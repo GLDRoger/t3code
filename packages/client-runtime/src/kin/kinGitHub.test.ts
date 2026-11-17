@@ -4,6 +4,7 @@ import { AsyncResult } from "effect/reactivity";
 
 import {
   createKinGitHubGuardActions,
+  KIN_GITHUB_GUARD_COPY,
   kinGitHubAccountRepos,
   kinGitHubGuardAction,
   kinGitHubGuardLine,
@@ -342,22 +343,51 @@ describe("kinGitHubAccountRepos", () => {
 });
 
 describe("protecting a repo's main branch from Kin's App", () => {
-  it("says each state on the row and offers only Kin's own protection to remove", () => {
+  it("says each watched row's state, unknown with its reason, and offers only Kin's own protection to remove", () => {
     const rows = [
-      { state: "open", branch: "main", byKin: false },
-      { state: "protected", branch: "main", byKin: true },
-      { state: "protected", branch: "trunk", byKin: false },
-      { state: "unknown", branch: "main", byKin: false, problem: "plan" },
-      { state: "unknown", branch: "main", byKin: false, problem: "no_admin" },
+      [{ state: "open", branch: "main", byKin: false }, "app"],
+      [{ state: "open", branch: "main", byKin: false }, "owner"],
+      [{ state: "open", branch: "main", byKin: false }, undefined],
+      [{ state: "protected", branch: "main", byKin: true }, "app"],
+      [{ state: "protected", branch: "trunk", byKin: false }, "owner"],
+      [{ state: "unknown", branch: "main", byKin: false, problem: "plan" }, "owner"],
+      [{ state: "unknown", branch: "main", byKin: false, problem: "no_admin" }, "owner"],
+      [{ state: "unknown", branch: "main", byKin: false, problem: "no_access" }, "owner"],
+      [{ state: "unknown", branch: "main", byKin: false, problem: "unreachable" }, "app"],
+      [{ state: "unknown", branch: "main", byKin: false, problem: "refused" }, "owner"],
+      [{ state: "unknown", branch: "main", byKin: false }, "owner"],
+      [undefined, "owner"],
     ] as const;
-    expect(rows.map((guard) => [kinGitHubGuardLine(guard), kinGitHubGuardAction(guard)])).toEqual([
-      ["Kin's App can change main", "protect"],
+    expect(
+      rows.map(([guard, agentsAs]) => [
+        kinGitHubGuardLine({ watched: true, agentsAs, guard }),
+        kinGitHubGuardAction(guard),
+      ]),
+    ).toEqual([
+      ["main unprotected: Kin's App can change it", "protect"],
+      ["main unprotected; the App isn't on this repo", "protect"],
+      ["main unprotected; the App isn't on this repo", "protect"],
       ["Kin protects main", "remove"],
       ["Your rules protect trunk", null],
       ["GitHub's plan offers no protection for main here", null],
-      ["Protecting main takes admin on this repo", null],
+      ["main protection unknown: it takes admin on this repo", null],
+      ["main protection unknown: GitHub hides its rules from your login", null],
+      ["main protection unknown: Kin couldn't reach GitHub", null],
+      ["main protection unknown: GitHub didn't say", null],
+      ["main protection unknown: GitHub didn't say", null],
+      ["Main branch not checked yet", null],
     ]);
-    expect(kinGitHubGuardAction(undefined)).toBeNull();
+    // Kin never reads a repo it doesn't watch, so its row says nothing of it.
+    expect(
+      kinGitHubGuardLine({
+        watched: false,
+        agentsAs: "owner",
+        guard: { state: "open", branch: "main", byKin: false },
+      }),
+    ).toBeNull();
+    // One count for both kinds of unprotected branch, true whether or not the App is on the repo.
+    expect(KIN_GITHUB_GUARD_COPY.open(1)).toBe("1 watched repo has an unprotected main branch.");
+    expect(KIN_GITHUB_GUARD_COPY.open(3)).toBe("3 watched repos have an unprotected main branch.");
   });
 
   it("Protect all says how many worked and names each one that didn't, and why", async () => {

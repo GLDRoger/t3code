@@ -490,7 +490,7 @@ function useGuardActions(target: KinConnectionsTarget) {
   return { busy, run, notice };
 }
 
-/** "N watched repos let Kin's App change their main branch", what protecting does, and Protect all. */
+/** "N watched repos have an unprotected main branch", what protecting does, and Protect all. */
 function ProtectAll(props: {
   readonly target: KinConnectionsTarget;
   readonly open: number;
@@ -530,7 +530,8 @@ function repoNote(repo: KinGitHubRepo): string | undefined {
   if (repo.agentsAs !== undefined) parts.push(repo.agentsAs === "app" ? WATCH.asApp : WATCH.asYou);
   if (repo.fork) parts.push(WATCH.fork);
   if (repo.mentions) parts.push(WATCH.mentions);
-  if (repo.guard !== undefined) parts.push(kinGitHubGuardLine(repo.guard));
+  const guard = kinGitHubGuardLine(repo);
+  if (guard !== null) parts.push(guard);
   return parts.length === 0 ? undefined : parts.join(" · ");
 }
 
