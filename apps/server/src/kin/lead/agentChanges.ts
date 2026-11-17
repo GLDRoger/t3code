@@ -52,7 +52,7 @@ const ALONG = new Set(["reason", "handedBack"]);
 
 /**
  * What putting back one change's old values writes, or undefined when Kin can't do it on its own:
- * amounts, list details, links, a client or project moved (kept by key) and a doc's text.
+ * amounts, list details, a client or project moved (kept by key) and a doc's text. Links: `linkOf`.
  */
 const reversal = (change: {
   readonly kind: string;
@@ -120,8 +120,21 @@ const reversal = (change: {
   return Object.keys(patch).length === 0 ? undefined : (patch as Patch);
 };
 
+/** What a "linked" change put on, for Undo to take off. */
+const linkOf = (change: {
+  readonly kind: string;
+  readonly at: number;
+  readonly fields: ReadonlyArray<FieldChange>;
+}) => {
+  const [made] = change.fields;
+  return change.kind === "linked" && made !== undefined && made.to !== null
+    ? { kind: made.field, shown: made.to, at: change.at }
+    : undefined;
+};
+
 type Row = {
   readonly seq: number;
+  readonly recordId: string;
   readonly at: number;
   readonly key: string;
   readonly title: string;
@@ -140,6 +153,10 @@ const putBack = (
 ) => {
   if (change.kind === "created")
     return next.some((one) => one.field === "state" && one.to === "dropped");
+  if (change.kind === "linked")
+    return change.fields.some((one) =>
+      next.some((back) => back.field === one.field && back.from === one.to && back.to === null),
+    );
   const own = change.fields.filter((one) => !ALONG.has(one.field));
   return (
     own.length > 0 &&
@@ -156,7 +173,7 @@ const rowsOf = Effect.fn("KinAgentChanges.rows")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   // Owner-level only (its page's check): every record, private ones included.
-  return yield* sql<Row>`SELECT c.seq, c.at, r.key, r.title, r.register_id AS "registerId",
+  return yield* sql<Row>`SELECT c.seq, c.record_id AS "recordId", c.at, r.key, r.title, r.register_id AS "registerId",
         r.state, c.kind, c.fields_json AS "fieldsJson",
         EXISTS (SELECT 1 FROM kin_record_changes l WHERE l.org_id = c.org_id
           AND l.record_id = c.record_id AND l.seq > c.seq AND l.actor_kind <> 'system') AS since,
@@ -167,6 +184,12 @@ const rowsOf = Effect.fn("KinAgentChanges.rows")(function* (
       JOIN kin_records r ON r.org_id = c.org_id AND r.record_id = c.record_id
       WHERE c.org_id = ${orgId} AND c.actor_kind = 'agent' AND c.actor_id = ${agentId}
         ${seq === undefined ? sql`` : sql`AND c.seq = ${seq}`}
+        -- A link both ways is one change: the half back to the entry linked first isn't listed.
+        AND NOT (c.kind = 'linked' AND EXISTS (SELECT 1 FROM kin_record_changes p
+          WHERE p.org_id = c.org_id AND p.kind = 'linked' AND p.actor_kind = c.actor_kind
+            AND p.actor_id = c.actor_id AND p.at = c.at AND p.seq < c.seq
+            AND p.record_id = json_extract(c.fields_json, '$[0].to')
+            AND json_extract(p.fields_json, '$[0].to') = c.record_id))
       ORDER BY c.seq DESC LIMIT ${AGENT_CHANGES_SHOWN}`;
 });
 
@@ -181,7 +204,9 @@ const changeOf = (row: Row): KinAgentChange => {
     registerId: row.registerId,
     kind: row.kind,
     fields: fields.map((change) => ({ field: change.field, from: change.from, to: change.to })),
-    undo: !since && reversal({ ...row, fields }) !== undefined,
+    undo:
+      !since &&
+      (linkOf({ ...row, fields }) !== undefined || reversal({ ...row, fields }) !== undefined),
     since,
     ...(row.nextJson !== null && putBack({ ...row, fields }, parseChanges(row.nextJson))
       ? { undone: true }
@@ -215,20 +240,28 @@ export const ownerLevelUndoAgentChange = Effect.fn("KinAgentChanges.undo")(funct
       reason: "invalid_state",
       message: `${row.key} changed since, so Kin won't put this back over it. Open it to change it yourself.`,
     });
+  const writer = {
+    actor: { _tag: "person", personId: input.by },
+    via: "owner",
+    askedBy: input.by,
+  } as const;
+  const records = yield* KinRecords;
+  const made = linkOf({ ...row, fields: parseChanges(row.fieldsJson) });
+  if (made !== undefined) {
+    if (yield* records.unlink(input.orgId, writer, row.recordId, made)) return;
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: `That link on ${row.key} is already gone.`,
+    });
+  }
   const patch = reversal({ ...row, fields: parseChanges(row.fieldsJson) });
   if (patch === undefined)
     return yield* new KinChatError({
       reason: "invalid_state",
       message: `Kin can't put this change to ${row.key} back on its own. Open it to change it yourself.`,
     });
-  const records = yield* KinRecords;
   const before = yield* records.get(input.orgId, row.key);
-  yield* records.update(
-    input.orgId,
-    { actor: { _tag: "person", personId: input.by }, via: "owner", askedBy: input.by },
-    row.key,
-    patch,
-  );
+  yield* records.update(input.orgId, writer, row.key, patch);
   yield* tellMoved(
     { _tag: "person", orgId: input.orgId, personId: input.by },
     before,

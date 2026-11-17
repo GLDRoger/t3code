@@ -423,6 +423,16 @@ export class KinRecords extends Context.Service<
       recordId: string,
       link: LinkInput,
     ) => Effect.Effect<boolean, KinChatError>;
+    /**
+     * Takes off the link a "linked" change made (its kind, what it showed, when), and for an entry
+     * the link back made with it, each recorded on its entry. False when it is already gone.
+     */
+    readonly unlink: (
+      orgId: KinOrgId,
+      writer: Writer,
+      recordId: string,
+      link: { readonly kind: string; readonly shown: string; readonly at: number },
+    ) => Effect.Effect<boolean, KinChatError>;
     /** Money paid against an entry paid over time; in full, it is marked paid. Never more than owed. */
     readonly pay: (
       orgId: KinOrgId,
@@ -1729,6 +1739,45 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const unlink = Effect.fn("KinRecords.unlink")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    recordId: string,
+    link: { readonly kind: string; readonly shown: string; readonly at: number },
+  ) {
+    return yield* transaction(
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        const [made] = yield* sql<{ target: string }>`SELECT target FROM kin_record_links
+          WHERE org_id = ${orgId} AND record_id = ${recordId} AND kind = ${link.kind}
+            AND created_at = ${link.at} AND COALESCE(label, target) = ${link.shown}`;
+        if (made === undefined) return false;
+        const halves = [
+          { recordId, target: made.target },
+          ...(link.kind === "record" ? [{ recordId: made.target, target: recordId }] : []),
+        ];
+        for (const half of halves) {
+          const [gone] = yield* sql<{ shown: string }>`DELETE FROM kin_record_links
+            WHERE org_id = ${orgId} AND record_id = ${half.recordId} AND kind = ${link.kind}
+              AND target = ${half.target} AND created_at = ${link.at}
+            RETURNING COALESCE(label, target) AS shown`;
+          const [row] = yield* sql<{ rev: number; key: string }>`SELECT rev, key FROM kin_records
+            WHERE org_id = ${orgId} AND record_id = ${half.recordId}`;
+          if (gone === undefined || row === undefined) continue;
+          yield* logChange(
+            orgId,
+            writer,
+            { recordId: half.recordId, key: row.key, rev: row.rev },
+            "linked",
+            [{ field: link.kind, from: gone.shown, to: null }],
+            now,
+          );
+        }
+        return true;
+      }),
+    );
+  });
+
   const pay = Effect.fn("KinRecords.pay")(function* (
     orgId: KinOrgId,
     writer: Writer,
@@ -2127,6 +2176,7 @@ const make = Effect.gen(function* () {
     update,
     handBack,
     link,
+    unlink,
     pay,
     voidPayment,
     totals,
