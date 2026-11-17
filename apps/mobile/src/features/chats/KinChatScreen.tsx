@@ -310,10 +310,14 @@ function KinLiveChat(props: {
     summary === undefined || viewer.personId === null
       ? null
       : kinPeopleChatWith(summary, new Set([viewer.personId]));
-  const pairProfile = useKinProfiles(
+  const pairProfiles = useKinProfiles(
     pairWith === null ? null : environmentId,
     summary === undefined ? null : summary.orgId,
-  ).held?.profiles.find((profile) => profile.personId === pairWith);
+  ).held;
+  const pairProfile =
+    pairProfiles === null || pairProfiles === undefined
+      ? undefined
+      : pairProfiles.profiles.find((profile) => profile.personId === pairWith);
   const away = pairProfile === undefined ? null : kinAwayLine(pairProfile, { mine: false });
   const groupResult = useAtomValue(
     environmentId === null || chatId === null || !group
