@@ -26,7 +26,8 @@ Then add a fake to `conformance.test.ts`: a recording stand-in for the provider 
 
 1. Write the descriptor and its fake, and add a row to the providers table.
 2. Run `vp test run apps/server/src/kin/lead/turn/` until the suite passes, or declare what the provider can't do as `lacks` or `limits`.
-3. Run the Kin eval on the provider's cheapest model (`evals/mcp-tool-use`). Its runner reads the same instructions and descriptors.
+3. Run `.agents/skills/verify-kin/scripts/provider-conformance.sh <instance> <model>` on a verify-kin instance started with the provider's credentials: the same fixed turns live, as a table.
+4. Run the Kin eval on the provider's cheapest model (`evals/mcp-tool-use`). Its runner reads the same instructions and descriptors.
 
 T3's own adapters stay as they are. When a seam is missing, add the smallest hook T3 could keep, as `AcpSessionShaper` is for ACP.
 

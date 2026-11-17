@@ -133,6 +133,8 @@ bash .agents/skills/verify-kin/scripts/relay-owner-to-member.sh   # one, on the 
 | `hand-over-all`            | Zoya's page offers Give all open tasks to… with her count; the owner gives them to Arjun, each a recorded change, Arjun told once, Undo gives them back; Arjun can't; Zoya gives hers to Dev                                                                                                                                                           |
 | `money-place-follows`      | Zoya has Money open while the owner switches her Money place on, then off: the page follows each way without her navigating                                                                                                                                                                                                                            |
 
+`provider-conformance.sh <provider instance id> <model> [effort]` is the live half of the providers' conformance suite and is not in `run-all.sh`: it spends real model turns. It runs fourteen fixed turns (a plain reply, a Kin tool, a deferred tool, a choice card, a picture, scanned, text and compressed PDFs, a spreadsheet, the owner's signed shell and the web, then a teammate's same picture and PDF and no shell) and prints a table. Start the instance with the provider's credentials in its environment; see [Providers for Kin agents](../../../docs/kin/providers.md).
+
 `node scripts/kin-release-check.ts` runs all ten with the models, property tests and UI fuzz before a release ([Releasing Kin](../../../docs/operations/kin-release.md)).
 
 A script that sees a known product bug prints a `known` line on stderr instead of passing
