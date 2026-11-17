@@ -264,6 +264,12 @@ export function kinLeadMessageable(
   return access.everyone === true || access.people.some((one) => one.personId === personId);
 }
 
+/** A teammate's card for someone else's agent: what its owner wrote under What teammates see. */
+export function kinLeadContactAbout(contact: { readonly name: string; readonly intro: string }) {
+  const intro = contact.intro.trim();
+  return intro === "" ? `Message ${contact.name} here like a colleague.` : intro;
+}
+
 /** Told to a teammate in their chat with a lead's details: the owner can read that chat. */
 export function kinLeadOwnerSeesLine(ownerName: string | undefined): string {
   return ownerName === undefined
