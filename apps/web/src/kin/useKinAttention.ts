@@ -25,7 +25,7 @@ import { useState } from "react";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
-import { prefillKinDraft } from "./KinChatView";
+import { prefillKinDraft } from "./kinDraft";
 import { connectionAtomRuntime } from "../connection/runtime";
 import { kinClient } from "./kinClient";
 import { useKinMoneyLive } from "./useKinMoneyLive";

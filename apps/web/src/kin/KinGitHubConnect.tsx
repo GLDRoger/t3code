@@ -3,8 +3,10 @@ import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   createKinGitHubActions,
   createKinGitHubRepoActions,
+  KIN_GITHUB_AGENTS_COPY as AGENTS,
   KIN_GITHUB_COPY as COPY,
   KIN_GITHUB_WATCH_COPY as WATCH,
+  kinGitHubAgentsView,
   kinGitHubRow,
   kinGitHubSheet,
   kinGitHubWatchLine,
@@ -126,6 +128,9 @@ function GitHubSection(props: { readonly environmentId: EnvironmentId; readonly 
         status.watch !== undefined ? (
           <WatchedRepos environmentId={environmentId} orgId={orgId} status={status} />
         ) : null}
+        {status?.agents === undefined ? null : (
+          <AgentIdentity status={status} agents={status.agents} />
+        )}
         {problem === null ? null : (
           <div className="px-4 pb-3">
             <Alert variant="error">
@@ -157,6 +162,47 @@ function GitHubSection(props: { readonly environmentId: EnvironmentId; readonly 
         onClose={() => setConfirming(false)}
       />
     </>
+  );
+}
+
+/** Who agents work as on GitHub, where the App is missing, and what they lately did as the owner. */
+function AgentIdentity(props: {
+  readonly status: KinGitHubStatus;
+  readonly agents: NonNullable<KinGitHubStatus["agents"]>;
+}) {
+  const now = useNowMinuteMs();
+  const view = kinGitHubAgentsView(props.agents, props.status.account?.login ?? null, now);
+  return (
+    <div className="flex flex-col gap-3 border-t px-4 py-3">
+      <div className="flex flex-col gap-1">
+        <p className="text-sm font-medium">{view.headline}</p>
+        <p className="text-sm text-muted-foreground">{view.detail}</p>
+      </div>
+      {view.installUrl === null ? null : (
+        <div>
+          <Button
+            size="xs"
+            variant="outline"
+            render={<a href={view.installUrl} target="_blank" rel="noreferrer noopener" />}
+          >
+            {AGENTS.install}
+          </Button>
+        </div>
+      )}
+      {view.uses.length === 0 ? null : (
+        <div className="flex flex-col gap-1">
+          <p className="text-xs font-medium text-muted-foreground">{AGENTS.usesTitle}</p>
+          <ul className="flex flex-col divide-y rounded-md border">
+            {view.uses.map((use) => (
+              <li key={use.key} className="flex min-w-0 flex-col gap-0.5 px-3 py-2">
+                <span className="text-xs text-muted-foreground">{use.line}</span>
+                <code className="truncate font-mono text-xs">{use.command}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }
 

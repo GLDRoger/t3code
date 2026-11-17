@@ -172,6 +172,7 @@ import { KinStandInLine } from "./KinStandInLine";
 import { kinAccessCopy } from "./kinTeammateMark";
 import { useKinHostAt } from "./useKinHost";
 import { useKinProfiles } from "./kinPictures";
+import { kinDraftAtom, kinDraftKey, restoreDraft } from "./kinDraft";
 
 type ChatResult = AsyncResult.AsyncResult<KinSynced<KinChatState>, unknown> | null;
 type InboxResult = AsyncResult.AsyncResult<KinSynced<KinInboxState>, unknown> | null;
@@ -186,31 +187,6 @@ const decodeChatId = Schema.decodeUnknownOption(KinChatId);
 
 // Mirrors the host's reactable cards; the host still refuses the rest.
 const REACTABLE_WIDGETS = new Set(["choice", "task", "routine"]);
-
-/** Every Kin host uses the same org id, so the environment keeps two hosts' drafts apart. */
-const kinDraftAtom = Atom.family((_key: string) =>
-  Atom.make("").pipe(Atom.keepAlive, Atom.withLabel("kin:draft")),
-);
-const kinDraftKey = (environmentId: EnvironmentId, orgId: string, chatId: string) =>
-  `${environmentId}:${orgId}:${chatId}`;
-
-/** Readies a message in a chat's box for the owner to send, unless it is already there. */
-export function prefillKinDraft(
-  environmentId: EnvironmentId,
-  orgId: string,
-  chatId: string,
-  body: string,
-) {
-  const key = kinDraftKey(environmentId, orgId, chatId);
-  if (!appAtomRegistry.get(kinDraftAtom(key)).includes(body)) restoreDraft(key, body);
-}
-
-/** Puts an unsent body back in the draft, ahead of anything typed since. */
-function restoreDraft(key: string, body: string) {
-  const atom = kinDraftAtom(key);
-  const typed = appAtomRegistry.get(atom);
-  appAtomRegistry.set(atom, typed.trim().length === 0 ? body : `${body}\n\n${typed}`);
-}
 
 /** A lead's charter as the empty chat's opening lines: whole when short, else cut at a word. */
 function kinIntroCharter(charter: string): string | null {

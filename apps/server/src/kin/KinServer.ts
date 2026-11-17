@@ -30,6 +30,7 @@ import type { KinWorkspace } from "./gendocs/workspace.ts";
 import type { KinRecords } from "./work/KinRecords.ts";
 import type { KinConnections } from "./connections/ConnectionsService.ts";
 import type { KinGitHubLogin } from "./connections/GitHubLogin.ts";
+import type { KinGitHubApp } from "./github/KinGitHubApp.ts";
 import type { KinAgentSessionPolicy } from "./lead/sessionPolicy.ts";
 import type { KinSocial } from "./social/SocialService.ts";
 
@@ -62,6 +63,7 @@ export type Services =
   | KinDocRenderer
   | KinConnections
   | KinGitHubLogin
+  | KinGitHubApp
   | KinAgentSessionPolicy
   | KinSocial;
 

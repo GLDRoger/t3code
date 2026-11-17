@@ -14,6 +14,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
 import { KinGitHubApi } from "../github/GitHubWatch.ts";
+import { KinGitHubApp } from "../github/KinGitHubApp.ts";
 import * as Persistence from "../persistence/KinPersistence.ts";
 import { FIXTURE_QUOTE, FIXTURE_SAID, fixtureItem } from "./__fixtures__/items.ts";
 import * as Memory from "./Memory.ts";
@@ -32,6 +33,8 @@ interface RecordedRequest {
   readonly method: string;
   readonly path: string;
   readonly body: unknown;
+  /** Who Kin called GitHub as: its GitHub App or the owner's login. */
+  readonly as?: "app" | "owner";
 }
 interface FakeAnswer {
   /** Never answers, like a `gh` call GitHub leaves hanging. */
@@ -431,37 +434,48 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           return { status: 201, body: {} };
         return { status: 404, body: { message: "Not Found" } };
       }).pipe(Effect.orDie);
-    // GitHub as the owner's `gh` login, over `route`.
+    // GitHub as the owner's `gh` login, or as Kin's GitHub App in `merged`, over `route`.
+    const asApp = scenario === "merged";
     const github = { requests: [] as Array<RecordedRequest> };
+    const callAs =
+      (as: "app" | "owner"): KinGitHubApi["Service"]["call"] =>
+      (request) =>
+        Effect.gen(function* () {
+          const recorded = {
+            method: request.method ?? "GET",
+            path: `/${request.path}`,
+            body: request.body,
+            as,
+          };
+          github.requests.push(recorded);
+          const answer = yield* route(recorded);
+          if (answer.hang === true || answer.stallBody === true) return yield* Effect.never;
+          return {
+            status: answer.status,
+            headers: answer.headers ?? {},
+            body: answer.body ?? null,
+            text: "",
+          };
+        });
+    // With the App installed on the memory repo, Kin lands memory without the owner's login.
     const api = Layer.succeed(
       KinGitHubApi,
       KinGitHubApi.of({
-        connected: () => Effect.succeed({ login: "owner", orgs: [] }),
-        call: (request) =>
-          Effect.gen(function* () {
-            const recorded = {
-              method: request.method ?? "GET",
-              path: `/${request.path}`,
-              body: request.body,
-            };
-            github.requests.push(recorded);
-            const answer = yield* route(recorded);
-            if (answer.hang === true || answer.stallBody === true) return yield* Effect.never;
-            return {
-              status: answer.status,
-              headers: answer.headers ?? {},
-              body: answer.body ?? null,
-              text: "",
-            };
-          }),
+        connected: () => Effect.succeed(asApp ? null : { login: "owner", orgs: [] }),
+        call: callAs("owner"),
       }),
     );
+    const app = Layer.succeed(KinGitHubApp, {
+      state: () => Effect.succeed({ _tag: "none" }),
+      on: () => Effect.succeed({ login: "invented-kin[bot]", call: callAs("app") }),
+      refresh: () => Effect.void,
+    });
     const pullRequests = Layer.effect(
       PullRequests.MemoryPullRequests,
       PullRequests.make({
         pollInterval: scenario === "check-pending" ? "20 minutes" : heldInCi ? "1 minute" : 0,
       }),
-    ).pipe(Layer.provide(api));
+    ).pipe(Layer.provide(api), Layer.provide(asApp ? app : Layer.empty));
 
     const notices: Array<{ branch: string; reason: string }> = [];
     const recovery = Layer.succeed(Memory.MemoryRecoveryHooks, {
@@ -962,6 +976,8 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       ]);
       const pinned = (merges[0]!.body as { sha: string }).sha;
       expect(yield* git(paths.writer, ["rev-parse", `${pinned}^{tree}`])).toBe(autoHead);
+      if (asApp)
+        expect(new Set(github.requests.map((request) => request.as))).toEqual(new Set(["app"]));
       if (!ownerPath) {
         // Memory writes post nothing in the owner's chat.
         expect(notices).toEqual([]);

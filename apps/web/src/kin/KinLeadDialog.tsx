@@ -42,7 +42,7 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient, refreshKinAgents } from "./kinClient";
 import { KinAgentModelPicker, useKinAgentModels } from "./KinAgentModelPicker";
-import { prefillKinDraft } from "./KinChatView";
+import { prefillKinDraft } from "./kinDraft";
 import { kinLeadFormAtom, type KinLeadFormTarget } from "./kinLeadForm";
 
 const closeLeadForm = () => appAtomRegistry.set(kinLeadFormAtom, null);

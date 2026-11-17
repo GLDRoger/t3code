@@ -44,8 +44,29 @@ export interface FakeComment {
   path?: string;
   line?: number;
 }
+/** Kin's GitHub App as GitHub holds it: where it is installed, and the tokens it minted. */
+export interface FakeApp {
+  id: number;
+  slug: string;
+  name: string;
+  botId: number;
+  installations: {
+    id: number;
+    account: string;
+    repos: string[];
+    permissions: Record<string, string>;
+  }[];
+  minted: {
+    token: string;
+    installation: number;
+    expiresAt: number;
+    permissions: Record<string, string>;
+  }[];
+}
 export interface FakeWorld {
   user: string;
+  /** Kin's GitHub App, when the test sets one up. */
+  app?: FakeApp | null;
   now: number;
   seq: number;
   /** A failure every call answers with, such as 401, to show a signed-out login. */
@@ -63,7 +84,7 @@ export interface FakeWorld {
     event: string;
     body: string;
   }[];
-  reactions: { on: string; content: string }[];
+  reactions: { on: string; content: string; by?: string }[];
   checks: Record<string, string[]>;
   notifications: { id: string; repo: string; number: number; reason: string; updated_at: number }[];
   events: { id: string; type: string; repo: string; number: number; created_at: number }[];
@@ -293,6 +314,71 @@ export class FakeGitHub {
     const missing: FakeAnswer = { status: 404, headers: {}, body: { message: "Not Found" } };
     if (this.world.down !== null)
       return { status: this.world.down, headers: {}, body: { message: "Bad credentials" } };
+    const app = this.world.app ?? null;
+    const bearer = /^bearer (.+)$/i.exec(headers.authorization ?? "")?.[1];
+    const asApp = app !== null && bearer !== undefined && bearer.split(".").length === 3;
+    const minted = app?.minted.find((entry) => entry.token === bearer);
+    if (bearer !== undefined && !asApp && minted === undefined)
+      return { status: 401, headers: {}, body: { message: "Bad credentials" } };
+    if (minted !== undefined && minted.expiresAt <= this.world.now)
+      return { status: 401, headers: {}, body: { message: "Bad credentials" } };
+    const installation = app?.installations.find((entry) => entry.id === minted?.installation);
+    const actor = installation === undefined ? this.world.user : `${app!.slug}[bot]`;
+    const association = actor === this.world.user ? "OWNER" : "NONE";
+    // As real GitHub: the App's JWT works only on `/app…`, which take nothing else, and
+    // `/installation…` takes only an installation token.
+    const appPath = path === "app" || path.startsWith("app/");
+    if (asApp !== appPath || (path.startsWith("installation/") && installation === undefined))
+      return {
+        status: 401,
+        headers: {},
+        body: { message: "A JSON web token could not be decoded" },
+      };
+    if (app !== null && method === "GET" && decodeURIComponent(path) === `users/${app.slug}[bot]`)
+      return ok({ id: app.botId, login: `${app.slug}[bot]` });
+    if (asApp) {
+      if (method === "GET" && path === "app") return ok({ slug: app.slug, name: app.name });
+      if (method === "GET" && path === "app/installations")
+        return ok(
+          app.installations.map((entry) => ({
+            id: entry.id,
+            account: { login: entry.account },
+            permissions: entry.permissions,
+          })),
+        );
+      const mint = /^app\/installations\/(\d+)\/access_tokens$/.exec(path);
+      const target = app.installations.find((entry) => entry.id === Number(mint?.[1]));
+      if (method === "POST" && target !== undefined) {
+        const asked = (body.permissions ?? target.permissions) as Record<string, string>;
+        const level = (value: string | undefined) =>
+          ["read", "write", "admin"].indexOf(value ?? "");
+        if (
+          Object.entries(asked).some(
+            ([name, value]) => level(value) > level(target.permissions[name]),
+          )
+        )
+          return {
+            status: 422,
+            headers: {},
+            body: { message: "The permissions requested are not granted to this installation." },
+          };
+        const token = `ghs_fake_${target.id}_${app.minted.length + 1}`;
+        const expiresAt = this.world.now + 60 * 60_000;
+        app.minted.push({ token, installation: target.id, expiresAt, permissions: asked });
+        return ok({ token, expires_at: iso(expiresAt), permissions: asked });
+      }
+      return missing;
+    }
+    if (installation !== undefined) {
+      if (method === "GET" && path === "installation/repositories")
+        return ok({
+          total_count: installation.repos.length,
+          repositories: installation.repos.map((full_name) => ({ full_name })),
+        });
+      const scoped = /^repos\/([^/]+\/[^/]+)\//.exec(path)?.[1]?.toLowerCase();
+      if (scoped === undefined || !installation.repos.some((repo) => repo.toLowerCase() === scoped))
+        return { status: 404, headers: {}, body: { message: "Not Found" } };
+    }
     const since = url.searchParams.get("since");
     const sinceMs = since === null ? 0 : Date.parse(since);
     if (method === "GET" && path === "user") return ok({ login: this.world.user });
@@ -413,15 +499,19 @@ export class FakeGitHub {
         );
       }
       if (method === "POST" && /reactions$/.test(rest)) {
-        this.world.reactions.push({ on: `${repo}/${rest}`, content: String(body.content) });
+        this.world.reactions.push({
+          on: `${repo}/${rest}`,
+          content: String(body.content),
+          by: actor,
+        });
         return ok({ content: body.content });
       }
       if (method === "POST" && (found = /^issues\/(\d+)\/comments$/.exec(rest))) {
         const id = this.comment({
           repo,
           number: Number(found[1]),
-          author: this.world.user,
-          association: "OWNER",
+          author: actor,
+          association,
           body: String(body.body ?? ""),
         });
         return ok({
@@ -435,7 +525,7 @@ export class FakeGitHub {
           id,
           repo,
           number: Number(found[1]),
-          user: this.world.user,
+          user: actor,
           event: String(body.event ?? "COMMENT"),
           body: String(body.body ?? ""),
         });
@@ -446,8 +536,8 @@ export class FakeGitHub {
           this.comment({
             repo,
             number: Number(found[1]),
-            author: this.world.user,
-            association: "OWNER",
+            author: actor,
+            association,
             body: String(inline.body ?? ""),
             path: String(inline.path ?? ""),
             line: Number(inline.line ?? 1),
@@ -461,8 +551,8 @@ export class FakeGitHub {
         const number = this.openItem({
           repo,
           pull: false,
-          author: this.world.user,
-          association: "OWNER",
+          author: actor,
+          association,
           title: String(body.title ?? ""),
           body: String(body.body ?? ""),
         });

@@ -8,7 +8,8 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
-import { type ApiAnswer, KinGitHubApi } from "../github/GitHubWatch.ts";
+import { type ApiAnswer, type ApiRequest, KinGitHubApi } from "../github/GitHubWatch.ts";
+import { gitHubApp } from "../github/KinGitHubApp.ts";
 import { WRITE_BRANCH_PREFIX } from "./MemoryConfig.ts";
 
 // GitHub Actions' app id: a `memory-check` run from any other app doesn't count.
@@ -236,6 +237,7 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
   readonly pollInterval: Duration.Input;
 }) {
   const api = yield* KinGitHubApi;
+  const app = yield* gitHubApp;
   const sql = yield* SqlClient.SqlClient;
 
   const connect = Effect.fn("MemoryPullRequests.connect")(function* (
@@ -244,8 +246,16 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
   ) {
     const refuse = (reason: string, url?: string) =>
       new MemoryPullRequestRefused({ orgId, reason, ...(url === undefined ? {} : { url }) });
-    if ((yield* api.connected()) === null)
-      return yield* refuse("the owner's GitHub isn't connected to Kin");
+    // As Kin's GitHub App where it is installed on the memory repo, else as the owner.
+    const asApp = Effect.fn("MemoryPullRequests.asApp")(function* () {
+      return Option.isSome(app) ? yield* app.value.on(repo) : undefined;
+    });
+    if ((yield* asApp()) === undefined && (yield* api.connected()) === null)
+      return yield* refuse(
+        "neither Kin's GitHub App nor the owner's GitHub login reaches this repo",
+      );
+    const send = (request: ApiRequest) =>
+      asApp().pipe(Effect.flatMap((as) => (as?.call ?? api.call)(request)));
     const [owner = "", name = ""] = repo.split("/");
     const base = `repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
     const fromBranch = (branch: string) => encodeURIComponent(`${owner}:${branch}`);
@@ -255,7 +265,7 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
       path: string,
       body?: unknown,
     ) =>
-      api.call({ method, path: `${base}${path}`, ...(body === undefined ? {} : { body }) }).pipe(
+      send({ method, path: `${base}${path}`, ...(body === undefined ? {} : { body }) }).pipe(
         Effect.timeout(CALL_TIMEOUT),
         Effect.flatMap((answer) =>
           answer.status === 0 ? Effect.fail(undefined) : Effect.succeed(answerOf(answer)),

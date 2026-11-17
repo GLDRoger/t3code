@@ -272,8 +272,8 @@ const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
     Layer.provide(GithubReaders.layer),
   );
 
-// TRIG-15: memory writes to the default branch land through PRs as the owner, unless
-// KIN_MEMORY_DIRECT_PUSH=true; without his GitHub login each such write is refused.
+// TRIG-15: memory writes to the default branch land through PRs, as Kin's GitHub App where it is
+// installed, else as the owner, unless KIN_MEMORY_DIRECT_PUSH=true; with neither, they're refused.
 const memoryPullRequests = Layer.unwrap(
   Effect.gen(function* () {
     const { directMainPush } = yield* MemoryConfig.MemoryConfig;
