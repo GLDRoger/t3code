@@ -744,6 +744,47 @@ async function main() {
         }),
       );
     await watch("Nothing changes (5 s baseline)", async () => undefined);
+    // Money open on every page: the owner level sees it, members their own view or the refusal.
+    for (const person of probes.keys()) {
+      const one = person === "owner" ? session : sessions.get(person)!;
+      await one.page.goto(`${one.base}/money`);
+    }
+    await sleep(4000);
+    const unpaid = database(instance)
+      .prepare(
+        `SELECT key, amount_minor AS minor, currency FROM kin_records
+         WHERE register_id = 'invoices' AND state = 'waiting' AND amount_minor > 0
+         ORDER BY key LIMIT 1`,
+      )
+      .get() as { key: string; minor: number; currency: string } | undefined;
+    if (unpaid !== undefined)
+      await watch("An invoice is paid (Money open)", () =>
+        as("owner", "kin.work.recordPayment", {
+          orgId: ORG,
+          key: unpaid.key,
+          amount: { minor: unpaid.minor, currency: unpaid.currency },
+          paidOn: new Date().toISOString().slice(0, 10),
+          clientRequestId: `kin-bench-pay-${Date.now()}`,
+        }),
+      );
+    const task =
+      taskKey === undefined
+        ? undefined
+        : (database(instance)
+            .prepare(`SELECT rev FROM kin_records WHERE register_id = 'work' AND key = ?`)
+            .get(taskKey) as { rev: number } | undefined);
+    if (taskKey !== undefined && task !== undefined)
+      await watch("A task changes (Money open)", () =>
+        as("owner", "kin.work.update", {
+          orgId: ORG,
+          key: taskKey,
+          rev: task.rev,
+          title: "bench chatter: one task, renamed",
+        }),
+      );
+    // The reconnect below measures the owner's home, as before these rows.
+    await page.goto(session.base);
+    await sleep(4000);
     for (const [index, one] of chatter.entries()) {
       const sum = (key: "framesIn" | "bytesIn" | "requestsOut" | "deflatedIn") =>
         one.clients.reduce((total, client) => total + (client[key] ?? 0), 0);
