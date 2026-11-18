@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { KIN_AGENT_CHANGES } from "@t3tools/client-runtime/kin/kinAgentPage";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
+  KIN_TURN_RECEIPT_LABEL,
   kinTurnReceiptRows,
   kinTurnReceiptTarget,
   type KinTurnReceiptRow,
@@ -21,7 +22,6 @@ import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 import { useKinOpenTarget } from "./KinMessagePage";
 
-const LIST_LABEL = "What this reply changed";
 
 /** The changes one agent reply's turn made, each opening its entry, with Undo where Kin can. */
 export function KinTurnReceiptSheet(props: {
@@ -56,9 +56,9 @@ export function KinTurnReceiptSheet(props: {
       });
   };
   return (
-    <Sheet variant="plain" title={LIST_LABEL} onClose={onClose}>
+    <Sheet variant="plain" title={KIN_TURN_RECEIPT_LABEL} onClose={onClose}>
       <View className="gap-4 px-4 pt-7 pb-10">
-        <ListSection title={LIST_LABEL}>
+        <ListSection title={KIN_TURN_RECEIPT_LABEL}>
           {rows.map((row, index) => {
             const undone = row.undo === "undone";
             const what = undone ? `${row.what} · ${KIN_AGENT_CHANGES.undone}` : row.what;

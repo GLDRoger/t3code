@@ -13,6 +13,8 @@ const NAMED = 2;
  * counting the changes about any other. Null when the turn changed nothing, or for a reply from an
  * older host, which has no receipt.
  */
+export const KIN_TURN_RECEIPT_LABEL = "What this reply changed";
+
 export function kinTurnReceiptLine(turn: KinTurnChanges | undefined): string | null {
   if (turn === undefined || turn.count === 0) return null;
   const named = [...new Set(turn.items.map((item) => item.key))].slice(0, NAMED);

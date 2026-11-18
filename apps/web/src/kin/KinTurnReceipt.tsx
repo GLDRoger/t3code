@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { KIN_AGENT_CHANGES } from "@t3tools/client-runtime/kin/kinAgentPage";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
+  KIN_TURN_RECEIPT_LABEL,
   kinTurnReceiptRows,
   kinTurnReceiptTarget,
   type KinTurnReceiptRow,
@@ -23,7 +24,6 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
 import { kinRecordPlace } from "./kinPlaces";
 
-const LIST_LABEL = "What this reply changed";
 
 /** "Changed W-25 and W-26" under an agent's reply; a click lists each change with its Undo. */
 export function KinTurnReceipt(props: {
@@ -89,7 +89,7 @@ function KinTurnReceiptList(props: {
       });
   };
   return (
-    <ul aria-label={LIST_LABEL} className="flex flex-col">
+    <ul aria-label={KIN_TURN_RECEIPT_LABEL} className="flex flex-col">
       {rows.map((row) => {
         const place = kinRecordPlace(kinTurnReceiptTarget(row.key, props.links));
         const undone = row.undo === "undone";
