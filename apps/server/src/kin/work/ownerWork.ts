@@ -70,6 +70,7 @@ import {
   teamKeys,
   teamRecord,
   teamRecordIn,
+  linkedFromOf,
   personSees,
   placesOf,
   teamSeesKey,
@@ -541,7 +542,14 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
   const can = (yield* cansOf(viewer, detail.orgId, [{ ...detail, registerId: row.registerId }]))(
     detail.recordId,
   );
-  const extras = yield* sheetExtras(detail.orgId, viewer, detail).pipe(workFailure);
+  const extras = {
+    ...(yield* sheetExtras(detail.orgId, viewer, detail).pipe(workFailure)),
+    ...(yield* linkedFromOf(
+      detail.orgId,
+      detail.recordId,
+      viewer.teammate ? viewerOfPeople([viewer.person.personId]) : KIN_OWNER_LEVEL,
+    ).pipe(workFailure)),
+  };
   if (!viewer.teammate) return { ...detail, ...extras, can };
   const { personId } = viewer.person;
   const seen = yield* teamVisible(detail.orgId, personId, [detail.recordId]).pipe(workFailure);
