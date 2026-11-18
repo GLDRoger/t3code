@@ -49,6 +49,14 @@ export const KIN_CANVAS = {
   loadFailed: "Couldn't load the canvas",
   minimap: "Canvas overview",
   sinceTitle: "Since you last looked",
+  offlineTitle: "You're offline",
+  offlineDetail: "The canvas comes back when the connection does.",
+  refusedTitle: "Only the owner can open this",
+  refusedDetail: "The canvas is shown to the person who runs this workspace for now.",
+  widgetAddFailed: "Couldn't add the widget",
+  widgetRemoveFailed: "Couldn't remove the widget",
+  nothingNeedsYou: "Nothing needs you right now.",
+  entrySummary: "Tasks and docs on one board, by project",
 } as const;
 
 export type KinCanvasCardKind = "task" | "doc";
@@ -263,7 +271,8 @@ export function kinCanvasModel(input: {
   );
   const docs = input.docs.filter((doc) => !doc.archived);
   const titles = new Map<string, string>(input.projects.map((p) => [p.key, p.title]));
-  for (const row of [...tasks, ...docs]) if (row.project) titles.set(row.project.key, row.project.title);
+  for (const row of [...tasks, ...docs])
+    if (row.project) titles.set(row.project.key, row.project.title);
   const projectOf = new Map<string, string | null>();
   for (const row of [...tasks, ...docs]) projectOf.set(row.key, row.project?.key ?? null);
 

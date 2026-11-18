@@ -10,6 +10,7 @@ import type { KinDockProps } from "./KinDock";
 const KIN_DOCK_NAMES: Record<KinDockTab, string> = {
   chats: "threads",
   tasks: "tasks",
+  canvas: "canvas",
   money: "money",
   clients: "clients",
   docs: "docs",

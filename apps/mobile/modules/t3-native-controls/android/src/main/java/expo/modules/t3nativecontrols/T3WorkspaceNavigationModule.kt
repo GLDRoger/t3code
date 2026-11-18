@@ -418,6 +418,7 @@ class T3WorkspaceNavigationView(
     "issues" -> "Issues"
     "usage" -> "Usage"
     "tasks" -> "Tasks"
+    "canvas" -> "Canvas"
     "money" -> "Money"
     "clients" -> "Clients"
     "docs" -> "Docs"
@@ -435,6 +436,7 @@ class T3WorkspaceNavigationView(
       "issues" -> R.drawable.t3_issues
       "usage" -> R.drawable.t3_usage
       "tasks" -> R.drawable.t3_tasks
+      "canvas" -> R.drawable.t3_canvas
       "money" -> R.drawable.t3_money
       "clients" -> R.drawable.t3_clients
       "docs" -> R.drawable.t3_docs

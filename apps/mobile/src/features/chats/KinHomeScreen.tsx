@@ -29,6 +29,7 @@ import { KIN_ONLY } from "../../lib/kinOnly";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentSession } from "../../state/session";
+import { KinCanvasScreen } from "./KinCanvasScreen";
 import { KinChatsList } from "./KinChatsScreen";
 import { KinDock, kinDockClearance, type KinDockProps } from "./components/KinDock";
 import { useKinAttention } from "./state/useKinAttention";
@@ -175,14 +176,21 @@ function KinHomeTabs(props: {
       />
       <KinTabContext value={docked ? { bottomClearance } : null}>
         {tab !== "chats" && workTarget !== null ? (
-          <KinPlace
-            // Asked again to narrow Tasks, it starts again from what it was asked.
-            key={`${tab}:${held.opened}`}
-            {...workTarget}
-            place={{ place: tab, projects: false }}
-            party={tab === "tasks" ? (held.tasks?.party ?? null) : null}
-            project={tab === "tasks" ? (held.tasks?.project ?? null) : null}
-          />
+          tab === "canvas" ? (
+            <KinCanvasScreen
+              key={`${workTarget.environmentId}:${workTarget.orgId}`}
+              {...workTarget}
+            />
+          ) : (
+            <KinPlace
+              // Asked again to narrow Tasks, it starts again from what it was asked.
+              key={`${tab}:${held.opened}`}
+              {...workTarget}
+              place={{ place: tab, projects: false }}
+              party={tab === "tasks" ? (held.tasks?.party ?? null) : null}
+              project={tab === "tasks" ? (held.tasks?.project ?? null) : null}
+            />
+          )
         ) : accessEnded ? (
           <KinHomeMessage title="Kin" bottomClearance={bottomClearance} actions={[settings]}>
             <EmptyState

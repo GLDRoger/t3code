@@ -3,6 +3,7 @@ import { createNativeStackScreen } from "@react-navigation/native-stack";
 import { pageRoute, sheetRoute } from "../layout/route-options";
 import { KinApprovalsScreen } from "./approvals/KinApprovalsScreen";
 import { KinAgentsScreen } from "./KinAgentsScreen";
+import { KinCanvasRouteScreen } from "./KinCanvasScreen";
 import { KinChatScreen } from "./KinChatScreen";
 import { KinChatsScreen } from "./KinChatsScreen";
 import { KinClientScreen } from "./KinClientScreen";
@@ -84,6 +85,11 @@ export const KIN_SCREENS = {
     screen: KinWorkScreen,
     linking: "kin/:environmentId/:orgId/work",
     options: pageRoute({ title: "Tasks" }),
+  }),
+  KinCanvas: createNativeStackScreen({
+    screen: KinCanvasRouteScreen,
+    linking: "kin/:environmentId/:orgId/canvas",
+    options: pageRoute({ title: "Canvas" }),
   }),
   KinWorkItem: createNativeStackScreen({
     screen: KinWorkItemScreen,

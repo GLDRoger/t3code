@@ -45,7 +45,7 @@ export const kinCachedOrgsAtom = Atom.family((environmentId: EnvironmentId) =>
 );
 
 const dockCache = persistQuery(
-  Schema.Array(Schema.Literals(["chats", "tasks", "money", "clients", "docs"])),
+  Schema.Array(Schema.Literals(["chats", "tasks", "canvas", "money", "clients", "docs"])),
 );
 const DOCK_CACHE_KEY = "dock";
 
