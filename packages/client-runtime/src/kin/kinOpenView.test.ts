@@ -15,7 +15,7 @@ import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
 import { kinAttention, kinTasksAttention, kinTasksBlock } from "./kinAttention.ts";
-import { kinOpenBadge, kinOpenNeeds, kinOpenWaiting } from "./kinOpenView.ts";
+import { kinOpenBadge, kinOpenNeeds, kinOpenShown, kinOpenWaiting } from "./kinOpenView.ts";
 import type { KinWorkNames } from "./kinWork.ts";
 import { kinNeedsYou } from "./kinWorkHome.ts";
 
@@ -163,5 +163,19 @@ describe("kinOpenNeeds", () => {
     expect(kinOpenBadge({ open: open(), ownerLevel: false, attention, mineDue: [late] })).toBe(
       rows.length,
     );
+  });
+
+  it("drops facts answered here, and the count with them, until the stream says", () => {
+    const key = facts[0]!.key;
+    for (const [answered, needsYou, ids] of [
+      [[], rows.length, rows.map((row) => row.id)],
+      [[key], rows.length - 1, rows.slice(1).map((row) => row.id)],
+      // A key that names no open fact, or names a task, changes nothing.
+      [["task_late:W-9", "W-5"], rows.length, rows.map((row) => row.id)],
+    ] as const) {
+      const shown = kinOpenShown(open(), new Set(answered));
+      expect(shown.counts).toEqual({ needsYou, waiting: 1 });
+      expect(shown.rows.map((row) => row.id)).toEqual(ids);
+    }
   });
 });

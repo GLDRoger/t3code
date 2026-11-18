@@ -783,6 +783,10 @@
       "types": "./src/kin/kinFeedFollow.ts",
       "default": "./src/kin/kinFeedFollow.ts"
     },
+    "./kin/kinOpenView": {
+      "types": "./src/kin/kinOpenView.ts",
+      "default": "./src/kin/kinOpenView.ts"
+    },
     "./kin/kinOutbox": {
       "types": "./src/kin/kinOutbox.ts",
       "default": "./src/kin/kinOutbox.ts"

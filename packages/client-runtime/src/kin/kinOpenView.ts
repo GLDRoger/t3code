@@ -30,6 +30,20 @@ export const kinOpenBadge = (input: {
   readonly mineDue: ReadonlyArray<unknown> | null;
 }) => (input.open === null ? kinTasksBadgeCount(input) : input.open.counts.needsYou);
 
+/**
+ * The open list as it stands once these facts were answered here (`kinAttentionShown`): they
+ * leave at once, and the count with them, until the stream says where they stand now.
+ */
+export function kinOpenShown(read: KinOpenRead, answered: ReadonlySet<string>): KinOpenRead {
+  if (answered.size === 0) return read;
+  const rows = read.rows.filter(
+    (row) => !(row.item._tag === "fact" && answered.has(row.item.fact.key)),
+  );
+  const gone = read.rows.length - rows.length;
+  if (gone === 0) return read;
+  return { ...read, counts: { ...read.counts, needsYou: read.counts.needsYou - gone }, rows };
+}
+
 /** What waits on the viewer in chats, oldest first, for Waiting on you (`selectKinInboxView`). */
 export const kinOpenWaiting = (read: KinOpenRead): ReadonlyArray<KinWaitingItem> =>
   read.rows.flatMap((row) => (row.item._tag === "waiting" ? [row.item.waiting] : []));
