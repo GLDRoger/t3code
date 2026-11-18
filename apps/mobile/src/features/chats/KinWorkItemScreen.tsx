@@ -10,7 +10,6 @@ import {
   kinRecordChip,
   kinRecordWho,
   kinTaskActivity,
-  type KinActivityIcon,
   type KinActivityLine,
   type KinNextStepAct,
   type KinRecordChipTone,
@@ -26,6 +25,7 @@ import {
   kinWorkOnlyOwner,
   KIN_WORK_REPEAT,
   KIN_WORK_TITLE_MAX,
+  kinSameRepeat,
   kinWorkAssignees,
   kinWorkHostClients,
   kinWorkItemState,
@@ -49,6 +49,7 @@ import {
   KinRecordKey,
   type KinAgentId,
   type KinChatId,
+  type KinRecordComment,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -56,12 +57,15 @@ import { AsyncResult } from "effect/reactivity";
 import { Pressable, TextInput, View } from "react-native";
 
 import { useState } from "react";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import type { AppBarMenu, AppBarMenuItem } from "../../components/ui/AppBar";
 import { SymbolView, type AppSymbolName } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
+import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { FilePreviewModal, type FilePreviewSource } from "../../components/ui/FilePreviewModal";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
@@ -71,13 +75,16 @@ import { useNowMinuteMs } from "../../lib/clock";
 import { cn } from "../../lib/cn";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { KIN_ONLY } from "../../lib/kinOnly";
 import { useOpenWorkspaceDetail } from "../layout/useOpenWorkspaceDetail";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { KinNotesVersions } from "./KinNotesVersions";
 import { KinAvatar } from "./components/KinAvatar";
+import { KinAttachments } from "./components/KinMessageBubble";
+import { KinTaskNoteComposer } from "./components/KinTaskNoteComposer";
 import { KinNextStep } from "./components/KinNextStep";
-import { KinWorkDueRow, KinWorkPlaceRow, KinWorkRepeatRow } from "./components/KinWorkTaskMenus";
+import { KinWorkDueRow, KinWorkPlaceRow } from "./components/KinWorkTaskMenus";
 import { KinListEntryBody } from "./KinListEntry";
 import { KinMakeDocumentStep, type KinMakeStep } from "./KinInvoice";
 import { KinWorkFrame, KinWorkLoading, KinWorkTaskRow } from "./components/KinWorkPieces";
@@ -94,7 +101,7 @@ import {
   type KinWorkTarget,
 } from "./state/useKinWork";
 import { useKinWorkLink } from "./state/kinWorkLink";
-import { useKinGate } from "./state/useKinHost";
+import { useKinGate, useKinHostAt } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
 
 export type KinWorkItemParams = {
@@ -117,7 +124,8 @@ const LINK_SYMBOL: Record<KinWorkLinkView["kind"], AppSymbolName> = {
   link: "link",
 };
 
-const ACTIVITY_SYMBOL: Record<KinActivityIcon, AppSymbolName> = {
+const ACTIVITY_SYMBOL: Record<KinActivityLine["icon"], AppSymbolName> = {
+  comment: "bubble.left",
   made: "plus",
   gave: "person.crop.circle",
   due: "clock",
@@ -170,6 +178,7 @@ const CHIP: Record<
 };
 
 const MENU_WAITING = "waiting:";
+const MENU_REPEAT = "repeat:";
 
 /** One task as a full page: where it stands, the next step, details, brief, activity, links. */
 export function KinWorkItemScreen({ route }: StaticScreenProps<KinWorkItemParams>) {
@@ -228,6 +237,17 @@ function KinWorkItemBody(props: ItemTarget) {
   const directory = useKinWorkDirectory(props, true);
   const canGive = useAtomValue(kinClient.workAssign.permissionAtom(environmentId));
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
+  const canComment = useAtomValue(kinClient.workComment.permissionAtom(environmentId));
+  const host = useKinHostAt(environmentId);
+  const insets = useSafeAreaInsets();
+  const [previewFile, setPreviewFile] = useState<FilePreviewSource | null>(null);
+  // Pages of comments older than the sheet's, read on asking; a newer sheet keeps them.
+  const [older, setOlder] = useState<{
+    readonly comments: ReadonlyArray<KinRecordComment>;
+    readonly more: boolean;
+  } | null>(null);
+  const readOlder = useAtomCommand(kinClient.workComments, { reportFailure: false });
+  const removeComment = useAtomCommand(kinClient.workCommentRemove, { reportFailure: false });
   const place = useKinWorkPlace(environmentId);
   const work = useKinWork(props);
   // Make invoice and Make its PDF are a step of this page, never a sheet over it.
@@ -343,6 +363,13 @@ function KinWorkItemBody(props: ItemTarget) {
     });
   const step = kinNextStep({ item: shown, view, names, now, change: act !== null, give: canGive });
   const onStep = (id: KinNextStepAct) => {
+    if (id === "openWaiting" && step.waiting !== null)
+      return navigation.navigate("KinChat", {
+        environmentId,
+        orgId,
+        chatId: step.waiting.chatId,
+        message: step.waiting.messageId,
+      });
     if (id === "give") return giveTo();
     if (id === "handBack") return handBack();
     if (act === null) return;
@@ -430,6 +457,45 @@ function KinWorkItemBody(props: ItemTarget) {
                 },
               ]),
         ];
+  const repeatShown = view.repeat?.text ?? KIN_WORK_REPEAT.never;
+  const dated = view.due !== null;
+  const repeats = act !== null && view.can.repeat === true && !view.closed;
+  const repeatMenu: ReadonlyArray<AppBarMenuItem> = !repeats
+    ? []
+    : [
+        {
+          id: "repeat",
+          title: `${KIN_WORK_REPEAT.label}: ${repeatShown}`,
+          items: [
+            ...(dated
+              ? []
+              : [
+                  {
+                    id: `${MENU_REPEAT}needs-due`,
+                    title: KIN_WORK_REPEAT.needsDue,
+                    disabled: true,
+                    onPress: () => undefined,
+                  },
+                ]),
+            ...KIN_WORK_REPEAT.choices.map((choice, index) => ({
+              id: `${MENU_REPEAT}${index}`,
+              title: choice.label,
+              selected: kinSameRepeat(choice.rule, view.repeat?.rule ?? null),
+              disabled: !dated,
+              onPress: () => act({ type: "repeat", rule: choice.rule }),
+            })),
+            ...(view.repeat === null
+              ? []
+              : [
+                  {
+                    id: `${MENU_REPEAT}stop`,
+                    title: KIN_WORK_REPEAT.stop,
+                    onPress: () => act({ type: "repeat", rule: null }),
+                  },
+                ]),
+          ],
+        },
+      ];
   // The less-used moves; each is here only where the host takes it from this viewer.
   const moreItems: ReadonlyArray<AppBarMenuItem> = [
     ...(reword === null || edit !== null
@@ -441,6 +507,7 @@ function KinWorkItemBody(props: ItemTarget) {
     ...(canGive && view.assignLabel !== null
       ? [{ id: "give", title: view.assignLabel, onPress: giveTo }]
       : []),
+    ...repeatMenu,
     ...(act !== null && view.handBackTo !== null
       ? [{ id: "hand-back", title: KIN_WORK_HAND_BACK.button, onPress: handBack }]
       : []),
@@ -458,8 +525,61 @@ function KinWorkItemBody(props: ItemTarget) {
     moreItems.length === 0 || saving
       ? []
       : [{ title: KIN_TASK_RECORD.more, icon: "ellipsis", items: moreItems }];
+  const sheetComments = item.comments ?? [];
+  const firstSeq = sheetComments[0]?.seq;
+  const earlier = (older?.comments ?? []).filter(
+    (one) => firstSeq === undefined || one.seq < firstSeq,
+  );
+  const comments = [...earlier, ...sheetComments];
+  const moreComments = older === null ? item.olderComments === true : older.more;
+  const loadOlder = async () => {
+    const before = comments[0]?.seq;
+    if (before === undefined) return;
+    const outcome = await readOlder({
+      environmentId,
+      input: { orgId, key: itemKey, beforeSeq: before },
+    });
+    if (AsyncResult.isFailure(outcome)) return;
+    setOlder({ comments: [...outcome.value.comments, ...earlier], more: outcome.value.older });
+  };
+  const askRemove = (commentId: string) =>
+    Dialog.confirm({
+      title: "Remove this note?",
+      message: "It stays in Activity as removed, without its words or files.",
+      confirmText: "Remove",
+      destructive: true,
+      onConfirm: () =>
+        void removeComment({ environmentId, input: { orgId, key: itemKey, commentId } }).then(
+          () => {
+            setOlder(null);
+            appAtomRegistry.refresh(itemAtom);
+          },
+        ),
+    });
+  const connected = host._tag === "host" && host.connected;
+  const footer =
+    canComment && edit === null
+      ? {
+          node: (
+            <KinTaskNoteComposer
+              environmentId={environmentId}
+              orgId={orgId}
+              itemKey={itemKey}
+              connected={connected}
+              bottomInset={Math.max(insets.bottom, 12)}
+            />
+          ),
+          bottomInset: Math.max(insets.bottom, 12),
+        }
+      : undefined;
   return (
-    <KinWorkFrame title={view.title} onBack={back} menus={menus} form={edit !== null}>
+    <KinWorkFrame
+      title={view.title}
+      onBack={back}
+      menus={menus}
+      form={edit !== null}
+      {...(footer === undefined ? {} : { footer })}
+    >
       <View className="gap-2.5 px-1">
         <View className="flex-row flex-wrap items-center gap-2">
           <KinRecordChip tone={chip.tone} label={chip.label} />
@@ -667,9 +787,7 @@ function KinWorkItemBody(props: ItemTarget) {
             }
           />
         )}
-        {act !== null && view.can.repeat === true && !view.closed ? (
-          <KinWorkRepeatRow view={view} disabled={saving} onAct={act} />
-        ) : view.repeat === null ? null : (
+        {repeats || view.repeat === null ? null : (
           <ListRowLayout
             icon="arrow.clockwise"
             label={KIN_WORK_REPEAT.label}
@@ -719,7 +837,6 @@ function KinWorkItemBody(props: ItemTarget) {
                       size="compact"
                       label={KIN_TASK_RECORD.edit}
                       accessibilityLabel="Edit the brief"
-                      disabled={saving}
                       onPress={() => changes.startEdit(item)}
                     />
                   ),
@@ -754,7 +871,14 @@ function KinWorkItemBody(props: ItemTarget) {
           />
         </View>
       )}
-      <KinActivity lines={kinTaskActivity(item, names, now)} note={view.historyNote} />
+      <KinActivity
+        lines={kinTaskActivity({ changes: item.changes, comments }, names, now)}
+        note={view.historyNote}
+        environmentId={environmentId}
+        onPressPreview={setPreviewFile}
+        onRemove={askRemove}
+        {...(moreComments ? { onOlder: () => void loadOlder() } : {})}
+      />
       {view.links.length === 0 ? null : (
         <ListSection title={KIN_TASK_RECORD.linked}>
           {view.links.map((link) => (
@@ -767,6 +891,7 @@ function KinWorkItemBody(props: ItemTarget) {
           ))}
         </ListSection>
       )}
+      <FilePreviewModal source={previewFile} onRequestClose={() => setPreviewFile(null)} />
     </KinWorkFrame>
   );
 }
@@ -815,10 +940,14 @@ function KinDetailPerson(props: {
   );
 }
 
-/** Who did what to the task and when, oldest first, with what a change replaced. */
+/** Who did what to the task and when, oldest first: its changes and its notes in one thread. */
 function KinActivity(props: {
   readonly lines: ReadonlyArray<KinActivityLine>;
   readonly note: string | null;
+  readonly environmentId: EnvironmentId;
+  readonly onPressPreview: (source: FilePreviewSource) => void;
+  readonly onRemove: (commentId: string) => void;
+  readonly onOlder?: () => void;
 }) {
   return (
     <View className="gap-3">
@@ -833,6 +962,16 @@ function KinActivity(props: {
         <Text textRole="footnote" className="px-2 text-foreground-muted">
           {props.note}
         </Text>
+      )}
+      {props.onOlder === undefined ? null : (
+        <View className="px-1">
+          <Button
+            tone="text"
+            size="compact"
+            label={KIN_TASK_RECORD.older}
+            onPress={props.onOlder}
+          />
+        </View>
       )}
       {props.lines.length === 0 ? (
         <Text textRole="footnote" className="px-2 text-foreground-muted">
@@ -853,8 +992,16 @@ function KinActivity(props: {
                 {line.who === null ? null : (
                   <Text className="font-t3-medium text-foreground">{line.who} </Text>
                 )}
-                {line.text} · {line.when}
+                {activityTail(line)}
               </Text>
+              {line.comment === null || line.comment.removed ? null : (
+                <KinCommentBody
+                  comment={line.comment}
+                  environmentId={props.environmentId}
+                  onPressPreview={props.onPressPreview}
+                  onRemove={() => props.onRemove(line.comment?.commentId ?? "")}
+                />
+              )}
               {line.before === null && line.after === null ? null : (
                 <KinBeforeAfter before={line.before} after={line.after} />
               )}
@@ -862,6 +1009,51 @@ function KinActivity(props: {
           </View>
         ))
       )}
+    </View>
+  );
+}
+
+/** What follows the name: "gave it to Zoya, via Chief of staff · 2h", or a note's time alone. */
+const activityTail = (line: KinActivityLine) => {
+  const said = [line.text, line.via === null ? "" : `via ${line.via}`]
+    .filter((part) => part !== "")
+    .join(", ");
+  return said === "" ? `· ${line.when}` : `${said} · ${line.when}`;
+};
+
+/** A note's words and files, and the way to take it back for whoever may. */
+function KinCommentBody(props: {
+  readonly comment: NonNullable<KinActivityLine["comment"]>;
+  readonly environmentId: EnvironmentId;
+  readonly onPressPreview: (source: FilePreviewSource) => void;
+  readonly onRemove: () => void;
+}) {
+  const { comment } = props;
+  return (
+    <View className="mt-1 gap-1.5">
+      {comment.body === "" ? null : (
+        <Text textRole="body" selectable className="text-foreground">
+          {comment.body}
+        </Text>
+      )}
+      {comment.files.length === 0 ? null : (
+        <KinAttachments
+          attachments={comment.files}
+          environmentId={props.environmentId}
+          onPressPreview={props.onPressPreview}
+        />
+      )}
+      {comment.canRemove ? (
+        <View className="flex-row">
+          <Button
+            tone="text"
+            size="compact"
+            label="Remove"
+            accessibilityLabel="Remove this note"
+            onPress={props.onRemove}
+          />
+        </View>
+      ) : null}
     </View>
   );
 }

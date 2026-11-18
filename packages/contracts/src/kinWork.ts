@@ -286,7 +286,7 @@ export const KinRecordChange = Schema.Struct({
 });
 export type KinRecordChange = typeof KinRecordChange.Type;
 
-const KIN_RECORD_COMMENT_MAX = 4_000;
+export const KIN_RECORD_COMMENT_MAX = 4_000;
 const KIN_RECORD_COMMENT_FILES_MAX = 8;
 /** How many comments a record's sheet carries, newest; `kin.work.comments` pages older ones. */
 export const KIN_RECORD_COMMENTS_PAGE = 50;
