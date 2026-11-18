@@ -28,6 +28,7 @@ export type KinTurnReceiptUndo = "undo" | "undone" | "none";
 export interface KinTurnReceiptRow {
   readonly id: string;
   readonly key: string;
+  readonly kind: KinTurnChange["kind"];
   readonly title: string;
   readonly what: string;
   /** `undo` offers Undo (`kin.lead.undoChange` with `change`); `undone` says it was put back. */
@@ -45,6 +46,7 @@ export function kinTurnReceiptRows(turn: KinTurnChanges | undefined): {
     rows: turn.items.map((item) => ({
       id: `${item.change.agentId}:${item.change.seq}`,
       key: item.key,
+      kind: item.kind,
       title: item.title,
       what: item.what,
       undo: item.undone ? "undone" : item.undoable ? "undo" : "none",
@@ -55,14 +57,15 @@ export function kinTurnReceiptRows(turn: KinTurnChanges | undefined): {
 }
 
 /**
- * Where a row opens. A change names only its key, so the kind comes from the reply's own links;
- * an entry the reply doesn't name opens in the task sheet, as attention rows do.
+ * Where a row opens: the kind the change carries, else the reply's own link to that key; an entry
+ * neither names (an older host) opens in the task sheet, as attention rows do.
  */
 export function kinTurnReceiptTarget(
-  key: string,
+  row: Pick<KinTurnChange, "key" | "kind">,
   links: ReadonlyArray<KinMessageLink> | undefined,
 ): Extract<KinMessageLinkTarget, { readonly _tag: "record" }> {
+  if (row.kind !== undefined) return { _tag: "record", key: row.key, kind: row.kind };
   for (const link of links ?? [])
-    if (link.to._tag === "record" && link.to.key === key) return link.to;
-  return { _tag: "record", key, kind: "task" };
+    if (link.to._tag === "record" && link.to.key === row.key) return link.to;
+  return { _tag: "record", key: row.key, kind: "task" };
 }
