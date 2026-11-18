@@ -93,6 +93,7 @@ import { connectionAtomRuntime } from "../connection/runtime";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
+import { KinTeammateDevices } from "./KinDevices";
 import { KinInviteDialog, type KinInviteDialogState } from "./KinInviteDialog";
 import { KinAwayField, KinHandOverButton } from "./KinAway";
 import { useKinProfiles } from "./kinPictures";
@@ -548,6 +549,13 @@ function KinTeammateDialog(props: {
               )}
             </Section>
           )}
+          {offered.remove && teammate.personId !== null && teammate.state === "joined" ? (
+            <KinTeammateDevices
+              environmentId={props.environmentId}
+              orgId={props.orgId}
+              personId={teammate.personId}
+            />
+          ) : null}
           {offered.remove && teammate.personId !== null ? (
             <Section title="Access">
               <Button

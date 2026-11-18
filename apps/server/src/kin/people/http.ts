@@ -21,6 +21,7 @@ import {
   trustedBrowserOrigins,
 } from "../../auth/EnvironmentAuth.ts";
 import { SessionStore } from "../../auth/SessionStore.ts";
+import { deriveAuthClientMetadata } from "../../auth/utils.ts";
 import * as ServerConfig from "../../config.ts";
 import { requestUrl } from "../../requestUrl.ts";
 import { KinServer } from "../KinServer.ts";
@@ -28,6 +29,8 @@ import * as People from "./KinPeople.ts";
 
 const decodeAccept = Schema.decodeUnknownEffect(KinInviteAcceptRequest);
 const noStore = { "cache-control": "no-store" };
+const clientOf = (request: HttpServerRequest.HttpServerRequest) =>
+  deriveAuthClientMetadata({ request }).ipAddress ?? "unknown";
 
 /** The device's own session renewed; none when it is not a live, bound teammate device. */
 const renewDevice = Effect.fn("KinPeopleHttp.renewDevice")(function* (token: string) {
@@ -68,11 +71,10 @@ export const layer = Layer.effectDiscard(
       Effect.gen(function* () {
         const kin = yield* KinServer;
         if (Option.isNone(kin.services)) return HttpServerResponse.empty({ status: 503 });
-        const input = yield* (yield* HttpServerRequest.HttpServerRequest).json.pipe(
-          Effect.flatMap(decodeAccept),
-        );
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const input = yield* request.json.pipe(Effect.flatMap(decodeAccept));
         const people = yield* People.make.pipe(Effect.provideContext(kin.services.value));
-        const result = yield* people.accept(input);
+        const result = yield* people.accept(input, clientOf(request));
         return yield* HttpServerResponse.json(result, { headers: { "cache-control": "no-store" } });
       }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
     );
@@ -138,7 +140,7 @@ export const layer = Layer.effectDiscard(
         const input = yield* request.json.pipe(Effect.flatMap(decodeAccept));
         const secure = Option.exists(requestUrl(request), (url) => url.protocol === "https:");
         return yield* Effect.gen(function* () {
-          const result = yield* (yield* People.make).accept(input);
+          const result = yield* (yield* People.make).accept(input, clientOf(request));
           return yield* HttpServerResponse.empty({
             status: 204,
             headers: { "cache-control": "no-store" },

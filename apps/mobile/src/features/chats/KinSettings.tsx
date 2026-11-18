@@ -9,6 +9,7 @@ import {
   kinDailyLimitUsed,
   kinDailyLimitWaiting,
 } from "@t3tools/client-runtime/kin/kinBudget";
+import { KIN_DEVICES_COPY } from "@t3tools/client-runtime/kin/kinDevices";
 import {
   KIN_COMPANY_CHAT_COPY,
   KIN_PROFILE_COPY,
@@ -26,7 +27,7 @@ import {
 import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -223,19 +224,35 @@ export function KinSettings(props: {
               switch (page) {
                 case "profile":
                   return host._tag !== "host" || orgId === null || mine === null ? null : (
-                    <SettingsRow
-                      key={page}
-                      icon="person.crop.circle"
-                      label={mine.displayName}
-                      value={kinRoleLine(mine.roleTags) || KIN_PROFILE_COPY.mine}
-                      onPress={() =>
-                        navigation.navigate("KinProfile", {
-                          environmentId: host.environmentId,
-                          orgId,
-                          personId: mine.personId,
-                        })
-                      }
-                    />
+                    <Fragment key={page}>
+                      <SettingsRow
+                        icon="person.crop.circle"
+                        label={mine.displayName}
+                        value={kinRoleLine(mine.roleTags) || KIN_PROFILE_COPY.mine}
+                        onPress={() =>
+                          navigation.navigate("KinProfile", {
+                            environmentId: host.environmentId,
+                            orgId,
+                            personId: mine.personId,
+                          })
+                        }
+                      />
+                      {/* The owner links devices from T3 Code's Sharing & access settings. */}
+                      {teammateIds.includes(host.environmentId) ? (
+                        <SettingsRow
+                          icon="iphone"
+                          label={KIN_DEVICES_COPY.title}
+                          value={KIN_DEVICES_COPY.rowDetail}
+                          onPress={() =>
+                            navigation.navigate("KinDevices", {
+                              environmentId: host.environmentId,
+                              orgId,
+                              personId: mine.personId,
+                            })
+                          }
+                        />
+                      ) : null}
+                    </Fragment>
                   );
                 case "notifications":
                   return (

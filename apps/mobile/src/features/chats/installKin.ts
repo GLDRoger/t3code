@@ -6,6 +6,7 @@ import { rootNavigationRef, whenRootNavigationReady } from "../../lib/rootNaviga
 import {
   installKinAccessEnded,
   installKinChatOnlyMemory,
+  installKinDeviceRenewal,
   installKinShellReset,
 } from "./state/kinChatOnly";
 import { readKinIsHome } from "./state/kinHome";
@@ -32,6 +33,7 @@ export function installKin(navigate: (href: string) => void): () => void {
     }),
     installKinNotificationSync(),
     installKinChatOnlyMemory(),
+    installKinDeviceRenewal(),
     installKinShellReset(resetToHome),
     installKinAccessEnded(() => {
       // Only a teammate's phone: with coding environments too, Home is not about this team.

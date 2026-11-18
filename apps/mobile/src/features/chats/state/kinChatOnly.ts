@@ -9,6 +9,7 @@ import {
   kinViewerOwnerLevel,
   type KinAppShell,
 } from "@t3tools/client-runtime/kin/kinJoin";
+import { renewKinTeammateDevice } from "@t3tools/client-runtime/kin/kinDevices";
 import {
   EnvironmentId,
   kinOwnerLevel,
@@ -164,6 +165,44 @@ export function installKinChatOnlyMemory(): () => void {
     },
     { immediate: true },
   );
+}
+
+const renewAtom = connectionAtomRuntime.fn(
+  (environmentId: EnvironmentId, get) => {
+    const entry = get(environmentCatalog.catalogValueAtom).entries.get(environmentId);
+    return entry === undefined
+      ? Effect.void
+      : renewKinTeammateDevice(entry).pipe(
+          Effect.catch(() => Effect.logWarning("Renewing this device's Kin sign-in failed")),
+        );
+  },
+  { concurrent: true },
+);
+
+/**
+ * Renews each teammate session once a run, so a phone in use never reaches its deadline. The
+ * open socket stays; the next connection uses the new token. Offline, it waits for the next run.
+ */
+export function installKinDeviceRenewal(): () => void {
+  const renewed = new Set<EnvironmentId>();
+  // An unmounted fn atom is dropped, and its run cancelled, before the request can finish.
+  const unmount = appAtomRegistry.mount(renewAtom);
+  const unsubscribe = appAtomRegistry.subscribe(
+    chatOnlyStateAtom,
+    (state) => {
+      if (!state.ready) return;
+      for (const environmentId of state.chatOnly) {
+        if (renewed.has(environmentId)) continue;
+        renewed.add(environmentId);
+        appAtomRegistry.set(renewAtom, environmentId);
+      }
+    },
+    { immediate: true },
+  );
+  return () => {
+    unsubscribe();
+    unmount();
+  };
 }
 
 /**

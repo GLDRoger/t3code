@@ -244,10 +244,10 @@ it.effect("a teammate links, lists, renews and removes only their own devices", 
     });
     const asha = yield* join("Asha");
     const ravi = yield* join("Ravi");
-    const refused = (effect: Effect.Effect<unknown, unknown>) =>
+    const refused = <A, E extends object>(effect: Effect.Effect<A, E>) =>
       effect.pipe(
         Effect.flip,
-        Effect.map((error) => (error as { reason?: string }).reason),
+        Effect.map((error) => ("reason" in error ? error.reason : undefined)),
       );
 
     // The owner pairs through T3 Code; a link would make them a teammate.
@@ -293,6 +293,18 @@ it.effect("a teammate links, lists, renews and removes only their own devices", 
     assert.equal(yield* refused(service.accept({ secret: stale.code })), "not_found");
     yield* TestClock.adjust("10 minutes");
     assert.equal(yield* refused(service.accept({ secret: fresh.secret })), "not_found");
+
+    // Wrong codes pause only the address sending them; everyone else's code still works.
+    const guessed = yield* service.linkDevice(asha.session, { orgId });
+    for (let miss = 0; miss < 20; miss += 1)
+      yield* refused(service.accept({ secret: "KIN-AAAA-AAAA" }, "guesser"));
+    assert.equal(yield* refused(service.accept({ secret: guessed.code }, "guesser")), "not_found");
+    const tablet = yield* service.accept({ secret: guessed.code, label: "Tablet" }, "tablet");
+    yield* service.revokeDevice(asha.session, {
+      orgId,
+      personId: asha.person.personId,
+      sessionId: (yield* sessions.verify(tablet.accessToken)).sessionId,
+    });
 
     // A device in use renews itself: the same session under a later deadline.
     yield* TestClock.adjust("20 days");

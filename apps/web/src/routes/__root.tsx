@@ -53,6 +53,7 @@ import { GUEST_PAGE_PATH } from "../guestPage";
 import { KIN_INVITE_LINK_PATH } from "@t3tools/shared/remote";
 import { kinListAt } from "../kin/kinListSwitch";
 import { rememberKinTeammate } from "../kin/kinTeammateMark";
+import { renewKinBrowserSession } from "../kin/kinBrowserRenew";
 import { hasHostedPairingRequest, isHostedStaticApp } from "../hostedPairing";
 import { useHostedPromptLinkLanding } from "../components/promptLinks/HostedPromptLinkLanding";
 import { isLocalEnvironmentDisabled } from "../localEnvironment";
@@ -94,6 +95,9 @@ export const Route = createRootRoute({
     }
 
     const authGateState = await resolveInitialServerAuthGateState();
+    // A teammate's cookie session runs out 30 days after it was last renewed, so a browser in use renews it.
+    if (authGateState.status === "authenticated" && authGateState.chatOnly)
+      renewKinBrowserSession();
     if (
       authGateState.status === "authenticated" &&
       authGateState.chatOnly &&

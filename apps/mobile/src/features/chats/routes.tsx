@@ -41,6 +41,7 @@ import { KinReceiptApplyScreen, KinReceiptNewScreen } from "./KinInvoice";
 import { KinJoinScreen } from "./KinJoinScreen";
 import { KinBudgetScreen } from "./KinMoneyAnswers";
 import { KinTeamScreen } from "./KinTeamScreen";
+import { KinDevicesScreen } from "./KinDevicesScreen";
 import { KinProfileEditScreen, KinProfileScreen } from "./KinProfileScreen";
 import { KinTeammateScreen } from "./KinTeammateScreen";
 import { KinWaitingScreen } from "./KinWaitingScreen";
@@ -267,6 +268,11 @@ export const KIN_SCREENS = {
     screen: KinProfileScreen,
     linking: "kin/:environmentId/:orgId/people/:personId",
     options: sheetRoute({ detent: 0.75 }),
+  }),
+  KinDevices: createNativeStackScreen({
+    screen: KinDevicesScreen,
+    linking: "kin/:environmentId/:orgId/people/:personId/devices",
+    options: pageRoute({ title: "Linked devices" }),
   }),
   // A full sheet, so the keyboard never covers the field being typed in.
   KinProfileEdit: createNativeStackScreen({

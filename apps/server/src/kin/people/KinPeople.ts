@@ -98,12 +98,17 @@ const codeHash = (code: string) => {
   const match = KIN_DEVICE_CODE_PATTERN.exec(code.trim());
   return match === null ? null : hash(`KIN-${match[1]}-${match[2]}`.toUpperCase()).toString("hex");
 };
-// Codes are 40 bits and live ten minutes; past this many misses a minute, codes wait.
+// Codes are 40 bits and live ten minutes. Misses count per address, so one caller can't pause
+// everyone's codes; the shared ceiling still bounds a guesser spread over many addresses.
 const CODE_MISSES_PER_MINUTE = 20;
-const codeMisses: Array<number> = [];
-const codesPaused = (now: number) => {
-  while (codeMisses.length > 0 && codeMisses[0]! <= now - 60_000) codeMisses.shift();
-  return codeMisses.length >= CODE_MISSES_PER_MINUTE;
+const CODE_MISSES_PER_MINUTE_ALL = 300;
+const codeMisses: Array<{ readonly at: number; readonly client: string }> = [];
+const codesPaused = (now: number, client: string) => {
+  while (codeMisses.length > 0 && codeMisses[0]!.at <= now - 60_000) codeMisses.shift();
+  return (
+    codeMisses.length >= CODE_MISSES_PER_MINUTE_ALL ||
+    codeMisses.filter((miss) => miss.client === client).length >= CODE_MISSES_PER_MINUTE
+  );
 };
 const deviceLimit = new KinChatError({
   reason: "limit",
@@ -160,6 +165,8 @@ export class KinPeople extends Context.Service<
     ) => Effect.Effect<{ revoked: boolean }, Failure>;
     readonly accept: (
       input: KinInviteAcceptRequest,
+      /** Where the request came from; wrong codes are limited per caller. */
+      client?: string,
     ) => Effect.Effect<KinInviteAcceptResult, Failure>;
     readonly list: (
       session: AuthenticatedSession,
@@ -426,13 +433,16 @@ export const make = Effect.gen(function* () {
     if (Option.isSome(records))
       yield* noteTasks(records.value, personId, { orgId, personId }, "accessBack");
   });
-  const accept = Effect.fn("KinPeople.accept")(function* (input: KinInviteAcceptRequest) {
+  const accept = Effect.fn("KinPeople.accept")(function* (
+    input: KinInviteAcceptRequest,
+    client = "unknown",
+  ) {
     const now = (yield* DateTime.now).epochMilliseconds;
     const code = codeHash(input.secret);
     const parts = input.secret.split(".");
     if (code === null && (parts.length !== 3 || parts[0] !== identity.owner.orgId))
       return yield* missing;
-    if (code !== null && codesPaused(now)) return yield* missing;
+    if (code !== null && codesPaused(now, client)) return yield* missing;
     const [, inviteId = "", secret = ""] = parts;
     const orgId = identity.owner.orgId;
     return yield* sql
@@ -451,7 +461,7 @@ export const make = Effect.gen(function* () {
             Effect.mapError(toPersistenceSqlError("KinPeople.accept")),
           );
           const row = rows[0];
-          if (code !== null && !row) codeMisses.push(now);
+          if (code !== null && !row) codeMisses.push({ at: now, client });
           if (
             !row ||
             isOwnerHimself(identity.owner, row.person_id) ||

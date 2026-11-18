@@ -7,7 +7,9 @@ import {
   type AuthEnvironmentScope,
   type AuthWebSocketTicketResult,
   type AuthWebSocketTicketUse,
+  KIN_DEVICE_RENEW_ROUTE,
   KIN_INVITE_ACCEPT_ROUTE,
+  KinDeviceRenewResult,
   KinInviteAcceptResult,
 } from "@t3tools/contracts";
 import { encodeOAuthScope } from "@t3tools/shared/oauthScope";
@@ -191,6 +193,26 @@ export const acceptRemoteKinInvite = Effect.fn("clientRuntime.authorization.acce
         }),
         (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk).execute,
         Effect.flatMap(HttpClientResponse.schemaBodyJson(KinInviteAcceptResult)),
+      ),
+    );
+  },
+);
+
+/** A teammate's device session under a fresh deadline; the new bearer replaces the stored one. */
+export const renewRemoteKinDevice = Effect.fn("clientRuntime.authorization.renewRemoteKinDevice")(
+  function* (input: {
+    readonly httpBaseUrl: string;
+    readonly bearerToken: string;
+    readonly timeoutMs?: number;
+  }) {
+    const requestUrl = environmentEndpointUrl(input.httpBaseUrl, KIN_DEVICE_RENEW_ROUTE);
+    return yield* executeEnvironmentHttpRequest(
+      requestUrl,
+      input.timeoutMs ?? DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,
+      HttpClientRequest.post(requestUrl).pipe(
+        HttpClientRequest.bearerToken(input.bearerToken),
+        (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk).execute,
+        Effect.flatMap(HttpClientResponse.schemaBodyJson(KinDeviceRenewResult)),
       ),
     );
   },

@@ -65,6 +65,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinAwaySection, KinHandOverRow } from "./components/KinAway";
+import { KinDeviceList } from "./KinDevicesScreen";
 import { KinInviteLink } from "./components/KinInviteLink";
 import { kinClient } from "./state/kinClient";
 import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
@@ -385,6 +386,9 @@ function KinTeammateDetails(props: {
           )}
         </ListSection>
       )}
+      {offered.remove && teammate.personId !== null && teammate.state === "joined" ? (
+        <KinDeviceList target={{ ...props.target, personId: teammate.personId }} self={false} />
+      ) : null}
       {offered.remove ? (
         <ListSection>
           <ListActionRow
