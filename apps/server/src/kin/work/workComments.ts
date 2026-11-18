@@ -1,6 +1,7 @@
 import {
   type KinAttachment,
   KinChatError,
+  type KinOrgId,
   KinPersonId,
   type KinRecordComment,
   KinRecordKey,
@@ -105,32 +106,42 @@ export const comment = Effect.fn("KinWorkComments.comment")(function* (
 });
 
 /**
- * Whoever holds the task and whoever asked for it hear a person's comment once, from the team
- * agent, as they hear it given: each still here and seeing it, and never its own author.
+ * Whoever holds the task and whoever asked for it, once each, still here and seeing it, never
+ * `author`: who hears a comment on it.
  */
+const commentNotices = Effect.fn("KinWorkComments.notices")(function* (
+  orgId: KinOrgId,
+  row: AssignNotice["row"],
+  body: string,
+  author: string | null,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [asked] = yield* sql<{ askedBy: string | null }>`SELECT asked_by_person_id AS "askedBy"
+    FROM kin_records WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
+  const readers = new Set(
+    [row.ownerKind === "person" ? row.ownerId : null, asked?.askedBy ?? null].filter(
+      (one): one is string => one !== null && one !== author,
+    ),
+  );
+  const why = oneLine(body, NOTICE_WORDS);
+  const notices: Array<AssignNotice> = [];
+  for (const reader of readers) {
+    const personId = KinPersonId.make(reader);
+    const here = yield* sql`SELECT 1 FROM kin_people WHERE org_id = ${orgId}
+      AND person_id = ${personId} AND removed_at IS NULL`;
+    if (here.length === 0 || !(yield* personSeesRecord(orgId, personId, row.recordId))) continue;
+    notices.push({ personId, kind: "commented", row, why: why === "" ? null : why });
+  }
+  return notices;
+});
+
+/** A person's comment is told as they hear it given, from the team agent. */
 const tellReaders = Effect.fn("KinWorkComments.tellReaders")(
   function* (person: PersonIdentity, key: string, written: KinRecordComment) {
-    const sql = yield* SqlClient.SqlClient;
     const records = yield* KinRecords;
     const row = yield* records.get(person.orgId, key);
     if (row === undefined || row.registerId !== "work") return;
-    const [asked] = yield* sql<{ askedBy: string | null }>`SELECT asked_by_person_id AS "askedBy"
-      FROM kin_records WHERE org_id = ${person.orgId} AND record_id = ${row.recordId}`;
-    const readers = new Set(
-      [row.ownerKind === "person" ? row.ownerId : null, asked?.askedBy ?? null].filter(
-        (one): one is string => one !== null && one !== person.personId,
-      ),
-    );
-    const why = oneLine(written.body, NOTICE_WORDS);
-    const notices: Array<AssignNotice> = [];
-    for (const reader of readers) {
-      const personId = KinPersonId.make(reader);
-      const here = yield* sql`SELECT 1 FROM kin_people WHERE org_id = ${person.orgId}
-        AND person_id = ${personId} AND removed_at IS NULL`;
-      if (here.length === 0 || !(yield* personSeesRecord(person.orgId, personId, row.recordId)))
-        continue;
-      notices.push({ personId, kind: "commented", row, why: why === "" ? null : why });
-    }
+    const notices = yield* commentNotices(person.orgId, row, written.body, person.personId);
     yield* tellOnScreen(person, `comment:${written.commentId}`, notices);
   },
   Effect.catchCause((cause) =>
@@ -189,8 +200,8 @@ export const CommentResult = Schema.Struct({
 });
 
 /**
- * A lead says something on an entry it may see, for the people of its turn. A person holding it
- * is told once in their own chat. A retry of the same words in the same turn writes nothing more.
+ * A lead says something on an entry it may see, for the people of its turn. Whoever holds it and
+ * whoever asked for it are told once each in their own chat. A retry of the same words in the same turn writes nothing more.
  */
 const runComment = Effect.fnUntraced(function* (lead: Lead, input: typeof CommentInput.Type) {
   yield* admitted(lead, "record_comment", input);
@@ -220,18 +231,12 @@ const runComment = Effect.fnUntraced(function* (lead: Lead, input: typeof Commen
     });
   }).pipe(sql.withTransaction, workFailure);
   const result = { key: input.key, commentId: written.comment.commentId };
-  const holder = yield* records.getById(lead.orgId, written.recordId);
-  if (!written.created || holder === undefined || holder.ownerKind !== "person") return result;
-  const told = yield* tellPeople(lead, [
-    {
-      personId: KinPersonId.make(holder.ownerId),
-      kind: "commented",
-      row: holder,
-      why: oneLine(input.body, NOTICE_WORDS),
-    },
-  ]).pipe(
+  const row = yield* records.getById(lead.orgId, written.recordId);
+  if (!written.created || row === undefined) return result;
+  const told = yield* commentNotices(lead.orgId, row, input.body, author.askedBy).pipe(
+    Effect.flatMap((notices) => tellPeople(lead, notices)),
     Effect.catchCause((cause) =>
-      Effect.logWarning("Kin couldn't tell the holder about a comment", cause).pipe(
+      Effect.logWarning("Kin couldn't tell people about a comment", cause).pipe(
         Effect.as(new Set<string>()),
       ),
     ),
