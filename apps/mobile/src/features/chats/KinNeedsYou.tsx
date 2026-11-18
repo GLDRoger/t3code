@@ -8,6 +8,7 @@ import {
   type KinAttentionRow,
 } from "@t3tools/client-runtime/kin/kinAttention";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
+import { kinOpenNeeds } from "@t3tools/client-runtime/kin/kinOpenView";
 import { kinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { KinWorkNames } from "@t3tools/client-runtime/kin/kinWork";
 import {
@@ -28,6 +29,7 @@ import { useKinOpenPlace } from "./state/kinHomeTab";
 import { useKinAttention, useKinAttentionHandle } from "./state/useKinAttention";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinInbox } from "./state/useKinInbox";
+import { useKinOpen } from "./state/useKinOpen";
 import { useKinLists, useKinMoneySummary } from "./state/useKinMoney";
 import type { KinWorkTarget } from "./state/useKinWork";
 
@@ -39,7 +41,8 @@ const NEEDS_ICON: Record<KinNeedsYouRow["kind"], AppSymbolName> = {
 
 /**
  * What needs attention over Tasks, read for the owner and a co-owner: the attention rows, what
- * clients owe past due and what an agent waits on you for. Your own tasks are under "On me".
+ * clients owe past due and what an agent waits on you for, from the host's open list where it
+ * streams one. Your own tasks are under "On me".
  * Null when not asked for (`enabled` false), and then nothing is read.
  */
 export function useKinNeedsRows(
@@ -49,13 +52,16 @@ export function useKinNeedsRows(
   const { environmentId, orgId, names } = props;
   const target = { environmentId, orgId };
   const now = new Date(useNowMinuteMs());
-  const money = useKinMoneySummary(target, { enabled }).state;
-  const lists = useKinLists(target, { enabled, archived: true }).state;
+  const open = useKinOpen(target, enabled);
+  const old = enabled && !open.on;
+  const money = useKinMoneySummary(target, { enabled: old }).state;
+  const lists = useKinLists(target, { enabled: old, archived: true }).state;
   const inbox = useKinInbox();
   const [expanded, setExpanded] = useState(false);
-  // The first page until See all; then everything, the page standing in until it arrives.
+  // The first page until See all; then everything, the page standing in until it arrives. With
+  // the open list, the page is read only for the answered rows' Undo, which that list doesn't hold.
   const pagedRead = useKinAttention(target, enabled, true);
-  const fullRead = useKinAttention(target, enabled && expanded);
+  const fullRead = useKinAttention(target, old && expanded);
   const attentionRead = expanded && fullRead !== null ? fullRead : pagedRead;
   const handler = useKinAttentionHandle(target);
   if (!enabled) return null;
@@ -68,6 +74,23 @@ export function useKinNeedsRows(
     inbox.state._tag === "ready" && inbox.state.environmentId === environmentId
       ? inbox.state
       : null;
+  if (open.on) {
+    // Nothing until the list arrives, so the block never shows a count it will take back.
+    if (open.read === null) return null;
+    const from = kinOpenNeeds(open.read, {
+      names,
+      chats: inboxReady?.inbox.value.chats ?? [],
+      agentNames: kinDirectory(inbox.host).agentNames,
+      now,
+    });
+    return {
+      ...from,
+      handled: attention.handled,
+      handler,
+      expanded,
+      setExpanded,
+    };
+  }
   const before = kinNeedsYou({
     mine: [],
     // A viewer the host keeps money from sees nothing owed here.
