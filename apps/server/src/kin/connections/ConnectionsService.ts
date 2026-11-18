@@ -160,6 +160,8 @@ export const ASK_CLOSED = {
   declined: "This exact action was already cancelled on its card, so nothing was sent.",
   expired: "The card for this exact action was closed without an answer, so nothing was sent.",
   replaced: "A newer card replaced the one for this exact action, so nothing was sent from it.",
+  edited: (name: string) =>
+    `This exact action was sent, edited by ${name} on its card: what went is quoted below, not your draft. Nothing was sent again.`,
 } as const;
 export const OFFERED = "The owner will see a card to connect it.";
 const SEVERAL_ACCOUNTS =
@@ -2313,7 +2315,8 @@ const make = Effect.gen(function* () {
         FROM kin_connection_asks k
         LEFT JOIN kin_widgets w ON w.org_id = k.org_id AND w.widget_id = k.widget_id
         WHERE k.org_id = ${turn.orgId} AND k.ask_id = ${id}`.pipe(Effect.map(([ask]) => ask));
-    // An ask a person's edit replaced answers as the edited one went.
+    const noted = (note: string | undefined) => (note === undefined ? undefined : { note });
+    // An ask a person's edit replaced answers as the edited one went, and with what went.
     const toldFor = Effect.fnUntraced(function* (ask: {
       readonly state: string;
       readonly decidedBy: string | null;
@@ -2324,12 +2327,35 @@ const make = Effect.gen(function* () {
         ask.state === "stale" && ask.result !== null
           ? Option.getOrUndefined(decodeEdited(ask.result))
           : undefined;
-      if (edited === undefined) return askClosed(ask);
+      if (edited === undefined) return noted(askClosed(ask));
       const went = yield* persisted(edited.editedAs);
-      return went === undefined ? ASK_CLOSED.replaced : askClosed(went);
+      if (went?.state !== "sent")
+        return noted(went === undefined ? ASK_CLOSED.replaced : askClosed(went));
+      const [sent] = yield* sql<{ payload: string; name: string | null }>`SELECT
+          k.payload_json AS payload, p.display_name AS name
+        FROM kin_connection_asks k
+        LEFT JOIN kin_people p ON p.org_id = k.org_id AND p.person_id = k.decided_by
+        WHERE k.org_id = ${turn.orgId} AND k.ask_id = ${edited.editedAs}`;
+      const mail =
+        sent === undefined ? undefined : Option.getOrUndefined(decodePrepared(sent.payload));
+      return {
+        note: ASK_CLOSED.edited(sent?.name ?? "the owner"),
+        ...(mail?._tag === "email"
+          ? {
+              quoted: quote("The mail as it was sent", {
+                to: mail.to,
+                cc: mail.cc,
+                subject: mail.subject,
+                body: mail.body,
+              }),
+            }
+          : {}),
+      };
     });
-    const answered = (note: string) =>
-      record(turn, { ...entry, status: "refused", refusedReason: note }).pipe(Effect.as({ note }));
+    const answered = (closed: { readonly note: string; readonly quoted?: string }) =>
+      record(turn, { ...entry, status: "refused", refusedReason: closed.note }).pipe(
+        Effect.as(closed),
+      );
     const entryRecordId =
       prepared._tag === "email"
         ? (prepared.attachments.find((one) => one.entryRecordId !== null)?.entryRecordId ?? null)
@@ -2343,7 +2369,11 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const outside = yield* outsideStamp(turn).pipe(provideSql);
         const askId = outside === undefined ? twinId : idOf([...key, "outside"]);
-        const done = (told: string | undefined) => ({ outside, askId, closed: told });
+        const done = (closed: { readonly note: string; readonly quoted?: string } | undefined) => ({
+          outside,
+          askId,
+          closed,
+        });
         if (askId !== twinId && (yield* persisted(askId)) === undefined) {
           const twin = yield* persisted(twinId);
           const told = twin === undefined ? undefined : yield* toldFor(twin);

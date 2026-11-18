@@ -797,7 +797,9 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         // The agent's repeat of its own draft is told what became of it, and draws no card.
         const shown = cards.length;
         const repeat = yield* callTool(ACCOUNTS, "mail_send", draft);
-        assert.strictEqual(repeat.note, ASK_CLOSED.sent);
+        assert.strictEqual(repeat.note, ASK_CLOSED.edited("Arjun"));
+        assert.include(repeat.quoted ?? "", "See you Monday at 10.");
+        assert.include(repeat.quoted ?? "", "dev@lumen.example");
         assert.lengthOf(cards, shown);
         assert.lengthOf(fake.sent(), 1);
       }),
