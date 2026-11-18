@@ -48,6 +48,7 @@ import {
   stampEvent,
 } from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { presetDefinition } from "../work/registers.ts";
 import * as ConnectionSecrets from "./ConnectionSecrets.ts";
 import {
   ALWAYS_ASK,
@@ -2001,6 +2002,40 @@ describe("KinConnections sending", () => {
           assert.include(bad.message, "isn't a plain address");
         }),
       ),
+  );
+
+  it.effect("voiding the entry before Confirm: the ask goes stale and nothing is sent", () =>
+    withGoogle((vendor, cards) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_registers
+          SET definition_json = ${JSON.stringify(presetDefinition("invoices", "INR"))}
+          WHERE org_id = ${orgId} AND register_id = 'invoices'`;
+        yield* connectGoogle(vendor);
+        const mail = { to: ["ana@client.example"], subject: "Invoice", attachments: ["INV-1"] };
+        yield* sendCall("mail_send", { ...mail, body: "Attached." });
+        yield* sql`UPDATE kin_records SET state = 'dropped'
+          WHERE org_id = ${orgId} AND record_id = 'rec_inv'`;
+        const stale = yield* answer(cards[0]!.widgetId, ownerId, true);
+        assert.deepInclude(stale, {
+          _tag: "stale",
+          reason: "Invoice INV-1 is void now, so nothing was sent.",
+          fresh: undefined,
+        });
+        assert.lengthOf(yield* connections.interruptedSends(orgId, 10), 0);
+        assert.lengthOf(vendor.vendor.sent, 0);
+
+        // Paid is not closed for sending: a copy of a paid invoice still goes.
+        yield* sql`UPDATE kin_records SET state = 'done'
+          WHERE org_id = ${orgId} AND record_id = 'rec_inv'`;
+        yield* sendCall("mail_send", { ...mail, body: "A copy, for your records." });
+        const paid = yield* answer(cards[1]!.widgetId, ownerId, true);
+        assert.strictEqual(paid?._tag, "send");
+        yield* connections.sendAsk(orgId, paid!.askId);
+        assert.lengthOf(vendor.vendor.sent, 1);
+      }),
+    ),
   );
 
   it.effect("asks a sign-in from before sending to sign in again", () =>
