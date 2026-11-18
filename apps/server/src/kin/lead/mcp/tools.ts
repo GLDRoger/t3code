@@ -28,6 +28,7 @@ import * as Handoff from "../Handoff.ts";
 import * as Team from "../../team/KinTeam.ts";
 import * as PeopleRead from "../peopleRead.ts";
 import * as PeopleUpdate from "../peopleUpdate.ts";
+import * as AwaySet from "../awaySet.ts";
 import * as AgentUpdate from "../agentUpdate.ts";
 import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import { KinLevelGate } from "../LevelGate.ts";
@@ -99,6 +100,13 @@ export const KinLeadToolkit = Toolkit.make(
   })
     .annotate(McpSchema.EnabledWhen, enabled)
     .annotate(Tool.Meta, deferredMeta),
+  Tool.make("away_set", {
+    ...agentChange,
+    description:
+      "Set the away date of the person talking with you when they say they themselves are away, in their own chat with you: Kin holds what can wait for them until they are back, and the answer lists their tasks due meanwhile, for you to mention. Leave until out when they say they are back; it never sets anyone else's, and a refusal says why: tell them in one line.",
+    parameters: AwaySet.AwaySetInput,
+    success: AwaySet.AwaySetResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("agent_update", {
     ...agentChange,
     description:
