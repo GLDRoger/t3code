@@ -294,7 +294,12 @@ export type KinAgentDefaults = typeof KinAgentDefaults.Type;
 export const KinAgentDefaultsSetInput = Schema.Struct({ orgId: KinOrgId, model: ModelSelection });
 export type KinAgentDefaultsSetInput = typeof KinAgentDefaultsSetInput.Type;
 /** Retire or restore one agent. Both are idempotent and answer with its profile. */
-export const KinLeadRetireInput = Schema.Struct({ orgId: KinOrgId, agentId: KinAgentId });
+export const KinLeadRetireInput = Schema.Struct({
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  // Retiring the team agent: the active agent teammates talk to instead. Restore ignores it.
+  nextTeamAgentId: Schema.optional(KinAgentId),
+});
 export type KinLeadRetireInput = typeof KinLeadRetireInput.Type;
 
 /** Who besides its owner may message a lead. Only the lead's owner reads or changes it. */
