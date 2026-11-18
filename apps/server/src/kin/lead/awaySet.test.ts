@@ -31,7 +31,6 @@ const TURNS: Record<string, ReadonlyArray<Record<string, unknown>>> = {
   passedOn: [
     message("zoya-chief", "zoya-own", { origin: { chatId: "group", agentId: "finance" } }),
   ],
-  takenPrivate: [message("zoya-chief", "zoya-copy")],
   routine: [{ _tag: "routine", routine: "morning_brief", provenance: { _tag: "system" } }],
   deferral: [
     {
@@ -73,19 +72,15 @@ const setup = Effect.fn(function* (name: keyof typeof TURNS) {
   ] as const)
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
       VALUES (${member}, ${orgId}, ${chat}, 'person', ${person}, ${person === "rhea" ? "owner" : "member"}, ${at})`;
-  for (const [seq, id, chat, person, member, client] of [
-    [1, "rhea-own", "rhea-chief", "rhea", "member-rhea-own", null],
-    [1, "zoya-own", "zoya-chief", "zoya", "member-zoya-own", null],
-    [1, "zoya-group", "group", "zoya", "member-zoya-group", null],
-    // `kin_take_private` posts her group message again, as hers, in her own chat.
-    [2, "zoya-copy", "zoya-chief", "zoya", "member-zoya-own", "private:zoya-group"],
+  for (const [id, chat, person, member] of [
+    ["rhea-own", "rhea-chief", "rhea", "member-rhea-own"],
+    ["zoya-own", "zoya-chief", "zoya", "member-zoya-own"],
+    ["zoya-group", "group", "zoya", "member-zoya-group"],
   ] as const)
     yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
-        author_member_id, author_role, kind, body, mentions_json, status, created_at, client_message_id)
-      VALUES (${id}, ${orgId}, ${chat}, ${seq}, 'human', ${person}, ${member},
-        ${person === "rhea" ? "owner" : "member"}, 'text', 'I am off till Monday.', '[]', 'posted', ${at}, ${client})`;
-  yield* sql`INSERT INTO kin_handoffs (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at)
-    VALUES (${orgId}, 'private:zoya-group', ${agentId}, ${agentId}, 'private:zoya-group', 0)`;
+        author_member_id, author_role, kind, body, mentions_json, status, created_at)
+      VALUES (${id}, ${orgId}, ${chat}, 1, 'human', ${person}, ${member},
+        ${person === "rhea" ? "owner" : "member"}, 'text', 'I am off till Monday.', '[]', 'posted', ${at})`;
   {
     const events = TURNS[name]!;
     const ids = events.map((_, index) => `event-${name}-${index}`);
@@ -176,7 +171,6 @@ describe("away_set", () => {
   it.effect.each([
     ["a group", "group"],
     ["a request another agent passed on", "passedOn"],
-    ["her group message taken private", "takenPrivate"],
     ["a routine", "routine"],
     ["a reminder she set", "deferral"],
     ["a reaction", "reaction"],

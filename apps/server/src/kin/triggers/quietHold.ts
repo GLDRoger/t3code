@@ -66,10 +66,10 @@ const personRule = Effect.fn("KinQuiet.rule")(function* (orgId: KinOrgId, person
   const [settings] = yield* sql<{ hours: string }>`SELECT quiet_hours_json AS hours
     FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`;
   const owner = person?.owner === 1;
-  // The owner's clock is the company's (`ownerZone`); anyone else's is their own.
-  const zone = owner
-    ? yield* ownerZone(orgId)
-    : (validZone(person?.zone) ?? (yield* ownerZone(orgId)));
+  const company = yield* ownerZone(orgId);
+  const own = validZone(person?.zone) ?? company;
+  // The owner's hours keep the company's clock (`ownerZone`); anyone else's are on their own.
+  const zone = owner ? company : own;
   const quiet = Option.getOrElse(
     Option.orElse(decodeJsonQuiet(person?.quiet ?? undefined), () =>
       decodeJsonQuiet(settings?.hours),
@@ -79,7 +79,8 @@ const personRule = Effect.fn("KinQuiet.rule")(function* (orgId: KinOrgId, person
   const holds = person?.hold === null || person?.hold === undefined ? !owner : person.hold === 1;
   const hours = holds && person?.hours != null ? decodeHours(person.hours) : Option.none();
   const rule = holdRule(zone, quiet, Option.getOrUndefined(hours));
-  return person?.away == null ? rule : { ...rule, awayUntil: startOfDay(person.away, zone) };
+  // Away ends when their profile stops showing it: on their own clock, the owner's too.
+  return person?.away == null ? rule : { ...rule, awayUntil: startOfDay(person.away, own) };
 });
 
 /**

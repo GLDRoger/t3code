@@ -6,8 +6,9 @@ import {
   AuthStandardClientScopes,
   EnvironmentId,
   KinAgentId,
-  type KinChatId,
+  KinChatId,
   type KinMessage,
+  KinMessageId,
   KinMemoryItemId,
   type KinOrgId,
   KinPersonId,
@@ -31,6 +32,7 @@ import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinAttachmentStore } from "../chat/KinAttachmentStore.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
@@ -930,6 +932,35 @@ it.effect(
           dueWhileAway: 1,
           keys: [proof],
         });
+        assert.strictEqual(yield* awayUntil, "2026-11-19");
+
+        // Said in the team group and taken private, it is a copy in her chat, not her own word.
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+          VALUES ('ambermill-team', ${orgId}, 'team_group', 'Ambermill team', 0, ${at})`;
+        for (const [member, kind, who] of [
+          ["team-rhea", "person", owner.personId],
+          ["team-zoya", "person", zoyaId],
+          ["team-chief", "agent", chief],
+        ] as const)
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+              person_id, agent_id, role, joined_at)
+            VALUES (${member}, ${orgId}, 'ambermill-team', ${kind}, ${kind === "person" ? who : null},
+              ${kind === "agent" ? who : null}, ${member === "team-rhea" ? "owner" : "member"}, ${at})`;
+        const inGroup = yield* says(zoya, KinChatId.make("ambermill-team"), "I'm off till Monday.");
+        const taken = yield* call("kin_take_private", { sourceEventId: inGroup });
+        assert.isTrue(taken.ok, JSON.stringify(taken.value));
+        const [copy] = yield* sql<{ messageId: string }>`SELECT message_id AS "messageId"
+          FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${zoyasChat}
+            AND author_person_id = ${zoyaId} AND body = 'I''m off till Monday.'`;
+        const copied = Option.getOrThrow(
+          yield* Context.get(services, KinChatRepository).getMessage({
+            orgId,
+            messageId: KinMessageId.make(copy!.messageId),
+          }),
+        );
+        yield* startAgentWakeup({ orgId, agentId: chief, threadId, message: copied });
+        const fromCopy = yield* call("away_set", { until: "2026-11-23" });
+        assert.isFalse(fromCopy.ok, JSON.stringify(fromCopy.value));
         assert.strictEqual(yield* awayUntil, "2026-11-19");
 
         // The owner, in his own chat, can't set it for her: there is no one else to name.

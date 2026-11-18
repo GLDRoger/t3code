@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { storedClientId } from "../chat/KinChatRepository.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { profileSets } from "../people/profileFields.ts";
 import { reholdAfter, validZone } from "../triggers/quietHold.ts";
@@ -71,8 +72,9 @@ const ownSpeaker = Effect.fn("KinAwaySet.speaker")(function* (
         AND e.tag = 'chat.message' AND m.message_id = json_extract(e.json, '$.messageId')
         AND m.chat_id = json_extract(e.json, '$.chatId') AND m.author_kind = 'human'
         AND m.kind = 'text' AND m.status = 'posted' AND m.relay_json IS NULL
-        AND NOT EXISTS (SELECT 1 FROM kin_handoffs h
-          WHERE h.org_id = m.org_id AND h.message_id = m.client_message_id)) AS speaker
+        -- A copy kin_take_private posts is sent with its claim's key as its client id.
+        AND NOT EXISTS (SELECT 1 FROM kin_handoffs h WHERE h.org_id = m.org_id
+          AND m.client_message_id = ${storedClientId("send", "")} || h.message_id)) AS speaker
     FROM kin_events e JOIN kin_wakeups w ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
     WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId}
       AND e.wakeup_id = ${lead.wakeupId} AND w.status = 'running' AND w.aborted_at IS NULL

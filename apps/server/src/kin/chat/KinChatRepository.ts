@@ -121,6 +121,8 @@ type InsertMessage = Omit<KinMessage, "seq" | "authorRole" | "clientMessageId" |
     readonly id: typeof TrimmedNonEmptyString.Type;
   } | null;
 };
+/** The stored form of a message's client id: one column holds every kind's. */
+export const storedClientId = (kind: "send" | "act" | "task-card", id: string) => `${kind}:${id}`;
 
 const isKinChatError = Schema.is(KinChatError);
 const isDecodeError = Schema.is(PersistenceDecodeError);
@@ -1791,7 +1793,7 @@ const make = Effect.gen(function* () {
             const clientId =
               input.clientMessageId === null
                 ? null
-                : `${input.clientMessageId.kind}:${input.clientMessageId.id}`;
+                : storedClientId(input.clientMessageId.kind, input.clientMessageId.id);
             const member =
               author._tag === "system"
                 ? null
