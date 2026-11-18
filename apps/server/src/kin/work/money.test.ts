@@ -320,6 +320,9 @@ describe("amounts", () => {
       assert.deepStrictEqual(parseAmount(text, "INR"), { money: { minor, currency } }, text);
     for (const text of ["12.345", "$5 and ₹5", "a lot", "JPY 1.5", "99999999999999 crore", "-20"])
       assert.isTrue("error" in parseAmount(text, "INR"), text);
+    assert.deepStrictEqual(parseAmount("-20", "INR", true), {
+      money: { minor: -2_000, currency: "INR" },
+    });
   });
 
   it("adds awkward amounts exactly and never mixes currencies", () => {
@@ -2879,12 +2882,7 @@ describe("money answers", () => {
             originKey: key,
           });
         // 20:00 UTC on 31 October is already 1 November in India; 19:00 UTC on 30 November is December.
-        const { row: flight } = yield* spend(
-          "flight",
-          "travel",
-          12_000,
-          Date.parse("2026-10-31T20:00:00.000Z"),
-        );
+        yield* spend("flight", "travel", 12_000, Date.parse("2026-10-31T20:00:00.000Z"));
         yield* spend("train", "travel", 3_000, Date.parse("2026-11-30T19:00:00.000Z"));
         yield* spend("hosting", "software", 5_000, on("2026-11-10"));
         yield* spend("dinner", "meals", 20_000, on("2026-11-11"), launch.recordId);
@@ -2893,41 +2891,27 @@ describe("money answers", () => {
           3,
           "Budget 10k a month for travel, 5k for software, 1 lakh for the launch",
         );
-        // An expense below zero, a refund, is refused on every path until phones read one.
-        const refund = {
-          list: "expenses",
-          title: "Invented refund",
-          category: "travel",
-          amount: "-1,500",
-          date: "2026-11-05",
-        };
-        const below = "amount: -1,500 is below zero; Kin records an amount of 0 or more.";
-        assert.strictEqual(
-          (yield* LeadWork.create(scope, { sourceEventId: asked, records: [refund] }).pipe(
-            Effect.flip,
-          )).message,
-          below,
-        );
+        // K058: a refund is an expense below zero, and takes its part off what was spent.
+        yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            {
+              list: "expenses",
+              title: "Invented refund",
+              category: "travel",
+              amount: "-1,500",
+              date: "2026-11-05",
+            },
+          ],
+        });
+        // Nothing else goes below zero.
         assert.strictEqual(
           (yield* LeadWork.update(scope, {
             sourceEventId: asked,
-            key: flight.key,
+            key: launch.key,
             amount: "-1,500",
           }).pipe(Effect.flip)).message,
-          below,
-        );
-        assert.strictEqual(
-          (yield* OwnerWork.update(people, {
-            orgId,
-            key: flight.key,
-            rev: flight.rev,
-            amount: { minor: -150_000, currency: "INR" },
-          }).pipe(Effect.flip)).message,
-          "An amount never goes below zero; give 0 or more.",
-        );
-        assert.strictEqual(
-          (yield* Effect.flip(spend("refund", "travel", -1_500, on("2026-11-05")))).message,
-          "An amount never goes below zero; give 0 or more.",
+          "amount: -1,500 is below zero; only an expense can be, as a refund.",
         );
         for (const input of [
           { category: "Travel", limit: "10k" },
@@ -2955,9 +2939,9 @@ describe("money answers", () => {
           {
             for: "travel",
             limit: "₹10,000.00",
-            spent: "₹12,000.00",
-            over: "₹2,000.00",
-            expenses: 1,
+            spent: "₹10,500.00",
+            over: "₹500.00",
+            expenses: 2,
             status: "over",
           },
           {
@@ -2976,6 +2960,12 @@ describe("money answers", () => {
             ["travel", "over"],
           ],
         );
+        const spent = (yield* OwnerMoney.money(people, { orgId })).spent.thisMonth;
+        assert.deepStrictEqual(spent.total, [{ minor: 3_550_000, currency: "INR" }]);
+        assert.deepInclude(spent.byCategory, {
+          category: "travel",
+          total: [{ minor: 1_050_000, currency: "INR" }],
+        });
         const december = yield* LeadMoney.moneyQuery(scope, { view: "budgets", month: "2026-12" });
         assert.strictEqual(
           (december.answer as ReturnType<typeof budgetsAnswer>).budgets[1]?.spent,

@@ -937,7 +937,7 @@ const amountFrom = (
   currency: string | undefined,
   stored: string | null | undefined,
 ) => {
-  const parsed = parseAmount(amount, currency ?? stored ?? def.currency);
+  const parsed = parseAmount(amount, currency ?? stored ?? def.currency, def.id === "expenses");
   if ("error" in parsed) return Effect.fail(parsed.error);
   if (currency !== undefined && parsed.money.currency !== currency)
     return Effect.fail(

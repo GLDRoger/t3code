@@ -25,15 +25,19 @@ export const isCurrency = isKinCurrency;
 /** Minor units per major one, as a power of ten: 2 for INR and USD, 0 for JPY, 3 for KWD. */
 export const currencyDigits = (currency: string) => kinCurrency(currency).decimals;
 
-/** A spoken or written amount in minor units, in the currency it names else `fallback`. */
+/**
+ * A spoken or written amount in minor units, in the currency it names else `fallback`. Below
+ * zero only where `refund` says the list takes one: an expense refunded or credited.
+ */
 export const parseAmount = (
   text: string,
   fallback: string,
+  refund = false,
 ): { readonly money: KinMoney } | { readonly error: KinChatError } => {
   const read = parseKinMoney(text, fallback);
   if (!("money" in read)) return { error: invalid(read.error) };
-  return read.money.minor < 0
-    ? { error: invalid(`${text.slice(0, 40)} is below zero; Kin records an amount of 0 or more.`) }
+  return read.money.minor < 0 && !refund
+    ? { error: invalid(`${text.slice(0, 40)} is below zero; only an expense can be, as a refund.`) }
     : read;
 };
 
