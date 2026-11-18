@@ -160,6 +160,18 @@ export function kinSearchOf(record: KinRecordWhere | null): KinPlaceSearch {
   };
 }
 
+/** The address with a task open over what the place shows, or closed; nothing else changes. */
+export function kinTaskAddress(place: KinPlace, search: KinPlaceSearch, task: KinRecordKey | null) {
+  return {
+    to: KIN_PLACE_PATH[place],
+    search: {
+      ...kinSearchOf(kinRecordOf(search)),
+      ...(place === "clients" && search.tab === "projects" ? { tab: search.tab } : {}),
+      ...(task === null ? {} : { task }),
+    },
+  };
+}
+
 /** The place a record lives in, for a link that names only the record. */
 export function kinPlaceOfRecord(record: KinRecordWhere | null): KinPlace {
   if (record === null) return "tasks";

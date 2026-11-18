@@ -16,8 +16,16 @@ export const KinMoney = Schema.Struct({
   currency: KinCurrency,
 });
 export type KinMoney = typeof KinMoney.Type;
-/** One figure per currency, INR first, then by code; an empty list is nothing. */
-export const KinMoneyTotals = Schema.Array(KinMoney);
+/** A balance, a net, a refund or a total refunds lowered: below zero is owed, overdrawn or back. */
+export const KinSignedMoney = Schema.Struct({
+  minor: Schema.Int.check(
+    Schema.isBetween({ minimum: -Number.MAX_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER }),
+  ),
+  currency: KinCurrency,
+});
+export type KinSignedMoney = typeof KinSignedMoney.Type;
+/** One figure per currency, home first, then by code; an empty list is nothing. */
+export const KinMoneyTotals = Schema.Array(KinSignedMoney);
 export type KinMoneyTotals = typeof KinMoneyTotals.Type;
 
 /** A built-in list (`work`, `clients`, `expenses`) or one defined in chat. */
