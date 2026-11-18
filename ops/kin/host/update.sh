@@ -186,7 +186,8 @@ write_env_file() {
     "PATH=$HOME/.local/bin:$HOME/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin" \
     "KIN_REPO=$REPO" \
     "KIN_CHECKOUT=$CURRENT" \
-    "KIN_NODE_VERSION=$1" >"$tmp" || ! chmod 600 "$tmp" || ! mv -f "$tmp" "$ENV_FILE"; then
+    "KIN_NODE_VERSION=$1" \
+    ${2:+"KIN_BUILD_COMMIT=$2"} >"$tmp" || ! chmod 600 "$tmp" || ! mv -f "$tmp" "$ENV_FILE"; then
     rm -f "$tmp"
     return 1
   fi
@@ -226,7 +227,7 @@ deploy() {
     return 1
   fi
   # Nothing has touched the database yet, so a failure here only needs the previous files and a start.
-  if ! { write_env_file "$node_version" && install_units "$build" && touch "$build" && switch_to "$build" &&
+  if ! { write_env_file "$node_version" "${PUBLISHED:-}" && install_units "$build" && touch "$build" && switch_to "$build" &&
     systemctl --user daemon-reload; }; then
     say "couldn't switch to $sha (env file, units or link); the database is untouched."
     if [ -z "$has_previous" ]; then
@@ -296,6 +297,9 @@ main() {
   git -C "$REPO" fetch origin +refs/heads/kin:refs/remotes/origin/kin
   git -C "$REPO" merge --ff-only origin/kin
   SHA="$(git -C "$REPO" rev-parse --verify 'HEAD^{commit}')"
+  # The memory repo's memory-check fetches its pin from GitHub, so only a pushed commit is offered.
+  PUBLISHED="$SHA"
+  git -C "$REPO" merge-base --is-ancestor "$SHA" origin/kin || PUBLISHED=""
   BUILD="$BUILDS/$SHA"
   PREVIOUS="$(readlink "$CURRENT" 2>/dev/null || true)"
 

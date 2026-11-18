@@ -1,14 +1,14 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { KinAgentId, KinMemoryItemId, KinOrgId } from "@t3tools/contracts";
+import { KinAgentId, KinChatId, KinMemoryItemId, KinOrgId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
-import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -81,9 +81,6 @@ const scenarios = [
   "check-pending",
   "merge-rejected",
   "owner-path",
-  "owner-path-close-fails",
-  "owner-path-refused",
-  "records-broken",
   "hang",
   "stall-body",
   "run-from-fork",
@@ -95,11 +92,42 @@ const scenarios = [
   "owner-conflict",
   "first-run",
   "land-fails",
-  "review-retry",
   "sync-fetch",
   "crash-owner-correction",
   "crash-beyond-search",
+  "decision-then-journal",
+  "code-owner-refusal",
+  "guard-rails-upgrade",
+  "review-leftovers",
 ] as const;
+
+// GitHub's own answer, byte for byte, to a merge that waits on a code owner (invented login).
+const codeOwnerRefusal = {
+  status: 405,
+  body: {
+    message:
+      "Repository rule violations found\n\nWaiting on code owner review from octo-owner.\n\n",
+    documentation_url: "https://docs.github.com/rest/pulls/pulls#merge-a-pull-request",
+    status: "405",
+  },
+};
+// What a memory repo set up before Kin wrote every memory folder alone holds.
+const oldCodeowners = "* @octo-owner\n/commitments/\n/deferrals/\n/claims/\n/journal/\n/INDEX.md\n";
+const oldPin = "1".repeat(40);
+const buildCommit = "2".repeat(40);
+// GitHub applies a CODEOWNERS' last matching line: `*`, `/folder/` or `/file`.
+const codeOwnersOf = (codeowners: string, path: string) => {
+  let owners: ReadonlyArray<string> = [];
+  for (const line of codeowners.split("\n")) {
+    const [pattern, ...named] = line.split("#")[0]!.trim().split(/\s+/);
+    if (!pattern) continue;
+    const matches =
+      pattern === "*" ||
+      (pattern.endsWith("/") ? path.startsWith(pattern.slice(1)) : path === pattern.slice(1));
+    if (matches) owners = named;
+  }
+  return owners;
+};
 
 // `it.effect`: real git, but GitHub's silences only end when the test clock moves.
 it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
@@ -120,6 +148,32 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
     yield* git(source, ["init", "-b", "main"]);
     yield* fs.writeFileString(`${source}/rules.md`, "Invented rules\n");
     yield* fs.writeFileString(`${source}/INDEX.md`, "As of 2026-11-08T00:00:00.000Z\n");
+    // The templates as this commit ships them, installed for an invented owner.
+    const path = yield* Path.Path;
+    const ops = path.join(
+      yield* path.fromFileUrl(new URL(".", import.meta.url)),
+      "../../../../../ops/kin/memory-repo",
+    );
+    const template = yield* fs.readFileString(`${ops}/CODEOWNERS.template`);
+    const installed = template.replace("* @OWNER", "* @octo-owner");
+    const workflow = (pin: string) =>
+      fs
+        .readFileString(`${ops}/memory-check.yml`)
+        .pipe(Effect.map((text) => text.replace('"<t3code commit SHA>"', `"${pin}"`)));
+    const guarded = ["decision-then-journal", "code-owner-refusal", "guard-rails-upgrade"].includes(
+      scenario,
+    );
+    if (guarded) {
+      yield* fs.makeDirectory(`${source}/.github/workflows`, { recursive: true });
+      yield* fs.writeFileString(
+        `${source}/.github/CODEOWNERS`,
+        scenario === "decision-then-journal" ? installed : oldCodeowners,
+      );
+      yield* fs.writeFileString(
+        `${source}/.github/workflows/memory-check.yml`,
+        yield* workflow(scenario === "decision-then-journal" ? buildCommit : oldPin),
+      );
+    }
     yield* git(source, ["add", "--", "."]);
     yield* git(source, [...identity, "commit", "-m", "fixture"]);
     yield* git(root, ["clone", "--bare", "--", source, remote]);
@@ -132,14 +186,15 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
     const silenced = yield* Deferred.make<void>();
     let stalls = 0;
     let jobsListed = false;
-    let unclosable: number | undefined;
     // memory-check stays pending on the first PR until the test releases it.
     const heldInCi = ["batched", "repeat-edit", "owner-edit", "owner-conflict"].includes(scenario);
     const firstPoll = yield* Deferred.make<void>();
     let ciDone = false;
     // GitHub refuses new PRs until the server restarts.
     let createFails = scenario === "restart" || scenario === "first-run";
-    let reviewFails = scenario === "review-retry";
+    // PRs the owner approved on GitHub; the sha each run of memory-check was listed for.
+    const approved = new Set<number>();
+    let checkedSha: string | undefined;
     const journalPath = "journal/2026/11-08.md";
     // The owner changes memory on GitHub itself, as a PR of their own would once merged.
     let ownerHead: string | undefined;
@@ -217,8 +272,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         const query = new URL(path, "https://github.invalid").searchParams;
         const body = request.body as Record<string, string> | undefined;
         if (request.method === "POST" && path === "/pulls") {
-          if (createFails || (reviewFails && body!.head!.endsWith("-review")))
-            return { status: 500, body: { message: "Server Error" } };
+          if (createFails) return { status: 500, body: { message: "Server Error" } };
           if (scenario === "hang") {
             yield* Deferred.succeed(silenced, undefined);
             return { status: 0, hang: true as const };
@@ -263,7 +317,6 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           const number = Number(pull[1]);
           const state = pulls.get(number)!;
           if (request.method === "PATCH") {
-            if (number === unclosable) return { status: 500, body: { message: "Server Error" } };
             state.state = body!.state!;
             return { status: 200, body: yield* pullBody(number) };
           }
@@ -279,6 +332,16 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           if (body!.sha !== head)
             return { status: 409, body: { message: "Head branch was modified." } };
           const parent = yield* bare("rev-parse", "refs/heads/main");
+          // The ruleset requires a code owner's review, read from the base branch's CODEOWNERS.
+          const rules = yield* bare("show", `${parent}:.github/CODEOWNERS`).pipe(
+            Effect.orElseSucceed(() => ""),
+          );
+          const changed = (yield* bare("diff", "--name-only", parent, head)).split("\n");
+          if (
+            !approved.has(number) &&
+            changed.some((file) => file !== "" && codeOwnersOf(rules, file).length > 0)
+          )
+            return codeOwnerRefusal;
           const squash = yield* bare(
             ...identity,
             "commit-tree",
@@ -307,11 +370,13 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           return { status: 200, body: { merged: true, sha: squash } };
         }
         if (request.method === "GET" && /^\/pulls\?state=open&per_page=/.test(path)) {
-          // Newest first, one page.
+          // Newest first, a page at a time.
+          const size = Number(query.get("per_page"));
+          const page = Number(query.get("page") ?? "1");
           const open = [...pulls]
             .filter(([, pull]) => pull.state === "open")
             .toSorted(([a], [b]) => b - a)
-            .slice(0, Number(query.get("per_page")));
+            .slice((page - 1) * size, page * size);
           return {
             status: 200,
             body: yield* Effect.forEach(open, ([number]) => pullBody(number)),
@@ -328,6 +393,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         const runs = /^\/actions\/runs\?head_sha=([a-f0-9]+)&event=pull_request/.exec(path);
         if (runs) {
           const sha = runs[1]!;
+          checkedSha = sha;
           const pull = yield* pullOf(sha);
           const run = (id: number, workflow: string) => ({
             id,
@@ -370,18 +436,15 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           jobsListed = true;
           const pending = scenario === "check-pending" || (heldInCi && !ciDone);
           // `check-failed` fails only the first PR, so a later commit's attempt can land.
-          const failed =
-            (scenario === "check-failed" && pulls.size === 1) || scenario === "owner-path-refused";
+          const failed = scenario === "check-failed" && pulls.size === 1;
           const job = (id: number) =>
-            Effect.gen(function* () {
-              return {
-                id,
-                name: "memory-check",
-                // The newest PR is the attempt being checked (a retry opens PR 2).
-                head_sha: yield* branchHead(pulls.get(Math.max(...pulls.keys()))!.branch),
-                status: pending ? "in_progress" : "completed",
-                conclusion: pending ? null : failed ? "failure" : "success",
-              };
+            Effect.succeed({
+              id,
+              name: "memory-check",
+              // The commit whose runs Kin just listed.
+              head_sha: checkedSha!,
+              status: pending ? "in_progress" : "completed",
+              conclusion: pending ? null : failed ? "failure" : "success",
             });
           // An Actions job's id is its check run's id.
           const ids = jobs[1] !== "10" ? [200] : scenario === "rerun" ? [100, 101] : [100];
@@ -482,12 +545,13 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       }),
     ).pipe(Layer.provide(api), Layer.provide(asApp ? app : Layer.empty));
 
-    const notices: Array<{ branch: string; reason: string }> = [];
+    const notices: Array<{ branch: string; reason: string; owner?: string }> = [];
     const recovery = Layer.succeed(Memory.MemoryRecoveryHooks, {
       notify: (notice) => Effect.sync(() => void notices.push(notice)),
     });
     const config = Layer.succeed(MemoryConfig, {
       baseDirectory: root,
+      ...(scenario === "code-owner-refusal" ? {} : { buildCommit }),
       repositories: [{ orgId, repoUrl: remote, path: "state", githubRepo: repo }],
     });
     const auth = Layer.succeed(Writer.MemoryWriterAuthority, {
@@ -565,6 +629,195 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       const remoteFiles = (ref: string) => bare("ls-tree", "-r", "--name-only", ref);
       const notMerged = () =>
         notices.filter((notice) => notice.reason.startsWith("Memory write not merged"));
+      const decision = (id: string) => ({
+        itemId: KinMemoryItemId.make(id),
+        title: "Which courier for the invented samples?",
+        body: "Chose the invented courier.",
+        saidBy: "fixture-owner",
+        trust: "owner" as const,
+        source: "kin:chat:chat-1:message:message-1",
+        chat: KinChatId.make("chat-1"),
+        link: "card:widget-1",
+      });
+      // A wake-up that writes only its journal entry.
+      const journal = (wakeupId: string) => writer.commitWakeup(orgId, wakeupId, "completed");
+      const opened = () =>
+        github.requests.filter(
+          (request) => request.method === "POST" && request.path === `/repos/${repo}/pulls`,
+        ).length;
+      const toldOwner = () => notices.flatMap((notice) => notice.owner ?? []);
+
+      if (scenario === "decision-then-journal") {
+        // A decision saved by code, then a wake-up's journal: both land, no review asked.
+        expect(yield* writer.recordDecision(orgId, decision("decision-0001"))).toEqual({
+          recorded: true,
+        });
+        expect(yield* landing).toMatchObject({ _tag: "merged" });
+        yield* journal("wake1");
+        expect(yield* landing).toMatchObject({ _tag: "merged" });
+        yield* settled;
+        const landed = yield* remoteFiles("main");
+        expect(landed).toContain("decisions/decision-0001.md");
+        expect(landed).toContain(journalPath);
+        expect(opened()).toBe(2);
+        expect(notices).toEqual([]);
+        return;
+      }
+
+      if (scenario === "code-owner-refusal") {
+        yield* writer.recordDecision(orgId, decision("decision-0001"));
+        expect(yield* landing).toMatchObject({
+          _tag: "stuck",
+          reason: expect.stringContaining("Waiting on code owner review from octo-owner."),
+        });
+        expect(opened()).toBe(1);
+        expect(pulls.get(1)?.state).toBe("closed");
+        // Later memory is saved here and waits behind the same cause: no PR per change.
+        for (const wakeupId of ["wake1", "wake2", "wake3"]) {
+          yield* journal(wakeupId);
+          expect(yield* landing).toEqual({ _tag: "waiting" });
+        }
+        expect(opened()).toBe(1);
+        expect(merges).toHaveLength(1);
+        expect(toldOwner()).toEqual([
+          expect.stringContaining("Memory is saved here, but GitHub's copy is behind"),
+        ]);
+        expect(toldOwner()[0]).toContain(`https://github.com/${repo}/pull/1`);
+        expect((yield* memory.readItem(orgId, KinMemoryItemId.make("decision-0001"))).head.id).toBe(
+          "decision-0001",
+        );
+        expect(yield* git(paths.writer, ["show", `main:${journalPath}`])).toContain(
+          "wake-up wake3",
+        );
+        // The owner frees the folder on GitHub by hand; that change is what Kin waited for.
+        yield* ownerCommits({ ".github/CODEOWNERS": () => installed });
+        yield* lander.signal(orgId);
+        expect(yield* landing).toMatchObject({ _tag: "merged" });
+        yield* settled;
+        expect(yield* remoteFiles("main")).toContain("decisions/decision-0001.md");
+        expect(yield* bare("show", `main:${journalPath}`)).toContain("wake-up wake3");
+        expect(opened()).toBe(2);
+        expect(toldOwner()).toHaveLength(1);
+        return;
+      }
+
+      if (scenario === "guard-rails-upgrade") {
+        // At start, Kin proposed this server's guard rails as one PR, and GitHub wants the owner.
+        const [number, upgrade] = [...pulls].find(([, pull]) =>
+          pull.branch.startsWith("kin/write/guard-rails/"),
+        )!;
+        expect(upgrade.state).toBe("open");
+        expect(opened()).toBe(1);
+        expect(yield* bare("diff", "--name-only", original, upgrade.branch)).toBe(
+          ".github/CODEOWNERS\n.github/workflows/memory-check.yml",
+        );
+        expect(yield* bare("show", `${upgrade.branch}:.github/CODEOWNERS`)).toBe(installed.trim());
+        expect(
+          yield* bare("show", `${upgrade.branch}:.github/workflows/memory-check.yml`),
+        ).toContain(`T3CODE_REF: "${buildCommit}"`);
+        expect(toldOwner()).toEqual([
+          `Approve one change to the memory repo's rules on GitHub: https://github.com/${repo}/pull/${number}. It lets Kin save every kind of memory there on its own; until then some of it stays on this server only. Kin merges it itself once you approve.`,
+        ]);
+        const head = yield* branchHead(upgrade.branch);
+        // GitHub's old rules refuse a decision; Kin holds it and asks the owner nothing more.
+        yield* writer.recordDecision(orgId, decision("decision-0001"));
+        expect(yield* landing).toMatchObject({
+          _tag: "stuck",
+          reason: expect.stringContaining("Waiting on code owner review"),
+        });
+        yield* journal("wake1");
+        expect(yield* landing).toEqual({ _tag: "waiting" });
+        expect(opened()).toBe(2);
+        expect(toldOwner()).toHaveLength(1);
+        // Kin never pushes to the PR again, so the owner's approval would stay.
+        expect(yield* branchHead(upgrade.branch)).toBe(head);
+        expect(upgrade.state).toBe("open");
+        // The owner approves on GitHub; the periodic sweep wakes the lander, which merges it,
+        // then lands everything that waited.
+        approved.add(number);
+        yield* lander.sweep(orgId);
+        expect(upgrade.state).toBe("open");
+        expect(yield* landing).toEqual({ _tag: "upgraded" });
+        expect(yield* landing).toMatchObject({ _tag: "merged" });
+        yield* settled;
+        const landed = yield* remoteFiles("main");
+        expect(landed).toContain("decisions/decision-0001.md");
+        expect(landed).toContain(journalPath);
+        expect(yield* bare("show", "main:.github/CODEOWNERS")).toBe(installed.trim());
+        expect(opened()).toBe(3);
+        yield* lander.signal(orgId);
+        yield* settled;
+        expect(opened()).toBe(3);
+        expect(yield* git(paths.writer, ["for-each-ref", "refs/kin/guard-rails"])).toBe("");
+        return;
+      }
+
+      if (scenario === "review-leftovers") {
+        // As a server from before left them: a review commit under its ref, an open review PR
+        // from a commit this server made, and one from a commit it never made.
+        const commitWith = (cwd: string, parent: string, file: string, content: string) =>
+          Effect.gen(function* () {
+            const index = `${root}/leftover-index`;
+            const plumb = (args: ReadonlyArray<string>, stdin?: string) =>
+              vcs
+                .run({
+                  operation: "test.memoryPullRequests.leftover",
+                  command: "git",
+                  cwd,
+                  args: [...identity, ...args],
+                  env: { GIT_INDEX_FILE: index },
+                  ...(stdin === undefined ? {} : { stdin }),
+                })
+                .pipe(Effect.map((result) => result.stdout.trim()));
+            const blob = yield* plumb(["hash-object", "-w", "--stdin"], content);
+            yield* plumb(["read-tree", parent]);
+            yield* plumb(["update-index", "--add", "--cacheinfo", `100644,${blob},${file}`]);
+            const tree = yield* plumb(["write-tree"]);
+            yield* fs.remove(index);
+            return yield* plumb(["commit-tree", tree, "-p", parent, "-m", "kin: review wake-up"]);
+          });
+        const kept = yield* commitWith(
+          paths.writer,
+          yield* localMain(),
+          "decisions/dec-left.md",
+          fixtureItem({ id: "dec-left", kind: "decision", review_by: null }),
+        );
+        yield* git(paths.writer, [
+          "update-ref",
+          `refs/kin/review/${agentId}/wake9-0123456789ab`,
+          kept,
+        ]);
+        const opened = yield* commitWith(
+          paths.writer,
+          original,
+          "people/person-left.md",
+          fixtureItem({ id: "person-left", kind: "person", review_by: null }),
+        );
+        const forged = yield* commitWith(
+          source,
+          original,
+          "people/forged.md",
+          fixtureItem({ id: "forged", kind: "person", review_by: null }),
+        );
+        for (const [branch, sha, cwd] of [
+          [`kin/write/${agentId}/wake8-0123456789ab-review`, opened, paths.writer],
+          ["kin/write/other/forged-review", forged, source],
+          // An agent points a review branch at a commit already on the default branch.
+          ["kin/write/other/main-review", original, source],
+        ] as const) {
+          yield* git(cwd, ["push", "--", remote, `${sha}:refs/heads/${branch}`]);
+          pulls.set(pulls.size + 1, { branch, state: "open", base: "main" });
+        }
+        // More newer PRs than one page holds, so the old reviews are only on a later page.
+        for (let flood = 0; flood < 120; flood++)
+          pulls.set(pulls.size + 1, {
+            branch: `feature/${flood}`,
+            state: "open",
+            base: "main",
+            sha: original,
+          });
+        return;
+      }
 
       // The periodic sync is still waiting on GitHub when the lead stages and commits.
       holdFetch = scenario === "sync-fetch";
@@ -575,18 +828,8 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       if (sync !== undefined) yield* Deferred.await(fetching);
 
       yield* writer.stage(orgId, "wake1", claim("new"));
-      const reviewed = scenario === "owner-path" || scenario === "owner-path-close-fails";
-      const ownerPath =
-        reviewed ||
-        scenario === "owner-path-refused" ||
-        scenario === "records-broken" ||
-        scenario === "review-retry";
-      const sql = yield* SqlClient.SqlClient;
-      const records = sql`SELECT branch, head FROM kin_memory_review_pulls ORDER BY branch`;
-      if (scenario === "records-broken")
-        yield* sql`CREATE TRIGGER no_insert BEFORE INSERT ON kin_memory_review_pulls
-          BEGIN SELECT RAISE(ABORT, 'fixture'); END`;
-      if (ownerPath)
+      // A lead's decision rides the same batch: every memory folder is Kin's to write alone.
+      if (scenario === "owner-path")
         yield* writer.stage(orgId, "wake1", {
           path: "decisions/dec-001.md",
           content: fixtureItem({
@@ -867,11 +1110,9 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       }
 
       if (
-        !reviewed &&
+        scenario !== "owner-path" &&
         scenario !== "merged" &&
         scenario !== "rerun" &&
-        scenario !== "records-broken" &&
-        scenario !== "review-retry" &&
         scenario !== "sync-fetch"
       ) {
         const foreign = "did not come from .github/workflows/memory-check.yml";
@@ -888,8 +1129,6 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         yield* kept;
         expect(merges.length).toBe(scenario === "merge-rejected" ? 1 : 0);
         expect(pulls.get(1)?.state).toBe("closed");
-        // A refused batch opens no review PR, so none is left waiting alone.
-        expect([...pulls.values()].filter((pull) => pull.branch.endsWith("-review"))).toEqual([]);
         // A PR from Kin's branch that isn't this one fails before Kin reads any run.
         if (scenario === "second-pr")
           expect(github.requests.map((request) => request.path)).not.toContainEqual(
@@ -924,7 +1163,6 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
               "events-truncated": "GitHub listed more PR events than one page holds",
               "moved-head": "head is not the commit Kin pushed",
               "check-failed": "memory-check failed",
-              "owner-path-refused": "memory-check failed",
               "check-pending": "did not finish in time",
               "merge-rejected":
                 "GitHub refused the merge (HTTP 405: Required status check is expected.)",
@@ -969,10 +1207,8 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       // The merged branch is deleted; the merge was pinned to the commit Kin pushed.
       const batchBranch = /^kin\/write\/land\/[0-9a-f]{12}$/;
       const auto = [...pulls].find(([, pull]) => batchBranch.test(pull.branch))!;
-      const reviewBranch = new RegExp(`^kin/write/${agentId}/wake1-[0-9a-f]{12}-review$`);
       const leftOver = yield* bare("for-each-ref", "--format=%(refname)", "refs/heads/kin/write/");
-      if (ownerPath) expect(leftOver.replace("refs/heads/", "")).toMatch(reviewBranch);
-      else expect(leftOver).toBe("");
+      expect(leftOver).toBe("");
       const autoHead = yield* git(paths.writer, ["rev-parse", `${main}^{tree}`]);
       expect(merges).toEqual([
         {
@@ -984,90 +1220,13 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       expect(yield* git(paths.writer, ["rev-parse", `${pinned}^{tree}`])).toBe(autoHead);
       if (asApp)
         expect(new Set(github.requests.map((request) => request.as))).toEqual(new Set(["app"]));
-      if (!ownerPath) {
-        // Memory writes post nothing in the owner's chat.
-        expect(notices).toEqual([]);
-        return;
+      if (scenario === "owner-path") {
+        expect(yield* remoteFiles(main)).toContain("decisions/dec-001.md");
+        expect(yield* bare("show", `${main}:INDEX.md`)).toContain("dec-001");
+        expect(pulls.size).toBe(1);
       }
-
-      if (scenario === "review-retry") {
-        const failed = () =>
-          notices.filter((notice) => notice.reason.includes("were not opened as a PR"));
-        const waiting = () =>
-          git(paths.writer, ["for-each-ref", "--format=%(refname)", "refs/kin/review/"]);
-        // GitHub refused the review PR: the owner hears once and the commit waits for a retry.
-        expect(failed()).toHaveLength(1);
-        expect(yield* waiting()).toMatch(new RegExp(`^refs/kin/review/${agentId}/wake1-`));
-        yield* lander.signal(orgId);
-        yield* settled;
-        expect(failed()).toHaveLength(1);
-        expect(yield* waiting()).not.toBe("");
-        reviewFails = false;
-        yield* lander.signal(orgId);
-        yield* settled;
-        const review = [...pulls].find(([, pull]) => reviewBranch.test(pull.branch))!;
-        expect(review[1].state).toBe("open");
-        expect(notices.map((notice) => notice.reason)).toContainEqual(
-          expect.stringContaining(`wait in https://github.com/${repo}/pull/${review[0]}`),
-        );
-        expect(yield* waiting()).toBe("");
-        expect(yield* records).toHaveLength(1);
-        return;
-      }
-
-      if (scenario === "records-broken") {
-        const reviewNumber = [...pulls].find(([, pull]) => pull.branch.endsWith("-review"))![0];
-        expect(pulls.get(reviewNumber)?.state).toBe("closed");
-        expect(notices.map((notice) => notice.reason)).toContainEqual(
-          "Memory changes on paths you review were not opened as a PR: Kin could not record the commit it pushed (MemoryPullRequests.recordReview). Kin keeps them on this server and tries again with the next memory change or restart",
-        );
-        const sweepRefusal = lander.sweep(orgId).pipe(Effect.flip);
-        yield* sql`DROP TRIGGER no_insert`;
-        yield* sql`INSERT INTO kin_memory_review_pulls (org_id, branch, head)
-          VALUES (${orgId}, 'kin/write/gone-review', ${original})
-          ON CONFLICT (org_id, branch) DO NOTHING`;
-        yield* sql`CREATE TRIGGER no_delete BEFORE DELETE ON kin_memory_review_pulls
-          BEGIN SELECT RAISE(ABORT, 'fixture'); END`;
-        expect(yield* sweepRefusal).toMatchObject({
-          _tag: "MemorySyncConflict",
-          reason: "Kin could not update its record of review PRs (MemoryPullRequests.forgetReview)",
-        });
-        yield* sql`ALTER TABLE kin_memory_review_pulls RENAME TO kin_memory_review_pulls_gone`;
-        expect(yield* sweepRefusal).toMatchObject({
-          _tag: "MemorySyncConflict",
-          reason: "Kin could not read its record of review PRs (MemoryPullRequests.records)",
-        });
-        return;
-      }
-
-      const review = [...pulls].find(([, pull]) => reviewBranch.test(pull.branch))!;
-      const reviewName = review[1].branch;
-      // Kin never merges the owner's paths; the PR stays open for their review.
-      expect(review[1].state).toBe("open");
-      expect(merges.map((merge) => merge.number)).not.toContain(review[0]);
-      expect(yield* remoteFiles(main)).not.toContain("decisions/dec-001.md");
-      expect(yield* bare("show", `${main}:INDEX.md`)).not.toContain("dec-001");
-      // Opened on GitHub's head once the rest landed, so it shows only the owner's paths.
-      expect(yield* bare("diff", "--name-only", main, reviewName)).toBe("decisions/dec-001.md");
-      const reviewHead = yield* branchHead(reviewName);
-      expect(notices.map((notice) => notice.reason)).toContainEqual(
-        `Memory changes on paths you review wait in https://github.com/${repo}/pull/${review[0]}. Kin pushed \`${reviewHead}\`; if the PR's head differs, close it`,
-      );
-      expect(github.requests).toContainEqual(
-        expect.objectContaining({
-          method: "POST",
-          path: `/repos/${repo}/pulls`,
-          body: expect.objectContaining({
-            head: reviewName,
-            body: expect.stringContaining(`Kin pushed \`${reviewHead}\``),
-          }),
-        }),
-      );
-      // Reads follow this server's default branch while the review PR is open.
-      expect((yield* memory.prepareWakeup(orgId)).head).toBe(head);
-      expect(
-        (yield* memory.readItem(orgId, KinMemoryItemId.make("dec-001")).pipe(Effect.flip))._tag,
-      ).toBe("MemoryNotFound");
+      // Memory writes post nothing in the owner's chat.
+      expect(notices).toEqual([]);
 
       // A crashed write or an agent's own push leaves a `kin/write/*` PR nobody waits on.
       const orphanBranch = "kin/write/other/orphan";
@@ -1083,55 +1242,6 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           body: { body: "Kin closed this memory PR: no Kin memory write is waiting on it." },
         }),
       );
-      expect(review[1].state).toBe("open");
-      expect(yield* records).toEqual([{ branch: reviewName, head: reviewHead }]);
-
-      // Agents flood the repo with newer PRs, which must not hide the review PR from the sweep.
-      for (let flood = 0; flood < 120; flood++)
-        pulls.set(pulls.size + 1, {
-          branch: `feature/${flood}`,
-          state: "open",
-          base: "main",
-          sha: original,
-        });
-      // A review PR Kin never recorded is closed with a comment, without telling the owner.
-      const fakeBranch = "kin/write/other/fake-review";
-      const fake = pulls.size + 1;
-      pulls.set(fake, { branch: fakeBranch, state: "open", base: "main", sha: original });
-
-      // An agent with the deploy key swaps what the owner would merge.
-      yield* bare("update-ref", `refs/heads/${reviewName}`, original);
-      if (scenario === "owner-path-close-fails") unclosable = review[0];
-      const before = notices.length;
-      yield* lander.sweep(orgId);
-      const moved = `https://github.com/${repo}/pull/${review[0]}`;
-      const reason = `its head is no longer \`${reviewHead}\`, the commit Kin pushed`;
-      expect(pulls.get(fake)?.state).toBe("closed");
-      expect(github.requests).toContainEqual(
-        expect.objectContaining({
-          method: "POST",
-          path: `/repos/${repo}/issues/${fake}/comments`,
-          body: { body: "Kin closed this memory PR: Kin did not open it." },
-        }),
-      );
-      expect(merges.map((merge) => merge.number)).toEqual([auto[0]]);
-      if (scenario === "owner-path-close-fails") {
-        expect(review[1].state).toBe("open");
-        expect(notices.slice(before).map((notice) => notice.reason)).toEqual([
-          `Kin could not close ${moved}, the memory PR for paths you review, and it is still open. Close it without merging: ${reason}`,
-        ]);
-        expect(yield* records).toEqual([{ branch: reviewName, head: reviewHead }]);
-        // The next sweep still can't close it, and doesn't tell the owner again.
-        const again = notices.length;
-        yield* lander.sweep(orgId);
-        expect(notices.length).toBe(again);
-        return;
-      }
-      expect(review[1].state).toBe("closed");
-      expect(notices.slice(before).map((notice) => notice.reason)).toEqual([
-        `Kin closed ${moved}, the memory PR for paths you review: ${reason}`,
-      ]);
-      expect(yield* records).toEqual([]);
     }).pipe(Effect.provide(writerLayer));
 
     if (scenario === "first-run") {
@@ -1206,6 +1316,65 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         expect(yield* git(`${root}/state/memory`, ["show", `${head}:${journalPath}`])).toContain(
           "Outcome: completed",
         );
+      }).pipe(Effect.provide(writerLayer));
+    }
+
+    if (scenario === "review-leftovers") {
+      // The next start keeps what this server made, closes both PRs, and lands it all.
+      yield* Effect.gen(function* () {
+        const memory = yield* Memory.Memory;
+        expect(yield* landing).toMatchObject({ _tag: "merged" });
+        yield* settled;
+        const writer = `${root}/state/memory`;
+        expect(yield* git(writer, ["for-each-ref", "refs/kin/review/"])).toBe("");
+        for (const id of ["dec-left", "person-left"])
+          expect((yield* memory.readItem(orgId, KinMemoryItemId.make(id))).head.id).toBe(id);
+        const landed = yield* bare("ls-tree", "-r", "--name-only", "main");
+        expect(landed).toContain("decisions/dec-left.md");
+        expect(landed).toContain("people/person-left.md");
+        expect(landed).not.toContain("people/forged.md");
+        expect(
+          [...pulls.values()]
+            .filter((pull) => pull.branch.startsWith("kin/write/"))
+            .map((pull) => pull.state),
+        ).toEqual(["closed", "closed", "closed", "closed"]);
+        const comments = github.requests.flatMap((request) =>
+          request.method === "POST" && request.path.endsWith("/comments")
+            ? [{ path: request.path, body: request.body }]
+            : [],
+        );
+        expect(comments.toSorted((a, b) => a.path.localeCompare(b.path))).toEqual([
+          {
+            path: `/repos/${repo}/issues/1/comments`,
+            body: {
+              body: "Kin closed this memory PR: Kin saves memory without review now, so it kept these changes on its server; its next memory PR brings them to main.",
+            },
+          },
+          ...[2, 3].map((number) => ({
+            path: `/repos/${repo}/issues/${number}/comments`,
+            body: {
+              body: "Kin closed this memory PR: Kin saves memory without review now, and its server doesn't have this PR's commit, so nothing from it was kept.",
+            },
+          })),
+        ]);
+        expect(notices.flatMap((notice) => notice.owner ?? []).toSorted()).toEqual(
+          [2, 3].map(
+            (number) =>
+              `Kin closed an old memory review, https://github.com/${repo}/pull/${number}, without keeping its changes: this server no longer has them.`,
+          ),
+        );
+      }).pipe(Effect.provide(writerLayer));
+    }
+
+    if (scenario === "guard-rails-upgrade") {
+      // A restart with nothing left to propose or land opens nothing.
+      yield* Effect.gen(function* () {
+        yield* settled;
+        expect(
+          github.requests.filter(
+            (request) => request.method === "POST" && request.path === `/repos/${repo}/pulls`,
+          ),
+        ).toHaveLength(3);
       }).pipe(Effect.provide(writerLayer));
     }
 

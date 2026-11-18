@@ -13,7 +13,7 @@ WorkingDirectory=%h
 # Owner overrides, such as T3CODE_LAN=true. Backed up with the state.
 EnvironmentFile=-%h/.t3/service.env
 # Read last so service.env can't override it. Written by setup.sh and update.sh:
-# KIN_ENABLED, PATH, KIN_REPO, KIN_CHECKOUT (~/kin-current) and KIN_NODE_VERSION.
+# KIN_ENABLED, PATH, KIN_REPO, KIN_CHECKOUT (~/kin-current), KIN_NODE_VERSION and KIN_BUILD_COMMIT.
 EnvironmentFile=%h/.config/kin/kin-server.env
 # systemd does not expand variables in the executable, so env finds mise on PATH.
 ExecStart=/usr/bin/env mise exec node@${KIN_NODE_VERSION} -- node ${KIN_CHECKOUT}/apps/server/dist/bin.mjs serve --base-dir %h/.t3

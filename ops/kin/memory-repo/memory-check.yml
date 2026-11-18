@@ -1,4 +1,5 @@
 # Install as .github/workflows/memory-check.yml in the memory repo; see README.md beside this file.
+# Kin guard rails 2: Kin proposes this file again whenever its version or shape changes.
 # Memory files are only ever read as data. The lint code and gitleaks config come from a pinned
 # GLDRoger/t3code commit, so a pull request cannot change what checks it.
 name: memory-check
@@ -21,7 +22,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      # A GLDRoger/t3code commit on kin or main that contains ops/kin/memory-repo. Bump it deliberately.
+      # A GLDRoger/t3code commit on kin or main that contains ops/kin/memory-repo. Kin's upgrade PR sets
+      # it to the commit its server runs; by hand, bump it deliberately.
       T3CODE_REF: "<t3code commit SHA>"
       GITLEAKS_VERSION: "8.30.1"
       GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"

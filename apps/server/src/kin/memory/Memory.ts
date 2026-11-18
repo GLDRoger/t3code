@@ -309,15 +309,8 @@ export class Memory extends Context.Service<
 
 const decodeHead = Schema.decodeEffect(MemoryItemHead);
 
-export const folders = [
-  "objectives",
-  "commitments",
-  "deferrals",
-  "decisions",
-  "people",
-  "claims",
-  "relationships",
-];
+/** Every folder that holds memory items; Kin writes all of them alone (`lint.ts` frees each one). */
+export const folders: ReadonlyArray<string> = itemFolders;
 
 export const maxBlobBytes = 256 * 1024;
 // Well under memoryGit's 64 MiB output cap, so a large journal reads in a few `cat-file` runs.

@@ -21,11 +21,24 @@ import {
 import { gitHubApp } from "../github/KinGitHubApp.ts";
 import { MemoryConfig, WRITE_BRANCH_PREFIX } from "./MemoryConfig.ts";
 import { memoryIdentity } from "./memoryIdentity.ts";
-import { MemoryPullRequests, REVIEW_BRANCH_SUFFIX } from "./MemoryPullRequests.ts";
-import { readCommit, readTree, verifyTree } from "./objects.ts";
+import { isCheckoutPath, isItemPath } from "./checkoutPaths.ts";
+import {
+  CODEOWNERS_PATH,
+  guardRailsUpdate,
+  MEMORY_CHECK_PATH,
+  sameGuardRails,
+  type GuardRails,
+} from "./guardRails.ts";
+import { kinShapeFailure } from "./lint.ts";
+import { MemoryPullRequests, type MemoryPullRequestRefused } from "./MemoryPullRequests.ts";
+import { readTree, verifyTree } from "./objects.ts";
 
-/** Where a wake-up's changes on owner-reviewed paths wait for the lander; named `<agent>/<id>-<sha12>`. */
-export const REVIEW_REF_PREFIX = "refs/kin/review/";
+/** The commit of the open guard-rails PR, kept so its head never changes under the owner. */
+const GUARD_RAILS_REF = "refs/kin/guard-rails";
+const GUARD_RAILS_BRANCH = `${WRITE_BRANCH_PREFIX}guard-rails/`;
+// Left by servers from before Kin wrote every memory folder alone; folded in once at start.
+const LEGACY_REVIEW_REFS = "refs/kin/review/";
+const LEGACY_REVIEW_BRANCH = /-review$/;
 
 export type LandingOutcome =
   /** GitHub holds everything this server does. */
@@ -33,6 +46,8 @@ export type LandingOutcome =
   | { readonly _tag: "merged"; readonly url: string; readonly commit: string }
   /** Refused or unreachable; the local commits stay, and landing waits for a new one. */
   | { readonly _tag: "stuck"; readonly reason: string }
+  /** GitHub merged Kin's guard-rails PR; the next batch starts from its new head. */
+  | { readonly _tag: "upgraded" }
   /** Still stuck on the same local head, so nothing was tried. */
   | { readonly _tag: "waiting" };
 
@@ -64,7 +79,7 @@ export class MemoryLander extends Context.Service<
   {
     /** Wakes the org's lander and returns at once; signals during a landing ride the next batch. */
     readonly signal: (orgId: KinOrgId) => Effect.Effect<void>;
-    /** Closes `kin/write/*` PRs no landing waits on and tells the owner about moved review PRs. */
+    /** Closes `kin/write/*` PRs no landing waits on; wakes the lander while its guard-rails PR waits. */
     readonly sweep: (
       orgId: KinOrgId,
     ) => Effect.Effect<void, MemorySyncConflict | MemoryConfigError | MemoryError>;
@@ -86,16 +101,24 @@ const make = Effect.gen(function* () {
   const main = config.defaultBranch ?? "main";
   const app = yield* gitHubApp;
   const identity = () => memoryIdentity(config, app);
-  // The local head each org's landing stopped on; a new head, or a restart, tries again. With no
-  // head, the failure came before one was read, and every signal tries again.
+  // What each org's landing stopped on. A refusal only the owner can clear is held against GitHub's
+  // guard-rail files (`owner`), so no new commit retries it; any other against the local head. A
+  // restart tries again either way. With no head, the failure came before one was read.
   const stuck = new Map<
     KinOrgId,
-    { readonly local: string | undefined; readonly reason: string }
+    { readonly local: string | undefined; readonly reason: string; readonly owner?: string }
   >();
-  // Review commits whose PR could not be opened, by ref, with the reason the owner last heard.
-  const unpublished = new Map<string, string>();
-  // Review PRs GitHub keeps refusing to close are reported once per process, not every sweep.
-  const reportedOpen = new Set<string>();
+  // Owner notices already given this run, by org and cause, so a repeat stays quiet.
+  const told = new Set<string>();
+  // Guard-rails commits tried this run, and ones whose PR was then closed without merging.
+  const tried = new Set<string>();
+  // Published this run: the owner is asked to approve each once, not again after every restart.
+  const published = new Set<string>();
+  const declined = new Set<string>();
+  // Orgs whose guard-rails PR waits on GitHub; the periodic sweep wakes their lander.
+  const upgrading = new Set<KinOrgId>();
+  // Orgs whose old review leftovers are folded in; until then each sweep tries again.
+  const foldedIn = new Set<KinOrgId>();
   // One server owns a state directory (`serverOwnership.ts`), so no second process lands this repo.
   const signals = new Map<KinOrgId, Queue.Queue<void>>();
 
@@ -104,7 +127,7 @@ const make = Effect.gen(function* () {
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(VcsProcess, vcs),
     );
-  const git = (
+  const gitRaw = (
     orgId: KinOrgId,
     cwd: string,
     args: ReadonlyArray<string>,
@@ -114,78 +137,359 @@ const make = Effect.gen(function* () {
     memoryGit(cwd, args, stdin, env).pipe(
       Effect.provideService(MemoryConfig, config),
       provide,
-      Effect.map((out) => out.trim()),
       Effect.mapError((cause) => new MemoryError({ orgId, operation: "land", cause })),
     );
+  const git = (
+    orgId: KinOrgId,
+    cwd: string,
+    args: ReadonlyArray<string>,
+    env: NodeJS.ProcessEnv = {},
+    stdin?: string,
+  ) => gitRaw(orgId, cwd, args, env, stdin).pipe(Effect.map((out) => out.trim()));
   const githubRepo = (orgId: KinOrgId) => {
     const repo = config.repositories.find((entry) => entry.orgId === orgId);
     return repo?.githubRepo !== undefined && isRepoSlug(repo.githubRepo)
       ? { repoUrl: repo.repoUrl, github: repo.githubRepo }
       : undefined;
   };
+  const tellOwner = Effect.fn("MemoryLander.tellOwner")(function* (
+    orgId: KinOrgId,
+    cause: string,
+    notice: { readonly branch: string; readonly reason: string; readonly owner?: string },
+  ) {
+    const key = `${orgId}\u0000${cause}`;
+    if (told.has(key)) return;
+    told.add(key);
+    yield* recovery.notify({ orgId, ...notice });
+  });
+  /** Blob ids of GitHub's guard-rail files: what must change before an owner-held refusal can lift. */
+  const guardRailsKey = (orgId: KinOrgId, writer: string, head: string) =>
+    git(orgId, writer, ["ls-tree", head, "--", CODEOWNERS_PATH, MEMORY_CHECK_PATH]);
+  const fileAt = (orgId: KinOrgId, writer: string, commit: string, path: string) =>
+    gitRaw(orgId, writer, ["cat-file", "blob", `${commit}:${path}`]).pipe(
+      Effect.option,
+      Effect.map(Option.getOrUndefined),
+    );
 
   const refuse = Effect.fn("MemoryLander.refuse")(function* (
     orgId: KinOrgId,
     local: string | undefined,
     reason: string,
-    options: { readonly url?: string; readonly told?: boolean } = {},
+    options: {
+      readonly url?: string;
+      readonly told?: boolean;
+      /** GitHub's guard-rail files the refusal is held against, when only the owner can clear it. */
+      readonly owner?: string;
+      readonly ownerNotice?: string;
+    } = {},
   ) {
     const held = stuck.get(orgId);
-    stuck.set(orgId, { local, reason });
+    stuck.set(orgId, {
+      local,
+      reason,
+      ...(options.owner === undefined ? {} : { owner: options.owner }),
+    });
     // One notice per problem: a retry that fails the same way stays quiet.
     if (options.told !== true && held?.reason !== reason)
       yield* recovery.notify({
         orgId,
         branch: main,
         reason: `Memory write not merged: ${reason}${options.url ? ` (${options.url})` : ""}. Memory is still saved on this server; the GitHub copy is behind until Kin lands it, which it tries again with the next memory change or restart`,
+        ...(options.ownerNotice === undefined ? {} : { owner: options.ownerNotice }),
       });
     return { _tag: "stuck", reason } as const;
   });
 
-  /** Rebuilds each waiting review commit on the remote head and opens its PR for the owner. */
-  const openReviews = Effect.fn("MemoryLander.openReviews")(function* (
+  /** One commit on GitHub's head that changes only the guard-rail files. */
+  const guardRailsCommit = Effect.fn("MemoryLander.guardRailsCommit")(function* (
     orgId: KinOrgId,
     writer: string,
     remote: string,
-    target: { readonly repoUrl: string; readonly github: RepoSlug },
+    files: GuardRails,
   ) {
-    if (Option.isNone(pullRequests)) return;
-    const listed = yield* git(orgId, writer, [
-      "for-each-ref",
-      "--format=%(refname) %(objectname)",
-      REVIEW_REF_PREFIX,
-    ]);
-    for (const line of listed.split("\n").filter(Boolean)) {
-      const [ref, sha] = line.split(" ");
-      if (!ref || !sha) continue;
-      const name = ref.slice(REVIEW_REF_PREFIX.length);
-      const branch = `${WRITE_BRANCH_PREFIX}${name}${REVIEW_BRANCH_SUFFIX}`;
-      const opened = yield* Effect.gen(function* () {
-        const own = yield* provide(readCommit(orgId, writer, sha));
-        if (own.parent === undefined)
-          return yield* new MemorySyncConflict({
-            orgId,
-            operation: "push",
-            reason: "the review commit has no parent",
-          });
-        const before = new Map(
-          (yield* provide(readTree(orgId, writer, own.parent))).map((entry) => [
-            entry.relative,
-            entry,
-          ]),
-        );
-        const changed = (yield* provide(readTree(orgId, writer, sha))).filter((entry) => {
-          const prior = before.get(entry.relative);
-          return prior?.sha !== entry.sha || prior.mode !== entry.mode;
-        });
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const temporary = yield* fs
+          .makeTempDirectoryScoped()
+          .pipe(Effect.mapError((cause) => new MemoryError({ orgId, operation: "land", cause })));
+        const env = { ...(yield* identity()), GIT_INDEX_FILE: `${temporary}/index` };
         const expected = new Map(
           (yield* provide(readTree(orgId, writer, remote))).map((entry) => [
             entry.relative,
             { mode: entry.mode, sha: entry.sha },
           ]),
         );
-        for (const entry of changed)
-          expected.set(entry.relative, { mode: entry.mode, sha: entry.sha });
+        yield* git(orgId, writer, ["read-tree", remote], env);
+        for (const [path, text] of [
+          [CODEOWNERS_PATH, files.codeowners],
+          [MEMORY_CHECK_PATH, files.workflow],
+        ] as const) {
+          const blob = yield* git(
+            orgId,
+            writer,
+            ["hash-object", "-w", "--no-filters", "--stdin"],
+            env,
+            text,
+          );
+          yield* git(
+            orgId,
+            writer,
+            ["update-index", "--add", "--cacheinfo", `100644,${blob},${path}`],
+            env,
+          );
+          expected.set(path, { mode: "100644", sha: blob });
+        }
+        const tree = yield* git(orgId, writer, ["write-tree"], env);
+        yield* provide(verifyTree(orgId, writer, tree, expected));
+        return yield* git(
+          orgId,
+          writer,
+          ["commit-tree", tree, "-p", remote],
+          env,
+          "kin: bring the memory repo's guard rails up to date\n",
+        );
+      }),
+    );
+  });
+
+  /**
+   * Proposes this server's guard rails when GitHub's differ, as one PR only the owner can approve
+   * (Kin never loosens its own rules), and merges it once GitHub allows. `waiting` while it can't.
+   */
+  const upgradeGuardRails = Effect.fn("MemoryLander.upgradeGuardRails")(function* (
+    orgId: KinOrgId,
+    writer: string,
+    remote: string,
+    target: NonNullable<ReturnType<typeof githubRepo>>,
+  ) {
+    if (Option.isNone(pullRequests)) return "current" as const;
+    const update = guardRailsUpdate(
+      {
+        codeowners: yield* fileAt(orgId, writer, remote, CODEOWNERS_PATH),
+        workflow: yield* fileAt(orgId, writer, remote, MEMORY_CHECK_PATH),
+      },
+      config.buildCommit ?? "",
+    );
+    const recorded = yield* git(orgId, writer, [
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      GUARD_RAILS_REF,
+    ]).pipe(Effect.option, Effect.map(Option.getOrUndefined));
+    if (update._tag !== "update" || config.buildCommit === undefined) {
+      const why =
+        update._tag === "unowned"
+          ? `the memory repo's ${CODEOWNERS_PATH} names no owner on its * line`
+          : update._tag === "update"
+            ? "KIN_BUILD_COMMIT is unset"
+            : undefined;
+      if (why !== undefined && !told.has(`${orgId}\u0000guard-rails:${why}`)) {
+        told.add(`${orgId}\u0000guard-rails:${why}`);
+        yield* Effect.logWarning(`Kin proposes no memory guard-rails update: ${why}`, { orgId });
+      }
+      if (recorded !== undefined && update._tag === "current")
+        yield* git(orgId, writer, ["update-ref", "-d", GUARD_RAILS_REF, recorded]);
+      upgrading.delete(orgId);
+      return "current" as const;
+    }
+    // The recorded commit stays the PR's head while it proposes the same files, whatever it pins.
+    let commit = recorded;
+    if (commit !== undefined) {
+      const proposed = {
+        codeowners: (yield* fileAt(orgId, writer, commit, CODEOWNERS_PATH)) ?? "",
+        workflow: (yield* fileAt(orgId, writer, commit, MEMORY_CHECK_PATH)) ?? "",
+      };
+      if (!sameGuardRails(proposed, update.files)) commit = undefined;
+    }
+    if (commit !== undefined && declined.has(commit)) return "waiting" as const;
+    upgrading.add(orgId);
+    const branchOf = (sha: string) => `${GUARD_RAILS_BRANCH}${sha.slice(0, 12)}`;
+    const publish = Effect.gen(function* () {
+      const built = yield* guardRailsCommit(orgId, writer, remote, update.files);
+      const pushed = yield* git(orgId, writer, [
+        "push",
+        "--",
+        target.repoUrl,
+        `${built}:refs/heads/${branchOf(built)}`,
+      ]).pipe(Effect.result);
+      if (pushed._tag === "Failure") return undefined;
+      yield* git(orgId, writer, ["update-ref", GUARD_RAILS_REF, built]);
+      published.add(built);
+      return built;
+    });
+    const attempt = (sha: string) =>
+      pullRequests.value
+        .land({
+          orgId,
+          repo: target.github,
+          branch: branchOf(sha),
+          base: main,
+          sha,
+          title: "kin: bring the memory repo's guard rails up to date",
+          message: "kin: bring the memory repo's guard rails up to date\n",
+          kind: "guard-rails",
+        })
+        .pipe(Effect.result);
+    if (commit === undefined) commit = yield* publish;
+    if (commit === undefined) {
+      yield* tellOwner(orgId, "guard-rails:push", {
+        branch: main,
+        reason:
+          "GitHub refused Kin's push of the guard-rails branch; Kin tries again with the next landing run",
+      });
+      return "waiting" as const;
+    }
+    let landed = yield* attempt(commit);
+    // A PR closed before this run, such as by a restart's sweep, is offered again once, fresh.
+    if (landed._tag === "Success" && landed.success._tag === "closed" && !tried.has(commit)) {
+      const fresh = yield* publish;
+      if (fresh !== undefined) {
+        commit = fresh;
+        landed = yield* attempt(commit);
+      }
+    }
+    tried.add(commit);
+    if (landed._tag === "Failure") {
+      const failure: MemoryPullRequestRefused = landed.failure;
+      // With a URL, Kin closed the PR (its head or branch was not Kin's alone): the next run rebuilds.
+      if (failure.url !== undefined)
+        yield* git(orgId, writer, ["update-ref", "-d", GUARD_RAILS_REF, commit]);
+      yield* tellOwner(orgId, `guard-rails:${commit}:${failure.reason}`, {
+        branch: branchOf(commit),
+        reason: `Kin's guard-rails PR did not merge: ${failure.reason}${failure.url ? ` (${failure.url})` : ""}`,
+      });
+      return "waiting" as const;
+    }
+    const outcome = landed.success;
+    if (outcome._tag === "merged") {
+      yield* git(orgId, writer, ["update-ref", "-d", GUARD_RAILS_REF, commit]);
+      yield* git(orgId, writer, [
+        "push",
+        "--",
+        target.repoUrl,
+        `:refs/heads/${branchOf(commit)}`,
+      ]).pipe(
+        Effect.catch(() =>
+          Effect.logWarning("Could not delete a merged guard-rails branch", { orgId }),
+        ),
+      );
+      upgrading.delete(orgId);
+      yield* Effect.logInfo("Kin memory guard rails updated", {
+        orgId,
+        pullRequest: outcome.url.slice(outcome.url.lastIndexOf("/") + 1),
+      });
+      return "merged" as const;
+    }
+    if (outcome._tag === "closed") {
+      declined.add(commit);
+      upgrading.delete(orgId);
+      yield* tellOwner(orgId, `guard-rails:${commit}:closed`, {
+        branch: branchOf(commit),
+        reason: `Kin's guard-rails PR was closed without merging (${outcome.url})`,
+        owner: `The change to the memory repo's rules on GitHub was closed without merging, so some memory stays on this server only. Kin offers it again after its next restart: ${outcome.url}`,
+      });
+      return "waiting" as const;
+    }
+    const askedBefore = outcome.waitsOnOwner && !published.has(commit);
+    yield* tellOwner(
+      orgId,
+      `guard-rails:${commit}:${outcome.waitsOnOwner ? "review" : outcome.reason}`,
+      {
+        branch: branchOf(commit),
+        reason: `Kin's guard-rails PR waits: ${outcome.reason} (${outcome.url})`,
+        // Asked when Kin opened it; a restart finding it still unapproved asks nothing new.
+        ...(askedBefore
+          ? {}
+          : {
+              owner: outcome.waitsOnOwner
+                ? `Approve one change to the memory repo's rules on GitHub: ${outcome.url}. It lets Kin save every kind of memory there on its own; until then some of it stays on this server only. Kin merges it itself once you approve.`
+                : outcome.reason.startsWith("GitHub refused the merge")
+                  ? `GitHub won't let Kin merge its change to the memory repo's rules (${outcome.reason}). Merge it there yourself: ${outcome.url}`
+                  : `Kin's change to the memory repo's rules on GitHub can't merge yet: ${outcome.reason}. ${outcome.url}`,
+            }),
+      },
+    );
+    return "waiting" as const;
+  });
+
+  /**
+   * Once, at start: changes an older server kept for the owner's review (under `refs/kin/review/`,
+   * or in an open `…-review` PR whose commit this server made) go onto the local default branch, so
+   * the next batch lands them; each such PR is closed with a comment.
+   */
+  const foldInReviews = Effect.fn("MemoryLander.foldInReviews")(function* (orgId: KinOrgId) {
+    const target = githubRepo(orgId);
+    const state = yield* memory.landingState(orgId);
+    if (state === undefined) return;
+    const { writer } = state;
+    const refs = (yield* git(orgId, writer, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      LEGACY_REVIEW_REFS,
+    ]))
+      .split("\n")
+      .flatMap((line) => {
+        const [ref, sha] = line.split(" ");
+        return ref && sha ? [{ ref, sha }] : [];
+      });
+    const listed =
+      Option.isSome(pullRequests) && target !== undefined
+        ? yield* pullRequests.value.openPulls({ orgId, repo: target.github }).pipe(Effect.option)
+        : Option.some({ pulls: [], complete: true });
+    const pulls = Option.match(listed, { onNone: () => [], onSome: (open) => open.pulls }).filter(
+      (pull) => LEGACY_REVIEW_BRANCH.test(pull.branch),
+    );
+    // Done once every open PR was read; until then the next sweep looks again.
+    const done = Effect.sync(() => {
+      if (Option.isSome(listed) && listed.value.complete) foldedIn.add(orgId);
+    });
+    if (refs.length === 0 && pulls.length === 0) return yield* done;
+    const local = yield* memory.anchor(orgId, main);
+    // Only a review commit this server made is kept: the deploy key can push anything to a PR
+    // branch, including a commit already on the default branch.
+    const ours = (sha: string) =>
+      git(orgId, writer, ["cat-file", "-e", `${sha}^{commit}`]).pipe(
+        Effect.andThen(
+          git(orgId, writer, ["merge-base", "--is-ancestor", sha, local]).pipe(
+            Effect.as(false),
+            Effect.orElseSucceed(() => true),
+          ),
+        ),
+        Effect.orElseSucceed(() => false),
+      );
+    const sources = refs.map(({ sha }) => sha);
+    for (const pull of pulls) if (yield* ours(pull.head)) sources.push(pull.head);
+    yield* memory.withWriterLock(
+      orgId,
+      Effect.gen(function* () {
+        const local = yield* memory.anchor(orgId, main);
+        const entries = new Map(
+          (yield* provide(readTree(orgId, writer, local))).map((entry) => [entry.relative, entry]),
+        );
+        const kept: Array<{ mode: string; sha: string; relative: string }> = [];
+        for (const sha of sources) {
+          const parent = yield* git(orgId, writer, ["rev-parse", `${sha}^`]);
+          const before = new Map(
+            (yield* provide(readTree(orgId, writer, parent))).map((entry) => [
+              entry.relative,
+              entry,
+            ]),
+          );
+          for (const entry of yield* provide(readTree(orgId, writer, sha))) {
+            const prior = before.get(entry.relative);
+            if (prior?.sha === entry.sha && prior.mode === entry.mode) continue;
+            const path = entry.relative;
+            if (!isItemPath(path) || !isCheckoutPath(path) || kinShapeFailure(path) !== undefined)
+              continue;
+            const current = entries.get(path);
+            // A later local write to the same item wins over the change that waited.
+            if (current !== undefined && current.sha !== prior?.sha) continue;
+            const next = { mode: "100644", sha: entry.sha, relative: path };
+            entries.set(path, next);
+            kept.push(next);
+          }
+        }
+        if (kept.length === 0) return;
         const commit = yield* Effect.scoped(
           Effect.gen(function* () {
             const temporary = yield* fs
@@ -194,72 +498,77 @@ const make = Effect.gen(function* () {
                 Effect.mapError((cause) => new MemoryError({ orgId, operation: "land", cause })),
               );
             const env = { ...(yield* identity()), GIT_INDEX_FILE: `${temporary}/index` };
-            yield* git(orgId, writer, ["read-tree", remote], env);
+            yield* git(orgId, writer, ["read-tree", local], env);
             yield* git(
               orgId,
               writer,
               ["update-index", "--index-info"],
               env,
-              changed.map((entry) => `${entry.mode} ${entry.sha}\t${entry.relative}`).join("\n") +
+              kept.map((entry) => `${entry.mode} ${entry.sha}\t${entry.relative}`).join("\n") +
                 "\n",
             );
             const tree = yield* git(orgId, writer, ["write-tree"], env);
-            yield* provide(verifyTree(orgId, writer, tree, expected));
-            return yield* git(orgId, writer, ["commit-tree", tree, "-p", remote], env, own.message);
+            yield* provide(
+              verifyTree(
+                orgId,
+                writer,
+                tree,
+                new Map(
+                  [...entries].map(([path, entry]) => [path, { mode: entry.mode, sha: entry.sha }]),
+                ),
+              ),
+            );
+            return yield* git(
+              orgId,
+              writer,
+              ["commit-tree", tree, "-p", local],
+              env,
+              "kin: keep memory changes that waited for review\n",
+            );
           }),
         );
-        yield* git(orgId, writer, [
-          "push",
-          "--",
-          target.repoUrl,
-          `+${commit}:refs/heads/${branch}`,
-        ]).pipe(
-          Effect.mapError(
-            () =>
-              new MemorySyncConflict({
-                orgId,
-                operation: "push",
-                reason: "Memory PR branch push rejected",
-              }),
-          ),
-        );
-        const title = own.message.split("\n")[0] ?? own.message;
-        const landed = yield* pullRequests.value.land({
+        yield* git(orgId, writer, ["update-ref", `refs/heads/${main}`, commit, local]);
+        yield* memory.record(orgId, main, local, commit);
+      }),
+    );
+    yield* memory.rebuildCache(orgId).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("Could not refresh memory cache after folding in reviews", {
+          orgId,
+          errorTag: error._tag,
+        }),
+      ),
+    );
+    for (const { ref, sha } of refs) yield* git(orgId, writer, ["update-ref", "-d", ref, sha]);
+    if (Option.isNone(pullRequests) || target === undefined) return yield* done;
+    for (const pull of pulls) {
+      const kept = sources.includes(pull.head);
+      yield* pullRequests.value
+        .close({
           orgId,
           repo: target.github,
-          branch,
-          base: main,
-          sha: commit,
-          title,
-          message: own.message,
-          ownerReview: true,
+          number: pull.number,
+          reason: kept
+            ? "Kin saves memory without review now, so it kept these changes on its server; its next memory PR brings them to main"
+            : "Kin saves memory without review now, and its server doesn't have this PR's commit, so nothing from it was kept",
+        })
+        .pipe(
+          Effect.catch(() =>
+            Effect.logWarning("Could not close an old memory review PR", {
+              orgId,
+              number: pull.number,
+            }),
+          ),
+        );
+      if (!kept)
+        yield* recovery.notify({
+          orgId,
+          branch: pull.branch,
+          reason: `Kin closed ${pull.url}, an old memory review PR whose commit this server doesn't have`,
+          owner: `Kin closed an old memory review, ${pull.url}, without keeping its changes: this server no longer has them.`,
         });
-        return { url: landed.url, commit };
-      }).pipe(Effect.result);
-      if (opened._tag === "Failure") {
-        // The commit stays under its ref for the next landing run; the owner hears once per reason.
-        const reason =
-          "reason" in opened.failure && typeof opened.failure.reason === "string"
-            ? opened.failure.reason
-            : opened.failure._tag;
-        if (unpublished.get(ref) !== reason)
-          yield* recovery.notify({
-            orgId,
-            branch,
-            reason: `Memory changes on paths you review were not opened as a PR: ${reason}. Kin keeps them on this server and tries again with the next memory change or restart`,
-          });
-        unpublished.set(ref, reason);
-        continue;
-      }
-      unpublished.delete(ref);
-      yield* recovery.notify({
-        orgId,
-        branch,
-        reason: `Memory changes on paths you review wait in ${opened.success.url}. Kin pushed \`${opened.success.commit}\`; if the PR's head differs, close it`,
-        owner: `Some memory changes need your review before Kin keeps them: ${opened.success.url}`,
-      });
-      yield* git(orgId, writer, ["update-ref", "-d", ref, sha]);
     }
+    yield* done;
   });
 
   const landOnce = Effect.fn("MemoryLander.landOnce")(function* (
@@ -269,12 +578,20 @@ const make = Effect.gen(function* () {
   ) {
     if (Option.isNone(pullRequests)) return { _tag: "idle" } as const;
     const { writer, local, remote } = state;
+    if (remote !== undefined && remote.descends) {
+      const upgrade = yield* upgradeGuardRails(orgId, writer, remote.head, target);
+      // GitHub's head moved: the next batch starts from a fresh sync.
+      if (upgrade === "merged") return { _tag: "upgraded" } as const;
+    }
     if (remote !== undefined && !remote.pending) {
-      yield* openReviews(orgId, writer, remote.head, target);
       stuck.delete(orgId);
       return { _tag: "idle" } as const;
     }
-    if (stuck.get(orgId)?.local === local) return { _tag: "waiting" } as const;
+    const held = stuck.get(orgId);
+    if (held?.owner !== undefined && remote !== undefined) {
+      if ((yield* guardRailsKey(orgId, writer, remote.head)) === held.owner)
+        return { _tag: "waiting" } as const;
+    } else if (held?.local === local) return { _tag: "waiting" } as const;
     if (remote === undefined) return yield* refuse(orgId, local, "Kin could not reach GitHub");
     // Sync told the owner when it could not combine the two.
     if (!remote.descends)
@@ -309,18 +626,28 @@ const make = Effect.gen(function* () {
         sha: batch,
         title: message.split("\n")[0] ?? message,
         message,
-        ownerReview: false,
+        kind: "batch",
       })
       .pipe(Effect.result);
-    if (landed._tag === "Failure")
-      return yield* refuse(
-        orgId,
-        local,
-        landed.failure.reason,
-        landed.failure.url === undefined ? {} : { url: landed.failure.url },
-      );
+    if (landed._tag === "Failure") {
+      const { reason, url, waitsOnOwner } = landed.failure;
+      if (waitsOnOwner !== true)
+        return yield* refuse(orgId, local, reason, url === undefined ? {} : { url });
+      // Only the owner can clear this, so no later commit tries it again: a change to GitHub's
+      // guard-rail files (such as the guard-rails PR merging) or a restart does.
+      return yield* refuse(orgId, local, reason, {
+        ...(url === undefined ? {} : { url }),
+        owner: yield* guardRailsKey(orgId, writer, remote.head),
+        // The guard-rails PR's own notice already asks the owner for what clears this.
+        ...(upgrading.has(orgId)
+          ? {}
+          : {
+              ownerNotice: `Memory is saved here, but GitHub's copy is behind: GitHub wants a review before Kin's memory PRs merge${url ? ` (${url})` : ""}, and Kin's own memory needs none. Check the memory repo's rules and ${CODEOWNERS_PATH} on GitHub; Kin tries again once those files change or the server restarts.`,
+            }),
+      });
+    }
     if (landed.success._tag !== "merged")
-      return yield* refuse(orgId, local, "GitHub opened the memory PR for review");
+      return yield* refuse(orgId, local, "GitHub kept the memory PR open");
     const { url, commit } = landed.success;
     // With GitHub's head unmoved, the squash must hold exactly the tree Kin pushed.
     yield* git(orgId, writer, ["fetch", "--", target.repoUrl, commit]);
@@ -391,7 +718,7 @@ const make = Effect.gen(function* () {
       if (atStart && batch === 0 && outcome._tag === "idle")
         yield* Effect.logInfo("Kin memory lander started with nothing to land", { orgId });
       yield* hooks.settled(orgId, outcome);
-      if (outcome._tag !== "merged") return;
+      if (outcome._tag !== "merged" && outcome._tag !== "upgraded") return;
     }
     yield* Effect.logWarning("Kin memory landing paused after its batch limit", { orgId });
   });
@@ -400,28 +727,51 @@ const make = Effect.gen(function* () {
     if (Option.isNone(pullRequests)) return;
     const target = githubRepo(orgId);
     if (target === undefined) return;
-    const moved = yield* pullRequests.value
-      .sweep({ orgId, repo: target.github, base: main })
-      .pipe(
-        Effect.mapError(
-          (error) => new MemorySyncConflict({ orgId, operation: "sweep", reason: error.reason }),
+    const refused = (error: MemoryPullRequestRefused) =>
+      new MemorySyncConflict({ orgId, operation: "sweep", reason: error.reason });
+    if (!foldedIn.has(orgId))
+      yield* foldInReviews(orgId).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin could not fold in memory held for review", {
+            orgId,
+            cause: Cause.pretty(cause),
+          }),
         ),
       );
-    for (const pull of moved) {
-      if (!pull.closed && reportedOpen.has(pull.url)) continue;
-      if (!pull.closed) reportedOpen.add(pull.url);
-      yield* recovery.notify({
-        orgId,
-        branch: pull.branch,
-        reason: pull.closed
-          ? `Kin closed ${pull.url}, the memory PR for paths you review: ${pull.reason}`
-          : `Kin could not close ${pull.url}, the memory PR for paths you review, and it is still open. Close it without merging: ${pull.reason}`,
-        ...(pull.closed
-          ? {}
-          : {
-              owner: `Kin couldn't close an old memory review, ${pull.url}. Close it there without merging.`,
+    const { writer } = yield* memory
+      .ensureCheckouts(orgId)
+      .pipe(Effect.mapError((cause) => new MemoryError({ orgId, operation: "sweep", cause })));
+    const proposal = yield* git(orgId, writer, [
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      GUARD_RAILS_REF,
+    ]).pipe(Effect.option);
+    const { pulls: open } = yield* pullRequests.value
+      .openPulls({ orgId, repo: target.github })
+      .pipe(Effect.mapError(refused));
+    for (const pull of open) {
+      const kept = Option.exists(
+        proposal,
+        (sha) => pull.head === sha && pull.branch === `${GUARD_RAILS_BRANCH}${sha.slice(0, 12)}`,
+      );
+      // Old review PRs are the fold-in's to close, once it has kept what they hold.
+      if (kept || LEGACY_REVIEW_BRANCH.test(pull.branch)) continue;
+      yield* pullRequests.value
+        .close({
+          orgId,
+          repo: target.github,
+          number: pull.number,
+          reason: "no Kin memory write is waiting on it",
+        })
+        .pipe(
+          Effect.catch(() =>
+            Effect.logWarning("Could not close an orphaned memory PR", {
+              repo: target.github,
+              number: pull.number,
             }),
-      });
+          ),
+        );
     }
   });
 
@@ -429,8 +779,8 @@ const make = Effect.gen(function* () {
     for (const { orgId } of config.repositories) {
       const queue = yield* Queue.dropping<void>(1);
       signals.set(orgId, queue);
-      // At start, PRs a crash left open are closed before anything lands, so none is duplicated;
-      // then whatever the last run left unlanded goes out.
+      // At start, changes an older server held for review are folded in and PRs a crash left open
+      // are closed before anything lands, so none is duplicated; then whatever is unlanded goes out.
       const resume = sweep(orgId).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("Kin memory PR sweep failed at start", {
@@ -458,14 +808,18 @@ const make = Effect.gen(function* () {
       );
     }
 
+  const signal = Effect.fn("MemoryLander.signal")(function* (orgId: KinOrgId) {
+    const queue = signals.get(orgId);
+    if (queue !== undefined) yield* Queue.offer(queue, undefined);
+  });
+
   return MemoryLander.of({
-    signal: Effect.fn("MemoryLander.signal")(function* (orgId) {
-      const queue = signals.get(orgId);
-      if (queue !== undefined) yield* Queue.offer(queue, undefined);
+    signal,
+    // Every 5 minutes: the owner's approval on GitHub changes nothing Kin hears of otherwise.
+    sweep: Effect.fn("MemoryLander.sweepLocked")(function* (orgId) {
+      yield* memory.withLandingLock(orgId, sweep(orgId));
+      if (upgrading.has(orgId)) yield* signal(orgId);
     }),
-    sweep: Effect.fn("MemoryLander.sweepLocked")((orgId) =>
-      memory.withLandingLock(orgId, sweep(orgId)),
-    ),
   });
 });
 
