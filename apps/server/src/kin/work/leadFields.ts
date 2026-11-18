@@ -30,7 +30,7 @@ export const FieldInputs = Schema.Record(
   ),
 ).annotate({
   description:
-    'The list\'s own fields by key, as list_define named them: text, a choice, a day (2026-11-20), "me"/"owner"/an agentId, a client or project, an amount (4,200 or 4.2 lakh), or file names from this turn\'s messages. null clears one.',
+    'The list\'s own fields by key, as list_define named them: text, a choice, a day (2026-11-20), "you"/"me" (whoever asked)/"owner"/an agentId, a client or project, an amount (4,200 or 4.2 lakh), or file names from this turn\'s messages. null clears one.',
 });
 export type FieldInputs = typeof FieldInputs.Type;
 
