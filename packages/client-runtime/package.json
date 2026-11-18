@@ -843,6 +843,10 @@
       "types": "./src/kin/kinCompanyProfile.ts",
       "default": "./src/kin/kinCompanyProfile.ts"
     },
+    "./kin/kinTaskRecord": {
+      "types": "./src/kin/kinTaskRecord.ts",
+      "default": "./src/kin/kinTaskRecord.ts"
+    },
     "./kin/kinWork": {
       "types": "./src/kin/kinWork.ts",
       "default": "./src/kin/kinWork.ts"
