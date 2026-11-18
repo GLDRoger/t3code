@@ -220,7 +220,7 @@ export const budgetsAnswer = (view: BudgetsView) => ({
     };
   }),
   ...(view.budgets.length === 0 ? { none: "No budgets are set." } : {}),
-  basis: `Spent is paid expenses dated in ${view.month} in the owner's time zone. over is past the limit; near is at the limit or past ${NEAR_PERCENT}% of it.`,
+  basis: `Spent is paid expenses dated in ${view.month} in the owner's time zone. over is past the limit; near is at the limit or past ${NEAR_PERCENT}% of it. notCounted is spending on the same target in other currencies, which the budget's spent does not include.`,
 });
 
 /** This month's budgets over or near their limit, for the morning brief; nothing when none are. */
