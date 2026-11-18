@@ -50,6 +50,8 @@ const MEMBER = [
   "kin.messages.markRead",
   "kin.messages.react",
   "kin.messages.send",
+  "kin.open.read",
+  "kin.open.subscribe",
   "kin.org.get",
   "kin.orgs.list",
   "kin.people.list",
