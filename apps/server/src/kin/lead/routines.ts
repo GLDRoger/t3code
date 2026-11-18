@@ -28,6 +28,8 @@ export interface MorningFacts {
   readonly dueThisWeek: ReadonlyArray<RoutineRow>;
   readonly overdue: ReadonlyArray<RoutineRow>;
   readonly waiting: ReadonlyArray<RoutineRow>;
+  /** Everything open for the owner, uncapped. */
+  readonly needsYou: number;
   readonly reviews: ReadonlyArray<RoutineRow>;
   readonly ciRed: ReadonlyArray<RoutineRow>;
   /** `off` without the Kin App; otherwise what the read missed, empty when complete. */
@@ -215,13 +217,15 @@ const NOTHING = {
 
 /**
  * The routine message: at most `ROUTINE_MAX_LINES` lines of body plus one card. `empty` when no
- * fact needs the owner (what GitHub couldn't be read is not one): such a routine is not sent.
+ * fact needs the owner (what GitHub couldn't be read is not one) and nothing is open for them:
+ * such a routine is not sent.
  */
 export function renderRoutine(header: RoutineHeader, facts: MorningFacts | EveningFacts) {
   const lines = facts.routine === "morning_brief" ? morningLines(facts) : eveningLines(facts);
   const empty =
-    (facts.routine === "morning_brief" ? morningLines({ ...facts, github: [] }) : lines).length ===
-    0;
+    facts.routine === "morning_brief"
+      ? morningLines({ ...facts, github: [] }).length === 0 && facts.needsYou === 0
+      : lines.length === 0;
   const body = fitLines([
     ...headerLines(facts.routine, header),
     ...(lines.length === 0 ? [NOTHING[facts.routine]] : lines),

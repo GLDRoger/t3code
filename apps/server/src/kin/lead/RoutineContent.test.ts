@@ -73,6 +73,8 @@ const EVIL_TITLE =
 interface FixtureOptions {
   readonly at?: number;
   readonly truncatedRepos?: number;
+  /** GitHub read in full and found nothing to review and no red CI. */
+  readonly quietGithub?: boolean;
   /** Runs inside the GitHub read, after the first lead lookup and before the write transaction. */
   readonly onGithubRead?: Effect.Effect<void, never, SqlClient.SqlClient>;
 }
@@ -119,15 +121,17 @@ function layerFor(files: ReadonlyArray<readonly [string, string]>, options: Fixt
             (options.onGithubRead ?? Effect.void).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
               Effect.as({
-                reviews: [
-                  {
-                    repo: "acme/app",
-                    number: 7,
-                    title: EVIL_TITLE,
-                    url: "https://github.com/acme/app/pull/7",
-                  },
-                ],
-                ciRed: [{ repo: "acme/app", branch: "main" }],
+                reviews: options.quietGithub
+                  ? []
+                  : [
+                      {
+                        repo: "acme/app",
+                        number: 7,
+                        title: EVIL_TITLE,
+                        url: "https://github.com/acme/app/pull/7",
+                      },
+                    ],
+                ciRed: options.quietGithub ? [] : [{ repo: "acme/app", branch: "main" }],
                 failedRepos: 0,
                 truncatedRepos: options.truncatedRepos ?? 0,
                 repos: 1,
@@ -503,6 +507,87 @@ it.effect("a summary with nothing to report posts nothing and wakes nobody", () 
       assert.strictEqual(result.eventState, "done");
       assert.isTrue(result.wakeups.every((wakeup) => wakeup.threadId === null));
     }),
+  ),
+);
+
+/** The owner's late task, and two cards waiting on them: one in their chat, one in a chat they left. */
+const openForOwner = (parts: { readonly lateTask?: boolean; readonly waiting?: boolean }): Setup =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    if (parts.lateTask === true) {
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at)
+        VALUES (${orgId}, 'work', 'work', 'W', 1, 0)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+          owner_kind, owner_id, due_at, created_by_kind, created_by_id, origin_key, created_at,
+          updated_at)
+        VALUES (${orgId}, 'r-W-1', 'work', 'W-1', 'Send the kiln quote', 'doing', 'person', 'owner',
+          ${now - 86_400_000}, 'person', 'owner', 'origin-W-1', ${now - 172_800_000},
+          ${now - 172_800_000})`;
+    }
+    if (parts.waiting === true) {
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+        VALUES ('left-chat', ${orgId}, 'team_group', 0, ${timestamp})`;
+      for (const [chat, leftAt] of [
+        ["owner-chat", null],
+        ["left-chat", timestamp],
+      ] as const) {
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, role, joined_at, left_at)
+          VALUES (${`member-${chat}`}, ${orgId}, ${chat}, 'person', 'owner', 'member', ${timestamp},
+            ${leftAt})`;
+        yield* sql`INSERT INTO kin_waiting (waiting_id, org_id, person_id, chat_id, reason,
+            created_at)
+          VALUES (${`wait-${chat}`}, ${orgId}, 'owner', ${chat}, 'decision', ${timestamp})`;
+      }
+    }
+  }).pipe(Effect.orDie);
+
+it.effect("a brief counts what is open for the owner, not what memory or their chats hold", () =>
+  withFixture(
+    [],
+    Effect.gen(function* () {
+      // A late task, nothing in memory: the brief is sent.
+      const late = yield* runRoutine(
+        routine("brief-late", "morning_brief"),
+        openForOwner({ lateTask: true }),
+      );
+      assert.lengthOf(late.messages, 1);
+    }),
+    { quietGithub: true },
+  ),
+);
+
+it.effect("a card waiting in a chat the owner left is not counted", () =>
+  withFixture(
+    [],
+    Effect.gen(function* () {
+      const result = yield* runRoutine(
+        routine("brief-waiting", "morning_brief"),
+        Effect.all([openForOwner({ waiting: true }), ownerLogin], { discard: true }),
+      );
+      assert.deepStrictEqual(result.messages[0]?.body.split("\n"), [
+        "Morning brief, Mon 9 Nov",
+        "Waiting on you: 1, oldest decision (decision, since Mon 9 Nov)",
+      ]);
+      assert.deepStrictEqual(
+        decodeCard(result.widgets[0]?.state).rows.map((row) => row.section),
+        ["waiting"],
+      );
+    }),
+    { quietGithub: true },
+  ),
+);
+
+it.effect("a brief with nothing open and nothing due is not sent", () =>
+  withFixture(
+    [],
+    Effect.gen(function* () {
+      const result = yield* runRoutine(routine("brief-empty", "morning_brief"));
+      assert.deepStrictEqual(result.messages, []);
+      assert.strictEqual(result.eventState, "done");
+    }),
+    { quietGithub: true },
   ),
 );
 

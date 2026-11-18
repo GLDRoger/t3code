@@ -1,4 +1,5 @@
 import {
+  KIN_PULSE_LATER_SENSES,
   KinChatId,
   KinEvent,
   KinMessageId,
@@ -7,6 +8,7 @@ import {
   KinWidgetId,
   type KinAgentId,
   type KinLeadRoutine,
+  type KinPersonId,
   type KinWidget,
   type MemoryItemHead,
   formatKinWhen,
@@ -24,11 +26,13 @@ import { isSqlError } from "effect/sql/SqlError";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as Chat from "../chat/KinChatService.ts";
 import { memoryDateMillis } from "../memory/frontMatter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
+import * as KinOpen from "../open/KinOpen.ts";
 import { deferralWidgetId } from "../triggers/deferrals.ts";
 import {
   renderRoutine,
@@ -151,12 +155,13 @@ const make = Effect.gen(function* () {
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
   const reader = yield* KinRoutineGithubReader;
+  const identity = yield* KinIdentity;
 
   const lead = Effect.fn("KinRoutineContent.lead")(function* (
     orgId: KinOrgId,
     agentId: KinAgentId,
   ) {
-    const [row] = yield* sql<{ chatId: string; personId: string; login: string | null }>`
+    const [row] = yield* sql<{ chatId: string; personId: KinPersonId; login: string | null }>`
       SELECT l.owner_chat_id AS "chatId", a.owner_person_id AS "personId", p.github_login AS login
       FROM kin_leads l
       JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
@@ -171,7 +176,7 @@ const make = Effect.gen(function* () {
   const gather = Effect.fn("KinRoutineContent.gather")(function* (
     orgId: KinOrgId,
     event: { readonly routine: "morning_brief" | "evening_summary"; readonly agentId: KinAgentId },
-    owner: { readonly personId: string; readonly login: string | null },
+    owner: { readonly personId: KinPersonId; readonly login: string | null },
   ) {
     const now = yield* Clock.currentTimeMillis;
     const zone = yield* cache.ownerTimeZone(orgId);
@@ -210,16 +215,40 @@ const make = Effect.gen(function* () {
       ...(item.links[0] === undefined ? {} : { link: item.links[0] }),
     });
 
-    const waitingRows = yield* sql<{ reason: string; createdAt: string; body: string | null }>`
-      SELECT w.reason, w.created_at AS "createdAt", m.body
-      FROM kin_waiting w
-      LEFT JOIN kin_messages m ON m.org_id = w.org_id AND m.message_id = w.message_id
-      WHERE w.org_id = ${orgId} AND w.person_id = ${owner.personId} AND w.resolved_at IS NULL
-      ORDER BY w.created_at, w.waiting_id`;
-    const waiting = waitingRows.map((waitingRow): RoutineRow => ({
-      title: waitingRow.body ?? waitingRow.reason,
-      note: `${waitingRow.reason}, since ${dayLabel(Date.parse(waitingRow.createdAt))}`,
-    }));
+    // The owner's open list, as their own Needs you shows it: membership and settled cards apply.
+    const open = yield* KinOpen.compute({
+      orgId,
+      viewer: { personId: owner.personId, ownerLevel: true },
+      at: now,
+      acceptSenses: KIN_PULSE_LATER_SENSES,
+    }).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.provideService(Repository.KinChatRepository, repo),
+      Effect.provideService(KinIdentity, identity),
+    );
+    const waitingIds = open.rows.flatMap((openRow) =>
+      openRow.item._tag === "waiting" ? [openRow.item.waiting.waitingId] : [],
+    );
+    const bodies = new Map(
+      waitingIds.length === 0
+        ? []
+        : (yield* sql<{ waitingId: string; body: string | null }>`
+            SELECT w.waiting_id AS "waitingId", m.body
+            FROM kin_waiting w
+            LEFT JOIN kin_messages m ON m.org_id = w.org_id AND m.message_id = w.message_id
+            WHERE w.org_id = ${orgId} AND w.waiting_id IN ${sql.in(waitingIds)}
+            ORDER BY w.waiting_id`).map((found) => [found.waitingId, found.body] as const),
+    );
+    const waiting = open.rows.flatMap(({ item }): ReadonlyArray<RoutineRow> =>
+      item._tag === "waiting"
+        ? [
+            {
+              title: bodies.get(item.waiting.waitingId) ?? item.waiting.reason,
+              note: `${item.waiting.reason}, since ${dayLabel(Date.parse(item.waiting.createdAt))}`,
+            },
+          ]
+        : [],
+    );
     const budgetUnits = Effect.fn("KinRoutineContent.budgetUnits")(function* (budgetDay: string) {
       const [budget] = yield* sql<{ units: number }>`
         SELECT lead_units + worker_units AS units FROM kin_budget
@@ -309,6 +338,7 @@ const make = Effect.gen(function* () {
             : [],
         overdue,
         waiting,
+        needsYou: open.counts.needsYou,
         reviews: Option.match(github, {
           onNone: () => [],
           onSome: (state) =>
