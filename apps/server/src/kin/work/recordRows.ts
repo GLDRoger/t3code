@@ -199,13 +199,39 @@ export const countedEntry = (
 export const countedPayment = (sql: SqlClient.SqlClient) =>
   sql`p.voided_at IS NULL AND ${countedEntry(sql)}`;
 
-/**
- * When an issued invoice `r` falls due: its due date, else (issued before Kin set one) its issue
- * day. Overdue is past it, the same in the pulse, Money, the client page and every brief.
- */
-export const invoiceDue = (sql: SqlClient.SqlClient) => sql`COALESCE(r.due_at, r.date_at)`;
-
 const DAY = 86_400_000;
+
+/** `termsDays` in SQL, for the forms its test names; null where it finds no days. */
+const termsDaysSql = (sql: SqlClient.SqlClient, terms: Statement.Fragment) => sql`(
+  SELECT CASE WHEN days BETWEEN 0 AND 365 THEN days END FROM (
+    SELECT CASE
+      WHEN net > 0 AND (day = 0 OR net < day) AND afterNet GLOB '[0-9]*'
+        THEN CAST(substr(afterNet, 1, 3) AS INTEGER)
+      WHEN day > 0 AND (substr(x, day + 3) = '' OR substr(x, day + 3) GLOB '[^a-z0-9_]*'
+          OR substr(x, day + 3) = 's' OR substr(x, day + 3) GLOB 's[^a-z0-9_]*')
+        THEN CASE
+          WHEN substr(beforeDay, -3) GLOB '[0-9][0-9][0-9]' THEN CAST(substr(beforeDay, -3) AS INTEGER)
+          WHEN substr(beforeDay, -2) GLOB '[0-9][0-9]' THEN CAST(substr(beforeDay, -2) AS INTEGER)
+          WHEN substr(beforeDay, -1) GLOB '[0-9]' THEN CAST(substr(beforeDay, -1) AS INTEGER)
+        END
+    END AS days FROM (
+      SELECT x, net, day, ltrim(substr(x, net + 3), ' ' || char(9, 10, 13)) AS afterNet,
+        rtrim(substr(x, 1, day - 1), ' -' || char(9, 10, 13)) AS beforeDay
+      FROM (SELECT x, instr(x, 'net') AS net, instr(x, 'day') AS day
+        FROM (SELECT lower(${terms}) AS x)))))`;
+
+/**
+ * When an issued invoice `r` falls due: its due date, else its issue day plus its client's terms
+ * in days, else never (null), as an invoice with no due date and no terms isn't due at once.
+ * Overdue is past it, the same in the pulse, Money, the client page and every brief.
+ */
+export const invoiceDue = (sql: SqlClient.SqlClient) => sql`COALESCE(r.due_at,
+  r.date_at + ${DAY} * ${termsDaysSql(
+    sql,
+    sql`(SELECT json_extract(c.fields_json, '$.terms') FROM kin_records c
+      WHERE c.org_id = r.org_id AND c.register_id = 'clients' AND c.record_id = COALESCE(r.party_id,
+        (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id)))`,
+  )})`;
 
 /**
  * Issued invoices still owed, oldest due first: counted, issued (waiting), with an amount and a
