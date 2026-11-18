@@ -564,6 +564,8 @@ export function KinWorkRow(props: {
         type="button"
         aria-label={row.accessibilityLabel}
         aria-current={props.selected === true ? true : undefined}
+        // Where focus goes back to when the task it opened closes.
+        data-kin-row={row.key}
         onClick={props.onOpen}
         className="flex min-w-0 flex-1 items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset aria-[current=true]:bg-accent"
       >

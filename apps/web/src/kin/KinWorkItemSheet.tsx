@@ -56,7 +56,7 @@ import {
 import { kinTaskProjectMenu } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { Link, useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
-import { AsyncResult } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -80,8 +80,9 @@ import {
   PlayIcon,
   RepeatIcon,
   RotateCcwIcon,
+  XIcon,
 } from "lucide-react";
-import { useId, useState } from "react";
+import { useId, useState, type ComponentProps } from "react";
 
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
@@ -146,10 +147,44 @@ const LINK_ICON: Record<KinWorkLinkView["kind"], typeof LinkIcon> = {
   link: LinkIcon,
 };
 
-/** One task beside the list: where it stands, its next step, who has it, and what happened to it. */
+const SHEET_FRAME = { Header: SheetHeader, Title: SheetTitle, Description: SheetDescription };
+// The same header outside a dialog, where the sheet's title and description have no dialog to name.
+const PAGE_FRAME = {
+  Header: (props: ComponentProps<"div">) => (
+    <div className="flex flex-col gap-2 p-6 max-sm:pb-4" {...props} />
+  ),
+  Title: (props: ComponentProps<"h2">) => (
+    <h2 className="text-xl leading-snug font-semibold" {...props} />
+  ),
+  Description: (props: ComponentProps<"p">) => (
+    <p className="text-sm text-muted-foreground" {...props} />
+  ),
+};
+type KinItemFrame = typeof SHEET_FRAME | typeof PAGE_FRAME;
+
+const NO_ITEM: ReturnType<typeof kinClient.workItem> = Atom.make(AsyncResult.initial());
+
+/** Whether the record open by key is a task or a list entry, once its read has answered. */
+export function useKinOpenedKind(target: KinWorkTarget, key: KinRecordKey | null) {
+  const { environmentId, orgId } = target;
+  const result = useAtomValue(
+    key === null ? NO_ITEM : kinClient.workItem({ environmentId, input: { orgId, key } }),
+  );
+  const item = Option.getOrNull(AsyncResult.value(result));
+  return item === null ? "unknown" : item.list === undefined ? "task" : "entry";
+}
+
+const focusOnMount = (node: HTMLElement | null) => node?.focus({ preventScroll: true });
+
+/**
+ * One task: where it stands, its next step, who has it, and what happened to it. It opens in the
+ * record pane beside the list (`pane`), as the whole page on a narrow window (`page`), or over the
+ * place (`sheet`); a list entry always opens over the place.
+ */
 export function KinWorkItemSheet(
   props: KinWorkTarget & {
     readonly itemKey: KinRecordKey;
+    readonly frame: "sheet" | "pane" | "page";
     readonly directory: KinWorkDirectory;
     readonly changes: KinWorkChangesHandle;
     /** The clients and projects it can go under; null on a host without them. */
@@ -179,94 +214,124 @@ export function KinWorkItemSheet(
     state._tag === "ready" ? state.item.tasks?.map((task) => task.key) : undefined,
   );
   const saving = changed.pending[itemKey] !== undefined;
+  const close = () => {
+    if (!saving) props.onClose();
+  };
+  const entry = state._tag === "ready" && state.item.list !== undefined;
+  const sheet = props.frame === "sheet" || entry;
+  const Frame = sheet ? SHEET_FRAME : PAGE_FRAME;
 
+  const content =
+    state._tag === "ready" && state.item.list !== undefined ? (
+      <KinListEntry
+        {...props}
+        item={state.item}
+        view={kinWorkItemView(state.item, names, now, KIN_RECORD_CHANGES_CAP, place)}
+        now={now}
+        links={
+          <KinWorkLinks
+            {...props}
+            item={state.item}
+            links={kinWorkItemView(state.item, names, now, KIN_RECORD_CHANGES_CAP, place).links}
+          />
+        }
+      />
+    ) : state._tag === "ready" ? (
+      <KinWorkItem
+        {...props}
+        frame={Frame}
+        item={state.item}
+        shown={kinWorkApplied(state.item, changed)}
+        view={kinWorkItemView(
+          kinWorkApplied(state.item, changed),
+          names,
+          now,
+          KIN_RECORD_CHANGES_CAP,
+          place,
+        )}
+        now={now}
+        saving={saving}
+        notice={changed.notice?.key === itemKey ? changed.notice : null}
+        edit={changed.edit?.key === itemKey ? changed.edit : null}
+        canChange={canChange}
+        canGive={canGive}
+        canComment={canComment}
+        onAct={(action) => void changes.run(state.item, action, names)}
+        onUndo={() => void changes.undo(names, state.item)}
+        onStartEdit={() => changes.startEdit(state.item)}
+        onEdit={changes.setEdit}
+        onCancelEdit={changes.cancelEdit}
+        onSaveEdit={() => void changes.saveEdit(state.item, names)}
+      />
+    ) : (
+      <>
+        <Frame.Header>
+          <Frame.Title>
+            {state._tag === "gone"
+              ? KIN_WORK_GONE.title
+              : state._tag === "failed"
+                ? KIN_WORK_ITEM_FAILED.title
+                : itemKey}
+          </Frame.Title>
+          <Frame.Description>
+            {state._tag === "gone"
+              ? KIN_WORK_GONE.detail
+              : state._tag === "failed"
+                ? KIN_WORK_ITEM_FAILED.detail
+                : "Loading…"}
+          </Frame.Description>
+        </Frame.Header>
+        <div className="flex flex-col items-start gap-3 px-6 pb-6">
+          {state._tag === "loading" ? (
+            <div className="flex w-full flex-col gap-2" role="status" aria-label="Loading task">
+              <Skeleton className="h-4 w-4/5" />
+              <Skeleton className="h-3.5 w-3/5" />
+              <Skeleton className="h-3.5 w-2/5" />
+            </div>
+          ) : state._tag === "failed" ? (
+            <Button size="sm" variant="outline" onClick={() => appAtomRegistry.refresh(itemAtom)}>
+              Retry
+            </Button>
+          ) : null}
+        </div>
+      </>
+    );
+
+  if (sheet)
+    return (
+      <Sheet
+        open
+        onOpenChange={(open) => {
+          if (!open) close();
+        }}
+      >
+        <SheetPopup side="right">{content}</SheetPopup>
+      </Sheet>
+    );
   return (
-    <Sheet
-      open
-      onOpenChange={(open) => {
-        if (!open && !saving) props.onClose();
+    <div
+      ref={focusOnMount}
+      tabIndex={-1}
+      aria-label={itemKey}
+      role="region"
+      className="relative mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col outline-none"
+      onKeyDown={(event) => {
+        // Escape inside a menu or dialog it opened is theirs: those render outside this element.
+        if (event.key !== "Escape" || event.defaultPrevented) return;
+        if (!(event.target instanceof Node) || !event.currentTarget.contains(event.target)) return;
+        event.preventDefault();
+        close();
       }}
     >
-      <SheetPopup side="right">
-        {state._tag === "ready" && state.item.list !== undefined ? (
-          <KinListEntry
-            {...props}
-            item={state.item}
-            view={kinWorkItemView(state.item, names, now, KIN_RECORD_CHANGES_CAP, place)}
-            now={now}
-            links={
-              <KinWorkLinks
-                {...props}
-                item={state.item}
-                links={kinWorkItemView(state.item, names, now, KIN_RECORD_CHANGES_CAP, place).links}
-              />
-            }
-          />
-        ) : state._tag === "ready" ? (
-          <KinWorkItem
-            {...props}
-            item={state.item}
-            shown={kinWorkApplied(state.item, changed)}
-            view={kinWorkItemView(
-              kinWorkApplied(state.item, changed),
-              names,
-              now,
-              KIN_RECORD_CHANGES_CAP,
-              place,
-            )}
-            now={now}
-            saving={saving}
-            notice={changed.notice?.key === itemKey ? changed.notice : null}
-            edit={changed.edit?.key === itemKey ? changed.edit : null}
-            canChange={canChange}
-            canGive={canGive}
-            canComment={canComment}
-            onAct={(action) => void changes.run(state.item, action, names)}
-            onUndo={() => void changes.undo(names, state.item)}
-            onStartEdit={() => changes.startEdit(state.item)}
-            onEdit={changes.setEdit}
-            onCancelEdit={changes.cancelEdit}
-            onSaveEdit={() => void changes.saveEdit(state.item, names)}
-          />
-        ) : (
-          <>
-            <SheetHeader>
-              <SheetTitle>
-                {state._tag === "gone"
-                  ? KIN_WORK_GONE.title
-                  : state._tag === "failed"
-                    ? KIN_WORK_ITEM_FAILED.title
-                    : itemKey}
-              </SheetTitle>
-              <SheetDescription>
-                {state._tag === "gone"
-                  ? KIN_WORK_GONE.detail
-                  : state._tag === "failed"
-                    ? KIN_WORK_ITEM_FAILED.detail
-                    : "Loading…"}
-              </SheetDescription>
-            </SheetHeader>
-            <div className="flex flex-col items-start gap-3 px-6 pb-6">
-              {state._tag === "loading" ? (
-                <div className="flex w-full flex-col gap-2" role="status" aria-label="Loading task">
-                  <Skeleton className="h-4 w-4/5" />
-                  <Skeleton className="h-3.5 w-3/5" />
-                  <Skeleton className="h-3.5 w-2/5" />
-                </div>
-              ) : state._tag === "failed" ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => appAtomRegistry.refresh(itemAtom)}
-                >
-                  Retry
-                </Button>
-              ) : null}
-            </div>
-          </>
-        )}
-      </SheetPopup>
-    </Sheet>
+      {content}
+      {props.frame === "page" ? null : (
+        <div className="absolute end-2 top-2">
+          <Button size="icon" variant="ghost" aria-label="Close task" onClick={close}>
+            <XIcon />
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 /** The holder gives the task back to whoever gave it, saying why if they like. */
@@ -402,6 +467,7 @@ function DetailPerson(props: {
  */
 function KinWorkItem(
   props: KinWorkTarget & {
+    readonly frame: KinItemFrame;
     readonly item: KinRecordDetail;
     /** The task with this browser's unsaved changes applied, as `view` reads it. */
     readonly shown: KinRecordDetail;
@@ -427,7 +493,7 @@ function KinWorkItem(
     readonly onClose: () => void;
   },
 ) {
-  const { view, environmentId, orgId, saving, edit, shown } = props;
+  const { view, environmentId, orgId, saving, edit, shown, frame: Frame } = props;
   const { orgs, people, joined, invited, names } = props.directory;
   const opensClients = useKinOpensClients(environmentId);
   const [handingBack, setHandingBack] = useState(false);
@@ -481,13 +547,13 @@ function KinWorkItem(
   const more = (reword !== null && edit === null) || status || giving || view.handBackTo !== null;
   return (
     <>
-      <SheetHeader>
+      <Frame.Header>
         <div className="flex flex-col gap-2 pe-8 wrap-break-word">
           <div className="flex flex-wrap items-center gap-2">
             <KinRecordChip tone={chip.tone} label={chip.label} />
-            <SheetDescription>
+            <Frame.Description>
               {view.heading === "Task" ? view.key : `${view.key} · ${view.heading}`}
-            </SheetDescription>
+            </Frame.Description>
             {saving ? (
               <span role="status" className="text-xs text-muted-foreground">
                 {KIN_WORK_COPY.saving}
@@ -570,14 +636,14 @@ function KinWorkItem(
               </div>
             )}
           </div>
-          {edit !== null ? null : <SheetTitle>{view.title}</SheetTitle>}
+          {edit !== null ? null : <Frame.Title>{view.title}</Frame.Title>}
           {view.remarks.map((remark) => (
             <p key={remark} className="text-xs text-muted-foreground">
               {remark}
             </p>
           ))}
         </div>
-      </SheetHeader>
+      </Frame.Header>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
         {edit === null ? null : (
           <form

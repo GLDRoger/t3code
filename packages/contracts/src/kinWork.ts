@@ -29,6 +29,7 @@ import {
   KinListId,
   KinMoney,
   KinMoneyTotals,
+  KinSignedMoney,
   KinPayment,
   KinRepeatRule,
 } from "./kinMoney.ts";
@@ -175,7 +176,8 @@ export const KinRecord = Schema.Struct({
   list: Schema.optional(KinListId),
   /** Its category among the list's own, such as an expense's `travel`. */
   listCategory: Schema.optional(KinTrimmedText),
-  amount: Schema.optional(KinMoney),
+  /** Below zero only on an expense: a refund or credit. */
+  amount: Schema.optional(KinSignedMoney),
   /** When it happened, was issued or starts; `dateAllDay` as for `dueAt`. */
   dateAt: Schema.optional(IsoDateTime),
   dateAllDay: Schema.optional(Schema.Boolean),
