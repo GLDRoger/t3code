@@ -27,6 +27,12 @@ export class MemoryConfig extends Context.Service<
      * owner, unless this is set; then they push directly, which a TRIG-15 ruleset rejects.
      */
     readonly directMainPush?: boolean;
+    /**
+     * The public t3code commit this server was built from (`KIN_BUILD_COMMIT`, set by the host's
+     * update script). The memory repo's `memory-check` is pinned to it when Kin proposes new guard
+     * rails; without it Kin proposes none.
+     */
+    readonly buildCommit?: string;
     readonly repositories: ReadonlyArray<{
       readonly orgId: KinOrgId;
       readonly repoUrl: string;
@@ -90,6 +96,9 @@ export const layer = (
       const directMainPush =
         options.directMainPush ??
         (yield* Config.Boolean("KIN_MEMORY_DIRECT_PUSH").pipe(Config.withDefault(false)));
+      const buildCommit = yield* Config.option(Config.String("KIN_BUILD_COMMIT"));
+      if (Option.isSome(buildCommit) && !/^[0-9a-f]{40}$/.test(buildCommit.value))
+        yield* Effect.logWarning("KIN_BUILD_COMMIT is not a full commit SHA; ignoring it");
       const configured = yield* Effect.forEach(repositories, (repo) =>
         Effect.gen(function* () {
           const githubRepo = githubRepoOf(repo.repoUrl);
@@ -110,6 +119,9 @@ export const layer = (
         ...(credentialHelper === undefined ? {} : { credentialHelper }),
         ...(sshCommand === undefined ? {} : { sshCommand }),
         directMainPush,
+        ...(Option.isSome(buildCommit) && /^[0-9a-f]{40}$/.test(buildCommit.value)
+          ? { buildCommit: buildCommit.value }
+          : {}),
         repositories: configured,
       });
     }),

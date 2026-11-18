@@ -20,13 +20,13 @@ export interface MemoryTreeEntry {
 }
 
 const codeowners = ".github/CODEOWNERS";
-/** The CODEOWNERS patterns Kin writes alone; everything else in the memory repo is the owner's. */
-const kinOnlyPaths = ["/commitments/", "/deferrals/", "/claims/", "/journal/", "/INDEX.md"];
+/**
+ * The CODEOWNERS patterns Kin writes alone: every item folder, the journal and the index. Everything
+ * else in the memory repo (`rules.md`, `.github/`, any file an agent harness would load) is the owner's.
+ */
+export const kinOnlyPaths = [...folders.map((folder) => `/${folder}/`), "/journal/", "/INDEX.md"];
 const kinOnlyRoots = kinOnlyPaths.map((pattern) => pattern.slice(1).replace(/\/$/, ""));
 const regularModes = ["100644", "100755"];
-/** CODEOWNERS denies by default: every path outside Kin's own folders waits for owner review. */
-export const isOwnerReviewedPath = (path: string) =>
-  !kinOnlyRoots.includes(path.split("/")[0] ?? "");
 
 export const isLintedPath = (path: string) =>
   path === "rules.md" ||
@@ -38,7 +38,7 @@ export const isLintedPath = (path: string) =>
 // Agent instruction files would be loaded by any agent that reads the folder; keep this in step
 // with the providers' nested context-file names. User-configured names are out of reach.
 const agentFiles = /^(claude|agents?|gemini|grok|crush|qwen|warp|skill)$/i;
-const itemPath = /^(?:commitments|deferrals|claims)\/([a-zA-Z0-9][a-zA-Z0-9_-]{0,199})\.md$/;
+const itemPath = new RegExp(`^(?:${folders.join("|")})/([a-zA-Z0-9][a-zA-Z0-9_-]{0,199})\\.md$`);
 const journalPath = /^journal\/\d{4}\/(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\.md$/;
 
 /** The shape check alone, for Kin's writers: a path they write must also pass `memory-check`. */

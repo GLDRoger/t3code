@@ -7,7 +7,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import { fixtureItem } from "./__fixtures__/items.ts";
-import { formatLintFailure, lintMemoryFiles } from "./lint.ts";
+import { formatLintFailure, kinShapeFailure, lintMemoryFiles } from "./lint.ts";
+import { folders } from "./Memory.ts";
 import { readMemoryDirectory } from "./lintCli.ts";
 
 const encode = (text: string) => new TextEncoder().encode(text);
@@ -23,9 +24,13 @@ const tree = (files: Record<string, string | Uint8Array | { mode: string }>) =>
   );
 const owners = [
   "* @invented-owner",
+  "/objectives/",
   "/commitments/",
   "/deferrals/",
+  "/decisions/",
+  "/people/",
   "/claims/",
+  "/relationships/",
   "/journal/",
   "/INDEX.md",
 ];
@@ -42,9 +47,8 @@ it.effect.each([
     files: {
       ...rules,
       "journal/2026/11-01.md": "no front matter",
-      "decisions/notes.txt": "x",
       ".claude/settings.json": "{}",
-      "decisions/.hidden/notes.txt": "owner reviewed",
+      "notes/anything.txt": "owner reviewed",
     },
     failures: [],
   },
@@ -75,17 +79,25 @@ it.effect.each([
       "commitments/.cursor/rules/x.mdc": "x",
       "INDEX.md/CLAUDE.md": "x",
       "commitments/link.md": symlink,
+      "decisions/.hidden/notes.txt": "x",
+      "people/CLAUDE.md": fixtureItem({ id: "x3", kind: "person" }),
+      "objectives/.claude/settings.json": "{}",
+      "relationships/AGENTS.md": "x",
     },
     failures: [
       "claims/.claude/settings.json:1 Hidden paths are not allowed in Kin's unowned folders",
       "commitments/.cursor/rules/x.mdc:1 Hidden paths are not allowed in Kin's unowned folders",
       "commitments/link.md:1 Symlinks are not allowed",
+      "decisions/.hidden/notes.txt:1 Hidden paths are not allowed in Kin's unowned folders",
       "deferrals/.claude/skills/y/SKILL.md:1 Hidden paths are not allowed in Kin's unowned folders",
       "deferrals/AGENTS.md:1 Kin's unowned folders only hold item and journal files",
       "deferrals/CLAUDE.md:1 Kin's unowned folders only hold item and journal files",
       "INDEX.md/CLAUDE.md:1 INDEX.md must be a file",
       "journal/.claude/skills/x/SKILL.md:1 Hidden paths are not allowed in Kin's unowned folders",
       "journal/CLAUDE.md:1 Kin's unowned folders only hold item and journal files",
+      "objectives/.claude/settings.json:1 Hidden paths are not allowed in Kin's unowned folders",
+      "people/CLAUDE.md:1 Kin's unowned folders only hold item and journal files",
+      "relationships/AGENTS.md:1 Kin's unowned folders only hold item and journal files",
     ],
   },
   {
@@ -154,8 +166,8 @@ it.effect.each([
     files: { ...rules, ...codeowners(...owners.slice(1), owners[0]!) },
     failures: [
       ".github/CODEOWNERS:1 CODEOWNERS must start with * and the owner",
-      ".github/CODEOWNERS:6 CODEOWNERS may only leave Kin's own paths unowned after the * line",
-      ".github/CODEOWNERS:1 CODEOWNERS lacks the /commitments/ line",
+      ".github/CODEOWNERS:10 CODEOWNERS may only leave Kin's own paths unowned after the * line",
+      ".github/CODEOWNERS:1 CODEOWNERS lacks the /objectives/ line",
     ],
   },
   {
@@ -167,8 +179,8 @@ it.effect.each([
     name: "CODEOWNERS freeing a path the lead would load",
     files: { ...rules, ...codeowners(...owners, "/CLAUDE.md", `/${planted}/ @kin-bot`) },
     failures: [
-      ".github/CODEOWNERS:7 CODEOWNERS may only leave Kin's own paths unowned after the * line",
-      ".github/CODEOWNERS:8 CODEOWNERS may only leave Kin's own paths unowned after the * line",
+      ".github/CODEOWNERS:11 CODEOWNERS may only leave Kin's own paths unowned after the * line",
+      ".github/CODEOWNERS:12 CODEOWNERS may only leave Kin's own paths unowned after the * line",
     ],
   },
   {
@@ -255,9 +267,22 @@ it.layer(NodeServices.layer)((it) => {
           Effect.map((failures) => failures.map(formatLintFailure)),
         );
       expect(yield* lint(template)).toEqual([
-        ".github/CODEOWNERS:5 CODEOWNERS still names the @OWNER placeholder",
+        ".github/CODEOWNERS:6 CODEOWNERS still names the @OWNER placeholder",
       ]);
       expect(yield* lint(template.replace("* @OWNER", "* @invented-owner"))).toEqual([]);
+      // Every folder Memory.load reads items from is Kin's alone, and held to Kin's shapes there.
+      for (const folder of folders) {
+        expect(template.split("\n")).toContain(`/${folder}/`);
+        expect(kinShapeFailure(`${folder}/item-1.md`)).toBeUndefined();
+        for (const refused of ["CLAUDE.md", "AGENTS.md", ".claude/settings.json", "nested/item.md"])
+          expect(kinShapeFailure(`${folder}/${refused}`)).toBeDefined();
+      }
+      // What a memory repo installed before every folder was freed now fails the new lint.
+      expect(
+        yield* lint(
+          "* @invented-owner\n/commitments/\n/deferrals/\n/claims/\n/journal/\n/INDEX.md\n",
+        ),
+      ).toContain(".github/CODEOWNERS:1 CODEOWNERS lacks the /decisions/ line");
     }),
   );
   it.effect("reads the whole tree with modes and never follows symlinks", () =>

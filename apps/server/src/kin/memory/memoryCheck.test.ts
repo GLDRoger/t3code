@@ -9,6 +9,7 @@ import * as Schema from "effect/Schema";
 import { parse } from "yaml";
 
 import { gitleaksToml } from "./gitleaksConfig.ts";
+import { codeownersFile, guardRailsUpdate, memoryCheckFile } from "./guardRails.ts";
 import { secretRules } from "./secretScan.ts";
 
 const body = "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0iL3oR6";
@@ -103,6 +104,37 @@ it.effect("the committed gitleaks config is generated from the scanner rules", (
     const fs = yield* FileSystem.FileSystem;
     expect(yield* fs.readFileString(yield* opsFile("gitleaks.toml"))).toBe(`${gitleaksToml}\n`);
     expect(Object.keys(plants).sort()).toEqual(secretRules.map(([id]) => id).sort());
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("the committed guard-rail templates are generated from guardRails.ts", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    expect(yield* fs.readFileString(yield* opsFile("CODEOWNERS.template"))).toBe(
+      codeownersFile("@OWNER"),
+    );
+    const workflow = yield* fs.readFileString(yield* opsFile("memory-check.yml"));
+    expect(workflow).toBe(memoryCheckFile("<t3code commit SHA>"));
+    const pin = (sha: string) => workflow.replace('"<t3code commit SHA>"', `"${sha}"`);
+    const installed = codeownersFile("@invented-owner");
+    const next = "b".repeat(40);
+    // Only the pin differs: re-pinning alone opens no PR.
+    expect(
+      guardRailsUpdate({ codeowners: installed, workflow: pin("a".repeat(40)) }, next),
+    ).toEqual({ _tag: "current" });
+    expect(guardRailsUpdate({ codeowners: installed, workflow }, next)).toMatchObject({
+      _tag: "update",
+    });
+    // An older CODEOWNERS keeps its owner line and gains every folder; the pin is this server's.
+    expect(
+      guardRailsUpdate(
+        { codeowners: "* @invented-owner\n/journal/\n", workflow: pin("a".repeat(40)) },
+        next,
+      ),
+    ).toEqual({ _tag: "update", files: { codeowners: installed, workflow: pin(next) } });
+    // Kin never names an owner the repo doesn't.
+    for (const codeowners of [undefined, codeownersFile("@OWNER"), "/journal/\n"])
+      expect(guardRailsUpdate({ codeowners, workflow }, next)).toEqual({ _tag: "unowned" });
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 

@@ -78,8 +78,10 @@ for n in 1 2 3; do build "older$n" 147 >/dev/null; command sleep 0.01; done
 mkdir -p "$BACKUP_DIR"
 for n in $(seq -w 1 12); do touch "$BACKUP_DIR/statev2-202601\${n}T000000Z-aaaaaaaaaaaa.sqlite"; done
 touch "$BACKUP_DIR/hand-made.sqlite"
+PUBLISHED="$(printf 'b%.0s' {1..40})"
 ${deploy}
 echo "current $(basename "$(readlink "$CURRENT")")"
+echo "env $(grep '^KIN_BUILD_COMMIT=' "$ENV_FILE")"
 echo "builds $(ls "$HOME/kin-builds" | sort | tr '\\n' ' ')"
 echo "backups $(ls "$BACKUP_DIR" | grep -c '^statev2-')"
 ls "$BACKUP_DIR" | grep -q hand-made && echo "hand-made kept"
@@ -89,6 +91,8 @@ echo "database at $(heads)"`);
     expect(out, said).toEqual([
       "status 0",
       "current new",
+      // memory-check in the memory repo is pinned to this commit when Kin updates it.
+      `env KIN_BUILD_COMMIT=${"b".repeat(40)}`,
       "builds new old older3 ",
       "backups 10",
       "hand-made kept",

@@ -30,7 +30,6 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import { isCheckoutPath } from "../memory/checkoutPaths.ts";
 import { spent } from "../memory/keeping.ts";
-import { isOwnerReviewedPath } from "../memory/lint.ts";
 import { readableFiles } from "../memory/quoteAccess.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
@@ -312,9 +311,10 @@ const make = Effect.gen(function* () {
   /**
    * Retires notes that were never memory and whose moment has passed, on the default branch and
    * without the owner: `spent` matches only obvious to-dos, follow-ups and progress. Left alone:
-   * a teammate's words, anything the owner chose who may know, and the kinds the owner reviews.
-   * Runs `reconcileSharing` first; a failure here never fails the dream.
+   * a teammate's words, anything the owner chose who may know, and every kind but commitments and
+   * claims. Runs `reconcileSharing` first; a failure here never fails the dream.
    */
+  const retiredKinds = new Set(["commitment", "claim", "deferral"]);
   const retireSpent = Effect.fn("DreamRunner.retireSpent")(
     function* (orgId: KinOrgId, memoryWriter: Writer.MemoryWriter["Service"]) {
       yield* memoryWriter.reconcileSharing(orgId).pipe(
@@ -337,7 +337,7 @@ const make = Effect.gen(function* () {
           head.shared_by !== undefined ||
           labels.held.has(head.id) ||
           labels.shared.has(head.id) ||
-          isOwnerReviewedPath(head.path) ||
+          !retiredKinds.has(head.kind) ||
           !spent(item, now)
         )
           continue;

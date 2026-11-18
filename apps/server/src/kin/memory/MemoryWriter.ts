@@ -54,7 +54,7 @@ import {
 } from "./frontMatter.ts";
 import { journalEntry, MemoryJournalError, type JournalContext } from "./journal.ts";
 import { QUOTE_MISSING, quoteRefusal } from "./keeping.ts";
-import { isOwnerReviewedPath, kinShapeFailure } from "./lint.ts";
+import { kinShapeFailure } from "./lint.ts";
 import { KinSecretScan, KinSecretScanError } from "./secretScan.ts";
 import { deletedQuotes } from "./quoteAccess.ts";
 import { retireLabels } from "./sensitivity.ts";
@@ -1215,9 +1215,7 @@ const make = Effect.gen(function* () {
                   .filter(([path]) => regular.has(path))
                   .map(([path, bytes]) => [path, bytes.toString("utf8")]),
               );
-              // Paths the owner reviews reach the default branch only through their own PR.
-              const reviewed = (path: string) => viaPullRequest && isOwnerReviewedPath(path);
-              for (const [path, text] of state.files) if (!reviewed(path)) combined.set(path, text);
+              for (const [path, text] of state.files) combined.set(path, text);
               state.files.set("INDEX.md", yield* indexFor(orgId, combined));
               const findings = yield* scanner.scan({
                 orgId,
@@ -1234,43 +1232,22 @@ const make = Effect.gen(function* () {
                 ]),
               );
               const message = `${subject}\n\nEvents: ${ctx.eventIds.join(", ")}\nKin-Outcome: ${outcome}\nKin-Request: ${fingerprint}\n`;
-              // Paths the owner reviews stay off the default branch; the lander opens their PR.
               const commit = yield* writeCommit(
                 orgId,
                 writer,
                 recorded,
                 recordedFiles,
-                viaPullRequest
-                  ? new Map([...changes].filter(([file]) => !reviewed(file)))
-                  : changes,
+                changes,
                 message,
               );
-              const review = new Map([...changes].filter(([file]) => reviewed(file)));
               if (onMain) {
                 const ending = [];
                 for (const [path, text] of state.files) {
-                  if (reviewed(path) || !folders.some((folder) => path.startsWith(`${folder}/`)))
-                    continue;
+                  if (!folders.some((folder) => path.startsWith(`${folder}/`))) continue;
                   const { frontMatter } = yield* parseFrontMatter(orgId, path, text);
                   if (retired(frontMatter)) ending.push(frontMatter.id);
                 }
                 yield* endSharing(orgId, ending);
-              }
-              if (review.size > 0) {
-                const reviewCommit = yield* writeCommit(
-                  orgId,
-                  writer,
-                  recorded,
-                  recordedFiles,
-                  review,
-                  `kin(${ctx.agentId}): review wake-up ${wakeupId}\n\nEvents: ${ctx.eventIds.join(", ")}\n`,
-                );
-                yield* git(orgId, writer, [
-                  "update-ref",
-                  `${MemoryLander.REVIEW_REF_PREFIX}${ctx.agentId}/${wakeupId}-${commit.slice(0, 12)}`,
-                  reviewCommit,
-                  "0".repeat(reviewCommit.length),
-                ]);
               }
               yield* git(orgId, writer, ["update-ref", `refs/heads/${branch}`, commit, recorded]);
               yield* memory.record(orgId, branch, recorded, commit);
