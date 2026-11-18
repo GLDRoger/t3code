@@ -623,6 +623,10 @@
       "types": "./src/kin/kinMessageAlerts.ts",
       "default": "./src/kin/kinMessageAlerts.ts"
     },
+    "./kin/kinNotificationDestination": {
+      "types": "./src/kin/kinNotificationDestination.ts",
+      "default": "./src/kin/kinNotificationDestination.ts"
+    },
     "./kin/kinViewerScope": {
       "types": "./src/kin/kinViewerScope.ts",
       "default": "./src/kin/kinViewerScope.ts"
