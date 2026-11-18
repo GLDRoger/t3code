@@ -1,8 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
-import { KIN_TASK_RECORD } from "@t3tools/client-runtime/kin/kinTaskRecord";
+import { KIN_TASK_NOTE_COPY, KIN_TASK_RECORD } from "@t3tools/client-runtime/kin/kinTaskRecord";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
+  KIN_RECORD_COMMENT_FILES_MAX,
   KIN_RECORD_COMMENT_MAX,
   type EnvironmentId,
   type KinAttachment,
@@ -45,7 +46,7 @@ import { kinAttachmentFailure } from "../state/kinAttachmentFailure";
 import { kinDraftKey } from "./KinComposer";
 
 const NOTE_SEND: ComposerSendPresentation = {
-  label: "Add note",
+  label: KIN_TASK_NOTE_COPY.send,
   icon: "arrow.up",
   action: null,
   alternate: null,
@@ -97,18 +98,22 @@ export function KinTaskNoteComposer(props: {
   });
   const body = draft.text.trim();
   const tooLong = body.length > KIN_RECORD_COMMENT_MAX;
+  const tooMany = draft.attachments.length > KIN_RECORD_COMMENT_FILES_MAX;
   const canSend =
     (body.length > 0 || hasAttachments) &&
     !tooLong &&
+    !tooMany &&
     !sending &&
     !uploading &&
     uploadBlock === null &&
     props.connected;
   const hint = tooLong
-    ? `Keep a note under ${KIN_RECORD_COMMENT_MAX.toLocaleString()} characters.`
-    : uploadBlock !== null
-      ? `${uploadBlock}.`
-      : problem;
+    ? KIN_TASK_RECORD.noteTooLong(KIN_RECORD_COMMENT_MAX)
+    : tooMany
+      ? KIN_TASK_NOTE_COPY.tooMany
+      : uploadBlock !== null
+        ? `${uploadBlock}.`
+        : problem;
 
   /** The uploads the host already holds for this draft, as the references a comment carries. */
   const uploaded = async (
@@ -165,7 +170,7 @@ export function KinTaskNoteComposer(props: {
     });
     setSending(false);
     if (AsyncResult.isFailure(outcome)) {
-      setProblem(kinFailureText(squashAtomCommandFailure(outcome), "Your note wasn't added"));
+      setProblem(kinFailureText(squashAtomCommandFailure(outcome), KIN_TASK_NOTE_COPY.notAdded));
       return;
     }
     requestId.current = null;

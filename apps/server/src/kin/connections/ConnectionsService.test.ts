@@ -23,6 +23,7 @@ import {
 import { McpProtocol, McpSchema, McpServer } from "effect/ai";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -115,8 +116,14 @@ type Spec = {
   readonly listReply?: (json: string) => Response;
   /** Sends every reply in two chunks, split inside the first copy of this text. */
   readonly splitAt?: string;
-  /** Answers each tool call with this JSON-RPC error, once `before` has run. */
-  readonly callError?: { readonly code: number; readonly before?: () => Promise<unknown> };
+  /** Holds each request of this JSON-RPC method until `until` resolves. */
+  readonly held?: { readonly method: string; readonly until: () => Promise<unknown> };
+  /** Answers each tool call with this JSON-RPC error, or this HTTP status, once `before` has run. */
+  readonly callError?: {
+    readonly code?: number;
+    readonly status?: number;
+    readonly before?: () => Promise<unknown>;
+  };
 };
 
 const text = (value: string) =>
@@ -222,13 +229,17 @@ const makeFake = Effect.fnUntraced(function* (initial: Spec) {
       requests.push(request.clone());
       if (spec.status !== undefined) return new Response(null, { status: spec.status });
       const failing = spec.callError;
-      if (failing !== undefined) {
+      const held = spec.held;
+      if (failing !== undefined || held !== undefined) {
         const body: unknown = await request
           .clone()
           .json()
           .catch(() => undefined);
-        if (Predicate.hasProperty(body, "method") && body.method === "tools/call") {
+        const method = Predicate.hasProperty(body, "method") ? body.method : undefined;
+        if (held !== undefined && method === held.method) await held.until();
+        if (failing !== undefined && method === "tools/call") {
           await failing.before?.();
+          if (failing.status !== undefined) return new Response(null, { status: failing.status });
           return new Response(
             JSON.stringify({
               jsonrpc: "2.0",
@@ -272,8 +283,33 @@ const identity = Layer.mock(KinIdentity)({
 });
 
 type Card = Parameters<KinLevelGate["Service"]["ask"]>[1] & { readonly widgetId: string };
-/** What a test runs as the gate is asked for a card, before the card is bound: once. */
-type Hooks = { beforeCard?: Effect.Effect<void> | undefined };
+/** What a test runs once: as the gate is asked for a card, before it is bound; before the next key is stored; before the next sign-in is read. */
+type Hooks = {
+  beforeCard?: Effect.Effect<void> | undefined;
+  beforeKey?: Effect.Effect<void> | undefined;
+  beforeSignInRead?: Effect.Effect<void> | undefined;
+};
+const once = (hooks: Hooks, name: "beforeKey" | "beforeSignInRead") =>
+  Effect.suspend(() => {
+    const run = hooks[name];
+    hooks[name] = undefined;
+    return run ?? Effect.void;
+  });
+/** The real secret store, running each armed hook first. */
+const secretsFor = (hooks: Hooks) =>
+  Layer.effect(
+    ConnectionSecrets.KinConnectionSecrets,
+    Effect.gen(function* () {
+      const real = yield* ConnectionSecrets.KinConnectionSecrets;
+      return ConnectionSecrets.KinConnectionSecrets.of({
+        ...real,
+        set: (connectionId, key) =>
+          once(hooks, "beforeKey").pipe(Effect.andThen(real.set(connectionId, key))),
+        getSignIn: (connectionId) =>
+          once(hooks, "beforeSignInRead").pipe(Effect.andThen(real.getSignIn(connectionId))),
+      });
+    }),
+  ).pipe(Layer.provide(ConnectionSecrets.layer));
 /**
  * The level gate as far as ask cards go: each card is kept, and bound like the real one. As the
  * chat's own retry, the same `clientMessageId` gets back the card it already made.
@@ -319,7 +355,7 @@ const layerFor = (
 ) =>
   Connections.layer.pipe(
     Layer.provide(gateFor(cards, hooks)),
-    Layer.provide(ConnectionSecrets.layer),
+    Layer.provide(secretsFor(hooks)),
     Layer.provide(McpGateway.layer),
     Layer.provide(
       guarded.pipe(
@@ -919,7 +955,7 @@ describe("KinConnections", () => {
   it.effect(
     "a drafted call runs its exact arguments once, on an owner-level tap, while nothing changed",
     () =>
-      withAsks(BASE, (fake, cards) =>
+      withAsks(BASE, (fake, cards, hooks) =>
         Effect.gen(function* () {
           const connections = yield* KinConnections;
           const sql = yield* SqlClient.SqlClient;
@@ -1001,7 +1037,7 @@ describe("KinConnections", () => {
 
           // No answer from the service: it may have gone, so it is never sent again on its own.
           const three = yield* confirm("three");
-          yield* fake.set({ ...BASE, status: 504 });
+          yield* fake.set({ ...BASE, callError: { status: 504 } });
           const unknown = {
             state: "failed",
             reason:
@@ -1073,6 +1109,17 @@ describe("KinConnections", () => {
               VALUES (${widgetId}, ${orgId}, 'lead-chat', 'ask', 'native', 'choice', 1,
                 ${JSON.stringify({ send: { outcome: { state: "sending" } } })}, '[]', '')`;
           }
+          // A card whose stored state is not JSON is skipped; the rest still drain.
+          yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
+              pin_digest, payload_json, agent_id, wakeup_id, chat_id, proposed_at, state, done_at,
+              widget_id)
+            SELECT org_id, 'ask-garbled', connection_id, tool_name, pin_digest, payload_json,
+              agent_id, wakeup_id, chat_id, proposed_at, 'sent', 1, 'w-garbled'
+            FROM kin_connection_asks WHERE ask_id = ${one}`;
+          yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class,
+              type, revision, state_json, awaiting_json, updated_at)
+            VALUES ('w-garbled', ${orgId}, 'lead-chat', 'ask', 'native', 'choice', 1,
+              '{"send": {"outcome": ', '[]', '')`;
           const republished = yield* connections.interruptedSends(orgId, 10);
           assert.sameMembers(
             republished.map((done) => done.widgetId),
@@ -1128,11 +1175,34 @@ describe("KinConnections", () => {
             connectionId: posthog,
             key: Redacted.make("phx_INVENTED_other_key_9c2e"),
           });
-          assert.deepStrictEqual(yield* connections.sendAsk(orgId, twelve), {
+          const moved = {
             state: "failed",
             reason:
               "PostHog is signed in as another account since this card was made, so nothing was sent.",
+          } as const;
+          assert.deepStrictEqual(yield* connections.sendAsk(orgId, twelve), moved);
+          // A card drawn and confirmed while the next key is being stored was made for the old one.
+          const context = yield* Effect.context<KinConnections | SqlClient.SqlClient>();
+          let thirteen = "";
+          hooks.beforeKey = drawn("thirteen").pipe(
+            Effect.map((askId) => void (thirteen = askId)),
+            Effect.orDie,
+            Effect.provide(context),
+          );
+          yield* connections.setKey(owner, {
+            orgId,
+            connectionId: posthog,
+            key: Redacted.make("phx_INVENTED_third_key_5a7f"),
           });
+          assert.deepStrictEqual(yield* connections.sendAsk(orgId, thirteen), moved);
+          // A session error once the request left: it may have run, so it is not sent again.
+          const fourteen = yield* drawn("fourteen");
+          yield* fake.set({ ...BASE, callError: { status: 404 } });
+          assert.deepStrictEqual(yield* connections.sendAsk(orgId, fourteen), {
+            state: "failed",
+            reason: "mcp.posthog.com answered with an error (HTTP 404).",
+          });
+          yield* fake.set(BASE);
           // The one sent, the ones whose answer never came or failed, and nothing else.
           assert.deepStrictEqual(yield* ran(), [
             { q: "one" },
@@ -1140,6 +1210,7 @@ describe("KinConnections", () => {
             { q: "nine" },
             { q: "ten" },
             { q: "eleven" },
+            { q: "fourteen" },
           ]);
         }),
       ),
@@ -1363,6 +1434,72 @@ describe("KinConnections", () => {
     ),
   );
 
+  it.effect(
+    "drops a session still opening when the key changes, so the new key opens its own",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFake(BASE);
+        return yield* Effect.gen(function* () {
+          const gateway = yield* McpGateway.KinMcpGateway;
+          const opening = Promise.withResolvers<void>();
+          const opened = Promise.withResolvers<void>();
+          yield* fake.set({
+            ...BASE,
+            held: {
+              method: "server/discover",
+              until: () => {
+                opening.resolve();
+                return opened.promise;
+              },
+            },
+          });
+          const target = (key: string) => ({
+            connectionId: "c-posthog",
+            url: "https://mcp.posthog.com/mcp",
+            protocolVersion: null,
+            headers: Redacted.make({ authorization: `Bearer ${key}` }),
+            credentials: Redacted.make([key]),
+          });
+          const tool = new McpSchema.Tool({ name: "query", inputSchema: { type: "object" } });
+          const first = yield* gateway
+            .callTool(target(KEY), tool, {})
+            .pipe(Effect.exit, Effect.forkChild);
+          yield* Effect.promise(() => opening.promise);
+          const dropping = yield* gateway
+            .invalidate("c-posthog")
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          opened.resolve();
+          yield* Fiber.join(first);
+          yield* Fiber.join(dropping);
+          yield* gateway.callTool(target("phx_INVENTED_new_key_77d0"), tool, {});
+          const keys = yield* Effect.promise(async () => {
+            const sent: Array<string | null> = [];
+            for (const request of fake.requests) {
+              const body: unknown = await request
+                .clone()
+                .json()
+                .catch(() => undefined);
+              if (Predicate.hasProperty(body, "method") && body.method === "tools/call")
+                sent.push(request.headers.get("authorization"));
+            }
+            return sent;
+          });
+          assert.strictEqual(keys.at(-1), "Bearer phx_INVENTED_new_key_77d0");
+        }).pipe(
+          Effect.provide(
+            McpGateway.layer.pipe(
+              Layer.provide(
+                guarded.pipe(
+                  Layer.provide(FetchHttpClient.layer),
+                  Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fake.fetch)),
+                ),
+              ),
+            ),
+          ),
+        );
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("falls back to an older protocol and fails cleanly on an oversized result", () =>
     withFake(
       {
@@ -1575,10 +1712,16 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
     accounts: new Map<string, string>(),
     /** Google's profile lookup fails, as it can for a moment. */
     profileDown: false,
-    /** The next refresh waits for `release` once it `arrived`, then answers as the old grant. */
+    /** The next refresh waits for `release` once it `arrived`, then answers as the old grant, or refuses. */
     hold: undefined as
       | undefined
-      | { readonly arrived: () => void; readonly release: Promise<void> },
+      | {
+          readonly arrived: () => void;
+          readonly release: Promise<void>;
+          readonly refuse?: boolean;
+        },
+    /** The next read of event e1 waits for this. */
+    beforeEvent: undefined as undefined | (() => Promise<void>),
     /** Event e1 as Google has it; a PATCH to it changes it. */
     e1: {
       summary: "Board prep",
@@ -1632,6 +1775,7 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
       vendor.hold = undefined;
       hold.arrived();
       await hold.release;
+      if (hold.refuse === true) return json({ error: "invalid_grant" }, 400);
       return json({ access_token: "at-stale", refresh_token: "rt-stale", expires_in: 3600 });
     }
     if (vendor.revoked || form.get("refresh_token") !== vendor.refresh)
@@ -1792,8 +1936,12 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
         if (path.endsWith("/users/me/threads")) return json({ threads: [{ id: "t1" }] });
         if (path.endsWith("/users/me/threads/t1"))
           return json(thread(url.searchParams.get("format")));
-        if (/\/calendars\/[^/]+\/events\/e1$/.test(path))
+        if (/\/calendars\/[^/]+\/events\/e1$/.test(path)) {
+          const wait = vendor.beforeEvent;
+          vendor.beforeEvent = undefined;
+          await wait?.();
           return json({ ...vendor.e1, id: "e1", status: "confirmed" });
+        }
         if (path.endsWith("/calendars/primary/events"))
           return json({
             items: [
@@ -1818,15 +1966,21 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
 
 const withVendor = <A, E>(
   options: { readonly s256?: boolean },
-  body: (vendor: ReturnType<typeof makeVendor>) => Effect.Effect<A, E, Env>,
+  body: (
+    vendor: ReturnType<typeof makeVendor>,
+    cards: Array<Card>,
+    hooks: Hooks,
+  ) => Effect.Effect<A, E, Env>,
 ) =>
   Effect.gen(function* () {
     const fake = yield* makeFake(BASE);
     const vendor = makeVendor(fake, options);
+    const cards: Array<Card> = [];
+    const hooks: Hooks = {};
     return yield* Effect.gen(function* () {
       yield* seed;
-      return yield* body(vendor);
-    }).pipe(Effect.provide(layerFor(vendor, [])));
+      return yield* body(vendor, cards, hooks);
+    }).pipe(Effect.provide(layerFor(vendor, [], cards, hooks)));
   }).pipe(Effect.scoped);
 
 const signInSentry = (vendor: ReturnType<typeof makeVendor>) =>
@@ -1965,7 +2119,7 @@ describe("KinConnections sign-in", () => {
   );
 
   it.effect("refreshes once for calls made together, and asks to sign in again when refused", () =>
-    withVendor({}, (vendor) =>
+    withVendor({}, (vendor, cards, hooks) =>
       Effect.gen(function* () {
         const connections = yield* KinConnections;
         const done = yield* signInSentry(vendor);
@@ -2022,6 +2176,63 @@ describe("KinConnections sign-in", () => {
         assert.include((yield* call(id, "query")).quoted ?? "", "pageviews: 42");
         const after = yield* connections.get(owner, { orgId, connectionId: id });
         assert.strictEqual(after.connection.state, "active");
+
+        // A refused refresh signs out only the sign-in it checked: a sign-in again that commits
+        // right after the check keeps the account signed in.
+        yield* TestClock.adjust("2 hours");
+        const refreshing = Promise.withResolvers<void>();
+        const refusal = Promise.withResolvers<void>();
+        vendor.vendor.hold = {
+          arrived: refreshing.resolve,
+          release: refusal.promise,
+          refuse: true,
+        };
+        const refused = yield* call(id, "query").pipe(Effect.flip, Effect.forkChild);
+        yield* Effect.promise(() => refreshing.promise);
+        const checking = yield* Deferred.make<void>();
+        const checked = yield* Deferred.make<void>();
+        hooks.beforeSignInRead = Deferred.succeed(checking, undefined).pipe(
+          Effect.andThen(Deferred.await(checked)),
+        );
+        refusal.resolve();
+        yield* Deferred.await(checking);
+        const sql = yield* SqlClient.SqlClient;
+        const signedIn = yield* sql
+          .withTransaction(
+            sql`UPDATE kin_connections SET sign_in_gen = sign_in_gen + 1, state = 'active'
+              WHERE connection_id = ${id}`,
+          )
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.succeed(checked, undefined);
+        yield* Fiber.join(signedIn);
+        assert.include((yield* Fiber.join(refused)).message, "sign in again");
+        const kept = yield* connections.get(owner, { orgId, connectionId: id });
+        assert.strictEqual(kept.connection.state, "active");
+
+        // A refused token, then a forced refresh that is refused too: the card keeps the refusal.
+        const fresh = yield* connections.signInStart(owner, {
+          orgId,
+          connectionId: id,
+          returnTo: "web",
+        });
+        yield* connections.signInFinish(owner, {
+          orgId,
+          response: vendor.approve(fresh.authorizationUrl),
+        });
+        yield* connections.setToolModes(owner, {
+          orgId,
+          connectionId: id,
+          modes: [{ tool: "query", mode: "ask", digest: toolOf(kept, "query")!.pinDigest }],
+        });
+        assert.strictEqual((yield* call(id, "query")).note, Connections.DRAFTED);
+        const asked = yield* answer(cards.at(-1)!.widgetId, ownerId, true);
+        vendor.vendor.access = "at-elsewhere";
+        vendor.vendor.revoked = true;
+        assert.deepStrictEqual(yield* connections.sendAsk(orgId, asked!.askId), {
+          state: "failed",
+          reason:
+            "Sentry's sign-in expired. The owner can sign in again in Settings. Nothing was sent.",
+        });
       }),
     ),
   );
@@ -2360,7 +2571,7 @@ describe("KinConnections sending", () => {
       withGoogle((vendor, cards) =>
         Effect.gen(function* () {
           const connections = yield* KinConnections;
-          yield* connectGoogle(vendor);
+          const google = (yield* connectGoogle(vendor)).connectionId;
           yield* sendCall("mail_send", {
             to: ["ana@client.example"],
             subject: "Invoice",
@@ -2482,6 +2693,36 @@ describe("KinConnections sending", () => {
             body: "x",
           }).pipe(Effect.flip);
           assert.include(bad.message, "isn't a plain address");
+
+          // Outside text is read while the same change is being drawn: one marked card, not two.
+          const reading = Promise.withResolvers<void>();
+          const read = Promise.withResolvers<void>();
+          vendor.vendor.beforeEvent = () => {
+            reading.resolve();
+            return read.promise;
+          };
+          const sync = {
+            calendarId: "team@group.calendar.example",
+            eventId: "e1",
+            title: "Board sync",
+            start: "2026-11-20T17:00:00+05:30",
+            end: "2026-11-20T17:30:00+05:30",
+          };
+          const plain = yield* sendCall("calendar_save_event", sync).pipe(Effect.forkChild);
+          yield* Effect.promise(() => reading.promise);
+          yield* markOutside(turn, google);
+          assert.strictEqual(
+            (yield* sendCall("calendar_save_event", sync)).note,
+            Connections.DRAFTED,
+          );
+          read.resolve();
+          assert.strictEqual((yield* Fiber.join(plain)).note, Connections.DRAFTED);
+          assert.deepStrictEqual(
+            yield* (yield* SqlClient.SqlClient)`SELECT outside_from AS outside
+              FROM kin_connection_asks WHERE state = 'open' AND payload_json LIKE '%Board sync%'
+              ORDER BY ask_id`,
+            [{ outside: google }],
+          );
         }),
       ),
   );
