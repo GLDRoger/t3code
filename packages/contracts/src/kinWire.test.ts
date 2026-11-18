@@ -1,6 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as Arbitrary from "effect/Arbitrary";
+import * as DateTime from "effect/DateTime";
+import * as Schema from "effect/Schema";
 
 import { KinOrgId, KinPersonId } from "./kinChat.ts";
+import { kinOpenApply, kinOpenDiff, type KinOpenRead, type KinOpenRow } from "./kinOpen.ts";
 import type { KinPulseFact } from "./kinPulse.ts";
 import type { KinRecord, KinRecordCan, KinWorkListResult } from "./kinWork.ts";
 import { kinCompactWorkList, kinPulsePage, kinRestoreWorkList } from "./kinWire.ts";
@@ -119,4 +123,56 @@ describe("kinPulsePage", () => {
       invoiceOverdue: false,
     });
   });
+});
+
+describe("kinOpenDiff", () => {
+  // A row is an id from a small pool and a version, so reads share, drop, add and change rows.
+  const spec = Arbitrary.schema(
+    Schema.Array(
+      Schema.Struct({
+        id: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 5 })),
+        version: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 2 })),
+      }),
+    ).check(Schema.isMaxLength(8)),
+  );
+  const counts = Arbitrary.schema(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 3 })));
+  const rowOf = ({ id, version }: { id: number; version: number }): KinOpenRow =>
+    id % 2 === 0
+      ? { id: `money:${id}`, late: version > 0, item: { _tag: "money", invoices: version + 1 } }
+      : {
+          id: `task:W-${id}`,
+          late: version === 2,
+          item: {
+            _tag: "task",
+            key: `W-${id}`,
+            title: `Invented ${version}`,
+            dueAt: DateTime.makeUnsafe("2026-11-18T12:00:00.000Z"),
+          },
+        };
+  const readOf = (
+    rows: ReadonlyArray<{ id: number; version: number }>,
+    waiting: number,
+    asOf: string,
+  ): KinOpenRead => {
+    const seen = new Set<number>();
+    const unique = rows.filter((row) => !seen.has(row.id) && seen.add(row.id));
+    return {
+      asOf: DateTime.makeUnsafe(asOf),
+      counts: { needsYou: unique.length + waiting, waiting },
+      rows: unique.map(rowOf),
+    };
+  };
+
+  it.prop(
+    "a read folded from the change equals the next read, and no change means nothing moved",
+    [spec, spec, counts, counts],
+    ([before, after, heldWaiting, nextWaiting]) => {
+      const held = readOf(before, heldWaiting, "2026-11-18T09:00:00.000Z");
+      const next = readOf(after, nextWaiting, "2026-11-18T09:15:00.000Z");
+      const change = kinOpenDiff(held, next);
+      const folded = change === null ? held : kinOpenApply(held, change);
+      expect({ ...folded, asOf: next.asOf }).toEqual(next);
+      if (change === null) expect({ ...held, asOf: next.asOf }).toEqual(next);
+    },
+  );
 });

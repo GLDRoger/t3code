@@ -100,6 +100,7 @@ import {
   sampleState,
   type State,
 } from "./margin.ts";
+import { needsTopUp, refusals, RunManifest, tallies, tally } from "./gate.ts";
 import { Rubric, rubricChecks, rubricRequest } from "./rubric.ts";
 import { type AppServer, type AppServerEvent, openAppServer } from "./appServer.ts";
 import {
@@ -3066,6 +3067,7 @@ const Flags = Schema.Struct({
   baseline: Schema.optional(Schema.String),
   case: Schema.optional(Schema.Array(Schema.String)),
   samples: Schema.optional(PositiveInt),
+  "top-up": Schema.optional(PositiveInt),
   concurrency: PositiveInt,
   "max-steps": Schema.optional(PositiveInt),
   effort: Schema.optional(Schema.Literals(EFFORTS)),
@@ -3096,6 +3098,15 @@ const decodeBaselineRow = Schema.decodeUnknownEffect(
   ),
 );
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeManifest = Schema.decodeUnknownEffect(Schema.fromJsonString(RunManifest));
+/** Files beside the runner that neither run samples nor grade them. */
+const NOT_GRADER = new Set([
+  "gate.ts",
+  "compare.ts",
+  "regrade.ts",
+  "trim-capture.ts",
+  "estimate.ts",
+]);
 const string = { type: "string" } as const;
 
 const main = Effect.gen(function* () {
@@ -3109,6 +3120,8 @@ const main = Effect.gen(function* () {
       case: { ...string, multiple: true },
       // Unset: 2 samples per case, and a 3rd when those 2 disagree.
       samples: string,
+      // A case whose samples split, or disagree with --baseline, gets more samples up to this count.
+      "top-up": string,
       // Samples in flight at once, across all cases.
       concurrency: { ...string, default: "8" },
       // Unset: 6 for Claude, 10 for Codex, whose code-mode cells take more steps.
@@ -3134,6 +3147,10 @@ const main = Effect.gen(function* () {
   if (flags.context) {
     process.stdout.write(`${t3ContextReport(flags.model)}\n`);
     return;
+  }
+  const topUp = flags["top-up"];
+  if (topUp !== undefined && topUp < (flags.samples ?? 3)) {
+    return yield* Effect.die(new Error("--top-up must be at least --samples."));
   }
   if (flags["stop-on-regression"] && flags.baseline === undefined) {
     return yield* Effect.die(new Error("--stop-on-regression needs --baseline."));
@@ -3314,19 +3331,23 @@ const main = Effect.gen(function* () {
   }
   const baseFor = (testCase: McpToolUseCase) => bases.get(baseKey(testCase)) ?? base;
   const effort = flags.effort ?? base.codex?.reasoning.effort ?? "high";
+  // The first request of a sample, as the dry run prints it.
+  const firstRequest = Effect.fnUntraced(function* (testCase: McpToolUseCase) {
+    const sample = makeSample(testCase, baseFor(testCase));
+    yield* Effect.scoped(Effect.andThen(withDevices(sample), withBackgroundWait(sample)));
+    const messages = buildMessages(sample);
+    const body = sample.base.codex
+      ? codexRequest(sample.base, codexMessages(messages))
+      : requestBody(sample, effort, messages);
+    return { sample, messages, encoded: yield* encodeJson(body) };
+  });
   if (flags["dry-run"] || flags.estimate) {
     // One JSON line per case. Without --case this also checks that every case builds, and fails on
     // a regex that doesn't compile, a tool the agent lacks or a placeholder left unfilled.
     const problems: Array<string> = [];
     const sizes: Array<{ prefixChars: number; messageChars: number }> = [];
     for (const testCase of selected) {
-      const sample = makeSample(testCase, baseFor(testCase));
-      yield* Effect.scoped(Effect.andThen(withDevices(sample), withBackgroundWait(sample)));
-      const messages = buildMessages(sample);
-      const body = sample.base.codex
-        ? codexRequest(sample.base, codexMessages(messages))
-        : requestBody(sample, effort, messages);
-      const encoded = yield* encodeJson(body);
+      const { sample, messages, encoded } = yield* firstRequest(testCase);
       const tools = new Set(
         [...sample.tools, ...sample.base.deferred].map((tool) => normalizeToolName(tool.name)),
       );
@@ -3389,8 +3410,15 @@ const main = Effect.gen(function* () {
         }
       : {}),
   };
+  const baselineDir =
+    flags.baseline !== undefined && (yield* fs.stat(flags.baseline)).type === "Directory"
+      ? flags.baseline
+      : undefined;
+  const baselineResults =
+    baselineDir === undefined ? flags.baseline : path.join(baselineDir, "results.jsonl");
   const previous =
-    flags.baseline === undefined ? [] : yield* readNdjson(flags.baseline, decodeBaselineRow);
+    baselineResults === undefined ? [] : yield* readNdjson(baselineResults, decodeBaselineRow);
+  const baselineTallies = tallies(previous);
   const baseline = new Map(
     groups(previous, (row) => row.id)
       .map(([id, r]) => [id, passRate(r)] as const)
@@ -3409,6 +3437,54 @@ const main = Effect.gen(function* () {
       () => "unknown",
     ),
   );
+  const hash = (text: string | Uint8Array) =>
+    NodeCrypto.createHash("sha256").update(text).digest("hex").slice(0, 16);
+  // The runner and its graders: a change to any of them makes earlier runs incomparable.
+  const graderFiles = (yield* fs.readDirectory(import.meta.dirname))
+    .filter(
+      (name) =>
+        (name.endsWith(".ts") && !name.endsWith(".test.ts") && !NOT_GRADER.has(name)) ||
+        name.endsWith(".txt"),
+    )
+    .toSorted();
+  const graderSources = yield* Effect.forEach(graderFiles, (name) =>
+    fs.readFileString(path.join(import.meta.dirname, name)),
+  );
+  const requests = yield* Effect.forEach(selected, (testCase) =>
+    Effect.all([encodeJson(testCase), firstRequest(testCase)]).pipe(
+      Effect.map(([encodedCase, { encoded }]) => ({
+        id: testCase.id,
+        case: hash(encodedCase),
+        request: hash(encoded),
+      })),
+    ),
+  );
+  const manifest: RunManifest = {
+    commit,
+    model: flags.model,
+    effort,
+    harness: appServer ? "app-server" : harness,
+    shellModel: config.shellModel,
+    maxSteps: config.maxSteps,
+    userInstructions: flags["user-instructions"],
+    template: hash(templateBytes),
+    grader: hash([config.shellModel, ...graderSources].join("\0")),
+    samples: flags.samples ?? (topUp === undefined ? 2 : 3),
+    topUp: topUp ?? flags.samples ?? 3,
+    text: hash(requests.map(({ request }) => request).join("\n")),
+    cases: Object.fromEntries(requests.map(({ id, ...hashes }) => [id, hashes] as const)),
+  };
+  // A stale baseline would waste the paid runs: refuse it before any.
+  if (baselineDir !== undefined && topUp !== undefined) {
+    const before = yield* fs
+      .readFileString(path.join(baselineDir, "run.json"))
+      .pipe(Effect.flatMap(decodeManifest));
+    const refused = refusals(before, manifest);
+    if (refused.length > 0)
+      return yield* Effect.die(
+        new Error(`The baseline cannot be compared with this run:\n${refused.join("\n")}`),
+      );
+  }
   const inFlight = yield* Semaphore.make(flags.concurrency);
   const runOne = (testCase: McpToolUseCase) => {
     const { id, kind, pattern } = testCase;
@@ -3468,10 +3544,21 @@ const main = Effect.gen(function* () {
       ),
     );
   };
-  // Without --samples, a case whose 2 samples disagree gets a 3rd to settle it.
+  // Without --samples or --top-up, a case whose 2 samples disagree gets a 3rd to settle it.
   const runCase = Effect.fn("evaluateMcpToolUse.runCase")(function* (testCase: McpToolUseCase) {
-    const samples = Array.from({ length: flags.samples ?? 2 }, () => testCase);
-    const first = yield* Effect.forEach(samples, runOne, { concurrency: "unbounded" });
+    const runMany = (count: number) =>
+      Effect.forEach(
+        Array.from({ length: count }, () => testCase),
+        runOne,
+        { concurrency: "unbounded" },
+      );
+    if (topUp !== undefined) {
+      const first = yield* runMany(manifest.samples);
+      return needsTopUp(tally(first), baselineTallies.get(testCase.id))
+        ? [...first, ...(yield* runMany(topUp - first.length))]
+        : first;
+    }
+    const first = yield* runMany(flags.samples ?? 2);
     const split = flags.samples === undefined && new Set(first.map((row) => row.pass)).size > 1;
     return split ? [...first, yield* runOne(testCase)] : first;
   });
@@ -3506,7 +3593,12 @@ const main = Effect.gen(function* () {
       ),
     { concurrency: flags.concurrency, discard: true },
   ).pipe(Effect.ignore);
-  const samples = flags.samples === undefined ? "2-3 (adaptive)" : flags.samples;
+  const samples =
+    topUp !== undefined && topUp > manifest.samples
+      ? `${manifest.samples} (topped up to ${topUp} when split)`
+      : flags.samples === undefined
+        ? "2-3 (adaptive)"
+        : flags.samples;
   const header = `Commit \`${commit}\`, ${flags.model}${appServer ? " (codex app-server)" : ""} at ${effort} effort, user instructions ${flags["user-instructions"]}, ${samples} samples per case, template \`${path.basename(templatePath)}\``;
   const finished = new Set(rows.map((row) => row.id)).size;
   const stopped =
@@ -3533,6 +3625,7 @@ const main = Effect.gen(function* () {
   const lines = yield* Effect.forEach(rows, (row) => encodeJson(row));
   yield* fs.writeFileString(path.join(out, "results.jsonl"), `${lines.join("\n")}\n`);
   yield* fs.writeFileString(path.join(out, "summary.md"), summary);
+  yield* fs.writeFileString(path.join(out, "run.json"), `${yield* encodeJson(manifest)}\n`);
   yield* Effect.log(`Wrote ${rows.length} samples to ${out}.\n\n${summary}`);
 });
 
