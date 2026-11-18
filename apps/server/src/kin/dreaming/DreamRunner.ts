@@ -314,7 +314,7 @@ const make = Effect.gen(function* () {
    * a teammate's words, anything the owner chose who may know, and every kind but commitments and
    * claims. Runs `reconcileSharing` first; a failure here never fails the dream.
    */
-  const retiredKinds = new Set(["commitment", "claim", "deferral"]);
+  const retiredKinds = new Set(["commitment", "claim"]);
   const retireSpent = Effect.fn("DreamRunner.retireSpent")(
     function* (orgId: KinOrgId, memoryWriter: Writer.MemoryWriter["Service"]) {
       yield* memoryWriter.reconcileSharing(orgId).pipe(

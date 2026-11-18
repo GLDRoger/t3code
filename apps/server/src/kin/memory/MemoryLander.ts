@@ -435,12 +435,13 @@ const make = Effect.gen(function* () {
     const listed =
       Option.isSome(pullRequests) && target !== undefined
         ? yield* pullRequests.value.openPulls({ orgId, repo: target.github }).pipe(Effect.option)
-        : Option.some([]);
-    const pulls = Option.getOrElse(listed, () => []).filter((pull) =>
-      LEGACY_REVIEW_BRANCH.test(pull.branch),
+        : Option.some({ pulls: [], complete: true });
+    const pulls = Option.match(listed, { onNone: () => [], onSome: (open) => open.pulls }).filter(
+      (pull) => LEGACY_REVIEW_BRANCH.test(pull.branch),
     );
+    // Done once every open PR was read; until then the next sweep looks again.
     const done = Effect.sync(() => {
-      if (Option.isSome(listed)) foldedIn.add(orgId);
+      if (Option.isSome(listed) && listed.value.complete) foldedIn.add(orgId);
     });
     if (refs.length === 0 && pulls.length === 0) return yield* done;
     const local = yield* memory.anchor(orgId, main);
@@ -746,7 +747,7 @@ const make = Effect.gen(function* () {
       "--quiet",
       GUARD_RAILS_REF,
     ]).pipe(Effect.option);
-    const open = yield* pullRequests.value
+    const { pulls: open } = yield* pullRequests.value
       .openPulls({ orgId, repo: target.github })
       .pipe(Effect.mapError(refused));
     for (const pull of open) {

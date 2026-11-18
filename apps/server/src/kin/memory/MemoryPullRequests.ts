@@ -137,11 +137,17 @@ export class MemoryPullRequests extends Context.Service<
     readonly land: (
       input: MemoryPullRequestInput,
     ) => Effect.Effect<MemoryPullRequestOutcome, MemoryPullRequestRefused>;
-    /** Open PRs from `kin/write/*` branches, newest first, from one page of open PRs. */
+    /**
+     * Open PRs from `kin/write/*` branches, newest first, over up to ten pages of open PRs;
+     * `complete` is false when more were left unread.
+     */
     readonly openPulls: (input: {
       readonly orgId: KinOrgId;
       readonly repo: RepoSlug;
-    }) => Effect.Effect<ReadonlyArray<OpenMemoryPullRequest>, MemoryPullRequestRefused>;
+    }) => Effect.Effect<
+      { readonly pulls: ReadonlyArray<OpenMemoryPullRequest>; readonly complete: boolean },
+      MemoryPullRequestRefused
+    >;
     /** Closes one of Kin's memory PRs with a one-line comment giving the reason. */
     readonly close: (input: {
       readonly orgId: KinOrgId;
@@ -215,6 +221,7 @@ const memoryCheckVerdict = (
 };
 
 const PAGE = 100;
+const MAX_OPEN_PAGES = 10;
 const MAX_RUNS = 10;
 // Every call runs under the landing lock; GitHub's own edge gives up after about 10 seconds.
 const CALL_TIMEOUT: Duration.Input = "30 seconds";
@@ -503,14 +510,24 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
   }) {
     yield* Effect.annotateCurrentSpan({ "kin.github.repo": input.repo });
     const { refuse, call } = yield* connect(input.orgId, input.repo);
-    const listed = yield* call("pulls.list", "GET", `/pulls?state=open&per_page=${PAGE}`);
-    const pulls = listed.status === 200 ? decodePulls(listed.body) : Option.none();
-    if (Option.isNone(pulls)) return yield* refuse("GitHub did not list the open PRs");
-    if (pastOnePage(listed, pulls.value.length))
+    const all: Array<typeof Pull.Type> = [];
+    let complete = false;
+    for (let page = 1; page <= MAX_OPEN_PAGES && !complete; page++) {
+      const listed = yield* call(
+        "pulls.list",
+        "GET",
+        `/pulls?state=open&per_page=${PAGE}&page=${page}`,
+      );
+      const pulls = listed.status === 200 ? decodePulls(listed.body) : Option.none();
+      if (Option.isNone(pulls)) return yield* refuse("GitHub did not list the open PRs");
+      all.push(...pulls.value);
+      complete = !pastOnePage(listed, pulls.value.length);
+    }
+    if (!complete)
       yield* Effect.logWarning("More open PRs than one memory PR sweep reads", {
         repo: input.repo,
       });
-    return pulls.value
+    const pulls = all
       .filter(
         (pull) =>
           pull.head.ref.startsWith(WRITE_BRANCH_PREFIX) &&
@@ -522,6 +539,7 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
         branch: pull.head.ref,
         head: pull.head.sha,
       }));
+    return { pulls, complete };
   });
 
   const close = Effect.fn("MemoryPullRequests.closeOne")(function* (input: {

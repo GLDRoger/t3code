@@ -370,11 +370,13 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           return { status: 200, body: { merged: true, sha: squash } };
         }
         if (request.method === "GET" && /^\/pulls\?state=open&per_page=/.test(path)) {
-          // Newest first, one page.
+          // Newest first, a page at a time.
+          const size = Number(query.get("per_page"));
+          const page = Number(query.get("page") ?? "1");
           const open = [...pulls]
             .filter(([, pull]) => pull.state === "open")
             .toSorted(([a], [b]) => b - a)
-            .slice(0, Number(query.get("per_page")));
+            .slice((page - 1) * size, page * size);
           return {
             status: 200,
             body: yield* Effect.forEach(open, ([number]) => pullBody(number)),
@@ -806,6 +808,14 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           yield* git(cwd, ["push", "--", remote, `${sha}:refs/heads/${branch}`]);
           pulls.set(pulls.size + 1, { branch, state: "open", base: "main" });
         }
+        // More newer PRs than one page holds, so the old reviews are only on a later page.
+        for (let flood = 0; flood < 120; flood++)
+          pulls.set(pulls.size + 1, {
+            branch: `feature/${flood}`,
+            state: "open",
+            base: "main",
+            sha: original,
+          });
         return;
       }
 
@@ -1323,12 +1333,11 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         expect(landed).toContain("decisions/dec-left.md");
         expect(landed).toContain("people/person-left.md");
         expect(landed).not.toContain("people/forged.md");
-        expect([...pulls.values()].map((pull) => pull.state)).toEqual([
-          "closed",
-          "closed",
-          "closed",
-          "closed",
-        ]);
+        expect(
+          [...pulls.values()]
+            .filter((pull) => pull.branch.startsWith("kin/write/"))
+            .map((pull) => pull.state),
+        ).toEqual(["closed", "closed", "closed", "closed"]);
         const comments = github.requests.flatMap((request) =>
           request.method === "POST" && request.path.endsWith("/comments")
             ? [{ path: request.path, body: request.body }]

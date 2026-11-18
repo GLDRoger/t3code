@@ -172,7 +172,8 @@ done
 # Keep in step with update.sh, which writes the same file.
 ENV_FILE="$CONFIG_DIR/kin-server.env"
 # update.sh records the build's commit; setup has no build of its own, so it keeps that line.
-BUILD_COMMIT="$(sed -n 's/^KIN_BUILD_COMMIT=//p' "$ENV_FILE" 2>/dev/null | tail -n1)"
+BUILD_COMMIT=""
+if [ -f "$ENV_FILE" ]; then BUILD_COMMIT="$(sed -n 's/^KIN_BUILD_COMMIT=//p' "$ENV_FILE" | tail -n1)"; fi
 ENV_CONTENT="KIN_ENABLED=true
 PATH=$KIN_HOME/.local/bin:$KIN_HOME/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
 KIN_REPO=$CHECKOUT
