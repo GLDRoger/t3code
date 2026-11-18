@@ -18,7 +18,7 @@ import { isMemoryRepo, repoList, setRepo } from "../../github/githubWatchStore.t
 import { linkGithubItem } from "../../github/githubLink.ts";
 import { SHARED_REFUSAL } from "../Audience.ts";
 import { toolAdmitted } from "../SharedTools.ts";
-import { laneFor } from "../../reply/KinReplyBridge.ts";
+import { laneFor } from "../../reply/replyLane.ts";
 import { KinChatService } from "../../chat/KinChatService.ts";
 import { KinServer } from "../../KinServer.ts";
 import * as Questions from "../../questions/openQuestions.ts";
@@ -207,7 +207,9 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           intent: lane.value.mode === "reply" ? "answer" : "evidence",
         },
       );
-      return { widgetId: result.widgetId, messageId: result.messageId };
+      return "figure" in result
+        ? result
+        : { widgetId: result.widgetId, messageId: result.messageId };
     }, Effect.mapError(failure)),
   ),
   kin_visual: McpToolAccess.actsAsCaller(
@@ -228,7 +230,9 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           intent: lane.value.mode === "reply" ? "answer" : "evidence",
         },
       );
-      return { widgetId: result.widgetId, messageId: result.messageId };
+      return "figure" in result
+        ? result
+        : { widgetId: result.widgetId, messageId: result.messageId };
     }, Effect.mapError(failure)),
   ),
   kin_react: McpToolAccess.actsAsCaller(

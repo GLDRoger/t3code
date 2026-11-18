@@ -8,6 +8,8 @@ import {
 } from "./auth.ts";
 import {
   TrimmedNonEmptyString,
+  KinTrimmedText,
+  KinText,
   NonNegativeInt,
   PositiveInt,
   IsoDateTime,
@@ -21,6 +23,8 @@ import {
   ChatImageAttachment,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
 } from "./chatAttachment.ts";
+import { KinEmbed, KIN_MESSAGE_FIGURES_MAX } from "./kinEmbed.ts";
+export { KinText, KinTrimmedText } from "./baseSchemas.ts";
 import { TimeZone } from "./kinTime.ts";
 
 export const KinOrgId = TrimmedNonEmptyString.pipe(Schema.brand("KinOrgId"));
@@ -53,12 +57,6 @@ const isNonBlankBody = Schema.makeFilter((value: string) => !isBlankBody(value),
   expected: "a non-blank message body",
 });
 
-// node:sqlite truncates TEXT results at NUL, even when the full value was stored.
-const isNulFree = Schema.makeFilter((value: string) => !value.includes("\u0000"), {
-  expected: "text without NUL characters",
-});
-export const KinText = Schema.String.check(isNulFree);
-export const KinTrimmedText = TrimmedNonEmptyString.check(isNulFree);
 const isPlainLine = Schema.makeFilter((value: string) => !/\p{Cc}/u.test(value), {
   expected: "text without control characters",
 });
@@ -280,6 +278,9 @@ export const KinMessage = Schema.Struct({
   refs: Schema.optional(Schema.Array(KinMessageRef)),
   // What this reader may open from the text; absent when it names nothing they can.
   links: Schema.optional(Schema.Array(KinMessageLink)),
+  embeds: Schema.optional(
+    Schema.Array(KinEmbed).check(Schema.isMaxLength(KIN_MESSAGE_FIGURES_MAX)),
+  ),
   // An agent's check-in or weekly brief, drawn as one; absent on everything else.
   form: Schema.optional(Schema.Literal("brief")),
   intent: Schema.NullOr(KinAgentIntent),

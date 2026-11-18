@@ -28,6 +28,13 @@ const isNonBlank = Schema.makeFilter((value: string) => value.trim().length > 0,
 });
 export const TrimmedNonEmptyString = TrimmedString.check(isNonBlank);
 
+// node:sqlite truncates TEXT results at NUL, even when the full value was stored.
+const isNulFree = Schema.makeFilter((value: string) => !value.includes("\u0000"), {
+  expected: "text without NUL characters",
+});
+export const KinText = Schema.String.check(isNulFree);
+export const KinTrimmedText = TrimmedNonEmptyString.check(isNulFree);
+
 export const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 export const PositiveInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
 export const PortSchema = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));

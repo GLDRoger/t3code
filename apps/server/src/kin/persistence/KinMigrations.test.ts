@@ -159,6 +159,7 @@ const tableNames = [
   "kin_trigger_inbox",
   "kin_trigger_settings",
   "kin_triggers",
+  "kin_turn_figures",
   "kin_visual_hosts",
   "kin_waiting",
   "kin_wakeup_outside_reads",
@@ -401,6 +402,7 @@ describe("Kin migrations", () => {
           { migration_id: 171, name: "GitHubBranchGuards" },
           { migration_id: 172, name: "CalendarCursor" },
           { migration_id: 173, name: "NoMemoryReviewPulls" },
+          { migration_id: 174, name: "AnswerPages" },
           { migration_id: 175, name: "DeviceLinks" },
         ]);
         assert.deepStrictEqual(
@@ -594,6 +596,7 @@ describe("Kin migrations", () => {
           { migration_id: 171, name: "GitHubBranchGuards" },
           { migration_id: 172, name: "CalendarCursor" },
           { migration_id: 173, name: "NoMemoryReviewPulls" },
+          { migration_id: 174, name: "AnswerPages" },
           { migration_id: 175, name: "DeviceLinks" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
@@ -837,6 +840,7 @@ describe("Kin migrations", () => {
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       const before = yield* kinSchema;
@@ -864,6 +868,9 @@ describe("Kin migrations", () => {
       ])
         yield* sql.unsafe(`DROP TRIGGER ${trigger}`);
       yield* sql`DROP INDEX idx_kin_messages_changes`;
+      yield* sql`DROP INDEX kin_message_wakeup_cards`;
+      yield* sql`ALTER TABLE kin_messages DROP COLUMN source_wakeup_id`;
+      yield* sql`ALTER TABLE kin_messages DROP COLUMN embeds_json`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN when_json`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN form`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN relay_json`;
@@ -1080,6 +1087,7 @@ describe("Kin migrations", () => {
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       assert.deepStrictEqual(
@@ -1237,6 +1245,7 @@ describe("Kin migrations", () => {
         { migration_id: 171, name: "GitHubBranchGuards" },
         { migration_id: 172, name: "CalendarCursor" },
         { migration_id: 173, name: "NoMemoryReviewPulls" },
+        { migration_id: 174, name: "AnswerPages" },
         { migration_id: 175, name: "DeviceLinks" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
@@ -1404,6 +1413,7 @@ describe("Kin migrations", () => {
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       assert.deepStrictEqual(
@@ -1541,6 +1551,7 @@ describe("Kin migrations", () => {
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       const columns = yield* sql<{ name: string }>`
@@ -1687,6 +1698,7 @@ describe("Kin migrations", () => {
           [171, "GitHubBranchGuards"],
           [172, "CalendarCursor"],
           [173, "NoMemoryReviewPulls"],
+          [174, "AnswerPages"],
           [175, "DeviceLinks"],
         ]);
         assert.deepStrictEqual((yield* kinHistory).slice(-101), [
@@ -1790,6 +1802,7 @@ describe("Kin migrations", () => {
           { migration_id: 171, name: "GitHubBranchGuards" },
           { migration_id: 172, name: "CalendarCursor" },
           { migration_id: 173, name: "NoMemoryReviewPulls" },
+          { migration_id: 174, name: "AnswerPages" },
           { migration_id: 175, name: "DeviceLinks" },
         ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_lead_deliveries`, [delivery]);
@@ -1944,6 +1957,7 @@ describe("Kin migrations", () => {
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT message_id, status FROM kin_messages ORDER BY seq`, [
@@ -2121,6 +2135,7 @@ describe("Kin migrations", () => {
           [171, "GitHubBranchGuards"],
           [172, "CalendarCursor"],
           [173, "NoMemoryReviewPulls"],
+          [174, "AnswerPages"],
           [175, "DeviceLinks"],
         ]);
         assert.deepStrictEqual(
@@ -2274,6 +2289,7 @@ describe("Kin migrations", () => {
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       assert.deepStrictEqual(
@@ -2402,6 +2418,7 @@ describe("Kin migrations", () => {
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       assert.deepStrictEqual(
@@ -2543,6 +2560,7 @@ describe("Kin migrations", () => {
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       assert.deepStrictEqual(
@@ -2675,6 +2693,7 @@ describe("Kin migrations", () => {
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT * FROM kin_memory_labels`, []);
@@ -2814,6 +2833,7 @@ describe("Kin migrations", () => {
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       assert.deepStrictEqual(
@@ -2862,6 +2882,7 @@ describe("Kin migrations", () => {
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       const one = JSON.parse(strong);
@@ -2898,6 +2919,7 @@ describe("Kin migrations", () => {
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       assert.deepStrictEqual(
@@ -2916,7 +2938,7 @@ describe("Kin migrations", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("K175 upgrades a database at K173, keeps its invites and devices, and reruns", () =>
+  it.effect("K175 upgrades a database at K174, keeps its invites and devices, and reruns", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
@@ -2924,7 +2946,7 @@ describe("Kin migrations", () => {
       for (const column of ["made_by_person_id", "made_by_session_id"])
         yield* sql`ALTER TABLE kin_people_invites DROP COLUMN ${sql.literal(column)}`;
       yield* sql`ALTER TABLE kin_session_bindings DROP COLUMN parent_session_id`;
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 174`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 175`;
       yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
       yield* sql`INSERT INTO kin_people_invites (invite_id, org_id, person_id, display_name, handle,
           secret_hash, created_at, expires_at)
@@ -3598,6 +3620,7 @@ it.effect("K058 adds Work to a database at K057, keeps its rows, and reruns with
       [171, "GitHubBranchGuards"],
       [172, "CalendarCursor"],
       [173, "NoMemoryReviewPulls"],
+      [174, "AnswerPages"],
       [175, "DeviceLinks"],
     ]);
     assert.deepStrictEqual(yield* sql`SELECT org_id FROM kin_orgs`, [{ org_id: "org" }]);
@@ -3708,6 +3731,7 @@ it.effect(
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       assert.lengthOf(
@@ -3821,6 +3845,7 @@ it.effect("K061 turns the withdrawals K059 stored into stops of those attempts",
       [171, "GitHubBranchGuards"],
       [172, "CalendarCursor"],
       [173, "NoMemoryReviewPulls"],
+      [174, "AnswerPages"],
       [175, "DeviceLinks"],
     ]);
     assert.deepStrictEqual(
@@ -3964,6 +3989,7 @@ it.effect(
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT key, repo FROM kin_records`, [
@@ -4079,6 +4105,7 @@ it.effect("K062 upgrades a database at K061, keeps its attempts, and reruns clea
       [171, "GitHubBranchGuards"],
       [172, "CalendarCursor"],
       [173, "NoMemoryReviewPulls"],
+      [174, "AnswerPages"],
       [175, "DeviceLinks"],
     ]);
     assert.deepStrictEqual(
@@ -4187,6 +4214,7 @@ it.effect("K164 keeps a worker's PR on the Work entry it belongs to, and reruns 
       [171, "GitHubBranchGuards"],
       [172, "CalendarCursor"],
       [173, "NoMemoryReviewPulls"],
+      [174, "AnswerPages"],
       [175, "DeviceLinks"],
     ]);
     const links = sql`SELECT kind, target, relation, label FROM kin_record_links ORDER BY kind, target`;
@@ -4246,6 +4274,7 @@ it.effect("K166 declines a review still waiting on its Post card and clears the 
       [171, "GitHubBranchGuards"],
       [172, "CalendarCursor"],
       [173, "NoMemoryReviewPulls"],
+      [174, "AnswerPages"],
       [175, "DeviceLinks"],
     ]);
     const shown = sql`SELECT p.post_id AS post, p.state, m.status,
@@ -4368,6 +4397,7 @@ it.effect(
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       assert.deepStrictEqual(yield* shape, fresh);
@@ -4481,6 +4511,7 @@ it.effect(
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       assert.deepStrictEqual(yield* column, fresh);
@@ -4590,6 +4621,7 @@ it.effect(
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       assert.deepStrictEqual(yield* index, fresh);
@@ -4691,6 +4723,7 @@ it.effect(
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       const indexed = yield* found;
@@ -4790,6 +4823,7 @@ it.effect("K068 adds money to a database at K067, keeps its entries, and reruns 
       [171, "GitHubBranchGuards"],
       [172, "CalendarCursor"],
       [173, "NoMemoryReviewPulls"],
+      [174, "AnswerPages"],
       [175, "DeviceLinks"],
     ]);
     assert.deepStrictEqual(
@@ -4904,6 +4938,7 @@ it.effect(
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       yield* K069WorkerNetwork;
@@ -4994,6 +5029,7 @@ it.effect("K071 adds a proposal's card and one profile change per card, and reru
       [171, "GitHubBranchGuards"],
       [172, "CalendarCursor"],
       [173, "NoMemoryReviewPulls"],
+      [174, "AnswerPages"],
       [175, "DeviceLinks"],
     ]);
     yield* K071OwnerAnswerCards;
@@ -5087,6 +5123,7 @@ it.effect("K072 issues each number once per series and entry, and reruns cleanly
       [171, "GitHubBranchGuards"],
       [172, "CalendarCursor"],
       [173, "NoMemoryReviewPulls"],
+      [174, "AnswerPages"],
       [175, "DeviceLinks"],
     ]);
     yield* K072GeneratedDocuments;
@@ -5172,6 +5209,7 @@ it.effect("K073 owes one push per key change, each notice's once, and reruns cle
       [171, "GitHubBranchGuards"],
       [172, "CalendarCursor"],
       [173, "NoMemoryReviewPulls"],
+      [174, "AnswerPages"],
       [175, "DeviceLinks"],
     ]);
     yield* K073KeyPushes;
@@ -5254,6 +5292,7 @@ it.effect("K074 owes every document job's worktree until it is removed, and reru
       [171, "GitHubBranchGuards"],
       [172, "CalendarCursor"],
       [173, "NoMemoryReviewPulls"],
+      [174, "AnswerPages"],
       [175, "DeviceLinks"],
     ]);
     yield* K074DocJobCleanup;
@@ -5333,6 +5372,7 @@ it.effect("K075 keeps what a rendered document was asked with, and reruns cleanl
       [171, "GitHubBranchGuards"],
       [172, "CalendarCursor"],
       [173, "NoMemoryReviewPulls"],
+      [174, "AnswerPages"],
       [175, "DeviceLinks"],
     ]);
     yield* K075ServerRenderedDocuments;
@@ -5416,6 +5456,7 @@ it.effect("K077 adds recipe labels and request fingerprints, and reruns cleanly"
       [171, "GitHubBranchGuards"],
       [172, "CalendarCursor"],
       [173, "NoMemoryReviewPulls"],
+      [174, "AnswerPages"],
       [175, "DeviceLinks"],
     ]);
     yield* K077DocumentLabels;
@@ -5497,6 +5538,7 @@ it.effect("K078 keeps one baseline per workspace, and reruns cleanly", () =>
       [171, "GitHubBranchGuards"],
       [172, "CalendarCursor"],
       [173, "NoMemoryReviewPulls"],
+      [174, "AnswerPages"],
       [175, "DeviceLinks"],
     ]);
     assert.deepStrictEqual(
@@ -5556,6 +5598,7 @@ it.effect(
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       assert.deepStrictEqual(
@@ -5640,6 +5683,7 @@ it.effect("K088 lets a Dates list take an amount, keeps rendered figures, and re
       [171, "GitHubBranchGuards"],
       [172, "CalendarCursor"],
       [173, "NoMemoryReviewPulls"],
+      [174, "AnswerPages"],
       [175, "DeviceLinks"],
     ]);
     yield* K088MoneyRecords;
@@ -5736,6 +5780,7 @@ it.effect(
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       yield* K107Connections;
@@ -5813,6 +5858,7 @@ it.effect("K131 carries each statement's wrong passwords into its budget, and re
       [171, "GitHubBranchGuards"],
       [172, "CalendarCursor"],
       [173, "NoMemoryReviewPulls"],
+      [174, "AnswerPages"],
       [175, "DeviceLinks"],
     ]);
     const budget = sql`SELECT budget_key AS key, remaining, refill_at IS NOT NULL AS "refills"
@@ -5869,6 +5915,7 @@ it.effect("K131 carries each statement's wrong passwords into its budget, and re
       [171, "GitHubBranchGuards"],
       [172, "CalendarCursor"],
       [173, "NoMemoryReviewPulls"],
+      [174, "AnswerPages"],
       [175, "DeviceLinks"],
     ]);
     assert.deepStrictEqual(yield* budget, carried);
@@ -5943,6 +5990,7 @@ it.effect(
         [171, "GitHubBranchGuards"],
         [172, "CalendarCursor"],
         [173, "NoMemoryReviewPulls"],
+        [174, "AnswerPages"],
         [175, "DeviceLinks"],
       ]);
       assert.deepStrictEqual(yield* schemaOf(), widened);

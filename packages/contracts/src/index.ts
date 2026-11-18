@@ -105,3 +105,6 @@ export * from "./kinConnections.ts";
 export * from "./kinSocial.ts";
 
 export * from "./kinPeople.ts";
+
+export * from "./kinEmbed.ts";
+export { scanKinDocFences } from "./kinDocFences.ts";

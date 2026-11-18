@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
+import { kinMessageText } from "./kinMessagePage.ts";
 import {
   EnvironmentAuthorizationError,
   KinTaskCardState,
@@ -744,7 +745,7 @@ export function kinMessageLabel(row: MessageRow, time: string): string {
   const parts = [row.own ? "You" : `${row.authorLabel}, ${row.authorKind}`];
   if (deleted) parts.push("Message deleted");
   else {
-    parts.push(kinPlainText(message.body));
+    parts.push(kinPlainText(kinMessageText(message, (title) => title)));
     if (message.attachments !== undefined) parts.push(kinAttachmentSummary(message.attachments));
   }
   parts.push(time);

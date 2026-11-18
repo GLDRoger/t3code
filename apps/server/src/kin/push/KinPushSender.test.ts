@@ -443,6 +443,20 @@ describe("KinPushSender", () => {
     }).pipe(Effect.provide(build(apns)));
   });
 
+  it.effect("rings a page's takeaway without its figure reference", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { notify, sql } = yield* seed;
+      const messageId = yield* postMessage(sql, { agentMemberId: "m_fin" }, "posted", {
+        body: "Two tasks are late.\n\n```kin_visual This week\nf_example000\n```",
+      });
+      yield* sql`UPDATE kin_messages SET chat_id = 'chat_dm' WHERE message_id = ${messageId}`;
+      yield* notify({ _tag: "message", orgId, messageId });
+      assert.isAbove(apns.sent.length, 0);
+      for (const alert of alerts(apns.sent)) assert.strictEqual(alert?.body, "Two tasks are late.");
+    }).pipe(Effect.provide(build(apns)));
+  });
+
   it.effect("a card its turn's reply already rang for rings only those the reply didn't", () => {
     const apns = makeApns();
     return Effect.gen(function* () {
@@ -479,6 +493,9 @@ describe("KinPushSender", () => {
         SELECT message_id AS "messageId" FROM kin_widgets WHERE widget_id = ${card}`) as [
         { messageId: KinMessageId },
       ];
+      yield* sql`UPDATE kin_messages SET body = 'The review is tomorrow.', source_wakeup_id = 'asked', widget_id = ${card}
+        WHERE message_id = ${anchor}`;
+      assert.strictEqual((yield* notify({ _tag: "message", orgId, messageId: anchor })).sent, 0);
       yield* sql`UPDATE kin_widgets SET awaiting_json = '[]' WHERE widget_id = ${card}`;
       assert.strictEqual((yield* notify({ _tag: "message", orgId, messageId: anchor })).sent, 0);
     }).pipe(Effect.provide(build(apns)));

@@ -301,7 +301,9 @@ function KinVisualBlockedHost(props: {
 export function KinVisual(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
-  readonly visual: KinVisualCardState;
+  readonly visual: KinVisualCardState & {
+    readonly heights?: ReadonlyArray<readonly [number, number]> | undefined;
+  };
 }) {
   const { attachmentId, title } = props.visual;
   const resource = {
@@ -327,7 +329,12 @@ export function KinVisual(props: {
   const [declined, setDeclined] = useState(false);
   const canAllow = useAtomValue(kinClient.visualHostAllow.permissionAtom(props.environmentId));
   const height = htmlRenderFrameHeight(
-    { attachmentId, title, height: props.visual.height },
+    {
+      attachmentId,
+      title,
+      height: props.visual.height,
+      ...(props.visual.heights === undefined ? {} : { heights: props.visual.heights }),
+    },
     width,
     contentHeight,
   );
