@@ -1058,6 +1058,65 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
   return { id: proposal.id, created: true };
 });
 
+/**
+ * The new list a card may create from a stored proposal, or why it can't now: a card only ever
+ * creates, so an extension, or an id, prefix or name (any case) already in use, makes nothing.
+ */
+export const proposalToCreate = Effect.fn("KinRegisters.proposalToCreate")(function* (
+  orgId: KinOrgId,
+  json: string,
+) {
+  const proposal = Option.getOrUndefined(decodeProposal(json));
+  if (proposal === undefined) return "the proposal can no longer be read";
+  if (proposal._tag !== "new") return "it would change a list that exists, and a card only creates";
+  const refused = checkDraft(proposal);
+  if (refused !== undefined) return refused.message;
+  const sql = yield* SqlClient.SqlClient;
+  const lists = yield* sql<{ id: string; name: string; prefix: string }>`SELECT
+      register_id AS id, name, key_prefix AS prefix FROM kin_registers
+    WHERE org_id = ${orgId} ORDER BY register_id`;
+  const name = proposal.name.trim().toLowerCase();
+  // Kin's own lists are stored on first use, so their names are taken before then.
+  const builtIn = Object.values(LISTS).find((list) => list.name.toLowerCase() === name);
+  if (builtIn !== undefined) return `there is already a list “${builtIn.name}”`;
+  const taken = lists.find(
+    (list) =>
+      list.id === proposal.id ||
+      list.prefix === proposal.prefix ||
+      list.name.trim().toLowerCase() === name,
+  );
+  if (taken === undefined) return proposal;
+  return taken.prefix === proposal.prefix && taken.id !== proposal.id
+    ? `the key prefix ${proposal.prefix} is taken`
+    : `there is already a list “${taken.name}”`;
+});
+
+/**
+ * Creates the list a proposal names from the owner's tap on a card that offered exactly it, in
+ * the tap's transaction. The reason nothing was created, or undefined once it is.
+ */
+export const defineProposed = Effect.fn("KinRegisters.defineProposed")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly agentId: string;
+  readonly proposalId: string;
+  readonly definition: string;
+  readonly now: number;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ json: string; definedAt: number | null }>`SELECT
+      definition_json AS json, defined_at AS "definedAt" FROM kin_list_proposals
+    WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId}
+      AND agent_id = ${input.agentId}`;
+  if (row === undefined || row.json !== input.definition) return "the proposal changed";
+  if (row.definedAt !== null) return "the list was already made";
+  const proposal = yield* proposalToCreate(input.orgId, row.json);
+  if (typeof proposal === "string") return proposal;
+  yield* defineList(input.orgId, proposal, input.now);
+  yield* sql`UPDATE kin_list_proposals SET defined_at = ${input.now}
+    WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId}`;
+  return undefined;
+});
+
 /** Open entries per list, for the definitions the owner sees. */
 export const openCounts = Effect.fn("KinRegisters.openCounts")(function* (
   orgId: KinOrgId,

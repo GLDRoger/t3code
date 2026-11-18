@@ -15,6 +15,8 @@ import { answerCard } from "../questions/openQuestions.ts";
 import { answerReceiptCard } from "../gendocs/receiptProposals.ts";
 import { receiptDocument } from "../gendocs/receipts.ts";
 import { answerCurrencyCard } from "./statements/statementReview.ts";
+import * as CardActions from "../widgets/cardActions.ts";
+import { KinRecords } from "./KinRecords.ts";
 
 /**
  * The owner's answer on a choice card Kin asked for itself, run in the tap's transaction. Work
@@ -25,6 +27,14 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   scope: Scope.Scope,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  // The option's sealed action runs here, as this tap, before anything the card answers.
+  const ran =
+    input.plan === undefined
+      ? undefined
+      : yield* CardActions.run(input, input.plan, {
+          records: yield* KinRecords,
+          chat: yield* KinChatService,
+        });
   // An agent's open question on this card is answered: its default is never taken.
   yield* answerCard({
     orgId: input.orgId,
@@ -74,6 +84,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
         scope,
       ),
     );
+  if (ran !== undefined) return ran;
   if (made?._tag === "made") return made.outcome;
   if (made?._tag === "declined")
     return { title: "Not recorded", text: "You said no, so nothing was recorded or numbered." };
