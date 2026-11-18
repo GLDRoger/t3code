@@ -230,7 +230,10 @@ export const SearchInput = Schema.Struct({
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(20)),
   ),
 });
+const WIDENED = "Nothing has every word, so these have some of them.";
 export const SearchResult = Schema.Struct({
+  /** Said when no entry has every word and the hits share only some. */
+  widened: Schema.optional(Schema.String),
   hits: Schema.Array(
     Schema.Struct({
       key: Schema.String,
@@ -644,15 +647,17 @@ export const link = leadTool("KinDocTools.link", runLink);
 
 const runSearch = Effect.fnUntraced(function* (lead: Lead, input: typeof SearchInput.Type) {
   const team = yield* viewOf(lead);
-  const { hits } = yield* search(lead.orgId, {
+  const { hits, widened } = yield* search(lead.orgId, {
     text: input.text,
     kinds: input.kinds,
     closed: input.closed,
     limit: input.limit ?? 10,
     viewer: team === undefined ? "owner" : "team",
     scope: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
+    widen: true,
   });
   return {
+    ...(widened ? { widened: WIDENED } : {}),
     hits: hits.map((hit) => ({
       key: hit.key,
       kind: hit.kind,

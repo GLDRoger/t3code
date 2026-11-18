@@ -44,7 +44,7 @@ import { sentMail, SentMailView } from "../connections/Sending.ts";
 import { homeCurrency } from "./companyProfile.ts";
 import { partyPage, projectDetail } from "./crm.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
-import { matchName } from "./nameMatch.ts";
+import { fold, matchName } from "./nameMatch.ts";
 import { lastContacts } from "./touches.ts";
 import { KinRecords, type Patch, type TotalsBy, type Writer } from "./KinRecords.ts";
 import {
@@ -393,6 +393,7 @@ const CreateRow = Schema.Struct({
     description:
       "true when an amount far above the rest of its list, or an invoice issued after its due day, is right as given.",
   }),
+  besides: Schema.optional(Schema.Array(KinRecordKey).check(Schema.isMaxLength(20))),
   ...SpineInputs,
   ...GoalInputs,
 });
@@ -400,6 +401,12 @@ export const CreateInput = Schema.Struct({
   sourceEventId: TurnEvent,
   records: Schema.Array(CreateRow).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
 });
+const Named = Schema.Struct({
+  key: Schema.String,
+  title: Schema.String,
+  sensitive: Schema.optional(Schema.Literal(true)),
+});
+const Near = Schema.Struct({ ...Named.fields, differs: Schema.String });
 /** The people Kin told, in their own chat, what this call gave them or took from them. */
 const Told = Schema.optional(Schema.Array(Schema.String));
 export const CreateResult = Schema.Struct({
@@ -412,6 +419,12 @@ export const CreateResult = Schema.Struct({
       /** A meeting whose start has passed: recorded as held, not booked. */
       past: Schema.optional(Schema.Literal(true)),
       ...Marks.fields,
+      /** Open entries close to this one that it was made beside. */
+      alsoOpen: Schema.optional(Schema.Array(Near)),
+      /** A client or vendor of the other kind that answers to the same name. */
+      alsoNamed: Schema.optional(Schema.String),
+      /** Other contacts with the same email. */
+      sameEmail: Schema.optional(Schema.Array(Named)),
     }),
   ),
 });
@@ -461,6 +474,8 @@ const Updated = Schema.Struct({
   state: KinRecordState,
   changed: Schema.Array(Schema.String),
   ...Marks.fields,
+  /** Other contacts with the same email. */
+  sameEmail: Schema.optional(Schema.Array(Named)),
 });
 /** One entry's change at the top level; with keys, each entry's in entries. */
 export const UpdateResult = Schema.Struct({
@@ -470,6 +485,7 @@ export const UpdateResult = Schema.Struct({
   state: Schema.optional(Updated.fields.state),
   changed: Schema.optional(Updated.fields.changed),
   ...Marks.fields,
+  sameEmail: Updated.fields.sameEmail,
   entries: Schema.optional(Schema.Array(Updated)),
 });
 
@@ -856,39 +872,86 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
 
 /**
  * A client or project the lead named by key, or by name as typed, among the active ones. In a turn
- * others read, one they may not all see answers exactly as one that doesn't exist.
+ * others read, one they may not all see answers exactly as one that doesn't exist. `kind` is the
+ * party a field wants (an expense's vendor): one of that kind wins, and `also` names the other.
  */
 export const refRecord = Effect.fn("KinWorkTools.refRecord")(function* (
   lead: Lead,
   text: string,
   list: "clients" | "projects",
+  kind?: KinPartyKind,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const team = yield* viewOf(lead);
+  const sees = team === undefined ? sql`1 = 1` : viewSees(sql, team.people);
   const rows = yield* sql<{
     recordId: string;
     key: string;
     name: string;
     createdAt: number;
     active: number;
+    kind: string;
+    address: string | null;
+    partyId: string | null;
   }>`
     SELECT r.record_id AS "recordId", r.key, r.title AS name, r.created_at AS "createdAt",
-      r.state NOT IN ('done', 'dropped') AS active
-    FROM kin_records r WHERE r.org_id = ${lead.orgId} AND r.register_id = ${list}
-      AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
+      r.state NOT IN ('done', 'dropped') AS active, COALESCE(r.category, 'client') AS kind,
+      json_extract(r.fields_json, '$.address') AS address, r.party_id AS "partyId"
+    FROM kin_records r WHERE r.org_id = ${lead.orgId} AND r.register_id = ${list} AND ${sees}
     ORDER BY r.key LIMIT ${REF_CANDIDATES}`;
-  const match = matchName(
-    text,
-    rows.filter((row) => row.active === 1 || row.key === text.toUpperCase()),
-  );
-  if (match._tag === "found") return match.item;
-  if (match._tag === "ambiguous")
-    return yield* invalid(
-      `Several ${list} could be ${text.slice(0, 60)}: ${match.items
-        .slice(0, 5)
-        .map((row) => `${row.name} (${row.key})`)
-        .join(", ")}. Ask which one is meant, or use the key.`,
+  const open = rows.filter((row) => row.active === 1 || row.key === text.toUpperCase());
+  if (kind !== undefined && list === "clients") {
+    const own = matchName(
+      text,
+      open.filter((row) => row.kind === kind),
     );
+    if (own._tag === "found") {
+      const other = matchName(
+        text,
+        open.filter((row) => row.kind !== kind),
+      );
+      const also =
+        other._tag === "found" ? [other.item] : other._tag === "ambiguous" ? other.items : [];
+      const named = also
+        .slice(0, 5)
+        .map((row) => `${row.name} (${row.key}), a ${row.kind},`)
+        .join(" and ");
+      return {
+        ...own.item,
+        also:
+          also.length === 0
+            ? undefined
+            : `${named} also ${also.length === 1 ? "answers" : "answer"} to ${text.slice(0, 60)}; this is the ${kind} ${own.item.name} (${own.item.key}).`,
+      };
+    }
+  }
+  const match = matchName(text, open);
+  if (match._tag === "found") return { ...match.item, also: undefined };
+  if (match._tag === "ambiguous") {
+    const shown = match.items.slice(0, 5);
+    const parties = shown.flatMap((row) => (row.partyId === null ? [] : [row.partyId]));
+    // A project's client is named only where everyone reading may see it.
+    const clients =
+      list === "projects" && parties.length > 0
+        ? new Map(
+            (yield* sql<{ recordId: string; name: string }>`SELECT r.record_id AS "recordId",
+                r.title AS name FROM kin_records r
+              WHERE r.org_id = ${lead.orgId} AND r.record_id IN ${sql.in(parties)} AND ${sees}
+              ORDER BY r.record_id`).map((row) => [row.recordId, row.name]),
+          )
+        : new Map<string, string>();
+    const fact = (row: (typeof shown)[number]) =>
+      list === "clients"
+        ? [row.kind, ...(row.address === null ? [] : [row.address.split("\n")[0]!.slice(0, 60)])]
+        : ((client) => (client === undefined ? ["no client"] : [`for ${client}`]))(
+            row.partyId === null ? undefined : clients.get(row.partyId),
+          );
+    return yield* invalid(
+      `Several ${list} could be ${text.slice(0, 60)}: ${shown
+        .map((row) => `${row.name} (${[row.key, ...fact(row)].join(", ")})`)
+        .join("; ")}. Ask which one is meant, or use the key.`,
+    );
+  }
   const nearest =
     match.nearest.length === 0
       ? ""
@@ -1678,13 +1741,17 @@ const createRow = Effect.fnUntraced(function* (
       : yield* resolveWho(lead, row.waitingOn).pipe(asField("waitingOn"));
   const due = row.due === undefined ? {} : yield* dueOf(lead.orgId, row.due);
   // Rows earlier in this call are already stored, so a contact can name the client just made.
-  const partyId = yield* refOrNull(lead, row.client, "clients");
+  const party =
+    row.client === undefined
+      ? undefined
+      : yield* refRecord(lead, row.client, "clients", PARTY_KIND[list]);
+  const partyId = party?.recordId;
   const projectId = yield* refOrNull(lead, row.project, "projects");
   // Setting up a client twice finds the one that is there instead of making another.
   const existing =
     list === "work" || !isBuiltIn(list)
       ? undefined
-      : yield* sameNamed(lead, list, row.title, partyId ?? null);
+      : yield* sameNamed(lead, list, row.title, partyId ?? null, categoryOf(list, row).category);
   const money = yield* moneyPatch(lead, def, row);
   if (row.confirmed !== true)
     yield* slipCheck(lead, def, {
@@ -1723,6 +1790,7 @@ const createRow = Effect.fnUntraced(function* (
       title: existing.title,
       created: false,
       ...(found === undefined ? {} : marksOf(lists, found)),
+      ...(party?.also === undefined ? {} : { alsoNamed: party.also }),
     };
   }
   // The same row from the same event is the same entry: a retry, or a repeat in one call.
@@ -1733,6 +1801,19 @@ const createRow = Effect.fnUntraced(function* (
         ? `${list}|${partyId ?? ""}|${titleKey(row.title)}`
         : `${list}|${partyId ?? ""}|${titleKey(row.title)}|${row.amount ?? ""}|${row.date ?? ""}|${row.due ?? ""}`;
   const originKey = `lead:${lead.agentId}:${sourceEventId}:${retryKey(rowKey)}`;
+  const alsoOpen =
+    list === "work" || !isBuiltIn(list)
+      ? yield* repeatsOf(lead, team, {
+          list,
+          title: row.title,
+          partyId: partyId ?? null,
+          dueAt: "dueAt" in due && typeof due.dueAt === "number" ? due.dueAt : null,
+          money: money.amount === undefined || money.amount === null ? undefined : money.amount,
+          dateAt: "dateAt" in money && typeof money.dateAt === "number" ? money.dateAt : null,
+          originKey,
+          besides: row.besides ?? [],
+        })
+      : [];
   const inProject = projectId !== undefined ? projectId : spine.projectId;
   const closedAt = yield* finishedAt(
     lead.orgId,
@@ -1773,12 +1854,30 @@ const createRow = Effect.fnUntraced(function* (
     stored.category === "meeting" &&
     stored.dateAt !== null &&
     stored.dateAt <= (yield* Clock.currentTimeMillis);
+  const sameEmail =
+    list === "contacts" && typeof fields.email === "string"
+      ? yield* emailShared(lead, team, fields.email, stored.recordId)
+      : undefined;
+  const kind =
+    list === "clients" ? (stored.category === "vendor" ? "vendor" : "client") : undefined;
+  const twin =
+    kind === undefined
+      ? undefined
+      : yield* sameNamed(lead, list, row.title, null, kind === "vendor" ? "client" : "vendor");
+  const alsoNamed =
+    party?.also ??
+    (twin === undefined
+      ? undefined
+      : `${twin.title} (${twin.key}) is a ${kind === "vendor" ? "client" : "vendor"} of the same name; this is the ${kind} ${stored.title} (${stored.key}).`);
   return {
     key: stored.key,
     title: stored.title,
     created,
     ...(past ? { past: true as const } : {}),
     ...marksOf(lists, stored),
+    ...(created && alsoOpen.length > 0 ? { alsoOpen } : {}),
+    ...(alsoNamed === undefined ? {} : { alsoNamed }),
+    ...(sameEmail === undefined ? {} : { sameEmail }),
   };
 });
 const orList = (items: ReadonlyArray<string>) =>
@@ -1799,6 +1898,7 @@ const sameNamed = Effect.fn("KinWorkTools.sameNamed")(function* (
   list: string,
   title: string,
   partyId: string | null,
+  kind: string | undefined,
 ) {
   const sql = yield* SqlClient.SqlClient;
   // In a turn others read, one they can't see is not there: the write's own guard then decides.
@@ -1808,9 +1908,156 @@ const sameNamed = Effect.fn("KinWorkTools.sameNamed")(function* (
     WHERE r.org_id = ${lead.orgId} AND r.register_id = ${list}
       AND r.state NOT IN ('done', 'dropped') AND lower(r.title) = lower(${title})
       AND (${list} != 'contacts' OR r.party_id IS ${partyId})
+      AND (${list} != 'clients' OR COALESCE(r.category, 'client') = ${kind ?? "client"})
       AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
     ORDER BY r.key LIMIT 1`;
   return row;
+});
+
+/** The party a money entry's client field means: who an expense paid, who an invoice bills. */
+const PARTY_KIND: Partial<Record<string, KinPartyKind>> = {
+  expenses: "vendor",
+  invoices: "client",
+  quotes: "client",
+  receipts: "client",
+};
+
+const DAY = 86_400_000;
+const NEAR_DAYS = 3;
+const REPEAT_CANDIDATES = 2000;
+const REPEATS_SHOWN = 5;
+
+/**
+ * Open entries a new row repeats, among those this turn may see. The same title, client and due
+ * day, or the same party, amount and day, is refused unless `besides` names it; ones near it (the
+ * same title in other words or on another day, the same amount within days) are returned.
+ */
+const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
+  lead: Lead,
+  team: View | undefined,
+  row: {
+    readonly list: string;
+    readonly title: string;
+    readonly partyId: string | null;
+    readonly dueAt: number | null;
+    readonly money: KinMoney | undefined;
+    readonly dateAt: number | null;
+    readonly originKey: string;
+    readonly besides: ReadonlyArray<string>;
+  },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const zone = yield* ownerZone(lead.orgId);
+  const paid = row.money !== undefined && row.dateAt !== null ? row.money : undefined;
+  // A paid expense is closed and still the same money, so only a void one is not a repeat.
+  const which =
+    paid === undefined
+      ? sql`r.state NOT IN ('done', 'dropped')`
+      : sql`r.state != 'dropped' AND r.amount_minor = ${paid.minor} AND r.currency = ${paid.currency}
+          AND abs(r.date_at - ${row.dateAt}) <= ${(NEAR_DAYS + 1) * DAY}`;
+  const rows = yield* sql<{
+    key: string;
+    title: string;
+    dueAt: number | null;
+    dateAt: number | null;
+    originKey: string | null;
+    sensitive: number;
+  }>`SELECT r.key, r.title, r.due_at AS "dueAt", r.date_at AS "dateAt",
+      r.origin_key AS "originKey", ${sensitiveNow(sql)} AS sensitive
+    FROM kin_records r
+    WHERE r.org_id = ${lead.orgId} AND r.register_id = ${row.list} AND r.party_id IS ${row.partyId}
+      AND ${which} AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
+    ORDER BY r.key LIMIT ${REPEAT_CANDIDATES}`;
+  // The same row from the same event is a retry, which the write itself returns.
+  if (rows.some((one) => one.originKey === row.originKey)) return [];
+  const day = (at: number | null) => (at === null ? null : dayIn(at, zone));
+  const title = row.title.trim();
+  const matches = rows.flatMap((one) => {
+    const sameTitle = one.title.trim() === title;
+    if (
+      !sameTitle &&
+      fold(one.title) !== fold(title) &&
+      (paid === undefined || row.partyId === null)
+    )
+      return [];
+    const sameDay =
+      paid === undefined ? day(one.dueAt) === day(row.dueAt) : day(one.dateAt) === day(row.dateAt);
+    if (
+      paid !== undefined &&
+      !sameDay &&
+      Math.abs(Date.parse(day(one.dateAt)!) - Date.parse(day(row.dateAt)!)) > NEAR_DAYS * DAY
+    )
+      return [];
+    const differs = [
+      ...(sameTitle ? [] : [`titled "${one.title.slice(0, 80)}"`]),
+      ...(sameDay
+        ? []
+        : paid !== undefined
+          ? [`dated ${day(one.dateAt)}`]
+          : [one.dueAt === null ? "no due day" : `due ${day(one.dueAt)}`]),
+    ];
+    return [
+      {
+        key: one.key,
+        title: one.title,
+        exact: paid === undefined ? sameTitle && sameDay : sameDay,
+        differs: differs.join(", "),
+        sensitive: one.sensitive === 1,
+      },
+    ];
+  });
+  const repeats = matches.filter((one) => one.exact && !row.besides.includes(one.key));
+  if (repeats.length > 0) {
+    const first = repeats[0]!;
+    const keys = repeats.slice(0, REPEATS_SHOWN).map((one) => one.key);
+    const same =
+      paid !== undefined
+        ? `records the same amount ${row.partyId === null ? "and title" : "for the same party"} on the same day`
+        : `is open with the same title${row.partyId === null ? "" : ", client"} and due day`;
+    const Refused = repeats.some((one) => one.sensitive) ? SensitiveRefusal : KinChatError;
+    return yield* new Refused({
+      reason: "conflict",
+      message: `${first.key} "${first.title.slice(0, 80)}" ${same}${
+        keys.length > 1
+          ? ` (so ${keys.length === 2 ? "does" : "do"} ${keys.slice(1).join(", ")})`
+          : ""
+      }. Use ${first.key}, or pass besides: [${keys.map((key) => `"${key}"`).join(", ")}] to add another.`,
+    });
+  }
+  return matches
+    .filter((one) => !one.exact)
+    .slice(0, REPEATS_SHOWN)
+    .map((one) => ({
+      key: one.key,
+      title: one.title,
+      differs: one.differs,
+      ...(one.sensitive ? { sensitive: true as const } : {}),
+    }));
+});
+
+/** Other open contacts this turn may see with the same email: said, never refused. */
+const emailShared = Effect.fn("KinWorkTools.emailShared")(function* (
+  lead: Lead,
+  team: View | undefined,
+  email: string,
+  recordId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ key: string; title: string; sensitive: number }>`SELECT r.key,
+      r.title, ${sensitiveNow(sql)} AS sensitive
+    FROM kin_records r
+    WHERE r.org_id = ${lead.orgId} AND r.register_id = 'contacts' AND r.record_id != ${recordId}
+      AND r.state NOT IN ('done', 'dropped')
+      AND lower(trim(json_extract(r.fields_json, '$.email'))) = lower(trim(${email}))
+      AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
+    ORDER BY r.key LIMIT ${REPEATS_SHOWN}`;
+  return rows.length === 0
+    ? undefined
+    : rows.map((one) => ({
+        key: one.key,
+        title: one.title,
+        ...(one.sensitive === 1 ? { sensitive: true as const } : {}),
+      }));
 });
 
 /** Sends this call's notices; the write already committed, so a failed message fails nothing. */
@@ -2011,6 +2258,10 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
           ),
         ];
   const lists = yield* allLists(lead.orgId);
+  const sameEmail =
+    listOf(after.registerId) === "contacts" && typeof input.email === "string"
+      ? yield* emailShared(lead, team, input.email, after.recordId)
+      : undefined;
   return {
     result: {
       key: after.key,
@@ -2019,6 +2270,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
       changed,
       ...marksOf(lists, after),
       ...(hiddenFrom.length === 0 ? {} : { noLongerSeenBy: hiddenFrom }),
+      ...(sameEmail === undefined ? {} : { sameEmail }),
     },
     notices: movedNotices(before, after),
   };
