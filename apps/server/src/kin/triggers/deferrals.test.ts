@@ -746,6 +746,40 @@ it.effect("remind, ask and chase act at due, noting lateness", () => {
   }).pipe(Effect.provide(layerFor(items)));
 });
 
+it.effect(
+  "a due promise to ask a third person wakes the holding agent and posts no card to the asker; ask me still posts the card",
+  () => {
+    const zoya = makeDeferral("def-z", { on_due: "ask", owner: "zoya", said_by: "owner" });
+    const me = makeDeferral("def-m", { on_due: "ask", owner: "owner", said_by: "owner" });
+    const items = [zoya, me];
+    return Effect.gen(function* () {
+      yield* setup();
+      const sql = yield* SqlClient.SqlClient;
+      const repo = yield* Repository.KinChatRepository;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('zoya-a', ${orgId}, 'zoya', 'Zoya', '2026-09-01T00:00:00.000Z')`;
+      const service = yield* TriggerService.KinTriggerService;
+      for (const entry of items) yield* service.syncItem(entry);
+      yield* tick(dueAt);
+
+      assert.equal((yield* runOf("def-z"))?.state, "started");
+      const handed = (yield* starts()).map((row) => decodeEvent(JSON.parse(row.json)));
+      assert.deepStrictEqual(
+        handed.map((event) => (event._tag === "deferral.due" ? event.subject : undefined)),
+        [{ type: "deferral", itemId: KinMemoryItemId.make("def-z"), phase: "due" }],
+      );
+      assert.deepStrictEqual(
+        handed.map((event) => event.agentId),
+        [KinAgentId.make("lead-a")],
+      );
+      assert.isTrue(Option.isNone(yield* repo.getWidget({ orgId, widgetId: widgetFor("def-z") })));
+
+      assert.equal((yield* runOf("def-m"))?.state, "asked");
+      assert.equal((yield* cardOf("def-m")).phase, "asked");
+    }).pipe(Effect.provide(layerFor(items)));
+  },
+);
+
 const reminderEvent = Effect.fn("test.reminderEvent")(function* (index = 0) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
