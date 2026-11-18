@@ -279,6 +279,29 @@ async function teamTurn(server: McpServer | undefined, prompt: string): Promise<
   return { reply: "Said." };
 }
 
+function isCheckIn(prompt: string): boolean {
+  for (const match of prompt.matchAll(
+    /^> BEGIN QUOTE: event data\n> (\{[^\n]*\})\n> END QUOTE$/gm,
+  )) {
+    try {
+      const event: unknown = JSON.parse(match[1]!);
+      if (
+        typeof event === "object" &&
+        event !== null &&
+        "type" in event &&
+        event.type === "pulse" &&
+        "checkIn" in event &&
+        event.checkIn !== null &&
+        typeof event.checkIn === "object"
+      )
+        return true;
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
+
 async function runTurn(
   server: McpServer | undefined,
   prompt: string,
@@ -295,7 +318,7 @@ async function runTurn(
   const id = due ? "due" : (marked ?? (notice === null ? undefined : "notice"));
   // A check-in (Run now) answers with `<verify dir>/checkin-reply.md` once, to show a brief.
   const brief = NodePath.join(verifyDir, "checkin-reply.md");
-  if (prompt.includes("This is a check-in") && NodeFS.existsSync(brief)) {
+  if (isCheckIn(prompt) && NodeFS.existsSync(brief)) {
     const reply = NodeFS.readFileSync(brief, "utf8");
     NodeFS.rmSync(brief);
     return { reply };
