@@ -1,11 +1,13 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
-import type {
-  KinAttachment,
-  KinRecordChange,
-  KinRecordComment,
-  KinRecordDetail,
-  KinRecordWaiting,
-  KinWorkPrincipal,
+import {
+  kinWorkMove,
+  type KinWorkMoveGroup,
+  type KinAttachment,
+  type KinRecordChange,
+  type KinRecordComment,
+  type KinRecordDetail,
+  type KinRecordWaiting,
+  type KinWorkPrincipal,
 } from "@t3tools/contracts";
 
 import { formatKinTime, type KinAvatarView } from "./kinScreenState.ts";
@@ -95,6 +97,50 @@ function kinLatestComment(
   return null;
 }
 
+/** How late something due at `dueAt` is: "3 days late", "1 day late", or "Late" the same day. */
+export function kinLateWords(dueAt: string, now: Date): string {
+  const days = Math.floor((now.getTime() - new Date(dueAt).getTime()) / DAY_MS);
+  return days >= 2 ? `${days} days late` : days === 1 ? "1 day late" : "Late";
+}
+
+/**
+ * Whose move a record is for this viewer (`kinWorkMove`), from what its page holds: the card
+ * waiting on them, and who asked for it. `ownerLevel` is whether they keep suggestions.
+ */
+export function kinRecordMove(
+  item: Pick<
+    KinRecordDetail,
+    | "state"
+    | "owner"
+    | "waitingOn"
+    | "late"
+    | "confirmed"
+    | "createdBy"
+    | "assignedBy"
+    | "askedBy"
+    | "givenBy"
+    | "waiting"
+  >,
+  names: KinWorkNames,
+  ownerLevel: boolean,
+): KinWorkMoveGroup | null {
+  if (names.me === null) return null;
+  const asker = kinRecordAskedBy(item);
+  return kinWorkMove(
+    {
+      state: item.state,
+      owner: item.owner,
+      waitingOn: item.waitingOn,
+      late: item.late,
+      confirmed: item.confirmed,
+      askedBy: asker?._tag === "person" ? asker.personId : null,
+      givenBy: item.givenBy ?? null,
+      card: item.waiting !== undefined,
+    },
+    { personId: names.me, ownerLevel },
+  );
+}
+
 export type KinRecordChipTone = "wait" | "doing" | "late" | "done" | "plain";
 
 /** The state chip above the title: the one word on where it stands for this viewer. */
@@ -106,17 +152,12 @@ export function kinRecordChip(
 ): { readonly tone: KinRecordChipTone; readonly label: string } {
   if (item.state === "done") return { tone: "done", label: "Done" };
   if (item.state === "dropped") return { tone: "plain", label: "Dropped" };
-  if (item.late && item.dueAt !== null) {
-    const days = Math.floor((now.getTime() - new Date(item.dueAt).getTime()) / DAY_MS);
-    return {
-      tone: "late",
-      label: days >= 2 ? `${days} days late` : days === 1 ? "1 day late" : "Late",
-    };
-  }
+  if (item.late && item.dueAt !== null)
+    return { tone: "late", label: kinLateWords(item.dueAt, now) };
   const handedToMe = item.handedBack !== undefined && isMe(item.owner, names);
-  const waitsOnMe =
-    item.state === "waiting" && item.waitingOn !== null && isMe(item.waitingOn, names);
-  if ((view.suggestion !== null && view.can.confirm) || handedToMe || waitsOnMe)
+  // Tasks' Needs you and this chip read one rule; a plain task of your own says its status.
+  const move = kinRecordMove(item, names, view.can.confirm);
+  if (handedToMe || (move === "needsYou" && !isMe(item.owner, names)))
     return { tone: "wait", label: "Waiting on you" };
   if (item.state === "doing" || item.working) return { tone: "doing", label: "In progress" };
   if (item.state === "waiting") return { tone: "wait", label: view.status };

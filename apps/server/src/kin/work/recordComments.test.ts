@@ -394,7 +394,11 @@ it.effect("a mail waiting to be confirmed about an entry shows on the sheet of w
     // Tasks puts the same card on the row, with what its buttons post.
     const rheas = yield* OwnerWork.list([rhea], { orgId, byMove: true });
     assert.deepInclude(rheas.moves?.[0], { key: made.key, group: "needsYou" });
-    assert.deepInclude(rheas.moves?.[0]?.card, { widgetId: "card", revision: 1, options: [] });
+    assert.deepInclude(rheas.moves?.[0]?.card, {
+      widgetId: "card",
+      revision: 1,
+      options: [],
+    } as never);
     const hers = yield* OwnerWork.list([zoya], { orgId, byMove: true });
     assert.deepStrictEqual(hers.moves, [{ key: made.key, group: "needsYou" }] as never);
     // Once decided, nothing waits.

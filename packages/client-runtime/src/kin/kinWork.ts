@@ -190,12 +190,17 @@ export interface KinWorkRef {
  * What the list shows: one view, optionally one person's or lead's, one client's or one
  * project's, optionally matching words.
  */
+/** How the phone's Tasks groups: by whose move it is (`me`), or by one of the task's own fields. */
+export type KinTaskGroupBy = "me" | "project" | "person" | "due" | "status";
+
 export interface KinWorkFilter {
   readonly view: KinWorkViewId;
   readonly owner: KinWorkPrincipal | null;
   readonly text: string;
   readonly party: KinWorkRef | null;
   readonly project: KinWorkRef | null;
+  /** Set only where the list groups (the phone's Tasks); absent reads plainly. */
+  readonly groupBy?: KinTaskGroupBy;
 }
 
 export const KIN_WORK_DEFAULT_FILTER: KinWorkFilter = {
@@ -220,7 +225,17 @@ export const kinWorkSameFilter = (a: KinWorkFilter, b: KinWorkFilter) =>
   a.text.trim() === b.text.trim() &&
   (a.party?.key ?? null) === (b.party?.key ?? null) &&
   (a.project?.key ?? null) === (b.project?.key ?? null) &&
-  (a.owner === null ? b.owner === null : kinWorkSamePrincipal(a.owner, b.owner));
+  (a.owner === null ? b.owner === null : kinWorkSamePrincipal(a.owner, b.owner)) &&
+  (a.groupBy ?? null) === (b.groupBy ?? null);
+
+/** Read by whose move it is (`byMove`): grouped Me first, and only the plain open list. */
+export const kinWorkByMove = (filter: KinWorkFilter) =>
+  filter.groupBy === "me" &&
+  filter.view === "open" &&
+  filter.owner === null &&
+  filter.party === null &&
+  filter.project === null &&
+  filter.text.trim() === "";
 
 /**
  * This host takes the owner's changes and the newer filters. An older one sends no closed count,
@@ -265,6 +280,7 @@ export function kinWorkListQuery(
     ...(filter.party === null ? {} : { party: filter.party.key }),
     ...(filter.project === null ? {} : { project: filter.project.key }),
     ...(text === "" ? {} : { text }),
+    ...(kinWorkByMove(filter) ? { byMove: true as const } : {}),
   };
 }
 

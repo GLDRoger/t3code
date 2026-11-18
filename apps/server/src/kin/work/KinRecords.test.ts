@@ -584,6 +584,8 @@ it.effect(
         "kin.work.create",
         "kin.work.assign",
         "kin.work.handBack",
+        // Whoever asked for it, or the owner level (`workMoves.nudge`).
+        "kin.work.nudge",
         // Their own; the owner level anyone's (`handOver`).
         "kin.work.handOver",
         "kin.work.update",
@@ -598,7 +600,7 @@ it.effect(
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 45);
+      assert.lengthOf(methods, 46);
       for (const method of methods)
         assert.strictEqual(kinRpcAccess(method) === "person", teammate.has(method), method);
     }).pipe(Effect.provide(layer)),

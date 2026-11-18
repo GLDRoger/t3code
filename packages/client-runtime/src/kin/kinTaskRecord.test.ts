@@ -284,6 +284,22 @@ describe("kinRecordChip", () => {
       { tone: "wait", label: "Waiting on you" },
     ],
     [
+      "waits on the owner for a draft about an agent's task",
+      task({
+        owner: finance,
+        waiting: {
+          kind: "send",
+          chatId: KinChatId.make("ambermill-chat"),
+          messageId: KinMessageId.make("ambermill-message"),
+          widgetId: KinWidgetId.make("ambermill-card"),
+          preview: "To accounts@orbit.invalid: October invoice",
+          files: [],
+          at: "2026-11-18T08:00:00.000Z",
+        },
+      }),
+      { tone: "wait", label: "Waiting on you" },
+    ],
+    [
       "shows an agent at work in progress",
       task({ owner: chief, working: true }),
       { tone: "doing", label: "In progress" },
