@@ -624,6 +624,124 @@ describe("KinPulse", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  // Run of two weeks: 8 of 9 unprompted messages only reminded, as the turn didn't say who to
+  // write to, from which account, or which file to attach.
+  it.effect("a fact carries its head start: the contact, the mail account and the made file", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const at = B + 12 * DAY;
+      const other = KinOrgId.make("other-org");
+      yield* sql`INSERT INTO kin_orgs VALUES (${other}, 'Invented Other', ${stamp})`;
+      for (const [org, list, prefix] of [
+        [orgId, "contacts", "K"],
+        [other, "contacts", "K"],
+        [other, "docs", "D"],
+      ] as const)
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+          VALUES (${org}, ${list}, ${list}, ${prefix}, 1, 0)`;
+      const contact = (org: KinOrgId, id: string, title: string, email: string | null) =>
+        sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
+            owner_id, party_id, created_by_kind, created_by_id, origin_key, created_at, updated_at,
+            fields_json)
+          VALUES (${org}, ${`r-${id}`}, 'contacts', ${id}, ${title}, 'open', 'person', ${owner},
+            'r-C-1', 'person', ${owner}, ${`origin-${id}`}, 0, 0,
+            ${JSON.stringify(email === null ? {} : { email })})`;
+      // Aaron sorts first but has no address; another org's contact on the same ids never shows.
+      yield* contact(orgId, "K-1", "Aaron", null);
+      yield* contact(orgId, "K-2", "Anita", "anita@lumen.example");
+      yield* contact(other, "K-9", "Abel", "leak@other.example");
+      const made = (
+        org: KinOrgId,
+        worker: string,
+        file: string,
+        draft: boolean,
+        createdAt: number,
+      ) =>
+        Effect.gen(function* () {
+          yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+              owner_kind, owner_id, created_by_kind, created_by_id, origin_key, created_at,
+              updated_at)
+            VALUES (${org}, ${`r-${worker}`}, 'docs', ${`D-${worker}`}, ${file}, 'open', 'agent',
+              ${finance}, 'agent', ${finance}, ${`origin-${worker}`}, 0, 0)`;
+          yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode,
+              recipe_commit, entry_record_id, inputs_sha256, sensitive, doc_origin, worktree_path,
+              branch, audience, created_at)
+            VALUES (${org}, ${worker}, ${finance}, 'w', 'recipe', 'c', 'r-INV-5', 'h', 1, 'o', '/w',
+              'b', 'owner_only', ${createdAt})`;
+          yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind,
+              summary, operations_json, actor_kind, actor_id, via, origin_key, created_at,
+              worker_id, file_json)
+            VALUES (${org}, ${`r-${worker}`}, 1, '', ${file}, 'created', 'Made', '[]', 'agent',
+              ${finance}, 'lead', ${`v-${worker}`}, ${createdAt}, ${worker},
+              ${JSON.stringify({ name: file, draft })})`;
+        });
+      yield* made(orgId, "wk-5", "INV-5.pdf", true, B);
+      yield* made(other, "wk-9", "LEAK.pdf", false, B + DAY);
+      yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq, author_kind,
+          author_id, body, request_hash, created_at)
+        VALUES (${orgId}, 'cm-1', 'r-W-1', 1, 'person', ${mate}, 'Half done; waiting on copy.',
+          'h1', ${B + 9 * DAY}),
+          (${other}, 'cm-9', 'r-W-1', 1, 'person', ${mate}, 'leak comment', 'h9', ${B + 11 * DAY})`;
+      const connection = (org: KinOrgId, id: string, account: string, paused: number | null) =>
+        sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host, auth,
+            reach, state, account_label, created_at, updated_at, paused_at)
+          VALUES (${org}, ${id}, 'google', 'Google', 'builtin', 'google.example', 'oauth', 'closed',
+            'active', ${account}, 1, 1, ${paused})`;
+      yield* connection(orgId, "g-1", "accounts@studio.example", null);
+      yield* connection(orgId, "g-2", "paused@studio.example", 1);
+      yield* connection(other, "g-9", "leak@other.example", null);
+
+      const facts = (yield* read(at)).facts;
+      const pick = (sense: string, subject: string) => keyed(facts, sense, subject)[0]!.key;
+      const keys = [
+        pick("invoice_overdue", "INV-5"),
+        pick("invoice_overdue", "INV-1"),
+        pick("task_late", "W-1"),
+      ];
+      const section = () =>
+        buildPulseSection({
+          orgId,
+          agentId: finance,
+          now: at,
+          wokeFor: [],
+          checkIn: new Set(keys),
+        });
+      const rows = (shown: Effect.Success<ReturnType<typeof section>>) =>
+        new Map(
+          (shown?.byProject ?? []).flatMap((group) => group.facts).map((one) => [one.key, one]),
+        );
+      const first = yield* section();
+      const byKey = rows(first);
+      assert.deepInclude(byKey.get(keys[0]!), {
+        writeTo: { name: "Anita", email: "anita@lumen.example" },
+        document: { key: "D-wk-5", file: "INV-5.pdf", draft: true },
+      });
+      assert.deepInclude(byKey.get(keys[1]!), {
+        writeTo: "no client on it, so nobody to write to",
+        document: "no document made for it yet",
+      });
+      assert.deepInclude(byKey.get(keys[2]!), {
+        lastSaid: { on: "2026-11-10", by: "Meera", text: "Half done; waiting on copy." },
+      });
+      assert.notProperty(byKey.get(keys[2]!), "writeTo");
+      assert.deepStrictEqual(first?.mailFrom, [
+        { connection: "g-1", account: "accounts@studio.example" },
+      ]);
+      assert.notInclude(JSON.stringify(first), "leak");
+
+      // No address on file and no mail connected: each fact says so, once, in plain words.
+      yield* sql`UPDATE kin_records SET fields_json = '{}' WHERE org_id = ${orgId} AND record_id = 'r-K-2'`;
+      yield* sql`UPDATE kin_connections SET removed_at = 1 WHERE org_id = ${orgId}`;
+      const bare = yield* section();
+      assert.strictEqual(rows(bare).get(keys[0]!)?.writeTo, "Lumen has no contact with an email");
+      assert.notProperty(bare, "mailFrom");
+      yield* sql`UPDATE kin_records SET fields_json = '{"email":"anita@lumen.example"}'
+        WHERE org_id = ${orgId} AND record_id = 'r-K-2'`;
+      assert.strictEqual((yield* section())?.mailFrom, "no mail account is connected");
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("people see only facts on tasks all of them may see, and only their own holds", () =>
     Effect.gen(function* () {
       yield* seed;

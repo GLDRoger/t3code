@@ -496,7 +496,37 @@ export class KinLeadPrompt extends Context.Service<
           if (event._tag !== "chat.message" && event._tag !== "widget.action") {
             fromOwner = false;
             if (ownerOnly) {
-              events.push(quote("event data", eventFacts(event), true));
+              // A started deferral says what it is for, so the turn can do it without a lookup.
+              const started =
+                event._tag === "deferral.due" && event.subject.type === "deferral"
+                  ? yield* admitted(event.subject.itemId)
+                  : Option.none();
+              const handle = Option.match(started, {
+                onNone: () => undefined,
+                onSome: (item) =>
+                  item.head.owner === item.head.said_by ? undefined : item.head.owner,
+              });
+              const [person] =
+                handle === undefined
+                  ? []
+                  : yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+                      WHERE org_id = ${orgId} AND handle = ${handle} AND removed_at IS NULL
+                      ORDER BY person_id LIMIT 1`.pipe(Effect.orElseSucceed(() => []));
+              events.push(
+                quote(
+                  "event data",
+                  Option.match(started, {
+                    onNone: () => eventFacts(event),
+                    onSome: (item) => ({
+                      ...eventFacts(event),
+                      ...reminderFacts(item),
+                      ...(item.head.on_due === undefined ? {} : { onDue: item.head.on_due }),
+                      ...(handle === undefined ? {} : { for: person?.name ?? handle }),
+                    }),
+                  }),
+                  true,
+                ),
+              );
               continue;
             }
             // Item ids, and a finding that names them, only for items the team may know.

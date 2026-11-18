@@ -2213,6 +2213,7 @@ const markedItems = new Map([
   ["zqmark-task", marked("zqmark-task")],
   ["zqmark-def", marked("zqmark-def", { every: undefined, on_due: "start" })],
   ["zqmark-follow", marked("zqmark-follow", { every: undefined, on_due: "chase" })],
+  ["zqmark-ask", marked("zqmark-ask", { every: undefined, on_due: "ask", owner: "teammate" })],
   ["zqmark-check", marked("zqmark-check", { kind: "claim", path: "claims/zqmark-check.md" })],
 ]);
 const markedNotes = [...markedItems.values()].map((item) => item.head);
@@ -2426,6 +2427,42 @@ it.effect.each([
         ),
       ),
     ),
+);
+
+// A promise to ask someone came due as bare event data: the turn had to look it up to act.
+it.effect("a started deferral says what it is for and whom, in a turn the owner alone reads", () =>
+  Effect.gen(function* () {
+    const repo = yield* leadWithOwner;
+    yield* repo.insertPerson({
+      orgId,
+      personId: teammateId,
+      displayName: "Zoya",
+      handle: "teammate",
+      githubLogin: null,
+      createdAt: timestamp,
+    });
+    const wakeup = yield* decodeRawEvent(
+      due("ask", { type: "deferral", itemId: "zqmark-ask", phase: "due" }),
+    );
+    yield* stored(input.wakeupId, [wakeup]);
+    const built = yield* (yield* KinLeadPrompt).build({
+      ...input,
+      lane: { chatId, mode: "notice" },
+      events: [wakeup],
+    });
+    const data = built.split("# Events")[1] ?? "";
+    expect(data).toContain('"what":"Invented zqmark what zqmark-ask"');
+    expect(data).toContain('"onDue":"ask"');
+    expect(data).toContain('"for":"Zoya"');
+  }).pipe(
+    Effect.provide(
+      KinLeadPrompt.layer.pipe(
+        Layer.provideMerge(Layer.merge(repository, markedMemory)),
+        Layer.provideMerge(database),
+        Layer.merge(teamMemory({})),
+      ),
+    ),
+  ),
 );
 
 it.effect(
