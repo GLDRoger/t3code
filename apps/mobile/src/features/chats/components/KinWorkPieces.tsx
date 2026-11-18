@@ -15,6 +15,7 @@ import {
 import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
 import { type ComponentRef, useEffect, useRef, useState } from "react";
 import { Pressable, TextInput, View } from "react-native";
+import { KeyboardStickyView } from "react-native-keyboard-controller";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../../components/ui/AppBar";
@@ -48,10 +49,17 @@ export function KinWorkFrame(
     readonly form?: boolean;
     /** A problem drawn at the top: the form scrolls up to it whenever it changes. */
     readonly showTop?: string | null;
+    /** Pinned under the page and above the keyboard, such as a note composer. */
+    readonly footer?: {
+      readonly node: React.ReactNode;
+      /** The space under it with the keyboard closed, which the keyboard covers when open. */
+      readonly bottomInset: number;
+    };
     readonly children: React.ReactNode;
   },
 ) {
-  const { form, showTop, children, ...bar } = props;
+  const { form, showTop, footer, children, ...bar } = props;
+  const [footerHeight, setFooterHeight] = useState(0);
   const scroll = useRef<ComponentRef<typeof ScreenScrollView>>(null);
   const barOverlap = useBarOverlap();
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- moves the native scroll view so a save's problem, drawn at the top, isn't left under the header
@@ -80,12 +88,22 @@ export function KinWorkFrame(
           contentContainerStyle={{
             padding: 16,
             paddingTop: form ? 16 + barOverlap : 16,
-            paddingBottom: 32,
+            paddingBottom: 32 + footerHeight,
             gap: 20,
           }}
         >
           {children}
         </ScreenScrollView>
+        {footer === undefined ? null : (
+          <KeyboardStickyView
+            style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}
+            offset={{ closed: 0, opened: footer.bottomInset }}
+          >
+            <View onLayout={(event) => setFooterHeight(event.nativeEvent.layout.height)}>
+              {footer.node}
+            </View>
+          </KeyboardStickyView>
+        )}
       </ScreenContent>
     </View>
   );

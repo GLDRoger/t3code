@@ -536,11 +536,12 @@ it.effect(
         "record_update",
         "record_assign",
         "record_hand_back",
+        "record_comment",
         "money_summary",
         "dates_query",
         "touch_log",
       ]);
-      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 15);
+      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 16);
       for (const tool of Object.keys(KinWorkToolkit.tools))
         assert.strictEqual(yield* sharedToolAllowed(shared, tool, {}), view.has(tool), tool);
       // G06: tasks made for the people there, whoever holds them, are shared with the team.
@@ -586,6 +587,10 @@ it.effect(
         // Their own; the owner level anyone's (`handOver`).
         "kin.work.handOver",
         "kin.work.update",
+        // Anyone who sees the entry; its author or the owner level removes one.
+        "kin.work.comment",
+        "kin.work.commentRemove",
+        "kin.work.comments",
         // Its lead too; the service refuses anyone else (`teamGuard`).
         "kin.work.projectPeople",
       ]);
@@ -593,7 +598,7 @@ it.effect(
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 42);
+      assert.lengthOf(methods, 45);
       for (const method of methods)
         assert.strictEqual(kinRpcAccess(method) === "person", teammate.has(method), method);
     }).pipe(Effect.provide(layer)),

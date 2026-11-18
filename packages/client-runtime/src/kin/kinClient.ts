@@ -1389,6 +1389,23 @@ export function makeKinClient<R, ER>(
       tag: "kin.work.handBack",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
     }),
+    /** A note on a task from anyone who sees it, with files they just uploaded. */
+    workComment: createKinRpcCommand(runtime, {
+      label: "kin:work:comment",
+      tag: "kin.work.comment",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    /** Its author takes a comment back, or the owner level any. */
+    workCommentRemove: createKinRpcCommand(runtime, {
+      label: "kin:work:commentRemove",
+      tag: "kin.work.commentRemove",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.commentId },
+    }),
+    /** A task's comments before the first its sheet carries. */
+    workComments: createKinRpcCommand(runtime, {
+      label: "kin:work:comments",
+      tag: "kin.work.comments",
+    }),
     /** Every open task someone holds, to someone else; `dryRun` counts them first. */
     workHandOver: createKinRpcCommand(runtime, {
       label: "kin:work:handOver",

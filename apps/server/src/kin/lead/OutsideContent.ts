@@ -104,6 +104,7 @@ export const OUTSIDE_TOOLS = {
   touch_log: "allowed",
   record_assign: "allowed",
   record_hand_back: "allowed",
+  record_comment: "allowed",
   doc_create: "allowed",
   doc_read: "allowed",
   doc_edit: "allowed",

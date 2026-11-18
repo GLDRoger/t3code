@@ -106,7 +106,7 @@ const NO_PLAYBACK = () => undefined;
 const NO_TARGET = () => undefined;
 
 /** A message's files, drawn by the thread feed's own attachment views at a bubble's width. */
-function KinAttachments(props: {
+export function KinAttachments(props: {
   readonly attachments: ReadonlyArray<KinAttachment>;
   readonly environmentId: EnvironmentId;
   readonly onPressPreview: (source: FilePreviewSource) => void;

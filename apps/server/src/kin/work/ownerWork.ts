@@ -41,6 +41,7 @@ import {
 } from "./KinRecords.ts";
 import { fieldList, LISTS, type ListName, parseFields } from "./lists.ts";
 import { milestoneLinks } from "./projectSpine.ts";
+import { sheetExtras } from "./recordComments.ts";
 import { isBuiltIn, listDef, unknownList } from "./registers.ts";
 import { type AssignNotice, movedNotices, tellPeople } from "./assignNotices.ts";
 import { teamAgent as theTeamAgent } from "../lead/LeadAccess.ts";
@@ -540,7 +541,8 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
   const can = (yield* cansOf(viewer, detail.orgId, [{ ...detail, registerId: row.registerId }]))(
     detail.recordId,
   );
-  if (!viewer.teammate) return { ...detail, can };
+  const extras = yield* sheetExtras(detail.orgId, viewer, detail).pipe(workFailure);
+  if (!viewer.teammate) return { ...detail, ...extras, can };
   const { personId } = viewer.person;
   const seen = yield* teamVisible(detail.orgId, personId, [detail.recordId]).pipe(workFailure);
   if (!seen.has(detail.recordId) && !justHidden)
@@ -569,7 +571,11 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
           !(yield* placesOf(detail.orgId, personId).pipe(workFailure)).clients
         ? named()
         : detail;
-  return { ...(yield* teamDetail(shown, personId, number, whole).pipe(workFailure)), can };
+  return {
+    ...(yield* teamDetail(shown, personId, number, whole).pipe(workFailure)),
+    ...extras,
+    can,
+  };
 });
 
 type Counts = { open: number; doing: number; waiting: number; late: number; dueThisWeek: number };

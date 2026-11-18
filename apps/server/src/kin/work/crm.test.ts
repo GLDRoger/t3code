@@ -46,6 +46,7 @@ import { effectivelySensitive } from "./recordRows.ts";
 import { presetDefinition } from "./registers.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import * as Touches from "./touches.ts";
+import * as Comments from "./workComments.ts";
 import { buildWorkSection } from "./workPrompt.ts";
 
 // Invented org, people, clients and work only; nothing here reads a real database.
@@ -749,6 +750,8 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
         LeadWork.handBack(scope, { key: "W-2", sourceEventId: "ask-event", note: "Invented" }),
         false,
       ],
+      // The comment's own key and id: nothing of the entry.
+      record_comment: [Comments.leadComment(scope, { key: "W-2", body: "Invented note" }), false],
       list_define: [
         LeadMoney.define(scope, { sourceEventId: "ask-event", name: "Invented leave" }),
         false,
