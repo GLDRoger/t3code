@@ -139,6 +139,8 @@ export const commentMine = Effect.fn("KinTasksKey.comment")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const identity = yield* KinIdentity;
+  // Before any lookup, so an ended key is told so whether or not the entry exists.
+  yield* stillTheirs(holder).pipe(workFailure);
   const written = yield* comment(
     [{ _tag: "person", orgId: holder.orgId, personId: holder.personId }],
     {
@@ -150,7 +152,8 @@ export const commentMine = Effect.fn("KinTasksKey.comment")(function* (
     undefined,
     {
       sessionId: holder.sessionId,
-      // In the comment's own transaction: the key is still live and the task still theirs.
+      // In the comment's own transaction: the key is still live and the task still theirs. A key
+      // that ended since the check above sees nothing, as for an entry that isn't there.
       sees: (recordId) =>
         stillTheirs(holder).pipe(
           Effect.provideService(KinIdentity, identity),
@@ -158,6 +161,7 @@ export const commentMine = Effect.fn("KinTasksKey.comment")(function* (
             sql`SELECT 1 FROM kin_records r WHERE ${held(sql, holder)} AND r.record_id = ${recordId}`,
           ),
           Effect.map((found) => found.length > 0),
+          Effect.catchTags({ KinChatError: () => Effect.succeed(false) }),
         ),
     },
   );

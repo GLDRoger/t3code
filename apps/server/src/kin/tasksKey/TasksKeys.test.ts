@@ -332,6 +332,12 @@ it.effect("a key ends at once when revoked, by its holder or the owner and nobod
       yield* reason(commentMine(holder, { key: hers.key, text: "Invented: late" })),
       "not_allowed",
     );
+    // An ended key hears the same whether or not the entry exists.
+    for (const key of [hers.key, "W-9999"])
+      assert.strictEqual(
+        yield* reason(commentMine(holder, { key, text: "Invented: late" })),
+        "not_allowed",
+      );
     assert.strictEqual(
       yield* reason(setStateMine(holder, { key: hers.key, state: "done" })),
       "not_allowed",
