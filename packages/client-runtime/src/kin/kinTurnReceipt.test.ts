@@ -1,7 +1,12 @@
-import { KinAgentId, type KinTurnChange, type KinTurnChanges } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  type KinMessageLink,
+  type KinTurnChange,
+  type KinTurnChanges,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinTurnReceiptLine, kinTurnReceiptRows } from "./kinTurnReceipt.ts";
+import { kinTurnReceiptLine, kinTurnReceiptRows, kinTurnReceiptTarget } from "./kinTurnReceipt.ts";
 
 // Invented entries only.
 const item = (key: string, seq: number, extra: Partial<KinTurnChange> = {}): KinTurnChange => ({
@@ -62,5 +67,25 @@ describe("a turn's receipt", () => {
     expect(more).toBe("2 more changes");
     expect(kinTurnReceiptRows(turn([item("W-1", 1)], 2)).more).toBe("1 more change");
     expect(kinTurnReceiptRows(undefined)).toEqual({ rows: [], more: null });
+  });
+
+  it.each([
+    ["the change's own kind", "client", "client"],
+    ["the reply's link, from an older host", undefined, "project"],
+  ] as const)("opens as %s", (_name, kind, opens) => {
+    const links: ReadonlyArray<KinMessageLink> = [
+      { text: "C-1", to: { _tag: "record", key: "C-1", kind: "project" }, note: null },
+    ];
+    expect(kinTurnReceiptTarget(item("C-1", 1, kind === undefined ? {} : { kind }), links)).toEqual(
+      { _tag: "record", key: "C-1", kind: opens },
+    );
+  });
+
+  it("opens an entry nothing names in the task sheet", () => {
+    expect(kinTurnReceiptTarget(item("C-1", 1), undefined)).toEqual({
+      _tag: "record",
+      key: "C-1",
+      kind: "task",
+    });
   });
 });

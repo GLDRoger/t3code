@@ -84,13 +84,15 @@ export const KinMessageRef = Schema.TaggedStruct("doc", {
 export type KinMessageRef = typeof KinMessageRef.Type;
 export const KIN_MESSAGE_REFS_CAP = 5;
 
+/** The sheet an entry opens in. */
+const KinRecordLinkKind = Schema.Literals(["task", "client", "project", "doc", "entry"]);
 /** Where a name in a message goes: a chat, a teammate's profile, an entry by its key, or Settings. */
 export const KinMessageLinkTarget = Schema.Union([
   Schema.TaggedStruct("chat", { chatId: TrimmedNonEmptyString }),
   Schema.TaggedStruct("person", { personId: TrimmedNonEmptyString }),
   Schema.TaggedStruct("record", {
     key: KinRefKey,
-    kind: Schema.Literals(["task", "client", "project", "doc", "entry"]),
+    kind: KinRecordLinkKind,
   }),
   Schema.TaggedStruct("settings", {}),
 ]);
@@ -268,6 +270,8 @@ export const KIN_TURN_CHANGES_SHOWN = 5;
  */
 export const KinTurnChange = Schema.Struct({
   key: KinRefKey,
+  // Absent from an older host.
+  kind: Schema.optional(KinRecordLinkKind),
   title: Schema.String,
   what: Schema.String,
   change: Schema.Struct({ agentId: KinAgentId, seq: PositiveInt }),

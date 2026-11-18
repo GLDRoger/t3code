@@ -23,6 +23,13 @@ import {
   type KinWorkRef,
 } from "@t3tools/client-runtime/kin/kinWork";
 import {
+  KIN_LINKED,
+  kinLinked,
+  kinLinkedRest,
+  type KinLinkedGroupName,
+  type KinLinkedItem,
+} from "@t3tools/client-runtime/kin/kinLinked";
+import {
   KIN_TASK_RECORD,
   kinBriefBy,
   kinNextStep,
@@ -46,9 +53,10 @@ import {
   type KinRecordDetail,
   type KinRecordKey,
 } from "@t3tools/contracts";
-import { Link } from "@tanstack/react-router";
+import { kinTaskProjectMenu } from "@t3tools/client-runtime/kin/kinWorkForms";
+import { Link, useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
-import { AsyncResult } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -72,8 +80,9 @@ import {
   PlayIcon,
   RepeatIcon,
   RotateCcwIcon,
+  XIcon,
 } from "lucide-react";
-import { useId, useState } from "react";
+import { useId, useState, type ComponentProps } from "react";
 
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
@@ -118,6 +127,7 @@ import { KinWorkRow } from "./KinWorkTasks";
 import { KinWorkSection as Section } from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
+import { openDestination } from "./KinNotifications";
 import { useNowMinuteMs } from "./useKinClock";
 import {
   useKinWorkItemWatch,
@@ -137,10 +147,44 @@ const LINK_ICON: Record<KinWorkLinkView["kind"], typeof LinkIcon> = {
   link: LinkIcon,
 };
 
-/** One task beside the list: where it stands, its next step, who has it, and what happened to it. */
+const SHEET_FRAME = { Header: SheetHeader, Title: SheetTitle, Description: SheetDescription };
+// The same header outside a dialog, where the sheet's title and description have no dialog to name.
+const PAGE_FRAME = {
+  Header: (props: ComponentProps<"div">) => (
+    <div className="flex flex-col gap-2 p-6 max-sm:pb-4" {...props} />
+  ),
+  Title: (props: ComponentProps<"h2">) => (
+    <h2 className="text-xl leading-snug font-semibold" {...props} />
+  ),
+  Description: (props: ComponentProps<"p">) => (
+    <p className="text-sm text-muted-foreground" {...props} />
+  ),
+};
+type KinItemFrame = typeof SHEET_FRAME | typeof PAGE_FRAME;
+
+const NO_ITEM: ReturnType<typeof kinClient.workItem> = Atom.make(AsyncResult.initial());
+
+/** Whether the record open by key is a task or a list entry, once its read has answered. */
+export function useKinOpenedKind(target: KinWorkTarget, key: KinRecordKey | null) {
+  const { environmentId, orgId } = target;
+  const result = useAtomValue(
+    key === null ? NO_ITEM : kinClient.workItem({ environmentId, input: { orgId, key } }),
+  );
+  const item = Option.getOrNull(AsyncResult.value(result));
+  return item === null ? "unknown" : item.list === undefined ? "task" : "entry";
+}
+
+const focusOnMount = (node: HTMLElement | null) => node?.focus({ preventScroll: true });
+
+/**
+ * One task: where it stands, its next step, who has it, and what happened to it. It opens in the
+ * record pane beside the list (`pane`), as the whole page on a narrow window (`page`), or over the
+ * place (`sheet`); a list entry always opens over the place.
+ */
 export function KinWorkItemSheet(
   props: KinWorkTarget & {
     readonly itemKey: KinRecordKey;
+    readonly frame: "sheet" | "pane" | "page";
     readonly directory: KinWorkDirectory;
     readonly changes: KinWorkChangesHandle;
     /** The clients and projects it can go under; null on a host without them. */
@@ -170,93 +214,124 @@ export function KinWorkItemSheet(
     state._tag === "ready" ? state.item.tasks?.map((task) => task.key) : undefined,
   );
   const saving = changed.pending[itemKey] !== undefined;
+  const close = () => {
+    if (!saving) props.onClose();
+  };
+  const entry = state._tag === "ready" && state.item.list !== undefined;
+  const sheet = props.frame === "sheet" || entry;
+  const Frame = sheet ? SHEET_FRAME : PAGE_FRAME;
 
+  const content =
+    state._tag === "ready" && state.item.list !== undefined ? (
+      <KinListEntry
+        {...props}
+        item={state.item}
+        view={kinWorkItemView(state.item, names, now, KIN_RECORD_CHANGES_CAP, place)}
+        now={now}
+        links={
+          <KinWorkLinks
+            {...props}
+            item={state.item}
+            links={kinWorkItemView(state.item, names, now, KIN_RECORD_CHANGES_CAP, place).links}
+          />
+        }
+      />
+    ) : state._tag === "ready" ? (
+      <KinWorkItem
+        {...props}
+        frame={Frame}
+        item={state.item}
+        shown={kinWorkApplied(state.item, changed)}
+        view={kinWorkItemView(
+          kinWorkApplied(state.item, changed),
+          names,
+          now,
+          KIN_RECORD_CHANGES_CAP,
+          place,
+        )}
+        now={now}
+        saving={saving}
+        notice={changed.notice?.key === itemKey ? changed.notice : null}
+        edit={changed.edit?.key === itemKey ? changed.edit : null}
+        canChange={canChange}
+        canGive={canGive}
+        canComment={canComment}
+        onAct={(action) => void changes.run(state.item, action, names)}
+        onUndo={() => void changes.undo(names, state.item)}
+        onStartEdit={() => changes.startEdit(state.item)}
+        onEdit={changes.setEdit}
+        onCancelEdit={changes.cancelEdit}
+        onSaveEdit={() => void changes.saveEdit(state.item, names)}
+      />
+    ) : (
+      <>
+        <Frame.Header>
+          <Frame.Title>
+            {state._tag === "gone"
+              ? KIN_WORK_GONE.title
+              : state._tag === "failed"
+                ? KIN_WORK_ITEM_FAILED.title
+                : itemKey}
+          </Frame.Title>
+          <Frame.Description>
+            {state._tag === "gone"
+              ? KIN_WORK_GONE.detail
+              : state._tag === "failed"
+                ? KIN_WORK_ITEM_FAILED.detail
+                : "Loading…"}
+          </Frame.Description>
+        </Frame.Header>
+        <div className="flex flex-col items-start gap-3 px-6 pb-6">
+          {state._tag === "loading" ? (
+            <div className="flex w-full flex-col gap-2" role="status" aria-label="Loading task">
+              <Skeleton className="h-4 w-4/5" />
+              <Skeleton className="h-3.5 w-3/5" />
+              <Skeleton className="h-3.5 w-2/5" />
+            </div>
+          ) : state._tag === "failed" ? (
+            <Button size="sm" variant="outline" onClick={() => appAtomRegistry.refresh(itemAtom)}>
+              Retry
+            </Button>
+          ) : null}
+        </div>
+      </>
+    );
+
+  if (sheet)
+    return (
+      <Sheet
+        open
+        onOpenChange={(open) => {
+          if (!open) close();
+        }}
+      >
+        <SheetPopup side="right">{content}</SheetPopup>
+      </Sheet>
+    );
   return (
-    <Sheet
-      open
-      onOpenChange={(open) => {
-        if (!open && !saving) props.onClose();
+    <div
+      ref={focusOnMount}
+      tabIndex={-1}
+      aria-label={itemKey}
+      role="region"
+      className="relative mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col outline-none"
+      onKeyDown={(event) => {
+        // Escape inside a menu or dialog it opened is theirs: those render outside this element.
+        if (event.key !== "Escape" || event.defaultPrevented) return;
+        if (!(event.target instanceof Node) || !event.currentTarget.contains(event.target)) return;
+        event.preventDefault();
+        close();
       }}
     >
-      <SheetPopup side="right">
-        {state._tag === "ready" && state.item.list !== undefined ? (
-          <KinListEntry
-            {...props}
-            item={state.item}
-            view={kinWorkItemView(state.item, names, now, KIN_RECORD_CHANGES_CAP, place)}
-            now={now}
-            links={
-              <KinWorkLinks
-                {...props}
-                links={kinWorkItemView(state.item, names, now, KIN_RECORD_CHANGES_CAP, place).links}
-              />
-            }
-          />
-        ) : state._tag === "ready" ? (
-          <KinWorkItem
-            {...props}
-            item={state.item}
-            shown={kinWorkApplied(state.item, changed)}
-            view={kinWorkItemView(
-              kinWorkApplied(state.item, changed),
-              names,
-              now,
-              KIN_RECORD_CHANGES_CAP,
-              place,
-            )}
-            now={now}
-            saving={saving}
-            notice={changed.notice?.key === itemKey ? changed.notice : null}
-            edit={changed.edit?.key === itemKey ? changed.edit : null}
-            canChange={canChange}
-            canGive={canGive}
-            canComment={canComment}
-            onAct={(action) => void changes.run(state.item, action, names)}
-            onUndo={() => void changes.undo(names, state.item)}
-            onStartEdit={() => changes.startEdit(state.item)}
-            onEdit={changes.setEdit}
-            onCancelEdit={changes.cancelEdit}
-            onSaveEdit={() => void changes.saveEdit(state.item, names)}
-          />
-        ) : (
-          <>
-            <SheetHeader>
-              <SheetTitle>
-                {state._tag === "gone"
-                  ? KIN_WORK_GONE.title
-                  : state._tag === "failed"
-                    ? KIN_WORK_ITEM_FAILED.title
-                    : itemKey}
-              </SheetTitle>
-              <SheetDescription>
-                {state._tag === "gone"
-                  ? KIN_WORK_GONE.detail
-                  : state._tag === "failed"
-                    ? KIN_WORK_ITEM_FAILED.detail
-                    : "Loading…"}
-              </SheetDescription>
-            </SheetHeader>
-            <div className="flex flex-col items-start gap-3 px-6 pb-6">
-              {state._tag === "loading" ? (
-                <div className="flex w-full flex-col gap-2" role="status" aria-label="Loading task">
-                  <Skeleton className="h-4 w-4/5" />
-                  <Skeleton className="h-3.5 w-3/5" />
-                  <Skeleton className="h-3.5 w-2/5" />
-                </div>
-              ) : state._tag === "failed" ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => appAtomRegistry.refresh(itemAtom)}
-                >
-                  Retry
-                </Button>
-              ) : null}
-            </div>
-          </>
-        )}
-      </SheetPopup>
-    </Sheet>
+      {content}
+      {props.frame === "page" ? null : (
+        <div className="absolute end-2 top-2">
+          <Button size="icon" variant="ghost" aria-label="Close task" onClick={close}>
+            <XIcon />
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 /** The holder gives the task back to whoever gave it, saying why if they like. */
@@ -392,6 +467,7 @@ function DetailPerson(props: {
  */
 function KinWorkItem(
   props: KinWorkTarget & {
+    readonly frame: KinItemFrame;
     readonly item: KinRecordDetail;
     /** The task with this browser's unsaved changes applied, as `view` reads it. */
     readonly shown: KinRecordDetail;
@@ -417,7 +493,7 @@ function KinWorkItem(
     readonly onClose: () => void;
   },
 ) {
-  const { view, environmentId, orgId, saving, edit, shown } = props;
+  const { view, environmentId, orgId, saving, edit, shown, frame: Frame } = props;
   const { orgs, people, joined, invited, names } = props.directory;
   const opensClients = useKinOpensClients(environmentId);
   const [handingBack, setHandingBack] = useState(false);
@@ -471,13 +547,13 @@ function KinWorkItem(
   const more = (reword !== null && edit === null) || status || giving || view.handBackTo !== null;
   return (
     <>
-      <SheetHeader>
+      <Frame.Header>
         <div className="flex flex-col gap-2 pe-8 wrap-break-word">
           <div className="flex flex-wrap items-center gap-2">
             <KinRecordChip tone={chip.tone} label={chip.label} />
-            <SheetDescription>
+            <Frame.Description>
               {view.heading === "Task" ? view.key : `${view.key} · ${view.heading}`}
-            </SheetDescription>
+            </Frame.Description>
             {saving ? (
               <span role="status" className="text-xs text-muted-foreground">
                 {KIN_WORK_COPY.saving}
@@ -560,14 +636,14 @@ function KinWorkItem(
               </div>
             )}
           </div>
-          {edit !== null ? null : <SheetTitle>{view.title}</SheetTitle>}
+          {edit !== null ? null : <Frame.Title>{view.title}</Frame.Title>}
           {view.remarks.map((remark) => (
             <p key={remark} className="text-xs text-muted-foreground">
               {remark}
             </p>
           ))}
         </div>
-      </SheetHeader>
+      </Frame.Header>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
         {edit === null ? null : (
           <form
@@ -764,6 +840,7 @@ function KinWorkItem(
                     label={KIN_WORK_NEW_COPY.projectLabel}
                     value={view.project}
                     choices={choices.projects}
+                    done={choices.doneProjects}
                     saving={saving}
                     clearable={view.can.clearProject}
                     onPick={
@@ -926,7 +1003,12 @@ function KinWorkItem(
           now={props.now}
           note={view.historyNote}
         />
-        <KinWorkLinks {...props} title={KIN_TASK_RECORD.linked} links={view.links} />
+        <KinWorkLinks
+          {...props}
+          item={props.shown}
+          title={KIN_TASK_RECORD.linked}
+          links={view.links}
+        />
       </div>
       {!props.canComment || edit !== null ? null : (
         <div className="px-4 pt-2 pb-4">
@@ -952,9 +1034,10 @@ function KinWorkItem(
   );
 }
 
-/** What an entry points at: the message it came from, a pull request, another entry. */
-function KinWorkLinks(
+/** Everything linked to an entry, both ways, by kind; then its pull requests, workers and pages. */
+export function KinWorkLinks(
   props: KinWorkTarget & {
+    readonly item: Parameters<typeof kinLinked>[0];
     readonly links: ReadonlyArray<KinWorkLinkView>;
     /** A task's reads "Linked", as the phone's does; a list entry's keeps "Links". */
     readonly title?: string;
@@ -962,22 +1045,92 @@ function KinWorkLinks(
     readonly onClose: () => void;
   },
 ) {
-  if (props.links.length === 0) return null;
+  const navigate = useNavigate();
+  const rest = kinLinkedRest(props.links);
   return (
-    <Section title={props.title ?? "Links"}>
-      <ul className="flex flex-col">
-        {props.links.map((link) => (
-          <li key={link.key}>
-            <KinWorkLink
-              link={link}
-              environmentId={props.environmentId}
-              orgId={props.orgId}
-              onOpen={props.onClose}
-              onOpenKey={props.onOpenKey}
-            />
-          </li>
-        ))}
-      </ul>
+    <KinLinkedGroups
+      item={props.item}
+      title={props.title ?? "Links"}
+      // Both panels show the entry's client, project and milestone in their rows already.
+      parentsShown
+      // A task or list entry opens on this panel; a doc, client or project has its own page.
+      onOpen={(item) =>
+        item.open._tag === "record" && (item.open.kind === "task" || item.open.kind === "entry")
+          ? props.onOpenKey(item.open.key)
+          : void openDestination(navigate, props, item.open)
+      }
+    >
+      {rest.length === 0 ? null : (
+        <ul className="flex flex-col">
+          {rest.map((link) => (
+            <li key={link.key}>
+              <KinWorkLink
+                link={link}
+                environmentId={props.environmentId}
+                orgId={props.orgId}
+                onOpen={props.onClose}
+                onOpenKey={props.onOpenKey}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </KinLinkedGroups>
+  );
+}
+
+/** What links to an entry or doc and what it links to, by kind; `children` follow the groups. */
+export function KinLinkedGroups(props: {
+  readonly item: Parameters<typeof kinLinked>[0];
+  readonly title: string;
+  readonly parentsShown: boolean;
+  readonly onOpen: (item: KinLinkedItem) => void;
+  readonly children?: React.ReactNode;
+}) {
+  const [expanded, setExpanded] = useState<ReadonlySet<KinLinkedGroupName>>(new Set());
+  const linked = kinLinked(props.item, undefined, { expanded, parentsShown: props.parentsShown });
+  const children = props.children ?? null;
+  if (linked.groups.length === 0 && children === null && linked.unlisted === 0) return null;
+  return (
+    <Section title={props.title}>
+      {linked.groups.map((group) => (
+        <div key={group.group} className="flex flex-col">
+          <h4 className="px-1 text-xs text-muted-foreground">{KIN_LINKED.group[group.group]}</h4>
+          <ul className="flex flex-col">
+            {group.items.map((item) => (
+              <li key={item.key}>
+                <button
+                  type="button"
+                  onClick={() => props.onOpen(item)}
+                  className={`${LINK_ROW} ${LINK_ROW_OPENS}`}
+                >
+                  {item.kind === "message" ? null : (
+                    <span className="shrink-0 text-xs text-muted-foreground">{item.key}</span>
+                  )}
+                  <span className="min-w-0 flex-1 truncate text-foreground">
+                    {item.title ?? KIN_LINKED.message}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          {group.more === 0 ? null : (
+            <div>
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={() => setExpanded(new Set([...expanded, group.group]))}
+              >
+                {KIN_LINKED.more(group.more)}
+              </Button>
+            </div>
+          )}
+        </div>
+      ))}
+      {children}
+      {linked.unlisted === 0 ? null : (
+        <p className="px-1 text-xs text-muted-foreground">{KIN_LINKED.unlisted(linked.unlisted)}</p>
+      )}
     </Section>
   );
 }
@@ -989,6 +1142,8 @@ function PlaceMenu(props: {
   readonly label: string;
   readonly value: KinWorkRef | null;
   readonly choices: ReadonlyArray<KinWorkRef>;
+  /** Done projects, under their own heading after the open ones. */
+  readonly done?: ReadonlyArray<KinWorkRef>;
   readonly saving: boolean;
   /** Null where the task can't be changed, which leaves only opening it. */
   readonly onPick: ((value: KinWorkRef | null) => void) | null;
@@ -1003,6 +1158,7 @@ function PlaceMenu(props: {
   };
 }) {
   const { value, onPick, side } = props;
+  const groups = kinTaskProjectMenu({ projects: props.choices, doneProjects: props.done ?? [] });
   if (onPick === null) {
     if (value === null) return null;
     const { onOpen } = props;
@@ -1036,18 +1192,24 @@ function PlaceMenu(props: {
             <MenuSeparator />
           </>
         )}
-        {props.choices.map((choice) => (
-          <MenuItem
-            key={choice.key}
-            disabled={choice.key === value?.key}
-            onClick={() => onPick(choice)}
-          >
-            <span className={PLACE_ROW}>{choice.title}</span>
-          </MenuItem>
+        {groups.map((group, index) => (
+          <MenuGroup key={group.label ?? ""}>
+            {index === 0 ? null : <MenuSeparator />}
+            {group.label === null ? null : <MenuGroupLabel>{group.label}</MenuGroupLabel>}
+            {group.choices.map((choice) => (
+              <MenuItem
+                key={choice.key}
+                disabled={choice.key === value?.key}
+                onClick={() => onPick(choice)}
+              >
+                <span className={PLACE_ROW}>{choice.title}</span>
+              </MenuItem>
+            ))}
+          </MenuGroup>
         ))}
         {value === null || props.clearable === false ? null : (
           <>
-            {props.choices.length === 0 ? null : <MenuSeparator />}
+            {groups.length === 0 ? null : <MenuSeparator />}
             <MenuItem onClick={() => onPick(null)}>{KIN_WORK_NEW_COPY.none}</MenuItem>
           </>
         )}

@@ -41,6 +41,7 @@ import {
 import { toastManager } from "../components/ui/toast";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
+import { useKinFormOpen } from "./kinOverlayParts";
 import { useKinWorkDirectory } from "./useKinWork";
 
 /**
@@ -56,7 +57,7 @@ export function KinAwayField(props: {
 }) {
   const { profile } = props;
   const update = useAtomCommand(kinClient.profileUpdate, { reportFailure: false });
-  const [picking, setPicking] = useState(false);
+  const [picking, setPicking] = useKinFormOpen();
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const line = kinAwayLine(profile, { mine: props.mine });
@@ -215,7 +216,7 @@ export function KinHandOverButton(props: {
   readonly label?: string;
   readonly onDone?: (moved: number) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useKinFormOpen();
   const { counted, ask } = useKinHandOverCount(props.environmentId, props.orgId);
   return (
     <>

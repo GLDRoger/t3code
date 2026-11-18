@@ -488,7 +488,11 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             attachments: ["INV-1"],
           });
           const card = cards.at(-1)!;
-          assert.strictEqual(card.question, "Send this email from Gmail?");
+          // Drafted after the search, which read both accounts: either may be named.
+          assert.oneOf(card.question, [
+            `Send this email from Gmail? Drafted after reading text from ${ACCOUNTS}, so check it before you confirm.`,
+            `Send this email from Gmail? Drafted after reading text from ${HELLO}, so check it before you confirm.`,
+          ]);
           assert.deepStrictEqual(
             [card.send?.account, card.send?.from, card.send?.to, card.send?.subject],
             [ACCOUNTS, ACCOUNTS, ["ravi@lumen.example"], "Invoice INV/26-27/001"],
@@ -710,14 +714,16 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.lengthOf(fake.sent(), 2);
         assert.strictEqual(fake.sent()[1]!.threadId, inbound.threadId);
 
-        // The mail service fails while sending: not sent, and the same mail comes back too.
+        // A 503 once the send left may have gone: never resent, and the mail comes back to check.
         const third = yield* reply("Yes, and the PDF is attached.");
         fake.setDown(HELLO, true);
         const broke = yield* tap(third.widgetId, owner);
         if (broke === undefined || !("state" in broke) || broke.fresh === undefined)
           return assert.fail("no fresh card after a failed send");
         assert.strictEqual(broke.state, "failed");
-        assert.include(broke.reason ?? "", "The same mail is below");
+        assert.include(broke.reason ?? "", "This may or may not have gone.");
+        assert.include(broke.reason ?? "", "the same mail below");
+        assert.lengthOf(fake.sent(), 2);
         fake.setDown(HELLO, false);
         // Kin restarts before that card posts: at start the mail still comes back.
         const later = (yield* Clock.currentTimeMillis) + 1;
@@ -748,7 +754,8 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         const [cut] = yield* connections.interruptedSends(orgId, NOW + 1);
         if (cut?.fresh === undefined) return assert.fail("no fresh card after a restart");
         assert.deepInclude(cut, { widgetId: fourth.widgetId, state: "failed" });
-        assert.include(cut.reason ?? "", "may or may not have gone");
+        // The send was never claimed, so it is known not to have gone.
+        assert.include(cut.reason ?? "", "Kin restarted before sending this, so nothing was sent.");
         assert.lengthOf(yield* connections.interruptedSends(orgId, NOW + 1), 0);
         const resumed = yield* connections.freshAsk(orgId, cut.fresh, NOW);
         if (resumed === undefined) return assert.fail("no fresh card");
@@ -776,7 +783,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         fake.setDown(HELLO, false);
         assert.strictEqual(lost.state, "failed");
         assert.isUndefined(lost.fresh);
-        assert.include(lost.reason ?? "", "newer card");
+        assert.include(lost.reason ?? "", "This may or may not have gone.");
         assert.deepStrictEqual(yield* tap(correction.widgetId, owner), {
           state: "sent",
           reason: null,
