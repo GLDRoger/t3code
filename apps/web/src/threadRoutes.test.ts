@@ -56,6 +56,9 @@ describe("threadRoutes", () => {
     const router = createRouter({
       routeTree: root.addChildren([thread, newThread]),
       history: createMemoryHistory({ initialEntries: ["/new"] }),
+      // Without a document the router runs as SSR, where navigate is a no-op.
+      isServer: false,
+      origin: "http://localhost",
     });
     await router.load();
     const ref = scopeThreadRef("local" as never, ThreadId.make("mcp:example"));

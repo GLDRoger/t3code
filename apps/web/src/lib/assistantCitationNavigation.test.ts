@@ -33,6 +33,9 @@ function createCitationRouter(initialEntry = "/environment-one/thread-one") {
   return createRouter({
     routeTree: root.addChildren([thread]),
     history: createMemoryHistory({ initialEntries: [initialEntry] }),
+    // Without a document the router runs as SSR, where navigate is a no-op.
+    isServer: false,
+    origin: "http://localhost",
   });
 }
 

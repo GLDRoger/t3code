@@ -77,6 +77,9 @@ function createSettingsRouter(initialEntry = "/settings/general") {
       legacyProject,
     ]),
     history: createMemoryHistory({ initialEntries: [initialEntry] }),
+    // Without a document the router runs as SSR, where navigate is a no-op.
+    isServer: false,
+    origin: "http://localhost",
   });
 }
 
@@ -122,7 +125,6 @@ describe("settings scope navigation", () => {
       });
       expect(router.state.location.pathname).toBe(to);
       expect(router.state.location.search).toEqual(regroupedCheckout);
-      expect(router.state.redirect).toBeUndefined();
 
       await router.navigate({
         from: "/settings",
@@ -220,8 +222,6 @@ describe("settings scope navigation", () => {
       to: "/projects/$projectKey",
       params: { projectKey: "legacy-project" },
     });
-    expect(router.state.redirect).not.toBeUndefined();
-    await router.navigate(router.state.redirect!.options);
     expect(router.state.location.pathname).toBe("/settings/projects");
     expect(router.state.location.search).toEqual({ project: "legacy-project" });
   });
@@ -229,8 +229,6 @@ describe("settings scope navigation", () => {
   it("keeps scope through the settings index redirect", async () => {
     const router = createSettingsRouter();
     await router.navigate({ to: "/settings", search: { machine: "remote-server" } });
-    expect(router.state.redirect).not.toBeUndefined();
-    await router.navigate(router.state.redirect!.options);
     expect(router.state.location.pathname).toBe("/settings/general");
     expect(router.state.location.search).toEqual({ machine: "remote-server" });
   });
