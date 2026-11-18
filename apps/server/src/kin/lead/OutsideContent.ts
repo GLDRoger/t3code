@@ -5,7 +5,6 @@ import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
-import { resolveConnection } from "../connections/ConnectionRows.ts";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 
 type Turn = {
@@ -31,21 +30,6 @@ export const OUTSIDE_REFUSAL =
 
 const field = (args: unknown, name: string) =>
   Predicate.hasProperty(args, name) ? args[name] : undefined;
-
-/** Only a closed connection's tool that doesn't say it reaches the open world. */
-const closedRead: Condition = Effect.fnUntraced(function* (turn, args) {
-  const connection = field(args, "connection");
-  const tool = field(args, "tool");
-  if (typeof connection !== "string" || typeof tool !== "string") return false;
-  const found = yield* resolveConnection(turn.orgId, connection);
-  if (found._tag !== "found" || found.row.reach !== "closed") return false;
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ openWorld: number }>`SELECT open_world AS "openWorld"
-    FROM kin_connection_tools WHERE org_id = ${turn.orgId}
-      AND connection_id = ${found.row.connectionId} AND tool_name = ${tool} AND removed_at IS NULL
-    ORDER BY tool_name`;
-  return rows.length === 1 && rows[0]!.openWorld === 0;
-});
 
 /** A recipe's file is made by Kin in the call; a file the agent made, or a recipe it writes, is not. */
 const recipeOnly: Condition = (_turn, args) =>
@@ -104,6 +88,7 @@ export const OUTSIDE_TOOLS = {
   touch_log: "allowed",
   record_assign: "allowed",
   record_hand_back: "allowed",
+  record_comment: "allowed",
   doc_create: "allowed",
   doc_read: "allowed",
   doc_edit: "allowed",
@@ -128,9 +113,9 @@ export const OUTSIDE_TOOLS = {
   kin_recipe_undo: "allowed",
   kin_receipt: "allowed",
   kin_connection_tools: "allowed",
-  // A pasted server may reach anywhere, and so may a tool that says so: arguments to either
-  // could carry what the outside text asked for.
-  kin_connection_call: closedRead,
+  // `callOn` decides: a closed read runs, and anything that may reach the open world, whose
+  // arguments could carry what the outside text asked for, becomes one Confirm card instead.
+  kin_connection_call: "allowed",
   kin_connection_offer: "allowed",
   // Outside text could relabel which account is for what.
   kin_connection_note: "refused",

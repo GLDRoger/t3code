@@ -3,6 +3,7 @@ import {
   KIN_TEAMMATE_NAME_MAX,
   KIN_TEAM_ADD_COPY,
   KIN_TEAM_ONLY_OWNER,
+  kinRemovedNamesake,
   kinTeammateNameCheck,
   type KinMadeInvite,
 } from "@t3tools/client-runtime/kin/kinTeam";
@@ -14,6 +15,7 @@ import { TextInput, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
 import { AppText as Text } from "../../components/ui/AppText";
+import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { ListSection } from "../../components/ui/ListSection";
@@ -58,7 +60,7 @@ export function KinInviteScreen({ route }: StaticScreenProps<KinInviteParams>) {
 
 function KinInviteForm(target: KinTeamTarget) {
   const navigation = useNavigation();
-  const { allowed, gate, actions } = useKinTeam(target);
+  const { allowed, gate, actions, list } = useKinTeam(target);
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -66,19 +68,30 @@ function KinInviteForm(target: KinTeamTarget) {
   const [made, setMade] = useState<KinMadeInvite | null>(null);
   const checked = kinTeammateNameCheck(name);
 
-  const save = async () => {
+  const save = async (person: ReturnType<typeof kinRemovedNamesake> = null, newPerson?: true) => {
     if (saving || !allowed) return;
     if (!checked.ok) return setProblem(checked.problem);
     setSaving(true);
     setProblem(null);
     const result = await actions.makeLink({
-      displayName: checked.name,
-      personId: null,
-      replaces: null,
+      displayName: person?.displayName ?? checked.name,
+      personId: person?.personId ?? null,
+      ...(newPerson === true ? { newPerson } : {}),
+      replaces:
+        person === null
+          ? null
+          : (list?.invites.find((held) => held.personId === person.personId)?.inviteId ?? null),
     });
     setSaving(false);
-    if (result.ok) setMade(result.invite);
-    else setProblem(result.problem);
+    if (result.ok) return setMade(result.invite);
+    const removed = result.bringBack === true ? kinRemovedNamesake(list, checked.name) : null;
+    // The host's offer to bring back a removed person by this name, instead of a second one.
+    if (removed === null) return setProblem(result.problem);
+    Dialog.alert(KIN_TEAM_ADD_COPY.title, result.problem, [
+      { text: "Cancel", style: "cancel" },
+      { text: KIN_TEAM_ADD_COPY.someoneElse, onPress: () => void save(null, true) },
+      { text: `Bring back ${removed.displayName}`, onPress: () => void save(removed) },
+    ]);
   };
 
   return (

@@ -92,6 +92,7 @@ export * from "./kinMoney.ts";
 export * from "./kinCurrency.ts";
 export * from "./kinWhen.ts";
 export * from "./kinPulse.ts";
+export * from "./kinOpen.ts";
 export * from "./kinMoneyLive.ts";
 export * from "./kinWire.ts";
 export * from "./kinWorkRows.ts";
@@ -105,3 +106,6 @@ export * from "./kinConnections.ts";
 export * from "./kinSocial.ts";
 
 export * from "./kinPeople.ts";
+
+export * from "./kinEmbed.ts";
+export { scanKinDocFences } from "./kinDocFences.ts";

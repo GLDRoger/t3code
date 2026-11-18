@@ -87,7 +87,9 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
 - **Long answers read like a page.** A short reply is a bubble. One with headings, a table or a
   list of several things fills the chat's width, in sections you can fold; on the phone a long one
   opens with **Read more**. A check-in arrives as a brief: a greeting, the date, then only the
-  sections that have something in them.
+  sections that have something in them. Charts and figures appear right where they belong in the
+  answer. A question or **Confirm** card sits at the foot of the answer; after you tap, the
+  result shows on that same card.
 - **Names open what they name.** An agent, a teammate, a client, a project, a task or a document
   number such as INV-1 in a message is a link to it, when you may open it. Touch and hold one on
   the phone, or hover on the web, to see its state first.

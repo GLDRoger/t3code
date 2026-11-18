@@ -2,6 +2,7 @@ import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { useAtomValue } from "@effect/atom-react";
 import { kinAgentGroups } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { kinDomainLabel, KIN_AGENTS_COPY } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
 import {
   KIN_SETTINGS_MOVED,
   KIN_SETTINGS_PAGE_TITLES,
@@ -72,6 +73,7 @@ import { useTheme } from "../hooks/useTheme";
 import { cn } from "../lib/utils";
 import type { ThemePreferenceMode } from "../themePalette";
 import { KinAgentDefaultsSetting } from "./KinAgentsSetting";
+import { KinAvatar } from "./KinAvatar";
 import { withKinAgentPage } from "./kinPlaces";
 import { KinCheckInsSetting } from "./KinCheckIns";
 import { kinClient } from "./kinClient";
@@ -517,7 +519,7 @@ function KinSettingsAgents(props: KinSettingsTarget) {
                 search={(prev) => withKinAgentPage(prev, agent.agentId)}
                 className="flex items-center gap-3 px-3 py-2.5 outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
               >
-                <BotIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+                <KinAvatar avatar={kinAgentAvatar(agent.agentId)} size="xs" />
                 <span className="flex min-w-0 flex-1 flex-col">
                   <span className="truncate text-sm font-medium text-foreground">{agent.name}</span>
                   <span className="truncate text-xs text-muted-foreground">

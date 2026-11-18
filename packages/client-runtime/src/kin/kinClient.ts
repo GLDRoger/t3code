@@ -23,6 +23,7 @@ import {
   type KinBudgetGetInput,
   type KinGoalsInput,
   type KinCheckInsInput,
+  type KinOpenReadInput,
   type KinPulseListInput,
   type KinMemoryListInput,
   type KinPeopleListInput,
@@ -63,6 +64,7 @@ import { KIN_DOCS_LABEL, kinDocsLiveStream } from "./kinDocsStream.ts";
 import type { KinChatState } from "./kinInboxModel.ts";
 import { KIN_MONEY_LIVE_LABEL, kinMoneyLiveStream } from "./kinMoneyStream.ts";
 import { KIN_PULSE_LIVE_LABEL, kinPulseLiveStream } from "./kinPulseStream.ts";
+import { KIN_OPEN_LIVE_LABEL, kinOpenLiveStream } from "./kinOpenStream.ts";
 import {
   createKinDirectoryTrigger,
   createKinRefreshTriggers,
@@ -1084,6 +1086,14 @@ export function makeKinClient<R, ER>(
     }),
     /** Whether the host streams Needs attention; null until its refreshes say. */
     attentionStreamed: kinRefreshOn.serves("pulse"),
+    /** Everything open for the viewer as the host streams it (`kin.open.subscribe`). */
+    openLive: createEnvironmentSubscriptionAtomFamily(runtime, {
+      label: KIN_OPEN_LIVE_LABEL,
+      subscribe: (input: KinOpenReadInput) =>
+        kinOpenLiveStream({ ...input, acceptSenses: KIN_PULSE_LATER_SENSES }),
+    }),
+    /** Whether the host streams the open list; null until its refreshes say. */
+    openStreamed: kinRefreshOn.serves("open"),
     /** Money's parts as the host streams them to the owner level (`useKinMoneyLive`). */
     moneyLive: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: KIN_MONEY_LIVE_LABEL,
@@ -1212,18 +1222,26 @@ export function makeKinClient<R, ER>(
       staleTimeMs: 30_000,
       refreshTrigger: kinWorkRefreshOn(["clients", "projects"], kinRefreshOn("workChoices")),
     }),
-    /** The active clients and open projects a task or a project can be put under, by name. */
+    /**
+     * The active clients and open projects a task or a project can be put under, by name, and the
+     * done projects a late task can still be filed under.
+     */
     workChoices: createKinQueryAtomFamily(runtime, {
       label: "kin:work:choices",
       execute: Effect.fn("KinClient.workChoices")(function* (input: { readonly orgId: KinOrgId }) {
-        const [clients, projects] = yield* Effect.all(
+        const [clients, projects, done] = yield* Effect.all(
           [
             readWorkClients({ orgId: input.orgId, limit: 100 }),
             readWorkProjects({ orgId: input.orgId, limit: 100 }),
+            readWorkProjects({ orgId: input.orgId, state: "done", limit: 100 }),
           ],
-          { concurrency: 2 },
+          { concurrency: 3 },
         );
-        return { clients: clients.parties, projects: projects.projects };
+        return {
+          clients: clients.parties,
+          projects: projects.projects,
+          doneProjects: done.projects,
+        };
       }),
       staleTimeMs: 30_000,
       // Pickers show only names, kinds and states from these rows, which only their own lists move.
@@ -1378,6 +1396,23 @@ export function makeKinClient<R, ER>(
       label: "kin:work:handBack",
       tag: "kin.work.handBack",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
+    /** A note on a task from anyone who sees it, with files they just uploaded. */
+    workComment: createKinRpcCommand(runtime, {
+      label: "kin:work:comment",
+      tag: "kin.work.comment",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    /** Its author takes a comment back, or the owner level any. */
+    workCommentRemove: createKinRpcCommand(runtime, {
+      label: "kin:work:commentRemove",
+      tag: "kin.work.commentRemove",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.commentId },
+    }),
+    /** A task's comments before the first its sheet carries. */
+    workComments: createKinRpcCommand(runtime, {
+      label: "kin:work:comments",
+      tag: "kin.work.comments",
     }),
     /** Every open task someone holds, to someone else; `dryRun` counts them first. */
     workHandOver: createKinRpcCommand(runtime, {

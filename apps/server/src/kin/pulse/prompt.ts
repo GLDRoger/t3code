@@ -5,14 +5,16 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { sentMail, type SentMail } from "../connections/Sending.ts";
 import { clientHistory } from "./clientHistory.ts";
+import { headStarts } from "./headStart.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { teamHoursNow } from "./nudge.ts";
 
 export const PULSE_RULE =
-  "What needs attention, as Kin computed it from its own records just now. Act on a fact when that moves something forward; otherwise leave it. Call pulse_handle once one is in hand or is not a problem. teamHours says, per person, whether they are inside their own working hours now: go by it, never by the team's or your own reckoning.";
+  "What needs attention, as Kin computed it from its own records just now. Nobody asked for these facts, so each one you raise arrives one tap from done: do what you may do alone and say it in a line; draft what leaves the company (mail to its writeTo, its document attached, from an account in mailFrom) so its card waits on him; or put one kin_ask with the real options and a default. When the head start can't be made, say once what is missing, such as no contact with an email; never ask whether to start. Leave a fact that needs nothing or is already in hand. Call pulse_handle once one is in hand or is not a problem. teamHours says, per person, whether they are inside their own working hours now: go by it, never by the team's or your own reckoning.";
 export const CHECK_IN_PULSE_RULE =
-  "Check-in: below are only facts the owner hasn't been told as they stand now (new, changed or due today). Tell him each in your reply, once, leading with what you did or will do; one in hand (inHand) with who and until when. What he was told and hasn't changed is left out: don't recall it.";
+  "Check-in: below are only facts the owner hasn't been told as they stand now (new, changed or due today). Tell him each in your reply, once, leading with what you did or what waits on his tap; one in hand (inHand) with who and until when. What he was told and hasn't changed is left out: don't recall it.";
 const SECTION_CAP = 30;
+const MAILED_SENSES = new Set<KinPulseFact["sense"]>(["invoice_overdue", "quote_unanswered"]);
 const CHECK_IN_CAP = 200;
 
 /**
@@ -46,10 +48,10 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   const shown = all.facts
     .toSorted((a, b) => Number(woke.has(b.key)) - Number(woke.has(a.key)))
     .slice(0, checkIn ? CHECK_IN_CAP : SECTION_CAP);
-  // An overdue invoice comes with the mail it went in, so a reminder replies in that thread.
+  // An overdue invoice or unanswered quote comes with the mail it went in, to reply in that thread.
   const mailed = new Map<string, SentMail>();
   for (const fact of shown)
-    if (fact.sense === "invoice_overdue" && fact.subject.recordId !== undefined) {
+    if (MAILED_SENSES.has(fact.sense) && fact.subject.recordId !== undefined) {
       const [sent] = yield* sentMail({
         orgId: input.orgId,
         recordIds: [fact.subject.recordId],
@@ -84,6 +86,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
         fact.subject.recordId,
         yield* clientHistory(input.orgId, fact.subject.recordId, input.now),
       );
+  const starts = yield* headStarts(input.orgId, shown);
   const row = (fact: KinPulseFact) => ({
     key: fact.key,
     about: `${fact.subject.key === fact.subject.title ? fact.subject.title : `${fact.subject.key} ${fact.subject.title}`}`,
@@ -107,9 +110,10 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
             threadId,
           }))(mailed.get(fact.key)!),
         }
-      : fact.sense === "invoice_overdue"
+      : MAILED_SENSES.has(fact.sense)
         ? { sentIn: "no mail with it on record" }
         : {}),
+    ...starts.byFact.get(fact.key),
     ...(fact.handled === null
       ? {}
       : {
@@ -134,6 +138,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
     asOf: all.asOf,
     total: checkIn ? all.facts.length : all.total,
     ...(team.length === 0 ? {} : { teamHours: team }),
+    ...(starts.mail === undefined ? {} : { mailFrom: starts.mail }),
     ...(!checkIn && all.total > shown.length
       ? { shown: shown.length, more: "pulse_read has the rest" }
       : {}),

@@ -46,6 +46,7 @@ import { effectivelySensitive } from "./recordRows.ts";
 import { presetDefinition } from "./registers.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import * as Touches from "./touches.ts";
+import * as Comments from "./workComments.ts";
 import { buildWorkSection } from "./workPrompt.ts";
 
 // Invented org, people, clients and work only; nothing here reads a real database.
@@ -217,6 +218,29 @@ it.effect(
           ["C-1", false],
           ["CT-1", false],
         ],
+      );
+      // V06: a project that exists by name with new details is refused, not silently kept as it was.
+      const project = { list: "projects" as const, title: "Invented site", client: "C-1" };
+      const changed = yield* Effect.flip(
+        LeadWork.create(scope, {
+          sourceEventId: "again-event",
+          records: [{ ...project, value: "6 lakh" }],
+        }),
+      );
+      assert.strictEqual(
+        changed.message,
+        'P-1 "Invented site" exists already. To change its value, call record_update with key P-1.',
+      );
+      const [stored] = yield* (yield* SqlClient.SqlClient)<{ fields: string }>`SELECT fields_json
+        AS fields FROM kin_records WHERE key = 'P-1'`;
+      assert.notProperty(JSON.parse(stored!.fields), "value");
+      const same = yield* LeadWork.create(scope, {
+        sourceEventId: "again-event",
+        records: [{ ...project, due: "1970-01-31", repos: ["invented/site"] }],
+      });
+      assert.deepStrictEqual(
+        same.records.map((row) => [row.key, row.created]),
+        [["P-1", false]],
       );
       // The project's entry takes the project's client.
       assert.include(yield* LeadWork.get(scope, { key: "W-6" }), {
@@ -691,7 +715,14 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
         (${orgId}, 'expenses', 'Expenses', 'EXP', 0, 0, ${JSON.stringify(presetDefinition("expenses", "INR"))})`;
     yield* LeadWork.create(scope, {
       sourceEventId: "ask-event",
-      records: [{ list: "invoices", title: "Invented October retainer", amount: "1 lakh" }],
+      records: [
+        {
+          list: "invoices",
+          title: "Invented October retainer",
+          amount: "1 lakh",
+          state: "waiting",
+        },
+      ],
     });
     // One row per tool the lead has: a tool added without one fails to typecheck and here.
     // A definition shows no entry, so proposing one marks nothing.
@@ -718,7 +749,7 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
       record_assign: [
         LeadWork.assign(scope, {
           sourceEventId: "ask-event",
-          tasks: [{ key: "W-2", to: "me", reason: "Invented: free today" }],
+          tasks: [{ key: "W-2", to: "you", reason: "Invented: free today" }],
         }),
         false,
       ],
@@ -726,6 +757,8 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
         LeadWork.handBack(scope, { key: "W-2", sourceEventId: "ask-event", note: "Invented" }),
         false,
       ],
+      // The comment's own key and id: nothing of the entry.
+      record_comment: [Comments.leadComment(scope, { key: "W-2", body: "Invented note" }), false],
       list_define: [
         LeadMoney.define(scope, { sourceEventId: "ask-event", name: "Invented leave" }),
         false,
@@ -917,8 +950,9 @@ it.effect("no lead write makes anything less sensitive; the owner's own may", ()
     const sql = yield* SqlClient.SqlClient;
     const unmarked = <A, E, R>(write: Effect.Effect<A, E, R>) =>
       Effect.andThen(sql`DELETE FROM kin_wakeup_sensitive_reads`, write);
-    const update = (input: Omit<typeof LeadWork.UpdateInput.Type, "sourceEventId">) =>
-      unmarked(LeadWork.update(scope, { ...input, sourceEventId: "ask-event" }));
+    const update = (
+      input: Omit<typeof LeadWork.UpdateInput.Type, "sourceEventId"> & { readonly key: string },
+    ) => unmarked(LeadWork.update(scope, { ...input, sourceEventId: "ask-event" }));
     yield* update({ key: "C-1", sensitive: true });
     // W-6 is a task: its project's client never labels it, so unlinking labels nothing.
     assert.isFalse(yield* sensitive("W-6"));
@@ -1121,7 +1155,13 @@ it.effect(
       yield* LeadWork.create(scope, {
         sourceEventId: "ask-event",
         records: [
-          { list: "invoices", title: "Invented November work", client: "C-1", amount: "900" },
+          {
+            list: "invoices",
+            title: "Invented November work",
+            client: "C-1",
+            amount: "900",
+            state: "waiting",
+          },
         ],
       });
       yield* LeadMoney.payment(scope, {
@@ -1190,7 +1230,7 @@ it.effect(
       yield* sql`UPDATE kin_records SET state = 'waiting', due_at = ${3 * DAY} WHERE key = 'INV-1'`;
       const owes = (yield* LeadWork.get(scope, { key: "C-1" })).owed!;
       assert.deepStrictEqual(owes.money.overdue, owes.money.unpaid);
-      assert.match(owes.money.invoices[0]!, /^INV-1: .*500.* overdue, \d+ days past due$/);
+      assert.match(owes.money.invoices[0]!, /^INV-1: .*500.* overdue for \d+ days$/);
 
       // A client added today with work that ended long ago reads cold from that day, and a typed
       // name finds it: any case, a start of it, or a close spelling.

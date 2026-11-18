@@ -23,6 +23,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeCrypto from "node:crypto";
 
 import * as Scheduler from "../../scheduling/Scheduler.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
@@ -42,6 +43,8 @@ import { systemSenses } from "./senses/system.ts";
 import { workSenses } from "./senses/work.ts";
 import { fromConnections, noOutside, poll } from "./outside.ts";
 import { DAY_MS } from "./thresholds.ts";
+import { tellHolder } from "./holderNotice.ts";
+import { agentParty, forHolder, markTold, untold } from "./told.ts";
 
 const FINANCE_DOMAIN = "finance";
 /** How long "I've got it" with no date holds a fact. */
@@ -86,9 +89,8 @@ const context = Effect.fn("KinPulse.context")(function* (orgId: KinOrgId, at: nu
   } satisfies SenseContext;
 });
 
-/** Every sense over the org's rows as of `at`, before handling and viewers. */
-const sense = Effect.fn("KinPulse.sense")(function* (orgId: KinOrgId, at: number) {
-  const ctx = yield* context(orgId, at);
+/** Every sense over the org's rows as of `ctx.at`, before handling and viewers. */
+const senseIn = Effect.fn("KinPulse.sense")(function* (ctx: SenseContext) {
   const facts = [
     ...(yield* workSenses(ctx)),
     ...(yield* moneySenses(ctx)),
@@ -102,6 +104,7 @@ const sense = Effect.fn("KinPulse.sense")(function* (orgId: KinOrgId, at: number
       DateTime.toEpochMillis(a.since) - DateTime.toEpochMillis(b.since) || (a.key < b.key ? -1 : 1),
   );
 });
+const sense = (orgId: KinOrgId, at: number) => context(orgId, at).pipe(Effect.flatMap(senseIn));
 
 interface StoredRow {
   readonly key: string;
@@ -311,14 +314,130 @@ const lastSensed = new Map<KinOrgId, string>();
 const URGENT_SENSES = new Set<KinPulseFact["sense"]>(["client_waiting_on_us"]);
 
 /**
+ * Late and due-today work reaches whoever holds it, once (`kin_pulse_told`): an agent holder is
+ * woken with it; a teammate reads Kin's own notice in their chat; an owner-level holder hears it
+ * through the Chief of staff. One wake per agent per pass carries all of that agent's untold
+ * facts. Returns who was told what.
+ */
+const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
+  ctx: SenseContext,
+  facts: ReadonlyArray<SensedFact>,
+  stored: ReadonlyMap<string, StoredRow>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const queue = yield* KinEventQueue.KinEventQueue;
+  const { orgId, at, zone } = ctx;
+  const due = facts.flatMap(({ yours: _yours, ...fact }): Array<KinPulseFact> => {
+    const open = { ...fact, handled: handledOf(stored.get(fact.key), at) };
+    return open.handled === null && forHolder(open, at, zone) ? [open] : [];
+  });
+  const personIds = [
+    ...new Set(due.flatMap((fact) => (fact.actor._tag === "person" ? [fact.actor.personId] : []))),
+  ];
+  const present = new Set<string>();
+  for (let start = 0; start < personIds.length; start += 500)
+    for (const row of yield* sql<{ personId: string }>`SELECT person_id AS "personId"
+      FROM kin_people WHERE org_id = ${orgId} AND removed_at IS NULL
+        AND person_id IN ${sql.in(personIds.slice(start, start + 500))} ORDER BY person_id`)
+      present.add(row.personId);
+  // Who hears it, and the agent woken to act on it or to tell them.
+  const parties = new Map<string, { agentId: KinAgentId; facts: Array<KinPulseFact> }>();
+  for (const fact of due) {
+    const party =
+      fact.actor._tag === "agent"
+        ? { to: agentParty(fact.actor.agentId), agentId: fact.actor.agentId }
+        : fact.actor._tag === "person" && present.has(fact.actor.personId) && ctx.chief
+          ? { to: fact.actor.personId, agentId: ctx.chief }
+          : undefined;
+    if (party === undefined) continue;
+    const entry = parties.get(party.to) ?? { agentId: party.agentId, facts: [] };
+    entry.facts.push(fact);
+    parties.set(party.to, entry);
+  }
+  const level = personIds.length === 0 ? new Set<string>() : yield* ownerLevelPeople(orgId);
+  const told: Array<{ readonly agentId: KinAgentId; readonly to: string; readonly key: string }> =
+    [];
+  const wakes = new Map<KinAgentId, Array<{ to: string; facts: ReadonlyArray<KinPulseFact> }>>();
+  for (const [to, entry] of parties) {
+    const tell = yield* untold({
+      orgId,
+      personId: to,
+      facts: entry.facts,
+      at,
+      zone,
+      anyState: true,
+    });
+    if (tell.length === 0) continue;
+    if (to.startsWith("agent:") || level.has(to)) {
+      wakes.set(entry.agentId, [...(wakes.get(entry.agentId) ?? []), { to, facts: tell }]);
+      continue;
+    }
+    // A teammate's own late work has one right message: Kin writes it, no agent turn.
+    const personId = KinPersonId.make(to);
+    const sees = new Set(
+      (yield* visibleTo(orgId, { _tag: "people", people: [personId] }, tell)).map(
+        (fact) => fact.key,
+      ),
+    );
+    const theirs = tell.filter((fact) => sees.has(fact.key));
+    const noticeId = yield* tellHolder({ ctx, personId, agentId: entry.agentId, facts: theirs });
+    if (noticeId === undefined) continue;
+    yield* markTold({ orgId, personId: to, eventId: noticeId, facts: theirs, at, zone });
+    for (const fact of theirs) told.push({ agentId: entry.agentId, to, key: fact.key });
+  }
+  for (const [agentId, groups] of wakes) {
+    // One event carries at most 50 facts: the rest stay untold for the next pass.
+    let room = 50;
+    const batch = groups.flatMap(({ to, facts: some }) => {
+      const taken = some.slice(0, room);
+      room -= taken.length;
+      return taken.length === 0 ? [] : [{ to, facts: taken }];
+    });
+    const dedupeKey = `holders:${agentId}:${at}`;
+    const eventId = KinEventId.make(`pulse-${shortHash(`${orgId}\0${dedupeKey}`)}`);
+    const queued = yield* queue
+      .enqueue(
+        yield* decodeEvent({
+          _tag: "pulse",
+          orgId,
+          eventId,
+          agentId,
+          receivedAt: DateTime.formatIso(iso(at)),
+          dedupeKey,
+          provenance: { _tag: "system" },
+          factKeys: batch.flatMap((group) => group.facts.map((fact) => fact.key)),
+        }),
+        // Nobody asked: it waits out the owner's quiet hours.
+        yield* agentQuietUntil(orgId, agentId, at).pipe(
+          Effect.map((notBefore) => (notBefore === undefined ? undefined : { notBefore })),
+        ),
+      )
+      .pipe(
+        Effect.map((result) => !result.duplicate),
+        Effect.catchTags({
+          KinEventQueueUnknownAgent: () => Effect.succeed(false),
+          KinEventQueueRetiredAgent: () => Effect.succeed(false),
+        }),
+      );
+    if (!queued) continue;
+    for (const group of batch) {
+      yield* markTold({ orgId, personId: group.to, eventId, facts: group.facts, at, zone });
+      for (const fact of group.facts) told.push({ agentId, to: group.to, key: fact.key });
+    }
+  }
+  return told;
+});
+
+/**
  * Stores what is true now, clears what stopped being true, and wakes each fact's agent once for
- * the facts that matter now. No model runs here.
+ * the facts that matter now, and each holder once for its late and due work. No model runs here.
  */
 export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: number) {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
   const refreshes = yield* KinRefreshObserver;
-  const facts = yield* sense(orgId, at);
+  const ctx = yield* context(orgId, at);
+  const facts = yield* senseIn(ctx);
   // Owner-level screens read Needs attention again only on this topic, so any change to what was
   // sensed moves it: a fact's words or progress, not only a fact coming or going.
   const sensedNow = shortHash(yield* encodeSensed(facts));
@@ -340,6 +459,9 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
           WHERE org_id = ${orgId} AND fact_key = ${fact.key} AND cleared_at IS NOT NULL
           RETURNING fact_key`;
         moved += reopened.length;
+        // Back after it stopped being true: its holder and the check-ins hear of it again.
+        if (reopened.length > 0)
+          yield* sql`DELETE FROM kin_pulse_told WHERE org_id = ${orgId} AND fact_key = ${fact.key}`;
         yield* sql`UPDATE kin_pulse_facts SET last_seen_at = ${at}
           WHERE org_id = ${orgId} AND fact_key = ${fact.key}`;
       }
@@ -388,9 +510,10 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
           WHERE org_id = ${orgId} AND fact_key = ${fact.key}`;
         woken.push(fact.key);
       }
+      const told = yield* tellHolders(ctx, facts, stored);
       if (moved > 0 || sensedMoved) yield* refreshes.touch(orgId, "pulse");
       yield* sql.afterCommit(Effect.sync(() => lastSensed.set(orgId, sensedNow)));
-      return { facts: facts.length, cleared: cleared.length, woken };
+      return { facts: facts.length, cleared: cleared.length, woken, told };
     }),
   );
 });
@@ -459,6 +582,7 @@ export const layer = Layer.effectDiscard(
     const ticks = yield* Scheduler.Scheduler;
     const queue = yield* KinEventQueue.KinEventQueue;
     const refreshes = yield* KinRefreshObserver;
+    const chats = yield* Effect.serviceOption(KinChatService);
     const last = new Map<string, { readonly at: number; readonly seq: number }>();
     const outside = Option.match(yield* Effect.serviceOption(KinConnections), {
       onNone: () => noOutside,
@@ -501,6 +625,7 @@ export const layer = Layer.effectDiscard(
           yield* tick(KinOrgId.make(orgId), now).pipe(
             Effect.provideService(KinEventQueue.KinEventQueue, queue),
             Effect.provideService(KinRefreshObserver, refreshes),
+            Option.isSome(chats) ? Effect.provideService(KinChatService, chats.value) : (e) => e,
             Effect.catch((cause) => Effect.logWarning("Kin pulse failed", { orgId, cause })),
           );
         }

@@ -5,20 +5,13 @@ import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinChatError, KinOrgId, KinTrimmedText } from "./kinChat.ts";
 import { KinSacCode } from "./kinFinance.ts";
-import { KinCurrency, KinDay, KinMoney, KinMoneyTotals } from "./kinMoney.ts";
+import { KinCurrency, KinDay, KinMoney, KinMoneyTotals, KinSignedMoney } from "./kinMoney.ts";
 import { KinRecordKey } from "./kinWork.ts";
 
 /**
  * What Money answers from the host's own sums: cash from confirmed statements, what is expected
  * in and out next, runway, budgets, and quotes turned into invoices. Owner only, on the server.
  */
-
-const SignedMinor = Schema.Int.check(
-  Schema.isBetween({ minimum: -Number.MAX_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER }),
-);
-/** A balance or a net: below zero is owed or overdrawn. */
-export const KinSignedMoney = Schema.Struct({ minor: SignedMinor, currency: KinCurrency });
-export type KinSignedMoney = typeof KinSignedMoney.Type;
 
 /** Why a read statement gives no balance of record. */
 export const KinStatementStanding = Schema.Literals([
@@ -58,7 +51,8 @@ export const KinCashCurrency = Schema.Struct({
   stale: Schema.Boolean,
   /** Recorded in Kin since, with no account known. */
   receivedSince: KinMoney,
-  spentSince: KinMoney,
+  /** A refund lowers it. */
+  spentSince: KinSignedMoney,
   /** Total plus received minus spent since, when every balance is from one day: an estimate. */
   estimate: Schema.NullOr(KinSignedMoney),
 });
@@ -90,7 +84,7 @@ export const KinOutlookItem = Schema.Struct({
   title: Schema.String,
   list: Schema.String,
   on: KinDay,
-  money: KinMoney,
+  money: KinSignedMoney,
   repeats: Schema.Boolean,
 });
 export type KinOutlookItem = typeof KinOutlookItem.Type;
@@ -102,7 +96,7 @@ export const KinRunway = Schema.Struct({
       /** `2026-08`. */
       month: Schema.String,
       received: KinMoney,
-      spent: KinMoney,
+      spent: KinSignedMoney,
       net: KinSignedMoney,
     }),
   ),
@@ -157,7 +151,7 @@ export const KinMoneyBudget = Schema.Struct({
     Schema.Struct({ key: Schema.NullOr(KinRecordKey), title: Schema.NullOr(Schema.String) }),
   ),
   limit: KinMoney,
-  spent: KinMoney,
+  spent: KinSignedMoney,
   expenses: NonNegativeInt,
   /** Over is past the limit; near is at it or past 80% of it. */
   status: KinMoneyBudgetStatus,

@@ -971,6 +971,7 @@ describe("KinChatService", () => {
           comparison: { name: "Last week", values: [9, 14, -2] },
         };
         const card = yield* service.chart(agent, input);
+        if ("figure" in card) return assert.fail("Expected a standalone chart");
         assert.include(card, { type: "chart", revision: 1 });
         assert.strictEqual(String(card.widgetId), `chart:${card.messageId}`);
         assert.deepStrictEqual(card.awaiting, []);
@@ -997,6 +998,7 @@ describe("KinChatService", () => {
             series: [{ name: "Campaigns", points: [{ x: 12, y: 40, label: " Diwali " }] }],
           },
         });
+        if ("figure" in scatter) return assert.fail("Expected a standalone scatter");
         assert.deepInclude(scatter.state, {
           labels: [],
           series: [],
@@ -1098,6 +1100,7 @@ describe("KinChatService", () => {
           html: `<h1>Funnel</h1><img src="kin-file:${photo}"><script>fetch("https://example.com")</script>`,
         };
         const card = yield* service.visual(agent, input);
+        if ("figure" in card) return assert.fail("Expected a standalone visual");
         assert.include(card, { type: "visual", revision: 1 });
         assert.strictEqual(String(card.widgetId), `visual:${card.messageId}`);
         assert.deepStrictEqual(card.awaiting, []);
@@ -1157,6 +1160,8 @@ describe("KinChatService", () => {
         for (const [change, fix] of [
           [{ title: " " }, "needs a title"],
           [{ title: "x".repeat(121) }, "120 or fewer"],
+          [{ html: "<button><strong>Confirm</strong></button>" }, "Kin shows those itself"],
+          [{ html: "<input type=submit value=Pay>" }, "Kin shows those itself"],
           [{ html: "  " }, "page is empty"],
           [{ html: "x".repeat(5 * 1024 * 1024 + 1) }, "the limit is 5 MiB"],
           [{ html: '<img src="kin-file:kin-chat-not-here">' }, "is not a file in this chat"],
@@ -1199,7 +1204,8 @@ describe("KinChatService", () => {
           FROM kin_wakeups WHERE org_id = ${person.orgId} AND status = 'running'`;
         const inTurn = { ...agent, wakeupId: KinWakeupId.make(turn!.wakeupId) };
         const plain = yield* service.visual(inTurn, { ...input, clientMessageId: "visual-plain" });
-        assert.notProperty(plain.state, "sensitive");
+        if (!("figure" in plain)) return assert.fail("Expected a staged visual");
+        assert.match(plain.figure, /kin-figure:f_[A-Za-z0-9_-]{10}/);
         assert.notProperty(card.state, "sensitive");
         yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
           VALUES (${person.orgId}, ${turn!.wakeupId}, 0)`;
@@ -1207,7 +1213,21 @@ describe("KinChatService", () => {
           ...input,
           clientMessageId: "visual-sensitive",
         });
-        assert.deepInclude(labelled.state, { sensitive: true });
+        if (!("figure" in labelled)) return assert.fail("Expected a staged visual");
+        const reply = yield* service.send(inTurn, {
+          chatId: chat.chatId,
+          body: `Signups picked up.\n\n${labelled.figure}`,
+          clientMessageId: "visual-reply",
+          placeReplyFigures: true,
+          intent: "answer",
+        });
+        assert.lengthOf(reply.embeds ?? [], 2);
+        assert.deepInclude(reply.embeds?.[0], { _tag: "visual", sensitive: true });
+        assert.notProperty(reply.embeds?.[1], "sensitive");
+        assert.deepStrictEqual(
+          yield* service.visual(inTurn, { ...input, clientMessageId: "visual-plain" }),
+          plain,
+        );
       }).pipe(Effect.provide(attachmentLayer)),
   );
 

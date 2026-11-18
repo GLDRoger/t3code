@@ -16,7 +16,7 @@ import { leadProjectId } from "../lead/leadProject.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinSchedules from "./kinSchedules.ts";
-import { KIN_TASK_PREFIX } from "./taskIds.ts";
+import { KIN_SCHEDULE_TASK_PREFIX, KIN_TASK_PREFIX } from "./taskIds.ts";
 
 const decodeFire = Schema.decodeEffect(KinTriggerFired);
 
@@ -197,7 +197,7 @@ const make = Effect.gen(function* () {
       function* (input) {
         const taskId = input.initialMessage?.scheduledTaskId;
         if (taskId === undefined) return;
-        if (taskId.startsWith(KinSchedules.KIN_SCHEDULE_TASK_PREFIX))
+        if (taskId.startsWith(KIN_SCHEDULE_TASK_PREFIX))
           return yield* receiveSchedule(input, taskId);
         // Kin's task ids are deterministic, so a fire racing a remove still refuses to launch, and
         // a delivery to Kin's retired GitHub webhook task starts nothing.

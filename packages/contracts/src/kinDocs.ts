@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 
 import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { KinChartCardState } from "./kinChart.ts";
+import { KinEmbed } from "./kinEmbed.ts";
 import { KinMemoryItemId, KinWorkerId } from "./kinLead.ts";
 import {
   KinAgentId,
@@ -20,6 +20,7 @@ import {
   KinRecordChangeVia,
   KinRecordId,
   KinRecordKey,
+  KinLinkedFromFields,
   KinRecordLink,
   KinRecordRef,
   KinWorkActor,
@@ -193,16 +194,8 @@ export type KinDocListRow = typeof KinDocListRow.Type;
  * What one `kin_chart` or `kin_visual` block of a doc's body draws, in the order the blocks
  * appear. `broken` says why a block can't be drawn, so the rest still line up.
  */
-export const KinDocEmbed = Schema.Union([
-  Schema.TaggedStruct("chart", { chart: KinChartCardState }),
-  Schema.TaggedStruct("visual", {
-    title: KinTrimmedText,
-    attachmentId: TrimmedNonEmptyString,
-    height: PositiveInt,
-  }),
-  Schema.TaggedStruct("broken", { message: KinTrimmedText }),
-]);
-export type KinDocEmbed = typeof KinDocEmbed.Type;
+export const KinDocEmbed = KinEmbed;
+export type KinDocEmbed = KinEmbed;
 
 export const KinDocDetail = Schema.Struct({
   ...KinDocRow.fields,
@@ -211,6 +204,7 @@ export const KinDocDetail = Schema.Struct({
   body: KinText,
   outline: Schema.Array(KinDocSection),
   links: Schema.Array(KinRecordLink),
+  ...KinLinkedFromFields,
   /** This doc's latest change number: compare with a `changed` event's. */
   seq: NonNegativeInt,
   /** Absent from servers that draw no blocks. */

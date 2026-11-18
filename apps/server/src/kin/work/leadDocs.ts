@@ -13,17 +13,17 @@ import {
   KinSearchKind,
   KinWakeupId,
   type KinWorkPrincipal,
-  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { effectiveAudience } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
-import { laneFor } from "../reply/KinReplyBridge.ts";
+import { laneFor } from "../reply/replyLane.ts";
 import { DOC_BODY_MAX, outlineOf, sectionsOf, WHOLE_DOC } from "./docBody.ts";
 import * as Docs from "./docs.ts";
 import {
@@ -50,15 +50,13 @@ import { TurnEvent } from "../lead/eventIds.ts";
 /** The doc tools' inputs, results and the one call each makes. Model-facing text is in `mcp/docTools.ts`. */
 
 const Key = KinRecordKey.annotate({ description: "The doc's key, such as D-4." });
-const Summary = TrimmedNonEmptyString.check(
-  Schema.isMaxLength(200),
-  Schema.isPattern(/^[^\n]*$/),
-).annotate({
-  description: 'One line saying what changed, for the reader: "Moved launch to 14 Dec".',
-});
+const Summary = KinToolText(
+  200,
+  'One line saying what changed, for the reader: "Moved launch to 14 Dec".',
+).check(Schema.isPattern(/^[^\n]*$/));
 const Body = Schema.String.check(Schema.isMaxLength(DOC_BODY_MAX));
 const Text = Schema.String.check(Schema.isMaxLength(50_000));
-const Title = TrimmedNonEmptyString.check(Schema.isMaxLength(200));
+const Title = KinToolText(200);
 const Section = KinDocSectionId.annotate({ description: "A section id from the outline." });
 const SourceEvent = TurnEvent;
 const Card = Schema.optional(Schema.Boolean).annotate({
@@ -101,7 +99,10 @@ export const CreateInput = Schema.Struct({
   links: Schema.optional(Schema.Array(KinRecordKey).check(Schema.isMaxLength(20))).annotate({
     description: "Keys of entries or docs to link it to.",
   }),
-  card: Card,
+  card: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "The doc shows in this chat as a card the owner can open. Pass false only for a doc nobody asked for in this chat.",
+  }),
 });
 export const WriteResult = Schema.Struct({
   key: Schema.String,
@@ -163,9 +164,7 @@ const Operation = Schema.Union([
   Schema.Struct({ op: Schema.Literal("append"), text: Text }),
   Schema.Struct({
     op: Schema.Literal("replace_phrase"),
-    find: TrimmedNonEmptyString.check(Schema.isMaxLength(2_000)).annotate({
-      description: "Exact text that appears once in the doc.",
-    }),
+    find: KinToolText(2_000, "Exact text that appears once in the doc."),
     replace: Schema.String.check(Schema.isMaxLength(2_000)),
   }),
   Schema.Struct({ op: Schema.Literal("retitle"), title: Title }),
@@ -220,7 +219,7 @@ export const LinkResult = Schema.Struct({
   linked: Schema.Array(Schema.Struct({ key: Schema.String, title: Schema.String, ...Marks })),
 });
 export const SearchInput = Schema.Struct({
-  text: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  text: KinToolText(200),
   kinds: Schema.optional(Schema.Array(KinSearchKind).check(Schema.isMaxLength(5))).annotate({
     description: "work, clients, contacts, projects, docs. Leave out for all.",
   }),
@@ -379,18 +378,32 @@ const ownerOf = (row: RecordRow): KinWorkPrincipal =>
 export const shown = Effect.fn("KinDocTools.shown")(function* (
   lead: Lead,
   written: Docs.Written,
-  card: boolean | undefined,
+  card: boolean | "answer" | undefined,
 ) {
-  if (card !== true) return;
-  const wakeupId = KinWakeupId.make(lead.wakeupId);
-  const lane = yield* laneFor({ orgId: lead.orgId, agentId: lead.agentId, wakeupId });
+  if (card !== true && card !== "answer") return;
+  const turn = {
+    orgId: lead.orgId,
+    agentId: lead.agentId,
+    wakeupId: KinWakeupId.make(lead.wakeupId),
+  };
+  const lane = yield* laneFor(turn);
   if (Option.isNone(lane)) return;
+  if (card === "answer") {
+    if (lane.value.team === true) return;
+    if (lane.value.mode !== "reply") {
+      const sql = yield* SqlClient.SqlClient;
+      const checkIn = yield* sql`SELECT 1 FROM kin_events
+        WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId} AND wakeup_id = ${turn.wakeupId}
+          AND tag = 'pulse' AND json_type(json, '$.checkIn') = 'object' LIMIT 1`;
+      if (checkIn.length === 0) return;
+    }
+  }
   const version = Docs.toVersion(written.version);
   yield* (yield* KinLevelGate).showCard(
-    { ...lead, wakeupId },
+    { ...lead, wakeupId: turn.wakeupId },
     {
       chatId: lane.value.chatId,
-      clientMessageId: `kin-doc:${wakeupId}:${written.row.recordId}:${written.version.version}`,
+      clientMessageId: `kin-doc:${turn.wakeupId}:${written.row.recordId}:${written.version.version}`,
       type: KIN_DOC_CARD,
       state: {
         recordId: KinRecordId.make(written.row.recordId),
@@ -460,7 +473,7 @@ const projectFor = Effect.fn("KinDocTools.projectFor")(function* (
 
 const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
   const context = yield* writeContext(lead, "doc_create", input);
-  const owner = yield* resolveWho(lead, input.owner ?? "me");
+  const owner = yield* resolveWho(lead, input.owner ?? "you");
   const partyId = yield* refOrNull(lead, input.client, "clients");
   const projectId =
     (yield* refOrNull(lead, input.project, "projects")) ??
@@ -489,7 +502,7 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
   });
   if (input.links !== undefined && input.links.length > 0)
     yield* Docs.link(lead.orgId, context.writer, { key: written.row.key }, input.links, "relates");
-  yield* shown(lead, written, input.card);
+  yield* shown(lead, written, input.card ?? "answer");
   return writeResult(written, written.created);
 });
 export const create = leadTool("KinDocTools.create", runCreate);

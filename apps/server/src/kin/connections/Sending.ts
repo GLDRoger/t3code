@@ -10,6 +10,7 @@ import {
   type KinSendCard,
   formatKinWhen,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -21,6 +22,7 @@ import { readStoredFile } from "../gendocs/brand.ts";
 import type { TextClock } from "../work/companyProfile.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { formatMoney } from "../work/money.ts";
+import { listDef, stateLabel } from "../work/registers.ts";
 import { logTouch } from "../work/touches.ts";
 import { KinGatewayError } from "./McpGateway.ts";
 import { MAIL_TOOL, type Mailbox, type MailProvider } from "./MailProvider.ts";
@@ -69,6 +71,16 @@ export const Prepared = Schema.Union([
   Schema.TaggedStruct("event", {
     calendarId: Schema.String,
     eventId: Schema.NullOr(Schema.String),
+    /** A changed event as it stood when the card was drawn; missing on asks from before. */
+    current: Schema.optionalKey(
+      Schema.NullOr(
+        Schema.Struct({
+          title: Schema.NullOr(Schema.String),
+          start: Schema.NullOr(Schema.String),
+          end: Schema.NullOr(Schema.String),
+        }),
+      ),
+    ),
     title: Schema.String,
     start: Schema.String,
     end: Schema.String,
@@ -83,6 +95,15 @@ export type Prepared = typeof Prepared.Type;
 export const PreparedJson = Schema.fromJsonString(Prepared);
 
 const decodeFile = Schema.decodeUnknownOption(Schema.fromJsonString(KinDocFile));
+const decodeEvent = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      summary: Schema.NullOr(Schema.String),
+      start: Schema.NullOr(Schema.String),
+      end: Schema.NullOr(Schema.String),
+    }),
+  ),
+);
 const refused = (message: string) => new KinGatewayError({ reason: "protocol", message });
 
 const MAX_RECIPIENTS = 10;
@@ -221,6 +242,37 @@ export const attachmentsCurrent = Effect.fn("KinSending.current")(function* (
   return true;
 });
 
+/**
+ * Why the mail may not go any more because what it is about was closed since its card: a void
+ * invoice, quote or receipt, an archived doc, a dropped entry of any list. `null` when none is.
+ * Done (paid, accepted, filed) still goes: a copy of a paid invoice is fair to send.
+ */
+export const subjectClosed = Effect.fn("KinSending.subjectClosed")(function* (
+  orgId: KinOrgId,
+  prepared: Prepared,
+  entryRecordId: string | null,
+) {
+  const ids = new Set(
+    [
+      entryRecordId,
+      ...(prepared._tag === "email"
+        ? prepared.attachments.flatMap((one) => [one.recordId, one.entryRecordId])
+        : []),
+    ].filter((id) => id !== null),
+  );
+  if (ids.size === 0) return null;
+  const sql = yield* SqlClient.SqlClient;
+  const [closed] = yield* sql<{ key: string; registerId: string; state: string }>`SELECT key,
+      register_id AS "registerId", state FROM kin_records
+    WHERE org_id = ${orgId} AND record_id IN ${sql.in([...ids])} AND state = 'dropped'
+    ORDER BY register_id = 'docs', record_id LIMIT 1`;
+  if (closed === undefined) return null;
+  const def = yield* listDef(orgId, closed.registerId);
+  const noun = def?.noun ?? "entry";
+  const state = def === undefined ? "closed" : stateLabel(def, closed.state).toLowerCase();
+  return `${noun.charAt(0).toUpperCase()}${noun.slice(1)} ${closed.key} is ${state} now, so nothing was sent.`;
+});
+
 /** One of the account's addresses, with its From name; the default when `wanted` is null. */
 export const fromOf = (
   account: string | null,
@@ -268,10 +320,38 @@ export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (input:
     const invitees = strings(args.invitees);
     const bad = checkAddresses(invitees, "invitees", MAX_INVITEES);
     if (bad !== undefined) return yield* bad;
+    const calendarId = optional(args, "calendarId") ?? "primary";
+    const eventId = optional(args, "eventId");
+    // A change names the event it changes, read now from that calendar with the account's token.
+    const current =
+      eventId === null
+        ? null
+        : yield* input.provider
+            .call(
+              input.http,
+              yield* input.token,
+              mailbox,
+              MAIL_TOOL.event,
+              { calendarId, eventId },
+              yield* Clock.currentTimeMillis,
+            )
+            .pipe(
+              Effect.flatMap((result) => {
+                const [first] = result.content;
+                const read =
+                  first?.type === "text"
+                    ? Option.getOrUndefined(decodeEvent(first.text))
+                    : undefined;
+                return read === undefined
+                  ? Effect.fail(refused(`${input.provider.name} sent an answer Kin couldn't read.`))
+                  : Effect.succeed({ title: read.summary, start: read.start, end: read.end });
+              }),
+            );
     return {
       _tag: "event",
-      calendarId: optional(args, "calendarId") ?? "primary",
-      eventId: optional(args, "eventId"),
+      calendarId,
+      eventId,
+      current,
       title: title.slice(0, 300),
       start,
       end,
@@ -357,7 +437,7 @@ const OFFSET = /(?:z|[+-]\d{2}:?\d{2})$/i;
  * An event's times as a person reads them: in `zone` when the agent gave an offset; a wall-clock
  * time without one stands as written in the event's own zone, which then is named.
  */
-const plainWhen = (
+const whenOf = (
   prepared: Pick<Extract<Prepared, { _tag: "event" }>, "start" | "end" | "timeZone">,
   clock: TextClock,
 ) => {
@@ -375,14 +455,31 @@ const plainWhen = (
   const start = read(prepared.start);
   const end = read(prepared.end);
   if (start === null || end === null)
-    return `When: ${prepared.start} to ${prepared.end}${prepared.timeZone === null ? "" : ` (${prepared.timeZone})`}`;
+    return `${prepared.start} to ${prepared.end}${prepared.timeZone === null ? "" : ` (${prepared.timeZone})`}`;
   const day = (at: { ms: number; timeZone: string }) =>
     formatKinWhen(at.ms, "day", { zone: at.timeZone, locale: clock.locale });
   const time = (at: { ms: number; timeZone: string }) =>
     formatKinWhen(at.ms, "time", { zone: at.timeZone, locale: clock.locale });
   const shownZone = start.offset ? null : prepared.timeZone;
   const ending = day(end) === day(start) ? time(end) : `${day(end)}, ${time(end)}`;
-  return `When: ${day(start)}, ${time(start)} to ${ending}${shownZone === null ? "" : ` (${shownZone})`}`;
+  return `${day(start)}, ${time(start)} to ${ending}${shownZone === null ? "" : ` (${shownZone})`}`;
+};
+const plainWhen = (...args: Parameters<typeof whenOf>) => `When: ${whenOf(...args)}`;
+/** Which calendar, when not the main one, and the event a change replaces as it stands now. */
+const eventTarget = (prepared: Extract<Prepared, { _tag: "event" }>, clock: TextClock) => {
+  const current = prepared.current ?? null;
+  return [
+    ...(prepared.calendarId === "primary" ? [] : [`In calendar: ${prepared.calendarId}`]),
+    ...(prepared.eventId === null || current === null
+      ? []
+      : [
+          `Currently: ${current.title ?? "untitled"}${
+            current.start === null || current.end === null
+              ? ""
+              : `, ${whenOf({ start: current.start, end: current.end, timeZone: null }, clock)}`
+          }`,
+        ]),
+  ].map((line) => line.slice(0, 400));
 };
 
 /** One From the owner may switch a send card to; `id` names it in the switch. */
@@ -393,6 +490,8 @@ const fromLine = (from: From) =>
 
 /** The card: everything that goes, as it goes. */
 export const sendCard = (input: {
+  /** What outside text the turn had read when it drew the card, such as "text from Sentry". */
+  readonly outside?: string;
   readonly service: string;
   /** The mail provider of a mail or calendar card; a call card names `service`. */
   readonly mail?: Pick<MailProvider, "mailService" | "calendarService">;
@@ -403,6 +502,15 @@ export const sendCard = (input: {
   /** The owner's zone, which an event's times are shown in, and the company's locale. */
   readonly clock: TextClock;
 }): { readonly question: string; readonly detail: string; readonly send: KinSendCard } => {
+  const card = cardOf(input);
+  if (input.outside === undefined) return card;
+  // The question shows on every client, also beside the send details, so the mark goes there.
+  const mark = ` Drafted after reading ${input.outside.slice(0, 80)}, so check it before you confirm.`;
+  return { ...card, question: `${card.question.slice(0, 240 - mark.length)}${mark}` };
+};
+const cardOf = (
+  input: Omit<Parameters<typeof sendCard>[0], "outside">,
+): { readonly question: string; readonly detail: string; readonly send: KinSendCard } => {
   const { prepared } = input;
   if (prepared._tag === "email") {
     const reply = prepared.threadId !== null;
@@ -446,7 +554,10 @@ export const sendCard = (input: {
     };
   }
   if (prepared._tag === "event") {
+    const target = eventTarget(prepared, input.clock);
+    const changing = prepared.current?.title ?? null;
     const body = [
+      ...target,
       plainWhen(prepared, input.clock),
       ...(prepared.location === null ? [] : [`Where: ${prepared.location}`]),
       ...(prepared.notes === null ? [] : ["", prepared.notes]),
@@ -455,8 +566,10 @@ export const sendCard = (input: {
       question:
         prepared.eventId === null
           ? "Add this event and send the invitations?"
-          : "Change this event and tell the guests?",
-      detail: [`Event: ${prepared.title}`, plainWhen(prepared, input.clock)]
+          : changing === null
+            ? "Change this event and tell the guests?"
+            : `Change “${changing.slice(0, 80)}” and tell the guests?`,
+      detail: [...target, `Event: ${prepared.title}`, plainWhen(prepared, input.clock)]
         .join("\n")
         .slice(0, 2000),
       send: {
@@ -569,15 +682,21 @@ const filesOf = Effect.fn("KinSending.files")(function* (attachments: ReadonlyAr
   );
 });
 
-/** Sends exactly what was prepared, once, through the account's provider. */
+/**
+ * Sends exactly what was prepared, once, through the account's provider. `starting` runs right
+ * before the request leaves, after every file is read and checked.
+ */
 export const sendMail = Effect.fn("KinSending.sendMail")(function* (
   provider: MailProvider,
   http: HttpClient.HttpClient,
   token: string,
   prepared: Exclude<Prepared, { _tag: "call" }>,
+  starting: Effect.Effect<void>,
 ) {
-  if (prepared._tag === "event") return yield* provider.saveEvent(http, token, prepared);
+  if (prepared._tag === "event")
+    return yield* starting.pipe(Effect.andThen(provider.saveEvent(http, token, prepared)));
   const raw = mime(prepared, yield* filesOf(prepared.attachments));
+  yield* starting;
   return yield* provider.sendMessage(http, token, { raw, threadId: prepared.threadId });
 });
 

@@ -1,6 +1,6 @@
 import { kinBodyMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
+import { kinDocPieceKey, kinDocPieces } from "@t3tools/client-runtime/kin/kinDocs";
 import {
-  kinBriefHead,
   kinLinkedMarkdown,
   kinLinkOf,
   kinPageView,
@@ -10,6 +10,7 @@ import {
   KinOrgId,
   KinPersonId,
   type EnvironmentId,
+  type KinEmbed,
   type KinMessageLink,
 } from "@t3tools/contracts";
 import { Link, useRouter } from "@tanstack/react-router";
@@ -18,8 +19,9 @@ import { useId, useState, type ReactNode } from "react";
 
 import ChatMarkdown, { type ChatMarkdownContextReference } from "../components/ChatMarkdown";
 import { cn } from "../lib/utils";
+import { KinEmbedView } from "./KinEmbedView";
 import { openKinProfile } from "./KinProfileSheet";
-import { KIN_PLACE_PATH } from "./kinPlaces";
+import { kinRecordPlace } from "./kinPlaces";
 import { openKinSettings } from "./kinSettingsAddress";
 import { kinProfileRequestAtom } from "./kinTeamForm";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -79,24 +81,9 @@ function KinInAppLink(props: Where & { readonly link: KinMessageLink; readonly l
         </button>
       );
     case "record": {
-      const place =
-        to.kind === "task"
-          ? KIN_PLACE_PATH.tasks
-          : to.kind === "entry"
-            ? KIN_PLACE_PATH.money
-            : to.kind === "doc"
-              ? KIN_PLACE_PATH.docs
-              : KIN_PLACE_PATH.clients;
-      const search =
-        to.kind === "client"
-          ? { client: to.key }
-          : to.kind === "project"
-            ? { project: to.key }
-            : to.kind === "doc"
-              ? { doc: to.key }
-              : { task: to.key };
+      const place = kinRecordPlace(to);
       return (
-        <Link to={place} params={params} search={search} title={title}>
+        <Link to={place.to} params={params} search={place.search} title={title}>
           {label}
         </Link>
       );
@@ -130,14 +117,33 @@ export function KinLinkedMarkdown(
   );
 }
 
+interface PageText extends Where {
+  readonly links: ReadonlyArray<KinMessageLink> | undefined;
+  /** The whole body and its figures, so a block in any part finds the figure drawn for it. */
+  readonly body: string;
+  readonly embeds: ReadonlyArray<KinEmbed> | undefined;
+}
+
+/** A stretch of a page: its words with their links, and each figure in its place. */
+function KinPageText(props: PageText & { readonly markdown: string }) {
+  const pieces = kinDocPieces(props.markdown, props);
+  return pieces.map((piece, index) =>
+    piece.type === "text" ? (
+      <KinLinkedMarkdown key={kinDocPieceKey(piece, index)} {...props} markdown={piece.text} />
+    ) : (
+      <div key={kinDocPieceKey(piece, index)} className="py-1">
+        <KinEmbedView
+          environmentId={props.environmentId}
+          orgId={KinOrgId.make(props.orgId)}
+          embed={piece.embed}
+        />
+      </div>
+    ),
+  );
+}
+
 /** One titled part of a page; its heading folds it away and back. */
-function KinPageSection(
-  props: Where & {
-    readonly title: string;
-    readonly markdown: string;
-    readonly links: ReadonlyArray<KinMessageLink> | undefined;
-  },
-) {
+function KinPageSection(props: PageText & { readonly title: string; readonly markdown: string }) {
   const [open, setOpen] = useState(true);
   const id = useId();
   return (
@@ -160,8 +166,8 @@ function KinPageSection(
         </button>
       </h3>
       {open ? (
-        <div className="pt-1.5">
-          <KinLinkedMarkdown {...props} />
+        <div className="flex flex-col gap-2 pt-1.5">
+          <KinPageText {...props} />
         </div>
       ) : null}
     </section>
@@ -170,19 +176,18 @@ function KinPageSection(
 
 /**
  * An agent's long or structured message as a page: full column width, no bubble, its headings as
- * headings and each section folding on its own. A brief opens with its greeting and date.
+ * headings, each section folding on its own and its figures in place. A brief opens with its
+ * greeting and date; the turn's card, when it has one, closes the page.
  */
 export function KinMessagePage(
-  props: Where & {
-    readonly body: string;
-    readonly links: ReadonlyArray<KinMessageLink> | undefined;
-    readonly brief: { readonly createdAt: string; readonly firstName: string | null } | null;
+  props: PageText & {
+    readonly head: { readonly greeting: string; readonly date: string } | null;
     readonly label: string;
+    readonly foot?: ReactNode;
   },
 ) {
-  const view = kinPageView(props.body, props.brief !== null);
-  const head =
-    props.brief === null ? null : kinBriefHead(props.brief.createdAt, props.brief.firstName);
+  const { head, foot, ...text } = props;
+  const view = kinPageView(props.body, head !== null);
   return (
     <article
       aria-label={props.label}
@@ -196,15 +201,16 @@ export function KinMessagePage(
           <p className="m-0 text-xs text-muted-foreground">{head.date}</p>
         </header>
       )}
-      {view.lead === null ? null : <KinLinkedMarkdown {...props} markdown={view.lead} />}
+      {view.lead === null ? null : <KinPageText {...text} markdown={view.lead} />}
       {view.sections.map((section) => (
         <KinPageSection
           key={`${section.title}:${section.markdown.slice(0, 48)}`}
-          {...props}
+          {...text}
           title={section.title}
           markdown={section.markdown}
         />
       ))}
+      {foot === undefined || foot === null ? null : <div className="pt-1">{foot}</div>}
     </article>
   );
 }

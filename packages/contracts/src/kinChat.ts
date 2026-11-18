@@ -8,6 +8,8 @@ import {
 } from "./auth.ts";
 import {
   TrimmedNonEmptyString,
+  KinTrimmedText,
+  KinText,
   NonNegativeInt,
   PositiveInt,
   IsoDateTime,
@@ -21,6 +23,8 @@ import {
   ChatImageAttachment,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
 } from "./chatAttachment.ts";
+import { KinEmbed, KIN_MESSAGE_FIGURES_MAX } from "./kinEmbed.ts";
+export { KinText, KinTrimmedText } from "./baseSchemas.ts";
 import { TimeZone } from "./kinTime.ts";
 
 export const KinOrgId = TrimmedNonEmptyString.pipe(Schema.brand("KinOrgId"));
@@ -53,12 +57,6 @@ const isNonBlankBody = Schema.makeFilter((value: string) => !isBlankBody(value),
   expected: "a non-blank message body",
 });
 
-// node:sqlite truncates TEXT results at NUL, even when the full value was stored.
-const isNulFree = Schema.makeFilter((value: string) => !value.includes("\u0000"), {
-  expected: "text without NUL characters",
-});
-export const KinText = Schema.String.check(isNulFree);
-export const KinTrimmedText = TrimmedNonEmptyString.check(isNulFree);
 const isPlainLine = Schema.makeFilter((value: string) => !/\p{Cc}/u.test(value), {
   expected: "text without control characters",
 });
@@ -86,13 +84,15 @@ export const KinMessageRef = Schema.TaggedStruct("doc", {
 export type KinMessageRef = typeof KinMessageRef.Type;
 export const KIN_MESSAGE_REFS_CAP = 5;
 
+/** The sheet an entry opens in. */
+const KinRecordLinkKind = Schema.Literals(["task", "client", "project", "doc", "entry"]);
 /** Where a name in a message goes: a chat, a teammate's profile, an entry by its key, or Settings. */
 export const KinMessageLinkTarget = Schema.Union([
   Schema.TaggedStruct("chat", { chatId: TrimmedNonEmptyString }),
   Schema.TaggedStruct("person", { personId: TrimmedNonEmptyString }),
   Schema.TaggedStruct("record", {
     key: KinRefKey,
-    kind: Schema.Literals(["task", "client", "project", "doc", "entry"]),
+    kind: KinRecordLinkKind,
   }),
   Schema.TaggedStruct("settings", {}),
 ]);
@@ -263,6 +263,31 @@ export const KinMessageWhen = Schema.Struct({
 });
 export type KinMessageWhen = typeof KinMessageWhen.Type;
 
+export const KIN_TURN_CHANGES_SHOWN = 5;
+/**
+ * One record change an agent's wake-up made, as the reader may see it. `what` is Kin's own short
+ * phrase ("given to Finance"); `change` is what `kin.lead.undoChange` takes with the org.
+ */
+export const KinTurnChange = Schema.Struct({
+  key: KinRefKey,
+  // Absent from an older host.
+  kind: Schema.optional(KinRecordLinkKind),
+  title: Schema.String,
+  what: Schema.String,
+  change: Schema.Struct({ agentId: KinAgentId, seq: PositiveInt }),
+  // This reader may put it back now; false for a teammate, and once undone or changed since.
+  undoable: Schema.Boolean,
+  undone: Schema.Boolean,
+});
+export type KinTurnChange = typeof KinTurnChange.Type;
+/** What one wake-up changed, oldest first: `count` of them this reader sees, `more` not listed. */
+export const KinTurnChanges = Schema.Struct({
+  count: NonNegativeInt,
+  items: Schema.Array(KinTurnChange).check(Schema.isMaxLength(KIN_TURN_CHANGES_SHOWN)),
+  more: NonNegativeInt,
+});
+export type KinTurnChanges = typeof KinTurnChanges.Type;
+
 export const KinMessage = Schema.Struct({
   orgId: KinOrgId,
   chatId: KinChatId,
@@ -280,6 +305,9 @@ export const KinMessage = Schema.Struct({
   refs: Schema.optional(Schema.Array(KinMessageRef)),
   // What this reader may open from the text; absent when it names nothing they can.
   links: Schema.optional(Schema.Array(KinMessageLink)),
+  embeds: Schema.optional(
+    Schema.Array(KinEmbed).check(Schema.isMaxLength(KIN_MESSAGE_FIGURES_MAX)),
+  ),
   // An agent's check-in or weekly brief, drawn as one; absent on everything else.
   form: Schema.optional(Schema.Literal("brief")),
   intent: Schema.NullOr(KinAgentIntent),
@@ -297,6 +325,8 @@ export const KinMessage = Schema.Struct({
   relay: Schema.optional(KinMessageRelay),
   // Absent on a message that names no time.
   when: Schema.optional(KinMessageWhen),
+  // An agent's reply from a wake-up, for each reader; absent on every other message.
+  turnChanges: Schema.optional(KinTurnChanges),
 });
 export type KinMessage = typeof KinMessage.Type;
 

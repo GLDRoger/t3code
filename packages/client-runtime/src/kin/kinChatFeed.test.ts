@@ -372,19 +372,54 @@ describe("rows", () => {
     const system = { kind: "system" as const, author: { _tag: "system" as const } };
     const rows = messageRows(
       [
-        agentMessage(1, { ...system, relay: { kind: "sent_by", agentId: KIN_FIXTURE_AGENT } }),
+        agentMessage(1, {
+          ...system,
+          body: "Keep both **Pristine** runs?\nMeera wants the March one.",
+          relay: { kind: "sent_by", agentId: KIN_FIXTURE_AGENT },
+        }),
         agentMessage(2, {
           ...system,
+          body: "Kept the March run\nDone: Pristine runs (changed)",
           relay: { kind: "reply_from", agentId: KIN_FIXTURE_AGENT },
           discussionId: "TD-1" as KinMessage["discussionId"],
+        }),
+        agentMessage(3, {
+          ...system,
+          body: "## Cash\n\n- Runway is 14 months.\n- Dev's hire fits.\n\nNothing else moves.",
+          relay: { kind: "reply_from", agentId: KIN_FIXTURE_AGENT },
+        }),
+        agentMessage(4, {
+          ...system,
+          body: "Runway is 14 months.\n\nShould I hold Dev's hire?",
+          relay: { kind: "reply_from", agentId: KIN_FIXTURE_AGENT },
+        }),
+        agentMessage(5, {
+          ...system,
+          body: 'Spend by month.\n```kin_chart\n{"type":"bar"}\n```',
+          relay: { kind: "reply_from", agentId: KIN_FIXTURE_AGENT },
         }),
       ],
       viewer,
       new Set(),
-    );
+    ).filter((row) => row.type === "relay");
+    // Both directions fold to their first line; a reply ending on a question or holding a figure
+    // stays open, so nothing to answer or look at hides behind the fold.
     expect(rows).toMatchObject([
-      { type: "relay", relay: "sent_by", agentLabel: "Tech lead", discussionId: null },
-      { type: "relay", relay: "reply_from", agentLabel: "Tech lead", discussionId: "TD-1" },
+      {
+        relay: "sent_by",
+        agentLabel: "Tech lead",
+        discussionId: null,
+        summary: "Keep both Pristine runs?",
+      },
+      {
+        relay: "reply_from",
+        agentLabel: "Tech lead",
+        discussionId: "TD-1",
+        summary: "Kept the March run.",
+      },
+      { relay: "reply_from", summary: "Cash." },
+      { relay: "reply_from", summary: null },
+      { relay: "reply_from", summary: null },
     ]);
     // A person's words the agent passed on read as theirs, carried by the agent.
     const passed = messageRows(
@@ -559,12 +594,14 @@ describe("rows", () => {
 describe("streaming replies", () => {
   const reply = (seq: number, draftId: string, body: string) =>
     agentMessage(seq, { floorRunId: "r", clientMessageId: `reply:${draftId}`, body });
-  const draft = (draftId: string, text: string) => ({
+  // The fixture's clock, not a local one, so no time zone puts a gap before the message.
+  const draft = (seq: number, draftId: string, text: string) => ({
     draftId,
     agentId: KIN_FIXTURE_AGENT,
     text,
-    startedAt: localIso(8, 9),
+    startedAt: agentMessage(seq).createdAt,
   });
+  const streamingAt = new Date(Date.parse(agentMessage(3).createdAt) + 60_000);
   const shape = (rows: ReadonlyArray<KinFeedRow>) =>
     rows.map((row) =>
       row.type === "message" || row.type === "draft" ? [row.key, row.showAuthor] : row.type,
@@ -585,20 +622,14 @@ describe("streaming replies", () => {
 
   it("keeps a draft's key and author line when its message lands, so the bubble stays put", () => {
     const before = [ownMessage(1), reply(2, "a", "First.")];
-    const streaming = messageRows(before, viewer, new Set(), new Date(2026, 10, 8, 12), [
-      draft("b", "Sec"),
-    ]);
+    const streaming = messageRows(before, viewer, new Set(), streamingAt, [draft(3, "b", "Sec")]);
     const landed = messageRows([...before, reply(3, "b", "Second.")], viewer, new Set());
     expect(shape(streaming)).toEqual(shape(landed));
     expect(streaming[2]).toMatchObject({ type: "draft", authorLabel: "Tech lead" });
     expect(kinRowSeq(streaming[2]!)).toBe(0);
     // The first reply of a turn carries the author line while streaming and after.
     expect(
-      shape(
-        messageRows([ownMessage(1)], viewer, new Set(), new Date(2026, 10, 8, 12), [
-          draft("a", "Fi"),
-        ]),
-      ),
+      shape(messageRows([ownMessage(1)], viewer, new Set(), streamingAt, [draft(2, "a", "Fi")])),
     ).toEqual([
       ["fixture-1", false],
       ["reply:a", true],
@@ -749,6 +780,14 @@ describe("message labels", () => {
       "a card with a caption, which the card itself labels",
       row({ body: "Started", widgetId: "w1" as KinMessage["widgetId"] }),
       "Tech lead, agent. Started. 9:30.",
+    ],
+    [
+      "a page's figure by its title, not its id",
+      row({
+        body: "Two are late.\n\n```kin_visual This week\nf_aaaaaaaaaa\n```",
+        embeds: [{ _tag: "visual", title: "This week", attachmentId: "a1", height: 90 }],
+      }),
+      "Tech lead, agent. Two are late. This week. 9:30.",
     ],
     [
       "a body ending in an ellipsis",

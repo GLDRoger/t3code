@@ -18,7 +18,10 @@ import {
   createKinTeamActions,
   kinInviteLink,
   kinInviteLinkLocalOnly,
+  kinNamesakeHandle,
   kinOpenCountsFollower,
+  kinPickLine,
+  kinRemovedNamesake,
   kinTeamEntrySummary,
   kinTeamView,
   kinTeammateActions,
@@ -240,6 +243,32 @@ describe("createKinTeamActions", () => {
       ok: false,
       problem: `Couldn't make this link. ${KIN_BUSY} The earlier link was stopped.`,
     });
+  });
+
+  it("offers to bring back the removed person a new name matches, in the host's words", async () => {
+    const { actions } = harness({ create: () => refused("conflict") });
+    expect(
+      await actions.makeLink({ displayName: "Tomas", personId: null, replaces: null }),
+    ).toEqual({ ok: false, problem: "host words", bringBack: true });
+    // Tomas has no access; Mira, who has joined, and the owner are never a namesake to bring back.
+    expect(kinRemovedNamesake(list, " tomas ")?.personId).toBe(tomas);
+    expect(kinRemovedNamesake(list, "Mira")).toBeNull();
+    // Someone else named Tomas joins: both rows and the picker line read apart by handle.
+    const other = KinPersonId.make("tomas-2");
+    const both = {
+      ...list,
+      people: [...list.people, person(other, "Tomas")],
+      joined: [mira, other],
+    };
+    expect(
+      kinTeamView(both, KIN_TEAM_NO_EDITS, owner)
+        .filter((row) => row.name === "Tomas")
+        .map((row) => row.detail.split(" · ")[0]),
+    ).toEqual(["@tomas-2", "@tomas"]);
+    expect(kinNamesakeHandle(both.people, person(mira, "Mira"))).toBeNull();
+    expect(kinPickLine(kinNamesakeHandle(both.people, person(other, "Tomas")), "Invited")).toBe(
+      "@tomas-2 · Invited",
+    );
   });
 
   it("shows a removal at once, takes it back on refusal, and after a yes lets the host's list speak", async () => {

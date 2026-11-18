@@ -12,7 +12,12 @@ import {
   type OnViewableItemsChangedInfo,
   type ViewabilityConfigCallbackPairs,
 } from "@legendapp/list/react-native";
-import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import {
+  useIsFocused,
+  useNavigation,
+  useRoute,
+  type StaticScreenProps,
+} from "@react-navigation/native";
 import {
   EnvironmentId,
   KinChatId,
@@ -85,6 +90,7 @@ import { askForKinNotifications } from "./notifications/installKinNotifications"
 import { kinStackWithoutChat } from "./state/kinChatStack";
 import { resetRootStack } from "../../lib/root-stack-reset";
 import { KinMessageSheet } from "./components/KinMessageSheet";
+import { KinTurnReceiptSheet } from "./components/KinTurnReceiptSheet";
 import { KinChatTitle } from "./components/KinChatTitle";
 import {
   KinOfflineState,
@@ -129,6 +135,7 @@ import {
   type KinPaging,
   KIN_CHAT_COPY,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
+import { kinMessageCopyText } from "@t3tools/client-runtime/kin/kinMessagePage";
 import { kinFeedMessages } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { useLocalDayStartMs } from "./state/useLocalDayStartMs";
 import { kinClient, type KinSynced } from "./state/kinClient";
@@ -194,6 +201,8 @@ type KinChatParams = {
   readonly environmentId: string;
   readonly orgId: string;
   readonly chatId: string;
+  /** A message a notification opened the chat on, brought into view once it has loaded. */
+  readonly message?: string;
 };
 
 type KinFixtures = typeof import("@t3tools/client-runtime/kin/kinChatFixtures");
@@ -988,6 +997,7 @@ function KinChatFeed(props: {
   const openActions = (messageId: string) =>
     setActions((current) => ({ messageId, open: current.open + 1 }));
   const actionsFor = actions.messageId === "" ? null : actions.messageId;
+  const [receiptFor, setReceiptFor] = useState<string | null>(null);
   const safeBottom = useSafeAreaInsets().bottom;
   // Clears the home indicator; the keyboard offset gives that space back while the keyboard is up.
   const composerInset = Math.max(safeBottom, KIN_COMPOSER_GUTTER);
@@ -1103,6 +1113,22 @@ function KinChatFeed(props: {
             continues: index > 0 || endsOnOwn,
           })),
         ];
+  const params: unknown = useRoute().params;
+  const landOn =
+    typeof params === "object" && params !== null && "message" in params
+      ? String(params.message)
+      : null;
+  const landed = useRef<string | null>(null);
+  const landIndex =
+    landOn === null
+      ? -1
+      : rows.findIndex((row) => row.type === "message" && row.message.messageId === landOn);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the list, outside React, to the message a notification opened, once it has loaded
+  useEffect(() => {
+    if (landOn === null || landIndex < 0 || landed.current === landOn) return;
+    landed.current = landOn;
+    void listRef.current?.scrollToIndex({ index: landIndex, animated: false, viewPosition: 0.3 });
+  }, [landIndex, landOn, listRef, landed]);
   // LegendList grows an empty list to its frame, under both insets, which hid the intro under the
   // composer; the visible height ends it above the composer instead.
   const emptyMinHeight =
@@ -1328,6 +1354,7 @@ function KinChatFeed(props: {
                 ? () => openActions(message.messageId)
                 : null
             }
+            onOpenReceipt={() => setReceiptFor(message.messageId)}
             onLinkPress={onLinkPress}
             widget={widget}
             environmentId={props.environmentId}
@@ -1372,6 +1399,8 @@ function KinChatFeed(props: {
           <KinRelayBubble
             row={item}
             environmentId={props.environmentId}
+            markdownStyle={markdownStyle}
+            onLinkPress={onLinkPress}
             onOpenDiscussion={
               room === null
                 ? null
@@ -1558,6 +1587,13 @@ function KinChatFeed(props: {
           (candidate) => candidate.type === "message" && candidate.message.messageId === actionsFor,
         );
   const actionsMessage = actionsRow?.type === "message" ? actionsRow.message : null;
+  const receiptRow =
+    receiptFor === null
+      ? undefined
+      : feedRows.find(
+          (candidate) => candidate.type === "message" && candidate.message.messageId === receiptFor,
+        );
+  const receiptMessage = receiptRow?.type === "message" ? receiptRow.message : null;
 
   return (
     <View className="flex-1">
@@ -1588,11 +1624,14 @@ function KinChatFeed(props: {
         data={rows}
         keyExtractor={(row) => row.key}
         // A draft recycles into the agent bubble its message will take.
+        // A recycled WebView would load another row's page, so frames get a type of their own.
         getItemType={(row) =>
           row.type === "message"
             ? row.own
               ? "own"
-              : "other"
+              : row.message.embeds?.some((embed) => embed._tag === "visual") === true
+                ? "page-visual"
+                : "other"
             : row.type === "draft"
               ? "other"
               : row.type
@@ -1707,6 +1746,14 @@ function KinChatFeed(props: {
           onClose={() => setActions((current) => ({ ...current, messageId: "" }))}
         />
       )}
+      {receiptMessage === null ? null : (
+        <KinTurnReceiptSheet
+          message={receiptMessage}
+          environmentId={props.environmentId}
+          connected={props.connected}
+          onClose={() => setReceiptFor(null)}
+        />
+      )}
     </View>
   );
 }
@@ -1738,7 +1785,7 @@ function KinFeedMessageActions(props: {
     (message.widgetId === null || (widget !== undefined && REACTABLE_WIDGETS.has(widget.type)));
   return (
     <KinMessageSheet
-      body={message.status === "deleted" ? "" : message.body}
+      body={message.status === "deleted" ? "" : kinMessageCopyText(message)}
       markdownStyle={props.markdownStyle}
       mine={new Set(chips.flatMap((chip) => (chip.mine ? [chip.emoji] : [])))}
       onReact={

@@ -8,7 +8,11 @@ import {
 } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinDomainLabel } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { kinAgentAvatar, type KinAvatarView } from "@t3tools/client-runtime/kin/kinScreenState";
-import { kinPickablePeople } from "@t3tools/client-runtime/kin/kinTeam";
+import {
+  kinNamesakeHandle,
+  kinPickLine,
+  kinPickablePeople,
+} from "@t3tools/client-runtime/kin/kinTeam";
 import { KIN_WORK_ASSIGN } from "@t3tools/client-runtime/kin/kinWork";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
@@ -263,7 +267,13 @@ function KinGroupDialog(props: { readonly target: KinGroupFormTarget }) {
                           <PickRow
                             key={person.personId}
                             name={person.displayName}
-                            detail={waiting ? KIN_WORK_ASSIGN.invited : null}
+                            detail={kinPickLine(
+                              kinNamesakeHandle(
+                                people.map((entry) => entry.person),
+                                person,
+                              ),
+                              waiting ? KIN_WORK_ASSIGN.invited : null,
+                            )}
                             avatar={{ kind: "person", seed: `person:${person.personId}` }}
                             checked={personIds.includes(person.personId)}
                             disabled={busy || waiting}

@@ -8,6 +8,7 @@ import {
   KinMessageId,
   KinOrgId,
   KinPersonId,
+  KinRecordKey,
   KinWidgetId,
   type KinPushError,
   type KinPushToken,
@@ -216,12 +217,14 @@ const postMessage = (
     readonly mentions?: ReadonlyArray<string>;
     readonly replyTo?: KinMessageId;
     readonly silent?: boolean;
+    readonly messageId?: string;
+    readonly kind?: "text" | "system";
   } = {},
 ) =>
   Effect.gen(function* () {
     const [{ seq }] = (yield* sql<{ seq: number }>`
       SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM kin_messages`) as [{ seq: number }];
-    const messageId = KinMessageId.make(`msg_${seq}`);
+    const messageId = KinMessageId.make(options.messageId ?? `msg_${seq}`);
     const human = typeof author === "object" && "personId" in author;
     const agent = typeof author === "object" && "agentMemberId" in author;
     yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
@@ -230,7 +233,8 @@ const postMessage = (
       VALUES (${messageId}, 'org_01', ${options.chatId ?? "chat_team"}, ${seq},
         ${human ? "human" : agent ? "agent" : "system"}, ${human ? author.personId : null},
         ${agent ? "lead_fin" : null}, ${agent ? owner : null}, ${agent ? "thread-fin" : null},
-        ${human ? author.memberId : agent ? author.agentMemberId : null}, 'member', 'text',
+        ${human ? author.memberId : agent ? author.agentMemberId : null}, 'member',
+        ${options.kind ?? "text"},
         ${options.body ?? "Ship it before Friday, the secret is hunter2"},
         ${JSON.stringify(options.mentions ?? [])}, ${options.replyTo ?? null}, ${status}, ${T},
         ${options.silent === true ? 1 : 0})`;
@@ -409,6 +413,8 @@ describe("KinPushSender", () => {
           chatId: "chat_team",
           widgetId,
           revision: 3,
+          // A tap opens the card itself, in its chat.
+          subject: { _tag: "message", messageId: `msg_${widgetId.slice("w_msg_".length)}` },
           deepLink: "/kin/env_kin/org_01/chats/chat_team",
         },
       });
@@ -440,6 +446,108 @@ describe("KinPushSender", () => {
       // A suggestion only the owner can see isn't announced to anyone.
       const suggested = yield* postMessage(sql, "system", "suggested");
       assert.strictEqual((yield* notify({ _tag: "message", orgId, messageId: suggested })).sent, 0);
+    }).pipe(Effect.provide(build(apns)));
+  });
+
+  it.effect("a push opens the one entry it names, as the person it reaches may open it", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { notify, sql } = yield* seed;
+      yield* sql`UPDATE kin_people SET access = CASE person_id WHEN ${owner} THEN 'owner'
+        ELSE 'member' END`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at)
+        VALUES ('org_01', 'clients', 'Clients', 'C', 1, 0), ('org_01', 'work', 'Work', 'W', 1, 0)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, sensitive, created_by_kind, origin_key, created_at, updated_at)
+        VALUES ('org_01', 'c1', 'clients', 'C-1', 'Orbit Dental', 'person', ${owner}, 0,
+            'person', 'c1', 0, 0),
+          ('org_01', 'w1', 'work', 'W-1', 'Logo files', 'person', ${member}, 0, 'person', 'w1', 0, 0)`;
+      // A line from one of them to the other: what each tap opens for whoever it reached.
+      const subjects = (from: "owner" | "priya", body: string) =>
+        Effect.gen(function* () {
+          apns.sent.length = 0;
+          const author =
+            from === "owner"
+              ? { personId: owner, memberId: "m_owner" }
+              : { personId: member, memberId: "m_priya" };
+          const messageId = yield* postMessage(sql, author, "posted", {
+            mentions: [from === "owner" ? "m_priya" : "m_owner"],
+            body,
+          });
+          yield* notify({ _tag: "message", orgId, messageId });
+          return apns.sent.map(
+            (push) => (push.payload as { body: { subject?: unknown } }).body.subject,
+          );
+        });
+      const task = { _tag: "record", key: "W-1", kind: "task" };
+      const client = { _tag: "record", key: "C-1", kind: "client" };
+      // Priya may open her task, not the owner's client: only the task is hers to land on.
+      assert.deepStrictEqual(yield* subjects("owner", "W-1 is ready to send."), [task]);
+      assert.deepStrictEqual(yield* subjects("owner", "C-1 and W-1 wait on the files."), [task]);
+      assert.deepStrictEqual(yield* subjects("owner", "Orbit Dental renews next week."), [
+        undefined,
+      ]);
+      // The owner may open both, so a line naming both is about neither; one naming one opens it.
+      assert.deepStrictEqual(yield* subjects("priya", "C-1 and W-1 wait on the files."), [
+        undefined,
+        undefined,
+      ]);
+      assert.deepStrictEqual(yield* subjects("priya", "Orbit Dental signed."), [client, client]);
+
+      // Kin's notice of Priya's late work lands on her Tasks; of one task, on that task.
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, sensitive, created_by_kind, origin_key, created_at, updated_at)
+        VALUES ('org_01', 'w2', 'work', 'W-2', 'Brand deck', 'person', ${member}, 0, 'person',
+            'w2', 0, 0),
+          ('org_01', 'w3', 'work', 'W-3', 'Print run', 'person', ${member}, 0, 'person', 'w3', 0, 0),
+          ('org_01', 'w9', 'work', 'W-9', 'Payroll', 'person', ${owner}, 1, 'person', 'w9', 0, 0)`;
+      let notices = 0;
+      const told = (
+        body: string,
+        author: "system" | { agentMemberId: string } = "system",
+        id = `kin-holder-${notices + 1}`,
+      ) =>
+        Effect.gen(function* () {
+          apns.sent.length = 0;
+          notices += 1;
+          const messageId = yield* postMessage(sql, author, "posted", {
+            ...(author === "system" ? { messageId: id, kind: "system" as const } : {}),
+            mentions: ["m_priya"],
+            body,
+          });
+          yield* notify({ _tag: "message", orgId, messageId });
+          return apns.sent.map(
+            (push) => (push.payload as { body: { subject?: unknown } }).body.subject,
+          );
+        });
+      const lines =
+        "3 of your tasks need you:\n• W-1 Logo files\n• W-2 Brand deck\n• W-3 Print run";
+      assert.deepStrictEqual(yield* told(lines), [{ _tag: "tasks" }]);
+      assert.deepStrictEqual(yield* told("W-1 Logo files due today."), [task]);
+      // Held through her away time, it posts under the hold's id and still opens Tasks.
+      yield* sql`INSERT INTO kin_held_posts (hold_id, org_id, chat_id, person_id, kind, body,
+          audience, held_at, deliver_at)
+        VALUES ('hold-1', 'org_01', 'chat_team', ${member}, 'kin-holder-held', ${lines}, 'chat',
+          0, 0)`;
+      assert.deepStrictEqual(yield* told(lines, "system", "kin-held:hold-1"), [{ _tag: "tasks" }]);
+      // An agent naming several still opens the chat; a key she may not open is never counted.
+      assert.deepStrictEqual(yield* told(lines, { agentMemberId: "m_fin" }), [undefined]);
+      assert.deepStrictEqual(yield* told("2 of your tasks need you:\n• W-1\n• W-9"), [task]);
+    }).pipe(Effect.provide(build(apns)));
+  });
+
+  it.effect("rings a page's takeaway without its figure reference", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { notify, sql } = yield* seed;
+      const messageId = yield* postMessage(sql, { agentMemberId: "m_fin" }, "posted", {
+        body: "Two tasks are late.\n\n```kin_visual This week\nf_example000\n```",
+      });
+      yield* sql`UPDATE kin_messages SET chat_id = 'chat_dm' WHERE message_id = ${messageId}`;
+      yield* notify({ _tag: "message", orgId, messageId });
+      assert.isAbove(apns.sent.length, 0);
+      for (const alert of alerts(apns.sent)) assert.strictEqual(alert?.body, "Two tasks are late.");
     }).pipe(Effect.provide(build(apns)));
   });
 
@@ -479,6 +587,9 @@ describe("KinPushSender", () => {
         SELECT message_id AS "messageId" FROM kin_widgets WHERE widget_id = ${card}`) as [
         { messageId: KinMessageId },
       ];
+      yield* sql`UPDATE kin_messages SET body = 'The review is tomorrow.', source_wakeup_id = 'asked', widget_id = ${card}
+        WHERE message_id = ${anchor}`;
+      assert.strictEqual((yield* notify({ _tag: "message", orgId, messageId: anchor })).sent, 0);
       yield* sql`UPDATE kin_widgets SET awaiting_json = '[]' WHERE widget_id = ${card}`;
       assert.strictEqual((yield* notify({ _tag: "message", orgId, messageId: anchor })).sent, 0);
     }).pipe(Effect.provide(build(apns)));
@@ -555,9 +666,21 @@ describe("KinPushSender", () => {
       yield* notify({ _tag: "message", orgId, messageId: dm });
       const [first] = alerts(apns.sent);
       assert.strictEqual(first?.title, "Finance");
-      // Cut at a word, under the banner's length, and marked as cut.
-      assert.isAtMost(Array.from(first?.body ?? "").length, 160);
-      assert.match(first?.body ?? "", /^Payroll for November is ready to review\. .*ledger\.…$/);
+      // The whole reply: the lock screen shows it all, nothing cut at a banner's length.
+      assert.strictEqual(first?.body, long.trim());
+
+      // One past APNs' payload limit is cut to fit it, at the end of a sentence.
+      apns.sent.length = 0;
+      const essay = yield* postMessage(sql, { personId: member, memberId: "m_priya" }, "posted", {
+        mentions: ["m_owner"],
+        body: "The Q3 ledger reconciles against the bank statement line by line. ".repeat(90),
+      });
+      yield* notify({ _tag: "message", orgId, messageId: essay });
+      assert.lengthOf(alerts(apns.sent), 2);
+      for (const push of apns.sent) {
+        assert.isAtMost(new TextEncoder().encode(JSON.stringify(push.payload)).length, 4096);
+        assert.match(alerts([push])[0]?.body ?? "", /line by line\.…$/);
+      }
 
       // A check-in greets only when it has sections, and then leads with its first real line.
       for (const [body, expected] of [
@@ -577,6 +700,24 @@ describe("KinPushSender", () => {
         yield* notify({ _tag: "message", orgId, messageId: brief });
         assert.match(alerts(apns.sent)[0]?.body ?? "", expected);
       }
+
+      apns.sent.length = 0;
+      yield* sql`UPDATE kin_people SET display_name = 'Rhea Das' WHERE person_id = ${member}`;
+      const words = "Can you review the Lumen invoice?";
+      const relayed = yield* postMessage(sql, { agentMemberId: "m_fin_dm" }, "posted", {
+        chatId: "chat_dm",
+        body: `Rhea Das asked Finance:\n"${words}"`,
+      });
+      yield* sql`UPDATE kin_messages SET relay_json = ${JSON.stringify({
+        kind: "sent_by",
+        personId: member,
+        agentId: "lead_fin",
+      })} WHERE message_id = ${relayed}`;
+      yield* notify({ _tag: "message", orgId, messageId: relayed });
+      assert.deepStrictEqual(alerts(apns.sent), [
+        { title: "Rhea, via Finance", body: words },
+        { title: "Rhea, via Finance", body: words },
+      ]);
 
       // The lead's answer in the group rings whoever it is answering, named or not.
       yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json,
@@ -1241,6 +1382,47 @@ describe("KinPushSender", () => {
       });
       assert.strictEqual(apns.sent.length, 0);
     }).pipe(Effect.provide(build(apns)));
+  });
+});
+
+describe("kinTasksSubject", () => {
+  it("opens the one task a notice names, and Tasks when it names more", () => {
+    const [a, b] = [KinRecordKey.make("W-4"), KinRecordKey.make("W-7")];
+    assert.isUndefined(Sender.kinTasksSubject([]));
+    assert.deepStrictEqual(Sender.kinTasksSubject([a, a]), {
+      _tag: "record",
+      key: a,
+      kind: "task",
+    });
+    assert.deepStrictEqual(Sender.kinTasksSubject([a, b]), { _tag: "tasks" });
+  });
+});
+
+describe("kinPushFit", () => {
+  const bytes = (text: string) => new TextEncoder().encode(JSON.stringify(text)).length - 2;
+  const sentence = "Payroll for November matches the ledger and is ready for you. ";
+  const words = Array.from({ length: 400 }, (_, at) => `item${at}`).join(" ");
+  const hindi = "बजट की समीक्षा शुक्रवार तक पूरी होगी। ".repeat(60);
+  const chinese = "会议定在周五下午三点。".repeat(200);
+  it.each([
+    ["a short line whole", "Ship it Friday.", 3900, "Ship it Friday."],
+    ["a 600-character reply whole", sentence.repeat(10).trim(), 3900, sentence.repeat(10).trim()],
+    ["at a sentence end when one is near", sentence.repeat(100), 3900, /ready for you\.…$/],
+    ["at a word when no sentence ends near", words, 1000, /item\d+…$/],
+    ["Hindi at its sentence end, in bytes", hindi, 3900, /होगी।…$/],
+    ["Chinese at its sentence end, in bytes", chinese, 3900, /三点。…$/],
+    ["quotes and line breaks counted escaped", `"Done"\n`.repeat(800), 3900, /"Done"…$/],
+    ["a word longer than the room at a character", "x".repeat(5000), 100, /^x+…$/],
+  ] as const)("cuts %s", (_name, text, room, expected) => {
+    const cut = Sender.kinPushFit(text, room);
+    assert.isAtMost(bytes(cut), room);
+    if (typeof expected === "string") assert.strictEqual(cut, expected);
+    else {
+      assert.match(cut, expected);
+      // What it keeps is the text's own start, whole words, and nearly the room it had.
+      assert.isTrue(text.startsWith(cut.slice(0, -1)));
+      assert.isAbove(bytes(cut), room * 0.75);
+    }
   });
 });
 

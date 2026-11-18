@@ -89,9 +89,61 @@ describe("kinNotificationRoute", () => {
       },
       "/kin/env-1/kin-default/chats/c1f0e2d4-group",
     ],
+    // What it is about opens over its chat, so Back from it, or a gone entry, lands in the chat.
+    [
+      "a card, to its message in the chat",
+      { ...deferral, subject: { _tag: "message", messageId: "msg 7" } },
+      `${chatLink}?message=msg%207`,
+    ],
+    [
+      "a task, to its sheet over the chat",
+      { ...deferral, subject: { _tag: "record", key: "W-4", kind: "task" } },
+      [chatLink, "/kin/env-1/kin-default/work/W-4"],
+    ],
+    [
+      "an invoice, to its entry over the chat",
+      { ...deferral, subject: { _tag: "record", key: "INV-12", kind: "entry" } },
+      [chatLink, "/kin/env-1/kin-default/work/INV-12"],
+    ],
+    [
+      "a client, to its page over the chat",
+      { ...deferral, subject: { _tag: "record", key: "C-1", kind: "client" } },
+      [chatLink, "/kin/env-1/kin-default/clients/C-1"],
+    ],
+    [
+      "a doc, to its page over the chat",
+      { ...deferral, subject: { _tag: "record", key: "D-3", kind: "doc" } },
+      [chatLink, "/kin/env-1/kin-default/docs/D-3"],
+    ],
+    [
+      "several tasks, to Tasks over the chat",
+      { ...deferral, subject: { _tag: "tasks" } },
+      [chatLink, "/kin/env-1/kin-default/work"],
+    ],
+    // A subject a later build sends, or one that isn't well formed, still opens the chat.
+    [
+      "a subject this build doesn't know, to the chat",
+      { ...deferral, subject: { _tag: "meeting", meetingId: "m-1" } },
+      chatLink,
+    ],
+    [
+      "a malformed key, to the chat",
+      { ...deferral, subject: { _tag: "record", key: "../settings", kind: "task" } },
+      chatLink,
+    ],
+    [
+      "a subject on an approval, to where the approval opens",
+      {
+        kin: 1,
+        orgId: "kin-default",
+        deepLink: "/kin/env-1/kin-default/approvals",
+        subject: { _tag: "record", key: "W-4", kind: "task" },
+      },
+      "/kin/env-1/kin-default/approvals",
+    ],
   ])("routes %s", (_name, data, path) => {
     const route = kinNotificationRoute(response({ data }));
-    expect(route?.path).toBe(path);
+    expect(route?.paths).toEqual(typeof path === "string" ? [path] : path);
     expect(route?.act).toBeNull();
   });
 
@@ -131,7 +183,7 @@ describe("kinNotificationRoute", () => {
     expect(route).toEqual({
       responseKey: "note-1\u0000monday",
       environmentId: "env-1",
-      path: chatLink,
+      paths: [chatLink],
       act: {
         widgetId: "deferral:kin-default:item-7",
         revision: 3,
@@ -189,7 +241,7 @@ describe("kinNotificationRoute", () => {
     ],
   ])("opens the chat without acting for %s", (_name, action, category, data) => {
     const route = kinNotificationRoute(response({ data, action, category }));
-    expect(route?.path).toBe(chatLink);
+    expect(route?.paths).toEqual([chatLink]);
     expect(route?.act).toBeNull();
   });
 });

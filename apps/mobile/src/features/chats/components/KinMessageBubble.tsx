@@ -56,15 +56,23 @@ import {
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
+import { kinTurnReceiptLine } from "@t3tools/client-runtime/kin/kinTurnReceipt";
 import { kinCardDraws, KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
-import { kinMessageLayout } from "@t3tools/client-runtime/kin/kinMessagePage";
+import {
+  kinDraftMarkdown,
+  kinMessageCopyText,
+  kinMessageLayout,
+  kinPageHead,
+} from "@t3tools/client-runtime/kin/kinMessagePage";
 import { AgentMessageFoldHeader, MessageAttachmentList } from "../../threads/ThreadFeed";
 import { attachmentImageGallery } from "../../threads/messageImageGallery";
 import { useResolveClassNames } from "uniwind";
 import { SymbolView } from "../../../components/ui/AppSymbol";
-import { useEffect, useState } from "react";
+import { useViewabilityAmount } from "@legendapp/list/react-native";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { kinOutbox } from "../state/kinOutboxDelivery";
+import { KinVisualInView } from "../widgets/KinVisual";
 import { KinWidgetView } from "../widgets/KinWidgetView";
 import { KinAvatar } from "./KinAvatar";
 import { KinDocRefs } from "./KinDocRefs";
@@ -99,7 +107,7 @@ const NO_PLAYBACK = () => undefined;
 const NO_TARGET = () => undefined;
 
 /** A message's files, drawn by the thread feed's own attachment views at a bubble's width. */
-function KinAttachments(props: {
+export function KinAttachments(props: {
   readonly attachments: ReadonlyArray<KinAttachment>;
   readonly environmentId: EnvironmentId;
   readonly onPressPreview: (source: FilePreviewSource) => void;
@@ -192,6 +200,8 @@ export function KinMessageBubble(props: {
   readonly onOpenPerson?: (personId: KinPersonId) => void;
   /** The reader's first name, for a brief's greeting. */
   readonly firstName?: string | null;
+  /** Opens the sheet of what this reply's turn changed. */
+  readonly onOpenReceipt: () => void;
 }) {
   const { row, onReact, onOpenActions } = props;
   const onOpenTarget = useKinOpenTarget(props.environmentId, row.message.orgId);
@@ -219,6 +229,7 @@ export function KinMessageBubble(props: {
   const hasBubble =
     (!hasCard && attachments.length === 0) || hasBody || suggested || message.editedAt !== null;
   const mine = new Set(props.reactions.flatMap((chip) => (chip.mine ? [chip.emoji] : [])));
+  const receipt = deleted ? null : kinTurnReceiptLine(message.turnChanges);
   // The sheet's actions, reachable without the long press.
   const sheetActions = [
     ...(onReact === null || deleted
@@ -230,20 +241,30 @@ export function KinMessageBubble(props: {
     ...(hasBody ? [{ name: "copy", label: "Copy" }] : []),
   ];
 
+  // A page's card is its foot, across the page's width.
+  const card = (
+    <KinWidgetView
+      widget={props.widget}
+      environmentId={props.environmentId}
+      viewerPersonId={props.viewerPersonId}
+      onOpenLink={props.onLinkPress}
+      heldFor={props.heldFor ?? null}
+      {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
+    />
+  );
   const page =
     hasBubble && layout !== "bubble" ? (
       <View className="w-full gap-1">
         <KinMessagePage
           body={message.body}
           links={message.links}
+          embeds={message.embeds}
+          where={{ environmentId: props.environmentId, orgId: message.orgId }}
           textStyle={props.markdownStyle}
           onLinkPress={props.onLinkPress}
           onOpenTarget={onOpenTarget}
-          brief={
-            layout === "brief"
-              ? { createdAt: message.createdAt, firstName: props.firstName ?? null }
-              : null
-          }
+          head={kinPageHead(message, props.firstName ?? null)}
+          foot={hasCard ? card : null}
         />
         {wideTable ? (
           <Text textRole="caption" className="text-foreground-muted">
@@ -270,7 +291,7 @@ export function KinMessageBubble(props: {
         onAccessibilityAction={(event) => {
           const name = event.nativeEvent.actionName;
           if (name === "copy") {
-            copyTextWithHaptic(message.body, { target: "kin-message" });
+            copyTextWithHaptic(kinMessageCopyText(message), { target: "kin-message" });
             return;
           }
           if (name.startsWith("react-")) {
@@ -328,6 +349,23 @@ export function KinMessageBubble(props: {
       </View>
     ) : null;
 
+  const pressablePage =
+    page === null ? null : onOpenActions === null ? (
+      page
+    ) : (
+      // The page's own headings and text stay VoiceOver's, in order; this only takes the long press.
+      <Pressable
+        accessible={false}
+        onLongPress={() => {
+          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          onOpenActions();
+        }}
+        className="w-full"
+      >
+        {page}
+      </Pressable>
+    );
+  const framed = message.embeds?.some((embed) => embed._tag === "visual") === true;
   return (
     <View
       className={cn(
@@ -364,20 +402,10 @@ export function KinMessageBubble(props: {
           own={row.own}
         />
       )}
-      {page === null ? null : onOpenActions === null ? (
-        page
+      {page === null ? null : framed ? (
+        <KinFramesInView>{pressablePage}</KinFramesInView>
       ) : (
-        // The page's own headings and text stay VoiceOver's, in order; this only takes the long press.
-        <Pressable
-          accessible={false}
-          onLongPress={() => {
-            void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-            onOpenActions();
-          }}
-          className="w-full"
-        >
-          {page}
-        </Pressable>
+        pressablePage
       )}
       {bubble === null ? null : onOpenActions === null ? (
         <View className={row.own ? OWN_WIDTH_CLASS_NAME : OTHER_WIDTH_CLASS_NAME}>{bubble}</View>
@@ -397,18 +425,20 @@ export function KinMessageBubble(props: {
           {bubble}
         </Pressable>
       )}
-      {hasCard ? (
-        <View className="w-[85%]">
-          <KinWidgetView
-            widget={props.widget}
-            environmentId={props.environmentId}
-            viewerPersonId={props.viewerPersonId}
-            onOpenLink={props.onLinkPress}
-            heldFor={props.heldFor ?? null}
-            {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
-          />
-        </View>
-      ) : null}
+      {hasCard && page === null ? <View className="w-[85%]">{card}</View> : null}
+      {receipt === null ? null : (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${receipt}. Show the changes`}
+          hitSlop={8}
+          onPress={props.onOpenReceipt}
+          className="max-w-full px-1 active:opacity-60"
+        >
+          <Text textRole="caption" numberOfLines={1} className="text-foreground-muted">
+            {receipt}
+          </Text>
+        </Pressable>
+      )}
       {props.reactions.length > 0 ? (
         <View className={cn("flex-row flex-wrap gap-1.5 px-1", row.own && "justify-end")}>
           {props.reactions.map((chip) => (
@@ -432,6 +462,13 @@ export function KinMessageBubble(props: {
   );
 }
 
+/** Tells a page's frames whether its row is on screen, so only those load a WebView. */
+function KinFramesInView(props: { readonly children: ReactNode }) {
+  const [inView, setInView] = useState(false);
+  useViewabilityAmount(useCallback((token) => setInView(token.sizeVisible > 0), []));
+  return <KinVisualInView value={inView}>{props.children}</KinVisualInView>;
+}
+
 /**
  * A reply still streaming, laid out exactly as its message will be: the list keeps this row's
  * key and slot when the message lands, so nothing moves or flashes.
@@ -443,6 +480,8 @@ export function KinDraftBubble(props: {
   readonly direct: boolean;
 }) {
   const { row } = props;
+  const text = kinDraftMarkdown(row.draft.text);
+  const page = kinPageShape(text) === "page" || text !== row.draft.text;
   return (
     <View className={cn("items-start gap-1 px-4", rowSpacing(row.continues))}>
       {row.showAuthor && !props.direct ? (
@@ -452,27 +491,25 @@ export function KinDraftBubble(props: {
         accessible
         accessibilityLabel={kinSentences([
           `${row.authorLabel}, agent`,
-          kinPlainText(row.draft.text),
+          kinPlainText(text),
           "Still writing",
         ])}
-        className={
-          kinPageShape(row.draft.text) === "page"
-            ? "w-full"
-            : cn("gap-1", OTHER_WIDTH_CLASS_NAME, OTHER_BUBBLE_CLASS_NAME)
-        }
+        className={page ? "w-full" : cn("gap-1", OTHER_WIDTH_CLASS_NAME, OTHER_BUBBLE_CLASS_NAME)}
       >
-        {kinPageShape(row.draft.text) === "page" ? (
+        {page ? (
           <KinMessagePage
-            body={row.draft.text}
+            body={text}
             links={undefined}
+            embeds={undefined}
+            where={null}
             textStyle={props.markdownStyle}
             onLinkPress={props.onLinkPress}
             onOpenTarget={NO_TARGET}
-            brief={null}
+            head={null}
           />
         ) : (
           <SelectableMarkdownText
-            markdown={kinBodyMarkdown(row.draft.text)}
+            markdown={kinBodyMarkdown(text)}
             textStyle={props.markdownStyle}
             preserveSoftBreaks
             onLinkPress={props.onLinkPress}
@@ -521,13 +558,15 @@ export function KinSystemLine(props: {
 }
 
 /**
- * One agent's words in another's chat. What it asked sits on the viewer's side, folded as the
- * thread feed folds a message one agent sent into another's thread; the answer comes back as a
- * callout naming who answered, with the way to the discussion when an outcome came back.
+ * One agent's words in another's chat. What it asked sits on the viewer's side and the answer on
+ * the other, each folded to its first line as the thread feed folds a message from another
+ * thread; a Team-room outcome keeps its way to the discussion in view, folded or not.
  */
 export function KinRelayBubble(props: {
   readonly row: RelayRow;
   readonly environmentId: EnvironmentId;
+  readonly markdownStyle: NativeMarkdownTextStyle;
+  readonly onLinkPress: (href: string) => void;
   /** Opens the Team room; null when there is none to open. */
   readonly onOpenDiscussion: (() => void) | null;
 }) {
@@ -568,38 +607,78 @@ export function KinRelayBubble(props: {
       </View>
     );
   }
-  if (row.relay === "sent_by")
+  const body = row.message.body;
+  const sent = row.relay === "sent_by";
+  const label = sent ? `Sent by ${row.agentLabel}` : `${row.agentLabel} replied`;
+  // A Team-room outcome is its decision line, then "Done: …"; split before plain text joins them.
+  const [line = "", ...rest] = body.split("\n");
+  const done = row.discussionId === null ? "" : kinPlainText(rest.join("\n")).trim();
+  const markdown = (source: string) => (
+    <SelectableMarkdownText
+      markdown={kinBodyMarkdown(source)}
+      textStyle={props.markdownStyle}
+      preserveSoftBreaks
+      onLinkPress={props.onLinkPress}
+      renderImage={renderImageAsText}
+      resolveImageSource={kinImageSource}
+    />
+  );
+  const words = sent ? (
+    <Text textRole="body" selectable className="text-user-bubble-foreground">
+      {text}
+    </Text>
+  ) : row.discussionId === null ? (
+    markdown(body)
+  ) : (
+    <>
+      {markdown(line)}
+      {done === "" ? null : (
+        <Text textRole="footnote" className="text-foreground-muted">
+          {done}
+        </Text>
+      )}
+    </>
+  );
+  const seeHow =
+    row.discussionId === null || props.onOpenDiscussion === null ? null : (
+      <Pressable
+        accessibilityRole="link"
+        hitSlop={8}
+        className="min-h-8 justify-center self-start"
+        onPress={props.onOpenDiscussion}
+      >
+        <Text textRole="footnote" className="text-foreground-muted underline">
+          {KIN_CARD_COPY.seeHow}
+        </Text>
+      </Pressable>
+    );
+  // Folded as the thread feed folds a message from another thread: all of it is in its own chat.
+  if (row.summary !== null)
     return (
-      <View className="items-end px-4 pt-3">
+      <View className={cn("px-4 pt-3", sent ? "items-end" : "items-start")}>
         <View
           className={cn(
-            OWN_WIDTH_CLASS_NAME,
-            "min-w-0 rounded-[20px] bg-user-bubble",
+            sent ? OWN_WIDTH_CLASS_NAME : OTHER_WIDTH_CLASS_NAME,
+            "min-w-0 rounded-[20px]",
+            sent ? "bg-user-bubble" : "border border-separator",
             expanded && "w-[85%]",
           )}
         >
           <AgentMessageFoldHeader
             environmentId={props.environmentId}
-            label={`Sent by ${row.agentLabel}`}
-            summary={text.split(/\r?\n/, 1)[0]?.trim() ?? ""}
+            label={label}
+            summary={row.summary}
             expanded={expanded}
             onToggle={() => setExpanded((value) => !value)}
             iconSubtleColor={iconSubtleColor}
+            reply={!sent}
           />
-          {expanded ? (
-            <View className="px-3.5 pb-2.5">
-              <Text textRole="body" selectable className="text-user-bubble-foreground">
-                {text}
-              </Text>
-            </View>
-          ) : null}
+          {expanded ? <View className="gap-1 px-3.5 pb-2.5">{words}</View> : null}
+          {seeHow === null ? null : <View className="px-3.5 pb-1.5">{seeHow}</View>}
         </View>
       </View>
     );
-  // The outcome is the first line; "Done: …" follows. Split before plain text joins the lines.
-  const [line = "", ...rest] = row.message.body.split("\n");
-  const outcome = kinPlainText(line);
-  const done = kinPlainText(rest.join("\n")).trim();
+  // Held open: a reply holding a card, a figure, or a question to answer.
   return (
     <View className="items-start px-4 pt-3">
       <View
@@ -609,11 +688,7 @@ export function KinRelayBubble(props: {
         )}
       >
         {/* One element for the words, so the link below stays its own for VoiceOver. */}
-        <View
-          accessible
-          accessibilityLabel={`${row.agentLabel} replied, ${time}: ${outcome}${done === "" ? "" : ` ${done}`}`}
-          className="gap-1"
-        >
+        <View accessible accessibilityLabel={`${label}, ${time}: ${text}`} className="gap-1">
           <View className="flex-row items-center gap-1.5">
             <SymbolView
               name="arrow.uturn.backward"
@@ -622,30 +697,26 @@ export function KinRelayBubble(props: {
               type="monochrome"
             />
             <Text textRole="caption" className="text-foreground-muted">
-              {row.agentLabel} replied · {time}
+              {label} · {time}
             </Text>
           </View>
-          <Text textRole="body" selectable className="text-foreground">
-            {outcome}
-          </Text>
-          {done === "" ? null : (
-            <Text textRole="footnote" className="text-foreground-muted">
-              {done}
-            </Text>
+          {row.discussionId === null && kinPageShape(body) === "page" ? (
+            // Its figures draw in place, as they do in the chat it came from.
+            <KinMessagePage
+              body={body}
+              links={undefined}
+              embeds={undefined}
+              where={null}
+              textStyle={props.markdownStyle}
+              onLinkPress={props.onLinkPress}
+              onOpenTarget={NO_TARGET}
+              head={null}
+            />
+          ) : (
+            words
           )}
         </View>
-        {row.discussionId === null || props.onOpenDiscussion === null ? null : (
-          <Pressable
-            accessibilityRole="link"
-            hitSlop={8}
-            className="min-h-8 justify-center self-start"
-            onPress={props.onOpenDiscussion}
-          >
-            <Text textRole="footnote" className="text-foreground-muted underline">
-              {KIN_CARD_COPY.seeHow}
-            </Text>
-          </Pressable>
-        )}
+        {seeHow}
       </View>
     </View>
   );

@@ -5,6 +5,8 @@ import {
   KIN_INVITE_DEFAULT_TTL_HOURS,
   KinChatError,
   KinInviteId,
+  KIN_TEXT_LOCALE,
+  formatKinWhen,
   KinPerson,
   KinPersonId,
   KinWakeupId,
@@ -65,6 +67,7 @@ import { profileSets } from "./profileFields.ts";
 import { reholdAfter, validZone } from "../triggers/quietHold.ts";
 import { homeCurrency } from "../work/companyProfile.ts";
 import { ownerZone } from "../work/recordRows.ts";
+import { closeHeldQuestions } from "../questions/openQuestions.ts";
 
 const isKinError = Schema.is(KinChatError);
 const isSqlError = Schema.is(PersistenceSqlError);
@@ -276,6 +279,34 @@ export const make = Effect.gen(function* () {
     }
     return handle;
   });
+  /**
+   * A new teammate who is a removed person by name or handle is refused with the offer to bring
+   * them back, which a link for that person (`personId`) does; `newPerson` says it is someone else.
+   */
+  const notRemoved = Effect.fn("KinPeople.notRemoved")(function* (
+    orgId: KinOrgId,
+    displayName: string,
+    handle: string,
+  ) {
+    const [match] = yield* sql<{ displayName: string; removedAt: number }>`SELECT
+        display_name AS "displayName", removed_at AS "removedAt" FROM kin_people
+      WHERE org_id = ${orgId} AND removed_at IS NOT NULL
+        AND (lower(trim(display_name)) = ${displayName.trim().toLowerCase()}
+          OR lower(handle) = ${handle.toLowerCase()})
+      ORDER BY removed_at DESC, person_id LIMIT 1`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinPeople.notRemoved")),
+    );
+    if (match === undefined) return;
+    const zone = yield* ownerZone(orgId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.mapError(toPersistenceSqlError("KinPeople.notRemoved")),
+    );
+    const day = formatKinWhen(match.removedAt, "date", { zone, locale: KIN_TEXT_LOCALE });
+    return yield* new KinChatError({
+      reason: "conflict",
+      message: `Bring back ${match.displayName} (removed ${day})? They were on the team before: make a new link for them from their row in Team, and they get back what they had.`,
+    });
+  });
   const createInvite = Effect.fn("KinPeople.createInvite")(function* (
     session: AuthenticatedSession,
     input: KinPeopleCreateInviteInput,
@@ -284,7 +315,7 @@ export const make = Effect.gen(function* () {
     if (input.personId !== undefined) yield* mayActOn(caller, input.orgId, input.personId);
     const now = (yield* DateTime.now).epochMilliseconds;
     const secret = NodeCrypto.randomBytes(32).toString("base64url");
-    const inviteId = KinInviteId.make(NodeCrypto.randomUUID());
+    let inviteId = KinInviteId.make(NodeCrypto.randomUUID());
     let handle =
       input.handle ??
       (input.displayName
@@ -298,7 +329,31 @@ export const make = Effect.gen(function* () {
         Effect.gen(function* () {
           if (isOwnerHimself(identity.owner, input.personId)) return yield* denied;
           if (input.personId) yield* person(input.orgId, input.personId);
-          else handle = yield* uniqueHandle(input.orgId, handle, now);
+          else if (input.newPerson === true) {
+            // A retry while the first link is unopened is the same new person, with a fresh secret.
+            const [earlier] = yield* sql<{ inviteId: KinInviteId; handle: string }>`SELECT
+                invite_id AS "inviteId", handle FROM kin_people_invites
+              WHERE org_id = ${input.orgId} AND person_id IS NULL AND consumed_at IS NULL
+                AND revoked_at IS NULL AND expires_at > ${now}
+                AND lower(trim(display_name)) = ${input.displayName.trim().toLowerCase()}
+              ORDER BY created_at DESC, invite_id LIMIT 1`.pipe(
+              Effect.mapError(toPersistenceSqlError("KinPeople.createInvite")),
+            );
+            if (earlier !== undefined) {
+              inviteId = earlier.inviteId;
+              handle = earlier.handle;
+              yield* sql`UPDATE kin_people_invites SET secret_hash = ${hash(secret).toString("hex")},
+                expires_at = ${expiresAt} WHERE org_id = ${input.orgId} AND invite_id = ${inviteId}`.pipe(
+                Effect.mapError(toPersistenceSqlError("KinPeople.createInvite")),
+              );
+              yield* refresh.touch(input.orgId, "people");
+              return;
+            }
+            handle = yield* uniqueHandle(input.orgId, handle, now);
+          } else {
+            yield* notRemoved(input.orgId, input.displayName, handle);
+            handle = yield* uniqueHandle(input.orgId, handle, now);
+          }
           yield* sql`INSERT INTO kin_people_invites (invite_id, org_id, person_id, display_name, handle, secret_hash, created_at, expires_at)
         VALUES (${inviteId}, ${input.orgId}, ${input.personId ?? null}, ${input.displayName}, ${handle},
           ${hash(secret).toString("hex")}, ${now}, ${expiresAt})`.pipe(
@@ -616,7 +671,7 @@ export const make = Effect.gen(function* () {
     return yield* sql
       .withTransaction(
         Effect.gen(function* () {
-          yield* person(input.orgId, input.personId);
+          const gone = yield* person(input.orgId, input.personId);
           // Removed, they hold no level anywhere; what they had is kept for a new link to restore.
           yield* sql`UPDATE kin_people SET removed_access_json = json_object('access', access,
               'clients', sees_clients, 'docs', sees_docs, 'money', sees_money),
@@ -656,6 +711,20 @@ export const make = Effect.gen(function* () {
           );
           yield* refresh.touch(input.orgId, "people");
           yield* refresh.touch(input.orgId, "leads");
+          // Nobody is left to answer what agents asked them; tasks stay theirs, flagged above.
+          yield* closeHeldQuestions(
+            {
+              orgId: input.orgId,
+              holder: { personId: input.personId },
+              reason: () =>
+                `${gone.displayName} was removed from the team; nothing will happen on this.`,
+              closedAt: now,
+            },
+            Option.isSome(chats) ? chats.value : { closeReplaced: () => Effect.void },
+          ).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError(sqlError("KinPeople.removeAccessQuestions")),
+          );
           // Before leaving: their own chats with leads are found through their membership.
           const stopped = yield* onPersonRemoved(input).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
@@ -682,6 +751,19 @@ export const make = Effect.gen(function* () {
                 member: gone.value,
               });
           }
+          // Anything still waiting on them outside the chats they just left.
+          for (const item of yield* repo.listOpenWaiting(input))
+            if (
+              yield* repo.resolveWaiting({ ...item, resolvedAt: leftAt, resolution: "cancelled" })
+            ) {
+              const closed = yield* repo.getWaiting(item);
+              if (Option.isSome(closed))
+                yield* hub.publish({
+                  type: "waiting.updated",
+                  orgId: input.orgId,
+                  item: closed.value,
+                });
+            }
           if (stopped.expired.length > 0 && Option.isSome(presence)) {
             const line = presence.value;
             yield* sql.afterCommit(

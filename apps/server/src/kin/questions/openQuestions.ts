@@ -22,6 +22,7 @@ import * as NodeCrypto from "node:crypto";
 import type { KinChatService } from "../chat/KinChatService.ts";
 import type * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { ownerZone } from "../work/recordRows.ts";
+import { allLists } from "../work/registers.ts";
 import {
   dayWord,
   defaultDue,
@@ -155,6 +156,20 @@ export const readQuestion = Effect.fn("KinQuestions.read")(function* (
   return raw === undefined ? undefined : toRow(raw);
 });
 
+/** Whether any of `about` is an entry in a list that carries amounts: an invoice, quote, expense. */
+const aboutMoney = Effect.fn("KinQuestions.aboutMoney")(function* (
+  orgId: KinOrgId,
+  about: ReadonlyArray<string>,
+) {
+  if (about.length === 0) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ listId: string }>`SELECT DISTINCT register_id AS "listId"
+    FROM kin_records WHERE org_id = ${orgId} AND key IN ${sql.in(about)} ORDER BY register_id`;
+  if (rows.length === 0) return false;
+  const lists = yield* allLists(orgId);
+  return rows.some((row) => lists.get(row.listId)?.amount === true);
+});
+
 /** "already asked by Finance on Monday: “…”. Default “Draft it” on Wednesday." */
 const alreadyAsked = (open: QuestionRow, now: number, zone: string) =>
   `Already asked by ${open.agentName} ${dayWord(open.askedAt, now, zone)}: “${open.question}”. ${
@@ -218,8 +233,11 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
   const named = input.by === undefined ? undefined : namedDue(input.by, input.now, clock.zone);
   if (named !== undefined && "refused" in named) return yield* refuse(named.refused);
   const dueAt = named?.at ?? defaultDue(input.now, clock.zone, clock.days);
-  const safe = safeDefault(label, input.question);
   const about = normaliseAbout(input.about);
+  const safe = safeDefault(label, input.question, {
+    labels: input.labels,
+    aboutMoney: yield* aboutMoney(input.orgId, about),
+  });
   const intent = normaliseIntent(input.intent);
   if (seen === undefined)
     for (const open of yield* openFor(input.orgId, personId))
@@ -365,6 +383,78 @@ export const closeQuestion = Effect.fn("KinQuestions.close")(function* (
   return { questionId: row.questionId, state: input.outcome, changed: true } as const;
 });
 
+/** What a retired agent's question card says when it closes. */
+export const retiredQuestionText = (agentName: string) =>
+  `${agentName} was retired; nothing will happen on this.`;
+
+/**
+ * Closes every open question an agent asked, or that waits on a person, in the caller's
+ * transaction: each is withdrawn at `closedAt` and its card closes saying `reason`.
+ */
+export const closeHeldQuestions = Effect.fn("KinQuestions.closeHeld")(function* (
+  input: {
+    readonly orgId: KinOrgId;
+    readonly holder:
+      | { readonly agentId: KinAgentId; readonly personId?: never }
+      | { readonly personId: KinPersonId; readonly agentId?: never };
+    readonly reason: (row: QuestionRow) => string;
+    readonly closedAt: number;
+  },
+  chat: Pick<KinChatService["Service"], "closeReplaced">,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const { orgId, holder } = input;
+  const rows = (yield* sql<Raw>`SELECT ${sql.literal(COLUMNS)} ${sql.literal(FROM)}
+    WHERE q.org_id = ${orgId} AND q.state = 'open' AND ${
+      holder.agentId === undefined
+        ? sql`q.person_id = ${holder.personId}`
+        : sql`q.agent_id = ${holder.agentId}`
+    }
+    ORDER BY q.asked_at, q.question_id`).map(toRow);
+  for (const row of rows) {
+    const moved = yield* sql`UPDATE kin_questions SET state = 'withdrawn',
+        closed_at = ${input.closedAt}
+      WHERE org_id = ${orgId} AND question_id = ${row.questionId} AND state = 'open'
+      RETURNING question_id`;
+    if (moved.length === 0) continue;
+    for (const widgetId of cardIds(row))
+      yield* chat.closeReplaced({
+        orgId,
+        widgetId: KinWidgetId.make(widgetId),
+        outcome: { title: "Closed", text: input.reason(row) },
+      });
+  }
+  return rows.length;
+});
+
+/**
+ * Restoring an agent reopens the questions its retirement closed (withdrawn at that very
+ * instant), each with a fresh day as if asked now, so no default is taken before the person
+ * has had one. Its next raise posts the card again.
+ */
+export const reopenRetiredQuestions = Effect.fn("KinQuestions.reopenRetired")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly retiredAt: number;
+  readonly now: number;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ questionId: string; personId: string; safe: number }>`SELECT
+      question_id AS "questionId", person_id AS "personId", safe FROM kin_questions
+    WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND state = 'withdrawn'
+      AND closed_at = ${input.retiredAt}
+    ORDER BY asked_at, question_id`;
+  for (const row of rows) {
+    const clock = yield* personClock(input.orgId, row.personId);
+    const dueAt = defaultDue(input.now, clock.zone, clock.days);
+    const actAt = row.safe === 1 ? dueAt : raiseAt(dueAt, clock.zone, clock.days);
+    yield* sql`UPDATE kin_questions SET state = 'open', closed_at = NULL, raised_at = NULL,
+        due_at = ${dueAt}, act_at = ${actAt}
+      WHERE org_id = ${input.orgId} AND question_id = ${row.questionId} AND state = 'withdrawn'`;
+  }
+  return rows.length;
+});
+
 /** The turn that takes a default: one per question, keyed so a replay finds its own. */
 const takeEventId = (orgId: string, questionId: string) =>
   KinEventId.make(`question_${hash(`${orgId}\0${questionId}`).slice(0, 32)}`);
@@ -477,15 +567,28 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
   chat: Pick<KinChatService["Service"], "closeReplaced" | "ask">,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const [agent] = yield* sql<{ owner: string; threadId: string | null; retiredAt: string | null }>`
+    SELECT a.owner_person_id AS owner, l.thread_id AS "threadId", a.retired_at AS "retiredAt"
+    FROM kin_agents a LEFT JOIN kin_leads l ON l.org_id = a.org_id AND l.agent_id = a.agent_id
+    WHERE a.org_id = ${orgId} AND a.agent_id = ${row.agentId}`;
+  // Nobody would ever answer it: it closes as retiring does, so a restore reopens it.
+  if (agent?.retiredAt != null)
+    return (
+      (yield* closeHeldQuestions(
+        {
+          orgId,
+          holder: { agentId: row.agentId },
+          reason: (one) => retiredQuestionText(one.agentName),
+          closedAt: Date.parse(agent.retiredAt),
+        },
+        chat,
+      )) > 0
+    );
   const moved = yield* sql`UPDATE kin_questions SET raised_at = ${now}
     WHERE org_id = ${orgId} AND question_id = ${row.questionId} AND state = 'open'
       AND raised_at IS NULL
     RETURNING question_id`;
   if (moved.length === 0 || row.options.length < 2) return moved.length > 0;
-  const [agent] = yield* sql<{ owner: string; threadId: string | null }>`SELECT
-      a.owner_person_id AS owner, l.thread_id AS "threadId"
-    FROM kin_agents a LEFT JOIN kin_leads l ON l.org_id = a.org_id AND l.agent_id = a.agent_id
-    WHERE a.org_id = ${orgId} AND a.agent_id = ${row.agentId} AND a.retired_at IS NULL`;
   if (agent === undefined || agent.threadId === null) return true;
   const clock = yield* personClock(orgId, row.personId);
   const card = yield* chat.ask(

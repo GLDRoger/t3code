@@ -2,6 +2,7 @@ import {
   KIN_PULSE_LATER_SENSES,
   KinChatError,
   type KinOrgId,
+  type KinPulseFact,
   type KinPulseHandleInput,
   type KinPulseListInput,
   type KinPulseScreenRead,
@@ -12,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
@@ -34,7 +36,7 @@ const unavailableOn = (cause: unknown) =>
     ),
   );
 
-const viewerIn = Effect.fn("KinPulsePeople.viewer")(function* (
+export const viewerIn = Effect.fn("KinPulsePeople.viewer")(function* (
   people: ReadonlyArray<PersonIdentity>,
   orgId: KinOrgId,
 ) {
@@ -43,6 +45,17 @@ const viewerIn = Effect.fn("KinPulsePeople.viewer")(function* (
     return yield* new KinChatError({ reason: "not_found", message: "Kin couldn't find that." });
   const { owner } = yield* KinIdentity;
   if (person.orgId !== owner.orgId)
+    return yield* new KinChatError({ reason: "not_found", message: "Kin couldn't find that." });
+  const sql = yield* SqlClient.SqlClient;
+  // Asked on every build of a stream too, so a person removed while watching stops receiving.
+  const removed = yield* sql<{ one: number }>`SELECT 1 AS one FROM kin_people
+    WHERE org_id = ${orgId} AND person_id = ${person.personId} AND removed_at IS NOT NULL
+    ORDER BY person_id`.pipe(
+    Effect.mapError(
+      () => new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
+    ),
+  );
+  if (removed.length > 0)
     return yield* new KinChatError({ reason: "not_found", message: "Kin couldn't find that." });
   // Owner-level people (the owner and co-owners) see everything; a member, what they may see.
   const viewer: KinPulse.Viewer = (yield* mayActAsOwner(orgId, person.personId, owner).pipe(
@@ -54,6 +67,22 @@ const viewerIn = Effect.fn("KinPulsePeople.viewer")(function* (
     : { _tag: "people", people: [person.personId] };
   return { person, viewer };
 });
+
+/**
+ * Screens show the consequence, which already says the measure; agents' reads keep it. A sense
+ * newer than the client goes only to one that says it reads it.
+ */
+export const screenFacts = <F extends KinPulseFact>(
+  facts: ReadonlyArray<F>,
+  acceptSenses: ReadonlyArray<string> | undefined,
+) => {
+  const unread = new Set<string>(
+    KIN_PULSE_LATER_SENSES.filter((sense) => !(acceptSenses ?? []).includes(sense)),
+  );
+  return facts
+    .filter((fact) => !unread.has(fact.sense))
+    .map(({ measure: _measure, ...fact }) => fact);
+};
 
 export const read = Effect.fn("KinPulsePeople.read")(function* (
   people: ReadonlyArray<PersonIdentity>,
@@ -68,14 +97,7 @@ export const read = Effect.fn("KinPulsePeople.read")(function* (
     scope: input.scope,
     limit: SCREEN_CAP,
   }).pipe(Effect.catchTags({ SqlError: unavailableOn }));
-  // Screens show the consequence, which already says the measure; agents' reads keep it. A
-  // sense newer than the client goes only to one that says it reads it.
-  const unread = new Set<string>(
-    KIN_PULSE_LATER_SENSES.filter((sense) => !(input.acceptSenses ?? []).includes(sense)),
-  );
-  const facts = read.facts
-    .filter((fact) => !unread.has(fact.sense))
-    .map(({ measure: _measure, ...fact }) => fact);
+  const facts = screenFacts(read.facts, input.acceptSenses);
   return input.limit === undefined
     ? { ...read, facts }
     : { ...read, ...kinPulsePage(facts, input.limit) };

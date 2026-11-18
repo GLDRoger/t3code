@@ -401,6 +401,9 @@ features:
     form: true
     roles: { owner: both, co_owner: both, lead: both, member: both }
     tools: [record_update]
+    depth_reason: >-
+      The owner chose a full page for the task record (K125) so the next step, details, brief and
+      activity all fit; its controls are menus and an inline edit on that page, not a form page.
     proof:
       - apps/server/src/kin/work/KinRecords.test.ts
       - packages/client-runtime/src/kin/kinWork.test.ts
@@ -433,6 +436,19 @@ features:
       - apps/server/src/kin/work/KinRecords.test.ts
       - .agents/skills/verify-kin/scripts/asker-is-giver.sh
 
+  - id: task-comment
+    name: Notes on a task, with files
+    tab: tasks
+    phone: [tab:tasks, KinWorkItem, section:Activity]
+    roles: { owner: phone, co_owner: phone, lead: phone, member: phone }
+    tools: [record_comment]
+    note: >-
+      Anyone who sees the task adds a note, and whoever holds it is told; the web task page
+      follows.
+    proof:
+      - apps/server/src/kin/work/recordComments.test.ts
+      - packages/client-runtime/src/kin/kinTaskRecord.test.ts
+
   - id: task-private
     name: Only me, a private task
     tab: tasks
@@ -440,6 +456,9 @@ features:
     phone: [tab:tasks, KinWorkItem, menu:Who can see this]
     form: true
     roles: { owner: both, co_owner: both, lead: both, member: none }
+    depth_reason: >-
+      The owner chose a full page for the task record (K125) so the next step, details, brief and
+      activity all fit; its controls are menus and an inline edit on that page, not a form page.
     note: >-
       A lead may mark a task private and undo their own mark; others who see it read whose it
       is. Sharing with the team is owner-level.
@@ -514,6 +533,9 @@ features:
     phone: [tab:money, KinList, KinWorkItem, button:Make its PDF]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
+    depth_reason: >-
+      An entry opens on the full record page (K125), and making its PDF is a step of that page
+      with Back to the entry, as on web.
     tools: [kin_document, kin_recipes, kin_issue, kin_recipe_undo]
     proof:
       - apps/server/src/kin/gendocs/render.test.ts
@@ -1063,5 +1085,6 @@ unlisted:
   "web:settings/check-ins": The app's old address; opens Kin's Settings → Check-ins.
   "web:settings/kin-connections": The app's old address; opens Kin's Settings → Connections.
   "web:?v": Picks the version of the open doc; not a screen.
+  "web:?tab": Switches the Clients place between its Clients and Projects lists; not a screen.
   "web:?section": Scrolls the open doc to a section; not a screen.
   "web:?from": The base version of the compare view (`?changes`); not a screen.

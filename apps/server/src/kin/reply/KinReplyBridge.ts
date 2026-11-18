@@ -2,8 +2,9 @@ import {
   CommandId,
   KIN_DOC_CARD,
   KIN_MESSAGE_BODY_MAX_LENGTH,
-  KIN_TEAM_ROOM_TEAM_ID,
   KinChatId,
+  kinPageShape,
+  KIN_FIGURE_SCHEME,
   KinMessageId,
   MessageId,
   type KinAgentId,
@@ -46,8 +47,8 @@ import {
   rescueMessageId,
   type AgentIdentity,
 } from "../chat/KinIdentity.ts";
-import { owedNotice } from "../floor/KinFloor.ts";
-import { AUDIENCE_MOVED, CHAT_ANSWER_TAGS, aborted, ownerOnlyChat } from "../lead/Audience.ts";
+import { laneFor, type Lane } from "./replyLane.ts";
+import { AUDIENCE_MOVED, aborted, ownerOnlyChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import {
@@ -80,20 +81,6 @@ const STALL_MS = 120_000;
 const DRAFT_AFTER_MS = 1_000;
 const RESCUE_TIMEOUT_MS = 120_000;
 const OVERFLOW_SUFFIX = "\n\n…more in the agent's thread";
-
-/**
- * Where a wake-up's text goes. One wake-up answers one chat: the chat of its highest-priority
- * human message, card tap or reported work, else (a notice wake-up) the lead's direct chat with
- * its owner. `owed`: someone is waiting on words, so silence gets a rescue and then a plain line.
- */
-export type Lane = {
-  readonly chatId: KinChatId;
-  readonly mode: "reply" | "notice";
-  readonly owed: boolean;
-  readonly leadName: string;
-  /** A Team-room turn: it speaks only through `team_say`, and passing says nothing. */
-  readonly team?: true;
-};
 
 // Which wake-ups owe words: a message, card tap or reaction asked in its chat (`reply`); an entry
 // someone gave the lead and finished work wait on it too (`owedNotice`). Reminders, briefs and
@@ -292,61 +279,6 @@ const capBody = (text: string) =>
     ? text
     : `${text.slice(0, KIN_MESSAGE_BODY_MAX_LENGTH - OVERFLOW_SUFFIX.length)}${OVERFLOW_SUFFIX}`;
 
-/** The lane of a running wake-up, from its stored events; `kin_ask` posts its card there too. */
-export const laneFor = Effect.fn("KinReplyBridge.lane")(
-  function* (input: {
-    readonly orgId: KinOrgId;
-    readonly agentId: KinAgentId;
-    readonly wakeupId: KinWakeupId;
-  }) {
-    const sql = yield* SqlClient.SqlClient;
-    const [lead] = yield* sql<{ ownerChatId: string; name: string }>`
-      SELECT owner_chat_id AS "ownerChatId", name FROM kin_leads
-      WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} ORDER BY agent_id`;
-    // A worker's report answers where its work was asked for, as a notice: it owes no reply.
-    const [first] = yield* sql<{ chatId: string; asked: number }>`
-      SELECT json_extract(json, '$.chatId') AS "chatId",
-        EXISTS (SELECT 1 FROM kin_events h WHERE h.org_id = e.org_id AND h.agent_id = e.agent_id
-          AND h.wakeup_id = e.wakeup_id
-          AND h.tag IN ('chat.message', 'widget.action', 'chat.reaction')) AS asked
-      FROM kin_events e
-      WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND wakeup_id = ${input.wakeupId}
-        AND tag IN ${sql.in(CHAT_ANSWER_TAGS)} AND json_extract(json, '$.chatId') IS NOT NULL
-      ORDER BY priority, received_at, event_id LIMIT 1`;
-    const chatId = first?.chatId ?? lead?.ownerChatId;
-    if (chatId === undefined) return Option.none<Lane>();
-    // Another agent's turn handed on in the Team room, and no person's message with it.
-    const [team] = yield* sql<{ people: number }>`SELECT COUNT(e.event_id) FILTER (
-        WHERE json_extract(e.json, '$.provenance._tag') = 'human') AS people
-      FROM kin_events e JOIN kin_chats c ON c.org_id = e.org_id
-        AND c.chat_id = json_extract(e.json, '$.chatId') AND c.team_id = ${KIN_TEAM_ROOM_TEAM_ID}
-      WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
-        AND e.wakeup_id = ${input.wakeupId} AND c.chat_id = ${chatId}
-      HAVING COUNT(e.event_id) > 0`;
-    if (team !== undefined && team.people === 0)
-      return Option.some<Lane>({
-        chatId: KinChatId.make(chatId),
-        mode: "notice",
-        owed: false,
-        leadName: lead?.name ?? "Agent",
-        team: true,
-      });
-    const mode = first !== undefined && first.asked === 1 ? "reply" : "notice";
-    const waiting = yield* sql`SELECT 1 FROM kin_events e
-      WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
-        AND e.wakeup_id = ${input.wakeupId} AND ${sql.literal(owedNotice("e"))} LIMIT 1`;
-    return Option.some<Lane>({
-      chatId: KinChatId.make(chatId),
-      mode,
-      owed: mode === "reply" || waiting.length > 0,
-      leadName: lead?.name ?? "Agent",
-    });
-  },
-  Effect.catchCause((cause) =>
-    Effect.logWarning("Kin reply lane unavailable", { cause }).pipe(Effect.as(Option.none<Lane>())),
-  ),
-);
-
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -482,6 +414,7 @@ const make = Effect.gen(function* () {
           chatId: wake.lane.chatId,
           clientMessageId,
           body: capBody(body),
+          placeReplyFigures: true,
           intent: wake.lane.mode === "reply" ? "answer" : "evidence",
         },
         repliedBy(wake, ordinal),
@@ -510,7 +443,7 @@ const make = Effect.gen(function* () {
     text: string,
     ordinal: number,
   ) {
-    const joined = `${slot.body}\n\n${text}`;
+    const joined = slot.body === "" ? text : text === "" ? slot.body : `${slot.body}\n\n${text}`;
     const body =
       joined.length <= KIN_MESSAGE_BODY_MAX_LENGTH
         ? joined
@@ -551,6 +484,12 @@ const make = Effect.gen(function* () {
   const slotKey = (wake: Wake, ordinal: number) =>
     Math.max(-1, ...wake.steers.filter((steer) => steer < ordinal));
 
+  const hasFigures = Effect.fn("KinReplyBridge.hasFigures")(function* (wake: Wake) {
+    const rows = yield* sql`SELECT 1 FROM kin_turn_figures
+      WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId}
+        AND agent_id = ${wake.agentId} AND chat_id = ${wake.lane.chatId} AND message_id IS NULL LIMIT 1`;
+    return rows.length > 0;
+  });
   const post = Effect.fn("KinReplyBridge.post")(function* (wake: Wake, segment: Segment) {
     const end = (messageId: KinMessageId | null) =>
       segment.drafting
@@ -591,10 +530,48 @@ const make = Effect.gen(function* () {
       wake.overflow.push(text);
       return yield* end(null);
     }
-    const result =
-      slot === undefined
-        ? yield* deliver(wake, `reply:${segment.id}`, text, segment.ordinal)
-        : yield* extend(wake, slot, text, segment.ordinal);
+    const lead = slot === undefined ? yield* agent(wake) : undefined;
+    if (
+      !wake.replied &&
+      lead !== undefined &&
+      wake.lane.mode === "reply" &&
+      text.length <= 600 &&
+      !text.includes(KIN_FIGURE_SCHEME) &&
+      kinPageShape(text) === "bubble" &&
+      !(yield* hasFigures(wake)) &&
+      (yield* gate
+        .setChoiceOutcome(
+          lead,
+          { chatId: wake.lane.chatId, text },
+          repliedBy(wake, segment.ordinal),
+        )
+        .pipe(Effect.orElseSucceed(() => false)))
+    ) {
+      segment.outcome = "posted";
+      wake.answered = true;
+      wake.replied = true;
+      yield* stamp(wake, "posted_at");
+      return yield* end(null);
+    }
+    const cardId =
+      lead === undefined
+        ? null
+        : yield* chat.replyCard(lead, wake.lane.chatId).pipe(Effect.orElseSucceed(() => null));
+    const result = yield* slot !== undefined
+      ? extend(wake, slot, text, segment.ordinal)
+      : cardId === null
+        ? deliver(wake, `reply:${segment.id}`, text, segment.ordinal)
+        : Effect.gen(function* () {
+            const joined = yield* extend(
+              wake,
+              { messageId: cardId, body: "" },
+              text,
+              segment.ordinal,
+            );
+            if (joined._tag === "withheld" && joined.reason === "not_found")
+              return yield* deliver(wake, `reply:${segment.id}`, text, segment.ordinal);
+            return joined;
+          });
     switch (result._tag) {
       case "full":
         segment.outcome = "dropped";
@@ -803,6 +780,28 @@ const make = Effect.gen(function* () {
 
   // Every lead run's items, in order, from the projection: what a restart or a missed live
   // event would otherwise lose, and the exact next item for each short segment.
+  const settleFigures = Effect.fn("KinReplyBridge.settleFigures")(function* (wake: Wake) {
+    if (!(yield* hasFigures(wake))) return;
+    const lead = yield* agent(wake);
+    if (lead === undefined) return;
+    const slot = [...wake.slots.values()].at(-1);
+    if (wake.withheld === null && slot !== undefined) {
+      const result = yield* extend(wake, slot, "", -1);
+      if (result._tag === "withheld") wake.withheld = result.reason;
+    }
+    if (!(yield* hasFigures(wake))) return;
+    if (wake.withheld === null && slot === undefined) {
+      const posted = yield* gate
+        .settleFigures(lead, wake.lane.chatId, wake.lane.mode === "reply" ? "answer" : "evidence")
+        .pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        );
+      if (posted) return;
+    }
+    const removed = yield* chat.discardFigures({ ...wake, chatId: wake.lane.chatId });
+    if (removed > 0) yield* journal(wake, [`Omitted ${removed} unplaced answer figures.`]);
+  });
   const settle = Effect.fn("KinReplyBridge.settle")(function* (wake: Wake, rootRunId: RunId) {
     const projection = yield* threads.getThreadProjection(wake.threadId);
     const root = projection.runs.find((run) => run.id === rootRunId);
@@ -857,15 +856,14 @@ const make = Effect.gen(function* () {
   // "thanks, that's all" can take a 👍; a question, a card tap or a reaction still needs words.
   const answered = Effect.fn("KinReplyBridge.answered")(function* (wake: Wake) {
     if (wake.answered || !wake.lane.owed) return true;
-    // A turn only reactions started may end on NO_REPLY: a 👍 on a statement needs no answer.
-    // A changed or withdrawn answer does: the owner wants to hear what was stopped.
     if (
       wake.lane.mode === "reply" &&
       [...wake.segments.values()].some((segment) => segment.outcome === "silent")
     ) {
       const spoken = yield* sql`SELECT 1 FROM kin_events
         WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId}
-          AND (tag IN ('chat.message', 'widget.action') OR (tag = 'chat.reaction'
+          AND (tag = 'widget.action' OR (tag = 'chat.message' AND event_id NOT GLOB 'handoff-back-*')
+            OR (tag = 'chat.reaction'
             AND (json_extract(json, '$.changedFrom') IS NOT NULL
               OR json_extract(json, '$.withdrawn') = 1)))
         LIMIT 1`;
@@ -1028,6 +1026,7 @@ const make = Effect.gen(function* () {
             yield* post(wake, note);
           }
           yield* flushOverflow(wake);
+          yield* settleFigures(wake);
           yield* keptPromises(wake);
           // A reply ending on a question to the one person here: stored as open, for every agent.
           yield* flagTextQuestion({ ...wake, chatId: wake.lane.chatId }).pipe(
@@ -1214,6 +1213,9 @@ const make = Effect.gen(function* () {
       if (wakes.get(wake.threadId) === wake) wakes.delete(wake.threadId);
       yield* settleLine(wake);
     }
+    yield* chat
+      .discardFigures(input)
+      .pipe(Effect.catchCause(() => Effect.logWarning("Kin could not discard unplaced figures")));
     yield* syncQueued(presence, orgId, agentId).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
     );

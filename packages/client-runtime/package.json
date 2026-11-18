@@ -611,9 +611,17 @@
       "types": "./src/kinPush.ts",
       "default": "./src/kinPush.ts"
     },
+    "./kin/kinLinked": {
+      "types": "./src/kin/kinLinked.ts",
+      "default": "./src/kin/kinLinked.ts"
+    },
     "./kin/kinNavigation": {
       "types": "./src/kin/kinNavigation.ts",
       "default": "./src/kin/kinNavigation.ts"
+    },
+    "./kin/kinOpenView": {
+      "types": "./src/kin/kinOpenView.ts",
+      "default": "./src/kin/kinOpenView.ts"
     },
     "./kin/kinPeopleChat": {
       "types": "./src/kin/kinPeopleChat.ts",
@@ -622,6 +630,10 @@
     "./kin/kinMessageAlerts": {
       "types": "./src/kin/kinMessageAlerts.ts",
       "default": "./src/kin/kinMessageAlerts.ts"
+    },
+    "./kin/kinNotificationDestination": {
+      "types": "./src/kin/kinNotificationDestination.ts",
+      "default": "./src/kin/kinNotificationDestination.ts"
     },
     "./kin/kinViewerScope": {
       "types": "./src/kin/kinViewerScope.ts",
@@ -843,6 +855,10 @@
       "types": "./src/kin/kinCompanyProfile.ts",
       "default": "./src/kin/kinCompanyProfile.ts"
     },
+    "./kin/kinTaskRecord": {
+      "types": "./src/kin/kinTaskRecord.ts",
+      "default": "./src/kin/kinTaskRecord.ts"
+    },
     "./kin/kinWork": {
       "types": "./src/kin/kinWork.ts",
       "default": "./src/kin/kinWork.ts"
@@ -878,6 +894,10 @@
     "./kin/kinDocChanges": {
       "types": "./src/kin/kinDocChanges.ts",
       "default": "./src/kin/kinDocChanges.ts"
+    },
+    "./kin/kinTurnReceipt": {
+      "types": "./src/kin/kinTurnReceipt.ts",
+      "default": "./src/kin/kinTurnReceipt.ts"
     },
     "./kin/kinDocsStream": {
       "types": "./src/kin/kinDocsStream.ts",

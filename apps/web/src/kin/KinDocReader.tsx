@@ -11,8 +11,7 @@ import {
   kinDocRef,
   type KinDocAsk,
 } from "@t3tools/client-runtime/kin/kinDocs";
-import { kinChartView } from "@t3tools/client-runtime/kin/kinChart";
-import type { KinDocDetail, KinDocEmbed, KinDocSection, KinMessageRef } from "@t3tools/contracts";
+import type { KinDocDetail, KinDocSection, KinMessageRef } from "@t3tools/contracts";
 import {
   EllipsisIcon,
   FileDownIcon,
@@ -40,9 +39,7 @@ import {
   type SelectionActionPoint,
 } from "../lib/selectionActions";
 import { downloadPlanAsTextFile } from "../proposedPlan";
-import { CardFrame } from "./KinCards";
-import { KinChart } from "./KinChart";
-import { KinVisual } from "./KinVisual";
+import { KinEmbedView } from "./KinEmbedView";
 import { useKinDocLabel } from "./KinConfirm";
 import { KinDocFileCard } from "./KinInvoice";
 import { useNowMinuteMs } from "./useKinClock";
@@ -126,27 +123,6 @@ const fileImageSource = (id: string) => `${FILE_IMAGE}${id}`;
 const fileImageAttachment = (src: string) =>
   src.startsWith(FILE_IMAGE) ? kinDocFileId(src.slice(1)) : null;
 
-/** What the host drew for a doc's block, at the reading column's width like a card in chat. */
-function KinDocEmbedView(props: KinWorkTarget & { readonly embed: KinDocEmbed }) {
-  const { embed } = props;
-  switch (embed._tag) {
-    case "chart":
-      return (
-        <CardFrame>
-          <KinChart view={kinChartView(embed.chart)} />
-        </CardFrame>
-      );
-    case "visual":
-      return (
-        <CardFrame label={embed.title}>
-          <KinVisual environmentId={props.environmentId} orgId={props.orgId} visual={embed} />
-        </CardFrame>
-      );
-    case "broken":
-      return <p className="text-sm text-muted-foreground">{embed.message}</p>;
-  }
-}
-
 /** Ask and Change show only where there is an agent to ask; a teammate suggests a change. */
 function AskItems(props: {
   readonly onAsk: ((intent: KinDocAsk) => void) | null;
@@ -197,6 +173,8 @@ export function KinDocReader(
     readonly onRestore: ((version: number) => void) | null;
     /** Where the page header's own buttons go. */
     readonly actions: HTMLElement | null;
+    /** What links to the doc and what it links to, after the body. */
+    readonly linked: React.ReactNode;
   },
 ) {
   const { doc, onPoint } = props;
@@ -459,7 +437,7 @@ export function KinDocReader(
                   />
                 ) : (
                   <div key={kinDocPieceKey(piece, index)} data-kin-doc-embed="">
-                    <KinDocEmbedView
+                    <KinEmbedView
                       environmentId={props.environmentId}
                       orgId={props.orgId}
                       embed={piece.embed}
@@ -469,6 +447,7 @@ export function KinDocReader(
               )}
             </div>
           )}
+          {props.linked}
         </article>
       </div>
       {[...headings].map(([id, heading]) => {

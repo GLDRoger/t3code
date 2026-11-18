@@ -145,6 +145,8 @@ export const ImportEntry = Schema.Struct({
   closedAt: Schema.optional(When),
   /** Money received against it, recorded as Record payment does. */
   payments: Schema.optional(Schema.Array(ImportPayment).check(Schema.isMaxLength(500))),
+  /** An amount far above the rest of its list, or an invoice issued after its due day, is right. */
+  confirmed: Schema.optional(Schema.Boolean),
 });
 export type ImportEntry = typeof ImportEntry.Type;
 

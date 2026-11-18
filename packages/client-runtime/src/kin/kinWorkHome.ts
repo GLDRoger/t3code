@@ -26,6 +26,9 @@ export type KinWorkPlace = "tasks" | "money" | "clients" | "docs";
 
 export const KIN_WORK_HOME = {
   seeAll: (count: number) => `See all ${count}`,
+  /** Beside the Tasks block's count, the things it counts that the list below draws instead. */
+  onMeBelow: (count: number) =>
+    count === 1 ? "1 is on your list below" : `${count} are on your list below`,
   seeFewer: "Show fewer",
   search: "Search Work",
   add: "Add",
