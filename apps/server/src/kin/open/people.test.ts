@@ -13,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -99,11 +100,21 @@ const seed = Effect.gen(function* () {
 
 const follow = Effect.fn("test.follow")(function* (people: ReadonlyArray<PersonIdentity>) {
   const events = yield* Queue.unbounded<KinOpenEvent>();
-  yield* Open.subscribe(people, { orgId }).pipe(
+  const fiber = yield* Open.subscribe(people, { orgId }).pipe(
     Stream.runForEach((event) => Queue.offer(events, event)),
     Effect.forkScoped,
   );
-  return events;
+  return Object.assign(events, { fiber });
+});
+const snapshotOf = Effect.fn("test.snapshot")(function* (events: Queue.Queue<KinOpenEvent>) {
+  const first = yield* Queue.take(events);
+  if (first._tag !== "snapshot") return yield* Effect.die(new Error("No first list."));
+  return first.read;
+});
+const changeOf = Effect.fn("test.change")(function* (events: Queue.Queue<KinOpenEvent>) {
+  const change = yield* Queue.take(events);
+  if (change._tag !== "changed") return yield* Effect.die(new Error("No change."));
+  return change;
 });
 const mentions = (read: KinOpenRead, key: string) => JSON.stringify(read.rows).includes(key);
 
@@ -167,6 +178,83 @@ it.effect("a session for another company's person ends not_found", () =>
         orgId: KinOrgId.make("elsewhere"),
       }).pipe(Stream.runCollect, Effect.flip);
       assert.strictEqual(error.reason, "not_found");
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("a person removed while she watches has her stream end not_found", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* seed;
+      const events = yield* follow(as(meera));
+      yield* snapshotOf(events);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_people SET removed_at = ${NOW} WHERE org_id = ${orgId}
+        AND person_id = ${meera}`;
+      yield* (yield* KinRecords.KinRecords).peopleMoved(orgId, [meera]);
+      const error = yield* Fiber.join(events.fiber).pipe(Effect.flip);
+      assert.strictEqual(error._tag === "KinChatError" && error.reason, "not_found");
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("an approval waiting on her leaves her stream when it lapses, nothing else moving", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      // Foreign keys are off while the card is seeded without its message and thread.
+      yield* sql`PRAGMA foreign_keys = OFF`;
+      yield* sql`INSERT INTO kin_pending_actions (action_id, org_id, idempotency_key, kind,
+          target_json, resolved_json, target_digest, nonce, revision, reason,
+          requested_by_agent_id, requested_by_thread_id, provenance_json, required_approvers_json,
+          state, created_at, updated_at, expires_at)
+        VALUES ('act-1', ${orgId}, 'act-1', 'invented', '{}', '{}', 'd', 'n', 0, 'r', 'chief', 't',
+          '{}', '[]', 'awaiting_approval', ${NOW - DAY}, ${NOW - DAY}, ${NOW + HOUR / 2})`;
+      yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class,
+          type, revision, state_json, awaiting_json, updated_at)
+        VALUES ('g-1', ${orgId}, 'chat-meera', 'm-1', 'native', 'choice', 1,
+          ${JSON.stringify({ actionId: "act-1" })}, '[]', ${stamp})`;
+      yield* sql`INSERT INTO kin_waiting (waiting_id, org_id, person_id, chat_id, widget_id,
+          reason, created_at)
+        VALUES ('wait-1', ${orgId}, ${meera}, 'chat-meera', 'g-1', 'approval', ${stamp})`;
+      yield* sql`PRAGMA foreign_keys = ON`;
+      const events = yield* follow(as(meera));
+      const first = yield* snapshotOf(events);
+      assert.include(
+        first.rows.map((row) => row.id),
+        "waiting:wait-1",
+      );
+      yield* TestClock.adjust(HOUR / 2);
+      const change = yield* changeOf(events);
+      assert.deepStrictEqual(change.removed, ["waiting:wait-1"]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("her day turns at her own midnight: tomorrow's task becomes today's", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      // 17:30 in Kolkata: her day turns at 18:30 UTC, hours before the company's.
+      yield* sql`UPDATE kin_people SET time_zone = 'Asia/Kolkata' WHERE org_id = ${orgId}
+        AND person_id = ${meera}`;
+      yield* task("W-3", meera, NOW + 8 * HOUR);
+      const events = yield* follow(as(meera));
+      const first = yield* snapshotOf(events);
+      assert.deepStrictEqual(
+        first.rows.map((row) => row.id),
+        ["task:W-2"],
+      );
+      yield* TestClock.adjust(6 * HOUR + 29 * 60_000);
+      assert.strictEqual(yield* Queue.size(events), 0);
+      yield* TestClock.adjust(60_000);
+      const change = yield* changeOf(events);
+      assert.include(
+        change.updated.map((row) => row.id),
+        "task:W-3",
+      );
     }),
   ).pipe(Effect.provide(layer)),
 );

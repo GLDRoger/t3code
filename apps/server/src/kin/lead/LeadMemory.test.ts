@@ -598,6 +598,23 @@ it.live(
         );
         const second = yield* service.defer(scope, { ...deferred, what: "Another invented task" });
         assert.notStrictEqual(second.itemId, first.itemId);
+        // Who to ask is named as people are found here, and kept as the item's person.
+        const askMember = { ...deferred, what: "Invented ask", ask: "Memb" };
+        const asked = yield* service.defer(scope, askMember);
+        assert.deepStrictEqual(yield* service.defer(scope, askMember), asked);
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('other-meera', ${other}, 'meera', 'Meera', '2026-11-08T00:00:00.000Z')`;
+        for (const [ask, onDue, refusal] of [
+          ["Meera", "ask", "No one called Meera is in the company."],
+          ["Nobody", "chase", "No one called Nobody is in the company."],
+          ["Member", "remind", "ask names who to ask or chase"],
+        ] as const)
+          assert.include(
+            (yield* service
+              .defer(scope, { ...deferred, what: `Invented ${ask}`, ask, onDue })
+              .pipe(Effect.flip)).message,
+            refusal,
+          );
         assert.strictEqual(
           (yield* service
             .defer(scope, { ...deferred, itemId: first.itemId, what: "Different" })
@@ -848,6 +865,10 @@ it.live(
         );
         const files = yield* git(remote, ["ls-tree", "-r", "--name-only", committed.commit]);
         assert.include(files, `deferrals/${first.itemId}.md`);
+        assert.include(
+          yield* git(remote, ["show", `${committed.commit}:deferrals/${asked.itemId}.md`]),
+          "owner: fixture-member",
+        );
         const content = yield* git(remote, [
           "show",
           `${committed.commit}:deferrals/${first.itemId}.md`,

@@ -1,5 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers compare due times with the reader's local day, outside an Effect runtime.
-import type { KinRecord, KinWorkPrincipal } from "@t3tools/contracts";
+import type { KinRecord, KinRecordKey, KinWorkPrincipal } from "@t3tools/contracts";
 
 import {
   kinWorkAvatar,
@@ -31,6 +31,8 @@ export type KinWorkGroupItem<R extends KinRecord> =
       readonly kind: KinWorkGroupKind;
       readonly title: string;
       readonly count: number;
+      /** A project's heading opens that project. */
+      readonly project?: KinRecordKey;
     }
   | {
       readonly type: "who";
@@ -72,7 +74,11 @@ export const kinWorkGroupsShown = (
 type Where =
   | { readonly kind: "mine" }
   | { readonly kind: "others" | "agents"; readonly who: KinWorkPrincipal }
-  | { readonly kind: "project"; readonly key: string | null; readonly title: string | null };
+  | {
+      readonly kind: "project";
+      readonly key: KinRecordKey | null;
+      readonly title: string | null;
+    };
 
 const isMe = (who: KinWorkPrincipal, names: KinWorkNames) =>
   who._tag === "person" && who.personId === names.me;
@@ -129,14 +135,18 @@ export function kinWorkGroups<R extends KinRecord>(
   const mine: Array<R> = [];
   const waits = { others: new Map<string, Array<R>>(), agents: new Map<string, Array<R>>() };
   const whoOf = new Map<string, KinWorkPrincipal>();
-  const projects = new Map<string, { title: string | null; records: Array<R> }>();
+  const projects = new Map<
+    string,
+    { key: KinRecordKey | null; title: string | null; records: Array<R> }
+  >();
   for (const record of records) {
     const where = whereOf(record, names);
     if (where.kind === "mine") mine.push(record);
     else if (where.kind === "project") {
       const key = where.key ?? "";
       const held = projects.get(key);
-      if (held === undefined) projects.set(key, { title: where.title, records: [record] });
+      if (held === undefined)
+        projects.set(key, { key: where.key, title: where.title, records: [record] });
       else held.records.push(record);
     } else {
       const key = kinWorkPrincipalKey(where.who);
@@ -150,8 +160,22 @@ export function kinWorkGroups<R extends KinRecord>(
   const tasks = (rows: ReadonlyArray<R>, section: KinWorkGroupKind) => {
     for (const record of rows) items.push({ type: "task", key: record.key, record, section });
   };
-  const section = (kind: KinWorkGroupKind, key: string, title: string, count: number) => {
-    if (count > 0) items.push({ type: "section", key: `section:${key}`, kind, title, count });
+  const section = (
+    kind: KinWorkGroupKind,
+    key: string,
+    title: string,
+    count: number,
+    project: KinRecordKey | null = null,
+  ) => {
+    if (count > 0)
+      items.push({
+        type: "section",
+        key: `section:${key}`,
+        kind,
+        title,
+        count,
+        ...(project === null ? {} : { project }),
+      });
   };
   section("mine", "mine", KIN_WORK_GROUPS.mine, mine.length);
   const marked = mine.map((record) => ({ record, mark: kinWorkMark(record, now) }));
@@ -201,6 +225,7 @@ export function kinWorkGroups<R extends KinRecord>(
       `project:${key}`,
       project.title ?? KIN_WORK_GROUPS.noProject,
       project.records.length,
+      project.key,
     );
     tasks(project.records, "project");
   }

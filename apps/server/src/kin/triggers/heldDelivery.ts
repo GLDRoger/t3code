@@ -16,6 +16,8 @@ import type { WriteAudience } from "../chat/KinChatRepository.ts";
 import type { KinChatService } from "../chat/KinChatService.ts";
 import { personQuietUntil } from "./quietHold.ts";
 
+/** A delivered held line's message id is this before its first hold's id. */
+export const HELD_ID = "kin-held:";
 const decodeRelay = Schema.decodeUnknownOption(Schema.fromJsonString(KinMessageRelay));
 
 /**
@@ -66,7 +68,7 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
           yield* chat.notice({
             orgId,
             chatId: KinChatId.make(first.chatId),
-            messageId: KinMessageId.make(`kin-held:${first.holdId}`),
+            messageId: KinMessageId.make(`${HELD_ID}${first.holdId}`),
             audience: first.audience,
             body: [...new Set(group.map((row) => row.body))].join("\n\n"),
             ...(first.agentId === null ? {} : { from: first.agentId }),

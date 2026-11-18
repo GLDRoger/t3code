@@ -9,6 +9,8 @@ import {
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Queue from "effect/Queue";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 
 import { KinChatHub } from "../chat/KinChatHub.ts";
@@ -51,13 +53,31 @@ export const read = Effect.fn("KinOpenPeople.read")(function* (
   );
 });
 
+/** When the first approval waiting on this person after `at` lapses, the only row time alone ends. */
+const nextLapse = Effect.fn("KinOpenPeople.nextLapse")(function* (
+  orgId: KinOpenReadInput["orgId"],
+  personId: PersonIdentity["personId"],
+  at: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ at: number | null }>`SELECT MIN(pa.expires_at) AS at
+    FROM kin_waiting w
+      JOIN kin_widgets g ON g.org_id = w.org_id AND g.widget_id = w.widget_id
+      JOIN kin_pending_actions pa ON pa.org_id = w.org_id
+        AND pa.action_id = json_extract(g.state_json, '$.actionId')
+    WHERE w.org_id = ${orgId} AND w.person_id = ${personId} AND w.resolved_at IS NULL
+      AND w.reason = 'approval' AND pa.state = 'awaiting_approval' AND pa.expires_at > ${at}`;
+  return row?.at ?? undefined;
+});
+
 /** Names a list by what a screen shows of it (not `asOf`). */
 const openHash = (read: KinOpenRead) => viewHash(JSON.stringify([read.counts, read.rows]));
 
 /**
  * `kin.open.subscribe`: the list `read` gives this person, then what moved in it, built by that
- * same read each time a source may have moved: the pulse, Work, their waiting cards, and the turn
- * of their day. Chat events only wake a build; nothing of theirs is sent. Unchanged, nothing is.
+ * same read each time a source may have moved: the pulse, Work, their waiting cards, the turn of
+ * their day, and the moment an approval waiting on them lapses. Chat events only wake a build;
+ * nothing of theirs is sent. Unchanged, nothing is.
  */
 export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinOpenSubscribeInput) =>
   Stream.unwrap(
@@ -105,6 +125,21 @@ export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinOpenS
           return -3;
         }),
       );
+      // Each build sets the next lapse; a newer one replaces the timer waiting before it.
+      const lapses = yield* Queue.sliding<number | undefined>(1);
+      const lapsed = Stream.fromQueue(lapses).pipe(
+        Stream.switchMap((at) =>
+          at === undefined
+            ? Stream.empty
+            : Stream.fromEffect(
+                Effect.gen(function* () {
+                  const now = yield* Clock.currentTimeMillis;
+                  yield* Effect.sleep(Duration.millis(Math.max(0, at - now)));
+                  return -4;
+                }),
+              ),
+        ),
+      );
       const live = hashedLive({
         held,
         hash: openHash,
@@ -112,8 +147,20 @@ export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinOpenS
         diff: kinOpenDiff,
         apply: kinOpenApply,
       });
-      return coalesced(Stream.mergeAll([pulse, work, waiting, dayTurns], { concurrency: 4 }), () =>
-        read(people, readInput).pipe(Effect.map(live.next)),
+      return coalesced(
+        Stream.mergeAll([pulse, work, waiting, dayTurns, lapsed], { concurrency: 5 }),
+        () =>
+          Effect.gen(function* () {
+            const at = yield* Clock.currentTimeMillis;
+            const list = yield* read(people, readInput);
+            yield* Queue.offer(
+              lapses,
+              yield* nextLapse(input.orgId, person.personId, at).pipe(
+                Effect.orElseSucceed(() => undefined),
+              ),
+            );
+            return live.next(list);
+          }),
       );
     }),
   );

@@ -2,11 +2,12 @@
 import "../chat/KinChatService.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { KinChatError, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import { KinAttachment, KinChatError, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -17,6 +18,7 @@ import * as Numbers from "../gendocs/numbering.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { removeChunk } from "./importUndo.ts";
+import { insertComment } from "./recordComments.ts";
 import * as KinImport from "./KinImport.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { searchIndexed } from "./searchIndex.ts";
@@ -26,6 +28,13 @@ const orgId = KinOrgId.make("org");
 const ownerId = KinPersonId.make("owner");
 const at = "2026-11-11T00:00:00.000Z";
 const NOW = Date.parse("2026-11-12T06:00:00.000Z");
+const noteFile = Schema.decodeSync(KinAttachment)({
+  type: "file",
+  id: "kin-file-note",
+  name: "note.pdf",
+  mimeType: "application/pdf",
+  sizeBytes: 1,
+});
 const owner = { actor: { _tag: "person" as const, personId: ownerId }, via: "owner" as const };
 const me = { _tag: "person" as const, personId: ownerId };
 
@@ -175,6 +184,8 @@ const holdings = Effect.gen(function* () {
     changes: yield* countOf("kin_record_changes"),
     numbers: yield* countOf("kin_issued_numbers"),
     search: yield* countOf("kin_search_rows"),
+    comments: yield* countOf("kin_record_comments"),
+    commentFiles: yield* countOf("kin_record_comment_files"),
     money,
   };
 });
@@ -409,6 +420,18 @@ describe("KinImport", () => {
         recordOf(one).pipe(Effect.map((row) => row?.key)),
       );
       const keys = yield* keysOf;
+      // A comment is not a change: the commented entry goes, and its comment and file with it.
+      yield* insertComment({
+        orgId,
+        key: keys[2]!,
+        author: { _tag: "person", personId: ownerId },
+        requestId: "note",
+        requestHash: "note",
+        body: "Invented: the vendor called",
+        files: [noteFile],
+        now: 0,
+        sees: () => Effect.succeed(true),
+      });
       const plan = yield* imports.undo(orgId, ownerId, "oldbooks", {
         apply: false,
         includeChanged: false,

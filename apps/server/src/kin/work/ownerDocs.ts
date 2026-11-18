@@ -59,6 +59,7 @@ import {
   placesOf,
   seenBy,
   teamSeq,
+  linkedFromOf,
   teamVisible,
   viewerOfPeople,
   type KinViewer,
@@ -136,6 +137,7 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
               link.kind !== "record" ||
               (link.record !== undefined && linked.has(link.record.recordId)),
           ),
+    ...(yield* linkedFromOf(orgId, row.recordId, viewer)),
     seq: yield* recordSeq(orgId, row.recordId),
     embeds: yield* docEmbeds(orgId, row.recordId, shown.body),
   } satisfies KinDocDetail;

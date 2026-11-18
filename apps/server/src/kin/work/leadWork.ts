@@ -76,6 +76,7 @@ import {
   largestIn,
   parseAmount,
 } from "./money.ts";
+import { latestComments } from "./recordComments.ts";
 import {
   endOfDay,
   iso,
@@ -340,6 +341,18 @@ export const GetResult = Schema.Struct({
       targetPassed: Schema.Boolean,
     }),
   ),
+  /** The newest comments still standing, oldest first; `olderComments` counts those before. */
+  comments: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        at: Schema.String,
+        by: Schema.String,
+        text: Schema.String,
+        files: Schema.optional(Schema.Array(Schema.String)),
+      }),
+    ),
+  ),
+  olderComments: Schema.optional(Schema.Number),
 });
 const CreateRow = Schema.Struct({
   list: Schema.optional(List),
@@ -1454,6 +1467,7 @@ const mailedFor = Effect.fnUntraced(function* (
     addresses: related.flatMap((one) => (typeof one.email === "string" ? [one.email] : [])),
   });
 });
+const COMMENTS_SHOWN = 10;
 const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.Type) {
   const records = yield* KinRecords;
   const team = yield* viewOf(lead);
@@ -1469,6 +1483,20 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   const actor = (by: (typeof detail.changes)[number]["by"]) =>
     by._tag === "system" ? "Kin" : (name(by) ?? "someone");
   const assignedBy = name(detail.assignedBy);
+  const said = yield* latestComments(lead.orgId, row.recordId, COMMENTS_SHOWN);
+  const comments = {
+    ...(said.comments.length === 0
+      ? {}
+      : {
+          comments: said.comments.map((one) => ({
+            at: one.at,
+            by: name(one.by) ?? "someone",
+            text: one.body,
+            ...(one.files.length === 0 ? {} : { files: one.files.map((file) => file.name) }),
+          })),
+        }),
+    ...(said.older === 0 ? {} : { olderComments: said.older }),
+  };
   const whole = team !== undefined && (yield* viewWhole(lead, team, row));
   if (team !== undefined && !whole) {
     const shown: typeof GetResult.Type = {
@@ -1488,6 +1516,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
             ? "created"
             : change.fields.map((field) => `${field.field}: ${field.to ?? "cleared"}`).join("; "),
       })),
+      ...comments,
     };
     return shown;
   }
@@ -1581,6 +1610,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
         ? { sensitive: true as const }
         : {}),
     })),
+    ...comments,
   };
 });
 export const get = leadTool("KinWorkTools.get", runGet);

@@ -20,6 +20,7 @@ import {
   KinRecordChangeVia,
   KinRecordId,
   KinRecordKey,
+  KinLinkedFromFields,
   KinRecordLink,
   KinRecordRef,
   KinWorkActor,
@@ -203,6 +204,7 @@ export const KinDocDetail = Schema.Struct({
   body: KinText,
   outline: Schema.Array(KinDocSection),
   links: Schema.Array(KinRecordLink),
+  ...KinLinkedFromFields,
   /** This doc's latest change number: compare with a `changed` event's. */
   seq: NonNegativeInt,
   /** Absent from servers that draw no blocks. */

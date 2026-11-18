@@ -611,9 +611,17 @@
       "types": "./src/kinPush.ts",
       "default": "./src/kinPush.ts"
     },
+    "./kin/kinLinked": {
+      "types": "./src/kin/kinLinked.ts",
+      "default": "./src/kin/kinLinked.ts"
+    },
     "./kin/kinNavigation": {
       "types": "./src/kin/kinNavigation.ts",
       "default": "./src/kin/kinNavigation.ts"
+    },
+    "./kin/kinOpenView": {
+      "types": "./src/kin/kinOpenView.ts",
+      "default": "./src/kin/kinOpenView.ts"
     },
     "./kin/kinPeopleChat": {
       "types": "./src/kin/kinPeopleChat.ts",
@@ -886,6 +894,10 @@
     "./kin/kinDocChanges": {
       "types": "./src/kin/kinDocChanges.ts",
       "default": "./src/kin/kinDocChanges.ts"
+    },
+    "./kin/kinTurnReceipt": {
+      "types": "./src/kin/kinTurnReceipt.ts",
+      "default": "./src/kin/kinTurnReceipt.ts"
     },
     "./kin/kinDocsStream": {
       "types": "./src/kin/kinDocsStream.ts",

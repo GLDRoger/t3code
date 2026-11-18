@@ -1,7 +1,9 @@
 import {
   type KinAttachment,
   KinChatError,
+  type KinOrgId,
   KinPersonId,
+  type KinRecordComment,
   KinRecordKey,
   type KinWorkCommentInput,
   type KinWorkCommentRemoveInput,
@@ -16,11 +18,11 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { PendingUploadOwner } from "../../assets/AttachmentUpload.ts";
 import { KinAttachmentStore } from "../chat/KinAttachmentStore.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
-import { tellPeople } from "./assignNotices.ts";
+import { type AssignNotice, tellPeople } from "./assignNotices.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { KinToolText } from "./leadSchemas.ts";
 import { admitted, leadTool, type Lead, namer, viewOf, viewWriter, writerFor } from "./leadWork.ts";
-import { found, viewerOf } from "./ownerWork.ts";
+import { found, tellOnScreen, viewerOf } from "./ownerWork.ts";
 import {
   commentIdFor,
   commentsPage,
@@ -71,18 +73,24 @@ export const comment = Effect.fn("KinWorkComments.comment")(function* (
       const holder = yield* records.getById(input.orgId, written.recordId);
       if (written.created && holder?.ownerKind === "agent")
         yield* records.commented(input.orgId, personId, holder, written.comment.seq, input.body);
-      return withCanRemove(viewer, written.comment);
+      return { shown: withCanRemove(viewer, written.comment), created: written.created };
     },
     sql.withTransaction,
     workFailure,
   );
-  if (requested.length === 0) return { comment: yield* write([]) };
+  const posted = Effect.fn("KinWorkComments.posted")(function* (
+    written: Effect.Success<ReturnType<typeof write>>,
+  ) {
+    if (written.created) yield* tellReaders(viewer.person, input.key, written.shown);
+    return { comment: written.shown };
+  });
+  if (requested.length === 0) return yield* posted(yield* write([]));
   // A retry finds its comment before its uploads are claimed a second time.
   const row = yield* found(input.orgId, { key: input.key });
   const id = commentIdFor(input.orgId, row.recordId, author, input.clientRequestId);
   const stored = yield* sql`SELECT 1 FROM kin_record_comments
     WHERE org_id = ${input.orgId} AND comment_id = ${id}`.pipe(workFailure);
-  if (stored.length > 0) return { comment: yield* write([]) };
+  if (stored.length > 0) return yield* posted(yield* write([]));
   const store = yield* Effect.serviceOption(KinAttachmentStore);
   if (Option.isNone(store) || uploader === undefined)
     return yield* new KinChatError({
@@ -94,8 +102,52 @@ export const comment = Effect.fn("KinWorkComments.comment")(function* (
     Effect.onError(() => store.value.release(claimed)),
   );
   yield* store.value.discardPending(requested);
-  return { comment: written };
+  return yield* posted(written);
 });
+
+/**
+ * Whoever holds the task and whoever asked for it, once each, still here and seeing it, never
+ * `author`: who hears a comment on it.
+ */
+const commentNotices = Effect.fn("KinWorkComments.notices")(function* (
+  orgId: KinOrgId,
+  row: AssignNotice["row"],
+  body: string,
+  author: string | null,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [asked] = yield* sql<{ askedBy: string | null }>`SELECT asked_by_person_id AS "askedBy"
+    FROM kin_records WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
+  const readers = new Set(
+    [row.ownerKind === "person" ? row.ownerId : null, asked?.askedBy ?? null].filter(
+      (one): one is string => one !== null && one !== author,
+    ),
+  );
+  const why = oneLine(body, NOTICE_WORDS);
+  const notices: Array<AssignNotice> = [];
+  for (const reader of readers) {
+    const personId = KinPersonId.make(reader);
+    const here = yield* sql`SELECT 1 FROM kin_people WHERE org_id = ${orgId}
+      AND person_id = ${personId} AND removed_at IS NULL`;
+    if (here.length === 0 || !(yield* personSeesRecord(orgId, personId, row.recordId))) continue;
+    notices.push({ personId, kind: "commented", row, why: why === "" ? null : why });
+  }
+  return notices;
+});
+
+/** A person's comment is told as they hear it given, from the team agent. */
+const tellReaders = Effect.fn("KinWorkComments.tellReaders")(
+  function* (person: PersonIdentity, key: string, written: KinRecordComment) {
+    const records = yield* KinRecords;
+    const row = yield* records.get(person.orgId, key);
+    if (row === undefined || row.registerId !== "work") return;
+    const notices = yield* commentNotices(person.orgId, row, written.body, person.personId);
+    yield* tellOnScreen(person, `comment:${written.commentId}`, notices);
+  },
+  Effect.catchCause((cause) =>
+    Effect.logWarning("Kin couldn't tell people about a comment", cause),
+  ),
+);
 
 /** Its author takes a comment back, or the owner level any; its files go with it. */
 export const removeOne = Effect.fn("KinWorkComments.remove")(function* (
@@ -148,8 +200,8 @@ export const CommentResult = Schema.Struct({
 });
 
 /**
- * A lead says something on an entry it may see, for the people of its turn. A person holding it
- * is told once in their own chat. A retry of the same words in the same turn writes nothing more.
+ * A lead says something on an entry it may see, for the people of its turn. Whoever holds it and
+ * whoever asked for it are told once each in their own chat. A retry of the same words in the same turn writes nothing more.
  */
 const runComment = Effect.fnUntraced(function* (lead: Lead, input: typeof CommentInput.Type) {
   yield* admitted(lead, "record_comment", input);
@@ -179,18 +231,12 @@ const runComment = Effect.fnUntraced(function* (lead: Lead, input: typeof Commen
     });
   }).pipe(sql.withTransaction, workFailure);
   const result = { key: input.key, commentId: written.comment.commentId };
-  const holder = yield* records.getById(lead.orgId, written.recordId);
-  if (!written.created || holder === undefined || holder.ownerKind !== "person") return result;
-  const told = yield* tellPeople(lead, [
-    {
-      personId: KinPersonId.make(holder.ownerId),
-      kind: "commented",
-      row: holder,
-      why: oneLine(input.body, NOTICE_WORDS),
-    },
-  ]).pipe(
+  const row = yield* records.getById(lead.orgId, written.recordId);
+  if (!written.created || row === undefined) return result;
+  const told = yield* commentNotices(lead.orgId, row, input.body, author.askedBy).pipe(
+    Effect.flatMap((notices) => tellPeople(lead, notices)),
     Effect.catchCause((cause) =>
-      Effect.logWarning("Kin couldn't tell the holder about a comment", cause).pipe(
+      Effect.logWarning("Kin couldn't tell people about a comment", cause).pipe(
         Effect.as(new Set<string>()),
       ),
     ),

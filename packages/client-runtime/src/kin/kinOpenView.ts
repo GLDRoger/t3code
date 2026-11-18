@@ -30,6 +30,21 @@ export const kinOpenBadge = (input: {
   readonly mineDue: ReadonlyArray<unknown> | null;
 }) => (input.open === null ? kinTasksBadgeCount(input) : input.open.counts.needsYou);
 
+/** `read` less the facts answered on this device, as `kinAttentionShown` does for the pulse's. */
+export function kinOpenShown(read: KinOpenRead, answered: ReadonlySet<string>): KinOpenRead {
+  if (answered.size === 0) return read;
+  const rows = read.rows.filter(
+    (row) => !(row.item._tag === "fact" && answered.has(row.item.fact.key)),
+  );
+  const gone = read.rows.length - rows.length;
+  if (gone === 0) return read;
+  return {
+    ...read,
+    counts: { ...read.counts, needsYou: Math.max(0, read.counts.needsYou - gone) },
+    rows,
+  };
+}
+
 /** What waits on the viewer in chats, oldest first, for Waiting on you (`selectKinInboxView`). */
 export const kinOpenWaiting = (read: KinOpenRead): ReadonlyArray<KinWaitingItem> =>
   read.rows.flatMap((row) => (row.item._tag === "waiting" ? [row.item.waiting] : []));

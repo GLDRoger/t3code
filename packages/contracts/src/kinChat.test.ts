@@ -171,6 +171,14 @@ type SchemaName = {
   [K in keyof typeof Kin]: (typeof Kin)[K] extends Schema.Top ? K : never;
 }[keyof typeof Kin];
 
+const turnChange = {
+  key: "W-25",
+  title: "Invented pricing page",
+  what: "given to Finance",
+  change: { agentId: "agent-1", seq: 12 },
+  undoable: true,
+  undone: false,
+};
 const samples = {
   KinText: ["", "Hello\nworld", "  Markdown  "],
   KinTrimmedText: ["Kin", "Owner name"],
@@ -188,6 +196,11 @@ const samples = {
   ],
   KinMessageWhen: [
     { at: "2026-11-17T04:30:00.000Z", zone: "Asia/Kolkata", text: "10:00 their time" },
+  ],
+  KinTurnChange: [turnChange],
+  KinTurnChanges: [
+    { count: 0, items: [], more: 0 },
+    { count: 7, items: Array.from({ length: 5 }, () => turnChange), more: 2 },
   ],
   KinWidgetId: ["widget-1"],
   KinWaitingId: ["waiting-1"],
@@ -445,6 +458,7 @@ const samples = {
 } satisfies Record<SchemaName, ReadonlyArray<unknown>>;
 
 const decodeSend = Schema.decodeUnknownSync(Kin.KinMessagesSendInput);
+const decodeTurnChanges = Schema.decodeSync(Kin.KinTurnChanges);
 const decodeHistory = Schema.decodeSync(Kin.KinChatHistoryInput);
 
 describe("Kin chat contracts", () => {
@@ -457,6 +471,16 @@ describe("Kin chat contracts", () => {
       expect(encode(decoded)).toEqual(wire);
       expect(decode(encode(decoded))).toEqual(decoded);
     }
+  });
+
+  it("lists at most five of a turn's changes", () => {
+    expect(() =>
+      decodeTurnChanges({
+        count: 6,
+        items: Array.from({ length: 6 }, () => turnChange),
+        more: 0,
+      }),
+    ).toThrow();
   });
 
   it("rejects five message figures", () => {

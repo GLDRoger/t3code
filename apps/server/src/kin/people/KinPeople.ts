@@ -281,7 +281,7 @@ export const make = Effect.gen(function* () {
   });
   /**
    * A new teammate who is a removed person by name or handle is refused with the offer to bring
-   * them back, which a link for that person (`personId`) does; never a second record.
+   * them back, which a link for that person (`personId`) does; `newPerson` says it is someone else.
    */
   const notRemoved = Effect.fn("KinPeople.notRemoved")(function* (
     orgId: KinOrgId,
@@ -315,7 +315,7 @@ export const make = Effect.gen(function* () {
     if (input.personId !== undefined) yield* mayActOn(caller, input.orgId, input.personId);
     const now = (yield* DateTime.now).epochMilliseconds;
     const secret = NodeCrypto.randomBytes(32).toString("base64url");
-    const inviteId = KinInviteId.make(NodeCrypto.randomUUID());
+    let inviteId = KinInviteId.make(NodeCrypto.randomUUID());
     let handle =
       input.handle ??
       (input.displayName
@@ -329,7 +329,28 @@ export const make = Effect.gen(function* () {
         Effect.gen(function* () {
           if (isOwnerHimself(identity.owner, input.personId)) return yield* denied;
           if (input.personId) yield* person(input.orgId, input.personId);
-          else {
+          else if (input.newPerson === true) {
+            // A retry while the first link is unopened is the same new person, with a fresh secret.
+            const [earlier] = yield* sql<{ inviteId: KinInviteId; handle: string }>`SELECT
+                invite_id AS "inviteId", handle FROM kin_people_invites
+              WHERE org_id = ${input.orgId} AND person_id IS NULL AND consumed_at IS NULL
+                AND revoked_at IS NULL AND expires_at > ${now}
+                AND lower(trim(display_name)) = ${input.displayName.trim().toLowerCase()}
+              ORDER BY created_at DESC, invite_id LIMIT 1`.pipe(
+              Effect.mapError(toPersistenceSqlError("KinPeople.createInvite")),
+            );
+            if (earlier !== undefined) {
+              inviteId = earlier.inviteId;
+              handle = earlier.handle;
+              yield* sql`UPDATE kin_people_invites SET secret_hash = ${hash(secret).toString("hex")},
+                expires_at = ${expiresAt} WHERE org_id = ${input.orgId} AND invite_id = ${inviteId}`.pipe(
+                Effect.mapError(toPersistenceSqlError("KinPeople.createInvite")),
+              );
+              yield* refresh.touch(input.orgId, "people");
+              return;
+            }
+            handle = yield* uniqueHandle(input.orgId, handle, now);
+          } else {
             yield* notRemoved(input.orgId, input.displayName, handle);
             handle = yield* uniqueHandle(input.orgId, handle, now);
           }

@@ -13,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
@@ -44,6 +45,17 @@ export const viewerIn = Effect.fn("KinPulsePeople.viewer")(function* (
     return yield* new KinChatError({ reason: "not_found", message: "Kin couldn't find that." });
   const { owner } = yield* KinIdentity;
   if (person.orgId !== owner.orgId)
+    return yield* new KinChatError({ reason: "not_found", message: "Kin couldn't find that." });
+  const sql = yield* SqlClient.SqlClient;
+  // Asked on every build of a stream too, so a person removed while watching stops receiving.
+  const removed = yield* sql<{ one: number }>`SELECT 1 AS one FROM kin_people
+    WHERE org_id = ${orgId} AND person_id = ${person.personId} AND removed_at IS NOT NULL
+    ORDER BY person_id`.pipe(
+    Effect.mapError(
+      () => new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
+    ),
+  );
+  if (removed.length > 0)
     return yield* new KinChatError({ reason: "not_found", message: "Kin couldn't find that." });
   // Owner-level people (the owner and co-owners) see everything; a member, what they may see.
   const viewer: KinPulse.Viewer = (yield* mayActAsOwner(orgId, person.personId, owner).pipe(
