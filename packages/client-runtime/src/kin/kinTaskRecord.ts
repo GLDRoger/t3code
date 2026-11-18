@@ -40,6 +40,12 @@ export const KIN_TASK_RECORD = {
   older: "Show earlier notes",
   openDraft: "Open the draft",
   openQuestion: "Open the question",
+  waitingSend: "A draft is waiting for your OK",
+  waitingQuestion: "A question is waiting",
+  editAll: "Edit title and brief",
+  briefMoved: "The brief now says:",
+  removeDetail: "It stays in Activity as removed, without its words or files.",
+  noteTooLong: (max: number) => `Keep a note under ${max.toLocaleString()} characters.`,
 } as const;
 
 /** Someone the record names, as a row draws them: "Rhea (you)", or the agent's name. */

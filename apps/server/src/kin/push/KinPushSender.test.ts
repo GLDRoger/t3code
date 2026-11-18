@@ -8,6 +8,7 @@ import {
   KinMessageId,
   KinOrgId,
   KinPersonId,
+  KinRecordKey,
   KinWidgetId,
   type KinPushError,
   type KinPushToken,
@@ -1338,6 +1339,19 @@ describe("KinPushSender", () => {
       });
       assert.strictEqual(apns.sent.length, 0);
     }).pipe(Effect.provide(build(apns)));
+  });
+});
+
+describe("kinTasksSubject", () => {
+  it("opens the one task a notice names, and Tasks when it names more", () => {
+    const [a, b] = [KinRecordKey.make("W-4"), KinRecordKey.make("W-7")];
+    assert.isUndefined(Sender.kinTasksSubject([]));
+    assert.deepStrictEqual(Sender.kinTasksSubject([a, a]), {
+      _tag: "record",
+      key: a,
+      kind: "task",
+    });
+    assert.deepStrictEqual(Sender.kinTasksSubject([a, b]), { _tag: "tasks" });
   });
 });
 
