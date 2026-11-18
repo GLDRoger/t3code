@@ -19,7 +19,7 @@ describe("kinPlaceOfWork", () => {
     [{ show: "tasks" }, "tasks", {}],
     [{ show: "nonsense" }, "tasks", {}],
     [{ show: "clients" }, "clients", {}],
-    [{ show: "projects" }, "clients", {}],
+    [{ show: "projects" }, "clients", { tab: "projects" }],
     [{ show: "money" }, "money", {}],
     [{ show: "dates" }, "money", { dates: true }],
     [{ show: "docs" }, "docs", {}],
@@ -62,6 +62,7 @@ describe("place addresses", () => {
         dates: "yes",
         history: "1",
         open: "sheet",
+        tab: "clients",
       }),
     ).toEqual({});
   });

@@ -8,6 +8,7 @@ import {
   KinRecordId,
   KinRecordKey,
   type KinPartyRow,
+  type KinProjectRow,
 } from "@t3tools/contracts";
 
 import {
@@ -16,6 +17,7 @@ import {
   kinClientContactLine,
   kinClientRow,
   kinLastContactLine,
+  kinProjectsByClient,
   kinTouchAt,
 } from "./kinWorkClients.ts";
 
@@ -86,6 +88,72 @@ describe("kinClientRow", () => {
     );
     // A teammate's row comes without counts, so its zeros aren't "Nothing open".
     expect(kinClientRow(row, names, now).line).toBe("");
+  });
+});
+
+describe("kinProjectsByClient", () => {
+  const now = new Date(2026, 10, 15, 10);
+  const meera = KinPersonId.make("meera");
+  const names = { people: new Map([[meera, "Meera"]]), agents: new Map(), me: null, zone: null };
+  const clients: Record<string, string> = { Pinecrest: "C-1", "Ambermill Foods": "C-2" };
+  const project = (key: string, party: string | null, more: Partial<KinProjectRow> = {}) =>
+    ({
+      recordId: KinRecordId.make(`r-${key}`),
+      key: KinRecordKey.make(key),
+      name: `Project ${key}`,
+      party:
+        party === null
+          ? null
+          : {
+              recordId: KinRecordId.make(`r-${party}`),
+              key: KinRecordKey.make(clients[party] ?? ""),
+              title: party,
+            },
+      owner: { _tag: "person", personId: meera },
+      state: "open",
+      targetAt: null,
+      targetAllDay: true,
+      open: 6,
+      late: 0,
+      health: "on_track",
+      sensitive: false,
+      sensitiveInherited: false,
+      rev: 1,
+      ...more,
+    }) satisfies KinProjectRow;
+
+  it("groups under each client by name, with projects not for a client last", () => {
+    const groups = kinProjectsByClient(
+      [
+        project("P-1", null),
+        project("P-2", "Pinecrest"),
+        project("P-3", "Ambermill Foods"),
+        project("P-4", "Pinecrest"),
+      ],
+      names,
+      now,
+    );
+    expect(groups.map((group) => [group.title, group.rows.map((row) => row.key)])).toEqual([
+      ["Ambermill Foods", ["P-3"]],
+      ["Pinecrest", ["P-2", "P-4"]],
+      ["Not for a client", ["P-1"]],
+    ]);
+    expect(groups.map((group) => group.party)).toEqual(["C-2", "C-1", null]);
+  });
+
+  it("names the lead and counts, with the target only when there is one", () => {
+    const target = new Date(2026, 10, 17, 23, 59).toISOString();
+    const [withTarget, without] = kinProjectsByClient(
+      [project("P-1", "Pinecrest", { targetAt: target }), project("P-2", null)],
+      names,
+      now,
+    ).flatMap((group) => group.rows);
+    expect(withTarget?.line).toMatch(/^Meera · 6 open · target \D*17\D*$/);
+    expect(without).toMatchObject({ line: "Meera · 6 open", health: { label: "On track" } });
+  });
+
+  it("is no groups for no projects", () => {
+    expect(kinProjectsByClient([], names, now)).toEqual([]);
   });
 });
 
