@@ -124,6 +124,7 @@ import {
   sentMail,
   SentMailView,
   sentToClient,
+  subjectClosed,
 } from "./Sending.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { KinGitHubLogin } from "./GitHubLogin.ts";
@@ -2275,8 +2276,9 @@ const make = Effect.gen(function* () {
 
   /**
    * The owner's answer on an ask card, in the tap's transaction. Confirm moves it to sending
-   * only while the tool and every attached file are still what the card showed; otherwise it
-   * is stale and nothing is sent. Any other card is not this one's business.
+   * only while the tool and every attached file are still what the card showed, and what it is
+   * about is not void; otherwise it is stale and nothing is sent. Any other card is not this
+   * one's business.
    */
   const answerAsk = Effect.fn("KinConnections.answerAsk")(
     function* (input: {
@@ -2331,9 +2333,10 @@ const make = Effect.gen(function* () {
                   tool.mode !== "ask" ||
                   tool.pinDigest !== row.pinDigest
                 ? `${row.toolName} changed or was switched off since this card was made, so nothing was sent.`
-                : (yield* attachmentsCurrent(input.orgId, prepared))
-                  ? null
-                  : "The attached document changed since this card was made, so nothing was sent. A fresh card is below.";
+                : ((yield* subjectClosed(input.orgId, prepared, row.entryRecordId)) ??
+                  ((yield* attachmentsCurrent(input.orgId, prepared))
+                    ? null
+                    : "The attached document changed since this card was made, so nothing was sent. A fresh card is below."));
       if (reason !== null) {
         const again = reason.endsWith("A fresh card is below.");
         const newer = again && (yield* superseded(input.orgId, row.askId));
