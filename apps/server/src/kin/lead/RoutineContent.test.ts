@@ -550,9 +550,13 @@ it.effect("a brief counts what is open for the owner, not what memory or their c
       // A late task, nothing in memory: the brief is sent.
       const late = yield* runRoutine(
         routine("brief-late", "morning_brief"),
-        openForOwner({ lateTask: true }),
+        Effect.all([openForOwner({ lateTask: true }), ownerLogin], { discard: true }),
       );
-      assert.lengthOf(late.messages, 1);
+      assert.deepStrictEqual(late.messages[0]?.body.split("\n"), [
+        "Morning brief, Mon 9 Nov",
+        // The late fact stands for its task: one row, not two.
+        "Needs you: 1, oldest Send the kiln quote (Was due 2026-11-08, yesterday\\.)",
+      ]);
     }),
     { quietGithub: true },
   ),
@@ -568,7 +572,7 @@ it.effect("a card waiting in a chat the owner left is not counted", () =>
       );
       assert.deepStrictEqual(result.messages[0]?.body.split("\n"), [
         "Morning brief, Mon 9 Nov",
-        "Waiting on you: 1, oldest decision (decision, since Mon 9 Nov)",
+        "Needs you: 1, oldest decision (decision, since Mon 9 Nov)",
       ]);
       assert.deepStrictEqual(
         decodeCard(result.widgets[0]?.state).rows.map((row) => row.section),

@@ -28,8 +28,9 @@ export interface MorningFacts {
   readonly dueThisWeek: ReadonlyArray<RoutineRow>;
   readonly overdue: ReadonlyArray<RoutineRow>;
   readonly waiting: ReadonlyArray<RoutineRow>;
-  /** Everything open for the owner, uncapped. */
+  /** Everything open for the owner, uncapped, and the first of it as Needs you orders it. */
   readonly needsYou: number;
+  readonly needsYouFirst: RoutineRow | null;
   readonly reviews: ReadonlyArray<RoutineRow>;
   readonly ciRed: ReadonlyArray<RoutineRow>;
   /** `off` without the Kin App; otherwise what the read missed, empty when complete. */
@@ -126,11 +127,9 @@ function morningLines(facts: MorningFacts) {
     ...facts.dueToday.map((row) => `Due today: ${entry(row)}`),
     ...inline("Due this week", facts.dueThisWeek),
     ...inline("Overdue", facts.overdue),
-    ...(facts.waiting.length === 0
+    ...(facts.needsYouFirst === null
       ? []
-      : [
-          `Waiting on you: ${facts.waiting.length}, oldest ${entry(facts.waiting[0] as RoutineRow)}`,
-        ]),
+      : [`Needs you: ${facts.needsYou}, oldest ${entry(facts.needsYouFirst)}`]),
     ...inline("PRs for your review", facts.reviews),
     ...inline("CI red on the default branch", facts.ciRed),
     ...(facts.github === "off"
@@ -211,7 +210,7 @@ const sections = (
       ];
 
 const NOTHING = {
-  morning_brief: "Nothing due, overdue or waiting on you.",
+  morning_brief: "Nothing due, overdue or needing you.",
   evening_summary: "Nothing done, slipped, promised or due tomorrow.",
 };
 

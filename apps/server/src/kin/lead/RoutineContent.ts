@@ -8,6 +8,7 @@ import {
   KinWidgetId,
   type KinAgentId,
   type KinLeadRoutine,
+  type KinOpenRow,
   type KinPersonId,
   type KinWidget,
   type MemoryItemHead,
@@ -239,16 +240,29 @@ const make = Effect.gen(function* () {
             WHERE w.org_id = ${orgId} AND w.waiting_id IN ${sql.in(waitingIds)}
             ORDER BY w.waiting_id`).map((found) => [found.waitingId, found.body] as const),
     );
-    const waiting = open.rows.flatMap(({ item }): ReadonlyArray<RoutineRow> =>
-      item._tag === "waiting"
-        ? [
-            {
-              title: bodies.get(item.waiting.waitingId) ?? item.waiting.reason,
-              note: `${item.waiting.reason}, since ${dayLabel(Date.parse(item.waiting.createdAt))}`,
-            },
-          ]
-        : [],
-    );
+    const openRow = ({ item }: KinOpenRow): RoutineRow => {
+      switch (item._tag) {
+        case "fact":
+          return { title: item.fact.subject.title, note: item.fact.consequence };
+        case "task": {
+          const dueAt = DateTime.toEpochMillis(item.dueAt);
+          return {
+            title: item.title,
+            note: `due ${dueAt < dayStart ? dayLabel(dueAt) : timeLabel(dueAt)}`,
+          };
+        }
+        case "money":
+          return {
+            title: `${item.invoices} overdue ${item.invoices === 1 ? "invoice" : "invoices"}`,
+          };
+        case "waiting":
+          return {
+            title: bodies.get(item.waiting.waitingId) ?? item.waiting.reason,
+            note: `${item.waiting.reason}, since ${dayLabel(Date.parse(item.waiting.createdAt))}`,
+          };
+      }
+    };
+    const waiting = open.rows.filter((row) => row.item._tag === "waiting").map(openRow);
     const budgetUnits = Effect.fn("KinRoutineContent.budgetUnits")(function* (budgetDay: string) {
       const [budget] = yield* sql<{ units: number }>`
         SELECT lead_units + worker_units AS units FROM kin_budget
@@ -339,6 +353,7 @@ const make = Effect.gen(function* () {
         overdue,
         waiting,
         needsYou: open.counts.needsYou,
+        needsYouFirst: open.rows[0] === undefined ? null : openRow(open.rows[0]),
         reviews: Option.match(github, {
           onNone: () => [],
           onSome: (state) =>
