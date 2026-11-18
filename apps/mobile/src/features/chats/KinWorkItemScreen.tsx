@@ -90,7 +90,6 @@ import { useOpenWorkspaceDetail } from "../layout/useOpenWorkspaceDetail";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { KinNotesVersions } from "./KinNotesVersions";
 import { KinAvatar } from "./components/KinAvatar";
-import { useKinOpenTarget } from "./components/KinMessagePage";
 import { KinAttachments } from "./components/KinMessageBubble";
 import { KinTaskNoteComposer } from "./components/KinTaskNoteComposer";
 import { KinNextStep } from "./components/KinNextStep";
@@ -235,7 +234,6 @@ function KinWorkItemBody(props: ItemTarget) {
   const openRecord = useKinWorkLink();
   const openDetail = useOpenWorkspaceDetail();
   const { environmentId, orgId, itemKey } = props;
-  const openTarget = useKinOpenTarget(environmentId, orgId);
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
   const { state: changed, changes } = useKinWorkChanges(props);
   const state = kinWorkItemState(useAtomValue(itemAtom), useKinWorkAnswer(props, itemKey));
@@ -319,9 +317,15 @@ function KinWorkItemBody(props: ItemTarget) {
               chatId: to.chatId,
               ...(to.messageId === null ? {} : { message: to.messageId }),
             })
-          : to._tag === "record"
-            ? openTarget(to)
-            : undefined
+          : to._tag !== "record"
+            ? undefined
+            : to.kind === "client"
+              ? openRecord("KinClient", { environmentId, orgId, party: to.key })
+              : to.kind === "project"
+                ? openRecord("KinProject", { environmentId, orgId, project: to.key })
+                : to.kind === "doc"
+                  ? openRecord("KinDoc", { environmentId, orgId, doc: to.key })
+                  : openRecord("KinWorkItem", { environmentId, orgId, task: to.key })
       }
       onOpenLink={openLink}
       onOpenThread={openThread}
@@ -1125,7 +1129,8 @@ function KinWorkLinked(props: {
   readonly onOpenThread: (thread: NonNullable<KinWorkLinkView["thread"]>) => void;
 }) {
   const [expanded, setExpanded] = useState<ReadonlySet<KinLinkedGroupName>>(new Set());
-  const linked = kinLinked(props.detail, undefined, expanded);
+  // Both pages show the entry's client, project and milestone in their rows already.
+  const linked = kinLinked(props.detail, undefined, { expanded, parentsShown: true });
   const rest = kinLinkedRest(props.links);
   if (linked.groups.length === 0 && rest.length === 0 && linked.unlisted === 0) return null;
   return (

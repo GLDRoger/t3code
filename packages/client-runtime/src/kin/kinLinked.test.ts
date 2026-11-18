@@ -115,9 +115,26 @@ describe("kinLinked", () => {
       ["client", ["C-5"], 0],
     ]);
     expect(unlisted).toBe(10);
-    expect(kinLinked(detail, 5, new Set(["tasks"])).groups[0]).toMatchObject({
+    expect(kinLinked(detail, 5, { expanded: new Set(["tasks"]) }).groups[0]).toMatchObject({
       items: tasks.map((key) => ({ key })),
       more: 0,
     });
+  });
+
+  it("leaves out the parents a screen shows already, unless one is also really linked", () => {
+    const detail = {
+      key: "W-1",
+      party: ref("C-5"),
+      project: ref("P-4"),
+      milestone: ref("M-3"),
+      links: [recordLink("W-2")],
+      linkedFrom: [recordLink("P-4")],
+    } as const;
+    const keys = (shown: boolean) =>
+      kinLinked(detail, 5, { parentsShown: shown }).groups.flatMap((group) =>
+        group.items.map((item) => item.key),
+      );
+    expect(keys(false)).toEqual(["M-3", "W-2", "P-4", "C-5"]);
+    expect(keys(true)).toEqual(["W-2", "P-4"]);
   });
 });

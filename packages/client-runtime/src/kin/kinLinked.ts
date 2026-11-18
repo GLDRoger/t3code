@@ -35,7 +35,7 @@ export const KIN_LINKED = {
   /** A message link the host gave no label. */
   message: "Where this came from",
   more: (count: number) => `${count} more`,
-  unlisted: (count: number) => `${count} more link here, not shown`,
+  unlisted: (count: number) => `${count} more not shown`,
 } as const;
 
 export type KinLinkedKind = RecordKind | "contact" | "message";
@@ -110,9 +110,14 @@ export function kinLinked(
       Pick<KinRecordDetail, "project" | "party" | "milestone" | "linkedFrom" | "linkedFromMore">
     >,
   limit = 5,
-  /** Groups opened past `limit` in place: the detail already holds the rest. */
-  expanded: ReadonlySet<KinLinkedGroupName> = new Set(),
+  options: {
+    /** Groups opened past `limit` in place: the detail already holds the rest. */
+    readonly expanded?: ReadonlySet<KinLinkedGroupName>;
+    /** The screen shows its client, project and milestone already; a real link to one still lists. */
+    readonly parentsShown?: boolean;
+  } = {},
 ): KinLinked {
+  const { expanded = new Set(), parentsShown = false } = options;
   const seen = new Set([detail.key]);
   const items: Array<KinLinkedItem> = [];
   const add = (item: KinLinkedItem) => {
@@ -120,8 +125,9 @@ export function kinLinked(
     seen.add(item.key);
     items.push(item);
   };
-  for (const ref of [detail.party, detail.project, detail.milestone])
-    if (ref !== undefined) add(recordItem(ref));
+  if (!parentsShown)
+    for (const ref of [detail.party, detail.project, detail.milestone])
+      if (ref !== undefined) add(recordItem(ref));
   for (const link of [...detail.links, ...(detail.linkedFrom ?? [])]) {
     if (link.kind === "record" && link.record !== undefined) add(recordItem(link.record));
     if (link.kind === "message" && link.chatId !== null) add(messageItem(link, link.chatId));

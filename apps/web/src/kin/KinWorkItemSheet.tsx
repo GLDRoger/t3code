@@ -978,7 +978,8 @@ export function KinWorkLinks(
 ) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState<ReadonlySet<KinLinkedGroupName>>(new Set());
-  const linked = kinLinked(props.item, undefined, expanded);
+  // Both panels show the entry's client, project and milestone in their rows already.
+  const linked = kinLinked(props.item, undefined, { expanded, parentsShown: true });
   const rest = kinLinkedRest(props.links);
   if (linked.groups.length === 0 && rest.length === 0 && linked.unlisted === 0) return null;
   return (
@@ -991,7 +992,11 @@ export function KinWorkLinks(
               <li key={item.key}>
                 <button
                   type="button"
-                  onClick={() => void openDestination(navigate, props, item.open)}
+                  onClick={() =>
+                    item.open._tag === "record"
+                      ? props.onOpenKey(item.key)
+                      : void openDestination(navigate, props, item.open)
+                  }
                   className={`${LINK_ROW} ${LINK_ROW_OPENS}`}
                 >
                   {item.kind === "message" ? null : (
