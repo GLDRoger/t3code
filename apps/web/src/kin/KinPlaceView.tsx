@@ -19,7 +19,9 @@ import {
 import {
   KIN_CLIENTS,
   KIN_CLIENTS_OLDER_HOST,
+  KIN_CLIENTS_TABS,
   KIN_PROJECTS,
+  type KinClientsTab,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { KIN_WORK_HOME } from "@t3tools/client-runtime/kin/kinWorkHome";
 import { KinOrgId, type EnvironmentId, type KinRecordKey } from "@t3tools/contracts";
@@ -38,6 +40,7 @@ import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/Work
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { Button } from "../components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
+import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { isElectron } from "../env";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -45,7 +48,7 @@ import { KinDocPage } from "./KinDocPage";
 import { KinDocsList } from "./KinDocsList";
 import { KinSubscriptionsPage } from "./KinSubscriptions";
 import { KinSearchDialog } from "./KinSearchDialog";
-import { KinWorkClientPage, KinWorkClientsList } from "./KinWorkClients";
+import { KinWorkClientPage, KinWorkClientsList, KinWorkProjectsTab } from "./KinWorkClients";
 import { KinWorkDates } from "./KinWorkDates";
 import { KinClientDialog, KinProjectDialog } from "./KinWorkForms";
 import { KinWorkItemSheet } from "./KinWorkItemSheet";
@@ -104,6 +107,10 @@ export function KinPlacesRoute() {
   const location = useLocation();
   const record = kinRecordOf(search);
   const params = { environmentId, orgId };
+  // The Clients place's tab stays in the address while records and dialogs open over it.
+  const tab: KinClientsTab =
+    place === "clients" && search.tab === "projects" ? "projects" : "clients";
+  const kept = tab === "projects" ? { tab } : {};
   return (
     <KinPlaceView
       // One mounted view per organization, so a list being read never lands under another.
@@ -141,7 +148,7 @@ export function KinPlacesRoute() {
         void navigate({
           to: KIN_PLACE_PATH[to],
           params,
-          search: kinSearchOf(next),
+          search: { ...kinSearchOf(next), ...(to === place ? kept : {}) },
           // A record opened from a record, or from a dialog, takes its spot rather than stacking.
           replace: (within && !opensHistory) || overDialog,
           state: {
@@ -172,6 +179,7 @@ export function KinPlacesRoute() {
         }
         const under = {
           ...kinSearchOf(record),
+          ...kept,
           ...(search.task === undefined ? {} : { task: search.task }),
         };
         void navigate({
@@ -186,6 +194,16 @@ export function KinPlacesRoute() {
           },
         });
       }}
+      tab={tab}
+      onTab={(next) =>
+        void navigate({
+          to: KIN_PLACE_PATH.clients,
+          params,
+          search: { ...kinSearchOf(record), ...(next === "projects" ? { tab: next } : {}) },
+          replace: true,
+          state: location.state,
+        })
+      }
       openKey={search.task ?? null}
       onOpenKey={(key) => {
         const overDialog = search.open !== undefined;
@@ -201,7 +219,7 @@ export function KinPlacesRoute() {
         void navigate({
           to: KIN_PLACE_PATH[place],
           params,
-          search: key === null ? kinSearchOf(record) : { ...kinSearchOf(record), task: key },
+          search: { ...kinSearchOf(record), ...kept, ...(key === null ? {} : { task: key }) },
           // A task opened from a task, or from a dialog, takes its spot rather than stacking.
           replace: key === null || open || overDialog,
           state: {
@@ -233,9 +251,14 @@ function KinPlaceView({
   dialog,
   onDialog,
   docLink,
+  tab,
+  onTab,
   ...props
 }: KinWorkTarget & {
   readonly place: KinPlace;
+  /** Which of Clients and Projects the Clients place lists. */
+  readonly tab: KinClientsTab;
+  readonly onTab: (tab: KinClientsTab) => void;
   readonly record: KinRecordWhere | null;
   readonly onGo: (place: KinPlace, record: KinRecordWhere | null) => void;
   readonly openKey: KinRecordKey | null;
@@ -320,6 +343,26 @@ function KinPlaceView({
           </h1>
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
+      {place !== "clients" ||
+      !ready ||
+      !hostClients ||
+      placeRefused ||
+      (record !== null && !wide) ? null : (
+        <ToggleGroup
+          aria-label={title}
+          value={[tab]}
+          onValueChange={(value) => {
+            const next = KIN_CLIENTS_TABS.find((held) => held.id === value[0]);
+            if (next !== undefined) onTab(next.id);
+          }}
+        >
+          {KIN_CLIENTS_TABS.map((held) => (
+            <Toggle key={held.id} value={held.id}>
+              {held.label}
+            </Toggle>
+          ))}
+        </ToggleGroup>
+      )}
       {!ready ? null : (
         <div className="ms-auto flex items-center gap-1">
           <Button
@@ -405,6 +448,17 @@ function KinPlaceView({
             </Button>
           }
         />
+      ) : tab === "projects" ? (
+        <KinWorkProjectsTab
+          {...props}
+          live={state.live}
+          stale={state.stale}
+          directory={directory}
+          onOpenClient={openClient}
+          onOpenProject={openProject}
+          onAdd={addProject}
+          selected={record !== null && "project" in record ? record.project : null}
+        />
       ) : (
         <KinWorkClientsList
           {...props}
@@ -412,17 +466,8 @@ function KinPlaceView({
           stale={state.stale}
           directory={directory}
           onOpen={openClient}
-          onOpenProject={openProject}
           onAdd={addClient}
-          selected={
-            record === null
-              ? null
-              : "party" in record
-                ? record.party
-                : "project" in record
-                  ? record.project
-                  : null
-          }
+          selected={record !== null && "party" in record ? record.party : null}
         />
       );
     return (
@@ -436,6 +481,7 @@ function KinPlaceView({
         changes={changes}
         openKey={openKey}
         onOpen={setOpenKey}
+        onOpenProject={openProject}
         onAdd={addTask === null ? null : () => addTask(KIN_WORK_NO_DRAFT)}
         initial={narrowed}
         choices={hostClients ? choices : null}

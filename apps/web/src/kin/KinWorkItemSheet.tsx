@@ -52,6 +52,7 @@ import {
   type KinRecordDetail,
   type KinRecordKey,
 } from "@t3tools/contracts";
+import { kinTaskProjectMenu } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { Link, useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -772,6 +773,7 @@ function KinWorkItem(
                     label={KIN_WORK_NEW_COPY.projectLabel}
                     value={view.project}
                     choices={choices.projects}
+                    done={choices.doneProjects}
                     saving={saving}
                     clearable={view.can.clearProject}
                     onPick={
@@ -1051,6 +1053,8 @@ function PlaceMenu(props: {
   readonly label: string;
   readonly value: KinWorkRef | null;
   readonly choices: ReadonlyArray<KinWorkRef>;
+  /** Done projects, under their own heading after the open ones. */
+  readonly done?: ReadonlyArray<KinWorkRef>;
   readonly saving: boolean;
   /** Null where the task can't be changed, which leaves only opening it. */
   readonly onPick: ((value: KinWorkRef | null) => void) | null;
@@ -1065,6 +1069,7 @@ function PlaceMenu(props: {
   };
 }) {
   const { value, onPick, side } = props;
+  const groups = kinTaskProjectMenu({ projects: props.choices, doneProjects: props.done ?? [] });
   if (onPick === null) {
     if (value === null) return null;
     const { onOpen } = props;
@@ -1098,18 +1103,24 @@ function PlaceMenu(props: {
             <MenuSeparator />
           </>
         )}
-        {props.choices.map((choice) => (
-          <MenuItem
-            key={choice.key}
-            disabled={choice.key === value?.key}
-            onClick={() => onPick(choice)}
-          >
-            <span className={PLACE_ROW}>{choice.title}</span>
-          </MenuItem>
+        {groups.map((group, index) => (
+          <MenuGroup key={group.label ?? ""}>
+            {index === 0 ? null : <MenuSeparator />}
+            {group.label === null ? null : <MenuGroupLabel>{group.label}</MenuGroupLabel>}
+            {group.choices.map((choice) => (
+              <MenuItem
+                key={choice.key}
+                disabled={choice.key === value?.key}
+                onClick={() => onPick(choice)}
+              >
+                <span className={PLACE_ROW}>{choice.title}</span>
+              </MenuItem>
+            ))}
+          </MenuGroup>
         ))}
         {value === null || props.clearable === false ? null : (
           <>
-            {props.choices.length === 0 ? null : <MenuSeparator />}
+            {groups.length === 0 ? null : <MenuSeparator />}
             <MenuItem onClick={() => onPick(null)}>{KIN_WORK_NEW_COPY.none}</MenuItem>
           </>
         )}

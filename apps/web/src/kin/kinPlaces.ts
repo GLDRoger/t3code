@@ -62,6 +62,8 @@ export interface KinPlaceSearch {
   history?: true;
   /** A dialog open over the place, so Back closes it. */
   open?: KinPlaceDialog;
+  /** The Clients place's Projects tab; its Clients tab is the place with no tab named. */
+  tab?: "projects";
 }
 
 export type KinPlaceDialog = "new" | "search";
@@ -109,6 +111,7 @@ export function validateKinPlaceSearch(raw: Record<string, unknown>): KinPlaceSe
     ...(from === undefined ? {} : { from }),
     ...(raw.history === true ? { history: true } : {}),
     ...(raw.open === "new" || raw.open === "search" ? { open: raw.open } : {}),
+    ...(raw.tab === "projects" ? { tab: "projects" } : {}),
   };
 }
 
@@ -179,8 +182,9 @@ export function kinPlaceOfWork(search: KinPlaceSearch & { readonly show?: unknow
     show === "dates" && kinRecordOf(rest) === null ? { ...rest, dates: true as const } : rest;
   const record = kinRecordOf(kept);
   if (record !== null) return { place: kinPlaceOfRecord(record), search: kept };
+  if (show === "projects") return { place: "clients", search: { ...kept, tab: "projects" } };
   const place: KinPlace =
-    show === "projects" || show === "clients"
+    show === "clients"
       ? "clients"
       : show === "money"
         ? "money"

@@ -665,7 +665,7 @@ export interface KinProjectRowView {
   readonly name: string;
   /** Null once the project is done or dropped. */
   readonly health: KinHealthView | null;
-  /** "Acme · 5 open · 1 late · Target Fri 14 Nov". */
+  /** "Acme · Meera · 5 open · 1 late · target Fri 14 Nov": client, lead, counts, target. */
   readonly line: string;
   readonly private: boolean;
   readonly accessibilityLabel: string;
@@ -682,10 +682,11 @@ export function kinProjectRow(
   const health = row.health === null ? null : HEALTH[row.health];
   const line = [
     row.party === null || row.party.key === within?.key ? null : row.party.title,
+    kinWorkName(row.owner, names),
     PROJECT_CLOSED[row.state],
     row.state === "open" ? `${row.open} open` : null,
     row.late > 0 ? `${row.late} late` : null,
-    target === null || row.state !== "open" ? null : `Target ${target}`,
+    target === null || row.state !== "open" ? null : `target ${target}`,
   ]
     .filter((part) => part !== null)
     .join(" · ");
@@ -730,6 +731,55 @@ export function kinProjectsNothing(
       "Add a project to see at a glance how it's going, what's blocked and what's due next. Or ask an agent to break a piece of work into tasks.",
     offerNew: true,
   };
+}
+
+/** The two views of the Clients place: who the company works with, and the work itself. */
+export type KinClientsTab = "clients" | "projects";
+
+export const KIN_CLIENTS_TABS: ReadonlyArray<{
+  readonly id: KinClientsTab;
+  readonly label: string;
+}> = [
+  { id: "clients", label: KIN_CLIENTS.title },
+  { id: "projects", label: KIN_PROJECTS.title },
+];
+
+const KIN_PROJECTS_NO_CLIENT = "Not for a client";
+
+export interface KinProjectsGroupView {
+  readonly id: string;
+  readonly title: string;
+  /** The client the heading opens; null for projects with no client. */
+  readonly party: KinRecordKey | null;
+  readonly rows: ReadonlyArray<KinProjectRowView>;
+}
+
+/** The Projects tab: projects under their client by name, then those that are not for a client. */
+export function kinProjectsByClient(
+  rows: ReadonlyArray<KinProjectRow>,
+  names: KinWorkNames,
+  now: Date,
+): ReadonlyArray<KinProjectsGroupView> {
+  const groups = new Map<
+    string,
+    { title: string; party: KinRecordKey | null; rows: KinProjectRowView[] }
+  >();
+  for (const row of rows) {
+    const id = row.party === null ? "none" : `client:${row.party.key}`;
+    const group = groups.get(id) ?? {
+      title: row.party?.title ?? KIN_PROJECTS_NO_CLIENT,
+      party: row.party?.key ?? null,
+      rows: [],
+    };
+    // Under its client's heading, the row needn't name the client again.
+    group.rows.push(kinProjectRow(row, names, now, row.party ?? undefined));
+    groups.set(id, group);
+  }
+  return [...groups.entries()]
+    .map(([id, group]) => ({ id, ...group }))
+    .sort((a, b) =>
+      a.party === null ? 1 : b.party === null ? -1 : a.title.localeCompare(b.title),
+    );
 }
 
 export interface KinWorkTimelineLine {

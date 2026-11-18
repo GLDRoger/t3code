@@ -430,6 +430,26 @@ export type KinWorkFormProblem =
   | { readonly kind: "open_work"; readonly text: string }
   | { readonly kind: "failed"; readonly text: string };
 
+const KIN_PROJECT_DONE_GROUP = "Done";
+
+export interface KinTaskProjectGroup {
+  /** Null for the open projects, which come first without a heading. */
+  readonly label: string | null;
+  readonly choices: ReadonlyArray<KinWorkRef>;
+}
+
+/** A task's project menu: open projects, then done ones, so a late task can still be filed there. */
+export function kinTaskProjectMenu(choices: {
+  readonly projects: ReadonlyArray<KinWorkRef>;
+  readonly doneProjects: ReadonlyArray<KinWorkRef>;
+}): ReadonlyArray<KinTaskProjectGroup> {
+  const groups = [
+    { label: null, choices: choices.projects },
+    { label: KIN_PROJECT_DONE_GROUP, choices: choices.doneProjects },
+  ];
+  return groups.filter((group) => group.choices.length > 0);
+}
+
 export const KIN_WORK_FORM_CHANGED =
   "This changed while you were editing. What you typed is still here. Check what's new, then save again.";
 

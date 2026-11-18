@@ -19,10 +19,9 @@ import {
   kinClientPageView,
   kinClientRow,
   kinClientsNothing,
-  kinProjectRow,
-  kinWorkRefOf,
+  kinProjectsByClient,
+  kinProjectsNothing,
   kinWorkTimeline,
-  type KinClientRowView,
   type KinContactView,
   type KinOwedView,
   type KinProjectRowView,
@@ -34,11 +33,10 @@ import {
 } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import { KIN_WORK_HOME } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type {
   KinContact,
   KinPartyPage,
-  KinProjectRow,
+  KinPartyRow,
   KinRecord,
   KinRecordKey,
 } from "@t3tools/contracts";
@@ -86,117 +84,41 @@ import {
   type KinWorkTarget,
 } from "./useKinWork";
 
-type ClientsItem =
-  | { readonly type: "client"; readonly id: string; readonly row: KinClientRowView }
-  | { readonly type: "project"; readonly id: string; readonly row: KinProjectRowView }
-  | {
-      readonly type: "group";
-      readonly id: string;
-      readonly title: string;
-      /** The client a group of its projects opens; null for projects with no client. */
-      readonly party: KinRecordKey | null;
-    };
-
 const ACTIVE = "active";
 const CLOSED = "closed";
 
-/**
- * Everyone the company owes something to or is owed by, each with its projects under it, then the
- * projects that have no client. One Filter picks closed clients and done or dropped projects.
- */
+/** Everyone the company owes something to or is owed by. One Filter picks closed clients. */
 export function KinWorkClientsList(
   props: KinWorkTarget & {
     readonly live: KinWorkLive;
     readonly stale: boolean;
     readonly directory: KinWorkDirectory;
     readonly onOpen: (key: KinRecordKey) => void;
-    readonly onOpenProject: (key: KinRecordKey) => void;
     readonly onAdd: (() => void) | null;
-    /** The client or project showing beside the list, marked in it. */
+    /** The client showing beside the list, marked in it. */
     readonly selected?: KinRecordKey | null;
   },
 ) {
   const { names } = props.directory;
   const now = new Date(useNowMinuteMs());
   const scope = useKinViewerScope(props.environmentId);
-  const seq = props.stale ? null : props.live.seq;
-  const { state, list } = useKinClientsList(props, seq);
-  const projects = useKinProjectsList(props, seq);
+  const { state, list } = useKinClientsList(props, props.stale ? null : props.live.seq);
   const { filter } = state;
-  const projectFilter = projects.state.filter;
-  const clientKeys = new Set(state.records.map((row) => row.key));
-  const projectsOf = (party: KinRecordKey | null) =>
-    projects.state.records.filter((row) => (row.party?.key ?? null) === party);
-  const projectItems = (rows: ReadonlyArray<KinProjectRow>, within?: KinWorkRef) =>
-    rows.map((row): ClientsItem => ({
-      type: "project",
-      id: `project:${row.recordId}`,
-      row: kinProjectRow(row, names, now, within),
-    }));
-  // A project whose client isn't among the rows read so far still shows, under its client's name.
-  const elsewhere = [
-    ...new Map(
-      projects.state.records.flatMap((row) =>
-        row.party === null || clientKeys.has(row.party.key) ? [] : [[row.party.key, row.party]],
-      ),
-    ).values(),
-  ];
-  const items: ReadonlyArray<ClientsItem> = [
-    ...state.records.flatMap((record): ReadonlyArray<ClientsItem> => {
-      const row = kinClientRow(record, names, now);
-      return [
-        { type: "client", id: `client:${record.recordId}`, row },
-        ...projectItems(projectsOf(record.key), kinWorkRefOf(record)),
-      ];
-    }),
-    ...elsewhere.flatMap((party): ReadonlyArray<ClientsItem> => [
-      { type: "group", id: `group:${party.key}`, title: party.title, party: party.key },
-      ...projectItems(projectsOf(party.key), { key: party.key, title: party.title }),
-    ]),
-    ...(projectsOf(null).length === 0
-      ? []
-      : [
-          {
-            type: "group" as const,
-            id: "group:none",
-            title: KIN_WORK_HOME.noClient,
-            party: null,
-          },
-          ...projectItems(projectsOf(null)),
-        ]),
-  ];
   const nothing = kinClientsNothing(filter, scope);
-  const loading = state.loading || projects.state.loading;
-  const failed = state.failed !== null || projects.state.failed !== null;
-  const more = state.more || projects.state.more;
-  const loadMore = () => {
-    if (state.more) void list.loadMore();
-    if (projects.state.more) void projects.list.loadMore();
-  };
-  const chip = [
-    filter.closed ? KIN_CLIENTS.closed : null,
-    projectFilter.view === KIN_PROJECTS_DEFAULT_FILTER.view
-      ? null
-      : `${KIN_PROJECTS.title}: ${KIN_PROJECT_VIEWS.find((view) => view.id === projectFilter.view)?.label}`,
-  ].filter((part) => part !== null);
   return (
-    <LegendList<ClientsItem>
-      data={items}
-      keyExtractor={(item) => item.id}
-      extraData={[state, projects.state]}
+    <LegendList<KinPartyRow>
+      data={state.records}
+      keyExtractor={(row) => row.recordId}
+      extraData={state}
       recycleItems
-      onEndReached={loadMore}
+      onEndReached={() => {
+        if (state.more) void list.loadMore();
+      }}
       onEndReachedThreshold={0.5}
       ListHeaderComponent={
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
           {props.stale || state.stale ? (
-            <KinWorkStaleLine
-              environmentId={props.environmentId}
-              onRetry={() => {
-                list.refresh();
-                projects.list.refresh();
-              }}
-            />
+            <KinWorkStaleLine environmentId={props.environmentId} onRetry={list.refresh} />
           ) : null}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <div className="min-w-0 flex-1">
@@ -205,22 +127,12 @@ export function KinWorkClientsList(
                 aria-label={KIN_CLIENTS.search}
                 placeholder={KIN_CLIENTS.search}
                 value={filter.text}
-                onChange={(event) => {
-                  const text = event.currentTarget.value;
-                  list.setFilter({ ...filter, text });
-                  projects.list.setFilter({ ...projectFilter, text });
-                }}
+                onChange={(event) => list.setFilter({ ...filter, text: event.currentTarget.value })}
               />
             </div>
             <KinFilter
-              chip={chip.length === 0 ? null : chip.join(" · ")}
-              onClear={() => {
-                list.setFilter({ ...filter, closed: false });
-                projects.list.setFilter({
-                  ...projectFilter,
-                  view: KIN_PROJECTS_DEFAULT_FILTER.view,
-                });
-              }}
+              chip={filter.closed ? KIN_CLIENTS.closed : null}
+              onClear={() => list.setFilter({ ...filter, closed: false })}
               groups={[
                 {
                   label: KIN_CLIENTS.title,
@@ -231,16 +143,6 @@ export function KinWorkClientsList(
                   ],
                   onChange: (value) => list.setFilter({ ...filter, closed: value === CLOSED }),
                 },
-                {
-                  label: KIN_PROJECTS.title,
-                  value: projectFilter.view,
-                  options: KIN_PROJECT_VIEWS.map((view) => ({ value: view.id, label: view.label })),
-                  onChange: (value) => {
-                    const view = KIN_PROJECT_VIEWS.find((held) => held.id === value);
-                    if (view !== undefined)
-                      projects.list.setFilter({ ...projectFilter, view: view.id });
-                  },
-                },
               ]}
             />
           </div>
@@ -248,18 +150,15 @@ export function KinWorkClientsList(
       }
       ListEmptyComponent={
         <div className="mx-auto w-full max-w-3xl px-4">
-          {loading ? (
+          {state.loading ? (
             <div role="status" aria-label="Loading clients">
               <KinWorkRowSkeletons />
             </div>
-          ) : failed ? (
+          ) : state.failed !== null ? (
             <KinLoadFailed
               what={KIN_CLIENTS.loadFailed}
-              cause={state.failed ?? projects.state.failed}
-              onRetry={() => {
-                list.refresh();
-                projects.list.refresh();
-              }}
+              cause={state.failed}
+              onRetry={list.refresh}
               className="py-4"
             />
           ) : (
@@ -281,71 +180,212 @@ export function KinWorkClientsList(
         </div>
       }
       ListFooterComponent={
-        !more ? null : (
-          <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-6 py-3">
-            <p className="text-xs text-muted-foreground" role="status">
-              {state.moreFailed || projects.state.moreFailed
-                ? "Couldn't load more."
-                : `Showing ${state.records.length} of ${state.total ?? state.records.length} clients`}
-            </p>
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={state.loadingMore || projects.state.loadingMore}
-              aria-busy={state.loadingMore || projects.state.loadingMore}
-              onClick={loadMore}
-            >
-              {state.moreFailed || projects.state.moreFailed ? KIN_RETRY : "Show more"}
-            </Button>
-          </div>
+        !state.more ? null : (
+          <KinListMore
+            failed={state.moreFailed}
+            loading={state.loadingMore}
+            shown={`Showing ${state.records.length} of ${state.total ?? state.records.length} clients`}
+            onMore={() => void list.loadMore()}
+          />
         )
       }
-      renderItem={({ item }) =>
-        item.type === "group" ? (
-          <KinClientsGroup title={item.title} party={item.party} onOpen={props.onOpen} />
-        ) : item.type === "project" ? (
-          <div className="mx-auto w-full max-w-3xl border-b border-border/60 py-0.5 ps-8 pe-4">
-            <KinWorkProjectRow
-              row={item.row}
-              selected={props.selected === item.row.key}
-              onOpen={() => props.onOpenProject(item.row.key)}
-            />
-          </div>
-        ) : (
+      renderItem={({ item }) => {
+        const row = kinClientRow(item, names, now);
+        return (
           <div className="mx-auto w-full max-w-3xl border-b border-border/60 px-4 py-1">
             <button
               type="button"
-              aria-label={item.row.accessibilityLabel}
-              aria-current={props.selected === item.row.key ? true : undefined}
-              onClick={() => props.onOpen(item.row.key)}
+              aria-label={row.accessibilityLabel}
+              aria-current={props.selected === row.key ? true : undefined}
+              onClick={() => props.onOpen(row.key)}
               className="flex w-full items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset aria-[current=true]:bg-accent"
             >
               <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                 <span className="flex min-w-0 items-center gap-1.5">
-                  <span className="truncate text-sm text-foreground">{item.row.name}</span>
-                  {item.row.private ? <KinWorkPrivateMark /> : null}
+                  <span className="truncate text-sm text-foreground">{row.name}</span>
+                  {row.private ? <KinWorkPrivateMark /> : null}
                 </span>
-                <span className="truncate text-xs text-muted-foreground">{item.row.line}</span>
-                {item.row.next === null ? null : (
-                  <span className="truncate text-xs text-muted-foreground">{item.row.next}</span>
+                <span className="truncate text-xs text-muted-foreground">{row.line}</span>
+                {row.next === null ? null : (
+                  <span className="truncate text-xs text-muted-foreground">{row.next}</span>
                 )}
               </span>
-              {item.row.late ? (
+              {row.late ? (
                 <Badge size="sm" variant="error">
                   Late
                 </Badge>
               ) : null}
             </button>
           </div>
-        )
-      }
+        );
+      }}
       estimatedItemSize={60}
       drawDistance={640}
-      className={cn(
-        "min-h-0 flex-1 overscroll-contain pb-6",
-        (state.refreshing || projects.state.refreshing) && "opacity-70",
-      )}
+      className={cn("min-h-0 flex-1 overscroll-contain pb-6", state.refreshing && "opacity-70")}
     />
+  );
+}
+
+type ProjectsItem =
+  | { readonly type: "project"; readonly id: string; readonly row: KinProjectRowView }
+  | {
+      readonly type: "group";
+      readonly id: string;
+      readonly title: string;
+      /** The client the heading opens; null for projects not for a client. */
+      readonly party: KinRecordKey | null;
+    };
+
+/** The Clients place's Projects tab: projects under their client, then those not for a client. */
+export function KinWorkProjectsTab(
+  props: KinWorkTarget & {
+    readonly live: KinWorkLive;
+    readonly stale: boolean;
+    readonly directory: KinWorkDirectory;
+    readonly onOpenClient: (key: KinRecordKey) => void;
+    readonly onOpenProject: (key: KinRecordKey) => void;
+    readonly onAdd: (() => void) | null;
+    /** The project showing beside the list, marked in it. */
+    readonly selected?: KinRecordKey | null;
+  },
+) {
+  const now = new Date(useNowMinuteMs());
+  const scope = useKinViewerScope(props.environmentId);
+  const { state, list } = useKinProjectsList(props, props.stale ? null : props.live.seq);
+  const { filter } = state;
+  const items = kinProjectsByClient(state.records, props.directory.names, now).flatMap(
+    (group): ReadonlyArray<ProjectsItem> => [
+      { type: "group", id: `group:${group.id}`, title: group.title, party: group.party },
+      ...group.rows.map((row): ProjectsItem => ({ type: "project", id: row.key, row })),
+    ],
+  );
+  const nothing = kinProjectsNothing(filter, scope);
+  const view = KIN_PROJECT_VIEWS.find((held) => held.id === filter.view);
+  return (
+    <LegendList<ProjectsItem>
+      data={items}
+      keyExtractor={(item) => item.id}
+      extraData={state}
+      recycleItems
+      onEndReached={() => {
+        if (state.more) void list.loadMore();
+      }}
+      onEndReachedThreshold={0.5}
+      ListHeaderComponent={
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
+          {props.stale || state.stale ? (
+            <KinWorkStaleLine environmentId={props.environmentId} onRetry={list.refresh} />
+          ) : null}
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="min-w-0 flex-1">
+              <Input
+                type="search"
+                aria-label={KIN_PROJECTS.search}
+                placeholder={KIN_PROJECTS.search}
+                value={filter.text}
+                onChange={(event) => list.setFilter({ ...filter, text: event.currentTarget.value })}
+              />
+            </div>
+            <KinFilter
+              chip={filter.view === KIN_PROJECTS_DEFAULT_FILTER.view ? null : (view?.label ?? null)}
+              onClear={() => list.setFilter({ ...filter, view: KIN_PROJECTS_DEFAULT_FILTER.view })}
+              groups={[
+                {
+                  label: KIN_PROJECTS.title,
+                  value: filter.view,
+                  options: KIN_PROJECT_VIEWS.map((held) => ({ value: held.id, label: held.label })),
+                  onChange: (value) => {
+                    const next = KIN_PROJECT_VIEWS.find((held) => held.id === value);
+                    if (next !== undefined) list.setFilter({ ...filter, view: next.id });
+                  },
+                },
+              ]}
+            />
+          </div>
+        </div>
+      }
+      ListEmptyComponent={
+        <div className="mx-auto w-full max-w-3xl px-4">
+          {state.loading ? (
+            <div role="status" aria-label="Loading projects">
+              <KinWorkRowSkeletons />
+            </div>
+          ) : state.failed !== null ? (
+            <KinLoadFailed
+              what={KIN_PROJECTS.loadFailed}
+              cause={state.failed}
+              onRetry={list.refresh}
+              className="py-4"
+            />
+          ) : (
+            <KinWorkNotice
+              title={nothing.title}
+              detail={nothing.detail}
+              {...(nothing.offerNew && props.onAdd !== null
+                ? {
+                    action: (
+                      <Button onClick={props.onAdd}>
+                        <PlusIcon />
+                        {KIN_PROJECTS.add}
+                      </Button>
+                    ),
+                  }
+                : {})}
+            />
+          )}
+        </div>
+      }
+      ListFooterComponent={
+        !state.more ? null : (
+          <KinListMore
+            failed={state.moreFailed}
+            loading={state.loadingMore}
+            shown={`Showing ${state.records.length} of ${state.total ?? state.records.length} projects`}
+            onMore={() => void list.loadMore()}
+          />
+        )
+      }
+      renderItem={({ item }) =>
+        item.type === "group" ? (
+          <KinClientsGroup title={item.title} party={item.party} onOpen={props.onOpenClient} />
+        ) : (
+          <div className="mx-auto w-full max-w-3xl border-b border-border/60 px-4 py-0.5">
+            <KinWorkProjectRow
+              row={item.row}
+              selected={props.selected === item.row.key}
+              onOpen={() => props.onOpenProject(item.row.key)}
+            />
+          </div>
+        )
+      }
+      estimatedItemSize={56}
+      drawDistance={640}
+      className={cn("min-h-0 flex-1 overscroll-contain pb-6", state.refreshing && "opacity-70")}
+    />
+  );
+}
+
+function KinListMore(props: {
+  readonly failed: boolean;
+  readonly loading: boolean;
+  readonly shown: string;
+  readonly onMore: () => void;
+}) {
+  return (
+    <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-6 py-3">
+      <p className="text-xs text-muted-foreground" role="status">
+        {props.failed ? "Couldn't load more." : props.shown}
+      </p>
+      <Button
+        size="xs"
+        variant="outline"
+        disabled={props.loading}
+        aria-busy={props.loading}
+        onClick={props.onMore}
+      >
+        {props.failed ? KIN_RETRY : "Show more"}
+      </Button>
+    </div>
   );
 }
 
@@ -360,9 +400,11 @@ function KinClientsGroup(props: {
       {party === null ? (
         <h2 className="px-2 text-xs font-medium text-muted-foreground">{props.title}</h2>
       ) : (
-        <Button size="xs" variant="ghost" onClick={() => props.onOpen(party)}>
-          {props.title}
-        </Button>
+        <h2>
+          <Button size="xs" variant="ghost" onClick={() => props.onOpen(party)}>
+            {props.title}
+          </Button>
+        </h2>
       )}
     </div>
   );
