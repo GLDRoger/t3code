@@ -40,31 +40,42 @@ const TaskDetail = Schema.Struct({
   ),
 });
 const shared = { failure: KinChatError, failureMode: "return" as const };
+const TaskKey = KinRecordKey.annotate({ description: "The task's key, such as W-12." });
 const unavailable = new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
 
 const TasksKeyToolkit = Toolkit.make(
   // No `parameters`: an empty Struct serializes to a schema MCP clients reject.
   Tool.make("list_my_tasks", {
     ...shared,
+    description:
+      "List the open Kin tasks held by the person this key belongs to, soonest due first: key, title, state, due date and project.",
     success: Schema.Struct({ tasks: Schema.Array(TaskSummary), more: Schema.Boolean }),
   }),
   Tool.make("get_task", {
     ...shared,
-    parameters: Schema.Struct({ key: KinRecordKey }),
+    description:
+      "Read one of that person's tasks: title, brief, state, due date, project and the newest comments. A task they don't hold is not found.",
+    parameters: Schema.Struct({ key: TaskKey }),
     success: TaskDetail,
   }),
   Tool.make("comment_on_task", {
     ...shared,
+    description:
+      "Add a comment to one of that person's tasks. It is posted as them, marked as from their coding agent. The same text again posts nothing new.",
     parameters: Schema.Struct({
-      key: KinRecordKey,
-      text: KinTrimmedText.check(Schema.isMaxLength(4_000)),
+      key: TaskKey,
+      text: KinTrimmedText.check(Schema.isMaxLength(4_000)).annotate({
+        description: "The comment, in plain words.",
+      }),
     }),
     success: Schema.Struct({ key: Schema.String, posted: Schema.Boolean }),
   }),
   Tool.make("set_task_state", {
     ...shared,
+    description:
+      "Set one of that person's tasks to doing (started), done, or open (not started). The change is theirs, marked as from their coding agent.",
     parameters: Schema.Struct({
-      key: KinRecordKey,
+      key: TaskKey,
       state: Schema.Literals(["open", "doing", "done"]),
     }),
     success: TaskDetail,
