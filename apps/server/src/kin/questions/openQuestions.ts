@@ -21,6 +21,9 @@ import * as NodeCrypto from "node:crypto";
 
 import type { KinChatService } from "../chat/KinChatService.ts";
 import type * as KinEventQueue from "../lead/KinEventQueue.ts";
+import type * as CardActions from "../widgets/cardActions.ts";
+import { type CardPlan, plansOf, sealPlans, sealedOptions } from "../widgets/cardPlans.ts";
+import { choiceCardState } from "../widgets/choiceCard.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { allLists } from "../work/registers.ts";
 import {
@@ -213,6 +216,8 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
   readonly about?: ReadonlyArray<string> | undefined;
   readonly intent?: string | undefined;
   readonly now: number;
+  /** The default runs a fixed action: only a tap runs it, so it is never taken at its day. */
+  readonly acts?: boolean;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const wanted = input.default.trim().toLowerCase();
@@ -234,10 +239,12 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
   if (named !== undefined && "refused" in named) return yield* refuse(named.refused);
   const dueAt = named?.at ?? defaultDue(input.now, clock.zone, clock.days);
   const about = normaliseAbout(input.about);
-  const safe = safeDefault(label, input.question, {
-    labels: input.labels,
-    aboutMoney: yield* aboutMoney(input.orgId, about),
-  });
+  const safe =
+    input.acts !== true &&
+    safeDefault(label, input.question, {
+      labels: input.labels,
+      aboutMoney: yield* aboutMoney(input.orgId, about),
+    });
   const intent = normaliseIntent(input.intent);
   if (seen === undefined)
     for (const open of yield* openFor(input.orgId, personId))
@@ -590,7 +597,40 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
     RETURNING question_id`;
   if (moved.length === 0 || row.options.length < 2) return moved.length > 0;
   if (agent === undefined || agent.threadId === null) return true;
+  // An option that runs an action is drawn again, as a new card's; one that no longer holds is
+  // left off, and a default left off leaves the raised card with none.
+  const sealed =
+    row.widgetId === null ? new Map<string, CardPlan>() : yield* plansOf(orgId, row.widgetId);
+  const acting =
+    row.widgetId === null ? new Set<string>() : yield* sealedOptions(orgId, row.widgetId);
+  const offered: Array<{
+    readonly label: string;
+    readonly drawn?: Effect.Success<ReturnType<typeof CardActions.redraw>>;
+  }> = [];
+  let defaultLabel: string | null = null;
+  // Loaded here: cardActions reaches KinChatService, which imports this module.
+  const { redraw } = yield* Effect.promise(() => import("../widgets/cardActions.ts"));
+  for (const option of row.options) {
+    const plan = sealed.get(option.optionId);
+    const drawn = plan === undefined ? undefined : yield* redraw(orgId, row.chatId, plan);
+    if (acting.has(option.optionId) && drawn === undefined) continue;
+    const label = drawn?.label ?? option.label;
+    if (option.label === row.defaultLabel) defaultLabel = label;
+    offered.push({ label, drawn });
+  }
+  if (defaultLabel !== row.defaultLabel)
+    yield* sql`UPDATE kin_questions SET default_label = ${defaultLabel}
+      WHERE org_id = ${orgId} AND question_id = ${row.questionId}`;
+  // Too few left for a card: the first card stays open, each tap on it checked as it runs.
+  if (offered.length < 2) return true;
   const clock = yield* personClock(orgId, row.personId);
+  const asked = {
+    question: oneLine(`${STILL_OPEN}${row.question}`, 240),
+    detail: `${row.agentName} asked ${dayWord(row.askedAt, now, clock.zone)}. Nothing happens until you answer.`,
+    options: offered.map((option) => ({ label: option.label })),
+    actions: offered.map((option) => option.drawn),
+    untilAnswered: true as const,
+  };
   const card = yield* chat.ask(
     {
       _tag: "agent",
@@ -600,16 +640,25 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
       threadId: ThreadId.make(agent.threadId),
       hostPosted: true,
     },
-    {
-      chatId: row.chatId,
-      clientMessageId: `kin-question-raise:${row.questionId}`,
-      question: oneLine(`${STILL_OPEN}${row.question}`, 240),
-      detail: `${row.agentName} asked ${dayWord(row.askedAt, now, clock.zone)}. Nothing happens until you answer.`,
-      options: row.options.map((option) => ({ label: option.label })),
-      untilAnswered: true,
-    },
+    { ...asked, chatId: row.chatId, clientMessageId: `kin-question-raise:${row.questionId}` },
   );
-  yield* sql`UPDATE kin_questions SET raise_widget_id = ${card.widgetId}
+  const options = choiceCardState(asked).options.map(({ optionId, label }) => ({
+    optionId,
+    label,
+  }));
+  yield* sealPlans({
+    orgId,
+    chatId: row.chatId,
+    widgetId: card.widgetId,
+    plans: offered.flatMap((option, index) =>
+      option.drawn === undefined
+        ? []
+        : [{ optionId: options[index]!.optionId, plan: option.drawn.plan }],
+    ),
+    now,
+  });
+  yield* sql`UPDATE kin_questions SET raise_widget_id = ${card.widgetId},
+      options_json = ${yield* encodeOptions(options).pipe(Effect.orDie)}
     WHERE org_id = ${orgId} AND question_id = ${row.questionId}`;
   if (row.widgetId !== null)
     yield* chat.closeReplaced({ orgId, widgetId: KinWidgetId.make(row.widgetId) });

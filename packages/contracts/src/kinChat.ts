@@ -383,8 +383,20 @@ export const KinChoiceOption = Schema.Struct({
   label: KinTrimmedText.check(Schema.isMaxLength(80)),
   // Marks the yes/no pair a 👍/👎 reaction can answer.
   kind: Schema.optional(Schema.Literals(["yes", "no"])),
+  /** Set by the server when a tap on this option runs a fixed action: what it does, in its words. */
+  action: Schema.optionalKey(Schema.Struct({ line: KinText.check(Schema.isMaxLength(200)) })),
 });
 export type KinChoiceOption = typeof KinChoiceOption.Type;
+/**
+ * What the server adds to a choice card's `detail` for options that run an action, so a client
+ * that doesn't know `action` still shows each line; one that does shows them under the options.
+ */
+export const kinChoiceActionNote = (options: ReadonlyArray<KinChoiceOption>) => {
+  const lines = options.flatMap((option) =>
+    option.action === undefined ? [] : [`${option.label}: ${option.action.line}`],
+  );
+  return lines.length === 0 ? "" : lines.join("\n");
+};
 /** A `choice` card's buttons post `actionId: "choose"` with the option id as `value`. */
 export const KIN_CHOICE_CARD_ACTION = "choose";
 /**

@@ -296,6 +296,27 @@ describe("choice cards", () => {
     const open = choice();
     expect(open.question).toBe("Ship today?");
     expect(open.options.map((option) => option.label)).toEqual(["Ship it", "Wait"]);
+    // An option that runs an action is labelled by the server and shows its line under it; the
+    // card's text no longer repeats the line it carries for older clients.
+    const acts = choice({
+      state: {
+        ...choiceState(),
+        detail: "Dev says it is live.\n\nMark W-4 done: Mark W-4 “Ship the API” done",
+        options: [
+          {
+            optionId: "option-1",
+            label: "Mark W-4 done",
+            action: { line: "Mark W-4 “Ship the API” done" },
+          },
+          { optionId: "option-2", label: "Wait" },
+        ],
+      },
+    });
+    expect(acts.options).toEqual([
+      { id: "option-1", label: "Mark W-4 done", action: "Mark W-4 “Ship the API” done" },
+      { id: "option-2", label: "Wait", action: null },
+    ]);
+    expect(acts.detail).toBe("Dev says it is live.");
     expect(kinChoicePhase(open, posted + 60_000)).toBe("open");
     expect(kinChoicePhase(open, posted + 24 * 60 * 60 * 1000)).toBe("expired");
     expect(kinChoicePhase(choice({ closedAt: "2026-11-08T10:00:00.000Z" }), posted)).toBe(
