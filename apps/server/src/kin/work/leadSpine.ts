@@ -6,10 +6,10 @@ import {
   type KinMoney,
   type KinOrgId,
   type KinWorkPrincipal,
-  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { projectPage } from "./crm.ts";
@@ -27,16 +27,16 @@ import { type RecordRow, selectRecords, toRecord } from "./recordRows.ts";
  * came from, meetings, and a project's billing and people; and the one read of a whole project.
  */
 
-const Who = TrimmedNonEmptyString.check(Schema.isMaxLength(120));
+const Who = KinToolText(120);
 const Size = Schema.Literals(["S", "M", "L"]).annotate({ description: "S, M or L." });
-const Reason = TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
-  description:
-    'One line on why its owner was picked, such as "Kabir: tech, 3 open, free Thursday". Shown beside the task.',
-});
+const Reason = KinToolText(
+  200,
+  'One line on why its owner was picked, such as "Kabir: tech, 3 open, free Thursday". Shown beside the task.',
+);
 const From = Schema.NullOr(
   Schema.Struct({
     doc: KinRecordKey,
-    section: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+    section: KinToolText(120),
   }),
 ).annotate({
   description:
@@ -45,9 +45,7 @@ const From = Schema.NullOr(
 
 /** What a Work or project row may also carry; rows of other lists refuse them. */
 export const SpineInputs = {
-  milestone: Schema.optional(
-    Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
-  ).annotate({
+  milestone: Schema.optional(Schema.NullOr(KinToolText(200))).annotate({
     description:
       "A task's milestone: its key (M-2) or exact name in the task's project. Sets the project too when it has none. null clears.",
   }),
@@ -60,13 +58,11 @@ export const SpineInputs = {
   attendees: Schema.optional(Schema.Array(Who).check(Schema.isMaxLength(30))).annotate({
     description: "A meeting's people: each as owner is named.",
   }),
-  where: Schema.optional(Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(200)))),
+  where: Schema.optional(Schema.NullOr(KinToolText(200))),
   billing: Schema.optional(Schema.NullOr(KinProjectBilling)).annotate({
     description: "A project's billing: fixed, hourly or retainer.",
   }),
-  value: Schema.optional(
-    Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(60))),
-  ).annotate({
+  value: Schema.optional(Schema.NullOr(KinToolText(60))).annotate({
     description: 'A project\'s value as said ("6 lakh", "$12,000"); for a retainer, per period.',
   }),
   startsOn: Schema.optional(Schema.NullOr(KinDay)).annotate({

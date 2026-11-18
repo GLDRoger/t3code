@@ -3,7 +3,6 @@ import {
   KinChatError,
   KinGoalMeasure,
   KinRecordId,
-  TrimmedNonEmptyString,
   type KinGoal,
   type KinGoalSaveInput,
   type KinMoney,
@@ -13,6 +12,7 @@ import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
@@ -35,15 +35,15 @@ export const GoalInputs = {
     description:
       "A goal's measure: revenue_received (money in, from Money), clients_won, tasks_done, or manual (a number you keep current).",
   }),
-  target: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
+  target: Schema.optional(KinToolText(60)).annotate({
     description: 'A goal\'s target: money as said for revenue_received ("40 lakh"), else a number.',
   }),
   current: Schema.optional(Schema.NullOr(Schema.Finite)).annotate({
     description: "A manual goal's number now; say where it came from in notes.",
   }),
-  unit: Schema.optional(
-    Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(40))),
-  ).annotate({ description: 'What a manual goal counts, such as "hires".' }),
+  unit: Schema.optional(Schema.NullOr(KinToolText(40))).annotate({
+    description: 'What a manual goal counts, such as "hires".',
+  }),
 };
 export const GOAL_INPUTS = ["measure", "target", "current", "unit"] as const;
 

@@ -220,6 +220,20 @@ it.effect("record_create makes many entries in one call and a retry makes none",
         ["W-3", false],
       ],
     );
+    // V01: one refused row saves none of the call, and every refused row is named in one answer.
+    const refused = yield* Effect.flip(
+      LeadWork.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        records: [
+          { title: "Invented: send the launch mail" },
+          { title: "Invented: book the venue", owner: "Invented Nobody" },
+          { title: "Invented: pay the printer", amount: "-500" },
+        ],
+      }),
+    );
+    assert.match(refused.message, /^Row 2 \("Invented: book the venue"\): owner: No one called/);
+    assert.match(refused.message, /\nRow 3 \("Invented: pay the printer"\): amount: /);
+    assert.include(refused.message, "Nothing in this call was saved. Fix these 2 and send all 3");
     const sql = yield* SqlClient.SqlClient;
     assert.lengthOf(yield* sql`SELECT 1 FROM kin_records`, 3);
     // The owner said it, so it is confirmed, linked to the message, and the owner is its assigner.
@@ -285,6 +299,29 @@ it.effect("record_update changes only named fields, logs each change, and both o
       ),
       { reason: "conflict" },
     );
+    // V24: keys changes several entries the same way, all or none.
+    const both = yield* LeadWork.updateMany(scopeOf(lead), {
+      keys: ["W-1", "W-3"],
+      sourceEventId: "ask-event",
+      state: "doing",
+    });
+    assert.deepStrictEqual(
+      both.entries.map((one) => [one.key, one.rev, one.changed]),
+      [
+        ["W-1", 2, ["state"]],
+        ["W-3", 2, ["state"]],
+      ],
+    );
+    const none = yield* Effect.flip(
+      LeadWork.updateMany(scopeOf(lead), {
+        keys: ["W-1", "W-99"],
+        sourceEventId: "ask-event",
+        notes: "Invented: one note for both",
+      }),
+    );
+    assert.match(none.message, /^W-99/);
+    assert.include(none.message, "Nothing in this call was saved");
+    assert.include(yield* LeadWork.get(scopeOf(lead), { key: "W-1" }), { rev: 2, notes: "" });
     assert.include(
       yield* Effect.flip(
         LeadWork.update(scopeOf(lead), {
@@ -2457,8 +2494,8 @@ it.effect(
       });
       assert.deepStrictEqual(plan.told, ["Mate"]);
       assert.deepStrictEqual(
-        plan.tasks.map((task) => task.refused),
-        [undefined, undefined, undefined],
+        plan.tasks.map((task) => task.to),
+        ["Mate", "Mate", "Mate"],
       );
       assert.deepStrictEqual(keysOf(yield* OwnerWork.list([mate], { orgId })), [
         "W-1",
@@ -3162,18 +3199,18 @@ it.effect(
       yield* give;
       yield* bounce;
       // The owner asked in this turn: his word sends it back.
-      assert.isUndefined((yield* give).tasks[0]!.refused);
+      yield* give;
       yield* bounce;
       // A turn the owner's words didn't start, as a hand back's wake: it doesn't go straight back.
       yield* sql`UPDATE kin_events SET tag = 'chat.reaction' WHERE event_id = 'ask-event'`;
-      assert.include((yield* give).tasks[0]!.refused, "no repo yet");
+      assert.include((yield* Effect.flip(give)).message, "no repo yet");
       // Once what blocked it is addressed, it may.
       yield* LeadWork.update(scope, {
         key,
         sourceEventId: "ask-event",
         notes: "Invented: repo is invented/app",
       });
-      assert.isUndefined((yield* give).tasks[0]!.refused);
+      yield* give;
       // Model tasks: given to someone else meanwhile, it still doesn't bounce back to the agent
       // that handed it back before, nothing on it having changed since.
       yield* bounce;
@@ -3182,7 +3219,7 @@ it.effect(
         tasks: [{ key, to: "Mate", reason: "Invented: has time" }],
       });
       yield* OwnerWork.handBack([mate], { orgId, key, note: "Invented: not my area" });
-      assert.include((yield* give).tasks[0]!.refused, "no repo yet");
+      assert.include((yield* Effect.flip(give)).message, "no repo yet");
       // Model people: someone removed from the company is given nothing.
       yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = ${mateId}`;
       yield* LeadWork.update(scope, {
@@ -3190,10 +3227,12 @@ it.effect(
         sourceEventId: "ask-event",
         notes: "Invented: design is ready",
       });
-      const toGone = yield* LeadWork.assign(scope, {
-        sourceEventId: "ask-event",
-        tasks: [{ key, to: "Mate", reason: "Invented: has time" }],
-      });
-      assert.include(toGone.tasks[0]!.refused, "No one called Mate is in the company");
+      const toGone = yield* Effect.flip(
+        LeadWork.assign(scope, {
+          sourceEventId: "ask-event",
+          tasks: [{ key, to: "Mate", reason: "Invented: has time" }],
+        }),
+      );
+      assert.include(toGone.message, "No one called Mate is in the company");
     }).pipe(Effect.provide(layer)),
 );
