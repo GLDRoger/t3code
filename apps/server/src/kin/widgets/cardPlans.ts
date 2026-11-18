@@ -16,9 +16,11 @@ export const CardActionInput = Schema.Struct({
   kind: Schema.Literals(CARD_ACTIONS),
   target: KinTrimmedText.check(Schema.isMaxLength(200)).annotate({
     description:
-      "done, drop: a task key such as W-4. start: a due deferral's id. create_list: a list_define proposal id. take_default: the id of an open question of yours.",
+      "done, drop: a task key such as W-4. start: a due deferral's id. create_list: a list_define proposal id for a new list. take_default: the id of an open question of yours.",
   }),
-}).annotate({ description: "What Kin itself does when this option is tapped." });
+}).annotate({
+  description: "What Kin itself does when this option is tapped; Kin writes its button.",
+});
 export type CardActionInput = typeof CardActionInput.Type;
 
 /**
