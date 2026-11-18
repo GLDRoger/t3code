@@ -859,6 +859,10 @@
       "types": "./src/kin/kinTaskRecord.ts",
       "default": "./src/kin/kinTaskRecord.ts"
     },
+    "./kin/kinTasksList": {
+      "types": "./src/kin/kinTasksList.ts",
+      "default": "./src/kin/kinTasksList.ts"
+    },
     "./kin/kinTasksKeys": {
       "types": "./src/kin/kinTasksKeys.ts",
       "default": "./src/kin/kinTasksKeys.ts"

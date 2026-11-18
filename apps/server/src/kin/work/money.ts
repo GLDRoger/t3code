@@ -125,12 +125,20 @@ export const dayIn = (ms: number, zone: string) =>
   DateTime.formatIsoDate(DateTime.makeZonedUnsafe(ms, { timeZone: zone }));
 /** `2026-11` from a day. */
 export const monthOf = (day: string) => day.slice(0, 7);
-/** India's financial year, April to March: 2026-04-01 to 2027-03-31 is `FY2026-27`. */
-export const financialYearOf = (day: string) => {
+/**
+ * The financial year a day falls in, the year starting in `startMonth`: from April, 2026-04-01 to
+ * 2027-03-31 is `FY2026-27`; from January, 2026 is `FY2026`. Every caller passes its company's.
+ */
+export const financialYearOf = (day: string, startMonth = 4) => {
   const year = Number.parseInt(day.slice(0, 4), 10);
-  const start = Number.parseInt(day.slice(5, 7), 10) >= 4 ? year : year - 1;
-  return `FY${start}-${String((start + 1) % 100).padStart(2, "0")}`;
+  const start = Number.parseInt(day.slice(5, 7), 10) >= startMonth ? year : year - 1;
+  return startMonth === 1
+    ? `FY${start}`
+    : `FY${start}-${String((start + 1) % 100).padStart(2, "0")}`;
 };
+/** The first day of the financial year `financialYearOf` named. */
+export const financialYearStart = (year: string, startMonth: number) =>
+  `${year.slice(2, 6)}-${String(startMonth).padStart(2, "0")}-01`;
 /** The month `count` months after `month` (`2026-11`), negative for earlier. */
 export const shiftMonth = (month: string, count: number) => {
   const index =

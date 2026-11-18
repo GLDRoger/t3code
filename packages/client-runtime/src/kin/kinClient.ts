@@ -1448,6 +1448,12 @@ export function makeKinClient<R, ER>(
       tag: "kin.work.handBack",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
     }),
+    /** Asks the person holding a task where it stands; once a day per task (`kin.work.nudge`). */
+    workNudge: createKinRpcCommand(runtime, {
+      label: "kin:work:nudge",
+      tag: "kin.work.nudge",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
     /** A note on a task from anyone who sees it, with files they just uploaded. */
     workComment: createKinRpcCommand(runtime, {
       label: "kin:work:comment",

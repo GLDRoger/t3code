@@ -910,6 +910,17 @@ it.effect("one search finds entries and docs, and the team view hides what label
         .hits,
       0,
     );
+    // K064: when no entry has every word, a widened search finds those with some, and says so.
+    const widened = (widen?: true) =>
+      search(orgId, {
+        text: "booking zebra",
+        limit: 5,
+        viewer: "owner",
+        scope: KIN_OWNER_LEVEL,
+        ...(widen === undefined ? {} : { widen }),
+      }).pipe(Effect.map(({ hits, widened }) => [widened, hits.map((hit) => hit.title)]));
+    assert.deepStrictEqual(yield* widened(), [false, []]);
+    assert.deepStrictEqual(yield* widened(true), [true, ["Invented booking project"]]);
     // A label set later hides at once: labels are read at query time, not indexed.
     yield* records.update(
       orgId,
@@ -933,6 +944,7 @@ it.effect("one search finds entries and docs, and the team view hides what label
       "Invented launch plan",
     ]);
     assert.lengthOf((yield* found("owner")).hits, 4);
+    assert.deepStrictEqual(yield* widened(true), [true, ["Invented booking project"]]);
   }).pipe(Effect.provide(layer)),
 );
 

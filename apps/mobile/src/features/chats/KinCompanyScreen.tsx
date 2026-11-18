@@ -2,8 +2,9 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_COMPANY,
-  KIN_COMPANY_SECTIONS,
+  kinCompanyEditSections,
   kinCompanyDraftOf,
+  kinDeviceRegion,
   kinCompanyEmpty,
   kinCompanyInput,
   kinCompanyRead,
@@ -180,7 +181,7 @@ function Profile(
                   icon: "pencil" as const,
                   onPress: () => {
                     setSaved(false);
-                    setDraft(kinCompanyDraftOf(profile));
+                    setDraft(kinCompanyDraftOf(profile, kinDeviceRegion()));
                   },
                 },
               ],
@@ -200,7 +201,7 @@ function Profile(
                     <Button
                       tone="primary"
                       label={KIN_COMPANY.edit}
-                      onPress={() => setDraft(kinCompanyDraftOf(profile))}
+                      onPress={() => setDraft(kinCompanyDraftOf(profile, kinDeviceRegion()))}
                     />
                   ),
                 }
@@ -259,7 +260,7 @@ function Profile(
     >
       {lock}
       {problem === null ? null : <Notice message={problem} tone="danger" />}
-      {KIN_COMPANY_SECTIONS.map((section) => (
+      {kinCompanyEditSections(profile, draft).map((section) => (
         <ListSection key={section.title} title={section.title}>
           {section.fields.map((field) => (
             <KinWorkTextField

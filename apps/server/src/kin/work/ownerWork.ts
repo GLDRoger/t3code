@@ -13,6 +13,7 @@ import {
   type KinWorkLinkAddInput,
   type KinWorkLinkRemoveInput,
   type KinWorkListInput,
+  type KinWorkNudgeInput,
   type KinWorkPrincipal,
   type KinWorkShareInput,
   type KinWorkSummary,
@@ -44,6 +45,7 @@ import {
 import { fieldList, LISTS, type ListName, parseFields } from "./lists.ts";
 import { milestoneLinks } from "./projectSpine.ts";
 import { personSeesRecord, sheetExtras } from "./recordComments.ts";
+import { movePage, nudge as nudgeHolder } from "./workMoves.ts";
 import { isBuiltIn, listDef, unknownList } from "./registers.ts";
 import { type AssignNotice, movedNotices, tellPeople } from "./assignNotices.ts";
 import { teamAgent as theTeamAgent } from "../lead/LeadAccess.ts";
@@ -398,14 +400,27 @@ export const list = Effect.fn("KinWork.list")(function* (
     ...(viewer.teammate ? { team: viewer.person.personId } : {}),
     at,
   };
+  const byMove = input.byMove === true && (input.list === undefined || input.list === "work");
   const page =
     party.none || project.none
       ? {
           rows: [],
           total: 0,
           seq: yield* teamSeq(input.orgId, viewer.person.personId).pipe(workFailure),
+          moves: byMove ? [] : undefined,
+          counts: byMove ? { needsYou: 0, waiting: 0, rest: 0, doneRecently: 0 } : undefined,
         }
-      : yield* records.query(input.orgId, { ...filter, offset: cursor.offset, limit });
+      : byMove
+        ? yield* movePage({
+            orgId: input.orgId,
+            personId: viewer.person.personId,
+            ownerLevel: !viewer.teammate,
+            filter,
+            offset: cursor.offset,
+            limit,
+            at,
+          })
+        : yield* records.query(input.orgId, { ...filter, offset: cursor.offset, limit });
   // The sums are of every match and the same on each page, so only the first page pays for them.
   const totals =
     input.totalsBy === undefined || input.cursor !== undefined
@@ -424,6 +439,8 @@ export const list = Effect.fn("KinWork.list")(function* (
     seq: page.seq,
     asOf: iso(at),
     ...(totals === undefined ? {} : { totals: listTotals(totals) }),
+    ...("moves" in page && page.moves !== undefined ? { moves: page.moves } : {}),
+    ...("counts" in page && page.counts !== undefined ? { counts: page.counts } : {}),
   };
   return input.acceptCompactRows === true ? kinCompactWorkList(answer) : answer;
 });
@@ -824,6 +841,14 @@ export const tellOnScreen = Effect.fn("KinWork.tellOnScreen")(
     Effect.logWarning("Kin couldn't tell people about their tasks", cause),
   ),
 );
+
+/** Asks a person holding a task where it stands, once a day per task (`workMoves.nudge`). */
+export const nudge = Effect.fn("KinWork.nudge")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinWorkNudgeInput,
+) {
+  return yield* nudgeHolder(yield* viewerOf(people, input.orgId), input);
+});
 
 /** The holder gives the task back to whoever gave it to them; it may then be out of their view. */
 export const handBack = Effect.fn("KinWork.handBack")(function* (

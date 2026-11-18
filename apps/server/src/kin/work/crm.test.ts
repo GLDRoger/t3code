@@ -128,7 +128,7 @@ const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status,
       event_ids, audience)
     VALUES ('wake', ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running', '["ask-event"]', 'owner_only')`;
-  for (const eventId of ["ask-event", "again-event"]) {
+  for (const eventId of ["ask-event", "again-event", "third-event"]) {
     const event = {
       _tag: "chat.message",
       orgId,
@@ -495,6 +495,145 @@ it.effect("project health moves on read as entries go late or wait, with no turn
 );
 
 it.effect(
+  "a row repeating an open entry from another turn is refused by name; a near one is made and said",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* setup("ask-event");
+      const sql = yield* SqlClient.SqlClient;
+      const make = (sourceEventId: string, records: typeof LeadWork.CreateInput.Type.records) =>
+        LeadWork.create(scope, { sourceEventId, records });
+      const shown = (result: typeof LeadWork.CreateResult.Type) =>
+        result.records.map((row) => [row.key, row.created, row.alsoOpen]);
+      // V28: the same title, client and due day in a later turn is the entry already there.
+      const report = { title: "Invented monthly report", client: "C-1", due: "1970-01-05" };
+      assert.include(yield* Effect.flip(make("again-event", [report])), {
+        reason: "conflict",
+        message:
+          'W-1 "Invented monthly report" is open with the same title, client and due day. Use W-1, or pass besides: ["W-1"] to add another.',
+      });
+      // Named as known, a second is made.
+      assert.deepStrictEqual(shown(yield* make("again-event", [{ ...report, besides: ["W-1"] }])), [
+        ["W-7", true, undefined],
+      ]);
+      // Next month's is honest work: made, with the open ones near it named.
+      assert.deepStrictEqual(
+        shown(
+          yield* make("third-event", [
+            { ...report, title: "invented Monthly report", due: "1970-02-05" },
+          ]),
+        ),
+        [
+          [
+            "W-8",
+            true,
+            [
+              {
+                key: "W-1",
+                title: "Invented monthly report",
+                differs: 'titled "Invented monthly report", due 1970-01-05',
+              },
+              {
+                key: "W-7",
+                title: "Invented monthly report",
+                differs: 'titled "Invented monthly report", due 1970-01-05',
+              },
+            ],
+          ],
+        ],
+      );
+      // K013: a name others also answer to asks which, with what tells them apart.
+      yield* make("again-event", [
+        { list: "clients", title: "Invented Apex", address: "1 Invented Road, Pune" },
+        { list: "clients", title: "Invented Apex Dental" },
+      ]);
+      assert.include(
+        yield* Effect.flip(make("third-event", [{ title: "Call", client: "invented apex" }])),
+        {
+          message:
+            "Several clients could be invented apex: Invented Apex (C-2, client, 1 Invented Road, Pune); Invented Apex Dental (C-3, client). Ask which one is meant, or use the key.",
+        },
+      );
+      const exact = yield* make("third-event", [{ title: "Call", client: "Invented Apex" }]);
+      assert.include(yield* LeadWork.get(scope, { key: exact.records[0]!.key }), {
+        client: "Invented Apex (C-2)",
+      });
+      // K199: a vendor may share a client's name; a party on an expense is the vendor, said so.
+      const vendor = yield* make("again-event", [
+        { list: "clients", title: "Invented Acme", kind: "vendor" },
+      ]);
+      assert.deepInclude(vendor.records[0], {
+        key: "C-4",
+        created: true,
+        alsoNamed:
+          "Invented Acme (C-1) is a client of the same name; this is the vendor Invented Acme (C-4).",
+      });
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json)
+        VALUES (${orgId}, 'expenses', 'Expenses', 'EXP', 0, 0, ${JSON.stringify(presetDefinition("expenses", "INR"))})`;
+      const paper = {
+        list: "expenses",
+        title: "Invented printer paper",
+        client: "Invented Acme",
+        amount: "1,200",
+        date: "1970-01-10",
+      };
+      const spent = yield* make("again-event", [paper]);
+      assert.deepInclude(spent.records[0], {
+        key: "EXP-1",
+        alsoNamed:
+          "Invented Acme (C-1), a client, also answers to Invented Acme; this is the vendor Invented Acme (C-4).",
+      });
+      assert.include(yield* LeadWork.get(scope, { key: "EXP-1" }), {
+        client: "Invented Acme (C-4)",
+      });
+      // The same money to the same party on the same day, even paid, is refused; days apart is said.
+      assert.include(
+        yield* Effect.flip(make("third-event", [{ ...paper, title: "Invented paper" }])),
+        {
+          reason: "conflict",
+          message:
+            'EXP-1 "Invented printer paper" records the same amount for the same party on the same day. Use EXP-1, or pass besides: ["EXP-1"] to add another.',
+        },
+      );
+      assert.deepStrictEqual(
+        shown(yield* make("third-event", [{ ...paper, date: "1970-01-12" }])),
+        [
+          [
+            "EXP-2",
+            true,
+            [
+              {
+                key: "EXP-1",
+                title: "Invented printer paper",
+                differs: "dated 1970-01-10",
+                sensitive: true,
+              },
+            ],
+          ],
+        ],
+      );
+      // K204: an email another contact has is said, on a new contact and on an edit.
+      const twin = yield* make("again-event", [
+        { list: "contacts", title: "Invented R. Rao", client: "C-1", email: " Ravi@x.invalid" },
+      ]);
+      assert.deepStrictEqual(twin.records[0]!.sameEmail, [{ key: "CT-2", title: "Invented Ravi" }]);
+      const edited = yield* LeadWork.update(scope, {
+        key: "CT-1",
+        sourceEventId: "again-event",
+        email: "ravi@x.invalid",
+      });
+      assert.sameDeepMembers(
+        [...edited.sameEmail!],
+        [
+          { key: "CT-2", title: "Invented Ravi" },
+          { key: twin.records[0]!.key, title: "Invented R. Rao" },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
   "the owner edits clients and contacts by revision, field by field, and closes by rule",
   () =>
     Effect.gen(function* () {
@@ -529,9 +668,15 @@ it.effect(
         ),
         { reason: "not_allowed" },
       );
+      // K199: a vendor and a client may share a name; two vendors may not.
       assert.include(
         yield* Effect.flip(
-          Clients.createParty([owner], { orgId, name: "invented juniper", clientRequestId: "k" }),
+          Clients.createParty([owner], {
+            orgId,
+            name: "invented juniper",
+            kind: "vendor",
+            clientRequestId: "k",
+          }),
         ),
         { reason: "conflict" },
       );

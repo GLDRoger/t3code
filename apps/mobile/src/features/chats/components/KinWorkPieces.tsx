@@ -6,6 +6,12 @@ import {
   kinWorkStaleNotice,
   type KinWorkRowView,
 } from "@t3tools/client-runtime/kin/kinWork";
+import type { KinAvatarView } from "@t3tools/client-runtime/kin/kinScreenState";
+import {
+  KIN_TASKS,
+  type KinTaskLine,
+  type KinTaskStep,
+} from "@t3tools/client-runtime/kin/kinTasksList";
 import { KIN_WORK_COPY, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type { KinWorkTimelineLine } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
@@ -14,7 +20,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
 import { type ComponentRef, useEffect, useRef, useState } from "react";
-import { Pressable, TextInput, View } from "react-native";
+import { Platform, Pressable, TextInput, View } from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
@@ -31,6 +37,7 @@ import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
 import { useBarOverlap } from "../../../components/ui/useBarInset";
 import { cn } from "../../../lib/cn";
+import { MOBILE_SHAPE } from "../../../lib/designTokens";
 import { retryKinAccess } from "../state/kinClient";
 import { useKinHost, useKinHostAt } from "../state/useKinHost";
 import { KinLoadFailed } from "./KinLoadFailed";
@@ -240,6 +247,286 @@ export function KinWorkTaskRow(props: {
       ) : null}
       <View className="ml-12 h-px bg-border-subtle" />
     </>
+  );
+}
+
+/** What a row's step is doing: on its way, done in the host's words, or refused with its reason. */
+export type KinTaskStepStatus =
+  | { readonly kind: "busy"; readonly id: string }
+  | { readonly kind: "done"; readonly text: string }
+  | { readonly kind: "failed"; readonly text: string };
+
+const LEAD_TONE = {
+  late: "text-danger-foreground",
+  soon: "text-warning-foreground",
+  working: "text-update-foreground",
+} as const;
+
+const groupRadius = Platform.OS === "android" ? MOBILE_SHAPE.group.android : MOBILE_SHAPE.group.ios;
+
+/**
+ * One task on Tasks, inside its group's card: the circle that marks it done, the title on at most
+ * two lines, who has it and one coloured word, and its one step with that step's buttons.
+ */
+export function KinTaskRow(props: {
+  readonly row: KinWorkRowView;
+  readonly line: KinTaskLine;
+  readonly avatar: KinAvatarView;
+  readonly step: KinTaskStep | null;
+  readonly status: KinTaskStepStatus | null;
+  readonly first: boolean;
+  readonly last: boolean;
+  readonly saving: boolean;
+  readonly onPress: () => void;
+  /** Null where this phone or this host can't change a task. */
+  readonly onAct: ((action: KinWorkAction) => void) | null;
+  /** Null where this phone can't answer a card. */
+  readonly onChoose: ((optionId: string) => void) | null;
+  readonly onOpenCard: () => void;
+  readonly onNudge: () => void;
+  readonly onGive: () => void;
+}) {
+  const { row, line, step, status, onAct } = props;
+  const tick = onAct === null ? null : row.tick;
+  const busy = status?.kind === "busy";
+  const symbol = <KinWorkStateSymbol state={row.state} />;
+  return (
+    <View
+      className="mx-4 overflow-hidden border-continuous bg-grouped-card"
+      style={{
+        borderTopLeftRadius: props.first ? groupRadius : 0,
+        borderTopRightRadius: props.first ? groupRadius : 0,
+        borderBottomLeftRadius: props.last ? groupRadius : 0,
+        borderBottomRightRadius: props.last ? groupRadius : 0,
+      }}
+    >
+      {props.first ? null : <View className="ml-12 h-px bg-border-subtle" />}
+      <View className={cn("flex-row items-start", props.saving && "opacity-60")}>
+        {tick === null || onAct === null ? (
+          <View className="w-12 items-center pt-3">{symbol}</View>
+        ) : (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`${TICK_LABEL[tick]}: ${row.title}`}
+            disabled={props.saving}
+            onPress={() => onAct({ type: "state", state: tick === "done" ? "done" : "open" })}
+            className="w-12 items-center pt-3 pb-2 active:opacity-60"
+          >
+            {symbol}
+          </Pressable>
+        )}
+        <View className="min-w-0 flex-1 gap-2 py-3 pr-4">
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={row.accessibilityLabel}
+            onPress={props.onPress}
+            className="gap-0.5 active:opacity-60"
+          >
+            <Text textRole="body" numberOfLines={2} className="text-foreground">
+              {row.title}
+            </Text>
+            {/* Who has it never gives way: the rest of the line cuts off before it does. */}
+            <View className="min-w-0 flex-row items-center gap-1.5">
+              <KinAvatar avatar={props.avatar} size="mini" />
+              <Text
+                textRole="footnote"
+                numberOfLines={1}
+                className="max-w-[50%] shrink-0 text-foreground"
+              >
+                {line.holder}
+              </Text>
+              <Text
+                textRole="footnote"
+                numberOfLines={1}
+                className="min-w-0 shrink text-foreground-muted"
+              >
+                {"· "}
+                {line.lead === null ? null : (
+                  <Text className={cn("font-t3-medium", LEAD_TONE[line.lead.tone])}>
+                    {line.lead.text}
+                  </Text>
+                )}
+                {line.lead !== null && line.rest !== "" ? " · " : null}
+                {line.rest}
+              </Text>
+            </View>
+          </Pressable>
+          {step === null || step.line === null ? null : (
+            <View className="flex-row items-start gap-1.5">
+              <SymbolView
+                name={step.kind === "send" ? "doc.text" : "text.bubble"}
+                size={14}
+                tintColorClassName="accent-icon-muted"
+                type="monochrome"
+              />
+              <Text
+                textRole="footnote"
+                numberOfLines={2}
+                className="min-w-0 flex-1 text-foreground"
+              >
+                {step.line}
+              </Text>
+            </View>
+          )}
+          {step === null ? null : status?.kind === "done" ? (
+            <Text textRole="footnote" className="font-t3-medium text-foreground">
+              {status.text}
+            </Text>
+          ) : (
+            <>
+              <KinTaskStepButtons
+                step={step}
+                title={row.title}
+                busyId={busy ? status.id : null}
+                onChoose={props.onChoose}
+                onOpenCard={props.onOpenCard}
+                onNudge={props.onNudge}
+                onGive={props.onGive}
+              />
+              {status?.kind === "failed" ? (
+                <Text
+                  accessibilityRole="alert"
+                  textRole="footnote"
+                  className="text-danger-foreground"
+                >
+                  {status.text}
+                </Text>
+              ) : null}
+            </>
+          )}
+          {row.suggested && onAct !== null ? (
+            <View className="flex-row gap-2">
+              <Button
+                tone="secondary"
+                size="compact"
+                label={KIN_WORK_COPY.keep}
+                accessibilityLabel={`${KIN_WORK_COPY.keep}: ${row.title}`}
+                disabled={props.saving}
+                onPress={() => onAct({ type: "confirm" })}
+              />
+              <Button
+                tone="text"
+                size="compact"
+                label={KIN_WORK_COPY.decline}
+                accessibilityLabel={`${KIN_WORK_COPY.decline}: ${row.title}`}
+                disabled={props.saving}
+                onPress={() => onAct({ type: "decline" })}
+              />
+            </View>
+          ) : null}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function KinTaskStepButtons(props: {
+  readonly step: KinTaskStep;
+  readonly title: string;
+  readonly busyId: string | null;
+  readonly onChoose: ((optionId: string) => void) | null;
+  readonly onOpenCard: () => void;
+  readonly onNudge: () => void;
+  readonly onGive: () => void;
+}) {
+  const { step, busyId, onChoose } = props;
+  const busy = busyId !== null;
+  const label = (what: string) => `${what}: ${props.title}`;
+  if (step.kind === "nudge")
+    return (
+      <View className="flex-row flex-wrap items-center gap-2">
+        <Button
+          tone="secondary"
+          size="compact"
+          icon={step.nudged ? "checkmark" : "bell"}
+          label={step.nudged ? KIN_TASKS.nudged : KIN_TASKS.nudge(step.name)}
+          accessibilityLabel={label(step.nudged ? KIN_TASKS.nudged : KIN_TASKS.nudge(step.name))}
+          loading={busyId === "nudge"}
+          disabled={busy || step.nudged}
+          onPress={props.onNudge}
+        />
+        {step.give ? (
+          <Button
+            tone="text"
+            size="compact"
+            label={KIN_TASKS.giveTo}
+            accessibilityLabel={label(KIN_TASKS.giveTo)}
+            disabled={busy}
+            onPress={props.onGive}
+          />
+        ) : null}
+      </View>
+    );
+  if (step.kind === "send")
+    return (
+      <View className="flex-row flex-wrap items-center gap-2">
+        {step.approve === null || onChoose === null ? null : (
+          <Button
+            tone="primary"
+            size="compact"
+            icon="checkmark"
+            label={KIN_TASKS.approve}
+            accessibilityLabel={label(KIN_TASKS.approve)}
+            loading={busyId === step.approve.optionId}
+            disabled={busy}
+            onPress={() => onChoose(step.approve!.optionId)}
+          />
+        )}
+        <Button
+          tone="secondary"
+          size="compact"
+          label={KIN_TASKS.review}
+          accessibilityLabel={label(KIN_TASKS.review)}
+          disabled={busy}
+          onPress={props.onOpenCard}
+        />
+      </View>
+    );
+  return (
+    <View className="flex-row flex-wrap items-center gap-2">
+      {onChoose === null
+        ? null
+        : step.options.map((option) => (
+            <Button
+              key={option.optionId}
+              tone="secondary"
+              size="compact"
+              label={option.label}
+              accessibilityHint="Sends this as your reply"
+              loading={busyId === option.optionId}
+              disabled={busy}
+              onPress={() => onChoose(option.optionId)}
+            />
+          ))}
+      <Button
+        tone="text"
+        size="compact"
+        label={KIN_TASKS.other}
+        accessibilityLabel={label(KIN_TASKS.other)}
+        disabled={busy}
+        onPress={props.onOpenCard}
+      />
+    </View>
+  );
+}
+
+/** Nothing needs the reader: said in a card where Needs you's rows would be. */
+export function KinTasksAllClear() {
+  return (
+    <View
+      className="mx-4 flex-row items-start gap-3.5 border-continuous bg-grouped-card px-4 py-5"
+      style={{ borderRadius: groupRadius }}
+    >
+      <SymbolView name="checkmark.circle" size={22} tintColorClassName="accent-icon-muted" />
+      <View className="min-w-0 flex-1 gap-0.5">
+        <Text textRole="body" className="font-t3-medium text-foreground">
+          {KIN_TASKS.clearTitle}
+        </Text>
+        <Text textRole="footnote" className="text-foreground-muted">
+          {KIN_TASKS.clearDetail}
+        </Text>
+      </View>
+    </View>
   );
 }
 

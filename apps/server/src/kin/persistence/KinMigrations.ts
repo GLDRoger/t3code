@@ -100,6 +100,7 @@ import RecordComments from "./migrations/K176_RecordComments.ts";
 import RecordChangesByWakeup from "./migrations/K177_RecordChangesByWakeup.ts";
 import AskOutsideAndDispatch from "./migrations/K178_AskOutsideAndDispatch.ts";
 import DeviceLinks from "./migrations/K179_DeviceLinks.ts";
+import CardPlans from "./migrations/K180_CardPlans.ts";
 import TasksKeys from "./migrations/K181_TasksKeys.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -281,6 +282,7 @@ const loader = Migrator.fromRecord({
   "177_RecordChangesByWakeup": RecordChangesByWakeup,
   "178_AskOutsideAndDispatch": AskOutsideAndDispatch,
   "179_DeviceLinks": DeviceLinks,
+  "180_CardPlans": CardPlans,
   "181_TasksKeys": TasksKeys,
 });
 

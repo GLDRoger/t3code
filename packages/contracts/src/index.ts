@@ -96,6 +96,7 @@ export * from "./kinOpen.ts";
 export * from "./kinMoneyLive.ts";
 export * from "./kinWire.ts";
 export * from "./kinWorkRows.ts";
+export * from "./kinWorkMove.ts";
 export * from "./kinFinance.ts";
 export * from "./kinMoneyAnswers.ts";
 export * from "./kinStatements.ts";

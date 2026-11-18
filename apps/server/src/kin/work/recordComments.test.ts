@@ -430,12 +430,130 @@ it.effect("a mail waiting to be confirmed about an entry shows on the sheet of w
     } as never);
     // Zoya holds the task but doesn't read Rhea's chat: no card for her.
     assert.notProperty(yield* OwnerWork.get([zoya], { orgId, key: made.key }), "waiting");
+    // Tasks puts the same card on the row, with what its buttons post.
+    const rheas = yield* OwnerWork.list([rhea], { orgId, byMove: true });
+    assert.deepInclude(rheas.moves?.[0], { key: made.key, group: "needsYou" });
+    assert.deepInclude(rheas.moves?.[0]?.card, {
+      widgetId: "card",
+      revision: 1,
+      options: [],
+    } as never);
+    const hers = yield* OwnerWork.list([zoya], { orgId, byMove: true });
+    assert.deepStrictEqual(hers.moves, [{ key: made.key, group: "needsYou" }] as never);
     // Once decided, nothing waits.
     yield* sql`UPDATE kin_connection_asks SET state = 'sent'`;
     assert.notProperty(yield* OwnerWork.get([rhea], { orgId, key: made.key }), "waiting");
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "Tasks by whose move: every open match counted past the page, each reader their own",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* TestClock.setTime(Date.parse("2026-11-11T12:00:00.000Z"));
+      const toZoya = { owner: { _tag: "person" as const, personId: zoyaId } };
+      const later = yield* task("order the banners", { dueAt: "2026-11-20T00:00:00.000Z" });
+      const late = yield* task("sign the lease", { dueAt: "2026-11-10T00:00:00.000Z" });
+      const waits = yield* task("draft the brochure", {
+        ...toZoya,
+        dueAt: "2026-11-21T00:00:00.000Z",
+      });
+      const lateHers = yield* task("call the printer", {
+        ...toZoya,
+        dueAt: "2026-11-09T00:00:00.000Z",
+      });
+      // Zoya's own: she asked for it, so it is nobody's move but hers.
+      const hersAlone = yield* task("tidy the shelf", toZoya);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_records SET asked_by_person_id = ${zoyaId}, created_by_id = ${zoyaId},
+        assigned_by_person_id = NULL
+      WHERE org_id = ${orgId} AND key = ${hersAlone.key}`;
+      const closed = yield* task("post the letters");
+      yield* OwnerWork.update([rhea], { orgId, key: closed.key, rev: closed.rev, state: "done" });
+      const page = (who: typeof rhea, cursor?: string) =>
+        OwnerWork.list([who], {
+          orgId,
+          byMove: true,
+          limit: 2,
+          ...(cursor === undefined ? {} : { cursor }),
+        });
+      const first = yield* page(rhea);
+      assert.deepStrictEqual(first.counts, { needsYou: 3, waiting: 1, rest: 1, doneRecently: 1 });
+      assert.strictEqual(first.total, 5);
+      const second = yield* page(rhea, first.nextCursor!);
+      const third = yield* page(rhea, second.nextCursor!);
+      assert.isNull(third.nextCursor);
+      assert.deepStrictEqual(
+        [...first.moves!, ...second.moves!, ...third.moves!].map((one) => [one.key, one.group]),
+        [
+          [lateHers.key, "needsYou"],
+          [late.key, "needsYou"],
+          [later.key, "needsYou"],
+          [waits.key, "waiting"],
+          [hersAlone.key, "rest"],
+        ],
+      );
+      assert.deepStrictEqual(
+        first.records.map((one) => one.key),
+        [lateHers.key, late.key],
+      );
+      // Zoya counts only what she sees; Arjun sees none of it and is given no step for any of it.
+      const zoyas = yield* page(zoya);
+      assert.deepStrictEqual(zoyas.counts, { needsYou: 3, waiting: 0, rest: 0, doneRecently: 0 });
+      const arjuns = yield* page(arjun);
+      assert.deepStrictEqual(arjuns.counts, { needsYou: 0, waiting: 0, rest: 0, doneRecently: 0 });
+      assert.deepStrictEqual(arjuns.moves, []);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("asking a late task's holder where it stands posts one line a day in their chat", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+      VALUES (${orgId}, ${chief}, ${rheaId}, 0)`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+      VALUES ('zoya-chat', ${orgId}, 'direct', ${`${zoyaId}:${chief}`}, 0, ${at})`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+      VALUES ('zoya-chat-zoya', ${orgId}, 'zoya-chat', 'person', ${zoyaId}, 'member', ${at})`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+      VALUES ('zoya-chat-lead', ${orgId}, 'zoya-chat', 'agent', ${chief}, 'member', ${at})`;
+    yield* TestClock.setTime(Date.parse("2026-11-11T12:00:00.000Z"));
+    const made = yield* task("call the printer", {
+      owner: { _tag: "person", personId: zoyaId },
+      dueAt: "2026-11-09T00:00:00.000Z",
+    });
+    yield* say(zoya, made.key, "Invented: waiting on the quote");
+    const first = yield* OwnerWork.nudge([rhea], { orgId, key: made.key });
+    assert.isFalse(first.already);
+    const again = yield* OwnerWork.nudge([rhea], { orgId, key: made.key });
+    assert.deepStrictEqual(again, { ...first, already: true });
+    const told = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+      WHERE chat_id = 'zoya-chat' AND kind = 'system' AND body LIKE '%asked where%' ORDER BY seq`;
+    assert.deepStrictEqual(
+      told.map((one) => one.body),
+      [`Rhea asked where ${made.key} Invented: call the printer stands.`],
+    );
+    // The row says it went today, beside the holder's last word.
+    const row = (yield* OwnerWork.list([rhea], { orgId, byMove: true })).moves?.[0];
+    assert.deepStrictEqual(row, {
+      key: made.key,
+      group: "needsYou",
+      said: "Invented: waiting on the quote",
+      nudgedAt: first.nudgedAt,
+    } as never);
+    // Someone who can't see it, and the holder herself, get nowhere.
+    assert.strictEqual(
+      (yield* Effect.flip(OwnerWork.nudge([arjun], { orgId, key: made.key }))).reason,
+      "not_found",
+    );
+    assert.strictEqual(
+      (yield* Effect.flip(OwnerWork.nudge([zoya], { orgId, key: made.key }))).reason,
+      "not_allowed",
+    );
+  }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
+);
 it.effect("record_get shows the newest comments still standing, for the turn's people only", () =>
   Effect.gen(function* () {
     yield* seed;

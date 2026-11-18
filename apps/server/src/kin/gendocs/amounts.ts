@@ -45,7 +45,7 @@ const documentFigures = Effect.fn("KinDocAmounts.documentFigures")(function* (
   const gathered = yield* gatherFacts(orgId, recipe, entry, given);
   const assembled = assembleInputs(recipe, given, gathered.facts, gathered.currency);
   if ("error" in assembled) return { error: assembled.error.message };
-  const computed = computeData(assembled.inputs, recipe.computed);
+  const computed = computeData(assembled.inputs, recipe.computed, gathered.tax);
   if ("error" in computed) return { error: computed.error };
   return declaredFigures(recipe, computed.data);
 });

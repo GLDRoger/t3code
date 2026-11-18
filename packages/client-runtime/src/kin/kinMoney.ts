@@ -11,6 +11,7 @@ import {
   KIN_MONEY_NOTHING,
   kinCategoryLabel,
   kinFinancialYearLabel,
+  kinFinancialYearMonths,
   kinFinancialYearPeriod,
   kinMonthLabel,
   kinMonthPeriod,
@@ -129,7 +130,7 @@ export interface KinMoneyView {
     readonly amount: string;
     readonly open: KinListOpen | null;
   }>;
-  /** "FY 2026–27, April to March". */
+  /** "FY 2026–27, April to March", or "FY 2026, January to December". */
   readonly yearLabel: string;
   readonly yearReceived: KinMoneyFigure;
   readonly yearTdsDeducted: KinMoneyFigure | null;
@@ -170,7 +171,8 @@ export function kinMoneyView(
     });
   const receivedIn = (paid: KinListFilter["paid"]) => open(invoices, { paid });
   const thisMonth = kinMonthPeriod(summary.thisMonth);
-  const year = kinFinancialYearPeriod(summary.financialYear);
+  const yearStart = summary.financialYearStartMonth ?? 4;
+  const year = kinFinancialYearPeriod(summary.financialYear, yearStart);
   const currencies = [
     ...new Set(
       summary.series.flatMap((point) =>
@@ -257,7 +259,7 @@ export function kinMoneyView(
       amount: kinTotalsText(row.total),
       open: spentIn(thisMonth, row.category),
     })),
-    yearLabel: `${kinFinancialYearLabel(summary.financialYear)}, April to March`,
+    yearLabel: `${kinFinancialYearLabel(summary.financialYear)}, ${kinFinancialYearMonths(yearStart)}`,
     yearReceived: {
       id: "year-received",
       label: KIN_MONEY.received,

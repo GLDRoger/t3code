@@ -52,6 +52,7 @@ const tableNames = [
   "kin_budget",
   "kin_budget_charges",
   "kin_budget_limits",
+  "kin_card_plans",
   "kin_chat_levels",
   "kin_chat_members",
   "kin_chats",
@@ -415,6 +416,7 @@ describe("Kin migrations", () => {
           { migration_id: 177, name: "RecordChangesByWakeup" },
           { migration_id: 178, name: "AskOutsideAndDispatch" },
           { migration_id: 179, name: "DeviceLinks" },
+          { migration_id: 180, name: "CardPlans" },
           { migration_id: 181, name: "TasksKeys" },
         ]);
         assert.deepStrictEqual(
@@ -614,6 +616,7 @@ describe("Kin migrations", () => {
           { migration_id: 177, name: "RecordChangesByWakeup" },
           { migration_id: 178, name: "AskOutsideAndDispatch" },
           { migration_id: 179, name: "DeviceLinks" },
+          { migration_id: 180, name: "CardPlans" },
           { migration_id: 181, name: "TasksKeys" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
@@ -865,6 +868,7 @@ describe("Kin migrations", () => {
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       const before = yield* kinSchema;
@@ -1119,6 +1123,7 @@ describe("Kin migrations", () => {
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       assert.deepStrictEqual(
@@ -1282,6 +1287,7 @@ describe("Kin migrations", () => {
         { migration_id: 177, name: "RecordChangesByWakeup" },
         { migration_id: 178, name: "AskOutsideAndDispatch" },
         { migration_id: 179, name: "DeviceLinks" },
+        { migration_id: 180, name: "CardPlans" },
         { migration_id: 181, name: "TasksKeys" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
@@ -1455,6 +1461,7 @@ describe("Kin migrations", () => {
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       assert.deepStrictEqual(
@@ -1598,6 +1605,7 @@ describe("Kin migrations", () => {
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       const columns = yield* sql<{ name: string }>`
@@ -1750,9 +1758,10 @@ describe("Kin migrations", () => {
           [177, "RecordChangesByWakeup"],
           [178, "AskOutsideAndDispatch"],
           [179, "DeviceLinks"],
+          [180, "CardPlans"],
           [181, "TasksKeys"],
         ]);
-        assert.deepStrictEqual((yield* kinHistory).slice(-107), [
+        assert.deepStrictEqual((yield* kinHistory).slice(-108), [
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },
@@ -1859,6 +1868,7 @@ describe("Kin migrations", () => {
           { migration_id: 177, name: "RecordChangesByWakeup" },
           { migration_id: 178, name: "AskOutsideAndDispatch" },
           { migration_id: 179, name: "DeviceLinks" },
+          { migration_id: 180, name: "CardPlans" },
           { migration_id: 181, name: "TasksKeys" },
         ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_lead_deliveries`, [delivery]);
@@ -2019,6 +2029,7 @@ describe("Kin migrations", () => {
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT message_id, status FROM kin_messages ORDER BY seq`, [
@@ -2202,6 +2213,7 @@ describe("Kin migrations", () => {
           [177, "RecordChangesByWakeup"],
           [178, "AskOutsideAndDispatch"],
           [179, "DeviceLinks"],
+          [180, "CardPlans"],
           [181, "TasksKeys"],
         ]);
         assert.deepStrictEqual(
@@ -2361,6 +2373,7 @@ describe("Kin migrations", () => {
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       assert.deepStrictEqual(
@@ -2495,6 +2508,7 @@ describe("Kin migrations", () => {
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       assert.deepStrictEqual(
@@ -2642,6 +2656,7 @@ describe("Kin migrations", () => {
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       assert.deepStrictEqual(
@@ -2780,6 +2795,7 @@ describe("Kin migrations", () => {
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT * FROM kin_memory_labels`, []);
@@ -2925,6 +2941,7 @@ describe("Kin migrations", () => {
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       assert.deepStrictEqual(
@@ -2979,6 +2996,7 @@ describe("Kin migrations", () => {
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       const one = JSON.parse(strong);
@@ -3021,6 +3039,7 @@ describe("Kin migrations", () => {
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       assert.deepStrictEqual(
@@ -3063,6 +3082,7 @@ describe("Kin migrations", () => {
 
       assert.deepStrictEqual(yield* runKinMigrations(), [
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       assert.deepStrictEqual(
@@ -3078,6 +3098,7 @@ describe("Kin migrations", () => {
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 179`;
       assert.deepStrictEqual(yield* runKinMigrations(), [
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
     }).pipe(Effect.provide(layer)),
@@ -3734,6 +3755,7 @@ it.effect("K058 adds Work to a database at K057, keeps its rows, and reruns with
       [177, "RecordChangesByWakeup"],
       [178, "AskOutsideAndDispatch"],
       [179, "DeviceLinks"],
+      [180, "CardPlans"],
       [181, "TasksKeys"],
     ]);
     assert.deepStrictEqual(yield* sql`SELECT org_id FROM kin_orgs`, [{ org_id: "org" }]);
@@ -3850,6 +3872,7 @@ it.effect(
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       assert.lengthOf(
@@ -3969,6 +3992,7 @@ it.effect("K061 turns the withdrawals K059 stored into stops of those attempts",
       [177, "RecordChangesByWakeup"],
       [178, "AskOutsideAndDispatch"],
       [179, "DeviceLinks"],
+      [180, "CardPlans"],
       [181, "TasksKeys"],
     ]);
     assert.deepStrictEqual(
@@ -4118,6 +4142,7 @@ it.effect(
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT key, repo FROM kin_records`, [
@@ -4239,6 +4264,7 @@ it.effect("K062 upgrades a database at K061, keeps its attempts, and reruns clea
       [177, "RecordChangesByWakeup"],
       [178, "AskOutsideAndDispatch"],
       [179, "DeviceLinks"],
+      [180, "CardPlans"],
       [181, "TasksKeys"],
     ]);
     assert.deepStrictEqual(
@@ -4353,6 +4379,7 @@ it.effect("K164 keeps a worker's PR on the Work entry it belongs to, and reruns 
       [177, "RecordChangesByWakeup"],
       [178, "AskOutsideAndDispatch"],
       [179, "DeviceLinks"],
+      [180, "CardPlans"],
       [181, "TasksKeys"],
     ]);
     const links = sql`SELECT kind, target, relation, label FROM kin_record_links ORDER BY kind, target`;
@@ -4418,6 +4445,7 @@ it.effect("K166 declines a review still waiting on its Post card and clears the 
       [177, "RecordChangesByWakeup"],
       [178, "AskOutsideAndDispatch"],
       [179, "DeviceLinks"],
+      [180, "CardPlans"],
       [181, "TasksKeys"],
     ]);
     const shown = sql`SELECT p.post_id AS post, p.state, m.status,
@@ -4546,6 +4574,7 @@ it.effect(
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       assert.deepStrictEqual(yield* shape, fresh);
@@ -4665,6 +4694,7 @@ it.effect(
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       assert.deepStrictEqual(yield* column, fresh);
@@ -4780,6 +4810,7 @@ it.effect(
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       assert.deepStrictEqual(yield* index, fresh);
@@ -4887,6 +4918,7 @@ it.effect(
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       const indexed = yield* found;
@@ -4992,6 +5024,7 @@ it.effect("K068 adds money to a database at K067, keeps its entries, and reruns 
       [177, "RecordChangesByWakeup"],
       [178, "AskOutsideAndDispatch"],
       [179, "DeviceLinks"],
+      [180, "CardPlans"],
       [181, "TasksKeys"],
     ]);
     assert.deepStrictEqual(
@@ -5112,6 +5145,7 @@ it.effect(
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       yield* K069WorkerNetwork;
@@ -5208,6 +5242,7 @@ it.effect("K071 adds a proposal's card and one profile change per card, and reru
       [177, "RecordChangesByWakeup"],
       [178, "AskOutsideAndDispatch"],
       [179, "DeviceLinks"],
+      [180, "CardPlans"],
       [181, "TasksKeys"],
     ]);
     yield* K071OwnerAnswerCards;
@@ -5307,6 +5342,7 @@ it.effect("K072 issues each number once per series and entry, and reruns cleanly
       [177, "RecordChangesByWakeup"],
       [178, "AskOutsideAndDispatch"],
       [179, "DeviceLinks"],
+      [180, "CardPlans"],
       [181, "TasksKeys"],
     ]);
     yield* K072GeneratedDocuments;
@@ -5398,6 +5434,7 @@ it.effect("K073 owes one push per key change, each notice's once, and reruns cle
       [177, "RecordChangesByWakeup"],
       [178, "AskOutsideAndDispatch"],
       [179, "DeviceLinks"],
+      [180, "CardPlans"],
       [181, "TasksKeys"],
     ]);
     yield* K073KeyPushes;
@@ -5486,6 +5523,7 @@ it.effect("K074 owes every document job's worktree until it is removed, and reru
       [177, "RecordChangesByWakeup"],
       [178, "AskOutsideAndDispatch"],
       [179, "DeviceLinks"],
+      [180, "CardPlans"],
       [181, "TasksKeys"],
     ]);
     yield* K074DocJobCleanup;
@@ -5571,6 +5609,7 @@ it.effect("K075 keeps what a rendered document was asked with, and reruns cleanl
       [177, "RecordChangesByWakeup"],
       [178, "AskOutsideAndDispatch"],
       [179, "DeviceLinks"],
+      [180, "CardPlans"],
       [181, "TasksKeys"],
     ]);
     yield* K075ServerRenderedDocuments;
@@ -5660,6 +5699,7 @@ it.effect("K077 adds recipe labels and request fingerprints, and reruns cleanly"
       [177, "RecordChangesByWakeup"],
       [178, "AskOutsideAndDispatch"],
       [179, "DeviceLinks"],
+      [180, "CardPlans"],
       [181, "TasksKeys"],
     ]);
     yield* K077DocumentLabels;
@@ -5747,6 +5787,7 @@ it.effect("K078 keeps one baseline per workspace, and reruns cleanly", () =>
       [177, "RecordChangesByWakeup"],
       [178, "AskOutsideAndDispatch"],
       [179, "DeviceLinks"],
+      [180, "CardPlans"],
       [181, "TasksKeys"],
     ]);
     assert.deepStrictEqual(
@@ -5812,6 +5853,7 @@ it.effect(
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       assert.deepStrictEqual(
@@ -5902,6 +5944,7 @@ it.effect("K088 lets a Dates list take an amount, keeps rendered figures, and re
       [177, "RecordChangesByWakeup"],
       [178, "AskOutsideAndDispatch"],
       [179, "DeviceLinks"],
+      [180, "CardPlans"],
       [181, "TasksKeys"],
     ]);
     yield* K088MoneyRecords;
@@ -6004,6 +6047,7 @@ it.effect(
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       yield* K107Connections;
@@ -6087,6 +6131,7 @@ it.effect("K131 carries each statement's wrong passwords into its budget, and re
       [177, "RecordChangesByWakeup"],
       [178, "AskOutsideAndDispatch"],
       [179, "DeviceLinks"],
+      [180, "CardPlans"],
       [181, "TasksKeys"],
     ]);
     const budget = sql`SELECT budget_key AS key, remaining, refill_at IS NOT NULL AS "refills"
@@ -6149,6 +6194,7 @@ it.effect("K131 carries each statement's wrong passwords into its budget, and re
       [177, "RecordChangesByWakeup"],
       [178, "AskOutsideAndDispatch"],
       [179, "DeviceLinks"],
+      [180, "CardPlans"],
       [181, "TasksKeys"],
     ]);
     assert.deepStrictEqual(yield* budget, carried);
@@ -6229,6 +6275,7 @@ it.effect(
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       assert.deepStrictEqual(yield* schemaOf(), widened);
@@ -6269,6 +6316,7 @@ it.effect("K175 leaves existing K174 hand-offs with a null answer preference", (
       [177, "RecordChangesByWakeup"],
       [178, "AskOutsideAndDispatch"],
       [179, "DeviceLinks"],
+      [180, "CardPlans"],
       [181, "TasksKeys"],
     ]);
     assert.deepStrictEqual(yield* sql`SELECT wants_answer FROM kin_handoffs`, [
@@ -6305,6 +6353,7 @@ it.effect(
         [177, "RecordChangesByWakeup"],
         [178, "AskOutsideAndDispatch"],
         [179, "DeviceLinks"],
+        [180, "CardPlans"],
         [181, "TasksKeys"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT asked_by_person_id FROM kin_records`, [
@@ -6362,6 +6411,7 @@ it.effect("K178 counts a send under way at the upgrade as started, and nothing e
     assert.deepStrictEqual(yield* runKinMigrations(), [
       [178, "AskOutsideAndDispatch"],
       [179, "DeviceLinks"],
+      [180, "CardPlans"],
       [181, "TasksKeys"],
     ]);
     const rows = yield* sql<{
