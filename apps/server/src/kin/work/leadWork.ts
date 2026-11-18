@@ -16,6 +16,7 @@ import {
   KinRepoName,
   type KinMoney,
   type KinOrgId,
+  type KinRecordDetail,
   type KinWorkPrincipal,
   KIN_TEXT_LOCALE,
   calendarTimeMillis,
@@ -76,7 +77,7 @@ import {
   largestIn,
   parseAmount,
 } from "./money.ts";
-import { latestComments } from "./recordComments.ts";
+import { latestComments, projectNoteOf } from "./recordComments.ts";
 import {
   endOfDay,
   iso,
@@ -275,7 +276,13 @@ export const GetResult = Schema.Struct({
   notes: Schema.String,
   assignedBy: Schema.optional(Schema.String),
   links: Schema.Array(
-    Schema.Struct({ kind: Schema.String, relation: Schema.String, target: Schema.String }),
+    Schema.Struct({
+      kind: Schema.String,
+      relation: Schema.String,
+      target: Schema.String,
+      /** A web link's name; its target is the address. */
+      name: Schema.optional(Schema.String),
+    }),
   ),
   history: Schema.Array(
     Schema.Struct({
@@ -353,6 +360,8 @@ export const GetResult = Schema.Struct({
     ),
   ),
   olderComments: Schema.optional(Schema.Number),
+  /** The note its project leaves on every task: the project's words, not this entry's. */
+  projectNote: Schema.optional(Schema.Struct({ from: Schema.String, text: Schema.String })),
 });
 const CreateRow = Schema.Struct({
   list: Schema.optional(List),
@@ -1540,6 +1549,16 @@ const mailedFor = Effect.fnUntraced(function* (
   });
 });
 const COMMENTS_SHOWN = 10;
+/** A web link reads as its address, so it can be taken off by it; others by what they show. */
+const linkShown = (link: KinRecordDetail["links"][number]) =>
+  link.kind === "url"
+    ? {
+        kind: link.kind,
+        relation: link.relation,
+        target: link.target,
+        ...(link.label == null ? {} : { name: link.label }),
+      }
+    : { kind: link.kind, relation: link.relation, target: link.label ?? link.target };
 const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.Type) {
   const records = yield* KinRecords;
   const team = yield* viewOf(lead);
@@ -1569,6 +1588,19 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
         }),
     ...(said.older === 0 ? {} : { olderComments: said.older }),
   };
+  const noteFrom =
+    row.registerId === "projects" ? row.recordId : row.registerId === "work" ? row.projectId : null;
+  const note =
+    noteFrom === null ||
+    (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, noteFrom)))
+      ? undefined
+      : yield* projectNoteOf(lead.orgId, noteFrom);
+  const fromProject =
+    note === undefined
+      ? {}
+      : {
+          projectNote: { from: `${note.project.key} ${note.project.title}`, text: note.body },
+        };
   const whole = team !== undefined && (yield* viewWhole(lead, team, row));
   if (team !== undefined && !whole) {
     const shown: typeof GetResult.Type = {
@@ -1576,9 +1608,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
       notes: detail.notes,
       ...(assignedBy === undefined ? {} : { assignedBy }),
       links: detail.links.flatMap((link) =>
-        link.kind === "pull_request" || link.kind === "url"
-          ? [{ kind: link.kind, relation: link.relation, target: link.label ?? link.target }]
-          : [],
+        link.kind === "pull_request" || link.kind === "url" ? [linkShown(link)] : [],
       ),
       history: teamChanges(detail.changes).map((change) => ({
         at: change.at,
@@ -1589,6 +1619,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
             : change.fields.map((field) => `${field.field}: ${field.to ?? "cleared"}`).join("; "),
       })),
       ...comments,
+      ...fromProject,
     };
     return shown;
   }
@@ -1662,11 +1693,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
             link.kind === "url" ||
             (link.kind === "record" && !hiddenLinks.has(link.target)),
         )
-    ).map((link) => ({
-      kind: link.kind,
-      relation: link.relation,
-      target: link.label ?? link.target,
-    })),
+    ).map(linkShown),
     history: (team === undefined
       ? detail.changes
       : detail.changes.filter((change) => change.kind !== "linked")
@@ -1683,6 +1710,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
         : {}),
     })),
     ...comments,
+    ...fromProject,
   };
 });
 export const get = leadTool("KinWorkTools.get", runGet);

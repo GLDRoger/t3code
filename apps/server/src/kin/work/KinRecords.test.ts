@@ -545,11 +545,12 @@ it.effect(
         "record_assign",
         "record_hand_back",
         "record_comment",
+        "record_link",
         "money_summary",
         "dates_query",
         "touch_log",
       ]);
-      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 16);
+      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 18);
       for (const tool of Object.keys(KinWorkToolkit.tools))
         assert.strictEqual(yield* sharedToolAllowed(shared, tool, {}), view.has(tool), tool);
       // G06: tasks made for the people there, whoever holds them, are shared with the team.

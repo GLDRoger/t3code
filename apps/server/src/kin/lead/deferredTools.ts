@@ -26,6 +26,8 @@ export const KIN_DEFERRED_TOOLS: ReadonlySet<string> = new Set([
   "people_update",
   "agent_update",
   "record_hand_back",
+  "record_link",
+  "project_note",
 ]);
 
 /** `Tool.Meta` for a deferred tool: Claude Code overrides the server's `alwaysLoad` with it. */

@@ -400,7 +400,7 @@ features:
     phone: [tab:tasks, KinWorkItem]
     form: true
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    tools: [record_update]
+    tools: [record_update, record_link]
     depth_reason: >-
       The owner chose a full page for the task record (K125) so the next step, details, brief and
       activity all fit; its controls are menus and an inline edit on that page, not a form page.
@@ -685,6 +685,7 @@ features:
     phone: [tab:clients, KinProject]
     roles: { owner: both, co_owner: both, lead: both, member: both }
     note: Its people list its tasks as they see them; a task marked "Only me" stays out.
+    tools: [project_note]
     proof:
       - apps/server/src/kin/work/KinRecords.test.ts
       - .agents/skills/verify-kin/scripts/private-task-hidden.sh

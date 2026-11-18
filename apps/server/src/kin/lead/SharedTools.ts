@@ -132,6 +132,10 @@ export const SHARED_TOOLS = {
   record_hand_back: "view",
   // A note on a task everyone there sees, for them; it changes nothing on the task.
   record_comment: "view",
+  // A web link on an entry each of them may edit on their own screen.
+  record_link: "view",
+  // A project's note for every task is the owner level's.
+  project_note: "refused",
   // Docs every person behind the turn may see; writes as each of them may (a project's lead in
   // their project). Restoring stays the owner's.
   doc_create: "view",

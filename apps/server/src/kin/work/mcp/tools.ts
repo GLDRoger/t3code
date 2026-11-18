@@ -121,6 +121,20 @@ export const KinWorkToolkit = Toolkit.make(
     parameters: Comments.CommentInput,
     success: Comments.CommentResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("record_link", {
+    ...shared,
+    parameters: Comments.LinkInput,
+    success: Comments.LinkResult,
+  })
+    .annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(Tool.Meta, deferredMeta),
+  Tool.make("project_note", {
+    ...shared,
+    parameters: Comments.NoteInput,
+    success: Comments.NoteResult,
+  })
+    .annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(Tool.Meta, deferredMeta),
   Tool.make("list_define", {
     ...shared,
     description: `Start tracking something new as a list with typed fields, such as "start tracking expenses" or "track leave": a template (expenses, invoices, dates, receipts) or a name and fields (text, choice with choices, date, person, link to clients or projects, money, file), plus categories, the states it uses and what it calls them, and whether entries carry an amount. To add fields, choices or categories to a list you defined, pass list. The first call only proposes: it returns a proposal, creates nothing, and shows the owner its fields on a card to tap. Ask in one short line; once they tap yes or say yes in a later turn, call again with just proposal to create exactly that. A no on the card ends that proposal. Never create a list the owner hasn't agreed to. Only the owner retires a field or archives a list.`,

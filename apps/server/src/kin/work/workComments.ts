@@ -9,6 +9,8 @@ import {
   type KinWorkCommentInput,
   type KinWorkCommentRemoveInput,
   type KinWorkCommentsInput,
+  KIN_RECORD_COMMENT_MAX,
+  KinWorkLinkAddInput,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -24,7 +26,15 @@ import { type AssignNotice, tellPeople } from "./assignNotices.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { KinToolText } from "./leadSchemas.ts";
 import { admitted, leadTool, type Lead, namer, viewOf, viewWriter, writerFor } from "./leadWork.ts";
-import { found, tellOnScreen, viewerOf } from "./ownerWork.ts";
+import {
+  type ActingBy,
+  actingAs,
+  addLinkBy,
+  found,
+  removeLinkBy,
+  tellOnScreen,
+  viewerOf,
+} from "./ownerWork.ts";
 import {
   commentIdFor,
   commentsPage,
@@ -197,20 +207,21 @@ export const page = Effect.fn("KinWorkComments.page")(function* (
  * The owner level sets a project's one note for every task, or clears it with empty words. Each
  * of its tasks reads it at the top of its Activity, to whoever sees the project.
  */
-export const projectNote = Effect.fn("KinWorkComments.projectNote")(function* (
-  people: ReadonlyArray<PersonIdentity>,
+const projectNoteBy = Effect.fn("KinWorkComments.projectNote")(function* (
+  by: ActingBy,
   input: KinProjectNoteInput,
 ) {
-  const viewer = yield* viewerOf(people, input.orgId);
-  const personId = viewer.person.personId;
+  const author = by.writer.actor;
   const sql = yield* SqlClient.SqlClient;
   return yield* Effect.gen(function* () {
-    if (!(yield* ownerLevel(input.orgId, personId)))
+    let owners = by.viewers.length > 0;
+    for (const viewer of by.viewers)
+      owners = owners && (yield* ownerLevel(input.orgId, viewer.person.personId));
+    if (!owners || author._tag === "system")
       return yield* new KinChatError({
         reason: "not_allowed",
         message: "Only an owner can change a project's note for every task.",
       });
-    // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- owner level only, checked just above.
     const [project] = yield* sql<{ recordId: string }>`SELECT record_id AS "recordId"
       FROM kin_records WHERE org_id = ${input.orgId} AND key = ${input.key}
         AND register_id = 'projects'`;
@@ -218,7 +229,7 @@ export const projectNote = Effect.fn("KinWorkComments.projectNote")(function* (
     yield* writeProjectNote({
       orgId: input.orgId,
       projectId: project.recordId,
-      by: personId,
+      by: author,
       requestId: input.clientRequestId,
       body: input.body,
       now: yield* Clock.currentTimeMillis,
@@ -226,6 +237,8 @@ export const projectNote = Effect.fn("KinWorkComments.projectNote")(function* (
     return { note: (yield* projectNoteOf(input.orgId, project.recordId)) ?? null };
   }).pipe(sql.withTransaction, workFailure);
 });
+export const projectNote = (people: ReadonlyArray<PersonIdentity>, input: KinProjectNoteInput) =>
+  actingAs(people, input.orgId).pipe(Effect.flatMap((by) => projectNoteBy(by, input)));
 
 export const CommentInput = Schema.Struct({
   key: KinRecordKey.annotate({ description: "The entry's key, such as W-12." }),
@@ -289,3 +302,82 @@ const runComment = Effect.fnUntraced(function* (lead: Lead, input: typeof Commen
   };
 });
 export const leadComment = leadTool("KinWorkComments.leadComment", runComment);
+
+/**
+ * The people a lead's write is for, each checked as their own screen checks them: those behind a
+ * turn others read, else the lead's owner. The change is the lead's, for them.
+ */
+const actingFor = Effect.fn("KinWorkComments.actingFor")(function* (lead: Lead) {
+  const sql = yield* SqlClient.SqlClient;
+  const team = yield* viewOf(lead);
+  const people =
+    team !== undefined
+      ? team.people
+      : (yield* sql<{ owner: string }>`SELECT owner_person_id AS owner FROM kin_agents
+          WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`).map((row) =>
+          KinPersonId.make(row.owner),
+        );
+  const viewers = [];
+  for (const personId of people)
+    viewers.push(yield* viewerOf([{ _tag: "person", orgId: lead.orgId, personId }], lead.orgId));
+  const owned = yield* writerFor(lead);
+  return {
+    viewers,
+    writer: team === undefined ? owned : viewWriter(owned, team),
+  } satisfies ActingBy;
+});
+
+export const LinkInput = Schema.Struct({
+  key: KinRecordKey,
+  url: KinWorkLinkAddInput.fields.url,
+  name: KinWorkLinkAddInput.fields.name,
+  remove: Schema.optional(Schema.Literal(true)),
+});
+export const LinkResult = Schema.Struct({
+  key: Schema.String,
+  /** The entry's web links after the change. */
+  links: Schema.Array(Schema.Struct({ url: Schema.String, name: Schema.optional(Schema.String) })),
+});
+
+/** A lead adds or takes off a web link on an entry, as the people of its turn may on their screens. */
+const runLink = Effect.fnUntraced(function* (lead: Lead, input: typeof LinkInput.Type) {
+  yield* admitted(lead, "record_link", input);
+  const by = yield* actingFor(lead);
+  const at = { orgId: lead.orgId, key: input.key, url: input.url };
+  const sheet =
+    input.remove === true
+      ? yield* removeLinkBy(by, at)
+      : yield* addLinkBy(by, { ...at, ...(input.name === undefined ? {} : { name: input.name }) });
+  return {
+    key: sheet.key,
+    links: sheet.links.flatMap((link) =>
+      link.kind === "url"
+        ? [{ url: link.target, ...(link.label == null ? {} : { name: link.label }) }]
+        : [],
+    ),
+  };
+});
+export const leadLink = leadTool("KinWorkComments.leadLink", runLink);
+
+export const NoteInput = Schema.Struct({
+  key: KinRecordKey,
+  note: Schema.NullOr(KinToolText(KIN_RECORD_COMMENT_MAX)),
+});
+export const NoteResult = Schema.Struct({
+  key: Schema.String,
+  note: Schema.NullOr(Schema.String),
+});
+
+/** A lead sets or clears a project's note for every task, as its owner level may. */
+const runNote = Effect.fnUntraced(function* (lead: Lead, input: typeof NoteInput.Type) {
+  yield* admitted(lead, "project_note", input);
+  const body = input.note ?? "";
+  const written = yield* projectNoteBy(yield* actingFor(lead), {
+    orgId: lead.orgId,
+    key: input.key,
+    clientRequestId: `${lead.wakeupId}:${requestHashOf(body, [])}`,
+    body,
+  });
+  return { key: input.key, note: written.note?.body ?? null };
+});
+export const leadProjectNote = leadTool("KinWorkComments.leadProjectNote", runNote);
