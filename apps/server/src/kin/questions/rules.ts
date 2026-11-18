@@ -1,4 +1,4 @@
-import { formatKinWhen, KIN_TEXT_LOCALE } from "@t3tools/contracts";
+import { formatKinWhen, isKinCurrency, KIN_TEXT_LOCALE } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
 /** The company sits together 10:30 to 19:30: a question's day ends at 19:30, a raise comes at 10:30. */
@@ -140,13 +140,27 @@ export const repeats = (
 const LEAVES =
   /\b(send|sends|sending|sent|post|posts|posting|publish|publishing|tweet|pay|pays|paying|paid|transfer|refund|wire|charge|submit|reply to (the )?client)\b/i;
 
+/** A number with a percent sign or a currency symbol beside it, in any script. */
+const RATE_OR_SYMBOL = /\p{Nd}\s*[%\u066a\uff05\p{Sc}]|[%\u066a\uff05\p{Sc}]\s*\p{Nd}/u;
+const CODE_BESIDE_NUMBER = /\b([A-Z]{3})\s*\p{Nd}|\p{Nd}\s*([A-Z]{3})\b/gu;
+/** Whether `text` names an amount or a rate: "40% advance", "₹40,000", "USD 1,200", "1.500 €". */
+const moneyTerm = (text: string) =>
+  RATE_OR_SYMBOL.test(text) ||
+  [...text.matchAll(CODE_BESIDE_NUMBER)].some((found) => isKinCurrency(found[1] ?? found[2] ?? ""));
+
 /**
- * Whether Kin may take `label` on its own at the day: never when the asker said "none", and never
- * when the default, or a bare yes's question, reads as sending something out or moving money.
+ * Whether Kin may take `label` on its own at the day: never when the asker said "none", when the
+ * question is about a money record, when any option names an amount or a rate, or when the
+ * default, or a bare yes's question, reads as sending something out or moving money.
  */
-export const safeDefault = (label: string | null, question: string) => {
-  if (label === null) return false;
+export const safeDefault = (
+  label: string | null,
+  question: string,
+  terms: { readonly labels?: ReadonlyArray<string>; readonly aboutMoney?: boolean } = {},
+) => {
+  if (label === null || terms.aboutMoney === true) return false;
   const bare = label.trim().split(/\s+/).length <= 3;
+  if ([label, ...(terms.labels ?? []), ...(bare ? [question] : [])].some(moneyTerm)) return false;
   return !LEAVES.test(label) && !(bare && LEAVES.test(question));
 };
 
