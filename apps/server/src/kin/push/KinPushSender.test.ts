@@ -8,10 +8,12 @@ import {
   KinMessageId,
   KinOrgId,
   KinPersonId,
+  KinRecordKey,
   KinWidgetId,
   type KinPushError,
   type KinPushToken,
   kinPeopleChatTeamId,
+  KIN_DEVICE_LINKED_NOTICE,
 } from "@t3tools/contracts";
 import * as Arbitrary from "effect/Arbitrary";
 import * as Deferred from "effect/Deferred";
@@ -216,12 +218,14 @@ const postMessage = (
     readonly mentions?: ReadonlyArray<string>;
     readonly replyTo?: KinMessageId;
     readonly silent?: boolean;
+    readonly messageId?: string;
+    readonly kind?: "text" | "system";
   } = {},
 ) =>
   Effect.gen(function* () {
     const [{ seq }] = (yield* sql<{ seq: number }>`
       SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM kin_messages`) as [{ seq: number }];
-    const messageId = KinMessageId.make(`msg_${seq}`);
+    const messageId = KinMessageId.make(options.messageId ?? `msg_${seq}`);
     const human = typeof author === "object" && "personId" in author;
     const agent = typeof author === "object" && "agentMemberId" in author;
     yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
@@ -230,7 +234,8 @@ const postMessage = (
       VALUES (${messageId}, 'org_01', ${options.chatId ?? "chat_team"}, ${seq},
         ${human ? "human" : agent ? "agent" : "system"}, ${human ? author.personId : null},
         ${agent ? "lead_fin" : null}, ${agent ? owner : null}, ${agent ? "thread-fin" : null},
-        ${human ? author.memberId : agent ? author.agentMemberId : null}, 'member', 'text',
+        ${human ? author.memberId : agent ? author.agentMemberId : null}, 'member',
+        ${options.kind ?? "text"},
         ${options.body ?? "Ship it before Friday, the secret is hunter2"},
         ${JSON.stringify(options.mentions ?? [])}, ${options.replyTo ?? null}, ${status}, ${T},
         ${options.silent === true ? 1 : 0})`;
@@ -490,6 +495,46 @@ describe("KinPushSender", () => {
         undefined,
       ]);
       assert.deepStrictEqual(yield* subjects("priya", "Orbit Dental signed."), [client, client]);
+
+      // Kin's notice of Priya's late work lands on her Tasks; of one task, on that task.
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, sensitive, created_by_kind, origin_key, created_at, updated_at)
+        VALUES ('org_01', 'w2', 'work', 'W-2', 'Brand deck', 'person', ${member}, 0, 'person',
+            'w2', 0, 0),
+          ('org_01', 'w3', 'work', 'W-3', 'Print run', 'person', ${member}, 0, 'person', 'w3', 0, 0),
+          ('org_01', 'w9', 'work', 'W-9', 'Payroll', 'person', ${owner}, 1, 'person', 'w9', 0, 0)`;
+      let notices = 0;
+      const told = (
+        body: string,
+        author: "system" | { agentMemberId: string } = "system",
+        id = `kin-holder-${notices + 1}`,
+      ) =>
+        Effect.gen(function* () {
+          apns.sent.length = 0;
+          notices += 1;
+          const messageId = yield* postMessage(sql, author, "posted", {
+            ...(author === "system" ? { messageId: id, kind: "system" as const } : {}),
+            mentions: ["m_priya"],
+            body,
+          });
+          yield* notify({ _tag: "message", orgId, messageId });
+          return apns.sent.map(
+            (push) => (push.payload as { body: { subject?: unknown } }).body.subject,
+          );
+        });
+      const lines =
+        "3 of your tasks need you:\n• W-1 Logo files\n• W-2 Brand deck\n• W-3 Print run";
+      assert.deepStrictEqual(yield* told(lines), [{ _tag: "tasks" }]);
+      assert.deepStrictEqual(yield* told("W-1 Logo files due today."), [task]);
+      // Held through her away time, it posts under the hold's id and still opens Tasks.
+      yield* sql`INSERT INTO kin_held_posts (hold_id, org_id, chat_id, person_id, kind, body,
+          audience, held_at, deliver_at)
+        VALUES ('hold-1', 'org_01', 'chat_team', ${member}, 'kin-holder-held', ${lines}, 'chat',
+          0, 0)`;
+      assert.deepStrictEqual(yield* told(lines, "system", "kin-held:hold-1"), [{ _tag: "tasks" }]);
+      // An agent naming several still opens the chat; a key she may not open is never counted.
+      assert.deepStrictEqual(yield* told(lines, { agentMemberId: "m_fin" }), [undefined]);
+      assert.deepStrictEqual(yield* told("2 of your tasks need you:\n• W-1\n• W-9"), [task]);
     }).pipe(Effect.provide(build(apns)));
   });
 
@@ -912,6 +957,57 @@ describe("KinPushSender", () => {
     },
     { arbitrary: { runs: 30 } },
   );
+
+  it.effect("tells a person on their phones each time they link a device, loud", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { notify, sql } = yield* seed;
+      yield* sql`INSERT INTO auth_sessions (session_id, subject, scopes, method, issued_at,
+          expires_at, client_label)
+        VALUES ('sess-laptop', 'kin-member', '[]', 'bearer-access-token', ${T},
+          '2026-12-07T00:00:00.000Z', 'Laptop')`;
+      for (const id of ["sess-member", "sess-laptop"])
+        yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+          VALUES (${id}, 'org_01', ${member}, ${NOW})`;
+      // The new device has a phone token of its own; it needs no word of itself.
+      yield* (yield* KinPushDevices).register(caller("sess-laptop", member), {
+        orgId,
+        token: token("d"),
+        platform: "ios",
+        apsEnvironment: "development",
+      });
+      const linked = { _tag: "device", orgId, sessionId: "sess-laptop" } as const;
+      assert.deepStrictEqual(yield* notify(linked), {
+        status: "ready",
+        sent: 1,
+        suppressed: 0,
+        failed: 0,
+      });
+      const [push] = apns.sent;
+      assert.equal(push!.token, memberPhone);
+      assert.deepStrictEqual((push!.payload as { aps: { alert: unknown } }).aps.alert, {
+        title: "New device linked",
+        body: KIN_DEVICE_LINKED_NOTICE,
+      });
+      assert.equal(
+        (push!.payload as { body: { deepLink: string } }).body.deepLink,
+        "/kin/env_kin/org_01/people/h_member/devices",
+      );
+      // A device already removed again announces nothing.
+      apns.sent.length = 0;
+      yield* sql`UPDATE kin_session_bindings SET revoked_at = ${NOW} WHERE session_id = 'sess-laptop'`;
+      yield* notify(linked);
+      assert.deepStrictEqual(apns.sent, []);
+      // Nor does one signed out outside Kin, or one whose session has run out.
+      yield* sql`UPDATE kin_session_bindings SET revoked_at = NULL WHERE session_id = 'sess-laptop'`;
+      yield* sql`UPDATE auth_sessions SET revoked_at = ${T} WHERE session_id = 'sess-laptop'`;
+      yield* notify(linked);
+      yield* sql`UPDATE auth_sessions SET revoked_at = NULL, expires_at = ${T}
+        WHERE session_id = 'sess-laptop'`;
+      yield* notify(linked);
+      assert.deepStrictEqual(apns.sent, []);
+    }).pipe(Effect.provide(build(apns)));
+  });
 
   it.effect("sends a read's new badge, with no banner, to the reader's other devices", () => {
     const apns = makeApns();
@@ -1338,6 +1434,19 @@ describe("KinPushSender", () => {
       });
       assert.strictEqual(apns.sent.length, 0);
     }).pipe(Effect.provide(build(apns)));
+  });
+});
+
+describe("kinTasksSubject", () => {
+  it("opens the one task a notice names, and Tasks when it names more", () => {
+    const [a, b] = [KinRecordKey.make("W-4"), KinRecordKey.make("W-7")];
+    assert.isUndefined(Sender.kinTasksSubject([]));
+    assert.deepStrictEqual(Sender.kinTasksSubject([a, a]), {
+      _tag: "record",
+      key: a,
+      kind: "task",
+    });
+    assert.deepStrictEqual(Sender.kinTasksSubject([a, b]), { _tag: "tasks" });
   });
 });
 

@@ -173,6 +173,8 @@ export function KinDocReader(
     readonly onRestore: ((version: number) => void) | null;
     /** Where the page header's own buttons go. */
     readonly actions: HTMLElement | null;
+    /** What links to the doc and what it links to, after the body. */
+    readonly linked: React.ReactNode;
   },
 ) {
   const { doc, onPoint } = props;
@@ -445,6 +447,7 @@ export function KinDocReader(
               )}
             </div>
           )}
+          {props.linked}
         </article>
       </div>
       {[...headings].map(([id, heading]) => {

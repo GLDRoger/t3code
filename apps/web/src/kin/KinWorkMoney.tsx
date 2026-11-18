@@ -9,7 +9,7 @@ import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import {
   kinEstimatesByLine,
   kinMissingRates,
-  kinTotalsEstimate,
+  kinOwedAbout,
   type KinEstimate,
 } from "@t3tools/client-runtime/kin/kinCurrency";
 import {
@@ -342,7 +342,7 @@ export function KinWorkMoney(
     ],
     rates,
   );
-  const owedAll = kinTotalsEstimate(summary.owed.total, rates);
+  const owedAbout = kinOwedAbout(summary, rates);
   const missing = kinMissingRates(
     [
       ...summary.owed.total,
@@ -363,13 +363,10 @@ export function KinWorkMoney(
             <Figure figure={view.owed} onOpen={props.onOpenList} estimates={estimates} />
             <Figure figure={view.overdue} onOpen={props.onOpenList} estimates={estimates} />
           </div>
-          {owedAll?.all == null && missing.length === 0 ? null : (
+          {owedAbout === null && missing.length === 0 ? null : (
             <div className="flex flex-wrap items-center gap-x-3 px-2">
-              {owedAll?.all == null ? null : (
-                <KinEstimateText
-                  text={`${owedAll.all} owed (estimate)`}
-                  basis={owedAll.basis.map((line) => `At ${line}.`)}
-                />
+              {owedAbout === null ? null : (
+                <KinEstimateText text={owedAbout.text} basis={owedAbout.basis} />
               )}
               <KinSetRateButton {...props} currencies={missing} />
             </div>

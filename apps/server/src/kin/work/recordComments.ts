@@ -10,6 +10,9 @@ import {
   KinMessageId,
   type KinOrgId,
   KinPersonId,
+  type KinProjectNote,
+  KinRecordId,
+  KinRecordKey,
   type KinRecordComment,
   type KinRecordDetail,
   type KinRecordWaiting,
@@ -145,6 +148,25 @@ export const commentsPage = Effect.fn("KinRecordComments.page")(function* (
   return {
     comments: rows.slice(0, KIN_RECORD_COMMENTS_PAGE).toReversed().map(toComment),
     older: rows.length > KIN_RECORD_COMMENTS_PAGE,
+  };
+});
+
+/** The newest `limit` comments still standing, oldest first, and how many older ones stand. */
+export const latestComments = Effect.fn("KinRecordComments.latest")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+  limit: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<CommentRow>`SELECT ${sql.literal(COLUMNS)} FROM kin_record_comments
+    WHERE org_id = ${orgId} AND record_id = ${recordId} AND removed_at IS NULL
+    ORDER BY seq DESC LIMIT ${limit}`;
+  const [standing] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
+    FROM kin_record_comments
+    WHERE org_id = ${orgId} AND record_id = ${recordId} AND removed_at IS NULL`;
+  return {
+    comments: rows.toReversed().map(toComment),
+    older: Math.max(0, (standing?.count ?? 0) - rows.length),
   };
 });
 
@@ -288,6 +310,74 @@ export const commentFileReadable = Effect.fn("KinRecordComments.fileReadable")(f
 const decodeChoice = Schema.decodeUnknownOption(Schema.fromJsonString(KinChoiceCardState));
 /** About-text names keys between spaces, as `instr(' ' || about || ' ', ' KEY ')` reads it. */
 const aboutKeys = (about: string) => new Set(about.split(/\s+/).filter((word) => word !== ""));
+// A project's note for every task is a comment on the project whose id starts so.
+const NOTE_ID = "pnote_";
+
+/** The note a project leaves on every task: its newest standing note comment, if any. */
+export const projectNoteOf = Effect.fn("KinRecordComments.projectNote")(function* (
+  orgId: KinOrgId,
+  projectId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<CommentRow>`SELECT ${sql.literal(COLUMNS)} FROM kin_record_comments
+    WHERE org_id = ${orgId} AND record_id = ${projectId} AND removed_at IS NULL
+      AND substr(comment_id, 1, ${NOTE_ID.length}) = ${NOTE_ID}
+    ORDER BY seq DESC LIMIT 1`;
+  if (row === undefined) return undefined;
+  const [project] = yield* sql<{ key: string; title: string }>`SELECT key, title FROM kin_records
+    WHERE org_id = ${orgId} AND record_id = ${projectId} AND register_id = 'projects'`;
+  if (project === undefined) return undefined;
+  const note: KinProjectNote = {
+    body: row.body,
+    at: iso(row.createdAt),
+    by: principalOf(row.authorKind, row.authorId),
+    project: {
+      recordId: KinRecordId.make(projectId),
+      key: KinRecordKey.make(project.key),
+      title: project.title,
+    },
+  };
+  return note;
+});
+
+/**
+ * Sets a project's note in the caller's transaction: the standing one is taken back and these
+ * words, unless empty, become the note. An identical retry changes nothing; a different one fails.
+ */
+export const writeProjectNote = Effect.fn("KinRecordComments.writeProjectNote")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly projectId: string;
+  readonly by: KinPersonId;
+  readonly requestId: string;
+  readonly body: string;
+  readonly now: number;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const body = input.body.trim();
+  const requestHash = requestHashOf(body, []);
+  const commentId = `${NOTE_ID}${hash([input.orgId, input.projectId, input.by, input.requestId]).slice(0, 24)}`;
+  const [stored] = yield* sql<{ requestHash: string }>`SELECT request_hash AS "requestHash"
+    FROM kin_record_comments WHERE org_id = ${input.orgId} AND comment_id = ${commentId}`;
+  if (stored !== undefined) {
+    if (stored.requestHash === requestHash) return;
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: "That retry key already wrote a different note.",
+    });
+  }
+  yield* sql`UPDATE kin_record_comments
+    SET removed_at = ${input.now}, removed_by_kind = 'person', removed_by_id = ${input.by}
+    WHERE org_id = ${input.orgId} AND record_id = ${input.projectId} AND removed_at IS NULL
+      AND substr(comment_id, 1, ${NOTE_ID.length}) = ${NOTE_ID}`;
+  if (body === "") return;
+  yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq, author_kind,
+      author_id, body, files_json, request_hash, created_at)
+    VALUES (${input.orgId}, ${commentId}, ${input.projectId},
+      (SELECT COALESCE(MAX(seq), 0) + 1 FROM kin_record_comments
+        WHERE org_id = ${input.orgId} AND record_id = ${input.projectId}),
+      'person', ${input.by}, ${body}, '[]', ${requestHash}, ${input.now})
+    ON CONFLICT DO NOTHING`;
+});
 
 /**
  * The newest open card about each entry in a chat this person reads: a mail to Confirm that
@@ -403,9 +493,18 @@ const waitingFor = Effect.fn("KinRecordComments.waiting")(function* (
 export const sheetExtras = Effect.fn("KinRecordComments.sheetExtras")(function* (
   orgId: KinOrgId,
   viewer: SheetViewer,
-  detail: Pick<KinRecordDetail, "recordId" | "key" | "askedBy" | "comments" | "olderComments">,
+  detail: Pick<
+    KinRecordDetail,
+    "recordId" | "key" | "askedBy" | "comments" | "olderComments" | "project"
+  >,
 ) {
   const waiting = yield* waitingFor(orgId, viewer.person.personId, detail);
+  const projectId = detail.project?.recordId;
+  const projectNote =
+    projectId === undefined ||
+    (viewer.teammate && !(yield* personSeesRecord(orgId, viewer.person.personId, projectId)))
+      ? undefined
+      : yield* projectNoteOf(orgId, projectId);
   return {
     ...(detail.askedBy === undefined ? {} : { askedBy: detail.askedBy }),
     ...(detail.comments === undefined
@@ -413,5 +512,6 @@ export const sheetExtras = Effect.fn("KinRecordComments.sheetExtras")(function* 
       : { comments: detail.comments.map((one) => withCanRemove(viewer, one)) }),
     ...(detail.olderComments === undefined ? {} : { olderComments: detail.olderComments }),
     ...(waiting === undefined ? {} : { waiting }),
+    ...(projectNote === undefined ? {} : { projectNote }),
   };
 });

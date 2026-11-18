@@ -27,6 +27,7 @@ import {
   type KinPulseListInput,
   type KinMemoryListInput,
   type KinPeopleListInput,
+  type KinPeopleListDevicesInput,
   type KinAgentDefaultsInput,
   type KinAgentPageInput,
   type KinLeadAccessInput,
@@ -235,6 +236,11 @@ export function makeKinClient<R, ER>(
     tag: KIN_PEOPLE_WS_METHODS.peopleListInvites,
   });
   const readInvites = kinGuardedRead(invitesRead);
+  const devicesRead = createKinRpcCommand(runtime, {
+    label: "kin:devices:read",
+    tag: KIN_PEOPLE_WS_METHODS.peopleListDevices,
+  });
+  const readDevices = kinGuardedRead(devicesRead);
   const profilesRead = createKinRpcCommand(runtime, {
     label: "kin:profiles:read",
     tag: KIN_PEOPLE_WS_METHODS.peopleProfiles,
@@ -852,6 +858,26 @@ export function makeKinClient<R, ER>(
       staleTimeMs: 30_000,
       refreshTrigger: kinRefreshOn("people"),
     }),
+    /** A person's signed-in devices: their own, or a teammate's for the owner level. */
+    devices: createKinQueryAtomFamily(runtime, {
+      label: "kin:devices",
+      execute: Effect.fn("KinClient.devices")(function* (input: KinPeopleListDevicesInput) {
+        return yield* readDevices(input);
+      }),
+      staleTimeMs: 15_000,
+      refreshTrigger: kinRefreshOn("people"),
+    }),
+    deviceRemove: createKinRpcCommand(runtime, {
+      label: "kin:device:remove",
+      tag: KIN_PEOPLE_WS_METHODS.peopleRevokeDevice,
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.sessionId },
+    }),
+    /** A code and link for one more of your own devices; shown once, kept nowhere. */
+    deviceLink: createKinRpcCommand(runtime, {
+      label: "kin:device:link",
+      tag: KIN_PEOPLE_WS_METHODS.peopleLinkDevice,
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+    }),
     /** Makes a teammate's link. The answer carries the secret once; nothing here keeps it. */
     inviteCreate: createKinRpcCommand(runtime, {
       label: "kin:invite:create",
@@ -1222,18 +1248,26 @@ export function makeKinClient<R, ER>(
       staleTimeMs: 30_000,
       refreshTrigger: kinWorkRefreshOn(["clients", "projects"], kinRefreshOn("workChoices")),
     }),
-    /** The active clients and open projects a task or a project can be put under, by name. */
+    /**
+     * The active clients and open projects a task or a project can be put under, by name, and the
+     * done projects a late task can still be filed under.
+     */
     workChoices: createKinQueryAtomFamily(runtime, {
       label: "kin:work:choices",
       execute: Effect.fn("KinClient.workChoices")(function* (input: { readonly orgId: KinOrgId }) {
-        const [clients, projects] = yield* Effect.all(
+        const [clients, projects, done] = yield* Effect.all(
           [
             readWorkClients({ orgId: input.orgId, limit: 100 }),
             readWorkProjects({ orgId: input.orgId, limit: 100 }),
+            readWorkProjects({ orgId: input.orgId, state: "done", limit: 100 }),
           ],
-          { concurrency: 2 },
+          { concurrency: 3 },
         );
-        return { clients: clients.parties, projects: projects.projects };
+        return {
+          clients: clients.parties,
+          projects: projects.projects,
+          doneProjects: done.projects,
+        };
       }),
       staleTimeMs: 30_000,
       // Pickers show only names, kinds and states from these rows, which only their own lists move.
@@ -1411,6 +1445,24 @@ export function makeKinClient<R, ER>(
     workComments: createKinRpcCommand(runtime, {
       label: "kin:work:comments",
       tag: "kin.work.comments",
+    }),
+    /** "Add a link" on an entry: a web page, by whoever may edit it. */
+    workLinkAdd: createKinRpcCommand(runtime, {
+      label: "kin:work:linkAdd",
+      tag: "kin.work.linkAdd",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.key}:${input.url}` },
+    }),
+    /** Takes a web page's link off an entry. */
+    workLinkRemove: createKinRpcCommand(runtime, {
+      label: "kin:work:linkRemove",
+      tag: "kin.work.linkRemove",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.key}:${input.url}` },
+    }),
+    /** Sets or clears a project's note for every task. */
+    workProjectNote: createKinRpcCommand(runtime, {
+      label: "kin:work:projectNote",
+      tag: "kin.work.projectNote",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
     }),
     /** Every open task someone holds, to someone else; `dryRun` counts them first. */
     workHandOver: createKinRpcCommand(runtime, {

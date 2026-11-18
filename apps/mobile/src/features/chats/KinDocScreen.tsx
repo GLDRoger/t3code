@@ -80,6 +80,7 @@ import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { ThreadMarkdownImage } from "../threads/ThreadMarkdownImage";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
 import { KinDocFileRows } from "./KinInvoice";
+import { KinLinkedSection, useKinOpenLinked } from "./KinWorkItemScreen";
 import { KinWorkShareRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
 import { useKinDocLabel } from "./state/useKinDocLabel";
@@ -263,6 +264,7 @@ function KinDocBody(
 ) {
   const navigation = useNavigation();
   const openRecord = useKinWorkLink();
+  const openLinked = useKinOpenLinked(props);
   const { environmentId, orgId, doc } = props;
   const { party, project } = doc;
   const target = { environmentId, orgId };
@@ -713,6 +715,10 @@ function KinDocBody(
               </View>
             ))
           )}
+          <View className="pt-3">
+            {/* The chips above name the doc's client and project already. */}
+            <KinLinkedSection item={doc} parentsShown onOpen={openLinked} />
+          </View>
         </ScreenScrollView>
       </ScreenContent>
       <FilePreviewModal source={preview} onRequestClose={() => setPreview(null)} />

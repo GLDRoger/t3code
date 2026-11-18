@@ -100,7 +100,10 @@ function NameForm(props: {
   const nameId = useId();
   const checked = kinTeammateNameCheck(name);
 
-  const make = async (person: NonNullable<ReturnType<typeof kinRemovedNamesake>> | null) => {
+  const make = async (
+    person: NonNullable<ReturnType<typeof kinRemovedNamesake>> | null,
+    newPerson?: true,
+  ) => {
     if (!checked.ok || busy) return;
     props.setBusy(true);
     setProblem(null);
@@ -108,6 +111,7 @@ function NameForm(props: {
     const made = await props.actions.makeLink({
       displayName: person?.displayName ?? checked.name,
       personId: person?.personId ?? null,
+      ...(newPerson === true ? { newPerson } : {}),
       replaces:
         person === null
           ? null
@@ -169,6 +173,16 @@ function NameForm(props: {
                     Bring back {offer.person.displayName}
                   </Button>
                 )}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="self-start"
+                  disabled={busy}
+                  onClick={() => void make(null, true)}
+                >
+                  {KIN_TEAM_ADD_COPY.someoneElse}
+                </Button>
               </AlertDescription>
             </Alert>
           )}

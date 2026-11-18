@@ -67,6 +67,7 @@ import {
   type KinWorkTarget,
 } from "./state/useKinWork";
 import { KinAttentionSection } from "./KinAttention";
+import { KinProjectNoteSection } from "./components/KinProjectNote";
 import { useKinWorkLink } from "./state/kinWorkLink";
 
 export type KinProjectParams = {
@@ -178,6 +179,7 @@ function KinProjectBody(
   const openRecord = useKinWorkLink();
   const { environmentId, orgId } = props;
   const canChange = useAtomValue(kinClient.workProjectUpdate.permissionAtom(environmentId));
+  const canNote = useAtomValue(kinClient.workProjectNote.permissionAtom(environmentId));
   const update = useAtomCommand(kinClient.workProjectUpdate, { reportFailure: false });
   const now = new Date(useNowMinuteMs());
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
@@ -330,6 +332,16 @@ function KinProjectBody(
               }
             />
             <View className="gap-5 px-4 pb-2">
+              {props.page.can?.note === undefined ? null : (
+                <KinProjectNoteSection
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  projectKey={view.key}
+                  note={props.page.note ?? null}
+                  canEdit={props.page.can.note && canNote}
+                  onChanged={props.onRefresh}
+                />
+              )}
               <KinAttentionSection
                 environmentId={environmentId}
                 orgId={orgId}

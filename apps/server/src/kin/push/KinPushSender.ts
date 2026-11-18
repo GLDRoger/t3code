@@ -12,9 +12,11 @@ import type {
   KinPushSendingStatus,
   KinPushSubject,
   KinPushToken,
+  KinRecordKey,
   KinWidgetId,
 } from "@t3tools/contracts";
 import {
+  KIN_DEVICE_LINKED_NOTICE,
   KinMessageRelay,
   kinGreeting,
   kinIsBrief,
@@ -27,6 +29,7 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import type * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -41,6 +44,7 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { withLinks } from "../chat/messageLinks.ts";
 import { memberReads } from "../chat/sharing.ts";
 import { MemoryCache } from "../memory/MemoryCache.ts";
+import { isHolderNotice } from "../pulse/holderNotice.ts";
 import { personHoldNow } from "../triggers/quietHold.ts";
 import { KinApnsTransport } from "./Apns.ts";
 import { KinPushDevices, kinPushDeviceId, type KinPushDevice } from "./KinPushDevices.ts";
@@ -60,6 +64,8 @@ export type KinPushNotification =
       /** The turn's own messages that posted the card: whoever they rang already heard of it. */
       readonly covered?: ReadonlyArray<KinMessageId>;
     }
+  /** A person linked one more device themself: their other phones hear of it, every time. */
+  | { readonly _tag: "device"; readonly orgId: KinOrgId; readonly sessionId: string }
   /** A member's read mark moved: their other devices get the new badge, with no banner. */
   | {
       readonly _tag: "read";
@@ -99,6 +105,8 @@ type Push = {
   readonly collapseId?: string;
   readonly data: KinPushData;
   readonly recipients: ReadonlyArray<Recipient>;
+  /** A device the push is about, which needs no word of itself. */
+  readonly exceptSession?: string;
 };
 
 /** APNs refuses a regular push whose JSON payload is longer than this many bytes. */
@@ -190,6 +198,14 @@ const segment = encodeURIComponent;
 /** Every Kin host shares org id `kin-default`, so links name the host too (mobile spec, routes). */
 export const kinPushChatLink = (environmentId: EnvironmentId, orgId: KinOrgId, chatId: KinChatId) =>
   `/kin/${segment(environmentId)}/${segment(orgId)}/chats/${segment(chatId)}`;
+/** A notice about the reader's tasks opens the one it names, or their Tasks when it names more. */
+export const kinTasksSubject = (keys: ReadonlyArray<KinRecordKey>): KinPushSubject | undefined => {
+  const unique = [...new Set(keys)];
+  if (unique.length === 0) return undefined;
+  return unique.length === 1
+    ? { _tag: "record", key: unique[0]!, kind: "task" }
+    : { _tag: "tasks" };
+};
 /** Fits `apns-collapse-id`'s 64 bytes whatever the ids' length. */
 const kinPushCollapseId = (orgId: KinOrgId, chatId: KinChatId) =>
   `kin:${kinPushDeviceId(`${orgId}\u0000${chatId}`)}`;
@@ -343,7 +359,24 @@ const make = Effect.gen(function* () {
     function* (orgId: KinOrgId, messageId: KinMessageId, personId: KinPersonId) {
       const message = yield* chats.getMessage({ orgId, messageId });
       if (Option.isNone(message)) return undefined;
-      const [linked] = yield* withLinks(orgId, { _tag: "person", personId }, [message.value]).pipe(
+      const reader = { _tag: "person", personId } as const;
+      // Kin's notice of someone's late or due work names only their tasks: it opens them.
+      if (
+        message.value.author._tag === "system" &&
+        (yield* isHolderNotice(orgId, messageId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ))
+      ) {
+        const [listed] = yield* withLinks(orgId, reader, [{ ...message.value, kind: "text" }]).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        return kinTasksSubject(
+          (listed?.links ?? []).flatMap(({ to }) =>
+            to._tag === "record" && to.kind === "task" ? [to.key] : [],
+          ),
+        );
+      }
+      const [linked] = yield* withLinks(orgId, reader, [message.value]).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
       );
       return linked === undefined ? undefined : (kinMessageSubject(linked) ?? undefined);
@@ -720,10 +753,10 @@ const make = Effect.gen(function* () {
   });
 
   const deliver = Effect.fn("KinPushSender.deliver")(function* (orgId: KinOrgId, push: Push) {
-    const targets = yield* devices.forPeople(
+    const targets = (yield* devices.forPeople(
       orgId,
       push.recipients.map((recipient) => recipient.personId),
-    );
+    )).filter((device) => device.sessionId !== push.exceptSession);
     const recipients = new Map<
       KinPersonId,
       { silent: boolean; badge: number; subject: KinPushSubject | undefined }
@@ -810,6 +843,35 @@ const make = Effect.gen(function* () {
     return { sent: count("sent"), suppressed: count("suppressed"), failed: count("failed") };
   });
 
+  const devicePush = Effect.fn("KinPushSender.devicePush")(function* (
+    orgId: KinOrgId,
+    sessionId: string,
+  ) {
+    // Told only while it is still signed in: a device removed meanwhile has nothing to warn of.
+    const [row] = yield* sql<{ person_id: KinPersonId }>`
+      SELECT b.person_id FROM kin_session_bindings b
+      JOIN auth_sessions a ON a.session_id = b.session_id
+      WHERE b.org_id = ${orgId} AND b.session_id = ${sessionId} AND b.revoked_at IS NULL
+        AND a.revoked_at IS NULL AND a.expires_at > ${DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis))}`;
+    if (row === undefined) return undefined;
+    const push: Push = {
+      category: "kin.message",
+      title: "New device linked",
+      body: KIN_DEVICE_LINKED_NOTICE,
+      chatId: undefined,
+      source: undefined,
+      data: {
+        kin: 1,
+        orgId,
+        deepLink: `/kin/${host}/${segment(orgId)}/people/${segment(row.person_id)}/devices`,
+      },
+      // Someone else signing in as them rings through quiet hours.
+      recipients: [{ personId: row.person_id, silent: false }],
+      exceptSession: sessionId,
+    };
+    return push;
+  });
+
   const nothing: KinPushOutcome = { status: apns.status, sent: 0, suppressed: 0, failed: 0 };
 
   const run = Effect.fn("KinPushSender.run")(
@@ -825,13 +887,15 @@ const make = Effect.gen(function* () {
       const push =
         notification._tag === "approval"
           ? yield* approvalPush(notification.orgId, notification.actionId)
-          : notification._tag === "message"
-            ? yield* messagePush(notification.orgId, notification.messageId)
-            : yield* widgetPush(
-                notification.orgId,
-                notification.widgetId,
-                notification.covered ?? [],
-              );
+          : notification._tag === "device"
+            ? yield* devicePush(notification.orgId, notification.sessionId)
+            : notification._tag === "message"
+              ? yield* messagePush(notification.orgId, notification.messageId)
+              : yield* widgetPush(
+                  notification.orgId,
+                  notification.widgetId,
+                  notification.covered ?? [],
+                );
       if (push === undefined || push.recipients.length === 0) return nothing;
       const outcome: KinPushOutcome = {
         status: apns.status,

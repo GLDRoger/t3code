@@ -1,9 +1,20 @@
 import { useKinOpensClients } from "./state/kinChatOnly";
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import {
+  KIN_LINKED,
+  kinLinked,
+  kinLinkedRest,
+  type KinLinkedGroupName,
+} from "@t3tools/client-runtime/kin/kinLinked";
+import type { KinNotificationDestination } from "@t3tools/client-runtime/kin/kinNotificationDestination";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
+  KIN_TASK_LINK,
+  KIN_TASK_NOTE_COPY,
   KIN_TASK_RECORD,
+  kinProjectNoteLine,
+  kinTaskLinkProblem,
   kinBriefBy,
   kinNextStep,
   kinRecordAskedBy,
@@ -42,6 +53,7 @@ import {
   type KinWorkAction,
   type KinWorkNotice,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   EnvironmentId,
   KIN_RECORD_CHANGES_CAP,
@@ -50,13 +62,14 @@ import {
   type KinAgentId,
   type KinChatId,
   type KinRecordComment,
+  type KinRecordDetail,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { Pressable, TextInput, View } from "react-native";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import type { AppBarMenu, AppBarMenuItem } from "../../components/ui/AppBar";
@@ -70,6 +83,7 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
+import { RowPressable } from "../../components/ui/RowPressable";
 import { Notice } from "../../components/ui/Notice";
 import { useNowMinuteMs } from "../../lib/clock";
 import { cn } from "../../lib/cn";
@@ -225,6 +239,7 @@ function KinWorkItemBody(props: ItemTarget) {
   const openRecord = useKinWorkLink();
   const openDetail = useOpenWorkspaceDetail();
   const { environmentId, orgId, itemKey } = props;
+  const openLinked = useKinOpenLinked(props);
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
   const { state: changed, changes } = useKinWorkChanges(props);
   const state = kinWorkItemState(useAtomValue(itemAtom), useKinWorkAnswer(props, itemKey));
@@ -248,6 +263,9 @@ function KinWorkItemBody(props: ItemTarget) {
   } | null>(null);
   const readOlder = useAtomCommand(kinClient.workComments, { reportFailure: false });
   const removeComment = useAtomCommand(kinClient.workCommentRemove, { reportFailure: false });
+  const addLink = useAtomCommand(kinClient.workLinkAdd, { reportFailure: false });
+  const removeLink = useAtomCommand(kinClient.workLinkRemove, { reportFailure: false });
+  const canLink = useAtomValue(kinClient.workLinkAdd.permissionAtom(environmentId));
   const place = useKinWorkPlace(environmentId);
   const work = useKinWork(props);
   // Make invoice and Make its PDF are a step of this page, never a sheet over it.
@@ -296,6 +314,70 @@ function KinWorkItemBody(props: ItemTarget) {
   };
   const openThread = (thread: NonNullable<KinWorkLinkView["thread"]>) =>
     openDetail({ name: "Thread", params: thread });
+  const linkFailed = (outcome: AsyncResult.AsyncResult<unknown, unknown>, what: string) => {
+    if (!AsyncResult.isFailure(outcome)) return false;
+    Dialog.alert(kinFailureText(squashAtomCommandFailure(outcome), what));
+    return true;
+  };
+  const askLink = () =>
+    Dialog.prompt({
+      title: KIN_TASK_LINK.add,
+      message: KIN_TASK_LINK.url,
+      placeholder: KIN_TASK_LINK.urlPlaceholder,
+      initialValue: "",
+      confirmText: KIN_TASK_LINK.next,
+      onConfirm: (typed) => {
+        const url = typed.trim();
+        if (url === "") return;
+        const problem = kinTaskLinkProblem(url);
+        if (problem !== null) return Dialog.alert(problem);
+        Dialog.prompt({
+          title: KIN_TASK_LINK.add,
+          message: KIN_TASK_LINK.name,
+          initialValue: "",
+          confirmText: KIN_TASK_LINK.save,
+          onConfirm: (named) => {
+            const name = named.trim();
+            void addLink({
+              environmentId,
+              input: { orgId, key: itemKey, url, ...(name === "" ? {} : { name }) },
+            }).then((outcome) => {
+              if (!linkFailed(outcome, KIN_TASK_LINK.notAdded)) appAtomRegistry.refresh(itemAtom);
+            });
+          },
+        });
+      },
+    });
+  const askUnlink = (link: KinWorkLinkView) => {
+    const { removeUrl } = link;
+    if (removeUrl === undefined) return;
+    Dialog.confirm({
+      title: KIN_TASK_LINK.removeTitle,
+      message: link.label,
+      confirmText: KIN_TASK_LINK.removeConfirm,
+      destructive: true,
+      onConfirm: () =>
+        void removeLink({ environmentId, input: { orgId, key: itemKey, url: removeUrl } }).then(
+          (outcome) => {
+            if (!linkFailed(outcome, KIN_TASK_LINK.notRemoved)) appAtomRegistry.refresh(itemAtom);
+          },
+        ),
+    });
+  };
+  const linkedSection = (
+    detail: KinRecordDetail,
+    links: ReadonlyArray<KinWorkLinkView>,
+    editsLinks = false,
+  ) => (
+    <KinWorkLinked
+      detail={detail}
+      links={links}
+      onOpen={openLinked}
+      onOpenLink={openLink}
+      onOpenThread={openThread}
+      {...(editsLinks ? { onAddLink: askLink, onRemoveLink: askUnlink } : {})}
+    />
+  );
   if (item.list !== undefined && making !== null)
     return (
       <KinMakeDocumentStep
@@ -316,20 +398,7 @@ function KinWorkItemBody(props: ItemTarget) {
           view={read}
           directory={directory}
           now={now}
-          links={
-            read.links.length === 0 ? null : (
-              <ListSection title={KIN_TASK_RECORD.linked}>
-                {read.links.map((link) => (
-                  <KinWorkLink
-                    key={link.key}
-                    link={link}
-                    onOpen={() => openLink(link)}
-                    onOpenThread={openThread}
-                  />
-                ))}
-              </ListSection>
-            )
-          }
+          links={linkedSection(item, read.links)}
           history={<KinWorkHistory view={read} />}
         />
       </KinWorkFrame>
@@ -544,9 +613,9 @@ function KinWorkItemBody(props: ItemTarget) {
   };
   const askRemove = (commentId: string) =>
     Dialog.confirm({
-      title: "Remove this note?",
-      message: "It stays in Activity as removed, without its words or files.",
-      confirmText: "Remove",
+      title: KIN_TASK_NOTE_COPY.removeTitle,
+      message: KIN_TASK_RECORD.removeDetail,
+      confirmText: KIN_TASK_NOTE_COPY.remove,
       destructive: true,
       onConfirm: () =>
         void removeComment({ environmentId, input: { orgId, key: itemKey, commentId } }).then(
@@ -878,19 +947,12 @@ function KinWorkItemBody(props: ItemTarget) {
         onPressPreview={setPreviewFile}
         onRemove={askRemove}
         {...(moreComments ? { onOlder: () => void loadOlder() } : {})}
+        {...(item.projectNote === undefined
+          ? {}
+          : { projectNote: kinProjectNoteLine(item.projectNote, names, now) })}
+        onOpenProject={(project) => openRecord("KinProject", { environmentId, orgId, project })}
       />
-      {view.links.length === 0 ? null : (
-        <ListSection title={KIN_TASK_RECORD.linked}>
-          {view.links.map((link) => (
-            <KinWorkLink
-              key={link.key}
-              link={link}
-              onOpen={() => openLink(link)}
-              onOpenThread={openThread}
-            />
-          ))}
-        </ListSection>
-      )}
+      {linkedSection(shown, view.links, canLink && view.can.links === true)}
       <FilePreviewModal source={previewFile} onRequestClose={() => setPreviewFile(null)} />
     </KinWorkFrame>
   );
@@ -948,7 +1010,10 @@ function KinActivity(props: {
   readonly onPressPreview: (source: FilePreviewSource) => void;
   readonly onRemove: (commentId: string) => void;
   readonly onOlder?: () => void;
+  readonly projectNote?: ReturnType<typeof kinProjectNoteLine>;
+  readonly onOpenProject: (key: KinRecordKey) => void;
 }) {
+  const pinned = props.projectNote;
   return (
     <View className="gap-3">
       <Text
@@ -963,6 +1028,33 @@ function KinActivity(props: {
           {props.note}
         </Text>
       )}
+      {pinned === undefined ? null : (
+        <View
+          accessible
+          accessibilityLabel={`${KIN_TASK_RECORD.fromProject}, ${pinned.project.title}. ${pinned.body}`}
+          className="flex-row gap-2.5 px-1"
+        >
+          <View className="w-7 items-center pt-0.5">
+            <SymbolView name="folder" size={15} tintColorClassName="accent-icon-muted" />
+          </View>
+          <View className="min-w-0 flex-1">
+            <Text textRole="footnote" className="text-foreground-muted">
+              <Text className="font-t3-medium text-foreground">{KIN_TASK_RECORD.fromProject} </Text>
+              <Text
+                accessibilityRole="link"
+                className="text-foreground underline"
+                onPress={() => props.onOpenProject(pinned.project.key)}
+              >
+                {pinned.project.title}
+              </Text>
+              {` · ${pinned.who}, ${pinned.when}`}
+            </Text>
+            <Text textRole="body" selectable className="mt-1 text-foreground">
+              {pinned.body}
+            </Text>
+          </View>
+        </View>
+      )}
       {props.onOlder === undefined ? null : (
         <View className="px-1">
           <Button
@@ -974,9 +1066,11 @@ function KinActivity(props: {
         </View>
       )}
       {props.lines.length === 0 ? (
-        <Text textRole="footnote" className="px-2 text-foreground-muted">
-          {KIN_TASK_RECORD.noActivity}
-        </Text>
+        pinned !== undefined ? null : (
+          <Text textRole="footnote" className="px-2 text-foreground-muted">
+            {KIN_TASK_RECORD.noActivity}
+          </Text>
+        )
       ) : (
         props.lines.map((line) => (
           <View key={line.key} className="flex-row gap-2.5 px-1">
@@ -1048,7 +1142,7 @@ function KinCommentBody(props: {
           <Button
             tone="text"
             size="compact"
-            label="Remove"
+            label={KIN_TASK_NOTE_COPY.remove}
             accessibilityLabel="Remove this note"
             onPress={props.onRemove}
           />
@@ -1109,10 +1203,138 @@ function KinWorkNoticeLine(props: {
   );
 }
 
+/** Everything linked to an entry, both ways, by kind; then its pull requests, workers and pages. */
+function KinWorkLinked(props: {
+  readonly detail: KinRecordDetail;
+  readonly links: ReadonlyArray<KinWorkLinkView>;
+  readonly onOpen: (to: KinNotificationDestination) => void;
+  readonly onOpenLink: (link: KinWorkLinkView) => void;
+  readonly onOpenThread: (thread: NonNullable<KinWorkLinkView["thread"]>) => void;
+  /** Only where this viewer may change the entry's web links. */
+  readonly onAddLink?: () => void;
+  readonly onRemoveLink?: (link: KinWorkLinkView) => void;
+}) {
+  const rest = kinLinkedRest(props.links);
+  const { onAddLink, onRemoveLink } = props;
+  return (
+    <KinLinkedSection
+      item={props.detail}
+      // Both pages show the entry's client, project and milestone in their rows already.
+      parentsShown
+      onOpen={props.onOpen}
+    >
+      {rest.length === 0 && onAddLink === undefined ? null : (
+        <>
+          {rest.map((link) => (
+            <KinWorkLink
+              key={link.key}
+              link={link}
+              onOpen={() => props.onOpenLink(link)}
+              onOpenThread={props.onOpenThread}
+              {...(onRemoveLink === undefined || link.removeUrl === undefined
+                ? {}
+                : { onRemove: () => onRemoveLink(link) })}
+            />
+          ))}
+          {onAddLink === undefined ? null : (
+            <ListActionRow label={KIN_TASK_LINK.add} onPress={onAddLink} />
+          )}
+        </>
+      )}
+    </KinLinkedSection>
+  );
+}
+
+/** Opens a Linked row: a chat at its message, a record as a record link, a doc as a doc. */
+export function useKinOpenLinked(target: KinWorkTarget) {
+  const navigation = useNavigation();
+  const openRecord = useKinWorkLink();
+  const { environmentId, orgId } = target;
+  return (to: KinNotificationDestination) =>
+    to._tag === "chat"
+      ? navigation.navigate("KinChat", {
+          environmentId,
+          orgId,
+          chatId: to.chatId,
+          ...(to.messageId === null ? {} : { message: to.messageId }),
+        })
+      : to._tag !== "record"
+        ? undefined
+        : to.kind === "client"
+          ? openRecord("KinClient", { environmentId, orgId, party: to.key })
+          : to.kind === "project"
+            ? openRecord("KinProject", { environmentId, orgId, project: to.key })
+            : to.kind === "doc"
+              ? openRecord("KinDoc", { environmentId, orgId, doc: to.key })
+              : openRecord("KinWorkItem", { environmentId, orgId, task: to.key });
+}
+
+/** What links to an entry or doc and what it links to, by kind; `children` follow the groups. */
+export function KinLinkedSection(props: {
+  readonly item: Parameters<typeof kinLinked>[0];
+  readonly parentsShown: boolean;
+  readonly onOpen: (to: KinNotificationDestination) => void;
+  readonly children?: ReactNode;
+}) {
+  const [expanded, setExpanded] = useState<ReadonlySet<KinLinkedGroupName>>(new Set());
+  const linked = kinLinked(props.item, undefined, { expanded, parentsShown: props.parentsShown });
+  const children = props.children ?? null;
+  if (linked.groups.length === 0 && children === null && linked.unlisted === 0) return null;
+  return (
+    <ListSection
+      title={KIN_TASK_RECORD.linked}
+      {...(linked.unlisted === 0 ? {} : { footer: KIN_LINKED.unlisted(linked.unlisted) })}
+    >
+      {linked.groups.map((group) => (
+        <View key={group.group}>
+          <Text textRole="footnote" className="px-4 pt-3 text-foreground-muted">
+            {KIN_LINKED.group[group.group]}
+          </Text>
+          {group.items.map((item) => {
+            const title = item.title ?? KIN_LINKED.message;
+            return (
+              <RowPressable
+                key={item.key}
+                accessibilityRole="button"
+                accessibilityLabel={item.kind === "message" ? title : `${item.key}, ${title}`}
+                onPress={() => props.onOpen(item.open)}
+                className="bg-grouped-card"
+              >
+                <View className="min-w-0 flex-row gap-2 px-4 py-3">
+                  {item.kind === "message" ? null : (
+                    <Text textRole="body" className="text-foreground-muted">
+                      {item.key}
+                    </Text>
+                  )}
+                  <Text
+                    textRole="body"
+                    numberOfLines={1}
+                    className="min-w-0 flex-1 text-foreground"
+                  >
+                    {title}
+                  </Text>
+                </View>
+              </RowPressable>
+            );
+          })}
+          {group.more === 0 ? null : (
+            <ListActionRow
+              label={KIN_LINKED.more(group.more)}
+              onPress={() => setExpanded(new Set([...expanded, group.group]))}
+            />
+          )}
+        </View>
+      ))}
+      {children}
+    </ListSection>
+  );
+}
+
 function KinWorkLink(props: {
   readonly link: KinWorkLinkView;
   readonly onOpen: () => void;
   readonly onOpenThread: (thread: NonNullable<KinWorkLinkView["thread"]>) => void;
+  readonly onRemove?: () => void;
 }) {
   const { link } = props;
   const { thread } = link;
@@ -1133,6 +1355,13 @@ function KinWorkLink(props: {
         <ListActionRow
           label={KIN_WORK_COPY.openThread}
           onPress={() => props.onOpenThread(thread)}
+        />
+      )}
+      {props.onRemove === undefined ? null : (
+        <ListActionRow
+          tone="danger"
+          label={KIN_TASK_LINK.remove(link.label)}
+          onPress={props.onRemove}
         />
       )}
     </>

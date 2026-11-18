@@ -30,6 +30,7 @@ import {
   KinListId,
   KinMoney,
   KinMoneyTotals,
+  KinSignedMoney,
   KinPayment,
   KinRepeatRule,
 } from "./kinMoney.ts";
@@ -131,6 +132,8 @@ export const KinRecordCan = Schema.Struct({
   confirm: Schema.Boolean,
   /** Set how a task repeats, or turn it off; absent from older hosts. */
   repeat: Schema.optional(Schema.Boolean),
+  /** Add or remove its web links (`kin.work.linkAdd`); absent from older hosts. */
+  links: Schema.optional(Schema.Boolean),
 });
 export type KinRecordCan = typeof KinRecordCan.Type;
 
@@ -176,7 +179,8 @@ export const KinRecord = Schema.Struct({
   list: Schema.optional(KinListId),
   /** Its category among the list's own, such as an expense's `travel`. */
   listCategory: Schema.optional(KinTrimmedText),
-  amount: Schema.optional(KinMoney),
+  /** Below zero only on an expense: a refund or credit. */
+  amount: Schema.optional(KinSignedMoney),
   /** When it happened, was issued or starts; `dateAllDay` as for `dueAt`. */
   dateAt: Schema.optional(IsoDateTime),
   dateAllDay: Schema.optional(Schema.Boolean),
@@ -288,7 +292,7 @@ export const KinRecordChange = Schema.Struct({
 export type KinRecordChange = typeof KinRecordChange.Type;
 
 export const KIN_RECORD_COMMENT_MAX = 4_000;
-const KIN_RECORD_COMMENT_FILES_MAX = 8;
+export const KIN_RECORD_COMMENT_FILES_MAX = 8;
 /** How many comments a record's sheet carries, newest; `kin.work.comments` pages older ones. */
 export const KIN_RECORD_COMMENTS_PAGE = 50;
 /**
@@ -327,6 +331,31 @@ export const KinRecordWaiting = Schema.Struct({
 });
 export type KinRecordWaiting = typeof KinRecordWaiting.Type;
 
+/**
+ * A project's one note for every task: a comment on the project, shown at the top of each of its
+ * tasks to whoever sees the project. Never copied into a task.
+ */
+export const KinProjectNote = Schema.Struct({
+  body: KinText,
+  at: IsoDateTime,
+  by: KinWorkPrincipal,
+  project: KinRecordRef,
+});
+export type KinProjectNote = typeof KinProjectNote.Type;
+
+export const KIN_RECORD_LINKED_FROM_CAP = 50;
+/** The other way round from `links`, on a record's and a doc's sheet. */
+export const KinLinkedFromFields = {
+  /**
+   * Entries and docs that link to this one and the reader may see, newest first, at most
+   * `KIN_RECORD_LINKED_FROM_CAP`: `record` links whose `target` and `record` are the one linking
+   * here. Absent when none link here, and from older hosts.
+   */
+  linkedFrom: Schema.optional(Schema.Array(KinRecordLink)),
+  /** How many more past the cap, of those the reader may see. */
+  linkedFromMore: Schema.optional(NonNegativeInt),
+};
+
 /** An entry with everything the entry sheet shows. */
 export const KinRecordDetail = Schema.Struct({
   ...KinRecord.fields,
@@ -349,6 +378,7 @@ export const KinRecordDetail = Schema.Struct({
   reason: Schema.optional(KinText),
   createdBy: KinWorkActor,
   links: Schema.Array(KinRecordLink),
+  ...KinLinkedFromFields,
   /** Newest first, at most `KIN_RECORD_CHANGES_CAP`. */
   changes: Schema.Array(KinRecordChange),
   /** This entry's latest change number, links included: compare with a `changed` event's. */
@@ -377,6 +407,8 @@ export const KinRecordDetail = Schema.Struct({
   olderComments: Schema.optional(Schema.Boolean),
   /** The newest card waiting on someone about it, for a viewer who reads its chat. */
   waiting: Schema.optional(KinRecordWaiting),
+  /** Its project's note for every task, for a viewer who sees the project; absent with none. */
+  projectNote: Schema.optional(KinProjectNote),
 });
 export type KinRecordDetail = typeof KinRecordDetail.Type;
 export const KIN_RECORD_CHANGES_CAP = 50;
@@ -794,6 +826,34 @@ export const KinWorkCommentsInput = Schema.Struct({
   beforeSeq: NonNegativeInt,
 });
 export type KinWorkCommentsInput = typeof KinWorkCommentsInput.Type;
+
+const KIN_RECORD_URL_MAX = 2_000;
+/** "Add a link" on an entry: a web page, kept as a `url` link that relates to it. */
+export const KinWorkLinkAddInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  url: TrimmedNonEmptyString.check(Schema.isMaxLength(KIN_RECORD_URL_MAX)),
+  /** What the link reads as; the address itself when absent. */
+  name: Schema.optional(KinText.check(Schema.isMaxLength(200))),
+});
+export type KinWorkLinkAddInput = typeof KinWorkLinkAddInput.Type;
+/** Takes a `url` link off an entry; one already gone answers as removed. */
+export const KinWorkLinkRemoveInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  url: TrimmedNonEmptyString.check(Schema.isMaxLength(KIN_RECORD_URL_MAX)),
+});
+export type KinWorkLinkRemoveInput = typeof KinWorkLinkRemoveInput.Type;
+/** Sets a project's note for every task; empty words clear it. */
+export const KinProjectNoteInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  body: KinText.check(Schema.isMaxLength(KIN_RECORD_COMMENT_MAX)),
+});
+export type KinProjectNoteInput = typeof KinProjectNoteInput.Type;
+export const KinProjectNoteResult = Schema.Struct({ note: Schema.NullOr(KinProjectNote) });
+export type KinProjectNoteResult = typeof KinProjectNoteResult.Type;
 export const KinWorkCommentsResult = Schema.Struct({
   comments: Schema.Array(KinRecordComment),
   older: Schema.Boolean,
@@ -1150,7 +1210,15 @@ export const KinProjectPage = Schema.Struct({
   specChanged: Schema.optional(Schema.Array(KinSpecChange)),
   money: Schema.optional(KinProjectMoney),
   /** What this reader may change on it; absent from older hosts. */
-  can: Schema.optional(Schema.Struct({ people: Schema.Boolean })),
+  can: Schema.optional(
+    Schema.Struct({
+      people: Schema.Boolean,
+      /** Set or clear its note for every task; absent from older hosts. */
+      note: Schema.optional(Schema.Boolean),
+    }),
+  ),
+  /** Its note for every task; absent with none, and from older hosts. */
+  note: Schema.optional(KinProjectNote),
   seq: NonNegativeInt,
   asOf: IsoDateTime,
 });
@@ -1391,6 +1459,9 @@ export const KIN_WORK_WS_METHODS = {
   comment: "kin.work.comment",
   commentRemove: "kin.work.commentRemove",
   comments: "kin.work.comments",
+  linkAdd: "kin.work.linkAdd",
+  linkRemove: "kin.work.linkRemove",
+  projectNote: "kin.work.projectNote",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -1447,6 +1518,21 @@ export const KinWorkRpcs = [
   Rpc.make(KIN_WORK_WS_METHODS.comments, {
     payload: KinWorkCommentsInput,
     success: KinWorkCommentsResult,
+    error,
+  }),
+  Rpc.make(KIN_WORK_WS_METHODS.linkAdd, {
+    payload: KinWorkLinkAddInput,
+    success: KinRecordDetail,
+    error,
+  }),
+  Rpc.make(KIN_WORK_WS_METHODS.linkRemove, {
+    payload: KinWorkLinkRemoveInput,
+    success: KinRecordDetail,
+    error,
+  }),
+  Rpc.make(KIN_WORK_WS_METHODS.projectNote, {
+    payload: KinProjectNoteInput,
+    success: KinProjectNoteResult,
     error,
   }),
   Rpc.make(KIN_WORK_WS_METHODS.handOver, {
@@ -1558,6 +1644,9 @@ export const KIN_WORK_RPC_SCOPES = {
   [KIN_WORK_WS_METHODS.comment]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.commentRemove]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.comments]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.linkAdd]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.linkRemove]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.projectNote]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.update]: AuthKinChatScope,
   // Keeping a lead's suggestion makes it the owner's word; only he does that, or shares.
   [KIN_WORK_WS_METHODS.confirm]: AuthKinChatScope,

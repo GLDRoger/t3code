@@ -8,6 +8,7 @@ import {
   KinChatError,
   KinOrgId,
   KinPersonId,
+  type KinRecordDetail,
   type KinWorkCommentInput,
   ProviderInstanceId,
   ThreadId,
@@ -22,12 +23,14 @@ import { ServerConfig } from "../../config.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ChatRepository from "../chat/KinChatRepository.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadWork from "./leadWork.ts";
+import * as OwnerClients from "./ownerClients.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import { commentFileReadable } from "./recordComments.ts";
 import * as Comments from "./workComments.ts";
@@ -213,6 +216,9 @@ it.effect("someone who can't see an entry can neither comment on it nor read its
     assert.isFalse(yield* commentFileReadable([arjun], "kin-file-invented"));
     assert.isTrue(yield* commentFileReadable([zoya], "KIN-FILE-INVENTED"));
     assert.isTrue(yield* commentFileReadable([rhea], "kin-file-invented"));
+    // Shared, Arjun sees the task and opens its note's file, in no chat with Zoya.
+    yield* OwnerWork.share([rhea], { orgId, keys: [zoyas.key], shared: true });
+    assert.isTrue(yield* commentFileReadable([arjun], "kin-file-invented"));
   }).pipe(Effect.provide(layer)),
 );
 
@@ -331,6 +337,37 @@ it.effect("an agent's task and comment in a person's turn carry that person as w
     assert.lengthOf(
       told.filter((one) => one.body.includes("commented")),
       1,
+    );
+    // On a task Dev holds that Zoya asked for, Dev and Zoya hear the agent's comment once each.
+    const devId = KinPersonId.make("dev");
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES (${devId}, ${orgId}, 'dev', 'Dev', ${at})`;
+    yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+      VALUES (${orgId}, ${chief}, ${devId}, ${rheaId}, 0)`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+      VALUES ('dev-chat', ${orgId}, 'direct', ${`${devId}:${chief}`}, 0, ${at})`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+      VALUES ('dev-chat-dev', ${orgId}, 'dev-chat', 'person', ${devId}, 'member', ${at})`;
+    const menus = yield* task("print the menus", { owner: { _tag: "person", personId: devId } });
+    yield* sql`UPDATE kin_records SET asked_by_person_id = ${zoyaId} WHERE record_id = ${menus.recordId}`;
+    yield* OwnerWork.share([rhea], { orgId, keys: [menus.key], shared: true });
+    const tellsBefore = (yield* sql`SELECT 1 FROM kin_messages WHERE kind = 'system'`).length;
+    const noted = yield* Comments.leadComment(scope, {
+      key: menus.key,
+      body: "Invented: proofs in",
+    });
+    assert.deepInclude(noted, { told: ["Dev", "Zoya"] });
+    yield* Comments.leadComment(scope, { key: menus.key, body: "Invented: proofs in" });
+    const heard = yield* sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId", body
+      FROM kin_messages WHERE kind = 'system' ORDER BY chat_id, seq`;
+    const line = `Chief of staff commented on ${menus.key} Invented: print the menus: Invented: proofs in.`;
+    assert.strictEqual(heard.length, tellsBefore + 2);
+    assert.deepStrictEqual(
+      heard.filter((one) => one.body === line),
+      [
+        { chatId: "dev-chat", body: line },
+        { chatId: "zoya-chat", body: line },
+      ],
     );
   }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
 );
@@ -514,4 +551,193 @@ it.effect("asking a late task's holder where it stands posts one line a day in t
       "not_allowed",
     );
   }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
+);
+it.effect("record_get shows the newest comments still standing, for the turn's people only", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* rheaTurn;
+    const zoyas = yield* task("book the hall", { owner: { _tag: "person", personId: zoyaId } });
+    const written = [];
+    for (let n = 1; n <= 13; n++)
+      written.push((yield* say(rhea, zoyas.key, `Invented note ${n}`)).comment);
+    yield* Comments.removeOne([rhea], { orgId, key: zoyas.key, commentId: written[11]!.commentId });
+    const read = yield* LeadWork.get(scope, { key: zoyas.key });
+    assert.deepStrictEqual(
+      read.comments?.map((one) => [one.by, one.text]),
+      [3, 4, 5, 6, 7, 8, 9, 10, 11, 13].map((n) => ["owner", `Invented note ${n}`]),
+    );
+    assert.strictEqual(read.olderComments, 2);
+    // Zoya now reads this chat with Rhea: her own task's comments show, Rhea's own task not at all.
+    const rheas = yield* task("plan the offsite");
+    yield* say(rhea, rheas.key, "Invented: keep it quiet");
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+      VALUES ('chief-chat-zoya', ${orgId}, 'chief-chat', 'person', ${zoyaId}, 'member', ${at})`;
+    yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
+    assert.lengthOf((yield* LeadWork.get(scope, { key: zoyas.key })).comments ?? [], 10);
+    assert.include(yield* Effect.flip(LeadWork.get(scope, { key: rheas.key })), {
+      reason: "not_found",
+    });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a person's comment tells who holds the task and who asked for it, once each", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const meeraId = KinPersonId.make("meera");
+    const devId = KinPersonId.make("dev");
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES (${meeraId}, ${orgId}, 'meera', 'Meera', ${at}), (${devId}, ${orgId}, 'dev', 'Dev', ${at})`;
+    yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+      VALUES (${orgId}, ${chief}, ${rheaId}, ${at})`;
+    for (const one of [meeraId, devId, zoyaId]) {
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES (${`${one}-chat`}, ${orgId}, 'direct', ${`${one}:${chief}`}, 0, ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES (${`${one}-chat-person`}, ${orgId}, ${`${one}-chat`}, 'person', ${one}, 'member', ${at})`;
+    }
+    const made = yield* task("print the menus", { owner: { _tag: "person", personId: devId } });
+    yield* sql`UPDATE kin_records SET asked_by_person_id = ${zoyaId} WHERE record_id = ${made.recordId}`;
+    yield* OwnerWork.share([rhea], { orgId, keys: [made.key], shared: true });
+    yield* TestClock.setTime(Date.parse("2026-11-11T12:00:00.000Z"));
+    const posted: Array<string> = [];
+    const hub = Layer.mock(KinChatHub)({
+      publish: (event) =>
+        Effect.sync(() => {
+          if (event.type === "message.posted") posted.push(event.message.chatId);
+        }),
+    });
+    const told = sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId", body
+      FROM kin_messages WHERE kind = 'system' ORDER BY chat_id, seq`;
+    const meera = person(meeraId);
+    yield* say(meera, made.key, "Invented: use the matte paper", "first").pipe(Effect.provide(hub));
+    yield* say(meera, made.key, "Invented: use the matte paper", "first").pipe(Effect.provide(hub));
+    const line = `Meera commented on ${made.key} Invented: print the menus: Invented: use the matte paper.`;
+    assert.deepStrictEqual(yield* told, [
+      { chatId: "dev-chat", body: line },
+      { chatId: "zoya-chat", body: line },
+    ]);
+    assert.deepStrictEqual(posted.toSorted(), ["dev-chat", "zoya-chat"]);
+    // Someone removed from the company is told nothing; the asker still is.
+    yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = ${devId}`;
+    yield* say(meera, made.key, "Invented: and the gold ink", "second").pipe(Effect.provide(hub));
+    assert.deepStrictEqual(
+      (yield* told).map((one) => one.chatId),
+      ["dev-chat", "zoya-chat", "zoya-chat"],
+    );
+  }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
+);
+
+it.effect(
+  "a web link is added, listed and removed by whoever may edit the entry, and only a web address",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      // Teammates write from a bound session.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES ('zoya-session', ${orgId}, ${zoyaId}, 0), ('arjun-session', ${orgId}, ${arjunId}, 0)`;
+      const made = yield* task("mock the screens", { owner: { _tag: "person", personId: zoyaId } });
+      const figma = "https://figma.example/file/invented-screens";
+      const link = { orgId, key: made.key, url: figma };
+      const urls = (sheet: KinRecordDetail) => sheet.links.filter((one) => one.kind === "url");
+      // Arjun can't see it, so to him there is no such entry.
+      assert.include(yield* Effect.flip(OwnerWork.addLink([arjun], link)), { reason: "not_found" });
+      const added = yield* OwnerWork.addLink([zoya], { ...link, name: "Screens" });
+      assert.deepStrictEqual(
+        urls(added).map((one) => [one.target, one.relation, one.label]),
+        [[figma, "relates", "Screens"]],
+      );
+      assert.lengthOf(urls(yield* OwnerWork.get([rhea], { orgId, key: made.key })), 1);
+      // Shared, Arjun sees it but may not edit it: he neither adds nor removes a link.
+      assert.isTrue(added.can?.links);
+      yield* OwnerWork.share([rhea], { orgId, keys: [made.key], shared: true });
+      assert.isFalse((yield* OwnerWork.get([arjun], { orgId, key: made.key })).can?.links);
+      for (const refused of [
+        yield* Effect.flip(OwnerWork.addLink([arjun], { ...link, url: "https://x.example/" })),
+        yield* Effect.flip(OwnerWork.removeLink([arjun], link)),
+      ])
+        assert.include(refused, { reason: "not_allowed" });
+      for (const url of ["javascript:alert(1)", "ftp://files.example/brief.pdf", "the figma file"])
+        assert.include(yield* Effect.flip(OwnerWork.addLink([zoya], { ...link, url })), {
+          reason: "invalid_state",
+          message: "A link needs a web address that starts with https:// or http://.",
+        });
+      const removed = yield* OwnerWork.removeLink([zoya], link);
+      assert.lengthOf(urls(removed), 0);
+      // Already gone, a second remove answers with the sheet as it is.
+      assert.lengthOf(urls(yield* OwnerWork.removeLink([rhea], link)), 0);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a project's note tops each of its tasks for whoever sees the project, and clearing it clears all",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const project = (name: string) =>
+        OwnerClients.createProject([rhea], { orgId, name, clientRequestId: name });
+      const site = yield* project("Invented site");
+      const shop = yield* project("Invented shop");
+      yield* OwnerClients.projectPeople([rhea], {
+        orgId,
+        key: site.key,
+        add: [{ _tag: "person", personId: arjunId }],
+      });
+      const hero = yield* task("hero image", {
+        project: site.key,
+        owner: { _tag: "person", personId: arjunId },
+      });
+      const footer = yield* task("footer", {
+        project: site.key,
+        owner: { _tag: "person", personId: zoyaId },
+      });
+      const note = (key: string, body: string, id = body) =>
+        Comments.projectNote([rhea], { orgId, key, clientRequestId: id, body });
+      const noteOn = (who: typeof rhea, key: string) =>
+        OwnerWork.get([who], { orgId, key }).pipe(Effect.map((sheet) => sheet.projectNote));
+      const blue = "Invented: brand blue is #1a4f8b";
+      const set = yield* note(site.key, `  ${blue} `);
+      assert.deepInclude(set.note, {
+        body: blue,
+        by: { _tag: "person", personId: rheaId },
+        project: { recordId: site.recordId, key: site.key, title: "Invented site" },
+      });
+      assert.deepStrictEqual(yield* noteOn(rhea, hero.key), set.note);
+      assert.deepStrictEqual(yield* noteOn(rhea, footer.key), set.note);
+      assert.deepStrictEqual(yield* noteOn(arjun, hero.key), set.note);
+      // Zoya holds the footer but isn't on the project: her sheet has no note from it.
+      assert.isUndefined(yield* noteOn(zoya, footer.key));
+      // The project page carries it; only the owner level may change it.
+      const page = yield* OwnerClients.project([rhea], { orgId, key: site.key });
+      assert.deepStrictEqual(page.note, set.note ?? undefined);
+      assert.isTrue(page.can?.note);
+      assert.isFalse((yield* OwnerClients.project([arjun], { orgId, key: site.key })).can?.note);
+      assert.include(
+        yield* Effect.flip(
+          Comments.projectNote([arjun], { orgId, key: site.key, clientRequestId: "a", body: "x" }),
+        ),
+        { reason: "not_allowed" },
+      );
+      // A retry is the same note; the same key with other words is refused.
+      assert.deepStrictEqual((yield* note(site.key, blue, `  ${blue} `)).note, set.note);
+      assert.include(yield* Effect.flip(note(site.key, "Invented: other", `  ${blue} `)), {
+        reason: "not_allowed",
+      });
+      // Moved to another project, a task shows that project's note.
+      const shopNote = (yield* note(shop.key, "Invented: prices include tax")).note;
+      const heroNow = yield* OwnerWork.get([rhea], { orgId, key: hero.key });
+      yield* OwnerWork.update([rhea], {
+        orgId,
+        key: hero.key,
+        rev: heroNow.rev,
+        project: shop.key,
+      });
+      assert.deepStrictEqual(yield* noteOn(rhea, hero.key), shopNote);
+      // Cleared once, it is gone from every task and from the project.
+      assert.isNull((yield* note(site.key, "", "clear")).note);
+      assert.isUndefined(yield* noteOn(rhea, footer.key));
+      assert.isUndefined((yield* OwnerClients.project([rhea], { orgId, key: site.key })).note);
+    }).pipe(Effect.provide(layer)),
 );

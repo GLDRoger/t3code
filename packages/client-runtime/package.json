@@ -611,6 +611,10 @@
       "types": "./src/kinPush.ts",
       "default": "./src/kinPush.ts"
     },
+    "./kin/kinLinked": {
+      "types": "./src/kin/kinLinked.ts",
+      "default": "./src/kin/kinLinked.ts"
+    },
     "./kin/kinNavigation": {
       "types": "./src/kin/kinNavigation.ts",
       "default": "./src/kin/kinNavigation.ts"
@@ -895,6 +899,10 @@
       "types": "./src/kin/kinDocChanges.ts",
       "default": "./src/kin/kinDocChanges.ts"
     },
+    "./kin/kinTurnReceipt": {
+      "types": "./src/kin/kinTurnReceipt.ts",
+      "default": "./src/kin/kinTurnReceipt.ts"
+    },
     "./kin/kinDocsStream": {
       "types": "./src/kin/kinDocsStream.ts",
       "default": "./src/kin/kinDocsStream.ts"
@@ -942,6 +950,10 @@
     "./kin/kinDraft": {
       "types": "./src/kin/kinDraft.ts",
       "default": "./src/kin/kinDraft.ts"
+    },
+    "./kin/kinDevices": {
+      "types": "./src/kin/kinDevices.ts",
+      "default": "./src/kin/kinDevices.ts"
     }
   },
   "scripts": {

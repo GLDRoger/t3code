@@ -136,6 +136,15 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.comments": Effect.fn("KinWork.rpc.comments")(function* (input) {
         return yield* call((people) => Comments.page(people, input));
       }),
+      "kin.work.linkAdd": Effect.fn("KinWork.rpc.linkAdd")(function* (input) {
+        return yield* call((people) => Work.addLink(people, input));
+      }),
+      "kin.work.linkRemove": Effect.fn("KinWork.rpc.linkRemove")(function* (input) {
+        return yield* call((people) => Work.removeLink(people, input));
+      }),
+      "kin.work.projectNote": Effect.fn("KinWork.rpc.projectNote")(function* (input) {
+        return yield* call((people) => Comments.projectNote(people, input));
+      }),
       "kin.work.handOver": Effect.fn("KinWork.rpc.handOver")(function* (input) {
         return yield* call((people) => Work.handOver(people, input));
       }),

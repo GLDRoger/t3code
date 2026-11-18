@@ -69,7 +69,7 @@ export const KinWorkToolkit = Toolkit.make(
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("record_get", {
     ...shared,
-    description: `Open one entry by key: fields, notes, links (source message, delegated tasks, pull requests) and last changes. A client (C-3) adds what each side owes, contacts and projects. A project (P-2) adds health and plan: milestones with progress (late, atRisk), task counts, open tasks, people, docs, meetings, tasks whose spec section changed (specChanged), money (quoted, invoiced, received, unpaid), or noPlan; one call answers where it stands. An invoice adds payments and balance. Invoices, quotes, receipts and clients list mailed: mail Kin sent, when, from which account, who confirmed, and the threadId a mail_reply continues. Read-only. ${data} ${marked}`,
+    description: `Open one entry by key: fields, notes, links (source message, delegated tasks, pull requests), last changes and newest comments. A client (C-3) adds what each side owes, contacts and projects. A project (P-2) adds health and plan: milestones with progress (late, atRisk), task counts, open tasks, people, docs, meetings, tasks whose spec section changed (specChanged), money (quoted, invoiced, received, unpaid), or noPlan; one call answers where it stands. An invoice adds payments and balance. Invoices, quotes, receipts and clients list mailed: mail Kin sent, when, from which account, who confirmed, and the threadId a mail_reply continues. Read-only. ${data} ${marked}`,
     parameters: Work.GetInput,
     success: Work.GetResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -138,7 +138,7 @@ export const KinWorkToolkit = Toolkit.make(
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("money_summary", {
     ...shared,
-    description: `The company's money as Kin adds it up: owed and overdue by client, what open projects still have to invoice, received and spent this month and last, top spending, dates due in 30 days. Exact per currency: quote, never sum. Read-only. ${data}`,
+    description: `The company's money as Kin adds it up: owed and overdue by client, what open projects still have to invoice, received and spent this month and last, top spending, dates due in 30 days. Exact per currency: quote, never sum. about is an estimate at the owner's rates; say so, and name any currency it leaves out. Read-only. ${data}`,
     success: Money.MoneyResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("money_query", {

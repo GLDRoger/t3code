@@ -6,12 +6,14 @@ import {
   type KinMessageLinkTarget,
   type KinOrgId,
   type KinPersonId,
+  type KinTurnChanges,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { turnChanges } from "../lead/turnChanges.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { KIN_OWNER_LEVEL, seenBy, viewerOfPeople, type KinViewer } from "../work/teamView.ts";
 
@@ -124,7 +126,9 @@ const STATE_WORDS: Record<string, string> = {
   done: "Done",
   dropped: "Dropped",
 };
-const kindOf = (register: string): Extract<KinMessageLinkTarget, { _tag: "record" }>["kind"] =>
+export const kindOf = (
+  register: string,
+): Extract<KinMessageLinkTarget, { _tag: "record" }>["kind"] =>
   register === "work" || register === "milestones"
     ? "task"
     : register === "clients"
@@ -307,6 +311,8 @@ export const withLinks = Effect.fn("KinMessageLinks.withLinks")(function* (
   orgId: KinOrgId,
   reader: KinChatMember["principal"] | undefined,
   messages: ReadonlyArray<KinMessage>,
+  // A chat list's preview has no use for what a turn changed.
+  options: { readonly receipts: boolean } = { receipts: true },
 ) {
   if (reader?._tag !== "person") return messages;
   const texts = messages.filter(
@@ -342,9 +348,21 @@ export const withLinks = Effect.fn("KinMessageLinks.withLinks")(function* (
       written.set(one.text, { name: one.text, ...link });
   }
   const match = linkMatcher([...sources.names, ...written.values()], sources.keys, owner);
+  const receipts = options.receipts
+    ? yield* turnChanges(
+        viewer,
+        orgId,
+        agentTexts.map((message) => message.messageId),
+      )
+    : new Map<string, KinTurnChanges>();
   return messages.map((message) => {
     if (message.kind !== "text" || message.status === "deleted") return message;
     const links = match(message.body);
-    return links.length === 0 ? message : { ...message, links };
+    const turn = receipts.get(message.messageId);
+    return {
+      ...message,
+      ...(links.length === 0 ? {} : { links }),
+      ...(turn === undefined ? {} : { turnChanges: turn }),
+    };
   });
 });

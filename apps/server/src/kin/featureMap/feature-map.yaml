@@ -1038,6 +1038,20 @@ features:
       - apps/server/src/kin/people/KinPeople.test.ts
       - .agents/skills/verify-kin/scripts/remove-and-bring-back.sh
 
+  - id: linked-devices
+    name: Link and remove your own devices
+    tab: settings
+    web: [home, sheet:Profile, section:Linked devices]
+    phone: [SettingsKin, KinDevices]
+    roles: { owner: none, co_owner: both, lead: both, member: both }
+    note: >-
+      The owner pairs devices through T3 Code's Sharing & access, so a link is a teammate's.
+      Removing a device signs out every device linked from it; the owner removes a teammate's
+      devices from the teammate's sheet.
+    proof:
+      - apps/server/src/kin/people/KinPeople.test.ts
+      - packages/client-runtime/src/kin/kinDevices.test.ts
+
   - id: teammate-profile
     name: Change a teammate's profile
     tab: settings
@@ -1085,5 +1099,6 @@ unlisted:
   "web:settings/check-ins": The app's old address; opens Kin's Settings → Check-ins.
   "web:settings/kin-connections": The app's old address; opens Kin's Settings → Connections.
   "web:?v": Picks the version of the open doc; not a screen.
+  "web:?tab": Switches the Clients place between its Clients and Projects lists; not a screen.
   "web:?section": Scrolls the open doc to a section; not a screen.
   "web:?from": The base version of the compare view (`?changes`); not a screen.
