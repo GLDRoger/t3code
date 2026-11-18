@@ -2,6 +2,7 @@ import {
   KIN_PULSE_LATER_SENSES,
   KinChatError,
   type KinOrgId,
+  type KinPulseFact,
   type KinPulseHandleInput,
   type KinPulseListInput,
   type KinPulseScreenRead,
@@ -55,6 +56,22 @@ const viewerIn = Effect.fn("KinPulsePeople.viewer")(function* (
   return { person, viewer };
 });
 
+/**
+ * Screens show the consequence, which already says the measure; agents' reads keep it. A sense
+ * newer than the client goes only to one that says it reads it.
+ */
+export const screenFacts = <F extends KinPulseFact>(
+  facts: ReadonlyArray<F>,
+  acceptSenses: ReadonlyArray<string> | undefined,
+) => {
+  const unread = new Set<string>(
+    KIN_PULSE_LATER_SENSES.filter((sense) => !(acceptSenses ?? []).includes(sense)),
+  );
+  return facts
+    .filter((fact) => !unread.has(fact.sense))
+    .map(({ measure: _measure, ...fact }) => fact);
+};
+
 export const read = Effect.fn("KinPulsePeople.read")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPulseListInput,
@@ -68,14 +85,7 @@ export const read = Effect.fn("KinPulsePeople.read")(function* (
     scope: input.scope,
     limit: SCREEN_CAP,
   }).pipe(Effect.catchTags({ SqlError: unavailableOn }));
-  // Screens show the consequence, which already says the measure; agents' reads keep it. A
-  // sense newer than the client goes only to one that says it reads it.
-  const unread = new Set<string>(
-    KIN_PULSE_LATER_SENSES.filter((sense) => !(input.acceptSenses ?? []).includes(sense)),
-  );
-  const facts = read.facts
-    .filter((fact) => !unread.has(fact.sense))
-    .map(({ measure: _measure, ...fact }) => fact);
+  const facts = screenFacts(read.facts, input.acceptSenses);
   return input.limit === undefined
     ? { ...read, facts }
     : { ...read, ...kinPulsePage(facts, input.limit) };
