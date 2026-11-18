@@ -23,15 +23,15 @@ import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import { leadProjectId } from "../lead/leadProject.ts";
-import { KIN_COMMAND_PREFIX, KIN_TASK_PREFIX } from "./taskIds.ts";
+import { isStrayKinTask, KIN_COMMAND_PREFIX, KIN_TASK_PREFIX } from "./taskIds.ts";
 
-export const KIN_SCHEDULE_TASK_PREFIX = `${KIN_TASK_PREFIX}schedule:`;
 const commandIdOf = (orgId: KinOrgId, scheduleId: string) =>
   CommandId.make(`${KIN_COMMAND_PREFIX}schedule:${orgId}:${scheduleId}`);
 // Upstream names a task created by commandId `scheduled-task:${commandId}`.
@@ -154,6 +154,46 @@ export const everyOf = (
     days: Array.isArray(days) && days.length > 0 ? days.map(Number) : [0, 1, 2, 3, 4, 5, 6],
   };
 };
+
+/** Disables each enabled stray in `tasks` through T3's service; returns the ids it disabled. */
+export const disableStrayTasks = Effect.fn("KinSchedules.disableStrayTasks")(function* (
+  tasks: ReadonlyArray<{ readonly id: ScheduledTaskId; readonly enabled: boolean }>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const service = yield* ScheduledTaskService.ScheduledTaskService;
+  const disabled: ScheduledTaskId[] = [];
+  for (const task of tasks) {
+    if (!task.enabled || !task.id.startsWith(KIN_TASK_PREFIX)) continue;
+    yield* readScheduleByTask(sql, task.id).pipe(
+      Effect.flatMap((source) =>
+        isStrayKinTask(task.id, source !== undefined)
+          ? service
+              .setEnabled({ id: task.id, enabled: false })
+              .pipe(
+                Effect.andThen(Effect.logWarning("Kin stray scheduled task disabled")),
+                Effect.andThen(Effect.sync(() => disabled.push(task.id))),
+              )
+          : Effect.void,
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Kin stray scheduled task not disabled", Cause.pretty(cause)),
+      ),
+      Effect.annotateLogs({ scheduledTaskId: task.id }),
+    );
+  }
+  return disabled;
+});
+
+/** Its first pass cleans strays at start-up; each later change catches one whose run was refused. */
+export const watchStrayTasks = Effect.fn("KinSchedules.watchStrayTasks")(function* () {
+  const service = yield* ScheduledTaskService.ScheduledTaskService;
+  yield* service.subscribeList().pipe(
+    Stream.runForEach((list) => disableStrayTasks(list.tasks)),
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin stray scheduled task watch stopped", Cause.pretty(cause)),
+    ),
+  );
+});
 
 const decodeModel = Schema.decodeUnknownEffect(Schema.fromJsonString(KinLead.fields.model));
 const decodeUpsert = Schema.decodeUnknownEffect(ScheduledTaskUpsertInput);
