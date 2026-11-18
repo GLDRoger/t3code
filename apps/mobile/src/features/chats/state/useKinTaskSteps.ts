@@ -41,7 +41,8 @@ export function useKinTaskSteps(target: KinWorkTarget) {
   );
   const mark = (key: string, next: KinTaskStepStatus | null) =>
     setStatus((held) => {
-      const { [key]: _gone, ...rest } = held;
+      const rest = { ...held };
+      delete rest[key];
       return next === null ? rest : { ...rest, [key]: next };
     });
   return {
