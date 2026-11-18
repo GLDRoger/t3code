@@ -38,6 +38,7 @@ import { KinIdentity, KinIdentityConfig } from "../chat/KinIdentity.ts";
 import { layerKinAuthTest, pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { readProfile } from "../work/companyProfile.ts";
 import * as Records from "../work/KinRecords.ts";
+import { KinPushSender, type KinPushNotification } from "../push/KinPushSender.ts";
 import * as People from "./KinPeople.ts";
 
 const database = layerKinAuthTest("kin-people-");
@@ -341,7 +342,25 @@ it.effect("a teammate links, lists, renews and removes only their own devices", 
 
 it.effect("removing a device takes the devices linked from it and the links it left open", () =>
   Effect.gen(function* () {
-    const service = yield* People.KinPeople;
+    // Every device a person links themself rings their phones; an owner's invite doesn't.
+    const told: Array<KinPushNotification> = [];
+    const service = yield* People.make.pipe(
+      Effect.provideService(
+        KinPushSender,
+        KinPushSender.of({
+          status: "ready",
+          notify: (notification) =>
+            Effect.sync(() => told.push(notification)).pipe(
+              Effect.andThen(
+                Effect.forkChild(
+                  Effect.succeed({ status: "ready", sent: 1, suppressed: 0, failed: 0 } as const),
+                ),
+              ),
+            ),
+          flushKeyPushes: Effect.succeed(0),
+        }),
+      ),
+    );
     const identity = yield* KinIdentity;
     const sessions = yield* SessionStore;
     yield* pairSession(ownerSession.sessionId);
@@ -378,6 +397,10 @@ it.effect("removing a device takes the devices linked from it and the links it l
     const laptop = won[0]!.success;
     const tablet = yield* linkFrom(laptop, "Tablet");
     const watch = yield* linkFrom(phone, "Watch");
+    assert.deepStrictEqual(
+      told.map((notification) => ("sessionId" in notification ? notification.sessionId : null)),
+      [laptop.sessionId, tablet.sessionId, watch.sessionId],
+    );
 
     // A device linked from another removes itself and what it linked, never the phone above it.
     const fromLaptop = (yield* service.listDevices(yield* as(laptop), { orgId, personId })).devices;

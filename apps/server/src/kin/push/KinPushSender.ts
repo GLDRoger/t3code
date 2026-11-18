@@ -733,15 +733,20 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     sessionId: string,
   ) {
-    const [row] = yield* sql<{ person_id: KinPersonId; client_label: string | null }>`
-      SELECT b.person_id, a.client_label FROM kin_session_bindings b
+    const [row] = yield* sql<{
+      person_id: KinPersonId;
+      client_label: string | null;
+      client_device_type: string | null;
+    }>`
+      SELECT b.person_id, a.client_label, a.client_device_type FROM kin_session_bindings b
       LEFT JOIN auth_sessions a ON a.session_id = b.session_id
       WHERE b.org_id = ${orgId} AND b.session_id = ${sessionId} AND b.revoked_at IS NULL`;
     if (row === undefined) return undefined;
     const push: Push = {
       category: "kin.message",
       title: "New device linked",
-      body: `${row.client_label ?? "A device"} can now use your Kin. Not you? Remove it in Linked devices.`,
+      // The name is the new device's own to choose, so the kind the host saw comes first.
+      body: `A ${row.client_device_type === "mobile" ? "phone" : row.client_device_type === "desktop" ? "computer" : "device"}${row.client_label === null ? "" : ` named "${row.client_label}"`} can now use your Kin. Not you? Remove it in Linked devices.`,
       chatId: undefined,
       source: undefined,
       data: {

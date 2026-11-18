@@ -31,9 +31,12 @@ import * as People from "./KinPeople.ts";
 const decodeAccept = Schema.decodeUnknownEffect(KinInviteAcceptRequest);
 const noStore = { "cache-control": "no-store" };
 
+const firstValue = (value: string | undefined) => value?.split(",")[0]?.trim().toLowerCase();
+
 /**
- * Stricter than a cookie read: this sets a fresh session cookie, so it needs a browser's own
- * Origin, scheme included, or one of the app's trusted origins.
+ * Stricter than a cookie read: this sets a fresh session cookie, so it needs a browser's Origin.
+ * That is the app's own (same-origin by the browser's word, or this host, forwarded or not, on
+ * the request's own scheme) or one of the app's trusted origins.
  */
 const renewOriginAllowed = (
   request: HttpServerRequest.HttpServerRequest,
@@ -41,7 +44,18 @@ const renewOriginAllowed = (
 ) => {
   const origin = request.headers.origin;
   if (origin === undefined || ignoresBrowserCookie(request.headers, origins)) return false;
-  return origins.has(origin) || Option.exists(requestUrl(request), (url) => url.origin === origin);
+  if (origins.has(origin) || request.headers["sec-fetch-site"] === "same-origin") return true;
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    return false;
+  }
+  const hosts = [firstValue(request.headers.host), firstValue(request.headers["x-forwarded-host"])];
+  return (
+    hosts.includes(parsed.host.toLowerCase()) &&
+    Option.exists(requestUrl(request), (url) => url.protocol === parsed.protocol)
+  );
 };
 
 /** The device's own session renewed; none when it is not a live, bound teammate device. */
@@ -86,7 +100,8 @@ export const layer = Layer.effectDiscard(
         const request = yield* HttpServerRequest.HttpServerRequest;
         const input = yield* request.json.pipe(Effect.flatMap(decodeAccept));
         const people = yield* People.make.pipe(Effect.provideContext(kin.services.value));
-        const result = yield* people.accept(input);
+        // The phone app's route: what kind of device it is isn't the body's to say.
+        const result = yield* people.accept({ ...input, deviceType: "mobile" });
         return yield* HttpServerResponse.json(result, { headers: { "cache-control": "no-store" } });
       }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
     );

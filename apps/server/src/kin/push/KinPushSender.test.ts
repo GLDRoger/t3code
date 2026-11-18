@@ -827,6 +827,13 @@ describe("KinPushSender", () => {
       for (const id of ["sess-member", "sess-laptop"])
         yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
           VALUES (${id}, 'org_01', ${member}, ${NOW})`;
+      // The new device has a phone token of its own; it needs no word of itself.
+      yield* (yield* KinPushDevices).register(caller("sess-laptop", member), {
+        orgId,
+        token: token("d"),
+        platform: "ios",
+        apsEnvironment: "development",
+      });
       const linked = { _tag: "device", orgId, sessionId: "sess-laptop" } as const;
       assert.deepStrictEqual(yield* notify(linked), {
         status: "ready",
@@ -836,7 +843,10 @@ describe("KinPushSender", () => {
       });
       const [push] = apns.sent;
       assert.equal(push!.token, memberPhone);
-      assert.include(JSON.stringify(push!.payload), "Laptop can now use your Kin");
+      assert.deepStrictEqual((push!.payload as { aps: { alert: unknown } }).aps.alert, {
+        title: "New device linked",
+        body: 'A device named "Laptop" can now use your Kin. Not you? Remove it in Linked devices.',
+      });
       assert.equal(
         (push!.payload as { body: { deepLink: string } }).body.deepLink,
         "/kin/env_kin/org_01/people/h_member/devices",

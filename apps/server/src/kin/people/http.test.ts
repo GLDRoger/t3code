@@ -164,6 +164,20 @@ it.effect(
         assert.equal(refused.status, 403, name);
         assert.isNull(refused.headers.get("set-cookie"), name);
       }
+      // A proxy that forwards the public host, or the browser's own same-origin word, is the app.
+      for (const [name, headers] of [
+        [
+          "a forwarded host",
+          { origin: "http://kin.tail.example", "x-forwarded-host": "kin.tail.example" },
+        ],
+        [
+          "a same-origin fetch",
+          { origin: "http://kin.tail.example", "sec-fetch-site": "same-origin" },
+        ],
+      ] as const) {
+        const allowed = yield* renew(headers);
+        assert.equal(allowed.status, 200, name);
+      }
       const renewed = yield* renew({ origin: "http://kin.example" });
       assert.equal(renewed.status, 200);
       assert.match(renewed.headers.get("set-cookie") ?? "", new RegExp(`^${cookieName}=`));

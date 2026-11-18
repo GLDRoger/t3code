@@ -20,6 +20,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { AppState } from "react-native";
 
 import { environmentCatalog } from "../../../connection/catalog";
 import { connectionAtomRuntime } from "../../../connection/runtime";
@@ -184,31 +185,36 @@ const renewAtom = connectionAtomRuntime.fn(
   { concurrent: true },
 );
 
+const RENEW_EVERY_MS = 24 * 60 * 60 * 1000;
+
 /**
- * Renews each teammate session once a run, so a phone in use never reaches its deadline. The
- * open socket stays, and the host moves its deadline too. A failed try is asked again the next
- * time the connection comes back.
+ * Renews each teammate session when the app starts, and again when it comes to the front a day
+ * later, so a phone in use never reaches its deadline. The open socket stays, and the host moves
+ * its deadline too. A failed try is asked again on the next change or return to the front.
  */
 export function installKinDeviceRenewal(): () => void {
-  const renewed = new Set<EnvironmentId>();
+  const renewedAt = new Map<EnvironmentId, number>();
   // An unmounted fn atom is dropped, and its run cancelled, before the request can finish.
   const unmount = appAtomRegistry.mount(renewAtom);
-  const unsubscribe = appAtomRegistry.subscribe(
-    chatOnlyStateAtom,
-    (state) => {
-      if (!state.ready) return;
-      for (const environmentId of state.chatOnly) {
-        if (renewed.has(environmentId)) continue;
-        renewed.add(environmentId);
-        appAtomRegistry.set(renewAtom, {
-          environmentId,
-          failed: () => renewed.delete(environmentId),
-        });
-      }
-    },
-    { immediate: true },
-  );
+  const renewDue = (state: ChatOnlyState) => {
+    if (!state.ready) return;
+    const now = Date.now();
+    for (const environmentId of state.chatOnly) {
+      const at = renewedAt.get(environmentId);
+      if (at !== undefined && now - at < RENEW_EVERY_MS) continue;
+      renewedAt.set(environmentId, now);
+      appAtomRegistry.set(renewAtom, {
+        environmentId,
+        failed: () => renewedAt.delete(environmentId),
+      });
+    }
+  };
+  const unsubscribe = appAtomRegistry.subscribe(chatOnlyStateAtom, renewDue, { immediate: true });
+  const foreground = AppState.addEventListener("change", (next) => {
+    if (next === "active") renewDue(appAtomRegistry.get(chatOnlyStateAtom));
+  });
   return () => {
+    foreground.remove();
     unsubscribe();
     unmount();
   };

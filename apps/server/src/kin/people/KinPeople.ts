@@ -814,9 +814,10 @@ export const make = Effect.gen(function* () {
           const me = yield* person(input.orgId, caller.personId);
           if ((yield* devicesSignedIn(input.orgId, caller.personId, now)) >= KIN_DEVICE_LIMIT)
             return yield* deviceLimit;
-          // One open link a person at a time: a new one replaces the last.
+          // One open link per device: a new one replaces the last this device made, and no
+          // other device can cancel it.
           yield* sql`UPDATE kin_people_invites SET revoked_at = ${now}
-            WHERE org_id = ${input.orgId} AND made_by_person_id = ${caller.personId}
+            WHERE org_id = ${input.orgId} AND made_by_session_id = ${session.sessionId}
             AND consumed_at IS NULL AND revoked_at IS NULL`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.replaceLink")),
           );
