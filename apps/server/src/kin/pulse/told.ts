@@ -57,7 +57,8 @@ export const factSig = (fact: KinPulseFact, at: number, zone: string) => {
 /**
  * The facts `personId` (or `agentParty`) has not been told as they stand now: never told, changed
  * since, or due today. A row counts while its event is still to run or ran, a failed one told
- * nothing; with `anyState`, any row counts, so a failing turn is not tried again every pass.
+ * nothing; with `anyState`, any row counts, so a failing turn is not tried again every pass, and
+ * a row Kin's own notice wrote (its id is the message's, with no event) counts too.
  */
 export const untold = Effect.fn("KinPulse.untold")(function* (input: {
   readonly orgId: KinOrgId;
@@ -73,7 +74,7 @@ export const untold = Effect.fn("KinPulse.untold")(function* (input: {
   const keys = input.facts.map((fact) => fact.key);
   for (let start = 0; start < keys.length; start += 500)
     for (const row of yield* sql<{ key: string; sig: string }>`SELECT t.fact_key AS key, t.sig
-      FROM kin_pulse_told t JOIN kin_events e ON e.org_id = t.org_id AND e.event_id = t.event_id
+      FROM kin_pulse_told t LEFT JOIN kin_events e ON e.org_id = t.org_id AND e.event_id = t.event_id
       WHERE t.org_id = ${input.orgId} AND t.person_id = ${input.personId}
         AND t.fact_key IN ${sql.in(keys.slice(start, start + 500))}
         AND (${input.anyState === true ? 1 : 0} = 1 OR e.state IN ('queued', 'claimed', 'done'))

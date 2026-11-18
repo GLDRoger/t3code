@@ -12,10 +12,16 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
+import * as Chat from "../chat/layer.ts";
+import { deliverHeld } from "../triggers/heldDelivery.ts";
+import { holderBody } from "./holderNotice.ts";
 import { goalsNow } from "../work/goals.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
@@ -341,6 +347,27 @@ const SENSES: ReadonlyArray<readonly [string, string, number]> = [
 
 const decodeEvent = Schema.decodeUnknownSync(KinEvent);
 
+/** Chat services too, for the notices Kin posts itself. */
+const chatLayer = Chat.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
+
+/** Meera may message the Chief of staff. */
+const letMate = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+    VALUES (${orgId}, ${chief}, ${mate}, ${owner}, 0)`;
+});
+
+/** What Kin posted in Meera's direct chat with the Chief of staff, oldest first. */
+const mateNotices = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ body: string }>`SELECT m.body FROM kin_messages m
+    JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+    WHERE m.org_id = ${orgId} AND c.direct_key = ${`${mate}:${chief}`}
+      AND m.author_kind = 'system' AND m.status = 'posted'
+    ORDER BY m.seq`;
+  return rows.map((row) => row.body);
+});
+
 /** The wakes holders got, in order, with the facts each carried. */
 const holderWakes = Effect.fn("test.holderWakes")(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -528,29 +555,115 @@ describe("KinPulse", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("a late task held by a person tells that person once", () =>
+  it.effect("a late task held by a teammate is Kin's one notice in their chat, and no wake", () =>
     Effect.gen(function* () {
       yield* seed;
+      yield* letMate;
       const sql = yield* SqlClient.SqlClient;
-      const at = B + 3 * DAY;
+      const hub = yield* KinChatHub;
+      const posted = yield* hub.subscribeAll;
+      const at = B + 3 * DAY + 12 * HOUR;
+      yield* TestClock.setTime(at);
       const key = `task_late:W-8:due=${B + 2 * DAY}`;
+      // The owner's own late task still goes to the Chief of staff, not to a notice.
+      yield* insert({ id: "W-20", dueAt: B + 2 * DAY, ownerKind: "person", ownerId: owner });
       const first = yield* KinPulse.tick(orgId, at);
       assert.deepStrictEqual(
         first.told.filter((one) => one.key === key),
         [{ agentId: chief, to: mate, key }],
       );
-      // The Chief of staff is woken to tell Meera, in the same one wake as its own.
-      const wakes = yield* holderWakes();
-      assert.lengthOf(wakes, 1);
-      assert.include(wakes[0]!.keys, key);
-      yield* KinPulse.tick(orgId, at + DAY);
+      const wakes = (yield* holderWakes()).flatMap((wake) => wake.keys);
+      assert.notInclude(wakes, key);
+      assert.include(wakes, `task_late:W-20:due=${B + 2 * DAY}`);
+      assert.deepStrictEqual(yield* mateNotices, ["W-8 Invented W-8 was due yesterday."]);
+      // Posted to the hub, which is what pushes it.
+      const [event] = yield* Stream.runCollect(
+        posted.pipe(
+          Stream.filter((one) => one.type === "message.posted"),
+          Stream.take(1),
+        ),
+      );
+      assert.strictEqual(
+        event?.type === "message.posted" ? event.message.body : "",
+        "W-8 Invented W-8 was due yesterday.",
+      );
+      const ownerChats = yield* sql`SELECT 1 FROM kin_chats
+        WHERE org_id = ${orgId} AND direct_key LIKE ${`${owner}:%`}`;
+      assert.lengthOf(ownerChats, 0);
+      // Later passes, in the same minute or the next day, add nothing.
+      for (const later of [at + 1, at + MINUTE, at + DAY]) {
+        yield* TestClock.setTime(later);
+        const again = yield* KinPulse.tick(orgId, later);
+        assert.lengthOf(
+          again.told.filter((one) => one.key === key),
+          0,
+        );
+      }
+      assert.lengthOf(yield* mateNotices, 1);
       const told = yield* sql<{ person: string }>`SELECT person_id AS person FROM kin_pulse_told
         WHERE org_id = ${orgId} AND fact_key = ${key} ORDER BY told_at`;
       assert.deepStrictEqual(
         told.map((row) => row.person),
         [mate],
       );
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a teammate's facts are one notice of at most five lines", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* letMate;
+      const at = B + 3 * DAY + 12 * HOUR;
+      yield* TestClock.setTime(at);
+      yield* insert({ id: "W-21", dueAt: B, ownerKind: "person", ownerId: mate });
+      yield* insert({ id: "W-22", dueAt: at + 6 * HOUR, ownerKind: "person", ownerId: mate });
+      yield* KinPulse.tick(orgId, at);
+      assert.deepStrictEqual(yield* mateNotices, [
+        [
+          "3 of your tasks need you:",
+          "• W-21 Invented W-21, was due 3 days ago",
+          "• W-8 Invented W-8, was due yesterday",
+          "• W-22 Invented W-22, due today",
+        ].join("\n"),
+      ]);
+      const line = (n: number) => ({ key: `W-${n}`, title: "Invented", state: "due today" });
+      assert.strictEqual(
+        holderBody([1, 2, 3, 4, 5, 6, 7].map(line)),
+        [
+          "7 of your tasks need you:",
+          ...[1, 2, 3, 4, 5].map((n) => `• W-${n} Invented, due today`),
+          "and 2 more",
+        ].join("\n"),
+      );
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("an away teammate is told once they are back; a removed one never", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* letMate;
+      const sql = yield* SqlClient.SqlClient;
+      const chats = yield* KinChatService;
+      const at = B + 3 * DAY + 12 * HOUR;
+      yield* TestClock.setTime(at);
+      yield* sql`UPDATE kin_people SET away_until = '2026-11-06' WHERE person_id = ${mate}`;
+      yield* KinPulse.tick(orgId, at);
+      yield* deliverHeld(orgId, chats);
+      assert.lengthOf(yield* mateNotices, 0);
+      const back = B + 5 * DAY + 12 * HOUR;
+      yield* TestClock.setTime(back);
+      yield* deliverHeld(orgId, chats);
+      yield* KinPulse.tick(orgId, back);
+      yield* deliverHeld(orgId, chats);
+      assert.deepStrictEqual(yield* mateNotices, ["W-8 Invented W-8 was due yesterday."]);
+
+      // Removed: a new late task of theirs reaches no one, by notice or by wake.
+      yield* sql`UPDATE kin_people SET removed_at = ${back} WHERE person_id = ${mate}`;
+      yield* insert({ id: "W-23", dueAt: B + 4 * DAY, ownerKind: "person", ownerId: mate });
+      const removed = yield* KinPulse.tick(orgId, back + HOUR);
+      assert.isFalse(removed.told.some((one) => one.key.startsWith("task_late:W-23:")));
+      assert.lengthOf(yield* mateNotices, 1);
+    }).pipe(Effect.provide(chatLayer)),
   );
 
   it.effect("a tick moves screens' pulse for a fact whose words changed, and not for nothing", () =>
