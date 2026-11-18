@@ -98,7 +98,8 @@ import AnswerPages from "./migrations/K174_AnswerPages.ts";
 import HandoffWantsAnswer from "./migrations/K175_HandoffWantsAnswer.ts";
 import RecordComments from "./migrations/K176_RecordComments.ts";
 import RecordChangesByWakeup from "./migrations/K177_RecordChangesByWakeup.ts";
-import TasksKeys from "./migrations/K178_TasksKeys.ts";
+import AskOutsideAndDispatch from "./migrations/K178_AskOutsideAndDispatch.ts";
+import TasksKeys from "./migrations/K179_TasksKeys.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -277,7 +278,8 @@ const loader = Migrator.fromRecord({
   "175_HandoffWantsAnswer": HandoffWantsAnswer,
   "176_RecordComments": RecordComments,
   "177_RecordChangesByWakeup": RecordChangesByWakeup,
-  "178_TasksKeys": TasksKeys,
+  "178_AskOutsideAndDispatch": AskOutsideAndDispatch,
+  "179_TasksKeys": TasksKeys,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

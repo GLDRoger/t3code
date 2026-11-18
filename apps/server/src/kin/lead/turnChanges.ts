@@ -13,6 +13,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { kindOf } from "../chat/messageLinks.ts";
 import { type TextClock, textLocale } from "../work/companyProfile.ts";
 import { isClosed, ownerZone, parseChanges } from "../work/recordRows.ts";
 import { type KinViewer, seenBy } from "../work/teamView.ts";
@@ -174,6 +175,7 @@ export const turnChanges = Effect.fn("KinAgentChanges.turn")(function* (
       const made = changeOf({ ...row, seq: row.seq });
       const item: KinTurnChange = {
         key: made.key,
+        kind: kindOf(made.registerId),
         title: made.title,
         what: whatOf(
           made,

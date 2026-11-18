@@ -1,5 +1,5 @@
 // @effect-diagnostics globalDate:off - The target hint is read against a fixed local day.
-import { KinChatError, type KinRecordKey } from "@t3tools/contracts";
+import { KinChatError, KinRecordKey } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
@@ -20,6 +20,7 @@ import {
   kinProjectDraftCheck,
   kinProjectDraftOf,
   kinProjectTargetHint,
+  kinTaskProjectMenu,
   kinWorkFormMoved,
   kinWorkSend,
   type KinClientDraft,
@@ -236,6 +237,26 @@ describe("createKinWorkPageWatch", () => {
     teammate.watch.changed({ changed: { "W-77": 11 }, unnamed: 0 }, teammate.page);
     await Promise.resolve();
     expect([teammate.rereads(), teammate.asked()]).toEqual([1, 1]);
+  });
+});
+
+describe("kinTaskProjectMenu", () => {
+  const ref = (key: string, title: string) => ({ key: KinRecordKey.make(key), title });
+  it("a done project is offered in the menu", () => {
+    const menu = kinTaskProjectMenu({
+      projects: [ref("P-1", "Shopfront")],
+      doneProjects: [ref("P-2", "Spring launch")],
+    });
+    expect(menu).toEqual([
+      { label: null, choices: [ref("P-1", "Shopfront")] },
+      { label: "Done", choices: [ref("P-2", "Spring launch")] },
+    ]);
+  });
+
+  it("leaves out an empty group", () => {
+    expect(kinTaskProjectMenu({ projects: [ref("P-1", "Shopfront")], doneProjects: [] })).toEqual([
+      { label: null, choices: [ref("P-1", "Shopfront")] },
+    ]);
   });
 });
 

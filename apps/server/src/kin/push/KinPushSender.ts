@@ -12,6 +12,7 @@ import type {
   KinPushSendingStatus,
   KinPushSubject,
   KinPushToken,
+  KinRecordKey,
   KinWidgetId,
 } from "@t3tools/contracts";
 import {
@@ -41,6 +42,7 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { withLinks } from "../chat/messageLinks.ts";
 import { memberReads } from "../chat/sharing.ts";
 import { MemoryCache } from "../memory/MemoryCache.ts";
+import { isHolderNotice } from "../pulse/holderNotice.ts";
 import { personHoldNow } from "../triggers/quietHold.ts";
 import { KinApnsTransport } from "./Apns.ts";
 import { KinPushDevices, kinPushDeviceId, type KinPushDevice } from "./KinPushDevices.ts";
@@ -190,6 +192,14 @@ const segment = encodeURIComponent;
 /** Every Kin host shares org id `kin-default`, so links name the host too (mobile spec, routes). */
 export const kinPushChatLink = (environmentId: EnvironmentId, orgId: KinOrgId, chatId: KinChatId) =>
   `/kin/${segment(environmentId)}/${segment(orgId)}/chats/${segment(chatId)}`;
+/** A notice about the reader's tasks opens the one it names, or their Tasks when it names more. */
+export const kinTasksSubject = (keys: ReadonlyArray<KinRecordKey>): KinPushSubject | undefined => {
+  const unique = [...new Set(keys)];
+  if (unique.length === 0) return undefined;
+  return unique.length === 1
+    ? { _tag: "record", key: unique[0]!, kind: "task" }
+    : { _tag: "tasks" };
+};
 /** Fits `apns-collapse-id`'s 64 bytes whatever the ids' length. */
 const kinPushCollapseId = (orgId: KinOrgId, chatId: KinChatId) =>
   `kin:${kinPushDeviceId(`${orgId}\u0000${chatId}`)}`;
@@ -343,7 +353,24 @@ const make = Effect.gen(function* () {
     function* (orgId: KinOrgId, messageId: KinMessageId, personId: KinPersonId) {
       const message = yield* chats.getMessage({ orgId, messageId });
       if (Option.isNone(message)) return undefined;
-      const [linked] = yield* withLinks(orgId, { _tag: "person", personId }, [message.value]).pipe(
+      const reader = { _tag: "person", personId } as const;
+      // Kin's notice of someone's late or due work names only their tasks: it opens them.
+      if (
+        message.value.author._tag === "system" &&
+        (yield* isHolderNotice(orgId, messageId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ))
+      ) {
+        const [listed] = yield* withLinks(orgId, reader, [{ ...message.value, kind: "text" }]).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        return kinTasksSubject(
+          (listed?.links ?? []).flatMap(({ to }) =>
+            to._tag === "record" && to.kind === "task" ? [to.key] : [],
+          ),
+        );
+      }
+      const [linked] = yield* withLinks(orgId, reader, [message.value]).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
       );
       return linked === undefined ? undefined : (kinMessageSubject(linked) ?? undefined);

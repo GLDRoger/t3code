@@ -1222,18 +1222,26 @@ export function makeKinClient<R, ER>(
       staleTimeMs: 30_000,
       refreshTrigger: kinWorkRefreshOn(["clients", "projects"], kinRefreshOn("workChoices")),
     }),
-    /** The active clients and open projects a task or a project can be put under, by name. */
+    /**
+     * The active clients and open projects a task or a project can be put under, by name, and the
+     * done projects a late task can still be filed under.
+     */
     workChoices: createKinQueryAtomFamily(runtime, {
       label: "kin:work:choices",
       execute: Effect.fn("KinClient.workChoices")(function* (input: { readonly orgId: KinOrgId }) {
-        const [clients, projects] = yield* Effect.all(
+        const [clients, projects, done] = yield* Effect.all(
           [
             readWorkClients({ orgId: input.orgId, limit: 100 }),
             readWorkProjects({ orgId: input.orgId, limit: 100 }),
+            readWorkProjects({ orgId: input.orgId, state: "done", limit: 100 }),
           ],
-          { concurrency: 2 },
+          { concurrency: 3 },
         );
-        return { clients: clients.parties, projects: projects.projects };
+        return {
+          clients: clients.parties,
+          projects: projects.projects,
+          doneProjects: done.projects,
+        };
       }),
       staleTimeMs: 30_000,
       // Pickers show only names, kinds and states from these rows, which only their own lists move.

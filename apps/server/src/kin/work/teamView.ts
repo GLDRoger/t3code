@@ -9,6 +9,8 @@ import {
   type KinRecordChange,
   type KinRecordDetail,
   type KinRecordCan,
+  type KinRecordLink,
+  KIN_RECORD_LINKED_FROM_CAP,
   type KinRecordState,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
@@ -17,7 +19,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
 import { LISTS } from "./lists.ts";
-import { inheritedSensitive, notFound, samePrincipal, sensitiveNow } from "./recordRows.ts";
+import { inheritedSensitive, iso, notFound, samePrincipal, sensitiveNow } from "./recordRows.ts";
 
 /** Lists a project's lead writes in, inside that project; quotes and invoices only as drafts. */
 const LEAD_LISTS = ["work", "milestones", "docs", "quotes", "invoices"] as const;
@@ -301,6 +303,52 @@ export const teamVisible = Effect.fn("KinTeamView.visible")(function* (
       AND ${personSees(sql, personId)}
     ORDER BY r.record_id`;
   return new Set(rows.map((row) => row.recordId));
+});
+
+/**
+ * The entries and docs linking to this one that `viewer` sees, newest first, and how many more.
+ * One that this one links back to is in its own `links` already, so it is left out here.
+ */
+export const linkedFromOf = Effect.fn("KinTeamView.linkedFrom")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+  viewer: KinViewer,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    relation: KinRecordLink["relation"];
+    createdAt: number;
+    recordId: KinRecordId;
+    key: KinRecordKey;
+    title: KinRecord["title"];
+    total: number;
+  }>`SELECT l.relation, l.created_at AS "createdAt", r.record_id AS "recordId", r.key, r.title,
+      COUNT(*) OVER () AS total
+    FROM kin_record_links l
+    JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
+    WHERE l.org_id = ${orgId} AND l.kind = 'record' AND l.target = ${recordId}
+      AND NOT EXISTS (SELECT 1 FROM kin_record_links b WHERE b.org_id = l.org_id
+        AND b.record_id = l.target AND b.kind = 'record' AND b.target = l.record_id)
+      AND ${seenBy(sql, viewer)}
+    ORDER BY l.created_at DESC, r.key
+    LIMIT ${KIN_RECORD_LINKED_FROM_CAP}`;
+  const more = (rows[0]?.total ?? 0) - rows.length;
+  return {
+    ...(rows.length === 0
+      ? {}
+      : {
+          linkedFrom: rows.map((row): KinRecordLink => ({
+            kind: "record",
+            relation: row.relation,
+            target: row.recordId,
+            chatId: null,
+            label: null,
+            createdAt: iso(row.createdAt),
+            record: { recordId: row.recordId, key: row.key, title: row.title },
+          })),
+        }),
+    ...(more > 0 ? { linkedFromMore: more } : {}),
+  } satisfies Pick<KinRecordDetail, "linkedFrom" | "linkedFromMore">;
 });
 
 export const TEAM_REFUSED = new KinChatError({

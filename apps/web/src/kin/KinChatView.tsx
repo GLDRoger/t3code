@@ -948,6 +948,7 @@ function KinChatFeed(props: {
                 : null
             }
             previewKey={previewKey}
+            connected={props.connected}
           />
         );
       }

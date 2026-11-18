@@ -29,6 +29,7 @@ import {
   KinListId,
   KinMoney,
   KinMoneyTotals,
+  KinSignedMoney,
   KinPayment,
   KinRepeatRule,
 } from "./kinMoney.ts";
@@ -175,7 +176,8 @@ export const KinRecord = Schema.Struct({
   list: Schema.optional(KinListId),
   /** Its category among the list's own, such as an expense's `travel`. */
   listCategory: Schema.optional(KinTrimmedText),
-  amount: Schema.optional(KinMoney),
+  /** Below zero only on an expense: a refund or credit. */
+  amount: Schema.optional(KinSignedMoney),
   /** When it happened, was issued or starts; `dateAllDay` as for `dueAt`. */
   dateAt: Schema.optional(IsoDateTime),
   dateAllDay: Schema.optional(Schema.Boolean),
@@ -326,6 +328,19 @@ export const KinRecordWaiting = Schema.Struct({
 });
 export type KinRecordWaiting = typeof KinRecordWaiting.Type;
 
+export const KIN_RECORD_LINKED_FROM_CAP = 50;
+/** The other way round from `links`, on a record's and a doc's sheet. */
+export const KinLinkedFromFields = {
+  /**
+   * Entries and docs that link to this one and the reader may see, newest first, at most
+   * `KIN_RECORD_LINKED_FROM_CAP`: `record` links whose `target` and `record` are the one linking
+   * here. Absent when none link here, and from older hosts.
+   */
+  linkedFrom: Schema.optional(Schema.Array(KinRecordLink)),
+  /** How many more past the cap, of those the reader may see. */
+  linkedFromMore: Schema.optional(NonNegativeInt),
+};
+
 /** An entry with everything the entry sheet shows. */
 export const KinRecordDetail = Schema.Struct({
   ...KinRecord.fields,
@@ -348,6 +363,7 @@ export const KinRecordDetail = Schema.Struct({
   reason: Schema.optional(KinText),
   createdBy: KinWorkActor,
   links: Schema.Array(KinRecordLink),
+  ...KinLinkedFromFields,
   /** Newest first, at most `KIN_RECORD_CHANGES_CAP`. */
   changes: Schema.Array(KinRecordChange),
   /** This entry's latest change number, links included: compare with a `changed` event's. */

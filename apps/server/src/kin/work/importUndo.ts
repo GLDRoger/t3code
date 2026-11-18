@@ -134,6 +134,10 @@ export const removeChunk = Effect.fn("KinImport.removeChunk")(function* (
         yield* sql`DELETE FROM kin_record_payments WHERE org_id = ${orgId} AND record_id IN ${these}`;
         // Its number goes with it; the series stays where it is, so none is issued twice.
         yield* sql`DELETE FROM kin_issued_numbers WHERE org_id = ${orgId} AND record_id IN ${these}`;
+        yield* sql`DELETE FROM kin_record_comment_files WHERE org_id = ${orgId}
+          AND comment_id IN (SELECT comment_id FROM kin_record_comments
+            WHERE org_id = ${orgId} AND record_id IN ${these})`;
+        yield* sql`DELETE FROM kin_record_comments WHERE org_id = ${orgId} AND record_id IN ${these}`;
         yield* sql`DELETE FROM kin_record_changes WHERE org_id = ${orgId} AND record_id IN ${these}`;
         yield* sql`DELETE FROM kin_records WHERE org_id = ${orgId} AND record_id IN ${these}`;
       }

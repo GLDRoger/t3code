@@ -146,6 +146,25 @@ export const commentsPage = Effect.fn("KinRecordComments.page")(function* (
   };
 });
 
+/** The newest `limit` comments still standing, oldest first, and how many older ones stand. */
+export const latestComments = Effect.fn("KinRecordComments.latest")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+  limit: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<CommentRow>`SELECT ${sql.literal(COLUMNS)} FROM kin_record_comments
+    WHERE org_id = ${orgId} AND record_id = ${recordId} AND removed_at IS NULL
+    ORDER BY seq DESC LIMIT ${limit}`;
+  const [standing] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
+    FROM kin_record_comments
+    WHERE org_id = ${orgId} AND record_id = ${recordId} AND removed_at IS NULL`;
+  return {
+    comments: rows.toReversed().map(toComment),
+    older: Math.max(0, (standing?.count ?? 0) - rows.length),
+  };
+});
+
 /** Whether the author is in this org now: a person not removed, an agent not retired. */
 const authorHere = Effect.fn("KinRecordComments.authorHere")(function* (
   orgId: KinOrgId,

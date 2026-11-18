@@ -20,6 +20,7 @@ import {
   KinRecordId,
   KinRecordKey,
   type KinTurnChanges,
+  type KinRecordDetail,
   KinWakeupId,
   type KinWorkPrincipal,
   type MemoryItemHead,
@@ -2319,6 +2320,70 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("a record lists what links to it, of what the reader sees, newest first and capped", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const records = yield* KinRecords.KinRecords;
+    yield* places(0, 1, 0);
+    const doc = (yield* Docs.create(
+      orgId,
+      ownerWrites,
+      {},
+      {
+        title: "Invented brief",
+        body: "# Invented brief\n\nThe invented plan.\n",
+        owner: { _tag: "person", personId: ownerId },
+        summary: "Created",
+        originKey: "brief",
+      },
+    )).row;
+    yield* OwnerWork.share([owner], { orgId, keys: [doc.key], shared: true });
+    const theirs = yield* ownerTask("their task", { owner: { _tag: "person", personId: mateId } });
+    const mine = yield* ownerTask("owner's task");
+    const both = yield* ownerTask("linked both ways");
+    const linkTo = (from: { readonly recordId: string }, to: string) =>
+      records.link(orgId, ownerWrites, from.recordId, {
+        kind: "record",
+        target: to,
+        relation: "relates",
+      });
+    yield* linkTo(theirs, doc.recordId);
+    yield* TestClock.adjust("1 second");
+    yield* linkTo(mine, doc.recordId);
+    yield* Docs.link(orgId, ownerWrites, { key: doc.key }, [both.key], "relates");
+    const from = (detail: Pick<KinRecordDetail, "linkedFrom" | "linkedFromMore">) => [
+      detail.linkedFrom?.map((link) => [link.record?.key, link.target]),
+      detail.linkedFromMore,
+    ];
+    // Newest first; one the doc links back to is in its own links, not here.
+    assert.deepStrictEqual(from(yield* OwnerDocs.get([owner], { orgId, key: doc.key })), [
+      [
+        [mine.key, mine.recordId],
+        [theirs.key, theirs.recordId],
+      ],
+      undefined,
+    ]);
+    // A teammate who may not see the owner's task never learns of it, by key, title or count.
+    const seen = yield* OwnerDocs.get([mate], { orgId, key: doc.key });
+    assert.deepStrictEqual(from(seen), [[[theirs.key, theirs.recordId]], undefined]);
+    assert.notInclude(JSON.stringify(seen), "owner's task");
+    // The task's sheet reads the same way round: the doc is in its links, and nothing links to it.
+    const task = yield* OwnerWork.get([owner], { orgId, key: theirs.key });
+    assert.deepStrictEqual(
+      [task.links.map((link) => link.record?.key), task.linkedFrom],
+      [[doc.key], undefined],
+    );
+
+    for (let n = 0; n < 60; n++) yield* linkTo(yield* ownerTask(`linker ${n}`), mine.recordId);
+    assert.deepStrictEqual(
+      (({ linkedFrom, linkedFromMore }) => [linkedFrom?.length, linkedFromMore])(
+        yield* OwnerWork.get([owner], { orgId, key: mine.key }),
+      ),
+      [50, 10],
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "a member finds the projects they are on: in the list, its count and the client page",
   () =>
@@ -3378,6 +3443,11 @@ it.effect("an agent's reply carries what its own wake-up changed, as each reader
       sourceEventId: "ask-event",
       tasks: [{ key: "W-1", to: "Finance", reason: "Invented: month end" }],
     });
+    // Named in no link of the reply: the receipt alone says it opens as a client.
+    yield* LeadWork.create(scope, {
+      sourceEventId: "ask-event",
+      records: [{ list: "clients", title: "Invented Acme" }],
+    });
     yield* reply("first", "wake");
     // The next wake-up, in the same chat, changes seven things.
     yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'wake'`;
@@ -3409,11 +3479,16 @@ it.effect("an agent's reply carries what its own wake-up changed, as each reader
     yield* reply("empty", "wake-3");
     const read = yield* ownerReads;
     const first = read.get(KinMessageId.make("first"))!.turnChanges;
-    assert.deepInclude(first, { count: 2, more: 0 });
+    assert.deepInclude(first, { count: 3, more: 0 });
     assert.deepStrictEqual(receiptRows(first), [
       ["W-2", "created", true, false],
       ["W-1", "given to Finance", true, false],
+      ["C-1", "created", false, false],
     ]);
+    assert.deepStrictEqual(
+      first!.items.map((item) => item.kind),
+      ["task", "task", "client"],
+    );
     assert.deepStrictEqual(first!.items[0]!.change.agentId, lead);
     // A turn that changed nothing says so, unlike an older server.
     assert.deepStrictEqual(read.get(KinMessageId.make("empty"))!.turnChanges, {

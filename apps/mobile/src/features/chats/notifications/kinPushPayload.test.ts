@@ -115,6 +115,11 @@ describe("kinNotificationRoute", () => {
       { ...deferral, subject: { _tag: "record", key: "D-3", kind: "doc" } },
       [chatLink, "/kin/env-1/kin-default/docs/D-3"],
     ],
+    [
+      "several tasks, to Tasks over the chat",
+      { ...deferral, subject: { _tag: "tasks" } },
+      [chatLink, "/kin/env-1/kin-default/work"],
+    ],
     // A subject a later build sends, or one that isn't well formed, still opens the chat.
     [
       "a subject this build doesn't know, to the chat",

@@ -83,6 +83,21 @@ import {
 /** Task lists kept while their screen is away, so coming back reads nothing the stream brought. */
 const kinTaskLists = createKinListKeeper<KinWorkList, KinWorkListState>(Date.now);
 
+/** A project's heading in Tasks, which opens the project. */
+function ProjectHeading(props: {
+  readonly title: string;
+  readonly project: KinRecordKey;
+  readonly onOpen: (key: KinRecordKey) => void;
+}) {
+  return (
+    <h3 className="-ms-2 min-w-0">
+      <Button size="xs" variant="ghost" onClick={() => props.onOpen(props.project)}>
+        <span className="truncate">{props.title}</span>
+      </Button>
+    </h3>
+  );
+}
+
 /**
  * Tasks as a list: all of Work, or one project's under that project's own summary. Hundreds stay
  * cheap, because only the rows in view mount.
@@ -95,6 +110,8 @@ export function KinWorkTaskList(
     readonly changes: KinWorkChangesHandle;
     readonly openKey: KinRecordKey | null;
     readonly onOpen: (key: KinRecordKey) => void;
+    /** A project's heading opens the project; absent where headings stay plain. */
+    readonly onOpenProject?: (key: KinRecordKey) => void;
     readonly onAdd: (() => void) | null;
     /** Where the list starts: everything, or narrowed to a client or a project. */
     readonly initial: KinWorkFilter;
@@ -329,7 +346,15 @@ export function KinWorkTaskList(
       renderItem={({ item }) =>
         item.type === "section" ? (
           <div className="mx-auto flex w-full max-w-3xl items-baseline gap-2 px-6 pt-5 pb-1">
-            <h3 className="min-w-0 truncate text-sm font-medium text-foreground">{item.title}</h3>
+            {item.project === undefined || props.onOpenProject === undefined ? (
+              <h3 className="min-w-0 truncate text-sm font-medium text-foreground">{item.title}</h3>
+            ) : (
+              <ProjectHeading
+                title={item.title}
+                project={item.project}
+                onOpen={props.onOpenProject}
+              />
+            )}
             <span className="text-xs text-muted-foreground tabular-nums">{item.count}</span>
           </div>
         ) : item.type === "who" ? (
@@ -539,6 +564,8 @@ export function KinWorkRow(props: {
         type="button"
         aria-label={row.accessibilityLabel}
         aria-current={props.selected === true ? true : undefined}
+        // Where focus goes back to when the task it opened closes.
+        data-kin-row={row.key}
         onClick={props.onOpen}
         className="flex min-w-0 flex-1 items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset aria-[current=true]:bg-accent"
       >
