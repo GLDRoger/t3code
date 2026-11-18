@@ -1029,6 +1029,10 @@ const principalFromText = (text: string | null): KinWorkPrincipal | null => {
 /** "today", "yesterday" or "15 Nov" for an ISO time, on this device's calendar. */
 export const kinWorkDayOfTime = (iso: string, now: Date) => dayFromText(iso, now, null);
 
+/** A due date as the history wrote it, as the day it is where the owner is. */
+export const kinWorkDueDayText = (text: string | null, now: Date, zone: string | null) =>
+  dayFromText(text, now, zone);
+
 /** A due time from the history, as the day it is where the owner is, like the due date itself. */
 const dayFromText = (text: string | null, now: Date, zone: string | null) => {
   if (text === null) return null;
@@ -1054,6 +1058,8 @@ export function kinWorkChangeText(
   names: KinWorkNames,
   now: Date,
   list: keyof typeof ADDED = "work",
+  /** What a task's notes are called where the line shows: the record page calls them its brief. */
+  notesWord = "notes",
 ): string {
   const who = kinWorkActorName(change.by, names);
   const field = (name: string) => change.fields.find((held) => held.field === name);
@@ -1129,7 +1135,7 @@ export function kinWorkChangeText(
     );
   }
   if (field("title") !== undefined) clauses.push("renamed it");
-  if (field("notes") !== undefined) clauses.push("changed the notes");
+  if (field("notes") !== undefined) clauses.push(`changed the ${notesWord}`);
   if (field("confirmed")?.to === "true") clauses.push("kept it");
   if (field("terms") !== undefined) clauses.push("changed the terms");
   if (["role", "email", "phone"].some((name) => field(name) !== undefined))

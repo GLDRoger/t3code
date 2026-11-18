@@ -409,6 +409,8 @@ describe("KinPushSender", () => {
           chatId: "chat_team",
           widgetId,
           revision: 3,
+          // A tap opens the card itself, in its chat.
+          subject: { _tag: "message", messageId: `msg_${widgetId.slice("w_msg_".length)}` },
           deepLink: "/kin/env_kin/org_01/chats/chat_team",
         },
       });
@@ -440,6 +442,54 @@ describe("KinPushSender", () => {
       // A suggestion only the owner can see isn't announced to anyone.
       const suggested = yield* postMessage(sql, "system", "suggested");
       assert.strictEqual((yield* notify({ _tag: "message", orgId, messageId: suggested })).sent, 0);
+    }).pipe(Effect.provide(build(apns)));
+  });
+
+  it.effect("a push opens the one entry it names, as the person it reaches may open it", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { notify, sql } = yield* seed;
+      yield* sql`UPDATE kin_people SET access = CASE person_id WHEN ${owner} THEN 'owner'
+        ELSE 'member' END`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at)
+        VALUES ('org_01', 'clients', 'Clients', 'C', 1, 0), ('org_01', 'work', 'Work', 'W', 1, 0)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, sensitive, created_by_kind, origin_key, created_at, updated_at)
+        VALUES ('org_01', 'c1', 'clients', 'C-1', 'Orbit Dental', 'person', ${owner}, 0,
+            'person', 'c1', 0, 0),
+          ('org_01', 'w1', 'work', 'W-1', 'Logo files', 'person', ${member}, 0, 'person', 'w1', 0, 0)`;
+      // A line from one of them to the other: what each tap opens for whoever it reached.
+      const subjects = (from: "owner" | "priya", body: string) =>
+        Effect.gen(function* () {
+          apns.sent.length = 0;
+          const author =
+            from === "owner"
+              ? { personId: owner, memberId: "m_owner" }
+              : { personId: member, memberId: "m_priya" };
+          const messageId = yield* postMessage(sql, author, "posted", {
+            mentions: [from === "owner" ? "m_priya" : "m_owner"],
+            body,
+          });
+          yield* notify({ _tag: "message", orgId, messageId });
+          return apns.sent.map(
+            (push) => (push.payload as { body: { subject?: unknown } }).body.subject,
+          );
+        });
+      const task = { _tag: "record", key: "W-1", kind: "task" };
+      const client = { _tag: "record", key: "C-1", kind: "client" };
+      // Priya may open her task, not the owner's client: only the task is hers to land on.
+      assert.deepStrictEqual(yield* subjects("owner", "W-1 is ready to send."), [task]);
+      assert.deepStrictEqual(yield* subjects("owner", "C-1 and W-1 wait on the files."), [task]);
+      assert.deepStrictEqual(yield* subjects("owner", "Orbit Dental renews next week."), [
+        undefined,
+      ]);
+      // The owner may open both, so a line naming both is about neither; one naming one opens it.
+      assert.deepStrictEqual(yield* subjects("priya", "C-1 and W-1 wait on the files."), [
+        undefined,
+        undefined,
+      ]);
+      assert.deepStrictEqual(yield* subjects("priya", "Orbit Dental signed."), [client, client]);
     }).pipe(Effect.provide(build(apns)));
   });
 
@@ -572,9 +622,21 @@ describe("KinPushSender", () => {
       yield* notify({ _tag: "message", orgId, messageId: dm });
       const [first] = alerts(apns.sent);
       assert.strictEqual(first?.title, "Finance");
-      // Cut at a word, under the banner's length, and marked as cut.
-      assert.isAtMost(Array.from(first?.body ?? "").length, 160);
-      assert.match(first?.body ?? "", /^Payroll for November is ready to review\. .*ledger\.…$/);
+      // The whole reply: the lock screen shows it all, nothing cut at a banner's length.
+      assert.strictEqual(first?.body, long.trim());
+
+      // One past APNs' payload limit is cut to fit it, at the end of a sentence.
+      apns.sent.length = 0;
+      const essay = yield* postMessage(sql, { personId: member, memberId: "m_priya" }, "posted", {
+        mentions: ["m_owner"],
+        body: "The Q3 ledger reconciles against the bank statement line by line. ".repeat(90),
+      });
+      yield* notify({ _tag: "message", orgId, messageId: essay });
+      assert.lengthOf(alerts(apns.sent), 2);
+      for (const push of apns.sent) {
+        assert.isAtMost(new TextEncoder().encode(JSON.stringify(push.payload)).length, 4096);
+        assert.match(alerts([push])[0]?.body ?? "", /line by line\.…$/);
+      }
 
       // A check-in greets only when it has sections, and then leads with its first real line.
       for (const [body, expected] of [
@@ -1276,6 +1338,34 @@ describe("KinPushSender", () => {
       });
       assert.strictEqual(apns.sent.length, 0);
     }).pipe(Effect.provide(build(apns)));
+  });
+});
+
+describe("kinPushFit", () => {
+  const bytes = (text: string) => new TextEncoder().encode(JSON.stringify(text)).length - 2;
+  const sentence = "Payroll for November matches the ledger and is ready for you. ";
+  const words = Array.from({ length: 400 }, (_, at) => `item${at}`).join(" ");
+  const hindi = "बजट की समीक्षा शुक्रवार तक पूरी होगी। ".repeat(60);
+  const chinese = "会议定在周五下午三点。".repeat(200);
+  it.each([
+    ["a short line whole", "Ship it Friday.", 3900, "Ship it Friday."],
+    ["a 600-character reply whole", sentence.repeat(10).trim(), 3900, sentence.repeat(10).trim()],
+    ["at a sentence end when one is near", sentence.repeat(100), 3900, /ready for you\.…$/],
+    ["at a word when no sentence ends near", words, 1000, /item\d+…$/],
+    ["Hindi at its sentence end, in bytes", hindi, 3900, /होगी।…$/],
+    ["Chinese at its sentence end, in bytes", chinese, 3900, /三点。…$/],
+    ["quotes and line breaks counted escaped", `"Done"\n`.repeat(800), 3900, /"Done"…$/],
+    ["a word longer than the room at a character", "x".repeat(5000), 100, /^x+…$/],
+  ] as const)("cuts %s", (_name, text, room, expected) => {
+    const cut = Sender.kinPushFit(text, room);
+    assert.isAtMost(bytes(cut), room);
+    if (typeof expected === "string") assert.strictEqual(cut, expected);
+    else {
+      assert.match(cut, expected);
+      // What it keeps is the text's own start, whole words, and nearly the room it had.
+      assert.isTrue(text.startsWith(cut.slice(0, -1)));
+      assert.isAbove(bytes(cut), room * 0.75);
+    }
   });
 });
 

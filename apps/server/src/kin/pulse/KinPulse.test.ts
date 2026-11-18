@@ -341,6 +341,18 @@ const SENSES: ReadonlyArray<readonly [string, string, number]> = [
 
 const decodeEvent = Schema.decodeUnknownSync(KinEvent);
 
+/** The wakes holders got, in order, with the facts each carried. */
+const holderWakes = Effect.fn("test.holderWakes")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ agent: string; json: string }>`SELECT agent_id AS agent, json
+    FROM kin_events WHERE org_id = ${orgId} AND dedupe_key LIKE 'holders:%'
+    ORDER BY received_at, event_id`;
+  return rows.map((row) => {
+    const event = decodeEvent(JSON.parse(row.json));
+    return { agent: row.agent, keys: event._tag === "pulse" ? event.factKeys : [] };
+  });
+});
+
 describe("KinPulse", () => {
   it.effect("each sense is absent a minute before its line and present at it", () =>
     Effect.gen(function* () {
@@ -414,7 +426,8 @@ describe("KinPulse", () => {
         ["invoice_overdue", "task_stuck", "budget_over"],
       );
       const events = yield* sql<{ agent: string; tag: string }>`SELECT agent_id AS agent, tag
-        FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse' ORDER BY event_id`;
+        FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
+          AND dedupe_key NOT LIKE 'holders:%' ORDER BY event_id`;
       assert.lengthOf(events, first.woken.length);
       assert.isTrue(events.every((event) => event.agent === finance));
       const claim = yield* Effect.scoped(
@@ -432,6 +445,98 @@ describe("KinPulse", () => {
       yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-INV-1'`;
       const later = yield* KinPulse.tick(orgId, at + 2 * MINUTE);
       assert.isAtLeast(later.cleared, 1);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a record past due wakes its agent holder once, and again only when the due day changes",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const at = B + 11 * DAY;
+        const lateW1 = (keys: ReadonlyArray<string>) =>
+          keys.filter((key) => key.startsWith("task_late:W-1:"));
+        const first = yield* KinPulse.tick(orgId, at);
+        assert.deepStrictEqual(lateW1((yield* holderWakes()).flatMap((wake) => wake.keys)), [
+          `task_late:W-1:due=${B + 10 * DAY}`,
+        ]);
+        assert.isTrue(first.told.some((one) => one.to === `agent:${chief}`));
+        // Late all week: not again.
+        for (const later of [at + HOUR, at + DAY, at + 6 * DAY])
+          assert.lengthOf(
+            lateW1((yield* KinPulse.tick(orgId, later)).told.map((one) => one.key)),
+            0,
+          );
+        // Its due day moves: told again, once.
+        yield* sql`UPDATE kin_records SET due_at = ${B + 11 * DAY} WHERE record_id = 'r-W-1'`;
+        const moved = yield* KinPulse.tick(orgId, at + 7 * DAY);
+        assert.deepStrictEqual(lateW1(moved.told.map((one) => one.key)), [
+          `task_late:W-1:due=${B + 11 * DAY}`,
+        ]);
+        assert.lengthOf(
+          lateW1((yield* KinPulse.tick(orgId, at + 8 * DAY)).told.map((one) => one.key)),
+          0,
+        );
+        // Closed, then open again: told again.
+        yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-W-1'`;
+        yield* KinPulse.tick(orgId, at + 8 * DAY + HOUR);
+        yield* sql`UPDATE kin_records SET state = 'open' WHERE record_id = 'r-W-1'`;
+        const reopened = yield* KinPulse.tick(orgId, at + 8 * DAY + 2 * HOUR);
+        assert.lengthOf(lateW1(reopened.told.map((one) => one.key)), 1);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("two late tasks for one agent make one wake", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const at = B + 11 * DAY;
+      yield* KinPulse.tick(orgId, at);
+      const wakes = yield* holderWakes();
+      assert.deepStrictEqual(
+        wakes.map((wake) => wake.agent),
+        [chief],
+      );
+      assert.includeMembers(
+        [...wakes[0]!.keys],
+        [
+          `task_late:W-1:due=${B + 10 * DAY}`,
+          `task_late:W-9:due=${B + 2 * DAY}`,
+          `theirs_late:W-5:due=${B + 3 * DAY}`,
+        ],
+      );
+      // The next pass tells only what became due since (W-12, due today now), never those again.
+      const next = yield* KinPulse.tick(orgId, at + 15 * MINUTE);
+      assert.deepStrictEqual(
+        next.told.map((one) => one.key),
+        [`task_due_soon:W-12:due=${B + 12 * DAY}`],
+      );
+      assert.lengthOf(yield* holderWakes(), 2);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a late task held by a person tells that person once", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const at = B + 3 * DAY;
+      const key = `task_late:W-8:due=${B + 2 * DAY}`;
+      const first = yield* KinPulse.tick(orgId, at);
+      assert.deepStrictEqual(
+        first.told.filter((one) => one.key === key),
+        [{ agentId: chief, to: mate, key }],
+      );
+      // The Chief of staff is woken to tell Meera, in the same one wake as its own.
+      const wakes = yield* holderWakes();
+      assert.lengthOf(wakes, 1);
+      assert.include(wakes[0]!.keys, key);
+      yield* KinPulse.tick(orgId, at + DAY);
+      const told = yield* sql<{ person: string }>`SELECT person_id AS person FROM kin_pulse_told
+        WHERE org_id = ${orgId} AND fact_key = ${key} ORDER BY told_at`;
+      assert.deepStrictEqual(
+        told.map((row) => row.person),
+        [mate],
+      );
     }).pipe(Effect.provide(layer)),
   );
 

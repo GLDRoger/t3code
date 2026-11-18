@@ -217,7 +217,7 @@ export function installKinNotifications(navigate: (href: string) => void): () =>
     const route = kinNotificationRoute(response);
     if (route === null || handled.has(route.responseKey)) return;
     handled.add(route.responseKey);
-    navigate(route.path);
+    for (const path of route.paths) navigate(path);
     if (route.act !== null) delivery.post(route.environmentId, route.act);
   };
   const subscription = Notifications.addNotificationResponseReceivedListener(handleResponse);

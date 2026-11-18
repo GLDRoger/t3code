@@ -9,6 +9,8 @@ export const KIN_MESSAGE_ALERTS = {
   detail:
     "Alerts on this computer when someone writes to you while Kin is open but you're in another window. Your phone's notifications are set on the phone.",
   label: "Message alerts",
+  /** The in-app notice's button, which opens what the message is about. */
+  open: "Open",
 };
 
 export type KinUnreadSeen = ReadonlyMap<string, number>;
@@ -32,3 +34,21 @@ export const kinArrivalText = (row: KinChatListRow) => ({
   title: row.view.title ?? "Kin",
   body: row.author === null ? row.preview : `${row.author}: ${row.preview}`,
 });
+
+/**
+ * How each arrival is told on this device: by the system while you are in another window, else
+ * in the app, unless it is the chat already on screen.
+ */
+export function kinArrivalNotices(
+  arrivals: ReadonlyArray<KinChatListRow>,
+  where: { readonly looking: boolean; readonly onScreenChatId: string | null },
+): {
+  readonly system: ReadonlyArray<KinChatListRow>;
+  readonly inApp: ReadonlyArray<KinChatListRow>;
+} {
+  if (!where.looking) return { system: arrivals, inApp: [] };
+  return {
+    system: [],
+    inApp: arrivals.filter((row) => row.chat.chatId !== where.onScreenChatId),
+  };
+}

@@ -12,7 +12,12 @@ import {
   type OnViewableItemsChangedInfo,
   type ViewabilityConfigCallbackPairs,
 } from "@legendapp/list/react-native";
-import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import {
+  useIsFocused,
+  useNavigation,
+  useRoute,
+  type StaticScreenProps,
+} from "@react-navigation/native";
 import {
   EnvironmentId,
   KinChatId,
@@ -195,6 +200,8 @@ type KinChatParams = {
   readonly environmentId: string;
   readonly orgId: string;
   readonly chatId: string;
+  /** A message a notification opened the chat on, brought into view once it has loaded. */
+  readonly message?: string;
 };
 
 type KinFixtures = typeof import("@t3tools/client-runtime/kin/kinChatFixtures");
@@ -1104,6 +1111,22 @@ function KinChatFeed(props: {
             continues: index > 0 || endsOnOwn,
           })),
         ];
+  const params: unknown = useRoute().params;
+  const landOn =
+    typeof params === "object" && params !== null && "message" in params
+      ? String(params.message)
+      : null;
+  const landed = useRef<string | null>(null);
+  const landIndex =
+    landOn === null
+      ? -1
+      : rows.findIndex((row) => row.type === "message" && row.message.messageId === landOn);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the list, outside React, to the message a notification opened, once it has loaded
+  useEffect(() => {
+    if (landOn === null || landIndex < 0 || landed.current === landOn) return;
+    landed.current = landOn;
+    void listRef.current?.scrollToIndex({ index: landIndex, animated: false, viewPosition: 0.3 });
+  }, [landIndex, landOn, listRef, landed]);
   // LegendList grows an empty list to its frame, under both insets, which hid the intro under the
   // composer; the visible height ends it above the composer instead.
   const emptyMinHeight =

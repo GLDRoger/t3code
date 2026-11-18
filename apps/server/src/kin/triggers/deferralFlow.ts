@@ -279,6 +279,17 @@ const make = Effect.gen(function* () {
     return lead === undefined ? null : lead.ownerChatId;
   });
 
+  /** Whether the item asks a person here other than whoever asked for it. */
+  const asksAnother = Effect.fn("KinDeferralFlow.asksAnother")(function* (
+    orgId: KinOrgId,
+    item: MemoryItemHead,
+  ) {
+    if (item.owner === undefined || item.owner === item.said_by) return false;
+    const [person] = yield* sql`SELECT 1 FROM kin_people WHERE org_id = ${orgId}
+      AND handle = ${item.owner} AND removed_at IS NULL ORDER BY person_id LIMIT 1`;
+    return person !== undefined;
+  });
+
   const prepareChase = Effect.fn("KinDeferralFlow.prepareChase")(function* (
     orgId: KinOrgId,
     item: MemoryItemHead,
@@ -455,8 +466,24 @@ const make = Effect.gen(function* () {
             });
             if (!started) return false;
           }
-        } else if (onDue === "ask") yield* ask([]);
-        else if (onDue === "chase") {
+        } else if (onDue === "ask") {
+          // A promise to ask someone else: its lead asks them itself. Asking the asker is a card.
+          const started =
+            item !== undefined &&
+            (yield* asksAnother(orgId, item)) &&
+            (yield* start({
+              orgId,
+              itemId,
+              dueAt,
+              card: card("started", ""),
+              provenance: { _tag: "system" },
+              at: Date.parse(fire.firedAt),
+              now,
+              from: run.state,
+              item,
+            }));
+          if (!started) yield* ask([]);
+        } else if (onDue === "chase") {
           // Inside the transaction, so a chased run always has its ping row.
           const failure =
             item === undefined

@@ -2,24 +2,32 @@ import { kinChatListRows } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   KIN_MESSAGE_ALERTS,
+  kinArrivalNotices,
   kinArrivalText,
   kinNewArrivals,
   kinUnreadSeen,
   type KinUnreadSeen,
 } from "@t3tools/client-runtime/kin/kinMessageAlerts";
+import {
+  kinChatArrivalDestination,
+  type KinNotificationDestination,
+} from "@t3tools/client-runtime/kin/kinNotificationDestination";
 import { kinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
-import { useNavigate } from "@tanstack/react-router";
+import type { EnvironmentId } from "@t3tools/contracts";
+import { useNavigate, useParams } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 
 import { NotificationSettings } from "../components/settings/NotificationSettings";
 import { SettingsSection } from "../components/settings/settingsLayout";
 import { SettingsScopeProvider } from "../components/settings/SettingsScopeContext";
+import { toastManager } from "../components/ui/toast";
 import { useClientSettings } from "../hooks/useSettings";
 import {
   hasDesktopNotifications,
   hasNotificationSound,
   playNotificationSound,
 } from "../threadNotifications";
+import { KIN_PLACE_PATH } from "./kinPlaces";
 import { useKinInbox } from "./useKinHost";
 
 /** Settings → You → Notifications: this computer's alerts for Kin messages. */
@@ -42,11 +50,41 @@ export function KinSettingsNotifications() {
 
 const looking = () => document.visibilityState === "visible" && document.hasFocus();
 
-/** Rings this computer when a chat gets a message while Kin is open in a window you aren't in. */
+/** Where a notice opens, as the phone's tap on the same push does: the entry, the card, the chat. */
+function openDestination(
+  navigate: ReturnType<typeof useNavigate>,
+  where: { readonly environmentId: EnvironmentId; readonly orgId: string },
+  destination: KinNotificationDestination,
+) {
+  if (destination._tag === "chat")
+    return navigate({
+      to: "/kin/$environmentId/$orgId/$chatId",
+      params: { ...where, chatId: destination.chatId },
+      search: destination.messageId === null ? {} : { message: destination.messageId },
+    });
+  const { key, kind } = destination;
+  return kind === "client"
+    ? navigate({ to: KIN_PLACE_PATH.clients, params: where, search: { client: key } })
+    : kind === "project"
+      ? navigate({ to: KIN_PLACE_PATH.clients, params: where, search: { project: key } })
+      : kind === "doc"
+        ? navigate({ to: KIN_PLACE_PATH.docs, params: where, search: { doc: key } })
+        : navigate({
+            to: kind === "entry" ? KIN_PLACE_PATH.money : KIN_PLACE_PATH.tasks,
+            params: where,
+            search: { task: key },
+          });
+}
+
+/**
+ * Rings this computer when a chat gets a message while Kin is open in a window you aren't in, and
+ * shows a notice in Kin when you are on another page or chat.
+ */
 export function KinMessageAlerts() {
   const { host, state } = useKinInbox();
   const mode = useClientSettings((settings) => settings.notificationMode);
   const navigate = useNavigate();
+  const onScreenChatId = useParams({ strict: false }).chatId ?? null;
   const seen = useRef<KinUnreadSeen | null>(null);
   const environmentId = state._tag === "ready" ? state.environmentId : null;
   const rows =
@@ -58,27 +96,43 @@ export function KinMessageAlerts() {
     if (rows === null || environmentId === null) return;
     const arrivals = kinNewArrivals(seen.current, rows);
     seen.current = kinUnreadSeen(rows);
-    if (arrivals.length === 0 || mode === "off" || looking()) return;
+    if (arrivals.length === 0 || mode === "off") return;
+    const { system, inApp } = kinArrivalNotices(arrivals, { looking: looking(), onScreenChatId });
+    const open = (row: (typeof arrivals)[number]) =>
+      void openDestination(
+        navigate,
+        { environmentId, orgId: row.chat.orgId },
+        kinChatArrivalDestination(row.chat),
+      );
+    for (const row of inApp) {
+      const { title, body } = kinArrivalText(row);
+      const notice = toastManager.add({
+        type: "info",
+        title,
+        description: body,
+        actionProps: {
+          children: KIN_MESSAGE_ALERTS.open,
+          onClick: () => {
+            toastManager.close(notice);
+            open(row);
+          },
+        },
+      });
+    }
+    if (system.length === 0) return;
     if (hasNotificationSound(mode)) void playNotificationSound("input", () => !looking());
     if (!hasDesktopNotifications(mode) || typeof Notification === "undefined") return;
     if (Notification.permission !== "granted") return;
-    for (const row of arrivals) {
+    for (const row of system) {
       const { title, body } = kinArrivalText(row);
       const alert = new Notification(title, { body, tag: `kin:${row.chat.chatId}` });
       alert.onclick = () => {
         window.focus();
-        void navigate({
-          to: "/kin/$environmentId/$orgId/$chatId",
-          params: {
-            environmentId,
-            orgId: row.chat.orgId,
-            chatId: row.chat.chatId,
-          },
-        });
+        open(row);
         alert.close();
       };
     }
     // Runs again on every inbox change; `seen` makes a repeat look at the same counts a no-op.
-  }, [rows, mode, environmentId, navigate]);
+  }, [rows, mode, environmentId, navigate, onScreenChatId]);
   return null;
 }
