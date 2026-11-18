@@ -1701,7 +1701,7 @@ describe("Kin migrations", () => {
           [174, "AnswerPages"],
           [175, "DeviceLinks"],
         ]);
-        assert.deepStrictEqual((yield* kinHistory).slice(-101), [
+        assert.deepStrictEqual((yield* kinHistory).slice(-102), [
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },
