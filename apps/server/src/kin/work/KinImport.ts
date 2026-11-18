@@ -28,7 +28,8 @@ import {
 } from "./importFormat.ts";
 import { type CreateInput, KinRecords, type Writer } from "./KinRecords.ts";
 import { type FieldValue } from "./lists.ts";
-import { dayIn, parseAmount } from "./money.ts";
+import { dayIn, farAbove, issuedAfterDue, largestIn, parseAmount } from "./money.ts";
+import { homeCurrency } from "./companyProfile.ts";
 import { endOfDay, ownerZone, startOfDay, workFailure } from "./recordRows.ts";
 import {
   defineList,
@@ -227,6 +228,27 @@ const make = Effect.gen(function* () {
       DAY.test(value) ? (end ? endOfDay(value, zone) : startOfDay(value, zone)) : Date.parse(value);
     const dayOf = (value: string | undefined) =>
       value === undefined ? undefined : DAY.test(value) ? value : dayIn(Date.parse(value), zone);
+    const home = yield* homeCurrency(orgId);
+    // Each list's largest amount per currency, read once and raised as the file goes.
+    const largest = new Map<string, bigint>();
+    const slip = Effect.fn("KinImport.slip")(function* (
+      spec: ImportEntry,
+      def: ListDef,
+      amount: KinMoney | undefined,
+    ) {
+      if (spec.confirmed === true) return undefined;
+      if (amount !== undefined) {
+        const slot = `${def.id}|${amount.currency}`;
+        const most = largest.get(slot) ?? (yield* largestIn(orgId, def.id, amount.currency));
+        const far = farAbove(def.name, amount, most, home);
+        if (far !== undefined) return far;
+        const size = BigInt(Math.abs(amount.minor));
+        largest.set(slot, size > most ? size : most);
+      }
+      return def.id === "invoices" && spec.date !== undefined && spec.due !== undefined
+        ? issuedAfterDue(at(spec.date, true), at(spec.due, true), zone)
+        : undefined;
+    });
 
     const found = Effect.fn("KinImport.found")(function* (originKey: string) {
       const [row] = yield* sql<{ recordId: string; key: string }>`SELECT record_id AS "recordId",
@@ -661,6 +683,8 @@ const make = Effect.gen(function* () {
         else yield* payAll(line, due, had.key, currency);
         return tally(spec, def, amount, open);
       }
+      const slipped = yield* slip(spec, def, amount);
+      if (slipped !== undefined) return fail(slipped);
       const partyId =
         spec.client === undefined ? undefined : yield* client(line, spec.client, false);
       if (spec.client !== undefined && partyId === undefined)
