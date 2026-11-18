@@ -22,6 +22,7 @@ import { ServerConfig } from "../../config.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ChatRepository from "../chat/KinChatRepository.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
@@ -395,4 +396,81 @@ it.effect("a mail waiting to be confirmed about an entry shows on the sheet of w
     yield* sql`UPDATE kin_connection_asks SET state = 'sent'`;
     assert.notProperty(yield* OwnerWork.get([rhea], { orgId, key: made.key }), "waiting");
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect("record_get shows the newest comments still standing, for the turn's people only", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* rheaTurn;
+    const zoyas = yield* task("book the hall", { owner: { _tag: "person", personId: zoyaId } });
+    const written = [];
+    for (let n = 1; n <= 13; n++)
+      written.push((yield* say(rhea, zoyas.key, `Invented note ${n}`)).comment);
+    yield* Comments.removeOne([rhea], { orgId, key: zoyas.key, commentId: written[11]!.commentId });
+    const read = yield* LeadWork.get(scope, { key: zoyas.key });
+    assert.deepStrictEqual(
+      read.comments?.map((one) => [one.by, one.text]),
+      [3, 4, 5, 6, 7, 8, 9, 10, 11, 13].map((n) => ["owner", `Invented note ${n}`]),
+    );
+    assert.strictEqual(read.olderComments, 2);
+    // Zoya now reads this chat with Rhea: her own task's comments show, Rhea's own task not at all.
+    const rheas = yield* task("plan the offsite");
+    yield* say(rhea, rheas.key, "Invented: keep it quiet");
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+      VALUES ('chief-chat-zoya', ${orgId}, 'chief-chat', 'person', ${zoyaId}, 'member', ${at})`;
+    yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
+    assert.lengthOf((yield* LeadWork.get(scope, { key: zoyas.key })).comments ?? [], 10);
+    assert.include(yield* Effect.flip(LeadWork.get(scope, { key: rheas.key })), {
+      reason: "not_found",
+    });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a person's comment tells who holds the task and who asked for it, once each", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const meeraId = KinPersonId.make("meera");
+    const devId = KinPersonId.make("dev");
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES (${meeraId}, ${orgId}, 'meera', 'Meera', ${at}), (${devId}, ${orgId}, 'dev', 'Dev', ${at})`;
+    yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+      VALUES (${orgId}, ${chief}, ${rheaId}, ${at})`;
+    for (const one of [meeraId, devId, zoyaId]) {
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES (${`${one}-chat`}, ${orgId}, 'direct', ${`${one}:${chief}`}, 0, ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES (${`${one}-chat-person`}, ${orgId}, ${`${one}-chat`}, 'person', ${one}, 'member', ${at})`;
+    }
+    const made = yield* task("print the menus", { owner: { _tag: "person", personId: devId } });
+    yield* sql`UPDATE kin_records SET asked_by_person_id = ${zoyaId} WHERE record_id = ${made.recordId}`;
+    yield* OwnerWork.share([rhea], { orgId, keys: [made.key], shared: true });
+    yield* TestClock.setTime(Date.parse("2026-11-11T12:00:00.000Z"));
+    const posted: Array<string> = [];
+    const hub = Layer.mock(KinChatHub)({
+      publish: (event) =>
+        Effect.sync(() => {
+          if (event.type === "message.posted") posted.push(event.message.chatId);
+        }),
+    });
+    const told = sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId", body
+      FROM kin_messages WHERE kind = 'system' ORDER BY chat_id, seq`;
+    const meera = person(meeraId);
+    yield* say(meera, made.key, "Invented: use the matte paper", "first").pipe(Effect.provide(hub));
+    yield* say(meera, made.key, "Invented: use the matte paper", "first").pipe(Effect.provide(hub));
+    const line = `Meera commented on ${made.key} Invented: print the menus: Invented: use the matte paper.`;
+    assert.deepStrictEqual(yield* told, [
+      { chatId: "dev-chat", body: line },
+      { chatId: "zoya-chat", body: line },
+    ]);
+    assert.deepStrictEqual(posted.toSorted(), ["dev-chat", "zoya-chat"]);
+    // Someone removed from the company is told nothing; the asker still is.
+    yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = ${devId}`;
+    yield* say(meera, made.key, "Invented: and the gold ink", "second").pipe(Effect.provide(hub));
+    assert.deepStrictEqual(
+      (yield* told).map((one) => one.chatId),
+      ["dev-chat", "zoya-chat", "zoya-chat"],
+    );
+  }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
 );

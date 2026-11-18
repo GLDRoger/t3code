@@ -18,7 +18,11 @@ import {
 } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinDomainLabel } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
-import { kinPickablePeople } from "@t3tools/client-runtime/kin/kinTeam";
+import {
+  kinNamesakeHandle,
+  kinPickLine,
+  kinPickablePeople,
+} from "@t3tools/client-runtime/kin/kinTeam";
 import { KIN_WORK_ASSIGN } from "@t3tools/client-runtime/kin/kinWork";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import * as Option from "effect/Option";
@@ -327,24 +331,33 @@ function GroupForm(props: {
                   title="People"
                   footer={`Someone added later sees only what is said after they join, not earlier messages. ${KIN_GROUP_PEOPLE_NOTE}`}
                 >
-                  {people.map(({ person, invited: waiting }, index) => (
-                    <SelectionRow
-                      key={person.personId}
-                      role="checkbox"
-                      title={person.displayName}
-                      {...(waiting ? { subtitle: KIN_WORK_ASSIGN.invited } : {})}
-                      leading={
-                        <KinAvatar
-                          avatar={{ kind: "person", seed: `person:${person.personId}` }}
-                          size="small"
-                        />
-                      }
-                      selected={personIds.includes(person.personId)}
-                      disabled={!allowed || saving || waiting}
-                      isLast={index === people.length - 1}
-                      onPress={() => setPersonIds((held) => toggle(held, person.personId))}
-                    />
-                  ))}
+                  {people.map(({ person, invited: waiting }, index) => {
+                    const line = kinPickLine(
+                      kinNamesakeHandle(
+                        people.map((entry) => entry.person),
+                        person,
+                      ),
+                      waiting ? KIN_WORK_ASSIGN.invited : null,
+                    );
+                    return (
+                      <SelectionRow
+                        key={person.personId}
+                        role="checkbox"
+                        title={person.displayName}
+                        {...(line === null ? {} : { subtitle: line })}
+                        leading={
+                          <KinAvatar
+                            avatar={{ kind: "person", seed: `person:${person.personId}` }}
+                            size="small"
+                          />
+                        }
+                        selected={personIds.includes(person.personId)}
+                        disabled={!allowed || saving || waiting}
+                        isLast={index === people.length - 1}
+                        onPress={() => setPersonIds((held) => toggle(held, person.personId))}
+                      />
+                    );
+                  })}
                 </ListSection>
               )}
               {leads.length === 0 && people.length === 0 ? (

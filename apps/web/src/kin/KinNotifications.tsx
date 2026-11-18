@@ -62,6 +62,7 @@ function openDestination(
       params: { ...where, chatId: destination.chatId },
       search: destination.messageId === null ? {} : { message: destination.messageId },
     });
+  if (destination._tag === "tasks") return navigate({ to: KIN_PLACE_PATH.tasks, params: where });
   const { key, kind } = destination;
   return kind === "client"
     ? navigate({ to: KIN_PLACE_PATH.clients, params: where, search: { client: key } })

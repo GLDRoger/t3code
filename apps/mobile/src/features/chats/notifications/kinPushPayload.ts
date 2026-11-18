@@ -91,6 +91,8 @@ function landing(
         ? target.path
         : `${target.path}?message=${encodeURIComponent(destination.messageId)}`,
     ];
+  if (destination._tag === "tasks")
+    return [target.path, kinPath(target.environmentId, data.orgId, "work")];
   return [
     target.path,
     kinPath(target.environmentId, data.orgId, RECORD_SCREEN[destination.kind], destination.key),
