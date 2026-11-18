@@ -785,7 +785,7 @@ export const tellMoved = (
   after === undefined
     ? Effect.void
     : tellOnScreen(person, `${after.recordId}:${after.rev}`, movedNotices(before, after));
-const tellOnScreen = Effect.fn("KinWork.tellOnScreen")(
+export const tellOnScreen = Effect.fn("KinWork.tellOnScreen")(
   function* (person: PersonIdentity, change: string, all: ReadonlyArray<AssignNotice>) {
     const notices = all.filter((notice) => notice.personId !== person.personId);
     if (notices.length === 0) return;
