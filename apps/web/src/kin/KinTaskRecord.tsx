@@ -75,16 +75,14 @@ const KIN_TASK_NOTE_COPY = {
   discard: "Discard",
   remove: "Remove",
   removeTitle: "Remove this note?",
-  removeDetail: "It stays in Activity as removed, without its words or files.",
   offline: "You're offline. Your note stays here until you're back.",
-  tooLong: `Keep a note under ${KIN_RECORD_COMMENT_MAX.toLocaleString()} characters.`,
   tooMany: `A note takes up to ${NOTE_FILES_MAX} files.`,
   notAdded: "Your note wasn't added.",
   notRemoved: "The note wasn't removed.",
   olderFailed: "Earlier notes didn't load.",
 } as const;
 
-const WAITING = { send: "A draft is waiting for your OK", question: "A question is waiting" };
+const WAITING = { send: KIN_TASK_RECORD.waitingSend, question: KIN_TASK_RECORD.waitingQuestion };
 
 /**
  * What this browser holds for one task's notes: sends the host hasn't taken, notes posted since
@@ -499,7 +497,7 @@ export function KinTaskActivity(
         <AlertDialogPopup>
           <AlertDialogHeader>
             <AlertDialogTitle>{KIN_TASK_NOTE_COPY.removeTitle}</AlertDialogTitle>
-            <AlertDialogDescription>{KIN_TASK_NOTE_COPY.removeDetail}</AlertDialogDescription>
+            <AlertDialogDescription>{KIN_TASK_RECORD.removeDetail}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
@@ -537,7 +535,7 @@ export function KinTaskNoteComposer(props: TaskTarget) {
   const hasContent = body.length > 0 || files.count > 0;
   const hint =
     body.length > KIN_RECORD_COMMENT_MAX
-      ? KIN_TASK_NOTE_COPY.tooLong
+      ? KIN_TASK_RECORD.noteTooLong(KIN_RECORD_COMMENT_MAX)
       : files.count > NOTE_FILES_MAX
         ? KIN_TASK_NOTE_COPY.tooMany
         : !connected && hasContent

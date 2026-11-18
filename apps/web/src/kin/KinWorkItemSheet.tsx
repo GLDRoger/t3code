@@ -466,7 +466,7 @@ function KinWorkItem(
     if (id === "done") return change({ type: "state", state: "done" });
     if (id === "reopen") return change({ type: "state", state: "open" });
   };
-  const status = change !== null && (offer.done || offer.reopen || offer.menu);
+  const status = change !== null && (offer.reopen || (!view.closed && (offer.done || offer.menu)));
   const giving = give !== null && view.assignLabel !== null;
   const more = (reword !== null && edit === null) || status || giving || view.handBackTo !== null;
   return (
@@ -502,7 +502,7 @@ function KinWorkItem(
                     {reword === null || edit !== null ? null : (
                       <MenuItem onClick={props.onStartEdit}>
                         <PencilIcon />
-                        Edit title and brief
+                        {KIN_TASK_RECORD.editAll}
                       </MenuItem>
                     )}
                     {!status || change === null ? null : (
@@ -602,7 +602,7 @@ function KinWorkItem(
               />
               {moved?.notes == null ? null : (
                 <p className="whitespace-pre-wrap text-xs text-muted-foreground">
-                  The brief now says: {moved.notes}
+                  {KIN_TASK_RECORD.briefMoved} {moved.notes}
                 </p>
               )}
             </div>
