@@ -80,6 +80,8 @@ function useActiveDevices(target: KinDevicesTarget) {
   const held = Option.getOrNull(AsyncResult.value(result));
   return {
     devices: held === null ? null : kinActiveDevices(held.devices, nowMs),
+    all: held?.devices ?? [],
+    nowMs,
     failed: held === null && AsyncResult.isFailure(result),
     now: new Date(nowMs),
   };
@@ -95,7 +97,7 @@ export function KinMyDevices(props: KinDevicesTarget) {
   const [made, setMade] = useState<KinPeopleLinkDeviceResult | null>(null);
   // A device that joined with it: its join refreshes "people", which reads this list again.
   const joined =
-    made === null || devices === null ? null : kinDeviceJustLinked(devices, made.expiresAt);
+    made === null || devices === null ? null : kinDeviceJustLinked(devices, made.linkId);
   const makeLink = async () => {
     if (busy) return;
     setBusy(true);
@@ -157,12 +159,12 @@ export function KinTeammateDevices(props: KinDevicesTarget) {
 
 function KinDeviceList(props: KinDevicesTarget & { readonly mine: boolean }) {
   const { environmentId, orgId, personId } = props;
-  const { devices, failed, now } = useActiveDevices(props);
+  const { devices, all, nowMs, failed, now } = useActiveDevices(props);
   const remove = useAtomCommand(kinClient.deviceRemove, { reportFailure: false });
   const [asked, setAsked] = useState<KinPersonDevice | null>(null);
   const [removing, setRemoving] = useState<ReadonlySet<string>>(new Set());
   const [problem, setProblem] = useState<string | null>(null);
-  const copy = asked === null ? null : kinRemoveDeviceCopy(asked, props.mine, devices ?? []);
+  const copy = asked === null ? null : kinRemoveDeviceCopy(asked, props.mine, all, nowMs);
 
   const removeDevice = async (device: KinPersonDevice) => {
     setProblem(null);

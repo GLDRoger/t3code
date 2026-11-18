@@ -117,6 +117,7 @@ export function KinDevicesScreen({ route }: StaticScreenProps<KinDevicesParams>)
             />
           ) : made !== null ? (
             <KinDeviceLinkView
+              key={made.linkId}
               made={made}
               target={target}
               linking={linking}
@@ -162,7 +163,7 @@ export function KinDeviceList(props: {
   const devices = held === null ? null : kinActiveDevices(held.devices, nowMs);
 
   const remove = (device: KinPersonDevice) => {
-    const copy = kinRemoveDeviceCopy(device, props.self, devices ?? []);
+    const copy = kinRemoveDeviceCopy(device, props.self, held?.devices ?? [], nowMs);
     Dialog.confirm({
       title: copy.title,
       message: copy.detail,
@@ -270,7 +271,7 @@ function KinDeviceLinkView(props: {
   const joined =
     listed === null
       ? null
-      : kinDeviceJustLinked(kinActiveDevices(listed.devices, nowMs), made.expiresAt);
+      : kinDeviceJustLinked(kinActiveDevices(listed.devices, nowMs), made.linkId);
   if (joined !== null)
     return (
       <EmptyState

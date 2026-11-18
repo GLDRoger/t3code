@@ -2946,6 +2946,7 @@ describe("Kin migrations", () => {
       for (const column of ["made_by_person_id", "made_by_session_id"])
         yield* sql`ALTER TABLE kin_people_invites DROP COLUMN ${sql.literal(column)}`;
       yield* sql`ALTER TABLE kin_session_bindings DROP COLUMN parent_session_id`;
+      yield* sql`ALTER TABLE kin_session_bindings DROP COLUMN link_id`;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 175`;
       yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
       yield* sql`INSERT INTO kin_people_invites (invite_id, org_id, person_id, display_name, handle,
@@ -2966,9 +2967,9 @@ describe("Kin migrations", () => {
         [{ inviteId: "invite", madeBy: null, madeFrom: null }],
       );
       assert.deepStrictEqual(
-        yield* sql`SELECT session_id AS "sessionId", parent_session_id AS "parent"
-          FROM kin_session_bindings`,
-        [{ sessionId: "phone", parent: null }],
+        yield* sql`SELECT session_id AS "sessionId", parent_session_id AS "parent",
+          link_id AS "linkId" FROM kin_session_bindings`,
+        [{ sessionId: "phone", parent: null, linkId: null }],
       );
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 175`;
       assert.deepStrictEqual(yield* runKinMigrations(), [[175, "DeviceLinks"]]);

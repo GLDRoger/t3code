@@ -12,6 +12,7 @@ import {
   type KinPushError,
   type KinPushToken,
   kinPeopleChatTeamId,
+  KIN_DEVICE_LINKED_NOTICE,
 } from "@t3tools/contracts";
 import * as Arbitrary from "effect/Arbitrary";
 import * as Deferred from "effect/Deferred";
@@ -862,7 +863,7 @@ describe("KinPushSender", () => {
       assert.equal(push!.token, memberPhone);
       assert.deepStrictEqual((push!.payload as { aps: { alert: unknown } }).aps.alert, {
         title: "New device linked",
-        body: 'A device named "Laptop" can now use your Kin. Not you? Remove it in Linked devices.',
+        body: KIN_DEVICE_LINKED_NOTICE,
       });
       assert.equal(
         (push!.payload as { body: { deepLink: string } }).body.deepLink,
@@ -871,6 +872,14 @@ describe("KinPushSender", () => {
       // A device already removed again announces nothing.
       apns.sent.length = 0;
       yield* sql`UPDATE kin_session_bindings SET revoked_at = ${NOW} WHERE session_id = 'sess-laptop'`;
+      yield* notify(linked);
+      assert.deepStrictEqual(apns.sent, []);
+      // Nor does one signed out outside Kin, or one whose session has run out.
+      yield* sql`UPDATE kin_session_bindings SET revoked_at = NULL WHERE session_id = 'sess-laptop'`;
+      yield* sql`UPDATE auth_sessions SET revoked_at = ${T} WHERE session_id = 'sess-laptop'`;
+      yield* notify(linked);
+      yield* sql`UPDATE auth_sessions SET revoked_at = NULL, expires_at = ${T}
+        WHERE session_id = 'sess-laptop'`;
       yield* notify(linked);
       assert.deepStrictEqual(apns.sent, []);
     }).pipe(Effect.provide(build(apns)));

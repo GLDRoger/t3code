@@ -9,6 +9,7 @@ import {
   kinViewerOwnerLevel,
   type KinAppShell,
 } from "@t3tools/client-runtime/kin/kinJoin";
+import type { PreparedConnection } from "@t3tools/client-runtime/connection";
 import { renewKinTeammateDevice } from "@t3tools/client-runtime/kin/kinDevices";
 import {
   EnvironmentId,
@@ -169,52 +170,57 @@ export function installKinChatOnlyMemory(): () => void {
 }
 
 const renewAtom = connectionAtomRuntime.fn(
-  (input: { readonly environmentId: EnvironmentId; readonly failed: () => void }, get) => {
-    const entry = get(environmentCatalog.catalogValueAtom).entries.get(input.environmentId);
-    return entry === undefined
-      ? Effect.void
-      : renewKinTeammateDevice(entry).pipe(
-          Effect.asVoid,
-          Effect.catch(() =>
-            Effect.sync(input.failed).pipe(
-              Effect.andThen(Effect.logWarning("Renewing this device's Kin sign-in failed")),
-            ),
-          ),
-        );
-  },
+  (input: { readonly prepared: PreparedConnection; readonly failed: () => void }) =>
+    renewKinTeammateDevice(input.prepared).pipe(
+      Effect.asVoid,
+      Effect.catch(() =>
+        Effect.sync(input.failed).pipe(
+          Effect.andThen(Effect.logWarning("Renewing this device's Kin sign-in failed")),
+        ),
+      ),
+    ),
   { concurrent: true },
 );
 
 const RENEW_EVERY_MS = 24 * 60 * 60 * 1000;
+const RENEW_CHECK_MS = 60 * 60 * 1000;
 
 /**
- * Renews each teammate session when the app starts, and again when it comes to the front a day
- * later, so a phone in use never reaches its deadline. The open socket stays, and the host moves
- * its deadline too. A failed try is asked again on the next change or return to the front.
+ * Renews each teammate session at most daily while the app runs: on start, hourly, and on return
+ * to the front, so a phone in use never reaches its deadline. It goes only through the connection
+ * the session is live on, which checked the host is this environment. A failed try is asked again
+ * on the next check.
  */
 export function installKinDeviceRenewal(): () => void {
   const renewedAt = new Map<EnvironmentId, number>();
   // An unmounted fn atom is dropped, and its run cancelled, before the request can finish.
   const unmount = appAtomRegistry.mount(renewAtom);
-  const renewDue = (state: ChatOnlyState) => {
+  const renewDue = () => {
+    const state = appAtomRegistry.get(chatOnlyStateAtom);
     if (!state.ready) return;
     const now = Date.now();
     for (const environmentId of state.chatOnly) {
       const at = renewedAt.get(environmentId);
       if (at !== undefined && now - at < RENEW_EVERY_MS) continue;
+      const prepared = appAtomRegistry.get(
+        environmentSession.preparedConnectionValueAtom(environmentId),
+      );
+      if (Option.isNone(prepared)) continue;
       renewedAt.set(environmentId, now);
       appAtomRegistry.set(renewAtom, {
-        environmentId,
+        prepared: prepared.value,
         failed: () => renewedAt.delete(environmentId),
       });
     }
   };
   const unsubscribe = appAtomRegistry.subscribe(chatOnlyStateAtom, renewDue, { immediate: true });
+  const timer = setInterval(renewDue, RENEW_CHECK_MS);
   const foreground = AppState.addEventListener("change", (next) => {
-    if (next === "active") renewDue(appAtomRegistry.get(chatOnlyStateAtom));
+    if (next === "active") renewDue();
   });
   return () => {
     foreground.remove();
+    clearInterval(timer);
     unsubscribe();
     unmount();
   };

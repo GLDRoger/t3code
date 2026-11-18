@@ -1,12 +1,28 @@
 // @effect-diagnostics globalDate:off - Fixtures build ISO times relative to a fixed clock.
-import { AuthSessionId, type KinPersonDevice } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import {
+  AuthSessionId,
+  EnvironmentId,
+  KinInviteId,
+  type ExecutionEnvironmentDescriptor,
+  type KinPersonDevice,
+} from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
+import { describe, expect, it } from "@effect/vitest";
+
+import { BearerConnectionCredential, type ConnectionCredential } from "../connection/catalog.ts";
+import { ConnectionCredentialStore } from "../connection/credentialStore.ts";
+import { BearerConnectionTarget, type PreparedConnection } from "../connection/model.ts";
 
 import {
+  renewKinTeammateDevice,
   kinActiveDevices,
   kinDeviceJustLinked,
   kinDeviceLinkLeft,
   kinDevicesLinkedFrom,
+  kinRemoveDeviceCopy,
 } from "./kinDevices.ts";
 
 const now = Date.parse("2026-11-18T10:00:00Z");
@@ -54,52 +70,36 @@ describe("kinDeviceLinkLeft", () => {
 });
 
 describe("kinDeviceJustLinked", () => {
-  // A link made at 09:55 runs out at 10:05.
-  const expiresAt = "2026-11-18T10:05:00.000Z";
+  const link = KinInviteId.make("link-2");
   it.each([
     [
-      "names the device this one linked since the link was made",
+      "names the device that joined with this link",
       "new",
-      [
-        device("phone", { current: true }),
-        device("old", { linkedFrom: AuthSessionId.make("phone") }),
-        device("new", {
-          linkedFrom: AuthSessionId.make("phone"),
-          boundAt: "2026-11-18T09:57:00.000Z",
-        }),
-      ],
+      [device("old", { linkId: KinInviteId.make("link-1") }), device("new", { linkId: link })],
     ],
     [
-      "never an older device, however late the list loads",
+      "never another device, however recent",
       null,
-      [
-        device("phone", { current: true }),
-        device("old", { linkedFrom: AuthSessionId.make("phone") }),
-      ],
-    ],
-    [
-      "never a device another one linked meanwhile",
-      null,
-      [
-        device("phone", { current: true }),
-        device("laptop", {
-          linkedFrom: AuthSessionId.make("tablet"),
-          boundAt: "2026-11-18T09:57:00.000Z",
-        }),
-      ],
-    ],
-    [
-      "nothing before the host says which device is this one",
-      null,
-      [
-        device("new", {
-          linkedFrom: AuthSessionId.make("phone"),
-          boundAt: "2026-11-18T09:57:00.000Z",
-        }),
-      ],
+      [device("other", { boundAt: "2026-11-18T09:59:00.000Z" })],
     ],
   ] as const)("%s", (_name, label, devices) => {
-    expect(kinDeviceJustLinked(devices, expiresAt)?.label ?? null).toBe(label);
+    expect(kinDeviceJustLinked(devices, link)?.label ?? null).toBe(label);
+  });
+});
+
+describe("kinRemoveDeviceCopy", () => {
+  it("names the devices under one that already lapsed, and not the lapsed one", () => {
+    const devices = [
+      device("phone"),
+      device("tablet", {
+        linkedFrom: AuthSessionId.make("phone"),
+        expiresAt: "2026-11-10T09:00:00.000Z",
+      }),
+      device("laptop", { linkedFrom: AuthSessionId.make("tablet") }),
+    ];
+    expect(kinRemoveDeviceCopy(devices[0]!, true, devices, now).detail).toContain(
+      " laptop, linked from it, is signed out too.",
+    );
   });
 });
 
@@ -120,4 +120,70 @@ describe("kinDevicesLinkedFrom", () => {
       "watch",
     ]);
   });
+});
+
+describe("renewKinTeammateDevice", () => {
+  const environmentId = EnvironmentId.make("kin-host");
+  const prepared = (served: string): PreparedConnection => ({
+    environmentId,
+    label: "Kin",
+    httpBaseUrl: "http://192.168.1.20:3774",
+    socketUrl: "ws://192.168.1.20:3774/ws",
+    httpAuthorization: { _tag: "Bearer", token: "old" },
+    target: new BearerConnectionTarget({ environmentId, label: "Kin", connectionId: "kin" }),
+    descriptor: { environmentId: EnvironmentId.make(served) } as ExecutionEnvironmentDescriptor,
+  });
+  const run = Effect.fn("test.renew")(function* (
+    connection: PreparedConnection,
+    onRequest: (stored: Map<string, ConnectionCredential>) => void = () => undefined,
+  ) {
+    const stored = new Map<string, ConnectionCredential>([
+      ["kin", new BearerConnectionCredential({ token: "old" })],
+    ]);
+    const authorized: Array<string> = [];
+    const client = HttpClient.make((request) =>
+      Effect.sync(() => {
+        authorized.push(request.headers.authorization ?? "");
+        onRequest(stored);
+        return HttpClientResponse.fromWeb(
+          request,
+          Response.json({ accessToken: "new", expiresAt: "2026-12-18T10:00:00.000Z" }),
+        );
+      }),
+    );
+    const renewed = yield* renewKinTeammateDevice(connection).pipe(
+      Effect.provideService(HttpClient.HttpClient, client),
+      Effect.provideService(
+        ConnectionCredentialStore,
+        ConnectionCredentialStore.of({
+          get: (id) => Effect.sync(() => Option.fromNullishOr(stored.get(id))),
+          put: (id, credential) => Effect.sync(() => void stored.set(id, credential)),
+          remove: (id) => Effect.sync(() => void stored.delete(id)),
+        }),
+      ),
+    );
+    const token = (stored.get("kin") as BearerConnectionCredential | undefined)?.token;
+    return [renewed, authorized, token] as const;
+  });
+
+  it.effect("renews through the prepared connection and keeps the new token", () =>
+    Effect.map(run(prepared("kin-host")), (result) =>
+      expect(result).toEqual([true, ["Bearer old"], "new"]),
+    ),
+  );
+
+  it.effect("sends nothing when the address now answers as another environment", () =>
+    Effect.map(run(prepared("someone-else")), (result) =>
+      expect(result).toEqual([false, [], "old"]),
+    ),
+  );
+
+  it.effect("keeps a re-join's token that landed while the renewal was out", () =>
+    Effect.map(
+      run(prepared("kin-host"), (stored) =>
+        stored.set("kin", new BearerConnectionCredential({ token: "rejoined" })),
+      ),
+      (result) => expect(result).toEqual([false, ["Bearer old"], "rejoined"]),
+    ),
+  );
 });

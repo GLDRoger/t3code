@@ -3,7 +3,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 /**
  * A link a person made for one more of their own devices: who made it and from which session,
- * so removing that device cancels the link and every device linked from it.
+ * so removing that device cancels the link and every device linked from it; and on each device,
+ * the link it joined with.
  */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -19,6 +20,8 @@ export default Effect.gen(function* () {
   const bindings = yield* columnsOf("kin_session_bindings");
   if (!bindings.has("parent_session_id"))
     yield* sql`ALTER TABLE kin_session_bindings ADD COLUMN parent_session_id TEXT`;
+  if (!bindings.has("link_id"))
+    yield* sql`ALTER TABLE kin_session_bindings ADD COLUMN link_id TEXT`;
   yield* sql`CREATE INDEX IF NOT EXISTS kin_session_bindings_parent
     ON kin_session_bindings (parent_session_id) WHERE parent_session_id IS NOT NULL`;
 });

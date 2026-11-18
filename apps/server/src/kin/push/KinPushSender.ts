@@ -14,6 +14,7 @@ import type {
   KinWidgetId,
 } from "@t3tools/contracts";
 import {
+  KIN_DEVICE_LINKED_NOTICE,
   KinMessageRelay,
   kinGreeting,
   kinIsBrief,
@@ -25,6 +26,7 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import type * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -735,20 +737,17 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     sessionId: string,
   ) {
-    const [row] = yield* sql<{
-      person_id: KinPersonId;
-      client_label: string | null;
-      client_device_type: string | null;
-    }>`
-      SELECT b.person_id, a.client_label, a.client_device_type FROM kin_session_bindings b
-      LEFT JOIN auth_sessions a ON a.session_id = b.session_id
-      WHERE b.org_id = ${orgId} AND b.session_id = ${sessionId} AND b.revoked_at IS NULL`;
+    // Told only while it is still signed in: a device removed meanwhile has nothing to warn of.
+    const [row] = yield* sql<{ person_id: KinPersonId }>`
+      SELECT b.person_id FROM kin_session_bindings b
+      JOIN auth_sessions a ON a.session_id = b.session_id
+      WHERE b.org_id = ${orgId} AND b.session_id = ${sessionId} AND b.revoked_at IS NULL
+        AND a.revoked_at IS NULL AND a.expires_at > ${DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis))}`;
     if (row === undefined) return undefined;
     const push: Push = {
       category: "kin.message",
       title: "New device linked",
-      // The name is the new device's own to choose, so the kind the host saw comes first.
-      body: `A ${row.client_device_type === "mobile" ? "phone" : row.client_device_type === "desktop" ? "computer" : "device"}${row.client_label === null ? "" : ` named "${row.client_label}"`} can now use your Kin. Not you? Remove it in Linked devices.`,
+      body: KIN_DEVICE_LINKED_NOTICE,
       chatId: undefined,
       source: undefined,
       data: {

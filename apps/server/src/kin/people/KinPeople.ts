@@ -3,10 +3,12 @@ import * as NodeCrypto from "node:crypto";
 import {
   AuthKinChatScope,
   KIN_DEVICE_LIMIT,
+  KIN_DEVICE_LINKED_NOTICE,
   KIN_DEVICE_LINK_TTL_MINUTES,
   KIN_INVITE_DEFAULT_TTL_HOURS,
   KinChatError,
   KinInviteId,
+  KinMessageId,
   KinPerson,
   KinPersonId,
   KinWakeupId,
@@ -322,11 +324,10 @@ export const make = Effect.gen(function* () {
     session: AuthenticatedSession,
     input: KinPeopleCreateInviteInput,
   ) {
-    const caller = yield* owner(session, input.orgId);
-    if (input.personId !== undefined) yield* mayActOn(caller, input.orgId, input.personId);
-    const now = (yield* DateTime.now).epochMilliseconds;
+    yield* owner(session, input.orgId);
     const secret = NodeCrypto.randomBytes(32).toString("base64url");
     const inviteId = KinInviteId.make(NodeCrypto.randomUUID());
+    let now = (yield* DateTime.now).epochMilliseconds;
     let handle =
       input.handle ??
       (input.displayName
@@ -334,11 +335,23 @@ export const make = Effect.gen(function* () {
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-|-$/g, "") ||
         "member");
-    const expiresAt = now + (input.ttlHours ?? KIN_INVITE_DEFAULT_TTL_HOURS) * 3600000;
+    let expiresAt = now;
     yield* sql
       .withTransaction(
         Effect.gen(function* () {
+          now = (yield* DateTime.now).epochMilliseconds;
+          expiresAt = now + (input.ttlHours ?? KIN_INVITE_DEFAULT_TTL_HOURS) * 3600000;
+          // Who may invite, and for whom, is read here, so a demotion that lands first counts.
+          const caller = yield* owner(session, input.orgId);
           if (isOwnerHimself(identity.owner, input.personId)) return yield* denied;
+          // Your own devices come only from a link one of them makes, so each answers to the device
+          // that made it; a fresh start for a co-owner is the owner's to give.
+          if (input.personId === caller.personId)
+            return yield* new KinChatError({
+              reason: "not_allowed",
+              message: "Link your own devices from Linked devices.",
+            });
+          if (input.personId !== undefined) yield* mayActOn(caller, input.orgId, input.personId);
           if (input.personId) yield* person(input.orgId, input.personId);
           else handle = yield* uniqueHandle(input.orgId, handle, now);
           yield* sql`INSERT INTO kin_people_invites (invite_id, org_id, person_id, display_name, handle, secret_hash, created_at, expires_at)
@@ -447,10 +460,10 @@ export const make = Effect.gen(function* () {
     const parts = input.secret.split(".");
     if (parts.length !== 3 || parts[0] !== identity.owner.orgId) return yield* missing;
     const [orgId, inviteId, secret] = parts as [string, string, string];
-    const now = (yield* DateTime.now).epochMilliseconds;
     return yield* sql
       .withTransaction(
         Effect.gen(function* () {
+          const now = (yield* DateTime.now).epochMilliseconds;
           const rows = yield* sql<{
             invite_id: string;
             person_id: string | null;
@@ -519,7 +532,8 @@ export const make = Effect.gen(function* () {
             })
             .pipe(Effect.mapError(toPersistenceSqlError("KinPeople.issue")));
           yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at,
-          parent_session_id) VALUES (${issued.sessionId}, ${orgId}, ${personId}, ${now}, ${parent})`.pipe(
+          parent_session_id, link_id)
+          VALUES (${issued.sessionId}, ${orgId}, ${personId}, ${now}, ${parent}, ${row.invite_id})`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.bind")),
           );
           yield* refresh.touch(identity.owner.orgId, "people");
@@ -528,11 +542,39 @@ export const make = Effect.gen(function* () {
               Effect.provideService(SqlClient.SqlClient, sql),
               Effect.mapError(toPersistenceSqlError("KinPeople.teamAgent")),
             );
-            if (teamAgent !== null)
-              yield* chats.value.createDirect(
+            if (teamAgent !== null) {
+              const direct = yield* chats.value.createDirect(
                 { _tag: "person", orgId: member.orgId, personId },
                 { orgId: member.orgId, agentId: teamAgent },
               );
+              // Said inside Kin too, so someone with no phone for notifications still hears of it.
+              if (parent !== null) {
+                const notice = yield* repo
+                  .insertMessage({
+                    orgId: member.orgId,
+                    chatId: direct.chatId,
+                    audience: "chat",
+                    messageId: KinMessageId.make(`device-linked:${issued.sessionId}`),
+                    author: { _tag: "system" },
+                    kind: "text",
+                    body: KIN_DEVICE_LINKED_NOTICE,
+                    intent: null,
+                    mentions: [],
+                    replyTo: null,
+                    widgetId: null,
+                    floorRunId: null,
+                    status: "posted",
+                    sentBy: null,
+                    clientMessageId: null,
+                    createdAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
+                    editedAt: null,
+                  })
+                  .pipe(Effect.mapError(toPersistenceSqlError("KinPeople.linkedNotice")));
+                yield* sql.afterCommit(
+                  hub.publish({ type: "message.posted", orgId: member.orgId, message: notice }),
+                );
+              }
+            }
           }
           if (Option.isSome(groups)) yield* groups.value.joinCompany(member.orgId, personId);
           return {
@@ -656,21 +698,27 @@ export const make = Effect.gen(function* () {
     session: AuthenticatedSession,
     input: KinPeopleRevokeInviteInput,
   ) {
-    const caller = yield* owner(session, input.orgId);
-    const now = (yield* DateTime.now).epochMilliseconds;
-    const [target] = yield* sql<{ person_id: KinPersonId | null }>`SELECT person_id
-      FROM kin_people_invites WHERE org_id = ${input.orgId} AND invite_id = ${input.inviteId}`.pipe(
-      Effect.mapError(toPersistenceSqlError("KinPeople.revokeInviteFor")),
-    );
-    if (target?.person_id != null) yield* mayActOn(caller, input.orgId, target.person_id);
-    const rows = yield* sql`UPDATE kin_people_invites SET revoked_at = ${now}
-      WHERE org_id = ${input.orgId} AND invite_id = ${input.inviteId} AND made_by_person_id IS NULL
-      AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ${now} RETURNING invite_id`.pipe(
-      Effect.mapError(toPersistenceSqlError("KinPeople.revokeInvite")),
-    );
-    if (!rows.length) return yield* missing;
-    yield* refresh.touch(input.orgId, "people");
-    return { revoked: true };
+    return yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const caller = yield* owner(session, input.orgId);
+          const now = (yield* DateTime.now).epochMilliseconds;
+          const [target] = yield* sql<{ person_id: KinPersonId | null }>`SELECT person_id
+            FROM kin_people_invites WHERE org_id = ${input.orgId} AND invite_id = ${input.inviteId}`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinPeople.revokeInviteFor")),
+          );
+          if (target?.person_id != null) yield* mayActOn(caller, input.orgId, target.person_id);
+          const rows = yield* sql`UPDATE kin_people_invites SET revoked_at = ${now}
+            WHERE org_id = ${input.orgId} AND invite_id = ${input.inviteId} AND made_by_person_id IS NULL
+            AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ${now} RETURNING invite_id`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinPeople.revokeInvite")),
+          );
+          if (!rows.length) return yield* missing;
+          yield* refresh.touch(input.orgId, "people");
+          return { revoked: true };
+        }),
+      )
+      .pipe(Effect.mapError(sqlError("KinPeople.revokeInvite")));
   });
   /**
    * Which of this person's devices the asking session may remove: any, for the owner level or a
@@ -702,6 +750,7 @@ export const make = Effect.gen(function* () {
     return yield* sql<{
       session_id: AuthSessionId;
       parent_session_id: AuthSessionId | null;
+      link_id: KinInviteId | null;
       bound_at: number;
       revoked_at: number | null;
       session_revoked_at: string | null;
@@ -709,7 +758,7 @@ export const make = Effect.gen(function* () {
       client_device_type: string | null;
       expires_at: string | null;
       last_connected_at: string | null;
-    }>`SELECT b.session_id, b.parent_session_id, b.bound_at, b.revoked_at,
+    }>`SELECT b.session_id, b.parent_session_id, b.link_id, b.bound_at, b.revoked_at,
         a.revoked_at AS session_revoked_at, a.client_label, a.client_device_type, a.expires_at,
         a.last_connected_at FROM kin_session_bindings b
         LEFT JOIN auth_sessions a ON a.session_id = b.session_id
@@ -747,6 +796,7 @@ export const make = Effect.gen(function* () {
           lastConnectedAt: r.last_connected_at,
           current: r.session_id === session.sessionId,
           linkedFrom: r.parent_session_id,
+          linkId: r.link_id,
           removable: removable(r.session_id),
         };
       }),
@@ -756,12 +806,13 @@ export const make = Effect.gen(function* () {
     session: AuthenticatedSession,
     input: KinPeopleRevokeDeviceInput,
   ) {
-    const caller = yield* deviceViewer(session, input.orgId, input.personId);
-    yield* mayActOn(caller, input.orgId, input.personId);
-    const now = (yield* DateTime.now).epochMilliseconds;
     const gone = yield* sql
       .withTransaction(
         Effect.gen(function* () {
+          // Read here, so a demotion or removal that lands first counts.
+          const caller = yield* deviceViewer(session, input.orgId, input.personId);
+          yield* mayActOn(caller, input.orgId, input.personId);
+          const now = (yield* DateTime.now).epochMilliseconds;
           yield* person(input.orgId, input.personId);
           // As in linkDevice: a device signed out a moment ago removes nothing.
           if (
@@ -810,13 +861,13 @@ export const make = Effect.gen(function* () {
         reason: "not_allowed",
         message: "The owner links devices from T3 Code's Sharing & access settings.",
       });
-    const now = (yield* DateTime.now).epochMilliseconds;
     const secret = NodeCrypto.randomBytes(32).toString("base64url");
     const inviteId = KinInviteId.make(NodeCrypto.randomUUID());
-    const expiresAt = now + KIN_DEVICE_LINK_TTL_MINUTES * 60_000;
-    yield* sql
+    const expiresAt = yield* sql
       .withTransaction(
         Effect.gen(function* () {
+          const now = (yield* DateTime.now).epochMilliseconds;
+          const expiresAt = now + KIN_DEVICE_LINK_TTL_MINUTES * 60_000;
           // Checked here, not when the caller resolved: a "Remove access" or a removed device
           // that lands first leaves nothing to link from.
           if (!(yield* deviceLive(input.orgId, caller.personId, session.sessionId, now)))
@@ -838,10 +889,12 @@ export const make = Effect.gen(function* () {
             ${now}, ${expiresAt})`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.linkDevice")),
           );
+          return expiresAt;
         }),
       )
       .pipe(Effect.mapError(sqlError("KinPeople.linkDevice")));
     return {
+      linkId: inviteId,
       secret: `${input.orgId}.${inviteId}.${secret}`,
       expiresAt: DateTime.formatIso(DateTime.makeUnsafe(expiresAt)),
     };

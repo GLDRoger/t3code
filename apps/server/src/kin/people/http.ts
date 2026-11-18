@@ -5,6 +5,7 @@ import {
   KIN_INVITE_APP_ROUTE,
   KIN_INVITE_BROWSER_ACCEPT_ROUTE,
   KinAppScheme,
+  KinChatError,
   type KinDeviceRenewResult,
   KinInviteAcceptRequest,
   type KinInviteAppResult,
@@ -23,21 +24,27 @@ import {
   trustedBrowserOrigins,
 } from "../../auth/EnvironmentAuth.ts";
 import { SessionStore } from "../../auth/SessionStore.ts";
-import { deriveAuthClientMetadata } from "../../auth/utils.ts";
+import { deriveAuthClientMetadata, isFromLoopbackPeer } from "../../auth/utils.ts";
 import * as ServerConfig from "../../config.ts";
 import { requestUrl } from "../../requestUrl.ts";
 import { KinServer } from "../KinServer.ts";
 import * as People from "./KinPeople.ts";
 
 const decodeAccept = Schema.decodeUnknownEffect(KinInviteAcceptRequest);
+const isChatError = Schema.is(KinChatError);
+/** A full set of devices is its own answer, so the joining device says so, not "bad link". */
+const atDeviceLimit = Effect.catchIf(
+  (error: unknown) => isChatError(error) && error.reason === "limit",
+  () => Effect.succeed(HttpServerResponse.empty({ status: 409 })),
+);
 const noStore = { "cache-control": "no-store" };
 
 const firstValue = (value: string | undefined) => value?.split(",")[0]?.trim().toLowerCase();
 
 /**
- * Stricter than a cookie read: this sets a fresh session cookie, so it needs a browser's Origin.
- * That is the app's own (same-origin by the browser's word, or this host, forwarded or not, on
- * the request's own scheme) or one of the app's trusted origins.
+ * Stricter than a cookie read: this sets a fresh session cookie, so it needs a real http(s)
+ * Origin that is the app's own (same-origin by the browser's word, or this host on the request's
+ * scheme) or a trusted app origin. Forwarded host and scheme count only from a local proxy.
  */
 const renewOriginAllowed = (
   request: HttpServerRequest.HttpServerRequest,
@@ -45,17 +52,22 @@ const renewOriginAllowed = (
 ) => {
   const origin = request.headers.origin;
   if (origin === undefined || ignoresBrowserCookie(request.headers, origins)) return false;
-  if (origins.has(origin) || request.headers["sec-fetch-site"] === "same-origin") return true;
   let parsed: URL;
   try {
     parsed = new URL(origin);
   } catch {
     return false;
   }
-  const hosts = [firstValue(request.headers.host), firstValue(request.headers["x-forwarded-host"])];
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+  if (origins.has(parsed.origin) || request.headers["sec-fetch-site"] === "same-origin")
+    return true;
+  const proxied = isFromLoopbackPeer(request);
+  const hosts = [firstValue(request.headers.host)];
+  if (proxied) hosts.push(firstValue(request.headers["x-forwarded-host"]));
+  const own = proxied ? requestUrl(request) : HttpServerRequest.toURL(request);
   return (
     hosts.includes(parsed.host.toLowerCase()) &&
-    Option.exists(requestUrl(request), (url) => url.protocol === parsed.protocol)
+    Option.exists(own, (url) => url.protocol === parsed.protocol)
   );
 };
 
@@ -117,7 +129,10 @@ export const layer = Layer.effectDiscard(
         // The phone app's route: what kind of device it is isn't the body's to say.
         const result = yield* people.accept({ ...input, deviceType: "mobile" });
         return yield* HttpServerResponse.json(result, { headers: { "cache-control": "no-store" } });
-      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
+      }).pipe(
+        atDeviceLimit,
+        Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 })),
+      ),
     );
     yield* router.add(
       "POST",
@@ -192,7 +207,10 @@ export const layer = Layer.effectDiscard(
             }),
           );
         }).pipe(Effect.provideContext(kin.services.value));
-      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
+      }).pipe(
+        atDeviceLimit,
+        Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 })),
+      ),
     );
   }),
 );

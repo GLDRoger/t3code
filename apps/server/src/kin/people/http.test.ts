@@ -164,20 +164,24 @@ it.effect(
         assert.equal(refused.status, 403, name);
         assert.isNull(refused.headers.get("set-cookie"), name);
       }
-      // A proxy that forwards the public host, or the browser's own same-origin word, is the app.
+      // Forwarded headers count only from a proxy on this machine, never from any caller; an
+      // opaque or broken Origin is refused even when fetch metadata says same-origin.
       for (const [name, headers] of [
         [
-          "a forwarded host",
+          "a forwarded host from a caller that isn't a local proxy",
           { origin: "http://kin.tail.example", "x-forwarded-host": "kin.tail.example" },
         ],
-        [
-          "a same-origin fetch",
-          { origin: "http://kin.tail.example", "sec-fetch-site": "same-origin" },
-        ],
+        ["an opaque Origin", { origin: "null", "sec-fetch-site": "same-origin" }],
+        ["a broken Origin", { origin: "http//kin.example", "sec-fetch-site": "same-origin" }],
       ] as const) {
-        const allowed = yield* renew(headers);
-        assert.equal(allowed.status, 200, name);
+        const refused = yield* renew(headers);
+        assert.equal(refused.status, 403, name);
       }
+      const sameOrigin = yield* renew({
+        origin: "http://kin.tail.example",
+        "sec-fetch-site": "same-origin",
+      });
+      assert.equal(sameOrigin.status, 200, "a same-origin fetch");
       const renewed = yield* renew({ origin: "http://kin.example" });
       assert.equal(renewed.status, 200);
       assert.match(renewed.headers.get("set-cookie") ?? "", new RegExp(`^${cookieName}=`));

@@ -10,7 +10,8 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { renewRemoteKinDevice } from "../authorization/remote.ts";
-import { BearerConnectionCredential, type ConnectionCatalogEntry } from "../connection/catalog.ts";
+import { BearerConnectionCredential } from "../connection/catalog.ts";
+import type { PreparedConnection } from "../connection/model.ts";
 import { ConnectionCredentialStore } from "../connection/credentialStore.ts";
 import { credentialConnectionId } from "../connection/routes.ts";
 import { kinFailureText } from "./kinAnswers.ts";
@@ -107,26 +108,23 @@ export function kinDevicesLinkedFrom(
  */
 export function kinDeviceJustLinked(
   devices: ReadonlyArray<KinPersonDevice>,
-  linkExpiresAt: string,
+  linkId: string,
 ): KinPersonDevice | null {
-  const here = devices.find((device) => device.current === true);
-  if (here === undefined) return null;
-  const madeAt = Date.parse(linkExpiresAt) - KIN_DEVICE_LINK_TTL_MINUTES * 60_000;
-  return (
-    devices.find(
-      (device) => device.linkedFrom === here.sessionId && Date.parse(device.boundAt) >= madeAt,
-    ) ?? null
-  );
+  return devices.find((device) => device.linkId === linkId) ?? null;
 }
 
 /** The confirmation before a device is signed out, naming what goes with it. */
 export function kinRemoveDeviceCopy(
   device: KinPersonDevice,
   mine: boolean,
-  devices: ReadonlyArray<KinPersonDevice> = [],
+  /** Every device the host listed: the chain runs through ones already signed out. */
+  devices: ReadonlyArray<KinPersonDevice>,
+  nowMs: number,
 ): { readonly title: string; readonly detail: string } {
-  const linked = kinDevicesLinkedFrom(device, devices);
-  const names = linked.map(kinDeviceLabel);
+  const active = new Set(kinActiveDevices(devices, nowMs).map((held) => held.sessionId));
+  const names = kinDevicesLinkedFrom(device, devices)
+    .filter((held) => active.has(held.sessionId))
+    .map(kinDeviceLabel);
   const also =
     names.length === 0
       ? ""
@@ -180,24 +178,29 @@ export function kinRemoveDeviceProblem(error: unknown): string {
 }
 
 /**
- * Renews a teammate's saved bearer on this device: the same session under a fresh deadline. The
- * live connection keeps its socket; the next connection uses the new token.
+ * Renews a teammate's bearer on this device: the same session under a fresh deadline. It goes
+ * only to the connection the driver prepared, which already checked the server is this
+ * environment, so a saved address that now answers as another machine never sees the token.
+ * The stored token is replaced only if it is still the one renewed: a re-join meanwhile wins.
  */
 export const renewKinTeammateDevice = Effect.fn("kin.devices.renewTeammate")(function* (
-  entry: ConnectionCatalogEntry,
+  prepared: PreparedConnection,
 ) {
-  if (entry.target._tag !== "BearerConnectionTarget" || Option.isNone(entry.profile)) return false;
-  const profile = entry.profile.value;
-  if (profile._tag !== "BearerConnectionProfile") return false;
+  if (prepared.target._tag !== "BearerConnectionTarget") return false;
+  if (prepared.descriptor?.environmentId !== prepared.environmentId) return false;
+  if (prepared.httpAuthorization?._tag !== "Bearer") return false;
+  const sent = prepared.httpAuthorization.token;
   const credentials = yield* ConnectionCredentialStore;
-  const connectionId = credentialConnectionId(entry.target.connectionId);
-  const stored = yield* credentials.get(connectionId);
-  if (Option.isNone(stored)) return false;
+  const connectionId = credentialConnectionId(prepared.target.connectionId);
+  const stillSent = Effect.suspend(() => credentials.get(connectionId)).pipe(
+    Effect.map((stored) => Option.isSome(stored) && stored.value.token === sent),
+  );
+  if (!(yield* stillSent)) return false;
   const renewed = yield* renewRemoteKinDevice({
-    httpBaseUrl: profile.httpBaseUrl,
-    bearerToken: stored.value.token,
+    httpBaseUrl: prepared.httpBaseUrl,
+    bearerToken: sent,
   });
-  if (renewed.accessToken === undefined) return false;
+  if (renewed.accessToken === undefined || !(yield* stillSent)) return false;
   yield* credentials.put(
     connectionId,
     new BearerConnectionCredential({ token: renewed.accessToken }),

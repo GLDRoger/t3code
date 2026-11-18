@@ -121,8 +121,10 @@ export const KinPersonDevice = Schema.Struct({
   lastConnectedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** The device asking. Absent from older hosts. */
   current: Schema.optional(Schema.Boolean),
-  /** The device whose code linked this one; removing that device removes this one too. */
+  /** The device whose link brought this one in; removing that device removes this one too. */
   linkedFrom: Schema.optional(Schema.NullOr(AuthSessionId)),
+  /** The invite or link this device joined with. Absent from older hosts. */
+  linkId: Schema.optional(Schema.NullOr(KinInviteId)),
   /** Whether the device asking may remove this one. Absent from older hosts. */
   removable: Schema.optional(Schema.Boolean),
 });
@@ -151,12 +153,17 @@ export type KinPeopleRevokeDeviceResult = typeof KinPeopleRevokeDeviceResult.Typ
 export const KinPeopleLinkDeviceInput = Schema.Struct({ orgId: KinOrgId });
 export type KinPeopleLinkDeviceInput = typeof KinPeopleLinkDeviceInput.Type;
 export const KinPeopleLinkDeviceResult = Schema.Struct({
+  /** Which link it is: the device that joins with it lists it as its `linkId`. */
+  linkId: KinInviteId,
   /** The join link's secret, as `createInvite` gives it. */
   secret: TrimmedNonEmptyString,
   expiresAt: IsoDateTime,
 });
 export type KinPeopleLinkDeviceResult = typeof KinPeopleLinkDeviceResult.Type;
 export const KIN_DEVICE_LINK_TTL_MINUTES = 10;
+/** One wording wherever Kin says a device was linked: never the device's own, chosen name. */
+export const KIN_DEVICE_LINKED_NOTICE =
+  "A new device was just linked to your Kin. If it wasn't you, remove it in Linked devices.";
 /** Devices one person may have signed in at once. */
 export const KIN_DEVICE_LIMIT = 10;
 
