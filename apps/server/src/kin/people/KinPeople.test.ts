@@ -444,9 +444,14 @@ it.effect("removing a device takes the devices linked from it and the links it l
 
     // The phone removes the laptop: the tablet linked from it goes too, and the laptop's open
     // code is dead before anyone redeems it. The watch, linked from the phone, stays.
+    const tabletSession = yield* as(tablet);
+    const laptopAsSeen = yield* as(laptop);
     yield* service.revokeDevice(yield* as(phone), { orgId, personId, sessionId: laptop.sessionId });
     for (const gone of [laptop, tablet])
       assert.equal((yield* sessions.verify(gone.accessToken).pipe(Effect.result))._tag, "Failure");
+    // Neither can renew its way back: their bindings went with the laptop.
+    assert.isTrue(Option.isNone(yield* service.renewDevice(tabletSession, tablet.accessToken)));
+    assert.isTrue(Option.isNone(yield* service.renewDevice(laptopAsSeen, laptop.accessToken)));
     assert.equal(yield* refused(service.accept({ secret: open.secret })), "not_found");
     assert.equal((yield* as(watch)).sessionId, watch.sessionId);
 
