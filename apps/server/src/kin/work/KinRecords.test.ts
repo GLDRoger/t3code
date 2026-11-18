@@ -1280,6 +1280,21 @@ it.effect("in a teammate's turn the lead reads and changes Work as their own scr
       records: [{ title: "Invented: fix the login bug" }],
     });
     assert.include(keysOf(yield* OwnerWork.list([mate], { orgId })), made.records[0]!.key);
+    // A repeat of a task they can't see is made as if it weren't there, and never named.
+    const beside = yield* LeadWork.create(scope, {
+      sourceEventId: "ask-event",
+      records: [{ title: "Invented private" }, { title: "invented theirs" }],
+    });
+    assert.deepStrictEqual(
+      beside.records.map((row) => [row.created, row.alsoOpen]),
+      [
+        [true, undefined],
+        [
+          true,
+          [{ key: theirs.key, title: "Invented theirs", differs: 'titled "Invented theirs"' }],
+        ],
+      ],
+    );
   }).pipe(Effect.provide(layer)),
 );
 
