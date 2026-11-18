@@ -90,7 +90,7 @@ describe("kinLinked", () => {
 
   it("orders groups, drops itself, repeats and what opens nowhere, and caps each group", () => {
     const tasks = ["W-2", "W-3", "W-4", "W-5", "W-6", "W-7", "W-8"];
-    const { groups, unlisted } = kinLinked({
+    const detail = {
       key: "D-11",
       party: ref("C-5"),
       links: [
@@ -108,11 +108,33 @@ describe("kinLinked", () => {
       ],
       linkedFrom: tasks.map(recordLink),
       linkedFromMore: 10,
-    });
+    } as const;
+    const { groups, unlisted } = kinLinked(detail);
     expect(groups.map((one) => [one.group, one.items.map((item) => item.key), one.more])).toEqual([
       ["tasks", ["W-2", "W-3", "W-4", "W-5", "W-6"], 2],
       ["client", ["C-5"], 0],
     ]);
     expect(unlisted).toBe(10);
+    expect(kinLinked(detail, 5, { expanded: new Set(["tasks"]) }).groups[0]).toMatchObject({
+      items: tasks.map((key) => ({ key })),
+      more: 0,
+    });
+  });
+
+  it("leaves out the parents a screen shows already, unless one is also really linked", () => {
+    const detail = {
+      key: "W-1",
+      party: ref("C-5"),
+      project: ref("P-4"),
+      milestone: ref("M-3"),
+      links: [recordLink("W-2")],
+      linkedFrom: [recordLink("P-4")],
+    } as const;
+    const keys = (shown: boolean) =>
+      kinLinked(detail, 5, { parentsShown: shown }).groups.flatMap((group) =>
+        group.items.map((item) => item.key),
+      );
+    expect(keys(false)).toEqual(["M-3", "W-2", "P-4", "C-5"]);
+    expect(keys(true)).toEqual(["W-2", "P-4"]);
   });
 });
