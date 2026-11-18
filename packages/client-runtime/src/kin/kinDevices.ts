@@ -26,7 +26,11 @@ export const KIN_DEVICES_COPY = {
   linkDetail: `Works once, for ${KIN_DEVICE_LINK_TTL_MINUTES} minutes. Making a new one cancels this one.`,
   replaces: "Making a new one cancels this one.",
   computerTitle: "On a computer with Claude Code or T3 Code",
-  computerDetail: "Run this, or paste the code into a session and ask it to link Kin:",
+  computerDetail:
+    "Run the command, or paste the code into a Claude Code or T3 Code session and ask it to link Kin.",
+  renew: "Make a new code",
+  dropped:
+    "The connection dropped before the link could be shown. Make a new code once you're back online.",
   phoneTitle: "On a phone or in a browser",
   phoneDetail: "Open the link, or scan the code.",
   limit: `You have ${KIN_DEVICE_LIMIT} devices linked, the most Kin allows. Remove one you no longer use, then link the new one.`,

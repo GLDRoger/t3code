@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off globalConsole:off globalDate:off globalFetch:off - a stdio MCP bridge for agents on a teammate's computer.
+// @effect-diagnostics nodeBuiltinImport:off globalConsole:off globalDate:off globalFetch:off extendsNativeError:off - a stdio MCP bridge for agents on a teammate's computer.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -29,6 +29,8 @@ interface Session {
   readonly orgId: string;
   readonly personId: string;
   readonly name: string;
+  /** Absent on sign-ins saved before it was kept. */
+  readonly sessionId?: string;
   readonly accessToken: string;
   readonly expiresAt: string;
 }
@@ -132,7 +134,11 @@ async function join(text: string, server: string | undefined): Promise<Session> 
   const response = await fetch(new URL(KIN_INVITE_ACCEPT_ROUTE, origin), {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ secret, label: `Claude Code on ${NodeOS.hostname()}` }),
+    body: JSON.stringify({
+      secret,
+      label: `Claude Code on ${NodeOS.hostname()}`,
+      deviceType: "desktop",
+    }),
   });
   // A refused code is 400; 404 means the address is not Kin's server (a dev web port, say).
   if (response.status === 404)
@@ -146,18 +152,38 @@ async function join(text: string, server: string | undefined): Promise<Session> 
   const accepted = (await response.json()) as {
     orgId: string;
     person: { personId: string; displayName: string };
+    sessionId: string;
     accessToken: string;
     expiresAt: string;
   };
+  const before = store.read();
   const session: Session = {
     origin,
     orgId: accepted.orgId,
     personId: accepted.person.personId,
     name: accepted.person.displayName,
+    sessionId: accepted.sessionId,
     accessToken: accepted.accessToken,
     expiresAt: accepted.expiresAt,
   };
   store.write(session);
+  // Linking again replaces this computer's old sign-in, so it leaves Linked devices too.
+  if (
+    before?.sessionId !== undefined &&
+    before.origin === origin &&
+    before.personId === session.personId
+  )
+    await RpcConnection.open(before.origin, before.accessToken)
+      .then(async (rpc) => {
+        await rpc
+          .call("kin.people.revokeDevice", {
+            orgId: before.orgId,
+            personId: before.personId,
+            sessionId: before.sessionId,
+          })
+          .finally(() => rpc.close());
+      })
+      .catch(() => undefined);
   return session;
 }
 

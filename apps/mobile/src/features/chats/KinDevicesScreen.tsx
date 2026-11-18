@@ -271,9 +271,7 @@ function KinDeviceLinkView(props: {
   const [copied, setCopied] = useState<"code" | "command" | "link" | null>(null);
   const nowMs = useNowMinuteMs();
   if (connection === null) {
-    return (
-      <ErrorBanner message="The connection dropped before the link could be shown. Make a new one once you're back online." />
-    );
+    return <ErrorBanner message={KIN_DEVICES_COPY.dropped} />;
   }
   const link = kinInviteLink(connection.httpBaseUrl, made.secret);
   const command = kinDeviceJoinCommand(made.code, connection.httpBaseUrl);
@@ -301,7 +299,7 @@ function KinDeviceLinkView(props: {
         action={
           <Button
             tone="primary"
-            label="Make a new code"
+            label={KIN_DEVICES_COPY.renew}
             loading={props.linking}
             onPress={props.onRenew}
           />

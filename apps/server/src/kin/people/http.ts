@@ -140,7 +140,12 @@ export const layer = Layer.effectDiscard(
         const input = yield* request.json.pipe(Effect.flatMap(decodeAccept));
         const secure = Option.exists(requestUrl(request), (url) => url.protocol === "https:");
         return yield* Effect.gen(function* () {
-          const result = yield* (yield* People.make).accept(input, clientOf(request));
+          // A browser says what it is through its user agent, not the request body.
+          const deviceType = deriveAuthClientMetadata({ request }).deviceType;
+          const result = yield* (yield* People.make).accept(
+            { ...input, deviceType },
+            clientOf(request),
+          );
           return yield* HttpServerResponse.empty({
             status: 204,
             headers: { "cache-control": "no-store" },

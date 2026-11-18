@@ -255,7 +255,7 @@ it.effect("a teammate links, lists, renews and removes only their own devices", 
     const link = yield* service.linkDevice(asha.session, { orgId });
     assert.match(link.code, /^KIN-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
     const typed = link.code.toLowerCase().replaceAll("-", "").replace(/^kin/, "kin-");
-    const laptop = yield* service.accept({ secret: typed, label: "Laptop" });
+    const laptop = yield* service.accept({ secret: typed, label: "Laptop", deviceType: "desktop" });
     assert.equal(laptop.person.personId, asha.person.personId);
     assert.equal(yield* refused(service.accept({ secret: link.code })), "not_found");
 
@@ -264,8 +264,10 @@ it.effect("a teammate links, lists, renews and removes only their own devices", 
       personId: asha.person.personId,
     })).devices;
     assert.deepStrictEqual(
-      Object.fromEntries(mine.map((device) => [device.sessionId, device.current])),
-      { [asha.sessionId]: true, [laptop.sessionId]: false },
+      Object.fromEntries(
+        mine.map((device) => [device.sessionId, [device.current, device.deviceType]]),
+      ),
+      { [asha.sessionId]: [true, "mobile"], [laptop.sessionId]: [false, "desktop"] },
     );
     assert.equal(
       yield* refused(service.listDevices(asha.session, { orgId, personId: ravi.person.personId })),

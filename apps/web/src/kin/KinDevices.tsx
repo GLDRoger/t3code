@@ -322,10 +322,7 @@ function KinLinkDeviceDialog(props: {
             </Alert>
           ) : link === null || command === null ? (
             <Alert variant="error">
-              <AlertDescription>
-                The connection dropped before the link could be shown. Make a new code once you're
-                back online.
-              </AlertDescription>
+              <AlertDescription>{KIN_DEVICES_COPY.dropped}</AlertDescription>
             </Alert>
           ) : (
             <div className="flex flex-col gap-5">
@@ -382,7 +379,7 @@ function KinLinkDeviceDialog(props: {
               aria-busy={props.busy}
               onClick={props.onRenew}
             >
-              Make a new code
+              {KIN_DEVICES_COPY.renew}
             </Button>
           ) : null}
           <Button onClick={props.onClose}>Done</Button>

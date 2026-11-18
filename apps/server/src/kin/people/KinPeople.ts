@@ -500,7 +500,10 @@ export const make = Effect.gen(function* () {
               scopes: [AuthKinChatScope],
               subject: "kin-member",
               ttl: SESSION_TTL,
-              client: { label: input.label ?? row.display_name, deviceType: "mobile" },
+              client: {
+                label: input.label ?? row.display_name,
+                deviceType: input.deviceType ?? "mobile",
+              },
             })
             .pipe(Effect.mapError(toPersistenceSqlError("KinPeople.issue")));
           yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)

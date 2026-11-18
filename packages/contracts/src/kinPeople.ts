@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 
 import {
+  AuthClientMetadataDeviceType,
   AuthKinChatScope,
   EnvironmentAuthorizationError,
   type AuthEnvironmentScope,
@@ -301,6 +302,8 @@ export type KinPeopleSetOwnerNameInput = typeof KinPeopleSetOwnerNameInput.Type;
 export const KinInviteAcceptRequest = Schema.Struct({
   secret: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
   label: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(80))),
+  /** What kind of device is joining; the phone app when absent. */
+  deviceType: Schema.optional(AuthClientMetadataDeviceType),
 });
 export type KinInviteAcceptRequest = typeof KinInviteAcceptRequest.Type;
 export const KinInviteAcceptResult = Schema.Struct({
