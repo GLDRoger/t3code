@@ -175,7 +175,7 @@ const seed = Effect.gen(function* () {
     dueAt: B + 2 * DAY,
     partyId: "r-C-1",
   });
-  yield* insert({ id: "W-10", dueAt: B + 5 * DAY, partyId: "r-C-1" });
+  yield* insert({ id: "W-10", dueAt: B + 5 * DAY, partyId: "r-C-1", category: "obligation" });
   yield* insert({ id: "DT-1", list: "dates", category: "renewal", dueAt: B + 40 * DAY });
   yield* insert({
     id: "EXP-1",
@@ -386,6 +386,11 @@ describe("KinPulse", () => {
         renewals.map((fact) => fact.subject.key),
         ["DT-2"],
       );
+
+      // V27: our own task under a client is a late task, not something we owe the client.
+      yield* insert({ id: "W-15", dueAt: B, partyId: "r-C-2", category: "task" });
+      assert.lengthOf(keyed((yield* read(B + 60 * DAY)).facts, "client_waiting_on_us", "C-2"), 0);
+      assert.lengthOf(keyed((yield* read(B + 60 * DAY)).facts, "task_late", "W-15"), 1);
 
       // A void invoice never counts; a moved due date is a new episode, so a new key.
       assert.lengthOf(keyed((yield* read(B + 60 * DAY)).facts, "invoice_overdue", "INV-2"), 0);

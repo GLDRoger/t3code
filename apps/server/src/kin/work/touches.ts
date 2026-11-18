@@ -226,7 +226,7 @@ export type ClientSense = {
 /**
  * The client senses, for the pulse, on each client's playbook values: cold after
  * `client_cold_after_days` without contact and no open project, quiet after `client_checkin_days`
- * during one, waiting on us once something we owe them is `reply_owed_hours` past due. Days count
+ * during one, waiting on us once an obligation we owe them is `reply_owed_hours` past due. Days count
  * from the last contact or the last project we finished for them, else the client's creation.
  */
 export const clientSenses = Effect.fn("KinTouches.senses")(function* (
@@ -252,7 +252,7 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
         AS "openProjects",
       (SELECT MIN(w.due_at) FROM kin_records w WHERE w.org_id = c.org_id
         AND w.register_id = 'work' AND w.party_id = c.record_id AND w.side = 'ours'
-        AND w.state IN ('open', 'doing', 'waiting') AND w.due_at < ${now}) AS "dueAt"
+        AND w.category = 'obligation' AND w.state IN ('open', 'doing', 'waiting') AND w.due_at < ${now}) AS "dueAt"
     FROM kin_records c
     WHERE c.org_id = ${orgId} AND c.register_id = 'clients' AND c.state = 'open'
       AND COALESCE(c.category, 'client') = 'client'
