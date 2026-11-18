@@ -238,12 +238,60 @@ it.effect("record_create makes many entries in one call and a retry makes none",
     assert.lengthOf(yield* sql`SELECT 1 FROM kin_records`, 3);
     // The owner said it, so it is confirmed, linked to the message, and the owner is its assigner.
     const got = yield* LeadWork.get(scopeOf(lead), { key: "W-2" });
-    assert.include(got, { state: "open", due: "2026-11-20", owner: "you", assignedBy: "owner" });
+    assert.include(got, {
+      state: "open",
+      due: "2026-11-20",
+      owner: "Lead lead (you)",
+      assignedBy: "owner",
+    });
     assert.notProperty(got, "suggested");
     assert.deepInclude(got.links, { kind: "message", relation: "source", target: "ask" });
     assert.include(yield* LeadWork.get(scopeOf(lead), { key: "W-3" }), { owner: "owner" });
     // Its own entries, and the owner's, wake nobody.
     assert.lengthOf(yield* assignedEvents, 0);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect('"me" is the one person who asked in the turn, and "you" is the lead itself', () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* turn();
+    const sql = yield* SqlClient.SqlClient;
+    const made = yield* LeadWork.create(scopeOf(lead), {
+      sourceEventId: "ask-event",
+      records: [{ title: "Invented: book the venue" }, { title: "Invented: print the menus" }],
+    });
+    const give = (key: string, to: string) =>
+      LeadWork.assign(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        tasks: [{ key, to, reason: "Invented: asked" }],
+      });
+    // K008: the owner's "give it to me" lands on the owner, not on the lead.
+    assert.deepStrictEqual((yield* give("W-1", "me")).tasks, [{ key: "W-1", to: "owner" }]);
+    const [mine] = yield* sql<{ kind: string; id: string }>`SELECT owner_kind AS kind,
+        owner_id AS id FROM kin_records WHERE key = 'W-1'`;
+    assert.deepStrictEqual(mine, { kind: "person", id: ownerId });
+    assert.deepStrictEqual((yield* give("W-2", "you")).tasks, [
+      { key: "W-2", to: "Lead lead (you)" },
+    ]);
+    const onMe = yield* LeadWork.query(scopeOf(lead), { owner: "me" });
+    assert.deepStrictEqual(
+      onMe.records.map((row) => row.key),
+      [made.records[0]!.key],
+    );
+    // A turn no person started has no "me"; "you" still works.
+    yield* sql`UPDATE kin_events SET tag = 'record.changed',
+      json = json_set(json, '$._tag', 'record.changed', '$.provenance', json('{"_tag":"agent","agentId":"other"}'))
+      WHERE event_id = 'ask-event'`;
+    const refused = yield* Effect.flip(give("W-2", "me"));
+    assert.include(refused, { reason: "invalid_state" });
+    assert.include(refused.message, 'Use "you" for yourself, or name the person.');
+    assert.include(yield* Effect.flip(LeadWork.query(scopeOf(lead), { owner: "me" })), {
+      reason: "invalid_state",
+    });
+    assert.deepStrictEqual((yield* give("W-1", "you")).tasks, [
+      { key: "W-1", to: "Lead lead (you)" },
+    ]);
   }).pipe(Effect.provide(layer)),
 );
 
@@ -273,10 +321,10 @@ it.effect("record_update changes only named fields, logs each change, and both o
     assert.deepStrictEqual(
       got.history.map((line) => [line.by, line.change]),
       [
-        ["you", "due: cleared"],
+        ["Lead lead (you)", "due: cleared"],
         ["owner", "title: Draft the invented pricing page v2"],
-        ["you", "state: doing"],
-        ["you", "created"],
+        ["Lead lead (you)", "state: doing"],
+        ["Lead lead (you)", "created"],
       ],
     );
     // Nothing to change is no change, and a stale revision is refused.

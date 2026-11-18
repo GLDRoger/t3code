@@ -473,7 +473,7 @@ const projectFor = Effect.fn("KinDocTools.projectFor")(function* (
 
 const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
   const context = yield* writeContext(lead, "doc_create", input);
-  const owner = yield* resolveWho(lead, input.owner ?? "me");
+  const owner = yield* resolveWho(lead, input.owner ?? "you");
   const partyId = yield* refOrNull(lead, input.client, "clients");
   const projectId =
     (yield* refOrNull(lead, input.project, "projects")) ??

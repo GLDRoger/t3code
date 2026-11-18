@@ -1,4 +1,4 @@
-import { assert, it, layer } from "@effect/vitest";
+import { assert, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { KinOrgId } from "@t3tools/contracts";
 import * as Arbitrary from "effect/Arbitrary";
@@ -50,6 +50,28 @@ const invoice = Arbitrary.all({
 });
 type Invoice = typeof invoice extends Arbitrary.Arbitrary<infer A> ? A : never;
 const invoices = Arbitrary.array(invoice, { maxLength: 8 });
+const TERM_FORMS = ["Net {n}", "net{n}", "{n} days", "{n} day", "{n}-day terms", "within {n} days"];
+/** Each client's terms: days near now, written as people write them, or none that name days. */
+const terms = Arbitrary.all({
+  c1: maybe(Arbitrary.all([int(0, 4), pick(TERM_FORMS)])),
+  c2: pickOrNull(["50% advance", "On delivery"]),
+}).pipe(
+  Arbitrary.map(({ c1, c2 }) => ({
+    c1: c1 === null ? null : c1[1].replace("{n}", String(c1[0])),
+    c2,
+  })),
+);
+/** An issued invoice with no due date. */
+const undated = (party: Invoice["party"], dateAt: number): Invoice => ({
+  state: "waiting",
+  amount: 100,
+  currency: "INR",
+  party,
+  dueAt: null,
+  dateAt,
+  payments: [],
+});
+type Terms = typeof terms extends Arbitrary.Arbitrary<infer A> ? A : never;
 
 /** Payments as recording allows them: in the invoice's currency, never past what it still owes. */
 const paymentsOf = (one: Invoice) => {
@@ -64,14 +86,16 @@ const paymentsOf = (one: Invoice) => {
 };
 
 /** What each invoice still owes, written from the rules rather than the query. */
-const expected = (all: ReadonlyArray<Invoice>) =>
+const expected = (all: ReadonlyArray<Invoice>, given: Terms) =>
   all.flatMap((one, i) => {
     if (one.state !== "waiting" || one.amount === null) return [];
     const paid = paymentsOf(one)
       .filter((p) => !p.voided)
       .reduce((sum, p) => sum + p.minor, 0);
     const owed = one.amount - paid;
-    const due = one.dueAt ?? one.dateAt;
+    const days = one.party === null ? undefined : termsDays(given[one.party]);
+    const due =
+      one.dueAt ?? (one.dateAt === null || days === undefined ? null : one.dateAt + days * DAY);
     return owed > 0
       ? [
           {
@@ -92,7 +116,7 @@ const testLayer = KinPersistence.layer.pipe(
   Layer.provideMerge(NodeServices.layer),
 );
 
-const install = (all: ReadonlyArray<Invoice>) =>
+const install = (all: ReadonlyArray<Invoice>, given: Terms) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const [made] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_orgs`;
@@ -112,6 +136,9 @@ const install = (all: ReadonlyArray<Invoice>) =>
           'system', ${id}, ${NOW}, ${NOW})`;
     yield* row("c1", "clients", "Client one");
     yield* row("c2", "clients", "Client two");
+    for (const [id, text] of Object.entries(given))
+      yield* sql`UPDATE kin_records SET fields_json = ${JSON.stringify(text === null ? {} : { terms: text })}
+        WHERE org_id = ${orgId} AND record_id = ${id}`;
     for (const [i, one] of all.entries()) {
       const id = `i${i + 1}`;
       yield* row(id, "invoices", `Invoice ${i + 1}`);
@@ -142,13 +169,13 @@ const asSums = (money: ReadonlyArray<{ minor: number; currency: string }>) => {
 
 layer(testLayer)("money owed", (it) => {
   it.effect.prop(
-    "each issued invoice owes its amount less payments not taken back, and is overdue only past its due day",
-    [invoices],
-    ([all]) =>
+    "each issued invoice owes its amount less payments not taken back, and is overdue only past its due day, else its client's terms",
+    [invoices, terms],
+    ([all, given]) =>
       Effect.gen(function* () {
-        yield* install(all);
+        yield* install(all, given);
         const owed = yield* owedInvoices({ orgId, now: NOW });
-        const want = expected(all);
+        const want = expected(all, given);
         assert.deepStrictEqual(
           owed
             .map((one) => ({
@@ -167,12 +194,12 @@ layer(testLayer)("money owed", (it) => {
 
   it.effect.prop(
     "a client's total is the sum of its invoices, one figure per currency",
-    [invoices],
-    ([all]) =>
+    [invoices, terms],
+    ([all, given]) =>
       Effect.gen(function* () {
-        yield* install(all);
+        yield* install(all, given);
         const summary = yield* moneySummary(orgId, NOW, KIN_OWNER_LEVEL);
-        const want = expected(all);
+        const want = expected(all, given);
         assert.deepStrictEqual(asSums(summary.owed.total), sums(want));
         assert.deepStrictEqual(asSums(summary.owed.overdue), sums(want.filter((w) => w.overdue)));
         const parties = [...new Set(want.map((w) => w.party))];
@@ -190,13 +217,35 @@ layer(testLayer)("money owed", (it) => {
         }
       }),
   );
-});
 
-it.prop(
-  "however a client's terms write a number of days, the invoice is given that many",
-  [
-    int(0, 365),
-    pick(["Net {n}", "net{n}", "{n} days", "{n} day", "{n}-day terms", "within {n} days"]),
-  ],
-  ([days, form]) => termsDays(form.replace("{n}", String(days))) === days,
-);
+  // K080: no due date and no terms is never overdue; Net 30 is overdue on day 31.
+  it.effect("an invoice with no due date falls due on its client's terms, or never", () =>
+    Effect.gen(function* () {
+      const dayOne = NOW - 30 * DAY;
+      const overdue = (party: "c1" | "c2", c1: string | null) =>
+        install([undated(party, dayOne)], { c1, c2: null }).pipe(
+          Effect.andThen(owedInvoices({ orgId, now: NOW })),
+          Effect.map((rows) => rows.map((one) => one.overdue)),
+        );
+      assert.deepStrictEqual(yield* overdue("c2", null), [false]);
+      assert.deepStrictEqual(yield* overdue("c1", "Net 30"), [false]);
+      assert.deepStrictEqual(yield* overdue("c1", "Net 29"), [true]);
+      assert.deepStrictEqual(yield* overdue("c1", "50% advance"), [false]);
+    }),
+  );
+
+  it.effect.prop(
+    "however a client's terms write a number of days, the invoice is given that many, in SQL too",
+    [int(0, 999), pick([...TERM_FORMS, "Net {n}, else {n}0 days", "Due in {n} weeks", "Payday"])],
+    ([days, form]) =>
+      Effect.gen(function* () {
+        const text = form.replaceAll("{n}", String(days));
+        if (TERM_FORMS.includes(form))
+          assert.strictEqual(termsDays(text), days <= 365 ? days : undefined);
+        yield* install([undated("c1", NOW)], { c1: text, c2: null });
+        const [one] = yield* owedInvoices({ orgId, now: NOW });
+        const given = one === undefined || one.dueAt === null ? undefined : (one.dueAt - NOW) / DAY;
+        assert.strictEqual(given, termsDays(text), text);
+      }),
+  );
+});
