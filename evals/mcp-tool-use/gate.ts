@@ -4,7 +4,7 @@ import * as Schema from "effect/Schema";
  * The baseline gate: a case is "worse" when a one-sided Fisher exact test on its pass counts
  * gives p <= ALPHA and it is not unstable on both sides. The README states the false-alarm rate.
  */
-export const ALPHA = 0.02;
+export const ALPHA = 0.005;
 
 /** What a run ran on, written as `run.json` beside `results.jsonl`. */
 export const RunManifest = Schema.Struct({
@@ -124,27 +124,45 @@ export const refusals = (baseline: RunManifest, candidate: RunManifest) => [
   }),
 ];
 
-export const compare = (baseline: Run, candidate: Run) => {
-  const refused = refusals(baseline.manifest, candidate.manifest);
-  const before = tallies(baseline.rows);
-  const after = tallies(candidate.rows);
-  const empty = { passes: 0, finished: 0 };
-  const cases = Object.keys(candidate.manifest.cases)
-    .toSorted()
-    .map((id) => {
-      const was = before.get(id) ?? empty;
-      const now = after.get(id) ?? empty;
-      return { id, baseline: was, candidate: now, verdict: verdict(was, now) };
-    });
-  const notRun = Object.keys(baseline.manifest.cases).filter(
-    (id) => candidate.manifest.cases[id] === undefined,
+/**
+ * Candidates are pooled: a case that came out worse is run again in a separate batch, passed as
+ * a second candidate, and counts as a regression only if it is still worse with both batches.
+ */
+export const compare = (baseline: Run, candidates: ReadonlyArray<Run>) => {
+  const requests = new Map<string, string>();
+  const mixed = candidates.flatMap(({ manifest }) =>
+    Object.entries(manifest.cases).flatMap(([id, { request }]) => {
+      const seen = requests.get(id);
+      requests.set(id, request);
+      return seen === undefined || seen === request
+        ? []
+        : [`case ${id} was sent different requests in two candidate runs`];
+    }),
   );
+  const refused = [
+    ...new Set([
+      ...candidates.flatMap(({ manifest }) => refusals(baseline.manifest, manifest)),
+      ...mixed,
+    ]),
+  ];
+  const before = tallies(baseline.rows);
+  const after = tallies(candidates.flatMap(({ rows }) => rows));
+  const empty = { passes: 0, finished: 0 };
+  const cases = [...requests.keys()].toSorted().map((id) => {
+    const was = before.get(id) ?? empty;
+    const now = after.get(id) ?? empty;
+    return { id, baseline: was, candidate: now, verdict: verdict(was, now) };
+  });
+  const notRun = Object.keys(baseline.manifest.cases).filter((id) => !requests.has(id));
   const worse = cases.filter((row) => row.verdict === "worse");
   return {
     refused,
     cases,
     notRun,
-    sameText: baseline.manifest.text === candidate.manifest.text,
+    batches: candidates.length,
+    sameText: [...requests].every(
+      ([id, request]) => baseline.manifest.cases[id]?.request === request,
+    ),
     pass: refused.length === 0 && worse.length === 0,
   };
 };
@@ -158,19 +176,23 @@ export const report = (result: ReturnType<typeof compare>) => {
       ...result.refused.map((line) => `- ${line}`),
     ].join("\n");
   const count = (wanted: Verdict) => result.cases.filter((row) => row.verdict === wanted).length;
+  const worse = result.cases.filter((row) => row.verdict === "worse");
   const order: ReadonlyArray<Verdict> = ["worse", "better", "unstable", "no data", "same"];
   const shown = result.cases.toSorted(
     (a, b) => order.indexOf(a.verdict) - order.indexOf(b.verdict),
   );
   return [
     `Verdict: ${result.pass ? "pass" : "FAIL"}. ${count("worse")} worse, ${count("better")} better, ${count("unstable")} unstable on both, ${count("same")} same, ${count("no data")} no data, of ${result.cases.length} cases.`,
-    ...(result.sameText
-      ? ["The two runs sent identical requests: every difference is noise."]
-      : []),
+    ...(result.sameText ? ["Both sides sent identical requests: every difference is noise."] : []),
     ...(result.notRun.length > 0
       ? [`Not in the candidate run: ${result.notRun.length} baseline cases.`]
       : []),
     `Worse and better mean a one-sided Fisher exact p <= ${ALPHA}, unless the case is unstable on both sides.`,
+    ...(worse.length > 0 && result.batches === 1
+      ? [
+          `A worse case counts once it reproduces: run it again with \`pnpm kin:candidate --baseline <baseline> --case ${worse.map((row) => row.id).join(",")} --samples 8 --top-up 8 --out <confirm>\` (same --model and flags), then compare with both --candidate folders.`,
+        ]
+      : []),
     "",
     "| Case | Baseline | Candidate | Verdict |",
     "| --- | --: | --: | --- |",

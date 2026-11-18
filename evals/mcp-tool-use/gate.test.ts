@@ -12,10 +12,10 @@ it("computes the one-sided Fisher exact p", () => {
 
 it.each([
   ["a stable pass that mostly fails now", t(8, 8), t(2, 8), "worse"],
-  ["a stable pass that fails every sample now", t(8, 8), t(0, 3), "worse"],
-  ["a 3-sample pass against a collapse", t(3, 3), t(0, 8), "worse"],
+  ["a stable pass that fails nearly every sample now", t(8, 8), t(1, 8), "worse"],
+  ["a 3-sample pass against a collapse, too few to tell", t(3, 3), t(0, 8), "same"],
   ["a stable fail that passes now", t(0, 8), t(7, 8), "better"],
-  ["a drop the samples cannot tell from chance", t(8, 8), t(4, 8), "same"],
+  ["a drop the samples cannot tell from chance", t(8, 8), t(3, 8), "same"],
   ["unanimous agreement", t(3, 3), t(8, 8), "same"],
   ["two unstable runs far apart", t(6, 8), t(2, 8), "unstable"],
   ["an unstable case on identical text", t(4, 8), t(3, 8), "unstable"],
@@ -63,22 +63,31 @@ const manifest = (overrides: Partial<RunManifest> = {}): RunManifest => ({
 const rows = (id: string, passes: number, of: number) =>
   Array.from({ length: of }, (_, i) => ({ id, pass: i < passes }));
 
-it("passes unless a case is worse, and refuses runs made on other settings or cases", () => {
+it("passes unless a case is worse in every batch pooled, and refuses runs made on other settings, cases or text", () => {
   const baseline = { manifest: manifest(), rows: [...rows("a", 8, 8), ...rows("b", 4, 8)] };
   const same = {
     manifest: manifest({ samples: 3 }),
     rows: [...rows("a", 3, 3), ...rows("b", 2, 8)],
   };
-  assert.isTrue(compare(baseline, same).pass);
-  const worse = { ...same, rows: [...rows("a", 1, 8), ...rows("b", 2, 8)] };
+  assert.isTrue(compare(baseline, [same]).pass);
+  const worse = { ...same, rows: [...rows("a", 0, 8), ...rows("b", 2, 8)] };
   assert.deepStrictEqual(
-    compare(baseline, worse).cases.map(({ id, verdict }) => [id, verdict]),
+    compare(baseline, [worse]).cases.map(({ id, verdict }) => [id, verdict]),
     [
       ["a", "worse"],
       ["b", "unstable"],
     ],
   );
-  assert.isFalse(compare(baseline, worse).pass);
+  assert.isFalse(compare(baseline, [worse]).pass);
+  const confirm = (passes: number, request = "r") => ({
+    manifest: manifest({ cases: { a: { case: "1", request } } }),
+    rows: rows("a", passes, 8),
+  });
+  assert.isTrue(compare(baseline, [worse, confirm(7)]).pass);
+  assert.isFalse(compare(baseline, [worse, confirm(1)]).pass);
+  assert.deepStrictEqual(compare(baseline, [worse, confirm(7, "other text")]).refused, [
+    "case a was sent different requests in two candidate runs",
+  ]);
   const stale = {
     manifest: manifest({
       effort: "low",
@@ -86,10 +95,10 @@ it("passes unless a case is worse, and refuses runs made on other settings or ca
     }),
     rows: same.rows,
   };
-  assert.deepStrictEqual(compare(baseline, stale).refused, [
+  assert.deepStrictEqual(compare(baseline, [stale]).refused, [
     "effort differs: baseline high, candidate low",
     "case a changed since the baseline",
     "case c is not in the baseline",
   ]);
-  assert.isFalse(compare(baseline, stale).pass);
+  assert.isFalse(compare(baseline, [stale]).pass);
 });
