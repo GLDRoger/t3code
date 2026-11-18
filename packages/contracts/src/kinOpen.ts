@@ -1,7 +1,9 @@
+import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
+import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { KinOrgId, KinWaitingItem } from "./kinChat.ts";
+import { KinChatError, KinOrgId, KinWaitingItem } from "./kinChat.ts";
 import { CanonicalUtcTimestamp } from "./kinLead.ts";
 import { KinPulseFact, KinPulseListInput } from "./kinPulse.ts";
 import { KinRecordKey } from "./kinWork.ts";
@@ -147,3 +149,18 @@ export function kinOpenApply(
     rows: order.flatMap((id) => byId.get(id) ?? []),
   };
 }
+
+const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
+export const KinOpenRpcs = [
+  Rpc.make("kin.open.read", { payload: KinOpenReadInput, success: KinOpenRead, error }),
+  Rpc.make("kin.open.subscribe", {
+    payload: KinOpenSubscribeInput,
+    success: KinOpenEvent,
+    error,
+    stream: true,
+  }),
+] as const;
+export const KIN_OPEN_RPC_SCOPES = {
+  "kin.open.read": AuthKinChatScope,
+  "kin.open.subscribe": AuthKinChatScope,
+} as const;

@@ -35,7 +35,7 @@ const unavailableOn = (cause: unknown) =>
     ),
   );
 
-const viewerIn = Effect.fn("KinPulsePeople.viewer")(function* (
+export const viewerIn = Effect.fn("KinPulsePeople.viewer")(function* (
   people: ReadonlyArray<PersonIdentity>,
   orgId: KinOrgId,
 ) {

@@ -52,7 +52,7 @@ export type OwnTask = {
 };
 
 /** The person's day end: the start of tomorrow in their zone, or the company's. */
-const dayEndFor = Effect.fn("KinOpen.dayEnd")(function* (
+export const dayEndFor = Effect.fn("KinOpen.dayEnd")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
   at: number,
