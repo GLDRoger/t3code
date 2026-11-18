@@ -2,6 +2,7 @@ import { kinWhenFormat } from "@t3tools/contracts";
 import type {
   KinChatSummary,
   KinLeadProfile,
+  KinLeadsListResult,
   KinMessage,
   KinOrgsListResult,
 } from "@t3tools/contracts";
@@ -61,6 +62,20 @@ export function kinRetireCopy(name: string): {
     detail: `${name} stops what it's doing now, including any coding work it started, and anything it asked you to approve is cancelled. Its reminders and scheduled tasks are put on hold. Its chats, what it remembers and the tasks it has are kept, and you can restore it any time.`,
     confirm: KIN_RETIRE_ACTION,
   };
+}
+
+export const KIN_RETIRE_NEXT_TEAM_AGENT = "Who should the team talk to instead?";
+
+/**
+ * Retiring the team agent needs the one teammates talk to instead: the other active agents, or
+ * null when this one isn't the team agent and nothing needs choosing.
+ */
+export function kinNextTeamAgentChoices(
+  list: Pick<KinLeadsListResult, "leads" | "teamAgentId">,
+  agentId: string,
+): ReadonlyArray<KinLeadProfile> | null {
+  if (list.teamAgentId !== agentId) return null;
+  return list.leads.filter((lead) => lead.retired === undefined && lead.agentId !== agentId);
 }
 
 /** What restoring does, said beside Restore and before a restore from a list. */

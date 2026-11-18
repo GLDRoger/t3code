@@ -336,6 +336,7 @@ function KinTeamBody(
           state={dialog}
           environmentId={environmentId}
           actions={actions}
+          list={list}
           onMade={(invite) => setMade({ stage: "link", invite })}
           onClose={closeDialog}
         />

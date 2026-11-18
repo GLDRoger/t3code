@@ -218,6 +218,29 @@ it.effect(
           ["CT-1", false],
         ],
       );
+      // V06: a project that exists by name with new details is refused, not silently kept as it was.
+      const project = { list: "projects" as const, title: "Invented site", client: "C-1" };
+      const changed = yield* Effect.flip(
+        LeadWork.create(scope, {
+          sourceEventId: "again-event",
+          records: [{ ...project, value: "6 lakh" }],
+        }),
+      );
+      assert.strictEqual(
+        changed.message,
+        'P-1 "Invented site" exists already. To change its value, call record_update with key P-1.',
+      );
+      const [stored] = yield* (yield* SqlClient.SqlClient)<{ fields: string }>`SELECT fields_json
+        AS fields FROM kin_records WHERE key = 'P-1'`;
+      assert.notProperty(JSON.parse(stored!.fields), "value");
+      const same = yield* LeadWork.create(scope, {
+        sourceEventId: "again-event",
+        records: [{ ...project, due: "1970-01-31", repos: ["invented/site"] }],
+      });
+      assert.deepStrictEqual(
+        same.records.map((row) => [row.key, row.created]),
+        [["P-1", false]],
+      );
       // The project's entry takes the project's client.
       assert.include(yield* LeadWork.get(scope, { key: "W-6" }), {
         client: "Invented Acme (C-1)",
@@ -917,8 +940,9 @@ it.effect("no lead write makes anything less sensitive; the owner's own may", ()
     const sql = yield* SqlClient.SqlClient;
     const unmarked = <A, E, R>(write: Effect.Effect<A, E, R>) =>
       Effect.andThen(sql`DELETE FROM kin_wakeup_sensitive_reads`, write);
-    const update = (input: Omit<typeof LeadWork.UpdateInput.Type, "sourceEventId">) =>
-      unmarked(LeadWork.update(scope, { ...input, sourceEventId: "ask-event" }));
+    const update = (
+      input: Omit<typeof LeadWork.UpdateInput.Type, "sourceEventId"> & { readonly key: string },
+    ) => unmarked(LeadWork.update(scope, { ...input, sourceEventId: "ask-event" }));
     yield* update({ key: "C-1", sensitive: true });
     // W-6 is a task: its project's client never labels it, so unlinking labels nothing.
     assert.isFalse(yield* sensitive("W-6"));

@@ -10,6 +10,7 @@ import type {
   KinPushCategory,
   KinPushData,
   KinPushSendingStatus,
+  KinPushSubject,
   KinPushToken,
   KinWidgetId,
 } from "@t3tools/contracts";
@@ -18,6 +19,7 @@ import {
   kinGreeting,
   kinIsBrief,
   kinIsPeopleChat,
+  kinMessageSubject,
   kinPageGist,
   kinPageShape,
   kinPlainBody,
@@ -36,6 +38,7 @@ import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import { ApproverKeys } from "../approvals/ApproverKeys.ts";
 import { KinPendingActions } from "../approvals/PendingActions.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { withLinks } from "../chat/messageLinks.ts";
 import { memberReads } from "../chat/sharing.ts";
 import { MemoryCache } from "../memory/MemoryCache.ts";
 import { personHoldNow } from "../triggers/quietHold.ts";
@@ -81,6 +84,8 @@ type Recipient = {
   readonly personId: KinPersonId;
   readonly silent: boolean;
   readonly capped?: true;
+  /** What a tap opens for them, from what they may open. */
+  readonly subject?: KinPushSubject;
 };
 
 type Push = {
@@ -96,27 +101,62 @@ type Push = {
   readonly recipients: ReadonlyArray<Recipient>;
 };
 
-/** The longest body a banner shows before iOS cuts it; we cut at a word first. */
-const KIN_PUSH_BODY_MAX = 160;
+/** APNs refuses a regular push whose JSON payload is longer than this many bytes. */
+const KIN_APNS_PAYLOAD_MAX = 4096;
+
+const utf8 = new TextEncoder();
+const jsonBytes = (value: unknown) => utf8.encode(JSON.stringify(value)).length;
+const wordSegments = new Intl.Segmenter(undefined, { granularity: "word" });
+const sentenceSegments = new Intl.Segmenter(undefined, { granularity: "sentence" });
+// A sentence end within the last fifth before the word cut is where the cut goes instead.
+const SENTENCE_NEAR = 0.8;
+
+/**
+ * `text` whole when its JSON string fits `room` bytes, else cut to fit and marked "…": at a
+ * sentence end when one is near, else at a word boundary, in any script.
+ */
+export function kinPushFit(text: string, room: number): string {
+  const clip = (end: number) => `${text.slice(0, end).trimEnd()}…`;
+  const fits = (cut: string) => jsonBytes(cut) - 2 <= room;
+  if (fits(text)) return text;
+  const longest = (ends: ReadonlyArray<number>) => {
+    let [low, high, best] = [0, ends.length - 1, -1];
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (fits(clip(ends[mid]!))) [best, low] = [mid, mid + 1];
+      else high = mid - 1;
+    }
+    return best < 0 ? undefined : ends[best];
+  };
+  const endsOf = (segmenter: Intl.Segmenter) =>
+    Array.from(segmenter.segment(text), (part) => part.index + part.segment.length);
+  const word = longest(endsOf(wordSegments));
+  // One word longer than the room: cut it at a character, the only cut left.
+  if (word === undefined) {
+    let at = 0;
+    for (const char of text) {
+      if (!fits(clip(at + char.length))) break;
+      at += char.length;
+    }
+    return clip(at);
+  }
+  const sentence = longest(endsOf(sentenceSegments));
+  return clip(sentence !== undefined && sentence >= word * SENTENCE_NEAR ? sentence : word);
+}
 
 const kinRelayWords = (text: string) =>
   /^[^\n]+ asked [^\n]+:\n"([\s\S]*)"$/.exec(text)?.[1] ?? text;
 
-/** A message's start as one plain line for a banner. */
-const kinPushBody = (text: string) => {
-  const plain = text
+/** A message as plain text for a banner, its line breaks kept; `sendTo` cuts it to fit. */
+const kinPushBody = (text: string) =>
+  text
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/^\s{0,3}(?:#{1,6}|>|[-*+]|\d+\.)\s+/gm, "")
     .replace(/```[^\s`]*/g, "")
     .replace(/(\*\*|__|~~|`)/g, "")
-    .replace(/\s+/g, " ")
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/ ?\n[\s]*/g, "\n")
     .trim();
-  const chars = Array.from(plain);
-  if (chars.length <= KIN_PUSH_BODY_MAX) return plain;
-  const cut = chars.slice(0, KIN_PUSH_BODY_MAX - 1).join("");
-  const space = cut.lastIndexOf(" ");
-  return `${(space > KIN_PUSH_BODY_MAX / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
-};
 
 /** What a card asks, in its own words: its message, else its question or title. */
 const kinCardWords = (body: string, state: unknown) => {
@@ -295,6 +335,26 @@ const make = Effect.gen(function* () {
     return claimed.length > 0;
   });
 
+  /**
+   * What `messageId` is about for `personId`, from the names in it they may open: what the chat
+   * shows them. None when it can't be read; the push still opens the chat.
+   */
+  const subjectFor = Effect.fn("KinPushSender.subjectFor")(
+    function* (orgId: KinOrgId, messageId: KinMessageId, personId: KinPersonId) {
+      const message = yield* chats.getMessage({ orgId, messageId });
+      if (Option.isNone(message)) return undefined;
+      const [linked] = yield* withLinks(orgId, { _tag: "person", personId }, [message.value]).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      return linked === undefined ? undefined : (kinMessageSubject(linked) ?? undefined);
+    },
+    Effect.catch((error) =>
+      Effect.logWarning("Kin push couldn't read its subject.", { error: error._tag }).pipe(
+        Effect.as(undefined),
+      ),
+    ),
+  );
+
   /** The Chats list's unread total, from the same read, so the icon and the list agree. */
   const badgeFor = (orgId: KinOrgId, personId: KinPersonId) =>
     chats.unreadTotal({ orgId, personId });
@@ -453,12 +513,17 @@ const make = Effect.gen(function* () {
           : yield* holdNow(orgId, recipient.personId);
       const silent =
         recipient.silent || hold === "quiet" || (hold === "off" && !fromPerson && !answers);
+      const subject =
+        row.is_card === 1
+          ? ({ _tag: "message", messageId } as const)
+          : yield* subjectFor(orgId, messageId, recipient.personId);
+      const told = subject === undefined ? recipient : { ...recipient, subject };
       recipients.push(
         silent
-          ? { ...recipient, silent: true }
+          ? { ...told, silent: true }
           : fromPerson || answers || row.owner_timed === 1
-            ? recipient
-            : { ...recipient, capped: true },
+            ? told
+            : { ...told, capped: true },
       );
     }
     return { ...push, recipients } satisfies Push;
@@ -522,7 +587,11 @@ const make = Effect.gen(function* () {
       if (person.joinedSeq > row.seq || !awaiting.has(person.personId)) continue;
       // A heads-up comes at the time the owner deferred the task to.
       const held = row.phase === "heads_up" ? undefined : yield* holdNow(orgId, person.personId);
-      recipients.push({ personId: person.personId, silent: person.muted || held !== undefined });
+      recipients.push({
+        personId: person.personId,
+        silent: person.muted || held !== undefined,
+        subject: { _tag: "message", messageId: row.message_id },
+      });
     }
     return {
       ...kind,
@@ -578,7 +647,11 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     push: Push,
     device: KinPushDevice,
-    recipient: { readonly silent: boolean; readonly badge: number },
+    recipient: {
+      readonly silent: boolean;
+      readonly badge: number;
+      readonly subject: KinPushSubject | undefined;
+    },
   ) {
     if (push.chatId !== undefined && (yield* presence.isWatching(device.sessionId, push.chatId)))
       return "suppressed" as const;
@@ -589,24 +662,26 @@ const make = Effect.gen(function* () {
         !(yield* stillReads(orgId, device.personId, push.chatId, push.source)))
     )
       return "dropped" as const;
+    const payload = (body: string) => ({
+      aps: recipient.silent
+        ? { badge: recipient.badge }
+        : {
+            alert: { title: push.title, body },
+            badge: recipient.badge,
+            category: push.category,
+            sound: "default",
+            ...(push.chatId === undefined ? {} : { "thread-id": `kin:${orgId}:${push.chatId}` }),
+          },
+      // expo-notifications reads a remote push's `content.data` from `body`.
+      body:
+        recipient.subject === undefined ? push.data : { ...push.data, subject: recipient.subject },
+    });
     const result = yield* apns.send({
       token: device.token,
       environment: device.apsEnvironment,
       // A badge-only push must not replace the banner a loud one left under the same id.
       ...(push.collapseId === undefined || recipient.silent ? {} : { collapseId: push.collapseId }),
-      payload: {
-        aps: recipient.silent
-          ? { badge: recipient.badge }
-          : {
-              alert: { title: push.title, body: push.body },
-              badge: recipient.badge,
-              category: push.category,
-              sound: "default",
-              ...(push.chatId === undefined ? {} : { "thread-id": `kin:${orgId}:${push.chatId}` }),
-            },
-        // expo-notifications reads a remote push's `content.data` from `body`.
-        body: push.data,
-      },
+      payload: payload(kinPushFit(push.body, KIN_APNS_PAYLOAD_MAX - jsonBytes(payload("")))),
     });
     if (result.status === 200) {
       shownBadge.set(device.token, recipient.badge);
@@ -649,7 +724,10 @@ const make = Effect.gen(function* () {
       orgId,
       push.recipients.map((recipient) => recipient.personId),
     );
-    const recipients = new Map<KinPersonId, { silent: boolean; badge: number }>();
+    const recipients = new Map<
+      KinPersonId,
+      { silent: boolean; badge: number; subject: KinPushSubject | undefined }
+    >();
     for (const recipient of push.recipients) {
       let silent = recipient.silent;
       // The half hour's one ring is spent only on a phone that will show it, so a push decided
@@ -668,6 +746,7 @@ const make = Effect.gen(function* () {
       recipients.set(recipient.personId, {
         silent,
         badge: yield* badgeFor(orgId, recipient.personId),
+        subject: recipient.subject,
       });
     }
     // Bounded, so one slow device doesn't hold up the rest and a big org doesn't flood APNs.
