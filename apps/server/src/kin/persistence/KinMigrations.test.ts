@@ -1722,7 +1722,7 @@ describe("Kin migrations", () => {
           [176, "RecordComments"],
           [177, "RecordChangesByWakeup"],
         ]);
-        assert.deepStrictEqual((yield* kinHistory).slice(-103), [
+        assert.deepStrictEqual((yield* kinHistory).slice(-104), [
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },
