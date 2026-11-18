@@ -1414,6 +1414,24 @@ export function makeKinClient<R, ER>(
       label: "kin:work:comments",
       tag: "kin.work.comments",
     }),
+    /** "Add a link" on an entry: a web page, by whoever may edit it. */
+    workLinkAdd: createKinRpcCommand(runtime, {
+      label: "kin:work:linkAdd",
+      tag: "kin.work.linkAdd",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.key}:${input.url}` },
+    }),
+    /** Takes a web page's link off an entry. */
+    workLinkRemove: createKinRpcCommand(runtime, {
+      label: "kin:work:linkRemove",
+      tag: "kin.work.linkRemove",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.key}:${input.url}` },
+    }),
+    /** Sets or clears a project's note for every task. */
+    workProjectNote: createKinRpcCommand(runtime, {
+      label: "kin:work:projectNote",
+      tag: "kin.work.projectNote",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
     /** Every open task someone holds, to someone else; `dryRun` counts them first. */
     workHandOver: createKinRpcCommand(runtime, {
       label: "kin:work:handOver",

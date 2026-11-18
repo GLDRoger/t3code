@@ -40,6 +40,7 @@ import {
   writerOf,
 } from "./ownerWork.ts";
 import { principalOfText, principalText } from "./projectSpine.ts";
+import { projectNoteOf } from "./recordComments.ts";
 import { iso, notFound, type RecordRow, unavailable } from "./recordRows.ts";
 import {
   KIN_OWNER_LEVEL,
@@ -227,7 +228,12 @@ export const project = Effect.fn("KinWork.project")(function* (
   // Its people are the owner's, a co-owner's and its lead's to change (`teamGuard`).
   const leads =
     row.ownerKind === "person" && row.ownerId === person.person.personId && row.sensitive === 0;
-  return { ...page, can: { people: !person.teammate || leads } };
+  const note = yield* read(projectNoteOf(input.orgId, row.recordId));
+  return {
+    ...page,
+    ...(note === undefined ? {} : { note }),
+    can: { people: !person.teammate || leads, note: !person.teammate },
+  };
 });
 
 /** `s:<seq>`: the next page is everything older than the last line shown. */

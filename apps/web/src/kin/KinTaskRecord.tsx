@@ -1,12 +1,16 @@
 import { useAtomValue } from "@effect/atom-react";
 import { kinFailure, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
+  KIN_TASK_LINK,
+  KIN_TASK_NOTE_COPY,
   KIN_TASK_RECORD,
   type KinActivityIcon,
   type KinActivityLine,
   type KinNextStepView,
   type KinRecordChipTone,
+  kinProjectNoteLine,
   kinTaskActivity,
+  kinTaskLinkProblem,
 } from "@t3tools/client-runtime/kin/kinTaskRecord";
 import {
   kinWorkActorName,
@@ -15,6 +19,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinWork";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
+  KIN_RECORD_COMMENT_FILES_MAX,
   KIN_RECORD_COMMENT_MAX,
   type KinRecordComment,
   type KinRecordDetail,
@@ -29,12 +34,14 @@ import {
   CircleDotIcon,
   ClockIcon,
   FileTextIcon,
+  FolderIcon,
   LinkIcon,
   PencilIcon,
   PlusIcon,
   UserIcon,
+  XIcon,
 } from "lucide-react";
-import { type ClipboardEvent, type KeyboardEvent, useRef, useState } from "react";
+import { type ClipboardEvent, type KeyboardEvent, useId, useRef, useState } from "react";
 
 import { ComposerAttachButton } from "../components/chat/ComposerAttachmentStrip";
 import { shouldHandleComposerAttachmentPaste } from "../components/chat/composerAttachmentFiles";
@@ -51,6 +58,7 @@ import {
 } from "../components/ui/alert-dialog";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
 import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -64,23 +72,6 @@ import { useKinHostAt } from "./useKinHost";
 import type { KinWorkTarget } from "./useKinWork";
 
 type TaskTarget = KinWorkTarget & { readonly itemKey: KinRecordKey };
-
-// The host takes up to this many files on one note (`KIN_RECORD_COMMENT_FILES_MAX`).
-const NOTE_FILES_MAX = 8;
-
-const KIN_TASK_NOTE_COPY = {
-  send: "Add note",
-  sending: "Sending…",
-  retry: "Retry",
-  discard: "Discard",
-  remove: "Remove",
-  removeTitle: "Remove this note?",
-  offline: "You're offline. Your note stays here until you're back.",
-  tooMany: `A note takes up to ${NOTE_FILES_MAX} files.`,
-  notAdded: "Your note wasn't added.",
-  notRemoved: "The note wasn't removed.",
-  olderFailed: "Earlier notes didn't load.",
-} as const;
 
 const WAITING = { send: KIN_TASK_RECORD.waitingSend, question: KIN_TASK_RECORD.waitingQuestion };
 
@@ -257,10 +248,11 @@ const activityTail = (line: KinActivityLine) => {
  */
 export function KinTaskActivity(
   props: TaskTarget & {
-    readonly item: Pick<KinRecordDetail, "changes" | "comments" | "olderComments">;
+    readonly item: Pick<KinRecordDetail, "changes" | "comments" | "olderComments" | "projectNote">;
     readonly names: KinWorkNames;
     readonly now: Date;
     readonly note: string | null;
+    readonly onOpenProject: (key: KinRecordKey) => void;
   },
 ) {
   const { environmentId, orgId, itemKey, names } = props;
@@ -332,6 +324,12 @@ export function KinTaskActivity(
     <section aria-label={KIN_TASK_RECORD.activity} className="flex flex-col gap-3">
       <h3 className="text-xs font-medium text-muted-foreground">{KIN_TASK_RECORD.activity}</h3>
       {props.note === null ? null : <p className="text-xs text-muted-foreground">{props.note}</p>}
+      {props.item.projectNote === undefined ? null : (
+        <KinProjectNoteRow
+          line={kinProjectNoteLine(props.item.projectNote, names, props.now)}
+          onOpenProject={props.onOpenProject}
+        />
+      )}
       {!thread.more ? null : (
         <div>
           <Button
@@ -516,6 +514,171 @@ export function KinTaskActivity(
   );
 }
 
+/** "From the project" pinned first in a task's Activity: its project's note, read-only here. */
+function KinProjectNoteRow(props: {
+  readonly line: ReturnType<typeof kinProjectNoteLine>;
+  readonly onOpenProject: (key: KinRecordKey) => void;
+}) {
+  const { line } = props;
+  return (
+    <div aria-label={KIN_TASK_RECORD.fromProject} className="flex gap-2.5 text-sm">
+      <span className="flex w-5 shrink-0 justify-center pt-0.5">
+        <FolderIcon aria-hidden className="size-3.5 text-muted-foreground" />
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <p className="flex min-w-0 flex-wrap items-center gap-x-1 text-muted-foreground">
+          <span className="font-medium text-foreground">{KIN_TASK_RECORD.fromProject}</span>
+          <Button size="xs" variant="link" onClick={() => props.onOpenProject(line.project.key)}>
+            {line.project.title}
+          </Button>
+          <span>
+            · {line.who}, {line.when}
+          </span>
+        </p>
+        <p className="whitespace-pre-wrap wrap-break-word text-foreground">{line.body}</p>
+      </div>
+    </div>
+  );
+}
+
+/** "Add a link" under a task's Linked: a web address and an optional name, by whoever may edit it. */
+export function KinTaskLinkAdd(props: TaskTarget) {
+  const add = useAtomCommand(kinClient.workLinkAdd, { reportFailure: false });
+  const [open, setOpen] = useState(false);
+  const [url, setUrl] = useState("");
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const urlId = useId();
+  const nameId = useId();
+  const problem = kinTaskLinkProblem(url) ?? failed;
+  const close = () => {
+    setOpen(false);
+    setUrl("");
+    setName("");
+    setFailed(null);
+  };
+  const save = async () => {
+    if (url.trim() === "" || kinTaskLinkProblem(url) !== null) return;
+    setBusy(true);
+    setFailed(null);
+    const outcome = await add({
+      environmentId: props.environmentId,
+      input: {
+        orgId: props.orgId,
+        key: props.itemKey,
+        url: url.trim(),
+        ...(name.trim() === "" ? {} : { name: name.trim() }),
+      },
+    });
+    setBusy(false);
+    if (AsyncResult.isFailure(outcome))
+      return setFailed(kinFailureText(squashAtomCommandFailure(outcome), KIN_TASK_LINK.notAdded));
+    close();
+    appAtomRegistry.refresh(itemAtomOf(props));
+  };
+  if (!open)
+    return (
+      <div>
+        <Button size="xs" variant="ghost" onClick={() => setOpen(true)}>
+          <PlusIcon />
+          {KIN_TASK_LINK.add}
+        </Button>
+      </div>
+    );
+  return (
+    <form
+      className="flex flex-col gap-2"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void save();
+      }}
+    >
+      <label htmlFor={urlId} className="text-xs text-muted-foreground">
+        {KIN_TASK_LINK.url}
+      </label>
+      <Input
+        id={urlId}
+        type="url"
+        size="sm"
+        autoFocus
+        value={url}
+        placeholder={KIN_TASK_LINK.urlPlaceholder}
+        aria-invalid={problem !== null}
+        onChange={(event) => setUrl(event.target.value)}
+      />
+      <label htmlFor={nameId} className="text-xs text-muted-foreground">
+        {KIN_TASK_LINK.name}
+      </label>
+      <Input
+        id={nameId}
+        size="sm"
+        value={name}
+        maxLength={200}
+        onChange={(event) => setName(event.target.value)}
+      />
+      {problem === null ? null : (
+        <p role="alert" className="text-xs text-destructive-foreground">
+          {problem}
+        </p>
+      )}
+      <div className="flex gap-2">
+        <Button
+          type="submit"
+          size="xs"
+          disabled={busy || url.trim() === "" || kinTaskLinkProblem(url) !== null}
+          aria-busy={busy}
+        >
+          {KIN_TASK_LINK.save}
+        </Button>
+        <Button type="button" size="xs" variant="ghost" disabled={busy} onClick={close}>
+          {KIN_TASK_LINK.cancel}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+/** Takes a web link off a task, by whoever may edit it. */
+export function KinTaskLinkRemove(
+  props: TaskTarget & { readonly url: string; readonly label: string },
+) {
+  const remove = useAtomCommand(kinClient.workLinkRemove, { reportFailure: false });
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const run = async () => {
+    setBusy(true);
+    setFailed(null);
+    const outcome = await remove({
+      environmentId: props.environmentId,
+      input: { orgId: props.orgId, key: props.itemKey, url: props.url },
+    });
+    setBusy(false);
+    if (AsyncResult.isFailure(outcome))
+      return setFailed(kinFailureText(squashAtomCommandFailure(outcome), KIN_TASK_LINK.notRemoved));
+    appAtomRegistry.refresh(itemAtomOf(props));
+  };
+  return (
+    <>
+      <Button
+        size="icon-xs"
+        variant="ghost-muted"
+        disabled={busy}
+        aria-busy={busy}
+        aria-label={failed ?? KIN_TASK_LINK.remove(props.label)}
+        onClick={() => void run()}
+      >
+        <XIcon />
+      </Button>
+      {failed === null ? null : (
+        <span role="alert" className="shrink-0 text-xs text-destructive-foreground">
+          {failed}
+        </span>
+      )}
+    </>
+  );
+}
+
 /**
  * "Add a note…" pinned under a task: words and files for everyone who sees it. The words and
  * files are kept like a chat's draft, so closing the task loses nothing. Enter adds the note.
@@ -536,7 +699,7 @@ export function KinTaskNoteComposer(props: TaskTarget) {
   const hint =
     body.length > KIN_RECORD_COMMENT_MAX
       ? KIN_TASK_RECORD.noteTooLong(KIN_RECORD_COMMENT_MAX)
-      : files.count > NOTE_FILES_MAX
+      : files.count > KIN_RECORD_COMMENT_FILES_MAX
         ? KIN_TASK_NOTE_COPY.tooMany
         : !connected && hasContent
           ? KIN_TASK_NOTE_COPY.offline
