@@ -696,13 +696,17 @@ const TEAM_FIELDS = new Set([
   "handedBack",
   "repeat",
 ]);
+/** Whether a teammate's history of a task outside the projects they lead shows this change. */
+export const teamChangeShown = (kind: string, fields: ReadonlyArray<{ readonly field: string }>) =>
+  kind !== "linked" && (kind !== "updated" || fields.some((one) => TEAM_FIELDS.has(one.field)));
+
 /** Numbered among themselves, newest highest: the org's numbers would show what they can't see. */
 export const teamChanges = (changes: ReadonlyArray<KinRecordChange>) => {
-  const shown = changes.flatMap((change): ReadonlyArray<KinRecordChange> => {
-    if (change.kind === "linked") return [];
-    const fields = change.fields.filter((field) => TEAM_FIELDS.has(field.field));
-    return change.kind === "updated" && fields.length === 0 ? [] : [{ ...change, fields }];
-  });
+  const shown = changes.flatMap((change): ReadonlyArray<KinRecordChange> =>
+    teamChangeShown(change.kind, change.fields)
+      ? [{ ...change, fields: change.fields.filter((field) => TEAM_FIELDS.has(field.field)) }]
+      : [],
+  );
   return shown.map((change, index) => ({ ...change, seq: shown.length - index }));
 };
 

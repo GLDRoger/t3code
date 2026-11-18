@@ -94,6 +94,7 @@ import OneSocialProfile from "./migrations/K170_OneSocialProfile.ts";
 import GitHubBranchGuards from "./migrations/K171_GitHubBranchGuards.ts";
 import CalendarCursor from "./migrations/K172_CalendarCursor.ts";
 import NoMemoryReviewPulls from "./migrations/K173_NoMemoryReviewPulls.ts";
+import Canvas from "./migrations/K174_Canvas.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -268,6 +269,7 @@ const loader = Migrator.fromRecord({
   "171_GitHubBranchGuards": GitHubBranchGuards,
   "172_CalendarCursor": CalendarCursor,
   "173_NoMemoryReviewPulls": NoMemoryReviewPulls,
+  "174_Canvas": Canvas,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that
