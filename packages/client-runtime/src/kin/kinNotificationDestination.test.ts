@@ -27,6 +27,18 @@ describe("kinNotificationDestination", () => {
       { _tag: "record", key: "INV-2", kind: "entry" },
       { _tag: "record", chatId: null, key: "INV-2", kind: "entry" },
     ],
+    [
+      "several of the reader's tasks to their Tasks, the chat under it",
+      chatId,
+      { _tag: "tasks" },
+      { _tag: "tasks", chatId },
+    ],
+    [
+      "the reader's tasks with no chat",
+      undefined,
+      { _tag: "tasks" },
+      { _tag: "tasks", chatId: null },
+    ],
     // A later build's subject, or a malformed one, still opens the chat.
     [
       "an unknown subject to the chat",

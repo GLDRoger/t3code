@@ -1,5 +1,11 @@
 import { kinInMoney } from "@t3tools/client-runtime/kin/kinMoney";
-import { KinAgentId, KinDocSectionId, KinListId, KinRecordKey } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  KinDocSectionId,
+  KinListId,
+  KinRecordKey,
+  type KinMessageLinkTarget,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import type { KinDocWhere } from "./KinDocPage";
@@ -13,6 +19,22 @@ export const KIN_PLACE_PATH = {
   clients: "/kin/$environmentId/$orgId/clients",
   docs: "/kin/$environmentId/$orgId/docs",
 } as const satisfies Record<KinPlace, string>;
+
+/** The page and search that open a record a message names. */
+export function kinRecordPlace(to: Extract<KinMessageLinkTarget, { readonly _tag: "record" }>) {
+  switch (to.kind) {
+    case "client":
+      return { to: KIN_PLACE_PATH.clients, search: { client: to.key } };
+    case "project":
+      return { to: KIN_PLACE_PATH.clients, search: { project: to.key } };
+    case "doc":
+      return { to: KIN_PLACE_PATH.docs, search: { doc: to.key } };
+    case "entry":
+      return { to: KIN_PLACE_PATH.money, search: { task: to.key } };
+    case "task":
+      return { to: KIN_PLACE_PATH.tasks, search: { task: to.key } };
+  }
+}
 
 /** The record open beside a place's list: a client, project, list, the coming dates, the subscriptions, or a doc. */
 export type KinRecordWhere =

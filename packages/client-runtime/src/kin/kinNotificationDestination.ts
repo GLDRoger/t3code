@@ -10,7 +10,8 @@ import * as Schema from "effect/Schema";
 
 /**
  * Where a tap on a Kin notification lands, on the phone and on the web alike: the entry it is
- * about, a card's message in its chat, or the chat. `chatId` on a record is the chat under it.
+ * about, the reader's Tasks, a card's message in its chat, or the chat. `chatId` on a record or
+ * on Tasks is the chat under it.
  */
 export type KinNotificationDestination =
   | {
@@ -23,7 +24,8 @@ export type KinNotificationDestination =
       readonly chatId: KinChatId | null;
       readonly key: string;
       readonly kind: Extract<KinPushSubject, { readonly _tag: "record" }>["kind"];
-    };
+    }
+  | { readonly _tag: "tasks"; readonly chatId: KinChatId | null };
 
 const decodeSubject = Schema.decodeUnknownOption(KinPushSubject);
 
@@ -39,6 +41,7 @@ export function kinNotificationDestination(input: {
   const subject = Option.getOrNull(decodeSubject(input.subject));
   if (subject?._tag === "record")
     return { _tag: "record", chatId, key: subject.key, kind: subject.kind };
+  if (subject?._tag === "tasks") return { _tag: "tasks", chatId };
   if (chatId === null) return null;
   return {
     _tag: "chat",
