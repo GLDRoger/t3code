@@ -3,7 +3,9 @@ import {
   isKinCurrency,
   KinChatError,
   kinCurrency,
+  type KinCurrencyRate,
   type KinMoney,
+  type KinMoneyAbout,
   type KinOrgId,
   parseKinMoney,
 } from "@t3tools/contracts";
@@ -68,6 +70,54 @@ export const addUp = (amounts: Iterable<KinMoney>, home: string): ReadonlyArray<
         throw new RangeError(`A ${currency} total is out of range`);
       return { minor: Number(minor), currency };
     });
+};
+
+const RATE = /^(\d+)(?:\.(\d{1,6}))?$/u;
+
+/**
+ * Totals in several currencies as one estimate in `home` at the owner's `rates`, summed exactly
+ * and rounded once to a whole unit; currencies with no rate are named in `missing`. Undefined for
+ * one currency, or when no currency could be counted. Never fetches or invents a rate.
+ */
+export const aboutTotal = (
+  totals: ReadonlyArray<KinMoney>,
+  home: string,
+  rates: ReadonlyArray<KinCurrencyRate>,
+): KinMoneyAbout | undefined => {
+  if (new Set(totals.map((one) => one.currency)).size < 2) return undefined;
+  const homeDigits = currencyDigits(home);
+  // Billionths of a home minor unit: a six-place rate on a 3-decimal currency stays whole.
+  const scale = 10n ** 9n;
+  let sum = 0n;
+  let counted = 0;
+  const missing: Array<string> = [];
+  for (const money of totals) {
+    if (money.currency === home) {
+      sum += BigInt(money.minor) * scale;
+      counted += 1;
+      continue;
+    }
+    const found = RATE.exec(rates.find((one) => one.currency === money.currency)?.rate ?? "");
+    const micros =
+      found === null
+        ? 0n
+        : BigInt(found[1]!) * 1_000_000n + BigInt((found[2] ?? "").padEnd(6, "0"));
+    if (micros === 0n) {
+      missing.push(money.currency);
+      continue;
+    }
+    const shift = homeDigits - currencyDigits(money.currency) + 3;
+    sum += BigInt(money.minor) * micros * 10n ** BigInt(shift);
+    counted += 1;
+  }
+  if (counted === 0) return undefined;
+  const unit = scale * 10n ** BigInt(homeDigits);
+  const size = sum < 0n ? -sum : sum;
+  const whole = (size * 2n + unit) / (unit * 2n);
+  const minor = (sum < 0n ? -whole : whole) * 10n ** BigInt(homeDigits);
+  if (minor > BigInt(Number.MAX_SAFE_INTEGER) || minor < -BigInt(Number.MAX_SAFE_INTEGER))
+    return undefined;
+  return { home, total: { minor: Number(minor), currency: home }, missing };
 };
 
 /** The calendar day an instant falls on in `zone`. */
