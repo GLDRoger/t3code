@@ -808,7 +808,7 @@ export const dueTurnText = Effect.fn("KinQuestions.dueTurnText")(function* (
   const clock = yield* personClock(orgId, row.personId);
   const who = yield* personName(orgId, row.personId);
   return {
-    text: `Your question to ${who}, asked ${dayWord(row.askedAt, now, clock.zone)}, got no answer by its day, and its card now says you went with your default. Do “${row.defaultLabel}” now with your tools, inside the company only: anything that would send, post or move money stays on its Confirm card. Then say so in one line, such as: Went with “${row.defaultLabel}”; say "undo it" to reverse. Don't ask it again.`,
+    text: `Your question to ${who}, asked ${dayWord(row.askedAt, now, clock.zone)}, got no answer by its day, and its card now says you went with your default. Do “${row.defaultLabel}” now with your tools, inside the company only: anything that would send, post or move money stays on its Confirm card. Kin tells ${who} it went with “${row.defaultLabel}”, so don't say that again. Don't ask it again.`,
     data: {
       question: row.question,
       options: row.options.map((option) => option.label),
@@ -816,6 +816,17 @@ export const dueTurnText = Effect.fn("KinQuestions.dueTurnText")(function* (
       ...(row.about.length === 0 ? {} : { about: row.about }),
     },
   };
+});
+
+/** What the asker's turn is told when a default Kin took was undone; undefined when it wasn't. */
+export const undoneTurnText = Effect.fn("KinQuestions.undoneTurnText")(function* (
+  orgId: KinOrgId,
+  questionId: string,
+) {
+  const row = yield* readQuestion(orgId, questionId);
+  if (row === undefined || row.state !== "default_taken" || row.defaultLabel === null)
+    return undefined;
+  return `Your question to ${yield* personName(orgId, row.personId)}, “${row.question}”, got no answer, so Kin took your default “${row.defaultLabel}”. It has now been undone on Kin's note to them: what it changed is back as it was. Don't do it again or ask the same again; ask anew only if it still needs deciding.`;
 });
 
 /**

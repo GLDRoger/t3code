@@ -326,9 +326,12 @@ it.effect("a question is asked once, and its default is taken once at its day", 
         .pipe(Effect.flip);
       assert.include(late, { reason: "invalid_state" });
       assert.strictEqual((yield* questionRow(sql, questionId)).state, "default_taken");
-      // The turn Kin starts tells Finance to do it and say so in one line, with undo.
+      // The turn Kin starts tells Finance to do it, and that Kin tells Rhea.
       const due = yield* Questions.dueTurnText(KinOrgId.make(orgId), questionId, TUE_1930);
-      assert.include(due!.text, 'Went with “Draft it”; say "undo it" to reverse.');
+      assert.include(
+        due!.text,
+        "Kin tells Rhea Rao it went with “Draft it”, so don't say that again.",
+      );
       assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: owner.personId }), 0);
 
       // Once INV-8 is a real invoice, any default about it waits for Rhea.

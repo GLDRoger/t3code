@@ -690,8 +690,13 @@ export const KinEvent = Schema.Union([
         itemId: KinMemoryItemId,
         person: KinPersonId,
       }),
-      // An agent's open question reached its day unanswered: the asker takes its default.
-      Schema.Struct({ type: Schema.Literal("question"), questionId: TrimmedNonEmptyString }),
+      // An agent's open question reached its day unanswered: the asker takes its default. With
+      // `undone`, the person put back what Kin's taking it changed.
+      Schema.Struct({
+        type: Schema.Literal("question"),
+        questionId: TrimmedNonEmptyString,
+        undone: Schema.optional(Schema.Literal(true)),
+      }),
       // One run of a scheduled task; `runId` names the fire or Run now tap that started it.
       Schema.Struct({
         type: Schema.Literal("scheduled_task"),

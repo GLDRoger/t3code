@@ -1411,6 +1411,13 @@ it.effect("a default that closes a task is taken at its day, told once, and undo
       const again = yield* kin.tap(owner, note.widgetId, "option-1", "undo-2");
       assert.strictEqual(again.messageId, undo.messageId);
       assert.deepStrictEqual(yield* kin.stateOf(row.key), { state: "open", rev: row.rev + 2 });
+      // Finance hears once that its default was undone.
+      assert.deepStrictEqual(
+        yield* sql`SELECT agent_id AS agent, json_extract(json, '$.subject.undone') AS undone
+          FROM kin_events WHERE org_id = ${orgId}
+            AND dedupe_key = ${`question-undone:${asked.value.question as string}`}`,
+        [{ agent: "finance", undone: 1 }],
+      );
 
       // Changed since the default closed it: Undo puts nothing back over the rename.
       yield* sql`UPDATE kin_people SET away_until = NULL WHERE person_id = ${owner.personId}`;

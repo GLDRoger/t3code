@@ -2,22 +2,32 @@ import {
   KinAgentId,
   KinChatError,
   type KinChatId,
+  KinEvent,
+  KinEventId,
   type KinChoiceOutcome,
   KinMessageId,
   type KinOrgId,
   KinPersonId,
   ThreadId,
 } from "@t3tools/contracts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
+import * as NodeCrypto from "node:crypto";
+import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { KinChatService } from "../chat/KinChatService.ts";
+import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { reversal } from "../lead/changeRows.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { type TakenPlan, sealPlans } from "../widgets/cardPlans.ts";
 import type { KinRecords, Writer } from "../work/KinRecords.ts";
 import { parseChanges } from "../work/recordRows.ts";
 import { teamGuard } from "../work/teamView.ts";
+
+const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 
 /** The field a record change carries when Kin made it by taking a question's default. */
 const DEFAULT_FIELD = "default";
@@ -165,6 +175,54 @@ const markTaken = Effect.fn("KinDefaultTaken.markTold")(function* (
     ON CONFLICT DO NOTHING`;
 });
 
+/** The asking agent hears once that its default was undone, so it doesn't go on as if it stood. */
+const tellUndone = Effect.fn("KinDefaultTaken.tellUndone")(function* (
+  orgId: KinOrgId,
+  plan: TakenPlan,
+  chatId: KinChatId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [lead] = yield* sql<{ ownerChatId: string }>`SELECT owner_chat_id AS "ownerChatId"
+    FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${plan.agentId}`;
+  const [question] = yield* sql<{ personId: string }>`SELECT person_id AS "personId"
+    FROM kin_questions WHERE org_id = ${orgId} AND question_id = ${plan.questionId}`;
+  const event = yield* decodeEvent({
+    _tag: "deferral.due",
+    eventId: KinEventId.make(
+      `question_${NodeCrypto.createHash("sha256")
+        .update(`${orgId}\0${plan.questionId}\0undone`)
+        .digest("hex")
+        .slice(0, 32)}`,
+    ),
+    orgId,
+    agentId: plan.agentId,
+    receivedAt: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+    provenance: { _tag: "system" },
+    dedupeKey: `question-undone:${plan.questionId}`,
+    subject: { type: "question", questionId: plan.questionId, undone: true },
+    lateByMs: 0,
+    ...(lead === undefined || lead.ownerChatId === chatId || question === undefined
+      ? {}
+      : { origin: { agentId: plan.agentId, chatId, personId: question.personId } }),
+  }).pipe(Effect.orDie);
+  // A retired asker has no turn to tell.
+  yield* (yield* KinEventQueue).enqueue(event).pipe(
+    Effect.catchTags({
+      KinEventQueueRetiredAgent: () => Effect.void,
+      KinEventQueueUnknownAgent: () => Effect.void,
+      // The whole tap rolls back, so nothing is undone without its agent hearing of it.
+      KinEventQueueConflict: () => Effect.fail(notNow(plan.key)),
+      KinEventQueueUnknownEvent: () => Effect.fail(notNow(plan.key)),
+    }),
+  );
+});
+
+const notNow = (key: string) =>
+  new KinChatError({
+    reason: "conflict",
+    message: `${key} couldn't be undone just now, so nothing changed. Try again.`,
+  });
+
 const undone = (why: string): KinChoiceOutcome => ({
   title: "Nothing was undone",
   text: `${why}, so nothing was undone.`,
@@ -241,5 +299,6 @@ export const runTaken = Effect.fn("KinDefaultTaken.run")(function* (
         chatId: tap.chatId,
       };
   yield* records.update(orgId, writer, row.key, patch, plan.rev);
+  yield* tellUndone(orgId, plan, tap.chatId);
   return { title: "Undone", text: `Put ${plan.key} ${quoted(plan.title)} back as it was.` };
 });
