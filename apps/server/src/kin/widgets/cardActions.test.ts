@@ -54,6 +54,8 @@ import { KinRecords } from "../work/KinRecords.ts";
 import { handlers as workHandlers } from "../work/mcp/handlers.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { presetDefinition, propose } from "../work/registers.ts";
+import * as CardActions from "./cardActions.ts";
+import { plansOf } from "./cardPlans.ts";
 
 const providerInstanceId = ProviderInstanceId.make("codex");
 const at = "2026-10-01T00:00:00.000Z";
@@ -259,6 +261,11 @@ const ambermill = Effect.gen(function* () {
     widget,
     tap,
     stateOf,
+    settleDeps: {
+      chat: chats,
+      queue: Context.get(services, KinEventQueue.KinEventQueue),
+      records,
+    },
   };
 });
 
@@ -542,19 +549,18 @@ it.effect("a stale card, a reaction, a passed day or a foreign key runs nothing"
       assert.include(forced, { reason: "not_allowed" });
       assert.strictEqual((yield* kin.stateOf(reacted.key)).state, "open");
 
-      // Its default is the action: at its day it is raised again, never taken.
+      // Its default is the action, on a question about sending: at its day it is raised again,
+      // never taken.
       yield* kin.turn("finance", kin.chatOf("finance"), "And the proposal?");
       const daily = yield* callAs("finance", "kin_ask", {
         ...closeIt(timed.key),
+        question: `${timed.key} looks finished. Close it, or send it first?`,
         default: "Close it",
       });
       assert.isTrue(daily.ok, JSON.stringify(daily.value));
       const due = Date.parse(daily.value.by as string);
       yield* TestClock.setTime(due + 60_000);
-      yield* Questions.settleDue(orgId, due + 60_000, {
-        chat: kin.chats,
-        queue: Context.get(kin.services, KinEventQueue.KinEventQueue),
-      });
+      yield* Questions.settleDue(orgId, due + 60_000, kin.settleDeps);
       assert.notStrictEqual(
         (yield* Questions.readQuestion(orgId, daily.value.question as string))?.state,
         "default_taken",
@@ -601,10 +607,11 @@ it.effect("a stale card, a reaction, a passed day or a foreign key runs nothing"
         (yield* question(reworded.value.question))!.actAt,
       );
       yield* TestClock.setTime(raiseAt);
-      yield* Questions.settleDue(orgId, raiseAt, {
-        chat: kin.chats,
-        queue: Context.get(kin.services, KinEventQueue.KinEventQueue),
-      });
+      yield* Questions.settleDue(orgId, raiseAt, kin.settleDeps);
+      // The tiles' default no longer held at its day, so it waits for Rhea: raised a morning on.
+      const tilesAt = (yield* question(gone.value.question))!.actAt;
+      yield* TestClock.setTime(tilesAt);
+      yield* Questions.settleDue(orgId, tilesAt, kin.settleDeps);
       const raised = (yield* question(daily.value.question))!;
       assert.isNotNull(raised.raiseWidgetId);
       assert.strictEqual(raised.defaultLabel, `Mark ${timed.key} done`);
@@ -1296,6 +1303,162 @@ it.effect("closing a task closes what hangs off it, and reopening brings none ba
       assert.isNull((yield* kin.widget(mixed.value.widgetId)).closedAt);
       assert.strictEqual(yield* states(kept.value.question), "open");
       assert.isTrue(yield* waitingOn(kept.value.widgetId));
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// Nobody answers a question whose default closes a task: at its day Kin closes it as Finance,
+// History names the default, and Rhea is told once (held while she is away) on a card whose Undo
+// puts the task back once. Undo over a later change puts nothing back; Dev, neither asked nor
+// able to change the task, can't undo it.
+it.effect("a default that closes a task is taken at its day, told once, and undone once", () =>
+  Effect.andThen(
+    TestClock.setTime(MON),
+    Effect.gen(function* () {
+      const kin = yield* ambermill;
+      const { owner, orgId, sql } = kin;
+      const chatId = kin.chatOf("finance");
+      const settle = Effect.fn("test.settle")(function* (at: number) {
+        yield* TestClock.setTime(at);
+        return yield* Questions.settleDue(orgId, at, kin.settleDeps);
+      });
+      const notices = (questionId: unknown) =>
+        sql<{ messageId: string; widgetId: string | null; body: string }>`SELECT
+            m.message_id AS "messageId", m.widget_id AS "widgetId", m.body
+          FROM kin_pulse_told t JOIN kin_messages m ON m.org_id = t.org_id
+            AND m.message_id = t.event_id
+          WHERE t.org_id = ${orgId} AND t.fact_key = ${`default_taken:${questionId as string}`}`;
+      const row = yield* kin.task("Review the Apex deck");
+      yield* kin.turn("finance", chatId, "Is the Apex deck reviewed?");
+      const asked = yield* callAs("finance", "kin_ask", {
+        ...closeIt(row.key),
+        default: "Close it",
+      });
+      assert.isTrue(asked.ok, JSON.stringify(asked.value));
+      const due = Date.parse(asked.value.by as string);
+
+      // Away until the day after: the default is taken at its day, the news waits for her.
+      const back = DateTime.formatIsoDate(DateTime.makeUnsafe(due + 86_400_000));
+      yield* sql`UPDATE kin_people SET away_until = ${back} WHERE person_id = ${owner.personId}`;
+      assert.strictEqual(yield* settle(due), 1);
+      assert.deepStrictEqual(yield* kin.stateOf(row.key), { state: "done", rev: row.rev + 1 });
+      const [change] = yield* sql<{ actor: string; via: string; fields: string }>`SELECT
+          actor_kind || ':' || actor_id AS actor, via, fields_json AS fields
+        FROM kin_record_changes WHERE org_id = ${orgId} AND record_id = ${row.recordId}
+        ORDER BY seq DESC LIMIT 1`;
+      assert.deepStrictEqual(
+        { ...change!, fields: JSON.parse(change!.fields) },
+        {
+          actor: "agent:finance",
+          via: "lead",
+          fields: [
+            { field: "state", from: "open", to: "done" },
+            { field: "default", from: null, to: asked.value.question },
+          ],
+        },
+      );
+      // The server did it: no turn is started to take it.
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND dedupe_key LIKE 'question:%'`,
+        0,
+      );
+      assert.deepStrictEqual(
+        card(yield* kin.widget(asked.value.widgetId)).outcome?.title,
+        `Went with “Mark ${row.key} done”`,
+      );
+      assert.lengthOf(yield* notices(asked.value.question), 0);
+
+      // Back: one card, from Finance, and a second pass posts nothing more.
+      const home = Date.parse(`${back}T12:00:00.000Z`);
+      yield* settle(home);
+      yield* settle(home + 60_000);
+      const told = yield* notices(asked.value.question);
+      assert.lengthOf(told, 1);
+      const note = yield* kin.widget(told[0]!.widgetId);
+      assert.strictEqual(note.chatId, chatId);
+      assert.deepStrictEqual(card(note).options, [
+        {
+          optionId: "option-1",
+          label: "Undo",
+          action: { line: `Put ${row.key} “Review the Apex deck” back as it was` },
+        },
+        { optionId: "option-2", label: "Keep it" },
+      ]);
+      assert.strictEqual(
+        (note.state as { question: string }).question,
+        `Nobody answered, so I went with “Mark ${row.key} done” for ${row.key} Review the Apex deck.`,
+      );
+
+      // Undo, once: the task is open again as Rhea's change, and no turn is woken by the tap.
+      const undo = yield* kin.tap(owner, note.widgetId, "option-1", "undo-1");
+      assert.deepInclude(JSON.parse(undo.body), { handled: true });
+      assert.deepStrictEqual(yield* kin.stateOf(row.key), { state: "open", rev: row.rev + 2 });
+      assert.deepStrictEqual(card(yield* kin.widget(note.widgetId)).outcome, {
+        title: "Undone",
+        text: `Put ${row.key} “Review the Apex deck” back as it was.`,
+      });
+      const [undone] = yield* sql<{ actor: string; fields: string }>`SELECT
+          actor_kind || ':' || actor_id AS actor, fields_json AS fields
+        FROM kin_record_changes WHERE org_id = ${orgId} AND record_id = ${row.recordId}
+        ORDER BY seq DESC LIMIT 1`;
+      assert.deepStrictEqual(
+        { ...undone!, fields: JSON.parse(undone!.fields) },
+        {
+          actor: `person:${owner.personId}`,
+          fields: [{ field: "state", from: "done", to: "open" }],
+        },
+      );
+      const again = yield* kin.tap(owner, note.widgetId, "option-1", "undo-2");
+      assert.strictEqual(again.messageId, undo.messageId);
+      assert.deepStrictEqual(yield* kin.stateOf(row.key), { state: "open", rev: row.rev + 2 });
+
+      // Changed since the default closed it: Undo puts nothing back over the rename.
+      yield* sql`UPDATE kin_people SET away_until = NULL WHERE person_id = ${owner.personId}`;
+      const renamed = yield* kin.task("Print the Apex handouts");
+      yield* kin.turn("finance", chatId, "And the handouts?");
+      const second = yield* callAs("finance", "kin_ask", {
+        ...closeIt(renamed.key),
+        default: "Close it",
+      });
+      assert.isTrue(second.ok, JSON.stringify(second.value));
+      yield* settle(Date.parse(second.value.by as string));
+      const [secondNote] = yield* notices(second.value.question);
+      yield* kin.records.update(
+        orgId,
+        { actor: { _tag: "person", personId: owner.personId }, via: "owner" },
+        renamed.key,
+        { title: "Print the Apex handouts, both sizes" },
+      );
+      yield* kin.tap(owner, secondNote!.widgetId, "option-1", "undo-late");
+      assert.deepStrictEqual(card(yield* kin.widget(secondNote!.widgetId)).outcome, {
+        title: "Nothing was undone",
+        text: `${renamed.key} changed since, so nothing was undone.`,
+      });
+      assert.strictEqual((yield* kin.stateOf(renamed.key)).state, "done");
+
+      // Dev wasn't asked and can't change Rhea's task: the server refuses his Undo.
+      const third = yield* kin.task("Book the Apex venue");
+      yield* kin.turn("finance", chatId, "And the venue?");
+      const venue = yield* callAs("finance", "kin_ask", {
+        ...closeIt(third.key),
+        default: "Close it",
+      });
+      yield* settle(Date.parse(venue.value.by as string));
+      const [venueNote] = yield* notices(venue.value.question);
+      const plan = (yield* plansOf(orgId, venueNote!.widgetId!)).get("option-1")!;
+      const refused = yield* CardActions.run(
+        {
+          orgId,
+          widget: yield* kin.widget(venueNote!.widgetId),
+          personId: KinPersonId.make("dev"),
+          memberId: KinMemberId.make("dev-member"),
+          now: Date.parse(venue.value.by as string),
+        },
+        plan,
+        { records: kin.records, chat: kin.chats },
+      ).pipe(Effect.flip);
+      assert.include(refused, { reason: "not_allowed" });
+      assert.strictEqual((yield* kin.stateOf(third.key)).state, "done");
     }).pipe(Effect.provide(layer)),
   ),
 );

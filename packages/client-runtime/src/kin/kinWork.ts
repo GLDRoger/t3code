@@ -1184,7 +1184,11 @@ export function kinWorkChangeText(
   const kind = list === "clients" ? field("category")?.to : undefined;
   if (kind === "vendor") clauses.push("marked them a vendor");
   else if (kind === "client") clauses.push("marked them a client");
-  return `${who} ${clauses.length === 0 ? "updated it" : clauses.join(", ")}`;
+  const said = clauses.length === 0 ? "updated it" : clauses.join(", ");
+  // A change Kin made by taking the default of a question nobody answered.
+  return field("default") === undefined
+    ? `${who} ${said}`
+    : `${who} went with the default: ${said} (nobody answered)`;
 }
 
 function linkView(

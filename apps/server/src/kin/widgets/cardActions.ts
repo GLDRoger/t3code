@@ -23,6 +23,7 @@ import { SHARED_REFUSAL, aborted, peopleBehind } from "../lead/Audience.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import * as Memory from "../memory/Memory.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
+import { runTaken, takenFor } from "../questions/defaultTaken.ts";
 import { type QuestionRow, answerCard, readQuestion } from "../questions/openQuestions.ts";
 import {
   KinDeferralStopSwitch,
@@ -39,6 +40,7 @@ import {
   type CardDraw,
   type CardPlan,
   type RunPlan,
+  isTaken,
   plansOf,
 } from "./cardPlans.ts";
 
@@ -81,6 +83,10 @@ const labelOf = (plan: CardPlan): string => {
       const label = `Take the default: ${plan.label}`;
       return label.length <= LABEL_MAX ? label : `${label.slice(0, LABEL_MAX - 1)}…`;
     }
+    case "undo_default":
+      return "Undo";
+    case "keep_default":
+      return "Keep it";
   }
 };
 
@@ -99,6 +105,10 @@ const lineOf = (plan: CardPlan): string => {
       const went = `Go with ${quoted(plan.label, 40)} on ${quoted(plan.question, 60)}`;
       return plan.final === null ? went : `${went}: ${lineOf(plan.final)}`;
     }
+    case "undo_default":
+      return `Put ${plan.key} ${quoted(plan.title)} back as it was`;
+    case "keep_default":
+      return `Keep ${quoted(plan.label, 40)}`;
   }
 };
 
@@ -387,7 +397,8 @@ const defaultSource = Effect.fn("KinCardActions.defaultSource")(function* (
     !state.options.some((one) => one.optionId === optionId && one.label === row.defaultLabel)
   )
     return undefined;
-  return { widgetId: shown, final: (yield* plansOf(orgId, shown)).get(optionId) };
+  const final = (yield* plansOf(orgId, shown)).get(optionId);
+  return { widgetId: shown, final: final === undefined || isTaken(final) ? undefined : final };
 });
 
 /**
@@ -405,6 +416,7 @@ export const redraw = Effect.fn("KinCardActions.redraw")(function* (
   chatId: KinChatId,
   sealed: CardPlan,
 ) {
+  if (isTaken(sealed)) return undefined;
   const lead = {
     orgId,
     agentId: KinAgentId.make(sealed.draw.agentId),
@@ -492,6 +504,12 @@ export const run = Effect.fn("KinCardActions.run")(function* (
     readonly chat: Pick<KinChatService["Service"], "closeReplaced">;
   },
 ) {
+  if (isTaken(plan))
+    return yield* runTaken(
+      { orgId: tap.orgId, personId: tap.personId, chatId: tap.widget.chatId },
+      plan,
+      deps.records,
+    );
   if (plan.kind !== "take_default") return yield* runOne(tap, plan, deps.records, []);
   const row = yield* readQuestion(tap.orgId, plan.questionId);
   if (row !== undefined && row.personId !== tap.personId)
@@ -529,6 +547,35 @@ export const run = Effect.fn("KinCardActions.run")(function* (
         outcome: went,
       });
   return done ?? { title: went.title, text: `Answered ${quoted(plan.question)} with its default.` };
+});
+
+/**
+ * A question's default, sealed with a task's done or drop, taken at its day with no tap: written
+ * as the agent that asked, its change marked as that question's default (`takenFor`), while the
+ * task is as it was offered and whoever it was drawn for still could. False when it doesn't hold.
+ */
+export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
+  orgId: KinOrgId,
+  plan: CardPlan,
+  question: Pick<QuestionRow, "questionId" | "agentId" | "chatId">,
+  records: KinRecords["Service"],
+) {
+  if ((plan.kind !== "done" && plan.kind !== "drop") || plan.draw.agentId !== question.agentId)
+    return false;
+  const state = plan.kind === "done" ? "done" : "dropped";
+  const row = yield* recordRow(orgId, { recordId: plan.recordId });
+  if (row === undefined || row.rev !== plan.rev) return false;
+  if ((yield* drawHolds(orgId, plan.draw)) !== undefined) return false;
+  if (!(yield* teamMay(orgId, plan.draw, row, state))) return false;
+  yield* records.update(
+    orgId,
+    { actor: { _tag: "agent", agentId: question.agentId }, via: "lead", chatId: question.chatId },
+    row.key,
+    { state },
+    plan.rev,
+    takenFor(question.questionId),
+  );
+  return true;
 });
 
 /** A start the queue refused after its run moved: the whole tap rolls back, and says so. */

@@ -395,6 +395,17 @@ describe("kinTaskActivity", () => {
             ],
           }),
           change({ seq: 1, kind: "created", at: "2026-11-10T08:00:00.000Z" }),
+          // Kin took the default of a question nobody answered.
+          change({
+            seq: 3,
+            by: chief,
+            via: "lead",
+            at: "2026-11-10T13:00:00.000Z",
+            fields: [
+              { field: "state", from: "open", to: "done" },
+              { field: "default", from: null, to: "q-1" },
+            ],
+          }),
         ],
         comments: [
           comment({ seq: 1, by: zoya, at: "2026-11-10T09:00:00.000Z", body: "On it." }),
@@ -414,6 +425,7 @@ describe("kinTaskActivity", () => {
       ["comment", "Zoya", "", null],
       ["gave", "Meera", "gave it to Zoya", "Chief of staff"],
       ["comment", "You", "removed this note", null],
+      ["state", "Chief of staff", "went with the default: finished it (nobody answered)", null],
     ]);
     expect(lines[1]?.comment).toMatchObject({ body: "On it.", removed: false });
   });

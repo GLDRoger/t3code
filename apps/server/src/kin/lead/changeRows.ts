@@ -47,8 +47,11 @@ export const millisOf = (shown: string | null) => {
   return Number.isFinite(at) ? at : undefined;
 };
 
-/** Words that ride along with a move and go when it is put back; nothing to restore of their own. */
-export const ALONG = new Set(["reason", "handedBack", "untold"]);
+/**
+ * Words that ride along with a move and go when it is put back; nothing to restore of their own.
+ * `default` names the question whose default made the change (`defaultTaken.ts`).
+ */
+export const ALONG = new Set(["reason", "handedBack", "untold", "default"]);
 
 /**
  * What putting back one change's old values writes, or undefined when Kin can't do it on its own:

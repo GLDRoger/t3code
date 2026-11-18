@@ -41,6 +41,7 @@ import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import * as Team from "../team/KinTeam.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { KinRecords } from "../work/KinRecords.ts";
 import { presetDefinition } from "../work/registers.ts";
 import * as Questions from "./openQuestions.ts";
 
@@ -208,6 +209,7 @@ const settle = Effect.fn("test.settle")(function* (orgId: string, at: number) {
   return yield* Questions.settleDue(KinOrgId.make(orgId), at, {
     chat: Context.get(services, KinChatService),
     queue: Context.get(services, KinEventQueue.KinEventQueue),
+    records: Context.get(services, KinRecords),
   });
 });
 
@@ -275,7 +277,13 @@ it.effect("a question is asked once, and its default is taken once at its day", 
       assert.include(section!.body, `${questionId}, Finance, today:`);
       assert.include(section!.body, "default “Draft it” tomorrow");
 
-      // Never before its day; once at it; never twice.
+      // Never before its day; once at it; never twice. Her quiet hours hold the news of it.
+      yield* sql`UPDATE kin_people SET quiet_hours_json = '{"from":"19:00","to":"21:00"}'
+        WHERE person_id = ${owner.personId}`;
+      const told = sql<{ author: string; body: string; widget: string | null }>`SELECT
+          m.author_agent_id AS author, m.body, m.widget_id AS widget
+        FROM kin_pulse_told t JOIN kin_messages m ON m.org_id = t.org_id AND m.message_id = t.event_id
+        WHERE t.org_id = ${orgId} AND t.fact_key = ${`default_taken:${questionId}`}`;
       assert.strictEqual(yield* settle(orgId, TUE_1930 - 60_000), 0);
       assert.strictEqual((yield* questionRow(sql, questionId)).state, "open");
       assert.strictEqual(yield* settle(orgId, TUE_1930), 1);
@@ -283,6 +291,18 @@ it.effect("a question is asked once, and its default is taken once at its day", 
       assert.strictEqual((yield* questionRow(sql, questionId)).state, "default_taken");
       assert.deepStrictEqual(yield* dueEvents(sql, orgId), [
         { agent: "finance", key: `question:${questionId}` },
+      ]);
+      assert.lengthOf(yield* told, 0);
+      // At 21:00 her time she is told once, from Finance, as a line: Finance's turn does the
+      // default, so there is nothing for Kin to put back.
+      yield* settle(orgId, TUE_1930 + 90 * 60_000);
+      yield* settle(orgId, TUE_1930 + 91 * 60_000);
+      assert.deepStrictEqual(yield* told, [
+        {
+          author: "finance",
+          body: "Nobody answered, so I went with “Draft it” on “Shall I draft VIOM's payment reminder for INV-8?”.",
+          widget: null,
+        },
       ]);
       const card = Option.getOrThrow(
         yield* repo.getWidget({
