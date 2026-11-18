@@ -23,6 +23,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeCrypto from "node:crypto";
 
 import * as Scheduler from "../../scheduling/Scheduler.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
@@ -42,6 +43,7 @@ import { systemSenses } from "./senses/system.ts";
 import { workSenses } from "./senses/work.ts";
 import { fromConnections, noOutside, poll } from "./outside.ts";
 import { DAY_MS } from "./thresholds.ts";
+import { tellHolder } from "./holderNotice.ts";
 import { agentParty, forHolder, markTold, untold } from "./told.ts";
 
 const FINANCE_DOMAIN = "finance";
@@ -313,8 +315,9 @@ const URGENT_SENSES = new Set<KinPulseFact["sense"]>(["client_waiting_on_us"]);
 
 /**
  * Late and due-today work reaches whoever holds it, once (`kin_pulse_told`): an agent holder is
- * woken with it, a person holder through the Chief of staff, who tells them. One wake per agent
- * per pass carries all of that agent's untold facts. Returns who was told what.
+ * woken with it; a teammate reads Kin's own notice in their chat; an owner-level holder hears it
+ * through the Chief of staff. One wake per agent per pass carries all of that agent's untold
+ * facts. Returns who was told what.
  */
 const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
   ctx: SenseContext,
@@ -351,6 +354,9 @@ const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
     entry.facts.push(fact);
     parties.set(party.to, entry);
   }
+  const level = personIds.length === 0 ? new Set<string>() : yield* ownerLevelPeople(orgId);
+  const told: Array<{ readonly agentId: KinAgentId; readonly to: string; readonly key: string }> =
+    [];
   const wakes = new Map<KinAgentId, Array<{ to: string; facts: ReadonlyArray<KinPulseFact> }>>();
   for (const [to, entry] of parties) {
     const tell = yield* untold({
@@ -361,11 +367,24 @@ const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
       zone,
       anyState: true,
     });
-    if (tell.length > 0)
+    if (tell.length === 0) continue;
+    if (to.startsWith("agent:") || level.has(to)) {
       wakes.set(entry.agentId, [...(wakes.get(entry.agentId) ?? []), { to, facts: tell }]);
+      continue;
+    }
+    // A teammate's own late work has one right message: Kin writes it, no agent turn.
+    const personId = KinPersonId.make(to);
+    const sees = new Set(
+      (yield* visibleTo(orgId, { _tag: "people", people: [personId] }, tell)).map(
+        (fact) => fact.key,
+      ),
+    );
+    const theirs = tell.filter((fact) => sees.has(fact.key));
+    const noticeId = yield* tellHolder({ ctx, personId, agentId: entry.agentId, facts: theirs });
+    if (noticeId === undefined) continue;
+    yield* markTold({ orgId, personId: to, eventId: noticeId, facts: theirs, at, zone });
+    for (const fact of theirs) told.push({ agentId: entry.agentId, to, key: fact.key });
   }
-  const told: Array<{ readonly agentId: KinAgentId; readonly to: string; readonly key: string }> =
-    [];
   for (const [agentId, groups] of wakes) {
     // One event carries at most 50 facts: the rest stay untold for the next pass.
     let room = 50;
@@ -563,6 +582,7 @@ export const layer = Layer.effectDiscard(
     const ticks = yield* Scheduler.Scheduler;
     const queue = yield* KinEventQueue.KinEventQueue;
     const refreshes = yield* KinRefreshObserver;
+    const chats = yield* Effect.serviceOption(KinChatService);
     const last = new Map<string, { readonly at: number; readonly seq: number }>();
     const outside = Option.match(yield* Effect.serviceOption(KinConnections), {
       onNone: () => noOutside,
@@ -605,6 +625,7 @@ export const layer = Layer.effectDiscard(
           yield* tick(KinOrgId.make(orgId), now).pipe(
             Effect.provideService(KinEventQueue.KinEventQueue, queue),
             Effect.provideService(KinRefreshObserver, refreshes),
+            Option.isSome(chats) ? Effect.provideService(KinChatService, chats.value) : (e) => e,
             Effect.catch((cause) => Effect.logWarning("Kin pulse failed", { orgId, cause })),
           );
         }

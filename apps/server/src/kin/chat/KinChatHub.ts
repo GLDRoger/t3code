@@ -33,6 +33,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 type ChatEvent =
   | { readonly type: "chat.created"; readonly chat: KinChat }
   | { readonly type: "message.posted"; readonly message: KinMessage }
+  // A message already delivered reads differently now, such as its receipt after an Undo; nothing
+  // new was said, so nothing rings or wakes on it.
+  | { readonly type: "message.changed"; readonly message: KinMessage }
   | { readonly type: "widget.updated"; readonly widget: KinWidget }
   | { readonly type: "waiting.updated"; readonly item: KinWaitingItem }
   | { readonly type: "member.removed"; readonly member: KinChatMember }
@@ -145,7 +148,7 @@ const make = Effect.gen(function* () {
             const chatId =
               event.type === "chat.created"
                 ? event.chat.chatId
-                : event.type === "message.posted"
+                : event.type === "message.posted" || event.type === "message.changed"
                   ? event.message.chatId
                   : event.type === "widget.updated"
                     ? event.widget.chatId
@@ -184,7 +187,7 @@ const make = Effect.gen(function* () {
             const member = memberOption.value;
             // A person reads nothing from before they joined: no message, card, tap or reaction.
             const about =
-              event.type === "message.posted"
+              event.type === "message.posted" || event.type === "message.changed"
                 ? event.message.messageId
                 : event.type === "widget.updated"
                   ? event.widget.messageId
@@ -210,7 +213,7 @@ const make = Effect.gen(function* () {
                   ? event.item.messageId
                   : null;
             const message =
-              event.type === "message.posted"
+              event.type === "message.posted" || event.type === "message.changed"
                 ? Option.some(event.message)
                 : messageId === null
                   ? Option.none()
@@ -226,7 +229,7 @@ const make = Effect.gen(function* () {
           }),
         ),
         Stream.mapEffect((event): Effect.Effect<KinChatHubEvent> =>
-          event.type === "message.posted"
+          event.type === "message.posted" || event.type === "message.changed"
             ? withLinks(identity.orgId, identity, [messageForViewer(event.message, identity)]).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
                 Effect.map(([message]): KinChatHubEvent => ({ ...event, message: message! })),
