@@ -752,16 +752,16 @@ export const KinEvent = Schema.Union([
     // Metadata the server read from connections the owner marked Read: still outside text.
     outside: Schema.optional(Schema.Array(KinPulseOutsideLine).check(Schema.isMaxLength(200))),
   }),
-  // Code enqueues it when someone else gives this lead an entry (`assigned`), when its owner
-  // closes or takes back an open one it holds (`withdrawn`), or when whoever it gave one to gives
-  // it back (`handed_back`, with their words as `note`). Its provenance is the human whose
-  // authority the entry carries, the only authority the turn has; the entry's text is data.
+  // Someone else gives this lead an entry (`assigned`), its owner closes or takes back one it
+  // holds (`withdrawn`), it comes back (`handed_back`), or a person comments on one it holds
+  // (`commented`); `note` holds their words. Its provenance is the human whose authority the
+  // entry carries, the only authority the turn has; the entry's text is data.
   Schema.TaggedStruct("record.changed", {
     ...EventBase,
     recordId: KinRecordId,
     key: KinRecordKey,
     seq: NonNegativeInt,
-    reason: Schema.Literals(["assigned", "withdrawn", "handed_back"]),
+    reason: Schema.Literals(["assigned", "withdrawn", "handed_back", "commented"]),
     note: Schema.optional(Schema.String.check(Schema.isMaxLength(280))),
     // Given by a teammate: their direct chat with the lead, where it reports, and `origin` naming
     // them, so the turn is theirs and never the owner's. From stored rows.
