@@ -8,7 +8,7 @@ import { kinDocPieceKey, kinDocPieces } from "@t3tools/client-runtime/kin/kinDoc
 import {
   kinLinkedMarkdown,
   kinLinkOf,
-  kinPageCollapses,
+  kinPageCut,
   kinPageView,
 } from "@t3tools/client-runtime/kin/kinMessagePage";
 import {
@@ -161,9 +161,9 @@ function KinPageSection(props: PageText & { readonly title: string; readonly mar
 
 /**
  * An agent's long or structured message as a page across the chat: no bubble, its sections under
- * real headings, each folding on its own, its figures in place, a long one cut with Read more. A
- * brief opens with its greeting set large in a serif italic, and the date. The turn's card, when
- * it has one, closes the page.
+ * real headings, each folding on its own, its figures in place, a long one cut between sections
+ * with a Read more naming the rest. A brief opens with its greeting set large in a serif italic,
+ * and the date. The turn's card, when it has one, closes the page.
  */
 export function KinMessagePage(
   props: PageText & {
@@ -174,15 +174,14 @@ export function KinMessagePage(
   const { head, foot, ...text } = props;
   const [expanded, setExpanded] = useState(false);
   const view = kinPageView(props.body, head !== null);
-  const cut = !expanded && kinPageCollapses(props.body);
-  // A cut page with figures stops at its first section, so no frame loads below the cut.
-  const sections =
-    cut && (props.embeds?.length ?? 0) > 0 ? view.sections.slice(0, 1) : view.sections;
+  const cut = expanded ? null : kinPageCut(props.body, head !== null);
+  // Sections below the cut aren't mounted, so no frame loads there.
+  const sections = cut === null ? view.sections : view.sections.slice(0, cut.shown);
   return (
     <View className="w-full gap-3">
       <View
         className="gap-3 overflow-hidden"
-        style={cut ? { maxHeight: COLLAPSED_HEIGHT } : undefined}
+        style={cut?.clip ? { maxHeight: COLLAPSED_HEIGHT } : undefined}
       >
         {head === null ? null : (
           <View className="gap-0.5">
@@ -213,7 +212,7 @@ export function KinMessagePage(
           />
         ))}
       </View>
-      {cut ? (
+      {cut === null ? null : (
         <Pressable
           accessibilityRole="button"
           onPress={() => setExpanded(true)}
@@ -221,10 +220,10 @@ export function KinMessagePage(
           className="min-h-11 justify-center self-start active:opacity-60"
         >
           <Text textRole="body" className="font-t3-medium text-foreground">
-            Read more
+            {cut.label}
           </Text>
         </Pressable>
-      ) : null}
+      )}
       {foot === undefined || foot === null ? null : <View className="pt-1">{foot}</View>}
     </View>
   );

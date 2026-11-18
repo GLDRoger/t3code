@@ -9,6 +9,7 @@ import {
   kinMessageGistMarkdown,
   kinMessageLayout,
   kinPageCollapses,
+  kinPageCut,
   kinPageHead,
   kinPageView,
 } from "./kinMessagePage.ts";
@@ -142,6 +143,71 @@ describe("a page's figures", () => {
         "Late.\n\n![This week](kin-figure:f_aaaaaaaaaa)\n![x](https://a.example/x.png)",
       ),
     ).toBe("Late.\n\n*Figure: This week*\n![x](https://a.example/x.png)");
+  });
+});
+
+const items = (name: string, count: number) =>
+  Array.from({ length: count }, (_, at) => `- ${name} ${at + 1} for Ambermill.`).join("\n");
+const page = (lead: string, ...sections: ReadonlyArray<readonly [string, number]>) =>
+  [lead, ...sections.map(([title, count]) => `## ${title}\n${items(title, count)}`)].join("\n\n");
+
+describe("kinPageCut", () => {
+  it.each([
+    ["a short page shows whole", page("Ambermill is on track.", ["Today", 3]), null],
+    [
+      "cuts after the whole sections that fit, naming the one left",
+      page("Two things moved.", ["Today", 6], ["Money", 6], ["Open tasks", 6]),
+      { shown: 2, clip: false, label: "Read more: Open tasks" },
+    ],
+    [
+      "names two hidden sections and counts the rest",
+      page(
+        "A busy week.",
+        ["Today", 6],
+        ["Money", 6],
+        ["Tasks", 4],
+        ["Clients", 4],
+        ["Hiring", 2],
+        ["Notes", 2],
+      ),
+      { shown: 2, clip: false, label: "Read more: Tasks, Clients +2" },
+    ],
+    [
+      "always shows the first section, even past the budget",
+      page("Lots to do.", ["Open tasks", 26], ["Clients", 2]),
+      { shown: 1, clip: false, label: "Read more: Clients" },
+    ],
+    [
+      "cuts a very long first section at a height, still naming the rest",
+      page("Lots to do.", ["Open tasks", 40], ["Clients", 2]),
+      { shown: 1, clip: true, label: "Read more: Clients" },
+    ],
+    [
+      "shows a page whole when its one section only runs a little long",
+      page("Lots to do.", ["Open tasks", 25]),
+      null,
+    ],
+    [
+      "cuts a long page with no sections at a height",
+      items("Line", 30),
+      { shown: 0, clip: true, label: "Read more" },
+    ],
+    [
+      "counts a figure in a section as eight lines",
+      `${page("Cash is fine.", ["Today", 6], ["Money", 3])}\n\n\`\`\`kin_chart\nf_bbbbbbbbbb\n\`\`\`\n\n${page("", ["Clients", 6])}`,
+      { shown: 1, clip: false, label: "Read more: Money, Clients" },
+    ],
+  ])("%s", (_name, body, cut) => {
+    expect(kinPageCut(body)).toEqual(cut);
+  });
+
+  it("hides a closing line under the last section with that section, and cuts a brief the same way", () => {
+    const body = `${page("Good morning Rhea.", ["Needs you", 9], ["Money", 9], ["Open tasks", 4])}\n\nThat's all for today.`;
+    expect(kinPageCut(body, true)).toEqual({
+      shown: 2,
+      clip: false,
+      label: "Read more: Open tasks",
+    });
   });
 });
 
