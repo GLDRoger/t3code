@@ -741,7 +741,7 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
       record_assign: [
         LeadWork.assign(scope, {
           sourceEventId: "ask-event",
-          tasks: [{ key: "W-2", to: "me", reason: "Invented: free today" }],
+          tasks: [{ key: "W-2", to: "you", reason: "Invented: free today" }],
         }),
         false,
       ],

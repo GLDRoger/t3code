@@ -28,7 +28,13 @@ import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
-import { SHARED_REFUSAL, effectiveAudience, turnChat, turnPeople } from "../lead/Audience.ts";
+import {
+  SHARED_REFUSAL,
+  effectiveAudience,
+  turnAsker,
+  turnChat,
+  turnPeople,
+} from "../lead/Audience.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
 import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
@@ -539,9 +545,16 @@ export const sourceOf = Effect.fn("KinWorkTools.sourceOf")(function* (lead: Lead
     : undefined;
 });
 
+const NO_ASKER = '"me" has no one person in this turn.';
+/** "me" is the one person whose act the turn carries out (`turnAsker`); "you" is the calling lead. */
 export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (lead: Lead, who: string) {
   const sql = yield* SqlClient.SqlClient;
-  if (who === "me") return { _tag: "agent", agentId: lead.agentId } satisfies KinWorkPrincipal;
+  if (who === "you") return { _tag: "agent", agentId: lead.agentId } satisfies KinWorkPrincipal;
+  if (who === "me") {
+    const asker = yield* turnAsker(lead);
+    if (asker === null) return yield* invalid(NO_ASKER);
+    return { _tag: "person", personId: asker } satisfies KinWorkPrincipal;
+  }
   if (who === "owner") {
     const [row] = yield* sql<{ owner: string }>`SELECT owner_person_id AS owner FROM kin_agents
       WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`;
@@ -597,7 +610,7 @@ const dueOf = Effect.fn("KinWorkTools.dueOf")(function* (orgId: KinOrgId, due: s
   return { dueAt: ms, dueAllDay: false };
 });
 
-/** How a lead reads names: itself as "you", the owner as "owner", other leads by name. */
+/** How a lead reads names: itself by name and "(you)", the owner as "owner", other leads by name. */
 export const namer = Effect.fn("KinWorkTools.namer")(function* (lead: Lead) {
   const sql = yield* SqlClient.SqlClient;
   const agents = yield* sql<{ id: string; name: string }>`SELECT agent_id AS id,
@@ -613,7 +626,7 @@ export const namer = Effect.fn("KinWorkTools.namer")(function* (lead: Lead) {
       ? undefined
       : who._tag === "agent"
         ? who.agentId === lead.agentId
-          ? "you"
+          ? `${agentNames.get(who.agentId) ?? "an agent"} (you)`
           : `${agentNames.get(who.agentId) ?? "an agent"} (${who.agentId})`
         : (personNames.get(who.personId) ?? "a person");
 });
@@ -1569,7 +1582,7 @@ const createRow = Effect.fnUntraced(function* (
   // A client or contact is the owner's to look after unless told otherwise.
   const owner = yield* resolveWho(
     lead,
-    row.owner ?? (list === "clients" || list === "contacts" ? "owner" : "me"),
+    row.owner ?? (list === "clients" || list === "contacts" ? "owner" : "you"),
   ).pipe(asField("owner"));
   const waitingOn =
     row.waitingOn === undefined
