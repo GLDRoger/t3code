@@ -2818,8 +2818,13 @@ const make = Effect.gen(function* () {
         return email ? again(failed, row, prepared, connection) : failed;
       }
       const after = yield* connectionById(orgId, row.connectionId).pipe(provideSql);
+      // A refusal sent nothing, so when the retry it forced ended here, that reason says what to do.
+      const said =
+        ended === "refused" && answer !== undefined && sent.failure !== answer.error
+          ? sent.failure
+          : failure;
       const message =
-        isChatError(failure) || isGatewayError(failure) ? failure.message : "Kin couldn't send it.";
+        isChatError(said) || isGatewayError(said) ? said.message : "Kin couldn't send it.";
       if (prepared._tag === "email" && (yield* superseded(orgId, askId)))
         return yield* finish(
           true,
@@ -2843,7 +2848,7 @@ const make = Effect.gen(function* () {
         );
         return again(failed, row, prepared, after);
       }
-      const why = ended === "not_sent" ? nothingSent(message) : message;
+      const why = ended === "not_sent" || said !== failure ? nothingSent(message) : message;
       if (prepared._tag !== "email") return yield* finish(true, "failed", why, null);
       // A failed send never loses the mail: it comes back on a card for another Confirm.
       const failed = yield* finish(

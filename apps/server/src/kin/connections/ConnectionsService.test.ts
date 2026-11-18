@@ -2231,7 +2231,7 @@ describe("KinConnections sign-in", () => {
         assert.deepStrictEqual(yield* connections.sendAsk(orgId, asked!.askId), {
           state: "failed",
           reason:
-            "mcp.sentry.dev refused the key (401). The owner can replace it in the connection's settings.",
+            "Sentry's sign-in expired. The owner can sign in again in Settings. Nothing was sent.",
         });
       }),
     ),
