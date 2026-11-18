@@ -9,8 +9,6 @@ import {
   kinViewerOwnerLevel,
   type KinAppShell,
 } from "@t3tools/client-runtime/kin/kinJoin";
-import type { PreparedConnection } from "@t3tools/client-runtime/connection";
-import { renewKinTeammateDevice } from "@t3tools/client-runtime/kin/kinDevices";
 import {
   EnvironmentId,
   kinOwnerLevel,
@@ -21,7 +19,6 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { AppState } from "react-native";
 
 import { environmentCatalog } from "../../../connection/catalog";
 import { connectionAtomRuntime } from "../../../connection/runtime";
@@ -167,63 +164,6 @@ export function installKinChatOnlyMemory(): () => void {
     },
     { immediate: true },
   );
-}
-
-const renewAtom = connectionAtomRuntime.fn(
-  (input: { readonly prepared: PreparedConnection; readonly failed: () => void }) =>
-    renewKinTeammateDevice(input.prepared).pipe(
-      Effect.asVoid,
-      Effect.catch(() =>
-        Effect.sync(input.failed).pipe(
-          Effect.andThen(Effect.logWarning("Renewing this device's Kin sign-in failed")),
-        ),
-      ),
-    ),
-  { concurrent: true },
-);
-
-const RENEW_EVERY_MS = 24 * 60 * 60 * 1000;
-const RENEW_CHECK_MS = 60 * 60 * 1000;
-
-/**
- * Renews each teammate session at most daily while the app runs: on start, hourly, and on return
- * to the front, so a phone in use never reaches its deadline. It goes only through the connection
- * the session is live on, which checked the host is this environment. A failed try is asked again
- * on the next check.
- */
-export function installKinDeviceRenewal(): () => void {
-  const renewedAt = new Map<EnvironmentId, number>();
-  // An unmounted fn atom is dropped, and its run cancelled, before the request can finish.
-  const unmount = appAtomRegistry.mount(renewAtom);
-  const renewDue = () => {
-    const state = appAtomRegistry.get(chatOnlyStateAtom);
-    if (!state.ready) return;
-    const now = Date.now();
-    for (const environmentId of state.chatOnly) {
-      const at = renewedAt.get(environmentId);
-      if (at !== undefined && now - at < RENEW_EVERY_MS) continue;
-      const prepared = appAtomRegistry.get(
-        environmentSession.preparedConnectionValueAtom(environmentId),
-      );
-      if (Option.isNone(prepared)) continue;
-      renewedAt.set(environmentId, now);
-      appAtomRegistry.set(renewAtom, {
-        prepared: prepared.value,
-        failed: () => renewedAt.delete(environmentId),
-      });
-    }
-  };
-  const unsubscribe = appAtomRegistry.subscribe(chatOnlyStateAtom, renewDue, { immediate: true });
-  const timer = setInterval(renewDue, RENEW_CHECK_MS);
-  const foreground = AppState.addEventListener("change", (next) => {
-    if (next === "active") renewDue();
-  });
-  return () => {
-    foreground.remove();
-    clearInterval(timer);
-    unsubscribe();
-    unmount();
-  };
 }
 
 /**

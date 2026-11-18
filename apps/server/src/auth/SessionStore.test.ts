@@ -138,29 +138,32 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("SessionStore.lay
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
   );
 
-  it.effect("keeps a socket open past its old deadline once its session renews", () =>
+  it.effect("closes a socket within a minute of a revocation written by another process", () =>
     Effect.gen(function* () {
       const sessions = yield* SessionStore.SessionStore;
-      const device = yield* sessions.issue({
-        subject: "kin-member",
-        ttl: Duration.hours(1),
-        client: { label: "Phone", deviceType: "mobile" },
-      });
-      yield* sessions.markConnected(device.sessionId);
+      const sql = yield* SqlClient.SqlClient;
+      const client = yield* sessions.issue({ ...relaySessionInput, ttl: Duration.days(30) });
+      yield* sessions.markConnected(client.sessionId);
       const invalidated = yield* Deferred.make<void>();
-      const watcher = yield* sessions
-        .awaitInvalidation(device.sessionId)
+      yield* sessions
+        .awaitInvalidation(client.sessionId, relaySessionInput.proofKeyThumbprint)
         .pipe(
           Effect.andThen(Deferred.succeed(invalidated, undefined)),
           Effect.forkScoped({ startImmediately: true }),
         );
-      yield* TestClock.adjust(Duration.minutes(30));
-      expect(Option.isSome(yield* sessions.renew(device.token, Duration.hours(1)))).toBe(true);
-      yield* TestClock.adjust(Duration.minutes(31));
+      // What `t3 auth session revoke` does from its own process: the row, and no event here.
+      yield* sql`UPDATE auth_sessions SET revoked_at = '2026-01-01T00:00:00.000Z'
+        WHERE session_id = ${client.sessionId}`;
+      yield* TestClock.adjust(Duration.seconds(59));
       expect(yield* Deferred.isDone(invalidated)).toBe(false);
-      yield* TestClock.adjust(Duration.minutes(29));
-      yield* Fiber.join(watcher);
-    }).pipe(Effect.scoped, Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
+      yield* TestClock.adjust(Duration.seconds(1));
+      yield* Deferred.await(invalidated);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(layerSessionStore(), SqlitePersistence.layerMemory, TestClock.layer()),
+      ),
+    ),
   );
 
   it.effect.each([

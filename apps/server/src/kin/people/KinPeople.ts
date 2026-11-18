@@ -7,6 +7,7 @@ import {
   KIN_DEVICE_LINK_TTL_MINUTES,
   KIN_INVITE_DEFAULT_TTL_HOURS,
   KinChatError,
+  type KinChatId,
   KinInviteId,
   KinMessageId,
   KinPerson,
@@ -25,7 +26,6 @@ import {
   type KinPeopleRevokeDeviceInput,
   type KinPeopleLinkDeviceInput,
   type KinPeopleLinkDeviceResult,
-  type KinDeviceRenewResult,
   type KinPeopleRemoveAccessInput,
   type KinPeopleSetGithubLoginInput,
   type KinPeopleSetAccessInput,
@@ -171,11 +171,6 @@ export class KinPeople extends Context.Service<
       session: AuthenticatedSession,
       input: KinPeopleLinkDeviceInput,
     ) => Effect.Effect<KinPeopleLinkDeviceResult, Failure>;
-    /** The caller's own device session under a fresh deadline, while it is still bound and live. */
-    readonly renewDevice: (
-      session: AuthenticatedSession,
-      token: string,
-    ) => Effect.Effect<Option.Option<KinDeviceRenewResult & { accessToken: string }>, Failure>;
     readonly removeAccess: (
       session: AuthenticatedSession,
       input: KinPeopleRemoveAccessInput,
@@ -537,45 +532,59 @@ export const make = Effect.gen(function* () {
             Effect.mapError(toPersistenceSqlError("KinPeople.bind")),
           );
           yield* refresh.touch(identity.owner.orgId, "people");
+          // Said inside Kin too, so someone with no phone for notifications still hears of it:
+          // in their chat with the Team agent, or, with none, in each of their own direct chats.
+          const told: Array<KinChatId> = [];
           if (Option.isSome(chats)) {
             const teamAgent = yield* LeadAccess.teamAgent(member.orgId).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
               Effect.mapError(toPersistenceSqlError("KinPeople.teamAgent")),
             );
-            if (teamAgent !== null) {
-              const direct = yield* chats.value.createDirect(
-                { _tag: "person", orgId: member.orgId, personId },
-                { orgId: member.orgId, agentId: teamAgent },
+            if (teamAgent !== null)
+              told.push(
+                (yield* chats.value.createDirect(
+                  { _tag: "person", orgId: member.orgId, personId },
+                  { orgId: member.orgId, agentId: teamAgent },
+                )).chatId,
               );
-              // Said inside Kin too, so someone with no phone for notifications still hears of it.
-              if (parent !== null) {
-                const notice = yield* repo
-                  .insertMessage({
-                    orgId: member.orgId,
-                    chatId: direct.chatId,
-                    audience: "chat",
-                    messageId: KinMessageId.make(`device-linked:${issued.sessionId}`),
-                    author: { _tag: "system" },
-                    kind: "text",
-                    body: KIN_DEVICE_LINKED_NOTICE,
-                    intent: null,
-                    mentions: [],
-                    replyTo: null,
-                    widgetId: null,
-                    floorRunId: null,
-                    status: "posted",
-                    sentBy: null,
-                    clientMessageId: null,
-                    createdAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
-                    editedAt: null,
-                  })
-                  .pipe(Effect.mapError(toPersistenceSqlError("KinPeople.linkedNotice")));
-                yield* sql.afterCommit(
-                  hub.publish({ type: "message.posted", orgId: member.orgId, message: notice }),
-                );
-              }
-            }
           }
+          if (parent !== null && told.length === 0)
+            for (const joined of yield* repo
+              .listMembersByPerson({ orgId: member.orgId, personId })
+              .pipe(Effect.mapError(toPersistenceSqlError("KinPeople.linkedNoticeChats")))) {
+              if (joined.leftAt !== null) continue;
+              const chat = yield* repo
+                .getChat({ orgId: member.orgId, chatId: joined.chatId })
+                .pipe(Effect.mapError(toPersistenceSqlError("KinPeople.linkedNoticeChat")));
+              if (Option.isSome(chat) && chat.value.kind === "direct") told.push(joined.chatId);
+            }
+          if (parent !== null)
+            for (const chatId of new Set(told)) {
+              const notice = yield* repo
+                .insertMessage({
+                  orgId: member.orgId,
+                  chatId,
+                  audience: "chat",
+                  messageId: KinMessageId.make(`device-linked:${issued.sessionId}:${chatId}`),
+                  author: { _tag: "system" },
+                  kind: "text",
+                  body: KIN_DEVICE_LINKED_NOTICE,
+                  intent: null,
+                  mentions: [],
+                  replyTo: null,
+                  widgetId: null,
+                  floorRunId: null,
+                  status: "posted",
+                  sentBy: null,
+                  clientMessageId: null,
+                  createdAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
+                  editedAt: null,
+                })
+                .pipe(Effect.mapError(toPersistenceSqlError("KinPeople.linkedNotice")));
+              yield* sql.afterCommit(
+                hub.publish({ type: "message.posted", orgId: member.orgId, message: notice }),
+              );
+            }
           if (Option.isSome(groups)) yield* groups.value.joinCompany(member.orgId, personId);
           return {
             orgId: member.orgId,
@@ -899,24 +908,6 @@ export const make = Effect.gen(function* () {
       expiresAt: DateTime.formatIso(DateTime.makeUnsafe(expiresAt)),
     };
   });
-  const renewDevice = Effect.fn("KinPeople.renewDevice")(function* (
-    session: AuthenticatedSession,
-    token: string,
-  ) {
-    const bound = yield* sql`SELECT 1 FROM kin_session_bindings b JOIN kin_people p
-      ON p.org_id = b.org_id AND p.person_id = b.person_id
-      WHERE b.session_id = ${session.sessionId} AND b.revoked_at IS NULL AND p.removed_at IS NULL`.pipe(
-      Effect.mapError(toPersistenceSqlError("KinPeople.renewBound")),
-    );
-    if (bound.length === 0) return Option.none();
-    const renewed = yield* sessions
-      .renew(token, SESSION_TTL)
-      .pipe(Effect.mapError(toPersistenceSqlError("KinPeople.renew")));
-    return Option.map(renewed, (next) => ({
-      accessToken: next.token,
-      expiresAt: DateTime.formatIso(next.expiresAt),
-    }));
-  });
   /**
    * Takes away the person's access: links, sessions, every chat and lead they could reach, their
    * pushes, and every turn or event that answers them. Nothing else moves: their open tasks stay
@@ -927,13 +918,14 @@ export const make = Effect.gen(function* () {
     session: AuthenticatedSession,
     input: KinPeopleRemoveAccessInput,
   ) {
-    const caller = yield* owner(session, input.orgId);
-    yield* mayActOn(caller, input.orgId, input.personId);
-    const now = (yield* DateTime.now).epochMilliseconds;
-    const leftAt = DateTime.formatIso(DateTime.makeUnsafe(now));
     return yield* sql
       .withTransaction(
         Effect.gen(function* () {
+          // Read here, so a demotion or removal that lands first counts.
+          const caller = yield* owner(session, input.orgId);
+          yield* mayActOn(caller, input.orgId, input.personId);
+          const now = (yield* DateTime.now).epochMilliseconds;
+          const leftAt = DateTime.formatIso(DateTime.makeUnsafe(now));
           yield* person(input.orgId, input.personId);
           // Removed, they hold no level anywhere; what they had is kept for a new link to restore.
           yield* sql`UPDATE kin_people SET removed_access_json = json_object('access', access,
@@ -991,14 +983,14 @@ export const make = Effect.gen(function* () {
           for (const member of yield* repo.listMembersByPerson(input)) {
             if (member.leftAt !== null) continue;
             for (const item of yield* repo.leaveChat({ ...member, leftAt }))
-              yield* hub.publish({ type: "waiting.updated", orgId: input.orgId, item });
+              yield* sql.afterCommit(
+                hub.publish({ type: "waiting.updated", orgId: input.orgId, item }),
+              );
             const gone = yield* repo.getMember(member);
             if (Option.isSome(gone))
-              yield* hub.publish({
-                type: "member.removed",
-                orgId: input.orgId,
-                member: gone.value,
-              });
+              yield* sql.afterCommit(
+                hub.publish({ type: "member.removed", orgId: input.orgId, member: gone.value }),
+              );
           }
           if (stopped.expired.length > 0 && Option.isSome(presence)) {
             const line = presence.value;
@@ -1086,12 +1078,13 @@ export const make = Effect.gen(function* () {
     session: AuthenticatedSession,
     input: KinPeopleSetAccessInput,
   ) {
-    const caller = yield* owner(session, input.orgId);
-    if (!isOwnerHimself(identity.owner, caller.personId)) return yield* ownerOnly;
     if (isOwnerHimself(identity.owner, input.personId)) return yield* ownerOnly;
     return yield* sql
       .withTransaction(
         Effect.gen(function* () {
+          // Read here, so a sign-out that lands first counts.
+          const caller = yield* owner(session, input.orgId);
+          if (!isOwnerHimself(identity.owner, caller.personId)) return yield* ownerOnly;
           // Removed, it is the level a new link brings back; the row stays a member's meanwhile.
           const kept = yield* sql`UPDATE kin_people
             SET removed_access_json = json_set(removed_access_json, '$.access', ${input.access})
@@ -1439,7 +1432,6 @@ export const make = Effect.gen(function* () {
     listDevices,
     revokeDevice,
     linkDevice,
-    renewDevice,
     removeAccess,
     setGithubLogin,
     setOwnerName,

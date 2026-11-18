@@ -1,23 +1,8 @@
 // @effect-diagnostics globalDate:off - Fixtures build ISO times relative to a fixed clock.
-import {
-  AuthSessionId,
-  EnvironmentId,
-  KinInviteId,
-  type ExecutionEnvironmentDescriptor,
-  type KinPersonDevice,
-} from "@t3tools/contracts";
-import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
-import * as HttpClient from "effect/http/HttpClient";
-import * as HttpClientResponse from "effect/http/HttpClientResponse";
-import { describe, expect, it } from "@effect/vitest";
-
-import { BearerConnectionCredential, type ConnectionCredential } from "../connection/catalog.ts";
-import { ConnectionCredentialStore } from "../connection/credentialStore.ts";
-import { BearerConnectionTarget, type PreparedConnection } from "../connection/model.ts";
+import { AuthSessionId, KinInviteId, type KinPersonDevice } from "@t3tools/contracts";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
-  renewKinTeammateDevice,
   kinActiveDevices,
   kinDeviceJustLinked,
   kinDeviceLinkLeft,
@@ -120,70 +105,4 @@ describe("kinDevicesLinkedFrom", () => {
       "watch",
     ]);
   });
-});
-
-describe("renewKinTeammateDevice", () => {
-  const environmentId = EnvironmentId.make("kin-host");
-  const prepared = (served: string): PreparedConnection => ({
-    environmentId,
-    label: "Kin",
-    httpBaseUrl: "http://192.168.1.20:3774",
-    socketUrl: "ws://192.168.1.20:3774/ws",
-    httpAuthorization: { _tag: "Bearer", token: "old" },
-    target: new BearerConnectionTarget({ environmentId, label: "Kin", connectionId: "kin" }),
-    descriptor: { environmentId: EnvironmentId.make(served) } as ExecutionEnvironmentDescriptor,
-  });
-  const run = Effect.fn("test.renew")(function* (
-    connection: PreparedConnection,
-    onRequest: (stored: Map<string, ConnectionCredential>) => void = () => undefined,
-  ) {
-    const stored = new Map<string, ConnectionCredential>([
-      ["kin", new BearerConnectionCredential({ token: "old" })],
-    ]);
-    const authorized: Array<string> = [];
-    const client = HttpClient.make((request) =>
-      Effect.sync(() => {
-        authorized.push(request.headers.authorization ?? "");
-        onRequest(stored);
-        return HttpClientResponse.fromWeb(
-          request,
-          Response.json({ accessToken: "new", expiresAt: "2026-12-18T10:00:00.000Z" }),
-        );
-      }),
-    );
-    const renewed = yield* renewKinTeammateDevice(connection).pipe(
-      Effect.provideService(HttpClient.HttpClient, client),
-      Effect.provideService(
-        ConnectionCredentialStore,
-        ConnectionCredentialStore.of({
-          get: (id) => Effect.sync(() => Option.fromNullishOr(stored.get(id))),
-          put: (id, credential) => Effect.sync(() => void stored.set(id, credential)),
-          remove: (id) => Effect.sync(() => void stored.delete(id)),
-        }),
-      ),
-    );
-    const token = (stored.get("kin") as BearerConnectionCredential | undefined)?.token;
-    return [renewed, authorized, token] as const;
-  });
-
-  it.effect("renews through the prepared connection and keeps the new token", () =>
-    Effect.map(run(prepared("kin-host")), (result) =>
-      expect(result).toEqual([true, ["Bearer old"], "new"]),
-    ),
-  );
-
-  it.effect("sends nothing when the address now answers as another environment", () =>
-    Effect.map(run(prepared("someone-else")), (result) =>
-      expect(result).toEqual([false, [], "old"]),
-    ),
-  );
-
-  it.effect("keeps a re-join's token that landed while the renewal was out", () =>
-    Effect.map(
-      run(prepared("kin-host"), (stored) =>
-        stored.set("kin", new BearerConnectionCredential({ token: "rejoined" })),
-      ),
-      (result) => expect(result).toEqual([false, ["Bearer old"], "rejoined"]),
-    ),
-  );
 });

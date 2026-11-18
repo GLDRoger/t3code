@@ -322,17 +322,6 @@ export const KinInviteAcceptResult = Schema.Struct({
 });
 export type KinInviteAcceptResult = typeof KinInviteAcceptResult.Type;
 export const KIN_INVITE_ACCEPT_ROUTE = "/kin/invites/accept";
-/**
- * POST with the device's own session (bearer, or the browser's cookie): the same session under a
- * fresh deadline, so a device in use stays signed in. A bearer gets the new token in the body.
- */
-export const KIN_DEVICE_RENEW_ROUTE = "/kin/devices/renew";
-export const KIN_DEVICE_BROWSER_RENEW_ROUTE = "/api/kin/devices/renew";
-export const KinDeviceRenewResult = Schema.Struct({
-  accessToken: Schema.optional(TrimmedNonEmptyString),
-  expiresAt: IsoDateTime,
-});
-export type KinDeviceRenewResult = typeof KinDeviceRenewResult.Type;
 /** The same accept for a browser: under `/api` so the web app reaches it, answered with a cookie. */
 export const KIN_INVITE_BROWSER_ACCEPT_ROUTE = "/api/kin/invites/accept";
 /** A URL scheme, such as `kin`, without the colon. */

@@ -3,7 +3,6 @@ import { assert, it } from "@effect/vitest";
 import {
   AuthSessionId,
   AuthStandardClientScopes,
-  KIN_DEVICE_BROWSER_RENEW_ROUTE,
   KIN_INVITE_APP_ROUTE,
   KIN_INVITE_BROWSER_ACCEPT_ROUTE,
 } from "@t3tools/contracts";
@@ -15,7 +14,7 @@ import type * as SqlClient from "effect/sql/SqlClient";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServer from "effect/http/HttpServer";
 
-import { SessionStore } from "../../auth/SessionStore.ts";
+import type { SessionStore } from "../../auth/SessionStore.ts";
 import * as ServerConfig from "../../config.ts";
 import { layerKinAuthTest, pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import * as Hub from "../chat/KinChatHub.ts";
@@ -48,7 +47,7 @@ const ownerSession = {
 };
 
 it.effect(
-  "a browser accepts an invite and renews it only from the app's own origin, Secure over HTTPS",
+  "a browser accepts an invite only from the app's origin, as JSON, with Secure over HTTPS",
   () =>
     Effect.gen(function* () {
       const people = yield* People.KinPeople;
@@ -132,58 +131,5 @@ it.effect(
       });
       assert.equal(tls.status, 204);
       assert.match(tls.headers.get("set-cookie") ?? "", /Secure/);
-
-      // Renewal sets a new session cookie, so only the app's own origin, scheme and all, asks.
-      const { cookieName } = yield* SessionStore;
-      const cookie = (plain.headers.get("set-cookie") ?? "").split(";")[0]!;
-      assert.include(cookie, `${cookieName}=`);
-      const renew = (headers: Record<string, string>) =>
-        Effect.promise(() =>
-          handler(
-            new Request(`http://kin.example${KIN_DEVICE_BROWSER_RENEW_ROUTE}`, {
-              method: "POST",
-              headers: { host: "kin.example", cookie, ...headers },
-            }),
-            routeContext,
-          ),
-        );
-      for (const [name, headers] of [
-        ["no Origin", {}],
-        ["another site", { origin: "https://elsewhere.example" }],
-        ["the same host on another scheme", { origin: "https://kin.example" }],
-        [
-          "a cross-site request naming this host",
-          {
-            origin: "http://kin.example",
-            "sec-fetch-site": "cross-site",
-            "sec-fetch-mode": "cors",
-          },
-        ],
-      ] as const) {
-        const refused = yield* renew(headers);
-        assert.equal(refused.status, 403, name);
-        assert.isNull(refused.headers.get("set-cookie"), name);
-      }
-      // Forwarded headers count only from a proxy on this machine, never from any caller; an
-      // opaque or broken Origin is refused even when fetch metadata says same-origin.
-      for (const [name, headers] of [
-        [
-          "a forwarded host from a caller that isn't a local proxy",
-          { origin: "http://kin.tail.example", "x-forwarded-host": "kin.tail.example" },
-        ],
-        ["an opaque Origin", { origin: "null", "sec-fetch-site": "same-origin" }],
-        ["a broken Origin", { origin: "http//kin.example", "sec-fetch-site": "same-origin" }],
-      ] as const) {
-        const refused = yield* renew(headers);
-        assert.equal(refused.status, 403, name);
-      }
-      const sameOrigin = yield* renew({
-        origin: "http://kin.tail.example",
-        "sec-fetch-site": "same-origin",
-      });
-      assert.equal(sameOrigin.status, 200, "a same-origin fetch");
-      const renewed = yield* renew({ origin: "http://kin.example" });
-      assert.equal(renewed.status, 200);
-      assert.match(renewed.headers.get("set-cookie") ?? "", new RegExp(`^${cookieName}=`));
     }).pipe(Effect.provide(layer)),
 );

@@ -407,17 +407,6 @@ export class SessionStore extends Context.Service<
       readonly replaceSessionId?: AuthSessionId;
     }) => Effect.Effect<IssuedSession, SessionCredentialInternalError>;
     readonly verify: (token: string) => Effect.Effect<VerifiedSession, SessionCredentialError>;
-    /**
-     * The same session under a new deadline, `ttl` from now; the old token stays valid until its
-     * own. Proof-key, ceilinged and peer-link sessions renew through their own exchange instead.
-     */
-    readonly renew: (
-      token: string,
-      ttl: Duration.Duration,
-    ) => Effect.Effect<
-      Option.Option<{ readonly token: string; readonly expiresAt: DateTime.DateTime }>,
-      SessionCredentialError
-    >;
     readonly issueWebSocketToken: (
       sessionId: AuthSessionId,
       input?: {
@@ -471,6 +460,7 @@ export class SessionStore extends Context.Service<
 const SIGNING_SECRET_NAME = "server-signing-key";
 const DEFAULT_SESSION_TTL = Duration.days(30);
 const DEFAULT_WEBSOCKET_TOKEN_TTL = Duration.minutes(5);
+const SESSION_RECHECK_INTERVAL = Duration.minutes(1);
 
 const SessionClaims = Schema.Struct({
   v: Schema.Literals([1, 2]),
@@ -1162,13 +1152,13 @@ const make = Effect.gen(function* () {
         while (true) {
           const rows = yield* Effect.forEach(chain, readRow);
           if (rows.some((row) => Option.isNone(row) || row.value.revokedAt !== null)) return;
-          // `renew` moves the same session's deadline, so the row, not the first read, decides.
-          const latest = rows[rows.length - 1];
-          if (latest !== undefined && Option.isSome(latest)) current = latest.value;
           const now = yield* DateTime.now;
           const remaining = current.expiresAt.epochMilliseconds - now.epochMilliseconds;
           if (remaining > 0) {
-            yield* Effect.raceFirst(nextRemoval, Effect.sleep(Duration.millis(remaining)));
+            // Another process (the CLI) writes revocations without publishing here, so the rows
+            // are read again at least every minute.
+            const wait = Math.min(remaining, Duration.toMillis(SESSION_RECHECK_INTERVAL));
+            yield* Effect.raceFirst(nextRemoval, Effect.sleep(Duration.millis(wait)));
             continue;
           }
           const successorId =
@@ -1192,46 +1182,11 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const renew: SessionStore["Service"]["renew"] = Effect.fn("SessionStore.renew")(
-    function* (token, ttl) {
-      const verified = yield* verify(token);
-      const [encodedPayload] = token.split(".");
-      const claims = yield* decodeSessionClaims(base64UrlDecodeUtf8(encodedPayload ?? "")).pipe(
-        Effect.mapError((cause) => new InvalidSessionTokenPayloadError({ cause })),
-      );
-      if (claims.jkt !== undefined || claims.rtc !== undefined || claims.plk !== undefined)
-        return Option.none();
-      const issuedAt = yield* DateTime.now;
-      const expiresAt = DateTime.add(issuedAt, { milliseconds: Duration.toMillis(ttl) });
-      const renewed: SessionClaims = {
-        ...claims,
-        iat: issuedAt.epochMilliseconds,
-        exp: expiresAt.epochMilliseconds,
-      };
-      const payload = yield* encodeClaims(renewed).pipe(
-        Effect.map(base64UrlEncode),
-        Effect.mapError(
-          (cause) => new SessionCredentialIssueError({ sessionId: verified.sessionId, cause }),
-        ),
-      );
-      const extended = yield* authSessions
-        .extend({ sessionId: verified.sessionId, expiresAt, observedAt: issuedAt })
-        .pipe(
-          Effect.mapError(
-            (cause) => new SessionCredentialIssueError({ sessionId: verified.sessionId, cause }),
-          ),
-        );
-      if (!extended) return Option.none();
-      return Option.some({ token: `${payload}.${yield* signer.sign(payload)}`, expiresAt });
-    },
-  );
-
   return (yield* SessionHooks).wrap({ connectedSessionsRef, emitRemoved })({
     cookieName,
     legacyCookieName,
     issue,
     verify,
-    renew,
     issueWebSocketToken,
     verifyWebSocketToken,
     listActive,

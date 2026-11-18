@@ -225,23 +225,21 @@ const enabled = (options: { readonly recordsPairings: boolean }) =>
                   const signedOut = yield* sql<{
                     session_id: AuthSessionId;
                   }>`UPDATE auth_sessions SET revoked_at = ${DateTime.formatIso(now)} WHERE session_id IN (${selected}) AND revoked_at IS NULL RETURNING session_id`;
+                  // From the session named too: one already ended another way still takes its own.
                   const linked = yield* revokeLinkedDevices(
                     sql,
-                    signedOut.map((row) => row.session_id),
+                    [...(bulk ? [] : [sessionId]), ...signedOut.map((row) => row.session_id)],
                     caller,
                   );
-                  return [
-                    ...signedOut,
-                    ...linked.map((id) => ({ session_id: id as AuthSessionId })),
-                  ];
+                  const ids = [...signedOut.map((row) => row.session_id), ...linked];
+                  // Told once the outermost write commits, so a rollback takes nothing back.
+                  yield* sql.afterCommit(
+                    Effect.forEach(ids, (id) => removed(id as AuthSessionId), { discard: true }),
+                  );
+                  return ids;
                 }),
               )
-              .pipe(
-                Effect.tap((ids) =>
-                  Effect.forEach(ids, (row) => removed(row.session_id), { discard: true }),
-                ),
-                Effect.uninterruptible,
-              );
+              .pipe(Effect.uninterruptible);
           return {
             ...store,
             issue: Effect.fn("ProofKeySessions.issue")(function* (input) {
@@ -249,6 +247,16 @@ const enabled = (options: { readonly recordsPairings: boolean }) =>
                 .withTransaction(
                   Effect.gen(function* () {
                     const issued = yield* store.issue(input);
+                    // A session replaced in place (a browser pairing again) is signed out, so the
+                    // devices linked from it go with it, as with any other sign-out.
+                    if (input?.replaceSessionId !== undefined) {
+                      const linked = yield* revokeLinkedDevices(sql, [input.replaceSessionId]);
+                      yield* sql.afterCommit(
+                        Effect.forEach(linked, (id) => removed(id as AuthSessionId), {
+                          discard: true,
+                        }),
+                      );
+                    }
                     let revoked = false;
                     if (input?.proofKeyThumbprint) {
                       yield* hooks.onIssue(issued.sessionId, input.proofKeyThumbprint);
@@ -283,7 +291,7 @@ const enabled = (options: { readonly recordsPairings: boolean }) =>
             }),
             revoke: Effect.fn("ProofKeySessions.revoke")((sessionId, callerSessionId) =>
               revoke(sessionId, false, callerSessionId).pipe(
-                Effect.map((ids) => ids.some((row) => row.session_id === sessionId)),
+                Effect.map((ids) => ids.includes(sessionId)),
                 Effect.mapError(
                   (cause) =>
                     new SessionStore.SessionRevocationError({
@@ -323,14 +331,15 @@ const enabled = (options: { readonly recordsPairings: boolean }) =>
                       sql,
                       keyed.map((row) => row.session_id),
                     );
-                    return { count: count + linked.length, linked };
+                    yield* sql.afterCommit(
+                      Effect.forEach(linked, (id) => removed(id as AuthSessionId), {
+                        discard: true,
+                      }),
+                    );
+                    return count + linked.length;
                   }),
                 )
                 .pipe(
-                  Effect.tap(({ linked }) =>
-                    Effect.forEach(linked, (id) => removed(id as AuthSessionId), { discard: true }),
-                  ),
-                  Effect.map(({ count }) => count),
                   Effect.catchTags({
                     SqlError: (cause) =>
                       Effect.fail(

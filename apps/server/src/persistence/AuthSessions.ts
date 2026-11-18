@@ -99,13 +99,6 @@ export const SetAuthSessionLastConnectedAtInput = Schema.Struct({
 });
 export type SetAuthSessionLastConnectedAtInput = typeof SetAuthSessionLastConnectedAtInput.Type;
 
-export const ExtendAuthSessionInput = Schema.Struct({
-  sessionId: AuthSessionId,
-  expiresAt: Schema.DateTimeUtcFromString,
-  observedAt: Schema.DateTimeUtcFromString,
-});
-export type ExtendAuthSessionInput = typeof ExtendAuthSessionInput.Type;
-
 export class AuthSessionRepository extends Context.Service<
   AuthSessionRepository,
   {
@@ -139,10 +132,6 @@ export class AuthSessionRepository extends Context.Service<
     readonly revokeByProofKey: (
       input: RevokeAuthSessionsByProofKeyInput,
     ) => Effect.Effect<ReadonlyArray<AuthSessionId>, AuthSessionRepositoryError>;
-    /** Moves a live session's deadline; false when it is revoked or already past its deadline. */
-    readonly extend: (
-      input: ExtendAuthSessionInput,
-    ) => Effect.Effect<boolean, AuthSessionRepositoryError>;
   }
 >()("t3/persistence/AuthSessions/AuthSessionRepository") {}
 
@@ -344,20 +333,6 @@ export const make = Effect.gen(function* () {
         SET last_connected_at = ${lastConnectedAt}
         WHERE session_id = ${sessionId}
           AND revoked_at IS NULL
-      `,
-  });
-
-  const extendSessionRows = SqlSchema.findAll({
-    Request: ExtendAuthSessionInput,
-    Result: Schema.Struct({ sessionId: AuthSessionId }),
-    execute: ({ sessionId, expiresAt, observedAt }) =>
-      sql`
-        UPDATE auth_sessions
-        SET expires_at = ${expiresAt}
-        WHERE session_id = ${sessionId}
-          AND revoked_at IS NULL
-          AND expires_at > ${observedAt}
-        RETURNING session_id AS "sessionId"
       `,
   });
 
@@ -571,20 +546,7 @@ export const make = Effect.gen(function* () {
       Effect.map((rows) => rows.map((row) => row.sessionId)),
     );
 
-  const extend: AuthSessionRepository["Service"]["extend"] = (input) =>
-    extendSessionRows(input).pipe(
-      Effect.mapError(
-        toPersistenceSqlOrDecodeError(
-          "AuthSessionRepository.extend:query",
-          "AuthSessionRepository.extend:encodeRequest",
-          { sessionId: input.sessionId },
-        ),
-      ),
-      Effect.map((rows) => rows.length > 0),
-    );
-
   return {
-    extend,
     create,
     createReplacingActive,
     createIfAbsent,

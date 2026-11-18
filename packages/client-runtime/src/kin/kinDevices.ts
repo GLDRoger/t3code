@@ -5,15 +5,8 @@ import {
   formatKinWhen,
   type KinPersonDevice,
 } from "@t3tools/contracts";
-import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { renewRemoteKinDevice } from "../authorization/remote.ts";
-import { BearerConnectionCredential } from "../connection/catalog.ts";
-import type { PreparedConnection } from "../connection/model.ts";
-import { ConnectionCredentialStore } from "../connection/credentialStore.ts";
-import { credentialConnectionId } from "../connection/routes.ts";
 import { kinFailureText } from "./kinAnswers.ts";
 import { formatKinTime } from "./kinScreenState.ts";
 
@@ -21,7 +14,7 @@ export const KIN_DEVICES_COPY = {
   title: "Linked devices",
   rowDetail: "Phones and browsers signed in as you",
   footer:
-    "Each device stays signed in while you use it. One unused for 30 days signs out; link it again here.",
+    "Each device stays signed in for 30 days from when it was linked. Then link it again here.",
   empty: "No devices linked yet.",
   link: "Link a device",
   linkDetail: `Works once, for ${KIN_DEVICE_LINK_TTL_MINUTES} minutes. Making a new one cancels this one.`,
@@ -176,34 +169,3 @@ export function kinRemoveDeviceProblem(error: unknown): string {
     gone: "That device was already signed out.",
   });
 }
-
-/**
- * Renews a teammate's bearer on this device: the same session under a fresh deadline. It goes
- * only to the connection the driver prepared, which already checked the server is this
- * environment, so a saved address that now answers as another machine never sees the token.
- * The stored token is replaced only if it is still the one renewed: a re-join meanwhile wins.
- */
-export const renewKinTeammateDevice = Effect.fn("kin.devices.renewTeammate")(function* (
-  prepared: PreparedConnection,
-) {
-  if (prepared.target._tag !== "BearerConnectionTarget") return false;
-  if (prepared.descriptor?.environmentId !== prepared.environmentId) return false;
-  if (prepared.httpAuthorization?._tag !== "Bearer") return false;
-  const sent = prepared.httpAuthorization.token;
-  const credentials = yield* ConnectionCredentialStore;
-  const connectionId = credentialConnectionId(prepared.target.connectionId);
-  const stillSent = Effect.suspend(() => credentials.get(connectionId)).pipe(
-    Effect.map((stored) => Option.isSome(stored) && stored.value.token === sent),
-  );
-  if (!(yield* stillSent)) return false;
-  const renewed = yield* renewRemoteKinDevice({
-    httpBaseUrl: prepared.httpBaseUrl,
-    bearerToken: sent,
-  });
-  if (renewed.accessToken === undefined || !(yield* stillSent)) return false;
-  yield* credentials.put(
-    connectionId,
-    new BearerConnectionCredential({ token: renewed.accessToken }),
-  );
-  return true;
-});

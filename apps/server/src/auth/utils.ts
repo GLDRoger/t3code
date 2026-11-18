@@ -179,12 +179,6 @@ function resolveClientIpAddress(request: HttpServerRequest.HttpServerRequest): s
   return forwarded && NodeNet.isIP(forwarded) !== 0 ? forwarded : peer;
 }
 
-/** Whether the request came from a proxy on this machine, the only one whose forwarded headers count. */
-export function isFromLoopbackPeer(request: HttpServerRequest.HttpServerRequest): boolean {
-  const peer = readRemoteAddressFromSource(request.source);
-  return peer !== undefined && isLoopbackIpAddress(peer);
-}
-
 export function deriveAuthClientMetadata(input: {
   readonly request: HttpServerRequest.HttpServerRequest;
   readonly presented?: AuthClientPresentationMetadata;

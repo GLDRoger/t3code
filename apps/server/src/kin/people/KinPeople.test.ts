@@ -231,7 +231,7 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
-it.effect("a teammate links, lists, renews and removes only their own devices", () =>
+it.effect("a teammate links, lists and removes only their own devices", () =>
   Effect.gen(function* () {
     const service = yield* People.KinPeople;
     const identity = yield* KinIdentity;
@@ -307,36 +307,15 @@ it.effect("a teammate links, lists, renews and removes only their own devices", 
       sessionId: (yield* sessions.verify(tablet.accessToken)).sessionId,
     });
 
-    // A device in use renews itself: the same session under a later deadline.
-    yield* TestClock.adjust("20 days");
+    // Removing a device ends it, and a connection that already holds it can't act as it.
     const laptopSession = yield* sessions.verify(laptop.accessToken);
-    const renewed = yield* service.renewDevice(laptopSession, laptop.accessToken);
-    assert.isTrue(Option.isSome(renewed));
-    if (Option.isNone(renewed)) return;
-    yield* TestClock.adjust("15 days");
-    assert.equal(
-      (yield* sessions.verify(laptop.accessToken).pipe(Effect.flip))._tag,
-      "SessionTokenExpiredError",
-    );
-    assert.equal((yield* sessions.verify(renewed.value.accessToken)).sessionId, laptop.sessionId);
-
-    // Removing a device ends it, and it can't renew its way back.
     yield* service.revokeDevice(ownerSession, {
       orgId,
       personId: asha.person.personId,
       sessionId: laptop.sessionId,
     });
-    assert.equal(
-      (yield* sessions.verify(renewed.value.accessToken).pipe(Effect.result))._tag,
-      "Failure",
-    );
-    assert.isTrue(
-      Option.isNone(
-        yield* service
-          .renewDevice(laptopSession, renewed.value.accessToken)
-          .pipe(Effect.orElseSucceed(() => Option.none())),
-      ),
-    );
+    assert.equal((yield* sessions.verify(laptop.accessToken).pipe(Effect.result))._tag, "Failure");
+    assert.equal(yield* refused(service.linkDevice(laptopSession, { orgId })), "not_allowed");
   }).pipe(Effect.provide(layer)),
 );
 
@@ -449,9 +428,9 @@ it.effect("removing a device takes the devices linked from it and the links it l
     yield* service.revokeDevice(yield* as(phone), { orgId, personId, sessionId: laptop.sessionId });
     for (const gone of [laptop, tablet])
       assert.equal((yield* sessions.verify(gone.accessToken).pipe(Effect.result))._tag, "Failure");
-    // Neither can renew its way back: their bindings went with the laptop.
-    assert.isTrue(Option.isNone(yield* service.renewDevice(tabletSession, tablet.accessToken)));
-    assert.isTrue(Option.isNone(yield* service.renewDevice(laptopAsSeen, laptop.accessToken)));
+    // Neither can act through a connection that already held it.
+    for (const held of [tabletSession, laptopAsSeen])
+      assert.equal(yield* refused(service.linkDevice(held, { orgId })), "not_allowed");
     assert.equal(yield* refused(service.accept({ secret: open.secret })), "not_found");
     assert.equal((yield* as(watch)).sessionId, watch.sessionId);
 
@@ -463,13 +442,6 @@ it.effect("removing a device takes the devices linked from it and the links it l
     yield* sessions.revoke(watch.sessionId);
     assert.equal(yield* refused(service.accept({ secret: fromWatch.secret })), "not_found");
     assert.equal((yield* sessions.verify(strap.accessToken).pipe(Effect.result))._tag, "Failure");
-    assert.isTrue(
-      Option.isNone(
-        yield* service
-          .renewDevice(strapSession, strap.accessToken)
-          .pipe(Effect.orElseSucceed(() => Option.none())),
-      ),
-    );
     assert.equal(yield* refused(service.linkDevice(strapSession, { orgId })), "not_allowed");
     const listed = (yield* service.listDevices(ownerSession, { orgId, personId })).devices;
     assert.isNotNull(listed.find((d) => d.sessionId === watch.sessionId)!.revokedAt);
