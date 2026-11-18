@@ -8,7 +8,15 @@ import {
 } from "./auth.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinActionId } from "./kinApprovals.ts";
-import { KinChatId, KinOrgId, KinTrimmedText, KinWidgetId } from "./kinChat.ts";
+import {
+  KinChatId,
+  KinMessageId,
+  KinOrgId,
+  KinTrimmedText,
+  KinWidgetId,
+  type KinMessageLink,
+} from "./kinChat.ts";
+import { KinRecordKey } from "./kinWork.ts";
 
 /** A native APNs device token in hex. Apple says not to fix the length; today it is 32 bytes. */
 export const KinPushToken = Schema.String.check(
@@ -34,6 +42,36 @@ export const KinPushCategory = Schema.Literals([
 export type KinPushCategory = typeof KinPushCategory.Type;
 
 /**
+ * The one thing a push is about, when it is about one: a card's message in the push's chat, or
+ * an entry by its key. A tap opens it; a build that doesn't know it opens `deepLink`.
+ */
+export const KinPushSubject = Schema.Union([
+  Schema.TaggedStruct("message", { messageId: KinMessageId }),
+  Schema.TaggedStruct("record", {
+    key: KinRecordKey,
+    kind: Schema.Literals(["task", "client", "project", "doc", "entry"]),
+  }),
+]);
+export type KinPushSubject = typeof KinPushSubject.Type;
+
+/**
+ * What a message is about for the reader its `links` were worked out for: its card, else the one
+ * entry it names. Null when it names none or several. The push and the web's notice both use it.
+ */
+export function kinMessageSubject(message: {
+  readonly messageId: KinMessageId;
+  readonly widgetId: KinWidgetId | null;
+  readonly links?: ReadonlyArray<KinMessageLink> | undefined;
+}): KinPushSubject | null {
+  if (message.widgetId !== null) return { _tag: "message", messageId: message.messageId };
+  const records = new Map<string, KinPushSubject>();
+  for (const { to } of message.links ?? [])
+    if (to._tag === "record") records.set(to.key, { _tag: "record", key: to.key, kind: to.kind });
+  const [only, ...more] = records.values();
+  return only !== undefined && more.length === 0 ? only : null;
+}
+
+/**
  * What a Kin push carries besides `aps`, under the payload's `body` key, which is what
  * expo-notifications exposes as `content.data` for a remote push. Ids and a `/kin/` link only.
  */
@@ -47,6 +85,8 @@ export const KinPushData = Schema.Struct({
   pendingActionId: Schema.optional(KinActionId),
   /** On a read's badge push: nothing in `chatId` is unread for this person any more. */
   cleared: Schema.optional(Schema.Literal(true)),
+  /** Worked out for the person it is sent to, from what they may open. */
+  subject: Schema.optional(KinPushSubject),
   deepLink: Schema.String.check(
     Schema.makeFilter((value: string) => /^\/kin\/[A-Za-z0-9._~%/-]+$/.test(value), {
       expected: "a /kin/ app path",
