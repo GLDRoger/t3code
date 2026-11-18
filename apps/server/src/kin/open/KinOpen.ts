@@ -65,7 +65,7 @@ const dayEndFor = Effect.fn("KinOpen.dayEnd")(function* (
 });
 
 /** The person's tasks not closed and due by `dayEnd`, every one of them, soonest first. */
-const ownTasks = Effect.fn("KinOpen.ownTasks")(function* (input: {
+export const ownTasks = Effect.fn("KinOpen.ownTasks")(function* (input: {
   readonly orgId: KinOrgId;
   readonly personId: KinPersonId;
   readonly dayEnd: number;
@@ -189,8 +189,8 @@ export const sources = Effect.fn("KinOpen.sources")(function* (input: {
 });
 export type OpenSources = Effect.Success<ReturnType<typeof sources>>;
 
-/** The list from its sources: every row counted, the first 200 sent, in Needs you's order. */
-export const rowsOf = (from: OpenSources, at: number): KinOpenRead => {
+/** The list from its sources: every row counted, the first `cap` sent, in Needs you's order. */
+export const rowsOf = (from: OpenSources, at: number, cap = ROW_CAP): KinOpenRead => {
   const ranked: Array<{ readonly rank: number; readonly at: number; readonly row: KinOpenRow }> =
     [];
   for (const fact of from.facts) {
@@ -249,7 +249,7 @@ export const rowsOf = (from: OpenSources, at: number): KinOpenRead => {
   return {
     asOf: iso(at),
     counts: { needsYou: ranked.length, waiting },
-    rows: ranked.slice(0, ROW_CAP).map((one) => one.row),
+    rows: ranked.slice(0, cap).map((one) => one.row),
   };
 };
 
