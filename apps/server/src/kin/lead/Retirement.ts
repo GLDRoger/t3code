@@ -11,6 +11,12 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 
 import type { PersistenceDecodeError, PersistenceSqlError } from "../../persistence/Errors.ts";
+import type { KinChatService } from "../chat/KinChatService.ts";
+import {
+  closeHeldQuestions,
+  reopenRetiredQuestions,
+  retiredQuestionText,
+} from "../questions/openQuestions.ts";
 
 /**
  * What retiring an agent does to everything it has in flight, inside the transaction that sets
@@ -64,12 +70,15 @@ const heldChats = (sql: SqlClient.SqlClient, orgId: KinOrgId, agentId: KinAgentI
  * In the retirement's transaction, after `retired_at` is set. Returns the running wake-ups the
  * caller stops after commit (`KinStop.abortTurns`) and whether any queued event expired.
  */
-export const retire = Effect.fn("KinRetirement.retire")(function* (input: {
-  readonly orgId: KinOrgId;
-  readonly agentId: KinAgentId;
-  readonly retiredAt: string;
-  readonly now: number;
-}) {
+export const retire = Effect.fn("KinRetirement.retire")(function* (
+  input: {
+    readonly orgId: KinOrgId;
+    readonly agentId: KinAgentId;
+    readonly retiredAt: string;
+    readonly now: number;
+  },
+  chat: Pick<KinChatService["Service"], "closeReplaced">,
+) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, agentId, now } = input;
   // Every turn it ever began, whatever its state (a join may have aborted one already): the mark
@@ -121,6 +130,16 @@ export const retire = Effect.fn("KinRetirement.retire")(function* (input: {
       WHERE org_id = ${orgId} AND agent_id = ${agentId} AND kind = 'schedule')`;
   // What it asked the owner to approve closes; an approval can't act for a retired agent.
   yield* (yield* KinRetiredActions).close({ orgId, agentId });
+  // Its questions close at the retirement's instant, which is how a restore finds them.
+  yield* closeHeldQuestions(
+    {
+      orgId,
+      holder: { agentId },
+      reason: (row) => retiredQuestionText(row.agentName),
+      closedAt: now,
+    },
+    chat,
+  );
   return {
     turns: turns.map((row) => KinWakeupId.make(row.wakeupId)),
     expired: expired.length,
@@ -129,16 +148,19 @@ export const retire = Effect.fn("KinRetirement.retire")(function* (input: {
 
 /**
  * In the restore's transaction: the timers and schedules retiring paused run again (a due one
- * fires late, once; a scheduled run more than two hours late is skipped instead).
- * Expired events and closed requests stay as they are.
+ * fires late, once; a scheduled run more than two hours late is skipped instead), and the
+ * questions retiring closed reopen. Expired events and closed requests stay as they are.
  */
 export const restore = Effect.fn("KinRetirement.restore")(function* (input: {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
+  /** The `retired_at` being undone. */
+  readonly retiredAt: string;
   readonly now: number;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, agentId, now } = input;
+  yield* reopenRetiredQuestions({ orgId, agentId, retiredAt: Date.parse(input.retiredAt), now });
   const held = sql`SELECT target_id FROM kin_retirement_holds
     WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
   yield* sql`UPDATE kin_triggers AS t SET enabled = 1, updated_at = ${now},

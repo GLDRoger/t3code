@@ -428,6 +428,47 @@ it.effect("a question with no safe default is raised once, then waits for its an
   ),
 );
 
+// An agent retired before its questions were closed with it: raising one closes it instead.
+it.effect("a question of a retired agent can close", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const { sql, chats, owner, orgId, services, chatOf, wake } = yield* ambermill;
+      const repo = Context.get(services, KinChatRepository);
+      yield* wake(
+        "finance",
+        yield* chats.send(owner, {
+          chatId: chatOf("finance"),
+          body: "VIOM is late again.",
+          clientMessageId: "m1",
+        }),
+      );
+      const asked = yield* callAs("finance", "kin_ask", {
+        question: "Send VIOM the reminder mail I drafted?",
+        options: [{ label: "Send it" }, { label: "Hold it" }],
+        default: "Send it",
+        about: ["INV-8"],
+        intent: "send payment reminder",
+      });
+      assert.isTrue(asked.ok, JSON.stringify(asked.value));
+      const questionId = asked.value.question as string;
+      const [waiting] = yield* repo.listOpenWaiting({ orgId, personId: owner.personId });
+      yield* sql`UPDATE kin_agents SET retired_at = ${TUE_1930_ISO} WHERE agent_id = 'finance'`;
+
+      assert.strictEqual(yield* settle(orgId, Date.UTC(2026, 10, 18, 5)), 1);
+      assert.strictEqual((yield* questionRow(sql, questionId)).state, "withdrawn");
+      const card = Option.getOrThrow(
+        yield* repo.getWidget({ orgId, widgetId: waiting!.widgetId! }),
+      );
+      assert.isNotNull(card.closedAt);
+      assert.deepInclude(card.state, {
+        outcome: { title: "Closed", text: "Finance was retired; nothing will happen on this." },
+      });
+      assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: owner.personId }), 0);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
 // A plain-text question stays open for every agent until the person writes back, and an
 // agent closes a carded one the person answered in words.
 it.effect("questions close on the person's words, and only the asker withdraws one", () =>

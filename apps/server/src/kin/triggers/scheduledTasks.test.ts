@@ -207,10 +207,16 @@ const retirement = (agentId: string, at: number, retired: boolean) =>
     yield* sql.withTransaction(
       Effect.gen(function* () {
         const retiredAt = retired ? DateTime.formatIso(DateTime.makeUnsafe(at)) : null;
+        const [was] = yield* sql<{ retiredAt: string }>`SELECT retired_at AS "retiredAt"
+          FROM kin_agents WHERE agent_id = ${agentId}`;
         yield* sql`UPDATE kin_agents SET retired_at = ${retiredAt} WHERE agent_id = ${agentId}`;
         if (retired)
-          yield* Retirement.retire({ orgId, agentId: agent, retiredAt: retiredAt!, now: at });
-        else yield* Retirement.restore({ orgId, agentId: agent, now: at });
+          yield* Retirement.retire(
+            { orgId, agentId: agent, retiredAt: retiredAt!, now: at },
+            { closeReplaced: () => Effect.void },
+          );
+        else
+          yield* Retirement.restore({ orgId, agentId: agent, retiredAt: was!.retiredAt, now: at });
       }),
     );
   }).pipe(
