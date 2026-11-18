@@ -22,6 +22,8 @@ import { laneFor } from "../../reply/replyLane.ts";
 import { KinChatService } from "../../chat/KinChatService.ts";
 import { KinServer } from "../../KinServer.ts";
 import * as Questions from "../../questions/openQuestions.ts";
+import * as CardActions from "../../widgets/cardActions.ts";
+import * as CardPlans from "../../widgets/cardPlans.ts";
 import * as ChoiceCard from "../../widgets/choiceCard.ts";
 import { KinHandoff } from "../Handoff.ts";
 import { KinTeam } from "../../team/KinTeam.ts";
@@ -29,6 +31,7 @@ import { KinLevelGate } from "../LevelGate.ts";
 import { LeadMemory, resolveLead } from "../LeadMemory.ts";
 import { readPeople } from "../peopleRead.ts";
 import { updatePeople } from "../peopleUpdate.ts";
+import { setAway } from "../awaySet.ts";
 import { updateAgent } from "../agentUpdate.ts";
 import { KinLeadToolkit } from "./tools.ts";
 
@@ -68,6 +71,13 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       const lead = yield* resolveLead(yield* McpInvocationContext);
       yield* admitted(lead, "people_update", input);
       return yield* updatePeople(lead, input);
+    }, Effect.mapError(failure)),
+  ),
+  away_set: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.awaySet")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      yield* admitted(lead, "away_set", input);
+      return yield* setAway(lead, input);
     }, Effect.mapError(failure)),
   ),
   agent_update: McpToolAccess.actsAsCaller(
@@ -116,6 +126,44 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       const sql = yield* SqlClient.SqlClient;
       const now = yield* Clock.currentTimeMillis;
       const chatId = lane.value.chatId;
+      // Each action is checked as this turn could do it; its button and line are the server's own.
+      const drawAll = Effect.forEach(card.options, (option) =>
+        option.action === undefined
+          ? Effect.undefined
+          : CardActions.draw(lead, chatId, option.action),
+      );
+      const drawn = yield* drawAll;
+      const asked = { ...card, actions: drawn };
+      const options = ChoiceCard.choiceCardState(asked).options;
+      const plans = options.flatMap((option, index) => {
+        const one = drawn[index];
+        return one === undefined ? [] : [{ optionId: option.optionId, plan: one.plan }];
+      });
+      // The default may name an option by the agent's words or by the server's button; "none"
+      // is read first, so no option's label can take it.
+      const wanted = ChoiceCard.readAs(chosen);
+      const none = wanted === "none";
+      const names = (label: string) => ChoiceCard.readAs(label) === wanted;
+      const named = none
+        ? []
+        : card.options.flatMap((option, index) =>
+            names(option.label) || names(options[index]!.label) ? [index] : [],
+          );
+      if (plans.length > 0) {
+        const labels = options.map((option) => ChoiceCard.readAs(option.label));
+        const twice = options.find((_, index) => labels.indexOf(labels[index]!) !== index);
+        if (twice !== undefined)
+          return yield* new KinChatError({
+            reason: "invalid_state",
+            message: `Two options would read “${twice.label}”. Kin labels an option with an action by what it does; give the others their own words.`,
+          });
+        if (named.length > 1)
+          return yield* new KinChatError({
+            reason: "invalid_state",
+            message: `default “${chosen}” names more than one option. Give each option its own label.`,
+          });
+      }
+      const at = named[0];
       // A refused repeat posts nothing; an allowed one is stored in its card's own transaction.
       const plan = yield* Questions.planAsk({
         orgId: lead.orgId,
@@ -123,27 +171,53 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         chatId,
         key: `${wakeupId}:${key}`,
         question: card.question,
-        labels: card.options.map((option) => option.label),
-        default: chosen,
+        labels: options.map((option) => option.label),
+        default: none ? "none" : at === undefined ? chosen : options[at]!.label,
         by,
         about,
         intent,
         now,
+        acts: at !== undefined && drawn[at] !== undefined,
       });
+      // Drawn again inside the card's transaction: what was checked is what is stored.
+      const recheck = drawAll.pipe(
+        Effect.flatMap((again) =>
+          again.every(
+            (one, index) => JSON.stringify(one?.plan) === JSON.stringify(drawn[index]?.plan),
+          )
+            ? Effect.void
+            : Effect.fail(
+                new KinChatError({
+                  reason: "invalid_state",
+                  message: "What an option names changed while its card was made. Ask again.",
+                }),
+              ),
+        ),
+        Effect.mapError(failure),
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
       const result = yield* (yield* KinLevelGate).ask(
         { ...lead, wakeupId },
         {
-          ...card,
+          ...asked,
           ...(plan === undefined ? {} : { untilAnswered: true as const }),
+          ...(plans.length === 0 ? {} : { recheck }),
           chatId,
           clientMessageId: `kin-ask:${wakeupId}:${key.slice(0, 32)}`,
         },
-        plan === undefined
+        plan === undefined && plans.length === 0
           ? undefined
           : (widget) =>
-              Questions.recordAsk(plan, {
-                widgetId: widget.widgetId,
-                options: ChoiceCard.choiceCardState(card).options,
+              Effect.gen(function* () {
+                if (plan !== undefined)
+                  yield* Questions.recordAsk(plan, { widgetId: widget.widgetId, options });
+                yield* CardPlans.sealPlans({
+                  orgId: lead.orgId,
+                  chatId,
+                  widgetId: widget.widgetId,
+                  plans,
+                  now,
+                });
               }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       );
       return plan === undefined

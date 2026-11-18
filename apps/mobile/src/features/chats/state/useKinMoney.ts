@@ -411,6 +411,11 @@ export function useKinHomeCurrency(target: KinWorkTarget) {
   return useAtomValue(kinAccessMeAtom(connectionAtomRuntime, target.environmentId))?.homeCurrency;
 }
 
+/** The company's country, which decides whether forms ask for India's tax fields. */
+export function useKinCompanyCountry(target: KinWorkTarget) {
+  return useAtomValue(kinAccessMeAtom(connectionAtomRuntime, target.environmentId))?.country;
+}
+
 const noReceiptsAtom: ReturnType<typeof kinClient.receipts> = Atom.make(AsyncResult.initial());
 const noRecipesAtom: ReturnType<typeof kinClient.recipes> = Atom.make(AsyncResult.initial());
 

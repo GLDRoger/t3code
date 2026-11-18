@@ -230,8 +230,12 @@ export function kinMonthLabel(month: string, short = false): string {
   return `${short ? name.slice(0, 3) : name} ${month.slice(0, 4)}`;
 }
 
-/** "FY 2026–27" for `FY2026-27`. */
-export const kinFinancialYearLabel = (year: string) => `FY ${year.slice(2, 6)}–${year.slice(7)}`;
+/** "FY 2026–27" for `FY2026-27`, "FY 2026" for `FY2026`. */
+export const kinFinancialYearLabel = (year: string) =>
+  year.length > 6 ? `FY ${year.slice(2, 6)}–${year.slice(7)}` : `FY ${year.slice(2, 6)}`;
+/** "April to March": the months a financial year starting in `startMonth` runs. */
+export const kinFinancialYearMonths = (startMonth: number) =>
+  `${MONTHS[startMonth - 1]} to ${MONTHS[(startMonth + 10) % 12]}`;
 
 export interface KinPeriod {
   readonly from: string;
@@ -246,10 +250,16 @@ export function kinMonthPeriod(month: string): KinPeriod {
   return { from: `${month}-01`, to: `${month}-${pad(last)}` };
 }
 
-/** April to March. */
-export function kinFinancialYearPeriod(year: string): KinPeriod {
+/**
+ * A financial year's days. `FY2026` is the calendar year; one across two years starts in
+ * `startMonth`, April where the host didn't say, as hosts before company years were set.
+ */
+export function kinFinancialYearPeriod(year: string, startMonth?: number): KinPeriod {
   const start = Number(year.slice(2, 6));
-  return { from: `${start}-04-01`, to: `${start + 1}-03-31` };
+  const first = year.length > 6 ? (startMonth ?? 4) : 1;
+  if (first === 1) return { from: `${start}-01-01`, to: `${start}-12-31` };
+  const end = kinMonthPeriod(`${start + 1}-${pad(first - 1)}`);
+  return { from: `${start}-${pad(first)}-01`, to: end.to };
 }
 
 const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;

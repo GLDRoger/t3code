@@ -3,7 +3,8 @@ import * as NodeZlib from "node:zlib";
 
 import { assert, describe, it } from "@effect/vitest";
 
-import { computeData } from "./compute.ts";
+import { computeData, type TaxRegime } from "./compute.ts";
+import { taxRegimeOf } from "./facts.ts";
 import { sampleInputs } from "./recipeLabels.ts";
 import { assembleInputs, parseRecipe, type Recipe, type Value } from "./recipe.ts";
 import { typeMismatch } from "./returnPath.ts";
@@ -33,11 +34,11 @@ const base: Readonly<Record<string, Value>> = {
   lines: [{ description: "Advisory", sac: null, quantity: "3", unit: null, rate: inr(33333) }],
 };
 /** The invoice as its template reads it: every declared input, null unless given. */
-const computeInvoice = (given: Readonly<Record<string, Value>>) => {
+const computeInvoice = (given: Readonly<Record<string, Value>>, tax?: TaxRegime) => {
   const inputs = Object.fromEntries(
     invoice.inputs.map((input) => [input.name, given[input.name] ?? null]),
   );
-  const result = computeData(inputs, invoice.computed);
+  const result = computeData(inputs, invoice.computed, tax);
   if ("error" in result) throw new Error(result.error);
   return result.data as {
     readonly tax: {
@@ -59,6 +60,71 @@ const computeInvoice = (given: Readonly<Record<string, Value>>) => {
 };
 
 describe("invoice", () => {
+  it("charges a company outside India its own one tax, and none without a rate", () => {
+    const gbp = (minor: number) => ({ minor, currency: "GBP" });
+    const uk = taxRegimeOf({
+      country: "GB",
+      tax: { name: "VAT", rate: "20", pricesInclude: null },
+    });
+    const lines = [
+      { description: "Advisory", sac: null, quantity: "3", unit: null, rate: gbp(33333) },
+    ];
+    // No GSTIN, SAC or place of supply: none is asked for outside India.
+    const plain = { ...base, supplierGstin: null, supplierPlace: null, sac: null, lines };
+    const cases = [
+      {
+        name: "on top",
+        input: plain,
+        tax: uk,
+        taxes: [["VAT", "20%", "£200.00"]],
+        total: "£1,199.99",
+      },
+      {
+        name: "in the prices",
+        input: plain,
+        tax: { ...uk, pricesInclude: true },
+        taxes: [["VAT", "20%", "£166.66"]],
+        total: "£999.99",
+      },
+      {
+        name: "out of the entry's total",
+        input: { ...plain, lines: null, total: gbp(120000) },
+        tax: uk,
+        taxes: [["VAT", "20%", "£200.00"]],
+        total: "£1,200.00",
+      },
+      {
+        name: "no rate set",
+        input: plain,
+        tax: taxRegimeOf({
+          country: "US",
+          tax: { name: "Sales tax", rate: null, pricesInclude: null },
+        }),
+        taxes: [],
+        total: "£999.99",
+      },
+      {
+        name: "no country",
+        input: plain,
+        tax: taxRegimeOf({ country: null, tax: null }),
+        taxes: [],
+        total: "£999.99",
+      },
+    ];
+    for (const one of cases) {
+      const { tax } = computeInvoice(one.input, one.tax);
+      assert.deepStrictEqual(
+        tax.taxes.map((line) => [line.name, `${line.rate}%`, line.amount.text]),
+        one.taxes,
+        one.name,
+      );
+      assert.strictEqual(tax.total.text, one.total, one.name);
+      assert.isFalse(tax.registered, one.name);
+    }
+    // India keeps its GST from the states, whatever the profile's tax says.
+    assert.deepStrictEqual(taxRegimeOf({ country: "IN", tax: null }), { _tag: "gst" });
+  });
+
   it("decides the tax lines from the states and keeps every paisa", () => {
     const cases = [
       // 3 x 333.33 = 999.99; 9% of it is 89.9991, so 90.00 each way.

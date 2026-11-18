@@ -110,7 +110,10 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   can write in: their chat with an agent, a chat with a teammate, or a group they are in. Only
   people in that chat can open them, and an agent reads them with the access of whoever sent them.
 - **It asks with cards.** A question with choices, a chart, or something to confirm comes as a card
-  in the chat. Tapping an answer answers the agent; it is never an approval.
+  in the chat. Tapping an answer answers the agent; it is never an approval. An answer with a line
+  under it, such as Mark W-4 “Set up the API” done, does exactly that when you tap it, with no
+  wait for the agent. If what it names changed since, the card says nothing was done. A reaction
+  never does it, and Kin never takes such an answer as a default: it waits for your tap.
 - **It asks once, and says what it will do.** An agent's question comes with the answer it will go
   with and the day, by default the end of your next working day (until 19:30). If you don't answer
   by then, it goes with that answer and tells you in one line; say "undo it" to reverse. Something
@@ -224,7 +227,9 @@ teammate, under each person; **On agents** is what an agent has; then everything
 Each task says who has it first, agents by name, then when it's due and its project.
 
 **On me** starts with what can't wait, each marked **Late**, **Due today** or **Stuck**. For
-teammates, the Tasks badge counts your late and due-today tasks.
+teammates, the Tasks badge counts your late and due-today tasks. When one of your tasks is late or
+due today, Kin tells you in your own chat, counting a private task without naming it; teammates
+and co-owners get this plain notice from Kin, while the Chief of staff tells its own owner itself.
 
 The owner and co-owners also see **Needs attention** at the top, for what wants attention across
 the company: other people's late or stuck work, quiet clients, projects with nothing moving. Each

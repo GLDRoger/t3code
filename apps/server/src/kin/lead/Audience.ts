@@ -145,7 +145,7 @@ type Turn = {
  * carries out, by stored author, reactor, `origin.personId` or a task's assigner. Someone whose
  * words a task quotes is neither. `owner` is the lead's owner.
  */
-const peopleBehind = Effect.fn("KinAudience.peopleBehind")(function* (turn: Turn) {
+export const peopleBehind = Effect.fn("KinAudience.peopleBehind")(function* (turn: Turn) {
   const sql = yield* SqlClient.SqlClient;
   const [lead] = yield* sql<{ owner: string; ownerChatId: string }>`
     SELECT a.owner_person_id AS owner, l.owner_chat_id AS "ownerChatId" FROM kin_leads l

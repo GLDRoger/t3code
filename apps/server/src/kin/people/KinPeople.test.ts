@@ -37,6 +37,7 @@ import * as Stop from "../lead/KinStop.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import { KinIdentity, KinIdentityConfig } from "../chat/KinIdentity.ts";
 import { layerKinAuthTest, pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { personHoldNow } from "../triggers/quietHold.ts";
 import { readProfile } from "../work/companyProfile.ts";
 import * as Records from "../work/KinRecords.ts";
 import { KinPushSender, type KinPushNotification } from "../push/KinPushSender.ts";
@@ -1566,6 +1567,35 @@ it.effect(
         awayUntil: null,
       });
       assert.notProperty(cleared, "awayUntil");
+      // The owner's own away ends at midnight on his profile's clock, held and shown alike,
+      // though his quiet hours keep the company's.
+      yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+          dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+        VALUES (${orgId}, 'America/Los_Angeles', '08:30', '18:00', '02:00', 0, 1, '09:00',
+          '{"from":"22:00","to":"07:00"}')
+        ON CONFLICT (org_id) DO UPDATE SET time_zone = excluded.time_zone,
+          quiet_hours_json = excluded.quiet_hours_json`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES ('chief-of-staff', ${orgId}, 'Chief of staff', 'lead', ${owner.personId}, '2026-11-01T00:00:00.000Z')`;
+      yield* service.updateProfile(ownerSession, {
+        orgId,
+        personId: owner.personId,
+        timeZone: "Asia/Kolkata",
+        awayUntil: "2026-11-19",
+      });
+      const ownerAway = Effect.gen(function* () {
+        const profile = (yield* service.profiles(ownerSession, orgId)).profiles.find(
+          (one) => one.personId === owner.personId,
+        );
+        return { shown: profile?.awayUntil, held: yield* personHoldNow(orgId, owner.personId) };
+      });
+      // 10:29 on the 18th in Los Angeles is a minute before midnight in Kolkata.
+      yield* TestClock.setTime(Date.parse("2026-11-18T18:29:00.000Z"));
+      assert.deepStrictEqual(yield* ownerAway, { shown: "2026-11-19", held: "away" });
+      yield* TestClock.setTime(Date.parse("2026-11-18T18:30:00.000Z"));
+      assert.deepStrictEqual(yield* ownerAway, { shown: undefined, held: undefined });
+      yield* sql`DELETE FROM kin_agents WHERE org_id = ${orgId} AND agent_id = 'chief-of-staff'`;
+      yield* TestClock.setTime(Date.parse("2026-11-16T12:00:00.000Z"));
       // Everyone in the org reads everyone's.
       const seen = yield* service.profiles(ravi.session, orgId);
       assert.strictEqual(seen.ownerPersonId, owner.personId);

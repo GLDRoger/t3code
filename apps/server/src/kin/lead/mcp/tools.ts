@@ -28,6 +28,7 @@ import * as Handoff from "../Handoff.ts";
 import * as Team from "../../team/KinTeam.ts";
 import * as PeopleRead from "../peopleRead.ts";
 import * as PeopleUpdate from "../peopleUpdate.ts";
+import * as AwaySet from "../awaySet.ts";
 import * as AgentUpdate from "../agentUpdate.ts";
 import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import { KinLevelGate } from "../LevelGate.ts";
@@ -99,6 +100,13 @@ export const KinLeadToolkit = Toolkit.make(
   })
     .annotate(McpSchema.EnabledWhen, enabled)
     .annotate(Tool.Meta, deferredMeta),
+  Tool.make("away_set", {
+    ...agentChange,
+    description:
+      "Set the away date of the person talking with you when they say they themselves are away, in their own chat with you: Kin holds what can wait for them until they are back, and the answer lists their tasks due meanwhile, for you to mention. Leave until out when they say they are back; it never sets anyone else's, and a refusal says why: tell them in one line.",
+    parameters: AwaySet.AwaySetInput,
+    success: AwaySet.AwaySetResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("agent_update", {
     ...agentChange,
     description:
@@ -149,7 +157,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_ask", {
     ...chat,
     description:
-      "Ask with 2-4 tap-to-answer options in the chat your reply goes to, when the answer is one of a few choices; kind marks a yes/no pair. default: the label you'll take if they don't answer, or \"none\" when nothing is safe without them; by: that day, YYYY-MM-DD (left out: the end of their next working day); about: the record keys it concerns; intent: what you'd do, in a few words. Kin refuses another agent asking the same. It shows under your reply: don't restate the question or its options. Say only what you did or what changed. The tap arrives later and is never an approval.",
+      "Ask with 2-4 tap-to-answer options in the chat your reply goes to, when the answer is one of a few choices; kind marks a yes/no pair. default: the label you'll take if they don't answer, or \"none\" when nothing is safe without them; by: that day, YYYY-MM-DD (left out: the end of their next working day); about: the record keys it concerns; intent: what you'd do, in a few words. Kin refuses another agent asking the same. It shows under your reply: don't restate the question or its options. Say only what you did or what changed. An option may carry action {kind, target}, which Kin runs when it is tapped, with no turn of yours: done or drop a task, start a due deferral, create_list for a new list from your list_define proposal, or take_default of an open question of yours (it runs that default's own action). Kin checks it now as you could do it and writes that option's button and the line under it itself; your label for it isn't shown. A reaction or a passed day never runs it. A plain option's tap arrives later and is never an approval.",
     parameters: ChoiceCard.LeadAskInput,
     success: ChoiceCard.AskResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

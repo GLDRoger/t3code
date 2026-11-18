@@ -348,7 +348,7 @@ export function KinInvoiceCurrency(
       {settled === null ? (
         props.settled ? (
           <Text textRole="footnote" className="text-foreground-muted">
-            {KIN_CURRENCY.paidUnlinked(view.currency)}
+            {KIN_CURRENCY.paidUnlinked(view.currency, view.home)}
           </Text>
         ) : null
       ) : (
