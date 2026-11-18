@@ -528,6 +528,21 @@ it.effect.each([true, false])(
           yield* Effect.promise(() => HttpServerResponse.toWeb(steered).text()),
           OUTSIDE_REFUSAL,
         );
+        // A connection call passes the gate: the service runs a closed read or draws a card.
+        const drafted = yield* request(
+          "/kin/mcp",
+          issued.config.authorizationHeader,
+          "tools/call",
+          {
+            name: "kin_connection_call",
+            arguments: { connection: "Mail", tool: "mail_send", arguments: {} },
+          },
+          connected.session,
+        );
+        assert.notInclude(
+          yield* Effect.promise(() => HttpServerResponse.toWeb(drafted).text()),
+          OUTSIDE_REFUSAL,
+        );
         // A turn others read runs on a shared thread, which never lists them.
         for (const name of LEAD_T3_TOOLS)
           assert.isFalse(yield* visibleOnKinEndpoint(name, ThreadId.make("kin-shared:lead-group")));
