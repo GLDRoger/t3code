@@ -595,6 +595,19 @@ it.effect("the live canvas sends each viewer only what their read would show", (
         widgets.hiddenCountdown.id,
       ])
         assert.notInclude(named(memberSent), `"${hidden}"`);
+
+      // A co-owner made a member: the owner's next move starts their canvas over as a member's.
+      const sql = yield* SqlClient.SqlClient;
+      const demoted = yield* canvas.session(coOwner, { orgId });
+      yield* demoted.start();
+      yield* sql`UPDATE kin_people SET access = 'member'
+        WHERE org_id = ${orgId} AND person_id = ${coOwnerId}`;
+      const afterDemotion = yield* demoted.news({ _tag: "placed", places: moved });
+      assert.deepStrictEqual(
+        afterDemotion.map((event) => event._tag),
+        ["snapshot"],
+      );
+      assert.notInclude(named(afterDemotion), `"${keys.secret}"`);
     }),
   ).pipe(Effect.provide(layer)),
 );

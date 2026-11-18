@@ -107,7 +107,9 @@ export function KinCanvasPeek(props: {
               />
               {card.working !== null ? <Row label="Now" value={card.working} /> : null}
               {card.changed !== null ? <Row label="New" value={card.changed} /> : null}
-              {card.needsYou ? <Row label={KIN_CANVAS.needsYou} value="It's on your list" /> : null}
+              {card.needsYou ? (
+                <Row label={KIN_CANVAS.needsYou} value={KIN_CANVAS.onYourList} />
+              ) : null}
             </View>
             <View className="flex-row flex-wrap gap-2">
               <Button
@@ -127,7 +129,7 @@ export function KinCanvasPeek(props: {
                   size="compact"
                   tone="outline"
                   icon="timer"
-                  label="Count down to it"
+                  label={KIN_CANVAS.countDown}
                   onPress={() => props.onAddWidget("countdown", card.key)}
                 />
               ) : null}
@@ -159,7 +161,7 @@ export function KinCanvasPeek(props: {
               </Text>
             </View>
             <Text textRole="caption" className="text-foreground-muted">
-              Counted by Kin from {widget.sourceKey} whenever it changes.
+              {KIN_CANVAS.countedFrom(widget.sourceKey)}
             </Text>
             <View className="flex-row flex-wrap gap-2">
               {widget.widget.kind !== "countdown" ? (
@@ -230,9 +232,7 @@ export function KinCanvasPeek(props: {
                     key={kind.kind}
                     label={kind.label}
                     description={
-                      kind.kind === "countdown"
-                        ? "Time left to the project's target date"
-                        : kind.detail
+                      kind.kind === "countdown" ? KIN_CANVAS.projectCountdown : kind.detail
                     }
                     onPress={() => props.onAddWidget(kind.kind, groupKey)}
                   />

@@ -7,7 +7,11 @@ import {
   type KinCanvasCamera,
 } from "@t3tools/client-runtime/kin/kinCanvasCamera";
 
-export type KinCanvasFrameListener = (camera: KinCanvasCamera, width: number, height: number) => void;
+export type KinCanvasFrameListener = (
+  camera: KinCanvasCamera,
+  width: number,
+  height: number,
+) => void;
 
 const reducedMotion = () =>
   typeof window !== "undefined" &&

@@ -17,7 +17,10 @@ import {
  */
 export type KinCanvasLensId = "state" | "holder" | "due";
 
-export const KIN_CANVAS_LENSES: ReadonlyArray<{ readonly id: KinCanvasLensId; readonly label: string }> = [
+export const KIN_CANVAS_LENSES: ReadonlyArray<{
+  readonly id: KinCanvasLensId;
+  readonly label: string;
+}> = [
   { id: "state", label: "By state" },
   { id: "holder", label: "By who has it" },
   { id: "due", label: "By due date" },
@@ -32,7 +35,11 @@ export interface KinCanvasLensTask {
   readonly late: boolean;
 }
 
-const STATE_COLUMNS: ReadonlyArray<{ readonly id: string; readonly title: string; readonly states: ReadonlyArray<KinRecordState> }> = [
+const STATE_COLUMNS: ReadonlyArray<{
+  readonly id: string;
+  readonly title: string;
+  readonly states: ReadonlyArray<KinRecordState>;
+}> = [
   { id: "open", title: "To do", states: ["open"] },
   { id: "doing", title: "In progress", states: ["doing"] },
   { id: "waiting", title: "Waiting", states: ["waiting"] },

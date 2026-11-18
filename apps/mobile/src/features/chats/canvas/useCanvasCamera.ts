@@ -34,13 +34,15 @@ export function useCanvasCamera(
   const scale = useSharedValue(held?.scale ?? 1);
   const width = useSharedValue(0);
   const height = useSharedValue(0);
+  // Until a person moves it, the board refits as its cards arrive.
+  const moved = useSharedValue(held !== null);
 
   const get = (): KinCanvasCamera => ({ x: x.get(), y: y.get(), scale: scale.get() });
-  const keep = () => heldCameras.set(key, get());
-  const settled = () => {
-    keep();
-    onSettle(get());
+  const settledAt = (camera: KinCanvasCamera) => {
+    heldCameras.set(key, camera);
+    onSettle(camera);
   };
+  const settled = () => settledAt(get());
   const stop = () => {
     cancelAnimation(x);
     cancelAnimation(y);
@@ -48,12 +50,19 @@ export function useCanvasCamera(
   };
   const set = (camera: KinCanvasCamera) => {
     stop();
-    x.set(camera.x);
-    y.set(camera.y);
-    scale.set(kinCanvasClampScale(camera.scale));
+    const to = { ...camera, scale: kinCanvasClampScale(camera.scale) };
+    x.set(to.x);
+    y.set(to.y);
+    scale.set(to.scale);
+    // Read back on this thread, the values may still be the old ones.
+    settledAt(to);
+  };
+  const touched = () => {
+    moved.set(true);
     settled();
   };
   const flyTo = (target: KinCanvasCamera) => {
+    moved.set(true);
     const to = { ...target, scale: kinCanvasClampScale(target.scale) };
     if (reduceMotion) return set(to);
     stop();
@@ -75,7 +84,21 @@ export function useCanvasCamera(
       kinCanvasZoom(get(), factor, width.get() / 2, height.get() / 2, width.get(), height.get()),
     );
 
-  return { x, y, scale, width, height, held: held !== null, get, set, flyTo, zoomBy, settled };
+  return {
+    x,
+    y,
+    scale,
+    width,
+    height,
+    held: held !== null,
+    moved: () => moved.get(),
+    get,
+    set,
+    flyTo,
+    zoomBy,
+    settled,
+    touched,
+  };
 }
 
 export type CanvasCamera = ReturnType<typeof useCanvasCamera>;

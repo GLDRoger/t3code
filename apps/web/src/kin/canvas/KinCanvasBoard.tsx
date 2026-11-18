@@ -1,7 +1,4 @@
-import {
-  kinCanvasDetail,
-  kinCanvasToWorld,
-} from "@t3tools/client-runtime/kin/kinCanvasCamera";
+import { kinCanvasDetail } from "@t3tools/client-runtime/kin/kinCanvasCamera";
 import { kinCanvasSnap, type KinCanvasLayout } from "@t3tools/client-runtime/kin/kinCanvasLayout";
 import {
   KIN_CANVAS,
@@ -10,9 +7,16 @@ import {
   type KinCanvasWidgetView,
 } from "@t3tools/client-runtime/kin/kinCanvasView";
 import type { KinRecordState } from "@t3tools/contracts";
-import { CalendarClockIcon, FileTextIcon, GaugeIcon, ListTodoIcon, MoreHorizontalIcon } from "lucide-react";
+import {
+  CalendarClockIcon,
+  FileTextIcon,
+  GaugeIcon,
+  ListTodoIcon,
+  MoreHorizontalIcon,
+} from "lucide-react";
 import { memo, useEffect, useRef, type ReactNode } from "react";
 
+import { useStableCallback } from "../../hooks/useStableCallback";
 import { observeResize } from "../../lib/observeResize";
 import { cn } from "../../lib/utils";
 import { KinWorkStateIcon } from "../KinWorkStateIcon";
@@ -126,20 +130,25 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
     pointerId: number;
   } | null>(null);
 
-  const onCardDown = (event: React.PointerEvent<HTMLElement>, key: string, left: number, top: number) => {
-    if (!canArrange || event.button !== 0 || event.shiftKey || event.metaKey || event.ctrlKey) return;
+  // Stable, so a board render doesn't render every card again; the card names itself by data-key.
+  const onCardDown = useStableCallback((event: React.PointerEvent<HTMLElement>) => {
+    if (!canArrange || event.button !== 0 || event.shiftKey || event.metaKey || event.ctrlKey)
+      return;
+    const key = event.currentTarget.dataset.key ?? "";
+    const box = props.layout.cards.get(key);
+    if (box === undefined) return;
     drag.current = {
       key,
       el: event.currentTarget,
       startX: event.clientX,
       startY: event.clientY,
-      left,
-      top,
+      left: box.x,
+      top: box.y,
       moved: false,
       pointerId: event.pointerId,
     };
-  };
-  const onCardMove = (event: React.PointerEvent<HTMLElement>) => {
+  });
+  const onCardMove = useStableCallback((event: React.PointerEvent<HTMLElement>) => {
     const held = drag.current;
     if (held === null || held.pointerId !== event.pointerId) return;
     const dx = event.clientX - held.startX;
@@ -152,8 +161,15 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
     }
     const scale = controller.camera.scale;
     held.el.style.transform = `translate(${held.left + dx / scale}px, ${held.top + dy / scale}px)`;
-  };
-  const onCardUp = (event: React.PointerEvent<HTMLElement>) => {
+  });
+  const onCardCancel = useStableCallback(() => {
+    const held = drag.current;
+    drag.current = null;
+    if (held === null || !held.moved) return;
+    delete held.el.dataset.dragging;
+    held.el.style.transform = `translate(${held.left}px, ${held.top}px)`;
+  });
+  const onCardUp = useStableCallback((event: React.PointerEvent<HTMLElement>) => {
     const held = drag.current;
     drag.current = null;
     if (held === null || !held.moved) return;
@@ -170,10 +186,17 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
       justDragged.current = null;
     }, 0);
     props.onMove(held.key, at.x, at.y);
-  };
+  });
+  const onCardClick = useStableCallback((event: React.MouseEvent<HTMLElement>) => {
+    const key = event.currentTarget.dataset.key ?? "";
+    if (justDragged.current === key) return;
+    if (event.shiftKey || event.metaKey || event.ctrlKey) props.onToggleSelect(key);
+    else props.onPeek(key);
+  });
 
   const onKeyDown = (event: React.KeyboardEvent) => {
-    if ((event.target as HTMLElement).closest("[data-canvas-card]") && event.key === "Enter") return;
+    if ((event.target as HTMLElement).closest("[data-canvas-card]") && event.key === "Enter")
+      return;
     const step = 80;
     const keys: Record<string, () => void> = {
       ArrowLeft: () => controller.panBy(step, 0),
@@ -200,7 +223,8 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
       tabIndex={0}
       onKeyDown={onKeyDown}
       onClick={(event) => {
-        if (event.target === event.currentTarget || event.target === world.current) props.onPeek(null);
+        if (event.target === event.currentTarget || event.target === world.current)
+          props.onPeek(null);
       }}
       data-detail="cards"
       className="group/canvas absolute inset-0 cursor-grab touch-none overflow-hidden bg-muted/40 outline-none select-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset data-panning:cursor-grabbing"
@@ -217,25 +241,29 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
           <div
             key={group.key ?? "none"}
             className="pointer-events-none absolute rounded-2xl border border-border/70 bg-background/60"
-            style={{ transform: `translate(${group.x}px, ${group.y}px)`, width: group.w, height: group.h }}
+            style={{
+              transform: `translate(${group.x}px, ${group.y}px)`,
+              width: group.w,
+              height: group.h,
+            }}
           >
             <div className="pointer-events-auto flex h-[52px] items-center gap-2 px-6">
               <h2
                 className="min-w-0 truncate font-semibold text-foreground tracking-tight"
-                style={{ fontSize: "calc(1.125rem * var(--kc-inv))" }}
+                style={{ fontSize: "min(calc(1.125rem * var(--kc-inv)), 34px)" }}
               >
                 {group.title}
               </h2>
               {props.groupMenus ? (
-              <button
-                type="button"
-                data-canvas-control=""
-                aria-label={`${group.title}: more`}
-                className="ms-auto inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset focus-visible:outline-none group-data-[detail=dots]/canvas:hidden"
-                onClick={(event) => props.onGroup(group.key, event.currentTarget)}
-              >
-                <MoreHorizontalIcon className="size-4" />
-              </button>
+                <button
+                  type="button"
+                  data-canvas-control=""
+                  aria-label={`${group.title}: more`}
+                  className="ms-auto inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset focus-visible:outline-none group-data-[detail=dots]/canvas:hidden"
+                  onClick={(event) => props.onGroup(group.key, event.currentTarget)}
+                >
+                  <MoreHorizontalIcon className="size-4" />
+                </button>
               ) : null}
             </div>
           </div>
@@ -256,14 +284,11 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
               highlighted={props.highlight.has(box.key)}
               gliding={props.gliding}
               draggable={canArrange}
-              onPointerDown={(event) => onCardDown(event, box.key, box.x, box.y)}
+              onPointerDown={onCardDown}
               onPointerMove={onCardMove}
               onPointerUp={onCardUp}
-              onClick={(event) => {
-                if (justDragged.current === box.key) return;
-                if (event.shiftKey || event.metaKey || event.ctrlKey) props.onToggleSelect(box.key);
-                else props.onPeek(box.key);
-              }}
+              onPointerCancel={onCardCancel}
+              onClick={onCardClick}
             />
           );
         })}
@@ -286,6 +311,7 @@ interface CanvasCardProps {
   readonly onPointerDown: (event: React.PointerEvent<HTMLElement>) => void;
   readonly onPointerMove: (event: React.PointerEvent<HTMLElement>) => void;
   readonly onPointerUp: (event: React.PointerEvent<HTMLElement>) => void;
+  readonly onPointerCancel: () => void;
   readonly onClick: (event: React.MouseEvent<HTMLElement>) => void;
 }
 
@@ -303,6 +329,7 @@ const CanvasCard = memo(function CanvasCard(props: CanvasCardProps) {
       onPointerDown={props.onPointerDown}
       onPointerMove={props.onPointerMove}
       onPointerUp={props.onPointerUp}
+      onPointerCancel={props.onPointerCancel}
       onClick={props.onClick}
       className={cn(
         "absolute top-0 left-0 flex h-[132px] w-[240px] flex-col overflow-hidden rounded-xl border bg-card p-3 text-start text-card-foreground shadow-xs outline-none",
@@ -430,16 +457,18 @@ function Widget(props: { readonly widget: KinCanvasWidgetView }) {
           className="mt-auto h-1.5 overflow-hidden rounded-full bg-muted group-data-[detail=dots]/canvas:hidden"
         >
           <div
-            className={cn("h-full rounded-full", widget.tone === "done" ? "bg-success" : "bg-primary")}
+            className={cn(
+              "h-full rounded-full",
+              widget.tone === "done" ? "bg-success" : "bg-primary",
+            )}
             style={{ width: `${Math.round(widget.fraction * 100)}%` }}
           />
         </div>
       ) : null}
-      <span aria-hidden className="hidden size-full rounded-lg bg-primary/25 group-data-[detail=dots]/canvas:block" />
+      <span
+        aria-hidden
+        className="hidden size-full rounded-lg bg-primary/25 group-data-[detail=dots]/canvas:block"
+      />
     </>
   );
 }
-
-/** The canvas point under a screen point inside the board. */
-export const kinCanvasPointAt = (controller: KinCanvasController, sx: number, sy: number) =>
-  kinCanvasToWorld(controller.camera, controller.width, controller.height, sx, sy);

@@ -12,7 +12,12 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import { kinCanvasFit, kinCanvasZoom } from "./kinCanvasCamera.ts";
-import { KIN_CANVAS_CARD_W, kinCanvasLayout, kinCanvasOverlaps } from "./kinCanvasLayout.ts";
+import {
+  KIN_CANVAS_CARD_W,
+  kinCanvasDrop,
+  kinCanvasLayout,
+  kinCanvasOverlaps,
+} from "./kinCanvasLayout.ts";
 import { kinCanvasLensColumns } from "./kinCanvasLens.ts";
 import { kinCanvasApply } from "./kinCanvasStream.ts";
 import {
@@ -99,7 +104,8 @@ describe("canvas layout", () => {
     expect([...a.cards.values()]).toEqual([...b.cards.values()]);
     const boxes = [...a.cards.values()];
     for (const box of boxes)
-      for (const other of boxes) if (other !== box) expect(kinCanvasOverlaps(box, other)).toBe(false);
+      for (const other of boxes)
+        if (other !== box) expect(kinCanvasOverlaps(box, other)).toBe(false);
     expect(a.groups.map((g) => g.title)).toEqual(["Launch site", "No project"]);
   });
 
@@ -113,6 +119,27 @@ describe("canvas layout", () => {
     expect(next.x).toBe(2000 + KIN_CANVAS_CARD_W + 24);
     // The group nobody arranged goes below the arranged one.
     expect(layout.cards.get("W-5")!.y).toBeGreaterThan(1000);
+  });
+
+  it("moves only the dropped card: the rest stay where they were", () => {
+    const before = kinCanvasLayout({ groups, items, places: new Map() });
+    const places = new Map(kinCanvasDrop(before, "W-1", 2000, 1000).map((p) => [p.key, p]));
+    const after = kinCanvasLayout({ groups, items, places });
+    expect(after.cards.get("W-1")).toMatchObject({ x: 2000, y: 1000 });
+    for (const key of ["W-2", "W-3", "W-4", "W-5", "W-6"])
+      expect(after.cards.get(key)).toMatchObject({
+        x: before.cards.get(key)!.x,
+        y: before.cards.get(key)!.y,
+      });
+  });
+
+  it("drops a card beside the one it lands on, not over it", () => {
+    const before = kinCanvasLayout({ groups, items, places: new Map() });
+    const target = before.cards.get("W-2")!;
+    const [dropped] = kinCanvasDrop(before, "W-1", target.x + 10, target.y + 10);
+    for (const card of before.cards.values())
+      if (card.key !== "W-1")
+        expect(kinCanvasOverlaps({ ...dropped!, w: target.w, h: target.h }, card)).toBe(false);
   });
 });
 
@@ -131,7 +158,13 @@ describe("canvas camera", () => {
 describe("canvas lens", () => {
   const tasks = [
     { key: "W-1", state: "open", holder: "You", dueAt: null, late: false },
-    { key: "W-2", state: "doing", holder: "Tech lead", dueAt: "2026-11-20T00:00:00.000Z", late: false },
+    {
+      key: "W-2",
+      state: "doing",
+      holder: "Tech lead",
+      dueAt: "2026-11-20T00:00:00.000Z",
+      late: false,
+    },
     { key: "W-3", state: "open", holder: "Meera", dueAt: "2026-11-10T00:00:00.000Z", late: true },
     { key: "W-4", state: "done", holder: "You", dueAt: null, late: false },
     { key: "W-5", state: "dropped", holder: "You", dueAt: null, late: false },
@@ -191,7 +224,15 @@ describe("canvas cards and words", () => {
         since: {
           seenAt: "2026-11-17T08:00:00.000Z",
           changes: [
-            { key: "W-1", title: "x", by: lead, others: 1, count: 3, at: "2026-11-18T07:00:00.000Z", created: false },
+            {
+              key: "W-1",
+              title: "x",
+              by: lead,
+              others: 1,
+              count: 3,
+              at: "2026-11-18T07:00:00.000Z",
+              created: false,
+            },
           ],
           more: 0,
         },
@@ -216,7 +257,13 @@ describe("canvas cards and words", () => {
   });
 
   it("says what changed since the last look", () => {
-    const change = { title: "x", others: 0, count: 1, at: "2026-11-18T07:00:00.000Z", created: false };
+    const change = {
+      title: "x",
+      others: 0,
+      count: 1,
+      at: "2026-11-18T07:00:00.000Z",
+      created: false,
+    };
     expect(kinCanvasSinceLine(read(), names)).toBe("Nothing changed since you last looked.");
     expect(kinCanvasSinceLine(read({ since: { seenAt: null, changes: [], more: 0 } }), names)).toBe(
       "Changes appear here from your next visit.",
@@ -239,22 +286,25 @@ describe("canvas cards and words", () => {
   });
 
   it("words each widget from its value", () => {
-    expect(kinCanvasWidgetView(widget(), now)).toMatchObject({ headline: "6 of 13 done", tone: "open" });
+    expect(kinCanvasWidgetView(widget(), now)).toMatchObject({
+      headline: "6 of 13 done",
+      tone: "open",
+    });
     const countdown = (value: KinCanvasWidget["value"]) =>
       kinCanvasWidgetView(widget({ kind: "countdown", value }), now).headline;
-    expect(countdown({ _tag: "countdown", at: "2026-12-05T23:59:59.999Z", allDay: true, closed: false })).toBe(
-      "17 days left",
-    );
-    expect(countdown({ _tag: "countdown", at: "2026-11-15T08:00:00.000Z", allDay: true, closed: false })).toBe(
-      "3 days late",
-    );
+    expect(
+      countdown({ _tag: "countdown", at: "2026-12-05T23:59:59.999Z", allDay: true, closed: false }),
+    ).toBe("17 days left");
+    expect(
+      countdown({ _tag: "countdown", at: "2026-11-15T08:00:00.000Z", allDay: true, closed: false }),
+    ).toBe("3 days late");
     expect(countdown({ _tag: "gone" })).toBe("Its source was removed");
     expect(
       kinCanvasWidgetView(
         widget({ kind: "facts", value: { _tag: "facts", open: 2, doing: 1, waiting: 0, late: 1 } }),
         now,
       ),
-    ).toMatchObject({ headline: "3 tasks open", detail: "1 in progress · 1 late", tone: "late" });
+    ).toMatchObject({ headline: "2 tasks open", detail: "1 in progress · 1 late", tone: "late" });
   });
 
   it("names where an agent is working", () => {
@@ -268,7 +318,9 @@ describe("canvas cards and words", () => {
     expect(kinCanvasActivityText({ ...base, state: "thinking", keys: ["W-14"] })).toBe(
       "Tech lead · working on W-14",
     );
-    expect(kinCanvasActivityText({ ...base, state: "thinking", keys: [] })).toBe("Tech lead · thinking");
+    expect(kinCanvasActivityText({ ...base, state: "thinking", keys: [] })).toBe(
+      "Tech lead · thinking",
+    );
   });
 });
 

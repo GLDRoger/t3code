@@ -48,7 +48,14 @@ const KIN_NOT_CHAT = new Set([
 export function kinDestinationAt(pathname: string): KinDestination | null {
   if (kinListAt(pathname) !== "kin") return null;
   const page = pathname.split("/")[4];
-  if (page === "tasks" || page === "canvas" || page === "money" || page === "clients" || page === "docs") return page;
+  if (
+    page === "tasks" ||
+    page === "canvas" ||
+    page === "money" ||
+    page === "clients" ||
+    page === "docs"
+  )
+    return page;
   return "chats";
 }
 

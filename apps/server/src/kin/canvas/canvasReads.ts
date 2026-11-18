@@ -117,6 +117,9 @@ const fieldNames = (json: string): ReadonlyArray<{ readonly field: string }> => 
   }
 };
 
+/** The newest changes a return looks through; after a long absence the rest are folded away. */
+const SINCE_SCAN = 2000;
+
 /**
  * Changes to the canvas's entries this viewer may read, made after `after` by anyone but `me`,
  * newest first. A teammate's tasks outside the projects they lead keep only the changes their
@@ -138,7 +141,8 @@ export const changesSince = Effect.fn("KinCanvas.changesSince")(function* (
       WHERE c.org_id = ${orgId} AND c.at > ${after}
         AND NOT (c.actor_kind = 'person' AND c.actor_id IS ${me})
         AND r.register_id IN ${sql.in(CANVAS_LISTS)} AND ${seenBy(sql, viewer)}
-      ORDER BY c.seq DESC`;
+      ORDER BY c.seq DESC
+      LIMIT ${SINCE_SCAN}`;
   if (viewer._tag === "ownerLevel") return rows;
   return rows.filter(
     (row) =>

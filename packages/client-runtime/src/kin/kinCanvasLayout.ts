@@ -89,11 +89,9 @@ const cardAt = (
 });
 
 /**
- * Where every card sits. A card with a stored place sits exactly there. In a group nobody has
- * arranged, cards sit in a grid in the order given, and those groups are packed in rows below
- * everything arranged by hand. In an arranged group, a new card takes the first free cell from
- * the group's top left, so it lands beside its neighbours without covering one. The same input
- * always lays out the same way.
+ * Where every card sits, the same way for the same input. A stored place is kept exactly. A group
+ * nobody arranged is a grid, packed below the arranged ones; a new card in an arranged group takes
+ * the first free cell from its top left, covering nothing.
  */
 export function kinCanvasLayout(input: {
   readonly groups: ReadonlyArray<KinCanvasLayoutGroup>;
@@ -150,7 +148,12 @@ export function kinCanvasLayout(input: {
       }
       const placedBox =
         box ??
-        cardAt(item, origin.x, (kinCanvasUnion(taken)?.y ?? 0) + (kinCanvasUnion(taken)?.h ?? 0) + STEP_Y, false);
+        cardAt(
+          item,
+          origin.x,
+          (kinCanvasUnion(taken)?.y ?? 0) + (kinCanvasUnion(taken)?.h ?? 0) + STEP_Y,
+          false,
+        );
       taken.push(placedBox);
       group.cards.push(placedBox);
     }
@@ -221,6 +224,43 @@ export function kinCanvasLayout(input: {
     groups,
     bounds: kinCanvasUnion(groups) ?? { x: 0, y: 0, w: KIN_CANVAS_CARD_W, h: KIN_CANVAS_CARD_H },
   };
+}
+
+/**
+ * The places one drop stores: the dropped card, beside whatever it landed on rather than over it,
+ * and every card the canvas laid out itself, where it sits now, so its neighbours don't re-flow.
+ */
+export function kinCanvasDrop(
+  layout: KinCanvasLayout,
+  key: string,
+  x: number,
+  y: number,
+): Array<{ key: string; x: number; y: number }> {
+  const others = [...layout.cards.values()].filter((card) => card.key !== key);
+  const free = (at: { x: number; y: number }) =>
+    !others.some((card) =>
+      kinCanvasOverlaps({ ...at, w: KIN_CANVAS_CARD_W, h: KIN_CANVAS_CARD_H }, card),
+    );
+  const spots = others.flatMap((card) => [
+    { x: card.x - STEP_X, y: card.y },
+    { x: card.x + STEP_X, y: card.y },
+    { x: card.x, y: card.y - STEP_Y },
+    { x: card.x, y: card.y + STEP_Y },
+  ]);
+  const distance = (at: { x: number; y: number }) => Math.hypot(at.x - x, at.y - y);
+  // Hermes on the phone has no toSorted.
+  const nearest = spots
+    .filter(free)
+    .reduce<{ x: number; y: number } | null>(
+      (best, spot) => (best === null || distance(spot) < distance(best) ? spot : best),
+      null,
+    );
+  const at = free({ x, y }) ? { x, y } : (nearest ?? { x, y });
+  const places = [{ key, ...at }];
+  for (const card of layout.cards.values())
+    if (!card.placed && card.key !== key && places.length < 200)
+      places.push({ key: card.key, x: card.x, y: card.y });
+  return places;
 }
 
 /** Where a card dropped at (x, y) lands: snapped to a quiet grid so rows line up. */

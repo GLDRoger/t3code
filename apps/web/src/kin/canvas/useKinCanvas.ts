@@ -35,15 +35,17 @@ function useAllTasks(target: KinWorkTarget, filter: KinWorkFilter, seq: number |
         orgId,
         initial: filter,
         read: (input) =>
-          kinClient.workList.run(appAtomRegistry, { environmentId, input: { ...input, limit: 100 } }),
+          kinClient.workList.run(appAtomRegistry, {
+            environmentId,
+            input: { ...input, limit: 100 },
+          }),
         onChange,
         now: Date.now,
         hostFilters: () => true,
         schedule: kinSchedule,
         rows: () =>
-          appAtomRegistry
-            .get(kinWorkLiveAtom(target))
-            .pipe(AsyncResult.value, Option.getOrNull)?.rows ?? null,
+          appAtomRegistry.get(kinWorkLiveAtom(target)).pipe(AsyncResult.value, Option.getOrNull)
+            ?.rows ?? null,
       }),
     seq,
   );
@@ -61,7 +63,13 @@ function useAllDocs(target: KinWorkTarget, seq: number | null, enabled: boolean)
   const { state, list } = useKinDocsList(target, enabled ? seq : null);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the next page of docs from the host until the canvas holds them all, up to a cap
   useEffect(() => {
-    if (enabled && state.more && !state.loadingMore && !state.moreFailed && state.records.length < 400)
+    if (
+      enabled &&
+      state.more &&
+      !state.loadingMore &&
+      !state.moreFailed &&
+      state.records.length < 400
+    )
       void list.loadMore();
   }, [enabled, list, state.more, state.loadingMore, state.moreFailed, state.records.length]);
   return state;
@@ -86,22 +94,26 @@ export function useKinCanvas(target: KinWorkTarget) {
   const docs = useAllDocs(target, docsLive.live?.seq ?? null, !docsLive.refused);
   const projects = useKinProjectsList(target, seq);
   const canvasResult = useAtomValue(
-    ready ? kinClient.canvasLive({ environmentId: target.environmentId, input: { orgId: target.orgId } }) : noCanvasAtom,
+    ready
+      ? kinClient.canvasLive({
+          environmentId: target.environmentId,
+          input: { orgId: target.orgId },
+        })
+      : noCanvasAtom,
   );
   const canvas: KinCanvasRead | null = Option.getOrNull(AsyncResult.value(canvasResult));
   const canvasFailed = AsyncResult.isFailure(canvasResult) && canvas === null;
   const mine = useKinMyDueTasks(target, directory.names.me, seq);
   const needsRows = useKinNeedsRows({ ...target, names: directory.names }, ready ? mine : null);
-  const leadsResult = useAtomValue(
-    kinReads.askLeads(target, false),
-  );
+  const leadsResult = useAtomValue(kinReads.askLeads(target, false));
   const leads = (Option.getOrNull(AsyncResult.value(leadsResult))?.leads ?? []).filter(
     (lead) => lead.retired === undefined,
   );
   const nowMs = useNowMinuteMs();
 
   const needsYou = new Set<string>();
-  for (const row of needsRows?.needs ?? []) if (row.open.type === "task") needsYou.add(row.open.key);
+  for (const row of needsRows?.needs ?? [])
+    if (row.open.type === "task") needsYou.add(row.open.key);
   for (const row of needsRows?.attention ?? [])
     if (row.open.type === "record") needsYou.add(row.open.key);
 
@@ -115,12 +127,15 @@ export function useKinCanvas(target: KinWorkTarget) {
     now: new Date(nowMs),
   });
 
-  const loading = work._tag === "loading" || (open.loading && open.records.length === 0) || (canvas === null && !canvasFailed);
+  const loading =
+    work._tag === "loading" ||
+    (ready && ((open.loading && open.records.length === 0) || (canvas === null && !canvasFailed)));
   return {
     work,
     model,
     canvas,
     canvasFailed,
+    canvasResult,
     loading,
     names: directory.names,
     nowMs,
@@ -128,7 +143,12 @@ export function useKinCanvas(target: KinWorkTarget) {
     leads,
     stale: open.stale || closed.stale,
     retry: () => {
-      appAtomRegistry.refresh(kinClient.canvasLive({ environmentId: target.environmentId, input: { orgId: target.orgId } }));
+      appAtomRegistry.refresh(
+        kinClient.canvasLive({
+          environmentId: target.environmentId,
+          input: { orgId: target.orgId },
+        }),
+      );
     },
   };
 }

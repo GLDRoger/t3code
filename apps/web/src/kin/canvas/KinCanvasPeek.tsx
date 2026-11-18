@@ -43,7 +43,8 @@ export function KinCanvasPeek(props: {
   const { target, model } = props;
   const card = target.type === "card" ? model.cards.get(target.key) : undefined;
   const widget = target.type === "card" ? model.widgets.get(target.key) : undefined;
-  const group = target.type === "group" ? model.groups.find((g) => g.key === target.key) : undefined;
+  const group =
+    target.type === "group" ? model.groups.find((g) => g.key === target.key) : undefined;
   if (card === undefined && widget === undefined && group === undefined) return null;
 
   const membersOf = (groupKey: string) =>
@@ -61,7 +62,13 @@ export function KinCanvasPeek(props: {
         <span className="text-muted-foreground text-xs tabular-nums">
           {card?.key ?? widget?.sourceKey ?? group?.key}
         </span>
-        <Button className="ms-auto" size="icon-sm" variant="ghost" aria-label="Close" onClick={props.onClose}>
+        <Button
+          className="ms-auto"
+          size="icon-sm"
+          variant="ghost"
+          aria-label="Close"
+          onClick={props.onClose}
+        >
           <XIcon />
         </Button>
       </div>
@@ -71,10 +78,13 @@ export function KinCanvasPeek(props: {
             <h2 className="font-semibold text-base leading-snug">{card.title}</h2>
             <p className="mt-1 text-muted-foreground text-sm">{card.line}</p>
             <dl className="mt-3 space-y-1.5 text-sm">
-              <Row label="State" value={card.tone === "late" ? `${card.status}, late` : card.status} />
+              <Row
+                label="State"
+                value={card.tone === "late" ? `${card.status}, late` : card.status}
+              />
               {card.working !== null ? <Row label="Now" value={card.working} /> : null}
               {card.changed !== null ? <Row label="New" value={card.changed} /> : null}
-              {card.needsYou ? <Row label="Needs you" value="It's on your list" /> : null}
+              {card.needsYou ? <Row label="Needs you" value={KIN_CANVAS.onYourList} /> : null}
             </dl>
             <div className="mt-4 flex flex-wrap gap-2">
               <Button size="sm" onClick={() => props.onOpen(card.key, card.kind)}>
@@ -88,9 +98,13 @@ export function KinCanvasPeek(props: {
                 onAsk={(agent) => props.onAsk(agent, card.key)}
               />
               {props.canArrange && card.kind === "task" ? (
-                <Button size="sm" variant="outline" onClick={() => props.onAddWidget("countdown", card.key)}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => props.onAddWidget("countdown", card.key)}
+                >
                   <CalendarClockIcon />
-                  Count down to it
+                  {KIN_CANVAS.countDown}
                 </Button>
               ) : null}
               {props.canArrange && props.placed ? (
@@ -106,18 +120,28 @@ export function KinCanvasPeek(props: {
         {widget !== undefined ? (
           <>
             <h2 className="font-semibold text-base leading-snug">{widget.title}</h2>
-            <p className="mt-2 font-semibold text-2xl tabular-nums tracking-tight">{widget.headline}</p>
+            <p className="mt-2 font-semibold text-2xl tabular-nums tracking-tight">
+              {widget.headline}
+            </p>
             <p className="text-muted-foreground text-sm">{widget.detail}</p>
             <p className="mt-3 text-muted-foreground text-xs">
-              Counted by Kin from {widget.sourceKey} whenever it changes.
+              {KIN_CANVAS.countedFrom(widget.sourceKey)}
             </p>
             <div className="mt-4 flex flex-wrap gap-2">
               {widget.widget.kind !== "countdown" ? (
-                <Button size="sm" variant="outline" onClick={() => props.onShowSources(membersOf(widget.sourceKey))}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => props.onShowSources(membersOf(widget.sourceKey))}
+                >
                   Show its tasks
                 </Button>
               ) : model.cards.has(widget.sourceKey) ? (
-                <Button size="sm" variant="outline" onClick={() => props.onShowSources([widget.sourceKey])}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => props.onShowSources([widget.sourceKey])}
+                >
                   Show the task
                 </Button>
               ) : null}
@@ -125,7 +149,12 @@ export function KinCanvasPeek(props: {
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => props.onOpen(widget.sourceKey, widget.widget.kind === "countdown" ? "task" : "project")}
+                  onClick={() =>
+                    props.onOpen(
+                      widget.sourceKey,
+                      widget.widget.kind === "countdown" ? "task" : "project",
+                    )
+                  }
                 >
                   <ExternalLinkIcon />
                   Open {widget.sourceKey}
@@ -184,7 +213,9 @@ export function KinCanvasPeek(props: {
                       onClick={() => props.onAddWidget("countdown", group.key!)}
                     >
                       <span className="font-medium text-sm">Countdown</span>
-                      <span className="text-muted-foreground text-xs">Time left to the project's target date</span>
+                      <span className="text-muted-foreground text-xs">
+                        {KIN_CANVAS.projectCountdown}
+                      </span>
                     </button>
                   </li>
                 </ul>

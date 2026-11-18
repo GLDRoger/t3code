@@ -137,6 +137,7 @@ export function useKinCanvas(target: KinWorkTarget) {
     model,
     canvas,
     canvasFailed,
+    canvasResult,
     loading,
     names: directory.names,
     nowMs,

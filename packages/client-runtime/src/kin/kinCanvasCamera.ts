@@ -60,7 +60,7 @@ export const kinCanvasVisible = (
   h: height / camera.scale,
 });
 
-export const kinCanvasToWorld = (
+const kinCanvasToWorld = (
   camera: KinCanvasCamera,
   width: number,
   height: number,

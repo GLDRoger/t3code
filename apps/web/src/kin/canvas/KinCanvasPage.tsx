@@ -1,5 +1,9 @@
 import { kinCanvasFit } from "@t3tools/client-runtime/kin/kinCanvasCamera";
-import { kinCanvasLayout, type KinCanvasLayout } from "@t3tools/client-runtime/kin/kinCanvasLayout";
+import {
+  kinCanvasDrop,
+  kinCanvasLayout,
+  type KinCanvasLayout,
+} from "@t3tools/client-runtime/kin/kinCanvasLayout";
 import {
   KIN_CANVAS_LENSES,
   kinCanvasLensColumns,
@@ -40,7 +44,7 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { kinClient } from "../kinClient";
-import { KinLoadFailed } from "../KinWorkParts";
+import { KinGateFailed, KinLoadFailed, KinWorkNotice } from "../KinWorkParts";
 import { useKinOpenChat } from "../useKinOpenChat";
 import type { KinWorkTarget } from "../useKinWork";
 import { AskMenu } from "./KinCanvasAsk";
@@ -51,7 +55,8 @@ import { KinCanvasPeek, type KinCanvasPeekTarget } from "./KinCanvasPeek";
 import { useKinCanvas } from "./useKinCanvas";
 import { WorkspacePageHeader } from "../../components/WorkspacePageHeader";
 
-const CAMERA_KEY = (target: KinWorkTarget) => `kin:canvas:camera:${target.environmentId}:${target.orgId}`;
+const CAMERA_KEY = (target: KinWorkTarget) =>
+  `kin:canvas:camera:${target.environmentId}:${target.orgId}`;
 
 function savedCamera(target: KinWorkTarget) {
   try {
@@ -94,6 +99,17 @@ export function KinCanvasPage(props: KinWorkTarget) {
 
   const places = new Map<string, { x: number; y: number }>();
   for (const held of data.canvas?.places ?? []) places.set(held.key, held);
+  // A move stays shown as pending until the host's own places carry it.
+  const caughtUp = [...pending].filter(([key, at]) => {
+    const held = places.get(key);
+    return held?.x === at.x && held.y === at.y;
+  });
+  if (caughtUp.length > 0)
+    setPending((held) => {
+      const next = new Map(held);
+      for (const [key] of caughtUp) next.delete(key);
+      return next;
+    });
   for (const [key, at] of pending) places.set(key, at);
 
   const stored: KinCanvasLayout = kinCanvasLayout({
@@ -177,15 +193,25 @@ export function KinCanvasPage(props: KinWorkTarget) {
     if (right > room) controller.flyTo({ ...camera, x: camera.x + (right - room) / camera.scale });
   };
 
-  const openRecord = (key: string, kind: "task" | "doc" | "project" = data.model.cards.get(key)?.kind ?? "task") => {
+  const openRecord = (key: string, given?: "task" | "doc" | "project") => {
+    const kind = given ?? data.model.cards.get(key)?.kind ?? "task";
     openedRecord.current = true;
     const params = { environmentId: target.environmentId, orgId: target.orgId };
     const recordKey = key as KinRecordKey;
     if (kind === "doc")
       void navigate({ to: "/kin/$environmentId/$orgId/docs", params, search: { doc: recordKey } });
     else if (kind === "project")
-      void navigate({ to: "/kin/$environmentId/$orgId/clients", params, search: { project: recordKey } });
-    else void navigate({ to: "/kin/$environmentId/$orgId/tasks", params, search: { task: recordKey } });
+      void navigate({
+        to: "/kin/$environmentId/$orgId/clients",
+        params,
+        search: { project: recordKey },
+      });
+    else
+      void navigate({
+        to: "/kin/$environmentId/$orgId/tasks",
+        params,
+        search: { task: recordKey },
+      });
   };
 
   const ask = (agent: { readonly ownerChatId: string }, keys: ReadonlyArray<string>) => {
@@ -199,25 +225,39 @@ export function KinCanvasPage(props: KinWorkTarget) {
           : [];
     });
     openedRecord.current = true;
-    openChat(target.environmentId, target.orgId, agent.ownerChatId as never, kinCanvasAskDraft(cards));
+    openChat(
+      target.environmentId,
+      target.orgId,
+      agent.ownerChatId as never,
+      kinCanvasAskDraft(cards),
+    );
   };
 
   const problem = (cause: unknown, what: string) =>
     toastManager.add({ type: "error", title: kinFailure(cause, what).text });
 
   const onMove = async (key: string, x: number, y: number) => {
-    setPending((held) => new Map(held).set(key, { x, y }));
-    const result = await place({
-      environmentId: target.environmentId,
-      input: { orgId: target.orgId, places: [{ key: key as never, x, y }] },
-    });
-    // The host's places carry it from here, or it goes back where it was.
+    const dropped = kinCanvasDrop(stored, key, x, y);
     setPending((held) => {
       const next = new Map(held);
-      next.delete(key);
+      for (const at of dropped) next.set(at.key, at);
       return next;
     });
-    if (AsyncResult.isFailure(result)) problem(result.cause, KIN_CANVAS.movedFailed);
+    const result = await place({
+      environmentId: target.environmentId,
+      input: {
+        orgId: target.orgId,
+        places: dropped.map((at) => ({ ...at, key: at.key as never })),
+      },
+    });
+    if (!AsyncResult.isFailure(result)) return;
+    // They go back where they were.
+    setPending((held) => {
+      const next = new Map(held);
+      for (const at of dropped) next.delete(at.key);
+      return next;
+    });
+    problem(result.cause, KIN_CANVAS.movedFailed);
   };
 
   const addWidget = async (kind: KinCanvasWidgetKind, source: string) => {
@@ -225,7 +265,7 @@ export function KinCanvasPage(props: KinWorkTarget) {
       environmentId: target.environmentId,
       input: { orgId: target.orgId, kind, source: source as KinRecordKey },
     });
-    if (AsyncResult.isFailure(result)) problem(result.cause, "Couldn't add the widget");
+    if (AsyncResult.isFailure(result)) problem(result.cause, KIN_CANVAS.widgetAddFailed);
     else if (AsyncResult.isSuccess(result)) setPeek({ type: "card", key: result.value.id });
   };
 
@@ -234,7 +274,7 @@ export function KinCanvasPage(props: KinWorkTarget) {
       environmentId: target.environmentId,
       input: { orgId: target.orgId, id: id as never },
     });
-    if (AsyncResult.isFailure(result)) problem(result.cause, "Couldn't remove the widget");
+    if (AsyncResult.isFailure(result)) problem(result.cause, KIN_CANVAS.widgetRemoveFailed);
     else setPeek(null);
   };
 
@@ -291,10 +331,14 @@ export function KinCanvasPage(props: KinWorkTarget) {
             {needsCount > 0 ? <span className="tabular-nums">{needsCount}</span> : null}
           </Button>
           <Menu>
-            <MenuTrigger render={<Button size="sm" variant={lens === null ? "ghost" : "secondary"} />}>
+            <MenuTrigger
+              render={<Button size="sm" variant={lens === null ? "ghost" : "secondary"} />}
+            >
               <LayoutGridIcon />
               <span className="max-sm:sr-only">
-                {lens === null ? KIN_CANVAS.lens : KIN_CANVAS_LENSES.find((l) => l.id === lens)?.label}
+                {lens === null
+                  ? KIN_CANVAS.lens
+                  : KIN_CANVAS_LENSES.find((l) => l.id === lens)?.label}
               </span>
             </MenuTrigger>
             <MenuPopup align="end">
@@ -304,7 +348,9 @@ export function KinCanvasPage(props: KinWorkTarget) {
                   {lens === option.id ? <CheckIcon className="ms-auto" /> : null}
                 </MenuItem>
               ))}
-              {lens !== null ? <MenuItem onClick={() => chooseLens(null)}>{KIN_CANVAS.backToCanvas}</MenuItem> : null}
+              {lens !== null ? (
+                <MenuItem onClick={() => chooseLens(null)}>{KIN_CANVAS.backToCanvas}</MenuItem>
+              ) : null}
             </MenuPopup>
           </Menu>
           <Button
@@ -322,11 +368,17 @@ export function KinCanvasPage(props: KinWorkTarget) {
       </WorkspacePageHeader>
 
       <div className="relative min-h-0 flex-1">
-        {data.canvasFailed && data.model.items.length === 0 ? (
+        {data.work._tag === "refused" ? (
+          <KinWorkNotice title={KIN_CANVAS.refusedTitle} detail={KIN_CANVAS.refusedDetail} />
+        ) : data.work._tag === "offline" ? (
+          <KinWorkNotice title={KIN_CANVAS.offlineTitle} detail={KIN_CANVAS.offlineDetail} />
+        ) : data.work._tag === "failed" ? (
+          <KinGateFailed className="absolute inset-0 items-center justify-center p-6" />
+        ) : data.canvasFailed && data.model.items.length === 0 ? (
           <KinLoadFailed
             className="absolute inset-0 items-center justify-center p-6"
             what={KIN_CANVAS.loadFailed}
-            cause={null}
+            cause={data.canvasResult}
             onRetry={data.retry}
           />
         ) : data.loading ? (
@@ -373,7 +425,10 @@ export function KinCanvasPage(props: KinWorkTarget) {
             }}
           >
             {/* Overlays: inside the board so the camera's size is the board's. */}
-            <div data-canvas-control="" className="pointer-events-none absolute inset-x-3 top-3 flex flex-col items-start gap-2">
+            <div
+              data-canvas-control=""
+              className="pointer-events-none absolute inset-x-3 top-3 flex flex-col items-start gap-2"
+            >
               {lens !== null ? (
                 <div className="pointer-events-auto flex items-center gap-2 rounded-full border bg-popover px-3 py-1.5 text-sm shadow-sm">
                   <span>{KIN_CANVAS_LENSES.find((l) => l.id === lens)?.label}</span>
@@ -388,16 +443,26 @@ export function KinCanvasPage(props: KinWorkTarget) {
                   className="pointer-events-auto w-full max-w-sm rounded-xl border bg-popover p-3 text-popover-foreground text-sm shadow-sm"
                 >
                   <div className="flex items-start gap-2">
-                    <HistoryIcon aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                    <HistoryIcon
+                      aria-hidden
+                      className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                    />
                     <p className="min-w-0 flex-1">{sinceLine}</p>
                     {since !== undefined && since.changes.length > 0 ? (
-                      <Button size="compact" variant="ghost" onClick={() => setSinceOpen((open) => !open)}>
+                      <Button
+                        size="compact"
+                        variant="ghost"
+                        onClick={() => setSinceOpen((open) => !open)}
+                      >
                         {sinceOpen ? "Hide" : "Show"}
                       </Button>
                     ) : null}
                   </div>
                   {sinceOpen && since !== undefined && since.changes.length > 0 ? (
-                    <ul className="mt-2 max-h-48 space-y-0.5 overflow-y-auto" data-canvas-control="">
+                    <ul
+                      className="mt-2 max-h-48 space-y-0.5 overflow-y-auto"
+                      data-canvas-control=""
+                    >
                       {since.changes.slice(0, 12).map((change) => {
                         const on = data.model.cards.has(change.key);
                         return (
@@ -407,7 +472,9 @@ export function KinCanvasPage(props: KinWorkTarget) {
                               className="flex w-full items-baseline gap-2 rounded-md px-1.5 py-1 text-start hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset focus-visible:outline-none"
                               onClick={() => (on ? focusOn(change.key) : openRecord(change.key))}
                             >
-                              <span className="shrink-0 text-muted-foreground text-xs tabular-nums">{change.key}</span>
+                              <span className="shrink-0 text-muted-foreground text-xs tabular-nums">
+                                {change.key}
+                              </span>
                               <span className="min-w-0 flex-1 truncate">{change.title}</span>
                             </button>
                           </li>
@@ -421,7 +488,10 @@ export function KinCanvasPage(props: KinWorkTarget) {
                       size="compact"
                       variant="outline"
                       onClick={async () => {
-                        await seen({ environmentId: target.environmentId, input: { orgId: target.orgId } });
+                        await seen({
+                          environmentId: target.environmentId,
+                          input: { orgId: target.orgId },
+                        });
                         data.retry();
                       }}
                     >
@@ -431,7 +501,10 @@ export function KinCanvasPage(props: KinWorkTarget) {
                 </section>
               ) : null}
               {activity.length > 0 ? (
-                <ul aria-label="Agents working" className="pointer-events-auto flex flex-wrap gap-1.5">
+                <ul
+                  aria-label="Agents working"
+                  className="pointer-events-auto flex flex-wrap gap-1.5"
+                >
                   {activity.map((entry) => (
                     <li key={`${entry.agentId}:${entry.chatId}`}>
                       <button
@@ -452,11 +525,24 @@ export function KinCanvasPage(props: KinWorkTarget) {
               ) : null}
             </div>
 
-            <div data-canvas-control="" className="absolute bottom-3 left-3 flex items-center gap-1 rounded-lg border bg-popover p-1 shadow-sm max-md:bottom-24">
-              <Button size="icon-sm" variant="ghost" aria-label={KIN_CANVAS.zoomOut} onClick={() => controller.zoomAt(0.8)}>
+            <div
+              data-canvas-control=""
+              className="absolute bottom-3 left-3 flex items-center gap-1 rounded-lg border bg-popover p-1 shadow-sm max-md:bottom-24"
+            >
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label={KIN_CANVAS.zoomOut}
+                onClick={() => controller.zoomAt(0.8)}
+              >
                 <MinusIcon />
               </Button>
-              <Button size="icon-sm" variant="ghost" aria-label={KIN_CANVAS.zoomIn} onClick={() => controller.zoomAt(1.25)}>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label={KIN_CANVAS.zoomIn}
+                onClick={() => controller.zoomAt(1.25)}
+              >
                 <PlusIcon />
               </Button>
               <Button size="sm" variant="ghost" onClick={() => fitAll()}>
@@ -468,7 +554,10 @@ export function KinCanvasPage(props: KinWorkTarget) {
             {!narrow ? <KinCanvasMinimap controller={controller} layout={layout} /> : null}
 
             {selected.size > 0 ? (
-              <div data-canvas-control="" className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border bg-popover py-1 ps-4 pe-1 text-sm shadow-md max-md:bottom-24">
+              <div
+                data-canvas-control=""
+                className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border bg-popover py-1 ps-4 pe-1 text-sm shadow-md max-md:bottom-24"
+              >
                 <span className="tabular-nums">{selected.size} selected</span>
                 <AskMenu leads={data.leads} onAsk={(agent) => ask(agent, [...selected])} />
                 <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
@@ -486,12 +575,20 @@ export function KinCanvasPage(props: KinWorkTarget) {
           >
             <div className="flex items-center gap-2 border-b px-4 py-3">
               <h2 className="font-semibold text-sm">{KIN_CANVAS.needsYou}</h2>
-              <Button className="ms-auto" size="icon-sm" variant="ghost" aria-label="Close" onClick={() => setNeedsOpen(false)}>
+              <Button
+                className="ms-auto"
+                size="icon-sm"
+                variant="ghost"
+                aria-label="Close"
+                onClick={() => setNeedsOpen(false)}
+              >
                 <XIcon />
               </Button>
             </div>
             <ul className="min-h-0 flex-1 overflow-y-auto p-2">
-              {needsCount === 0 ? <li className="p-3 text-muted-foreground text-sm">Nothing needs you right now.</li> : null}
+              {needsCount === 0 ? (
+                <li className="p-3 text-muted-foreground text-sm">{KIN_CANVAS.nothingNeedsYou}</li>
+              ) : null}
               {[
                 ...(data.needsRows?.needs ?? []).map((row) => ({
                   id: row.id,
@@ -519,11 +616,18 @@ export function KinCanvasPage(props: KinWorkTarget) {
                         setNeedsOpen(false);
                         setHighlight(new Set([row.key]));
                       } else if (row.key !== null) openRecord(row.key);
-                      else if (row.chat !== null) openChat(target.environmentId, target.orgId, row.chat);
+                      else if (row.chat !== null)
+                        openChat(target.environmentId, target.orgId, row.chat);
                     }}
                   >
                     <span className="font-medium text-sm">{row.title}</span>
-                    <span className={row.urgent ? "text-destructive-foreground text-xs" : "text-muted-foreground text-xs"}>
+                    <span
+                      className={
+                        row.urgent
+                          ? "text-destructive-foreground text-xs"
+                          : "text-muted-foreground text-xs"
+                      }
+                    >
                       {row.detail}
                     </span>
                   </button>
@@ -544,7 +648,9 @@ export function KinCanvasPage(props: KinWorkTarget) {
             onClose={() => setPeek(null)}
             onOpen={openRecord}
             onAsk={(agent, key) => ask(agent, [key])}
-            onAddWidget={(kind: KinCanvasWidgetKind, source: string) => void addWidget(kind, source)}
+            onAddWidget={(kind: KinCanvasWidgetKind, source: string) =>
+              void addWidget(kind, source)
+            }
             onRemoveWidget={(id) => void removeWidget(id)}
             onPutBack={(key) => void putBack(key)}
             onShowSources={(keys) => {

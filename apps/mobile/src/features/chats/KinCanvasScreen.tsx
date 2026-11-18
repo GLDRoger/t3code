@@ -1,7 +1,11 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinFailure } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinCanvasFit, type KinCanvasCamera } from "@t3tools/client-runtime/kin/kinCanvasCamera";
-import { kinCanvasLayout, type KinCanvasLayout } from "@t3tools/client-runtime/kin/kinCanvasLayout";
+import {
+  kinCanvasDrop,
+  kinCanvasLayout,
+  type KinCanvasLayout,
+} from "@t3tools/client-runtime/kin/kinCanvasLayout";
 import {
   KIN_CANVAS_LENSES,
   kinCanvasLensColumns,
@@ -123,7 +127,11 @@ export function KinCanvasScreen(props: KinWorkTarget) {
     );
   if (data.work._tag === "failed" || (data.canvasFailed && data.model.items.length === 0))
     return message(
-      <KinLoadFailed title={KIN_CANVAS.loadFailed} cause={null} onRetry={data.retry} />,
+      <KinLoadFailed
+        title={KIN_CANVAS.loadFailed}
+        cause={data.work._tag === "failed" ? null : data.canvasResult}
+        onRetry={data.retry}
+      />,
     );
   if (!ready || data.loading)
     return message(
@@ -179,6 +187,17 @@ function KinCanvasLoaded(props: {
 
   const places = new Map<string, { x: number; y: number }>();
   for (const held of data.canvas?.places ?? []) places.set(held.key, held);
+  // A move stays shown as pending until the host's own places carry it.
+  const caughtUp = [...pending].filter(([key, at]) => {
+    const held = places.get(key);
+    return held?.x === at.x && held.y === at.y;
+  });
+  if (caughtUp.length > 0)
+    setPending((held) => {
+      const next = new Map(held);
+      for (const [key] of caughtUp) next.delete(key);
+      return next;
+    });
   for (const [key, at] of pending) places.set(key, at);
 
   const layoutFor = (id: KinCanvasLensId | null): KinCanvasLayout =>
@@ -202,8 +221,15 @@ function KinCanvasLoaded(props: {
     setViews([camera.get(), to]);
     camera.flyTo(to);
   };
-  const fitTo = (bounds: KinCanvasLayout["bounds"], instant = false) => {
-    const to = kinCanvasFit(bounds, camera.width.get(), camera.height.get(), {
+  const fitTo = (
+    bounds: KinCanvasLayout["bounds"],
+    instant = false,
+    // A size just measured: the shared values may not read it back on this thread yet.
+    measured?: { readonly w: number; readonly h: number },
+  ) => {
+    const w = measured?.w ?? camera.width.get();
+    const h = measured?.h ?? camera.height.get();
+    const to = kinCanvasFit(bounds, w, h, {
       top: top + 56,
       right: 0,
       bottom: bottom + 56,
@@ -212,6 +238,15 @@ function KinCanvasLoaded(props: {
     if (instant) camera.set(to);
     else fly(to);
   };
+
+  const { x: boundsX, y: boundsY, w: boundsW, h: boundsH } = layout.bounds;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- refits the camera, which lives outside React, to the board as its cards arrive, until the person moves it
+  useEffect(() => {
+    if (camera.moved() || camera.width.get() === 0) return;
+    // oxlint-disable-next-line react/set-state-in-effect -- the refit tells the board its new view once, for culling and text size.
+    fitTo({ x: boundsX, y: boundsY, w: boundsW, h: boundsH }, true);
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- only a change of the board's extent refits; the camera and insets are read as they are then.
+  }, [boundsX, boundsY, boundsW, boundsH]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the host this person has looked when the canvas leaves the screen
   useEffect(() => {
@@ -226,8 +261,10 @@ function KinCanvasLoaded(props: {
     const box = layout.cards.get(key);
     if (box === undefined) return false;
     const scale = Math.max(camera.scale.get(), 0.9);
-    // The peek covers the lower half, so the card rests in the upper part of the view.
-    const lift = open ? camera.height.get() / 4 / scale : 0;
+    // The peek covers the lower part and the bar and return panel the top; the card rests between.
+    const height = camera.height.get();
+    const between = (top + 120 + height * 0.55) / 2;
+    const lift = open ? (height / 2 - between) / scale : 0;
     fly({ x: box.x + box.w / 2, y: box.y + box.h / 2 + lift, scale });
     if (open) setPeek({ type: "card", key });
     return true;
@@ -260,18 +297,24 @@ function KinCanvasLoaded(props: {
   const problem = (cause: unknown, what: string) => setNotice(kinFailure(cause, what).text);
 
   const onMove = async (key: string, x: number, y: number) => {
-    setPending((held) => new Map(held).set(key, { x, y }));
-    const result = await place({
-      environmentId,
-      input: { orgId, places: [{ key: key as KinCanvasItemKey, x, y }] },
-    });
-    // The host's places carry it from here, or it goes back where it was.
+    const dropped = kinCanvasDrop(layout, key, x, y);
     setPending((held) => {
       const next = new Map(held);
-      next.delete(key);
+      for (const at of dropped) next.set(at.key, at);
       return next;
     });
-    if (AsyncResult.isFailure(result)) problem(result.cause, KIN_CANVAS.movedFailed);
+    const result = await place({
+      environmentId,
+      input: { orgId, places: dropped.map((at) => ({ ...at, key: at.key as KinCanvasItemKey })) },
+    });
+    if (!AsyncResult.isFailure(result)) return;
+    // They go back where they were.
+    setPending((held) => {
+      const next = new Map(held);
+      for (const at of dropped) next.delete(at.key);
+      return next;
+    });
+    problem(result.cause, KIN_CANVAS.movedFailed);
   };
 
   const addWidget = async (kind: KinCanvasWidgetKind, source: string) => {
@@ -432,9 +475,9 @@ function KinCanvasLoaded(props: {
           setPeek({ type: "group", key });
         }}
         onMove={(key, x, y) => void onMove(key, x, y)}
-        onSized={() => {
+        onSized={(size) => {
           if (camera.held) camera.settled();
-          else fitTo(layout.bounds, true);
+          else fitTo(layout.bounds, true, size);
         }}
       >
         <View pointerEvents="box-none" className="absolute inset-x-0 gap-2 px-3" style={{ top }}>
@@ -452,6 +495,8 @@ function KinCanvasLoaded(props: {
               open={sinceOpen}
               onToggle={() => setSinceOpen((open) => !open)}
               onChange={(key) => {
+                // Folded, so the card it flies to isn't under the list.
+                setSinceOpen(false);
                 if (!focusOn(key)) openRecord(key);
               }}
               onMarkSeen={async () => {

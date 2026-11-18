@@ -5,7 +5,11 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../../components/ui/menu
 
 /** Ask about what is chosen: one item per agent this person can message. */
 export function AskMenu(props: {
-  readonly leads: ReadonlyArray<{ readonly agentId: string; readonly name: string; readonly ownerChatId: string }>;
+  readonly leads: ReadonlyArray<{
+    readonly agentId: string;
+    readonly name: string;
+    readonly ownerChatId: string;
+  }>;
   readonly onAsk: (agent: { readonly ownerChatId: string }) => void;
   readonly label?: string;
   readonly variant?: "default" | "outline";

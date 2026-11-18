@@ -7,7 +7,10 @@ import { resubscribeWhenKinReturns, retryWhileKinUnavailable } from "./kinStream
 export const KIN_CANVAS_LIVE_LABEL = "kin:canvas:live";
 
 /** The held canvas after one event from `kin.canvas.subscribe`. */
-export function kinCanvasApply(held: KinCanvasRead | null, event: KinCanvasEvent): KinCanvasRead | null {
+export function kinCanvasApply(
+  held: KinCanvasRead | null,
+  event: KinCanvasEvent,
+): KinCanvasRead | null {
   if (event._tag === "snapshot") return event.read;
   if (held === null) return null;
   switch (event._tag) {
@@ -15,10 +18,7 @@ export function kinCanvasApply(held: KinCanvasRead | null, event: KinCanvasEvent
       const moved = new Map(event.places.map((place) => [place.key, place]));
       return {
         ...held,
-        places: [
-          ...held.places.filter((place) => !moved.has(place.key)),
-          ...event.places,
-        ],
+        places: [...held.places.filter((place) => !moved.has(place.key)), ...event.places],
       };
     }
     case "unplaced": {

@@ -19,10 +19,17 @@ export type KinCanvasWidgetId = typeof KinCanvasWidgetId.Type;
 export const KinCanvasItemKey = Schema.Union([KinRecordKey, KinCanvasWidgetId]);
 export type KinCanvasItemKey = typeof KinCanvasItemKey.Type;
 
-const KinCanvasCoord = Schema.Number.check(Schema.isFinite(), Schema.isBetween({ minimum: -1e6, maximum: 1e6 }));
+const KinCanvasCoord = Schema.Number.check(
+  Schema.isFinite(),
+  Schema.isBetween({ minimum: -1e6, maximum: 1e6 }),
+);
 
 /** Where one card sits, in canvas units. One layout per company; each person keeps their own view. */
-export const KinCanvasPlace = Schema.Struct({ key: KinCanvasItemKey, x: KinCanvasCoord, y: KinCanvasCoord });
+export const KinCanvasPlace = Schema.Struct({
+  key: KinCanvasItemKey,
+  x: KinCanvasCoord,
+  y: KinCanvasCoord,
+});
 export type KinCanvasPlace = typeof KinCanvasPlace.Type;
 
 /**
@@ -43,6 +50,7 @@ export const KinCanvasWidgetValue = Schema.Union([
     closed: Schema.Boolean,
   }),
   Schema.TaggedStruct("facts", {
+    /** Every task not done or dropped; `doing` and `waiting` are among them. */
     open: NonNegativeInt,
     doing: NonNegativeInt,
     waiting: NonNegativeInt,
@@ -176,13 +184,21 @@ export const KinCanvasRpcs = [
     error,
     stream: true,
   }),
-  Rpc.make("kin.canvas.place", { payload: KinCanvasPlaceInput, success: KinCanvasPlacesResult, error }),
+  Rpc.make("kin.canvas.place", {
+    payload: KinCanvasPlaceInput,
+    success: KinCanvasPlacesResult,
+    error,
+  }),
   Rpc.make("kin.canvas.unplace", {
     payload: KinCanvasUnplaceInput,
     success: KinCanvasPlacesResult,
     error,
   }),
-  Rpc.make("kin.canvas.widgetAdd", { payload: KinCanvasWidgetAddInput, success: KinCanvasWidget, error }),
+  Rpc.make("kin.canvas.widgetAdd", {
+    payload: KinCanvasWidgetAddInput,
+    success: KinCanvasWidget,
+    error,
+  }),
   Rpc.make("kin.canvas.widgetRemove", {
     payload: KinCanvasWidgetRemoveInput,
     success: KinCanvasRemoved,

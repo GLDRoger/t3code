@@ -51,12 +51,16 @@ export const KIN_CANVAS = {
   sinceTitle: "Since you last looked",
   offlineTitle: "You're offline",
   offlineDetail: "The canvas comes back when the connection does.",
-  refusedTitle: "Only the owner can open this",
-  refusedDetail: "The canvas is shown to the person who runs this workspace for now.",
+  refusedTitle: "The canvas isn't open to you here",
+  refusedDetail: "It shows tasks and docs, and you don't have access to them here.",
   widgetAddFailed: "Couldn't add the widget",
   widgetRemoveFailed: "Couldn't remove the widget",
   nothingNeedsYou: "Nothing needs you right now.",
   entrySummary: "Tasks and docs on one board, by project",
+  onYourList: "It's on your list",
+  countDown: "Count down to it",
+  projectCountdown: "Time left to the project's target date",
+  countedFrom: (key: string) => `Counted by Kin from ${key} whenever it changes.`,
 } as const;
 
 export type KinCanvasCardKind = "task" | "doc";
@@ -114,11 +118,7 @@ const toneOf = (state: KinRecordState, late: boolean): KinCanvasTone =>
           : "open";
 
 /** "Tech lead changed it today", "Meera and 2 others added it yesterday". */
-export function kinCanvasChangedText(
-  change: KinCanvasChange,
-  names: KinWorkNames,
-  now: Date,
-): string {
+function kinCanvasChangedText(change: KinCanvasChange, names: KinWorkNames, now: Date): string {
   const who = kinWorkActorName(change.by, names);
   const plus = change.others === 0 ? who : `${who} and ${plural(change.others, "other")}`;
   return `${plus} ${change.created ? "added" : "changed"} it ${kinWorkDayOfTime(change.at, now)}`;
@@ -199,7 +199,7 @@ export function kinCanvasWidgetView(widget: KinCanvasWidget, nowDate: Date): Kin
     );
   }
   if (value._tag === "facts") {
-    const open = value.open + value.doing + value.waiting;
+    const open = value.open;
     const parts = [
       value.doing > 0 ? `${value.doing} in progress` : null,
       value.waiting > 0 ? `${value.waiting} waiting` : null,
@@ -243,7 +243,7 @@ export interface KinCanvasModel {
 }
 
 /** Done tasks stay on the canvas this long after closing, then leave it. */
-export const KIN_CANVAS_DONE_DAYS = 14;
+const KIN_CANVAS_DONE_DAYS = 14;
 
 const byKey = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true });
 

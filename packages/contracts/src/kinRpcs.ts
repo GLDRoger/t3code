@@ -411,7 +411,7 @@ const KIN_RPC_ACCESS = {
   "kin.people.setPlaces": "owner_level",
   "kin.access.me": "person",
   "kin.refreshes.subscribe": "person",
-  // Needs attention and goals: the service shows a member only what they may see.
+  // The canvas: anyone reads their own view of it; only the owner level arranges it.
   "kin.canvas.read": "person",
   "kin.canvas.subscribe": "person",
   "kin.canvas.place": "owner_level",
@@ -419,6 +419,7 @@ const KIN_RPC_ACCESS = {
   "kin.canvas.widgetAdd": "owner_level",
   "kin.canvas.widgetRemove": "owner_level",
   "kin.canvas.seen": "person",
+  // Needs attention and goals: the service shows a member only what they may see.
   "kin.pulse.read": "person",
   "kin.pulse.subscribe": "person",
   "kin.pulse.handle": "person",

@@ -51,7 +51,7 @@ export interface KinCanvasBoardProps {
   readonly onGroup: (key: string) => void;
   readonly onMove: (key: string, x: number, y: number) => void;
   /** The board has a size for the first time: place the camera. */
-  readonly onSized: () => void;
+  readonly onSized: (size: { readonly w: number; readonly h: number }) => void;
   readonly children?: ReactNode;
 }
 
@@ -69,7 +69,7 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
     },
   );
 
-  const { settled } = camera;
+  const { touched } = camera;
   const stop = () => {
     "worklet";
     cancelAnimation(x);
@@ -83,7 +83,7 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
       x.set(x.get() - event.changeX / scale.get());
       y.set(y.get() - event.changeY / scale.get());
     },
-    onDeactivate: () => runOnJS(settled)(),
+    onDeactivate: () => runOnJS(touched)(),
   });
   const pinch = usePinchGesture({
     onActivate: () => stop(),
@@ -99,7 +99,7 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
       y.set(y.get() + fy / s - fy / next);
       scale.set(next);
     },
-    onDeactivate: () => runOnJS(settled)(),
+    onDeactivate: () => runOnJS(touched)(),
   });
   const zoomIn = (sx: number, sy: number) => {
     const s = camera.get();
@@ -148,7 +148,7 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
         height.set(h);
         if (w === 0) return;
         setSize({ w, h });
-        if (size === null) props.onSized();
+        if (size === null) props.onSized({ w, h });
       }}
     >
       <GestureDetector gesture={gestures}>
@@ -188,7 +188,10 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
                     <Text
                       numberOfLines={1}
                       className="min-w-0 shrink font-t3-semibold"
-                      style={{ fontSize: 18 * inv, lineHeight: 23 * inv }}
+                      style={{
+                        fontSize: Math.min(18 * inv, 34),
+                        lineHeight: Math.min(23 * inv, 42),
+                      }}
                     >
                       {group.title}
                     </Text>

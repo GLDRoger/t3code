@@ -636,7 +636,17 @@ const make = Effect.gen(function* () {
       return [{ _tag: "activity", activity } satisfies KinCanvasEvent];
     });
 
+    // A co-owner made a member reads a different canvas: every input checks first, and starts over.
+    const releveled = Effect.fn("KinCanvas.session.releveled")(function* () {
+      const now = yield* viewerOf(people, orgId);
+      if (now.teammate === viewer.teammate) return null;
+      viewer = now;
+      return yield* start();
+    });
+
     const news = Effect.fn("KinCanvas.session.news")(function* (one: News) {
+      const restarted = yield* releveled();
+      if (restarted !== null) return restarted;
       switch (one._tag) {
         case "placed":
           return yield* placeDiff(one.places, []);
@@ -652,12 +662,8 @@ const make = Effect.gen(function* () {
     });
 
     const ticks = Effect.fn("KinCanvas.session.ticks")(function* (burst: ReadonlyArray<Tick>) {
-      // A co-owner made a member reads a different canvas: start over.
-      const now = yield* viewerOf(people, orgId);
-      if (now.teammate !== viewer.teammate) {
-        viewer = now;
-        return yield* start();
-      }
+      const restarted = yield* releveled();
+      if (restarted !== null) return restarted;
       const keys = burst.flatMap((tick) => (tick.key === undefined ? [] : [tick.key]));
       // A gap, an undo or someone's places moving may move anything.
       const everything = burst.some(
@@ -692,7 +698,11 @@ const make = Effect.gen(function* () {
       start: provided(start),
       news: provided(news),
       ticks: provided(ticks),
-      presence: provided(activityDiff),
+      presence: provided(
+        Effect.fn("KinCanvas.session.presence")(function* () {
+          return (yield* releveled()) ?? (yield* activityDiff());
+        }),
+      ),
     } satisfies CanvasSession;
   });
 
