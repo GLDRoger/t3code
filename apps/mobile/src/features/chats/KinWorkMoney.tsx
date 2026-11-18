@@ -27,7 +27,7 @@ import {
   kinEstimatesByLine,
   kinMissingRates,
   kinRateLine,
-  kinTotalsEstimate,
+  kinOwedAbout,
   type KinEstimate,
 } from "@t3tools/client-runtime/kin/kinCurrency";
 import { Pressable, View } from "react-native";
@@ -497,7 +497,7 @@ export function KinMoneyArea(props: Shared) {
     ],
     rates,
   );
-  const owedAll = kinTotalsEstimate(summary.owed.total, rates);
+  const owedAbout = kinOwedAbout(summary, rates);
   const missing = kinMissingRates(
     [
       ...summary.owed.total,
@@ -514,13 +514,10 @@ export function KinMoneyArea(props: Shared) {
           <Figure figure={view.owed} onOpen={openList} estimates={estimates} />
           <Figure figure={view.overdue} onOpen={openList} estimates={estimates} />
         </View>
-        {owedAll?.all == null && missing.length === 0 ? null : (
+        {owedAbout === null && missing.length === 0 ? null : (
           <View className="gap-1 px-2">
-            {owedAll?.all == null ? null : (
-              <KinEstimateText
-                text={`${owedAll.all} owed (estimate)`}
-                basis={owedAll.basis.map((line) => `At ${line}.`)}
-              />
+            {owedAbout === null ? null : (
+              <KinEstimateText text={owedAbout.text} basis={owedAbout.basis} />
             )}
             <KinSetRateLink {...target} currencies={missing} />
           </View>

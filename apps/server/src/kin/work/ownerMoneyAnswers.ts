@@ -167,6 +167,11 @@ const budgetsOf = Effect.fn("KinMoneyAnswers.budgetsOf")(function* (orgId: KinOr
       spent: signed(one.spent, one.currency),
       expenses: one.expenses,
       status: one.status,
+      ...(one.notCounted.length === 0
+        ? {}
+        : {
+            notCounted: one.notCounted.map((money) => ({ currency: money.currency, spent: money })),
+          }),
     })),
   };
 });
