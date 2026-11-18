@@ -123,7 +123,10 @@ export const DeferInput = Schema.Struct({
   what: TrimmedNonEmptyString.check(Schema.isMaxLength(8000)),
   due: deferDue,
   onDue: Schema.Literals(["remind", "start", "ask", "chase"]),
-  ask: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
+  ask: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))).annotate({
+    description:
+      "With onDue ask or chase: the person you will ask or chase when it comes due, by name; omit it when that is whoever asked you.",
+  }),
   chatId: KinChatId,
   sourceEventId: TurnEvent,
   replaces: Schema.optional(KinMemoryItemId),
