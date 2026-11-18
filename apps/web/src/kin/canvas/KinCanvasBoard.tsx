@@ -28,6 +28,8 @@ export interface KinCanvasBoardProps {
   /** Cards glide to a lens's places and back; never while dragging or panning. */
   readonly gliding: boolean;
   readonly canArrange: boolean;
+  /** Groups are projects (not a lens's columns), so each has a menu. */
+  readonly groupMenus: boolean;
   readonly onPeek: (key: string | null) => void;
   readonly onToggleSelect: (key: string) => void;
   readonly onMove: (key: string, x: number, y: number) => void;
@@ -82,7 +84,8 @@ function useCameraWriter(
     const stopResize = observeResize(el, ([entry]) => {
       if (entry === undefined) return;
       controller.resize(entry.contentRect.width, entry.contentRect.height);
-      if (!sized && entry.contentRect.width > 0) {
+      // Until someone moves it, the view keeps fitting the board as the window changes.
+      if (entry.contentRect.width > 0 && (!sized || !controller.touched)) {
         sized = true;
         onSized(entry.contentRect.width, entry.contentRect.height);
       }
@@ -223,6 +226,7 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
               >
                 {group.title}
               </h2>
+              {props.groupMenus ? (
               <button
                 type="button"
                 data-canvas-control=""
@@ -232,6 +236,7 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
               >
                 <MoreHorizontalIcon className="size-4" />
               </button>
+              ) : null}
             </div>
           </div>
         ))}

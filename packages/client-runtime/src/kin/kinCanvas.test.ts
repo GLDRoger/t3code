@@ -242,7 +242,7 @@ describe("canvas cards and words", () => {
     expect(kinCanvasWidgetView(widget(), now)).toMatchObject({ headline: "6 of 13 done", tone: "open" });
     const countdown = (value: KinCanvasWidget["value"]) =>
       kinCanvasWidgetView(widget({ kind: "countdown", value }), now).headline;
-    expect(countdown({ _tag: "countdown", at: "2026-12-05T08:00:00.000Z", allDay: true, closed: false })).toBe(
+    expect(countdown({ _tag: "countdown", at: "2026-12-05T23:59:59.999Z", allDay: true, closed: false })).toBe(
       "17 days left",
     );
     expect(countdown({ _tag: "countdown", at: "2026-11-15T08:00:00.000Z", allDay: true, closed: false })).toBe(
@@ -265,7 +265,7 @@ describe("canvas cards and words", () => {
       label: null,
       startedAt: now.toISOString(),
     };
-    expect(kinCanvasActivityText({ ...base, state: "working", keys: ["W-14"] })).toBe(
+    expect(kinCanvasActivityText({ ...base, state: "thinking", keys: ["W-14"] })).toBe(
       "Tech lead · working on W-14",
     );
     expect(kinCanvasActivityText({ ...base, state: "thinking", keys: [] })).toBe("Tech lead · thinking");

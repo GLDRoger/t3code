@@ -214,10 +214,13 @@ function KinCanvasLoaded(props: {
   };
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the host this person has looked when the canvas leaves the screen
-  useEffect(
-    () => () => void seen({ environmentId, input: { orgId } }),
-    [seen, environmentId, orgId],
-  );
+  useEffect(() => {
+    const shownAt = performance.now();
+    return () => {
+      // A glance shorter than this (or a dev remount) isn't a look.
+      if (performance.now() - shownAt > 1500) void seen({ environmentId, input: { orgId } });
+    };
+  }, [seen, environmentId, orgId]);
 
   const focusOn = (key: string, open = true) => {
     const box = layout.cards.get(key);

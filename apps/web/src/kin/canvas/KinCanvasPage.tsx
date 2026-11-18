@@ -66,6 +66,8 @@ function savedCamera(target: KinWorkTarget) {
   }
 }
 
+const KIN_CANVAS_LOOK_MS = 1500;
+
 export function KinCanvasPage(props: KinWorkTarget) {
   const target = props;
   const data = useKinCanvas(target);
@@ -109,7 +111,8 @@ export function KinCanvasPage(props: KinWorkTarget) {
 
   const fitAll = (instant = false) => {
     const camera = kinCanvasFit(layout.bounds, controller.width, controller.height, {
-      top: 64,
+      // The return panel and agent chips sit over the top of the board.
+      top: (data.canvas?.since.changes.length ?? 0) > 0 && sinceOpen ? 220 : 120,
       right: peek !== null && !narrow ? 380 : 0,
       bottom: narrow ? 96 : 24,
       left: 0,
@@ -142,14 +145,15 @@ export function KinCanvasPage(props: KinWorkTarget) {
   );
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the host this person has looked when they leave the canvas, unless for a card they opened from it; stops the camera
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    const shownAt = performance.now();
+    return () => {
       controller.dispose();
-      if (!openedRecord.current)
+      // A glance shorter than this (or a dev remount) isn't a look.
+      if (!openedRecord.current && performance.now() - shownAt > KIN_CANVAS_LOOK_MS)
         void seen({ environmentId: target.environmentId, input: { orgId: target.orgId } });
-    },
-    [controller, seen, target.environmentId, target.orgId],
-  );
+    };
+  }, [controller, seen, target.environmentId, target.orgId]);
 
   const focusOn = (key: string, open = true) => {
     const box = layout.cards.get(key);
@@ -161,6 +165,16 @@ export function KinCanvasPage(props: KinWorkTarget) {
     });
     if (open) setPeek({ type: "card", key });
     return true;
+  };
+
+  // The peek covers the board's right edge on a wide window; a card under it slides into view.
+  const revealBesidePeek = (key: string) => {
+    const box = layout.cards.get(key);
+    if (box === undefined || narrow) return;
+    const { camera, width } = controller;
+    const right = (box.x + box.w - camera.x) * camera.scale + width / 2;
+    const room = width - 400;
+    if (right > room) controller.flyTo({ ...camera, x: camera.x + (right - room) / camera.scale });
   };
 
   const openRecord = (key: string, kind: "task" | "doc" | "project" = data.model.cards.get(key)?.kind ?? "task") => {
@@ -273,13 +287,15 @@ export function KinCanvasPage(props: KinWorkTarget) {
             }}
           >
             <BellDotIcon />
-            {KIN_CANVAS.needsYou}
+            <span className="max-sm:sr-only">{KIN_CANVAS.needsYou}</span>
             {needsCount > 0 ? <span className="tabular-nums">{needsCount}</span> : null}
           </Button>
           <Menu>
             <MenuTrigger render={<Button size="sm" variant={lens === null ? "ghost" : "secondary"} />}>
               <LayoutGridIcon />
-              {lens === null ? KIN_CANVAS.lens : KIN_CANVAS_LENSES.find((l) => l.id === lens)?.label}
+              <span className="max-sm:sr-only">
+                {lens === null ? KIN_CANVAS.lens : KIN_CANVAS_LENSES.find((l) => l.id === lens)?.label}
+              </span>
             </MenuTrigger>
             <MenuPopup align="end">
               {KIN_CANVAS_LENSES.map((option) => (
@@ -333,6 +349,7 @@ export function KinCanvasPage(props: KinWorkTarget) {
             peek={peek?.type === "card" ? peek.key : null}
             highlight={highlight}
             gliding={gliding}
+            groupMenus={lens === null}
             canArrange={canArrange && !selecting}
             onPeek={(key) => {
               setHighlight(new Set());
@@ -344,6 +361,7 @@ export function KinCanvasPage(props: KinWorkTarget) {
               else {
                 setNeedsOpen(false);
                 setPeek({ type: "card", key });
+                revealBesidePeek(key);
               }
             }}
             onToggleSelect={toggleSelect}

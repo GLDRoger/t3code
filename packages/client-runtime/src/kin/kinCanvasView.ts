@@ -160,11 +160,13 @@ const DOING: Partial<Record<KinCanvasActivity["state"], string>> = {
 export function kinCanvasActivityText(activity: KinCanvasActivity): string {
   const doing = DOING[activity.state] ?? "working";
   if (activity.keys.length === 0) return `${activity.name} · ${doing}`;
+  // Once its turn has changed something, it is working on that, whatever the line says now.
+  const on_ = activity.state === "stalled" || activity.state === "paused" ? doing : "working";
   const on =
     activity.keys.length === 1
       ? activity.keys[0]
       : `${activity.keys[0]} and ${plural(activity.keys.length - 1, "other")}`;
-  return `${activity.name} · ${doing} on ${on}`;
+  return `${activity.name} · ${on_} on ${on}`;
 }
 
 export function kinCanvasWidgetView(widget: KinCanvasWidget, nowDate: Date): KinCanvasWidgetView {
@@ -218,8 +220,9 @@ export function kinCanvasWidgetView(widget: KinCanvasWidget, nowDate: Date): Kin
     const late = Math.max(1, Math.floor((now - at) / DAY_MS));
     return view(`${plural(late, "day")} late`, `Was due ${day}`, null, "late");
   }
-  const days = Math.ceil((at - now) / DAY_MS);
-  return view(days <= 1 ? "Due today" : `${plural(days, "day")} left`, `Due ${day}`, null, "open");
+  // An all-day due time is that day's end, so whole days left are counted down, not up.
+  const days = value.allDay ? Math.floor((at - now) / DAY_MS) : Math.ceil((at - now) / DAY_MS);
+  return view(days < 1 ? "Due today" : `${plural(days, "day")} left`, `Due ${day}`, null, "open");
 }
 
 export interface KinCanvasProject {
