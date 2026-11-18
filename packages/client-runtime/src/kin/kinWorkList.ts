@@ -6,6 +6,8 @@ import {
   type KinWorkHeldPage,
   type KinWorkListInput,
   type KinWorkListResult,
+  type KinWorkMoveCounts,
+  type KinWorkRowMove,
   type KinWorkRows,
 } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
@@ -13,6 +15,7 @@ import { AsyncResult } from "effect/reactivity";
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import {
   KIN_WORK_DEFAULT_FILTER,
+  kinWorkByMove,
   kinWorkListQuery,
   kinWorkSameFilter,
   type KinWorkFilter,
@@ -315,6 +318,10 @@ export function createKinWorkList(options: {
   readonly rows?: () => KinWorkRows | null;
 }) {
   const follow = kinWorkPageFollower(options.rows ?? (() => null));
+  // A `byMove` read's steps by key and its counts, kept beside the rows they came with.
+  let moves = new Map<string, KinWorkRowMove>();
+  let counts: KinWorkMoveCounts | null = null;
+  let movesFor: KinWorkFilter | null = null;
   const list = createKinPagedList<KinWorkFilter, KinRecord>({
     initial: options.initial ?? KIN_WORK_DEFAULT_FILTER,
     sameFilter: kinWorkSameFilter,
@@ -327,12 +334,25 @@ export function createKinWorkList(options: {
         ...page,
       };
       const result = await follow.read(input, options.read);
+      if (AsyncResult.isSuccess(result)) {
+        const top = page.cursor === undefined;
+        if (top || movesFor === null || !kinWorkSameFilter(movesFor, filter)) moves = new Map();
+        movesFor = filter;
+        for (const move of result.value.moves ?? []) moves.set(move.key, move);
+        if (top || result.value.counts !== undefined) counts = result.value.counts ?? null;
+      }
       return mapPage(result, (value) => ({ ...value, rows: value.records }));
     },
-    catchUp: (state) => follow.catchUp(state.records),
+    // Grouped by whose move, a change can move a row between groups: only a read says where.
+    catchUp: (state) => (kinWorkByMove(state.filter) ? null : follow.catchUp(state.records)),
   });
+  const current = () => movesFor !== null && kinWorkSameFilter(movesFor, list.getState().filter);
   return {
     ...list,
+    /** Each row's step from the last `byMove` read; empty from an older host or another read. */
+    moves: (): ReadonlyMap<string, KinWorkRowMove> => (current() ? moves : new Map()),
+    /** The groups' counts from the last `byMove` read; null from an older host or another read. */
+    counts: () => (current() ? counts : null),
     /** The host announced `seq`: rows it sent apply in place, and anything else reads again. */
     changed: (seq: number) => list.changed(seq, follow.newEpoch()),
     resume: () => (follow.newEpoch() ? list.refresh() : list.resume()),

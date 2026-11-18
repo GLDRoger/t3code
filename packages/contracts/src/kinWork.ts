@@ -14,6 +14,7 @@ import {
   KinAttachment,
   KinChatError,
   KinChatId,
+  KinChoiceOption,
   KinMessageId,
   KinOrgId,
   KinPersonId,
@@ -485,8 +486,45 @@ export const KinWorkListInput = Schema.Struct({
   ),
   /** Answer `rows` and `can` in place of `records`; `kinWorkListRecords` restores them. */
   acceptCompactRows: Schema.optional(Schema.Boolean),
+  /**
+   * Open tasks only, ordered by whose move each is for the reader (`kinWorkMove`): Needs you,
+   * Waiting on others, the rest; inside each, `kinWorkMoveOrder`. Answers `moves` and `counts`.
+   */
+  byMove: Schema.optional(Schema.Literal(true)),
 });
 export type KinWorkListInput = typeof KinWorkListInput.Type;
+
+export const KinWorkMoveGroup = Schema.Literals(["needsYou", "waiting", "rest"]);
+export type KinWorkMoveGroup = typeof KinWorkMoveGroup.Type;
+
+/** A card waiting on the reader about a task, with what its buttons post (`kin.widgets.act`). */
+export const KinWorkMoveCard = Schema.Struct({
+  ...KinRecordWaiting.fields,
+  revision: NonNegativeInt,
+  options: Schema.Array(KinChoiceOption),
+});
+export type KinWorkMoveCard = typeof KinWorkMoveCard.Type;
+
+/** Where a row of a `byMove` page sits for the reader, and the one step it carries. */
+export const KinWorkRowMove = Schema.Struct({
+  key: KinRecordKey,
+  group: KinWorkMoveGroup,
+  card: Schema.optional(KinWorkMoveCard),
+  /** A late task someone else holds for the reader: the holder's latest note. */
+  said: Schema.optional(KinText),
+  /** When the reader last nudged its holder, if that was today. */
+  nudgedAt: Schema.optional(IsoDateTime),
+});
+export type KinWorkRowMove = typeof KinWorkRowMove.Type;
+
+/** Every match of a `byMove` read, not just the page; `doneRecently` is done in the last 14 days. */
+export const KinWorkMoveCounts = Schema.Struct({
+  needsYou: NonNegativeInt,
+  waiting: NonNegativeInt,
+  rest: NonNegativeInt,
+  doneRecently: NonNegativeInt,
+});
+export type KinWorkMoveCounts = typeof KinWorkMoveCounts.Type;
 /** Ordered open first, then soonest due, then key. `seq` is the change number the page is as of. */
 export const KinWorkListResult = Schema.Struct({
   records: Schema.Array(KinRecord),
@@ -500,8 +538,22 @@ export const KinWorkListResult = Schema.Struct({
   rows: Schema.optional(Schema.Array(KinRecordCompact)),
   /** What the reader may do to every row in `rows` that carries no `can` of its own. */
   can: Schema.optional(KinRecordCan),
+  /** Asked for with `byMove`: one per row of this page. */
+  moves: Schema.optional(Schema.Array(KinWorkRowMove)),
+  counts: Schema.optional(KinWorkMoveCounts),
 });
 export type KinWorkListResult = typeof KinWorkListResult.Type;
+
+/** The reader asks whoever holds a task they asked for where it stands: once a day per task. */
+export const KinWorkNudgeInput = Schema.Struct({ orgId: KinOrgId, key: KinRecordKey });
+export type KinWorkNudgeInput = typeof KinWorkNudgeInput.Type;
+export const KinWorkNudgeResult = Schema.Struct({
+  key: KinRecordKey,
+  nudgedAt: IsoDateTime,
+  /** It had already gone today; nothing more was sent. */
+  already: Schema.Boolean,
+});
+export type KinWorkNudgeResult = typeof KinWorkNudgeResult.Type;
 
 /** By key, or by record id as a `record` link names it. */
 export const KinWorkGetInput = Schema.Union([
@@ -1384,6 +1436,7 @@ export const KIN_WORK_WS_METHODS = {
   create: "kin.work.create",
   assign: "kin.work.assign",
   handBack: "kin.work.handBack",
+  nudge: "kin.work.nudge",
   handOver: "kin.work.handOver",
   update: "kin.work.update",
   confirm: "kin.work.confirm",
@@ -1445,6 +1498,11 @@ export const KinWorkRpcs = [
   Rpc.make(KIN_WORK_WS_METHODS.handBack, {
     payload: KinWorkHandBackInput,
     success: KinWorkHandBackResult,
+    error,
+  }),
+  Rpc.make(KIN_WORK_WS_METHODS.nudge, {
+    payload: KinWorkNudgeInput,
+    success: KinWorkNudgeResult,
     error,
   }),
   Rpc.make(KIN_WORK_WS_METHODS.comment, {
@@ -1581,6 +1639,7 @@ export const KIN_WORK_RPC_SCOPES = {
   [KIN_WORK_WS_METHODS.create]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.assign]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.handBack]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.nudge]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.handOver]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.comment]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.commentRemove]: AuthKinChatScope,

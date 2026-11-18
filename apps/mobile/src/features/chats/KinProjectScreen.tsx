@@ -53,7 +53,7 @@ import {
   KinGateView,
 } from "./components/KinWorkPieces";
 import { KinWorkHealthWord } from "./KinWorkLists";
-import { KinWorkTaskList } from "./KinWorkScreen";
+import { KinTasksList } from "./KinTasksList";
 import { KinPlaceLists } from "./KinPlaceLists";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinProjectPeopleSection } from "./KinProjectPeopleScreen";
@@ -215,7 +215,7 @@ function KinProjectBody(
   const openTask = (task: KinRecordKey) =>
     openRecord("KinWorkItem", { environmentId, orgId, task });
   return (
-    <KinWorkTaskList
+    <KinTasksList
       environmentId={environmentId}
       orgId={orgId}
       live={props.live}

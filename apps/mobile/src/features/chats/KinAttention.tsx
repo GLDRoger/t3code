@@ -23,8 +23,7 @@ import { useNowMinuteMs } from "../../lib/clock";
 import { useKinAskAbout, useKinAttention, useKinAttentionHandle } from "./state/useKinAttention";
 import type { KinWorkTarget } from "./state/useKinWork";
 
-export const kinAttentionNames = (names: KinWorkNames) =>
-  new Map([...names.agents, ...names.people]);
+const kinAttentionNames = (names: KinWorkNames) => new Map([...names.agents, ...names.people]);
 
 type Handler = ReturnType<typeof useKinAttentionHandle>;
 
@@ -34,7 +33,7 @@ const ASK = "ask";
 const SNOOZE = "snooze:";
 
 /** One row: tapping it opens the thing itself; its menu holds the answers to it. */
-export function KinAttentionItem(
+function KinAttentionItem(
   props: KinWorkTarget & {
     readonly row: KinAttentionRow;
     readonly handler: Handler;
@@ -113,7 +112,7 @@ export function KinAttentionItem(
 }
 
 /** What someone already has in hand, folded away, each with its Undo. */
-export function KinAttentionHandled(props: {
+function KinAttentionHandled(props: {
   readonly rows: ReadonlyArray<KinAttentionRow>;
   readonly handler: Handler;
 }) {
