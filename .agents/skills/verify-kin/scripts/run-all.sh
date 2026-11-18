@@ -18,7 +18,7 @@ ALL=(told-once-quiet-hours assign-member-sees relay-owner-to-member
   member-messages-teammate member-refused-client member-suggests-playbook quote-invoice-loop
   social-week
   hours-two-zones relay-marked asker-is-giver remove-and-bring-back teammate-reminder
-  money-place-follows away-held hand-over-all)
+  money-place-follows away-held hand-over-all retire-team-agent)
 if [[ "${1:-}" == "--list" ]]; then printf '%s\n' "${ALL[@]}"; exit 0; fi
 if [[ "${1:-}" == "--instance" ]]; then INSTANCE=$2; shift 2; fi
 if [[ "${1:-}" == "--queue" ]]; then QUEUE=$2; shift 2; fi

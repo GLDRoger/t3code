@@ -26,8 +26,10 @@ import {
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import {
   KIN_RETIRE_ACTION,
+  KIN_RETIRE_NEXT_TEAM_AGENT,
   kinAgentGroups,
   kinRestoreCopy,
+  kinNextTeamAgentChoices,
   kinRetireOffer,
 } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
@@ -54,6 +56,7 @@ import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListActionRow } from "../../components/ui/ListActionRow";
+import { Menu } from "../../components/ui/Menu";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
@@ -144,6 +147,8 @@ function KinLeadBody(props: {
     lead === null || held === null
       ? null
       : kinRetireOffer(lead, kinAgentGroups(held.leads).active.length);
+  // Retiring the team agent first asks who teammates talk to instead.
+  const nextChoices = held === null ? null : kinNextTeamAgentChoices(held, agentId);
   const contact =
     lead === null ? (held?.contacts?.find((entry) => entry.agentId === agentId) ?? null) : null;
   return (
@@ -206,13 +211,36 @@ function KinLeadBody(props: {
               />
               {!canRetire || isRetired || retireOffer === null ? null : retireOffer.offered ? (
                 <ListSection>
-                  <ListActionRow
-                    label={KIN_RETIRE_ACTION}
-                    icon="archivebox"
-                    tone="danger"
-                    loading={retire.busy === lead.agentId}
-                    onPress={() => retire.retire(lead)}
-                  />
+                  {nextChoices === null ? (
+                    <ListActionRow
+                      label={KIN_RETIRE_ACTION}
+                      icon="archivebox"
+                      tone="danger"
+                      loading={retire.busy === lead.agentId}
+                      onPress={() => retire.retire(lead)}
+                    />
+                  ) : (
+                    <Menu
+                      title={KIN_RETIRE_NEXT_TEAM_AGENT}
+                      accessibilityRole="button"
+                      accessibilityLabel={KIN_RETIRE_ACTION}
+                      actions={nextChoices.map((next) => ({ id: next.agentId, title: next.name }))}
+                      onPressAction={({ nativeEvent }) => {
+                        const next = nextChoices.find((one) => one.agentId === nativeEvent.event);
+                        if (next !== undefined && retire.busy === null)
+                          retire.retire(lead, undefined, next);
+                      }}
+                    >
+                      <View pointerEvents="none" className="bg-grouped-card">
+                        <ListRowLayout
+                          label={KIN_RETIRE_ACTION}
+                          icon="archivebox"
+                          tone="danger"
+                          disabled={retire.busy === lead.agentId || nextChoices.length === 0}
+                        />
+                      </View>
+                    </Menu>
+                  )}
                 </ListSection>
               ) : (
                 <Text textRole="footnote" className="px-4 text-foreground-muted">
