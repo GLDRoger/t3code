@@ -261,6 +261,29 @@ export const KinMessageWhen = Schema.Struct({
 });
 export type KinMessageWhen = typeof KinMessageWhen.Type;
 
+export const KIN_TURN_CHANGES_SHOWN = 5;
+/**
+ * One record change an agent's wake-up made, as the reader may see it. `what` is Kin's own short
+ * phrase ("given to Finance"); `change` is what `kin.lead.undoChange` takes with the org.
+ */
+export const KinTurnChange = Schema.Struct({
+  key: KinRefKey,
+  title: Schema.String,
+  what: Schema.String,
+  change: Schema.Struct({ agentId: KinAgentId, seq: PositiveInt }),
+  // This reader may put it back now; false for a teammate, and once undone or changed since.
+  undoable: Schema.Boolean,
+  undone: Schema.Boolean,
+});
+export type KinTurnChange = typeof KinTurnChange.Type;
+/** What one wake-up changed, oldest first: `count` of them this reader sees, `more` not listed. */
+export const KinTurnChanges = Schema.Struct({
+  count: NonNegativeInt,
+  items: Schema.Array(KinTurnChange).check(Schema.isMaxLength(KIN_TURN_CHANGES_SHOWN)),
+  more: NonNegativeInt,
+});
+export type KinTurnChanges = typeof KinTurnChanges.Type;
+
 export const KinMessage = Schema.Struct({
   orgId: KinOrgId,
   chatId: KinChatId,
@@ -298,6 +321,8 @@ export const KinMessage = Schema.Struct({
   relay: Schema.optional(KinMessageRelay),
   // Absent on a message that names no time.
   when: Schema.optional(KinMessageWhen),
+  // An agent's reply from a wake-up, for each reader; absent on every other message.
+  turnChanges: Schema.optional(KinTurnChanges),
 });
 export type KinMessage = typeof KinMessage.Type;
 

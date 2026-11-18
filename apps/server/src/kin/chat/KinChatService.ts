@@ -1206,6 +1206,7 @@ const make = Effect.gen(function* () {
       beforeSeq: chat.lastSeq + 1,
       limit: PREVIEW_LOOKBACK,
       viewerMemberId: member.memberId,
+      receipts: false,
     });
     let lastMessage: KinMessage | null = null;
     for (const message of history.messages.toReversed()) {
@@ -1914,7 +1915,8 @@ const make = Effect.gen(function* () {
             live.pipe(
               Stream.map((event) => {
                 switch (event.type) {
-                  case "message.posted": {
+                  case "message.posted":
+                  case "message.changed": {
                     const change = event.message.changeSeq ?? event.message.seq;
                     if (
                       event.message.chatId !== input.chatId ||
@@ -2062,8 +2064,12 @@ const make = Effect.gen(function* () {
           const live = Stream.mergeAll(streams, { concurrency: "unbounded" }).pipe(
             Stream.mapEffect(({ viewer, event }) =>
               Effect.gen(function* (): Effect.fn.Return<KinChatListEvent, ServiceError> {
-                // Reactions and draft deltas don't change a chat's row.
-                if (event.type === "reaction.updated" || event.type === "draft.updated")
+                // Reactions, draft deltas and a message read anew don't change a chat's row.
+                if (
+                  event.type === "reaction.updated" ||
+                  event.type === "draft.updated" ||
+                  event.type === "message.changed"
+                )
                   return yield* notFound;
                 if (event.type === "waiting.updated")
                   return yield* requireRecord(repo.getWaiting(event.item)).pipe(

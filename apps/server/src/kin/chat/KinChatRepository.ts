@@ -211,6 +211,7 @@ const {
   links: _links,
   embeds: _embeds,
   form: _form,
+  turnChanges: _turnChanges,
   ...messageRowFields
 } = KinMessage.fields;
 const encodeRelay = Schema.encodeEffect(Schema.fromJsonString(KinMessageRelay));
@@ -261,6 +262,7 @@ const MessageRow = Schema.Struct({
         relay,
         when,
         links: _links,
+        turnChanges: _turnChanges,
         form,
         embeds,
         ...message
@@ -528,7 +530,8 @@ export class KinChatRepository extends Context.Service<
       },
     ) => Effect.Effect<KinMessage, RepositoryError>;
     readonly history: (
-      input: Scope & KinChatHistoryInput & { readonly viewerMemberId?: KinMemberId },
+      input: Scope &
+        KinChatHistoryInput & { readonly viewerMemberId?: KinMemberId; readonly receipts?: false },
     ) => Effect.Effect<KinChatHistoryResult, RepositoryError>;
     readonly messagesAfter: (
       input: ChatScope & {
@@ -1984,7 +1987,7 @@ const make = Effect.gen(function* () {
  ${input.silent === true ? 1 : 0}, ${form}, ${input.discussionId ?? null},
  ${input.relay === undefined ? null : yield* encodeRelay(input.relay)},
  ${input.when === undefined ? null : yield* encodeWhen(input.when)},
- ${placed.embeds.length === 0 ? null : yield* encodeEmbeds(placed.embeds)}, ${input.body === "" && author._tag === "agent" ? (input.wakeupId ?? null) : null})
+ ${placed.embeds.length === 0 ? null : yield* encodeEmbeds(placed.embeds)}, ${(input.body === "" || input.placeReplyFigures === true) && author._tag === "agent" ? (input.wakeupId ?? null) : null})
  ON CONFLICT DO NOTHING RETURNING message_id`;
             if (inserted.length === 0)
               return yield* new KinChatError({
@@ -2037,6 +2040,7 @@ const make = Effect.gen(function* () {
                   .slice(0, request.limit)
                   .reverse()
                   .map((m) => messageForViewer(m, viewer?.principal)),
+                { receipts: input.receipts !== false },
               );
               const widgets =
                 messages.length === 0
