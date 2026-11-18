@@ -14,6 +14,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -227,6 +228,103 @@ it.effect(
         member.person.personId,
       );
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a teammate links, lists, renews and removes only their own devices", () =>
+  Effect.gen(function* () {
+    const service = yield* People.KinPeople;
+    const identity = yield* KinIdentity;
+    const sessions = yield* SessionStore;
+    yield* pairSession(ownerSession.sessionId);
+    const orgId = identity.owner.orgId;
+    const join = Effect.fn("test.join")(function* (displayName: string) {
+      const invite = yield* service.createInvite(ownerSession, { orgId, displayName });
+      const accepted = yield* service.accept({ secret: invite.secret });
+      return { ...accepted, session: yield* sessions.verify(accepted.accessToken) };
+    });
+    const asha = yield* join("Asha");
+    const ravi = yield* join("Ravi");
+    const refused = (effect: Effect.Effect<unknown, unknown>) =>
+      effect.pipe(
+        Effect.flip,
+        Effect.map((error) => (error as { reason?: string }).reason),
+      );
+
+    // The owner pairs through T3 Code; a link would make them a teammate.
+    assert.equal(yield* refused(service.linkDevice(ownerSession, { orgId })), "not_allowed");
+    const link = yield* service.linkDevice(asha.session, { orgId });
+    assert.match(link.code, /^KIN-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
+    const typed = link.code.toLowerCase().replaceAll("-", "").replace(/^kin/, "kin-");
+    const laptop = yield* service.accept({ secret: typed, label: "Laptop" });
+    assert.equal(laptop.person.personId, asha.person.personId);
+    assert.equal(yield* refused(service.accept({ secret: link.code })), "not_found");
+
+    const mine = (yield* service.listDevices(asha.session, {
+      orgId,
+      personId: asha.person.personId,
+    })).devices;
+    assert.deepStrictEqual(
+      Object.fromEntries(mine.map((device) => [device.sessionId, device.current])),
+      { [asha.sessionId]: true, [laptop.sessionId]: false },
+    );
+    assert.equal(
+      yield* refused(service.listDevices(asha.session, { orgId, personId: ravi.person.personId })),
+      "not_allowed",
+    );
+    assert.equal(
+      yield* refused(
+        service.revokeDevice(asha.session, {
+          orgId,
+          personId: ravi.person.personId,
+          sessionId: ravi.sessionId,
+        }),
+      ),
+      "not_allowed",
+    );
+
+    // A person's own link never brings back someone the owner removed.
+    const ravisLink = yield* service.linkDevice(ravi.session, { orgId });
+    yield* service.removeAccess(ownerSession, { orgId, personId: ravi.person.personId });
+    assert.equal(yield* refused(service.accept({ secret: ravisLink.code })), "not_found");
+
+    // A newer link replaces an unused one, and an unused one lapses after ten minutes.
+    const stale = yield* service.linkDevice(asha.session, { orgId });
+    const fresh = yield* service.linkDevice(asha.session, { orgId });
+    assert.equal(yield* refused(service.accept({ secret: stale.code })), "not_found");
+    yield* TestClock.adjust("10 minutes");
+    assert.equal(yield* refused(service.accept({ secret: fresh.secret })), "not_found");
+
+    // A device in use renews itself: the same session under a later deadline.
+    yield* TestClock.adjust("20 days");
+    const laptopSession = yield* sessions.verify(laptop.accessToken);
+    const renewed = yield* service.renewDevice(laptopSession, laptop.accessToken);
+    assert.isTrue(Option.isSome(renewed));
+    if (Option.isNone(renewed)) return;
+    yield* TestClock.adjust("15 days");
+    assert.equal(
+      (yield* sessions.verify(laptop.accessToken).pipe(Effect.flip))._tag,
+      "SessionTokenExpiredError",
+    );
+    assert.equal((yield* sessions.verify(renewed.value.accessToken)).sessionId, laptop.sessionId);
+
+    // Removing a device ends it, and it can't renew its way back.
+    yield* service.revokeDevice(ownerSession, {
+      orgId,
+      personId: asha.person.personId,
+      sessionId: laptop.sessionId,
+    });
+    assert.equal(
+      (yield* sessions.verify(renewed.value.accessToken).pipe(Effect.result))._tag,
+      "Failure",
+    );
+    assert.isTrue(
+      Option.isNone(
+        yield* service
+          .renewDevice(laptopSession, renewed.value.accessToken)
+          .pipe(Effect.orElseSucceed(() => Option.none())),
+      ),
+    );
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect.each(["create", "accept"] as const)("rejects owner binding at %s", (stage) =>

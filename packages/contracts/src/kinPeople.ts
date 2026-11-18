@@ -116,6 +116,10 @@ export const KinPersonDevice = Schema.Struct({
   boundAt: IsoDateTime,
   expiresAt: Schema.NullOr(IsoDateTime),
   revokedAt: Schema.NullOr(IsoDateTime),
+  /** When it last opened a connection; absent from older hosts. */
+  lastConnectedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** The device asking. Absent from older hosts. */
+  current: Schema.optional(Schema.Boolean),
 });
 export type KinPersonDevice = typeof KinPersonDevice.Type;
 
@@ -137,6 +141,23 @@ export const KinPeopleRevokeDeviceInput = Schema.Struct({
 export type KinPeopleRevokeDeviceInput = typeof KinPeopleRevokeDeviceInput.Type;
 export const KinPeopleRevokeDeviceResult = Schema.Struct({ revoked: Schema.Boolean });
 export type KinPeopleRevokeDeviceResult = typeof KinPeopleRevokeDeviceResult.Type;
+
+/** A person links one more of their own devices: a code and a link, each good once, briefly. */
+export const KinPeopleLinkDeviceInput = Schema.Struct({ orgId: KinOrgId });
+export type KinPeopleLinkDeviceInput = typeof KinPeopleLinkDeviceInput.Type;
+export const KinPeopleLinkDeviceResult = Schema.Struct({
+  /** Typed or pasted, such as `KIN-7Q4M-X2PA`; the accept route takes it as `secret`. */
+  code: TrimmedNonEmptyString,
+  /** The join link's secret, as `createInvite` gives it. */
+  secret: TrimmedNonEmptyString,
+  expiresAt: IsoDateTime,
+});
+export type KinPeopleLinkDeviceResult = typeof KinPeopleLinkDeviceResult.Type;
+export const KIN_DEVICE_LINK_TTL_MINUTES = 10;
+/** Devices one person may have signed in at once. */
+export const KIN_DEVICE_LIMIT = 10;
+/** A device code: `KIN-` then two groups of four, letters and digits that can't be misread. */
+export const KIN_DEVICE_CODE_PATTERN = /^KIN-?([A-HJ-NP-Z2-9]{4})-?([A-HJ-NP-Z2-9]{4})$/i;
 
 /** Signs a person out everywhere and cancels their unused invite links. They stay a person. */
 export const KinPeopleRemoveAccessInput = Schema.Struct({
@@ -291,6 +312,17 @@ export const KinInviteAcceptResult = Schema.Struct({
 });
 export type KinInviteAcceptResult = typeof KinInviteAcceptResult.Type;
 export const KIN_INVITE_ACCEPT_ROUTE = "/kin/invites/accept";
+/**
+ * POST with the device's own session (bearer, or the browser's cookie): the same session under a
+ * fresh deadline, so a device in use stays signed in. A bearer gets the new token in the body.
+ */
+export const KIN_DEVICE_RENEW_ROUTE = "/kin/devices/renew";
+export const KIN_DEVICE_BROWSER_RENEW_ROUTE = "/api/kin/devices/renew";
+export const KinDeviceRenewResult = Schema.Struct({
+  accessToken: Schema.optional(TrimmedNonEmptyString),
+  expiresAt: IsoDateTime,
+});
+export type KinDeviceRenewResult = typeof KinDeviceRenewResult.Type;
 /** The same accept for a browser: under `/api` so the web app reaches it, answered with a cookie. */
 export const KIN_INVITE_BROWSER_ACCEPT_ROUTE = "/api/kin/invites/accept";
 /** A URL scheme, such as `kin`, without the colon. */
@@ -310,6 +342,7 @@ export const KIN_PEOPLE_WS_METHODS = {
   peopleCreateInvite: "kin.people.createInvite",
   peopleListDevices: "kin.people.listDevices",
   peopleRevokeDevice: "kin.people.revokeDevice",
+  peopleLinkDevice: "kin.people.linkDevice",
   peopleRemoveAccess: "kin.people.removeAccess",
   peopleSetGithubLogin: "kin.people.setGithubLogin",
   peopleSetAccess: "kin.people.setAccess",
@@ -352,6 +385,11 @@ export const KinPeopleRpcs = [
   Rpc.make(KIN_PEOPLE_WS_METHODS.peopleRevokeDevice, {
     payload: KinPeopleRevokeDeviceInput,
     success: KinPeopleRevokeDeviceResult,
+    error: KinPeopleError,
+  }),
+  Rpc.make(KIN_PEOPLE_WS_METHODS.peopleLinkDevice, {
+    payload: KinPeopleLinkDeviceInput,
+    success: KinPeopleLinkDeviceResult,
     error: KinPeopleError,
   }),
   Rpc.make(KIN_PEOPLE_WS_METHODS.peopleRemoveAccess, {
@@ -409,6 +447,7 @@ export const KIN_PEOPLE_RPC_SCOPES = {
   [KIN_PEOPLE_WS_METHODS.peopleCreateInvite]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleListDevices]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleRevokeDevice]: AuthKinChatScope,
+  [KIN_PEOPLE_WS_METHODS.peopleLinkDevice]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleRemoveAccess]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleSetGithubLogin]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleSetAccess]: AuthKinChatScope,

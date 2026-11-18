@@ -1,4 +1,6 @@
 import {
+  KIN_DEVICE_BROWSER_RENEW_ROUTE,
+  KIN_DEVICE_RENEW_ROUTE,
   KIN_INVITE_ACCEPT_ROUTE,
   KIN_INVITE_APP_ROUTE,
   KIN_INVITE_BROWSER_ACCEPT_ROUTE,
@@ -13,7 +15,11 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
-import { isBrowserOriginAllowed, trustedBrowserOrigins } from "../../auth/EnvironmentAuth.ts";
+import {
+  isBrowserOriginAllowed,
+  parseBearerToken,
+  trustedBrowserOrigins,
+} from "../../auth/EnvironmentAuth.ts";
 import { SessionStore } from "../../auth/SessionStore.ts";
 import * as ServerConfig from "../../config.ts";
 import { requestUrl } from "../../requestUrl.ts";
@@ -21,6 +27,17 @@ import { KinServer } from "../KinServer.ts";
 import * as People from "./KinPeople.ts";
 
 const decodeAccept = Schema.decodeUnknownEffect(KinInviteAcceptRequest);
+const noStore = { "cache-control": "no-store" };
+
+/** The device's own session renewed; none when it is not a live, bound teammate device. */
+const renewDevice = Effect.fn("KinPeopleHttp.renewDevice")(function* (token: string) {
+  const kin = yield* KinServer;
+  if (Option.isNone(kin.services)) return Option.none();
+  return yield* Effect.gen(function* () {
+    const verified = yield* (yield* SessionStore).verify(token);
+    return yield* (yield* People.make).renewDevice(verified, token);
+  }).pipe(Effect.provideContext(kin.services.value));
+});
 
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -58,6 +75,48 @@ export const layer = Layer.effectDiscard(
         const result = yield* people.accept(input);
         return yield* HttpServerResponse.json(result, { headers: { "cache-control": "no-store" } });
       }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
+    );
+    yield* router.add(
+      "POST",
+      KIN_DEVICE_RENEW_ROUTE,
+      Effect.gen(function* () {
+        const token = parseBearerToken(yield* HttpServerRequest.HttpServerRequest);
+        if (token === null) return HttpServerResponse.empty({ status: 401 });
+        const renewed = yield* renewDevice(token);
+        return Option.isNone(renewed)
+          ? HttpServerResponse.empty({ status: 403 })
+          : yield* HttpServerResponse.json(renewed.value, { headers: noStore });
+      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 401 }))),
+    );
+    // The browser's renewal: the cookie in, a fresh cookie out; script never sees the token.
+    yield* router.add(
+      "POST",
+      KIN_DEVICE_BROWSER_RENEW_ROUTE,
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        if (!isBrowserOriginAllowed(request, origins))
+          return HttpServerResponse.empty({ status: 403 });
+        const sessions = yield* SessionStore;
+        const token = request.cookies[sessions.cookieName];
+        if (token === undefined) return HttpServerResponse.empty({ status: 401 });
+        const renewed = yield* renewDevice(token);
+        if (Option.isNone(renewed)) return HttpServerResponse.empty({ status: 403 });
+        const secure = Option.exists(requestUrl(request), (url) => url.protocol === "https:");
+        return yield* HttpServerResponse.json(
+          { expiresAt: renewed.value.expiresAt },
+          { headers: noStore },
+        ).pipe(
+          Effect.flatMap(
+            HttpServerResponse.setCookie(sessions.cookieName, renewed.value.accessToken, {
+              expires: DateTime.toDate(DateTime.makeUnsafe(renewed.value.expiresAt)),
+              httpOnly: true,
+              path: "/",
+              sameSite: "lax",
+              secure,
+            }),
+          ),
+        );
+      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 401 }))),
     );
     // A browser keeps the session as the app's own cookie; script never holds the token.
     yield* router.add(
