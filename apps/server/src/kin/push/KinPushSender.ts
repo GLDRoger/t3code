@@ -105,6 +105,9 @@ type Push = {
 /** The longest body a banner shows before iOS cuts it; we cut at a word first. */
 const KIN_PUSH_BODY_MAX = 160;
 
+const kinRelayWords = (text: string) =>
+  /^[^\n]+ asked [^\n]+:\n"([\s\S]*)"$/.exec(text)?.[1] ?? text;
+
 /** A message's start as one plain line for a banner. */
 const kinPushBody = (text: string) => {
   const plain = text
@@ -391,20 +394,21 @@ const make = Effect.gen(function* () {
     // A card that waits on someone announces itself through its widget push; one with no words of
     // its own (a chart, a doc) is seen in the chat and rings nobody.
     if (row === undefined || row.awaits_card === 1) return undefined;
+    const relay = Option.getOrUndefined(decodeRelay(row.relay_json ?? undefined));
     const body = kinPushBody(
-      kinIsBrief(row.body, row.form)
-        ? `${kinGreeting(yield* ownerHour(orgId))} · ${kinPageGist(row.body)}`
-        : kinPageShape(row.body) === "page"
-          ? kinPageGist(row.body)
-          : kinPlainBody(row.body),
+      relay?.personId !== undefined
+        ? kinRelayWords(row.body)
+        : kinIsBrief(row.body, row.form)
+          ? `${kinGreeting(yield* ownerHour(orgId))} · ${kinPageGist(row.body)}`
+          : kinPageShape(row.body) === "page"
+            ? kinPageGist(row.body)
+            : kinPlainBody(row.body),
     );
     if (row.is_card === 1 && body === "") return undefined;
     const chat = yield* chatName(orgId, row.chat_id);
     const mentions = new Set<string>(yield* decodeIds(row.mentions_json));
     const asked = new Set<string>(yield* decodeIds(row.asked_json));
     const people = yield* chatPeople(orgId, row.chat_id);
-    // A person's words an agent passed on read as theirs: "Rhea, via Chief of staff".
-    const relay = Option.getOrUndefined(decodeRelay(row.relay_json ?? undefined));
     const [sender] =
       relay?.personId === undefined
         ? []

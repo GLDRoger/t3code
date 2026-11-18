@@ -1517,7 +1517,10 @@ export function AgentMessageFoldHeader(props: {
   readonly expanded: boolean;
   readonly onToggle: () => void;
   readonly iconSubtleColor: ColorValue;
+  /** An answer that came back, on the plain surface rather than the user bubble. */
+  readonly reply?: boolean;
 }) {
+  const reply = props.reply === true;
   const senderShell = useQuietThreadShell(
     props.label === undefined && props.senderThreadId
       ? scopeThreadRef(props.environmentId, props.senderThreadId)
@@ -1538,19 +1541,28 @@ export function AgentMessageFoldHeader(props: {
       }}
     >
       <SymbolView
-        name="bubble.left.and.bubble.right"
+        name={reply ? "arrow.uturn.backward" : "bubble.left.and.bubble.right"}
         size={14}
         weight="medium"
-        tintColorClassName="accent-user-bubble-foreground-muted"
+        tintColorClassName={reply ? "accent-icon-muted" : "accent-user-bubble-foreground-muted"}
         type="monochrome"
       />
       <Text
         numberOfLines={1}
-        className="max-w-[50%] shrink-0 font-t3-medium text-sm text-user-bubble-foreground-muted"
+        className={cn(
+          "max-w-[50%] shrink-0 font-t3-medium text-sm",
+          reply ? "text-foreground-muted" : "text-user-bubble-foreground-muted",
+        )}
       >
         {label}
       </Text>
-      <Text numberOfLines={1} className="min-w-0 shrink text-sm text-user-bubble-foreground">
+      <Text
+        numberOfLines={1}
+        className={cn(
+          "min-w-0 shrink text-sm",
+          reply ? "text-foreground" : "text-user-bubble-foreground",
+        )}
+      >
         {props.summary}
       </Text>
       <ThreadDisclosureChevron

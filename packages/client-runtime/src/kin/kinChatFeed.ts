@@ -12,6 +12,7 @@ import {
   type KinRecordKey,
   type KinWidget,
   kinWhenFormat,
+  scanKinDocFences,
 } from "@t3tools/contracts";
 import { KIN_VISUAL_FILE_SCHEME } from "@t3tools/shared/kinVisual";
 import * as Cause from "effect/Cause";
@@ -252,6 +253,7 @@ export type KinFeedRow =
    * Words carried into this chat (`relay`): `sent_by` what one agent asked another, `reply_from`
    * the answer or a Team-room outcome (`discussionId` links it). With `personLabel`, a person's
    * words an agent passed on ("Sent by Rhea, via Chief of staff"), `text` their words alone.
+   * `summary` is the one line an agent's row folds to; null keeps the row open (`kinRelaySummary`).
    */
   | {
       readonly type: "relay";
@@ -260,6 +262,7 @@ export type KinFeedRow =
       readonly relay: "sent_by" | "reply_from";
       readonly agentLabel: string;
       readonly discussionId: string | null;
+      readonly summary: string | null;
       readonly personLabel?: string;
       readonly text?: string;
     }
@@ -299,6 +302,29 @@ const kinRelayWords = (body: string) => {
   const quoted = /^[^\n]+ asked [^\n]+:\n"([\s\S]*)"$/.exec(body);
   return quoted?.[1] ?? body;
 };
+
+/**
+ * The first line an agent's relayed words fold to, as T3 folds a message from another thread:
+ * the full reply already sits in the chat it came from. A reply holding a card, a chart or visual,
+ * or ending on a question stays open (null), so nothing the owner may act on hides behind a tap.
+ */
+function kinRelaySummary(
+  message: Pick<KinMessage, "body" | "widgetId">,
+  kind: "sent_by" | "reply_from",
+): string | null {
+  const lines: Array<string> = [];
+  let fenced = false;
+  for (const line of message.body.split(/\r?\n/)) {
+    if (/^\s{0,3}(```|~~~)/.test(line)) fenced = !fenced;
+    else if (!fenced && line.trim() !== "") lines.push(line);
+  }
+  const summary = kinPlainText(lines[0] ?? "");
+  if (kind === "sent_by") return summary;
+  const asks = /\?$/.test(kinPlainText(lines.at(-1) ?? ""));
+  if (message.widgetId !== null || scanKinDocFences(message.body).found.length > 0 || asks)
+    return null;
+  return summary;
+}
 
 const isSystem = (message: KinMessage) =>
   message.kind === "system" || message.author._tag === "system";
@@ -478,6 +504,7 @@ export function buildKinFeedRows(
         relay: "sent_by",
         agentLabel: viewer.agentNames.get(passedOn.agentId) ?? kinAuthorLabel(message, viewer),
         discussionId: null,
+        summary: null,
         personLabel: passedOn.personName ?? "A teammate",
         text: kinRelayWords(message.body),
       });
@@ -492,6 +519,7 @@ export function buildKinFeedRows(
         relay: message.relay.kind,
         agentLabel: viewer.agentNames.get(message.relay.agentId) ?? "Another agent",
         discussionId: message.discussionId ?? null,
+        summary: kinRelaySummary(message, message.relay.kind),
       });
       previousAuthor = null;
       return;
