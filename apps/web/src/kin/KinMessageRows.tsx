@@ -433,9 +433,9 @@ export function KinSystemRow(props: {
 }
 
 /**
- * One agent's words in another's chat. What it asked sits on the viewer's side, folded as T3
- * folds a message one agent sent into another's thread; the answer comes back as a callout
- * naming who answered, with a way to the discussion when a Team-room outcome is what came back.
+ * One agent's words in another's chat. What it asked sits on the viewer's side and the answer on
+ * the other, each folded to its first line as T3 folds a message from another thread; a
+ * Team-room outcome keeps its way to the discussion in view, folded or not.
  */
 export function KinRelayRow(props: {
   readonly row: RelayRow;
@@ -474,63 +474,90 @@ export function KinRelayRow(props: {
       </div>
     );
   }
-  if (row.relay === "sent_by") {
-    const summary = kinPlainText(row.message.body).split(/\r?\n/, 1)[0]?.trim() ?? "";
+  const body = row.message.body;
+  const seeHow =
+    row.discussionId === null || props.teamRoomId === null ? null : (
+      <Link
+        to="/kin/$environmentId/$orgId/$chatId"
+        params={{
+          environmentId: props.environmentId,
+          orgId: props.orgId,
+          chatId: props.teamRoomId,
+        }}
+        className="self-start rounded-sm text-xs text-foreground underline underline-offset-2 outline-none ring-ring hover:text-primary focus-visible:ring-2 focus-visible:ring-inset"
+      >
+        {KIN_CARD_COPY.seeHow}
+      </Link>
+    );
+  // A Team-room outcome is its decision line, then "Done: …" quieter under it.
+  const [line, ...rest] = body.split("\n");
+  const done = row.discussionId === null ? "" : rest.join("\n").trim();
+  const words =
+    row.discussionId === null ? (
+      <KinBody markdown={body} environmentId={props.environmentId} />
+    ) : (
+      <>
+        <KinBody markdown={line ?? ""} environmentId={props.environmentId} />
+        {done === "" ? null : <p className="text-xs text-muted-foreground">{done}</p>}
+      </>
+    );
+  const sent = row.relay === "sent_by";
+  const label = sent ? `Sent by ${row.agentLabel}` : `${row.agentLabel} replied`;
+  // Folded as T3 folds a message from another thread: the whole of it is in the chat it came from.
+  if (row.summary !== null)
     return (
-      <div className={cn(ROW, "pt-3", "items-end")}>
+      <div className={cn(ROW, "pt-3", sent ? "items-end" : "items-start")}>
         <div
           role="article"
-          aria-label={`Sent by ${row.agentLabel}, ${time}: ${kinPlainText(row.message.body)}`}
+          aria-label={`${label}, ${time}: ${kinPlainText(body)}`}
           className={cn(
-            "min-w-0 max-w-[85%] rounded-2xl bg-message text-sm text-message-foreground",
+            "flex min-w-0 max-w-[85%] flex-col rounded-2xl text-sm",
+            sent ? "bg-message text-message-foreground" : "border border-border",
             expanded && "w-full",
           )}
         >
           <FoldedMessageHeader
-            icon={MessagesSquareIcon}
-            label={`Sent by ${row.agentLabel}`}
-            summary={summary}
+            icon={sent ? MessagesSquareIcon : ReplyIcon}
+            label={label}
+            summary={row.summary}
             expanded={expanded}
             onToggle={() => setExpanded((value) => !value)}
           />
           {expanded ? (
-            <div className="max-h-96 overflow-auto px-3 pb-3">
-              <KinBody markdown={row.message.body} environmentId={props.environmentId} />
-            </div>
+            <div className="flex max-h-96 flex-col gap-1 overflow-auto px-3 pb-3">{words}</div>
           ) : null}
+          {seeHow === null ? null : <div className="flex px-3 pb-2">{seeHow}</div>}
         </div>
       </div>
     );
-  }
-  const [line, ...rest] = row.message.body.split("\n");
-  const done = rest.join("\n").trim();
+  // Held open: a reply holding a card, a figure, or a question to answer.
   return (
     <div className={cn(ROW, "pt-3", "items-start")}>
       <div
         role="article"
-        aria-label={`${row.agentLabel} replied, ${time}: ${kinPlainText(row.message.body)}`}
+        aria-label={`${label}, ${time}: ${kinPlainText(body)}`}
         className="flex min-w-0 max-w-[85%] flex-col gap-1 rounded-2xl border border-border px-3.5 py-2 text-sm"
       >
         <p aria-hidden className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <ReplyIcon className="size-3.5 shrink-0" />
-          {row.agentLabel} replied
+          {label}
           <span className="tabular-nums">· {time}</span>
         </p>
-        <KinBody markdown={line ?? ""} environmentId={props.environmentId} />
-        {done === "" ? null : <p className="text-xs text-muted-foreground">{done}</p>}
-        {row.discussionId === null || props.teamRoomId === null ? null : (
-          <Link
-            to="/kin/$environmentId/$orgId/$chatId"
-            params={{
-              environmentId: props.environmentId,
-              orgId: props.orgId,
-              chatId: props.teamRoomId,
-            }}
-            className="self-start rounded-sm text-xs text-foreground underline underline-offset-2 outline-none ring-ring hover:text-primary focus-visible:ring-2 focus-visible:ring-inset"
-          >
-            {KIN_CARD_COPY.seeHow}
-          </Link>
+        {row.discussionId === null && kinPageShape(body) === "page" ? (
+          // Its figures draw in place, as they do in the chat it came from.
+          <KinMessagePage
+            environmentId={props.environmentId}
+            orgId={props.orgId}
+            body={body}
+            links={undefined}
+            embeds={undefined}
+            label={label}
+            head={null}
+          />
+        ) : (
+          words
         )}
+        {seeHow}
       </div>
     </div>
   );

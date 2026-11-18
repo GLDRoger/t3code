@@ -541,13 +541,15 @@ export function KinSystemLine(props: {
 }
 
 /**
- * One agent's words in another's chat. What it asked sits on the viewer's side, folded as the
- * thread feed folds a message one agent sent into another's thread; the answer comes back as a
- * callout naming who answered, with the way to the discussion when an outcome came back.
+ * One agent's words in another's chat. What it asked sits on the viewer's side and the answer on
+ * the other, each folded to its first line as the thread feed folds a message from another
+ * thread; a Team-room outcome keeps its way to the discussion in view, folded or not.
  */
 export function KinRelayBubble(props: {
   readonly row: RelayRow;
   readonly environmentId: EnvironmentId;
+  readonly markdownStyle: NativeMarkdownTextStyle;
+  readonly onLinkPress: (href: string) => void;
   /** Opens the Team room; null when there is none to open. */
   readonly onOpenDiscussion: (() => void) | null;
 }) {
@@ -588,38 +590,78 @@ export function KinRelayBubble(props: {
       </View>
     );
   }
-  if (row.relay === "sent_by")
+  const body = row.message.body;
+  const sent = row.relay === "sent_by";
+  const label = sent ? `Sent by ${row.agentLabel}` : `${row.agentLabel} replied`;
+  // A Team-room outcome is its decision line, then "Done: …"; split before plain text joins them.
+  const [line = "", ...rest] = body.split("\n");
+  const done = row.discussionId === null ? "" : kinPlainText(rest.join("\n")).trim();
+  const markdown = (source: string) => (
+    <SelectableMarkdownText
+      markdown={kinBodyMarkdown(source)}
+      textStyle={props.markdownStyle}
+      preserveSoftBreaks
+      onLinkPress={props.onLinkPress}
+      renderImage={renderImageAsText}
+      resolveImageSource={kinImageSource}
+    />
+  );
+  const words = sent ? (
+    <Text textRole="body" selectable className="text-user-bubble-foreground">
+      {text}
+    </Text>
+  ) : row.discussionId === null ? (
+    markdown(body)
+  ) : (
+    <>
+      {markdown(line)}
+      {done === "" ? null : (
+        <Text textRole="footnote" className="text-foreground-muted">
+          {done}
+        </Text>
+      )}
+    </>
+  );
+  const seeHow =
+    row.discussionId === null || props.onOpenDiscussion === null ? null : (
+      <Pressable
+        accessibilityRole="link"
+        hitSlop={8}
+        className="min-h-8 justify-center self-start"
+        onPress={props.onOpenDiscussion}
+      >
+        <Text textRole="footnote" className="text-foreground-muted underline">
+          {KIN_CARD_COPY.seeHow}
+        </Text>
+      </Pressable>
+    );
+  // Folded as the thread feed folds a message from another thread: all of it is in its own chat.
+  if (row.summary !== null)
     return (
-      <View className="items-end px-4 pt-3">
+      <View className={cn("px-4 pt-3", sent ? "items-end" : "items-start")}>
         <View
           className={cn(
-            OWN_WIDTH_CLASS_NAME,
-            "min-w-0 rounded-[20px] bg-user-bubble",
+            sent ? OWN_WIDTH_CLASS_NAME : OTHER_WIDTH_CLASS_NAME,
+            "min-w-0 rounded-[20px]",
+            sent ? "bg-user-bubble" : "border border-separator",
             expanded && "w-[85%]",
           )}
         >
           <AgentMessageFoldHeader
             environmentId={props.environmentId}
-            label={`Sent by ${row.agentLabel}`}
-            summary={text.split(/\r?\n/, 1)[0]?.trim() ?? ""}
+            label={label}
+            summary={row.summary}
             expanded={expanded}
             onToggle={() => setExpanded((value) => !value)}
             iconSubtleColor={iconSubtleColor}
+            reply={!sent}
           />
-          {expanded ? (
-            <View className="px-3.5 pb-2.5">
-              <Text textRole="body" selectable className="text-user-bubble-foreground">
-                {text}
-              </Text>
-            </View>
-          ) : null}
+          {expanded ? <View className="gap-1 px-3.5 pb-2.5">{words}</View> : null}
+          {seeHow === null ? null : <View className="px-3.5 pb-1.5">{seeHow}</View>}
         </View>
       </View>
     );
-  // The outcome is the first line; "Done: …" follows. Split before plain text joins the lines.
-  const [line = "", ...rest] = row.message.body.split("\n");
-  const outcome = kinPlainText(line);
-  const done = kinPlainText(rest.join("\n")).trim();
+  // Held open: a reply holding a card, a figure, or a question to answer.
   return (
     <View className="items-start px-4 pt-3">
       <View
@@ -629,11 +671,7 @@ export function KinRelayBubble(props: {
         )}
       >
         {/* One element for the words, so the link below stays its own for VoiceOver. */}
-        <View
-          accessible
-          accessibilityLabel={`${row.agentLabel} replied, ${time}: ${outcome}${done === "" ? "" : ` ${done}`}`}
-          className="gap-1"
-        >
+        <View accessible accessibilityLabel={`${label}, ${time}: ${text}`} className="gap-1">
           <View className="flex-row items-center gap-1.5">
             <SymbolView
               name="arrow.uturn.backward"
@@ -642,30 +680,26 @@ export function KinRelayBubble(props: {
               type="monochrome"
             />
             <Text textRole="caption" className="text-foreground-muted">
-              {row.agentLabel} replied · {time}
+              {label} · {time}
             </Text>
           </View>
-          <Text textRole="body" selectable className="text-foreground">
-            {outcome}
-          </Text>
-          {done === "" ? null : (
-            <Text textRole="footnote" className="text-foreground-muted">
-              {done}
-            </Text>
+          {row.discussionId === null && kinPageShape(body) === "page" ? (
+            // Its figures draw in place, as they do in the chat it came from.
+            <KinMessagePage
+              body={body}
+              links={undefined}
+              embeds={undefined}
+              where={null}
+              textStyle={props.markdownStyle}
+              onLinkPress={props.onLinkPress}
+              onOpenTarget={NO_TARGET}
+              head={null}
+            />
+          ) : (
+            words
           )}
         </View>
-        {row.discussionId === null || props.onOpenDiscussion === null ? null : (
-          <Pressable
-            accessibilityRole="link"
-            hitSlop={8}
-            className="min-h-8 justify-center self-start"
-            onPress={props.onOpenDiscussion}
-          >
-            <Text textRole="footnote" className="text-foreground-muted underline">
-              {KIN_CARD_COPY.seeHow}
-            </Text>
-          </Pressable>
-        )}
+        {seeHow}
       </View>
     </View>
   );
