@@ -77,6 +77,8 @@ const MEMBER = [
   "kin.work.get",
   "kin.work.handBack",
   "kin.work.handOver",
+  "kin.work.linkAdd",
+  "kin.work.linkRemove",
   "kin.work.list",
   "kin.work.lists",
   "kin.work.money",

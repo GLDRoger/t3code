@@ -44,6 +44,7 @@ import { Switch } from "../components/ui/switch";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAttentionSection } from "./KinAttention";
 import { KinDocsUnder } from "./KinDocsList";
+import { KinProjectNoteSection } from "./KinProjectNote";
 import { KinProjectPeopleSection } from "./KinProjectPeople";
 import { KinMilestoneDialog, KinProjectDialog } from "./KinWorkForms";
 import {
@@ -124,6 +125,7 @@ function ProjectPage(
   const { environmentId, orgId, page } = props;
   const { names } = props.directory;
   const canChange = useAtomValue(kinClient.workProjectUpdate.permissionAtom(environmentId));
+  const canNote = useAtomValue(kinClient.workProjectNote.permissionAtom(environmentId));
   const update = useAtomCommand(kinClient.workProjectUpdate, { reportFailure: false });
   const now = new Date(useNowMinuteMs());
   const [editing, setEditing] = useState(false);
@@ -262,6 +264,16 @@ function ProjectPage(
           </Button>
         ) : null}
       </div>
+      {page.can?.note === undefined ? null : (
+        <KinProjectNoteSection
+          environmentId={environmentId}
+          orgId={orgId}
+          projectKey={view.key}
+          note={page.note ?? null}
+          canEdit={page.can.note && canNote}
+          onChanged={props.onRefresh}
+        />
+      )}
       <KinAttentionSection
         environmentId={environmentId}
         orgId={orgId}

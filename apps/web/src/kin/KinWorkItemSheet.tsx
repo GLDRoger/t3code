@@ -119,6 +119,8 @@ import {
   KinNextStepCard,
   KinRecordChip,
   KinTaskActivity,
+  KinTaskLinkAdd,
+  KinTaskLinkRemove,
   KinTaskNoteComposer,
 } from "./KinTaskRecord";
 import { KinListEntry } from "./KinWorkEntry";
@@ -494,6 +496,7 @@ function KinWorkItem(
   },
 ) {
   const { view, environmentId, orgId, saving, edit, shown, frame: Frame } = props;
+  const canAddLink = useAtomValue(kinClient.workLinkAdd.permissionAtom(environmentId));
   const { orgs, people, joined, invited, names } = props.directory;
   const opensClients = useKinOpensClients(environmentId);
   const [handingBack, setHandingBack] = useState(false);
@@ -1002,12 +1005,15 @@ function KinWorkItem(
           names={names}
           now={props.now}
           note={view.historyNote}
+          onOpenProject={props.onOpenProject}
         />
         <KinWorkLinks
           {...props}
           item={props.shown}
           title={KIN_TASK_RECORD.linked}
           links={view.links}
+          itemKey={view.key}
+          addLink={canAddLink && view.can.links === true}
         />
       </div>
       {!props.canComment || edit !== null ? null : (
@@ -1041,6 +1047,9 @@ export function KinWorkLinks(
     readonly links: ReadonlyArray<KinWorkLinkView>;
     /** A task's reads "Linked", as the phone's does; a list entry's keeps "Links". */
     readonly title?: string;
+    /** The entry the links are on, and whether this viewer may add a web link to it. */
+    readonly itemKey?: KinRecordKey;
+    readonly addLink?: boolean;
     readonly onOpenKey: (key: KinRecordKey) => void;
     readonly onClose: () => void;
   },
@@ -1060,20 +1069,32 @@ export function KinWorkLinks(
           : void openDestination(navigate, props, item.open)
       }
     >
-      {rest.length === 0 ? null : (
-        <ul className="flex flex-col">
-          {rest.map((link) => (
-            <li key={link.key}>
-              <KinWorkLink
-                link={link}
-                environmentId={props.environmentId}
-                orgId={props.orgId}
-                onOpen={props.onClose}
-                onOpenKey={props.onOpenKey}
-              />
-            </li>
-          ))}
-        </ul>
+      {rest.length === 0 && props.addLink !== true ? null : (
+        <>
+          {rest.length === 0 ? null : (
+            <ul className="flex flex-col">
+              {rest.map((link) => (
+                <li key={link.key}>
+                  <KinWorkLink
+                    link={link}
+                    environmentId={props.environmentId}
+                    orgId={props.orgId}
+                    {...(props.itemKey === undefined ? {} : { itemKey: props.itemKey })}
+                    onOpen={props.onClose}
+                    onOpenKey={props.onOpenKey}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+          {props.addLink !== true || props.itemKey === undefined ? null : (
+            <KinTaskLinkAdd
+              environmentId={props.environmentId}
+              orgId={props.orgId}
+              itemKey={props.itemKey}
+            />
+          )}
+        </>
       )}
     </KinLinkedGroups>
   );
@@ -1497,6 +1518,7 @@ const LINK_ROW_OPENS = "hover:bg-accent focus-visible:ring-2 focus-visible:ring-
 function KinWorkLink(
   props: KinWorkTarget & {
     readonly link: KinWorkLinkView;
+    readonly itemKey?: KinRecordKey;
     readonly onOpen: () => void;
     readonly onOpenKey: (key: KinRecordKey) => void;
   },
@@ -1556,12 +1578,23 @@ function KinWorkLink(
         <ExternalLinkIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
       </a>
     );
-  return thread === null ? (
+  const remove =
+    link.removeUrl === undefined || props.itemKey === undefined ? null : (
+      <KinTaskLinkRemove
+        environmentId={props.environmentId}
+        orgId={props.orgId}
+        itemKey={props.itemKey}
+        url={link.removeUrl}
+        label={link.label}
+      />
+    );
+  return thread === null && remove === null ? (
     row
   ) : (
     <div className="flex items-center gap-1">
       <div className="min-w-0 flex-1">{row}</div>
       {thread}
+      {remove}
     </div>
   );
 }
