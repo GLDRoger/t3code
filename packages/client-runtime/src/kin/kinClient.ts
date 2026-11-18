@@ -41,6 +41,7 @@ import {
   type KinConnectionCallsInput,
   type KinConnectionRef,
   type KinConnectionsInput,
+  type KinTasksKeysListInput,
   type KinSocialInput,
   type KinGitHubInput,
   type KinProjectPageInput,
@@ -240,6 +241,11 @@ export function makeKinClient<R, ER>(
     tag: KIN_PEOPLE_WS_METHODS.peopleProfiles,
   });
   const readProfiles = kinGuardedRead(profilesRead);
+  const tasksKeysRead = createKinRpcCommand(runtime, {
+    label: "kin:tasks-keys:read",
+    tag: "kin.tasksKeys.list",
+  });
+  const readTasksKeys = kinGuardedRead(tasksKeysRead);
 
   const memoryRead = createKinRpcCommand(runtime, {
     label: "kin:memory:read",
@@ -837,6 +843,25 @@ export function makeKinClient<R, ER>(
       label: "kin:profile:update",
       tag: KIN_PEOPLE_WS_METHODS.peopleUpdateProfile,
       concurrency: { mode: "singleFlight", key: ({ input }) => input.personId },
+    }),
+    /** A person's live coding agent keys: their own, or anyone's for the owner level. */
+    tasksKeys: createKinQueryAtomFamily(runtime, {
+      label: "kin:tasks-keys",
+      execute: Effect.fn("KinClient.tasksKeys")(function* (input: KinTasksKeysListInput) {
+        return yield* readTasksKeys(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinRefreshOn("people"),
+    }),
+    /** Makes a key for the caller. The answer carries the secret once; nothing here keeps it. */
+    tasksKeyIssue: createKinRpcCommand(runtime, {
+      label: "kin:tasks-key:issue",
+      tag: "kin.tasksKeys.issue",
+    }),
+    tasksKeyRevoke: createKinRpcCommand(runtime, {
+      label: "kin:tasks-key:revoke",
+      tag: "kin.tasksKeys.revoke",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.sessionId },
     }),
     teamAgentSet: createKinRpcCommand(runtime, {
       label: "kin:team-agent:set",

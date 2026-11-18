@@ -66,6 +66,7 @@ import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinAwaySection, KinHandOverRow } from "./components/KinAway";
 import { KinInviteLink } from "./components/KinInviteLink";
+import { KinTasksKeysSection } from "./components/KinTasksKeys";
 import { kinClient } from "./state/kinClient";
 import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
 import { useKinOpenCounts, useKinProfiles } from "./state/useKinProfiles";
@@ -385,6 +386,14 @@ function KinTeammateDetails(props: {
           )}
         </ListSection>
       )}
+      {teammate.personId !== null && teammate.state !== "you" && kinOwnerLevel(props.viewer) ? (
+        <KinTasksKeysSection
+          environmentId={props.target.environmentId}
+          orgId={props.target.orgId}
+          personId={teammate.personId}
+          holder={teammate.name}
+        />
+      ) : null}
       {offered.remove ? (
         <ListSection>
           <ListActionRow
