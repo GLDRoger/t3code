@@ -25,9 +25,22 @@ Someone who runs the company sends you a join link. Open it in a browser, or in 
 on its first screen, tap **I have a join link**. You're in straight away, with your chats and the
 places the owner turned on for you.
 
-A join link works once and lasts a week. If yours has expired or was used, ask for a new one. To
-add another phone or browser later, ask for a **Link for another device**; the devices you already
-use stay signed in.
+A join link works once and lasts a week. If yours has expired or was used, ask for a new one.
+
+### Linked devices
+
+Once you're in, you add your other devices yourself. Open **Linked devices** (under your name on the
+web, in **Settings** on the phone) and choose **Link a device**. Kin shows a link and a QR code that
+work once, for 10 minutes. Scan the QR code with the new phone, or open the link in the new
+browser. Each time a device is linked, Kin tells you in Kin and on your phones that have
+notifications on, so you'd hear of one you didn't add.
+
+A linked device stays signed in for 30 days, then you link it again the same way. You can have 10
+devices at a time. Remove a device from the same list to sign it out at once, along with every
+device linked from it. Signing a device out from **Sharing & access** does the same. **Leave this
+team** on a phone only forgets the team on that phone: the device stays in your list until you
+remove it. A device you linked can remove itself and the devices linked from it, but not the
+phone you joined with. The owner can see and remove a teammate's devices on the **Team** page.
 
 ### Your profile
 

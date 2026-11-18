@@ -52,6 +52,7 @@ import { KinAwayField } from "./KinAway";
 import { useOpenKinPeopleChat } from "./KinPeopleChat";
 import { kinSettingsSectionIn } from "./kinSettingsAddress";
 import { KIN_DIALOG_PARTS, KIN_SHEET_PARTS } from "./kinOverlayParts";
+import { KinMyDevices } from "./KinDevices";
 import { kinClient } from "./kinClient";
 import { useKinProfiles } from "./kinPictures";
 import { useKinHostAt } from "./useKinHost";
@@ -312,15 +313,21 @@ export function KinProfileBody(props: KinProfileTarget) {
       onDone={() => setEditing(false)}
     />
   ) : (
-    <KinProfileRead
-      environmentId={environmentId}
-      orgId={orgId}
-      profile={profile}
-      holding={holding}
-      mine={mine}
-      mayEdit={mayEdit}
-      onEdit={() => setEditing(true)}
-    />
+    <>
+      <KinProfileRead
+        environmentId={environmentId}
+        orgId={orgId}
+        profile={profile}
+        holding={holding}
+        mine={mine}
+        mayEdit={mayEdit}
+        onEdit={() => setEditing(true)}
+      />
+      {/* The owner's own devices are T3 Code pairings, managed in its settings. */}
+      {mine && !holding.isOwner ? (
+        <KinMyDevices environmentId={environmentId} orgId={orgId} personId={personId} />
+      ) : null}
+    </>
   );
 }
 

@@ -138,6 +138,34 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("SessionStore.lay
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
   );
 
+  it.effect("closes a socket within a minute of a revocation written by another process", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const sql = yield* SqlClient.SqlClient;
+      const client = yield* sessions.issue({ ...relaySessionInput, ttl: Duration.days(30) });
+      yield* sessions.markConnected(client.sessionId);
+      const invalidated = yield* Deferred.make<void>();
+      yield* sessions
+        .awaitInvalidation(client.sessionId, relaySessionInput.proofKeyThumbprint)
+        .pipe(
+          Effect.andThen(Deferred.succeed(invalidated, undefined)),
+          Effect.forkScoped({ startImmediately: true }),
+        );
+      // What `t3 auth session revoke` does from its own process: the row, and no event here.
+      yield* sql`UPDATE auth_sessions SET revoked_at = '2026-01-01T00:00:00.000Z'
+        WHERE session_id = ${client.sessionId}`;
+      yield* TestClock.adjust(Duration.seconds(59));
+      expect(yield* Deferred.isDone(invalidated)).toBe(false);
+      yield* TestClock.adjust(Duration.seconds(1));
+      yield* Deferred.await(invalidated);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(layerSessionStore(), SqlitePersistence.layerMemory, TestClock.layer()),
+      ),
+    ),
+  );
+
   it.effect.each([
     { name: "a renewal for the same key", renewal: {}, closesAtMinute: 119 },
     {
