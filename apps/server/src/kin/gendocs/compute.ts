@@ -341,6 +341,76 @@ const gst = (args: {
   };
 };
 
+/**
+ * Which tax a `gst` field charges, by the company's country: India's GST from the GSTINs and
+ * states, else the company's one tax at its rate (none without one), so a recipe that names `gst`
+ * is right in any country.
+ */
+export type TaxRegime =
+  | { readonly _tag: "gst" }
+  | {
+      readonly _tag: "flat";
+      readonly name: string;
+      readonly rate: string | null;
+      readonly pricesInclude: boolean;
+    };
+export const GST_REGIME: TaxRegime = { _tag: "gst" };
+let regime: TaxRegime = GST_REGIME;
+
+/**
+ * One tax line at the company's rate, on the lines' value or, when their prices include it, out
+ * of them; with no lines, out of the entry's total. No rate is no line.
+ */
+const flatTax = (
+  tax: Extract<TaxRegime, { readonly _tag: "flat" }>,
+  args: {
+    readonly taxable: Money | null;
+    readonly total: Money | null;
+    readonly recordedTax: Money | null;
+  },
+) => {
+  const currency =
+    args.taxable?.currency ?? args.total?.currency ?? fail("there is no amount and no lines");
+  for (const one of [args.taxable, args.total, args.recordedTax])
+    if (one !== null && one.currency !== currency) fail(`every amount must be in ${currency}`);
+  const rate = tax.rate === null ? { num: 0n, den: 1n } : fraction(tax.rate);
+  const charged = tax.rate !== null;
+  const outOf = (gross: bigint) =>
+    args.recordedTax !== null && charged
+      ? gross - BigInt(args.recordedTax.minor)
+      : divide(gross * 100n * rate.den, 100n * rate.den + rate.num);
+  let taxable: bigint;
+  let amount: bigint;
+  if (args.taxable !== null && !tax.pricesInclude) {
+    taxable = BigInt(args.taxable.minor);
+    amount = divide(taxable * rate.num, rate.den * 100n);
+  } else {
+    const gross = args.taxable ?? args.total ?? fail("there is no amount and no lines");
+    if (args.recordedTax !== null && !charged && args.recordedTax.minor !== 0)
+      fail(`the entry records tax, but the company has no ${tax.name} rate set`);
+    taxable = outOf(BigInt(gross.minor));
+    amount = BigInt(gross.minor) - taxable;
+  }
+  if (args.total !== null && args.taxable !== null && BigInt(args.total.minor) !== taxable + amount)
+    fail(
+      `the lines come to ${formatMoney(money(taxable + amount, currency))} with tax, but the entry is recorded at ${formatMoney(args.total)}: correct the lines or the entry's amount`,
+    );
+  return {
+    registered: false,
+    exported: false,
+    exportUnderLut: false,
+    supplierState: null,
+    placeOfSupply: null,
+    country: null,
+    taxable: money(taxable, currency),
+    taxes: charged
+      ? [{ name: tax.name, rate: decimalText(rate.num, rate.den), amount: money(amount, currency) }]
+      : [],
+    tax: money(amount, currency),
+    total: money(taxable + amount, currency),
+  };
+};
+
 export type Block =
   | { readonly kind: "heading"; readonly level: number; readonly spans: ReadonlyArray<Span> }
   | { readonly kind: "paragraph" | "quote"; readonly spans: ReadonlyArray<Span> }
@@ -587,6 +657,12 @@ const evaluate = (scope: Scope, name: string, spec: Spec): unknown => {
       if (typeof arg !== "object" || arg === null || Array.isArray(arg))
         return fail(`${name}: gst takes named arguments`);
       const get = (key: string) => resolve(scope, Reflect.get(arg, key) ?? null);
+      if (regime._tag === "flat")
+        return flatTax(regime, {
+          taxable: asMoney(get("taxable"), "taxable"),
+          total: asMoney(get("total"), "total"),
+          recordedTax: asMoney(get("recordedTax"), "recordedTax"),
+        });
       const rate = get("rate");
       if (rate === null || rate === undefined) return fail(`${name}: gst needs a rate`);
       return gst({
@@ -710,8 +786,10 @@ const withText = (value: unknown, done: WeakMap<object, unknown>): unknown => {
 export const computeData = (
   inputs: Readonly<Record<string, Value>>,
   computed: ReadonlyArray<readonly [string, unknown]>,
+  tax: TaxRegime = GST_REGIME,
 ): { readonly data: Computed } | { readonly error: string } => {
   const scope: Record<string, unknown> = { ...inputs };
+  regime = tax;
   operations = 0;
   made = { values: 0, bytes: 0 };
   measured = new WeakMap();

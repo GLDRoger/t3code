@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 
 import {
+  AuthClientMetadataDeviceType,
   AuthKinChatScope,
   EnvironmentAuthorizationError,
   type AuthEnvironmentScope,
@@ -118,6 +119,16 @@ export const KinPersonDevice = Schema.Struct({
   boundAt: IsoDateTime,
   expiresAt: Schema.NullOr(IsoDateTime),
   revokedAt: Schema.NullOr(IsoDateTime),
+  /** When it last opened a connection, which is not the same as last use. Absent from older hosts. */
+  lastConnectedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** The device asking. Absent from older hosts. */
+  current: Schema.optional(Schema.Boolean),
+  /** The device whose link brought this one in; removing that device removes this one too. */
+  linkedFrom: Schema.optional(Schema.NullOr(AuthSessionId)),
+  /** The invite or link this device joined with. Absent from older hosts. */
+  linkId: Schema.optional(Schema.NullOr(KinInviteId)),
+  /** Whether the device asking may remove this one. Absent from older hosts. */
+  removable: Schema.optional(Schema.Boolean),
 });
 export type KinPersonDevice = typeof KinPersonDevice.Type;
 
@@ -139,6 +150,24 @@ export const KinPeopleRevokeDeviceInput = Schema.Struct({
 export type KinPeopleRevokeDeviceInput = typeof KinPeopleRevokeDeviceInput.Type;
 export const KinPeopleRevokeDeviceResult = Schema.Struct({ revoked: Schema.Boolean });
 export type KinPeopleRevokeDeviceResult = typeof KinPeopleRevokeDeviceResult.Type;
+
+/** A person links one more of their own devices: a link, good once, briefly. */
+export const KinPeopleLinkDeviceInput = Schema.Struct({ orgId: KinOrgId });
+export type KinPeopleLinkDeviceInput = typeof KinPeopleLinkDeviceInput.Type;
+export const KinPeopleLinkDeviceResult = Schema.Struct({
+  /** Which link it is: the device that joins with it lists it as its `linkId`. */
+  linkId: KinInviteId,
+  /** The join link's secret, as `createInvite` gives it. */
+  secret: TrimmedNonEmptyString,
+  expiresAt: IsoDateTime,
+});
+export type KinPeopleLinkDeviceResult = typeof KinPeopleLinkDeviceResult.Type;
+export const KIN_DEVICE_LINK_TTL_MINUTES = 10;
+/** One wording wherever Kin says a device was linked: never the device's own, chosen name. */
+export const KIN_DEVICE_LINKED_NOTICE =
+  "A new device was just linked to your Kin. If it wasn't you, remove it in Linked devices.";
+/** Devices one person may have signed in at once. */
+export const KIN_DEVICE_LIMIT = 10;
 
 /** Signs a person out everywhere and cancels their unused invite links. They stay a person. */
 export const KinPeopleRemoveAccessInput = Schema.Struct({
@@ -183,6 +212,8 @@ export const KinAccessMeResult = Schema.Struct({
   leads: Schema.optional(Schema.Array(KinRecordRef)),
   /** The company's home currency, which every member's forms start amounts in; absent from an older host. */
   homeCurrency: Schema.optional(KinCurrency),
+  /** The company's country, ISO 3166 alpha-2, null for none; absent from an older host. */
+  country: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isPattern(/^[A-Z]{2}$/)))),
 });
 export type KinAccessMeResult = typeof KinAccessMeResult.Type;
 
@@ -282,6 +313,8 @@ export type KinPeopleSetOwnerNameInput = typeof KinPeopleSetOwnerNameInput.Type;
 export const KinInviteAcceptRequest = Schema.Struct({
   secret: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
   label: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(80))),
+  /** What kind of device is joining; the phone app when absent. */
+  deviceType: Schema.optional(AuthClientMetadataDeviceType),
 });
 export type KinInviteAcceptRequest = typeof KinInviteAcceptRequest.Type;
 export const KinInviteAcceptResult = Schema.Struct({
@@ -312,6 +345,7 @@ export const KIN_PEOPLE_WS_METHODS = {
   peopleCreateInvite: "kin.people.createInvite",
   peopleListDevices: "kin.people.listDevices",
   peopleRevokeDevice: "kin.people.revokeDevice",
+  peopleLinkDevice: "kin.people.linkDevice",
   peopleRemoveAccess: "kin.people.removeAccess",
   peopleSetGithubLogin: "kin.people.setGithubLogin",
   peopleSetAccess: "kin.people.setAccess",
@@ -354,6 +388,11 @@ export const KinPeopleRpcs = [
   Rpc.make(KIN_PEOPLE_WS_METHODS.peopleRevokeDevice, {
     payload: KinPeopleRevokeDeviceInput,
     success: KinPeopleRevokeDeviceResult,
+    error: KinPeopleError,
+  }),
+  Rpc.make(KIN_PEOPLE_WS_METHODS.peopleLinkDevice, {
+    payload: KinPeopleLinkDeviceInput,
+    success: KinPeopleLinkDeviceResult,
     error: KinPeopleError,
   }),
   Rpc.make(KIN_PEOPLE_WS_METHODS.peopleRemoveAccess, {
@@ -411,6 +450,7 @@ export const KIN_PEOPLE_RPC_SCOPES = {
   [KIN_PEOPLE_WS_METHODS.peopleCreateInvite]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleListDevices]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleRevokeDevice]: AuthKinChatScope,
+  [KIN_PEOPLE_WS_METHODS.peopleLinkDevice]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleRemoveAccess]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleSetGithubLogin]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleSetAccess]: AuthKinChatScope,

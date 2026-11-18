@@ -1,5 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format a rate's day for React render, outside an Effect runtime.
-import { kinWhenFormat } from "@t3tools/contracts";
+import { kinCurrency, kinWhenFormat } from "@t3tools/contracts";
 import type {
   KinRecordDetail,
   KinRecordKey,
@@ -21,11 +21,17 @@ import { kinMinorDigits, kinMoneyText } from "./kinLists.ts";
  * into an exact figure, an invoice, a receipt or an export.
  */
 
+/** "rupees" for INR, a currency's code where it has no name of its own. */
+const homeUnits = (home: string) => {
+  const major = kinCurrency(home).major;
+  return major === home ? home : major.toLowerCase();
+};
+
 export const KIN_CURRENCY = {
   ratesFailed: "Couldn't load the rates",
   exactStays: "Exact figures, invoices and exports stay in their own currency.",
-  paidUnlinked: (currency: string) =>
-    `Paid in ${currency}. No bank row is linked yet, so the rupees received aren't known.`,
+  paidUnlinked: (currency: string, home: string) =>
+    `Paid in ${currency}. No bank row is linked yet, so the ${homeUnits(home)} received aren't known.`,
   noRates: "No rates yet, so no foreign amount shows an estimate.",
   rateForEstimates: "Use this rate for estimates",
   setRate: "Set a rate",
@@ -312,6 +318,8 @@ function kinCurrencyName(currency: string): string {
 /** How a foreign-currency invoice says what currency it is in, and what it is about worth. */
 export interface KinInvoiceCurrencyView {
   readonly currency: string;
+  /** The company's home currency, the one an estimate is in. */
+  readonly home: string;
   /** "Amounts in US Dollar (USD)". */
   readonly label: string;
   readonly estimate: KinEstimate | null;
@@ -333,6 +341,7 @@ export function kinInvoiceCurrency(
   const estimate = kinEstimate(amount, rates);
   return {
     currency: amount.currency,
+    home: rates.home,
     label: `Amounts in ${kinCurrencyName(amount.currency)}`,
     estimate,
     missingRate: estimate === null,

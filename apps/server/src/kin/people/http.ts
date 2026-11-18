@@ -3,6 +3,7 @@ import {
   KIN_INVITE_APP_ROUTE,
   KIN_INVITE_BROWSER_ACCEPT_ROUTE,
   KinAppScheme,
+  KinChatError,
   KinInviteAcceptRequest,
   type KinInviteAppResult,
 } from "@t3tools/contracts";
@@ -15,13 +16,19 @@ import * as Schema from "effect/Schema";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { isBrowserOriginAllowed, trustedBrowserOrigins } from "../../auth/EnvironmentAuth.ts";
 import { SessionStore } from "../../auth/SessionStore.ts";
+import { deriveAuthClientMetadata } from "../../auth/utils.ts";
 import * as ServerConfig from "../../config.ts";
 import { requestUrl } from "../../requestUrl.ts";
 import { KinServer } from "../KinServer.ts";
 import * as People from "./KinPeople.ts";
 
 const decodeAccept = Schema.decodeUnknownEffect(KinInviteAcceptRequest);
-
+const isChatError = Schema.is(KinChatError);
+/** A full set of devices is its own answer, so the joining device says so, not "bad link". */
+const atDeviceLimit = Effect.catchIf(
+  (error: unknown) => isChatError(error) && error.reason === "limit",
+  () => Effect.succeed(HttpServerResponse.empty({ status: 409 })),
+);
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const router = yield* HttpRouter.HttpRouter;
@@ -51,13 +58,16 @@ export const layer = Layer.effectDiscard(
       Effect.gen(function* () {
         const kin = yield* KinServer;
         if (Option.isNone(kin.services)) return HttpServerResponse.empty({ status: 503 });
-        const input = yield* (yield* HttpServerRequest.HttpServerRequest).json.pipe(
-          Effect.flatMap(decodeAccept),
-        );
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const input = yield* request.json.pipe(Effect.flatMap(decodeAccept));
         const people = yield* People.make.pipe(Effect.provideContext(kin.services.value));
-        const result = yield* people.accept(input);
+        // The phone app's route: what kind of device it is isn't the body's to say.
+        const result = yield* people.accept({ ...input, deviceType: "mobile" });
         return yield* HttpServerResponse.json(result, { headers: { "cache-control": "no-store" } });
-      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
+      }).pipe(
+        atDeviceLimit,
+        Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 })),
+      ),
     );
     // A browser keeps the session as the app's own cookie; script never holds the token.
     yield* router.add(
@@ -79,7 +89,9 @@ export const layer = Layer.effectDiscard(
         const input = yield* request.json.pipe(Effect.flatMap(decodeAccept));
         const secure = Option.exists(requestUrl(request), (url) => url.protocol === "https:");
         return yield* Effect.gen(function* () {
-          const result = yield* (yield* People.make).accept(input);
+          // A browser says what it is through its user agent, not the request body.
+          const deviceType = deriveAuthClientMetadata({ request }).deviceType;
+          const result = yield* (yield* People.make).accept({ ...input, deviceType });
           return yield* HttpServerResponse.empty({
             status: 204,
             headers: { "cache-control": "no-store" },
@@ -93,7 +105,10 @@ export const layer = Layer.effectDiscard(
             }),
           );
         }).pipe(Effect.provideContext(kin.services.value));
-      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
+      }).pipe(
+        atDeviceLimit,
+        Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 })),
+      ),
     );
   }),
 );

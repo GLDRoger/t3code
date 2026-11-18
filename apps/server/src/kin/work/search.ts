@@ -56,9 +56,11 @@ const wordsOf = (text: string) =>
     .filter((word) => word !== "")
     .slice(0, 12);
 
-/** Every word must match; the last may be the start of one, as someone still typing it. */
-const ftsQuery = (words: ReadonlyArray<string>) =>
-  words.map((word, index) => `"${word}"${index === words.length - 1 ? "*" : ""}`).join(" ");
+/** Every word must match, or with `any` one of them; the last may be the start of one. */
+const ftsQuery = (words: ReadonlyArray<string>, any: boolean) =>
+  words
+    .map((word, index) => `"${word}"${index === words.length - 1 ? "*" : ""}`)
+    .join(any ? " OR " : " ");
 
 const around = (text: string, words: ReadonlyArray<string>) => {
   const lower = text.toLowerCase();
@@ -84,12 +86,14 @@ export const search = Effect.fn("KinSearch.search")(function* (
     readonly viewer: Viewer;
     /** Whose entries: only what every one of its people sees (`seenBy`). */
     readonly scope: KinViewer;
+    /** With nothing that has every word, look again for any of them (`widened`). */
+    readonly widen?: boolean;
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
   const words = wordsOf(input.text);
   const indexed = yield* searchIndexed();
-  if (words.length === 0) return { hits: [] as ReadonlyArray<Hit>, indexed };
+  if (words.length === 0) return { hits: [] as ReadonlyArray<Hit>, indexed, widened: false };
   const kinds = input.kinds === undefined || input.kinds.length === 0 ? KINDS : input.kinds;
   const where = [
     sql`r.org_id = ${orgId}`,
@@ -104,16 +108,20 @@ export const search = Effect.fn("KinSearch.search")(function* (
   const columns = sql`r.record_id AS "recordId", r.register_id AS "registerId", r.key, r.title,
     r.state, r.updated_at AS "updatedAt", CASE WHEN r.register_id IN ${sql.in([...MONEY])}
       THEN ${inheritedSensitive(sql)} ELSE ${sensitiveNow(sql)} END AS sensitive`;
-  const rows = indexed
-    ? yield* sql<Row>`SELECT ${columns}, m.part,
+  const find = (any: boolean) =>
+    indexed
+      ? sql<Row>`SELECT ${columns}, m.part,
           snippet(kin_search, 1, '', '', '…', ${SNIPPET_WORDS}) AS snippet
         FROM kin_search s JOIN kin_search_rows m ON m.id = s.rowid
         JOIN kin_records r ON r.org_id = m.org_id AND r.record_id = m.record_id
-        WHERE kin_search MATCH ${ftsQuery(words)} AND m.org_id = ${orgId}
+        WHERE kin_search MATCH ${ftsQuery(words, any)} AND m.org_id = ${orgId}
           AND ${sql.and([...where, ...(input.viewer === "team" ? [sql`m.part = 'public'`] : [])])}
         ORDER BY bm25(kin_search, 4.0, 1.0), r.updated_at DESC, r.record_id
         LIMIT ${input.limit * 2}`
-    : yield* scan(sql, words, where, columns, input.viewer, input.limit * 2);
+      : scan(sql, words, any, where, columns, input.viewer, input.limit * 2);
+  const every = yield* find(false);
+  const widened = every.length === 0 && words.length > 1 && input.widen === true;
+  const rows = widened ? yield* find(true) : every;
   const seen = new Set<string>();
   const best = rows.filter((row) => !seen.has(row.recordId) && seen.add(row.recordId));
   const shown = best.slice(0, input.limit);
@@ -127,7 +135,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
       body === undefined
         ? undefined
         : sectionsOf(body).find((part) =>
-            words.every((word) => part.text.toLowerCase().includes(word)),
+            words[widened ? "some" : "every"]((word) => part.text.toLowerCase().includes(word)),
           );
     return {
       recordId: row.recordId,
@@ -152,7 +160,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
       updatedAt: row.updatedAt,
     };
   });
-  return { hits, indexed };
+  return { hits, indexed, widened: widened && hits.length > 0 };
 });
 
 /** A snippet indexed before members' ids were left out of the index, without them. */
@@ -162,10 +170,11 @@ const withoutIds = (snippet: string) =>
     .replace(/\s{2,}/g, " ")
     .trim();
 
-/** Without FTS5: every word somewhere in the same text, newest first. */
+/** Without FTS5: every word, or with `any` one of them, somewhere in the same text, newest first. */
 const scan = Effect.fnUntraced(function* (
   sql: SqlClient.SqlClient,
   words: ReadonlyArray<string>,
+  any: boolean,
   where: ReadonlyArray<ReturnType<SqlClient.SqlClient["and"]>>,
   columns: ReturnType<SqlClient.SqlClient["and"]>,
   viewer: Viewer,
@@ -181,7 +190,12 @@ const scan = Effect.fnUntraced(function* (
   const rows = yield* sql<Omit<Row, "part" | "snippet"> & { readonly text: string }>`
     SELECT ${columns}, r.title || ' ' || r.notes || ' ' || ${body} AS text
     FROM kin_records r
-    WHERE ${sql.and([...where, ...words.map((word) => sql`instr(${text}, ${word}) > 0`)])}
+    WHERE ${sql.and([
+      ...where,
+      ((found) => (any ? sql.or(found) : sql.and(found)))(
+        words.map((word) => sql`instr(${text}, ${word}) > 0`),
+      ),
+    ])}
     ORDER BY r.updated_at DESC, r.record_id LIMIT ${limit}`;
   return rows.map(({ text: found, ...row }): Row => ({
     ...row,

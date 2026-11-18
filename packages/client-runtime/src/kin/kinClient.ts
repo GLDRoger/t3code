@@ -27,6 +27,7 @@ import {
   type KinPulseListInput,
   type KinMemoryListInput,
   type KinPeopleListInput,
+  type KinPeopleListDevicesInput,
   type KinAgentDefaultsInput,
   type KinAgentPageInput,
   type KinLeadAccessInput,
@@ -235,6 +236,11 @@ export function makeKinClient<R, ER>(
     tag: KIN_PEOPLE_WS_METHODS.peopleListInvites,
   });
   const readInvites = kinGuardedRead(invitesRead);
+  const devicesRead = createKinRpcCommand(runtime, {
+    label: "kin:devices:read",
+    tag: KIN_PEOPLE_WS_METHODS.peopleListDevices,
+  });
+  const readDevices = kinGuardedRead(devicesRead);
   const profilesRead = createKinRpcCommand(runtime, {
     label: "kin:profiles:read",
     tag: KIN_PEOPLE_WS_METHODS.peopleProfiles,
@@ -858,6 +864,26 @@ export function makeKinClient<R, ER>(
       staleTimeMs: 30_000,
       refreshTrigger: kinRefreshOn("people"),
     }),
+    /** A person's signed-in devices: their own, or a teammate's for the owner level. */
+    devices: createKinQueryAtomFamily(runtime, {
+      label: "kin:devices",
+      execute: Effect.fn("KinClient.devices")(function* (input: KinPeopleListDevicesInput) {
+        return yield* readDevices(input);
+      }),
+      staleTimeMs: 15_000,
+      refreshTrigger: kinRefreshOn("people"),
+    }),
+    deviceRemove: createKinRpcCommand(runtime, {
+      label: "kin:device:remove",
+      tag: KIN_PEOPLE_WS_METHODS.peopleRevokeDevice,
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.sessionId },
+    }),
+    /** A code and link for one more of your own devices; shown once, kept nowhere. */
+    deviceLink: createKinRpcCommand(runtime, {
+      label: "kin:device:link",
+      tag: KIN_PEOPLE_WS_METHODS.peopleLinkDevice,
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+    }),
     /** Makes a teammate's link. The answer carries the secret once; nothing here keeps it. */
     inviteCreate: createKinRpcCommand(runtime, {
       label: "kin:invite:create",
@@ -1401,6 +1427,12 @@ export function makeKinClient<R, ER>(
     workHandBack: createKinRpcCommand(runtime, {
       label: "kin:work:handBack",
       tag: "kin.work.handBack",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
+    /** Asks the person holding a task where it stands; once a day per task (`kin.work.nudge`). */
+    workNudge: createKinRpcCommand(runtime, {
+      label: "kin:work:nudge",
+      tag: "kin.work.nudge",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
     }),
     /** A note on a task from anyone who sees it, with files they just uploaded. */

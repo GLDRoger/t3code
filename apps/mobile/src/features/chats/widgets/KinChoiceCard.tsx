@@ -510,17 +510,23 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
           )}
           <View className="gap-2 pt-1">
             {choice.options.map((option) => (
-              <Button
-                key={option.id}
-                label={option.label}
-                accessibilityHint="Sends this as your reply"
-                tone="outline"
-                size="compact"
-                fullWidth
-                loading={pending === option.id}
-                disabled={(pending !== null && pending !== option.id) || switching}
-                onPress={() => void press(option.id)}
-              />
+              <View key={option.id} className="gap-0.5">
+                <Button
+                  label={option.label}
+                  accessibilityHint={option.action ?? "Sends this as your reply"}
+                  tone="outline"
+                  size="compact"
+                  fullWidth
+                  loading={pending === option.id}
+                  disabled={(pending !== null && pending !== option.id) || switching}
+                  onPress={() => void press(option.id)}
+                />
+                {option.action === null ? null : (
+                  <Text textRole="footnote" className="px-1 text-foreground-muted">
+                    {option.action}
+                  </Text>
+                )}
+              </View>
             ))}
             {editable && choice.send?.edit != null ? (
               <Button

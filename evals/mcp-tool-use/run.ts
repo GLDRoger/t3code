@@ -1252,7 +1252,8 @@ const loadTools = (tools: Array<ApiTool>, id: string, found: ReadonlyArray<ApiTo
  */
 const STANDARD_SEATS = ["chief-of-staff", "finance", "engineering", "growth", "social"];
 const seatCharacter = (domain: string) => {
-  const body = defaultCharacterFor(domain);
+  // The eval company keeps rupees in India, so Finance's text is the one Kin's tests know.
+  const body = defaultCharacterFor(domain, { homeCurrency: "INR", country: "IN", tax: null });
   if (body === undefined) throw new Error(`No default character for ${domain}.`);
   return { body, name: /^# (.+)$/m.exec(body)?.[1] ?? domain };
 };

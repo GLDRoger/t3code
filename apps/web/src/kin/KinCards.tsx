@@ -492,16 +492,20 @@ function KinChoiceCard(props: {
           <CardNotice notice={status?.notice} />
           <div className="flex flex-col gap-1.5 pt-1">
             {choice.options.map((option) => (
-              <Button
-                key={option.id}
-                variant="outline"
-                size="sm-multiline"
-                aria-busy={pending === option.id}
-                disabled={pending !== null || switching}
-                onClick={() => void press(option.id)}
-              >
-                {option.label}
-              </Button>
+              <div key={option.id} className="flex flex-col gap-0.5">
+                <Button
+                  variant="outline"
+                  size="sm-multiline"
+                  aria-busy={pending === option.id}
+                  disabled={pending !== null || switching}
+                  onClick={() => void press(option.id)}
+                >
+                  {option.label}
+                </Button>
+                {option.action === null ? null : (
+                  <p className="px-1 text-xs text-muted-foreground">{option.action}</p>
+                )}
+              </div>
             ))}
             {editable && choice.send?.edit != null ? (
               <Button

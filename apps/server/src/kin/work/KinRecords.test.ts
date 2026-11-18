@@ -592,6 +592,8 @@ it.effect(
         "kin.work.create",
         "kin.work.assign",
         "kin.work.handBack",
+        // Whoever asked for it, or the owner level (`workMoves.nudge`).
+        "kin.work.nudge",
         // Their own; the owner level anyone's (`handOver`).
         "kin.work.handOver",
         "kin.work.update",
@@ -609,7 +611,7 @@ it.effect(
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 48);
+      assert.lengthOf(methods, 49);
       for (const method of methods)
         assert.strictEqual(kinRpcAccess(method) === "person", teammate.has(method), method);
     }).pipe(Effect.provide(layer)),
@@ -1280,6 +1282,21 @@ it.effect("in a teammate's turn the lead reads and changes Work as their own scr
       records: [{ title: "Invented: fix the login bug" }],
     });
     assert.include(keysOf(yield* OwnerWork.list([mate], { orgId })), made.records[0]!.key);
+    // A repeat of a task they can't see is made as if it weren't there, and never named.
+    const beside = yield* LeadWork.create(scope, {
+      sourceEventId: "ask-event",
+      records: [{ title: "Invented private" }, { title: "invented theirs" }],
+    });
+    assert.deepStrictEqual(
+      beside.records.map((row) => [row.created, row.alsoOpen]),
+      [
+        [true, undefined],
+        [
+          true,
+          [{ key: theirs.key, title: "Invented theirs", differs: 'titled "Invented theirs"' }],
+        ],
+      ],
+    );
   }).pipe(Effect.provide(layer)),
 );
 

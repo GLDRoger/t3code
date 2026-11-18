@@ -328,6 +328,7 @@ const KIN_RPC_ACCESS = {
   "kin.work.assign": "person",
   "kin.work.update": "person",
   "kin.work.handBack": "person",
+  "kin.work.nudge": "person",
   "kin.work.handOver": "person",
   // Anyone who sees the entry; its author or the owner level removes one (`recordComments.ts`).
   "kin.work.comment": "person",
@@ -411,8 +412,10 @@ const KIN_RPC_ACCESS = {
   // A member reads names only; the service keeps access and places to owner level.
   "kin.people.list": "person",
   "kin.people.createInvite": "owner_level",
-  "kin.people.listDevices": "owner_level",
-  "kin.people.revokeDevice": "owner_level",
+  // A person's own devices; another person's are the owner level's (KinPeople checks which).
+  "kin.people.listDevices": "person",
+  "kin.people.revokeDevice": "person",
+  "kin.people.linkDevice": "person",
   "kin.people.removeAccess": "owner_level",
   "kin.people.setGithubLogin": "person",
   "kin.people.setAccess": "org_owner",
@@ -480,6 +483,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.people.createInvite": "kin-people",
   "kin.people.listDevices": "kin-people",
   "kin.people.revokeDevice": "kin-people",
+  "kin.people.linkDevice": "kin-people",
   "kin.people.removeAccess": "kin-people",
   "kin.people.setGithubLogin": "kin-people",
   "kin.people.setAccess": "kin-people",
@@ -586,6 +590,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.create": "kin-work",
   "kin.work.assign": "kin-work",
   "kin.work.handBack": "kin-work",
+  "kin.work.nudge": "kin-work",
   "kin.work.handOver": "kin-work",
   "kin.work.comment": "kin-work",
   "kin.work.commentRemove": "kin-work",

@@ -1038,6 +1038,20 @@ features:
       - apps/server/src/kin/people/KinPeople.test.ts
       - .agents/skills/verify-kin/scripts/remove-and-bring-back.sh
 
+  - id: linked-devices
+    name: Link and remove your own devices
+    tab: settings
+    web: [home, sheet:Profile, section:Linked devices]
+    phone: [SettingsKin, KinDevices]
+    roles: { owner: none, co_owner: both, lead: both, member: both }
+    note: >-
+      The owner pairs devices through T3 Code's Sharing & access, so a link is a teammate's.
+      Removing a device signs out every device linked from it; the owner removes a teammate's
+      devices from the teammate's sheet.
+    proof:
+      - apps/server/src/kin/people/KinPeople.test.ts
+      - packages/client-runtime/src/kin/kinDevices.test.ts
+
   - id: teammate-profile
     name: Change a teammate's profile
     tab: settings
@@ -1057,12 +1071,15 @@ features:
     phone: [SettingsKin, KinProfile, KinProfileEdit]
     form: true
     roles: { owner: both, co_owner: both, lead: both, member: both }
+    tools: [away_set]
     note: >-
       Only the person sets how they like to be spoken to, their quiet hours, and whether Kin holds
-      non-urgent messages outside their working hours; others see these read-only.
+      non-urgent messages outside their working hours; others see these read-only. Their own away
+      date they also set by saying so in their own chat with an agent.
     proof:
       - packages/client-runtime/src/kin/kinProfiles.test.ts
       - apps/server/src/kin/people/KinPeople.test.ts
+      - apps/server/src/kin/lead/awaySet.test.ts
       - apps/server/src/kin/lead/messagesToPeople.test.ts
       - .agents/skills/verify-kin/scripts/hours-two-zones.sh
 

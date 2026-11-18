@@ -6,6 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Docs from "../work/docs.ts";
 import type { Writer } from "../work/KinRecords.ts";
 import { defaultCharacterFor } from "./characterDefaults.ts";
+import { companyMoney } from "../work/companyProfile.ts";
 
 /**
  * An agent's character is a doc it owns, filed as the company's and labelled sensitive, so only
@@ -91,10 +92,11 @@ export const seedCharacters = Effect.fn("KinCharacters.seed")(function* (orgId: 
         ORDER BY origin_key`).map((row) => row.originKey),
   );
   let made = 0;
+  const money = yield* companyMoney(orgId);
   for (const lead of yield* liveLeads(sql, orgId)) {
     const originKey = characterOrigin(lead.agentId);
     if (have.has(originKey)) continue;
-    const fixed = defaultCharacterFor(lead.domain);
+    const fixed = defaultCharacterFor(lead.domain, money);
     yield* Docs.create(
       orgId,
       system,

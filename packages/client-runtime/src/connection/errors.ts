@@ -276,12 +276,18 @@ export function mapRemoteEnvironmentError(
 export const KIN_JOIN_LINK_SPENT =
   "This link has already been used or has expired. Ask your team for a new one.";
 
+export const KIN_JOIN_DEVICE_LIMIT =
+  "You already have 10 devices signed in. Remove one in Linked devices, then ask for a new link.";
+
 /** The host answers 400 for a used, expired or revoked invite alike, so one sentence covers them. */
 export function mapKinInviteError(error: RemoteEnvironmentAuthError): ConnectionAttemptError {
-  if (error._tag === "RemoteEnvironmentAuthUndeclaredStatusError" && error.status === 400) {
+  if (
+    error._tag === "RemoteEnvironmentAuthUndeclaredStatusError" &&
+    (error.status === 400 || error.status === 409)
+  ) {
     return new ConnectionBlockedError({
       reason: "authentication",
-      detail: KIN_JOIN_LINK_SPENT,
+      detail: error.status === 409 ? KIN_JOIN_DEVICE_LIMIT : KIN_JOIN_LINK_SPENT,
       hop: "server",
     });
   }

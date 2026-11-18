@@ -31,7 +31,7 @@ import { ownerLevel } from "../people/KinAccess.ts";
  */
 export type AssignNotice = {
   readonly personId: KinPersonId;
-  readonly kind: "given" | "taken" | "returned" | "added" | "lead" | "commented";
+  readonly kind: "given" | "taken" | "returned" | "added" | "lead" | "commented" | "nudged";
   readonly row: RecordRow;
   /** The agent's one line on why, or the holder's words on a hand back. */
   readonly why: string | null;
@@ -48,6 +48,8 @@ type Turn = {
   /** A person who gave it on their own screen: named in place of the agent, and no turn chat. */
   readonly by?: string;
   readonly byPersonId?: KinPersonId;
+  /** The message's id in place of one from the turn and the words: a nudge is one a day. */
+  readonly messageId?: KinMessageId;
 };
 
 const reasonOf = (row: RecordRow) => {
@@ -142,6 +144,7 @@ const line = (notice: AssignNotice, clock: TextClock, gaveTo: string | null = nu
   if (notice.kind === "added") return `added you to ${task}`;
   if (notice.kind === "lead") return `made you the lead of ${task}`;
   if (notice.kind === "commented") return `commented on ${task}${why}`;
+  if (notice.kind === "nudged") return `asked where ${task} stands`;
   return notice.kind === "given"
     ? `${task}${dueText(notice.row, clock)}${notice.why === null ? "" : `. Why: ${notice.why}`}`
     : notice.kind === "taken"
@@ -166,7 +169,10 @@ const bodyFor = (
   const projects = notices.filter((notice) => notice.kind === "added" || notice.kind === "lead");
   const other = notices.filter(
     (notice) =>
-      notice.kind === "taken" || notice.kind === "returned" || notice.kind === "commented",
+      notice.kind === "taken" ||
+      notice.kind === "returned" ||
+      notice.kind === "commented" ||
+      notice.kind === "nudged",
   );
   if (notices.length === 1)
     return given.length === 1
@@ -282,12 +288,14 @@ export const tellPeople = Effect.fn("KinAssignNotices.tell")(function* (
       (notice) => names.get(notice) ?? null,
     );
     // The same lines from the same turn are one message, so a retried call posts nothing more.
-    const messageId = KinMessageId.make(
-      `kin-assign-${NodeCrypto.createHash("sha256")
-        .update(`${turn.wakeupId}:${person}:${body}`)
-        .digest("hex")
-        .slice(0, 32)}`,
-    );
+    const messageId =
+      turn.messageId ??
+      KinMessageId.make(
+        `kin-assign-${NodeCrypto.createHash("sha256")
+          .update(`${turn.wakeupId}:${person}:${body}`)
+          .digest("hex")
+          .slice(0, 32)}`,
+      );
     if (Option.isSome(yield* repo.value.getMessage({ orgId: turn.orgId, messageId }))) {
       told.add(person);
       continue;

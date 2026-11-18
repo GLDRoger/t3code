@@ -6,6 +6,7 @@ import {
   KinAttachment,
   KinChatError,
   KinChatId,
+  KinChoiceCardState,
   KinMessageId,
   type KinOrgId,
   KinPersonId,
@@ -16,6 +17,7 @@ import {
   type KinRecordDetail,
   type KinRecordWaiting,
   KinWidgetId,
+  type KinWorkMoveCard,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -305,6 +307,9 @@ export const commentFileReadable = Effect.fn("KinRecordComments.fileReadable")(f
   return false;
 });
 
+const decodeChoice = Schema.decodeUnknownOption(Schema.fromJsonString(KinChoiceCardState));
+/** About-text names keys between spaces, as `instr(' ' || about || ' ', ' KEY ')` reads it. */
+const aboutKeys = (about: string) => new Set(about.split(/\s+/).filter((word) => word !== ""));
 // A project's note for every task is a comment on the project whose id starts so.
 const NOTE_ID = "pnote_";
 
@@ -375,77 +380,110 @@ export const writeProjectNote = Effect.fn("KinRecordComments.writeProjectNote")(
 });
 
 /**
- * The newest open card about this entry in a chat this person reads: a mail to Confirm that
- * carries its document, or an agent's question about its key.
+ * The newest open card about each entry in a chat this person reads: a mail to Confirm that
+ * carries its document, or an agent's question naming its key. One read for every entry given,
+ * with what the card's buttons post.
  */
+export const waitingCards = Effect.fn("KinRecordComments.waitingCards")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  records: ReadonlyArray<{ readonly recordId: string; readonly key: string }>,
+) {
+  const found = new Map<string, KinWorkMoveCard>();
+  if (records.length === 0) return found;
+  const sql = yield* SqlClient.SqlClient;
+  const reads = (alias: string) => sql`EXISTS (SELECT 1 FROM kin_chat_members m
+    WHERE m.org_id = ${sql(alias)}.org_id AND m.chat_id = ${sql(alias)}.chat_id
+      AND m.principal_kind = 'person' AND m.person_id = ${personId} AND m.left_at IS NULL)`;
+  type Found = {
+    chatId: string;
+    messageId: string;
+    widgetId: string;
+    revision: number;
+    state: string;
+    at: number;
+  };
+  const asks = yield* sql<Found & { recordId: string; payload: string }>`SELECT
+      k.entry_record_id AS "recordId", k.chat_id AS "chatId", w.message_id AS "messageId",
+      k.widget_id AS "widgetId", w.revision, w.state_json AS state,
+      k.payload_json AS payload, k.proposed_at AS at
+    FROM kin_connection_asks k
+    JOIN kin_widgets w ON w.org_id = k.org_id AND w.widget_id = k.widget_id
+    WHERE k.org_id = ${orgId} AND k.state = 'open'
+      AND k.entry_record_id IN ${sql.in(records.map((record) => record.recordId))}
+      AND ${reads("k")}
+    ORDER BY k.proposed_at DESC, k.ask_id`;
+  // Open card questions are few: read this person's once and match their keys here.
+  const questions = yield* sql<Found & { about: string; question: string }>`SELECT
+      q.chat_id AS "chatId", w.message_id AS "messageId", q.widget_id AS "widgetId",
+      w.revision, w.state_json AS state, q.about, q.question, q.asked_at AS at
+    FROM kin_questions q
+    JOIN kin_widgets w ON w.org_id = q.org_id AND w.widget_id = q.widget_id
+    WHERE q.org_id = ${orgId} AND q.state = 'open' AND q.kind = 'card' AND ${reads("q")}
+    ORDER BY q.asked_at DESC, q.question_id LIMIT 500`;
+  const card = (
+    kind: KinRecordWaiting["kind"],
+    row: Found,
+    preview: string,
+    files: KinRecordWaiting["files"],
+  ): KinWorkMoveCard => ({
+    kind,
+    chatId: KinChatId.make(row.chatId),
+    messageId: KinMessageId.make(row.messageId),
+    widgetId: KinWidgetId.make(row.widgetId),
+    preview: oneLine(preview, 200),
+    files,
+    at: iso(row.at),
+    revision: row.revision,
+    options: Option.match(decodeChoice(row.state), {
+      onNone: () => [],
+      onSome: (state) => (state.answer === null ? state.options : []),
+    }),
+  });
+  const keep = (recordId: string, next: KinWorkMoveCard, at: number) => {
+    const held = found.get(recordId);
+    if (held === undefined || Date.parse(held.at) < at) found.set(recordId, next);
+  };
+  for (const ask of asks) {
+    if (found.has(ask.recordId)) continue;
+    const prepared = Option.getOrUndefined(decodePrepared(ask.payload));
+    if (prepared === undefined) continue;
+    found.set(
+      ask.recordId,
+      prepared._tag === "email"
+        ? card(
+            "send",
+            ask,
+            `To ${prepared.to.join(", ")}: ${prepared.subject}`,
+            prepared.attachments.map((file) => ({ name: file.name, mimeType: file.mimeType })),
+          )
+        : card(
+            "send",
+            ask,
+            prepared._tag === "event" ? prepared.title : "An action to confirm",
+            [],
+          ),
+    );
+  }
+  const byKey = new Map(records.map((record) => [record.key, record.recordId]));
+  for (const question of questions)
+    for (const word of aboutKeys(question.about)) {
+      const recordId = byKey.get(word);
+      if (recordId !== undefined)
+        keep(recordId, card("question", question, question.question, []), question.at);
+    }
+  return found;
+});
+
 const waitingFor = Effect.fn("KinRecordComments.waiting")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
   record: { readonly recordId: string; readonly key: string },
 ) {
-  const sql = yield* SqlClient.SqlClient;
-  const reads = (alias: string) => sql`EXISTS (SELECT 1 FROM kin_chat_members m
-    WHERE m.org_id = ${sql(alias)}.org_id AND m.chat_id = ${sql(alias)}.chat_id
-      AND m.principal_kind = 'person' AND m.person_id = ${personId} AND m.left_at IS NULL)`;
-  const [ask] = yield* sql<{
-    chatId: string;
-    messageId: string;
-    widgetId: string;
-    payload: string;
-    at: number;
-  }>`SELECT k.chat_id AS "chatId", w.message_id AS "messageId", k.widget_id AS "widgetId",
-      k.payload_json AS payload, k.proposed_at AS at
-    FROM kin_connection_asks k
-    JOIN kin_widgets w ON w.org_id = k.org_id AND w.widget_id = k.widget_id
-    WHERE k.org_id = ${orgId} AND k.entry_record_id = ${record.recordId} AND k.state = 'open'
-      AND ${reads("k")}
-    ORDER BY k.proposed_at DESC, k.ask_id LIMIT 1`;
-  const [question] = yield* sql<{
-    chatId: string;
-    messageId: string;
-    widgetId: string;
-    question: string;
-    at: number;
-  }>`SELECT q.chat_id AS "chatId", w.message_id AS "messageId", q.widget_id AS "widgetId",
-      q.question, q.asked_at AS at
-    FROM kin_questions q
-    JOIN kin_widgets w ON w.org_id = q.org_id AND w.widget_id = q.widget_id
-    WHERE q.org_id = ${orgId} AND q.state = 'open' AND q.kind = 'card'
-      AND instr(' ' || q.about || ' ', ${` ${record.key} `}) > 0 AND ${reads("q")}
-    ORDER BY q.asked_at DESC, q.question_id LIMIT 1`;
-  const card = (
-    kind: KinRecordWaiting["kind"],
-    found: { chatId: string; messageId: string; widgetId: string; at: number },
-    preview: string,
-    files: KinRecordWaiting["files"],
-  ): KinRecordWaiting => ({
-    kind,
-    chatId: KinChatId.make(found.chatId),
-    messageId: KinMessageId.make(found.messageId),
-    widgetId: KinWidgetId.make(found.widgetId),
-    preview: oneLine(preview, 200),
-    files,
-    at: iso(found.at),
-  });
-  const send = () => {
-    if (ask === undefined) return undefined;
-    const prepared = Option.getOrUndefined(decodePrepared(ask.payload));
-    if (prepared === undefined) return undefined;
-    return prepared._tag === "email"
-      ? card(
-          "send",
-          ask,
-          `To ${prepared.to.join(", ")}: ${prepared.subject}`,
-          prepared.attachments.map((file) => ({ name: file.name, mimeType: file.mimeType })),
-        )
-      : card("send", ask, prepared._tag === "event" ? prepared.title : "An action to confirm", []);
-  };
-  const sent = send();
-  const asked =
-    question === undefined ? undefined : card("question", question, question.question, []);
-  if (sent === undefined) return asked;
-  if (asked === undefined) return sent;
-  return question!.at > ask!.at ? asked : sent;
+  const found = (yield* waitingCards(orgId, personId, [record])).get(record.recordId);
+  if (found === undefined) return undefined;
+  const { revision: _revision, options: _options, ...waiting } = found;
+  return waiting satisfies KinRecordWaiting;
 });
 
 /**

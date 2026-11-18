@@ -10,6 +10,7 @@ import {
   type KinWidget,
   type KinWidgetsActInput,
   formatKinWhen,
+  kinChoiceActionNote,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -26,7 +27,12 @@ export interface KinChoiceCardView {
   readonly revision: number;
   readonly question: string;
   readonly detail: string | null;
-  readonly options: ReadonlyArray<{ readonly id: string; readonly label: string }>;
+  readonly options: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    /** What a tap on it does, in the server's words: shown under the option. */
+    readonly action: string | null;
+  }>;
   /** A picture of what is asked about, such as a new logo: a file in the card's chat. */
   readonly image: { readonly attachmentId: string; readonly mimeType: string } | null;
   readonly answer: {
@@ -246,7 +252,18 @@ export function kinChoiceCardView(
   const options = card.options.map((option) => ({
     id: option.optionId,
     label: line(option.label),
+    action: option.action === undefined ? null : line(option.action.line),
   }));
+  // The server repeats each option's action line in `detail` for older clients; shown here once.
+  const note = kinChoiceActionNote(card.options);
+  const own =
+    card.detail === null || note === ""
+      ? card.detail
+      : card.detail === note
+        ? null
+        : card.detail.endsWith(`\n\n${note}`)
+          ? card.detail.slice(0, -note.length - 2)
+          : card.detail;
   const chosen =
     card.answer === null
       ? undefined
@@ -267,7 +284,7 @@ export function kinChoiceCardView(
       card.answer === null || card.outcome === undefined
         ? null
         : { title: line(card.outcome.title), text: card.outcome.text.trim() },
-    detail: card.detail === null || card.detail.trim() === "" ? null : card.detail.trim(),
+    detail: own === null || own.trim() === "" ? null : own.trim(),
     options,
     image: card.image === undefined ? null : card.image,
     send,
