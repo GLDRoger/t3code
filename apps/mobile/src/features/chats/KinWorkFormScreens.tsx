@@ -21,6 +21,7 @@ import {
   kinClientDraftOf,
   kinClientDraftWithGstin,
   kinClientGstinNote,
+  kinIndiaFields,
   kinClientUpdateInput,
   kinContactCreateInput,
   kinContactDraftCheck,
@@ -74,7 +75,7 @@ import {
   KinWorkProblemNotice,
   KinWorkTextField,
 } from "./components/KinWorkPieces";
-import { useKinHomeCurrency } from "./state/useKinMoney.ts";
+import { useKinCompanyCountry, useKinHomeCurrency } from "./state/useKinMoney.ts";
 import { KinWorkPlaceRow } from "./components/KinWorkTaskMenus";
 import { KinProjectPeoplePicker } from "./KinProjectPeopleScreen";
 import { kinWorkRefParam, type KinWorkParams } from "./KinWorkScreen";
@@ -276,6 +277,7 @@ function ClientForm(props: KinWorkTarget & { readonly editing: KinPartyDetail | 
   }, [form, editing]);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
+  const india = kinIndiaFields(useKinCompanyCountry(props));
   const gstinNote = kinClientGstinNote(draft);
   const placeId = draft.abroad ? ABROAD : draft.placeOfSupply || NO_PLACE;
   const placeLabel = draft.abroad
@@ -363,56 +365,60 @@ function ClientForm(props: KinWorkTarget & { readonly editing: KinPartyDetail | 
           onChangeText={(address) => form.edit({ address })}
         />
       </ListSection>
-      <ListSection footer={gstinNote === null ? COPY.party.placeHint : undefined}>
-        <KinWorkTextField
-          label={COPY.party.gstin}
-          value={draft.gstin}
-          disabled={state.saving}
-          maxLength={20}
-          placeholder={COPY.party.gstinPlaceholder}
-          hint={COPY.party.gstinHint}
-          moved={moved.gstin}
-          onChangeText={(gstin) => {
-            const next = kinClientDraftWithGstin(draft, gstin);
-            form.edit({ gstin: next.gstin, placeOfSupply: next.placeOfSupply });
-          }}
-        />
-        <Menu
-          title={COPY.party.place}
-          accessibilityRole="button"
-          accessibilityLabel={`${COPY.party.place}: ${placeLabel}. Change`}
-          actions={[
-            { id: NO_PLACE, title: COPY.party.placeNone },
-            ...KIN_GST_STATE_NAMES.map((name) => ({ id: name, title: name })),
-            { id: ABROAD, title: COPY.party.placeAbroad },
-          ].map((one) => ({
-            ...one,
-            state: one.id === placeId ? ("on" as const) : ("off" as const),
-          }))}
-          onPressAction={({ nativeEvent: { event } }) =>
-            form.edit(
-              event === ABROAD
-                ? { abroad: true, placeOfSupply: "" }
-                : { abroad: false, placeOfSupply: event === NO_PLACE ? "" : event },
-            )
-          }
-        >
-          <View pointerEvents="none">
-            <ListRowLayout label={placeLabel} detail={COPY.party.place} />
-          </View>
-        </Menu>
-        {draft.abroad ? (
-          <KinWorkTextField
-            label={COPY.party.country}
-            value={draft.placeOfSupply}
-            disabled={state.saving}
-            maxLength={60}
-            placeholder={COPY.party.countryPlaceholder}
-            onChangeText={(placeOfSupply) => form.edit({ placeOfSupply })}
-          />
-        ) : null}
-      </ListSection>
-      {gstinNote === null ? null : <Notice message={gstinNote} />}
+      {india ? (
+        <>
+          <ListSection footer={gstinNote === null ? COPY.party.placeHint : undefined}>
+            <KinWorkTextField
+              label={COPY.party.gstin}
+              value={draft.gstin}
+              disabled={state.saving}
+              maxLength={20}
+              placeholder={COPY.party.gstinPlaceholder}
+              hint={COPY.party.gstinHint}
+              moved={moved.gstin}
+              onChangeText={(gstin) => {
+                const next = kinClientDraftWithGstin(draft, gstin);
+                form.edit({ gstin: next.gstin, placeOfSupply: next.placeOfSupply });
+              }}
+            />
+            <Menu
+              title={COPY.party.place}
+              accessibilityRole="button"
+              accessibilityLabel={`${COPY.party.place}: ${placeLabel}. Change`}
+              actions={[
+                { id: NO_PLACE, title: COPY.party.placeNone },
+                ...KIN_GST_STATE_NAMES.map((name) => ({ id: name, title: name })),
+                { id: ABROAD, title: COPY.party.placeAbroad },
+              ].map((one) => ({
+                ...one,
+                state: one.id === placeId ? ("on" as const) : ("off" as const),
+              }))}
+              onPressAction={({ nativeEvent: { event } }) =>
+                form.edit(
+                  event === ABROAD
+                    ? { abroad: true, placeOfSupply: "" }
+                    : { abroad: false, placeOfSupply: event === NO_PLACE ? "" : event },
+                )
+              }
+            >
+              <View pointerEvents="none">
+                <ListRowLayout label={placeLabel} detail={COPY.party.place} />
+              </View>
+            </Menu>
+            {draft.abroad ? (
+              <KinWorkTextField
+                label={COPY.party.country}
+                value={draft.placeOfSupply}
+                disabled={state.saving}
+                maxLength={60}
+                placeholder={COPY.party.countryPlaceholder}
+                onChangeText={(placeOfSupply) => form.edit({ placeOfSupply })}
+              />
+            ) : null}
+          </ListSection>
+          {gstinNote === null ? null : <Notice message={gstinNote} />}
+        </>
+      ) : null}
       <ListSection>
         <KinWorkTextField
           label={COPY.party.notes}

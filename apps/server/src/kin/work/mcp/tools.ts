@@ -132,7 +132,7 @@ export const KinWorkToolkit = Toolkit.make(
   Tool.make("payment_record", {
     ...shared,
     description:
-      "Record money received against an invoice (INV-4): amount as said in its currency, and paidOn. TDS deducted goes in withheld, never amount. A part payment leaves the rest owed. void with a paymentId from record_get takes a wrong one back. Returns the amount, received total and balance, exact. Reply in one line.",
+      "Record money received against an invoice (INV-4): amount as said in its currency, and paidOn. Tax a client withheld goes in withheld, never amount. A part payment leaves the rest owed. void with a paymentId from record_get takes a wrong one back. Returns the amount, received total and balance, exact. Reply in one line.",
     parameters: Money.PaymentInput,
     success: Money.PaymentResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

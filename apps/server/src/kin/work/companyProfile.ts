@@ -6,6 +6,7 @@ import {
   type KinCompanyProfile,
   KinCompanyProfileData,
   KinCompanyProfileSetInput,
+  type KinCompanyTax,
   type KinOrgId,
   KinPersonId,
 } from "@t3tools/contracts";
@@ -18,7 +19,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { iso } from "./recordRows.ts";
-import { companyRegion } from "./statements/statementRegion.ts";
+import { localeOf, regionOf } from "./region.ts";
 
 /**
  * The company profile: legal name, address, tax ids, bank details, logo and brand, one sensitive
@@ -58,51 +59,117 @@ export type ProfileWriter =
   | { readonly _tag: "person"; readonly personId: string }
   | { readonly _tag: "agent"; readonly agentId: string };
 
-export const readProfile = Effect.fn("KinCompanyProfile.read")(function* (orgId: KinOrgId) {
+/** How the company's money works: its currency, its country, its year's first month and its tax. */
+export interface CompanyMoney {
+  readonly homeCurrency: string;
+  readonly country: string | null;
+  readonly financialYearStartMonth: number;
+  /** Null for India, whose GST the invoice recipe works out, and for a company with none. */
+  readonly tax: KinCompanyTax | null;
+}
+
+/** The country of a profile stored before countries: India's for rupees, else none. */
+export const countryBefore = (home: string) => (home === KIN_DEFAULT_HOME_CURRENCY ? "IN" : null);
+
+/**
+ * The profile as it reads: one stored before countries is in India when it keeps rupees, else in
+ * no country; a country's row fills the year and tax the company never set.
+ */
+const moneyOf = (profile: KinCompanyProfileData): CompanyMoney => {
+  const country =
+    profile.country !== undefined ? profile.country : countryBefore(profile.homeCurrency);
+  const region = regionOf(country);
+  return {
+    homeCurrency: profile.homeCurrency,
+    country,
+    financialYearStartMonth:
+      profile.financialYearStartMonth ?? region?.financialYearStartMonth ?? 1,
+    tax:
+      country === "IN"
+        ? null
+        : profile.tax !== undefined
+          ? profile.tax
+          : region === undefined
+            ? null
+            : { name: region.tax, rate: null, pricesInclude: null },
+  };
+};
+
+const storedProfile = Effect.fn("KinCompanyProfile.stored")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ json: string; rev: number; updatedAt: number }>`
     SELECT profile_json AS json, rev, updated_at AS "updatedAt" FROM kin_company_profile
     WHERE org_id = ${orgId}`;
-  if (row === undefined) return { ...EMPTY, rev: 0, updatedAt: null } satisfies KinCompanyProfile;
+  return row === undefined
+    ? { data: EMPTY, rev: 0, updatedAt: null }
+    : {
+        data: Option.getOrElse(decodeProfile(row.json), () => EMPTY),
+        rev: row.rev,
+        updatedAt: iso(row.updatedAt),
+      };
+});
+
+/** The profile with its country, year and tax as they read, set or not. */
+export const readProfile = Effect.fn("KinCompanyProfile.read")(function* (orgId: KinOrgId) {
+  const stored = yield* storedProfile(orgId);
+  const { homeCurrency: _home, ...money } = moneyOf(stored.data);
   return {
-    ...Option.getOrElse(decodeProfile(row.json), () => EMPTY),
-    rev: row.rev,
-    updatedAt: iso(row.updatedAt),
+    ...stored.data,
+    ...money,
+    rev: stored.rev,
+    updatedAt: stored.updatedAt,
   } satisfies KinCompanyProfile;
 });
 
-/**
- * What the company keeps its books in: an amount that names no currency is in it. A company that
- * never set one, or a profile that can't be read, keeps the default.
- */
-export const homeCurrency = Effect.fn("KinCompanyProfile.homeCurrency")(function* (
-  orgId: KinOrgId,
-) {
+/** The company's money as it reads; a company that never set one, or can't be read, is the default. */
+export const companyMoney = Effect.fn("KinCompanyProfile.money")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ json: string }>`SELECT profile_json AS json
     FROM kin_company_profile WHERE org_id = ${orgId}`.pipe(Effect.orElseSucceed(() => []));
-  return row === undefined
-    ? KIN_DEFAULT_HOME_CURRENCY
-    : Option.match(decodeProfile(row.json), {
-        onNone: () => KIN_DEFAULT_HOME_CURRENCY,
-        onSome: (profile) => profile.homeCurrency,
-      });
+  return moneyOf(
+    row === undefined ? EMPTY : Option.getOrElse(decodeProfile(row.json), () => EMPTY),
+  );
 });
 
-/**
- * The locale of what the server writes for this company's people: its region's (en-IN and a
- * 12-hour clock in India, en-GB in the UK, en-US in the US), `KIN_TEXT_LOCALE` where no region
- * matches its home currency. Agent-facing text stays in `KIN_TEXT_LOCALE` so prompts don't move.
- */
+/** What the company keeps its books in: an amount that names no currency is in it. */
+export const homeCurrency = Effect.fn("KinCompanyProfile.homeCurrency")(function* (
+  orgId: KinOrgId,
+) {
+  return (yield* companyMoney(orgId)).homeCurrency;
+});
+
 /** The zone a person reads a time in and the locale the company's text is written in. */
 export interface TextClock {
   readonly zone: string;
   readonly locale: string;
 }
 
+/**
+ * The locale of what the server writes for this company's people: its country's (en-IN and a
+ * 12-hour clock in India, en-GB in the UK, en-US in the US), `KIN_TEXT_LOCALE` where it has none.
+ * Agent-facing text stays in `KIN_TEXT_LOCALE` so prompts don't move.
+ */
 export const textLocale = Effect.fn("KinCompanyProfile.textLocale")(function* (orgId: KinOrgId) {
-  return companyRegion(yield* homeCurrency(orgId))?.locale ?? KIN_TEXT_LOCALE;
+  const money = yield* companyMoney(orgId);
+  return localeOf(money.country, money.homeCurrency) ?? KIN_TEXT_LOCALE;
 });
+
+/**
+ * A change of country brings that country's currency, year and tax for whichever of them the
+ * same change doesn't give; a country with no row keeps the currency and has no tax.
+ */
+const followCountry = (data: KinCompanyProfileData, patch: ProfilePatch) => {
+  if (patch.country === undefined || patch.country === moneyOf(data).country) return {};
+  const region = regionOf(patch.country);
+  return {
+    ...(region === undefined ? {} : { homeCurrency: region.currency }),
+    financialYearStartMonth: region?.financialYearStartMonth ?? 1,
+    tax:
+      region === undefined || patch.country === "IN"
+        ? null
+        : { name: region.tax, rate: null, pricesInclude: null },
+  };
+};
 
 /** Only the fields given change. A `rev` other than the stored one is refused unless nothing would change. */
 export const setProfile = Effect.fn("KinCompanyProfile.set")(function* (
@@ -114,23 +181,23 @@ export const setProfile = Effect.fn("KinCompanyProfile.set")(function* (
   const sql = yield* SqlClient.SqlClient;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      const current = yield* readProfile(orgId);
-      const { rev: _rev, updatedAt: _at, ...data } = current;
+      const { data, rev: storedRev } = yield* storedProfile(orgId);
       const { bank, brand, ...rest } = patch;
       const given = <A extends object>(value: A | undefined) =>
         Object.fromEntries(Object.entries(value ?? {}).filter(([, one]) => one !== undefined));
       const next: KinCompanyProfileData = {
         ...data,
+        ...followCountry(data, patch),
         ...given(rest),
         bank: { ...data.bank, ...given(bank) },
         brand: { ...data.brand, ...given(brand) },
       };
       const json = yield* encodeProfile(next);
-      if (json === (yield* encodeProfile(data))) return current;
-      if (rev !== undefined && rev !== current.rev)
+      if (json === (yield* encodeProfile(data))) return yield* readProfile(orgId);
+      if (rev !== undefined && rev !== storedRev)
         return yield* new KinChatError({
           reason: "conflict",
-          message: `The company profile changed since you read it; it is at revision ${current.rev} now.`,
+          message: `The company profile changed since you read it; it is at revision ${storedRev} now.`,
         });
       const now = yield* Clock.currentTimeMillis;
       const by = writer._tag === "person" ? writer.personId : writer.agentId;
@@ -152,9 +219,19 @@ const PatchJson = Schema.fromJsonString(
 );
 const encodePatch = Schema.encodeEffect(PatchJson);
 const decodePatch = Schema.decodeUnknownEffect(PatchJson);
-// Home currency and rates are the owner's own settings; no agent card proposes them.
+// Home currency, rates, country, year and tax are the owner's own settings; no agent card proposes them.
 const LABELS: Record<
-  Exclude<keyof ProfilePatch, "bank" | "brand" | "logo" | "homeCurrency" | "rates">,
+  Exclude<
+    keyof ProfilePatch,
+    | "bank"
+    | "brand"
+    | "logo"
+    | "homeCurrency"
+    | "rates"
+    | "country"
+    | "financialYearStartMonth"
+    | "tax"
+  >,
   string
 > = {
   gstin: "GSTIN",

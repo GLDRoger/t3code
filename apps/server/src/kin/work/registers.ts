@@ -27,7 +27,8 @@ import {
   parseFields,
   sensitiveFields,
 } from "./lists.ts";
-import { homeCurrency } from "./companyProfile.ts";
+import { type CompanyMoney, companyMoney, countryBefore, homeCurrency } from "./companyProfile.ts";
+import { regionOf } from "./region.ts";
 import { companyRegion, NEUTRAL_PAID_WITH } from "./statements/statementRegion.ts";
 import { dayIn, isCurrency } from "./money.ts";
 import { cardAnswer } from "./ownerCards.ts";
@@ -219,6 +220,7 @@ export const PRESETS: Record<
       dropped: "Not applicable",
     },
     defaultState: "open",
+    // India's; `presetFor` puts each company's own country's filings in their place.
     categories: ["gst", "tds", "income tax", "company", "payroll", "renewal", "other"],
     categoryLabels: { gst: "GST", tds: "TDS" },
     fields: [field("form", "Form", "text"), field("period", "Period", "text")],
@@ -239,15 +241,29 @@ const STATE_NAMES: Record<string, string> = {
 export const stateLabel = (def: ListDef, state: string) =>
   def.stateLabels[state as keyof ListDef["stateLabels"]] ?? STATE_NAMES[state] ?? state;
 
+/** The Dates template's categories in every country; its own filings come first. */
+const DATE_CATEGORIES = ["income tax", "company", "payroll", "renewal", "other"];
+
 /**
- * A template as a company with `home` as its currency gets it: an expense is paid the ways its
- * country pays (`paidWith` of the company's region). Lists already made keep their choices.
+ * A template as a company gets it: an expense is paid the ways its country pays (`paidWith` of
+ * its currency's region), and its Dates start with its country's filings. Lists already made
+ * keep their choices.
  */
-const presetFor = (id: PresetId, home: string) => {
+const presetFor = (id: PresetId, money: Pick<CompanyMoney, "homeCurrency" | "country">) => {
   const preset = PRESETS[id];
-  const paidWith = companyRegion(home)?.paidWith ?? NEUTRAL_PAID_WITH;
+  const paidWith = companyRegion(money.homeCurrency)?.paidWith ?? NEUTRAL_PAID_WITH;
+  const filings = regionOf(money.country)?.filings ?? [];
   return {
     ...preset,
+    ...(id === "dates"
+      ? {
+          categories: [
+            ...filings.map(([key]) => key),
+            ...DATE_CATEGORIES.filter((key) => filings.every(([own]) => own !== key)),
+          ],
+          categoryLabels: Object.fromEntries(filings),
+        }
+      : {}),
     fields: preset.fields.map((field) =>
       field.key === "paidWith" ? { ...field, choices: paidWith } : field,
     ),
@@ -255,8 +271,12 @@ const presetFor = (id: PresetId, home: string) => {
 };
 
 /** A template's definition, its amounts in `currency` (the company's home currency). */
-export const presetDefinition = (id: PresetId, currency: string) => ({
-  ...presetFor(id, currency),
+export const presetDefinition = (
+  id: PresetId,
+  currency: string,
+  country: string | null = countryBefore(currency),
+) => ({
+  ...presetFor(id, { homeCurrency: currency, country }),
   currency,
 });
 
@@ -354,6 +374,13 @@ export const storedCategoryLabels = (
           : [],
     ),
   );
+/** A company's own labels for its template's categories, such as VAT, that India's template lacks. */
+const ownLabels = (id: string, labels: Readonly<Record<string, string>> | undefined) => {
+  const own = Object.entries(labels ?? {}).filter(
+    ([category]) => !isPreset(id) || PRESETS[id].categoryLabels?.[category] === undefined,
+  );
+  return own.length === 0 ? {} : { categoryLabels: Object.fromEntries(own) };
+};
 const presetExtras = (id: string, definition: StoredDefinition) => {
   const preset = isPreset(id) ? PRESETS[id] : undefined;
   const categoryLabels = { ...preset?.categoryLabels, ...definition.categoryLabels };
@@ -472,7 +499,7 @@ export const describe = (spec: FieldDef) =>
         : spec.type === "link"
           ? `a ${spec.link === "projects" ? "project" : "client"}'s key or name`
           : spec.type === "money"
-            ? "an amount such as 4,200 or 4.2 lakh"
+            ? "an amount such as 4,200.50 or 12k"
             : spec.type === "file"
               ? "the names of files attached to this turn's messages"
               : "a line of text";
@@ -806,9 +833,10 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
     input.id ?? input.template ?? (input.name === undefined ? undefined : idFor(input.name));
   if (named === undefined)
     return yield* invalid("Name the list, start from a template, or say which list to add to.");
-  const home = yield* homeCurrency(orgId);
+  const money = yield* companyMoney(orgId);
+  const home = money.homeCurrency;
   const preset = (PRESET_IDS as ReadonlyArray<string>).includes(named)
-    ? presetFor(named as PresetId, home)
+    ? presetFor(named as PresetId, money)
     : undefined;
   if (preset === undefined && (isBuiltIn(named) || named === "docs"))
     return yield* invalid(`${input.name ?? named} is one of Kin's own lists already.`);
@@ -830,6 +858,7 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
           ? "open"
           : states[0]!,
     categories: [...new Set([...(preset?.categories ?? []), ...(input.categories ?? [])])],
+    ...ownLabels(named, preset?.categoryLabels),
     fields: [
       // A template's choice field named again with more choices keeps them, as on a list made already.
       ...(preset?.fields ?? []).map((had) => {

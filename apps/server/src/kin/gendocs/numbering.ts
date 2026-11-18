@@ -11,6 +11,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { Documented } from "./amounts.ts";
+import { companyMoney } from "../work/companyProfile.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { isMoney, parseFields } from "../work/lists.ts";
 import { dayIn, financialYearOf, formatMoney } from "../work/money.ts";
@@ -64,8 +65,11 @@ const isChatError = Schema.is(KinChatError);
 /** As every issue answers, so a caller reads `notice` whichever way it went. */
 const answered = (issued: Issued): Issued => issued;
 
-/** `26-27` for any day from 1 April 2026 to 31 March 2027. */
-const financialYear = (day: string) => financialYearOf(day).slice(4);
+/** `26-27` for any day from 1 April 2026 to 31 March 2027 in a year from April; `2026` from January. */
+const financialYear = (day: string, startMonth: number) => {
+  const year = financialYearOf(day, startMonth);
+  return startMonth === 1 ? year.slice(2) : year.slice(4);
+};
 
 const formatNumber = (rule: KinNumberingRule, year: string | null, seq: number) =>
   [
@@ -111,7 +115,10 @@ const seriesToday = Effect.fn("KinNumbers.seriesToday")(function* (
   const now = yield* Clock.currentTimeMillis;
   const zone = yield* ownerZone(orgId);
   const day = dayIn(now, zone);
-  const year = rule.series === "financial_year" ? financialYear(day) : null;
+  const year =
+    rule.series === "financial_year"
+      ? financialYear(day, (yield* companyMoney(orgId)).financialYearStartMonth)
+      : null;
   const series = `${rule.prefix}|${year ?? "running"}`;
   // A receipt number the old system issued may still sit only in a payment's note: past it.
   const floor = registerId === "receipts" ? yield* notedFloor(orgId, rule, year, series) : 0;

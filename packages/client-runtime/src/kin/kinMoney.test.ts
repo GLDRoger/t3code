@@ -6,7 +6,12 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinCompanyDraftOf, kinCompanyInput } from "./kinCompanyProfile.ts";
+import {
+  kinCompanyDraftOf,
+  kinCompanyEditSections,
+  kinCompanyInput,
+  kinCompanyRead,
+} from "./kinCompanyProfile.ts";
 import { kinDatesMonth, kinMonthWindow, kinZonedDayStart } from "./kinDates.ts";
 import { kinMoneyAgent, kinMoneyHeadline, kinMoneyView } from "./kinMoney.ts";
 
@@ -114,6 +119,23 @@ describe("the Money summary", () => {
     expect(kinMoneyHeadline(summary)[0]).toBe("₹2,10,000 and $2,500 owed to us");
   });
 
+  it("names and opens the company's own financial year", () => {
+    const calendar = kinMoneyView(
+      { ...summary, financialYear: "FY2026", financialYearStartMonth: 1 },
+      [list("expenses")],
+    );
+    expect(calendar.yearLabel).toBe("FY 2026, January to December");
+    expect(calendar.yearSpent.open?.filter.period).toEqual({
+      from: "2026-01-01",
+      to: "2026-12-31",
+    });
+    const july = kinMoneyView({ ...summary, financialYearStartMonth: 7 }, [list("expenses")]);
+    expect(july.yearLabel).toBe("FY 2026–27, July to June");
+    expect(july.yearSpent.open?.filter.period).toEqual({ from: "2026-07-01", to: "2027-06-30" });
+    // A host from before company years says none: April to March, as it always was.
+    expect(kinMoneyView(summary, []).yearLabel).toBe("FY 2026–27, April to March");
+  });
+
   it("asks the agent that keeps the books, never a retired one", () => {
     const leads = [
       { name: "Finance", domain: "finance", retired: {} },
@@ -193,6 +215,60 @@ describe("company details", () => {
     expect(kinCompanyInput("org" as never, profile, { ...draft, pan: "ABCDE" })).toEqual({
       ok: false,
       problems: { pan: "A PAN is 10 characters, like ABCDE1234F." },
+    });
+  });
+
+  it("asks for India's tax ids only in India, and for its own tax anywhere else", () => {
+    const fields = (sections: ReturnType<typeof kinCompanyEditSections>) =>
+      sections.flatMap((section) => section.fields.map((field) => field.id));
+    const india = ["gstin", "pan", "placeOfSupply", "sac", "lutNumber", "lutDate", "ifsc", "upi"];
+    const uk = {
+      ...(profile as object),
+      country: "GB",
+      financialYearStartMonth: 4,
+      tax: { name: "VAT", rate: "20", pricesInclude: null },
+      homeCurrency: "GBP",
+    } as never;
+    const ukDraft = kinCompanyDraftOf(uk);
+    expect(fields(kinCompanyEditSections(uk, ukDraft))).not.toContain("gstin");
+    expect(fields(kinCompanyEditSections(uk, ukDraft))).toContain("taxRate");
+    for (const id of india) expect(fields(kinCompanyEditSections(uk, ukDraft))).not.toContain(id);
+    // An IFSC kept from before shows only while the company is in India.
+    expect(kinCompanyRead(uk).flatMap((one) => one.rows.map((row) => row.id))).not.toContain(
+      "ifsc",
+    );
+    // Typing India brings its ids back; a host too old to say keeps them, as before.
+    expect(fields(kinCompanyEditSections(uk, { ...ukDraft, country: "in" }))).toContain("gstin");
+    expect(fields(kinCompanyEditSections(profile, kinCompanyDraftOf(profile)))).toContain("gstin");
+    expect(fields(kinCompanyEditSections(profile, kinCompanyDraftOf(profile)))).not.toContain(
+      "taxRate",
+    );
+    expect(
+      kinCompanyInput("org" as never, uk, {
+        ...ukDraft,
+        taxRate: "17.5",
+        financialYearStartMonth: "jan",
+      }),
+    ).toEqual({
+      ok: true,
+      input: {
+        orgId: "org",
+        rev: 4,
+        financialYearStartMonth: 1,
+        tax: { name: "VAT", rate: "17.5", pricesInclude: null },
+      },
+    });
+    expect(kinCompanyInput("org" as never, uk, { ...ukDraft, taxName: "" })).toEqual({
+      ok: false,
+      problems: { taxName: "Name the tax this rate is for, like VAT." },
+    });
+    // A company that never saved its details is offered this device's country, and only it.
+    const unsaved = { ...(uk as object), rev: 0 } as never;
+    expect(kinCompanyDraftOf(unsaved, "US").country).toBe("US");
+    expect(kinCompanyDraftOf(uk, "US").country).toBe("GB");
+    expect(kinCompanyInput("org" as never, unsaved, kinCompanyDraftOf(unsaved, "US"))).toEqual({
+      ok: true,
+      input: { orgId: "org", rev: 0, country: "US" },
     });
   });
 });

@@ -58,7 +58,7 @@ const ROWS: Readonly<Record<string, Partial<Omit<KinCurrencyInfo, "code" | "deci
 const words = (list: string) => new Set(list.split(/\s+/));
 const ZERO = words(ZERO_DECIMALS);
 const THREE = words(THREE_DECIMALS);
-/** The home currency of a company that never set one. */
+/** The home currency of a profile stored before companies chose theirs, and of one never saved. */
 export const KIN_DEFAULT_HOME_CURRENCY = "INR";
 /** Every ISO 4217 code Kin accepts. */
 export const KIN_CURRENCY_CODES: ReadonlySet<string> = words(CODES);
