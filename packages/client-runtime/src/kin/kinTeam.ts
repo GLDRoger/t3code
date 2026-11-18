@@ -277,6 +277,27 @@ export function kinPickablePeople<P extends { readonly personId: KinPersonId }>(
   ];
 }
 
+/**
+ * The removed person a new teammate's name matches, as the host matches it (name, or the handle
+ * the name makes): who "Bring back" makes a new link for, instead of a second person.
+ */
+export function kinRemovedNamesake(
+  list: Pick<KinTeamList, "people" | "joined"> | null,
+  name: string,
+): KinPeopleListResult["people"][number] | null {
+  const wanted = name.trim().toLowerCase();
+  const handle = wanted.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const joined = new Set<string>(list?.joined ?? []);
+  return (
+    list?.people.find(
+      (person) =>
+        !joined.has(person.personId) &&
+        person.access !== "owner" &&
+        (person.displayName.trim().toLowerCase() === wanted || person.handle === handle),
+    ) ?? null
+  );
+}
+
 /** The second line of the way in from the chat list. */
 export function kinTeamEntrySummary(
   list: KinTeamList | null,
@@ -530,7 +551,7 @@ export function createKinTeamActions(options: {
       readonly replaces: KinInviteId | null;
     }): Promise<
       | { readonly ok: true; readonly invite: KinMadeInvite }
-      | { readonly ok: false; readonly problem: string }
+      | { readonly ok: false; readonly problem: string; readonly bringBack?: true }
     > => {
       if (input.replaces !== null && !(await cancelInvite(input.replaces)))
         return { ok: false, problem: kinTeamProblem(null, "make this link") };
@@ -547,7 +568,11 @@ export function createKinTeamActions(options: {
         }
         return { ok: true, invite: { ...result.value, replaced: input.replaces !== null } };
       }
-      const problem = kinTeamProblem(squashAtomCommandFailure(result), "make this link");
+      const failure = squashAtomCommandFailure(result);
+      // The host found a removed person by this name: its words offer to bring them back.
+      if (input.personId === null && isChatError(failure) && failure.reason === "conflict")
+        return { ok: false, problem: failure.message, bringBack: true };
+      const problem = kinTeamProblem(failure, "make this link");
       return {
         ok: false,
         problem: input.replaces === null ? problem : `${problem} The earlier link was stopped.`,

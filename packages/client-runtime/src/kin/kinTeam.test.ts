@@ -19,6 +19,7 @@ import {
   kinInviteLink,
   kinInviteLinkLocalOnly,
   kinOpenCountsFollower,
+  kinRemovedNamesake,
   kinTeamEntrySummary,
   kinTeamView,
   kinTeammateActions,
@@ -240,6 +241,16 @@ describe("createKinTeamActions", () => {
       ok: false,
       problem: `Couldn't make this link. ${KIN_BUSY} The earlier link was stopped.`,
     });
+  });
+
+  it("offers to bring back the removed person a new name matches, in the host's words", async () => {
+    const { actions } = harness({ create: () => refused("conflict") });
+    expect(
+      await actions.makeLink({ displayName: "Tomas", personId: null, replaces: null }),
+    ).toEqual({ ok: false, problem: "host words", bringBack: true });
+    // Tomas has no access; Mira, who has joined, and the owner are never a namesake to bring back.
+    expect(kinRemovedNamesake(list, " tomas ")?.personId).toBe(tomas);
+    expect(kinRemovedNamesake(list, "Mira")).toBeNull();
   });
 
   it("shows a removal at once, takes it back on refusal, and after a yes lets the host's list speak", async () => {
