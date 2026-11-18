@@ -17,6 +17,7 @@ import * as Clients from "../leadClients.ts";
 import { KinRecords } from "../KinRecords.ts";
 import * as Money from "../leadMoney.ts";
 import * as Work from "../leadWork.ts";
+import * as Comments from "../workComments.ts";
 import { deferredMeta } from "../../lead/deferredTools.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 
@@ -113,6 +114,13 @@ export const KinWorkToolkit = Toolkit.make(
   })
     .annotate(McpSchema.EnabledWhen, enabled)
     .annotate(Tool.Meta, deferredMeta),
+  Tool.make("record_comment", {
+    ...shared,
+    description:
+      "Say something on a Work entry without changing it, such as progress, a finding or a question; whoever holds it is told. Not for changing its brief, state, owner or due: record_update does that.",
+    parameters: Comments.CommentInput,
+    success: Comments.CommentResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("list_define", {
     ...shared,
     description: `Start tracking something new as a list with typed fields, such as "start tracking expenses" or "track leave": a template (expenses, invoices, dates, receipts) or a name and fields (text, choice with choices, date, person, link to clients or projects, money, file), plus categories, the states it uses and what it calls them, and whether entries carry an amount. To add fields, choices or categories to a list you defined, pass list. The first call only proposes: it returns a proposal, creates nothing, and shows the owner its fields on a card to tap. Ask in one short line; once they tap yes or say yes in a later turn, call again with just proposal to create exactly that. A no on the card ends that proposal. Never create a list the owner hasn't agreed to. Only the owner retires a field or archives a list.`,

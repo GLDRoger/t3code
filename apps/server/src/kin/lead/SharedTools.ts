@@ -128,6 +128,8 @@ export const SHARED_TOOLS = {
   // Giving out a task everyone there sees; handing back is the asker's own task, in their view.
   record_assign: "view",
   record_hand_back: "view",
+  // A note on a task everyone there sees, for them; it changes nothing on the task.
+  record_comment: "view",
   // Docs every person behind the turn may see; writes as each of them may (a project's lead in
   // their project). Restoring stays the owner's.
   doc_create: "view",

@@ -436,6 +436,19 @@ features:
       - apps/server/src/kin/work/KinRecords.test.ts
       - .agents/skills/verify-kin/scripts/asker-is-giver.sh
 
+  - id: task-comment
+    name: Notes on a task, with files
+    tab: tasks
+    phone: [tab:tasks, KinWorkItem, section:Activity]
+    roles: { owner: phone, co_owner: phone, lead: phone, member: phone }
+    tools: [record_comment]
+    note: >-
+      Anyone who sees the task adds a note, and whoever holds it is told; the web task page
+      follows.
+    proof:
+      - apps/server/src/kin/work/recordComments.test.ts
+      - packages/client-runtime/src/kin/kinTaskRecord.test.ts
+
   - id: task-private
     name: Only me, a private task
     tab: tasks

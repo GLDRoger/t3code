@@ -138,8 +138,8 @@ export const page = Effect.fn("KinWorkComments.page")(function* (
 });
 
 export const CommentInput = Schema.Struct({
-  key: KinRecordKey,
-  body: KinToolText(4_000),
+  key: KinRecordKey.annotate({ description: "The entry's key, such as W-12." }),
+  body: KinToolText(4_000, "What you want to say, in plain words."),
 });
 export const CommentResult = Schema.Struct({
   key: Schema.String,
