@@ -129,6 +129,7 @@ import {
   type KinPaging,
   KIN_CHAT_COPY,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
+import { kinMessageCopyText } from "@t3tools/client-runtime/kin/kinMessagePage";
 import { kinFeedMessages } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { useLocalDayStartMs } from "./state/useLocalDayStartMs";
 import { kinClient, type KinSynced } from "./state/kinClient";
@@ -1588,11 +1589,14 @@ function KinChatFeed(props: {
         data={rows}
         keyExtractor={(row) => row.key}
         // A draft recycles into the agent bubble its message will take.
+        // A recycled WebView would load another row's page, so frames get a type of their own.
         getItemType={(row) =>
           row.type === "message"
             ? row.own
               ? "own"
-              : "other"
+              : row.message.embeds?.some((embed) => embed._tag === "visual") === true
+                ? "page-visual"
+                : "other"
             : row.type === "draft"
               ? "other"
               : row.type
@@ -1738,7 +1742,7 @@ function KinFeedMessageActions(props: {
     (message.widgetId === null || (widget !== undefined && REACTABLE_WIDGETS.has(widget.type)));
   return (
     <KinMessageSheet
-      body={message.status === "deleted" ? "" : message.body}
+      body={message.status === "deleted" ? "" : kinMessageCopyText(message)}
       markdownStyle={props.markdownStyle}
       mine={new Set(chips.flatMap((chip) => (chip.mine ? [chip.emoji] : [])))}
       onReact={

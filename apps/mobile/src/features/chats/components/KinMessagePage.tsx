@@ -4,15 +4,21 @@ import {
   kinImageSource,
   kinImageText,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
+import { kinDocPieceKey, kinDocPieces } from "@t3tools/client-runtime/kin/kinDocs";
 import {
-  kinBriefHead,
   kinLinkedMarkdown,
   kinLinkOf,
   kinPageCollapses,
   kinPageView,
 } from "@t3tools/client-runtime/kin/kinMessagePage";
-import type { EnvironmentId, KinMessageLink, KinMessageLinkTarget } from "@t3tools/contracts";
-import { useState } from "react";
+import {
+  KinOrgId,
+  type EnvironmentId,
+  type KinEmbed,
+  type KinMessageLink,
+  type KinMessageLinkTarget,
+} from "@t3tools/contracts";
+import { Fragment, useState, type ReactNode } from "react";
 import { Platform, Pressable, View } from "react-native";
 
 import { SymbolView } from "../../../components/ui/AppSymbol";
@@ -23,6 +29,7 @@ import {
   type MarkdownImageRenderer,
   type NativeMarkdownTextStyle,
 } from "../../../native/SelectableMarkdownText";
+import { KinEmbedView } from "../widgets/KinEmbedView";
 
 // A system serif that reads as chosen on each platform, with no font to ship.
 const GREETING_FONT = Platform.select({ ios: "Georgia", default: "serif" });
@@ -98,13 +105,34 @@ export function KinLinkedText(props: {
   );
 }
 
+type PageText = Omit<Parameters<typeof KinLinkedText>[0], "markdown"> & {
+  /** The whole body and its figures, so a block in any part finds the figure drawn for it. */
+  readonly body: string;
+  readonly embeds: ReadonlyArray<KinEmbed> | undefined;
+  /** Where a figure's file is; null draws figures as their titles, as a draft does. */
+  readonly where: { readonly environmentId: EnvironmentId; readonly orgId: string } | null;
+};
+
+/** A stretch of a page: its words with their links, and each figure in its place. */
+function KinPageText(props: PageText & { readonly markdown: string }) {
+  const { where } = props;
+  return kinDocPieces(props.markdown, props).map((piece, index) => (
+    <Fragment key={kinDocPieceKey(piece, index)}>
+      {piece.type === "text" ? (
+        <KinLinkedText {...props} markdown={piece.text} />
+      ) : where === null ? null : (
+        <KinEmbedView
+          environmentId={where.environmentId}
+          orgId={KinOrgId.make(where.orgId)}
+          embed={piece.embed}
+        />
+      )}
+    </Fragment>
+  ));
+}
+
 /** One titled part of a page; tapping its heading folds it away and back. */
-function KinPageSection(
-  props: Omit<Parameters<typeof KinLinkedText>[0], "markdown"> & {
-    readonly title: string;
-    readonly markdown: string;
-  },
-) {
+function KinPageSection(props: PageText & { readonly title: string; readonly markdown: string }) {
   const [open, setOpen] = useState(true);
   return (
     <View className="gap-1.5 border-t border-border-subtle pt-3">
@@ -126,27 +154,30 @@ function KinPageSection(
           type="monochrome"
         />
       </Pressable>
-      {open ? <KinLinkedText {...props} /> : null}
+      {open ? <KinPageText {...props} /> : null}
     </View>
   );
 }
 
 /**
  * An agent's long or structured message as a page across the chat: no bubble, its sections under
- * real headings, each folding on its own, a long one cut with Read more. A brief opens with its
- * greeting set large in a serif italic, and the date.
+ * real headings, each folding on its own, its figures in place, a long one cut with Read more. A
+ * brief opens with its greeting set large in a serif italic, and the date. The turn's card, when
+ * it has one, closes the page.
  */
 export function KinMessagePage(
-  props: Omit<Parameters<typeof KinLinkedText>[0], "markdown"> & {
-    readonly body: string;
-    readonly brief: { readonly createdAt: string; readonly firstName: string | null } | null;
+  props: PageText & {
+    readonly head: { readonly greeting: string; readonly date: string } | null;
+    readonly foot?: ReactNode;
   },
 ) {
+  const { head, foot, ...text } = props;
   const [expanded, setExpanded] = useState(false);
-  const view = kinPageView(props.body, props.brief !== null);
-  const head =
-    props.brief === null ? null : kinBriefHead(props.brief.createdAt, props.brief.firstName);
+  const view = kinPageView(props.body, head !== null);
   const cut = !expanded && kinPageCollapses(props.body);
+  // A cut page with figures stops at its first section, so no frame loads below the cut.
+  const sections =
+    cut && (props.embeds?.length ?? 0) > 0 ? view.sections.slice(0, 1) : view.sections;
   return (
     <View className="w-full gap-3">
       <View
@@ -172,11 +203,11 @@ export function KinMessagePage(
             </Text>
           </View>
         )}
-        {view.lead === null ? null : <KinLinkedText {...props} markdown={view.lead} />}
-        {view.sections.map((section) => (
+        {view.lead === null ? null : <KinPageText {...text} markdown={view.lead} />}
+        {sections.map((section) => (
           <KinPageSection
             key={`${section.title}:${section.markdown.slice(0, 48)}`}
-            {...props}
+            {...text}
             title={section.title}
             markdown={section.markdown}
           />
@@ -194,6 +225,7 @@ export function KinMessagePage(
           </Text>
         </Pressable>
       ) : null}
+      {foot === undefined || foot === null ? null : <View className="pt-1">{foot}</View>}
     </View>
   );
 }

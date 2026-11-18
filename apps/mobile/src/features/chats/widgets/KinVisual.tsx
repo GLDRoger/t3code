@@ -41,6 +41,7 @@ import { fromVisualPage } from "./kinVisualMessage";
 const TOUCH_WINDOW_MS = 1500;
 // Kept across remounts, so a card scrolled back into view does not jump.
 const measuredHeights = new Map<string, number>();
+let mountedFrames = 0;
 
 const location = (url: string) => url.split(/[?#]/, 1)[0];
 
@@ -84,6 +85,16 @@ function KinVisualWebView(props: {
     shownTheme.current = theme;
     postTheme(webView.current, theme);
   }, [theme]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- counts live WebViews for the dev-only cost check in Metro's log
+  useEffect(() => {
+    if (!__DEV__) return;
+    mountedFrames += 1;
+    console.debug(`[kin-visual] frames mounted: ${mountedFrames}`);
+    return () => {
+      mountedFrames -= 1;
+      console.debug(`[kin-visual] frames mounted: ${mountedFrames}`);
+    };
+  }, []);
   const restart = () => {
     crashes.current += 1;
     if (crashes.current > 1) {
@@ -260,7 +271,9 @@ function KinVisualFullScreen(props: {
 export const KinVisual = memo(function KinVisual(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
-  readonly visual: KinVisualCardState;
+  readonly visual: KinVisualCardState & {
+    readonly heights?: ReadonlyArray<readonly [number, number]> | undefined;
+  };
 }) {
   const { attachmentId, title } = props.visual;
   const resource = {
@@ -288,7 +301,12 @@ export const KinVisual = memo(function KinVisual(props: {
   const canAllow = useAtomValue(kinClient.visualHostAllow.permissionAtom(props.environmentId));
   const allow = useAtomCommand(kinClient.visualHostAllow, { reportFailure: false });
   const height = htmlRenderFrameHeight(
-    { attachmentId, title, height: props.visual.height },
+    {
+      attachmentId,
+      title,
+      height: props.visual.height,
+      ...(props.visual.heights === undefined ? {} : { heights: props.visual.heights }),
+    },
     width,
     contentHeight,
   );
