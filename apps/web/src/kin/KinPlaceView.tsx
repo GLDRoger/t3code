@@ -34,7 +34,7 @@ import {
   useSearch,
 } from "@tanstack/react-router";
 import { ArrowLeftIcon, PlusIcon, SearchIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
@@ -51,7 +51,7 @@ import { KinSearchDialog } from "./KinSearchDialog";
 import { KinWorkClientPage, KinWorkClientsList, KinWorkProjectsTab } from "./KinWorkClients";
 import { KinWorkDates } from "./KinWorkDates";
 import { KinClientDialog, KinProjectDialog } from "./KinWorkForms";
-import { KinWorkItemSheet } from "./KinWorkItemSheet";
+import { KinWorkItemSheet, useKinOpenedKind } from "./KinWorkItemSheet";
 import { KinWorkListPage } from "./KinWorkLists";
 import { KinWorkMoney } from "./KinWorkMoney";
 import { KinWorkNewDialog } from "./KinWorkNewDialog";
@@ -64,6 +64,7 @@ import {
   kinPlaceOfRecord,
   kinRecordOf,
   kinSearchOf,
+  kinTaskAddress,
   type KinPlace,
   type KinPlaceDialog,
   type KinRecordWhere,
@@ -84,9 +85,10 @@ const PLACES_ROUTE = "/_chat/kin/$environmentId/$orgId/_places";
 
 declare module "@tanstack/react-router" {
   interface HistoryState {
-    /** A record opened from its place's list, so the way back is one step back. */
-    kinFromList?: boolean;
-    kinTaskPushed?: boolean;
+    /** How many entries this place pushed over its list, so the way back to it is that many back. */
+    kinDepth?: number;
+    /** How many of those opened a task, so closing the task goes back to what it was over. */
+    kinTasks?: number;
     kinDialogPushed?: boolean;
     kinHistoryPushed?: boolean;
   }
@@ -111,6 +113,12 @@ export function KinPlacesRoute() {
   const tab: KinClientsTab =
     place === "clients" && search.tab === "projects" ? "projects" : "clients";
   const kept = tab === "projects" ? { tab } : {};
+  // Pushes count only over the list, and task pushes only over what has no task open, so going
+  // back that many always lands there; an address reached any other way closes by navigating.
+  const depth = location.state.kinDepth ?? 0;
+  const pushedDepth = depth > 0 || (record === null && search.task === undefined) ? depth + 1 : 0;
+  const tasks = location.state.kinTasks ?? 0;
+  const pushedTasks = tasks > 0 || search.task === undefined ? tasks + 1 : 0;
   return (
     <KinPlaceView
       // One mounted view per organization, so a list being read never lands under another.
@@ -119,8 +127,7 @@ export function KinPlacesRoute() {
       orgId={KinOrgId.make(orgId)}
       place={place}
       record={record}
-      onGo={(to, next) => {
-        const fromList = location.state.kinFromList === true;
+      onGo={(to, next, stack) => {
         const overDialog = search.open !== undefined;
         // A doc's History opened here is one step on from the doc, so Back lands on the doc.
         const historyPushed = location.state.kinHistoryPushed === true && !overDialog;
@@ -139,20 +146,22 @@ export function KinPlacesRoute() {
           router.history.back();
           return;
         }
-        // Back from a record opened off this list is the browser's own Back, so the two agree.
-        if (to === place && next === null && record !== null && fromList && !overDialog) {
-          router.history.go(historyPushed ? -2 : -1);
+        // Back to the list from what was opened over it is the browser's own Back, so the two agree.
+        if (to === place && next === null && depth > 0 && !overDialog) {
+          router.history.go(-depth);
           return;
         }
         const within = to === place && record !== null;
+        // A row picked beside an open record, or a hit from a dialog, takes its spot; a record
+        // opened from a record stacks, so Back retraces them. A doc's own versions never stack.
+        const replace = overDialog || (within && !opensHistory && (!stack || sameDoc));
         void navigate({
           to: KIN_PLACE_PATH[to],
           params,
           search: { ...kinSearchOf(next), ...(to === place ? kept : {}) },
-          // A record opened from a record, or from a dialog, takes its spot rather than stacking.
-          replace: (within && !opensHistory) || overDialog,
+          replace,
           state: {
-            kinFromList: next !== null && (within ? fromList : to === place),
+            kinDepth: next === null || to !== place ? 0 : replace ? depth : pushedDepth,
             kinHistoryPushed: opensHistory || (historyPushed && sameDoc),
           },
         });
@@ -182,14 +191,15 @@ export function KinPlacesRoute() {
           ...kept,
           ...(search.task === undefined ? {} : { task: search.task }),
         };
+        const replace = next === null || search.open !== undefined;
         void navigate({
           to: KIN_PLACE_PATH[place],
           params,
           search: next === null ? under : { ...under, open: next },
-          replace: next === null || search.open !== undefined,
+          replace,
           state: {
-            kinFromList: location.state.kinFromList === true,
-            kinTaskPushed: location.state.kinTaskPushed === true,
+            kinDepth: replace ? depth : pushedDepth,
+            kinTasks: tasks,
             kinDialogPushed: next !== null && (search.open === undefined || pushed),
           },
         });
@@ -205,26 +215,33 @@ export function KinPlacesRoute() {
         })
       }
       openKey={search.task ?? null}
-      onOpenKey={(key) => {
+      onOpenKey={(key, stack) => {
         const overDialog = search.open !== undefined;
-        const pushed = overDialog
-          ? location.state.kinDialogPushed === true
-          : location.state.kinTaskPushed === true;
         const open = search.task !== undefined;
         // Closing a task this page opened is the browser's Back, so Back never lands on it again.
-        if (key === null && open && pushed && !overDialog) {
-          router.history.back();
+        if (key === null && open && tasks > 0 && !overDialog) {
+          router.history.go(-tasks);
           return;
         }
+        // A row picked beside an open task, or a hit from a dialog, takes its spot; a task opened
+        // from inside a task stacks, so Back retraces them.
+        const replace = key === null || overDialog || (open && !stack);
         void navigate({
-          to: KIN_PLACE_PATH[place],
+          ...kinTaskAddress(place, search, key),
           params,
-          search: { ...kinSearchOf(record), ...kept, ...(key === null ? {} : { task: key }) },
-          // A task opened from a task, or from a dialog, takes its spot rather than stacking.
-          replace: key === null || open || overDialog,
+          replace,
           state: {
-            kinFromList: location.state.kinFromList === true,
-            kinTaskPushed: key !== null && (overDialog ? pushed : !open || pushed),
+            kinDepth: replace ? depth : pushedDepth,
+            kinTasks:
+              key === null
+                ? 0
+                : overDialog
+                  ? location.state.kinDialogPushed === true
+                    ? pushedTasks
+                    : tasks
+                  : replace
+                    ? tasks
+                    : pushedTasks,
           },
         });
       }}
@@ -242,12 +259,12 @@ type Adding =
  * One place: its list, and the record opened from it beside the list on a wide window or in its
  * stead on a narrow one. A record opened from a record takes its spot; nothing stacks.
  */
-function KinPlaceView({
+export function KinPlaceView({
   place,
   record,
   onGo,
   openKey,
-  onOpenKey: setOpenKey,
+  onOpenKey,
   dialog,
   onDialog,
   docLink,
@@ -260,9 +277,10 @@ function KinPlaceView({
   readonly tab: KinClientsTab;
   readonly onTab: (tab: KinClientsTab) => void;
   readonly record: KinRecordWhere | null;
-  readonly onGo: (place: KinPlace, record: KinRecordWhere | null) => void;
+  /** `stack`: opened from inside a record, so it is one more step back rather than a swap. */
+  readonly onGo: (place: KinPlace, record: KinRecordWhere | null, stack: boolean) => void;
   readonly openKey: KinRecordKey | null;
-  readonly onOpenKey: (key: KinRecordKey | null) => void;
+  readonly onOpenKey: (key: KinRecordKey | null, stack: boolean) => void;
   /** New task or Search, open over the place; it lives in the address so Back closes it. */
   readonly dialog: KinPlaceDialog | null;
   readonly onDialog: (dialog: KinPlaceDialog | null) => void;
@@ -297,15 +315,43 @@ function KinPlaceView({
   // Where a list starts when a figure or a client opened it: narrowed to what is behind it.
   const [listStart, setListStart] = useState<KinListOpen | null>(null);
 
-  const open = (next: KinRecordWhere | null) => onGo(place, next);
-  const openList = (start: KinListOpen) => {
-    setListStart(start);
-    open({ list: start.list });
-  };
-  const openClient = (key: KinRecordKey) => open({ party: key });
-  const openProject = (key: KinRecordKey) => open({ project: key });
-  const openDoc = (doc: KinRecordKey, section?: string) =>
-    open(section === undefined ? { doc } : { doc, section });
+  // From a list, what opens takes the open record's spot; from inside a record, it stacks.
+  const opens = (stack: boolean) => ({
+    open: (next: KinRecordWhere | null) => onGo(place, next, stack),
+    list: (start: KinListOpen) => {
+      setListStart(start);
+      onGo(place, { list: start.list }, stack);
+    },
+    party: (key: KinRecordKey) => onGo(place, { party: key }, stack),
+    project: (key: KinRecordKey) => onGo(place, { project: key }, stack),
+    doc: (doc: KinRecordKey, section?: string) =>
+      onGo(place, section === undefined ? { doc } : { doc, section }, stack),
+    task: (key: KinRecordKey | null) => onOpenKey(key, stack),
+  });
+  const fromList = opens(false);
+  const fromRecord = opens(true);
+  const open = fromList.open;
+  const openList = fromList.list;
+  const openClient = fromList.party;
+  const openProject = fromList.project;
+  const openDoc = fromList.doc;
+  const setOpenKey = fromList.task;
+  // A task opens in the record pane, or as the page on a narrow window; a list entry opens over
+  // the place. Until it loads, Money and Docs, where entries live, guess an entry.
+  const opened = useKinOpenedKind(props, ready ? openKey : null);
+  const taskPage =
+    openKey !== null &&
+    ready &&
+    (opened === "task" || (opened === "unknown" && place !== "money" && place !== "docs"));
+  const shownTask = useRef<{ readonly key: KinRecordKey; readonly under: string } | null>(null);
+  const under = JSON.stringify(record);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- focus lives in the DOM: a closed task hands it back to its row
+  useEffect(() => {
+    const was = shownTask.current;
+    shownTask.current = taskPage && openKey !== null ? { key: openKey, under } : null;
+    if (was === null || openKey !== null || was.under !== under) return;
+    document.querySelector<HTMLElement>(`[data-kin-row="${was.key}"]`)?.focus();
+  }, [taskPage, openKey, under]);
   const addTask =
     ready && canAdd
       ? (draft: KinWorkDraft) => {
@@ -322,12 +368,12 @@ function KinPlaceView({
   const header = (
     <WorkspacePageHeader electron={isElectron}>
       {/* A place is a destination of the dock on a narrow window, so only a record has a Back. */}
-      {record === null || wide ? null : (
+      {(record === null && !taskPage) || wide ? null : (
         <Button
           size="icon-sm"
           variant="ghost"
-          aria-label={`Back to ${title}`}
-          onClick={() => open(null)}
+          aria-label={taskPage && record !== null ? "Back" : `Back to ${title}`}
+          onClick={() => (taskPage ? setOpenKey(null) : open(null))}
         >
           <ArrowLeftIcon />
         </Button>
@@ -335,9 +381,9 @@ function KinPlaceView({
       <WorkspaceBreadcrumb ariaLabel={title}>
         <WorkspaceBreadcrumbItem current>
           <h1 className="truncate">
-            {record !== null && !wide && "dates" in record
+            {record !== null && !wide && !taskPage && "dates" in record
               ? KIN_DATES.title
-              : record !== null && !wide && "subscriptions" in record
+              : record !== null && !wide && !taskPage && "subscriptions" in record
                 ? KIN_SUBSCRIPTIONS.title
                 : title}
           </h1>
@@ -347,7 +393,7 @@ function KinPlaceView({
       !ready ||
       !hostClients ||
       placeRefused ||
-      (record !== null && !wide) ? null : (
+      ((record !== null || taskPage) && !wide) ? null : (
         <ToggleGroup
           aria-label={title}
           value={[tab]}
@@ -443,7 +489,7 @@ function KinPlaceView({
         <KinWorkNotice
           {...KIN_CLIENTS_OLDER_HOST}
           action={
-            <Button size="sm" variant="outline" onClick={() => onGo("tasks", null)}>
+            <Button size="sm" variant="outline" onClick={() => onGo("tasks", null, false)}>
               Open tasks
             </Button>
           }
@@ -489,9 +535,9 @@ function KinPlaceView({
           onOpenTask: setOpenKey,
           onOpenList: (start) => {
             setListStart(start);
-            onGo(kinPlaceOfRecord({ list: start.list }), { list: start.list });
+            onGo(kinPlaceOfRecord({ list: start.list }), { list: start.list }, false);
           },
-          onOpenMoney: () => onGo("money", null),
+          onOpenMoney: () => onGo("money", null, false),
         }}
       />
     );
@@ -508,7 +554,7 @@ function KinPlaceView({
           directory={directory}
           placeTitle={title}
           inPane={wide}
-          onGo={open}
+          onGo={fromRecord.open}
           linkTo={(section) => docLink(shown.doc, section)}
           onOpenKey={setOpenKey}
           onOpenClient={openClient}
@@ -522,7 +568,7 @@ function KinPlaceView({
           live={state.live}
           stale={state.stale}
           directory={directory}
-          onOpenKey={setOpenKey}
+          onOpenKey={fromRecord.task}
         />
       );
     if ("dates" in shown)
@@ -532,7 +578,7 @@ function KinPlaceView({
           live={state.live}
           stale={state.stale}
           directory={directory}
-          onOpenKey={setOpenKey}
+          onOpenKey={fromRecord.task}
         />
       );
     if ("list" in shown)
@@ -547,8 +593,8 @@ function KinPlaceView({
           directory={directory}
           initial={listStart?.list === shown.list ? listStart.filter : KIN_LIST_DEFAULT_FILTER}
           openKey={openKey}
-          onOpenKey={setOpenKey}
-          onGone={() => onGo("docs", null)}
+          onOpenKey={fromRecord.task}
+          onGone={() => onGo("docs", null, false)}
         />
       );
     if (!hostClients) return <KinWorkNotice {...KIN_CLIENTS_OLDER_HOST} />;
@@ -563,16 +609,16 @@ function KinPlaceView({
           changes={changes}
           choices={choices}
           canChangeTasks={canChangeTasks && kinWorkHostEdits(summary)}
-          onOpenTask={setOpenKey}
-          onOpenClient={openClient}
-          onOpenProject={openProject}
-          onOpenDoc={openDoc}
+          onOpenTask={fromRecord.task}
+          onOpenClient={fromRecord.party}
+          onOpenProject={fromRecord.project}
+          onOpenDoc={fromRecord.doc}
           onSeeAll={(party) => {
             setNarrowed({ ...KIN_WORK_DEFAULT_FILTER, party });
-            onGo("tasks", null);
+            onGo("tasks", null, false);
           }}
           onAddTask={addTask}
-          onOpenList={openList}
+          onOpenList={fromRecord.list}
         />
       );
     return (
@@ -586,24 +632,47 @@ function KinPlaceView({
         changes={changes}
         choices={choices}
         openKey={openKey}
-        onOpenTask={setOpenKey}
-        onOpenClient={openClient}
-        onOpenProject={openProject}
-        onOpenDoc={openDoc}
+        onOpenTask={fromRecord.task}
+        onOpenClient={fromRecord.party}
+        onOpenProject={fromRecord.project}
+        onOpenDoc={fromRecord.doc}
         onAddTask={addTask}
-        onOpenList={openList}
+        onOpenList={fromRecord.list}
       />
     );
   };
 
+  const task = (
+    key: KinRecordKey,
+    frame: "sheet" | "pane" | "page",
+    go: ReturnType<typeof opens>,
+  ) => (
+    <KinWorkItemSheet
+      // A fresh panel per task, so one task's hand-over never shows on another.
+      key={key}
+      {...props}
+      itemKey={key}
+      frame={frame}
+      directory={directory}
+      changes={changes}
+      choices={hostClients ? choices : null}
+      onOpenKey={go.task}
+      onOpenClient={go.party}
+      onOpenProject={go.project}
+      onOpenDoc={(doc) => go.doc(doc)}
+      onClose={() => setOpenKey(null)}
+    />
+  );
+  const opening = record !== null || taskPage;
+
   // A doc on a narrow window is the whole page, under its own header with its own way back.
-  const docAlone = record !== null && "doc" in record && !wide;
+  const docAlone = record !== null && "doc" in record && !wide && !taskPage;
   return (
     <>
       {docAlone ? null : header}
       {state._tag === "refused" ? (
         <KinWorkNotice {...kinWorkOnlyOwner(place)} />
-      ) : placeRefused && record === null ? (
+      ) : placeRefused && !opening ? (
         <KinWorkNotice {...(place === "money" ? KIN_MONEY.onlyOwner : kinWorkOnlyOwner(place))} />
       ) : state._tag === "offline" ? (
         <KinWorkNotice {...kinWorkOffline(place)} />
@@ -624,10 +693,10 @@ function KinPlaceView({
       ) : (
         <div className="flex min-h-0 flex-1">
           {/* A record under a place taken away says for itself that it isn't theirs; no list beside it. */}
-          {record !== null && (!wide || placeRefused) ? null : (
+          {opening && (!wide || placeRefused) ? null : (
             <div
               className={
-                record === null
+                !opening
                   ? "flex min-h-0 min-w-0 flex-1 flex-col"
                   : "flex min-h-0 w-96 shrink-0 flex-col border-e border-border"
               }
@@ -635,12 +704,24 @@ function KinPlaceView({
               {placeList()}
             </div>
           )}
-          {record === null ? null : (
+          {!opening ? null : (
             <section
-              aria-label={place === "money" && "list" in record ? KIN_MONEY.title : title}
+              aria-label={
+                record !== null && !taskPage && place === "money" && "list" in record
+                  ? KIN_MONEY.title
+                  : title
+              }
               className="flex min-h-0 min-w-0 flex-1 flex-col"
             >
-              {recordView(record)}
+              {/* The record stays mounted under a task opened from it, so closing the task costs no read. */}
+              {record === null ? null : (
+                <div className={taskPage ? "hidden" : "flex min-h-0 min-w-0 flex-1 flex-col"}>
+                  {recordView(record)}
+                </div>
+              )}
+              {taskPage && openKey !== null
+                ? task(openKey, wide ? "pane" : "page", fromRecord)
+                : null}
             </section>
           )}
         </div>
@@ -660,22 +741,7 @@ function KinPlaceView({
           }}
         />
       )}
-      {openKey === null || !ready ? null : (
-        <KinWorkItemSheet
-          // A fresh sheet per task, so one task's hand-over never shows on another.
-          key={openKey}
-          {...props}
-          itemKey={openKey}
-          directory={directory}
-          changes={changes}
-          choices={hostClients ? choices : null}
-          onOpenKey={setOpenKey}
-          onOpenClient={openClient}
-          onOpenProject={openProject}
-          onOpenDoc={(doc) => openDoc(doc)}
-          onClose={() => setOpenKey(null)}
-        />
-      )}
+      {openKey === null || !ready || taskPage ? null : task(openKey, "sheet", fromList)}
       {adding?.type === "task" && dialog === "new" ? (
         <KinWorkNewDialog
           {...props}

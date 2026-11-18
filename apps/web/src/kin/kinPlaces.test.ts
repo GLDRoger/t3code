@@ -5,6 +5,7 @@ import {
   kinPlaceOfWork,
   kinRecordOf,
   kinSearchOf,
+  kinTaskAddress,
   validateKinAgentSearch,
   validateKinPlaceSearch,
   withKinAgentPage,
@@ -52,6 +53,48 @@ describe("place addresses", () => {
     for (const record of records)
       expect(kinRecordOf(validateKinPlaceSearch({ ...kinSearchOf(record) }))).toEqual(record);
   });
+
+  it.each([
+    ["tasks", {}, "/kin/$environmentId/$orgId/tasks", {}],
+    [
+      "money",
+      { list: KinListId.make("invoices") },
+      "/kin/$environmentId/$orgId/money",
+      {
+        list: "invoices",
+      },
+    ],
+    [
+      "clients",
+      { client: party, tab: "projects" },
+      "/kin/$environmentId/$orgId/clients",
+      {
+        client: party,
+        tab: "projects",
+      },
+    ],
+    ["docs", { doc: party, v: 2 }, "/kin/$environmentId/$orgId/docs", { doc: party, v: 2 }],
+    // The Projects tab is the Clients place's alone, and a dialog closes as a task opens.
+    [
+      "tasks",
+      { project: party, tab: "projects", open: "search" },
+      "/kin/$environmentId/$orgId/tasks",
+      {
+        project: party,
+      },
+    ],
+  ] as const)(
+    "opens a task over %s %j, and closing it removes only the task",
+    (place, search, to, under) => {
+      const other = KinRecordKey.make("T-13");
+      expect(kinTaskAddress(place, search, key)).toEqual({ to, search: { ...under, task: key } });
+      expect(kinTaskAddress(place, { ...search, task: other }, key)).toEqual({
+        to,
+        search: { ...under, task: key },
+      });
+      expect(kinTaskAddress(place, { ...search, task: key }, null)).toEqual({ to, search: under });
+    },
+  );
 
   it("drops what isn't a record key or a version", () => {
     expect(
