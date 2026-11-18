@@ -181,13 +181,67 @@ function kinBriefHead(createdAt: string, firstName: string | null) {
 // A figure is drawn far taller than the lines that hold it.
 const FIGURE_LINES = 8;
 
+const PAGE_CHARS = 900;
+const PAGE_LINES = 22;
+// A first section may run this far past the budget and still show whole.
+const FIRST_SECTION_SLACK = 1.5;
+
+function kinTextSize(markdown: string) {
+  const figures = kinDocBlocks(markdown);
+  return {
+    chars: kinPlainBody(markdown).length,
+    lines:
+      markdown.split("\n").length +
+      figures.reduce((sum, block) => sum + FIGURE_LINES - block.content.split("\n").length - 2, 0),
+  };
+}
+
 /** A long page shows its start on the phone, with Read more. */
 export function kinPageCollapses(markdown: string) {
-  const figures = kinDocBlocks(markdown);
-  const lines =
-    markdown.split("\n").length +
-    figures.reduce((sum, block) => sum + FIGURE_LINES - block.content.split("\n").length - 2, 0);
-  return kinPlainBody(markdown).length > 900 || lines > 22;
+  const size = kinTextSize(markdown);
+  return size.chars > PAGE_CHARS || size.lines > PAGE_LINES;
+}
+
+/** Where the phone cuts a long page, and what its Read more names. */
+export interface KinPageCut {
+  /** How many of the page's sections show above Read more. */
+  readonly shown: number;
+  /** The shown part is still too tall, so it is cut at a height instead of between sections. */
+  readonly clip: boolean;
+  /** "Read more: Open tasks", "Read more: Tasks, Clients +2", or "Read more". */
+  readonly label: string;
+}
+
+/**
+ * Null when the page shows whole. Otherwise the lead and the first section, then each further
+ * whole section while the page fits; a first section far past the budget, or a page without
+ * sections, falls back to a height cut.
+ */
+export function kinPageCut(markdown: string, brief = false): KinPageCut | null {
+  if (!kinPageCollapses(markdown)) return null;
+  const { lead, sections } = kinPageView(markdown, brief);
+  const used = lead === null ? { chars: 0, lines: 0 } : kinTextSize(lead);
+  let shown = 0;
+  for (const section of sections) {
+    const size = kinTextSize(section.markdown);
+    const chars = used.chars + section.title.length + size.chars;
+    const lines = used.lines + 2 + size.lines;
+    const slack = shown === 0 ? FIRST_SECTION_SLACK : 1;
+    if (chars > PAGE_CHARS * slack || lines > PAGE_LINES * slack) break;
+    used.chars = chars;
+    used.lines = lines;
+    shown += 1;
+  }
+  if (shown === sections.length && shown > 0) return null;
+  const clip = shown === 0;
+  if (clip) shown = Math.min(1, sections.length);
+  const hidden = sections.slice(shown).map((section) => section.title);
+  const named = hidden.slice(0, 2).join(", ");
+  const label =
+    hidden.length === 0
+      ? "Read more"
+      : `Read more: ${named}${hidden.length > 2 ? ` +${hidden.length - 2}` : ""}`;
+  return { shown, clip, label };
 }
 
 /**
