@@ -32,7 +32,7 @@ import { answerChange, changeLines } from "./companyProfile.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
-import { addUp, financialYearOf, formatMinor, parseAmount } from "./money.ts";
+import { aboutTotal, addUp, financialYearOf, formatMinor, parseAmount } from "./money.ts";
 import { budgetFlags, budgetsAnswer, budgetsView } from "./budgets.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
 import { moneySection } from "./moneyViews.ts";
@@ -368,6 +368,70 @@ describe("amounts", () => {
     );
   });
 
+  it("estimates totals at the owner's rates, summed exactly and rounded once", () => {
+    const eur = [{ currency: "EUR", rate: "1.08", asOf: "2026-11-10" }];
+    const usd = (minor: number) => ({ minor, currency: "USD" });
+    const three = [
+      usd(100_000),
+      { minor: 50_000, currency: "EUR" },
+      { minor: 2_000, currency: "AED" },
+    ];
+    assert.deepStrictEqual(aboutTotal(three, "USD", eur), {
+      home: "USD",
+      total: usd(154_000),
+      missing: ["AED"],
+    });
+    // One currency says it exactly already; none with a rate is no estimate at all.
+    assert.strictEqual(aboutTotal([usd(100_000)], "USD", eur), undefined);
+    assert.strictEqual(
+      aboutTotal(
+        [
+          { minor: 1, currency: "AED" },
+          { minor: 1, currency: "GBP" },
+        ],
+        "USD",
+        eur,
+      ),
+      undefined,
+    );
+    // A refund lowers the exact total and the estimate with it.
+    const refunded = addUp(
+      [usd(100_000), { minor: 50_000, currency: "EUR" }, { minor: -10_000, currency: "EUR" }],
+      "USD",
+    );
+    assert.deepStrictEqual(refunded, [usd(100_000), { minor: 40_000, currency: "EUR" }]);
+    assert.deepStrictEqual(aboutTotal(refunded, "USD", eur)?.total, usd(143_200));
+    assert.deepStrictEqual(
+      aboutTotal([usd(-100_000), { minor: -50_000, currency: "EUR" }], "USD", eur)?.total,
+      usd(-154_000),
+    );
+    // $10.40 + €0.40 + £0.40 at 1.0 is $11.20, about $11; rounding each first would say $10.
+    const par = [
+      { currency: "EUR", rate: "1", asOf: "2026-11-10" },
+      { currency: "GBP", rate: "1.0", asOf: "2026-11-10" },
+    ];
+    assert.deepStrictEqual(
+      aboutTotal(
+        [usd(1_040), { minor: 40, currency: "EUR" }, { minor: 40, currency: "GBP" }],
+        "USD",
+        par,
+      )?.total,
+      usd(1_100),
+    );
+    // Across decimals: ¥1,500 at 0.006543 is $9.8145 and KWD 1.000 at 3.25 is $3.25.
+    assert.deepStrictEqual(
+      aboutTotal(
+        [usd(30), { minor: 1_500, currency: "JPY" }, { minor: 1_000, currency: "KWD" }],
+        "USD",
+        [
+          { currency: "JPY", rate: "0.006543", asOf: "2026-11-10" },
+          { currency: "KWD", rate: "3.25", asOf: "2026-11-10" },
+        ],
+      )?.total,
+      usd(1_300),
+    );
+  });
+
   it("formats totals past a float's exact range digit for digit, signed", () => {
     const past = BigInt(Number.MAX_SAFE_INTEGER) * 10n + 7n;
     assert.strictEqual(formatMinor(past, "INR"), "₹90,07,19,92,54,74,099.17");
@@ -387,6 +451,7 @@ describe("amounts", () => {
           spent: past,
           expenses: 2,
           status: "over" as const,
+          notCounted: [],
         },
       ],
     };
@@ -2405,6 +2470,116 @@ describe("money answers", () => {
           ${input.status ?? "read"}, ${JSON.stringify(review)}, 0, ${readAt},
           ${standing === "confirmed" ? readAt : null}, ${standing === "undone" ? readAt : null})`;
     });
+
+  it.effect(
+    "estimate several currencies at the owner's rates only, and say what a budget leaves out",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* OwnerMoney.setCompanyProfile(people, {
+          orgId,
+          rev: 0,
+          homeCurrency: "USD",
+          rates: [{ currency: "EUR", rate: "1.08", asOf: "2026-11-10" }],
+        });
+        yield* defined(1, { template: "invoices" });
+        const asked = yield* turn(3, "Invoice Invented Brightwell in three currencies");
+        yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            ["Invented dollar retainer", "USD 1,000"],
+            ["Invented euro retainer", "EUR 500"],
+            ["Invented dirham retainer", "AED 2,000"],
+          ].map(([title, amount]) => ({
+            list: "invoices",
+            title: title!,
+            amount: amount!,
+            date: "2026-11-01",
+            due: "2026-12-01",
+          })),
+        });
+        const summary = yield* OwnerMoney.money(people, { orgId });
+        assert.deepStrictEqual(summary.owed.total, [
+          { minor: 100_000, currency: "USD" },
+          { minor: 200_000, currency: "AED" },
+          { minor: 50_000, currency: "EUR" },
+        ]);
+        // $1,000 and €500 at 1.08; no AED rate is set, so none is used.
+        assert.deepStrictEqual(summary.about?.owed, {
+          home: "USD",
+          total: { minor: 154_000, currency: "USD" },
+          missing: ["AED"],
+        });
+        assert.deepStrictEqual(moneySection(summary, summary.timeZone)?.about?.owedToUs, {
+          home: "USD",
+          total: "$1,540",
+          missing: ["AED"],
+        });
+        // Nothing overdue and nothing received: no figure to estimate.
+        assert.deepStrictEqual(
+          Object.entries(summary.about ?? {}).flatMap(([key, one]) =>
+            one === undefined ? [] : [key],
+          ),
+          ["owed"],
+        );
+
+        yield* defined(4, { template: "expenses" });
+        const records = yield* KinRecords.KinRecords;
+        for (const [key, money] of [
+          ["flight", { minor: 30_000, currency: "USD" }],
+          ["hotel", { minor: 76_800, currency: "EUR" }],
+        ] as const)
+          yield* records.create(orgId, system, {
+            list: "expenses",
+            title: `Invented ${key}`,
+            owner,
+            state: "done",
+            category: "travel",
+            amount: money,
+            dateAt: on("2026-11-05"),
+            originKey: key,
+          });
+        yield* OwnerMoneyAnswers.setBudget(people, {
+          orgId,
+          category: "travel",
+          project: null,
+          currency: "USD",
+          limitMinor: 50_000,
+          clientRequestId: "travel-usd",
+        });
+        const now = yield* Clock.currentTimeMillis;
+        assert.deepInclude(budgetsAnswer(yield* budgetsView(orgId, now)).budgets[0], {
+          spent: "$300.00",
+          notCounted: [{ currency: "EUR", spent: "€768.00" }],
+        });
+        assert.deepInclude((yield* OwnerMoneyAnswers.budgets(people, { orgId })).budgets[0], {
+          spent: { minor: 30_000, currency: "USD" },
+          notCounted: [{ currency: "EUR", spent: { minor: 76_800, currency: "EUR" } }],
+        });
+        assert.deepStrictEqual((yield* OwnerMoney.money(people, { orgId })).about?.spentThisMonth, {
+          home: "USD",
+          total: { minor: 112_900, currency: "USD" },
+          missing: [],
+        });
+        // The euros have a budget of their own now, so the dollar one leaves nothing out.
+        yield* OwnerMoneyAnswers.setBudget(people, {
+          orgId,
+          category: "travel",
+          project: null,
+          currency: "EUR",
+          limitMinor: 100_000,
+          clientRequestId: "travel-eur",
+        });
+        const both = budgetsAnswer(yield* budgetsView(orgId, now)).budgets;
+        assert.deepStrictEqual(
+          both.map((one) => [one.limit, "notCounted" in one]),
+          [
+            ["€1,000.00", false],
+            ["$500.00", false],
+          ],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
 
   it.effect(
     "give cash only from confirmed statements, one account per proven chain, unknown with none",

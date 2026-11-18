@@ -155,6 +155,10 @@ export const KinMoneyBudget = Schema.Struct({
   expenses: NonNegativeInt,
   /** Over is past the limit; near is at it or past 80% of it. */
   status: KinMoneyBudgetStatus,
+  /** Spending on the same target in other currencies, which `spent` leaves out; absent when none. */
+  notCounted: Schema.optional(
+    Schema.Array(Schema.Struct({ currency: KinCurrency, spent: KinSignedMoney })),
+  ),
 });
 export type KinMoneyBudget = typeof KinMoneyBudget.Type;
 export const KinMoneyBudgets = Schema.Struct({

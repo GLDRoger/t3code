@@ -1,13 +1,16 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
-import type {
-  KinAttachment,
-  KinRecordChange,
-  KinRecordComment,
-  KinRecordDetail,
-  KinRecordWaiting,
-  KinWorkPrincipal,
+import {
+  KIN_RECORD_COMMENT_FILES_MAX,
+  type KinAttachment,
+  type KinProjectNote,
+  type KinRecordChange,
+  type KinRecordComment,
+  type KinRecordDetail,
+  type KinRecordWaiting,
+  type KinWorkPrincipal,
 } from "@t3tools/contracts";
 
+import { kinSafeWebUrl } from "./kinLinks.ts";
 import { formatKinTime, type KinAvatarView } from "./kinScreenState.ts";
 import {
   kinWorkActorName,
@@ -46,7 +49,68 @@ export const KIN_TASK_RECORD = {
   briefMoved: "The brief now says:",
   removeDetail: "It stays in Activity as removed, without its words or files.",
   noteTooLong: (max: number) => `Keep a note under ${max.toLocaleString()} characters.`,
+  fromProject: "From the project",
 } as const;
+
+/** A task's note box and its notes, on web and phone. */
+export const KIN_TASK_NOTE_COPY = {
+  send: "Add note",
+  sending: "Sending…",
+  retry: "Retry",
+  discard: "Discard",
+  remove: "Remove",
+  removeTitle: "Remove this note?",
+  offline: "You're offline. Your note stays here until you're back.",
+  tooMany: `A note takes up to ${KIN_RECORD_COMMENT_FILES_MAX} files.`,
+  notAdded: "Your note wasn't added.",
+  notRemoved: "The note wasn't removed.",
+  olderFailed: "Earlier notes didn't load.",
+} as const;
+
+/** "Add a link" on a task: a web page with an optional name. */
+export const KIN_TASK_LINK = {
+  add: "Add a link",
+  url: "Web address",
+  urlPlaceholder: "https://",
+  name: "Name (optional)",
+  save: "Add link",
+  next: "Next",
+  cancel: "Cancel",
+  remove: (label: string) => `Remove the link ${label}`,
+  removeTitle: "Remove this link?",
+  removeConfirm: "Remove",
+  notWeb: "A link needs a web address that starts with https:// or http://.",
+  notAdded: "The link wasn't added.",
+  notRemoved: "The link wasn't removed.",
+} as const;
+
+/** What stops this address being added as a link, or null when it is a web page. */
+export const kinTaskLinkProblem = (url: string): string | null =>
+  url.trim() === "" ? null : kinSafeWebUrl(url.trim()) === null ? KIN_TASK_LINK.notWeb : null;
+
+/** A project's one note, shown at the top of each of its tasks. */
+export const KIN_PROJECT_NOTE = {
+  title: "Note for every task",
+  hint: "Every task in this project shows it at the top of its Activity.",
+  placeholder: "Write a note for every task…",
+  empty: "No note yet.",
+  edit: "Edit",
+  save: "Save",
+  cancel: "Cancel",
+  clear: "Clear",
+  notSaved: "The note wasn't saved.",
+} as const;
+
+/** "From the project" at the top of a task's Activity: who wrote it, when, and which project. */
+export function kinProjectNoteLine(note: KinProjectNote, names: KinWorkNames, now: Date) {
+  return {
+    who: kinWorkActorName(note.by, names),
+    avatar: kinWorkAvatar(note.by),
+    when: formatKinTime(new Date(note.at), now),
+    body: note.body,
+    project: note.project,
+  };
+}
 
 /** Someone the record names, as a row draws them: "Rhea (you)", or the agent's name. */
 export interface KinRecordWho {

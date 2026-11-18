@@ -13,6 +13,7 @@ import {
   KinListFieldKey,
   KinListId,
   KinMoney,
+  KinMoneyAbout,
   KinMoneyTotals,
 } from "./kinMoney.ts";
 import {
@@ -241,6 +242,17 @@ export const KinMoneySummary = Schema.Struct({
   /** The last 12 months, oldest first, this month last: money in and out, for a chart. */
   series: Schema.Array(
     Schema.Struct({ month: Schema.String, received: KinMoneyTotals, spent: KinMoneyTotals }),
+  ),
+  /** Beside each figure in more than one currency, its estimate; absent from older servers. */
+  about: Schema.optional(
+    Schema.Struct({
+      owed: Schema.optional(KinMoneyAbout),
+      overdue: Schema.optional(KinMoneyAbout),
+      receivedThisMonth: Schema.optional(KinMoneyAbout),
+      receivedLastMonth: Schema.optional(KinMoneyAbout),
+      spentThisMonth: Schema.optional(KinMoneyAbout),
+      spentLastMonth: Schema.optional(KinMoneyAbout),
+    }),
   ),
 });
 export type KinMoneySummary = typeof KinMoneySummary.Type;

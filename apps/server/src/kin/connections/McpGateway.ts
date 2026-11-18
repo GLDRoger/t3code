@@ -53,10 +53,15 @@ export class KinMcpGateway extends Context.Service<
       },
       KinGatewayError
     >;
+    /**
+     * `confirmed`: sent on a person's Confirm, so once its request is handed over it is never
+     * sent again.
+     */
     readonly callTool: (
       target: GatewayTarget,
       tool: McpSchema.Tool,
       args: Readonly<Record<string, unknown>>,
+      confirmed?: boolean,
     ) => Effect.Effect<McpSchema.CallToolResult, KinGatewayError>;
     /** Drops the open client: after a key change, removal or a failed session. */
     readonly invalidate: (connectionId: string) => Effect.Effect<void>;
@@ -246,11 +251,16 @@ const make = Effect.gen(function* () {
     );
   });
 
+  // Behind an opening in flight: a session that began with the old credential is dropped too.
   const invalidate = Effect.fn("KinMcpGateway.invalidate")(function* (connectionId: string) {
-    const held = open.get(connectionId);
-    if (held === undefined) return;
-    open.delete(connectionId);
-    yield* Scope.close(held.scope, Exit.void);
+    const held = yield* opening.withPermits(1)(
+      Effect.sync(() => {
+        const entry = open.get(connectionId);
+        open.delete(connectionId);
+        return entry;
+      }),
+    );
+    if (held !== undefined) yield* Scope.close(held.scope, Exit.void);
   });
 
   /** One retry with a fresh client when the session expired: the request never ran. */
@@ -290,10 +300,21 @@ const make = Effect.gen(function* () {
       ).pipe(Effect.mapError((error) => gatewayError(error, host)));
       return { ...listed, tools: yield* asSent(listed.tools, pages, host) };
     }),
-    callTool: Effect.fn("KinMcpGateway.callTool")(function* (target, tool, args) {
-      return yield* withClient(target, (client) =>
-        client.callTool({ tool, arguments: args }, { timeout: CONNECTION_LIMITS.timeout }),
-      );
+    callTool: Effect.fn("KinMcpGateway.callTool")(function* (
+      target,
+      tool,
+      args,
+      confirmed = false,
+    ) {
+      const run = (client: McpClient.McpClient) =>
+        client.callTool({ tool, arguments: args }, { timeout: CONNECTION_LIMITS.timeout });
+      if (!confirmed) return yield* withClient(target, run);
+      // Its own fresh session, retried only while opening: any later error may follow the work.
+      return yield* Effect.acquireUseRelease(
+        connect(target).pipe(Effect.catchIf(stale, () => connect(target))),
+        ({ client }) => run(client),
+        ({ scope }) => Scope.close(scope, Exit.void),
+      ).pipe(Effect.mapError((error) => gatewayError(error, new URL(target.url).host)));
     }),
     invalidate,
   });

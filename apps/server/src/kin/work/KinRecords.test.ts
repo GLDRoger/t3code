@@ -599,6 +599,9 @@ it.effect(
         "kin.work.comment",
         "kin.work.commentRemove",
         "kin.work.comments",
+        // Whoever may edit the entry; the service checks `can.edit`.
+        "kin.work.linkAdd",
+        "kin.work.linkRemove",
         // Its lead too; the service refuses anyone else (`teamGuard`).
         "kin.work.projectPeople",
       ]);
@@ -606,7 +609,7 @@ it.effect(
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 45);
+      assert.lengthOf(methods, 48);
       for (const method of methods)
         assert.strictEqual(kinRpcAccess(method) === "person", teammate.has(method), method);
     }).pipe(Effect.provide(layer)),
