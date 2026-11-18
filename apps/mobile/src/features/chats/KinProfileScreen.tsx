@@ -51,6 +51,7 @@ import { pickKinPicture } from "./state/kinPicture";
 import { useKinHostAt } from "./state/useKinHost";
 import { useKinProfiles } from "./state/useKinProfiles";
 import { KinAwaySection } from "./components/KinAway";
+import { KinTasksKeysSection } from "./components/KinTasksKeys";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
@@ -267,6 +268,14 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
           fullWidth
           label={KIN_PROFILE_COPY.edit}
           onPress={() => navigation.navigate("KinProfileEdit", route.params)}
+        />
+      ) : null}
+      {target.mine ? (
+        <KinTasksKeysSection
+          environmentId={target.environmentId}
+          orgId={target.orgId}
+          personId={profile.personId}
+          holder={null}
         />
       ) : null}
     </Frame>

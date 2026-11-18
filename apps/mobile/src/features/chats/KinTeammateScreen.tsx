@@ -67,6 +67,7 @@ import { KinAvatar } from "./components/KinAvatar";
 import { KinAwaySection, KinHandOverRow } from "./components/KinAway";
 import { KinDeviceList } from "./KinDevicesScreen";
 import { KinInviteLink } from "./components/KinInviteLink";
+import { KinTasksKeysSection } from "./components/KinTasksKeys";
 import { kinClient } from "./state/kinClient";
 import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
 import { useKinOpenCounts, useKinProfiles } from "./state/useKinProfiles";
@@ -388,6 +389,14 @@ function KinTeammateDetails(props: {
       )}
       {offered.remove && teammate.personId !== null && teammate.state === "joined" ? (
         <KinDeviceList target={{ ...props.target, personId: teammate.personId }} self={false} />
+      ) : null}
+      {teammate.personId !== null && teammate.state !== "you" && kinOwnerLevel(props.viewer) ? (
+        <KinTasksKeysSection
+          environmentId={props.target.environmentId}
+          orgId={props.target.orgId}
+          personId={teammate.personId}
+          holder={teammate.name}
+        />
       ) : null}
       {offered.remove ? (
         <ListSection>
