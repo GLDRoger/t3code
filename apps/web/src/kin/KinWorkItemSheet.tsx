@@ -27,6 +27,7 @@ import {
   kinLinked,
   kinLinkedRest,
   type KinLinkedGroupName,
+  type KinLinkedItem,
 } from "@t3tools/client-runtime/kin/kinLinked";
 import {
   KIN_TASK_RECORD,
@@ -979,13 +980,52 @@ export function KinWorkLinks(
   },
 ) {
   const navigate = useNavigate();
-  const [expanded, setExpanded] = useState<ReadonlySet<KinLinkedGroupName>>(new Set());
-  // Both panels show the entry's client, project and milestone in their rows already.
-  const linked = kinLinked(props.item, undefined, { expanded, parentsShown: true });
   const rest = kinLinkedRest(props.links);
-  if (linked.groups.length === 0 && rest.length === 0 && linked.unlisted === 0) return null;
   return (
-    <Section title={props.title ?? "Links"}>
+    <KinLinkedGroups
+      item={props.item}
+      title={props.title ?? "Links"}
+      // Both panels show the entry's client, project and milestone in their rows already.
+      parentsShown
+      onOpen={(item) =>
+        item.open._tag === "record"
+          ? props.onOpenKey(item.key)
+          : void openDestination(navigate, props, item.open)
+      }
+    >
+      {rest.length === 0 ? null : (
+        <ul className="flex flex-col">
+          {rest.map((link) => (
+            <li key={link.key}>
+              <KinWorkLink
+                link={link}
+                environmentId={props.environmentId}
+                orgId={props.orgId}
+                onOpen={props.onClose}
+                onOpenKey={props.onOpenKey}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </KinLinkedGroups>
+  );
+}
+
+/** What links to an entry or doc and what it links to, by kind; `children` follow the groups. */
+export function KinLinkedGroups(props: {
+  readonly item: Parameters<typeof kinLinked>[0];
+  readonly title: string;
+  readonly parentsShown: boolean;
+  readonly onOpen: (item: KinLinkedItem) => void;
+  readonly children?: React.ReactNode;
+}) {
+  const [expanded, setExpanded] = useState<ReadonlySet<KinLinkedGroupName>>(new Set());
+  const linked = kinLinked(props.item, undefined, { expanded, parentsShown: props.parentsShown });
+  const children = props.children ?? null;
+  if (linked.groups.length === 0 && children === null && linked.unlisted === 0) return null;
+  return (
+    <Section title={props.title}>
       {linked.groups.map((group) => (
         <div key={group.group} className="flex flex-col">
           <h4 className="px-1 text-xs text-muted-foreground">{KIN_LINKED.group[group.group]}</h4>
@@ -994,11 +1034,7 @@ export function KinWorkLinks(
               <li key={item.key}>
                 <button
                   type="button"
-                  onClick={() =>
-                    item.open._tag === "record"
-                      ? props.onOpenKey(item.key)
-                      : void openDestination(navigate, props, item.open)
-                  }
+                  onClick={() => props.onOpen(item)}
                   className={`${LINK_ROW} ${LINK_ROW_OPENS}`}
                 >
                   {item.kind === "message" ? null : (
@@ -1024,21 +1060,7 @@ export function KinWorkLinks(
           )}
         </div>
       ))}
-      {rest.length === 0 ? null : (
-        <ul className="flex flex-col">
-          {rest.map((link) => (
-            <li key={link.key}>
-              <KinWorkLink
-                link={link}
-                environmentId={props.environmentId}
-                orgId={props.orgId}
-                onOpen={props.onClose}
-                onOpenKey={props.onOpenKey}
-              />
-            </li>
-          ))}
-        </ul>
-      )}
+      {children}
       {linked.unlisted === 0 ? null : (
         <p className="px-1 text-xs text-muted-foreground">{KIN_LINKED.unlisted(linked.unlisted)}</p>
       )}

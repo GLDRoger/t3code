@@ -18,12 +18,15 @@ import {
   kinDocRestoreOutcome,
   kinDocVersionView,
 } from "@t3tools/client-runtime/kin/kinDocs";
+import type { KinLinkedItem } from "@t3tools/client-runtime/kin/kinLinked";
+import { KIN_TASK_RECORD } from "@t3tools/client-runtime/kin/kinTaskRecord";
 import { KIN_DOC_CHANGES } from "@t3tools/client-runtime/kin/kinDocChanges";
 import { KIN_DOC_COMPANY, KIN_DOC_SHARE } from "@t3tools/client-runtime/kin/kinWork";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinDocDetail, KinRecordKey } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { ArrowLeftIcon, FolderInputIcon, XIcon } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
@@ -69,6 +72,8 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinDocChangesView } from "./KinDocChangesView";
 import { KinDocFileDialog } from "./KinDocFileDialog";
 import { KinDocReader } from "./KinDocReader";
+import { openDestination } from "./KinNotifications";
+import { KinLinkedGroups } from "./KinWorkItemSheet";
 import { KinWorkShareRow } from "./KinWorkShareRow";
 import { KinWorkNotice, KinLoadFailed } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
@@ -100,6 +105,10 @@ export function KinDocPage(
     readonly placeTitle: string;
     /** Beside its place's list, under that place's header, rather than the whole page. */
     readonly inPane: boolean;
+    /** A task or money entry linked to the doc, on its panel over the place. */
+    readonly onOpenKey: (key: KinRecordKey) => void;
+    readonly onOpenClient: (key: KinRecordKey) => void;
+    readonly onOpenProject: (key: KinRecordKey) => void;
   },
 ) {
   const { placeTitle, inPane } = props;
@@ -133,6 +142,7 @@ export function KinDocPage(
   };
   const restore = useAtomCommand(kinClient.docRestore, { reportFailure: false });
   const ownerLevel = useKinOwnerLevel(environmentId);
+  const navigate = useNavigate();
   const ask = useKinDocAsk(props, doc, names.me, ownerLevel);
   const [actions, setActions] = useState<HTMLElement | null>(null);
   const [restoring, setRestoring] = useState<Restoring>(null);
@@ -164,6 +174,15 @@ export function KinDocPage(
     setUndo(undoing ? null : target.latest);
     refresh();
     onGo({ doc: key });
+  };
+
+  const openLinked = (item: KinLinkedItem) => {
+    const to = item.open;
+    if (to._tag !== "record") return void openDestination(navigate, props, to);
+    if (to.kind === "doc") return onGo({ doc: to.key });
+    if (to.kind === "client") return props.onOpenClient(to.key);
+    if (to.kind === "project") return props.onOpenProject(to.key);
+    props.onOpenKey(to.key);
   };
 
   const copyLink = (section: string | null) => {
@@ -343,6 +362,15 @@ export function KinDocPage(
           onExportPdf={canPdf ? () => void exportPdf() : null}
           onRestore={
             canRestore ? (version) => setRestoring({ version, latest: doc.latest.version }) : null
+          }
+          linked={
+            <KinLinkedGroups
+              item={doc}
+              title={KIN_TASK_RECORD.linked}
+              // The filing row above the doc names its client and project already.
+              parentsShown
+              onOpen={openLinked}
+            />
           }
         />
       )}

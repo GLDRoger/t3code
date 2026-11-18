@@ -4,7 +4,7 @@ import { page, userEvent } from "vite-plus/test/browser";
 
 import "~/index.css";
 import { render } from "../../test/render";
-import { KinWorkLinks } from "./KinWorkItemSheet";
+import { KinLinkedGroups, KinWorkLinks } from "./KinWorkItemSheet";
 
 const linkTo = (key: string, title: string): KinRecordLink => ({
   kind: "record",
@@ -51,5 +51,27 @@ describe("a task's Linked section", () => {
 
     await userEvent.click(page.getByRole("button", { name: /D-11/ }));
     expect(onOpenKey).toHaveBeenCalledWith("D-11");
+  });
+
+  it("on a doc, shows a task linking to it and a doc it links to, and opens the task", async () => {
+    const onOpen = vi.fn();
+    await using screen = await render(
+      <KinLinkedGroups
+        item={{
+          key: "D-11",
+          links: [linkTo("D-12", "Ambermill price list")],
+          linkedFrom: [linkTo("W-2", "Send Ambermill the quote")],
+        }}
+        title="Linked"
+        parentsShown
+        onOpen={onOpen}
+      />,
+    );
+    await expect.element(screen.getByText("Tasks")).toBeVisible();
+    await expect.element(screen.getByText("Docs")).toBeVisible();
+    await expect.element(screen.getByText("Ambermill price list")).toBeVisible();
+
+    await userEvent.click(page.getByRole("button", { name: /W-2/ }));
+    expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ key: "W-2", kind: "task" }));
   });
 });

@@ -64,7 +64,7 @@ import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { Pressable, TextInput, View } from "react-native";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import type { AppBarMenu, AppBarMenuItem } from "../../components/ui/AppBar";
@@ -234,6 +234,7 @@ function KinWorkItemBody(props: ItemTarget) {
   const openRecord = useKinWorkLink();
   const openDetail = useOpenWorkspaceDetail();
   const { environmentId, orgId, itemKey } = props;
+  const openLinked = useKinOpenLinked(props);
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
   const { state: changed, changes } = useKinWorkChanges(props);
   const state = kinWorkItemState(useAtomValue(itemAtom), useKinWorkAnswer(props, itemKey));
@@ -309,24 +310,7 @@ function KinWorkItemBody(props: ItemTarget) {
     <KinWorkLinked
       detail={detail}
       links={links}
-      onOpen={(to) =>
-        to._tag === "chat"
-          ? navigation.navigate("KinChat", {
-              environmentId,
-              orgId,
-              chatId: to.chatId,
-              ...(to.messageId === null ? {} : { message: to.messageId }),
-            })
-          : to._tag !== "record"
-            ? undefined
-            : to.kind === "client"
-              ? openRecord("KinClient", { environmentId, orgId, party: to.key })
-              : to.kind === "project"
-                ? openRecord("KinProject", { environmentId, orgId, project: to.key })
-                : to.kind === "doc"
-                  ? openRecord("KinDoc", { environmentId, orgId, doc: to.key })
-                  : openRecord("KinWorkItem", { environmentId, orgId, task: to.key })
-      }
+      onOpen={openLinked}
       onOpenLink={openLink}
       onOpenThread={openThread}
     />
@@ -1128,11 +1112,63 @@ function KinWorkLinked(props: {
   readonly onOpenLink: (link: KinWorkLinkView) => void;
   readonly onOpenThread: (thread: NonNullable<KinWorkLinkView["thread"]>) => void;
 }) {
-  const [expanded, setExpanded] = useState<ReadonlySet<KinLinkedGroupName>>(new Set());
-  // Both pages show the entry's client, project and milestone in their rows already.
-  const linked = kinLinked(props.detail, undefined, { expanded, parentsShown: true });
   const rest = kinLinkedRest(props.links);
-  if (linked.groups.length === 0 && rest.length === 0 && linked.unlisted === 0) return null;
+  return (
+    <KinLinkedSection
+      item={props.detail}
+      // Both pages show the entry's client, project and milestone in their rows already.
+      parentsShown
+      onOpen={props.onOpen}
+    >
+      {rest.length === 0
+        ? null
+        : rest.map((link) => (
+            <KinWorkLink
+              key={link.key}
+              link={link}
+              onOpen={() => props.onOpenLink(link)}
+              onOpenThread={props.onOpenThread}
+            />
+          ))}
+    </KinLinkedSection>
+  );
+}
+
+/** Opens a Linked row: a chat at its message, a record as a record link, a doc as a doc. */
+export function useKinOpenLinked(target: KinWorkTarget) {
+  const navigation = useNavigation();
+  const openRecord = useKinWorkLink();
+  const { environmentId, orgId } = target;
+  return (to: KinNotificationDestination) =>
+    to._tag === "chat"
+      ? navigation.navigate("KinChat", {
+          environmentId,
+          orgId,
+          chatId: to.chatId,
+          ...(to.messageId === null ? {} : { message: to.messageId }),
+        })
+      : to._tag !== "record"
+        ? undefined
+        : to.kind === "client"
+          ? openRecord("KinClient", { environmentId, orgId, party: to.key })
+          : to.kind === "project"
+            ? openRecord("KinProject", { environmentId, orgId, project: to.key })
+            : to.kind === "doc"
+              ? openRecord("KinDoc", { environmentId, orgId, doc: to.key })
+              : openRecord("KinWorkItem", { environmentId, orgId, task: to.key });
+}
+
+/** What links to an entry or doc and what it links to, by kind; `children` follow the groups. */
+export function KinLinkedSection(props: {
+  readonly item: Parameters<typeof kinLinked>[0];
+  readonly parentsShown: boolean;
+  readonly onOpen: (to: KinNotificationDestination) => void;
+  readonly children?: ReactNode;
+}) {
+  const [expanded, setExpanded] = useState<ReadonlySet<KinLinkedGroupName>>(new Set());
+  const linked = kinLinked(props.item, undefined, { expanded, parentsShown: props.parentsShown });
+  const children = props.children ?? null;
+  if (linked.groups.length === 0 && children === null && linked.unlisted === 0) return null;
   return (
     <ListSection
       title={KIN_TASK_RECORD.linked}
@@ -1178,14 +1214,7 @@ function KinWorkLinked(props: {
           )}
         </View>
       ))}
-      {rest.map((link) => (
-        <KinWorkLink
-          key={link.key}
-          link={link}
-          onOpen={() => props.onOpenLink(link)}
-          onOpenThread={props.onOpenThread}
-        />
-      ))}
+      {children}
     </ListSection>
   );
 }
