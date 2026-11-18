@@ -133,6 +133,23 @@ describe("canvas layout", () => {
       });
   });
 
+  it("moves only the dropped card on a canvas of hundreds", () => {
+    const many = Array.from({ length: 250 }, (_, i) => ({ key: `W-${i + 1}`, group: "P-1" }));
+    const big = [{ key: "P-1", title: "Launch site" }];
+    const before = kinCanvasLayout({ groups: big, items: many, places: new Map() });
+    const dropped = kinCanvasDrop(before, "W-1", -1000, -1000);
+    const after = kinCanvasLayout({
+      groups: big,
+      items: many,
+      places: new Map(dropped.map((p) => [p.key, p])),
+    });
+    for (const { key } of many.slice(1))
+      expect(after.cards.get(key)).toMatchObject({
+        x: before.cards.get(key)!.x,
+        y: before.cards.get(key)!.y,
+      });
+  });
+
   it("drops a card beside the one it lands on, not over it", () => {
     const before = kinCanvasLayout({ groups, items, places: new Map() });
     const target = before.cards.get("W-2")!;

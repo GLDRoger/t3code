@@ -4,7 +4,7 @@ import {
   KIN_CANVAS_WIDGET_KINDS,
   type KinCanvasModel,
 } from "@t3tools/client-runtime/kin/kinCanvasView";
-import type { KinCanvasWidgetKind } from "@t3tools/contracts";
+import type { KinCanvasRecordKind, KinCanvasWidgetKind } from "@t3tools/contracts";
 import { ScrollView, View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
@@ -60,7 +60,7 @@ export function KinCanvasPeek(props: {
   readonly placed: boolean;
   readonly leads: ReadonlyArray<KinCanvasLead>;
   readonly onClose: () => void;
-  readonly onOpen: (key: string, kind: "task" | "doc" | "project") => void;
+  readonly onOpen: (key: string, kind?: KinCanvasRecordKind) => void;
   readonly onAsk: (lead: KinCanvasLead, key: string) => void;
   readonly onAddWidget: (kind: KinCanvasWidgetKind, source: string) => void;
   readonly onRemoveWidget: (id: string) => void;
@@ -185,12 +185,7 @@ export function KinCanvasPeek(props: {
                   tone="outline"
                   icon="arrow.up.right"
                   label={`Open ${widget.sourceKey}`}
-                  onPress={() =>
-                    props.onOpen(
-                      widget.sourceKey,
-                      widget.widget.kind === "countdown" ? "task" : "project",
-                    )
-                  }
+                  onPress={() => props.onOpen(widget.sourceKey, widget.widget.sourceKind)}
                 />
               ) : null}
               {props.canArrange ? (

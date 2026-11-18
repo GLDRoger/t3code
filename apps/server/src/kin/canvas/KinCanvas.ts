@@ -11,6 +11,7 @@ import {
   type KinCanvasRead,
   type KinCanvasRemoved,
   type KinCanvasSeenResult,
+  type KinCanvasRecordKind,
   type KinCanvasUnplaceInput,
   type KinCanvasWidget,
   type KinCanvasWidgetAddInput,
@@ -82,6 +83,9 @@ type News =
   | { readonly _tag: "unplaced"; readonly keys: ReadonlyArray<string> }
   | { readonly _tag: "widget"; readonly id: string }
   | { readonly _tag: "widgetRemoved"; readonly id: string };
+
+const recordKind = (registerId: string): KinCanvasRecordKind =>
+  registerId === "projects" ? "project" : registerId === "docs" ? "doc" : "task";
 
 export class KinCanvas extends Context.Service<
   KinCanvas,
@@ -239,6 +243,7 @@ const make = Effect.gen(function* () {
           key: source?.key ?? widget.sourceKey,
           title: (source?.title ?? widget.sourceTitle) as KinRecordRef["title"],
         },
+        ...(source === undefined ? {} : { sourceKind: recordKind(source.registerId) }),
         value:
           source === undefined
             ? { _tag: "gone" }

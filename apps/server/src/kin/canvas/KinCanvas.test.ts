@@ -242,6 +242,11 @@ it.effect("each viewer reads only the places and widgets of entries they may rea
     const gone = mine.widgets.find((widget) => widget.id === "cw_gone000");
     assert.deepStrictEqual(gone?.value, { _tag: "gone" });
     assert.strictEqual(gone?.source.title, "Invented: removed");
+    const kindOf = (id: string) => mine.widgets.find((widget) => widget.id === id)?.sourceKind;
+    assert.deepStrictEqual(
+      [kindOf(widgets.progress.id), kindOf(widgets.countdown.id), gone?.sourceKind],
+      ["project", "task", undefined],
+    );
     expect(yield* canvas.read(coOwner, { orgId })).toEqual(mine);
 
     const theirs = yield* canvas.read(member, { orgId });

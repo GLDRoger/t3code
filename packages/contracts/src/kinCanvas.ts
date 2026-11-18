@@ -39,6 +39,10 @@ export type KinCanvasPlace = typeof KinCanvasPlace.Type;
 export const KinCanvasWidgetKind = Schema.Literals(["progress", "countdown", "facts"]);
 export type KinCanvasWidgetKind = typeof KinCanvasWidgetKind.Type;
 
+/** What a card or a widget's source is, which decides the screen it opens on. */
+export const KinCanvasRecordKind = Schema.Literals(["task", "doc", "project"]);
+export type KinCanvasRecordKind = typeof KinCanvasRecordKind.Type;
+
 /** A widget's value, worked out by the server from the viewer's own read of its source. */
 export const KinCanvasWidgetValue = Schema.Union([
   Schema.TaggedStruct("progress", { done: NonNegativeInt, total: NonNegativeInt }),
@@ -66,6 +70,8 @@ export const KinCanvasWidget = Schema.Struct({
   kind: KinCanvasWidgetKind,
   /** The entry it counts. Its title is as it is now; a gone source keeps the last title seen. */
   source: KinRecordRef,
+  /** Absent when the source is gone. */
+  sourceKind: Schema.optional(KinCanvasRecordKind),
   value: KinCanvasWidgetValue,
   addedBy: KinWorkActor,
   addedAt: IsoDateTime,
@@ -140,9 +146,15 @@ export const KinCanvasEvent = Schema.Union([
 ]);
 export type KinCanvasEvent = typeof KinCanvasEvent.Type;
 
+/** Most places one call stores: enough for a first drop to pin every card a client can hold. */
+export const KIN_CANVAS_PLACE_MAX = 5000;
+
 export const KinCanvasPlaceInput = Schema.Struct({
   orgId: KinOrgId,
-  places: Schema.Array(KinCanvasPlace).check(Schema.isMinLength(1), Schema.isMaxLength(200)),
+  places: Schema.Array(KinCanvasPlace).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(KIN_CANVAS_PLACE_MAX),
+  ),
 });
 export type KinCanvasPlaceInput = typeof KinCanvasPlaceInput.Type;
 

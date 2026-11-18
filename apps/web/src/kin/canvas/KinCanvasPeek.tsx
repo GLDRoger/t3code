@@ -4,7 +4,7 @@ import {
   type KIN_CANVAS_WIDGET_KINDS,
   type KinCanvasModel,
 } from "@t3tools/client-runtime/kin/kinCanvasView";
-import type { KinCanvasWidgetKind } from "@t3tools/contracts";
+import type { KinCanvasRecordKind, KinCanvasWidgetKind } from "@t3tools/contracts";
 import { CalendarClockIcon, ExternalLinkIcon, Trash2Icon, Undo2Icon, XIcon } from "lucide-react";
 
 import { Button } from "../../components/ui/button";
@@ -33,7 +33,7 @@ export function KinCanvasPeek(props: {
   readonly leads: ReadonlyArray<Lead>;
   readonly widgetKinds: typeof KIN_CANVAS_WIDGET_KINDS;
   readonly onClose: () => void;
-  readonly onOpen: (key: string, kind?: "task" | "doc" | "project") => void;
+  readonly onOpen: (key: string, kind?: KinCanvasRecordKind) => void;
   readonly onAsk: (agent: { readonly ownerChatId: string }, key: string) => void;
   readonly onAddWidget: (kind: KinCanvasWidgetKind, source: string) => void;
   readonly onRemoveWidget: (id: string) => void;
@@ -149,12 +149,7 @@ export function KinCanvasPeek(props: {
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() =>
-                    props.onOpen(
-                      widget.sourceKey,
-                      widget.widget.kind === "countdown" ? "task" : "project",
-                    )
-                  }
+                  onClick={() => props.onOpen(widget.sourceKey, widget.widget.sourceKind)}
                 >
                   <ExternalLinkIcon />
                   Open {widget.sourceKey}

@@ -1,3 +1,4 @@
+import { KIN_CANVAS_PLACE_MAX } from "@t3tools/contracts";
 import type { KinCanvasBox } from "./kinCanvasCamera.ts";
 
 export const KIN_CANVAS_CARD_W = 240;
@@ -258,7 +259,7 @@ export function kinCanvasDrop(
   const at = free({ x, y }) ? { x, y } : (nearest ?? { x, y });
   const places = [{ key, ...at }];
   for (const card of layout.cards.values())
-    if (!card.placed && card.key !== key && places.length < 200)
+    if (!card.placed && card.key !== key && places.length < KIN_CANVAS_PLACE_MAX)
       places.push({ key: card.key, x: card.x, y: card.y });
   return places;
 }
