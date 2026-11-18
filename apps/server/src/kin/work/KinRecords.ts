@@ -12,12 +12,14 @@ import {
   type KinOrgId,
   KinPersonId,
   type KinRecordChangeVia,
+  type KinRecordDetail,
   type KinRecordLinkKind,
   type KinRecordRelation,
   type KinRecordSide,
   type KinRecordState,
   type KinWorkPrincipal,
   KinRecordId,
+  mentionsKinMoney,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -37,9 +39,9 @@ import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
-import { mentionsMoney } from "../memory/sensitivity.ts";
 import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { homeCurrency } from "./companyProfile.ts";
+import { commentsPage } from "./recordComments.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal } from "./sensitiveReads.ts";
 import {
@@ -67,6 +69,7 @@ import {
   latestSeq,
   moneyDay,
   notFound,
+  owedInvoices,
   ownerZone,
   principal,
   principalId,
@@ -88,6 +91,7 @@ import {
   listDef,
   owedState,
   owesIn,
+  startState,
   stateLabel,
   unknownList,
   verifyRefs,
@@ -286,6 +290,7 @@ export type PaymentInput = {
   readonly originKey: string;
 };
 const CLOSED = ["done", "dropped"] as const;
+const OPEN_KEYS_NAMED = 20;
 /** A retry whose first result was taken back since: answering it with that result would lie. */
 const undoneRetry = (what: string) =>
   new KinChatError({
@@ -347,7 +352,7 @@ const checkInput = (
     readonly repeat?: KinRepeatRule | null | undefined;
   },
 ): KinChatError | undefined => {
-  if (input.title !== undefined && mentionsMoney(input.title))
+  if (input.title !== undefined && mentionsKinMoney(input.title))
     return invalid(
       "A title never holds an amount: give the amount on its own and keep the title to what it was for.",
     );
@@ -355,6 +360,7 @@ const checkInput = (
     if (!def.amount && def.builtIn !== "work") return invalid(`A ${def.noun} has no amount.`);
     if (!isCurrency(input.amount.currency))
       return invalid(`${input.amount.currency} is not a currency code.`);
+    if (input.amount.minor < 0) return invalid("An amount never goes below zero; give 0 or more.");
   }
   // A Work meeting's start is its date; due stays what someone owes by when.
   if (
@@ -388,6 +394,18 @@ const checkInput = (
     );
   return input.fields === undefined ? undefined : checkFields(def, input.fields);
 };
+
+/** An invoice, or a renewal on Dates, for nothing: it isn't owed, so it isn't kept as owed. */
+const zeroOwed = (
+  def: ListDef,
+  amount: KinMoney | null | undefined,
+  category: string | null | undefined,
+) =>
+  amount?.minor === 0 && (def.id === "invoices" || (def.id === "dates" && category === "renewal"))
+    ? invalid(
+        `${def.id === "invoices" ? "An invoice" : "A renewal"} for 0 isn't owed; leave the amount off or drop it.`,
+      )
+    : undefined;
 
 export class KinRecords extends Context.Service<
   KinRecords,
@@ -486,8 +504,24 @@ export class KinRecords extends Context.Service<
     readonly detail: (
       row: RecordRow,
       changeLimit?: number,
-    ) => Effect.Effect<Effect.Success<ReturnType<typeof toDetail>>, KinChatError>;
+    ) => Effect.Effect<
+      Effect.Success<ReturnType<typeof toDetail>> &
+        Pick<KinRecordDetail, "askedBy" | "comments" | "olderComments">,
+      KinChatError
+    >;
     readonly seq: (orgId: KinOrgId) => Effect.Effect<number, KinChatError>;
+    /**
+     * In the caller's transaction: a person's comment on a task an agent holds wakes that agent
+     * once per comment, on that person's authority, as their message to it would. False when
+     * nobody is woken, as when the agent is theirs to message no longer.
+     */
+    readonly commented: (
+      orgId: KinOrgId,
+      personId: KinPersonId,
+      row: RecordRow,
+      commentSeq: number,
+      note: string,
+    ) => Effect.Effect<boolean, KinChatError>;
     /**
      * The latest change number now, then again with the entry after every committed change, its
      * list, and the people besides the owner who may see it after that change (`teamView.ts`).
@@ -566,10 +600,11 @@ const make = Effect.gen(function* () {
           ? writer.actor.personId
           : null;
     const [change] = yield* sql<{ seq: number }>`INSERT INTO kin_record_changes (org_id, record_id,
-        rev, at, actor_kind, actor_id, via, kind, fields_json, wakeup_id, chat_id)
+        rev, at, actor_kind, actor_id, via, kind, fields_json, wakeup_id, chat_id,
+        asked_by_person_id)
       VALUES (${orgId}, ${row.recordId}, ${row.rev}, ${now}, ${writer.actor._tag}, ${actorId},
         ${writer.via}, ${kind}, ${yield* encodeFields(fields)}, ${writer.wakeupId ?? null},
-        ${writer.chatId ?? null})
+        ${writer.chatId ?? null}, ${writer.actor._tag === "agent" ? (writer.askedBy ?? null) : null})
       RETURNING seq`;
     const seq = change?.seq ?? 0;
     // Who sees it as this change leaves it, and what else of theirs it showed or hid (`personSees`).
@@ -694,7 +729,7 @@ const make = Effect.gen(function* () {
     assignedBy: KinPersonId | null,
     seq: number,
     now: number,
-    reason: "assigned" | "withdrawn" | "handed_back" = "assigned",
+    reason: "assigned" | "withdrawn" | "handed_back" | "commented" = "assigned",
     note?: string | null,
   ) {
     // Looking after a client or leading a project is not an instruction to do anything.
@@ -958,6 +993,8 @@ const make = Effect.gen(function* () {
       repeat: input.repeat,
     });
     if (invalidFor !== undefined) return yield* invalidFor;
+    const zero = zeroOwed(def, input.amount, input.category);
+    if (zero !== undefined) return yield* zero;
     if (list === "receipts" && RECEIPT_TIES.some((field) => field in fields))
       return yield* invalid(RECEIPT_TIES_ARE_KINS);
     if (writer.actor._tag !== "person" && numberingOf(def) !== undefined && "number" in fields)
@@ -979,7 +1016,14 @@ const make = Effect.gen(function* () {
         : yield* storedRepeat(orgId, input.repeat, input.dueAt ?? null, input.dateAt ?? null));
     const now = yield* Clock.currentTimeMillis;
     const key = yield* ensureRegister(orgId, def, now);
-    const state = input.state ?? def.defaultState;
+    const state =
+      input.state ??
+      startState(def, {
+        dateAt: input.dateAt ?? null,
+        numbered: "number" in fields,
+        now,
+        zone: def.id === "expenses" ? yield* ownerZone(orgId).pipe(provideSql) : "UTC",
+      });
     const waitingOn = state === "waiting" ? (input.waitingOn ?? null) : null;
     const givenAway =
       !(writer.actor._tag === "agent" && samePrincipal(writer.actor, input.owner)) &&
@@ -994,7 +1038,7 @@ const make = Effect.gen(function* () {
         created_by_id, assigned_by_person_id, assigned_at, origin_key, created_at, updated_at,
         closed_at, party_id, project_id, repo, fields_json, amount_minor, currency, date_at,
         date_all_day, repeat_json, request_hash, team_shared, title_by, notes_by,
-        assigned_by_agent_id, marked_by_person_id)
+        assigned_by_agent_id, marked_by_person_id, asked_by_person_id)
       VALUES (${orgId}, ${recordId}, ${list}, ${key}, ${input.title}, ${state},
         ${waitingOn?._tag ?? null}, ${waitingOn === null ? null : principalId(waitingOn)},
         ${input.owner._tag}, ${principalId(input.owner)}, ${input.side ?? "ours"},
@@ -1013,7 +1057,7 @@ const make = Effect.gen(function* () {
         ${options.authors === undefined ? author : options.authors.title},
         ${notes === "" ? null : options.authors === undefined ? author : options.authors.notes},
         ${givenAway && writer.actor._tag === "agent" && writer.askedBy == null ? writer.actor.agentId : null},
-        ${input.sensitive === true ? textBy(writer) : null})`;
+        ${input.sensitive === true ? textBy(writer) : null}, ${textBy(writer)})`;
     const changes: Array<FieldChange> = [
       { field: "title", from: null, to: input.title },
       { field: "state", from: null, to: state },
@@ -1198,6 +1242,8 @@ const make = Effect.gen(function* () {
           repeat: patch.repeat,
         });
         if (invalidFor !== undefined) return yield* invalidFor;
+        const zero = zeroOwed(def, patch.amount, patch.category ?? row.category);
+        if (zero !== undefined) return yield* zero;
         if (list === "receipts") {
           if (RECEIPT_TIES.some((field) => field in (patch.fields ?? {})))
             return yield* invalid(RECEIPT_TIES_ARE_KINS);
@@ -1343,14 +1389,32 @@ const make = Effect.gen(function* () {
           isClosed(state) &&
           !isClosed(row.state)
         ) {
-          const [open] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records
+          const open = yield* sql<{ key: string }>`SELECT key FROM kin_records
             WHERE org_id = ${orgId} AND (party_id = ${row.recordId} OR project_id = ${row.recordId})
-              AND register_id IN ('work', 'projects') AND state NOT IN ${sql.in(CLOSED)}`;
-          if ((open?.count ?? 0) > 0)
+              AND register_id IN ('work', 'projects') AND state NOT IN ${sql.in(CLOSED)}
+            ORDER BY created_at, key`;
+          if (open.length > 0) {
+            const named = open.slice(0, OPEN_KEYS_NAMED).map((one) => one.key);
+            const more = open.length - named.length;
             return yield* new KinChatError({
               reason: "invalid_state",
-              message: `${row.key} still has ${open!.count} open ${list === "clients" ? "entries or projects" : "entries"} pointing at it. Close or move them first.`,
+              message: `${row.key} still has ${open.length} open ${list === "clients" ? "entries or projects" : "entries"} pointing at it: ${named.join(", ")}${more > 0 ? ` and ${more} more` : ""}. Close or move them first.`,
             });
+          }
+          const unpaid =
+            list === "clients"
+              ? yield* owedInvoices({ orgId, now, partyId: row.recordId }).pipe(provideSql)
+              : [];
+          if (unpaid.length > 0) {
+            const named = unpaid
+              .slice(0, OPEN_KEYS_NAMED)
+              .map((one) => `${one.key} (${formatMoney(one.balance)} owed)`);
+            const more = unpaid.length - named.length;
+            return yield* new SensitiveRefusal({
+              reason: "invalid_state",
+              message: `${row.key} still owes on ${unpaid.length} unpaid ${unpaid.length === 1 ? "invoice" : "invoices"}: ${named.join(", ")}${more > 0 ? ` and ${more} more` : ""}. Record their payments or void them first.`,
+            });
+          }
         }
         if (state !== row.state) {
           changes.push({ field: "state", from: row.state, to: state });
@@ -2200,8 +2264,61 @@ const make = Effect.gen(function* () {
     }),
     detail: Effect.fn("KinRecords.detail")(function* (row, changeLimit) {
       const now = yield* Clock.currentTimeMillis;
-      return yield* failed(toDetail(row, now, changeLimit).pipe(provideSql));
+      return yield* failed(
+        Effect.gen(function* () {
+          const detail = yield* toDetail(row, now, changeLimit);
+          const [record] = yield* sql<{ askedBy: string | null }>`SELECT
+              asked_by_person_id AS "askedBy" FROM kin_records
+            WHERE org_id = ${row.orgId} AND record_id = ${row.recordId}`;
+          const seqs = detail.changes.map((change) => change.seq);
+          const askers = new Map(
+            seqs.length === 0
+              ? []
+              : (yield* sql<{ seq: number; askedBy: string }>`SELECT seq,
+                    asked_by_person_id AS "askedBy" FROM kin_record_changes
+                  WHERE org_id = ${row.orgId} AND record_id = ${row.recordId}
+                    AND seq IN ${sql.in(seqs)} AND asked_by_person_id IS NOT NULL
+                  ORDER BY seq`).map((one) => [one.seq, KinPersonId.make(one.askedBy)] as const),
+          );
+          const page = yield* commentsPage(row.orgId as KinOrgId, row.recordId);
+          return {
+            ...detail,
+            changes: detail.changes.map((change) => {
+              const askedBy = askers.get(change.seq);
+              return askedBy === undefined ? change : { ...change, askedBy };
+            }),
+            ...(record?.askedBy == null ? {} : { askedBy: KinPersonId.make(record.askedBy) }),
+            comments: page.comments,
+            olderComments: page.older,
+          };
+        }).pipe(provideSql),
+      );
     }),
+    commented: Effect.fn("KinRecords.commented")(
+      function* (orgId, personId, row, commentSeq, note) {
+        const now = yield* Clock.currentTimeMillis;
+        const writer: Writer = {
+          actor: { _tag: "person", personId },
+          via: "owner",
+          askedBy: personId,
+        };
+        return yield* wakeLead(
+          orgId,
+          writer,
+          row,
+          principal(row.ownerKind, row.ownerId) ?? { _tag: "person", personId },
+          personId,
+          commentSeq,
+          now,
+          "commented",
+          note.length > 280 ? `${note.slice(0, 279)}…` : note,
+        ).pipe(
+          // A teammate whose agent this no longer is still comments; the agent just isn't woken.
+          Effect.catchTags({ KinChatError: () => Effect.succeed(false) }),
+        );
+      },
+      (effect) => failed(effect),
+    ),
     seq: Effect.fn("KinRecords.seq")(function* (orgId) {
       return yield* failed(latestSeq(orgId).pipe(provideSql));
     }),

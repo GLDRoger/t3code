@@ -18,7 +18,11 @@ import { OrchestratorCommandRejectedError } from "../../orchestration-v2/Orchest
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
+import { leadProjectId } from "../lead/leadProject.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import * as KinSchedules from "./kinSchedules.ts";
+import { nativeScheduler } from "./kinSchedules.testkit.ts";
 import * as KinTriggerSink from "./KinTriggerSink.ts";
 import { projection, timestamp } from "./threadProjection.testkit.ts";
 
@@ -329,3 +333,80 @@ it.effect(
       }
     }),
 );
+
+it.effect("a refused stray Kin task is disabled", () => {
+  const logs: unknown[] = [];
+  return Effect.gen(function* () {
+    yield* seed;
+    const recorded = { launches: [] as ThreadLaunchService.ThreadLaunchInput[], sends: [] };
+    const workers = new Map<string, Effect.Effect<void>>();
+    yield* Effect.gen(function* () {
+      const tasks = yield* ScheduledTaskService.ScheduledTaskService;
+      const sql = yield* SqlClient.SqlClient;
+      const hourly = (commandId: string) =>
+        tasks
+          .upsert({
+            commandId: CommandId.make(commandId),
+            title: "Ambermill invoices",
+            prompt: "List Ambermill's overdue invoices.",
+            enabled: true,
+            schedule: { type: "interval", everyMs: 3_600_000 },
+            projectId: leadProjectId(orgA, `agent-${orgA}`),
+            threadId: null,
+            threadMode: "new_thread",
+            workspaceStrategy: { type: "root" },
+            modelSelection: { instanceId: ProviderInstanceId.make("claude"), model: "test" },
+            runtimeMode: "approval-required",
+            interactionMode: "plan",
+            createdBy: "system",
+            creationSource: "server",
+          })
+          .pipe(Effect.map(({ task }) => task.id));
+      const stray = yield* hourly("kin:webhook:github-app");
+      const own = yield* hourly("rhea-weekly-review");
+      const live = yield* hourly(`kin:schedule:${orgA}:sch-invoices`);
+      yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+          source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at)
+        VALUES (${live}, ${orgA}, 'sch-invoices', ${`agent-${orgA}`}, 'chat-a', 'event-a',
+          'person-org-a', 'owner_only', 'hash', ${`inbox-${orgA}`}, 1794009600000, 1794009600000)`;
+      const runHour = Effect.gen(function* () {
+        yield* TestClock.adjust("1 hour");
+        yield* workers.get("scheduled-tasks")!;
+      });
+      const enabled = tasks
+        .list()
+        .pipe(Effect.map((list) => list.tasks.map((task) => [task.id, task.enabled] as const)));
+      const pass = tasks
+        .list()
+        .pipe(Effect.flatMap((list) => KinSchedules.disableStrayTasks(list.tasks)));
+
+      yield* runHour;
+      assert.deepStrictEqual(
+        recorded.launches.map((input) => input.initialMessage?.scheduledTaskId),
+        [own],
+      );
+      assert.deepStrictEqual(yield* pass, [stray]);
+      assert.deepStrictEqual(yield* pass, []);
+      assert.sameDeepMembers(yield* enabled, [
+        [stray, false],
+        [own, true],
+        [live, true],
+      ]);
+      yield* runHour;
+      assert.deepStrictEqual(
+        recorded.launches.map((input) => input.initialMessage?.scheduledTaskId),
+        [own, own],
+      );
+    }).pipe(Effect.provide(nativeScheduler(orgA, `agent-${orgA}`, recorded, workers)));
+    const told = (text: string) => logs.filter((message) => JSON.stringify(message).includes(text));
+    assert.lengthOf(told("Kin scheduled task refused: no Kin source for it"), 1);
+    assert.lengthOf(told("Kin stray scheduled task disabled"), 1);
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        database,
+        Logger.layer([Logger.make((entry) => void logs.push(entry.message))]),
+      ),
+    ),
+  );
+});

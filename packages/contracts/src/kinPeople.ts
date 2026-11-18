@@ -78,6 +78,8 @@ export const KinPeopleCreateInviteInput = Schema.Struct({
   handle: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(40))),
   // Re-inviting someone who is already a person binds a new device to that person.
   personId: Schema.optional(KinPersonId),
+  // Someone else who shares a removed person's name: a new person instead of the bring-back offer.
+  newPerson: Schema.optional(Schema.Literal(true)),
   ttlHours: Schema.optional(
     PositiveInt.check(Schema.isLessThanOrEqualTo(KIN_INVITE_MAX_TTL_HOURS)),
   ),

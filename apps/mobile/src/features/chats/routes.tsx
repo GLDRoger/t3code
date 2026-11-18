@@ -89,7 +89,7 @@ export const KIN_SCREENS = {
   KinWorkItem: createNativeStackScreen({
     screen: KinWorkItemScreen,
     linking: "kin/:environmentId/:orgId/work/:task",
-    options: sheetRoute({ detent: 0.75 }),
+    options: pageRoute({ title: "Task" }),
   }),
   KinList: createNativeStackScreen({
     screen: KinListScreen,

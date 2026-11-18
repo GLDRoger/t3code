@@ -31,7 +31,7 @@ import { ownerLevel } from "../people/KinAccess.ts";
  */
 export type AssignNotice = {
   readonly personId: KinPersonId;
-  readonly kind: "given" | "taken" | "returned" | "added" | "lead";
+  readonly kind: "given" | "taken" | "returned" | "added" | "lead" | "commented";
   readonly row: RecordRow;
   /** The agent's one line on why, or the holder's words on a hand back. */
   readonly why: string | null;
@@ -141,6 +141,7 @@ const line = (notice: AssignNotice, clock: TextClock, gaveTo: string | null = nu
   const why = notice.why === null ? "" : `: ${notice.why}`;
   if (notice.kind === "added") return `added you to ${task}`;
   if (notice.kind === "lead") return `made you the lead of ${task}`;
+  if (notice.kind === "commented") return `commented on ${task}${why}`;
   return notice.kind === "given"
     ? `${task}${dueText(notice.row, clock)}${notice.why === null ? "" : `. Why: ${notice.why}`}`
     : notice.kind === "taken"
@@ -163,7 +164,10 @@ const bodyFor = (
 ) => {
   const given = notices.filter((notice) => notice.kind === "given");
   const projects = notices.filter((notice) => notice.kind === "added" || notice.kind === "lead");
-  const other = notices.filter((notice) => notice.kind === "taken" || notice.kind === "returned");
+  const other = notices.filter(
+    (notice) =>
+      notice.kind === "taken" || notice.kind === "returned" || notice.kind === "commented",
+  );
   if (notices.length === 1)
     return given.length === 1
       ? given[0]!.row.category === "meeting"

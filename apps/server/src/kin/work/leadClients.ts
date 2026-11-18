@@ -1,13 +1,8 @@
-import {
-  calendarTimeMillis,
-  isCalendarDay,
-  KinRecordKey,
-  KinTouchKind,
-  TrimmedNonEmptyString,
-} from "@t3tools/contracts";
+import { calendarTimeMillis, isCalendarDay, KinRecordKey, KinTouchKind } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { turnPeople } from "../lead/Audience.ts";
@@ -33,19 +28,15 @@ const TOUCHES_READ = 10;
 export const TouchInput = Schema.Struct({
   client: Client,
   kind: KinTouchKind,
-  note: TrimmedNonEmptyString.check(Schema.isMaxLength(1_000)).annotate({
-    description: "What happened and what was agreed, in a line, as the person told it.",
-  }),
+  note: KinToolText(1_000, "What happened and what was agreed, in a line, as the person told it."),
   at: Schema.optional(
-    TrimmedNonEmptyString.check(Schema.isMaxLength(40)).annotate({
-      description:
-        "When: a day (2026-11-14) in the owner's time zone or a time with offset. Default now.",
-    }),
+    KinToolText(
+      40,
+      "When: a day (2026-11-14) in the owner's time zone or a time with offset. Default now.",
+    ),
   ),
   who: Schema.optional(
-    TrimmedNonEmptyString.check(Schema.isMaxLength(120)).annotate({
-      description: "Who on our side, by handle or name; default the person who told you.",
-    }),
+    KinToolText(120, "Who on our side, by handle or name; default the person who told you."),
   ),
   sourceEventId: TurnEvent,
 });

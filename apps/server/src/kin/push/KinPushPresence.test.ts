@@ -51,13 +51,13 @@ it.effect("counts a watcher only while its client keeps acking beats", () =>
       Effect.forkChild({ startImmediately: true }),
     );
     assert.isTrue(yield* presence.isWatching(sessionId, stalled));
-    yield* TestClock.adjust("15 seconds");
-    yield* Deferred.await(received);
-    // Its last refresh was when it opened, so it stops counting one TTL after that.
-    yield* TestClock.adjust("29 seconds");
+    // A phone sent to the background mid-chat: its last refresh was when it opened, and it stops
+    // counting one beat and an ack's round trip after that, so its next push isn't lost.
+    yield* TestClock.adjust("7 seconds");
     assert.isTrue(yield* presence.isWatching(sessionId, stalled));
     yield* TestClock.adjust("1 second");
     assert.isFalse(yield* presence.isWatching(sessionId, stalled));
+    yield* Deferred.await(received);
 
     for (let minute = 0; minute < 60; minute += 1) yield* TestClock.adjust("1 minute");
     assert.isTrue(yield* presence.isWatching(sessionId, chatId));
@@ -111,7 +111,7 @@ it.effect("marks the chat open for the watching session through the real handler
       Stream.runForEach(() => Deferred.succeed(beat, undefined)),
       Effect.forkChild,
     );
-    yield* TestClock.adjust("15 seconds");
+    yield* TestClock.adjust("5 seconds");
     yield* Deferred.await(beat);
     assert.isTrue(yield* presence.isWatching(sessionId, chatId));
     assert.isFalse(yield* presence.isWatching(AuthSessionId.make("sess-other"), chatId));
@@ -176,7 +176,7 @@ it.effect("refuses to watch a chat the caller is not in, has left, or that is ar
         Effect.exit,
         Effect.forkChild,
       );
-      yield* TestClock.adjust("15 seconds");
+      yield* TestClock.adjust("5 seconds");
       const exit = yield* Fiber.join(fiber);
       assert.isTrue(Exit.isFailure(exit), `watch of ${chatId} was accepted`);
       assert.include(Cause.squash((exit as Exit.Failure<unknown, unknown>).cause), {

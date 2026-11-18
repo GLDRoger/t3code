@@ -476,6 +476,18 @@ const WORKING_PRESENCE: ReadonlySet<KinPresenceState> = new Set([
   "stalled",
 ]);
 
+/** What waits on a person in chats they are still in: the chat list's rule, and the open list's. */
+export const waitingFor = Effect.fn("KinChatService.waitingFor")(function* (
+  identity: PersonIdentity,
+) {
+  const repo = yield* Repository.KinChatRepository;
+  const waiting: Array<KinWaitingItem> = [];
+  for (const item of yield* repo.listOpenWaiting(identity))
+    if (Option.isSome(yield* repo.activeMember({ ...item, principal: identity })))
+      waiting.push(item);
+  return waiting;
+});
+
 const make = Effect.gen(function* () {
   const floor = yield* Floor.KinFloor;
   const cards = yield* TaskCard.TaskCardIndex;
@@ -1156,6 +1168,7 @@ const make = Effect.gen(function* () {
       beforeSeq: chat.lastSeq + 1,
       limit: PREVIEW_LOOKBACK,
       viewerMemberId: member.memberId,
+      receipts: false,
     });
     let lastMessage: KinMessage | null = null;
     for (const message of history.messages.toReversed()) {
@@ -1224,10 +1237,11 @@ const make = Effect.gen(function* () {
           if (!(yield* roomReadable(identity, chat))) continue;
           chats.push(yield* summary(identity, member.chatId));
         }
-        for (const item of yield* repo.listOpenWaiting(identity)) {
-          if (Option.isSome(yield* repo.activeMember({ ...item, principal: identity })))
-            waiting.push(item);
-        }
+        waiting.push(
+          ...(yield* waitingFor(identity).pipe(
+            Effect.provideService(Repository.KinChatRepository, repo),
+          )),
+        );
       }
       return { _tag: "snapshot" as const, chats, waiting };
     },
@@ -1863,7 +1877,8 @@ const make = Effect.gen(function* () {
             live.pipe(
               Stream.map((event) => {
                 switch (event.type) {
-                  case "message.posted": {
+                  case "message.posted":
+                  case "message.changed": {
                     const change = event.message.changeSeq ?? event.message.seq;
                     if (
                       event.message.chatId !== input.chatId ||
@@ -2011,8 +2026,12 @@ const make = Effect.gen(function* () {
           const live = Stream.mergeAll(streams, { concurrency: "unbounded" }).pipe(
             Stream.mapEffect(({ viewer, event }) =>
               Effect.gen(function* (): Effect.fn.Return<KinChatListEvent, ServiceError> {
-                // Reactions and draft deltas don't change a chat's row.
-                if (event.type === "reaction.updated" || event.type === "draft.updated")
+                // Reactions, draft deltas and a message read anew don't change a chat's row.
+                if (
+                  event.type === "reaction.updated" ||
+                  event.type === "draft.updated" ||
+                  event.type === "message.changed"
+                )
                   return yield* notFound;
                 if (event.type === "waiting.updated")
                   return yield* requireRecord(repo.getWaiting(event.item)).pipe(

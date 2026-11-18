@@ -5,6 +5,7 @@ import {
   kinPlaceOfWork,
   kinRecordOf,
   kinSearchOf,
+  kinTaskAddress,
   validateKinAgentSearch,
   validateKinPlaceSearch,
   withKinAgentPage,
@@ -19,7 +20,7 @@ describe("kinPlaceOfWork", () => {
     [{ show: "tasks" }, "tasks", {}],
     [{ show: "nonsense" }, "tasks", {}],
     [{ show: "clients" }, "clients", {}],
-    [{ show: "projects" }, "clients", {}],
+    [{ show: "projects" }, "clients", { tab: "projects" }],
     [{ show: "money" }, "money", {}],
     [{ show: "dates" }, "money", { dates: true }],
     [{ show: "docs" }, "docs", {}],
@@ -53,6 +54,48 @@ describe("place addresses", () => {
       expect(kinRecordOf(validateKinPlaceSearch({ ...kinSearchOf(record) }))).toEqual(record);
   });
 
+  it.each([
+    ["tasks", {}, "/kin/$environmentId/$orgId/tasks", {}],
+    [
+      "money",
+      { list: KinListId.make("invoices") },
+      "/kin/$environmentId/$orgId/money",
+      {
+        list: "invoices",
+      },
+    ],
+    [
+      "clients",
+      { client: party, tab: "projects" },
+      "/kin/$environmentId/$orgId/clients",
+      {
+        client: party,
+        tab: "projects",
+      },
+    ],
+    ["docs", { doc: party, v: 2 }, "/kin/$environmentId/$orgId/docs", { doc: party, v: 2 }],
+    // The Projects tab is the Clients place's alone, and a dialog closes as a task opens.
+    [
+      "tasks",
+      { project: party, tab: "projects", open: "search" },
+      "/kin/$environmentId/$orgId/tasks",
+      {
+        project: party,
+      },
+    ],
+  ] as const)(
+    "opens a task over %s %j, and closing it removes only the task",
+    (place, search, to, under) => {
+      const other = KinRecordKey.make("T-13");
+      expect(kinTaskAddress(place, search, key)).toEqual({ to, search: { ...under, task: key } });
+      expect(kinTaskAddress(place, { ...search, task: other }, key)).toEqual({
+        to,
+        search: { ...under, task: key },
+      });
+      expect(kinTaskAddress(place, { ...search, task: key }, null)).toEqual({ to, search: under });
+    },
+  );
+
   it("drops what isn't a record key or a version", () => {
     expect(
       validateKinPlaceSearch({
@@ -62,6 +105,7 @@ describe("place addresses", () => {
         dates: "yes",
         history: "1",
         open: "sheet",
+        tab: "clients",
       }),
     ).toEqual({});
   });

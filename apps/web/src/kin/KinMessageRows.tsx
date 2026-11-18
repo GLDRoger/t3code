@@ -7,6 +7,7 @@ import {
   KIN_CHAT_COPY,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
+import { kinTurnReceiptLine } from "@t3tools/client-runtime/kin/kinTurnReceipt";
 import { kinCardDraws, KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
   kinDraftMarkdown,
@@ -54,6 +55,7 @@ import { cn } from "../lib/utils";
 import { KinCard } from "./KinCards";
 import { KinMessageAttachments } from "./KinMessageAttachments";
 import { KinLinkedMarkdown, KinMessagePage } from "./KinMessagePage";
+import { KinTurnReceipt } from "./KinTurnReceipt";
 
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
 type DraftRow = Extract<KinFeedRow, { readonly type: "draft" }>;
@@ -175,6 +177,7 @@ export function KinMessageRow(props: {
   readonly previewKey: string;
   /** The reader's first name, for a brief's greeting. */
   readonly firstName?: string | null;
+  readonly connected: boolean;
 }) {
   const { row, onReact } = props;
   const { message } = row;
@@ -198,6 +201,7 @@ export function KinMessageRow(props: {
   const canReact = onReact !== null && !deleted;
   const layout = row.own || !hasBody ? "bubble" : kinMessageLayout(message);
   const label = kinMessageLabel(row, formatTime(message.createdAt));
+  const receipt = deleted ? null : kinTurnReceiptLine(message.turnChanges);
   // A page's card is its foot, across the page's width.
   const onPage = hasBubble && layout !== "bubble";
   const card = (
@@ -302,6 +306,16 @@ export function KinMessageRow(props: {
           {canReact && !hasBubble ? <KinReactMenu mine={mine} onReact={onReact} /> : null}
         </div>
       ) : null}
+      {receipt === null ? null : (
+        <KinTurnReceipt
+          line={receipt}
+          turnChanges={message.turnChanges}
+          links={message.links}
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          connected={props.connected}
+        />
+      )}
       {props.reactions.length > 0 ? (
         <div className={cn("flex flex-wrap gap-1 px-1", row.own && "justify-end")}>
           {props.reactions.map((chip) => (

@@ -594,12 +594,14 @@ describe("rows", () => {
 describe("streaming replies", () => {
   const reply = (seq: number, draftId: string, body: string) =>
     agentMessage(seq, { floorRunId: "r", clientMessageId: `reply:${draftId}`, body });
-  const draft = (draftId: string, text: string) => ({
+  // The fixture's clock, not a local one, so no time zone puts a gap before the message.
+  const draft = (seq: number, draftId: string, text: string) => ({
     draftId,
     agentId: KIN_FIXTURE_AGENT,
     text,
-    startedAt: localIso(8, 9),
+    startedAt: agentMessage(seq).createdAt,
   });
+  const streamingAt = new Date(Date.parse(agentMessage(3).createdAt) + 60_000);
   const shape = (rows: ReadonlyArray<KinFeedRow>) =>
     rows.map((row) =>
       row.type === "message" || row.type === "draft" ? [row.key, row.showAuthor] : row.type,
@@ -620,20 +622,14 @@ describe("streaming replies", () => {
 
   it("keeps a draft's key and author line when its message lands, so the bubble stays put", () => {
     const before = [ownMessage(1), reply(2, "a", "First.")];
-    const streaming = messageRows(before, viewer, new Set(), new Date(2026, 10, 8, 12), [
-      draft("b", "Sec"),
-    ]);
+    const streaming = messageRows(before, viewer, new Set(), streamingAt, [draft(3, "b", "Sec")]);
     const landed = messageRows([...before, reply(3, "b", "Second.")], viewer, new Set());
     expect(shape(streaming)).toEqual(shape(landed));
     expect(streaming[2]).toMatchObject({ type: "draft", authorLabel: "Tech lead" });
     expect(kinRowSeq(streaming[2]!)).toBe(0);
     // The first reply of a turn carries the author line while streaming and after.
     expect(
-      shape(
-        messageRows([ownMessage(1)], viewer, new Set(), new Date(2026, 10, 8, 12), [
-          draft("a", "Fi"),
-        ]),
-      ),
+      shape(messageRows([ownMessage(1)], viewer, new Set(), streamingAt, [draft(2, "a", "Fi")])),
     ).toEqual([
       ["fixture-1", false],
       ["reply:a", true],

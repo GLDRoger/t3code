@@ -1770,3 +1770,186 @@ it.effect(
       ]);
     }).pipe(Effect.provide(teamLayer)),
 );
+
+const withRecords = People.layer.pipe(
+  Layer.provideMerge(Records.layer),
+  Layer.provideMerge(Service.layer),
+  Layer.provideMerge(Stop.layer),
+  Layer.provideMerge(KinEventQueue.layer),
+  Layer.provideMerge(Presence.layer),
+  Layer.provideMerge(Hub.layer),
+  Layer.provideMerge(identities),
+  Layer.provideMerge(database),
+  Layer.provideMerge(environment),
+);
+
+it.effect("removing a person closes their open questions and leaves their tasks flagged", () =>
+  Effect.gen(function* () {
+    const service = yield* People.KinPeople;
+    const identity = yield* KinIdentity;
+    const sql = yield* SqlClient.SqlClient;
+    const repo = yield* Repository.KinChatRepository;
+    const chats = yield* Service.KinChatService;
+    const records = yield* Records.KinRecords;
+    const { owner } = identity;
+    const { orgId } = owner;
+    yield* pairSession(ownerSession.sessionId);
+    const finance = KinAgentId.make("finance");
+    const threadId = ThreadId.make("finance-thread");
+    yield* repo.insertAgent({
+      orgId,
+      agentId: finance,
+      ownerPersonId: owner.personId,
+      displayName: "Finance",
+      role: "lead",
+      createdAt: at,
+    });
+    yield* identity.registerAgentThread({ orgId, agentId: finance, threadId });
+    const ownerChat = yield* chats.createDirect(owner, { orgId, agentId: finance });
+    yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+      VALUES (${finance}, ${orgId}, 'Finance', 0, '{}', '[]', ${ownerChat.chatId})`;
+    const arjun = (yield* service.accept({
+      secret: (yield* service.createInvite(ownerSession, { orgId, displayName: "Arjun Rao" }))
+        .secret,
+    })).person.personId;
+    const person = { _tag: "person" as const, orgId, personId: arjun };
+    yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at, revoked_at)
+      VALUES (${orgId}, ${finance}, ${arjun}, ${owner.personId}, 0, NULL)`;
+    const direct = yield* chats.createDirect(person, { orgId, agentId: finance });
+    // Finance asked Arjun on a card; the owner is asked something too.
+    const card = yield* chats.ask(
+      {
+        _tag: "agent",
+        orgId,
+        agentId: finance,
+        ownerPersonId: owner.personId,
+        threadId,
+        hostPosted: true,
+      },
+      {
+        chatId: direct.chatId,
+        clientMessageId: "ask-arjun",
+        question: "Invented: send the VIOM receipt?",
+        options: [{ label: "Send it" }, { label: "Hold it" }],
+        untilAnswered: true,
+      },
+    );
+    const ask = (id: string, personId: KinPersonId, widgetId: string | null) =>
+      sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id, kind,
+          widget_id, question, safe, asked_at, due_at, act_at, state)
+        VALUES (${id}, ${orgId}, ${finance}, ${personId}, ${direct.chatId},
+          ${widgetId === null ? "text" : "card"}, ${widgetId}, 'Invented?', 0, 0, 1, 1, 'open')`;
+    yield* ask("q-arjun", arjun, card.widgetId);
+    yield* ask("q-owner", owner.personId, null);
+    assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: arjun }), 1);
+    const { row: task } = yield* records.create(
+      orgId,
+      {
+        actor: { _tag: "person", personId: owner.personId },
+        via: "owner",
+        askedBy: owner.personId,
+      },
+      {
+        originKey: "arjun-task",
+        title: "Invented: file the receipts",
+        owner: { _tag: "person", personId: arjun },
+      },
+    );
+
+    yield* service.removeAccess(ownerSession, { orgId, personId: arjun });
+    assert.deepStrictEqual(
+      yield* sql`SELECT question_id AS id, state FROM kin_questions ORDER BY question_id`,
+      [
+        { id: "q-arjun", state: "withdrawn" },
+        { id: "q-owner", state: "open" },
+      ],
+    );
+    const closed = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId: card.widgetId }));
+    assert.isNotNull(closed.closedAt);
+    assert.deepInclude(closed.state, {
+      outcome: {
+        title: "Closed",
+        text: "Arjun Rao was removed from the team; nothing will happen on this.",
+      },
+    });
+    assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: arjun }), 0);
+    // The task is neither closed nor moved: it stays Arjun's, flagged for the owner to decide.
+    const kept = (yield* records.get(orgId, task.key))!;
+    assert.deepStrictEqual([kept.ownerKind, kept.ownerId, kept.state], ["person", arjun, "open"]);
+    const [flag] = yield* sql<{ fields: string }>`SELECT c.fields_json AS fields
+      FROM kin_record_changes c JOIN kin_records r ON r.record_id = c.record_id
+      WHERE r.key = ${task.key} ORDER BY c.seq DESC LIMIT 1`;
+    assert.include(flag?.fields, "accessRemoved");
+  }).pipe(Effect.provide(withRecords)),
+);
+
+it.effect(
+  "adding a teammate who matches a removed person offers the bring-back and makes no second person",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* People.KinPeople;
+      const identity = yield* KinIdentity;
+      const sql = yield* SqlClient.SqlClient;
+      const orgId = identity.owner.orgId;
+      yield* pairSession(ownerSession.sessionId);
+      yield* TestClock.setTime(Date.parse("2026-11-18T09:00:00.000Z"));
+      const arjun = (yield* service.accept({
+        secret: (yield* service.createInvite(ownerSession, { orgId, displayName: "Arjun Rao" }))
+          .secret,
+      })).person.personId;
+      yield* service.removeAccess(ownerSession, { orgId, personId: arjun });
+      const people = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_people`;
+      const before = (yield* people)[0]!.n;
+
+      for (const again of [
+        { orgId, displayName: " arjun rao " },
+        { orgId, displayName: "A. Rao", handle: "arjun-rao" },
+      ])
+        assert.deepInclude(yield* service.createInvite(ownerSession, again).pipe(Effect.flip), {
+          reason: "conflict",
+          message:
+            "Bring back Arjun Rao (removed 18 Nov)? They were on the team before: make a new link for them from their row in Team, and they get back what they had.",
+        });
+      // Only the owner level is told who was removed.
+      const outsider = {
+        ...ownerSession,
+        sessionId: AuthSessionId.make("x"),
+        scopes: [AuthKinChatScope],
+      };
+      assert.propertyVal(
+        yield* service
+          .createInvite(outsider, { orgId, displayName: "Arjun Rao" })
+          .pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
+      // Someone else by that name: a new person, and a retry of that add is still them.
+      const other = { orgId, displayName: "Arjun Rao", newPerson: true as const };
+      const first = yield* service.createInvite(ownerSession, other);
+      const retried = yield* service.createInvite(ownerSession, other);
+      assert.deepStrictEqual([retried.inviteId, retried.handle], [first.inviteId, "arjun-rao-2"]);
+      assert.propertyVal(
+        yield* service.accept({ secret: first.secret }).pipe(Effect.flip),
+        "reason",
+        "not_found",
+      );
+      const namesake = (yield* service.accept({ secret: retried.secret })).person;
+      assert.notStrictEqual(namesake.personId, arjun);
+      assert.strictEqual(namesake.handle, "arjun-rao-2");
+      const [still] = yield* sql<{ removedAt: number | null }>`SELECT removed_at AS "removedAt"
+        FROM kin_people WHERE person_id = ${arjun}`;
+      assert.isNotNull(still?.removedAt);
+      // Yes: a link for the old record brings the same person back.
+      const back = yield* service.accept({
+        secret: (yield* service.createInvite(ownerSession, {
+          orgId,
+          displayName: "Arjun Rao",
+          personId: arjun,
+        })).secret,
+      });
+      assert.strictEqual(back.person.personId, arjun);
+      assert.strictEqual((yield* people)[0]!.n, before + 1);
+      // Back on the team, the name is theirs again and a namesake is someone new.
+      yield* service.createInvite(ownerSession, { orgId, displayName: "Arjun Rao" });
+    }).pipe(Effect.provide(layer)),
+);

@@ -21,7 +21,7 @@ import ChatMarkdown, { type ChatMarkdownContextReference } from "../components/C
 import { cn } from "../lib/utils";
 import { KinEmbedView } from "./KinEmbedView";
 import { openKinProfile } from "./KinProfileSheet";
-import { KIN_PLACE_PATH } from "./kinPlaces";
+import { kinRecordPlace } from "./kinPlaces";
 import { openKinSettings } from "./kinSettingsAddress";
 import { kinProfileRequestAtom } from "./kinTeamForm";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -81,24 +81,9 @@ function KinInAppLink(props: Where & { readonly link: KinMessageLink; readonly l
         </button>
       );
     case "record": {
-      const place =
-        to.kind === "task"
-          ? KIN_PLACE_PATH.tasks
-          : to.kind === "entry"
-            ? KIN_PLACE_PATH.money
-            : to.kind === "doc"
-              ? KIN_PLACE_PATH.docs
-              : KIN_PLACE_PATH.clients;
-      const search =
-        to.kind === "client"
-          ? { client: to.key }
-          : to.kind === "project"
-            ? { project: to.key }
-            : to.kind === "doc"
-              ? { doc: to.key }
-              : { task: to.key };
+      const place = kinRecordPlace(to);
       return (
-        <Link to={place} params={params} search={search} title={title}>
+        <Link to={place.to} params={params} search={place.search} title={title}>
           {label}
         </Link>
       );

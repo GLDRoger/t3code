@@ -8,6 +8,7 @@ import { LeadMemory } from "../../lead/LeadMemory.ts";
 import * as Clients from "../leadClients.ts";
 import * as Money from "../leadMoney.ts";
 import * as Work from "../leadWork.ts";
+import * as Comments from "../workComments.ts";
 import { KinWorkToolkit } from "./tools.ts";
 
 const isKinChatError = Schema.is(KinChatError);
@@ -58,7 +59,11 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
   ),
   record_update: McpToolAccess.actsAsCaller(
     Effect.fn("KinWorkToolkit.update")(function* (input) {
-      return yield* Work.update(yield* McpInvocationContext, input);
+      const scope = yield* McpInvocationContext;
+      const { key, ...change } = input;
+      return key === undefined || input.keys !== undefined
+        ? yield* Work.updateMany(scope, input)
+        : yield* Work.update(scope, { ...change, key });
     }, Effect.mapError(failure)),
   ),
   record_assign: McpToolAccess.actsAsCaller(
@@ -69,6 +74,11 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
   record_hand_back: McpToolAccess.actsAsCaller(
     Effect.fn("KinWorkToolkit.handBack")(function* (input) {
       return yield* Work.handBack(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
+  record_comment: McpToolAccess.actsAsCaller(
+    Effect.fn("KinWorkToolkit.comment")(function* (input) {
+      return yield* Comments.leadComment(yield* McpInvocationContext, input);
     }, Effect.mapError(failure)),
   ),
   list_define: McpToolAccess.actsAsCaller(

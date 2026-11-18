@@ -12,7 +12,12 @@ import {
   type OnViewableItemsChangedInfo,
   type ViewabilityConfigCallbackPairs,
 } from "@legendapp/list/react-native";
-import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import {
+  useIsFocused,
+  useNavigation,
+  useRoute,
+  type StaticScreenProps,
+} from "@react-navigation/native";
 import {
   EnvironmentId,
   KinChatId,
@@ -85,6 +90,7 @@ import { askForKinNotifications } from "./notifications/installKinNotifications"
 import { kinStackWithoutChat } from "./state/kinChatStack";
 import { resetRootStack } from "../../lib/root-stack-reset";
 import { KinMessageSheet } from "./components/KinMessageSheet";
+import { KinTurnReceiptSheet } from "./components/KinTurnReceiptSheet";
 import { KinChatTitle } from "./components/KinChatTitle";
 import {
   KinOfflineState,
@@ -195,6 +201,8 @@ type KinChatParams = {
   readonly environmentId: string;
   readonly orgId: string;
   readonly chatId: string;
+  /** A message a notification opened the chat on, brought into view once it has loaded. */
+  readonly message?: string;
 };
 
 type KinFixtures = typeof import("@t3tools/client-runtime/kin/kinChatFixtures");
@@ -989,6 +997,7 @@ function KinChatFeed(props: {
   const openActions = (messageId: string) =>
     setActions((current) => ({ messageId, open: current.open + 1 }));
   const actionsFor = actions.messageId === "" ? null : actions.messageId;
+  const [receiptFor, setReceiptFor] = useState<string | null>(null);
   const safeBottom = useSafeAreaInsets().bottom;
   // Clears the home indicator; the keyboard offset gives that space back while the keyboard is up.
   const composerInset = Math.max(safeBottom, KIN_COMPOSER_GUTTER);
@@ -1104,6 +1113,22 @@ function KinChatFeed(props: {
             continues: index > 0 || endsOnOwn,
           })),
         ];
+  const params: unknown = useRoute().params;
+  const landOn =
+    typeof params === "object" && params !== null && "message" in params
+      ? String(params.message)
+      : null;
+  const landed = useRef<string | null>(null);
+  const landIndex =
+    landOn === null
+      ? -1
+      : rows.findIndex((row) => row.type === "message" && row.message.messageId === landOn);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the list, outside React, to the message a notification opened, once it has loaded
+  useEffect(() => {
+    if (landOn === null || landIndex < 0 || landed.current === landOn) return;
+    landed.current = landOn;
+    void listRef.current?.scrollToIndex({ index: landIndex, animated: false, viewPosition: 0.3 });
+  }, [landIndex, landOn, listRef, landed]);
   // LegendList grows an empty list to its frame, under both insets, which hid the intro under the
   // composer; the visible height ends it above the composer instead.
   const emptyMinHeight =
@@ -1329,6 +1354,7 @@ function KinChatFeed(props: {
                 ? () => openActions(message.messageId)
                 : null
             }
+            onOpenReceipt={() => setReceiptFor(message.messageId)}
             onLinkPress={onLinkPress}
             widget={widget}
             environmentId={props.environmentId}
@@ -1561,6 +1587,13 @@ function KinChatFeed(props: {
           (candidate) => candidate.type === "message" && candidate.message.messageId === actionsFor,
         );
   const actionsMessage = actionsRow?.type === "message" ? actionsRow.message : null;
+  const receiptRow =
+    receiptFor === null
+      ? undefined
+      : feedRows.find(
+          (candidate) => candidate.type === "message" && candidate.message.messageId === receiptFor,
+        );
+  const receiptMessage = receiptRow?.type === "message" ? receiptRow.message : null;
 
   return (
     <View className="flex-1">
@@ -1711,6 +1744,14 @@ function KinChatFeed(props: {
           environmentId={props.environmentId}
           markdownStyle={markdownStyle}
           onClose={() => setActions((current) => ({ ...current, messageId: "" }))}
+        />
+      )}
+      {receiptMessage === null ? null : (
+        <KinTurnReceiptSheet
+          message={receiptMessage}
+          environmentId={props.environmentId}
+          connected={props.connected}
+          onClose={() => setReceiptFor(null)}
         />
       )}
     </View>

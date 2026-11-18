@@ -38,6 +38,7 @@ import { kinRetiredAgentIds } from "./kinAgentRetire.ts";
 import type { KinLink } from "./kinHost.ts";
 import { KIN_SCOPE_ALL, kinScopeNote, type KinViewerScope } from "./kinViewerScope.ts";
 import { kinLinkToOpen } from "./kinChatFeed.ts";
+import { kinLinkLabel } from "./kinLinks.ts";
 import { formatKinTime, kinAgentAvatar, type KinAvatarView } from "./kinScreenState.ts";
 import { kinPickablePeople } from "./kinTeam.ts";
 import type { KinWorkLive } from "./kinWorkStream.ts";
@@ -783,6 +784,8 @@ export interface KinWorkLinkView {
     | null;
   /** The thread a lead's work ran in, where this device can open it the way a task card does. */
   readonly thread: { readonly environmentId: EnvironmentId; readonly threadId: string } | null;
+  /** A web link this viewer may take off: the address `kin.work.linkRemove` takes. */
+  readonly removeUrl?: string;
 }
 
 /** Where the task is read from, to say which threads this device can open. */
@@ -1029,6 +1032,10 @@ const principalFromText = (text: string | null): KinWorkPrincipal | null => {
 /** "today", "yesterday" or "15 Nov" for an ISO time, on this device's calendar. */
 export const kinWorkDayOfTime = (iso: string, now: Date) => dayFromText(iso, now, null);
 
+/** A due date as the history wrote it, as the day it is where the owner is. */
+export const kinWorkDueDayText = (text: string | null, now: Date, zone: string | null) =>
+  dayFromText(text, now, zone);
+
 /** A due time from the history, as the day it is where the owner is, like the due date itself. */
 const dayFromText = (text: string | null, now: Date, zone: string | null) => {
   if (text === null) return null;
@@ -1054,6 +1061,8 @@ export function kinWorkChangeText(
   names: KinWorkNames,
   now: Date,
   list: keyof typeof ADDED = "work",
+  /** What a task's notes are called where the line shows: the record page calls them its brief. */
+  notesWord = "notes",
 ): string {
   const who = kinWorkActorName(change.by, names);
   const field = (name: string) => change.fields.find((held) => held.field === name);
@@ -1129,7 +1138,7 @@ export function kinWorkChangeText(
     );
   }
   if (field("title") !== undefined) clauses.push("renamed it");
-  if (field("notes") !== undefined) clauses.push("changed the notes");
+  if (field("notes") !== undefined) clauses.push(`changed the ${notesWord}`);
   if (field("confirmed")?.to === "true") clauses.push("kept it");
   if (field("terms") !== undefined) clauses.push("changed the terms");
   if (["role", "email", "phone"].some((name) => field(name) !== undefined))
@@ -1161,6 +1170,7 @@ function linkView(
   link: KinRecordLink,
   working: boolean,
   place: KinWorkPlace,
+  editable: boolean,
 ): KinWorkLinkView | null {
   const key = `${link.kind}:${link.target}`;
   switch (link.kind) {
@@ -1239,10 +1249,12 @@ function linkView(
         : {
             key,
             kind: "link",
-            label: link.label ?? href,
+            // A person names a link, so its label names the host it really opens.
+            label: link.label === null ? href : kinLinkLabel(link.label, new URL(href)),
             detail: null,
             open: { type: "url", href },
             thread: null,
+            ...(editable ? { removeUrl: link.target } : {}),
           };
     }
   }
@@ -1291,16 +1303,16 @@ export function kinWorkItemView(
               .filter((part) => part !== null)
               .join(" · ");
   // The latest link to one target says the most: "PR #12 merged" over "PR #12".
-  const links = new Map<string, KinWorkLinkView>();
-  for (const link of item.links) {
-    const view = linkView(link, item.working, place);
-    if (view !== null) links.set(view.key, view);
-  }
   const notes = item.notes.trim();
   // Only a host that takes changes sends a task's own change number.
   const editable = item.seq !== undefined;
   const isClosed = kinWorkClosed(item.state);
   const can = item.can ?? olderHostCan(item, editable, isClosed, names);
+  const links = new Map<string, KinWorkLinkView>();
+  for (const link of item.links) {
+    const view = linkView(link, item.working, place, item.can?.links === true);
+    if (view !== null) links.set(view.key, view);
+  }
   const suggested = !item.confirmed && !isClosed;
   const lead = item.owner._tag === "agent";
   return {

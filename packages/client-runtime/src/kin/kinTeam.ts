@@ -41,6 +41,7 @@ export const KIN_TEAM_ADD_COPY = {
   namePlaceholder: "Sami Okafor",
   nameHint: "This is how they appear in chats.",
   submit: "Make link",
+  someoneElse: "Someone else with the same name",
 } as const;
 
 export const KIN_TEAM_EMPTY = {
@@ -203,6 +204,7 @@ export function kinTeamView(
       access === "member"
         ? (list.places?.find((held) => held.personId === person.personId) ?? null)
         : null;
+    const namesake = kinNamesakeHandle(list.people, person);
     rows.push({
       key: `person:${person.personId}`,
       name: person.displayName,
@@ -214,7 +216,7 @@ export function kinTeamView(
       roles: roles.get(person.personId) ?? "",
       load: loads.get(person.personId) ?? "",
       places,
-      detail:
+      detail: `${namesake === null ? "" : `${namesake} · `}${
         state === "you"
           ? "You"
           : state === "owner"
@@ -227,7 +229,8 @@ export function kinTeamView(
                 }`
               : invite === undefined
                 ? "No access. Make a new link to let them back in."
-                : `Hasn't opened the new link. It works until ${until}.`,
+                : `Hasn't opened the new link. It works until ${until}.`
+      }`,
     });
   }
   for (const invite of invites) {
@@ -276,6 +279,49 @@ export function kinPickablePeople<P extends { readonly personId: KinPersonId }>(
       .map((person) => ({ person, invited: true })),
   ];
 }
+
+/**
+ * The removed person a new teammate's name matches, as the host matches it (name, or the handle
+ * the name makes): who "Bring back" makes a new link for, instead of a second person.
+ */
+export function kinRemovedNamesake(
+  list: Pick<KinTeamList, "people" | "joined"> | null,
+  name: string,
+): KinPeopleListResult["people"][number] | null {
+  const wanted = name.trim().toLowerCase();
+  const handle = wanted.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const joined = new Set<string>(list?.joined ?? []);
+  return (
+    list?.people.find(
+      (person) =>
+        !joined.has(person.personId) &&
+        person.access !== "owner" &&
+        (person.displayName.trim().toLowerCase() === wanted || person.handle === handle),
+    ) ?? null
+  );
+}
+
+/** "@meera-2" when someone else in `people` has this person's name, so the two read apart. */
+export function kinNamesakeHandle(
+  people: ReadonlyArray<{
+    readonly personId: string;
+    readonly displayName: string;
+    readonly handle: string;
+  }>,
+  person: { readonly personId: string; readonly displayName: string; readonly handle: string },
+): string | null {
+  const name = person.displayName.trim().toLowerCase();
+  return people.some(
+    (other) =>
+      other.personId !== person.personId && other.displayName.trim().toLowerCase() === name,
+  )
+    ? `@${person.handle}`
+    : null;
+}
+
+/** A picker row's second line: the handle of a namesake, then the reason it is not pickable. */
+export const kinPickLine = (namesake: string | null, unpickable: string | null): string | null =>
+  [namesake, unpickable].filter((part) => part !== null).join(" · ") || null;
 
 /** The second line of the way in from the chat list. */
 export function kinTeamEntrySummary(
@@ -528,9 +574,11 @@ export function createKinTeamActions(options: {
       readonly displayName: string;
       readonly personId: KinPersonId | null;
       readonly replaces: KinInviteId | null;
+      /** Someone else who shares a removed person's name, not them. */
+      readonly newPerson?: true;
     }): Promise<
       | { readonly ok: true; readonly invite: KinMadeInvite }
-      | { readonly ok: false; readonly problem: string }
+      | { readonly ok: false; readonly problem: string; readonly bringBack?: true }
     > => {
       if (input.replaces !== null && !(await cancelInvite(input.replaces)))
         return { ok: false, problem: kinTeamProblem(null, "make this link") };
@@ -538,6 +586,7 @@ export function createKinTeamActions(options: {
         orgId,
         displayName: input.displayName,
         ...(input.personId === null ? {} : { personId: input.personId }),
+        ...(input.newPerson === true ? { newPerson: true } : {}),
       });
       void options.refresh();
       if (AsyncResult.isSuccess(result)) {
@@ -547,7 +596,11 @@ export function createKinTeamActions(options: {
         }
         return { ok: true, invite: { ...result.value, replaced: input.replaces !== null } };
       }
-      const problem = kinTeamProblem(squashAtomCommandFailure(result), "make this link");
+      const failure = squashAtomCommandFailure(result);
+      // The host found a removed person by this name: its words offer to bring them back.
+      if (input.personId === null && isChatError(failure) && failure.reason === "conflict")
+        return { ok: false, problem: failure.message, bringBack: true };
+      const problem = kinTeamProblem(failure, "make this link");
       return {
         ok: false,
         problem: input.replaces === null ? problem : `${problem} The earlier link was stopped.`,

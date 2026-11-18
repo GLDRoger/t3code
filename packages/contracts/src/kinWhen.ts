@@ -111,3 +111,17 @@ export const kinWhenParts = (at: number | Date, zone: string) => {
     isoDay: `${parts.year}-${parts.month}-${parts.day}`,
   };
 };
+
+const HOUR_MS = 3_600_000;
+/**
+ * How long something has been late or quiet, from `from` to `to`, read after a verb: "for 5 hours"
+ * under 48 hours, "for 12 days" under 60 days, else "since 1 Jan 1999" in the reader's zone.
+ */
+export const formatKinLate = (from: number, to: number, options: KinWhenOptions = {}) => {
+  const hours = Math.floor((to - from) / HOUR_MS);
+  if (hours < 1) return "for under an hour";
+  if (hours < 48) return hours === 1 ? "for 1 hour" : `for ${hours} hours`;
+  const days = Math.floor(hours / 24);
+  if (days < 60) return `for ${days} days`;
+  return `since ${formatKinWhen(from, "dateYear", options)}`;
+};

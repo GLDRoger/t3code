@@ -1,6 +1,4 @@
 import {
-  KIN_WORK_REPEAT,
-  kinSameRepeat,
   kinWorkDueChoices,
   kinWorkDueLabel,
   KIN_WORK_ASSIGN,
@@ -99,6 +97,8 @@ export function KinWorkDueRow(props: {
   readonly now: Date;
   readonly disabled: boolean;
   readonly onAct: (action: KinWorkAction) => void;
+  /** Past due and still open: drawn in the danger colour. */
+  readonly late?: boolean;
 }) {
   const { view, now } = props;
   const due = view.due === null ? KIN_WORK_COPY.noDate : capital(view.due);
@@ -126,54 +126,12 @@ export function KinWorkDueRow(props: {
       }}
     >
       <View pointerEvents="none">
-        <ListRowLayout icon="clock" label="Due" detail={due} disabled={props.disabled} />
-      </View>
-    </Menu>
-  );
-}
-
-const REPEAT = "repeat:";
-const NO_REPEAT = "repeat";
-
-/** How the task comes back once closed: the usual rules, or off. It needs a due date to go from. */
-export function KinWorkRepeatRow(props: {
-  readonly view: KinWorkItemView;
-  readonly disabled: boolean;
-  readonly onAct: (action: KinWorkAction) => void;
-}) {
-  const { view } = props;
-  const shown = view.repeat?.text ?? KIN_WORK_REPEAT.never;
-  const dated = view.due !== null;
-  return (
-    <Menu
-      title={dated ? KIN_WORK_REPEAT.note : KIN_WORK_REPEAT.needsDue}
-      accessibilityRole="button"
-      accessibilityLabel={`${KIN_WORK_REPEAT.label}: ${shown}. Change`}
-      actions={[
-        ...KIN_WORK_REPEAT.choices.map((choice, index) => ({
-          id: `${REPEAT}${index}`,
-          title: choice.label,
-          state: kinSameRepeat(choice.rule, view.repeat?.rule ?? null)
-            ? ("on" as const)
-            : ("off" as const),
-          ...(dated ? {} : { attributes: { disabled: true } }),
-        })),
-        ...(view.repeat === null ? [] : [{ id: NO_REPEAT, title: KIN_WORK_REPEAT.stop }]),
-      ]}
-      onPressAction={({ nativeEvent: { event } }) => {
-        if (props.disabled) return;
-        if (event === NO_REPEAT) return props.onAct({ type: "repeat", rule: null });
-        const choice = KIN_WORK_REPEAT.choices[Number(event.slice(REPEAT.length))];
-        if (event.startsWith(REPEAT) && choice !== undefined)
-          props.onAct({ type: "repeat", rule: choice.rule });
-      }}
-    >
-      <View pointerEvents="none">
         <ListRowLayout
-          icon="arrow.clockwise"
-          label={KIN_WORK_REPEAT.label}
-          detail={shown}
+          icon="clock"
+          label="Due"
+          detail={due}
           disabled={props.disabled}
+          {...(props.late ? { tone: "danger" as const } : {})}
         />
       </View>
     </Menu>

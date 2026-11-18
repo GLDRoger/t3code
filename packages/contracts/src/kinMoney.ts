@@ -16,9 +16,27 @@ export const KinMoney = Schema.Struct({
   currency: KinCurrency,
 });
 export type KinMoney = typeof KinMoney.Type;
-/** One figure per currency, INR first, then by code; an empty list is nothing. */
-export const KinMoneyTotals = Schema.Array(KinMoney);
+/** A balance, a net, a refund or a total refunds lowered: below zero is owed, overdrawn or back. */
+export const KinSignedMoney = Schema.Struct({
+  minor: Schema.Int.check(
+    Schema.isBetween({ minimum: -Number.MAX_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER }),
+  ),
+  currency: KinCurrency,
+});
+export type KinSignedMoney = typeof KinSignedMoney.Type;
+/** One figure per currency, home first, then by code; an empty list is nothing. */
+export const KinMoneyTotals = Schema.Array(KinSignedMoney);
 export type KinMoneyTotals = typeof KinMoneyTotals.Type;
+/**
+ * Totals in more than one currency as one figure in `home`, at the rates the owner set: an
+ * estimate, never an exact figure. `missing` has no rate and is left out of `total`.
+ */
+export const KinMoneyAbout = Schema.Struct({
+  home: KinCurrency,
+  total: KinSignedMoney,
+  missing: Schema.Array(KinCurrency),
+});
+export type KinMoneyAbout = typeof KinMoneyAbout.Type;
 
 /** A built-in list (`work`, `clients`, `expenses`) or one defined in chat. */
 export const KinListId = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{1,39}$/));

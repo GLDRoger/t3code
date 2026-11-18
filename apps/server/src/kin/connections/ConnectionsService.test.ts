@@ -23,7 +23,9 @@ import {
 import { McpProtocol, McpSchema, McpServer } from "effect/ai";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
@@ -41,6 +43,7 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import {
   inheritOutside,
+  markOutside,
   outsideRead,
   outsideStamp,
   outsideToolAllowed,
@@ -48,6 +51,7 @@ import {
   stampEvent,
 } from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { presetDefinition } from "../work/registers.ts";
 import * as ConnectionSecrets from "./ConnectionSecrets.ts";
 import {
   ALWAYS_ASK,
@@ -112,6 +116,14 @@ type Spec = {
   readonly listReply?: (json: string) => Response;
   /** Sends every reply in two chunks, split inside the first copy of this text. */
   readonly splitAt?: string;
+  /** Holds each request of this JSON-RPC method until `until` resolves. */
+  readonly held?: { readonly method: string; readonly until: () => Promise<unknown> };
+  /** Answers each tool call with this JSON-RPC error, or this HTTP status, once `before` has run. */
+  readonly callError?: {
+    readonly code?: number;
+    readonly status?: number;
+    readonly before?: () => Promise<unknown>;
+  };
 };
 
 const text = (value: string) =>
@@ -212,11 +224,32 @@ const makeFake = Effect.fnUntraced(function* (initial: Spec) {
   };
   yield* Effect.addFinalizer(() => Effect.promise(async () => current?.dispose()));
   const fetch: typeof globalThis.fetch = Object.assign(
-    (input: string | URL | Request, init?: RequestInit) => {
+    async (input: string | URL | Request, init?: RequestInit) => {
       const request = new Request(input, init);
       requests.push(request.clone());
-      if (spec.status !== undefined)
-        return Promise.resolve(new Response(null, { status: spec.status }));
+      if (spec.status !== undefined) return new Response(null, { status: spec.status });
+      const failing = spec.callError;
+      const held = spec.held;
+      if (failing !== undefined || held !== undefined) {
+        const body: unknown = await request
+          .clone()
+          .json()
+          .catch(() => undefined);
+        const method = Predicate.hasProperty(body, "method") ? body.method : undefined;
+        if (held !== undefined && method === held.method) await held.until();
+        if (failing !== undefined && method === "tools/call") {
+          await failing.before?.();
+          if (failing.status !== undefined) return new Response(null, { status: failing.status });
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: Predicate.hasProperty(body, "id") ? body.id : null,
+              error: { code: failing.code, message: "Invented failure" },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+      }
       current ??= build();
       return current.handler(request).then(asSent);
     },
@@ -250,13 +283,48 @@ const identity = Layer.mock(KinIdentity)({
 });
 
 type Card = Parameters<KinLevelGate["Service"]["ask"]>[1] & { readonly widgetId: string };
-/** The level gate as far as ask cards go: each card is kept, and bound like the real one. */
-const gateFor = (cards: Array<Card>) =>
+/** What a test runs once: as the gate is asked for a card, before it is bound; before the next key is stored; before the next sign-in is read. */
+type Hooks = {
+  beforeCard?: Effect.Effect<void> | undefined;
+  beforeKey?: Effect.Effect<void> | undefined;
+  beforeSignInRead?: Effect.Effect<void> | undefined;
+};
+const once = (hooks: Hooks, name: "beforeKey" | "beforeSignInRead") =>
+  Effect.suspend(() => {
+    const run = hooks[name];
+    hooks[name] = undefined;
+    return run ?? Effect.void;
+  });
+/** The real secret store, running each armed hook first. */
+const secretsFor = (hooks: Hooks) =>
+  Layer.effect(
+    ConnectionSecrets.KinConnectionSecrets,
+    Effect.gen(function* () {
+      const real = yield* ConnectionSecrets.KinConnectionSecrets;
+      return ConnectionSecrets.KinConnectionSecrets.of({
+        ...real,
+        set: (connectionId, key) =>
+          once(hooks, "beforeKey").pipe(Effect.andThen(real.set(connectionId, key))),
+        getSignIn: (connectionId) =>
+          once(hooks, "beforeSignInRead").pipe(Effect.andThen(real.getSignIn(connectionId))),
+      });
+    }),
+  ).pipe(Layer.provide(ConnectionSecrets.layer));
+/**
+ * The level gate as far as ask cards go: each card is kept, and bound like the real one. As the
+ * chat's own retry, the same `clientMessageId` gets back the card it already made.
+ */
+const gateFor = (cards: Array<Card>, hooks: Hooks) =>
   Layer.mock(KinLevelGate)({
     ask: (agent, input, bind) =>
       Effect.gen(function* () {
-        const widgetId = `w-${cards.length + 1}`;
-        cards.push({ ...input, widgetId });
+        const before = hooks.beforeCard;
+        hooks.beforeCard = undefined;
+        if (before !== undefined) yield* before;
+        const widgetId =
+          cards.find((card) => card.clientMessageId === input.clientMessageId)?.widgetId ??
+          `w-${cards.length + 1}`;
+        if (!cards.some((card) => card.widgetId === widgetId)) cards.push({ ...input, widgetId });
         const widget = {
           orgId: agent.orgId,
           chatId: input.chatId,
@@ -283,10 +351,11 @@ const layerFor = (
   fake: Pick<Fake, "fetch">,
   touches: Array<KinRefreshTopic>,
   cards: Array<Card> = [],
+  hooks: Hooks = {},
 ) =>
   Connections.layer.pipe(
-    Layer.provide(gateFor(cards)),
-    Layer.provide(ConnectionSecrets.layer),
+    Layer.provide(gateFor(cards, hooks)),
+    Layer.provide(secretsFor(hooks)),
     Layer.provide(McpGateway.layer),
     Layer.provide(
       guarded.pipe(
@@ -365,15 +434,16 @@ const withFake = <A, E>(
 /** As `withFake`, keeping the ask cards the gate was asked to show. */
 const withAsks = <A, E>(
   spec: Spec,
-  body: (fake: Fake, cards: Array<Card>) => Effect.Effect<A, E, Env>,
+  body: (fake: Fake, cards: Array<Card>, hooks: Hooks) => Effect.Effect<A, E, Env>,
 ) =>
   Effect.gen(function* () {
     const fake = yield* makeFake(spec);
     const cards: Array<Card> = [];
+    const hooks: Hooks = {};
     return yield* Effect.gen(function* () {
       yield* seed;
-      return yield* body(fake, cards);
-    }).pipe(Effect.provide(layerFor(fake, [], cards)));
+      return yield* body(fake, cards, hooks);
+    }).pipe(Effect.provide(layerFor(fake, [], cards, hooks)));
   }).pipe(Effect.scoped);
 
 /** A person's tap on an ask card, as the card's tap transaction runs it. */
@@ -421,6 +491,34 @@ const call = (connection: string, tool: string) =>
       arguments: {},
       reason: "test",
     });
+  });
+/** A call with arguments, as an agent makes it. */
+const search = (connection: string, args: Record<string, unknown>) =>
+  Effect.gen(function* () {
+    return yield* (yield* KinConnections).call(scope, {
+      connection,
+      tool: "search_web",
+      arguments: args,
+    });
+  });
+/** Each tool the fake server was asked to run, in order, with the arguments it got. */
+const toolCalls = (fake: Fake) =>
+  Effect.promise(async () => {
+    const calls: Array<{ readonly name: string; readonly args: unknown }> = [];
+    for (const request of fake.requests) {
+      const body: unknown = await request
+        .clone()
+        .json()
+        .catch(() => undefined);
+      if (Predicate.hasProperty(body, "method") && body.method === "tools/call") {
+        const params = Predicate.hasProperty(body, "params") ? body.params : undefined;
+        calls.push({
+          name: Predicate.hasProperty(params, "name") ? String(params.name) : "",
+          args: Predicate.hasProperty(params, "arguments") ? params.arguments : undefined,
+        });
+      }
+    }
+    return calls;
   });
 const toolOf = <T extends { readonly name: string }>(
   detail: { readonly tools: ReadonlyArray<T> },
@@ -611,7 +709,7 @@ describe("KinConnections", () => {
   it.effect(
     "runs an Ask me tool only on the owner's Confirm, and gives agents no way to manage",
     () =>
-      withAsks(BASE, (fake, cards) =>
+      withAsks(BASE, (fake, cards, hooks) =>
         Effect.gen(function* () {
           const connections = yield* KinConnections;
           const id = (yield* addPosthog).connection.connectionId;
@@ -635,13 +733,90 @@ describe("KinConnections", () => {
           assert.strictEqual(cards.length, 1);
           assert.strictEqual(cards[0]!.send?.action, "call");
           assert.include(cards[0]!.send?.body ?? "", '"flag": "beta"');
-          const widgetId = cards[0]!.widgetId;
+
+          const flagged = (flag: string) =>
+            connections.call(scope, {
+              connection: id,
+              tool: "delete_flag",
+              arguments: { flag },
+            });
+          const flag = () => flagged("beta");
+          const dispatched = () =>
+            toolCalls(fake).pipe(
+              Effect.map((calls) => calls.filter((one) => one.name === "delete_flag").length),
+            );
+          for (const other of ["gamma", "delta", "epsilon"])
+            assert.strictEqual((yield* flagged(other)).note, ASKED);
+          const widgetOf = (n: number) => cards[n]!.widgetId;
+          const [beta, gamma, delta, epsilon] = [
+            widgetOf(0),
+            widgetOf(1),
+            widgetOf(2),
+            widgetOf(3),
+          ];
+
+          // The turn reads outside text: the same call now waits on one marked card instead.
+          yield* markRead(id, ["query"]);
+          yield* call(id, "query");
+          // A tap that lands before the repeat stands, and nothing new is drawn.
+          const sending = yield* answer(epsilon, ownerId, true);
+          assert.strictEqual((yield* flagged("epsilon")).note, Connections.ASK_CLOSED.sending);
+          yield* connections.sendAsk(orgId, sending!.askId);
+          yield* answer(delta, ownerId, false);
+          assert.strictEqual((yield* flagged("delta")).note, Connections.ASK_CLOSED.declined);
+          assert.lengthOf(cards, 4);
+          // A tap after the repeat began but before its card is bound finds the older replaced.
+          const context = yield* Effect.context<KinConnections | SqlClient.SqlClient>();
+          const raced: Array<string> = [];
+          const tap = (widgetId: string, confirmed: boolean) =>
+            answer(widgetId, ownerId, confirmed).pipe(
+              Effect.flatMap((tapped) =>
+                tapped?._tag === "send"
+                  ? connections.sendAsk(orgId, tapped.askId).pipe(Effect.as("sent"))
+                  : Effect.succeed(tapped?._tag ?? "none"),
+              ),
+              Effect.catchTags({ KinChatError: (error) => Effect.succeed(error.reason) }),
+              Effect.map((outcome) => void raced.push(outcome)),
+              Effect.orDie,
+              Effect.provide(context),
+            );
+          hooks.beforeCard = tap(beta, true);
+          assert.strictEqual((yield* flag()).note, Connections.DRAFTED);
+          hooks.beforeCard = tap(gamma, false);
+          assert.strictEqual((yield* flagged("gamma")).note, Connections.DRAFTED);
+          assert.deepStrictEqual(raced, ["widget_changed", "widget_changed"]);
+          assert.strictEqual((yield* flag()).note, Connections.DRAFTED);
+          assert.lengthOf(cards, 6);
+          assert.include(cards[4]!.question, "Drafted after reading text from PostHog");
+          const sql = yield* SqlClient.SqlClient;
+          assert.deepStrictEqual(
+            yield* sql<{ widget: string; state: string; reason: string | null }>`SELECT
+                widget_id AS widget, state, reason FROM kin_connection_asks ORDER BY rowid`,
+            [
+              { widget: beta, state: "stale", reason: "Replaced by a newer card." },
+              { widget: gamma, state: "stale", reason: "Replaced by a newer card." },
+              { widget: delta, state: "declined", reason: null },
+              { widget: epsilon, state: "sent", reason: null },
+              { widget: cards[4]!.widgetId, state: "open", reason: null },
+              { widget: cards[5]!.widgetId, state: "open", reason: null },
+            ],
+          );
+          assert.strictEqual(
+            (yield* answer(beta, ownerId, true).pipe(Effect.flip)).reason,
+            "widget_changed",
+          );
+
+          const widgetId = cards[4]!.widgetId;
           const answered = yield* answer(widgetId, ownerId, true);
           assert.strictEqual(answered?._tag, "send");
-          assert.strictEqual(calls(), before);
+          assert.strictEqual(yield* dispatched(), 1);
           const done = yield* connections.sendAsk(orgId, answered!.askId);
           assert.deepStrictEqual(done, { state: "sent", reason: null });
-          assert.isAbove(calls(), before);
+          // epsilon once and beta once: no action went twice.
+          assert.strictEqual(yield* dispatched(), 2);
+          // Asked again once it went: the agent is told so, and no card is drawn.
+          assert.strictEqual((yield* flag()).note, Connections.ASK_CLOSED.sent);
+          assert.lengthOf(cards, 6);
           assert.sameMembers(Object.keys(KinConnectionsToolkit.tools), [
             "kin_connection_tools",
             "kin_connection_call",
@@ -711,9 +886,9 @@ describe("KinConnections", () => {
   );
 
   it.effect(
-    "after an outside read, refuses workers and anything that could carry the text out",
+    "after an outside read, refuses workers, and drafts anything that could carry the text out",
     () =>
-      withFake(BASE, () =>
+      withAsks(BASE, (fake, cards) =>
         Effect.gen(function* () {
           const posthog = (yield* addPosthog).connection.connectionId;
           yield* markRead(posthog, ["query", "search_web"]);
@@ -727,7 +902,8 @@ describe("KinConnections", () => {
           yield* markRead(custom.connection.connectionId, ["query"]);
 
           assert.isTrue(yield* outsideToolAllowed(turn, "delegate_task", {}));
-          yield* call(posthog, "query");
+          // Before any outside text, an open-world tool marked Read runs as the owner set it.
+          assert.include((yield* call(posthog, "search_web")).quoted ?? "", "found");
           assert.isTrue(yield* outsideRead(turn));
           assert.isFalse(yield* outsideToolAllowed(turn, "delegate_task", {}));
           assert.isFalse(yield* outsideToolAllowed(turn, "t3_thread_send", {}));
@@ -735,26 +911,307 @@ describe("KinConnections", () => {
           assert.isTrue(yield* outsideToolAllowed(turn, "kin_chat_post", {}));
           assert.isTrue(yield* outsideToolAllowed(turn, "kin_document", { recipe: "invoice" }));
           assert.isFalse(yield* outsideToolAllowed(turn, "kin_document", { brief: "write it" }));
+          // The gate lets every connection call through to the service, which drafts what it must.
           const allowed = (connection: string, tool: string) =>
             outsideToolAllowed(turn, "kin_connection_call", { connection, tool });
           assert.isTrue(yield* allowed(posthog, "query"));
-          assert.isFalse(yield* allowed(posthog, "search_web"));
-          assert.isFalse(yield* allowed("Notes", "query"));
+          assert.isTrue(yield* allowed(posthog, "search_web"));
+          assert.isTrue(yield* allowed("Notes", "query"));
 
-          // The service holds the same line with the gate bypassed.
           assert.include(
             yield* call(posthog, "query").pipe(Effect.map((r) => r.quoted ?? "")),
             "pageviews",
           );
+          const before = yield* toolCalls(fake);
+          // Marked Read, but open-world: one card with exactly its arguments, and nothing runs.
+          for (const _ of [1, 2])
+            assert.strictEqual(
+              (yield* search(posthog, { q: "Ambermill" })).note,
+              Connections.DRAFTED,
+            );
+          assert.strictEqual((yield* call("Notes", "query")).note, Connections.DRAFTED);
+          assert.deepStrictEqual(yield* toolCalls(fake), before);
+          assert.lengthOf(cards, 2);
           assert.strictEqual(
-            (yield* call(posthog, "search_web").pipe(Effect.flip)).message,
-            OUTSIDE_REFUSAL,
+            cards[0]!.question,
+            "Run search_web on PostHog? Drafted after reading text from PostHog, so check it before you confirm.",
           );
-          assert.strictEqual(
-            (yield* call("Notes", "query").pipe(Effect.flip)).message,
-            OUTSIDE_REFUSAL,
+          assert.deepInclude(cards[0]!.send, { action: "call", body: '{\n  "q": "Ambermill"\n}' });
+          const sql = yield* SqlClient.SqlClient;
+          assert.deepStrictEqual(
+            yield* sql<{ tool: string; outside: string; account: string | null }>`SELECT
+                tool_name AS tool, outside_from AS outside, account FROM kin_connection_asks
+              ORDER BY proposed_at, tool_name`,
+            [
+              { tool: "query", outside: posthog, account: null },
+              { tool: "search_web", outside: posthog, account: null },
+            ],
           );
           assert.isTrue(yield* outsideRead(turn));
+        }),
+      ),
+  );
+
+  it.effect(
+    "a drafted call runs its exact arguments once, on an owner-level tap, while nothing changed",
+    () =>
+      withAsks(BASE, (fake, cards, hooks) =>
+        Effect.gen(function* () {
+          const connections = yield* KinConnections;
+          const sql = yield* SqlClient.SqlClient;
+          const posthog = (yield* addPosthog).connection.connectionId;
+          yield* markRead(posthog, ["query", "search_web"]);
+          yield* call(posthog, "query");
+          const qs = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+          for (const q of qs) yield* search(posthog, { q });
+          const card = (q: string) =>
+            cards.find((one) => one.send?.body.includes(`"${q}"`))!.widgetId;
+          const ran = () =>
+            toolCalls(fake).pipe(
+              Effect.map((calls) =>
+                calls.filter((one) => one.name === "search_web").map((one) => one.args),
+              ),
+            );
+          const confirm = (q: string, person = ownerId) =>
+            answer(card(q), person, true).pipe(Effect.map((asked) => asked?.askId ?? ""));
+
+          // A teammate's tap sends nothing; two dispatches of one Confirm run it once.
+          assert.strictEqual(
+            (yield* answer(card("one"), mateId, true).pipe(Effect.flip)).reason,
+            "not_allowed",
+          );
+          const one = yield* confirm("one");
+          const both = yield* Effect.all(
+            [connections.sendAsk(orgId, one), connections.sendAsk(orgId, one)],
+            {
+              concurrency: "unbounded",
+            },
+          );
+          assert.lengthOf(
+            both.filter((done) => done.state === "sent"),
+            1,
+          );
+          assert.deepStrictEqual(yield* ran(), [{ q: "one" }]);
+          assert.strictEqual(
+            (yield* answer(card("one"), ownerId, true).pipe(Effect.flip)).reason,
+            "widget_changed",
+          );
+          // A repeat returns what is stored; the same call again draws nothing new.
+          assert.deepStrictEqual(yield* connections.sendAsk(orgId, one), {
+            state: "sent",
+            reason: null,
+          });
+          assert.strictEqual(
+            (yield* search(posthog, { q: "one" })).note,
+            Connections.ASK_CLOSED.sent,
+          );
+          yield* answer(card("seven"), ownerId, false);
+          assert.strictEqual(
+            (yield* search(posthog, { q: "seven" })).note,
+            Connections.ASK_CLOSED.declined,
+          );
+          assert.lengthOf(cards, qs.length);
+
+          // A co-owner's Confirm, dispatched after they stopped being one, sends nothing.
+          yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${mateId}`;
+          const two = yield* confirm("two", mateId);
+          yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = ${mateId}`;
+          assert.deepStrictEqual(yield* connections.sendAsk(orgId, two), {
+            state: "failed",
+            reason: "Only the owner or a co-owner confirms what Kin sends, so nothing was sent.",
+          });
+
+          // Signed out between the tap and the send: nothing is claimed and nothing goes.
+          const eight = yield* confirm("eight");
+          yield* sql`UPDATE kin_connections SET state = 'needs_sign_in' WHERE connection_id = ${posthog}`;
+          assert.deepStrictEqual(yield* connections.sendAsk(orgId, eight), {
+            state: "failed",
+            reason:
+              "PostHog needs signing in again in Settings › Connections, so nothing was sent.",
+          });
+          assert.deepStrictEqual(
+            yield* sql`SELECT dispatched_at FROM kin_connection_asks WHERE ask_id = ${eight}`,
+            [{ dispatched_at: null }],
+          );
+          yield* sql`UPDATE kin_connections SET state = 'active' WHERE connection_id = ${posthog}`;
+
+          // No answer from the service: it may have gone, so it is never sent again on its own.
+          const three = yield* confirm("three");
+          yield* fake.set({ ...BASE, callError: { status: 504 } });
+          const unknown = {
+            state: "failed",
+            reason:
+              "PostHog gave no clear answer. This may or may not have gone. Check before sending again.",
+          } as const;
+          assert.deepStrictEqual(yield* connections.sendAsk(orgId, three), unknown);
+          yield* fake.set(BASE);
+          assert.deepStrictEqual(yield* connections.sendAsk(orgId, three), unknown);
+
+          // The service answered that the tool failed: a definite answer, said as it is.
+          const nine = yield* confirm("nine");
+          yield* fake.set({
+            ...BASE,
+            tools: [
+              QUERY,
+              DELETE,
+              {
+                ...SEARCH,
+                result: () =>
+                  new McpSchema.CallToolResult({
+                    content: [{ type: "text", text: "no" }],
+                    isError: true,
+                  }),
+              },
+            ],
+          });
+          const refused = { state: "failed", reason: "PostHog answered with an error." } as const;
+          assert.deepStrictEqual(yield* connections.sendAsk(orgId, nine), refused);
+          yield* fake.set(BASE);
+          assert.deepStrictEqual(yield* connections.sendAsk(orgId, nine), refused);
+
+          // A restart: one never claimed did not go; one claimed may have; one sent shows sent.
+          const five = yield* confirm("five");
+          const six = yield* confirm("six");
+          yield* sql`UPDATE kin_connection_asks SET dispatched_at = 1 WHERE ask_id = ${six}`;
+          yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class,
+              type, revision, state_json, awaiting_json, updated_at)
+            VALUES (${card("one")}, ${orgId}, 'lead-chat', 'ask', 'native', 'choice', 1,
+              ${JSON.stringify({ send: { outcome: { state: "sending" } } })}, '[]', '')`;
+          const restarted = yield* connections.interruptedSends(orgId, 10);
+          assert.deepStrictEqual(
+            restarted.map((done) => [done.widgetId, done.state, done.reason]).toSorted(),
+            [
+              [card("five"), "failed", "Kin restarted before sending this, so nothing was sent."],
+              [card("one"), "sent", null],
+              [
+                card("six"),
+                "failed",
+                "Kin restarted while sending this. This may or may not have gone. Check before sending again.",
+              ],
+            ].toSorted(),
+          );
+          assert.strictEqual((yield* connections.sendAsk(orgId, five)).state, "failed");
+          // Past one batch of cards left saying sending: each is shown once, then none is left.
+          const shownAs = (widgetId: string, state: string) =>
+            sql`UPDATE kin_widgets SET state_json = ${JSON.stringify({ send: { outcome: { state } } })}
+              WHERE widget_id = ${widgetId}`;
+          yield* shownAs(card("one"), "sent");
+          const many = Array.from({ length: 51 }, (_, n) => `w-many-${n}`);
+          for (const widgetId of many) {
+            yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
+                pin_digest, payload_json, agent_id, wakeup_id, chat_id, proposed_at, state, done_at,
+                widget_id)
+              SELECT org_id, ${`ask-${widgetId}`}, connection_id, tool_name, pin_digest,
+                payload_json, agent_id, wakeup_id, chat_id, proposed_at, 'sent', 1, ${widgetId}
+              FROM kin_connection_asks WHERE ask_id = ${one}`;
+            yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class,
+                type, revision, state_json, awaiting_json, updated_at)
+              VALUES (${widgetId}, ${orgId}, 'lead-chat', 'ask', 'native', 'choice', 1,
+                ${JSON.stringify({ send: { outcome: { state: "sending" } } })}, '[]', '')`;
+          }
+          // A card whose stored state is not JSON is skipped; the rest still drain.
+          yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
+              pin_digest, payload_json, agent_id, wakeup_id, chat_id, proposed_at, state, done_at,
+              widget_id)
+            SELECT org_id, 'ask-garbled', connection_id, tool_name, pin_digest, payload_json,
+              agent_id, wakeup_id, chat_id, proposed_at, 'sent', 1, 'w-garbled'
+            FROM kin_connection_asks WHERE ask_id = ${one}`;
+          yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class,
+              type, revision, state_json, awaiting_json, updated_at)
+            VALUES ('w-garbled', ${orgId}, 'lead-chat', 'ask', 'native', 'choice', 1,
+              '{"send": {"outcome": ', '[]', '')`;
+          const republished = yield* connections.interruptedSends(orgId, 10);
+          assert.sameMembers(
+            republished.map((done) => done.widgetId),
+            many,
+          );
+          for (const done of republished) yield* shownAs(done.widgetId, done.state);
+          assert.lengthOf(yield* connections.interruptedSends(orgId, 10), 0);
+
+          // Switched off since the card: Confirm sends nothing and says why.
+          yield* connections.setToolModes(owner, {
+            orgId,
+            connectionId: posthog,
+            modes: [{ tool: "search_web", mode: "off" }],
+          });
+          assert.deepInclude(yield* answer(card("four"), ownerId, true), {
+            _tag: "stale",
+            reason:
+              "search_web changed or was switched off since this card was made, so nothing was sent.",
+          });
+          yield* markRead(posthog, ["search_web"]);
+          const drawn = (q: string) =>
+            search(posthog, { q }).pipe(Effect.andThen(() => confirm(q)));
+          // The sign-in moves while the request is out: its answer still decides the card.
+          const movedWhileOut = (askId: string, code: number) =>
+            Effect.gen(function* () {
+              const arrived = Promise.withResolvers<void>();
+              const release = Promise.withResolvers<void>();
+              const before = () => {
+                arrived.resolve();
+                return release.promise;
+              };
+              yield* fake.set({ ...BASE, callError: { code, before } });
+              const sending = yield* connections.sendAsk(orgId, askId).pipe(Effect.forkChild);
+              yield* Effect.promise(() => arrived.promise);
+              yield* sql`UPDATE kin_connections SET sign_in_gen = sign_in_gen + 1
+                WHERE connection_id = ${posthog}`;
+              release.resolve();
+              const outcome = yield* Fiber.join(sending);
+              yield* fake.set(BASE);
+              return outcome;
+            });
+          // Refused before it ran (invalid params): a definite answer, said as the service said it.
+          assert.deepStrictEqual(yield* movedWhileOut(yield* drawn("ten"), -32602), {
+            state: "failed",
+            reason: "mcp.posthog.com returned an error (code -32602).",
+          });
+          // An internal error may come after the work was done: it may have gone.
+          assert.deepStrictEqual(yield* movedWhileOut(yield* drawn("eleven"), -32603), unknown);
+          // A new key may be another account's: a card drawn before it sends nothing.
+          const twelve = yield* drawn("twelve");
+          yield* connections.setKey(owner, {
+            orgId,
+            connectionId: posthog,
+            key: Redacted.make("phx_INVENTED_other_key_9c2e"),
+          });
+          const moved = {
+            state: "failed",
+            reason:
+              "PostHog is signed in as another account since this card was made, so nothing was sent.",
+          } as const;
+          assert.deepStrictEqual(yield* connections.sendAsk(orgId, twelve), moved);
+          // A card drawn and confirmed while the next key is being stored was made for the old one.
+          const context = yield* Effect.context<KinConnections | SqlClient.SqlClient>();
+          let thirteen = "";
+          hooks.beforeKey = drawn("thirteen").pipe(
+            Effect.map((askId) => void (thirteen = askId)),
+            Effect.orDie,
+            Effect.provide(context),
+          );
+          yield* connections.setKey(owner, {
+            orgId,
+            connectionId: posthog,
+            key: Redacted.make("phx_INVENTED_third_key_5a7f"),
+          });
+          assert.deepStrictEqual(yield* connections.sendAsk(orgId, thirteen), moved);
+          // A session error once the request left: it may have run, so it is not sent again.
+          const fourteen = yield* drawn("fourteen");
+          yield* fake.set({ ...BASE, callError: { status: 404 } });
+          assert.deepStrictEqual(yield* connections.sendAsk(orgId, fourteen), {
+            state: "failed",
+            reason: "mcp.posthog.com answered with an error (HTTP 404).",
+          });
+          yield* fake.set(BASE);
+          // The one sent, the ones whose answer never came or failed, and nothing else.
+          assert.deepStrictEqual(yield* ran(), [
+            { q: "one" },
+            { q: "three" },
+            { q: "nine" },
+            { q: "ten" },
+            { q: "eleven" },
+            { q: "fourteen" },
+          ]);
         }),
       ),
   );
@@ -831,12 +1288,8 @@ describe("KinConnections", () => {
         assert.include(listed.quoted ?? "", "Start a task");
         assert.isTrue(yield* outsideRead(turn));
         assert.isFalse(yield* outsideToolAllowed(turn, "delegate_task", {}));
-        assert.isFalse(
-          yield* outsideToolAllowed(turn, "kin_connection_call", {
-            connection: "posthog",
-            tool: "x",
-          }),
-        );
+        // The gate leaves connection calls to the service, which knows no tool x.
+        assert.strictEqual((yield* call("posthog", "x").pipe(Effect.flip)).reason, "not_found");
       }),
     ),
   );
@@ -979,6 +1432,72 @@ describe("KinConnections", () => {
         assert.match(row!.args, /…\[cut: \d+ more bytes\]$/);
       }),
     ),
+  );
+
+  it.effect(
+    "drops a session still opening when the key changes, so the new key opens its own",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFake(BASE);
+        return yield* Effect.gen(function* () {
+          const gateway = yield* McpGateway.KinMcpGateway;
+          const opening = Promise.withResolvers<void>();
+          const opened = Promise.withResolvers<void>();
+          yield* fake.set({
+            ...BASE,
+            held: {
+              method: "server/discover",
+              until: () => {
+                opening.resolve();
+                return opened.promise;
+              },
+            },
+          });
+          const target = (key: string) => ({
+            connectionId: "c-posthog",
+            url: "https://mcp.posthog.com/mcp",
+            protocolVersion: null,
+            headers: Redacted.make({ authorization: `Bearer ${key}` }),
+            credentials: Redacted.make([key]),
+          });
+          const tool = new McpSchema.Tool({ name: "query", inputSchema: { type: "object" } });
+          const first = yield* gateway
+            .callTool(target(KEY), tool, {})
+            .pipe(Effect.exit, Effect.forkChild);
+          yield* Effect.promise(() => opening.promise);
+          const dropping = yield* gateway
+            .invalidate("c-posthog")
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          opened.resolve();
+          yield* Fiber.join(first);
+          yield* Fiber.join(dropping);
+          yield* gateway.callTool(target("phx_INVENTED_new_key_77d0"), tool, {});
+          const keys = yield* Effect.promise(async () => {
+            const sent: Array<string | null> = [];
+            for (const request of fake.requests) {
+              const body: unknown = await request
+                .clone()
+                .json()
+                .catch(() => undefined);
+              if (Predicate.hasProperty(body, "method") && body.method === "tools/call")
+                sent.push(request.headers.get("authorization"));
+            }
+            return sent;
+          });
+          assert.strictEqual(keys.at(-1), "Bearer phx_INVENTED_new_key_77d0");
+        }).pipe(
+          Effect.provide(
+            McpGateway.layer.pipe(
+              Layer.provide(
+                guarded.pipe(
+                  Layer.provide(FetchHttpClient.layer),
+                  Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fake.fetch)),
+                ),
+              ),
+            ),
+          ),
+        );
+      }).pipe(Effect.scoped),
   );
 
   it.effect("falls back to an older protocol and fails cleanly on an oversized result", () =>
@@ -1193,6 +1712,22 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
     accounts: new Map<string, string>(),
     /** Google's profile lookup fails, as it can for a moment. */
     profileDown: false,
+    /** The next refresh waits for `release` once it `arrived`, then answers as the old grant, or refuses. */
+    hold: undefined as
+      | undefined
+      | {
+          readonly arrived: () => void;
+          readonly release: Promise<void>;
+          readonly refuse?: boolean;
+        },
+    /** The next read of event e1 waits for this. */
+    beforeEvent: undefined as undefined | (() => Promise<void>),
+    /** Event e1 as Google has it; a PATCH to it changes it. */
+    e1: {
+      summary: "Board prep",
+      start: { dateTime: "2026-11-20T10:00:00+05:30" },
+      end: { dateTime: "2026-11-20T10:30:00+05:30" },
+    } as Record<string, unknown>,
   };
   const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
     new Response(JSON.stringify(body), {
@@ -1234,6 +1769,14 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
         expires_in: 3600,
         ...(vendor.scope === undefined ? {} : { scope: vendor.scope }),
       });
+    }
+    const hold = vendor.hold;
+    if (hold !== undefined) {
+      vendor.hold = undefined;
+      hold.arrived();
+      await hold.release;
+      if (hold.refuse === true) return json({ error: "invalid_grant" }, 400);
+      return json({ access_token: "at-stale", refresh_token: "rt-stale", expires_in: 3600 });
     }
     if (vendor.revoked || form.get("refresh_token") !== vendor.refresh)
       return json({ error: "invalid_grant" }, 400);
@@ -1380,16 +1923,25 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
           return json({ error: { code: 404 } }, 404);
         }
         if (request.method !== "GET") {
-          vendor.sent.push({ method: request.method, url, json: await request.json(), account });
+          const body: unknown = await request.json();
+          vendor.sent.push({ method: request.method, url, json: body, account });
+          if (/\/events\/e1$/.test(path) && Predicate.isObject(body))
+            vendor.e1 = { ...vendor.e1, ...body };
           if (path.endsWith("/users/me/messages/send"))
             return json({ id: `sent-${vendor.sent.length}`, threadId: "t-sent" });
-          if (path.includes("/calendars/primary/events")) return json({ id: "ev-1" });
+          if (/\/calendars\/[^/]+\/events/.test(path)) return json({ id: "ev-1" });
           return json({ error: { code: 404 } }, 404);
         }
         if (path.endsWith("/users/me/profile")) return json({ emailAddress: OWNER_MAIL });
         if (path.endsWith("/users/me/threads")) return json({ threads: [{ id: "t1" }] });
         if (path.endsWith("/users/me/threads/t1"))
           return json(thread(url.searchParams.get("format")));
+        if (/\/calendars\/[^/]+\/events\/e1$/.test(path)) {
+          const wait = vendor.beforeEvent;
+          vendor.beforeEvent = undefined;
+          await wait?.();
+          return json({ ...vendor.e1, id: "e1", status: "confirmed" });
+        }
         if (path.endsWith("/calendars/primary/events"))
           return json({
             items: [
@@ -1414,15 +1966,21 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
 
 const withVendor = <A, E>(
   options: { readonly s256?: boolean },
-  body: (vendor: ReturnType<typeof makeVendor>) => Effect.Effect<A, E, Env>,
+  body: (
+    vendor: ReturnType<typeof makeVendor>,
+    cards: Array<Card>,
+    hooks: Hooks,
+  ) => Effect.Effect<A, E, Env>,
 ) =>
   Effect.gen(function* () {
     const fake = yield* makeFake(BASE);
     const vendor = makeVendor(fake, options);
+    const cards: Array<Card> = [];
+    const hooks: Hooks = {};
     return yield* Effect.gen(function* () {
       yield* seed;
-      return yield* body(vendor);
-    }).pipe(Effect.provide(layerFor(vendor, [])));
+      return yield* body(vendor, cards, hooks);
+    }).pipe(Effect.provide(layerFor(vendor, [], cards, hooks)));
   }).pipe(Effect.scoped);
 
 const signInSentry = (vendor: ReturnType<typeof makeVendor>) =>
@@ -1561,7 +2119,7 @@ describe("KinConnections sign-in", () => {
   );
 
   it.effect("refreshes once for calls made together, and asks to sign in again when refused", () =>
-    withVendor({}, (vendor) =>
+    withVendor({}, (vendor, cards, hooks) =>
       Effect.gen(function* () {
         const connections = yield* KinConnections;
         const done = yield* signInSentry(vendor);
@@ -1594,6 +2152,87 @@ describe("KinConnections sign-in", () => {
         });
         assert.strictEqual(restored.connection.state, "active");
         assert.include((yield* call(id, "query")).quoted ?? "", "pageviews: 42");
+
+        // A refresh that began before a sign-in again answers after it: the new sign-in's
+        // tokens stay, the refresh's answer is dropped, and the call goes with the new ones.
+        yield* TestClock.adjust("2 hours");
+        const arrived = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        vendor.vendor.hold = { arrived: arrived.resolve, release: release.promise };
+        const racing = yield* call(id, "query").pipe(Effect.forkChild);
+        yield* Effect.promise(() => arrived.promise);
+        vendor.vendor.access = "at-new";
+        const anew = yield* connections.signInStart(owner, {
+          orgId,
+          connectionId: id,
+          returnTo: "web",
+        });
+        yield* connections.signInFinish(owner, {
+          orgId,
+          response: vendor.approve(anew.authorizationUrl),
+        });
+        release.resolve();
+        assert.include((yield* Fiber.join(racing)).quoted ?? "", "pageviews: 42");
+        assert.include((yield* call(id, "query")).quoted ?? "", "pageviews: 42");
+        const after = yield* connections.get(owner, { orgId, connectionId: id });
+        assert.strictEqual(after.connection.state, "active");
+
+        // A refused refresh signs out only the sign-in it checked: a sign-in again that commits
+        // right after the check keeps the account signed in.
+        yield* TestClock.adjust("2 hours");
+        const refreshing = Promise.withResolvers<void>();
+        const refusal = Promise.withResolvers<void>();
+        vendor.vendor.hold = {
+          arrived: refreshing.resolve,
+          release: refusal.promise,
+          refuse: true,
+        };
+        const refused = yield* call(id, "query").pipe(Effect.flip, Effect.forkChild);
+        yield* Effect.promise(() => refreshing.promise);
+        const checking = yield* Deferred.make<void>();
+        const checked = yield* Deferred.make<void>();
+        hooks.beforeSignInRead = Deferred.succeed(checking, undefined).pipe(
+          Effect.andThen(Deferred.await(checked)),
+        );
+        refusal.resolve();
+        yield* Deferred.await(checking);
+        const sql = yield* SqlClient.SqlClient;
+        const signedIn = yield* sql
+          .withTransaction(
+            sql`UPDATE kin_connections SET sign_in_gen = sign_in_gen + 1, state = 'active'
+              WHERE connection_id = ${id}`,
+          )
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.succeed(checked, undefined);
+        yield* Fiber.join(signedIn);
+        assert.include((yield* Fiber.join(refused)).message, "sign in again");
+        const kept = yield* connections.get(owner, { orgId, connectionId: id });
+        assert.strictEqual(kept.connection.state, "active");
+
+        // A refused token, then a forced refresh that is refused too: the card keeps the refusal.
+        const fresh = yield* connections.signInStart(owner, {
+          orgId,
+          connectionId: id,
+          returnTo: "web",
+        });
+        yield* connections.signInFinish(owner, {
+          orgId,
+          response: vendor.approve(fresh.authorizationUrl),
+        });
+        yield* connections.setToolModes(owner, {
+          orgId,
+          connectionId: id,
+          modes: [{ tool: "query", mode: "ask", digest: toolOf(kept, "query")!.pinDigest }],
+        });
+        assert.strictEqual((yield* call(id, "query")).note, Connections.DRAFTED);
+        const asked = yield* answer(cards.at(-1)!.widgetId, ownerId, true);
+        vendor.vendor.access = "at-elsewhere";
+        vendor.vendor.revoked = true;
+        assert.deepStrictEqual(yield* connections.sendAsk(orgId, asked!.askId), {
+          state: "failed",
+          reason:
+            "Sentry's sign-in expired. The owner can sign in again in Settings. Nothing was sent.",
+        });
       }),
     ),
   );
@@ -1912,7 +2551,10 @@ describe("KinConnections sending", () => {
           (yield* answer(card.widgetId, ownerId, true).pipe(Effect.flip)).reason,
           "widget_changed",
         );
-        yield* connections.sendAsk(orgId, confirmed!.askId);
+        assert.deepStrictEqual(yield* connections.sendAsk(orgId, confirmed!.askId), {
+          state: "sent",
+          reason: null,
+        });
         assert.lengthOf(vendor.vendor.sent, 1);
         const onInvoice = yield* sql<{ to: string; threadId: string }>`SELECT
             json_extract(payload_json, '$.to') AS "to",
@@ -1929,7 +2571,7 @@ describe("KinConnections sending", () => {
       withGoogle((vendor, cards) =>
         Effect.gen(function* () {
           const connections = yield* KinConnections;
-          yield* connectGoogle(vendor);
+          const google = (yield* connectGoogle(vendor)).connectionId;
           yield* sendCall("mail_send", {
             to: ["ana@client.example"],
             subject: "Invoice",
@@ -1993,14 +2635,219 @@ describe("KinConnections sending", () => {
             [{ email: "ana@client.example" }],
           );
 
+          // A change names the calendar and the event as they are, and goes to exactly those.
+          yield* sendCall("calendar_save_event", {
+            calendarId: "team@group.calendar.example",
+            eventId: "e1",
+            title: "Board prep, moved",
+            start: "2026-11-20T16:00:00+05:30",
+            end: "2026-11-20T16:30:00+05:30",
+          });
+          const change = cards.at(-1)!;
+          assert.strictEqual(change.question, "Change “Board prep” and tell the guests?");
+          assert.strictEqual(
+            change.send!.body,
+            [
+              "In calendar: team@group.calendar.example",
+              "Currently: Board prep, Fri, 20 Nov, 4:30 am to 5:00 am",
+              "When: Fri, 20 Nov, 10:30 am to 11:00 am",
+            ].join("\n"),
+          );
+          const changed = yield* answer(change.widgetId, ownerId, true);
+          yield* connections.sendAsk(orgId, changed!.askId);
+          const patched = vendor.vendor.sent.at(-1)!;
+          assert.deepStrictEqual(
+            [patched.method, patched.url.pathname],
+            ["PATCH", "/calendar/v3/calendars/team%40group.calendar.example/events/e1"],
+          );
+          // The same change again reads the moved event, and is still the action that went.
+          const moveAgain = sendCall("calendar_save_event", {
+            calendarId: "team@group.calendar.example",
+            eventId: "e1",
+            title: "Board prep, moved",
+            start: "2026-11-20T16:00:00+05:30",
+            end: "2026-11-20T16:30:00+05:30",
+          });
+          assert.strictEqual((yield* moveAgain).note, Connections.ASK_CLOSED.sent);
+          assert.strictEqual(cards.at(-1), change);
+          const patches = () => vendor.vendor.sent.filter((one) => one.method === "PATCH").length;
+          assert.strictEqual(patches(), 1);
+          // Someone else edits the event between two identical asks: still one open card.
+          const rename = sendCall("calendar_save_event", {
+            calendarId: "team@group.calendar.example",
+            eventId: "e1",
+            title: "Board review",
+            start: "2026-11-20T16:00:00+05:30",
+            end: "2026-11-20T16:30:00+05:30",
+          });
+          assert.strictEqual((yield* rename).note, ASKED);
+          const drawn = cards.length;
+          vendor.vendor.e1 = { ...vendor.vendor.e1, summary: "Board prep (Meera's copy)" };
+          assert.strictEqual((yield* rename).note, ASKED);
+          assert.lengthOf(cards, drawn);
+          assert.strictEqual(patches(), 1);
+
           const bad = yield* sendCall("mail_send", {
             to: ["Ana <ana@client.example>\r\nBcc: x@y.example"],
             subject: "Hi",
             body: "x",
           }).pipe(Effect.flip);
           assert.include(bad.message, "isn't a plain address");
+
+          // Outside text is read while the same change is being drawn: one marked card, not two.
+          const reading = Promise.withResolvers<void>();
+          const read = Promise.withResolvers<void>();
+          vendor.vendor.beforeEvent = () => {
+            reading.resolve();
+            return read.promise;
+          };
+          const sync = {
+            calendarId: "team@group.calendar.example",
+            eventId: "e1",
+            title: "Board sync",
+            start: "2026-11-20T17:00:00+05:30",
+            end: "2026-11-20T17:30:00+05:30",
+          };
+          const plain = yield* sendCall("calendar_save_event", sync).pipe(Effect.forkChild);
+          yield* Effect.promise(() => reading.promise);
+          yield* markOutside(turn, google);
+          assert.strictEqual(
+            (yield* sendCall("calendar_save_event", sync)).note,
+            Connections.DRAFTED,
+          );
+          read.resolve();
+          assert.strictEqual((yield* Fiber.join(plain)).note, Connections.DRAFTED);
+          assert.deepStrictEqual(
+            yield* (yield* SqlClient.SqlClient)`SELECT outside_from AS outside
+              FROM kin_connection_asks WHERE state = 'open' AND payload_json LIKE '%Board sync%'
+              ORDER BY ask_id`,
+            [{ outside: google }],
+          );
         }),
       ),
+  );
+
+  it.effect(
+    "a mail drafted after outside text says so, and each check holds at the tap and at dispatch",
+    () =>
+      withGoogle((vendor, cards) =>
+        Effect.gen(function* () {
+          const connections = yield* KinConnections;
+          const sql = yield* SqlClient.SqlClient;
+          const { connectionId } = yield* connectGoogle(vendor);
+          yield* markRead(connectionId, ["mail_search"]);
+          yield* markOutside(turn, connectionId);
+          const mail = { to: ["ana@client.example"], subject: "Invoice", attachments: ["INV-1"] };
+          // The gate lets both through; the send is only drafted, and the read by alias runs.
+          for (const tool of ["mail_send", "mail_search"])
+            assert.isTrue(
+              yield* outsideToolAllowed(turn, "kin_connection_call", { connection: "mail", tool }),
+            );
+          const asked = yield* sendCall("mail_send", { ...mail, body: "Attached." });
+          assert.strictEqual(asked.note, Connections.DRAFTED);
+          assert.lengthOf(vendor.vendor.sent, 0);
+          const searched = vendor.vendor.googleRequests.length;
+          const found = yield* connections.call(scope, {
+            connection: "mail",
+            tool: "mail_search",
+            arguments: { query: "invoice" },
+          });
+          assert.include(found.quoted ?? "", "owner@invented.example");
+          assert.isTrue(
+            vendor.vendor.googleRequests
+              .slice(searched)
+              .some((url) => url.searchParams.get("q") === "invoice"),
+          );
+          const mark =
+            " Drafted after reading text from owner@invented.example, so check it before you confirm.";
+          assert.strictEqual(cards[0]!.question, `Send this email from Gmail?${mark}`);
+
+          // The file changed: nothing goes, and the fresh card keeps the mark and the reason.
+          yield* fileVersion(2);
+          const stale = yield* answer(cards[0]!.widgetId, ownerId, true);
+          if (stale?._tag !== "stale" || stale.fresh === undefined) return assert.fail("not stale");
+          assert.include(stale.reason, "The attached document changed since this card was made");
+          const fresh = yield* connections.freshAsk(orgId, stale.fresh, 2);
+          if (fresh === undefined) return assert.fail("no fresh card");
+          assert.strictEqual(fresh.card.question, `Send this email from Gmail?${mark}`);
+          yield* fresh.bind("w-fresh");
+          const [kept] = yield* sql<{ outside: string }>`SELECT outside_from AS outside
+          FROM kin_connection_asks WHERE widget_id = 'w-fresh'`;
+          assert.strictEqual(kept?.outside, connectionId);
+
+          // Signed in again as another account between the tap and the send: nothing goes.
+          const confirmed = yield* answer("w-fresh", ownerId, true);
+          assert.strictEqual(confirmed?._tag, "send");
+          yield* sql`UPDATE kin_connections SET sign_in_gen = sign_in_gen + 1
+          WHERE connection_id = ${connectionId}`;
+          const done = yield* connections.sendAsk(orgId, confirmed!.askId);
+          assert.strictEqual(done.state, "failed");
+          assert.include(done.reason ?? "", "since this card was made, so nothing was sent.");
+          assert.lengthOf(vendor.vendor.sent, 0);
+
+          // The stored file no longer matches between the tap and the send: it never left.
+          yield* sendCall("mail_send", { ...mail, body: "Attached, again." });
+          const late = yield* answer(cards.at(-1)!.widgetId, ownerId, true);
+          const fs = yield* FileSystem.FileSystem;
+          const { attachmentsDir } = yield* ServerConfig;
+          yield* fs.writeFile(
+            `${attachmentsDir}/kin-00000000-0000-4000-8000-000000000002-pdf.pdf`,
+            PDF(9),
+          );
+          const unsent = yield* connections.sendAsk(orgId, late!.askId);
+          assert.deepInclude(unsent, {
+            state: "failed",
+            reason:
+              "INV-26-27-001.pdf is not the file the card showed. Nothing was sent. The same mail is below to try again.",
+          });
+          assert.lengthOf(vendor.vendor.sent, 0);
+        }),
+      ),
+  );
+
+  it.effect("voiding the entry before Confirm: the ask goes stale and nothing is sent", () =>
+    withGoogle((vendor, cards) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_registers
+          SET definition_json = ${JSON.stringify(presetDefinition("invoices", "INR"))}
+          WHERE org_id = ${orgId} AND register_id = 'invoices'`;
+        yield* connectGoogle(vendor);
+        const mail = { to: ["ana@client.example"], subject: "Invoice", attachments: ["INV-1"] };
+        yield* sendCall("mail_send", { ...mail, body: "Attached." });
+        yield* sql`UPDATE kin_records SET state = 'dropped'
+          WHERE org_id = ${orgId} AND record_id = 'rec_inv'`;
+        const stale = yield* answer(cards[0]!.widgetId, ownerId, true);
+        assert.deepInclude(stale, {
+          _tag: "stale",
+          reason: "Invoice INV-1 is void now, so nothing was sent.",
+          fresh: undefined,
+        });
+        assert.lengthOf(yield* connections.interruptedSends(orgId, 10), 0);
+        assert.lengthOf(vendor.vendor.sent, 0);
+
+        // Paid is not closed for sending: a copy of a paid invoice still goes.
+        yield* sql`UPDATE kin_records SET state = 'done'
+          WHERE org_id = ${orgId} AND record_id = 'rec_inv'`;
+        yield* sendCall("mail_send", { ...mail, body: "A copy, for your records." });
+        const paid = yield* answer(cards[1]!.widgetId, ownerId, true);
+        assert.strictEqual(paid?._tag, "send");
+        yield* connections.sendAsk(orgId, paid!.askId);
+        assert.lengthOf(vendor.vendor.sent, 1);
+
+        // Voided between the Confirm and the send: the send checks again and nothing goes.
+        yield* sendCall("mail_send", { ...mail, body: "Once more." });
+        const late = yield* answer(cards[2]!.widgetId, ownerId, true);
+        yield* sql`UPDATE kin_records SET state = 'dropped'
+          WHERE org_id = ${orgId} AND record_id = 'rec_inv'`;
+        assert.deepStrictEqual(yield* connections.sendAsk(orgId, late!.askId), {
+          state: "failed",
+          reason: "Invoice INV-1 is void now, so nothing was sent.",
+        });
+        assert.lengthOf(vendor.vendor.sent, 1);
+      }),
+    ),
   );
 
   it.effect("asks a sign-in from before sending to sign in again", () =>
@@ -2435,9 +3282,13 @@ describe("KinConnections Microsoft", () => {
           tool: "mail_reply",
           arguments: { threadId: "conv1", body: "Quote attached." },
         });
-        assert.strictEqual(asked.note, ASKED);
+        // The reply was drafted after reading the thread, and its card says so.
+        assert.strictEqual(asked.note, Connections.DRAFTED);
         const card = cards.at(-1)!;
-        assert.strictEqual(card.question, "Send this reply from Outlook?");
+        assert.strictEqual(
+          card.question,
+          "Send this reply from Outlook? Drafted after reading text from owner@outlook.example, so check it before you confirm.",
+        );
         assert.strictEqual(card.send?.from, "sales@outlook.example");
         assert.lengthOf(vendor.vendor.graphMime, 0);
         const confirmed = yield* answer(card.widgetId, ownerId, true);
