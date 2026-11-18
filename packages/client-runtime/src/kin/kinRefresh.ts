@@ -114,7 +114,8 @@ export function kinRefreshTriggers(
       /** How often a topic has moved since this client first heard it; for a read over several orgs. */
       moves: (topic: KinRefreshTopic) => (target: Target) => moves(keyOf(topic, target)),
       unresumed,
-      serves: (name: (typeof KIN_STREAMS)[number]) => (target: Target) =>
+      // Readers ask for "open" before KIN_STREAMS lists it; until a host does, it serves false.
+      serves: (name: (typeof KIN_STREAMS)[number] | "open") => (target: Target) =>
         serves(keyOf(name, target)),
     },
   );

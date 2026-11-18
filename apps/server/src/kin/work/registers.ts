@@ -440,7 +440,7 @@ export const describe = (spec: FieldDef) =>
     : spec.type === "date"
       ? "a day such as 2026-11-20, or a day and time such as 2026-11-18T15:00"
       : spec.type === "person"
-        ? '"me", "owner" or an agentId'
+        ? '"you", "me" for whoever asked, "owner" or an agentId'
         : spec.type === "link"
           ? `a ${spec.link === "projects" ? "project" : "client"}'s key or name`
           : spec.type === "money"

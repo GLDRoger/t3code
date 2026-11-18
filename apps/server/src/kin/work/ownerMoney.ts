@@ -4,6 +4,7 @@ import {
   KIN_RECORD_CHANGES_CAP,
   KinChatError,
   type KinOrgId,
+  type KinPersonId,
   type KinCompanyProfileInput,
   type KinCompanyProfileSetInput,
   type KinDatesInput,
@@ -281,6 +282,10 @@ const moneyReader = Effect.fn("KinMoney.reader")(function* (
   if (!places.reaches.money) return yield* noMoney;
   return viewer.person.personId;
 });
+
+/** `moneyReader` for a server caller holding ids: undefined for owner level, or the teammate. */
+export const moneyViewer = (orgId: KinOrgId, personId: KinPersonId) =>
+  moneyReader([{ _tag: "person", orgId, personId }], orgId);
 
 /** The owner's Issue tap: the entry's number from its list's series, the same one if asked twice. */
 export const issue = Effect.fn("KinMoney.issue")(function* (

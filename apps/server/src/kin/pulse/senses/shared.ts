@@ -5,6 +5,7 @@ import {
   type KinOrgId,
   type KinPulseActor,
   type KinPulseFact,
+  formatKinLate,
   formatKinWhen,
   KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
@@ -114,6 +115,9 @@ export const daysAgoText = (ctx: SenseContext, ms: number) => {
 /** A moment in the owner's zone, such as "Thu 19 Nov, 15:00". */
 export const whenOf = (ctx: SenseContext, ms: number) =>
   formatKinWhen(ms, "dayTime", { zone: ctx.zone, locale: KIN_TEXT_LOCALE });
+/** How long since `ms`, to follow a verb: "for 5 hours", "for 12 days", "since 1 Jan 1999". */
+export const lateText = (ctx: SenseContext, ms: number) =>
+  formatKinLate(ms, ctx.at, { zone: ctx.zone, locale: KIN_TEXT_LOCALE });
 export const daysText = (days: number) => (days === 1 ? "1 day" : `${days} days`);
 export const hoursText = (hours: number) => (hours === 1 ? "1 hour" : `${hours} hours`);
 /** An instant as facts carry it. */

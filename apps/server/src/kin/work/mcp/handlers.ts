@@ -8,6 +8,7 @@ import { LeadMemory } from "../../lead/LeadMemory.ts";
 import * as Clients from "../leadClients.ts";
 import * as Money from "../leadMoney.ts";
 import * as Work from "../leadWork.ts";
+import * as Comments from "../workComments.ts";
 import { KinWorkToolkit } from "./tools.ts";
 
 const isKinChatError = Schema.is(KinChatError);
@@ -73,6 +74,11 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
   record_hand_back: McpToolAccess.actsAsCaller(
     Effect.fn("KinWorkToolkit.handBack")(function* (input) {
       return yield* Work.handBack(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
+  record_comment: McpToolAccess.actsAsCaller(
+    Effect.fn("KinWorkToolkit.comment")(function* (input) {
+      return yield* Comments.leadComment(yield* McpInvocationContext, input);
     }, Effect.mapError(failure)),
   ),
   list_define: McpToolAccess.actsAsCaller(

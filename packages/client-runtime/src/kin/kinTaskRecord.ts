@@ -1,5 +1,12 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
-import type { KinRecordChange, KinRecordDetail, KinWorkPrincipal } from "@t3tools/contracts";
+import type {
+  KinAttachment,
+  KinRecordChange,
+  KinRecordComment,
+  KinRecordDetail,
+  KinRecordWaiting,
+  KinWorkPrincipal,
+} from "@t3tools/contracts";
 
 import { formatKinTime, type KinAvatarView } from "./kinScreenState.ts";
 import {
@@ -28,6 +35,11 @@ export const KIN_TASK_RECORD = {
   more: "More",
   nothingNeeded: "Nothing needed from you yet.",
   noActivity: "Nothing has happened here yet.",
+  addNote: "Add a note…",
+  removed: "removed this note",
+  older: "Show earlier notes",
+  openDraft: "Open the draft",
+  openQuestion: "Open the question",
 } as const;
 
 /** Someone the record names, as a row draws them: "Rhea (you)", or the agent's name. */
@@ -49,17 +61,39 @@ const isMe = (who: KinWorkPrincipal, names: KinWorkNames) =>
   who._tag === "person" && who.personId === names.me;
 
 /**
- * Who asked for it: the person who made it, else the person who gave it to its holder. An agent
- * that wrote the task down asked nothing; null when no person is on record.
+ * Who asked for it: the person the host stored when it was made. Older entries have none, so
+ * then the person who made it, else the person who gave it to its holder; an agent that wrote
+ * the task down asked nothing. Null when no person is on record.
  */
 export const kinRecordAskedBy = (
-  item: Pick<KinRecordDetail, "createdBy" | "assignedBy">,
+  item: Pick<KinRecordDetail, "createdBy" | "assignedBy" | "askedBy">,
 ): KinWorkPrincipal | null =>
-  item.createdBy._tag === "person"
-    ? item.createdBy
-    : item.assignedBy?._tag === "person"
-      ? item.assignedBy
-      : null;
+  item.askedBy !== undefined
+    ? { _tag: "person", personId: item.askedBy }
+    : item.createdBy._tag === "person"
+      ? item.createdBy
+      : item.assignedBy?._tag === "person"
+        ? item.assignedBy
+        : null;
+
+const samePrincipal = (a: KinWorkPrincipal, b: KinWorkPrincipal) =>
+  a._tag === "person"
+    ? b._tag === "person" && a.personId === b.personId
+    : b._tag === "agent" && a.agentId === b.agentId;
+
+/** The newest comment still standing, by `who` when given. */
+function kinLatestComment(
+  item: Pick<KinRecordDetail, "comments">,
+  who?: KinWorkPrincipal,
+): KinRecordComment | null {
+  const comments = item.comments ?? [];
+  for (let index = comments.length - 1; index >= 0; index--) {
+    const comment = comments[index]!;
+    if (comment.removed !== undefined || comment.body.trim() === "") continue;
+    if (who === undefined || samePrincipal(comment.by, who)) return comment;
+  }
+  return null;
+}
 
 export type KinRecordChipTone = "wait" | "doing" | "late" | "done" | "plain";
 
@@ -89,7 +123,14 @@ export function kinRecordChip(
   return { tone: "plain", label: view.status };
 }
 
-export type KinNextStepAct = "keep" | "decline" | "done" | "reopen" | "give" | "handBack";
+export type KinNextStepAct =
+  | "keep"
+  | "decline"
+  | "done"
+  | "reopen"
+  | "give"
+  | "handBack"
+  | "openWaiting";
 
 /**
  * The one thing that moves this task for this viewer, drawn as a card under the title. `acts`
@@ -101,13 +142,15 @@ export interface KinNextStepView {
   /** What follows the name: "suggested this task", "is on it". */
   readonly line: string;
   readonly when: string | null;
-  /** Someone's own words, quoted. */
+  /** Someone's own words, quoted: the holder's latest note, or a done task's last one. */
   readonly words: string | null;
   readonly note: string | null;
+  /** A draft or question waiting in a chat about this task; `openWaiting` opens it there. */
+  readonly waiting: KinRecordWaiting | null;
   readonly acts: ReadonlyArray<{ readonly id: KinNextStepAct; readonly label: string }>;
 }
 
-export function kinNextStep(input: {
+type NextStepInput = {
   readonly item: KinRecordDetail;
   readonly view: KinWorkItemView;
   readonly names: KinWorkNames;
@@ -115,7 +158,40 @@ export function kinNextStep(input: {
   /** This viewer may change the task, and give it to someone. */
   readonly change: boolean;
   readonly give: boolean;
-}): KinNextStepView {
+};
+
+export function kinNextStep(input: NextStepInput): KinNextStepView {
+  const step = stepFor(input);
+  const { item } = input;
+  // A note beats the stored reason: it is the latest thing they said.
+  const said =
+    step.kind === "closed"
+      ? item.state === "done"
+        ? kinLatestComment(item)
+        : null
+      : step.kind === "agent" || step.kind === "held" || step.kind === "late"
+        ? kinLatestComment(item, item.owner)
+        : null;
+  const waiting = item.waiting ?? null;
+  return {
+    ...step,
+    words: said?.body ?? step.words,
+    waiting,
+    acts:
+      waiting === null
+        ? step.acts
+        : [
+            {
+              id: "openWaiting",
+              label:
+                waiting.kind === "send" ? KIN_TASK_RECORD.openDraft : KIN_TASK_RECORD.openQuestion,
+            },
+            ...step.acts,
+          ],
+  };
+}
+
+function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
   const { item, view, names, now } = input;
   const to = (state: KinRecordDetail["state"]) => input.change && view.can.states.includes(state);
   const giveAct =
@@ -242,16 +318,29 @@ export type KinActivityIcon =
   | "link"
   | "change";
 
-/** One line of a task's Activity, with what a change replaced shown beside what it became. */
+/**
+ * One line of a task's Activity: a change, with what it replaced beside what it became, or a
+ * note someone left, with its files.
+ */
 export interface KinActivityLine {
   readonly key: string;
-  readonly icon: KinActivityIcon;
+  readonly icon: KinActivityIcon | "comment";
   /** Set in bold ahead of `text`; null when the line names nobody first. */
   readonly who: string | null;
   readonly text: string;
   readonly when: string;
   readonly before: string | null;
   readonly after: string | null;
+  /** An agent that did it for `who`: "via Chief of staff". */
+  readonly via: string | null;
+  /** A note's own words and files; null on a change. */
+  readonly comment: {
+    readonly commentId: string;
+    readonly body: string;
+    readonly files: ReadonlyArray<KinAttachment>;
+    readonly removed: boolean;
+    readonly canRemove: boolean;
+  } | null;
 }
 
 const SHOWN_CHANGES = ["due", "title", "notes"] as const;
@@ -285,25 +374,75 @@ function beforeAfter(change: KinRecordChange, names: KinWorkNames, now: Date) {
   return { before: null, after: null };
 }
 
-/** A task's changes as Activity reads them: oldest first, each with who, when and what moved. */
+function changeLine(change: KinRecordChange, names: KinWorkNames, now: Date): KinActivityLine {
+  const full = kinWorkChangeText(change, names, now, "work", "brief");
+  const actor = kinWorkActorName(change.by, names);
+  const named = full.startsWith(`${actor} `);
+  // An agent acting for a person: the person did it, through the agent.
+  const asker = change.by._tag === "agent" && named ? change.askedBy : undefined;
+  return {
+    key: `change:${change.seq}`,
+    icon: changeIcon(change),
+    who:
+      asker !== undefined
+        ? kinWorkActorName({ _tag: "person", personId: asker }, names)
+        : named
+          ? actor
+          : null,
+    text: named ? full.slice(actor.length + 1) : full,
+    when: formatKinTime(new Date(change.at), now),
+    ...beforeAfter(change, names, now),
+    via: asker === undefined ? null : actor,
+    comment: null,
+  };
+}
+
+function commentLine(comment: KinRecordComment, names: KinWorkNames, now: Date): KinActivityLine {
+  const removed = comment.removed !== undefined;
+  return {
+    key: `comment:${comment.commentId}`,
+    icon: "comment",
+    who: kinWorkActorName(comment.by, names),
+    text: removed ? KIN_TASK_RECORD.removed : "",
+    when: formatKinTime(new Date(comment.at), now),
+    before: null,
+    after: null,
+    via: null,
+    comment: {
+      commentId: comment.commentId,
+      body: comment.body,
+      files: comment.files,
+      removed,
+      canRemove: comment.canRemove === true,
+    },
+  };
+}
+
+/**
+ * A task's Activity: its changes and notes in one thread, oldest first, each with who, when and
+ * what moved. A note and a change at the same moment read change first.
+ */
 export function kinTaskActivity(
-  item: Pick<KinRecordDetail, "changes">,
+  item: Pick<KinRecordDetail, "changes" | "comments">,
   names: KinWorkNames,
   now: Date,
 ): ReadonlyArray<KinActivityLine> {
-  return [...item.changes].reverse().map((change) => {
-    const full = kinWorkChangeText(change, names, now, "work", "brief");
-    const who = kinWorkActorName(change.by, names);
-    const named = full.startsWith(`${who} `);
-    return {
-      key: String(change.seq),
-      icon: changeIcon(change),
-      who: named ? who : null,
-      text: named ? full.slice(who.length + 1) : full,
-      when: formatKinTime(new Date(change.at), now),
-      ...beforeAfter(change, names, now),
-    };
-  });
+  const lines = [
+    ...[...item.changes].reverse().map((change) => ({
+      at: Date.parse(change.at),
+      order: 0,
+      line: changeLine(change, names, now),
+    })),
+    ...(item.comments ?? []).map((comment) => ({
+      at: Date.parse(comment.at),
+      order: 1,
+      line: commentLine(comment, names, now),
+    })),
+  ];
+  return lines
+    .map((entry, index) => ({ ...entry, index }))
+    .sort((a, b) => a.at - b.at || a.order - b.order || a.index - b.index)
+    .map((entry) => entry.line);
 }
 
 /** Who wrote the brief as it reads now, and when: "Rhea, 12 Nov". Null with no brief. */

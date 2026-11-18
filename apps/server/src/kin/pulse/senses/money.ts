@@ -70,7 +70,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
     return found;
   });
 
-  // invoice_overdue: issued, still owed, and past its due date (else its issue date) plus the grace.
+  // invoice_overdue: issued, still owed, and past its due date (else its client's terms) plus the grace.
   const invoices = yield* sql<EntryRow & { base: number; paid: number }>`SELECT * FROM (
     SELECT ${entryColumns(sql)}, ${invoiceDue(sql)} AS base,
       (SELECT COALESCE(SUM(pay.amount_minor), 0) FROM kin_record_payments pay
@@ -91,7 +91,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
         key: `invoice_overdue:${row.key}:base=${row.base}`,
         since: iso(row.base + toMs(chase)),
         measure: measure(days, chase),
-        consequence: `${owed} owed, ${daysText(days)} past ${row.dueAt === null ? "its issue date" : "due"} (${dayOf(ctx, row.base)}).`,
+        consequence: `${owed} owed, ${daysText(days)} past due (${dayOf(ctx, row.base)}).`,
         wake: "now",
       }),
     );

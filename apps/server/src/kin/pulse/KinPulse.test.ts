@@ -175,7 +175,7 @@ const seed = Effect.gen(function* () {
     dueAt: B + 2 * DAY,
     partyId: "r-C-1",
   });
-  yield* insert({ id: "W-10", dueAt: B + 5 * DAY, partyId: "r-C-1" });
+  yield* insert({ id: "W-10", dueAt: B + 5 * DAY, partyId: "r-C-1", category: "obligation" });
   yield* insert({ id: "DT-1", list: "dates", category: "renewal", dueAt: B + 40 * DAY });
   yield* insert({
     id: "EXP-1",
@@ -385,6 +385,19 @@ describe("KinPulse", () => {
       assert.deepStrictEqual(
         renewals.map((fact) => fact.subject.key),
         ["DT-2"],
+      );
+
+      // V27: our own task under a client is a late task, not something we owe the client.
+      yield* insert({ id: "W-15", dueAt: B, partyId: "r-C-2", category: "task" });
+      assert.lengthOf(keyed((yield* read(B + 60 * DAY)).facts, "client_waiting_on_us", "C-2"), 0);
+      assert.lengthOf(keyed((yield* read(B + 60 * DAY)).facts, "task_late", "W-15"), 1);
+      // A late obligation is, in days rather than hours; contact names what it counts.
+      const [owed] = keyed((yield* read(B + 12 * DAY)).facts, "client_waiting_on_us", "C-1");
+      assert.strictEqual(owed!.consequence, "Something we owe them has been past due for 7 days.");
+      const [cold] = keyed((yield* read(B)).facts, "client_cold", "C-1");
+      assert.strictEqual(
+        cold!.consequence,
+        "No contact for 30 days (calls, meetings, mail, invoices and payments count; the last was an invoice), and nothing open with them.",
       );
 
       // A void invoice never counts; a moved due date is a new episode, so a new key.
@@ -708,7 +721,7 @@ describe("KinPulse", () => {
       assert.match(week.goals[0]!, /^G-1 .*₹1,00,000 of ₹10,00,000.*behind$/);
       assert.isTrue(
         week.money.unpaid.some((line) =>
-          /^INV-1:.*days past due; no mail with it on record$/.test(line),
+          /^INV-1:.*unpaid, overdue for \d+ days; no mail with it on record$/.test(line),
         ),
       );
       // Run 4: the brief called a reminder sent 45 s earlier a draft. Its lines read the record.
@@ -752,7 +765,7 @@ describe("KinPulse", () => {
       );
       assert.match(
         String(yield* overdueLine),
-        /past due; sent \S+ from hello@studio.example, no reminder since$/,
+        /overdue for \d+ days; sent \S+ from hello@studio.example, no reminder since$/,
       );
       yield* ask("draft", "open", null, []);
       assert.match(
