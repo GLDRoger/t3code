@@ -481,6 +481,7 @@ function KinPlaceView({
         changes={changes}
         openKey={openKey}
         onOpen={setOpenKey}
+        onOpenProject={openProject}
         onAdd={addTask === null ? null : () => addTask(KIN_WORK_NO_DRAFT)}
         initial={narrowed}
         choices={hostClients ? choices : null}

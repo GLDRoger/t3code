@@ -148,7 +148,15 @@ describe("kinWorkGroups", () => {
     expect(shape(meera)).not.toContain("# On others 0");
   });
 
-  it("a row under its project's heading doesn't name the project again", () => {
+  it("a project's heading names the project it opens; a row under it doesn't name it again", () => {
+    const sections = kinWorkGroups(all, namesFor(zoya), now).filter(
+      (item) => item.type === "section" && item.kind === "project",
+    );
+    expect(sections.map((item) => (item.type === "section" ? item.project : null))).toEqual([
+      "P-1",
+      "P-2",
+      undefined,
+    ]);
     const items = kinWorkGroups(all, namesFor(zoya), now).filter((item) => item.type === "task");
     const under = items.find((item) => item.key === devs.key)!;
     const own = items.find((item) => item.key === zoyas.key)!;
