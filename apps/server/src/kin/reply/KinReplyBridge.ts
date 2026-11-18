@@ -856,15 +856,14 @@ const make = Effect.gen(function* () {
   // "thanks, that's all" can take a 👍; a question, a card tap or a reaction still needs words.
   const answered = Effect.fn("KinReplyBridge.answered")(function* (wake: Wake) {
     if (wake.answered || !wake.lane.owed) return true;
-    // A turn only reactions started may end on NO_REPLY: a 👍 on a statement needs no answer.
-    // A changed or withdrawn answer does: the owner wants to hear what was stopped.
     if (
       wake.lane.mode === "reply" &&
       [...wake.segments.values()].some((segment) => segment.outcome === "silent")
     ) {
       const spoken = yield* sql`SELECT 1 FROM kin_events
         WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId}
-          AND (tag IN ('chat.message', 'widget.action') OR (tag = 'chat.reaction'
+          AND (tag = 'widget.action' OR (tag = 'chat.message' AND event_id NOT GLOB 'handoff-back-*')
+            OR (tag = 'chat.reaction'
             AND (json_extract(json, '$.changedFrom') IS NOT NULL
               OR json_extract(json, '$.withdrawn') = 1)))
         LIMIT 1`;

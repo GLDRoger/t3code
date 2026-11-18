@@ -72,6 +72,10 @@ export const HandOffInput = Schema.Struct({
       "What you are passing on, in the owner's terms, with anything useful you already found. The owner's own message goes along with it.",
   }),
   sourceEventId: TurnEvent,
+  wantsAnswer: Schema.Boolean.annotate({
+    description:
+      "true: you need their answer to finish the owner's request. false: the job is theirs to finish.",
+  }),
   fact: Schema.optional(
     TrimmedNonEmptyString.check(Schema.isMaxLength(300)).annotate({
       description:
@@ -367,9 +371,10 @@ const make = Effect.gen(function* () {
     const target = yield* pick(others, input.to);
     const { messageId } = ask.message;
     const claimed = yield* sql<{ toAgentId: KinAgentId }>`INSERT INTO kin_handoffs
-        (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at)
+        (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at, wants_answer)
       VALUES (${ctx.orgId}, ${messageId}, ${ctx.agentId}, ${target.agentId},
-        ${wakeEvent(ask.message, target.agentId, undefined).eventId}, ${yield* Clock.currentTimeMillis})
+        ${wakeEvent(ask.message, target.agentId, undefined).eventId}, ${yield* Clock.currentTimeMillis},
+        ${input.wantsAnswer ? 1 : 0})
       ON CONFLICT (org_id, message_id) DO NOTHING RETURNING to_agent_id AS "toAgentId"`;
     if (claimed.length === 0) {
       const [record] = yield* sql<{ toAgentId: KinAgentId }>`SELECT to_agent_id AS "toAgentId"
@@ -746,9 +751,9 @@ const make = Effect.gen(function* () {
     const id = NodeCrypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
     const messageId = KinMessageId.make(`kin-handoff:${id}`);
     const claimed = yield* sql`INSERT INTO kin_handoffs
-        (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at, to_chat_id)
+        (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at, to_chat_id, wants_answer)
       VALUES (${ctx.orgId}, ${messageId}, ${ctx.agentId}, ${target.agentId}, ${`handoff-${id}`},
-        ${now}, ${target.ownerChatId})
+        ${now}, ${target.ownerChatId}, ${input.wantsAnswer ? 1 : 0})
       ON CONFLICT (org_id, message_id) DO NOTHING RETURNING to_agent_id`;
     if (claimed.length === 0) return { to: target.name, passed: true as const };
     const about =
@@ -880,9 +885,10 @@ const make = Effect.gen(function* () {
         // One hand-off per owner message, whatever words, lead name or wake-up a retry uses. The
         // row is claimed before anything is posted, so a second destination never gets it.
         const claimed = yield* sql<{ toAgentId: KinAgentId }>`INSERT INTO kin_handoffs
-            (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at, to_chat_id)
+            (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at, to_chat_id, wants_answer)
           VALUES (${ctx.orgId}, ${event.messageId}, ${ctx.agentId}, ${target.agentId},
-            ${`handoff-${id}`}, ${yield* Clock.currentTimeMillis}, ${target.ownerChatId})
+            ${`handoff-${id}`}, ${yield* Clock.currentTimeMillis}, ${target.ownerChatId},
+            ${input.wantsAnswer ? 1 : 0})
           ON CONFLICT (org_id, message_id) DO NOTHING RETURNING to_agent_id AS "toAgentId"`;
         if (claimed.length === 0) return (yield* already()) ?? (yield* unavailable());
         const { message } = yield* chat.notice({
@@ -934,8 +940,9 @@ const make = Effect.gen(function* () {
         fromAgentId: KinAgentId;
         toChatId: KinChatId;
         noticeSeq: number;
+        wantsAnswer: number | null;
       }>`SELECT h.message_id AS "messageId", h.from_agent_id AS "fromAgentId",
-          h.to_chat_id AS "toChatId",
+          h.to_chat_id AS "toChatId", h.wants_answer AS "wantsAnswer",
           COALESCE((SELECT n.seq FROM kin_messages n WHERE n.org_id = h.org_id
             AND n.message_id = json_extract(e.json, '$.messageId')), 0) AS "noticeSeq"
         FROM kin_handoffs h JOIN kin_events e ON e.org_id = h.org_id AND e.event_id = h.event_id
@@ -980,7 +987,7 @@ const make = Effect.gen(function* () {
               relay: { kind: "reply_from", agentId: input.agentId },
               silent: true,
             });
-            // The asker carries on from the answer, in its own chat with the owner.
+            if (handoff.wantsAnswer === 0) return;
             yield* queue
               .enqueue({
                 _tag: "chat.message",

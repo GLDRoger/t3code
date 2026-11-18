@@ -595,6 +595,24 @@ describe("KinPushSender", () => {
         assert.match(alerts(apns.sent)[0]?.body ?? "", expected);
       }
 
+      apns.sent.length = 0;
+      yield* sql`UPDATE kin_people SET display_name = 'Rhea Das' WHERE person_id = ${member}`;
+      const words = "Can you review the Lumen invoice?";
+      const relayed = yield* postMessage(sql, { agentMemberId: "m_fin_dm" }, "posted", {
+        chatId: "chat_dm",
+        body: `Rhea Das asked Finance:\n"${words}"`,
+      });
+      yield* sql`UPDATE kin_messages SET relay_json = ${JSON.stringify({
+        kind: "sent_by",
+        personId: member,
+        agentId: "lead_fin",
+      })} WHERE message_id = ${relayed}`;
+      yield* notify({ _tag: "message", orgId, messageId: relayed });
+      assert.deepStrictEqual(alerts(apns.sent), [
+        { title: "Rhea, via Finance", body: words },
+        { title: "Rhea, via Finance", body: words },
+      ]);
+
       // The lead's answer in the group rings whoever it is answering, named or not.
       yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json,
           worker_projects_json, owner_chat_id)

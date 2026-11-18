@@ -11,6 +11,7 @@ import {
   EventId,
   KinAgentId,
   KinChatId,
+  KinEventId,
   KinMessageId,
   KinPersonId,
   KinWakeupId,
@@ -1737,6 +1738,58 @@ const narration = (ordinal: number, runId: RunId): OrchestrationV2TurnItem => ({
     strength: "strong",
   },
 });
+it.effect.each([false, true])(
+  "a hand-back may end on NO_REPLY unless the wake also has an owner message (owner message: %s)",
+  (withOwnerMessage) =>
+    Effect.gen(function* () {
+      const handOver = WAKE_KINDS["hand-over"].event!;
+      const { fake, runId, complete, posted, sql, wakeupId } = yield* setup({
+        event: (context) =>
+          Effect.gen(function* () {
+            if (withOwnerMessage) {
+              const kin = yield* Kin.KinServer;
+              const services = Option.getOrThrow(kin.services);
+              const chats = Context.get(services, KinChatService);
+              const message = yield* chats.send(context.owner, {
+                chatId: context.direct,
+                body: "What should we do next?",
+                clientMessageId: "owner-question",
+              });
+              yield* Context.get(services, KinEventQueue.KinEventQueue).enqueue({
+                _tag: "chat.message",
+                orgId: context.owner.orgId,
+                agentId,
+                eventId: KinEventId.make("owner-question"),
+                receivedAt: yield* DateTime.now,
+                dedupeKey: null,
+                provenance: message.author,
+                chatId: message.chatId,
+                messageId: message.messageId,
+              });
+            }
+            const event = yield* handOver(context);
+            return (base: WakeupEventBase) => ({
+              ...event(base),
+              eventId: KinEventId.make("handoff-back-test"),
+              dedupeKey: "handoff-back:test",
+            });
+          }).pipe(Effect.orDie),
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT event_id = 'handoff-back-test' AS back FROM kin_events
+          WHERE wakeup_id = ${wakeupId} AND tag = 'chat.message' ORDER BY back DESC`,
+        withOwnerMessage ? [{ back: 1 }, { back: 0 }] : [{ back: 1 }],
+      );
+      fake.items = [text("a", 1, "NO_REPLY", runId)];
+      yield* complete;
+      assert.strictEqual(fake.rescues, withOwnerMessage ? 1 : 0);
+      assert.deepStrictEqual(
+        (yield* posted).filter((row) => row.body === "Ada didn't reply.").map((row) => row.body),
+        withOwnerMessage ? ["Ada didn't reply."] : [],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect.each(
   Object.entries(WAKE_KINDS).flatMap(([kind, wake]) =>
     (
