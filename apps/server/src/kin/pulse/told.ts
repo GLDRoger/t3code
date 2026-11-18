@@ -1,4 +1,4 @@
-import type { KinOrgId, KinPersonId, KinPulseFact } from "@t3tools/contracts";
+import type { KinAgentId, KinOrgId, KinPulseFact } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -23,6 +23,15 @@ const dueToday = (fact: KinPulseFact, at: number, zone: string) => {
   return ms > 0 && dayIn(at + Math.max(0, fact.measure.value) * ms, zone) === dayIn(at, zone);
 };
 
+/** Work its holder must hear of: late, owed to us and late, or due today and not started. */
+export const forHolder = (fact: KinPulseFact, at: number, zone: string) =>
+  fact.sense === "task_late" ||
+  fact.sense === "theirs_late" ||
+  (fact.sense === "task_due_soon" && dueToday(fact, at, zone));
+
+/** A told row's party: a person by id, an agent as `agent:<id>`. */
+export const agentParty = (agentId: KinAgentId) => `agent:${agentId}`;
+
 /**
  * What a told fact is compared on, from its own fields: how many times its threshold has been
  * passed (an invoice crossing another chase interval), who has it in hand, and its due day.
@@ -46,15 +55,17 @@ export const factSig = (fact: KinPulseFact, at: number, zone: string) => {
 };
 
 /**
- * The facts `personId` has not been told as they stand now: never told, changed since, or due
- * today. A row counts while its check-in is still to run or ran; a failed one told nothing.
+ * The facts `personId` (or `agentParty`) has not been told as they stand now: never told, changed
+ * since, or due today. A row counts while its event is still to run or ran, a failed one told
+ * nothing; with `anyState`, any row counts, so a failing turn is not tried again every pass.
  */
 export const untold = Effect.fn("KinPulse.untold")(function* (input: {
   readonly orgId: KinOrgId;
-  readonly personId: KinPersonId;
+  readonly personId: string;
   readonly facts: ReadonlyArray<KinPulseFact>;
   readonly at: number;
   readonly zone: string;
+  readonly anyState?: boolean | undefined;
 }) {
   if (input.facts.length === 0) return [];
   const sql = yield* SqlClient.SqlClient;
@@ -65,7 +76,7 @@ export const untold = Effect.fn("KinPulse.untold")(function* (input: {
       FROM kin_pulse_told t JOIN kin_events e ON e.org_id = t.org_id AND e.event_id = t.event_id
       WHERE t.org_id = ${input.orgId} AND t.person_id = ${input.personId}
         AND t.fact_key IN ${sql.in(keys.slice(start, start + 500))}
-        AND e.state IN ('queued', 'claimed', 'done')
+        AND (${input.anyState === true ? 1 : 0} = 1 OR e.state IN ('queued', 'claimed', 'done'))
       ORDER BY t.fact_key, t.told_at`)
       told.set(row.key, (told.get(row.key) ?? new Set()).add(row.sig));
   return input.facts.filter(
@@ -73,10 +84,10 @@ export const untold = Effect.fn("KinPulse.untold")(function* (input: {
   );
 });
 
-/** Marks `facts` told to `personId` by the check-in `eventId`. */
+/** Marks `facts` told to `personId` (or `agentParty`) by the event `eventId`. */
 export const markTold = Effect.fn("KinPulse.markTold")(function* (input: {
   readonly orgId: KinOrgId;
-  readonly personId: KinPersonId;
+  readonly personId: string;
   readonly eventId: string;
   readonly facts: ReadonlyArray<KinPulseFact>;
   readonly at: number;
