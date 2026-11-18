@@ -212,6 +212,8 @@ export const KinAccessMeResult = Schema.Struct({
   leads: Schema.optional(Schema.Array(KinRecordRef)),
   /** The company's home currency, which every member's forms start amounts in; absent from an older host. */
   homeCurrency: Schema.optional(KinCurrency),
+  /** The company's country, ISO 3166 alpha-2, null for none; absent from an older host. */
+  country: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isPattern(/^[A-Z]{2}$/)))),
 });
 export type KinAccessMeResult = typeof KinAccessMeResult.Type;
 

@@ -199,7 +199,7 @@ const KinSpent = Schema.Struct({
 /**
  * What the Money tab and the morning brief read, in the owner's time zone. Owed counts issued
  * invoices' balances; overdue those past due. Received is payments by the day paid; spent is
- * expenses by their date. Months run in the owner's zone; `financialYear` is April to March.
+ * expenses by their date. Months run in the owner's zone; `financialYear` starts in the company's month.
  */
 export const KinMoneySummary = Schema.Struct({
   asOf: IsoDateTime,
@@ -207,8 +207,12 @@ export const KinMoneySummary = Schema.Struct({
   /** `2026-11` and `2026-10`. */
   thisMonth: Schema.String,
   lastMonth: Schema.String,
-  /** `FY2026-27`. */
+  /** `FY2026-27`, or `FY2026` for a year that starts in January. */
   financialYear: Schema.String,
+  /** The month the company's financial year starts in, 1 to 12; absent from older servers (April). */
+  financialYearStartMonth: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 12 })),
+  ),
   owed: Schema.Struct({
     total: KinMoneyTotals,
     overdue: KinMoneyTotals,
@@ -468,6 +472,19 @@ const KinCurrencyRates = Schema.Array(KinCurrencyRate).check(
     { expected: "one rate above zero per currency" },
   ),
 );
+/** A country as ISO 3166 alpha-2 writes it: `IN`, `GB`, `US`. */
+export const KinCountryCode = Schema.String.check(Schema.isPattern(/^[A-Z]{2}$/));
+/** The month a financial year starts in: 1 for January. */
+export const KinMonthNumber = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 12 }));
+/** The one tax the company charges on what it sells outside India, such as VAT at 20 percent. */
+export const KinCompanyTax = Schema.Struct({
+  name: KinTrimmedText.check(Schema.isMaxLength(40)),
+  /** A percent, such as "20" or "7.5"; null charges none until it is set. */
+  rate: Schema.NullOr(Schema.String.check(Schema.isPattern(/^(?:100|\d{1,2}(?:\.\d{1,3})?)$/))),
+  /** Whether the prices it is charged on already include it. */
+  pricesInclude: Schema.NullOr(Schema.Boolean),
+});
+export type KinCompanyTax = typeof KinCompanyTax.Type;
 /** A SAC or HSN code as GST writes it: 4 to 8 digits. */
 export const KinSacCode = Schema.String.check(Schema.isPattern(/^\d{4,8}$/));
 const KinCompanyProfileFields = {
@@ -494,6 +511,14 @@ const KinCompanyProfileFields = {
     Schema.withDecodingDefaultKey(Effect.succeed(KIN_DEFAULT_HOME_CURRENCY)),
   ),
   rates: KinCurrencyRates.pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+  /**
+   * Where the company is. Stored before countries existed it is absent: a rupee company reads as
+   * India, any other as unset. Unset has no tax line and a January year.
+   */
+  country: Schema.optional(Schema.NullOr(KinCountryCode)),
+  financialYearStartMonth: Schema.optional(KinMonthNumber),
+  /** Null charges no tax; India's GST is worked out by the invoice recipe instead. */
+  tax: Schema.optional(Schema.NullOr(KinCompanyTax)),
 };
 export const KinCompanyProfileData = Schema.Struct(KinCompanyProfileFields);
 export type KinCompanyProfileData = typeof KinCompanyProfileData.Type;
@@ -559,6 +584,10 @@ export const KinCompanyProfileSetInput = Schema.Struct({
   homeCurrency: Schema.optional(KinCurrency),
   /** Replaces every rate; send the list without one to remove it. */
   rates: Schema.optional(KinCurrencyRates),
+  /** A new country also brings its currency, year and tax for any of those not sent with it. */
+  country: Schema.optional(Schema.NullOr(KinCountryCode)),
+  financialYearStartMonth: Schema.optional(KinMonthNumber),
+  tax: Schema.optional(Schema.NullOr(KinCompanyTax)),
 });
 export type KinCompanyProfileSetInput = typeof KinCompanyProfileSetInput.Type;
 

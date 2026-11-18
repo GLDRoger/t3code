@@ -91,6 +91,8 @@ export const SHARED_TOOLS = {
   people_read: "allowed",
   // Saved only for the one person who asked, with their own rights.
   people_update: "allowed",
+  // Only the speaker's own date, in their own direct chat with this agent (`setAway`).
+  away_set: "allowed",
   // Only to an agent in the group asked in (`KinHandoff.passInRoom`).
   kin_hand_off: "allowed",
   // Posts only the person's own stored words in their own direct chat; nothing of this turn.

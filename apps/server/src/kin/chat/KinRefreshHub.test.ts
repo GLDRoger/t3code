@@ -267,7 +267,12 @@ describe("KinRefreshHub", () => {
       // Binding a suggestion as it is shown, in `bindSuggestions`, is part of reading the list.
       kin_memory_labels: ["memory/sensitivity.ts"],
       // The repository writes only the first-start owner, before any client, and test seeds.
-      kin_people: ["people/KinPeople.ts", "chat/KinChatRepository.ts", "lead/peopleUpdate.ts"],
+      kin_people: [
+        "people/KinPeople.ts",
+        "chat/KinChatRepository.ts",
+        "lead/peopleUpdate.ts",
+        "lead/awaySet.ts",
+      ],
       // A sign-out's cascade (auth/linkedDevices.ts) runs in the session store, below Kin's hub.
       // Kin's Remove touches the topic itself; one from Sharing & access shows at the next read,
       // and the signed-out devices' sockets close at once.
