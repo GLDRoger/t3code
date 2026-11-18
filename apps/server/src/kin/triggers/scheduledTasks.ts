@@ -860,6 +860,7 @@ const make = Effect.gen(function* () {
     }
   });
 
+  yield* KinSchedules.watchStrayTasks().pipe(Effect.forkScoped);
   const seeded = new Set<string>();
   yield* ticks.register(
     "kin-scheduled-tasks",
