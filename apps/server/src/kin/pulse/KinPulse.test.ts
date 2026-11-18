@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   KinAgentId,
+  KinConnectionId,
   KinEvent,
   KinOrgId,
   KinPersonId,
@@ -839,7 +840,7 @@ describe("KinPulse", () => {
       });
       assert.notProperty(byKey.get(keys[2]!), "writeTo");
       assert.deepStrictEqual(first?.mailFrom, [
-        { connection: "g-1", account: "accounts@studio.example" },
+        { connection: KinConnectionId.make("g-1"), account: "accounts@studio.example" },
       ]);
       assert.notInclude(JSON.stringify(first), "leak");
 
