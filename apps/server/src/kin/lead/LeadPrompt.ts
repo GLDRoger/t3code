@@ -340,7 +340,7 @@ export class KinLeadPrompt extends Context.Service<
             }
             replyDue = true;
             events.push(
-              `This reminder is due now. Write it as your reply, in one short message: only what it was for, and anything about that which changed. The Done, Snooze and Change buttons are attached for you.\n\n${quote(
+              `This reminder is due now. Write it as your reply, in one short message: only what it was for, and anything about that which changed. When it is for something you can start, start it now and say what waits on a tap. The Done, Snooze and Change buttons are attached for you.\n\n${quote(
                 "reminder (data)",
                 {
                   event: event.eventId,

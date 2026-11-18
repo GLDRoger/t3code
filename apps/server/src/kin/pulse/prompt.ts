@@ -10,9 +10,9 @@ import * as KinPulse from "./KinPulse.ts";
 import { teamHoursNow } from "./nudge.ts";
 
 export const PULSE_RULE =
-  "What needs attention, as Kin computed it from its own records just now. Act on a fact when that moves something forward; otherwise leave it. Call pulse_handle once one is in hand or is not a problem. teamHours says, per person, whether they are inside their own working hours now: go by it, never by the team's or your own reckoning.";
+  "What needs attention, as Kin computed it from its own records just now. Nobody asked for these facts, so each one you raise arrives one tap from done: do what you may do alone and say it in a line; draft what leaves the company (mail to its writeTo, its document attached, from an account in mailFrom) so its card waits on him; or put one kin_ask with the real options and a default. When the head start can't be made, say once what is missing, such as no contact with an email; never ask whether to start. Leave a fact that needs nothing or is already in hand. Call pulse_handle once one is in hand or is not a problem. teamHours says, per person, whether they are inside their own working hours now: go by it, never by the team's or your own reckoning.";
 export const CHECK_IN_PULSE_RULE =
-  "Check-in: below are only facts the owner hasn't been told as they stand now (new, changed or due today). Tell him each in your reply, once, leading with what you did or will do; one in hand (inHand) with who and until when. What he was told and hasn't changed is left out: don't recall it.";
+  "Check-in: below are only facts the owner hasn't been told as they stand now (new, changed or due today). Tell him each in your reply, once, leading with what you did or what waits on his tap; one in hand (inHand) with who and until when. What he was told and hasn't changed is left out: don't recall it.";
 const SECTION_CAP = 30;
 const MAILED_SENSES = new Set<KinPulseFact["sense"]>(["invoice_overdue", "quote_unanswered"]);
 const CHECK_IN_CAP = 200;
