@@ -671,7 +671,7 @@ export interface KinProjectRowView {
   readonly accessibilityLabel: string;
 }
 
-export function kinProjectRow(
+function kinProjectRow(
   row: KinProjectRow,
   names: KinWorkNames,
   now: Date,

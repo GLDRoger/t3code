@@ -12,6 +12,8 @@ import {
   kinWorkStatusOffer,
   type KinWorkAction,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
+import { kinTaskProjectMenu } from "@t3tools/client-runtime/kin/kinWorkForms";
+import type { MenuAction } from "@react-native-menu/menu";
 import { View } from "react-native";
 
 import type { AppSymbolName } from "../../../components/ui/AppSymbol";
@@ -153,6 +155,8 @@ export function KinWorkPlaceRow(props: {
   readonly none: string;
   readonly held: KinWorkRef | null;
   readonly choices: ReadonlyArray<KinWorkRef>;
+  /** A task's done projects, offered after the open ones so a late task can still be filed there. */
+  readonly done?: ReadonlyArray<KinWorkRef>;
   readonly disabled: boolean;
   readonly onPick: (ref: KinWorkRef | null) => void;
   /** Whether "None" is offered: the host may let a value change but not be cleared. */
@@ -164,11 +168,18 @@ export function KinWorkPlaceRow(props: {
   };
 }) {
   const { held, side } = props;
+  const groups = kinTaskProjectMenu({ projects: props.choices, doneProjects: props.done ?? [] });
+  const offered = groups.flatMap((group) => group.choices);
   // The one it already has stays pickable after that one closes.
   const choices =
-    held === null || props.choices.some((choice) => choice.key === held.key)
-      ? props.choices
-      : [held, ...props.choices];
+    held === null || offered.some((choice) => choice.key === held.key)
+      ? offered
+      : [held, ...offered];
+  const action = (choice: KinWorkRef) => ({
+    id: choice.key,
+    title: choice.title,
+    state: choice.key === held?.key ? ("on" as const) : ("off" as const),
+  });
   const detail = held?.title ?? props.none;
   return (
     <Menu
@@ -179,11 +190,21 @@ export function KinWorkPlaceRow(props: {
         ...(held === null || props.onOpen === undefined
           ? []
           : [{ id: OPEN, title: `Open ${held.title}`, image: "arrow.up.right" }]),
-        ...choices.map((choice) => ({
-          id: choice.key,
-          title: choice.title,
-          state: choice.key === held?.key ? ("on" as const) : ("off" as const),
-        })),
+        ...(held === null || offered.some((choice) => choice.key === held.key)
+          ? []
+          : [action(held)]),
+        ...groups.flatMap((group): ReadonlyArray<MenuAction> =>
+          group.label === null
+            ? group.choices.map(action)
+            : [
+                {
+                  id: `group:${group.label}`,
+                  title: group.label,
+                  displayInline: true,
+                  subactions: group.choices.map(action),
+                },
+              ],
+        ),
         ...(props.clearable === false && held !== null
           ? []
           : [
