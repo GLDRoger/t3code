@@ -1,5 +1,4 @@
 import { assert } from "@effect/vitest";
-import { AuthSessionId, AuthStandardClientScopes } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -34,20 +33,15 @@ export const layerAt = (dir: string | { readonly prefix: string }) =>
     Layer.provideMerge(layerAuthTest(dir)),
   );
 export const layer = layerAt({ prefix: "kin-tasks-key-" });
-const ownerApp = {
-  sessionId: AuthSessionId.make("rhea-phone"),
-  subject: "browser",
-  method: "browser-session-cookie" as const,
-  scopes: AuthStandardClientScopes,
-};
-
 /** The owner signed in on a paired device, and Zoya and Arjun on the phones their invites made. */
 export const team = Effect.gen(function* () {
   const people = yield* People.KinPeople;
   const sessions = yield* SessionStore;
   const identity = yield* KinIdentity;
   const orgId = identity.owner.orgId;
-  yield* pairSession(ownerApp.sessionId);
+  const signedIn = yield* sessions.issue({ subject: "browser" });
+  yield* pairSession(signedIn.sessionId);
+  const ownerApp = yield* sessions.verify(signedIn.token);
   const join = Effect.fn("test.join")(function* (displayName: string) {
     const invite = yield* people.createInvite(ownerApp, { orgId, displayName });
     const joined = yield* people.accept({ secret: invite.secret });

@@ -117,6 +117,13 @@ export const issue = Effect.fn("KinTasksKeys.issue")(function* (
   const label = input.label ?? "Coding agent";
   return yield* Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
+    // A removal may have committed since `caller`: the issuer is read again where the key is made.
+    const issuer = yield* sql`SELECT 1 FROM auth_sessions a
+      JOIN kin_people p ON p.org_id = ${person.orgId} AND p.person_id = ${person.personId}
+        AND p.removed_at IS NULL
+      WHERE a.session_id = ${session.sessionId} AND a.revoked_at IS NULL
+        AND a.expires_at > ${iso(now)}`;
+    if (issuer.length === 0) return yield* nobody;
     if ((yield* liveKeys(person.orgId, person.personId, now)).length >= KIN_TASKS_KEY_LIMIT)
       return yield* full;
     const issued = yield* auth
@@ -230,8 +237,13 @@ export const admit = Effect.fn("KinTasksKeys.admit")(function* (token: string) {
   if (Option.isNone(holder)) return holder;
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
+  // Bookkeeping only: a failed write never refuses a key that was verified and is live.
   yield* sql`UPDATE kin_tasks_keys SET last_used_at = ${now}
     WHERE org_id = ${holder.value.orgId} AND session_id = ${session.sessionId}
-      AND (last_used_at IS NULL OR last_used_at <= ${now - LAST_USE_STEP_MS})`;
+      AND (last_used_at IS NULL OR last_used_at <= ${now - LAST_USE_STEP_MS})`.pipe(
+    Effect.catch((error) =>
+      Effect.logWarning("Kin couldn't record a coding agent key's use", error),
+    ),
+  );
   return holder;
 }, workFailure);

@@ -27,6 +27,8 @@ import * as AuthHttp from "../../auth/http.ts";
 import { ServerSecretStore } from "../../auth/ServerSecretStore.ts";
 import { SessionStore } from "../../auth/SessionStore.ts";
 import { layerAuthTest } from "../auth/ProofKeySessions.testkit.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
+import * as People from "../people/KinPeople.ts";
 import * as Records from "../work/KinRecords.ts";
 import { TasksKeyAudience } from "./audience.ts";
 import { commentMine, getMine, listMine, setStateMine } from "./tasks.ts";
@@ -56,7 +58,7 @@ it.effect("a person makes keys only for themself, three at most, even two at onc
     assert.deepStrictEqual(issued.scopes, [AuthKinTasksScope]);
     assert.strictEqual(issued.subject, TasksKeys.KIN_TASKS_KEY_SUBJECT);
 
-    yield* TasksKeys.issue(zoya.app, { orgId });
+    const second = yield* TasksKeys.issue(zoya.app, { orgId });
     // Two at once at two keys: exactly one is made.
     const both = yield* Effect.forEach(
       [zoya.app, zoya.app],
@@ -91,6 +93,15 @@ it.effect("a person makes keys only for themself, three at most, even two at onc
       (one) => one.sessionId === first.key.sessionId,
     );
     assert.isNotNull(used?.lastUsedAt);
+    // Last use is bookkeeping: when it can't be written, a live key still gets in.
+    yield* (yield* SqlClient.SqlClient)`CREATE TRIGGER invented_last_use_fails
+      BEFORE UPDATE OF last_used_at ON kin_tasks_keys
+      BEGIN SELECT RAISE(ABORT, 'invented write failure'); END`;
+    assert.strictEqual((yield* admitted(second.secret)).personId, zoya.personId);
+    const unrecorded = (yield* TasksKeys.list(zoya.app, { orgId })).keys.find(
+      (one) => one.sessionId === second.key.sessionId,
+    );
+    assert.isNull(unrecorded?.lastUsedAt);
   }).pipe(Effect.provide(layer)),
 );
 
@@ -247,6 +258,51 @@ it.effect("a key reaches only tasks its person holds, narrowly and as them, even
       "not_found",
     );
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a removal that commits while a key is being made leaves no key, even after rejoining",
+  () =>
+    Effect.gen(function* () {
+      const { orgId, rhea, zoya } = yield* team;
+      const identity = yield* KinIdentity;
+      const people = yield* People.KinPeople;
+      const sql = yield* SqlClient.SqlClient;
+      // Rhea removes Zoya just after Zoya's call is resolved to her, before its key is made.
+      const removedMidway = {
+        ...identity,
+        resolve: (session: AuthenticatedSession) =>
+          identity
+            .resolve(session)
+            .pipe(
+              Effect.tap(() =>
+                people
+                  .removeAccess(rhea.app, { orgId, personId: zoya.personId })
+                  .pipe(Effect.provideService(KinIdentity, identity), Effect.orDie),
+              ),
+            ),
+      };
+      assert.strictEqual(
+        yield* reason(
+          TasksKeys.issue(zoya.app, { orgId }).pipe(
+            Effect.provideService(KinIdentity, removedMidway),
+          ),
+        ),
+        "not_allowed",
+      );
+      const keyRows = sql`SELECT session_id FROM kin_tasks_keys WHERE person_id = ${zoya.personId}`;
+      assert.deepStrictEqual(yield* keyRows, []);
+      // Brought back, she holds no key until she makes one.
+      const invite = yield* people.createInvite(rhea.app, {
+        orgId,
+        displayName: "Zoya",
+        personId: zoya.personId,
+      });
+      const back = yield* people.accept({ secret: invite.secret });
+      const app = yield* (yield* SessionStore).verify(back.accessToken);
+      assert.deepStrictEqual((yield* TasksKeys.list(app, { orgId })).keys, []);
+      assert.deepStrictEqual(yield* keyRows, []);
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect("a key ends at once when revoked, by its holder or the owner and nobody else", () =>
