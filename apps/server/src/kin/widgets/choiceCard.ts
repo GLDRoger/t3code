@@ -6,6 +6,7 @@ import {
   KinChoiceOption,
   KinText,
   KinTrimmedText,
+  kinChoiceActionNote,
   type KinPersonId,
   type KinReactionEmoji,
   type KinSendCard,
@@ -15,6 +16,8 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+
+import { CardActionInput } from "./cardPlans.ts";
 
 /** What `kin_ask` takes: the server assigns option ids, so a lead can't collide them. */
 export const AskInput = Schema.Struct({
@@ -30,6 +33,13 @@ export const AskInput = Schema.Struct({
 /** What an agent's `kin_ask` takes: the card, the default it takes and when, and what it is about. */
 export const LeadAskInput = Schema.Struct({
   ...AskInput.fields,
+  options: Schema.Array(
+    Schema.Struct({
+      label: KinChoiceOption.fields.label,
+      kind: KinChoiceOption.fields.kind,
+      action: Schema.optional(CardActionInput),
+    }),
+  ).check(Schema.isMinLength(2), Schema.isMaxLength(4)),
   default: KinTrimmedText.check(Schema.isMaxLength(80)),
   by: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(10))),
   about: Schema.optional(
@@ -46,6 +56,8 @@ export type AskInput = typeof AskInput.Type & {
   readonly send?: KinSendCard;
   /** An agent's open question: it takes taps until the question closes. */
   readonly untilAnswered?: true;
+  /** The server's line for each option that runs a fixed action (`cardActions.ts`), by index. */
+  readonly actionLines?: ReadonlyArray<string | undefined>;
 };
 export const AskResult = Schema.Struct({
   widgetId: KinTrimmedText,
@@ -65,19 +77,40 @@ export const CloseResult = Schema.Struct({ question: KinTrimmedText, state: KinT
 const decode = Schema.decodeUnknownEffect(KinChoiceCardState);
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 
-export const choiceCardState = (input: AskInput): KinChoiceCardState => ({
-  question: input.question,
-  detail: input.detail === undefined || input.detail.trim() === "" ? null : input.detail,
-  options: input.options.map((option, index) => ({
-    optionId: `option-${index + 1}`,
-    label: option.label,
-    ...(option.kind === undefined ? {} : { kind: option.kind }),
-  })),
-  ...(input.image === undefined ? {} : { image: input.image }),
-  ...(input.send === undefined ? {} : { send: input.send }),
-  ...(input.untilAnswered === true ? { untilAnswered: true as const } : {}),
-  answer: null,
-});
+const DETAIL_MAX = 2000;
+/**
+ * An option that runs an action shows the server's line and has no yes/no kind, so no reaction
+ * can pick it. The lines are in `detail` too, for clients that don't read `action`.
+ */
+export const choiceCardState = (input: AskInput): KinChoiceCardState => {
+  const options = input.options.map((option, index) => {
+    const line = input.actionLines?.[index];
+    return {
+      optionId: `option-${index + 1}`,
+      label: option.label,
+      ...(option.kind === undefined || line !== undefined ? {} : { kind: option.kind }),
+      ...(line === undefined ? {} : { action: { line } }),
+    };
+  });
+  const note = kinChoiceActionNote(options);
+  const own = input.detail === undefined || input.detail.trim() === "" ? null : input.detail;
+  const room = DETAIL_MAX - note.length - 2;
+  const detail =
+    note === ""
+      ? own
+      : own === null
+        ? note
+        : `${own.length <= room ? own : `${own.slice(0, room - 1)}…`}\n\n${note}`;
+  return {
+    question: input.question,
+    detail,
+    options,
+    ...(input.image === undefined ? {} : { image: input.image }),
+    ...(input.send === undefined ? {} : { send: input.send }),
+    ...(input.untilAnswered === true ? { untilAnswered: true as const } : {}),
+    answer: null,
+  };
+};
 
 /**
  * Unanswered cards take taps for a day after they were posted (`KIN_CHOICE_CARD_TTL_MS`); an

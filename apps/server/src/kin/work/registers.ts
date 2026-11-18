@@ -987,6 +987,55 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
   return { id: proposal.id, created: true };
 });
 
+/** A proposal's list name and the revision of the list it adds to (null for a new one). */
+export const proposalShown = Effect.fn("KinRegisters.proposalShown")(function* (
+  orgId: KinOrgId,
+  json: string,
+) {
+  const proposal = Option.getOrUndefined(decodeProposal(json));
+  if (proposal === undefined) return undefined;
+  if (proposal._tag === "new") return { name: proposal.name, listRev: null };
+  const sql = yield* SqlClient.SqlClient;
+  const [list] = yield* sql<{ name: string; rev: number }>`SELECT name, rev FROM kin_registers
+    WHERE org_id = ${orgId} AND register_id = ${proposal.id}`;
+  return list === undefined ? undefined : { name: list.name, listRev: list.rev };
+});
+
+/**
+ * Carries out a proposal from the owner's tap on a card that offered exactly it, in the tap's
+ * transaction: the stored definition and the list it adds to unchanged since then. The reason
+ * nothing was created, or undefined once it is.
+ */
+export const defineProposed = Effect.fn("KinRegisters.defineProposed")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly agentId: string;
+  readonly proposalId: string;
+  readonly definition: string;
+  readonly listRev: number | null;
+  readonly now: number;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ json: string; definedAt: number | null }>`SELECT
+      definition_json AS json, defined_at AS "definedAt" FROM kin_list_proposals
+    WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId}
+      AND agent_id = ${input.agentId}`;
+  if (row === undefined || row.json !== input.definition) return "the proposal changed";
+  if (row.definedAt !== null) return "the list was already made";
+  const shown = yield* proposalShown(input.orgId, row.json);
+  if (shown === undefined || shown.listRev !== input.listRev) return "the list changed";
+  const proposal = Option.getOrUndefined(decodeProposal(row.json));
+  if (proposal === undefined) return "the proposal can no longer be read";
+  // defineList refuses a taken name or prefix before it writes anything.
+  const refused = yield* defineList(input.orgId, proposal, input.now).pipe(
+    Effect.as(undefined),
+    Effect.catchTags({ KinChatError: (error) => Effect.succeed(error.message) }),
+  );
+  if (refused !== undefined) return refused;
+  yield* sql`UPDATE kin_list_proposals SET defined_at = ${input.now}
+    WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId}`;
+  return undefined;
+});
+
 /** Open entries per list, for the definitions the owner sees. */
 export const openCounts = Effect.fn("KinRegisters.openCounts")(function* (
   orgId: KinOrgId,

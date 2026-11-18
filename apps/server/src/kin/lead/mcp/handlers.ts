@@ -22,6 +22,8 @@ import { laneFor } from "../../reply/replyLane.ts";
 import { KinChatService } from "../../chat/KinChatService.ts";
 import { KinServer } from "../../KinServer.ts";
 import * as Questions from "../../questions/openQuestions.ts";
+import * as CardActions from "../../widgets/cardActions.ts";
+import * as CardPlans from "../../widgets/cardPlans.ts";
 import * as ChoiceCard from "../../widgets/choiceCard.ts";
 import { KinHandoff } from "../Handoff.ts";
 import { KinTeam } from "../../team/KinTeam.ts";
@@ -116,6 +118,19 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       const sql = yield* SqlClient.SqlClient;
       const now = yield* Clock.currentTimeMillis;
       const chatId = lane.value.chatId;
+      // Each action is checked as this turn could do it, and its line is the server's own.
+      const drawn = yield* Effect.forEach(card.options, (option) =>
+        option.action === undefined
+          ? Effect.undefined
+          : CardActions.draw(lead, chatId, option.action),
+      );
+      const asked = { ...card, actionLines: drawn.map((one) => one?.line) };
+      const options = ChoiceCard.choiceCardState(asked).options;
+      const plans = options.flatMap((option, index) => {
+        const one = drawn[index];
+        return one === undefined ? [] : [{ optionId: option.optionId, plan: one.plan }];
+      });
+      const wanted = chosen.trim().toLowerCase();
       // A refused repeat posts nothing; an allowed one is stored in its card's own transaction.
       const plan = yield* Questions.planAsk({
         orgId: lead.orgId,
@@ -129,21 +144,31 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         about,
         intent,
         now,
+        acts: card.options.some(
+          (option) => option.action !== undefined && option.label.trim().toLowerCase() === wanted,
+        ),
       });
       const result = yield* (yield* KinLevelGate).ask(
         { ...lead, wakeupId },
         {
-          ...card,
+          ...asked,
           ...(plan === undefined ? {} : { untilAnswered: true as const }),
           chatId,
           clientMessageId: `kin-ask:${wakeupId}:${key.slice(0, 32)}`,
         },
-        plan === undefined
+        plan === undefined && plans.length === 0
           ? undefined
           : (widget) =>
-              Questions.recordAsk(plan, {
-                widgetId: widget.widgetId,
-                options: ChoiceCard.choiceCardState(card).options,
+              Effect.gen(function* () {
+                if (plan !== undefined)
+                  yield* Questions.recordAsk(plan, { widgetId: widget.widgetId, options });
+                yield* CardPlans.sealPlans({
+                  orgId: lead.orgId,
+                  chatId,
+                  widgetId: widget.widgetId,
+                  plans,
+                  now,
+                });
               }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       );
       return plan === undefined

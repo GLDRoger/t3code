@@ -213,6 +213,8 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
   readonly about?: ReadonlyArray<string> | undefined;
   readonly intent?: string | undefined;
   readonly now: number;
+  /** The default runs a fixed action: only a tap runs it, so it is never taken at its day. */
+  readonly acts?: boolean;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const wanted = input.default.trim().toLowerCase();
@@ -234,10 +236,12 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
   if (named !== undefined && "refused" in named) return yield* refuse(named.refused);
   const dueAt = named?.at ?? defaultDue(input.now, clock.zone, clock.days);
   const about = normaliseAbout(input.about);
-  const safe = safeDefault(label, input.question, {
-    labels: input.labels,
-    aboutMoney: yield* aboutMoney(input.orgId, about),
-  });
+  const safe =
+    input.acts !== true &&
+    safeDefault(label, input.question, {
+      labels: input.labels,
+      aboutMoney: yield* aboutMoney(input.orgId, about),
+    });
   const intent = normaliseIntent(input.intent);
   if (seen === undefined)
     for (const open of yield* openFor(input.orgId, personId))

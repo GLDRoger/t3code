@@ -87,6 +87,7 @@ import { validateState } from "../widgets/registry.ts";
 import { deferralCardActions, deferralCardActionsReady } from "../widgets/deferralCard.ts";
 import * as ChartCard from "../widgets/chartCard.ts";
 import * as VisualCard from "../widgets/visualCard.ts";
+import * as CardPlans from "../widgets/cardPlans.ts";
 import * as ChoiceCard from "../widgets/choiceCard.ts";
 import { answerByReply } from "../questions/openQuestions.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
@@ -150,12 +151,15 @@ export type ChoiceAnswerHandler = (input: {
   readonly orgId: KinOrgId;
   readonly widget: KinWidget;
   readonly personId: KinPersonId;
+  readonly memberId: KinMemberId;
   readonly option: { readonly label: string; readonly kind?: "yes" | "no" | undefined };
+  /** The fixed action the option runs, sealed when the card was drawn (`cardActions.ts`). */
+  readonly plan?: CardPlans.CardPlan;
   readonly via: "tap" | "reaction";
   readonly now: number;
 }) => Effect.Effect<
   KinChoiceOutcome | undefined,
-  Repository.RepositoryError | SqlError.SqlError | Schema.SchemaError
+  KinChatError | Repository.RepositoryError | SqlError.SqlError | Schema.SchemaError
 >;
 type WaitingInput = Pick<
   KinWaitingItem,
@@ -896,6 +900,21 @@ const make = Effect.gen(function* () {
         ? yield* SocialCards.describePackTap(widget, request.actionId)
         : null;
     const tap = choice ?? reminder ?? scheduled ?? socialTap ?? packTap;
+    // An option that runs a fixed action runs it for a tap only, never for a reaction.
+    const sealed =
+      choice === null
+        ? undefined
+        : yield* CardPlans.planFor({
+            orgId: identity.orgId,
+            widgetId: widget.widgetId,
+            optionId: choice.option.optionId,
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(cardTapError));
+    if (sealed !== undefined && (reaction !== null || sealed.plan === undefined))
+      return yield* new KinChatError({
+        reason: "not_allowed",
+        message: "This option runs only from a tap on it.",
+      });
+    const runs = sealed?.plan !== undefined && CardPlans.runsItself(sealed.plan);
     const body = yield* encodeAction({
       widgetId: request.widgetId,
       revision: request.revision,
@@ -903,7 +922,9 @@ const make = Effect.gen(function* () {
       ...(request.value === undefined ? {} : { value: request.value }),
       ...(tap === null ? {} : { text: tap.text }),
       // The server finished this tap itself, so it doesn't wake the lead.
-      ...((reminder ?? scheduled ?? socialTap ?? packTap)?.wake === false ? { handled: true } : {}),
+      ...((reminder ?? scheduled ?? socialTap ?? packTap)?.wake === false || runs
+        ? { handled: true }
+        : {}),
     }).pipe(Effect.mapError(() => invalidState));
     const previous = yield* repo.findClientMessage({
       ...member,
@@ -920,6 +941,11 @@ const make = Effect.gen(function* () {
         return yield* notAllowed;
       return previous.value;
     }
+    // Its action ran once already: any later tap, from any session, gets that tap's answer.
+    if (sealed?.ran != null)
+      return yield* requireRecord(
+        repo.getMessage({ orgId: identity.orgId, messageId: sealed.ran }),
+      );
     if (widget.revision !== request.revision)
       return yield* new KinChatError({
         reason: "widget_changed",
@@ -1027,6 +1053,8 @@ const make = Effect.gen(function* () {
             Effect.provideService(KinRefreshObserver, refresh),
             Effect.mapError(cardTapError),
           );
+    if (sealed !== undefined && onChoice === undefined)
+      return yield* new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
     const handled =
       choice === null || onChoice === undefined
         ? undefined
@@ -1034,7 +1062,9 @@ const make = Effect.gen(function* () {
             orgId: identity.orgId,
             widget,
             personId: identity.personId,
+            memberId: member.memberId,
             option: choice.option,
+            ...(sealed?.plan === undefined ? {} : { plan: sealed.plan }),
             via: reaction === null ? "tap" : "reaction",
             now: yield* Clock.currentTimeMillis,
           }).pipe(
@@ -1054,6 +1084,13 @@ const make = Effect.gen(function* () {
       widgetId: widget.widgetId,
       clientId: { kind: "act", id: request.clientActionId },
     });
+    if (sealed !== undefined && choice !== null)
+      yield* CardPlans.markRan({
+        orgId: identity.orgId,
+        widgetId: widget.widgetId,
+        optionId: choice.option.optionId,
+        messageId: message.messageId,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(cardTapError));
     for (const item of yield* repo.listOpenWaiting(identity))
       if (item.widgetId === widget.widgetId) yield* resolve(item, "acted");
     if (answer !== null) {
