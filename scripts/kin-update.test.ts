@@ -206,6 +206,17 @@ echo "current $(basename "$(readlink "$CURRENT")")"`);
     expect(said).toContain("didn't answer on http://127.0.0.1:3773 within 90s");
   });
 
+  it("hands over to the merged script once, when the merge changed it", () => {
+    const { out } = onFakeHost(`
+mkdir -p "$REPO/ops/kin/host"
+cp "$SCRIPT" "$REPO/ops/kin/host/update.sh"
+(hand_over first); echo "same script: stayed"
+echo 'echo "merged script ran: $KIN_UPDATE_HANDED_OVER $*"' >"$REPO/ops/kin/host/update.sh"
+(hand_over a b)
+(KIN_UPDATE_HANDED_OVER=1; hand_over c); echo "second time: stayed"`);
+    expect(out).toEqual(["same script: stayed", "merged script ran: 1 a b", "second time: stayed"]);
+  });
+
   it("reads the port from service.env", () => {
     const { out } = onFakeHost(`
 printf 'T3CODE_LAN=true\\nexport T3CODE_PORT="4100"\\n' >"$SERVICE_ENV"

@@ -25,8 +25,18 @@ SERVICE_ENV="$HOME/.t3/service.env"
 ANSWER_TIMEOUT=90
 BACKUP=""
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+SELF_SUM="$(cksum <"$SELF")"
 
 say() { echo "update.sh: $*" >&2; }
+
+# This shell read the script before the merge, so a change to it would wait for the update after
+# this one. Run the merged script instead, once.
+hand_over() {
+  local merged="$REPO/ops/kin/host/update.sh"
+  if [ -n "${KIN_UPDATE_HANDED_OVER:-}" ] || [ "$(cksum <"$merged")" = "$SELF_SUM" ]; then return 0; fi
+  say "the update script changed; running the new one."
+  KIN_UPDATE_HANDED_OVER=1 exec bash "$merged" "$@"
+}
 
 # `sudo -iu kin` starts no user session, so point systemctl at kin's user manager.
 user_bus() {
@@ -296,6 +306,7 @@ main() {
 
   git -C "$REPO" fetch origin +refs/heads/kin:refs/remotes/origin/kin
   git -C "$REPO" merge --ff-only origin/kin
+  hand_over "$@"
   SHA="$(git -C "$REPO" rev-parse --verify 'HEAD^{commit}')"
   # The memory repo's memory-check fetches its pin from GitHub, so only a pushed commit is offered.
   PUBLISHED="$SHA"
