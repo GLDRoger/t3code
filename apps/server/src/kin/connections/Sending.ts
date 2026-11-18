@@ -21,6 +21,7 @@ import { readStoredFile } from "../gendocs/brand.ts";
 import type { TextClock } from "../work/companyProfile.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { formatMoney } from "../work/money.ts";
+import { listDef, stateLabel } from "../work/registers.ts";
 import { logTouch } from "../work/touches.ts";
 import { KinGatewayError } from "./McpGateway.ts";
 import { MAIL_TOOL, type Mailbox, type MailProvider } from "./MailProvider.ts";
@@ -219,6 +220,37 @@ export const attachmentsCurrent = Effect.fn("KinSending.current")(function* (
       return false;
   }
   return true;
+});
+
+/**
+ * Why the mail may not go any more because what it is about was closed since its card: a void
+ * invoice, quote or receipt, an archived doc, a dropped entry of any list. `null` when none is.
+ * Done (paid, accepted, filed) still goes: a copy of a paid invoice is fair to send.
+ */
+export const subjectClosed = Effect.fn("KinSending.subjectClosed")(function* (
+  orgId: KinOrgId,
+  prepared: Prepared,
+  entryRecordId: string | null,
+) {
+  const ids = new Set(
+    [
+      entryRecordId,
+      ...(prepared._tag === "email"
+        ? prepared.attachments.flatMap((one) => [one.recordId, one.entryRecordId])
+        : []),
+    ].filter((id) => id !== null),
+  );
+  if (ids.size === 0) return null;
+  const sql = yield* SqlClient.SqlClient;
+  const [closed] = yield* sql<{ key: string; registerId: string; state: string }>`SELECT key,
+      register_id AS "registerId", state FROM kin_records
+    WHERE org_id = ${orgId} AND record_id IN ${sql.in([...ids])} AND state = 'dropped'
+    ORDER BY register_id = 'docs', record_id LIMIT 1`;
+  if (closed === undefined) return null;
+  const def = yield* listDef(orgId, closed.registerId);
+  const noun = def?.noun ?? "entry";
+  const state = def === undefined ? "closed" : stateLabel(def, closed.state).toLowerCase();
+  return `${noun.charAt(0).toUpperCase()}${noun.slice(1)} ${closed.key} is ${state} now, so nothing was sent.`;
 });
 
 /** One of the account's addresses, with its From name; the default when `wanted` is null. */

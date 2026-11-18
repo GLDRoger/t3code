@@ -212,6 +212,8 @@ export function KinChatView(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: string;
   readonly chatId: string;
+  /** A message a notification opened the chat on, brought into view once it has loaded. */
+  readonly message?: string | undefined;
 }) {
   startKinOutbox();
   // The route's host, not the saved one: every Kin host uses the same org id.
@@ -420,6 +422,7 @@ export function KinChatView(props: {
           environmentId={state.environmentId}
           chatId={chatId ?? (props.chatId as KinChatId)}
           agentName={summary === undefined ? null : kinDirectAgentName(summary, viewer.agentNames)}
+          landOn={props.message ?? null}
           chat={state.chat}
           connected={state.connected}
           offline={state.offline}
@@ -602,6 +605,7 @@ function KinChatFeed(props: {
   readonly environmentId: EnvironmentId;
   readonly chatId: KinChatId;
   readonly agentName: string | null;
+  readonly landOn: string | null;
   readonly chat: KinSynced<KinChatState>;
   readonly connected: boolean;
   /** Known unreachable, not just still on its first connection attempt. */
@@ -707,6 +711,19 @@ function KinChatFeed(props: {
             continues: index > 0 || endsOnOwn,
           })),
         ];
+
+  const { landOn } = props;
+  const landed = useRef<string | null>(null);
+  const landIndex =
+    landOn === null
+      ? -1
+      : rows.findIndex((row) => row.type === "message" && row.message.messageId === landOn);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the list, outside React, to the message a notification opened, once it has loaded
+  useEffect(() => {
+    if (landOn === null || landIndex < 0 || landed.current === landOn) return;
+    landed.current = landOn;
+    void listRef.current?.scrollToIndex({ index: landIndex, animated: false, viewPosition: 0.3 });
+  }, [landIndex, landOn, listRef, landed]);
 
   const { presence, stopLead } = props;
   const wakeupId = presence?.wakeupId ?? null;

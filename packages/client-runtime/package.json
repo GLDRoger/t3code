@@ -623,6 +623,10 @@
       "types": "./src/kin/kinMessageAlerts.ts",
       "default": "./src/kin/kinMessageAlerts.ts"
     },
+    "./kin/kinNotificationDestination": {
+      "types": "./src/kin/kinNotificationDestination.ts",
+      "default": "./src/kin/kinNotificationDestination.ts"
+    },
     "./kin/kinViewerScope": {
       "types": "./src/kin/kinViewerScope.ts",
       "default": "./src/kin/kinViewerScope.ts"
@@ -842,6 +846,10 @@
     "./kin/kinCompanyProfile": {
       "types": "./src/kin/kinCompanyProfile.ts",
       "default": "./src/kin/kinCompanyProfile.ts"
+    },
+    "./kin/kinTaskRecord": {
+      "types": "./src/kin/kinTaskRecord.ts",
+      "default": "./src/kin/kinTaskRecord.ts"
     },
     "./kin/kinWork": {
       "types": "./src/kin/kinWork.ts",

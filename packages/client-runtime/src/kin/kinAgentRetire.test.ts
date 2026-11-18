@@ -1,8 +1,9 @@
-import { KinChatError, type KinLeadProfile } from "@t3tools/contracts";
+import { KinAgentId, KinChatError, type KinLeadProfile } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   kinAgentGroups,
+  kinNextTeamAgentChoices,
   kinRestoreProblem,
   kinRetireOffer,
   kinRetireProblem,
@@ -23,6 +24,16 @@ describe("retiring an agent", () => {
     const groups = kinAgentGroups([lead("tech", false), lead("old", true), lead("growth", false)]);
     expect(groups.active.map((held) => held.agentId)).toEqual(["tech", "growth"]);
     expect(groups.retired.map((held) => held.agentId)).toEqual(["old"]);
+    // Only the team agent asks who teammates talk to instead, among the other active ones.
+    const leads = [lead("tech", false), lead("old", true), lead("growth", false)];
+    expect(
+      kinNextTeamAgentChoices({ leads, teamAgentId: KinAgentId.make("growth") }, "tech"),
+    ).toBeNull();
+    expect(
+      kinNextTeamAgentChoices({ leads, teamAgentId: KinAgentId.make("tech") }, "tech")?.map(
+        (held) => held.agentId,
+      ),
+    ).toEqual(["growth"]);
   });
 
   it("offers Retire only while another active agent stays", () => {

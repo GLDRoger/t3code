@@ -11,6 +11,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -1086,5 +1087,130 @@ describe("KinLeadProvision", () => {
         assert.include(yield* member(contact.chatId), { role: "member", leftAt: null });
         yield* say("three");
       }).pipe(Effect.provide(paired)),
+  );
+
+  it.effect(
+    "retiring an agent closes its questions with the reason; restoring reopens only those",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const ada = (yield* Provision.create(input(owner, []))).lead;
+        const finance = (yield* Provision.create({
+          ...input(owner, []),
+          name: "Finance",
+          domain: "finance",
+        })).lead;
+        const { orgId } = finance;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('meera', ${orgId}, 'meera', 'Meera', '2026-11-09T00:00:00.000Z')`;
+        const ask = (id: string, agentId: KinAgentId, state: string, closedAt: number | null) =>
+          sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id, kind,
+            question, safe, asked_at, due_at, act_at, state, closed_at)
+          VALUES (${id}, ${orgId}, ${agentId}, 'meera', ${finance.ownerChatId}, 'text',
+            'Invented?', 0, 0, 1000, 1000, ${state}, ${closedAt})`;
+        yield* ask("q-open", finance.agentId, "open", null);
+        yield* ask("q-answered", finance.agentId, "answered", 500);
+        yield* ask("q-withdrawn", finance.agentId, "withdrawn", 600);
+        yield* ask("q-ada", ada.agentId, "open", null);
+        const states = sql<{ id: string; state: string; due: number }>`SELECT question_id AS id,
+          state, due_at AS due FROM kin_questions ORDER BY question_id`;
+
+        yield* TestClock.adjust("1 minute");
+        yield* Provision.retireOnHost(finance.agentId);
+        assert.deepStrictEqual(
+          (yield* states).map((row) => [row.id, row.state]),
+          [
+            ["q-ada", "open"],
+            ["q-answered", "answered"],
+            ["q-open", "withdrawn"],
+            ["q-withdrawn", "withdrawn"],
+          ],
+        );
+        yield* TestClock.adjust("1 day");
+        yield* Provision.restoreOnHost(finance.agentId);
+        const after = yield* states;
+        assert.deepStrictEqual(
+          after.map((row) => [row.id, row.state]),
+          [
+            ["q-ada", "open"],
+            ["q-answered", "answered"],
+            ["q-open", "open"],
+            ["q-withdrawn", "withdrawn"],
+          ],
+        );
+        // Reopened with a fresh day: nothing is taken or raised before the person has one.
+        assert.isAbove(
+          after.find((row) => row.id === "q-open")!.due,
+          yield* Clock.currentTimeMillis,
+        );
+      }).pipe(Effect.provide(paired)),
+  );
+
+  const teamOf = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const ada = (yield* Provision.create(input(owner, []))).lead;
+    const chief = (yield* Provision.create({
+      ...input(owner, []),
+      name: "Chief of staff",
+      domain: "operations",
+    })).lead;
+    const { orgId } = chief;
+    // Dev, a member signed in on a phone, talks to the team agent.
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES ('dev', ${orgId}, 'dev', 'Dev', '2026-11-09T00:00:00.000Z', 'member')`;
+    yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES ('dev-phone', ${orgId}, 'dev', 0)`;
+    yield* Provision.setTeamAgent({ editor: owner, orgId, agentId: chief.agentId });
+    const dev = { _tag: "person" as const, orgId, personId: KinPersonId.make("dev") };
+    const contacts = Provision.contacts(dev).pipe(
+      Effect.map((rows) => rows.map((row) => row.name)),
+    );
+    assert.deepStrictEqual(yield* contacts, ["Chief of staff"]);
+    return { sql, ada, chief, orgId, contacts };
+  });
+
+  it.effect("retiring the team agent without naming the next is refused", () =>
+    Effect.gen(function* () {
+      const { chief, ada, orgId, contacts } = yield* teamOf;
+      assert.strictEqual(yield* refusal(Provision.retireOnHost(chief.agentId)), "conflict");
+      assert.strictEqual(
+        yield* refusal(
+          Provision.retire({
+            by: owner,
+            orgId,
+            agentId: chief.agentId,
+            nextTeamAgentId: chief.agentId,
+          }),
+        ),
+        "not_found",
+      );
+      // Another agent retires as before.
+      yield* Provision.retireOnHost(ada.agentId);
+      assert.deepStrictEqual(yield* contacts, ["Chief of staff"]);
+      assert.strictEqual((yield* Provision.teamAgent(orgId)) ?? "", chief.agentId);
+    }).pipe(Effect.provide(paired)),
+  );
+
+  it.effect("with the next named, teammates' chats point at it", () =>
+    Effect.gen(function* () {
+      const { sql, chief, ada, orgId, contacts } = yield* teamOf;
+      const retired = yield* Provision.retire({
+        by: owner,
+        orgId,
+        agentId: chief.agentId,
+        nextTeamAgentId: ada.agentId,
+      });
+      assert.strictEqual(retired._tag, "retired");
+      assert.strictEqual(yield* Provision.teamAgent(orgId), ada.agentId);
+      assert.deepStrictEqual(yield* contacts, ["Ada"]);
+      // Dev never wrote to the old one, so its chat leaves the list.
+      assert.deepStrictEqual(
+        yield* sql`SELECT m.left_at IS NOT NULL AS gone FROM kin_chats c
+          JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+            AND m.person_id = 'dev'
+          WHERE c.direct_key = ${`dev:${chief.agentId}`}`,
+        [{ gone: 1 }],
+      );
+    }).pipe(Effect.provide(paired)),
   );
 });

@@ -286,6 +286,7 @@ export type PaymentInput = {
   readonly originKey: string;
 };
 const CLOSED = ["done", "dropped"] as const;
+const OPEN_KEYS_NAMED = 20;
 /** A retry whose first result was taken back since: answering it with that result would lie. */
 const undoneRetry = (what: string) =>
   new KinChatError({
@@ -1343,14 +1344,18 @@ const make = Effect.gen(function* () {
           isClosed(state) &&
           !isClosed(row.state)
         ) {
-          const [open] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records
+          const open = yield* sql<{ key: string }>`SELECT key FROM kin_records
             WHERE org_id = ${orgId} AND (party_id = ${row.recordId} OR project_id = ${row.recordId})
-              AND register_id IN ('work', 'projects') AND state NOT IN ${sql.in(CLOSED)}`;
-          if ((open?.count ?? 0) > 0)
+              AND register_id IN ('work', 'projects') AND state NOT IN ${sql.in(CLOSED)}
+            ORDER BY created_at, key`;
+          if (open.length > 0) {
+            const named = open.slice(0, OPEN_KEYS_NAMED).map((one) => one.key);
+            const more = open.length - named.length;
             return yield* new KinChatError({
               reason: "invalid_state",
-              message: `${row.key} still has ${open!.count} open ${list === "clients" ? "entries or projects" : "entries"} pointing at it. Close or move them first.`,
+              message: `${row.key} still has ${open.length} open ${list === "clients" ? "entries or projects" : "entries"} pointing at it: ${named.join(", ")}${more > 0 ? ` and ${more} more` : ""}. Close or move them first.`,
             });
+          }
         }
         if (state !== row.state) {
           changes.push({ field: "state", from: row.state, to: state });
