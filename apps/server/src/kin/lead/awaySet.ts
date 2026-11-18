@@ -21,7 +21,10 @@ import { directKey } from "./LeadAccess.ts";
 import type { resolveLead } from "./LeadMemory.ts";
 
 export const AwaySetInput = Schema.Struct({
-  until: Schema.optional(Schema.NullOr(KinDay)),
+  until: Schema.optional(Schema.NullOr(KinDay)).annotate({
+    description:
+      "The last day they are away, YYYY-MM-DD on their own calendar; today is allowed. Left out, they are back.",
+  }),
 });
 export type AwaySetInput = typeof AwaySetInput.Type;
 export const AwaySetResult = Schema.Struct({
