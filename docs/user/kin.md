@@ -37,7 +37,8 @@ you'd hear of one you didn't add.
 
 A device stays signed in while you use it. One left unused for 30 days signs out, and you link it
 again the same way. You can have 10 devices at a time. Remove a device from the same list to sign it
-out at once; the devices linked from it are signed out too. A device you linked can remove itself
+out at once. However a device is signed out, the devices linked from it are signed out too; one
+that simply goes unused doesn't take them with it. A device you linked can remove itself
 and the devices linked from it, but not the phone you joined with. The owner can see and remove a
 teammate's devices on the **Team** page.
 

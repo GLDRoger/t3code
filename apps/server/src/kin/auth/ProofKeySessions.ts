@@ -10,6 +10,7 @@ import * as Ref from "effect/Ref";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as KinEnabled from "../KinEnabled.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { revokeLinkedDevices } from "./linkedDevices.ts";
 import { SessionHooks } from "./sessionHooks.ts";
 
 type Column = Statement.Fragment | string | number;
@@ -221,9 +222,18 @@ const enabled = (options: { readonly recordsPairings: boolean }) =>
                   // A repair link issued before this block must not lift it.
                   yield* sql`UPDATE kin_auth_key_repairs SET consumed_at = ${now.epochMilliseconds}
               WHERE consumed_at IS NULL AND thumbprint IN (${blockedKeys})`;
-                  return yield* sql<{
+                  const signedOut = yield* sql<{
                     session_id: AuthSessionId;
                   }>`UPDATE auth_sessions SET revoked_at = ${DateTime.formatIso(now)} WHERE session_id IN (${selected}) AND revoked_at IS NULL RETURNING session_id`;
+                  const linked = yield* revokeLinkedDevices(
+                    sql,
+                    signedOut.map((row) => row.session_id),
+                    caller,
+                  );
+                  return [
+                    ...signedOut,
+                    ...linked.map((id) => ({ session_id: id as AuthSessionId })),
+                  ];
                 }),
               )
               .pipe(
@@ -305,10 +315,22 @@ const enabled = (options: { readonly recordsPairings: boolean }) =>
               WHERE proof_key_thumbprint = ${thumbprint}`;
                     yield* sql`UPDATE kin_auth_key_repairs SET consumed_at = ${now.epochMilliseconds}
               WHERE consumed_at IS NULL AND thumbprint = ${thumbprint}`;
-                    return yield* store.revokeByProofKey(thumbprint);
+                    const count = yield* store.revokeByProofKey(thumbprint);
+                    const keyed = yield* sql<{
+                      session_id: AuthSessionId;
+                    }>`SELECT session_id FROM kin_auth_session_keys WHERE proof_key_thumbprint = ${thumbprint}`;
+                    const linked = yield* revokeLinkedDevices(
+                      sql,
+                      keyed.map((row) => row.session_id),
+                    );
+                    return { count: count + linked.length, linked };
                   }),
                 )
                 .pipe(
+                  Effect.tap(({ linked }) =>
+                    Effect.forEach(linked, (id) => removed(id as AuthSessionId), { discard: true }),
+                  ),
+                  Effect.map(({ count }) => count),
                   Effect.catchTags({
                     SqlError: (cause) =>
                       Effect.fail(

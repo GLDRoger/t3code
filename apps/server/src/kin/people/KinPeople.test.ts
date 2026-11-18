@@ -444,10 +444,22 @@ it.effect("removing a device takes the devices linked from it and the links it l
     assert.equal(yield* refused(service.accept({ secret: open.secret })), "not_found");
     assert.equal((yield* as(watch)).sessionId, watch.sessionId);
 
-    // An issuer signed out some other way still can't have its code redeemed.
+    // Signed out outside Kin (Sharing & access, the CLI): the watch still takes what it linked,
+    // and its open link is dead.
+    const strap = yield* linkFrom(watch, "Strap");
+    const strapSession = yield* as(strap);
     const fromWatch = yield* service.linkDevice(yield* as(watch), { orgId });
     yield* sessions.revoke(watch.sessionId);
     assert.equal(yield* refused(service.accept({ secret: fromWatch.secret })), "not_found");
+    assert.equal((yield* sessions.verify(strap.accessToken).pipe(Effect.result))._tag, "Failure");
+    assert.isTrue(
+      Option.isNone(
+        yield* service
+          .renewDevice(strapSession, strap.accessToken)
+          .pipe(Effect.orElseSucceed(() => Option.none())),
+      ),
+    );
+    assert.equal(yield* refused(service.linkDevice(strapSession, { orgId })), "not_allowed");
     const listed = (yield* service.listDevices(ownerSession, { orgId, personId })).devices;
     assert.isNotNull(listed.find((d) => d.sessionId === watch.sessionId)!.revokedAt);
 
@@ -461,6 +473,13 @@ it.effect("removing a device takes the devices linked from it and the links it l
     });
     yield* service.accept({ secret: back.secret });
     assert.equal(yield* refused(service.accept({ secret: lastLink.secret })), "limit");
+    // So is an owner's invite for someone already at the limit.
+    const once = yield* service.createInvite(ownerSession, {
+      orgId,
+      displayName: "Asha",
+      personId,
+    });
+    assert.equal(yield* refused(service.accept({ secret: once.secret })), "limit");
   }).pipe(Effect.provide(layer)),
 );
 

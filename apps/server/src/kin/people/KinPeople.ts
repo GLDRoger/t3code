@@ -483,9 +483,13 @@ export const make = Effect.gen(function* () {
               !(yield* deviceLive(orgId, row.person_id, parent, now))
             )
               return yield* missing;
-            if ((yield* devicesSignedIn(orgId, row.person_id, now)) >= KIN_DEVICE_LIMIT)
-              return yield* deviceLimit;
           }
+          // However a device joins an existing person, the limit holds.
+          if (
+            row.person_id !== null &&
+            (yield* devicesSignedIn(orgId, row.person_id, now)) >= KIN_DEVICE_LIMIT
+          )
+            return yield* deviceLimit;
           const consumed = yield* sql`UPDATE kin_people_invites SET consumed_at = ${now}
         WHERE org_id = ${orgId} AND invite_id = ${row.invite_id} AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ${now} RETURNING invite_id`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.consume")),
@@ -617,9 +621,9 @@ export const make = Effect.gen(function* () {
     session: AuthenticatedSession,
     orgId: KinOrgId,
   ) {
-    yield* owner(session, orgId);
+    const caller = yield* owner(session, orgId);
     const now = (yield* DateTime.now).epochMilliseconds;
-    const rows = yield* sql<{
+    const all = yield* sql<{
       inviteId: KinInviteId;
       personId: KinPersonId | null;
       displayName: string;
@@ -630,6 +634,15 @@ export const make = Effect.gen(function* () {
       created_at AS "createdAt", expires_at AS "expiresAt" FROM kin_people_invites WHERE org_id = ${orgId}
       AND made_by_person_id IS NULL AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ${now} ORDER BY created_at, invite_id`.pipe(
       Effect.mapError(toPersistenceSqlError("KinPeople.listInvites")),
+    );
+    // A link back for someone the caller can't act on (another co-owner) is the owner's alone.
+    const rows = yield* Effect.filter(all, (row) =>
+      row.personId === null
+        ? Effect.succeed(true)
+        : mayActOn(caller, orgId, row.personId).pipe(
+            Effect.as(true),
+            Effect.catchTags({ KinChatError: () => Effect.succeed(false) }),
+          ),
     );
     return {
       invites: rows.map((row) => ({
@@ -643,8 +656,13 @@ export const make = Effect.gen(function* () {
     session: AuthenticatedSession,
     input: KinPeopleRevokeInviteInput,
   ) {
-    yield* owner(session, input.orgId);
+    const caller = yield* owner(session, input.orgId);
     const now = (yield* DateTime.now).epochMilliseconds;
+    const [target] = yield* sql<{ person_id: KinPersonId | null }>`SELECT person_id
+      FROM kin_people_invites WHERE org_id = ${input.orgId} AND invite_id = ${input.inviteId}`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinPeople.revokeInviteFor")),
+    );
+    if (target?.person_id != null) yield* mayActOn(caller, input.orgId, target.person_id);
     const rows = yield* sql`UPDATE kin_people_invites SET revoked_at = ${now}
       WHERE org_id = ${input.orgId} AND invite_id = ${input.inviteId} AND made_by_person_id IS NULL
       AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ${now} RETURNING invite_id`.pipe(
@@ -745,6 +763,12 @@ export const make = Effect.gen(function* () {
       .withTransaction(
         Effect.gen(function* () {
           yield* person(input.orgId, input.personId);
+          // As in linkDevice: a device signed out a moment ago removes nothing.
+          if (
+            !asOwnerLevel(caller, input.personId) &&
+            !(yield* deviceLive(input.orgId, caller.personId, session.sessionId, now))
+          )
+            return yield* denied;
           const rows = yield* deviceRows(input.orgId, input.personId);
           const target = rows.find((r) => r.session_id === input.sessionId);
           if (target === undefined || target.revoked_at !== null) return yield* missing;
@@ -758,32 +782,18 @@ export const make = Effect.gen(function* () {
               reason: "not_allowed",
               message: "Remove this device from the phone you joined with, or ask the owner.",
             });
-          // The device, every device linked from it down the line, and the links they left open.
-          const revoked = yield* sql<{
-            session_id: AuthSessionId;
-          }>`WITH RECURSIVE gone(session_id) AS (
-              SELECT ${input.sessionId}
-              UNION SELECT b.session_id FROM kin_session_bindings b JOIN gone g
-                ON b.parent_session_id = g.session_id
-              WHERE b.org_id = ${input.orgId} AND b.person_id = ${input.personId}
-            )
-            UPDATE kin_session_bindings SET revoked_at = ${now}
+          const bound = yield* sql`UPDATE kin_session_bindings SET revoked_at = ${now}
             WHERE org_id = ${input.orgId} AND person_id = ${input.personId}
-            AND session_id IN (SELECT session_id FROM gone) AND revoked_at IS NULL
-            RETURNING session_id`.pipe(Effect.mapError(toPersistenceSqlError("KinPeople.revoke")));
-          const ids = revoked.map((r) => r.session_id);
-          yield* sql`UPDATE kin_people_invites SET revoked_at = ${now}
-            WHERE org_id = ${input.orgId} AND made_by_session_id IN ${sql.in(ids)}
-            AND consumed_at IS NULL AND revoked_at IS NULL`.pipe(
-            Effect.mapError(toPersistenceSqlError("KinPeople.revokeLinks")),
+            AND session_id = ${input.sessionId} AND revoked_at IS NULL RETURNING session_id`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinPeople.revoke")),
           );
-          yield* Effect.forEach(ids, (id) =>
-            sessions
-              .revoke(id)
-              .pipe(Effect.mapError(toPersistenceSqlError("KinPeople.revokeSession"))),
-          );
+          // Signing the session out takes every device linked from it, and the links they left
+          // open, as any sign-out does (see revokeLinkedDevices).
+          yield* sessions
+            .revoke(input.sessionId)
+            .pipe(Effect.mapError(toPersistenceSqlError("KinPeople.revokeSession")));
           yield* refresh.touch(input.orgId, "people");
-          return ids;
+          return bound;
         }),
       )
       .pipe(Effect.mapError(sqlError("KinPeople.revokeDevice")));

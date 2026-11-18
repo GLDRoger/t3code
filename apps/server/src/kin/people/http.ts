@@ -5,6 +5,7 @@ import {
   KIN_INVITE_APP_ROUTE,
   KIN_INVITE_BROWSER_ACCEPT_ROUTE,
   KinAppScheme,
+  type KinDeviceRenewResult,
   KinInviteAcceptRequest,
   type KinInviteAppResult,
 } from "@t3tools/contracts";
@@ -58,13 +59,26 @@ const renewOriginAllowed = (
   );
 };
 
-/** The device's own session renewed; none when it is not a live, bound teammate device. */
-const renewDevice = Effect.fn("KinPeopleHttp.renewDevice")(function* (token: string) {
+/**
+ * The device's own session renewed, as a response: 401 for a credential that isn't valid, 403
+ * for one that isn't a live, bound teammate device, and 500 for anything else, so a client tries
+ * again rather than taking a host fault as "nothing to renew".
+ */
+const renewDevice = Effect.fn("KinPeopleHttp.renewDevice")(function* <E>(
+  token: string,
+  respond: (
+    renewed: KinDeviceRenewResult & { accessToken: string },
+  ) => Effect.Effect<HttpServerResponse.HttpServerResponse, E>,
+) {
   const kin = yield* KinServer;
-  if (Option.isNone(kin.services)) return Option.none();
+  if (Option.isNone(kin.services)) return HttpServerResponse.empty({ status: 503 });
   return yield* Effect.gen(function* () {
-    const verified = yield* (yield* SessionStore).verify(token);
-    return yield* (yield* People.make).renewDevice(verified, token);
+    const verified = yield* (yield* SessionStore).verify(token).pipe(Effect.option);
+    if (Option.isNone(verified)) return HttpServerResponse.empty({ status: 401 });
+    const renewed = yield* (yield* People.make).renewDevice(verified.value, token);
+    return Option.isNone(renewed)
+      ? HttpServerResponse.empty({ status: 403 })
+      : yield* respond(renewed.value);
   }).pipe(Effect.provideContext(kin.services.value));
 });
 
@@ -111,11 +125,10 @@ export const layer = Layer.effectDiscard(
       Effect.gen(function* () {
         const token = parseBearerToken(yield* HttpServerRequest.HttpServerRequest);
         if (token === null) return HttpServerResponse.empty({ status: 401 });
-        const renewed = yield* renewDevice(token);
-        return Option.isNone(renewed)
-          ? HttpServerResponse.empty({ status: 403 })
-          : yield* HttpServerResponse.json(renewed.value, { headers: noStore });
-      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 401 }))),
+        return yield* renewDevice(token, (renewed) =>
+          HttpServerResponse.json(renewed, { headers: noStore }),
+        );
+      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 500 }))),
     );
     // The browser's renewal: the cookie in, a fresh cookie out; script never sees the token.
     yield* router.add(
@@ -127,24 +140,21 @@ export const layer = Layer.effectDiscard(
         const sessions = yield* SessionStore;
         const token = request.cookies[sessions.cookieName];
         if (token === undefined) return HttpServerResponse.empty({ status: 401 });
-        const renewed = yield* renewDevice(token);
-        if (Option.isNone(renewed)) return HttpServerResponse.empty({ status: 403 });
         const secure = Option.exists(requestUrl(request), (url) => url.protocol === "https:");
-        return yield* HttpServerResponse.json(
-          { expiresAt: renewed.value.expiresAt },
-          { headers: noStore },
-        ).pipe(
-          Effect.flatMap(
-            HttpServerResponse.setCookie(sessions.cookieName, renewed.value.accessToken, {
-              expires: DateTime.toDate(DateTime.makeUnsafe(renewed.value.expiresAt)),
-              httpOnly: true,
-              path: "/",
-              sameSite: "lax",
-              secure,
-            }),
+        return yield* renewDevice(token, (renewed) =>
+          HttpServerResponse.json({ expiresAt: renewed.expiresAt }, { headers: noStore }).pipe(
+            Effect.flatMap(
+              HttpServerResponse.setCookie(sessions.cookieName, renewed.accessToken, {
+                expires: DateTime.toDate(DateTime.makeUnsafe(renewed.expiresAt)),
+                httpOnly: true,
+                path: "/",
+                sameSite: "lax",
+                secure,
+              }),
+            ),
           ),
         );
-      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 401 }))),
+      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 500 }))),
     );
     // A browser keeps the session as the app's own cookie; script never holds the token.
     yield* router.add(
