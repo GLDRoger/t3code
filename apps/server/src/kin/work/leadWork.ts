@@ -186,7 +186,7 @@ export const QueryInput = Schema.Struct({
     ]),
   ).annotate({
     description:
-      "Also count the matches per group, with exact totals per currency where they have amounts. month and financialYear (April to March) go by each entry's date.",
+      "Also count the matches per group, with exact totals per currency where they have amounts. month and financialYear (the company's own year) go by each entry's date.",
   }),
   dateFrom: Schema.optional(KinDay).annotate({ description: "Its own date on or after this day." }),
   dateTo: Schema.optional(KinDay).annotate({ description: "Its own date on or before this day." }),
