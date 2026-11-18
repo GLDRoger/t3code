@@ -1,7 +1,7 @@
 import type { KinNextStepAct, KinNextStepView } from "@t3tools/client-runtime/kin/kinTaskRecord";
 import { View } from "react-native";
 
-import type { AppSymbolName } from "../../../components/ui/AppSymbol";
+import { SymbolView, type AppSymbolName } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
 import { KinAvatar } from "./KinAvatar";
@@ -10,7 +10,9 @@ const ICON: Partial<Record<KinNextStepAct, AppSymbolName>> = {
   keep: "checkmark",
   done: "checkmark",
   reopen: "arrow.uturn.backward",
+  openWaiting: "bubble.left",
 };
+const WAITING = { send: "A draft is waiting for your OK", question: "A question is waiting" };
 
 /** The one thing that moves a task for whoever is looking, under its title. */
 export function KinNextStep(props: {
@@ -37,6 +39,24 @@ export function KinNextStep(props: {
         <Text textRole="body" selectable className="text-foreground">
           “{step.words}”
         </Text>
+      )}
+      {step.waiting === null ? null : (
+        <View className="gap-1 rounded-xl bg-grouped-card px-3 py-2.5">
+          <Text textRole="footnote" className="text-foreground-muted">
+            {WAITING[step.waiting.kind]}
+          </Text>
+          <Text textRole="body" numberOfLines={3} className="text-foreground">
+            {step.waiting.preview}
+          </Text>
+          {step.waiting.files.map((file) => (
+            <View key={file.name} className="flex-row items-center gap-1.5">
+              <SymbolView name="doc.text" size={12} tintColorClassName="accent-icon-muted" />
+              <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
+                {file.name}
+              </Text>
+            </View>
+          ))}
+        </View>
       )}
       {step.acts.length === 0 ? null : (
         <View className="flex-row flex-wrap gap-2">

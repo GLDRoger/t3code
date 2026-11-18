@@ -7,7 +7,11 @@ import {
   KinRecordId,
   type KinRecordCan,
   type KinRecordChange,
+  type KinRecordComment,
   type KinRecordDetail,
+  KinChatId,
+  KinMessageId,
+  KinWidgetId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -109,6 +113,17 @@ const change = (
   ...patch,
 });
 
+const comment = (
+  patch: Partial<KinRecordComment> & Pick<KinRecordComment, "seq">,
+): KinRecordComment => ({
+  commentId: `c-${patch.seq}`,
+  at: "2026-11-10T09:30:00.000Z",
+  by: rhea,
+  body: "Invented note",
+  files: [],
+  ...patch,
+});
+
 const stepOf = (item: KinRecordDetail, who = names, can = { change: true, give: true }) =>
   kinNextStep({
     item,
@@ -148,9 +163,41 @@ describe("kinNextStep", () => {
       who: { name: "Chief of staff" },
       line: "is on it",
       when: expect.stringMatching(/^updated /),
+      words: null,
       note: "Nothing needed from you yet.",
       acts: [],
     });
+    // Its latest note standing is its last word; someone else's, or a removed one, is not.
+    const noted = {
+      ...item,
+      comments: [
+        comment({ seq: 1, by: chief, body: "Drafted the first two texts." }),
+        comment({ seq: 2, by: chief, body: "", removed: { at: item.createdAt, by: rhea } }),
+        comment({ seq: 3, by: rhea, body: "Keep them short." }),
+      ],
+    };
+    expect(stepOf(noted).words).toBe("Drafted the first two texts.");
+  });
+
+  it("puts a draft waiting in a chat first, opened where it is", () => {
+    const waiting = {
+      kind: "send" as const,
+      chatId: KinChatId.make("chief-chat"),
+      messageId: KinMessageId.make("card-message"),
+      widgetId: KinWidgetId.make("card"),
+      preview: "To clinic@example.invalid: New reminder texts",
+      files: [],
+      at: "2026-11-18T08:00:00.000Z",
+    };
+    const step = stepOf(task({ owner: rhea, waiting }));
+    expect(step.waiting).toEqual(waiting);
+    expect(step.acts.map((act) => [act.id, act.label])).toEqual([
+      ["openWaiting", "Open the draft"],
+      ["done", "Mark done"],
+    ]);
+    expect(stepOf(task({ waiting: { ...waiting, kind: "question" } })).acts[0]?.label).toBe(
+      "Open the question",
+    );
   });
 
   it("offers to hand late work held by someone else on, without a nudge the host can't send", () => {
@@ -185,6 +232,12 @@ describe("kinNextStep", () => {
     expect(stepOf({ ...item, can: readOnly }, names, { change: true, give: true }).acts).toEqual(
       [],
     );
+    // Its last note, whoever wrote it, is what it came to.
+    const result = {
+      ...item,
+      comments: [comment({ seq: 1, by: meera, body: "Sent to the clinic." })],
+    };
+    expect(stepOf(result).words).toBe("Sent to the clinic.");
   });
 
   it("gives the holder Mark done and the way back to whoever gave it", () => {
@@ -307,7 +360,46 @@ describe("kinTaskActivity", () => {
       text: "gave it to Zoya",
       before: null,
       after: null,
+      via: null,
     });
+  });
+
+  it("names the person an agent acted for, and threads notes in among changes by time", () => {
+    const lines = kinTaskActivity(
+      task({
+        changes: [
+          change({
+            seq: 2,
+            by: chief,
+            via: "lead",
+            askedBy: meera.personId,
+            at: "2026-11-10T10:00:00.000Z",
+            fields: [
+              { field: "owner", from: "person:ambermill-meera", to: "person:ambermill-zoya" },
+            ],
+          }),
+          change({ seq: 1, kind: "created", at: "2026-11-10T08:00:00.000Z" }),
+        ],
+        comments: [
+          comment({ seq: 1, by: zoya, at: "2026-11-10T09:00:00.000Z", body: "On it." }),
+          comment({
+            seq: 2,
+            at: "2026-11-10T11:00:00.000Z",
+            body: "",
+            removed: { at: "2026-11-10T12:00:00.000Z", by: rhea },
+          }),
+        ],
+      }),
+      names,
+      now,
+    );
+    expect(lines.map((line) => [line.icon, line.who, line.text, line.via])).toEqual([
+      ["made", "You", "added this", null],
+      ["comment", "Zoya", "", null],
+      ["gave", "Meera", "gave it to Zoya", "Chief of staff"],
+      ["comment", "You", "removed this note", null],
+    ]);
+    expect(lines[1]?.comment).toMatchObject({ body: "On it.", removed: false });
   });
 });
 
@@ -316,6 +408,10 @@ describe("kinRecordAskedBy and kinBriefBy", () => {
     expect(kinRecordAskedBy({ createdBy: meera, assignedBy: rhea })).toEqual(meera);
     expect(kinRecordAskedBy({ createdBy: finance, assignedBy: rhea })).toEqual(rhea);
     expect(kinRecordAskedBy({ createdBy: finance, assignedBy: null })).toBeNull();
+    // The asker the host stored wins over both stand-ins.
+    expect(
+      kinRecordAskedBy({ createdBy: finance, assignedBy: rhea, askedBy: zoya.personId }),
+    ).toEqual(zoya);
   });
 
   it("credits the brief to whoever last wrote it, and has no line without one", () => {

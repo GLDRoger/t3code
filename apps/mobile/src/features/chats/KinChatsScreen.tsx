@@ -3,7 +3,7 @@ import { KIN_PEOPLE_CHAT } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
-import { EnvironmentId, type KinOrgId } from "@t3tools/contracts";
+import { EnvironmentId, type KinOrgId, type KinWaitingItem } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, type ReactNode } from "react";
@@ -44,6 +44,7 @@ import { kinClient } from "./state/kinClient";
 import { rememberKinListAtom } from "./state/kinLastList";
 import { kinJoinedNameAtom } from "./state/kinJoin";
 import { useKinInbox } from "./state/useKinInbox";
+import { useKinOpenWaiting } from "./state/useKinOpen";
 import { useKinProfiles } from "./state/useKinProfiles";
 
 const NO_ENVIRONMENT = EnvironmentId.make("kin:none");
@@ -73,6 +74,7 @@ export function KinChatsList({
 }) {
   const navigation = useNavigation();
   const { host, state, retry } = useKinInbox();
+  const waiting = useKinOpenWaiting(host, state._tag === "ready" ? state.inbox.value : null);
   const orgId =
     host._tag === "host" && host.probe._tag === "ready"
       ? (host.probe.orgs.me[0]?.orgId ?? null)
@@ -97,6 +99,7 @@ export function KinChatsList({
         <KinChatsView
           state={state}
           directory={kinDirectory(host)}
+          {...(waiting === undefined ? {} : { waiting })}
           onRetry={retry}
           bottomClearance={bottomClearance}
           {...(empty === undefined ? {} : { empty })}
@@ -250,6 +253,8 @@ function KinChatsBar(props: {
 export function KinChatsView(props: {
   readonly state: KinInboxScreenState;
   readonly directory: KinDirectory;
+  /** Waiting on you from the host's open list, where it streams one (`useKinOpenWaiting`). */
+  readonly waiting?: ReadonlyArray<KinWaitingItem>;
   readonly onRetry: () => void;
   /** The owner's way in to what the leads remember, above the chats. */
   readonly memory?: ReactNode;
@@ -263,7 +268,7 @@ export function KinChatsView(props: {
   readonly onCreateFirstAgent?: () => void;
 }) {
   const { state, onOpenChat } = props;
-  const view = state._tag === "ready" ? selectKinInboxView(state.inbox.value) : null;
+  const view = state._tag === "ready" ? selectKinInboxView(state.inbox.value, props.waiting) : null;
   const banner = view === null ? null : kinWaitingBannerView(view.waiting);
   if (state._tag !== "ready" || view === null || view.rows.length === 0) {
     return (

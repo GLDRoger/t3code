@@ -476,6 +476,18 @@ const WORKING_PRESENCE: ReadonlySet<KinPresenceState> = new Set([
   "stalled",
 ]);
 
+/** What waits on a person in chats they are still in: the chat list's rule, and the open list's. */
+export const waitingFor = Effect.fn("KinChatService.waitingFor")(function* (
+  identity: PersonIdentity,
+) {
+  const repo = yield* Repository.KinChatRepository;
+  const waiting: Array<KinWaitingItem> = [];
+  for (const item of yield* repo.listOpenWaiting(identity))
+    if (Option.isSome(yield* repo.activeMember({ ...item, principal: identity })))
+      waiting.push(item);
+  return waiting;
+});
+
 const make = Effect.gen(function* () {
   const floor = yield* Floor.KinFloor;
   const cards = yield* TaskCard.TaskCardIndex;
@@ -1225,10 +1237,11 @@ const make = Effect.gen(function* () {
           if (!(yield* roomReadable(identity, chat))) continue;
           chats.push(yield* summary(identity, member.chatId));
         }
-        for (const item of yield* repo.listOpenWaiting(identity)) {
-          if (Option.isSome(yield* repo.activeMember({ ...item, principal: identity })))
-            waiting.push(item);
-        }
+        waiting.push(
+          ...(yield* waitingFor(identity).pipe(
+            Effect.provideService(Repository.KinChatRepository, repo),
+          )),
+        );
       }
       return { _tag: "snapshot" as const, chats, waiting };
     },

@@ -7,11 +7,13 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { normalizeAttachmentRelativePath } from "../../attachmentPaths.ts";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import * as SessionStore from "../../auth/SessionStore.ts";
 import { KinServer } from "../KinServer.ts";
+import { commentFileReadable } from "../work/recordComments.ts";
 import { KIN_ATTACHMENT_ID_PREFIX } from "./KinAttachmentStore.ts";
 import { KinChatService } from "./KinChatService.ts";
 import { KinIdentity } from "./KinIdentity.ts";
@@ -38,11 +40,25 @@ export const authorizeAttachmentRead = Effect.fn("Kin.authorizeAttachmentRead")(
     return session.scopes.every((scope) => scope === AuthKinChatScope) ? yield* refused : undefined;
   }
   if (Option.isNone(kin)) return yield* refused;
+  const sql = Context.getOption(kin.value, SqlClient.SqlClient);
   const readable = yield* Context.get(kin.value, KinIdentity)
     .resolve(session)
     .pipe(
       Effect.flatMap((people) =>
-        Context.get(kin.value, KinChatService).attachmentReadable(people, attachmentId),
+        Context.get(kin.value, KinChatService)
+          .attachmentReadable(people, attachmentId)
+          .pipe(
+            // A file on a task's comment is read by whoever sees the task.
+            Effect.filterOrElse(
+              (onMessage) => onMessage || Option.isNone(sql),
+              () =>
+                Option.isNone(sql)
+                  ? Effect.succeed(false)
+                  : commentFileReadable(people, attachmentId).pipe(
+                      Effect.provideService(SqlClient.SqlClient, sql.value),
+                    ),
+            ),
+          ),
       ),
       // A failed lookup is refused like a stranger: reading is denied by default.
       Effect.orElseSucceed(() => false),
