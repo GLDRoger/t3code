@@ -1,3 +1,5 @@
+import { scanKinDocFences } from "./kinDocFences.ts";
+
 /**
  * How an agent's message is laid out, read from its own text so web, phone, the chat list and
  * pushes agree: a short reply stays a bubble; one with headings, a table or a run of items reads
@@ -59,6 +61,7 @@ export function kinPageSections(body: string): ReadonlyArray<KinPageSection> {
  * more items in lists, or is long and in several paragraphs; anything else is a bubble.
  */
 export function kinPageShape(body: string): KinPageShape {
+  if (scanKinDocFences(body).found.length > 0) return "page";
   let fenced = false;
   let items = 0;
   let paragraphs = 0;
@@ -111,6 +114,9 @@ const firstLine = (markdown: string) =>
  * one, else the first line that says something. Still markdown; callers make it plain.
  */
 export function kinPageGist(body: string): string {
+  const plain = kinPlainBody(body);
+  if (plain.trim() === "") return scanKinDocFences(body).found[0]?.block.info ?? "";
+  body = plain;
   const sections = kinPageSections(body);
   const needs = sections.find(
     (section) =>
@@ -121,4 +127,16 @@ export function kinPageGist(body: string): string {
     if (line !== undefined) return line;
   }
   return firstLine(body) ?? "";
+}
+
+export function kinPlainBody(body: string): string {
+  const { lines, found } = scanKinDocFences(body);
+  if (found.length === 0) return body;
+  let at = 0;
+  const text = found.flatMap(({ from, to }) => {
+    const part = lines.slice(at, from);
+    at = to + 1;
+    return part;
+  });
+  return [...text, ...lines.slice(at)].join("\n").trim();
 }
