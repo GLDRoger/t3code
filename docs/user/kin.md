@@ -227,7 +227,9 @@ teammate, under each person; **On agents** is what an agent has; then everything
 Each task says who has it first, agents by name, then when it's due and its project.
 
 **On me** starts with what can't wait, each marked **Late**, **Due today** or **Stuck**. For
-teammates, the Tasks badge counts your late and due-today tasks.
+teammates, the Tasks badge counts your late and due-today tasks. When one of your tasks is late or
+due today, Kin tells you in your own chat, counting a private task without naming it; teammates
+and co-owners get this plain notice from Kin, while the Chief of staff tells its own owner itself.
 
 The owner and co-owners also see **Needs attention** at the top, for what wants attention across
 the company: other people's late or stuck work, quiet clients, projects with nothing moving. Each

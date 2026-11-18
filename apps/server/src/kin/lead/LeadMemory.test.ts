@@ -366,6 +366,7 @@ it.live(
           "agent_update",
           "people_read",
           "people_update",
+          "away_set",
           "kin_hand_off",
           "kin_take_private",
           "kin_relay",

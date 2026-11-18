@@ -31,6 +31,7 @@ import { KinLevelGate } from "../LevelGate.ts";
 import { LeadMemory, resolveLead } from "../LeadMemory.ts";
 import { readPeople } from "../peopleRead.ts";
 import { updatePeople } from "../peopleUpdate.ts";
+import { setAway } from "../awaySet.ts";
 import { updateAgent } from "../agentUpdate.ts";
 import { KinLeadToolkit } from "./tools.ts";
 
@@ -70,6 +71,13 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       const lead = yield* resolveLead(yield* McpInvocationContext);
       yield* admitted(lead, "people_update", input);
       return yield* updatePeople(lead, input);
+    }, Effect.mapError(failure)),
+  ),
+  away_set: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.awaySet")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      yield* admitted(lead, "away_set", input);
+      return yield* setAway(lead, input);
     }, Effect.mapError(failure)),
   ),
   agent_update: McpToolAccess.actsAsCaller(

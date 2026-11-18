@@ -14,6 +14,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { HELD_ID } from "../triggers/heldDelivery.ts";
 import { holdFor, holdLine } from "../triggers/quietHold.ts";
 import { daysAgoText, type SenseContext } from "./senses/shared.ts";
@@ -47,35 +48,60 @@ export const holderLine = (
   return { key: fact.subject.key, title: fact.subject.title, state };
 };
 
-/** What the holder reads, and their push says: one sentence for one fact, else a short list. */
-export const holderBody = (lines: ReadonlyArray<ReturnType<typeof holderLine>>) => {
-  if (lines.length === 1) {
-    const [one] = lines;
-    return `${one!.key} ${one!.title} ${one!.state}.`;
-  }
-  const rest = lines.length - SHOWN;
-  return [
-    `${lines.length} of your tasks need you:`,
-    ...lines.slice(0, SHOWN).map((one) => `• ${one.key} ${one.title}, ${one.state}`),
-    ...(rest > 0 ? [`and ${rest} more`] : []),
-  ].join("\n");
+/** What the holder's view hides, such as "Only me": counted, never named, as an agent reads it. */
+const privateLine = (unnamed: ReadonlyArray<Pick<KinPulseFact, "sense">>) => {
+  const today = unnamed.filter((fact) => fact.sense === "task_due_soon").length;
+  const late = unnamed.length - today;
+  const some = (n: number) => `${n} private ${n === 1 ? "task" : "tasks"} of yours`;
+  const be = (n: number) => (n === 1 ? "is" : "are");
+  const state =
+    late > 0 && today > 0
+      ? `${some(late)} ${be(late)} late and ${today} ${be(today)} due today`
+      : late > 0
+        ? `${some(late)} ${be(late)} late`
+        : `${some(today)} ${be(today)} due today`;
+  return `${state}. Open Tasks to see ${unnamed.length === 1 ? "it" : "them"}.`;
 };
 
 /**
- * Posts Kin's notice of `facts` in the person's direct chat with `agentId` (else the team agent,
- * as assignment notices pick), opened if needed; in their quiet hours or while away it is held
- * until they are back. Returns the id the told rows carry, or undefined when no chat may hold it.
+ * What the holder reads, and their push says: one sentence for one fact, else a short list, then
+ * a count of the private ones.
+ */
+export const holderBody = (
+  lines: ReadonlyArray<ReturnType<typeof holderLine>>,
+  unnamed: ReadonlyArray<Pick<KinPulseFact, "sense">> = [],
+) => {
+  const rest = lines.length - SHOWN;
+  const named =
+    lines.length === 0
+      ? []
+      : lines.length === 1
+        ? [`${lines[0]!.key} ${lines[0]!.title} ${lines[0]!.state}.`]
+        : [
+            `${lines.length} of your tasks need you:`,
+            ...lines.slice(0, SHOWN).map((one) => `• ${one.key} ${one.title}, ${one.state}`),
+            ...(rest > 0 ? [`and ${rest} more`] : []),
+          ];
+  return [...named, ...(unnamed.length === 0 ? [] : [privateLine(unnamed)])].join("\n");
+};
+
+/**
+ * Posts Kin's notice of `facts`, and a count of `unnamed`, in the person's direct chat with
+ * `agentId` (else the team agent, as assignment notices pick), opened if needed; in their quiet
+ * hours or while away it is held until they are back. Returns the id the told rows carry, or
+ * undefined when no chat may hold it.
  */
 export const tellHolder = Effect.fn("KinPulse.tellHolder")(function* (input: {
   readonly ctx: SenseContext;
   readonly personId: KinPersonId;
   readonly agentId: KinAgentId;
   readonly facts: ReadonlyArray<KinPulseFact>;
+  readonly unnamed: ReadonlyArray<KinPulseFact>;
 }) {
   const { ctx, personId } = input;
   const { orgId } = ctx;
   const chats = yield* Effect.serviceOption(KinChatService);
-  if (Option.isNone(chats) || input.facts.length === 0) return undefined;
+  if (Option.isNone(chats) || input.facts.length + input.unnamed.length === 0) return undefined;
   const sql = yield* SqlClient.SqlClient;
   const ids = input.facts.flatMap((fact) =>
     fact.subject.recordId === undefined ? [] : [fact.subject.recordId],
@@ -91,10 +117,12 @@ export const tellHolder = Effect.fn("KinPulse.tellHolder")(function* (input: {
     const due = fact.subject.recordId === undefined ? undefined : dueOf.get(fact.subject.recordId);
     return due === undefined ? [] : [holderLine(ctx, fact, due)];
   });
-  if (lines.length === 0) return undefined;
-  const via = (yield* LeadAccess.allowed({ orgId, agentId: input.agentId, personId }))
-    ? input.agentId
-    : yield* LeadAccess.teamAgent(orgId);
+  if (lines.length + input.unnamed.length === 0) return undefined;
+  // As `createDirect` lets them: a co-owner messages every lead, anyone else while its owner allows.
+  const reaches =
+    (yield* ownerLevel(orgId, personId)) ||
+    (yield* LeadAccess.allowed({ orgId, agentId: input.agentId, personId }));
+  const via = reaches ? input.agentId : yield* LeadAccess.teamAgent(orgId);
   if (via === null) return undefined;
   const [open] = yield* sql<{ chatId: string }>`SELECT c.chat_id AS "chatId" FROM kin_chats c
     JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
@@ -112,11 +140,13 @@ export const tellHolder = Effect.fn("KinPulse.tellHolder")(function* (input: {
             Effect.orElseSucceed(() => undefined),
           );
   if (chatId === undefined) return undefined;
-  const body = holderBody(lines);
-  // The same facts for the same person are one message, so a retried pass posts nothing more.
+  const body = holderBody(lines, input.unnamed);
+  // One pass's facts for one person are one message, so a retried pass posts nothing more; a fact
+  // open again after it cleared is told in a later pass, so it is a new message.
+  const keys = [...input.facts, ...input.unnamed].map((fact) => fact.key);
   const messageId = KinMessageId.make(
     `${HOLDER_ID}${NodeCrypto.createHash("sha256")
-      .update(`${orgId}\0${personId}\0${input.facts.map((fact) => fact.key).join("\0")}`)
+      .update(`${orgId}\0${personId}\0${ctx.at}\0${keys.join("\0")}`)
       .digest("hex")
       .slice(0, 32)}`,
   );
