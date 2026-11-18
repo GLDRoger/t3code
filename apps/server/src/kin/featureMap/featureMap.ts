@@ -8,7 +8,7 @@ import { SHARED_TOOLS } from "../lead/SharedTools.ts";
 const REPO_ROOT = NodePath.resolve(import.meta.dirname, "..", "..", "..", "..", "..");
 const FEATURE_MAP_PATH = NodePath.join(import.meta.dirname, "feature-map.yaml");
 
-export const DOCK_TABS = ["chats", "tasks", "money", "clients", "docs"] as const;
+export const DOCK_TABS = ["chats", "tasks", "canvas", "money", "clients", "docs"] as const;
 const ROLES = ["owner", "co_owner", "lead", "member"] as const;
 const REACH = ["both", "web", "phone", "none"] as const;
 /** Steps inside a screen that add no depth: a menu, a card in a chat, a section of a page. */
