@@ -1373,6 +1373,8 @@ function KinChatFeed(props: {
           <KinRelayBubble
             row={item}
             environmentId={props.environmentId}
+            markdownStyle={markdownStyle}
+            onLinkPress={onLinkPress}
             onOpenDiscussion={
               room === null
                 ? null

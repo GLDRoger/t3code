@@ -178,9 +178,9 @@ const teammateLead = Effect.fn("HandoffTest.teammateLead")(function* (
 
 // The host's chats, 10 Nov 2026: asked "Check my repos", the Chief of staff could only tell the
 // owner what it wasn't set up for. The front door passes the request to the lead who owns it.
-it.effect(
-  "a lead passes the owner's request to another of the owner's leads, once, with where it was asked",
-  () =>
+it.effect.each([true, false, "legacy"] as const)(
+  "a lead passes the owner's request once and wakes the asker only when needed (%s)",
+  (wantsAnswer) =>
     run(({ ctx, handoff }) =>
       Effect.gen(function* () {
         const { sql, orgId } = ctx;
@@ -201,6 +201,7 @@ it.effect(
           to: "tech lead",
           request: "CI is red on acme/app.\nThe owner wants to know why.",
           sourceEventId: "ask-event",
+          wantsAnswer: wantsAnswer !== false,
         };
         assert.deepStrictEqual(yield* handoff.handOff(scopeFor(chief), input), {
           to: "Tech lead",
@@ -252,6 +253,8 @@ it.effect(
             ${ctx.owner.personId}, 'tech-thread', ${member!.id}, 'member', 'text',
             'A flaky e2e test on main; I reran it and it passes.', '[]', 'posted', ${at}
           FROM kin_chats WHERE org_id = ${orgId} AND chat_id = ${ctx.techChat}`;
+        if (wantsAnswer === "legacy")
+          yield* sql`UPDATE kin_handoffs SET wants_answer = NULL WHERE org_id = ${orgId}`;
         const done = { orgId, agentId: tech, wakeupId: "tech-wake" };
         yield* handoff.reportBack(done);
         yield* handoff.reportBack(done);
@@ -267,11 +270,12 @@ it.effect(
         ]);
         const woke = yield* sql<{ json: string }>`SELECT json FROM kin_events
           WHERE org_id = ${orgId} AND agent_id = ${chief} AND dedupe_key LIKE 'handoff-back:%'`;
-        assert.lengthOf(woke, 1);
-        assert.deepInclude(JSON.parse(woke[0]!.json).origin, {
-          agentId: chief,
-          chatId: ctx.chiefChat,
-        });
+        assert.lengthOf(woke, wantsAnswer === false ? 0 : 1);
+        if (wantsAnswer !== false)
+          assert.deepInclude(JSON.parse(woke[0]!.json).origin, {
+            agentId: chief,
+            chatId: ctx.chiefChat,
+          });
       }),
     ),
 );
@@ -312,6 +316,7 @@ it.effect("a check-in passes a fact to the agent who acts on it, once, in Kin's 
       yield* recordAudience(turn, yield* turnAudience(turn));
       const pass = (fact?: string) =>
         handoff.handOff(scopeFor(chief), {
+          wantsAnswer: true,
           to: "Tech lead",
           request: "Ship the notes today or move the date.",
           sourceEventId: "checkin-event",
@@ -356,6 +361,7 @@ it.effect("a turn a teammate's join aborted passes nothing on", () =>
       yield* sql`UPDATE kin_wakeups SET aborted_at = 1, shared_since = 1 WHERE wakeup_id = 'chief-wake'`;
       const refused = yield* Effect.flip(
         handoff.handOff(scopeFor(chief), {
+          wantsAnswer: true,
           to: "Tech lead",
           request: "Invented",
           sourceEventId: "ask-event",
@@ -379,6 +385,7 @@ it.effect("what was passed on works at no more than the chat it was asked in all
       yield* sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since)
         VALUES (${orgId}, ${chief}, ${ctx.chiefChat}, 'L1', 0)`;
       yield* handoff.handOff(scopeFor(chief), {
+        wantsAnswer: true,
         to: "Tech lead",
         request: "Start a fix.",
         sourceEventId: "ask-event",
@@ -408,6 +415,7 @@ it.effect("what was passed on works at no more than the chat it was asked in all
       yield* recordAudience(techWake, yield* turnAudience(techWake));
       const back = yield* Effect.flip(
         handoff.handOff(scopeFor(tech), {
+          wantsAnswer: true,
           to: "Chief of staff",
           request: "Back to you.",
           sourceEventId: passed!.event.eventId,
@@ -428,7 +436,14 @@ it.effect(
         const { sql, orgId, owner } = ctx;
         yield* teammateLead(sql, orgId);
         const pass = (sourceEventId: string, to = "Tech lead") =>
-          Effect.flip(handoff.handOff(scopeFor(chief), { to, request: "Please.", sourceEventId }));
+          Effect.flip(
+            handoff.handOff(scopeFor(chief), {
+              wantsAnswer: true,
+              to,
+              request: "Please.",
+              sourceEventId,
+            }),
+          );
 
         // A group the owner put the lead in: a teammate there can't reach a lead outside it.
         yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
@@ -501,7 +516,12 @@ it.effect(
           yield* ctx.claim(eventId, chief, { messageId: sent.messageId });
         });
         const pass = (sourceEventId: string, request = "Please look.") =>
-          handoff.handOff(scopeFor(chief), { to: "Tech lead", request, sourceEventId });
+          handoff.handOff(scopeFor(chief), {
+            wantsAnswer: true,
+            to: "Tech lead",
+            request,
+            sourceEventId,
+          });
         // Past the 1,500 characters the reviewed version cut it at.
         const long = `${"The deploy log says ".repeat(150)}end.`;
         yield* ask("long-event", long);
@@ -704,7 +724,12 @@ it.effect(
         const { mate, ask } = yield* room(ctx);
         const sent = yield* ask("mate-event", mate, "Why is CI red?");
         const pass = (to: string, from = chief) =>
-          handoff.handOff(scopeFor(from), { to, request: "Yours.", sourceEventId: "mate-event" });
+          handoff.handOff(scopeFor(from), {
+            wantsAnswer: true,
+            to,
+            request: "Yours.",
+            sourceEventId: "mate-event",
+          });
         assert.deepStrictEqual(yield* pass("Tech lead"), { to: "Tech lead", passed: true });
         yield* pass("engineering");
         const events = yield* sql<{ agentId: string; json: string }>`SELECT agent_id AS "agentId",
