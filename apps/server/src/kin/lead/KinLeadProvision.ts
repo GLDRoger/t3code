@@ -655,15 +655,18 @@ export const retirable = Effect.fn("KinLeadProvision.retirable")(function* (inpu
 /**
  * Retires a lead. It is not deleted: its chats, history, memory and Work stay, and `restore`
  * brings it back. In one transaction: no turn of it runs again, what it has in flight stops or
- * waits (`Retirement.retire`), and after commit its running turns are stopped. The owner keeps
- * at least one live lead of their own, so there is always someone to talk to.
+ * waits (`Retirement.retire`), and after commit its running turns are stopped. The owner keeps a
+ * live lead of their own, and teammates the team agent's successor, so someone always answers.
  */
 export const retire = Effect.fn("KinLeadProvision.retire")(function* (input: {
   readonly by: LeadActor;
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
+  /** Required when it is the team agent: who teammates talk to instead. */
+  readonly nextTeamAgentId?: KinAgentId | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
+  const chats = yield* ChatService.KinChatService;
   const stop = yield* Effect.serviceOption(KinStop);
   const queue = yield* Effect.serviceOption(KinEventQueue);
   const presence = yield* Effect.serviceOption(KinPresence);
@@ -683,6 +686,26 @@ export const retire = Effect.fn("KinLeadProvision.retire")(function* (input: {
           "last_agent",
           `${lead.name} is your only agent. Create another before retiring it.`,
         );
+      const team = yield* LeadAccess.teamAgent(lead.orgId).pipe(
+        Effect.mapError(toPersistenceSqlError("KinLeadProvision.retire")),
+      );
+      if (team === lead.agentId) {
+        const live = yield* leadsIn(lead.orgId, { liveOnly: true });
+        if (input.nextTeamAgentId === undefined)
+          return yield* refuse(
+            "conflict",
+            `${lead.name} is the team agent, so teammates talk to it. Choose who they should talk to instead, then retire it.`,
+          );
+        const next = live.find(
+          (entry) => entry.agentId === input.nextTeamAgentId && entry.agentId !== lead.agentId,
+        );
+        if (next === undefined)
+          return yield* refuse(
+            "not_found",
+            `The team needs an active agent other than ${lead.name} to talk to instead.`,
+          );
+        yield* switchTeamAgent(lead.orgId, by ?? owner.personId, live, next);
+      }
       const now = yield* DateTime.now;
       const retiredAt = DateTime.formatIso(now);
       const changed = yield* sql`UPDATE kin_agents
@@ -693,12 +716,10 @@ export const retire = Effect.fn("KinLeadProvision.retire")(function* (input: {
       if (changed.length === 0)
         return yield* refuse("conflict", `Agent ${lead.agentId} changed while retiring.`);
       yield* leadsChanged(lead.orgId);
-      const stopped = yield* Retirement.retire({
-        orgId: lead.orgId,
-        agentId: lead.agentId,
-        retiredAt,
-        now: DateTime.toEpochMillis(now),
-      });
+      const stopped = yield* Retirement.retire(
+        { orgId: lead.orgId, agentId: lead.agentId, retiredAt, now: DateTime.toEpochMillis(now) },
+        chats,
+      );
       const after = Effect.gen(function* () {
         if (Option.isSome(stop) && stopped.turns.length > 0)
           yield* stop.value.abortTurns(lead.orgId, stopped.turns);
@@ -760,6 +781,7 @@ export const restore = Effect.fn("KinLeadProvision.restore")(function* (input: {
       yield* Retirement.restore({
         orgId: lead.orgId,
         agentId: lead.agentId,
+        retiredAt: lead.retiredAt,
         now: DateTime.toEpochMillis(yield* DateTime.now),
       });
       const restored = { ...lead, retiredAt: null, retiredByPersonId: null };
@@ -1085,7 +1107,6 @@ export const setTeamAgent = Effect.fn("KinLeadProvision.setTeamAgent")(function*
   readonly agentId: KinAgentId | null;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const chats = yield* ChatService.KinChatService;
   return yield* transaction(
     sql,
     "KinLeadProvision.setTeamAgent",
@@ -1099,43 +1120,57 @@ export const setTeamAgent = Effect.fn("KinLeadProvision.setTeamAgent")(function*
         input.agentId === null ? null : live.find((lead) => lead.agentId === input.agentId);
       if (next === undefined)
         return yield* refuse("not_found", `Org ${input.orgId} has no agent ${input.agentId}.`);
-      const sqlError = toPersistenceSqlError("KinLeadProvision.setTeamAgent");
-      const previous = yield* LeadAccess.teamAgent(person.orgId).pipe(Effect.mapError(sqlError));
-      const nextId = next?.agentId ?? null;
-      if (previous === nextId) return { teamAgentId: nextId };
-      const now = DateTime.toEpochMillis(yield* DateTime.now);
-      yield* (
-        nextId === null
-          ? sql`DELETE FROM kin_team_agents WHERE org_id = ${person.orgId}`
-          : sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
-              VALUES (${person.orgId}, ${nextId}, ${person.personId}, ${now})
-              ON CONFLICT (org_id) DO UPDATE SET agent_id = excluded.agent_id,
-                set_by = excluded.set_by, set_at = excluded.set_at`
-      ).pipe(Effect.mapError(sqlError));
-      const people = yield* teammates(person.orgId);
-      const old = live.find((lead) => lead.agentId === previous);
-      if (old !== undefined)
-        for (const personId of people) {
-          if (yield* LeadAccess.granted({ ...old, personId }).pipe(Effect.mapError(sqlError)))
-            continue;
-          yield* closeDirect(
-            old,
-            personId,
-            next === null
-              ? `${old.name} is no longer the team agent.`
-              : `The team agent is now ${next.name}. Message ${next.name} instead.`,
-          );
-        }
-      if (next !== null)
-        for (const personId of people)
-          yield* chats.createDirect(
-            { _tag: "person", orgId: person.orgId, personId },
-            { orgId: person.orgId, agentId: next.agentId },
-          );
-      yield* leadsChanged(person.orgId);
-      return { teamAgentId: nextId };
+      return { teamAgentId: yield* switchTeamAgent(person.orgId, person.personId, live, next) };
     }),
   );
+});
+
+/**
+ * Inside the caller's transaction: `next` (or none) becomes the team agent. Each teammate gets a
+ * direct chat with it, reopened if they had one; the previous one's chats say where to go.
+ */
+const switchTeamAgent = Effect.fn("KinLeadProvision.switchTeamAgent")(function* (
+  orgId: KinOrgId,
+  setBy: KinPersonId,
+  live: ReadonlyArray<LeadSummary>,
+  next: LeadSummary | null,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const chats = yield* ChatService.KinChatService;
+  const sqlError = toPersistenceSqlError("KinLeadProvision.setTeamAgent");
+  const previous = yield* LeadAccess.teamAgent(orgId).pipe(Effect.mapError(sqlError));
+  const nextId = next?.agentId ?? null;
+  if (previous === nextId) return nextId;
+  const now = DateTime.toEpochMillis(yield* DateTime.now);
+  yield* (
+    nextId === null
+      ? sql`DELETE FROM kin_team_agents WHERE org_id = ${orgId}`
+      : sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+          VALUES (${orgId}, ${nextId}, ${setBy}, ${now})
+          ON CONFLICT (org_id) DO UPDATE SET agent_id = excluded.agent_id,
+            set_by = excluded.set_by, set_at = excluded.set_at`
+  ).pipe(Effect.mapError(sqlError));
+  const people = yield* teammates(orgId);
+  const old = live.find((lead) => lead.agentId === previous);
+  if (old !== undefined)
+    for (const personId of people) {
+      if (yield* LeadAccess.granted({ ...old, personId }).pipe(Effect.mapError(sqlError))) continue;
+      yield* closeDirect(
+        old,
+        personId,
+        next === null
+          ? `${old.name} is no longer the team agent.`
+          : `The team agent is now ${next.name}. Message ${next.name} instead.`,
+      );
+    }
+  if (next !== null)
+    for (const personId of people)
+      yield* chats.createDirect(
+        { _tag: "person", orgId, personId },
+        { orgId, agentId: next.agentId },
+      );
+  yield* leadsChanged(orgId);
+  return nextId;
 });
 
 /**

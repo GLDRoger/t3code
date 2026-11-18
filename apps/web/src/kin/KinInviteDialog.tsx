@@ -6,9 +6,11 @@ import {
   kinInviteLink,
   kinInviteLinkCopy,
   kinInviteLinkLocalOnly,
+  kinRemovedNamesake,
   kinTeammateNameCheck,
   type KinMadeInvite,
   type KinTeamActions,
+  type KinTeamList,
 } from "@t3tools/client-runtime/kin/kinTeam";
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -45,6 +47,7 @@ export function KinInviteDialog(props: {
   readonly state: KinInviteDialogState;
   readonly environmentId: EnvironmentId;
   readonly actions: KinTeamActions;
+  readonly list: KinTeamList;
   readonly onMade: (invite: KinMadeInvite) => void;
   readonly onClose: () => void;
 }) {
@@ -62,6 +65,7 @@ export function KinInviteDialog(props: {
             busy={busy}
             setBusy={setBusy}
             actions={props.actions}
+            list={props.list}
             onMade={props.onMade}
             onClose={props.onClose}
           />
@@ -81,28 +85,42 @@ function NameForm(props: {
   readonly busy: boolean;
   readonly setBusy: (busy: boolean) => void;
   readonly actions: KinTeamActions;
+  readonly list: KinTeamList;
   readonly onMade: (invite: KinMadeInvite) => void;
   readonly onClose: () => void;
 }) {
   const { busy } = props;
   const [name, setName] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
+  // The host's offer to bring back a removed person by this name, and who that is.
+  const [offer, setOffer] = useState<{
+    readonly text: string;
+    readonly person: ReturnType<typeof kinRemovedNamesake>;
+  } | null>(null);
   const nameId = useId();
   const checked = kinTeammateNameCheck(name);
 
-  const save = async () => {
+  const make = async (person: NonNullable<ReturnType<typeof kinRemovedNamesake>> | null) => {
     if (!checked.ok || busy) return;
     props.setBusy(true);
     setProblem(null);
+    setOffer(null);
     const made = await props.actions.makeLink({
-      displayName: checked.name,
-      personId: null,
-      replaces: null,
+      displayName: person?.displayName ?? checked.name,
+      personId: person?.personId ?? null,
+      replaces:
+        person === null
+          ? null
+          : (props.list.invites.find((held) => held.personId === person.personId)?.inviteId ??
+            null),
     });
     props.setBusy(false);
     if (made.ok) props.onMade(made.invite);
+    else if (made.bringBack === true)
+      setOffer({ text: made.problem, person: kinRemovedNamesake(props.list, checked.name) });
     else setProblem(made.problem);
   };
+  const save = () => make(null);
 
   return (
     <form
@@ -134,6 +152,24 @@ function NameForm(props: {
           {problem === null ? null : (
             <Alert variant="error">
               <AlertDescription>{problem}</AlertDescription>
+            </Alert>
+          )}
+          {offer === null ? null : (
+            <Alert>
+              <AlertDescription>
+                {offer.text}
+                {offer.person === null ? null : (
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="self-start"
+                    disabled={busy}
+                    onClick={() => void make(offer.person)}
+                  >
+                    Bring back {offer.person.displayName}
+                  </Button>
+                )}
+              </AlertDescription>
             </Alert>
           )}
         </div>

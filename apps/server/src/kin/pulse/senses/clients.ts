@@ -49,7 +49,7 @@ export const clientSenses = Effect.fn("KinPulse.clientSenses")(function* (ctx: S
     consequence: consequence(one),
     actor: agentOrOwner(ctx.chief),
     sensitive: one.sensitive,
-    // Late work already wakes its holder as task_late; this one only reaches briefs.
+    // The late work itself reaches its holder once as task_late (`tellHolders`); this, briefs.
     wake: one.sense === "client_waiting_on_us" ? "brief" : "sweep",
   }));
 });
