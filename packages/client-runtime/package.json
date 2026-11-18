@@ -615,6 +615,10 @@
       "types": "./src/kin/kinNavigation.ts",
       "default": "./src/kin/kinNavigation.ts"
     },
+    "./kin/kinOpenView": {
+      "types": "./src/kin/kinOpenView.ts",
+      "default": "./src/kin/kinOpenView.ts"
+    },
     "./kin/kinPeopleChat": {
       "types": "./src/kin/kinPeopleChat.ts",
       "default": "./src/kin/kinPeopleChat.ts"

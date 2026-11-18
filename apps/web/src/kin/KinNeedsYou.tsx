@@ -9,6 +9,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinAttention";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
+import { kinOpenNeeds } from "@t3tools/client-runtime/kin/kinOpenView";
 import { kinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
 import {
   KIN_WORK_HOME,
@@ -31,6 +32,7 @@ import { useKinAttention, useKinAttentionHandle } from "./useKinAttention";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinInbox } from "./useKinHost";
+import { useKinOpen } from "./useKinOpen";
 import { kinListsOf, useKinLists, useKinMoneySummary } from "./useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 
@@ -50,6 +52,7 @@ export interface KinNeedsYouGo {
 /**
  * What needs attention and what needs you, read for one screen: the attention rows, then your
  * late tasks, what clients owe past due, what an agent waits on you for, and your tasks today.
+ * Where the host streams the open list they are its rows, and `mine` is only whether to show.
  * Null while `mine` is (still loading, or not asked for: then nothing is read).
  */
 export function useKinNeedsRows(
@@ -57,18 +60,21 @@ export function useKinNeedsRows(
   mine: ReadonlyArray<KinRecord> | null,
 ) {
   const { environmentId, orgId, names } = props;
-  const enabled = mine !== null;
+  const asked = mine !== null;
+  const open = useKinOpen(props);
+  const enabled = asked && open === null;
   const now = new Date(useNowMinuteMs());
   const money = useKinMoneySummary(props, { enabled });
   const lists = useKinLists(props, { enabled });
   const inbox = useKinInbox();
   const [expanded, setExpanded] = useState(false);
-  // The first page until See all; then everything, the page standing in until it arrives.
-  const pagedRead = useKinAttention(props, enabled, true);
+  // The first page until See all; then everything, the page standing in until it arrives. The
+  // open list has no answered facts, so their Undo still comes from the page.
+  const pagedRead = useKinAttention(props, asked, true);
   const fullRead = useKinAttention(props, enabled && expanded);
   const attentionRead = expanded && fullRead !== null ? fullRead : pagedRead;
   const handler = useKinAttentionHandle(props);
-  if (mine === null) return null;
+  if (mine === null || open === undefined) return null;
   const attention = kinAttention(attentionRead, {
     scope: { type: "all" },
     names: kinAttentionNames(names),
@@ -78,6 +84,20 @@ export function useKinNeedsRows(
     inbox.state._tag === "ready" && inbox.state.environmentId === environmentId
       ? inbox.state
       : null;
+  if (open !== null)
+    return {
+      ...kinOpenNeeds(open, {
+        names,
+        chats: ready?.inbox.value.chats ?? [],
+        agentNames: kinDirectory(inbox.host).agentNames,
+        now,
+      }),
+      handled: attention.handled,
+      handler,
+      expanded,
+      setExpanded,
+      openList: true,
+    };
   const before = kinNeedsYou({
     mine,
     // Where the host keeps money from this viewer, nothing owed shows here either.
@@ -106,6 +126,7 @@ export function useKinNeedsRows(
     handler,
     expanded,
     setExpanded,
+    openList: false,
   };
 }
 
@@ -153,10 +174,18 @@ export function KinTasksAttention(
     KinNeedsYouGo &
     NonNullable<ReturnType<typeof useKinNeedsRows>> & {
       readonly total: number;
+      readonly onMe: number;
       readonly more: boolean;
     },
 ) {
-  return <KinNeedsBlock {...props} title={KIN_ATTENTION.title} empty={null} />;
+  return (
+    <KinNeedsBlock
+      {...props}
+      title={KIN_ATTENTION.title}
+      empty={null}
+      below={props.openList ? props.onMe : 0}
+    />
+  );
 }
 
 function KinNeedsBlock(
@@ -168,9 +197,11 @@ function KinNeedsBlock(
       readonly more: boolean;
       /** What an empty block says; null where it never shows empty. */
       readonly empty: string | null;
+      /** Of `total`, the things the list below draws under "On me". */
+      readonly below?: number;
     },
 ) {
-  const { environmentId, orgId, handler, expanded, setExpanded, total } = props;
+  const { environmentId, orgId, handler, expanded, setExpanded, total, below = 0 } = props;
   const navigate = useNavigate();
   const rows: ReadonlyArray<KinNeedsYouRow> = props.needs;
   const attentionRows: ReadonlyArray<KinAttentionRow> = props.attention;
@@ -223,14 +254,25 @@ function KinNeedsBlock(
       </li>
     );
   };
+  const seeAll = !props.more ? undefined : (
+    <Button size="xs" variant="ghost" onClick={() => setExpanded(!expanded)}>
+      {expanded ? KIN_WORK_HOME.seeFewer : KIN_WORK_HOME.seeAll(total)}
+    </Button>
+  );
   return (
     <KinWorkSection
       title={props.title}
       action={
-        !props.more ? undefined : (
-          <Button size="xs" variant="ghost" onClick={() => setExpanded(!expanded)}>
-            {expanded ? KIN_WORK_HOME.seeFewer : KIN_WORK_HOME.seeAll(total)}
-          </Button>
+        below === 0 ? (
+          seeAll
+        ) : (
+          <span className="flex min-w-0 items-center gap-1">
+            {seeAll}
+            <span className="truncate text-xs text-muted-foreground">
+              {props.more ? "· " : null}
+              {KIN_WORK_HOME.onMeBelow(below)}
+            </span>
+          </span>
         )
       }
     >

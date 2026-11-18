@@ -3,7 +3,8 @@ import { useNavigation } from "@react-navigation/native";
 import { KIN_TEAMMATE_WELCOME } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { kinAccessMeAtom, kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinDockSelection, kinDockShown } from "@t3tools/client-runtime/kin/kinNavigation";
-import { kinAttentionBadge, kinTasksBadgeCount } from "@t3tools/client-runtime/kin/kinAttention";
+import { kinAttentionBadge } from "@t3tools/client-runtime/kin/kinAttention";
+import { kinOpenBadge } from "@t3tools/client-runtime/kin/kinOpenView";
 import { kinWorkListsMoved } from "@t3tools/client-runtime/kin/kinWorkStream";
 import { kinBadgeCount } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
@@ -33,6 +34,7 @@ import { KinChatsList } from "./KinChatsScreen";
 import { KinDock, kinDockClearance, type KinDockProps } from "./components/KinDock";
 import { useKinAttention } from "./state/useKinAttention";
 import { useKinMyDueTasks } from "./state/useKinWorkHome";
+import { useKinOpen } from "./state/useKinOpen";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { KinPlace } from "./KinWorkScreen";
 import { KinTabContext } from "./components/KinTab";
@@ -222,22 +224,27 @@ function KinHomeTabs(props: {
 }
 
 /**
- * The dock, with unread messages counted on Chats; on Tasks, what needs attention for the owner
- * and a co-owner, and anyone else's own late and due-today tasks, the ones "On me" marks.
+ * The dock, with unread messages counted on Chats; on Tasks, everything open for you where the
+ * host streams that list, else what needs attention for the owner and a co-owner, and anyone
+ * else's own late and due-today tasks, the ones "On me" marks.
  */
 function KinBadgedDock(props: KinWorkTarget & KinDockProps) {
   const target = { environmentId: props.environmentId, orgId: props.orgId };
   const ownerLevel = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, props.environmentId));
-  const attention = useKinAttention(target, ownerLevel, true);
+  // A host with the open list counts every level the same; until it arrives, no badge.
+  const open = useKinOpen(target);
+  const attention = useKinAttention(target, ownerLevel && !open.on, true);
   const work = useKinWork(target);
-  const ready = work._tag === "ready" && !ownerLevel;
+  const ready = work._tag === "ready" && !ownerLevel && !open.on;
   const directory = useKinWorkDirectory(target, ready);
   const mineDue = useKinMyDueTasks(
     target,
     ready ? directory.names.me : null,
     ready && !work.stale ? kinWorkListsMoved(work.live, ["work"]) : null,
   );
-  const badge = kinAttentionBadge(kinTasksBadgeCount({ ownerLevel, attention, mineDue }));
+  const badge = kinAttentionBadge(
+    kinOpenBadge({ open: open.read, ownerLevel, attention: open.on ? null : attention, mineDue }),
+  );
   return (
     <KinDock
       tabs={props.tabs}
