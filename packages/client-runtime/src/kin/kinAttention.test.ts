@@ -115,6 +115,21 @@ describe("kinAttention", () => {
     );
     // Three rows fit, so no "See all" that would open nothing new.
     expect(block?.more).toBe(false);
+    // A task under "On me" leaves the block's rows, not its count, which stays the badge's.
+    const onMe = kinTasksBlock({
+      ownerLevel: true,
+      onMe: new Set(["W-2"]),
+      attention: owing.rows,
+      needs: owing.moneyRow === null ? [] : [owing.moneyRow],
+      hidden: owing.hidden,
+      handled: 0,
+      expanded: false,
+    });
+    expect(onMe?.attention.map((row) => row.factKey)).toEqual(["task_due_soon:W-1"]);
+    expect(onMe?.total).toBe(
+      kinTasksBadgeCount({ ownerLevel: true, attention: twoOwed, mineDue: null }),
+    );
+    expect(onMe?.onMe).toBe(1);
     // A project or client fact does not repeat its own name after its key.
     const own = kinAttention(
       read([

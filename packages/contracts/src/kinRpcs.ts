@@ -37,6 +37,7 @@ import { KinMoneyAnswerRpcs, KIN_MONEY_ANSWER_RPC_SCOPES } from "./kinMoneyAnswe
 import { KinMoneyLiveRpcs, KIN_MONEY_LIVE_RPC_SCOPES } from "./kinMoneyLive.ts";
 import { KinRefreshRpcs, KIN_REFRESH_RPC_SCOPES } from "./kinRefresh.ts";
 import { KinPulseRpcs, KIN_PULSE_RPC_SCOPES } from "./kinPulse.ts";
+import { KinOpenRpcs, KIN_OPEN_RPC_SCOPES } from "./kinOpen.ts";
 import {
   KinChatError,
   KinChatRpcs,
@@ -191,6 +192,7 @@ export const KinRpcs = [
   ...KinSocialRpcs,
   ...KinRefreshRpcs,
   ...KinPulseRpcs,
+  ...KinOpenRpcs,
 ] as const;
 export const KIN_RPC_SCOPES = {
   ...KIN_CHAT_RPC_SCOPES,
@@ -210,6 +212,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_SOCIAL_RPC_SCOPES,
   ...KIN_REFRESH_RPC_SCOPES,
   ...KIN_PULSE_RPC_SCOPES,
+  ...KIN_OPEN_RPC_SCOPES,
   "kin.budget.get": AuthKinChatScope,
   "kin.budget.set": AuthKinChatScope,
   "kin.org.get": AuthKinChatScope,
@@ -416,6 +419,8 @@ const KIN_RPC_ACCESS = {
   "kin.pulse.read": "person",
   "kin.pulse.subscribe": "person",
   "kin.pulse.handle": "person",
+  "kin.open.read": "person",
+  "kin.open.subscribe": "person",
   "kin.goals.list": "person",
   "kin.goals.save": "owner_level",
   "kin.checkIns.list": "owner_level",
@@ -485,6 +490,8 @@ export const KIN_RPC_AGGREGATES = {
   "kin.pulse.read": "kin-pulse",
   "kin.pulse.subscribe": "kin-pulse",
   "kin.pulse.handle": "kin-pulse",
+  "kin.open.read": "kin-pulse",
+  "kin.open.subscribe": "kin-pulse",
   "kin.goals.list": "kin-pulse",
   "kin.goals.save": "kin-pulse",
   "kin.checkIns.list": "kin-pulse",

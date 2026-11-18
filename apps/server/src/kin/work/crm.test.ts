@@ -742,7 +742,7 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
       record_assign: [
         LeadWork.assign(scope, {
           sourceEventId: "ask-event",
-          tasks: [{ key: "W-2", to: "me", reason: "Invented: free today" }],
+          tasks: [{ key: "W-2", to: "you", reason: "Invented: free today" }],
         }),
         false,
       ],
@@ -1217,7 +1217,7 @@ it.effect(
       yield* sql`UPDATE kin_records SET state = 'waiting', due_at = ${3 * DAY} WHERE key = 'INV-1'`;
       const owes = (yield* LeadWork.get(scope, { key: "C-1" })).owed!;
       assert.deepStrictEqual(owes.money.overdue, owes.money.unpaid);
-      assert.match(owes.money.invoices[0]!, /^INV-1: .*500.* overdue, \d+ days past due$/);
+      assert.match(owes.money.invoices[0]!, /^INV-1: .*500.* overdue for \d+ days$/);
 
       // A client added today with work that ended long ago reads cold from that day, and a typed
       // name finds it: any case, a start of it, or a close spelling.

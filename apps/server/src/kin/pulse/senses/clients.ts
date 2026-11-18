@@ -5,13 +5,24 @@ import * as Touches from "../../work/touches.ts";
 import {
   agentOrOwner,
   daysText,
-  hoursText,
   iso,
+  lateText,
   type SenseContext,
   type SensedFact,
 } from "./shared.ts";
 
-const consequence = (one: Touches.ClientSense) => {
+const KIND_WORDS: Record<NonNullable<Touches.ClientSense["lastKind"]>, string> = {
+  call: "a call",
+  meeting: "a meeting",
+  email: "an email",
+  message: "a message",
+  other: "a contact",
+  invoice: "an invoice",
+  quote: "a quote",
+  payment: "a payment",
+};
+
+const consequence = (ctx: SenseContext, one: Touches.ClientSense) => {
   const silence =
     one.from === "added"
       ? one.days === 0
@@ -19,10 +30,10 @@ const consequence = (one: Touches.ClientSense) => {
         : `No contact logged since they were added ${daysText(one.days)} ago`
       : one.from === "project"
         ? `Nothing logged since their last project ended ${daysText(one.days)} ago`
-        : `No logged contact for ${daysText(one.days)}`;
+        : `No contact ${lateText(ctx, one.lastAt ?? ctx.at)} (calls, meetings, mail, invoices and payments count; the last was ${one.lastKind === null ? "a contact" : KIND_WORDS[one.lastKind]})`;
   if (one.sense === "client_quiet") return `${silence}, during an open project.`;
   if (one.sense === "client_cold") return `${silence}, and nothing open with them.`;
-  return `Something we owe them is ${hoursText(one.late ?? 0)} past due.`;
+  return `Something we owe them has been past due ${lateText(ctx, one.dueAt ?? ctx.at)}.`;
 };
 
 /** Contact with clients: quiet during a project, cold without one, waiting on something of ours. */
@@ -46,7 +57,7 @@ export const clientSenses = Effect.fn("KinPulse.clientSenses")(function* (ctx: S
       threshold: one.limit.value,
       from: one.limit.from,
     },
-    consequence: consequence(one),
+    consequence: consequence(ctx, one),
     actor: agentOrOwner(ctx.chief),
     sensitive: one.sensitive,
     // The late work itself reaches its holder once as task_late (`tellHolders`); this, briefs.

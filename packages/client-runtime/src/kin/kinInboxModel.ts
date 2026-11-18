@@ -124,9 +124,16 @@ function kinInboxFold(chat: KinChatSummary, waitingCount: number): KinInboxFold 
   return chat.working === true ? "working" : "rest";
 }
 
-export function selectKinInboxView(state: KinInboxState): KinInboxView {
+/**
+ * `waiting`, when given, is the host's open list's (`kinOpenWaiting`), which drops what no longer
+ * asks anything; absent, the chat list's own waiting items stand.
+ */
+export function selectKinInboxView(
+  state: KinInboxState,
+  waiting: ReadonlyArray<KinWaitingItem> = state.waiting,
+): KinInboxView {
   const waitingByChat = new Map<KinChatId, number>();
-  for (const item of state.waiting) {
+  for (const item of waiting) {
     waitingByChat.set(item.chatId, (waitingByChat.get(item.chatId) ?? 0) + 1);
   }
   const folds = { needsYou: 0, working: 0, rest: 0 };
@@ -147,11 +154,11 @@ export function selectKinInboxView(state: KinInboxState): KinInboxView {
   return {
     rows,
     folds,
-    waiting: [...state.waiting].sort(
+    waiting: [...waiting].sort(
       (a, b) => a.createdAt.localeCompare(b.createdAt) || a.waitingId.localeCompare(b.waitingId),
     ),
     unreadCount: kinBadgeCount(state),
-    waitingCount: state.waiting.length,
+    waitingCount: waiting.length,
   };
 }
 

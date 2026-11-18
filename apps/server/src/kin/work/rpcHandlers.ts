@@ -4,6 +4,7 @@ import {
   KinFinanceRpcs,
   KinMoneyAnswerRpcs,
   KinMoneyLiveRpcs,
+  KinOpenRpcs,
   KinPulseRpcs,
   KinRefreshRpcs,
   KinStatementRpcs,
@@ -26,6 +27,7 @@ import * as ThreadManagementService from "../../orchestration-v2/ThreadManagemen
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as CheckIns from "../pulse/checkIns.ts";
 import * as Pulse from "../pulse/people.ts";
+import * as Open from "../open/people.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import * as Goals from "./goals.ts";
 import * as Clients from "./ownerClients.ts";
@@ -46,6 +48,7 @@ const moneyLive = RpcGroup.make(...KinMoneyLiveRpcs);
 const statements = RpcGroup.make(...KinStatementRpcs);
 const refreshes = RpcGroup.make(...KinRefreshRpcs);
 const pulse = RpcGroup.make(...KinPulseRpcs);
+const open = RpcGroup.make(...KinOpenRpcs);
 const disabled = new KinChatError({
   reason: "disabled",
   message: "Kin is not running on this host.",
@@ -345,6 +348,12 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.refreshes.announce": Effect.fn("KinWork.rpc.announceRefreshes")(function* (input) {
         return yield* call((people) => announceRefreshes(people, input));
       }),
+    }),
+    ...open.of({
+      "kin.open.read": Effect.fn("KinOpen.rpc.read")(function* (input) {
+        return yield* call((people) => Open.read(people, input));
+      }),
+      "kin.open.subscribe": (input) => stream((people) => Open.subscribe(people, input)),
     }),
     ...pulse.of({
       "kin.pulse.read": Effect.fn("KinPulse.rpc.read")(function* (input) {
