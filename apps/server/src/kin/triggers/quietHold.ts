@@ -85,8 +85,9 @@ const personRule = Effect.fn("KinQuiet.rule")(function* (orgId: KinOrgId, person
 
 /**
  * Runs `change` to someone's clock (zone, quiet hours, working hours, the hold switch, away), then
- * moves each line held for them to the first minute their new rule lets it go. A line held past
- * the old rule's free minute waited for a time of its own, which it keeps when that is later.
+ * moves each line held for them to the first minute their new rule lets it go, and each unasked
+ * wake of their own agents held by that rule. A line held past the old rule's free minute waited
+ * for a time of its own, which it keeps when that is later.
  */
 export const reholdAfter = <A, E, R>(
   orgId: KinOrgId,
@@ -134,6 +135,14 @@ const reholdFor = Effect.fn("KinQuiet.rehold")(function* <A, E, R>(
         yield* sql`UPDATE kin_held_posts SET deliver_at = ${at}
           WHERE org_id = ${orgId} AND hold_id = ${row.holdId}`;
     }
+    // A wake of their own agent nobody asked for waited to the old rule's free minute exactly
+    // (`agentQuietUntil`); a retry, a budget wait or a check-in's own minute is held otherwise.
+    if (was > now && free !== was)
+      yield* sql`UPDATE kin_events SET not_before = ${free}
+        WHERE org_id = ${orgId} AND state = 'queued' AND tag = 'pulse' AND attempts = 0
+          AND budget_deferred = 0 AND not_before = ${was}
+          AND agent_id IN (SELECT agent_id FROM kin_agents
+            WHERE org_id = ${orgId} AND owner_person_id = ${personId})`;
   }
   return result;
 });

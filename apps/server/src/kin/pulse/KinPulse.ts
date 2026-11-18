@@ -315,9 +315,9 @@ const URGENT_SENSES = new Set<KinPulseFact["sense"]>(["client_waiting_on_us"]);
 
 /**
  * Late and due-today work reaches whoever holds it, once (`kin_pulse_told`): an agent holder is
- * woken with it; a teammate reads Kin's own notice in their chat; an owner-level holder hears it
- * through the Chief of staff. One wake per agent per pass carries all of that agent's untold
- * facts. Returns who was told what.
+ * woken with it; the Chief of staff's owner hears it through the Chief of staff; anyone else,
+ * a co-owner too, reads Kin's own notice in their chat, held by their own clock. One wake per
+ * agent per pass carries all of that agent's untold facts. Returns who was told what.
  */
 const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
   ctx: SenseContext,
@@ -354,7 +354,12 @@ const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
     entry.facts.push(fact);
     parties.set(party.to, entry);
   }
-  const level = personIds.length === 0 ? new Set<string>() : yield* ownerLevelPeople(orgId);
+  // A wake waits out its agent owner's clock, so only the owner's own work wakes the agent.
+  const [chiefOwner] =
+    ctx.chief === undefined || personIds.length === 0
+      ? []
+      : yield* sql<{ personId: string }>`SELECT owner_person_id AS "personId" FROM kin_agents
+          WHERE org_id = ${orgId} AND agent_id = ${ctx.chief} ORDER BY agent_id`;
   const told: Array<{ readonly agentId: KinAgentId; readonly to: string; readonly key: string }> =
     [];
   const wakes = new Map<KinAgentId, Array<{ to: string; facts: ReadonlyArray<KinPulseFact> }>>();
@@ -368,11 +373,11 @@ const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
       anyState: true,
     });
     if (tell.length === 0) continue;
-    if (to.startsWith("agent:") || level.has(to)) {
+    if (to.startsWith("agent:") || to === chiefOwner?.personId) {
       wakes.set(entry.agentId, [...(wakes.get(entry.agentId) ?? []), { to, facts: tell }]);
       continue;
     }
-    // A teammate's own late work has one right message: Kin writes it, no agent turn.
+    // Anyone else's own late work has one right message: Kin writes it, no agent turn.
     const personId = KinPersonId.make(to);
     const sees = new Set(
       (yield* visibleTo(orgId, { _tag: "people", people: [personId] }, tell)).map(

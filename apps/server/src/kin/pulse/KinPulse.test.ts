@@ -22,6 +22,7 @@ import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as Chat from "../chat/layer.ts";
 import { deliverHeld } from "../triggers/heldDelivery.ts";
+import { reholdAfter } from "../triggers/quietHold.ts";
 import { holderBody } from "./holderNotice.ts";
 import { goalsNow } from "../work/goals.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -358,16 +359,17 @@ const letMate = Effect.gen(function* () {
     VALUES (${orgId}, ${chief}, ${mate}, ${owner}, 0)`;
 });
 
-/** What Kin posted in Meera's direct chat with the Chief of staff, oldest first. */
-const mateNotices = Effect.gen(function* () {
+/** What Kin posted in someone's direct chat with the Chief of staff, oldest first. */
+const noticesTo = Effect.fn("test.noticesTo")(function* (personId: KinPersonId) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ body: string }>`SELECT m.body FROM kin_messages m
     JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
-    WHERE m.org_id = ${orgId} AND c.direct_key = ${`${mate}:${chief}`}
+    WHERE m.org_id = ${orgId} AND c.direct_key = ${`${personId}:${chief}`}
       AND m.author_kind = 'system' AND m.status = 'posted'
     ORDER BY m.seq`;
   return rows.map((row) => row.body);
 });
+const mateNotices = noticesTo(mate);
 
 /** The wakes holders got, in order, with the facts each carried. */
 const holderWakes = Effect.fn("test.holderWakes")(function* () {
@@ -664,6 +666,46 @@ describe("KinPulse", () => {
       const removed = yield* KinPulse.tick(orgId, back + HOUR);
       assert.isFalse(removed.told.some((one) => one.key.startsWith("task_late:W-23:")));
       assert.lengthOf(yield* mateNotices, 1);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("the owner's away holds only his own wake, and his coming back lets it go", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const at = B + 3 * DAY + 12 * HOUR;
+      yield* TestClock.setTime(at);
+      const zoya = KinPersonId.make("zoya");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+        VALUES (${zoya}, ${orgId}, 'zoya', 'Zoya', 'co_owner', ${stamp})`;
+      // Away through the 5th: back on the 6th, after his quiet hours.
+      const ownerAway = (day: string | null) =>
+        reholdAfter(
+          orgId,
+          owner,
+          sql`UPDATE kin_people SET away_until = ${day} WHERE person_id = ${owner}`,
+        );
+      yield* ownerAway("2026-11-06");
+      yield* insert({ id: "W-20", dueAt: B + 2 * DAY, ownerKind: "person", ownerId: owner });
+      yield* insert({ id: "W-30", dueAt: at + 6 * HOUR, ownerKind: "person", ownerId: zoya });
+      yield* KinPulse.tick(orgId, at);
+      // The co-owner's work due today reaches her now, in her own chat, and wakes no one.
+      assert.deepStrictEqual(yield* noticesTo(zoya), ["W-30 Invented W-30 due today."]);
+      const wakes = sql<{ keys: string; at: number | null }>`SELECT
+          json_extract(json, '$.factKeys') AS keys, not_before AS at
+        FROM kin_events WHERE org_id = ${orgId} AND dedupe_key LIKE 'holders:%'
+        ORDER BY event_id`;
+      const [held] = yield* wakes;
+      assert.include(held!.keys, "task_late:W-20:");
+      assert.notInclude(held!.keys, "W-30");
+      assert.strictEqual(held!.at, B + 5 * DAY + 7 * HOUR);
+      // "I'm back": the wake for his own late work goes now, not at the old cutoff.
+      yield* TestClock.setTime(at + HOUR);
+      yield* ownerAway(null);
+      assert.deepStrictEqual(
+        (yield* wakes).map((wake) => wake.at),
+        [at + HOUR],
+      );
     }).pipe(Effect.provide(chatLayer)),
   );
 

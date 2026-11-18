@@ -13,6 +13,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { holdFor, holdLine } from "../triggers/quietHold.ts";
 import { daysAgoText, type SenseContext } from "./senses/shared.ts";
 
@@ -74,9 +75,11 @@ export const tellHolder = Effect.fn("KinPulse.tellHolder")(function* (input: {
     return due === undefined ? [] : [holderLine(ctx, fact, due)];
   });
   if (lines.length === 0) return undefined;
-  const via = (yield* LeadAccess.allowed({ orgId, agentId: input.agentId, personId }))
-    ? input.agentId
-    : yield* LeadAccess.teamAgent(orgId);
+  // As `createDirect` lets them: a co-owner messages every lead, anyone else while its owner allows.
+  const reaches =
+    (yield* ownerLevel(orgId, personId)) ||
+    (yield* LeadAccess.allowed({ orgId, agentId: input.agentId, personId }));
+  const via = reaches ? input.agentId : yield* LeadAccess.teamAgent(orgId);
   if (via === null) return undefined;
   const [open] = yield* sql<{ chatId: string }>`SELECT c.chat_id AS "chatId" FROM kin_chats c
     JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
