@@ -101,7 +101,10 @@ export const CreateInput = Schema.Struct({
   links: Schema.optional(Schema.Array(KinRecordKey).check(Schema.isMaxLength(20))).annotate({
     description: "Keys of entries or docs to link it to.",
   }),
-  card: Card,
+  card: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "The doc shows in this chat as a card the owner can open. Pass false only for a doc nobody asked for in this chat.",
+  }),
 });
 export const WriteResult = Schema.Struct({
   key: Schema.String,
@@ -379,18 +382,32 @@ const ownerOf = (row: RecordRow): KinWorkPrincipal =>
 export const shown = Effect.fn("KinDocTools.shown")(function* (
   lead: Lead,
   written: Docs.Written,
-  card: boolean | undefined,
+  card: boolean | "answer" | undefined,
 ) {
-  if (card !== true) return;
-  const wakeupId = KinWakeupId.make(lead.wakeupId);
-  const lane = yield* laneFor({ orgId: lead.orgId, agentId: lead.agentId, wakeupId });
+  if (card !== true && card !== "answer") return;
+  const turn = {
+    orgId: lead.orgId,
+    agentId: lead.agentId,
+    wakeupId: KinWakeupId.make(lead.wakeupId),
+  };
+  const lane = yield* laneFor(turn);
   if (Option.isNone(lane)) return;
+  if (card === "answer") {
+    if (lane.value.team === true) return;
+    if (lane.value.mode !== "reply") {
+      const sql = yield* SqlClient.SqlClient;
+      const checkIn = yield* sql`SELECT 1 FROM kin_events
+        WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId} AND wakeup_id = ${turn.wakeupId}
+          AND tag = 'pulse' AND json_type(json, '$.checkIn') = 'object' LIMIT 1`;
+      if (checkIn.length === 0) return;
+    }
+  }
   const version = Docs.toVersion(written.version);
   yield* (yield* KinLevelGate).showCard(
-    { ...lead, wakeupId },
+    { ...lead, wakeupId: turn.wakeupId },
     {
       chatId: lane.value.chatId,
-      clientMessageId: `kin-doc:${wakeupId}:${written.row.recordId}:${written.version.version}`,
+      clientMessageId: `kin-doc:${turn.wakeupId}:${written.row.recordId}:${written.version.version}`,
       type: KIN_DOC_CARD,
       state: {
         recordId: KinRecordId.make(written.row.recordId),
@@ -489,7 +506,7 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
   });
   if (input.links !== undefined && input.links.length > 0)
     yield* Docs.link(lead.orgId, context.writer, { key: written.row.key }, input.links, "relates");
-  yield* shown(lead, written, input.card);
+  yield* shown(lead, written, input.card ?? "answer");
   return writeResult(written, written.created);
 });
 export const create = leadTool("KinDocTools.create", runCreate);

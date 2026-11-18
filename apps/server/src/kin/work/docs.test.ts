@@ -10,6 +10,7 @@ import {
   KinMessageId,
   KinOrgId,
   KinPersonId,
+  KinWidgetId,
   ProviderInstanceId,
   ThreadId,
   kinRpcAccess,
@@ -74,7 +75,25 @@ const identity = Layer.mock(KinIdentity)({
       threadId: scope.thread!.threadId,
     }),
 });
-const gate = Layer.mock(KinLevelGate)({});
+const docWidget = (chatId: KinChatId, state: unknown) => ({
+  orgId,
+  chatId,
+  state,
+  widgetId: KinWidgetId.make("doc:fixture"),
+  messageId: KinMessageId.make("fixture"),
+  widgetClass: "native" as const,
+  type: "doc",
+  revision: 1,
+  source: null,
+  feed: null,
+  awaiting: [],
+  pinnedAt: null,
+  closedAt: null,
+  updatedAt: at,
+});
+const gate = Layer.mock(KinLevelGate)({
+  showCard: (_, input) => Effect.succeed(docWidget(input.chatId, input.state)),
+});
 const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
@@ -404,6 +423,63 @@ it.effect("a restore is a new version that brings the old text back, and is undo
     );
     assert.strictEqual((yield* Docs.versionOf(orgId, recordId))!.version, 4);
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  { lane: "reply", shows: true },
+  { lane: "check-in", shows: true },
+  { lane: "background", shows: false },
+] as const)(
+  "a doc the turn wrote shows as a card in the reply chat unless told not to ($lane)",
+  ({ lane, shows }) =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* turn();
+      const sql = yield* SqlClient.SqlClient;
+      if (lane !== "reply") {
+        const event =
+          lane === "check-in"
+            ? {
+                type: "pulse",
+                checkIn: {
+                  scheduleId: "checkin-morning",
+                  title: "Morning",
+                  what: "Review.",
+                  slot: "now",
+                },
+              }
+            : { type: "routine" };
+        yield* sql`UPDATE kin_events SET tag = ${event.type}, json = ${JSON.stringify(event)} WHERE event_id = 'ask-event'`;
+      }
+      const cards: Array<{ chatId: KinChatId; state: unknown }> = [];
+      const service = yield* KinLevelGate;
+      const create = (title: string, card?: false) =>
+        LeadDocs.create(scopeOf(lead), {
+          title,
+          body: plan,
+          sourceEventId: "ask-event",
+          ...(card === undefined ? {} : { card }),
+        }).pipe(
+          Effect.provideService(KinLevelGate, {
+            ...service,
+            showCard: (agent, input) =>
+              Effect.sync(() => {
+                cards.push({ chatId: input.chatId, state: input.state });
+              }).pipe(Effect.andThen(service.showCard(agent, input))),
+          }),
+        );
+      const made = yield* create("Lumen kickoff brief");
+      yield* create("Lumen private notes", false);
+      assert.lengthOf(cards, shows ? 1 : 0);
+      if (shows) {
+        assert.strictEqual(cards[0]?.chatId, "lead-chat");
+        assert.deepInclude(cards[0]?.state as object, {
+          key: made.key,
+          title: made.title,
+          version: 1,
+        });
+      }
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect("a version's provenance comes from stored rows, never from what the agent sent", () =>

@@ -2686,6 +2686,7 @@ it.effect(
         sourceEventId: "ask-event",
         title: "Invented brief",
         body: "Invented.",
+        card: false,
       });
       yield* LeadDocs.link(scope, { key: brief.key, sourceEventId: "ask-event", to: ["W-1"] });
       const sql = yield* SqlClient.SqlClient;
@@ -2751,6 +2752,7 @@ it.effect(
         sourceEventId: "ask-event",
         title: "Invented dunning notes",
         body: "Invented.",
+        card: false,
       });
       for (const key of ["W-1", "W-2", "W-3", "W-4"])
         yield* LeadDocs.link(scope, { key: notes.key, sourceEventId: "ask-event", to: [key] });

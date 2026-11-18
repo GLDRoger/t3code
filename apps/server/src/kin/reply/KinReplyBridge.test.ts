@@ -3,6 +3,9 @@ import { kinSecretsTest } from "../lead/layer.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import {
   AuthSessionId,
+  EnvironmentId,
+  KIN_DOC_CARD,
+  ProviderInstanceId,
   KIN_CHOICE_CARD_ACTION,
   AuthStandardClientScopes,
   EventId,
@@ -57,6 +60,7 @@ import {
   type WakeupEventBase,
 } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
+import * as LeadDocs from "../work/leadDocs.ts";
 import * as ChatWake from "../lead/ChatWake.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import {
@@ -386,12 +390,60 @@ it.effect("posts the lead run's plain text to the chat it answers, as one agent 
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect.each([false, true])(
-  "joins its own last card only (intervening item: %s)",
-  (intervening) =>
+it.effect.each(["choice", "intervening item", "doc"] as const)(
+  "joins its own last card only (%s)",
+  (scenario) =>
     Effect.gen(function* () {
-      const { chats, identity, owner, chatId, wakeupId, fake, runId, complete, posted } =
-        yield* setup({ ask: "When should we launch?" });
+      const {
+        services,
+        sql,
+        chats,
+        identity,
+        owner,
+        chatId,
+        wakeupId,
+        fake,
+        runId,
+        complete,
+        posted,
+      } = yield* setup({
+        ask: scenario === "doc" ? "Write the Lumen kickoff brief." : "When should we launch?",
+      });
+      if (scenario === "doc") {
+        yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE org_id = ${owner.orgId} AND agent_id = ${agentId}`;
+        const made = yield* LeadDocs.create(
+          {
+            environmentId: EnvironmentId.make("fixture"),
+            requestNamespace: "fixture",
+            issuedAt: 0,
+            capabilities: new Set(),
+            client: undefined,
+            thread: {
+              threadId,
+              providerSessionId: "fixture",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+            },
+          },
+          {
+            sourceEventId: `event:${wakeupId}`,
+            title: "Lumen kickoff brief",
+            body: "## Kickoff\nReview the launch plan.",
+          },
+        ).pipe(Effect.provide(services));
+        fake.items = [text("a", 1, "Wrote the brief.", runId)];
+        yield* complete;
+        const history = yield* chats.history(owner, { chatId, beforeSeq: 99, limit: 20 });
+        const card = history.widgets.find((widget) => widget.type === KIN_DOC_CARD);
+        assert.isDefined(card);
+        assert.deepInclude(card.state as object, { key: made.key, title: made.title, version: 1 });
+        const rows = (yield* posted).filter((row) => row.authorKind === "agent");
+        assert.deepStrictEqual(
+          rows.map((row) => [row.body, row.widgetId]),
+          [["Wrote the brief.", card.widgetId]],
+        );
+        return;
+      }
+      const intervening = scenario === "intervening item";
       const lead = Option.getOrThrow(
         yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId }),
       );
