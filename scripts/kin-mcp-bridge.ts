@@ -1,23 +1,28 @@
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off globalDate:off globalFetch:off - a stdio MCP bridge for agents on a teammate's computer.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeReadline from "node:readline";
-import { KIN_INVITE_ACCEPT_ROUTE } from "@t3tools/contracts";
+import {
+  KIN_DEVICE_CODE_PATTERN,
+  KIN_DEVICE_RENEW_ROUTE,
+  KIN_INVITE_ACCEPT_ROUTE,
+} from "@t3tools/contracts";
 import { readKinJoinLink } from "@t3tools/shared/remote";
 
 import { RpcConnection, RpcFailure, VerifyError } from "./kin-verify/rpc.ts";
 
 const HELP = `kin-mcp-bridge: your Kin tasks for agents on this computer, signed in as you.
-  join "<join link>"   use a join link made for this computer (Team → you → invite again)
+  join <code or link> [--server <address>]
+                       link this computer: in Kin, Settings → Linked devices → Link a device.
+                       A code needs --server the first time; a link carries its own address.
   serve                stdio MCP server; add it with: claude mcp add kin -- node <this file> serve
   status               which Kin and person this computer is signed in as
-  forget               delete this computer's Kin session file`;
+  forget               sign this computer out here (remove it in Linked devices to end it there)`;
 
-// One session per computer; KIN_BRIDGE_SESSION points a test at its own file.
-const SESSION_FILE =
-  process.env.KIN_BRIDGE_SESSION ??
-  NodePath.join(NodeOS.homedir(), ".config", "kin-bridge", "session.json");
+// A device renews once less than this much of its 30 days is left.
+const RENEW_WITHIN_MS = 23 * 24 * 60 * 60 * 1000;
 
 interface Session {
   readonly origin: string;
@@ -28,28 +33,110 @@ interface Session {
   readonly expiresAt: string;
 }
 
-const readSession = (): Session => {
-  if (!NodeFS.existsSync(SESSION_FILE))
-    throw new VerifyError('not signed in; run `kin-mcp-bridge join "<join link>"` first');
-  return JSON.parse(NodeFS.readFileSync(SESSION_FILE, "utf8")) as Session;
+// macOS keeps the session in the login Keychain, other systems in an owner-only file. Either way
+// a program running as you can read it: removing the device in Linked devices is what ends it.
+// KIN_BRIDGE_ACCOUNT, KIN_BRIDGE_SESSION and KIN_BRIDGE_STORE=file keep a test off the real one.
+const SESSION_FILE =
+  process.env.KIN_BRIDGE_SESSION ??
+  NodePath.join(NodeOS.homedir(), ".config", "kin-bridge", "session.json");
+const KEYCHAIN =
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone Node tooling has no Effect runtime.
+  NodeOS.platform() === "darwin" && process.env.KIN_BRIDGE_STORE !== "file";
+const SERVICE = "kin-mcp-bridge";
+const ACCOUNT = process.env.KIN_BRIDGE_ACCOUNT ?? "session";
+
+// `security -i` reads its command from stdin, so the token never sits in a process's arguments.
+const security = (command: string) =>
+  NodeChildProcess.spawnSync("/usr/bin/security", ["-i"], {
+    input: `${command}\n`,
+    encoding: "utf8",
+  });
+const quote = (value: string) => `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+
+const store = {
+  read(): Session | null {
+    if (KEYCHAIN) {
+      const found = NodeChildProcess.spawnSync(
+        "/usr/bin/security",
+        ["find-generic-password", "-s", SERVICE, "-a", ACCOUNT, "-w"],
+        { encoding: "utf8" },
+      );
+      if (found.status === 0 && found.stdout.trim() !== "")
+        return JSON.parse(found.stdout) as Session;
+    }
+    if (!NodeFS.existsSync(SESSION_FILE)) return null;
+    const session = JSON.parse(NodeFS.readFileSync(SESSION_FILE, "utf8")) as Session;
+    // A session from before the Keychain moves into it.
+    if (KEYCHAIN) store.write(session);
+    return session;
+  },
+  write(session: Session) {
+    if (KEYCHAIN) {
+      const saved = security(
+        `add-generic-password -U -s ${SERVICE} -a ${ACCOUNT} -l ${quote("Kin sign-in for agents")} -w ${quote(JSON.stringify(session))}`,
+      );
+      if (saved.status !== 0) throw new VerifyError("couldn't save the sign-in to the Keychain");
+      NodeFS.rmSync(SESSION_FILE, { force: true });
+      return;
+    }
+    NodeFS.mkdirSync(NodePath.dirname(SESSION_FILE), { recursive: true, mode: 0o700 });
+    NodeFS.writeFileSync(SESSION_FILE, JSON.stringify(session), { mode: 0o600 });
+  },
+  forget() {
+    if (KEYCHAIN)
+      NodeChildProcess.spawnSync("/usr/bin/security", [
+        "delete-generic-password",
+        "-s",
+        SERVICE,
+        "-a",
+        ACCOUNT,
+      ]);
+    NodeFS.rmSync(SESSION_FILE, { force: true });
+  },
 };
 
-async function join(text: string) {
+const readSession = (): Session => {
+  const session = store.read();
+  if (session === null)
+    throw new VerifyError(
+      "this computer isn't linked to Kin; in Kin open Settings → Linked devices → Link a device, then run `kin-mcp-bridge join <code or link>`",
+    );
+  return session;
+};
+
+/** A code or a link, and the server it's for. */
+function target(text: string, server: string | undefined) {
   const link = readKinJoinLink(text);
-  if (link === null)
-    throw new VerifyError("that isn't a join link; paste the whole link you were sent");
-  const url = new URL(link);
-  const response = await fetch(new URL(KIN_INVITE_ACCEPT_ROUTE, url.origin), {
+  if (link !== null) {
+    const url = new URL(link);
+    return { origin: url.origin, secret: url.hash.slice(1).trim() };
+  }
+  const code = text.trim();
+  if (!KIN_DEVICE_CODE_PATTERN.test(code))
+    throw new VerifyError(
+      "that isn't a Kin code or link; paste the code (KIN-XXXX-XXXX) or the whole link",
+    );
+  const origin = server ?? store.read()?.origin;
+  if (origin === undefined)
+    throw new VerifyError(
+      "a code needs the server the first time: add --server <address>, or paste the link instead",
+    );
+  return {
+    origin: new URL(/^https?:\/\//.test(origin) ? origin : `https://${origin}`).origin,
+    secret: code,
+  };
+}
+
+async function join(text: string, server: string | undefined) {
+  const { origin, secret } = target(text, server);
+  const response = await fetch(new URL(KIN_INVITE_ACCEPT_ROUTE, origin), {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      secret: url.hash.slice(1).trim(),
-      label: `Agents on ${NodeOS.hostname()}`,
-    }),
+    body: JSON.stringify({ secret, label: `Claude Code on ${NodeOS.hostname()}` }),
   });
   if (!response.ok)
     throw new VerifyError(
-      `the link was refused (${response.status}); links work once and last a week, so ask for a new one`,
+      `Kin refused it (${response.status}): codes and links work once, for 10 minutes. Make a new one in Linked devices.`,
     );
   const accepted = (await response.json()) as {
     orgId: string;
@@ -58,18 +145,29 @@ async function join(text: string) {
     expiresAt: string;
   };
   const session: Session = {
-    origin: url.origin,
+    origin,
     orgId: accepted.orgId,
     personId: accepted.person.personId,
     name: accepted.person.displayName,
     accessToken: accepted.accessToken,
     expiresAt: accepted.expiresAt,
   };
-  NodeFS.mkdirSync(NodePath.dirname(SESSION_FILE), { recursive: true, mode: 0o700 });
-  NodeFS.writeFileSync(SESSION_FILE, JSON.stringify(session), { mode: 0o600 });
-  console.log(
-    `signed in to ${url.host} as ${session.name}, until ${session.expiresAt.slice(0, 10)}`,
-  );
+  store.write(session);
+  console.log(`linked to ${new URL(origin).host} as ${session.name}`);
+}
+
+/** Renews the session once it's within its last stretch; a device in use never lapses. */
+async function fresh(session: Session): Promise<Session> {
+  if (Date.parse(session.expiresAt) - Date.now() > RENEW_WITHIN_MS) return session;
+  const response = await fetch(new URL(KIN_DEVICE_RENEW_ROUTE, session.origin), {
+    method: "POST",
+    headers: { authorization: `Bearer ${session.accessToken}` },
+  }).catch(() => null);
+  if (response === null || !response.ok) return session;
+  const renewed = (await response.json()) as { accessToken: string; expiresAt: string };
+  const next = { ...session, accessToken: renewed.accessToken, expiresAt: renewed.expiresAt };
+  store.write(next);
+  return next;
 }
 
 // Task shapes as kin.work.get answers them; only what agents are shown is named.
@@ -315,19 +413,22 @@ function serve() {
 }
 
 const [command, ...rest] = process.argv.slice(2);
+const flag = (name: string) => {
+  const at = rest.indexOf(name);
+  return at === -1 ? undefined : rest.splice(at, 2)[1];
+};
 try {
-  if (command === "join" && rest[0]) await join(rest.join(" "));
+  const server = flag("--server");
+  if (command === "join" && rest[0]) await join(rest.join(" "), server);
   else if (command === "serve") serve();
   else if (command === "status") {
-    const session = readSession();
+    const session = await fresh(readSession());
     console.log(
-      `${session.name} on ${new URL(session.origin).host}, until ${session.expiresAt.slice(0, 10)}`,
+      `${session.name} on ${new URL(session.origin).host}; renews itself while used (next deadline ${session.expiresAt.slice(0, 10)})`,
     );
   } else if (command === "forget") {
-    NodeFS.rmSync(SESSION_FILE, { force: true });
-    console.log(
-      "forgot this computer's Kin session (it still shows under your devices until removed)",
-    );
+    store.forget();
+    console.log("signed out here; remove it in Kin's Linked devices to end it on the server too");
   } else console.log(HELP);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
