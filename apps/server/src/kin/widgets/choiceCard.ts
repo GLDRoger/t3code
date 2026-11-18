@@ -84,7 +84,12 @@ const invalid = (message: string) => new KinChatError({ reason: "invalid_state",
 
 /** A label as a person reads it: two that read the same here look the same on any button. */
 export const readAs = (label: string) =>
-  label.normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
+  label
+    .replace(/\p{Default_Ignorable_Code_Point}/gu, "")
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 
 const DETAIL_MAX = 2000;
 /**

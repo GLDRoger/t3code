@@ -442,6 +442,16 @@ it.effect("a tap on an action option runs it once, as the server wrote it", () =
         default: "none",
       });
       assert.isFalse(spaced.ok);
+      // So is a character nobody sees.
+      const unseen = yield* callAs("finance", "kin_ask", {
+        question: "Drop the signage today?",
+        options: [
+          { label: "Yes", action: { kind: "drop", target: later.key } },
+          { label: `Drop ${later.key.replace("-", "\u200b-")}` },
+        ],
+        default: "none",
+      });
+      assert.isFalse(unseen.ok);
       assert.strictEqual((yield* kin.stateOf(later.key)).state, "open");
       // "none" is no default, even when an action option is labelled "none".
       const noneLabelled = yield* callAs("finance", "kin_ask", {
@@ -566,10 +576,25 @@ it.effect("a stale card, a reaction, a passed day or a foreign key runs nothing"
         shut.key,
         { state: "done" },
       );
+      // One whose task was edited since is left off too: the question was about the task as it was.
+      const edited = yield* kin.task("Draft the Lumen cover note");
+      yield* kin.turn("finance", kin.chatOf("finance"), "And the cover note?");
+      const reworded = yield* callAs("finance", "kin_ask", {
+        ...closeIt(edited.key),
+        options: [...closeIt(edited.key).options, { label: "Ask me Friday" }],
+      });
+      assert.isTrue(reworded.ok, JSON.stringify(reworded.value));
+      yield* kin.records.update(
+        orgId,
+        { actor: { _tag: "person", personId: owner.personId }, via: "owner" },
+        edited.key,
+        { title: "Send the signed Lumen proposal" },
+      );
       const question = (id: unknown) => Questions.readQuestion(orgId, id as string);
       const raiseAt = Math.max(
         (yield* question(daily.value.question))!.actAt,
         (yield* question(gone.value.question))!.actAt,
+        (yield* question(reworded.value.question))!.actAt,
       );
       yield* TestClock.setTime(raiseAt);
       yield* Questions.settleDue(orgId, raiseAt, {
@@ -596,6 +621,13 @@ it.effect("a stale card, a reaction, a passed day or a foreign key runs nothing"
         { optionId: "option-1", label: "Not yet" },
         { optionId: "option-2", label: "Ask me Friday" },
       ]);
+      assert.deepStrictEqual(
+        card(yield* kin.widget((yield* question(reworded.value.question))!.raiseWidgetId)).options,
+        [
+          { optionId: "option-1", label: "Not yet" },
+          { optionId: "option-2", label: "Ask me Friday" },
+        ],
+      );
       const plain = JSON.stringify((yield* kin.widget(without.raiseWidgetId)).state);
       assert.notInclude(plain, `Mark ${shut.key}`);
       assert.notInclude(plain, '"action"');

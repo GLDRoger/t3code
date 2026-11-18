@@ -395,6 +395,11 @@ const defaultSource = Effect.fn("KinCardActions.defaultSource")(function* (
  * card was drawn for, the chat's readers now and the record as it is now. Undefined when that
  * draw no longer holds, so the raised card leaves the option off.
  */
+const revOf = (plan: CardPlan) => {
+  const record = plan.kind === "take_default" ? plan.final : plan;
+  return record !== null && "rev" in record ? record.rev : undefined;
+};
+
 export const redraw = Effect.fn("KinCardActions.redraw")(function* (
   orgId: KinOrgId,
   chatId: KinChatId,
@@ -417,6 +422,8 @@ export const redraw = Effect.fn("KinCardActions.redraw")(function* (
   const one = plan.value;
   if ("recordId" in one && "recordId" in sealed && one.recordId !== sealed.recordId)
     return undefined;
+  // The question's own words were written about the record as it was: changed since, it is left off.
+  if (revOf(one) !== revOf(sealed)) return undefined;
   return { plan: one, label: labelOf(one), line: lineOf(one) };
 });
 
