@@ -1,13 +1,14 @@
 /**
- * Kin's navigation, one model for web and phone: the five destinations, and what Settings (the
+ * Kin's navigation, one model for web and phone: the destinations, and what Settings (the
  * gear on Chats) holds for each person.
  */
 
-export type KinDestination = "chats" | "tasks" | "money" | "clients" | "docs";
+export type KinDestination = "chats" | "tasks" | "canvas" | "money" | "clients" | "docs";
 
 export const KIN_DESTINATION_NAMES: Readonly<Record<KinDestination, string>> = {
   chats: "Chats",
   tasks: "Tasks",
+  canvas: "Canvas",
   money: "Money",
   clients: "Clients",
   docs: "Docs",
@@ -21,7 +22,7 @@ export interface KinPlacesRefused {
 }
 
 /**
- * Chats, then Tasks when the viewer may read Work, then each place the host hasn't refused: every
+ * Chats, then Tasks and the Canvas when the viewer may read Work, then each place the host hasn't refused: every
  * one for the owner or a co-owner, for anyone else the ones the host says they reach, none until
  * it has. A destination the viewer can't open is absent, never disabled.
  */
@@ -37,6 +38,7 @@ export function kinDestinations(input: {
   return [
     "chats",
     "tasks",
+    "canvas",
     ...(shown("money") ? (["money"] as const) : []),
     ...(shown("clients") ? (["clients"] as const) : []),
     ...(shown("docs") ? (["docs"] as const) : []),

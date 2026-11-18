@@ -891,6 +891,26 @@
       "types": "./src/kin/kinPulseStream.ts",
       "default": "./src/kin/kinPulseStream.ts"
     },
+    "./kin/kinCanvasCamera": {
+      "types": "./src/kin/kinCanvasCamera.ts",
+      "default": "./src/kin/kinCanvasCamera.ts"
+    },
+    "./kin/kinCanvasLayout": {
+      "types": "./src/kin/kinCanvasLayout.ts",
+      "default": "./src/kin/kinCanvasLayout.ts"
+    },
+    "./kin/kinCanvasLens": {
+      "types": "./src/kin/kinCanvasLens.ts",
+      "default": "./src/kin/kinCanvasLens.ts"
+    },
+    "./kin/kinCanvasStream": {
+      "types": "./src/kin/kinCanvasStream.ts",
+      "default": "./src/kin/kinCanvasStream.ts"
+    },
+    "./kin/kinCanvasView": {
+      "types": "./src/kin/kinCanvasView.ts",
+      "default": "./src/kin/kinCanvasView.ts"
+    },
     "./kin/kinRefresh": {
       "types": "./src/kin/kinRefresh.ts",
       "default": "./src/kin/kinRefresh.ts"

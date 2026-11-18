@@ -11,6 +11,7 @@ import {
   BanknoteIcon,
   BriefcaseBusinessIcon,
   FileTextIcon,
+  LayoutDashboardIcon,
   ListChecksIcon,
   type LucideIcon,
   MessagesSquareIcon,
@@ -42,6 +43,7 @@ import { useKinWorkDirectory, type KinWorkTarget } from "./useKinWork";
 const ICON: Record<KinDestination, LucideIcon> = {
   chats: MessagesSquareIcon,
   tasks: ListChecksIcon,
+  canvas: LayoutDashboardIcon,
   money: BanknoteIcon,
   clients: BriefcaseBusinessIcon,
   docs: FileTextIcon,

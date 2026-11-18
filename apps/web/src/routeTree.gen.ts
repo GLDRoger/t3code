@@ -64,6 +64,7 @@ import { Route as ChatKinEnvironmentIdOrgIdWorkRouteImport } from './routes/_cha
 import { Route as ChatKinEnvironmentIdOrgIdTeamRouteImport } from './routes/_chat.kin.$environmentId.$orgId.team'
 import { Route as ChatKinEnvironmentIdOrgIdSettingsRouteImport } from './routes/_chat.kin.$environmentId.$orgId.settings'
 import { Route as ChatKinEnvironmentIdOrgIdMemoryRouteImport } from './routes/_chat.kin.$environmentId.$orgId.memory'
+import { Route as ChatKinEnvironmentIdOrgIdCanvasRouteImport } from './routes/_chat.kin.$environmentId.$orgId.canvas'
 import { Route as ChatKinEnvironmentIdOrgIdPlacesRouteImport } from './routes/_chat.kin.$environmentId.$orgId._places'
 import { Route as ChatKinEnvironmentIdOrgIdChatIdRouteImport } from './routes/_chat.kin.$environmentId.$orgId.$chatId'
 import { Route as ChatKinEnvironmentIdOrgIdSettingsIndexRouteImport } from './routes/_chat.kin.$environmentId.$orgId.settings.index'
@@ -358,6 +359,12 @@ const ChatKinEnvironmentIdOrgIdMemoryRoute =
     path: '/$environmentId/$orgId/memory',
     getParentRoute: () => ChatKinRoute,
   } as any)
+const ChatKinEnvironmentIdOrgIdCanvasRoute =
+  ChatKinEnvironmentIdOrgIdCanvasRouteImport.update({
+    id: '/$environmentId/$orgId/canvas',
+    path: '/$environmentId/$orgId/canvas',
+    getParentRoute: () => ChatKinRoute,
+  } as any)
 const ChatKinEnvironmentIdOrgIdPlacesRoute =
   ChatKinEnvironmentIdOrgIdPlacesRouteImport.update({
     id: '/$environmentId/$orgId/_places',
@@ -460,6 +467,7 @@ export interface FileRoutesByFullPath {
   '/kin/': typeof ChatKinIndexRoute
   '/kin/$environmentId/$orgId/$chatId': typeof ChatKinEnvironmentIdOrgIdChatIdRoute
   '/kin/$environmentId/$orgId': typeof ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren
+  '/kin/$environmentId/$orgId/canvas': typeof ChatKinEnvironmentIdOrgIdCanvasRoute
   '/kin/$environmentId/$orgId/memory': typeof ChatKinEnvironmentIdOrgIdMemoryRoute
   '/kin/$environmentId/$orgId/settings': typeof ChatKinEnvironmentIdOrgIdSettingsRouteWithChildren
   '/kin/$environmentId/$orgId/team': typeof ChatKinEnvironmentIdOrgIdTeamRoute
@@ -523,6 +531,7 @@ export interface FileRoutesByTo {
   '/kin': typeof ChatKinIndexRoute
   '/kin/$environmentId/$orgId/$chatId': typeof ChatKinEnvironmentIdOrgIdChatIdRoute
   '/kin/$environmentId/$orgId': typeof ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren
+  '/kin/$environmentId/$orgId/canvas': typeof ChatKinEnvironmentIdOrgIdCanvasRoute
   '/kin/$environmentId/$orgId/memory': typeof ChatKinEnvironmentIdOrgIdMemoryRoute
   '/kin/$environmentId/$orgId/team': typeof ChatKinEnvironmentIdOrgIdTeamRoute
   '/kin/$environmentId/$orgId/work': typeof ChatKinEnvironmentIdOrgIdWorkRoute
@@ -588,6 +597,7 @@ export interface FileRoutesById {
   '/_chat/kin/': typeof ChatKinIndexRoute
   '/_chat/kin/$environmentId/$orgId/$chatId': typeof ChatKinEnvironmentIdOrgIdChatIdRoute
   '/_chat/kin/$environmentId/$orgId/_places': typeof ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren
+  '/_chat/kin/$environmentId/$orgId/canvas': typeof ChatKinEnvironmentIdOrgIdCanvasRoute
   '/_chat/kin/$environmentId/$orgId/memory': typeof ChatKinEnvironmentIdOrgIdMemoryRoute
   '/_chat/kin/$environmentId/$orgId/settings': typeof ChatKinEnvironmentIdOrgIdSettingsRouteWithChildren
   '/_chat/kin/$environmentId/$orgId/team': typeof ChatKinEnvironmentIdOrgIdTeamRoute
@@ -654,6 +664,7 @@ export interface FileRouteTypes {
     | '/kin/'
     | '/kin/$environmentId/$orgId/$chatId'
     | '/kin/$environmentId/$orgId'
+    | '/kin/$environmentId/$orgId/canvas'
     | '/kin/$environmentId/$orgId/memory'
     | '/kin/$environmentId/$orgId/settings'
     | '/kin/$environmentId/$orgId/team'
@@ -717,6 +728,7 @@ export interface FileRouteTypes {
     | '/kin'
     | '/kin/$environmentId/$orgId/$chatId'
     | '/kin/$environmentId/$orgId'
+    | '/kin/$environmentId/$orgId/canvas'
     | '/kin/$environmentId/$orgId/memory'
     | '/kin/$environmentId/$orgId/team'
     | '/kin/$environmentId/$orgId/work'
@@ -781,6 +793,7 @@ export interface FileRouteTypes {
     | '/_chat/kin/'
     | '/_chat/kin/$environmentId/$orgId/$chatId'
     | '/_chat/kin/$environmentId/$orgId/_places'
+    | '/_chat/kin/$environmentId/$orgId/canvas'
     | '/_chat/kin/$environmentId/$orgId/memory'
     | '/_chat/kin/$environmentId/$orgId/settings'
     | '/_chat/kin/$environmentId/$orgId/team'
@@ -1193,6 +1206,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatKinEnvironmentIdOrgIdMemoryRouteImport
       parentRoute: typeof ChatKinRoute
     }
+    '/_chat/kin/$environmentId/$orgId/canvas': {
+      id: '/_chat/kin/$environmentId/$orgId/canvas'
+      path: '/$environmentId/$orgId/canvas'
+      fullPath: '/kin/$environmentId/$orgId/canvas'
+      preLoaderRoute: typeof ChatKinEnvironmentIdOrgIdCanvasRouteImport
+      parentRoute: typeof ChatKinRoute
+    }
     '/_chat/kin/$environmentId/$orgId/_places': {
       id: '/_chat/kin/$environmentId/$orgId/_places'
       path: '/$environmentId/$orgId'
@@ -1298,6 +1318,7 @@ interface ChatKinRouteChildren {
   ChatKinIndexRoute: typeof ChatKinIndexRoute
   ChatKinEnvironmentIdOrgIdChatIdRoute: typeof ChatKinEnvironmentIdOrgIdChatIdRoute
   ChatKinEnvironmentIdOrgIdPlacesRoute: typeof ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren
+  ChatKinEnvironmentIdOrgIdCanvasRoute: typeof ChatKinEnvironmentIdOrgIdCanvasRoute
   ChatKinEnvironmentIdOrgIdMemoryRoute: typeof ChatKinEnvironmentIdOrgIdMemoryRoute
   ChatKinEnvironmentIdOrgIdSettingsRoute: typeof ChatKinEnvironmentIdOrgIdSettingsRouteWithChildren
   ChatKinEnvironmentIdOrgIdTeamRoute: typeof ChatKinEnvironmentIdOrgIdTeamRoute
@@ -1309,6 +1330,7 @@ const ChatKinRouteChildren: ChatKinRouteChildren = {
   ChatKinEnvironmentIdOrgIdChatIdRoute: ChatKinEnvironmentIdOrgIdChatIdRoute,
   ChatKinEnvironmentIdOrgIdPlacesRoute:
     ChatKinEnvironmentIdOrgIdPlacesRouteWithChildren,
+  ChatKinEnvironmentIdOrgIdCanvasRoute: ChatKinEnvironmentIdOrgIdCanvasRoute,
   ChatKinEnvironmentIdOrgIdMemoryRoute: ChatKinEnvironmentIdOrgIdMemoryRoute,
   ChatKinEnvironmentIdOrgIdSettingsRoute:
     ChatKinEnvironmentIdOrgIdSettingsRouteWithChildren,
