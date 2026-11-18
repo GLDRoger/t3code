@@ -43,7 +43,14 @@ export function kinPageHead(
 }
 
 /** The text Copy gives: the body with each figure as its title in brackets. */
-export function kinMessageCopyText(message: Pick<KinMessage, "body" | "embeds">): string {
+export const kinMessageCopyText = (message: Pick<KinMessage, "body" | "embeds">) =>
+  kinMessageText(message, (title) => `[${title}]`);
+
+/** The body with each figure as its title, as `figure` writes it. */
+export function kinMessageText(
+  message: Pick<KinMessage, "body" | "embeds">,
+  figure: (title: string) => string,
+): string {
   const blocks = kinDocBlocks(message.body);
   return kinDocParts(message.body)
     .map((part) => {
@@ -60,7 +67,7 @@ export function kinMessageCopyText(message: Pick<KinMessage, "body" | "embeds">)
               : kind === "chart"
                 ? "Chart"
                 : "Visual";
-      return `[${title}]`;
+      return figure(title);
     })
     .join("\n\n");
 }

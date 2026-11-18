@@ -67,9 +67,11 @@ import { AgentMessageFoldHeader, MessageAttachmentList } from "../../threads/Thr
 import { attachmentImageGallery } from "../../threads/messageImageGallery";
 import { useResolveClassNames } from "uniwind";
 import { SymbolView } from "../../../components/ui/AppSymbol";
-import { useEffect, useState } from "react";
+import { useViewabilityAmount } from "@legendapp/list/react-native";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { kinOutbox } from "../state/kinOutboxDelivery";
+import { KinVisualInView } from "../widgets/KinVisual";
 import { KinWidgetView } from "../widgets/KinWidgetView";
 import { KinAvatar } from "./KinAvatar";
 import { KinDocRefs } from "./KinDocRefs";
@@ -343,6 +345,23 @@ export function KinMessageBubble(props: {
       </View>
     ) : null;
 
+  const pressablePage =
+    page === null ? null : onOpenActions === null ? (
+      page
+    ) : (
+      // The page's own headings and text stay VoiceOver's, in order; this only takes the long press.
+      <Pressable
+        accessible={false}
+        onLongPress={() => {
+          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          onOpenActions();
+        }}
+        className="w-full"
+      >
+        {page}
+      </Pressable>
+    );
+  const framed = message.embeds?.some((embed) => embed._tag === "visual") === true;
   return (
     <View
       className={cn(
@@ -379,20 +398,10 @@ export function KinMessageBubble(props: {
           own={row.own}
         />
       )}
-      {page === null ? null : onOpenActions === null ? (
-        page
+      {page === null ? null : framed ? (
+        <KinFramesInView>{pressablePage}</KinFramesInView>
       ) : (
-        // The page's own headings and text stay VoiceOver's, in order; this only takes the long press.
-        <Pressable
-          accessible={false}
-          onLongPress={() => {
-            void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-            onOpenActions();
-          }}
-          className="w-full"
-        >
-          {page}
-        </Pressable>
+        pressablePage
       )}
       {bubble === null ? null : onOpenActions === null ? (
         <View className={row.own ? OWN_WIDTH_CLASS_NAME : OTHER_WIDTH_CLASS_NAME}>{bubble}</View>
@@ -434,6 +443,13 @@ export function KinMessageBubble(props: {
       ) : null}
     </View>
   );
+}
+
+/** Tells a page's frames whether its row is on screen, so only those load a WebView. */
+function KinFramesInView(props: { readonly children: ReactNode }) {
+  const [inView, setInView] = useState(false);
+  useViewabilityAmount(useCallback((token) => setInView(token.sizeVisible > 0), []));
+  return <KinVisualInView value={inView}>{props.children}</KinVisualInView>;
 }
 
 /**

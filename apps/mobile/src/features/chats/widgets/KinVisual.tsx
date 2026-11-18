@@ -19,7 +19,7 @@ import {
 } from "@t3tools/shared/kinVisual";
 import { kinVisualSaveBytes } from "@t3tools/shared/kinVisualSvg";
 import { AsyncResult } from "effect/reactivity";
-import { memo, useEffect, useRef, useState } from "react";
+import { createContext, memo, use, useEffect, useRef, useState } from "react";
 import { Modal, Platform, Pressable, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
@@ -42,6 +42,9 @@ const TOUCH_WINDOW_MS = 1500;
 // Kept across remounts, so a card scrolled back into view does not jump.
 const measuredHeights = new Map<string, number>();
 let mountedFrames = 0;
+
+/** Whether the row holding a frame is on screen; a list row says so, anywhere else it is. */
+export const KinVisualInView = createContext(true);
 
 const location = (url: string) => url.split(/[?#]/, 1)[0];
 
@@ -311,6 +314,10 @@ export const KinVisual = memo(function KinVisual(props: {
     contentHeight,
   );
   const showing = uri !== null && failed === null;
+  // A frame off screen gives back its WebView; its box keeps the height, so nothing moves. It
+  // comes back on the address minted since, as the one it first loaded may have expired.
+  const inView = use(KinVisualInView);
+  if (!inView && asset._tag === "Success" && uri !== null && uri !== asset.url) setUri(asset.url);
   const retry = async () => {
     const next = await refresh().catch(() => null);
     if (next === null) {
@@ -362,7 +369,7 @@ export const KinVisual = memo(function KinVisual(props: {
         ) : null}
       </View>
       <View style={{ height }} onLayout={(event) => setWidth(event.nativeEvent.layout.width)}>
-        {showing ? (
+        {showing && !inView ? null : showing ? (
           <KinVisualWebView
             key={`${uri}:${attempt}`}
             uri={uri}
