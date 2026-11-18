@@ -4,14 +4,12 @@ import * as Layer from "effect/Layer";
 import type * as Context from "effect/Context";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
-import type { AuthEnvironmentScope, AuthSessionId } from "@t3tools/contracts";
+import type { AuthSessionId } from "@t3tools/contracts";
 import * as SessionStore from "../../auth/SessionStore.ts";
-import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as KinEnabled from "../KinEnabled.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
-import { isTasksKey, TasksKeyAudience } from "../tasksKey/audience.ts";
 import { SessionHooks } from "./sessionHooks.ts";
 
 type Column = Statement.Fragment | string | number;
@@ -234,33 +232,8 @@ const enabled = (options: { readonly recordsPairings: boolean }) =>
                 ),
                 Effect.uninterruptible,
               );
-          // Every credential T3 reads passes here: a coding-agent key works only on its own endpoint.
-          const outsideAudience = Effect.fnUntraced(function* <
-            S extends {
-              readonly sessionId: AuthSessionId;
-              readonly scopes: ReadonlyArray<AuthEnvironmentScope>;
-            },
-          >(session: S) {
-            if (!isTasksKey(session.scopes) || (yield* TasksKeyAudience)) return session;
-            return yield* new SessionStore.UnknownSessionTokenError({
-              sessionId: session.sessionId,
-            });
-          });
           return {
             ...store,
-            verify: (token) => store.verify(token).pipe(Effect.flatMap(outsideAudience)),
-            verifyWebSocketToken: (token) =>
-              store
-                .verifyWebSocketToken(token)
-                .pipe(
-                  Effect.flatMap((ticket) =>
-                    outsideAudience(ticket).pipe(Effect.provideService(TasksKeyAudience, false)),
-                  ),
-                ),
-            getActive: (sessionId) =>
-              store
-                .getActive(sessionId)
-                .pipe(Effect.map(Option.filter((session) => !isTasksKey(session.scopes)))),
             issue: Effect.fn("ProofKeySessions.issue")(function* (input) {
               return yield* sql
                 .withTransaction(

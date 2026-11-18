@@ -12,6 +12,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Etag from "effect/http/Etag";
+import * as FileSystem from "effect/FileSystem";
 import * as HttpPlatform from "effect/http/HttpPlatform";
 import { HttpEffect, HttpRouter, HttpServerRequest, type HttpServerResponse } from "effect/http";
 import * as HttpApi from "effect/http-api/HttpApi";
@@ -24,10 +25,11 @@ import { type AuthenticatedSession, EnvironmentAuth } from "../../auth/Environme
 import * as AuthHttp from "../../auth/http.ts";
 import { ServerSecretStore } from "../../auth/ServerSecretStore.ts";
 import { SessionStore } from "../../auth/SessionStore.ts";
+import { layerAuthTest } from "../auth/ProofKeySessions.testkit.ts";
 import * as Records from "../work/KinRecords.ts";
 import { TasksKeyAudience } from "./audience.ts";
 import { commentMine, getMine, listMine, setStateMine } from "./tasks.ts";
-import { admitted, layer, team } from "./tasksKey.testkit.ts";
+import { admitted, layer, layerAt, team } from "./tasksKey.testkit.ts";
 import * as TasksKeys from "./TasksKeys.ts";
 
 const reason = <A, E extends { readonly reason?: string }, R>(effect: Effect.Effect<A, E, R>) =>
@@ -290,6 +292,44 @@ it.effect("a key ends at once when revoked, by its holder or the owner and nobod
 
 class AuthRoutes extends HttpApi.make("environment").add(EnvironmentHttpApi.groups.auth) {}
 
+const request = (token: string, path = "/api/auth/session") =>
+  HttpServerRequest.fromWeb(
+    new Request(`http://127.0.0.1${path}`, { headers: { authorization: `Bearer ${token}` } }),
+  );
+const refused = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(
+    Effect.result,
+    Effect.map((result) => result._tag),
+  );
+/** The status T3's own auth routes give a bearer POST, as a client would see it. */
+const post = Effect.fn("test.post")(function* (path: string, token: string) {
+  const routes = HttpApiBuilder.layer(AuthRoutes).pipe(
+    Layer.provide(AuthHttp.layer),
+    Layer.provide(AuthHttp.layerAuthenticatedAuth),
+    Layer.provide(Layer.succeedContext(yield* Effect.context<EnvironmentAuth | SessionStore>())),
+    Layer.provide(HttpPlatform.layer.pipe(Layer.provideMerge(Etag.layerWeak))),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  );
+  const http = yield* HttpRouter.toHttpEffect(routes);
+  const sent = yield* Deferred.make<HttpServerResponse.HttpServerResponse>();
+  yield* HttpEffect.toHandled(http, (_request, response) => Deferred.succeed(sent, response)).pipe(
+    Effect.provideService(
+      HttpServerRequest.HttpServerRequest,
+      HttpServerRequest.fromWeb(
+        new Request(`http://127.0.0.1${path}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: "{}",
+        }),
+      ),
+    ),
+    // Bearer requests read no DPoP state: a store that holds nothing.
+    Effect.provide(Layer.mergeAll(NodeCrypto.layer, Layer.mock(ServerSecretStore)({}))),
+    Effect.exit,
+  );
+  return (yield* Deferred.await(sent)).status;
+});
+
 it.effect("a key is no credential anywhere but its endpoint: every route and credential read", () =>
   Effect.gen(function* () {
     const { orgId, zoya } = yield* team;
@@ -298,15 +338,6 @@ it.effect("a key is no credential anywhere but its endpoint: every route and cre
     const { key, secret } = yield* TasksKeys.issue(zoya.app, { orgId });
     // A script's bearer session passes every read below, so each refusal is the key's.
     const script = (yield* auth.issueSession({ subject: "script" })).token;
-    const request = (token: string, path = "/api/auth/session") =>
-      HttpServerRequest.fromWeb(
-        new Request(`http://127.0.0.1${path}`, { headers: { authorization: `Bearer ${token}` } }),
-      );
-    const refused = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-      effect.pipe(
-        Effect.result,
-        Effect.map((result) => result._tag),
-      );
     for (const token of [secret, script]) {
       const expected = token === secret ? "Failure" : "Success";
       assert.strictEqual(yield* refused(auth.authenticateHttpRequest(request(token))), expected);
@@ -366,38 +397,34 @@ it.effect("a key is no credential anywhere but its endpoint: every route and cre
       "webhooks POST /api/hooks/:hookId/:token",
       "webhooks PUT /api/hooks/:hookId/:token",
     ]);
-    const routes = HttpApiBuilder.layer(AuthRoutes).pipe(
-      Layer.provide(AuthHttp.layer),
-      Layer.provide(AuthHttp.layerAuthenticatedAuth),
-      Layer.provide(Layer.succeedContext(yield* Effect.context<EnvironmentAuth | SessionStore>())),
-      Layer.provide(HttpPlatform.layer.pipe(Layer.provideMerge(Etag.layerWeak))),
-      Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
-    );
-    const http = yield* HttpRouter.toHttpEffect(routes);
-    const post = Effect.fn("test.post")(function* (path: string, token: string) {
-      const sent = yield* Deferred.make<HttpServerResponse.HttpServerResponse>();
-      yield* HttpEffect.toHandled(http, (_request, response) =>
-        Deferred.succeed(sent, response),
-      ).pipe(
-        Effect.provideService(
-          HttpServerRequest.HttpServerRequest,
-          HttpServerRequest.fromWeb(
-            new Request(`http://127.0.0.1${path}`, {
-              method: "POST",
-              headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-              body: "{}",
-            }),
-          ),
-        ),
-        // Bearer requests read no DPoP state: a store that holds nothing.
-        Effect.provide(Layer.mergeAll(NodeCrypto.layer, Layer.mock(ServerSecretStore)({}))),
-        Effect.exit,
-      );
-      return (yield* Deferred.await(sent)).status;
-    });
     for (const path of ["/api/auth/websocket-ticket", "/api/auth/websocket-ticket/media"]) {
       assert.strictEqual(yield* post(path, secret), 401);
       assert.strictEqual(yield* post(path, script), 200);
     }
   }).pipe(Effect.scoped, Effect.provide(layer)),
+);
+
+it.effect("a key stays no credential when the same database restarts with Kin off", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const dir = yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: "kin-tasks-off-" }));
+    const { secret } = yield* Effect.gen(function* () {
+      const { orgId, zoya } = yield* team;
+      return yield* TasksKeys.issue(zoya.app, { orgId });
+    }).pipe(Effect.provide(layerAt(dir)));
+    yield* Effect.gen(function* () {
+      const auth = yield* EnvironmentAuth;
+      // A script's bearer session passes each read, so each refusal is the key's.
+      const script = (yield* auth.issueSession({ subject: "script" })).token;
+      for (const token of [secret, script]) {
+        const works = token === script;
+        assert.strictEqual((yield* auth.getSessionState(request(token))).authenticated, works);
+        assert.strictEqual(yield* post("/api/auth/websocket-ticket", token), works ? 200 : 401);
+        assert.strictEqual(
+          yield* refused(auth.authenticateWebSocketUpgrade(request(token, "/ws"), "rpc")),
+          works ? "Success" : "Failure",
+        );
+      }
+    }).pipe(Effect.provide(layerAuthTest(dir, "off")));
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

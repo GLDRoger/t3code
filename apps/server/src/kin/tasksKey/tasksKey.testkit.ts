@@ -5,7 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import { SessionStore } from "../../auth/SessionStore.ts";
-import { layerKinAuthTest, pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { layerAuthTest, pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import { KinIdentity, KinIdentityConfig } from "../chat/KinIdentity.ts";
@@ -25,13 +25,15 @@ const identities = KinIdentity.layer.pipe(
   ),
   Layer.provideMerge(Repository.layer),
 );
-export const layer = People.layer.pipe(
-  Layer.provideMerge(Records.layer),
-  Layer.provideMerge(KinEventQueue.layer),
-  Layer.provideMerge(Hub.layer),
-  Layer.provideMerge(identities),
-  Layer.provideMerge(layerKinAuthTest("kin-tasks-key-")),
-);
+export const layerAt = (dir: string | { readonly prefix: string }) =>
+  People.layer.pipe(
+    Layer.provideMerge(Records.layer),
+    Layer.provideMerge(KinEventQueue.layer),
+    Layer.provideMerge(Hub.layer),
+    Layer.provideMerge(identities),
+    Layer.provideMerge(layerAuthTest(dir)),
+  );
+export const layer = layerAt({ prefix: "kin-tasks-key-" });
 const ownerApp = {
   sessionId: AuthSessionId.make("rhea-phone"),
   subject: "browser",
