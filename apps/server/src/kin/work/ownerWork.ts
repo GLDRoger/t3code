@@ -70,6 +70,7 @@ import {
   teamKeys,
   teamRecord,
   teamRecordIn,
+  linkedFromOf,
   personSees,
   placesOf,
   teamSeesKey,
@@ -541,7 +542,14 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
   const can = (yield* cansOf(viewer, detail.orgId, [{ ...detail, registerId: row.registerId }]))(
     detail.recordId,
   );
-  const extras = yield* sheetExtras(detail.orgId, viewer, detail).pipe(workFailure);
+  const extras = {
+    ...(yield* sheetExtras(detail.orgId, viewer, detail).pipe(workFailure)),
+    ...(yield* linkedFromOf(
+      detail.orgId,
+      detail.recordId,
+      viewer.teammate ? viewerOfPeople([viewer.person.personId]) : KIN_OWNER_LEVEL,
+    ).pipe(workFailure)),
+  };
   if (!viewer.teammate) return { ...detail, ...extras, can };
   const { personId } = viewer.person;
   const seen = yield* teamVisible(detail.orgId, personId, [detail.recordId]).pipe(workFailure);
@@ -785,7 +793,7 @@ export const tellMoved = (
   after === undefined
     ? Effect.void
     : tellOnScreen(person, `${after.recordId}:${after.rev}`, movedNotices(before, after));
-const tellOnScreen = Effect.fn("KinWork.tellOnScreen")(
+export const tellOnScreen = Effect.fn("KinWork.tellOnScreen")(
   function* (person: PersonIdentity, change: string, all: ReadonlyArray<AssignNotice>) {
     const notices = all.filter((notice) => notice.personId !== person.personId);
     if (notices.length === 0) return;

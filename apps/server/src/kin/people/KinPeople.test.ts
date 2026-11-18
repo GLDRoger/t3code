@@ -1387,6 +1387,22 @@ it.effect(
         "reason",
         "not_allowed",
       );
+      // Someone else by that name: a new person, and a retry of that add is still them.
+      const other = { orgId, displayName: "Arjun Rao", newPerson: true as const };
+      const first = yield* service.createInvite(ownerSession, other);
+      const retried = yield* service.createInvite(ownerSession, other);
+      assert.deepStrictEqual([retried.inviteId, retried.handle], [first.inviteId, "arjun-rao-2"]);
+      assert.propertyVal(
+        yield* service.accept({ secret: first.secret }).pipe(Effect.flip),
+        "reason",
+        "not_found",
+      );
+      const namesake = (yield* service.accept({ secret: retried.secret })).person;
+      assert.notStrictEqual(namesake.personId, arjun);
+      assert.strictEqual(namesake.handle, "arjun-rao-2");
+      const [still] = yield* sql<{ removedAt: number | null }>`SELECT removed_at AS "removedAt"
+        FROM kin_people WHERE person_id = ${arjun}`;
+      assert.isNotNull(still?.removedAt);
       // Yes: a link for the old record brings the same person back.
       const back = yield* service.accept({
         secret: (yield* service.createInvite(ownerSession, {
@@ -1396,7 +1412,7 @@ it.effect(
         })).secret,
       });
       assert.strictEqual(back.person.personId, arjun);
-      assert.strictEqual((yield* people)[0]!.n, before);
+      assert.strictEqual((yield* people)[0]!.n, before + 1);
       // Back on the team, the name is theirs again and a namesake is someone new.
       yield* service.createInvite(ownerSession, { orgId, displayName: "Arjun Rao" });
     }).pipe(Effect.provide(layer)),
