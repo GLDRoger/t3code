@@ -68,6 +68,8 @@ export const OUTSIDE_TOOLS = {
   people_read: "allowed",
   // Outside text could rename someone or move their hours.
   people_update: "refused",
+  // Only the speaker's own date (`setAway`): it holds lines to them alone, on their profile to clear.
+  away_set: "allowed",
   // The event each makes carries the turn's stamp, so the turn it starts reads as outside.
   kin_hand_off: "allowed",
   // A discussion wakes every agent on its question: outside text doesn't get to set one.

@@ -47,6 +47,7 @@ import { LeadMemory } from "./LeadMemory.ts";
 import { handlers as leadHandlers } from "./mcp/handlers.ts";
 import { KinLeadToolkit } from "./mcp/tools.ts";
 import { deliverHeld } from "../triggers/heldDelivery.ts";
+import * as OwnerWork from "../work/ownerWork.ts";
 import { reholdAfter } from "../triggers/quietHold.ts";
 import { SHARED_REFUSAL } from "./Audience.ts";
 import { listedOnSharedThread } from "./SharedTools.ts";
@@ -847,4 +848,173 @@ it.effect("a held message follows its reader's changed clock", () =>
       assert.deepStrictEqual(yield* deliverAt, [{ at: now }, { at: now }]);
     }).pipe(Effect.provide(layer)),
   ),
+);
+
+it.effect(
+  "a teammate says she is away in her own chat: what waits for her goes once she is back",
+  () =>
+    Effect.andThen(
+      // Monday 11:30 in India, inside Zoya's working hours there.
+      TestClock.setTime(Date.UTC(2026, 10, 16, 6)),
+      Effect.gen(function* () {
+        const services = Option.getOrThrow((yield* Kin.KinServer).services);
+        const identity = Context.get(services, KinIdentity);
+        const chats = Context.get(services, KinChatService);
+        const sql = yield* SqlClient.SqlClient;
+        yield* pairSession(AuthSessionId.make("owner"));
+        const session = {
+          sessionId: AuthSessionId.make("owner"),
+          subject: "browser",
+          method: "browser-session-cookie",
+          scopes: AuthStandardClientScopes,
+        } as const;
+        const owner = (yield* identity.resolve(session))[0]!;
+        const { orgId } = owner;
+        const zoyaId = KinPersonId.make("zoya");
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+          access, time_zone, work_hours_json)
+        VALUES (${zoyaId}, ${orgId}, 'zoya', 'Zoya Sheikh', ${at}, 'member', 'Asia/Kolkata',
+          '{"days":[1,2,3,4,5],"start":"10:00","end":"18:00"}')`;
+        yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('zoya-session', ${orgId}, ${zoyaId}, 0)`;
+        yield* sql`UPDATE kin_people SET display_name = 'Rhea Kapoor' WHERE person_id = ${owner.personId}`;
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES (${chief}, ${orgId}, 'Chief of staff', 'lead', ${owner.personId}, ${at})`;
+        yield* identity.registerAgentThread({ orgId, agentId: chief, threadId });
+        const ownerChat = (yield* chats.createDirect(owner, { orgId, agentId: chief })).chatId;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
+          worker_projects_json, owner_chat_id, domain)
+        VALUES (${chief}, ${orgId}, 'Chief of staff', 0, ${threadId}, '{}', '[]', ${ownerChat},
+          'chief-of-staff')`;
+        yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+        VALUES (${orgId}, ${chief}, ${owner.personId}, 0)`;
+        const zoya = { _tag: "person" as const, orgId, personId: zoyaId };
+        const zoyasChat = (yield* chats.createDirect(zoya, { orgId, agentId: chief })).chatId;
+        const says = Effect.fn("test.says")(function* (
+          who: typeof owner | typeof zoya,
+          chatId: KinChatId,
+          body: string,
+        ) {
+          const message = yield* chats.send(who, { chatId, body, clientMessageId: body });
+          return `event:${yield* startAgentWakeup({ orgId, agentId: chief, threadId, message })}`;
+        });
+        // Her profile as agents read it: the same column her profile screen reads and sets.
+        const awayUntil = call("people_read", {}).pipe(
+          Effect.map(
+            ({ value }) => /"Zoya Sheikh".*?"awayUntil":"([\d-]+)"/.exec(String(value.quoted))?.[1],
+          ),
+        );
+
+        const setup = yield* says(owner, ownerChat, "Set up the brochure work.");
+        const created = yield* call("record_create", {
+          sourceEventId: setup,
+          records: [
+            { title: "Invented brochure copy", owner: "Zoya Sheikh", due: "2026-11-10" },
+            { title: "Invented brochure proof", owner: "Zoya Sheikh", due: "2026-11-17" },
+            { title: "Invented price sheet", owner: "Rhea Kapoor" },
+            { title: "Invented venue list", owner: "Rhea Kapoor" },
+          ],
+        });
+        assert.isTrue(created.ok, JSON.stringify(created.value));
+        const [, proof, prices, venues] = (
+          created.value.records as ReadonlyArray<{ key: string }>
+        ).map((record) => record.key);
+
+        // In her own chat, her own words: her date, on the same field her profile screen sets.
+        yield* says(zoya, zoyasChat, "I'm off till Wednesday.");
+        const away = yield* call("away_set", { until: "2026-11-18" });
+        assert.isTrue(away.ok, JSON.stringify(away.value));
+        assert.deepInclude(away.value, {
+          person: "Zoya Sheikh",
+          until: "2026-11-18",
+          dueWhileAway: 1,
+          keys: [proof],
+        });
+        assert.strictEqual(yield* awayUntil, "2026-11-19");
+
+        // The owner, in his own chat, can't set it for her: there is no one else to name.
+        yield* TestClock.adjust("11 minutes");
+        yield* says(owner, ownerChat, "Zoya is away till Monday.");
+        const forHer = yield* Effect.flip(
+          call("away_set", { until: "2026-11-23", person: "Zoya" }),
+        );
+        assert.include(String(forHer.message), 'Unknown argument "person"');
+        assert.strictEqual(yield* awayUntil, "2026-11-19");
+
+        // An assignment notice, a hand-over, a relay and a late-work nudge each wait for her.
+        const give = yield* says(owner, ownerChat, "Give the price sheet to Zoya.");
+        const given = yield* call("record_assign", {
+          sourceEventId: give,
+          tasks: [{ key: prices, to: "Zoya Sheikh", reason: "She knows the client" }],
+        });
+        assert.isTrue(given.ok, JSON.stringify(given.value));
+        const handed = yield* OwnerWork.handOver([owner], {
+          orgId,
+          from: { _tag: "person", personId: owner.personId },
+          to: { _tag: "person", personId: zoyaId },
+          keys: [venues!],
+        }).pipe(Effect.provide(Layer.succeedContext(services)));
+        assert.deepStrictEqual(handed, { keys: [venues], kept: 0 });
+        const signed = yield* says(owner, ownerChat, "Tell Zoya the client signed.");
+        const relayed = yield* call("kin_relay", {
+          to: "Zoya",
+          text: "The client signed.",
+          sourceEventId: signed,
+        });
+        assert.include(
+          String(relayed.value.note),
+          "Zoya Sheikh is away until 10:00 their time (Thu 19 Nov)",
+        );
+        yield* startAgentWakeup({
+          orgId,
+          agentId: chief,
+          threadId,
+          event: (base) => ({
+            ...base,
+            _tag: "pulse",
+            provenance: { _tag: "system" },
+            factKeys: [],
+            checkIn: {
+              scheduleId: KinMemoryItemId.make("checkin-morning"),
+              title: "Morning check-in",
+              what: "Morning check-in.",
+              slot: "2026-11-16T06:00:00.000Z",
+            },
+          }),
+        });
+        const facts = (yield* call("pulse_read", {})).value.facts as ReadonlyArray<{ key: string }>;
+        const late = facts.find((fact) => fact.key.startsWith("task_late"));
+        assert.isDefined(late, JSON.stringify(facts));
+        const nudged = yield* call("pulse_nudge", {
+          person: "Zoya Sheikh",
+          factKey: late!.key,
+          text: "The brochure copy is past its date: is anything blocking it?",
+        });
+        assert.isTrue(nudged.ok, JSON.stringify(nudged.value));
+
+        // Thursday 10:00 her time, her first working hour back: each goes once.
+        const back = Date.UTC(2026, 10, 19, 4, 30);
+        const waiting = yield* sql<{ at: number }>`SELECT deliver_at AS at FROM kin_held_posts
+        WHERE org_id = ${orgId} AND person_id = ${zoyaId} AND delivered_at IS NULL`;
+        assert.deepStrictEqual(waiting, [{ at: back }, { at: back }, { at: back }, { at: back }]);
+        yield* TestClock.setTime(back - 60_000);
+        assert.strictEqual(yield* deliverHeld(orgId, chats), 0);
+        yield* TestClock.setTime(back);
+        assert.strictEqual(yield* deliverHeld(orgId, chats), 4);
+        assert.strictEqual(yield* deliverHeld(orgId, chats), 0);
+        const hers = yield* rowsIn(sql, orgId, zoyasChat);
+        for (const said of [
+          `gave you ${prices}`,
+          venues!,
+          "The client signed.",
+          "anything blocking it?",
+        ])
+          assert.strictEqual(
+            hers.filter((row) => row.body.includes(said)).length,
+            1,
+            `${said}: ${JSON.stringify(hers)}`,
+          );
+        assert.isUndefined(yield* awayUntil);
+      }).pipe(Effect.provide(layer)),
+    ),
 );
