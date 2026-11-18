@@ -42,6 +42,7 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { withLinks } from "../chat/messageLinks.ts";
 import { memberReads } from "../chat/sharing.ts";
 import { MemoryCache } from "../memory/MemoryCache.ts";
+import { isHolderNotice } from "../pulse/holderNotice.ts";
 import { personHoldNow } from "../triggers/quietHold.ts";
 import { KinApnsTransport } from "./Apns.ts";
 import { KinPushDevices, kinPushDeviceId, type KinPushDevice } from "./KinPushDevices.ts";
@@ -352,7 +353,24 @@ const make = Effect.gen(function* () {
     function* (orgId: KinOrgId, messageId: KinMessageId, personId: KinPersonId) {
       const message = yield* chats.getMessage({ orgId, messageId });
       if (Option.isNone(message)) return undefined;
-      const [linked] = yield* withLinks(orgId, { _tag: "person", personId }, [message.value]).pipe(
+      const reader = { _tag: "person", personId } as const;
+      // Kin's notice of someone's late or due work names only their tasks: it opens them.
+      if (
+        message.value.author._tag === "system" &&
+        (yield* isHolderNotice(orgId, messageId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ))
+      ) {
+        const [listed] = yield* withLinks(orgId, reader, [{ ...message.value, kind: "text" }]).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        return kinTasksSubject(
+          (listed?.links ?? []).flatMap(({ to }) =>
+            to._tag === "record" && to.kind === "task" ? [to.key] : [],
+          ),
+        );
+      }
+      const [linked] = yield* withLinks(orgId, reader, [message.value]).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
       );
       return linked === undefined ? undefined : (kinMessageSubject(linked) ?? undefined);

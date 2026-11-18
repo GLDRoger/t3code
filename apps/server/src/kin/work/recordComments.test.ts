@@ -333,6 +333,37 @@ it.effect("an agent's task and comment in a person's turn carry that person as w
       told.filter((one) => one.body.includes("commented")),
       1,
     );
+    // On a task Dev holds that Zoya asked for, Dev and Zoya hear the agent's comment once each.
+    const devId = KinPersonId.make("dev");
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES (${devId}, ${orgId}, 'dev', 'Dev', ${at})`;
+    yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+      VALUES (${orgId}, ${chief}, ${devId}, ${rheaId}, 0)`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+      VALUES ('dev-chat', ${orgId}, 'direct', ${`${devId}:${chief}`}, 0, ${at})`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+      VALUES ('dev-chat-dev', ${orgId}, 'dev-chat', 'person', ${devId}, 'member', ${at})`;
+    const menus = yield* task("print the menus", { owner: { _tag: "person", personId: devId } });
+    yield* sql`UPDATE kin_records SET asked_by_person_id = ${zoyaId} WHERE record_id = ${menus.recordId}`;
+    yield* OwnerWork.share([rhea], { orgId, keys: [menus.key], shared: true });
+    const tellsBefore = (yield* sql`SELECT 1 FROM kin_messages WHERE kind = 'system'`).length;
+    const noted = yield* Comments.leadComment(scope, {
+      key: menus.key,
+      body: "Invented: proofs in",
+    });
+    assert.deepInclude(noted, { told: ["Dev", "Zoya"] });
+    yield* Comments.leadComment(scope, { key: menus.key, body: "Invented: proofs in" });
+    const heard = yield* sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId", body
+      FROM kin_messages WHERE kind = 'system' ORDER BY chat_id, seq`;
+    const line = `Chief of staff commented on ${menus.key} Invented: print the menus: Invented: proofs in.`;
+    assert.strictEqual(heard.length, tellsBefore + 2);
+    assert.deepStrictEqual(
+      heard.filter((one) => one.body === line),
+      [
+        { chatId: "dev-chat", body: line },
+        { chatId: "zoya-chat", body: line },
+      ],
+    );
   }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
 );
 
