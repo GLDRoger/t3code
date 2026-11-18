@@ -25,6 +25,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { stringify } from "yaml";
 
 import { KinChatHub } from "../chat/KinChatHub.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import type { TextClock } from "../work/companyProfile.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -195,7 +196,7 @@ export const KinDeferralStopSwitch = Context.Reference<{
   defaultValue: () => ({ isStopped: () => Effect.succeed(true) }),
 });
 
-/** The lead level work may start at; an owner tap is not a level grant. */
+/** The lead level work may start at by itself; an owner-level person's own [Start now] needs none. */
 export const startsAtLevel = (level: string) => level === "L2" || level === "L3";
 
 /** What a deferral's due work is traced back by: the chat it names and the event it came from. */
@@ -495,7 +496,15 @@ const make = Effect.gen(function* () {
             if (yield* (yield* KinDeferralStopSwitch).isStopped(orgId))
               return yield* Effect.fail("stopped" as const);
             const lead = yield* deferralLead(sql, orgId, item.head);
-            if (lead === undefined || !startsAtLevel(lead.level))
+            if (
+              lead === undefined ||
+              !(
+                startsAtLevel(lead.level) ||
+                (yield* ownerLevel(orgId, tap.provenance.personId).pipe(
+                  Effect.provideService(SqlClient.SqlClient, sql),
+                ))
+              )
+            )
               return yield* Effect.fail("below_l2" as const);
             const now = yield* Clock.currentTimeMillis;
             const started = yield* sql.withTransaction(

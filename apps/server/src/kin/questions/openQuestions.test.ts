@@ -41,6 +41,7 @@ import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import * as Team from "../team/KinTeam.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { presetDefinition } from "../work/registers.ts";
 import * as Questions from "./openQuestions.ts";
 
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -309,6 +310,31 @@ it.effect("a question is asked once, and its default is taken once at its day", 
       const due = yield* Questions.dueTurnText(KinOrgId.make(orgId), questionId, TUE_1930);
       assert.include(due!.text, 'Went with “Draft it”; say "undo it" to reverse.');
       assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: owner.personId }), 0);
+
+      // Once INV-8 is a real invoice, any default about it waits for Rhea.
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json)
+        VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(presetDefinition("invoices", "INR"))})`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, created_by_kind, origin_key, created_at, updated_at)
+        VALUES (${orgId}, 'rec_inv8', 'invoices', 'INV-8', 'VIOM retainer', 'person',
+          ${owner.personId}, 'person', 'inv8', 0, 0)`;
+      yield* wake(
+        "finance",
+        yield* chats.send(owner, {
+          chatId: chatOf("finance"),
+          body: "VIOM still hasn't paid.",
+          clientMessageId: "m3",
+        }),
+      );
+      const money = yield* callAs("finance", "kin_ask", {
+        ...reminderAsk,
+        question: "Shall I draft VIOM's second reminder for INV-8?",
+        intent: "draft second reminder",
+      });
+      assert.isTrue(money.ok, JSON.stringify(money.value));
+      const [unsafe] = yield* repo.listOpenWaiting({ orgId, personId: owner.personId });
+      assert.isNull(unsafe!.ask!.default);
     }).pipe(Effect.provide(layer)),
   ),
 );

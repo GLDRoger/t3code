@@ -22,6 +22,7 @@ import * as NodeCrypto from "node:crypto";
 import type { KinChatService } from "../chat/KinChatService.ts";
 import type * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { ownerZone } from "../work/recordRows.ts";
+import { allLists } from "../work/registers.ts";
 import {
   dayWord,
   defaultDue,
@@ -155,6 +156,20 @@ export const readQuestion = Effect.fn("KinQuestions.read")(function* (
   return raw === undefined ? undefined : toRow(raw);
 });
 
+/** Whether any of `about` is an entry in a list that carries amounts: an invoice, quote, expense. */
+const aboutMoney = Effect.fn("KinQuestions.aboutMoney")(function* (
+  orgId: KinOrgId,
+  about: ReadonlyArray<string>,
+) {
+  if (about.length === 0) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ listId: string }>`SELECT DISTINCT register_id AS "listId"
+    FROM kin_records WHERE org_id = ${orgId} AND key IN ${sql.in(about)} ORDER BY register_id`;
+  if (rows.length === 0) return false;
+  const lists = yield* allLists(orgId);
+  return rows.some((row) => lists.get(row.listId)?.amount === true);
+});
+
 /** "already asked by Finance on Monday: “…”. Default “Draft it” on Wednesday." */
 const alreadyAsked = (open: QuestionRow, now: number, zone: string) =>
   `Already asked by ${open.agentName} ${dayWord(open.askedAt, now, zone)}: “${open.question}”. ${
@@ -218,8 +233,11 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
   const named = input.by === undefined ? undefined : namedDue(input.by, input.now, clock.zone);
   if (named !== undefined && "refused" in named) return yield* refuse(named.refused);
   const dueAt = named?.at ?? defaultDue(input.now, clock.zone, clock.days);
-  const safe = safeDefault(label, input.question);
   const about = normaliseAbout(input.about);
+  const safe = safeDefault(label, input.question, {
+    labels: input.labels,
+    aboutMoney: yield* aboutMoney(input.orgId, about),
+  });
   const intent = normaliseIntent(input.intent);
   if (seen === undefined)
     for (const open of yield* openFor(input.orgId, personId))
