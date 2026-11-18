@@ -36,6 +36,7 @@ import { KinStatementRpcs, KIN_STATEMENT_RPC_SCOPES } from "./kinStatements.ts";
 import { KinMoneyAnswerRpcs, KIN_MONEY_ANSWER_RPC_SCOPES } from "./kinMoneyAnswers.ts";
 import { KinMoneyLiveRpcs, KIN_MONEY_LIVE_RPC_SCOPES } from "./kinMoneyLive.ts";
 import { KinRefreshRpcs, KIN_REFRESH_RPC_SCOPES } from "./kinRefresh.ts";
+import { KIN_CANVAS_RPC_SCOPES, KinCanvasRpcs } from "./kinCanvas.ts";
 import { KinPulseRpcs, KIN_PULSE_RPC_SCOPES } from "./kinPulse.ts";
 import {
   KinChatError,
@@ -191,6 +192,7 @@ export const KinRpcs = [
   ...KinSocialRpcs,
   ...KinRefreshRpcs,
   ...KinPulseRpcs,
+  ...KinCanvasRpcs,
 ] as const;
 export const KIN_RPC_SCOPES = {
   ...KIN_CHAT_RPC_SCOPES,
@@ -210,6 +212,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_SOCIAL_RPC_SCOPES,
   ...KIN_REFRESH_RPC_SCOPES,
   ...KIN_PULSE_RPC_SCOPES,
+  ...KIN_CANVAS_RPC_SCOPES,
   "kin.budget.get": AuthKinChatScope,
   "kin.budget.set": AuthKinChatScope,
   "kin.org.get": AuthKinChatScope,
@@ -409,6 +412,13 @@ const KIN_RPC_ACCESS = {
   "kin.access.me": "person",
   "kin.refreshes.subscribe": "person",
   // Needs attention and goals: the service shows a member only what they may see.
+  "kin.canvas.read": "person",
+  "kin.canvas.subscribe": "person",
+  "kin.canvas.place": "owner_level",
+  "kin.canvas.unplace": "owner_level",
+  "kin.canvas.widgetAdd": "owner_level",
+  "kin.canvas.widgetRemove": "owner_level",
+  "kin.canvas.seen": "person",
   "kin.pulse.read": "person",
   "kin.pulse.subscribe": "person",
   "kin.pulse.handle": "person",
@@ -478,6 +488,13 @@ export const KIN_RPC_AGGREGATES = {
 
   "kin.refreshes.subscribe": "kin-refreshes",
   "kin.refreshes.announce": "kin-refreshes",
+  "kin.canvas.read": "kin-canvas",
+  "kin.canvas.subscribe": "kin-canvas",
+  "kin.canvas.place": "kin-canvas",
+  "kin.canvas.unplace": "kin-canvas",
+  "kin.canvas.widgetAdd": "kin-canvas",
+  "kin.canvas.widgetRemove": "kin-canvas",
+  "kin.canvas.seen": "kin-canvas",
   "kin.pulse.read": "kin-pulse",
   "kin.pulse.subscribe": "kin-pulse",
   "kin.pulse.handle": "kin-pulse",
