@@ -2386,6 +2386,7 @@ describe("WakeupRunner", () => {
             Layer.mock(Presence.KinPresence)({
               snapshot: () => Effect.succeed({ presence: [], drafts: [] }),
               lines: () => [],
+              orgLines: () => [],
             }),
             Layer.mock(Budget.KinBudget)({}),
             Layer.mock(KinStop.KinStop)({}),

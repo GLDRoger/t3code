@@ -33,21 +33,21 @@ describe("kinDestinations", () => {
   it("gives each role the destinations it can open, in the dock's order", () => {
     const of = (role: keyof typeof ROLES) =>
       kinDestinations({ work: true, refused: none, ...ROLES[role] });
-    expect(of("owner")).toEqual(["chats", "tasks", "money", "clients", "docs"]);
-    expect(of("coOwner")).toEqual(["chats", "tasks", "money", "clients", "docs"]);
-    expect(of("lead")).toEqual(["chats", "tasks", "money", "clients", "docs"]);
-    expect(of("member")).toEqual(["chats", "tasks", "clients"]);
+    expect(of("owner")).toEqual(["chats", "tasks", "canvas", "money", "clients", "docs"]);
+    expect(of("coOwner")).toEqual(["chats", "tasks", "canvas", "money", "clients", "docs"]);
+    expect(of("lead")).toEqual(["chats", "tasks", "canvas", "money", "clients", "docs"]);
+    expect(of("member")).toEqual(["chats", "tasks", "canvas", "clients"]);
   });
 
   it("drops a place the host refused, and everything but Chats without Work", () => {
     expect(
       kinDestinations({ work: true, refused: { ...none, money: true }, ...ROLES.lead }),
-    ).toEqual(["chats", "tasks", "clients", "docs"]);
+    ).toEqual(["chats", "tasks", "canvas", "clients", "docs"]);
     expect(kinDestinations({ work: false, refused: none, ...ROLES.owner })).toEqual(["chats"]);
     // A member whose reach isn't known yet gets no place that may turn out refused.
     expect(
       kinDestinations({ work: true, refused: none, ownerLevel: false, reaches: null }),
-    ).toEqual(["chats", "tasks"]);
+    ).toEqual(["chats", "tasks", "canvas"]);
   });
 });
 

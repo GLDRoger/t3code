@@ -34,6 +34,7 @@ let lastKinChatId: string | null = null;
 // Pages under a company that aren't a chat; anything else there is a chat id.
 const KIN_NOT_CHAT = new Set([
   "tasks",
+  "canvas",
   "money",
   "clients",
   "docs",
@@ -47,7 +48,14 @@ const KIN_NOT_CHAT = new Set([
 export function kinDestinationAt(pathname: string): KinDestination | null {
   if (kinListAt(pathname) !== "kin") return null;
   const page = pathname.split("/")[4];
-  if (page === "tasks" || page === "money" || page === "clients" || page === "docs") return page;
+  if (
+    page === "tasks" ||
+    page === "canvas" ||
+    page === "money" ||
+    page === "clients" ||
+    page === "docs"
+  )
+    return page;
   return "chats";
 }
 
@@ -146,7 +154,7 @@ export function registerKinListCommands(
       when: () => kinListShownAt(router.state.location.pathname) === "kin",
       onKeyDown: (event) => {
         const mod = isMacPlatform(navigator.platform) ? event.metaKey : event.ctrlKey;
-        if (!mod || event.altKey || event.shiftKey || !/^Digit[1-5]$/.test(event.code))
+        if (!mod || event.altKey || event.shiftKey || !/^Digit[1-6]$/.test(event.code))
           return false;
         const shown = [...document.querySelectorAll<HTMLElement>("[data-kin-destination]")].filter(
           (element) => element.offsetParent !== null,
@@ -234,6 +242,8 @@ export function kinDestinationLink(
   target: KinWorkTarget,
   narrow = false,
 ) {
+  if (destination === "canvas")
+    return { to: "/kin/$environmentId/$orgId/canvas", params: target } as const;
   if (destination !== "chats") return { to: KIN_PLACE_PATH[destination], params: target } as const;
   // A wide window shows the list beside the chat, so Chats comes back to the chat you left.
   const chatId = narrow ? null : lastKinChatId;

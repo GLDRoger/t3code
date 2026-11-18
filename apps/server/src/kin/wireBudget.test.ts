@@ -5,6 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, layer as withLayer } from "@effect/vitest";
 import {
   KIN_REFRESH_TOPICS,
+  KinCanvasRpcs,
   KinChatError,
   KinDocsEvent,
   KinDocsRpcs,
@@ -37,6 +38,9 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
+import * as KinCanvas from "./canvas/KinCanvas.ts";
+import * as ChatHub from "./chat/KinChatHub.ts";
+import * as ChatRepository from "./chat/KinChatRepository.ts";
 import { KinIdentity, type PersonIdentity } from "./chat/KinIdentity.ts";
 import * as RefreshHub from "./chat/KinRefreshHub.ts";
 import { subscribeRefreshes } from "./chat/refreshes.ts";
@@ -45,6 +49,7 @@ import { KinLevelGate } from "./lead/LevelGate.ts";
 import * as KinPersistence from "./persistence/KinPersistence.ts";
 import * as KinPulse from "./pulse/KinPulse.ts";
 import * as Pulse from "./pulse/people.ts";
+import * as Presence from "./reply/KinPresence.ts";
 import budget from "./kinWireBudget.json" with { type: "json" };
 import * as Docs from "./work/docs.ts";
 import * as Goals from "./work/goals.ts";
@@ -201,6 +206,32 @@ const seed = Effect.gen(function* () {
       key,
       to: { _tag: "person", personId: memberId },
     });
+  // The canvas as the owner arranged it: every project, the first tasks, a widget per project.
+  const canvas = yield* KinCanvas.KinCanvas;
+  const cards = yield* sql<{ key: string; registerId: string }>`SELECT key,
+      register_id AS "registerId" FROM kin_records
+    WHERE org_id = ${orgId} AND register_id IN ('projects', 'work') ORDER BY register_id, key`;
+  const projects = cards.filter((card) => card.registerId === "projects");
+  const placed = [...projects, ...cards.filter((card) => card.registerId === "work").slice(0, 60)];
+  yield* canvas.place(as(ownerId), {
+    orgId,
+    places: placed.map((card, i) => ({
+      key: card.key,
+      x: (i % 12) * 320,
+      y: Math.floor(i / 12) * 200,
+    })),
+  });
+  for (const [i, project] of projects.entries())
+    yield* canvas.widgetAdd(as(ownerId), {
+      orgId,
+      kind: i % 3 === 0 ? "facts" : i % 3 === 1 ? "progress" : "countdown",
+      source: project.key,
+      place: { x: i * 320, y: -400 },
+    });
+  // Back after a while: everyone else's last look is just before the seed.
+  for (const person of [coOwnerId, memberId])
+    yield* sql`INSERT INTO kin_canvas_seen (org_id, person_id, seen_at)
+      VALUES (${orgId}, ${person}, ${NOW - 1})`;
 });
 
 const as = (personId: KinPersonId): ReadonlyArray<PersonIdentity> => [
@@ -231,6 +262,7 @@ const SCHEMAS = {
   docsEvent: KinDocsEvent,
   moneyEvent: KinMoneyEvent,
   refreshes: KinRefreshes,
+  canvas: successOf(KinCanvasRpcs, "kin.canvas.read"),
 };
 
 type Services = Layer.Success<typeof layer>;
@@ -372,6 +404,14 @@ const READS: ReadonlyArray<Read> = [
     rows: "projects",
     run: (people) => Clients.projects(people, { orgId }),
   },
+  {
+    name: "canvas",
+    paged: false,
+    schema: SCHEMAS.canvas,
+    rows: "places",
+    run: (people) =>
+      Effect.flatMap(KinCanvas.KinCanvas, (canvas) => canvas.read(people, { orgId })),
+  },
 ];
 
 const rowsOf = (value: object, field: string | undefined) => {
@@ -394,8 +434,12 @@ const identity = Layer.mock(KinIdentity)({
 const gate = Layer.mock(KinLevelGate)({
   ask: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
 });
-const layer = KinImport.layer.pipe(
+const layer = KinCanvas.layer.pipe(
+  Layer.provideMerge(KinImport.layer),
   Layer.provideMerge(Layer.mergeAll(KinRecords.layer, identity, gate)),
+  Layer.provideMerge(Presence.layer),
+  Layer.provideMerge(ChatHub.layer),
+  Layer.provideMerge(ChatRepository.layer),
   Layer.provideMerge(RefreshHub.layer),
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),

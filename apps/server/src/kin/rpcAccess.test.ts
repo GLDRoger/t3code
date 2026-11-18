@@ -32,6 +32,9 @@ const session = (person: string): AuthenticatedSession => ({
 // them only their places.
 const MEMBER = [
   "kin.access.me",
+  "kin.canvas.read",
+  "kin.canvas.seen",
+  "kin.canvas.subscribe",
   "kin.chat.history",
   "kin.chat.members",
   "kin.chat.subscribe",

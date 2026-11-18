@@ -38,6 +38,7 @@ const external = Layer.mergeAll(
     clear: () => Effect.void,
     snapshot: () => Effect.succeed({ presence: [], drafts: [] }),
     lines: () => [],
+    orgLines: () => [],
   }),
   ServerConfig.layerTest(process.cwd(), { prefix: "kin-lead-layer-" }),
   Layer.mock(DocumentText.DocumentText)({}),

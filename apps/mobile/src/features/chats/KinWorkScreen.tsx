@@ -3,6 +3,7 @@ import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { KIN_CANVAS } from "@t3tools/client-runtime/kin/kinCanvasView";
 import { KIN_SEARCH } from "@t3tools/client-runtime/kin/kinDocs";
 import {
   KIN_WORK_LOAD_FAILED,
@@ -154,6 +155,7 @@ export function KinWorkEntry(target: KinWorkTarget) {
 }
 
 function KinPlaceEntries(props: KinWorkTarget & { readonly live: KinWorkLive | null }) {
+  const navigation = useNavigation();
   const open = useKinOpenPlace(props);
   const summary = props.live?.summary ?? null;
   const hostClients = kinWorkHostClients(summary);
@@ -164,6 +166,20 @@ function KinPlaceEntries(props: KinWorkTarget & { readonly live: KinWorkLive | n
   return (
     <>
       <KinWorkEntryRow summary={kinWorkEntrySummary(summary)} onPress={() => open("tasks")} />
+      <KinListBanner
+        title={KIN_CANVAS.title}
+        summary={KIN_CANVAS.entrySummary}
+        symbol="square.grid.2x2"
+        accessibilityLabel={`${KIN_CANVAS.title}. ${KIN_CANVAS.entrySummary}`}
+        accessibilityHint={`Opens ${KIN_CANVAS.title}`}
+        onPress={() =>
+          navigation.navigate("KinCanvas", {
+            environmentId: String(props.environmentId),
+            orgId: String(props.orgId),
+          })
+        }
+      />
+      <View className="ml-5 h-px bg-border-subtle" />
       {money._tag === "refused" || money._tag === "failed" ? null : (
         <KinPlaceEntryRow
           place="money"
