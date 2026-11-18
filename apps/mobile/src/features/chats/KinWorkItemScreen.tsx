@@ -1,5 +1,5 @@
 import { useKinOpensClients } from "./state/kinChatOnly";
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   KIN_LINKED,
   kinLinked,
@@ -10,7 +10,11 @@ import type { KinNotificationDestination } from "@t3tools/client-runtime/kin/kin
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
+  KIN_TASK_LINK,
+  KIN_TASK_NOTE_COPY,
   KIN_TASK_RECORD,
+  kinProjectNoteLine,
+  kinTaskLinkProblem,
   kinBriefBy,
   kinNextStep,
   kinRecordAskedBy,
@@ -49,6 +53,7 @@ import {
   type KinWorkAction,
   type KinWorkNotice,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   EnvironmentId,
   KIN_RECORD_CHANGES_CAP,
@@ -258,6 +263,9 @@ function KinWorkItemBody(props: ItemTarget) {
   } | null>(null);
   const readOlder = useAtomCommand(kinClient.workComments, { reportFailure: false });
   const removeComment = useAtomCommand(kinClient.workCommentRemove, { reportFailure: false });
+  const addLink = useAtomCommand(kinClient.workLinkAdd, { reportFailure: false });
+  const removeLink = useAtomCommand(kinClient.workLinkRemove, { reportFailure: false });
+  const canLink = useAtomValue(kinClient.workLinkAdd.permissionAtom(environmentId));
   const place = useKinWorkPlace(environmentId);
   const work = useKinWork(props);
   // Make invoice and Make its PDF are a step of this page, never a sheet over it.
@@ -306,13 +314,68 @@ function KinWorkItemBody(props: ItemTarget) {
   };
   const openThread = (thread: NonNullable<KinWorkLinkView["thread"]>) =>
     openDetail({ name: "Thread", params: thread });
-  const linkedSection = (detail: KinRecordDetail, links: ReadonlyArray<KinWorkLinkView>) => (
+  const linkFailed = (outcome: AsyncResult.AsyncResult<unknown, unknown>, what: string) => {
+    if (!AsyncResult.isFailure(outcome)) return false;
+    Dialog.alert(kinFailureText(squashAtomCommandFailure(outcome), what));
+    return true;
+  };
+  const askLink = () =>
+    Dialog.prompt({
+      title: KIN_TASK_LINK.add,
+      message: KIN_TASK_LINK.url,
+      placeholder: KIN_TASK_LINK.urlPlaceholder,
+      initialValue: "",
+      confirmText: KIN_TASK_LINK.next,
+      onConfirm: (typed) => {
+        const url = typed.trim();
+        if (url === "") return;
+        const problem = kinTaskLinkProblem(url);
+        if (problem !== null) return Dialog.alert(problem);
+        Dialog.prompt({
+          title: KIN_TASK_LINK.add,
+          message: KIN_TASK_LINK.name,
+          initialValue: "",
+          confirmText: KIN_TASK_LINK.save,
+          onConfirm: (named) => {
+            const name = named.trim();
+            void addLink({
+              environmentId,
+              input: { orgId, key: itemKey, url, ...(name === "" ? {} : { name }) },
+            }).then((outcome) => {
+              if (!linkFailed(outcome, KIN_TASK_LINK.notAdded)) appAtomRegistry.refresh(itemAtom);
+            });
+          },
+        });
+      },
+    });
+  const askUnlink = (link: KinWorkLinkView) => {
+    const { removeUrl } = link;
+    if (removeUrl === undefined) return;
+    Dialog.confirm({
+      title: KIN_TASK_LINK.removeTitle,
+      message: link.label,
+      confirmText: KIN_TASK_LINK.removeConfirm,
+      destructive: true,
+      onConfirm: () =>
+        void removeLink({ environmentId, input: { orgId, key: itemKey, url: removeUrl } }).then(
+          (outcome) => {
+            if (!linkFailed(outcome, KIN_TASK_LINK.notRemoved)) appAtomRegistry.refresh(itemAtom);
+          },
+        ),
+    });
+  };
+  const linkedSection = (
+    detail: KinRecordDetail,
+    links: ReadonlyArray<KinWorkLinkView>,
+    editsLinks = false,
+  ) => (
     <KinWorkLinked
       detail={detail}
       links={links}
       onOpen={openLinked}
       onOpenLink={openLink}
       onOpenThread={openThread}
+      {...(editsLinks ? { onAddLink: askLink, onRemoveLink: askUnlink } : {})}
     />
   );
   if (item.list !== undefined && making !== null)
@@ -550,9 +613,9 @@ function KinWorkItemBody(props: ItemTarget) {
   };
   const askRemove = (commentId: string) =>
     Dialog.confirm({
-      title: "Remove this note?",
-      message: "It stays in Activity as removed, without its words or files.",
-      confirmText: "Remove",
+      title: KIN_TASK_NOTE_COPY.removeTitle,
+      message: KIN_TASK_RECORD.removeDetail,
+      confirmText: KIN_TASK_NOTE_COPY.remove,
       destructive: true,
       onConfirm: () =>
         void removeComment({ environmentId, input: { orgId, key: itemKey, commentId } }).then(
@@ -884,8 +947,12 @@ function KinWorkItemBody(props: ItemTarget) {
         onPressPreview={setPreviewFile}
         onRemove={askRemove}
         {...(moreComments ? { onOlder: () => void loadOlder() } : {})}
+        {...(item.projectNote === undefined
+          ? {}
+          : { projectNote: kinProjectNoteLine(item.projectNote, names, now) })}
+        onOpenProject={(project) => openRecord("KinProject", { environmentId, orgId, project })}
       />
-      {linkedSection(shown, view.links)}
+      {linkedSection(shown, view.links, canLink && view.can.links === true)}
       <FilePreviewModal source={previewFile} onRequestClose={() => setPreviewFile(null)} />
     </KinWorkFrame>
   );
@@ -943,7 +1010,10 @@ function KinActivity(props: {
   readonly onPressPreview: (source: FilePreviewSource) => void;
   readonly onRemove: (commentId: string) => void;
   readonly onOlder?: () => void;
+  readonly projectNote?: ReturnType<typeof kinProjectNoteLine>;
+  readonly onOpenProject: (key: KinRecordKey) => void;
 }) {
+  const pinned = props.projectNote;
   return (
     <View className="gap-3">
       <Text
@@ -958,6 +1028,33 @@ function KinActivity(props: {
           {props.note}
         </Text>
       )}
+      {pinned === undefined ? null : (
+        <View
+          accessible
+          accessibilityLabel={`${KIN_TASK_RECORD.fromProject}, ${pinned.project.title}. ${pinned.body}`}
+          className="flex-row gap-2.5 px-1"
+        >
+          <View className="w-7 items-center pt-0.5">
+            <SymbolView name="folder" size={15} tintColorClassName="accent-icon-muted" />
+          </View>
+          <View className="min-w-0 flex-1">
+            <Text textRole="footnote" className="text-foreground-muted">
+              <Text className="font-t3-medium text-foreground">{KIN_TASK_RECORD.fromProject} </Text>
+              <Text
+                accessibilityRole="link"
+                className="text-foreground underline"
+                onPress={() => props.onOpenProject(pinned.project.key)}
+              >
+                {pinned.project.title}
+              </Text>
+              {` · ${pinned.who}, ${pinned.when}`}
+            </Text>
+            <Text textRole="body" selectable className="mt-1 text-foreground">
+              {pinned.body}
+            </Text>
+          </View>
+        </View>
+      )}
       {props.onOlder === undefined ? null : (
         <View className="px-1">
           <Button
@@ -969,9 +1066,11 @@ function KinActivity(props: {
         </View>
       )}
       {props.lines.length === 0 ? (
-        <Text textRole="footnote" className="px-2 text-foreground-muted">
-          {KIN_TASK_RECORD.noActivity}
-        </Text>
+        pinned !== undefined ? null : (
+          <Text textRole="footnote" className="px-2 text-foreground-muted">
+            {KIN_TASK_RECORD.noActivity}
+          </Text>
+        )
       ) : (
         props.lines.map((line) => (
           <View key={line.key} className="flex-row gap-2.5 px-1">
@@ -1043,7 +1142,7 @@ function KinCommentBody(props: {
           <Button
             tone="text"
             size="compact"
-            label="Remove"
+            label={KIN_TASK_NOTE_COPY.remove}
             accessibilityLabel="Remove this note"
             onPress={props.onRemove}
           />
@@ -1111,8 +1210,12 @@ function KinWorkLinked(props: {
   readonly onOpen: (to: KinNotificationDestination) => void;
   readonly onOpenLink: (link: KinWorkLinkView) => void;
   readonly onOpenThread: (thread: NonNullable<KinWorkLinkView["thread"]>) => void;
+  /** Only where this viewer may change the entry's web links. */
+  readonly onAddLink?: () => void;
+  readonly onRemoveLink?: (link: KinWorkLinkView) => void;
 }) {
   const rest = kinLinkedRest(props.links);
+  const { onAddLink, onRemoveLink } = props;
   return (
     <KinLinkedSection
       item={props.detail}
@@ -1120,16 +1223,24 @@ function KinWorkLinked(props: {
       parentsShown
       onOpen={props.onOpen}
     >
-      {rest.length === 0
-        ? null
-        : rest.map((link) => (
+      {rest.length === 0 && onAddLink === undefined ? null : (
+        <>
+          {rest.map((link) => (
             <KinWorkLink
               key={link.key}
               link={link}
               onOpen={() => props.onOpenLink(link)}
               onOpenThread={props.onOpenThread}
+              {...(onRemoveLink === undefined || link.removeUrl === undefined
+                ? {}
+                : { onRemove: () => onRemoveLink(link) })}
             />
           ))}
+          {onAddLink === undefined ? null : (
+            <ListActionRow label={KIN_TASK_LINK.add} onPress={onAddLink} />
+          )}
+        </>
+      )}
     </KinLinkedSection>
   );
 }
@@ -1223,6 +1334,7 @@ function KinWorkLink(props: {
   readonly link: KinWorkLinkView;
   readonly onOpen: () => void;
   readonly onOpenThread: (thread: NonNullable<KinWorkLinkView["thread"]>) => void;
+  readonly onRemove?: () => void;
 }) {
   const { link } = props;
   const { thread } = link;
@@ -1243,6 +1355,13 @@ function KinWorkLink(props: {
         <ListActionRow
           label={KIN_WORK_COPY.openThread}
           onPress={() => props.onOpenThread(thread)}
+        />
+      )}
+      {props.onRemove === undefined ? null : (
+        <ListActionRow
+          tone="danger"
+          label={KIN_TASK_LINK.remove(link.label)}
+          onPress={props.onRemove}
         />
       )}
     </>

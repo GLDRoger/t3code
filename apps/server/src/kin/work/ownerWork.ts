@@ -10,6 +10,8 @@ import {
   type KinWorkGetInput,
   type KinWorkHandBackInput,
   type KinWorkHandOverInput,
+  type KinWorkLinkAddInput,
+  type KinWorkLinkRemoveInput,
   type KinWorkListInput,
   type KinWorkPrincipal,
   type KinWorkShareInput,
@@ -41,7 +43,7 @@ import {
 } from "./KinRecords.ts";
 import { fieldList, LISTS, type ListName, parseFields } from "./lists.ts";
 import { milestoneLinks } from "./projectSpine.ts";
-import { sheetExtras } from "./recordComments.ts";
+import { personSeesRecord, sheetExtras } from "./recordComments.ts";
 import { isBuiltIn, listDef, unknownList } from "./registers.ts";
 import { type AssignNotice, movedNotices, tellPeople } from "./assignNotices.ts";
 import { teamAgent as theTeamAgent } from "../lead/LeadAccess.ts";
@@ -186,6 +188,7 @@ const NOTHING: KinRecordCan = {
   share: false,
   confirm: false,
   repeat: false,
+  links: false,
 };
 
 type CanEntry = Pick<KinRecord, "recordId" | "key" | "state" | "owner" | "confirmed"> &
@@ -210,7 +213,10 @@ const cansOf = Effect.fn("KinWork.cansOf")(function* (
   });
   if (viewer.teammate) {
     const cans = yield* teamCan(orgId, viewer.person.personId, known).pipe(workFailure);
-    return (recordId: string) => cans.get(recordId) ?? NOTHING;
+    return (recordId: string): KinRecordCan => {
+      const can = cans.get(recordId);
+      return can === undefined ? NOTHING : { ...can, links: can.edit };
+    };
   }
   const cans = new Map<string, KinRecordCan>(
     known.map((entry) => {
@@ -232,6 +238,7 @@ const cansOf = Effect.fn("KinWork.cansOf")(function* (
         share: !UNSHARED.has(entry.registerId),
         confirm: edits && !entry.confirmed && open,
         repeat: entry.registerId === "work",
+        links: edits,
       };
       return [entry.recordId, can] as const;
     }),
@@ -446,8 +453,8 @@ export const shownRecords = Effect.fn("KinWork.shownRecords")(function* (
       ]).pipe(workFailure)
     : new Set<string>();
   return shown.map(({ row, record: whole }): KinRecord => {
-    // Only the task's own sheet sets a repeat, so its rows don't carry the answer.
-    const { repeat: _repeat, ...rowCan } = can(whole.recordId);
+    // Only the task's own sheet sets a repeat or links, so its rows don't carry the answers.
+    const { repeat: _repeat, links: _links, ...rowCan } = can(whole.recordId);
     const record = { ...whole, can: rowCan };
     if (viewer.teammate && plainTask(row, led)) return teamRecordIn(record, projects);
     const fields = isBuiltIn(row.registerId) ? {} : parseFields(row.fieldsJson);
@@ -973,6 +980,100 @@ export const update = Effect.fn("KinWork.update")(function* (
   return yield* sql
     .withTransaction(ownFiles(person, row.fieldsJson, input.fields).pipe(Effect.andThen(save)))
     .pipe(workFailure);
+});
+
+/** A web page's address as it is kept, or undefined for anything that isn't one. */
+const webAddress = (text: string) => {
+  try {
+    const url = new URL(text.trim());
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * Changes an entry's `url` links in one transaction with the check that this viewer may edit it,
+ * then answers with its sheet. One they can't see is unknown.
+ */
+const linkWrite = Effect.fn("KinWork.linkWrite")(function* (
+  viewer: Viewer,
+  orgId: KinOrgId,
+  key: string,
+  write: (recordId: string) => Effect.Effect<boolean, KinChatError, KinRecords>,
+) {
+  const records = yield* KinRecords;
+  const sql = yield* SqlClient.SqlClient;
+  return yield* Effect.gen(function* () {
+    const row = yield* found(orgId, { key });
+    if (!(yield* personSeesRecord(orgId, viewer.person.personId, row.recordId)))
+      return yield* notFound(key);
+    const now = yield* Clock.currentTimeMillis;
+    const can = (yield* cansOf(viewer, orgId, [
+      { ...toRecord(row, now), registerId: row.registerId },
+    ]))(row.recordId);
+    if (can.links !== true)
+      return yield* new KinChatError({
+        reason: "not_allowed",
+        message: "Only someone who may edit this can change its links.",
+      });
+    yield* write(row.recordId);
+    const after = yield* found(orgId, { key });
+    return yield* shownTo(
+      viewer,
+      yield* records.detail(after, KIN_RECORD_CHANGES_CAP),
+      after,
+      after,
+    );
+  }).pipe(sql.withTransaction, workFailure);
+});
+
+/** "Add a link": a web page that relates to the entry, by whoever may edit it. */
+export const addLink = Effect.fn("KinWork.addLink")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinWorkLinkAddInput,
+) {
+  const viewer = yield* viewerOf(people, input.orgId);
+  const target = webAddress(input.url);
+  if (target === undefined)
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: "A link needs a web address that starts with https:// or http://.",
+    });
+  const name = input.name?.trim() ?? "";
+  const records = yield* KinRecords;
+  return yield* linkWrite(viewer, input.orgId, input.key, (recordId) =>
+    records.link(input.orgId, writerOf(viewer), recordId, {
+      kind: "url",
+      relation: "relates",
+      target,
+      label: name === "" ? null : name,
+    }),
+  );
+});
+
+/** Takes a web page's link off an entry, by whoever may edit it; one already gone is fine. */
+export const removeLink = Effect.fn("KinWork.removeLink")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinWorkLinkRemoveInput,
+) {
+  const viewer = yield* viewerOf(people, input.orgId);
+  const records = yield* KinRecords;
+  const sql = yield* SqlClient.SqlClient;
+  return yield* linkWrite(viewer, input.orgId, input.key, (recordId) =>
+    Effect.gen(function* () {
+      const [made] = yield* sql<{ shown: string; at: number }>`SELECT
+          COALESCE(label, target) AS shown, created_at AS at FROM kin_record_links
+        WHERE org_id = ${input.orgId} AND record_id = ${recordId} AND kind = 'url'
+          AND target = ${input.url}`.pipe(workFailure);
+      if (made === undefined) return false;
+      return yield* records.unlink(input.orgId, writerOf(viewer), recordId, {
+        kind: "url",
+        shown: made.shown,
+        at: made.at,
+      });
+    }),
+  );
 });
 
 /**

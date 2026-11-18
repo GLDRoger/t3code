@@ -110,6 +110,20 @@ describe("kinBudgets", () => {
       ["b", "₹2,000 over", null],
       ["a", "$99 left", "about ₹8,400"],
     ]);
+    const euros = kinBudgetsView(
+      {
+        month: "2026-11",
+        budgets: [
+          {
+            ...budget("c", 30_000, 50_000, "ok", "USD"),
+            notCounted: [{ currency: "EUR", spent: { minor: 76_800, currency: "EUR" } }],
+          },
+        ],
+      },
+      null,
+      null,
+    );
+    expect(euros.map((one) => one.notCounted)).toEqual(["+ €768 not counted in this USD budget"]);
   });
 
   it("says in a line what is over or near, else that all are within their limits", () => {

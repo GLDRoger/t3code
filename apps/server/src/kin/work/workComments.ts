@@ -3,6 +3,7 @@ import {
   KinChatError,
   type KinOrgId,
   KinPersonId,
+  type KinProjectNoteInput,
   type KinRecordComment,
   KinRecordKey,
   type KinWorkCommentInput,
@@ -17,6 +18,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PendingUploadOwner } from "../../assets/AttachmentUpload.ts";
 import { KinAttachmentStore } from "../chat/KinAttachmentStore.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { type AssignNotice, tellPeople } from "./assignNotices.ts";
 import { KinRecords } from "./KinRecords.ts";
@@ -28,9 +30,11 @@ import {
   commentsPage,
   insertComment,
   personSeesRecord,
+  projectNoteOf,
   removeComment,
   requestHashOf,
   withCanRemove,
+  writeProjectNote,
 } from "./recordComments.ts";
 import { notFound, workFailure } from "./recordRows.ts";
 import { viewVisible } from "./teamView.ts";
@@ -187,6 +191,40 @@ export const page = Effect.fn("KinWorkComments.page")(function* (
     comments: shown.comments.map((one) => withCanRemove(viewer, one)),
     older: shown.older,
   };
+});
+
+/**
+ * The owner level sets a project's one note for every task, or clears it with empty words. Each
+ * of its tasks reads it at the top of its Activity, to whoever sees the project.
+ */
+export const projectNote = Effect.fn("KinWorkComments.projectNote")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinProjectNoteInput,
+) {
+  const viewer = yield* viewerOf(people, input.orgId);
+  const personId = viewer.person.personId;
+  const sql = yield* SqlClient.SqlClient;
+  return yield* Effect.gen(function* () {
+    if (!(yield* ownerLevel(input.orgId, personId)))
+      return yield* new KinChatError({
+        reason: "not_allowed",
+        message: "Only an owner can change a project's note for every task.",
+      });
+    // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- owner level only, checked just above.
+    const [project] = yield* sql<{ recordId: string }>`SELECT record_id AS "recordId"
+      FROM kin_records WHERE org_id = ${input.orgId} AND key = ${input.key}
+        AND register_id = 'projects'`;
+    if (project === undefined) return yield* notFound(input.key);
+    yield* writeProjectNote({
+      orgId: input.orgId,
+      projectId: project.recordId,
+      by: personId,
+      requestId: input.clientRequestId,
+      body: input.body,
+      now: yield* Clock.currentTimeMillis,
+    });
+    return { note: (yield* projectNoteOf(input.orgId, project.recordId)) ?? null };
+  }).pipe(sql.withTransaction, workFailure);
 });
 
 export const CommentInput = Schema.Struct({
