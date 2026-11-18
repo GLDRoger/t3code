@@ -144,10 +144,11 @@ const Category = KinToolText(
 );
 const Amount = KinToolText(
   60,
-  'The amount as said or written: "4200", "4.2 lakh", "₹1,23,456.78", "$30". Kin turns it into exact minor units.',
+  'The amount as said or written: "4200", "4,200.50", "€30", "12k". Kin turns it into exact minor units and refuses a form it can\'t read one way.',
 );
 const Currency = Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/)).annotate({
-  description: "ISO code, when the amount doesn't name one; default the list's, usually INR.",
+  description:
+    "ISO code, when the amount doesn't name one; default this entry's, else the list's, else the company's.",
 });
 const Day = Schema.NullOr(KinDay).annotate({
   description: "When it happened, was issued or starts: a day in the owner's time zone.",
@@ -375,7 +376,10 @@ const CreateRow = Schema.Struct({
   fields: Schema.optional(FieldInputs),
   sensitive: Schema.optional(Schema.Literal(true)),
   suggested: Schema.optional(Schema.Boolean),
-  confirmed: Schema.optional(Schema.Boolean),
+  confirmed: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "true when an amount far above the rest of its list, or an invoice issued after its due day, is right as given.",
+  }),
   ...SpineInputs,
   ...GoalInputs,
 });
