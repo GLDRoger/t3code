@@ -96,7 +96,7 @@ import CalendarCursor from "./migrations/K172_CalendarCursor.ts";
 import NoMemoryReviewPulls from "./migrations/K173_NoMemoryReviewPulls.ts";
 import AnswerPages from "./migrations/K174_AnswerPages.ts";
 import HandoffWantsAnswer from "./migrations/K175_HandoffWantsAnswer.ts";
-import RecordComments from "./migrations/K180_RecordComments.ts";
+import RecordComments from "./migrations/K176_RecordComments.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -273,7 +273,7 @@ const loader = Migrator.fromRecord({
   "173_NoMemoryReviewPulls": NoMemoryReviewPulls,
   "174_AnswerPages": AnswerPages,
   "175_HandoffWantsAnswer": HandoffWantsAnswer,
-  "180_RecordComments": RecordComments,
+  "176_RecordComments": RecordComments,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that
