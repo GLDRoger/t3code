@@ -17,7 +17,9 @@ import {
   type KinMoney,
   type KinOrgId,
   type KinWorkPrincipal,
+  KIN_TEXT_LOCALE,
   calendarTimeMillis,
+  formatKinLate,
   isCalendarDay,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -1369,7 +1371,7 @@ const clientOwed = Effect.fnUntraced(function* (
             one.dueAt === null
               ? "unpaid, no due date"
               : one.overdue
-                ? `overdue, ${one.daysOverdue} days past due`
+                ? `overdue ${formatKinLate(one.dueAt, now, { zone, locale: KIN_TEXT_LOCALE })}`
                 : `due ${dayIn(one.dueAt, zone)}`
           }`,
       ),

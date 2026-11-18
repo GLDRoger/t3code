@@ -123,17 +123,29 @@ export const touchesOf = Effect.fn("KinTouches.of")(function* (
   return rows.map(toTouch);
 });
 
+/** Each client's last contact and its kind; clients with none are absent. */
+const newestContacts = Effect.fn("KinTouches.newest")(function* (
+  orgId: KinOrgId,
+  partyIds: ReadonlyArray<string>,
+  now: number,
+) {
+  if (partyIds.length === 0) return new Map<string, { at: number; kind: TouchSql["kind"] }>();
+  const sql = yield* SqlClient.SqlClient;
+  // SQLite takes the bare `kind` from the row MAX(at) picks.
+  const rows = yield* sql<{ partyId: string; at: number; kind: TouchSql["kind"] }>`SELECT
+      "partyId", MAX(at) AS at, kind
+    FROM (${touchUnion(sql, orgId, partyIds, now)}) GROUP BY "partyId" ORDER BY "partyId"`;
+  return new Map(rows.map((row) => [row.partyId, { at: row.at, kind: row.kind }]));
+});
+
 /** Each client's last contact, epoch ms; clients with none are absent. */
 export const lastContacts = Effect.fn("KinTouches.last")(function* (
   orgId: KinOrgId,
   partyIds: ReadonlyArray<string>,
   now: number,
 ) {
-  if (partyIds.length === 0) return new Map<string, number>();
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ partyId: string; at: number }>`SELECT "partyId", MAX(at) AS at
-    FROM (${touchUnion(sql, orgId, partyIds, now)}) GROUP BY "partyId" ORDER BY "partyId"`;
-  return new Map(rows.map((row) => [row.partyId, row.at]));
+  const newest = yield* newestContacts(orgId, partyIds, now);
+  return new Map([...newest].map(([partyId, one]) => [partyId, one.at]));
 });
 
 export const daysSince = (at: number, now: number) => Math.max(0, Math.floor((now - at) / DAY_MS));
@@ -208,8 +220,9 @@ export type ClientSense = {
   readonly key: string;
   readonly name: string;
   readonly sensitive: boolean;
-  /** Last contact, epoch ms, or null when there has been none. */
+  /** Last contact, epoch ms, and what it was, or null when there has been none. */
   readonly lastAt: number | null;
+  readonly lastKind: KinClientTouch["kind"] | null;
   readonly days: number;
   /** What `days` counts from: the last contact, the last project we finished, or their adding. */
   readonly from: "contact" | "project" | "added";
@@ -217,8 +230,9 @@ export type ClientSense = {
   readonly since: number;
   /** What makes this one episode: a new contact starts another. */
   readonly episode: string;
-  /** Hours the oldest thing we owe them is past due. */
+  /** Hours the oldest thing we owe them is past due, and when it fell due. */
   readonly late?: number;
+  readonly dueAt?: number;
   /** The playbook value it crossed, and where that value came from. */
   readonly limit: Effect.Success<ReturnType<typeof playbookThreshold>>;
 };
@@ -258,14 +272,15 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
       AND COALESCE(c.category, 'client') = 'client'
     ORDER BY c.key`;
   const lookup = yield* playbookThresholds(orgId);
-  const last = yield* lastContacts(
+  const last = yield* newestContacts(
     orgId,
     clients.map((client) => client.partyId),
     now,
   );
   const senses: Array<ClientSense> = [];
   for (const client of clients) {
-    const lastAt = last.get(client.partyId) ?? null;
+    const newest = last.get(client.partyId);
+    const lastAt = newest?.at ?? null;
     // Work we finished for them is contact too: silence counts from whichever came last, and
     // from when the client was added only with neither (one added with its history isn't new).
     const from =
@@ -279,6 +294,7 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
       name: client.title,
       sensitive: client.sensitive === 1,
       lastAt,
+      lastKind: newest?.kind ?? null,
       days,
       from:
         lastAt === null && client.lastProjectAt === null
@@ -314,6 +330,7 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
         sense: "client_waiting_on_us",
         since,
         late: Math.floor((now - client.dueAt) / HOUR_MS),
+        dueAt: client.dueAt,
         episode: `${client.key}:late:${client.dueAt}`,
         limit: owed,
       });
