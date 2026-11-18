@@ -62,6 +62,7 @@ import {
   teamMemoryOn,
 } from "../memory/sensitivity.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
+import { personMiss, personNamed } from "../people/personNamed.ts";
 import { deferralOrigin } from "../triggers/deferralOrigin.ts";
 import { cancelDeferralRun } from "../triggers/KinTriggerService.ts";
 import { scheduledTaskTriggerId } from "../widgets/scheduledTaskCard.ts";
@@ -122,6 +123,7 @@ export const DeferInput = Schema.Struct({
   what: TrimmedNonEmptyString.check(Schema.isMaxLength(8000)),
   due: deferDue,
   onDue: Schema.Literals(["remind", "start", "ask", "chase"]),
+  ask: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
   chatId: KinChatId,
   sourceEventId: TurnEvent,
   replaces: Schema.optional(KinMemoryItemId),
@@ -466,6 +468,25 @@ const make = Effect.gen(function* () {
     if (input.onDue !== "remind" || !(yield* askersDirectChat(ctx, input.chatId).pipe(provideSql)))
       return yield* invalid(SHARED_REFUSAL);
     return ctx;
+  });
+  /** The handle of the person a deferral will ask or chase, as the deferral flow reads it. */
+  const askedHandle = Effect.fn("LeadMemory.askedHandle")(function* (
+    ctx: Effect.Success<ReturnType<typeof resolve>>,
+    input: typeof DeferInput.Type,
+  ) {
+    if (input.onDue !== "ask" && input.onDue !== "chase")
+      return yield* invalid("ask names who to ask or chase: set onDue to ask or chase.");
+    const named = yield* personNamed(ctx.orgId, input.ask ?? "").pipe(provideSql);
+    if (named._tag !== "found")
+      return yield* new KinChatError({
+        reason: "not_found",
+        message: `ask: ${personMiss(input.ask ?? "", named)}`,
+      });
+    const [person] = yield* sql<{ handle: string }>`SELECT handle FROM kin_people
+      WHERE org_id = ${ctx.orgId} AND person_id = ${named.item.id} AND removed_at IS NULL
+      ORDER BY person_id`;
+    if (person === undefined) return yield* missing();
+    return person.handle;
   });
   /** On a turn someone else reads: the item is a reminder its asker set, in their chat with this lead. */
   const askersOwnReminder = Effect.fn("LeadMemory.askersOwnReminder")(function* (
@@ -1094,6 +1115,7 @@ const make = Effect.gen(function* () {
           const [chat] =
             yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${ctx.orgId} AND chat_id = ${input.chatId}`;
           if (!chat) return yield* missing();
+          const asked = input.ask === undefined ? undefined : yield* askedHandle(ctx, input);
           const id =
             input.itemId ??
             KinMemoryItemId.make(
@@ -1131,6 +1153,7 @@ const make = Effect.gen(function* () {
             trust: source.trust,
             links: [],
             what: input.what,
+            ...(asked === undefined ? {} : { owner: asked }),
             chat: input.chatId,
             source_event: input.sourceEventId,
             // Out of the team's memory, whoever set it.
