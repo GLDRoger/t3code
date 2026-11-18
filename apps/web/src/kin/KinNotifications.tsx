@@ -51,7 +51,7 @@ export function KinSettingsNotifications() {
 const looking = () => document.visibilityState === "visible" && document.hasFocus();
 
 /** Where a notice opens, as the phone's tap on the same push does: the entry, the card, the chat. */
-function openDestination(
+export function openDestination(
   navigate: ReturnType<typeof useNavigate>,
   where: { readonly environmentId: EnvironmentId; readonly orgId: string },
   destination: KinNotificationDestination,

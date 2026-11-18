@@ -4,6 +4,7 @@ import {
   KinChatId,
   KinMessageId,
   type KinAgentId,
+  type KinOrgId,
   type KinPersonId,
   type KinPulseFact,
 } from "@t3tools/contracts";
@@ -14,10 +15,27 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
+import { HELD_ID } from "../triggers/heldDelivery.ts";
 import { holdFor, holdLine } from "../triggers/quietHold.ts";
 import { daysAgoText, type SenseContext } from "./senses/shared.ts";
 
 const SHOWN = 5;
+const HOLDER_ID = "kin-holder-";
+
+/** Whether `messageId` is a holder notice, posted now or after being held (`deliverHeld`). */
+export const isHolderNotice = Effect.fn("KinPulse.isHolderNotice")(function* (
+  orgId: KinOrgId,
+  messageId: KinMessageId,
+) {
+  if (messageId.startsWith(HOLDER_ID)) return true;
+  if (!messageId.startsWith(HELD_ID)) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM kin_held_posts
+    WHERE org_id = ${orgId} AND hold_id = ${messageId.slice(HELD_ID.length)}
+      AND substr(kind, 1, ${HOLDER_ID.length}) = ${HOLDER_ID}
+    LIMIT 1`;
+  return rows.length > 0;
+});
 
 /** One fact's line: "W-8 Send the deck, was due yesterday". */
 export const holderLine = (
@@ -100,7 +118,7 @@ export const tellHolder = Effect.fn("KinPulse.tellHolder")(function* (input: {
   const body = holderBody(lines);
   // The same facts for the same person are one message, so a retried pass posts nothing more.
   const messageId = KinMessageId.make(
-    `kin-holder-${NodeCrypto.createHash("sha256")
+    `${HOLDER_ID}${NodeCrypto.createHash("sha256")
       .update(`${orgId}\0${personId}\0${input.facts.map((fact) => fact.key).join("\0")}`)
       .digest("hex")
       .slice(0, 32)}`,

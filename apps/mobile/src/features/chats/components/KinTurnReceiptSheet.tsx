@@ -71,7 +71,7 @@ export function KinTurnReceiptSheet(props: {
                   accessibilityLabel={`${row.key}, ${row.title}, ${what}`}
                   onPress={() => {
                     onClose();
-                    openTarget(kinTurnReceiptTarget(row.key, message.links));
+                    openTarget(kinTurnReceiptTarget(row, message.links));
                   }}
                   className="bg-grouped-card"
                 >
