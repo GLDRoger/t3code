@@ -426,7 +426,8 @@ function KinTeammateDialog(props: {
         if (!open && !busy) props.onClose();
       }}
     >
-      <DialogPopup>
+      {/* A form opened from here takes its place: one sheet at a time. */}
+      <DialogPopup className="data-nested-dialog-open:hidden">
         <DialogHeader>
           <div className="flex items-center gap-3 pe-8">
             <KinAvatar avatar={teammate.avatar} />

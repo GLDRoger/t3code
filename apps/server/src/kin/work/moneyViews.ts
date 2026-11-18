@@ -1,6 +1,7 @@
 import type {
   KinDateRow,
   KinMoney,
+  KinMoneyAbout,
   KinMoneySummary,
   KinOrgId,
   KinRecordRef,
@@ -10,13 +11,15 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { companyMoney, homeCurrency } from "./companyProfile.ts";
+import { companyMoney, homeCurrency, readProfile } from "./companyProfile.ts";
 import {
+  aboutTotal,
   addUp,
   dayIn,
   financialYearOf,
   financialYearStart,
   formatMoney,
+  formatMoneyPlain,
   monthOf,
   shiftMonth,
 } from "./money.ts";
@@ -209,6 +212,10 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   const seen = seenBy(sql, viewer);
   const zone = yield* ownerZone(orgId);
   const { homeCurrency: home, financialYearStartMonth } = yield* companyMoney(orgId);
+  const rates = yield* readProfile(orgId).pipe(
+    Effect.map((profile) => profile.rates),
+    Effect.orElseSucceed(() => []),
+  );
   const today = dayIn(now, zone);
   const thisMonth = monthOf(today);
   const lastMonth = shiftMonth(thisMonth, -1);
@@ -326,6 +333,17 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     { from: now, to: now + 30 * DAY_MS, open: true, limit: 50, viewer },
     now,
   );
+  const owedTotal = addUp(
+    owing.map((one) => one.balance),
+    home,
+  );
+  const overdueTotal = addUp(
+    owing.filter((one) => one.overdue).map((one) => one.balance),
+    home,
+  );
+  const received = { thisMonth: receivedIn(thisMonth), lastMonth: receivedIn(lastMonth) };
+  const spent = { thisMonth: spentIn(thisMonth), lastMonth: spentIn(lastMonth) };
+  const about = (totals: ReadonlyArray<KinMoney>) => aboutTotal(totals, home, rates);
   return {
     asOf: iso(now),
     timeZone: zone,
@@ -334,14 +352,8 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     financialYear,
     financialYearStartMonth,
     owed: {
-      total: addUp(
-        owing.map((one) => one.balance),
-        home,
-      ),
-      overdue: addUp(
-        owing.filter((one) => one.overdue).map((one) => one.balance),
-        home,
-      ),
+      total: owedTotal,
+      overdue: overdueTotal,
       invoices: owing.length,
       overdueInvoices: owing.filter((one) => one.overdue).length,
       byClient: byClient.toSorted(
@@ -350,7 +362,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
           (b.owed[0]?.minor ?? 0) - (a.owed[0]?.minor ?? 0),
       ),
     },
-    received: { thisMonth: receivedIn(thisMonth), lastMonth: receivedIn(lastMonth) },
+    received,
     receivedThisFinancialYear: addUp(
       payments.filter((one) => one.paidOn >= fyStart),
       home,
@@ -360,7 +372,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
       withheld.filter((one) => one.paidOn >= fyStart),
       home,
     ),
-    spent: { thisMonth: spentIn(thisMonth), lastMonth: spentIn(lastMonth) },
+    spent,
     spentThisFinancialYear: addUp(
       spentRows.filter((one) => one.day >= fyStart),
       home,
@@ -372,12 +384,45 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
       received: receivedIn(month),
       spent: spentIn(month).total,
     })),
+    // Always present, so a live change that drops an estimate replaces the held one.
+    about: {
+      owed: about(owedTotal),
+      overdue: about(overdueTotal),
+      receivedThisMonth: about(received.thisMonth),
+      receivedLastMonth: about(received.lastMonth),
+      spentThisMonth: about(spent.thisMonth.total),
+      spentLastMonth: about(spent.lastMonth.total),
+    },
   } satisfies KinMoneySummary;
 });
 
 const shown = (totals: ReadonlyArray<KinMoney>) =>
   totals.length === 0 ? "none" : totals.map(formatMoney).join(" + ");
 const SECTION_CLIENTS = 5;
+
+/** The summary's estimates as an agent quotes them; absent when every figure is one currency. */
+const aboutSection = (summary: KinMoneySummary) => {
+  const about = summary.about ?? {};
+  const quoted = (one: KinMoneyAbout | undefined) =>
+    one === undefined
+      ? undefined
+      : {
+          home: one.home,
+          total: formatMoneyPlain(one.total),
+          ...(one.missing.length === 0 ? {} : { missing: one.missing }),
+        };
+  const months = (thisMonth: KinMoneyAbout | undefined, lastMonth: KinMoneyAbout | undefined) =>
+    thisMonth === undefined && lastMonth === undefined
+      ? undefined
+      : { [summary.thisMonth]: quoted(thisMonth), [summary.lastMonth]: quoted(lastMonth) };
+  const section = {
+    owedToUs: quoted(about.owed),
+    overdue: quoted(about.overdue),
+    received: months(about.receivedThisMonth, about.receivedLastMonth),
+    spent: months(about.spentThisMonth, about.spentLastMonth),
+  };
+  return Object.values(section).every((one) => one === undefined) ? {} : { about: section };
+};
 const SECTION_DATES = 10;
 
 /**
@@ -421,6 +466,7 @@ export const moneySection = (summary: KinMoneySummary, zone: string) => {
       [summary.thisMonth]: shown(summary.spent.thisMonth.total),
       [summary.lastMonth]: shown(summary.spent.lastMonth.total),
     },
+    ...aboutSection(summary),
     topSpendThisMonth: summary.spent.thisMonth.byCategory.slice(0, 3).map((one) => ({
       category: one.category ?? "uncategorised",
       spent: shown(one.total),

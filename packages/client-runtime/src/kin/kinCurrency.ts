@@ -7,6 +7,8 @@ import type {
   KinCompanyProfileSetInput,
   KinCurrencyRate,
   KinMoney,
+  KinMoneyAbout,
+  KinMoneySummary,
   KinMoneyTotals,
   KinOrgId,
 } from "@t3tools/contracts";
@@ -46,7 +48,13 @@ export const KIN_CURRENCY = {
   badRate: "Enter a rate above zero, like 84.25.",
   badDay: "Enter a day as YYYY-MM-DD.",
   sameAsHome: (currency: string) => `${currency} is the home currency already.`,
+  /** "About $1,540 owed at your rates; AED not included". */
+  aboutOwed: (amount: string, missing: ReadonlyArray<string>) =>
+    `About ${amount} owed at your rates${missing.length === 0 ? "" : `; ${kinAnd(missing)} not included`}`,
 };
+
+const kinAnd = (parts: ReadonlyArray<string>) =>
+  parts.length < 2 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
 
 /** The rates the owner set and the currency estimates are in. Absent until the profile loads. */
 export interface KinRates {
@@ -173,6 +181,35 @@ export function kinTotalsEstimate(
     missing: [],
     basis,
   };
+}
+
+/**
+ * The one line beside what is owed: the host's estimate at the owner's rates, naming what it
+ * leaves out. An older host sends none; then it is this client's, only with every rate set.
+ */
+export function kinOwedAbout(
+  summary: {
+    readonly owed: Pick<KinMoneySummary["owed"], "total">;
+    readonly about?: KinMoneySummary["about"];
+  },
+  rates: KinRates | null,
+): { readonly text: string; readonly basis: ReadonlyArray<string> } | null {
+  if (summary.about === undefined) {
+    const all = kinTotalsEstimate(summary.owed.total, rates);
+    return all?.all == null
+      ? null
+      : { text: `${all.all} owed (estimate)`, basis: all.basis.map((line) => `At ${line}.`) };
+  }
+  const about: KinMoneyAbout | undefined = summary.about.owed;
+  if (about === undefined) return null;
+  const basis = summary.owed.total.flatMap((money) => {
+    const rate =
+      rates === null || money.currency === about.home || about.missing.includes(money.currency)
+        ? null
+        : kinRateFor(rates, money.currency);
+    return rate === null ? [] : [`At ${kinRateLine(rate, about.home)}.`];
+  });
+  return { text: KIN_CURRENCY.aboutOwed(kinMoneyText(about.total), about.missing), basis };
 }
 
 /** The foreign currencies among `totals` that have no rate yet. */

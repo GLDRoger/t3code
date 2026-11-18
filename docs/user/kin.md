@@ -230,6 +230,8 @@ handling one. When nothing needs attention, the section isn't there.
   co-owners. Only they and whoever has it see it, and it stays out of every list, count and search
   for anyone else. A project lead who marks one can undo it; others see whose it is, as
   **Only Dev Malhotra**. Members can't change it.
+- **Add a link** under **Linked** keeps a web page with a task, such as its design file, with a
+  name if you like. Whoever can change the task adds or removes one; everyone who sees it opens it.
 
 Keep amounts, rates and client terms out of task titles and notes. Project people read those; put
 the figures in the quote or the invoice.
@@ -249,6 +251,11 @@ everyone on the project sees them. The owner or a co-owner sets the lead under *
 can also do this from a teammate's page under **Team**, and choose people when making a project.
 Whoever is added or made lead gets a message in their chat with a link to the project. Taken off,
 its tasks leave their list straight away. A member can't add themselves.
+
+**Note for every task** on a project's page is one note its tasks show at the top of their
+Activity, as **From the project**: the brand colours, the client's working hours. The owner and
+co-owners write, change or clear it there; clearing it takes it off every task at once. Only people
+who can see the project read it on a task.
 
 A member sees client names and contacts only when the owner turns on **Can see Clients**, and never
 what a client is charged or owes. With it on, they also find the projects they're on, under their

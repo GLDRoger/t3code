@@ -2,7 +2,9 @@ import {
   EnvironmentId,
   KinOrgId,
   KinPersonId,
+  KinRecordId,
   KinRecordKey,
+  type KinProjectNote,
   type KinRecordComment,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -12,6 +14,8 @@ const state = vi.hoisted(() => ({
   posts: [] as Array<{ clientRequestId: string; body: string }>,
   /** How each post is answered, in order: false fails as a dropped connection. */
   answers: [] as Array<boolean>,
+  links: [] as Array<{ readonly url: string; readonly name?: string }>,
+  notes: [] as Array<string>,
 }));
 
 vi.mock(import("~/state/use-atom-command"), async () => {
@@ -20,8 +24,24 @@ vi.mock(import("~/state/use-atom-command"), async () => {
   return {
     useAtomCommand: ((command: { readonly label: string }) =>
       async (value: {
-        readonly input: { readonly clientRequestId: string; readonly body: string };
+        readonly input: {
+          readonly clientRequestId: string;
+          readonly body: string;
+          readonly url: string;
+          readonly name?: string;
+        };
       }) => {
+        if (command.label === "kin:work:linkAdd") {
+          state.links.push({
+            url: value.input.url,
+            ...(value.input.name === undefined ? {} : { name: value.input.name }),
+          });
+          return AsyncResult.success({});
+        }
+        if (command.label === "kin:work:projectNote") {
+          state.notes.push(value.input.body);
+          return AsyncResult.success({ note: null });
+        }
         if (command.label !== "kin:work:comment") return AsyncResult.failure(Cause.fail("unused"));
         state.posts.push({ clientRequestId: value.input.clientRequestId, body: value.input.body });
         if (state.answers.shift() === false)
@@ -64,7 +84,9 @@ vi.mock(import("./KinComposerAttachments"), () => ({
 import "~/index.css";
 import { render } from "../../test/render";
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
+import { KinProjectNoteSection } from "./KinProjectNote";
 import { KinTaskActivity, KinTaskNoteComposer } from "./KinTaskRecord";
+import { KinWorkLinks } from "./KinWorkItemSheet";
 
 const target = {
   environmentId: EnvironmentId.make("env-1"),
@@ -81,6 +103,8 @@ const names = {
 function setup(answers: Array<boolean>) {
   state.posts = [];
   state.answers = answers;
+  state.links = [];
+  state.notes = [];
 }
 
 describe("a note on a task", () => {
@@ -94,6 +118,7 @@ describe("a note on a task", () => {
           names={names}
           now={new Date("2026-11-19T10:00:00.000Z")}
           note={null}
+          onOpenProject={() => {}}
         />
         <KinTaskNoteComposer {...target} />
       </AppAtomRegistryProvider>,
@@ -118,5 +143,129 @@ describe("a note on a task", () => {
     await expect.element(page.getByText("Invented: call the printer")).toBeVisible();
     expect(state.posts).toHaveLength(2);
     expect(state.posts[1]).toEqual(state.posts[0]);
+  });
+});
+
+describe("a task's links and its project's note", () => {
+  it("adds a link that shows under Linked, and a project note that tops the task's Activity", async () => {
+    setup([]);
+    const figma = "https://figma.example/file/invented-screens";
+    const linkedItem = (
+      links: ReadonlyArray<{ readonly url: string; readonly name?: string }>,
+    ) => ({
+      key: target.itemKey,
+      links: links.map((link) => ({
+        kind: "url" as const,
+        relation: "relates" as const,
+        target: link.url,
+        chatId: null,
+        label: link.name ?? null,
+        createdAt: "2026-11-19T09:00:00.000Z",
+      })),
+    });
+    const linkViews = (links: ReadonlyArray<{ readonly url: string; readonly name?: string }>) =>
+      links.map((link) => ({
+        key: `url:${link.url}`,
+        kind: "link" as const,
+        label: link.name ?? link.url,
+        detail: null,
+        open: { type: "url" as const, href: link.url },
+        thread: null,
+        removeUrl: link.url,
+      }));
+    const onOpenProject = vi.fn();
+    await using screen = await render(
+      <AppAtomRegistryProvider>
+        <KinWorkLinks
+          {...target}
+          item={linkedItem([])}
+          links={[]}
+          title="Linked"
+          itemKey={target.itemKey}
+          addLink
+          onOpenKey={() => {}}
+          onClose={() => {}}
+        />
+      </AppAtomRegistryProvider>,
+    );
+
+    await userEvent.click(page.getByRole("button", { name: "Add a link" }));
+    await userEvent.type(page.getByRole("textbox", { name: "Web address" }), "javascript:alert(1)");
+    await expect
+      .element(page.getByRole("alert"))
+      .toHaveTextContent("A link needs a web address that starts with https:// or http://.");
+    await expect.element(page.getByRole("button", { name: "Add link" })).toBeDisabled();
+    await userEvent.clear(page.getByRole("textbox", { name: "Web address" }));
+    await userEvent.type(page.getByRole("textbox", { name: "Web address" }), figma);
+    await userEvent.type(page.getByRole("textbox", { name: "Name (optional)" }), "Screens");
+    await userEvent.click(page.getByRole("button", { name: "Add link" }));
+    expect(state.links).toEqual([{ url: figma, name: "Screens" }]);
+
+    // The host answers with the link on the task; the sheet reads it again.
+    await screen.rerender(
+      <AppAtomRegistryProvider>
+        <KinWorkLinks
+          {...target}
+          item={linkedItem(state.links)}
+          links={linkViews(state.links)}
+          title="Linked"
+          itemKey={target.itemKey}
+          addLink
+          onOpenKey={() => {}}
+          onClose={() => {}}
+        />
+        <KinProjectNoteSection
+          {...target}
+          projectKey={KinRecordKey.make("P-4")}
+          note={null}
+          canEdit
+          onChanged={() => {}}
+        />
+      </AppAtomRegistryProvider>,
+    );
+    await expect.element(page.getByRole("heading", { name: "Linked" })).toBeVisible();
+    await expect
+      .element(page.getByRole("link", { name: /Screens/ }))
+      .toHaveAttribute("href", figma);
+    await expect
+      .element(page.getByRole("button", { name: "Remove the link Screens" }))
+      .toBeVisible();
+
+    await userEvent.click(page.getByRole("button", { name: "Edit Note for every task" }));
+    await userEvent.type(
+      page.getByRole("textbox", { name: "Note for every task" }),
+      "Invented: brand blue is #1a4f8b",
+    );
+    await userEvent.click(page.getByRole("button", { name: "Save" }));
+    expect(state.notes).toEqual(["Invented: brand blue is #1a4f8b"]);
+
+    const note: KinProjectNote = {
+      body: state.notes[0]!,
+      at: "2026-11-19T09:30:00.000Z",
+      by: { _tag: "person", personId: KinPersonId.make("rhea") },
+      project: {
+        recordId: KinRecordId.make("rec_P-4"),
+        key: KinRecordKey.make("P-4"),
+        title: "Ambermill shop",
+      },
+    };
+    await screen.rerender(
+      <AppAtomRegistryProvider>
+        <KinTaskActivity
+          {...target}
+          item={{ changes: [], comments: [], projectNote: note }}
+          names={names}
+          now={new Date("2026-11-19T10:00:00.000Z")}
+          note={null}
+          onOpenProject={onOpenProject}
+        />
+      </AppAtomRegistryProvider>,
+    );
+    const pinned = page.getByLabelText("From the project");
+    await expect.element(pinned.getByText("From the project", { exact: true })).toBeVisible();
+    await expect.element(pinned.getByText(/You,/)).toBeVisible();
+    await expect.element(pinned.getByText("Invented: brand blue is #1a4f8b")).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Ambermill shop" }));
+    expect(onOpenProject).toHaveBeenCalledWith("P-4");
   });
 });

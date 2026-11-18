@@ -116,6 +116,9 @@ export const KIN_BUDGETS = {
   over: (amount: string) => `${amount} over`,
   left: (amount: string) => `${amount} left`,
   of: (spent: string, limit: string) => `${spent} of ${limit}`,
+  /** "+ €768 not counted in this USD budget". */
+  notCounted: (amounts: ReadonlyArray<string>, currency: string) =>
+    `+ ${amounts.join(" and ")} not counted in this ${currency} budget`,
   removedProject: "a removed project",
 };
 
@@ -381,6 +384,8 @@ export interface KinBudgetView {
   /** Spent as a share of the limit, 0 to 1, for a bar. */
   readonly share: number;
   readonly estimate: string | null;
+  /** Spending on it in other currencies, which `spent` leaves out. */
+  readonly notCounted: string | null;
   readonly budget: KinMoneyBudget;
 }
 
@@ -416,6 +421,13 @@ export function kinBudgetsView(
         status: budget.status,
         share: budget.limit.minor <= 0 ? 1 : Math.min(budget.spent.minor / budget.limit.minor, 1),
         estimate: kinEstimate(budget.limit, rates)?.text ?? null,
+        notCounted:
+          budget.notCounted === undefined || budget.notCounted.length === 0
+            ? null
+            : KIN_BUDGETS.notCounted(
+                budget.notCounted.map((one) => kinMoneyText(one.spent)),
+                budget.limit.currency,
+              ),
         budget,
       };
     })
