@@ -17,7 +17,6 @@ import {
   type KinMoney,
   type KinOrgId,
   type KinWorkPrincipal,
-  TrimmedNonEmptyString,
   calendarTimeMillis,
   isCalendarDay,
 } from "@t3tools/contracts";
@@ -25,6 +24,7 @@ import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
@@ -102,10 +102,10 @@ import { TurnEvent } from "../lead/eventIds.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
-export const Who = TrimmedNonEmptyString.check(Schema.isMaxLength(120)).annotate({
-  description:
-    '"me" for you, "owner" for the owner, an agent\'s agentId from kin_leads or people_read, or a teammate\'s name exactly as people_read lists it (or its personId when two share a name).',
-});
+export const Who = KinToolText(
+  120,
+  '"me" for you, "owner" for the owner, an agent\'s agentId from kin_leads or people_read, or a teammate\'s name exactly as people_read lists it (or its personId when two share a name).',
+);
 const Due = Schema.NullOr(
   Schema.String.check(
     Schema.isPattern(
@@ -116,19 +116,20 @@ const Due = Schema.NullOr(
   description:
     "A calendar day in the owner's time zone (2026-11-20), or a time with its offset (2026-11-20T18:00+05:30). null clears it.",
 });
-const Title = TrimmedNonEmptyString.check(Schema.isMaxLength(280));
+const Title = KinToolText(280);
 const Notes = Schema.String.check(Schema.isMaxLength(4_000));
 const List = KinListId.annotate({
   description:
     "work (default), clients, contacts, projects, milestones, goals, or a list defined with list_define, such as expenses, invoices or dates.",
 });
-const Category = TrimmedNonEmptyString.check(Schema.isMaxLength(60)).annotate({
-  description: "Work: task, issue or obligation. A defined list: one of its categories.",
-});
-const Amount = TrimmedNonEmptyString.check(Schema.isMaxLength(60)).annotate({
-  description:
-    'The amount as said or written: "4200", "4.2 lakh", "₹1,23,456.78", "$30". Kin turns it into exact minor units.',
-});
+const Category = KinToolText(
+  60,
+  "Work: task, issue or obligation. A defined list: one of its categories.",
+);
+const Amount = KinToolText(
+  60,
+  'The amount as said or written: "4200", "4.2 lakh", "₹1,23,456.78", "$30". Kin turns it into exact minor units.',
+);
 const Currency = Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/)).annotate({
   description: "ISO code, when the amount doesn't name one; default the list's, usually INR.",
 });
@@ -139,18 +140,12 @@ const Repeat = Schema.NullOr(KinRepeatRule).annotate({
   description:
     'Kin makes the next one when this one closes: {"every":"month"}, "quarter", "year", or {"every":"days","days":14}. null stops it.',
 });
-const TaxId = TrimmedNonEmptyString.check(Schema.isMaxLength(60));
-const Address = TrimmedNonEmptyString.check(Schema.isMaxLength(500)).annotate({
-  description: "A client's billing address, as its invoices show it.",
-});
-export const Client = TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
-  description: "A client or vendor: its key (C-3) or exact name.",
-});
-export const Project = TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
-  description: "A project: its key (P-2) or exact name.",
-});
-const Detail = TrimmedNonEmptyString.check(Schema.isMaxLength(200));
-const Terms = TrimmedNonEmptyString.check(Schema.isMaxLength(4_000));
+const TaxId = KinToolText(60);
+const Address = KinToolText(500, "A client's billing address, as its invoices show it.");
+export const Client = KinToolText(200, "A client or vendor: its key (C-3) or exact name.");
+export const Project = KinToolText(200, "A project: its key (P-2) or exact name.");
+const Detail = KinToolText(200);
+const Terms = KinToolText(4_000);
 const Repos = Schema.Array(KinRepoName).check(Schema.isMaxLength(20));
 
 export const QueryInput = Schema.Struct({
@@ -188,7 +183,7 @@ export const QueryInput = Schema.Struct({
   ),
   offset: Schema.optional(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(100_000)),
-  ),
+  ).annotate({ description: "Skip this many matches: the next a result gave, for its next page." }),
 });
 /** The entry is sensitive, its own label or inherited; these fields are, whatever the label. */
 const Marks = Schema.Struct({
@@ -390,7 +385,10 @@ export const UpdateInput = Schema.Struct({
   key: Schema.optional(KinRecordKey),
   keys: Schema.optional(
     Schema.Array(KinRecordKey).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
-  ),
+  ).annotate({
+    description:
+      "Instead of key: up to 100 entries to change the same way in one call, all or none.",
+  }),
   sourceEventId: TurnEvent,
   title: Schema.optional(Title),
   state: Schema.optional(KinRecordState),
@@ -441,10 +439,10 @@ export const UpdateResult = Schema.Struct({
   entries: Schema.optional(Schema.Array(Updated)),
 });
 
-const Why = TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
-  description:
-    'One line on why them, from what people_read shows, such as "iOS, 2 open, free Thursday". Kin shows it on the task and tells them.',
-});
+const Why = KinToolText(
+  200,
+  'One line on why them, from what people_read shows, such as "iOS, 2 open, free Thursday". Kin shows it on the task and tells them.',
+);
 export const AssignInput = Schema.Struct({
   sourceEventId: TurnEvent,
   tasks: Schema.Array(
@@ -463,10 +461,10 @@ export const AssignResult = Schema.Struct({
 export const HandBackInput = Schema.Struct({
   key: KinRecordKey,
   sourceEventId: TurnEvent,
-  note: TrimmedNonEmptyString.check(Schema.isMaxLength(280)).annotate({
-    description:
-      'What blocks it and what would unblock it ("needs the repo URL and hosting choice"); a person\'s own words when they hand it back.',
-  }),
+  note: KinToolText(
+    280,
+    'What blocks it and what would unblock it ("needs the repo URL and hosting choice"); a person\'s own words when they hand it back.',
+  ),
 });
 export const HandBackResult = Schema.Struct({
   told: Told,

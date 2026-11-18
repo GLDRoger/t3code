@@ -20,6 +20,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 
@@ -121,7 +122,7 @@ export const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
   return widget.widgetId;
 });
 
-const Label = TrimmedNonEmptyString.check(Schema.isMaxLength(60));
+const Label = KinToolText(60);
 const FieldInput = Schema.Struct({
   label: Label,
   type: KinListFieldType,
@@ -139,7 +140,7 @@ const StateNames = Schema.Struct({
 
 export const DefineInput = Schema.Struct({
   sourceEventId: TurnEvent,
-  proposal: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(40))).annotate({
+  proposal: Schema.optional(KinToolText(40)).annotate({
     description: "A proposal this tool returned in an earlier turn: creates exactly that.",
   }),
   template: Schema.optional(Schema.Literals(PRESET_IDS)).annotate({
@@ -316,11 +317,11 @@ export const define = leadTool("KinWorkTools.define", runDefine);
 export const PaymentInput = Schema.Struct({
   sourceEventId: TurnEvent,
   key: KinRecordKey.annotate({ description: "The invoice, such as INV-4." }),
-  amount: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
+  amount: Schema.optional(KinToolText(60)).annotate({
     description:
       'The cash that came in, as said: "1,20,000" or "1.2 lakh". In the invoice\'s currency.',
   }),
-  withheld: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
+  withheld: Schema.optional(KinToolText(60)).annotate({
     description:
       'TDS the client deducted, as said, such as "18,000": it settles the invoice but is not cash received.',
   }),
@@ -328,7 +329,7 @@ export const PaymentInput = Schema.Struct({
     description: "The day it was received, in the owner's time zone.",
   }),
   note: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
-  void: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
+  void: Schema.optional(KinToolText(60)).annotate({
     description: "A paymentId from record_get to take back instead.",
   }),
 });
@@ -500,7 +501,7 @@ export const BudgetInput = Schema.Struct({
     description: "One of the expenses list's categories.",
   }),
   project: Schema.optional(Project),
-  limit: Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
+  limit: Schema.NullOr(KinToolText(60)).annotate({
     description: 'The monthly limit as said: "50k", "₹1,20,000". null removes the budget.',
   }),
   currency: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))),
@@ -642,7 +643,7 @@ const runDates = Effect.fnUntraced(function* (lead: Lead, input: typeof DatesInp
 export const datesQuery = leadTool("KinWorkTools.dates", runDates);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const ProfileText = Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(500)));
+const ProfileText = Schema.NullOr(KinToolText(500));
 export const ProfileInput = Schema.Struct({
   sourceEventId: Schema.optional(TrimmedNonEmptyString),
   set: Schema.optional(
@@ -668,7 +669,7 @@ export const ProfileInput = Schema.Struct({
           upi: Schema.optional(KinCompanyBank.fields.upi),
         }),
       ),
-      logo: Schema.optional(Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(128)))),
+      logo: Schema.optional(Schema.NullOr(KinToolText(128))),
       brand: Schema.optional(
         Schema.Struct({
           primaryColor: Schema.optional(KinCompanyBrand.fields.primaryColor),

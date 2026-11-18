@@ -13,12 +13,12 @@ import {
   KinSearchKind,
   KinWakeupId,
   type KinWorkPrincipal,
-  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { effectiveAudience } from "../lead/Audience.ts";
@@ -50,15 +50,13 @@ import { TurnEvent } from "../lead/eventIds.ts";
 /** The doc tools' inputs, results and the one call each makes. Model-facing text is in `mcp/docTools.ts`. */
 
 const Key = KinRecordKey.annotate({ description: "The doc's key, such as D-4." });
-const Summary = TrimmedNonEmptyString.check(
-  Schema.isMaxLength(200),
-  Schema.isPattern(/^[^\n]*$/),
-).annotate({
-  description: 'One line saying what changed, for the reader: "Moved launch to 14 Dec".',
-});
+const Summary = KinToolText(
+  200,
+  'One line saying what changed, for the reader: "Moved launch to 14 Dec".',
+).check(Schema.isPattern(/^[^\n]*$/));
 const Body = Schema.String.check(Schema.isMaxLength(DOC_BODY_MAX));
 const Text = Schema.String.check(Schema.isMaxLength(50_000));
-const Title = TrimmedNonEmptyString.check(Schema.isMaxLength(200));
+const Title = KinToolText(200);
 const Section = KinDocSectionId.annotate({ description: "A section id from the outline." });
 const SourceEvent = TurnEvent;
 const Card = Schema.optional(Schema.Boolean).annotate({
@@ -166,9 +164,7 @@ const Operation = Schema.Union([
   Schema.Struct({ op: Schema.Literal("append"), text: Text }),
   Schema.Struct({
     op: Schema.Literal("replace_phrase"),
-    find: TrimmedNonEmptyString.check(Schema.isMaxLength(2_000)).annotate({
-      description: "Exact text that appears once in the doc.",
-    }),
+    find: KinToolText(2_000, "Exact text that appears once in the doc."),
     replace: Schema.String.check(Schema.isMaxLength(2_000)),
   }),
   Schema.Struct({ op: Schema.Literal("retitle"), title: Title }),
@@ -223,7 +219,7 @@ export const LinkResult = Schema.Struct({
   linked: Schema.Array(Schema.Struct({ key: Schema.String, title: Schema.String, ...Marks })),
 });
 export const SearchInput = Schema.Struct({
-  text: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  text: KinToolText(200),
   kinds: Schema.optional(Schema.Array(KinSearchKind).check(Schema.isMaxLength(5))).annotate({
     description: "work, clients, contacts, projects, docs. Leave out for all.",
   }),
