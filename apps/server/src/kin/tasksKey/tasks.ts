@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { dayIn } from "../work/money.ts";
 import { latestComments, personSeesRecord, requestHashOf } from "../work/recordComments.ts";
@@ -137,6 +138,7 @@ export const commentMine = Effect.fn("KinTasksKey.comment")(function* (
   input: { readonly key: string; readonly text: string },
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const identity = yield* KinIdentity;
   const written = yield* comment(
     [{ _tag: "person", orgId: holder.orgId, personId: holder.personId }],
     {
@@ -151,6 +153,7 @@ export const commentMine = Effect.fn("KinTasksKey.comment")(function* (
       // In the comment's own transaction: the key is still live and the task still theirs.
       sees: (recordId) =>
         stillTheirs(holder).pipe(
+          Effect.provideService(KinIdentity, identity),
           Effect.andThen(
             sql`SELECT 1 FROM kin_records r WHERE ${held(sql, holder)} AND r.record_id = ${recordId}`,
           ),

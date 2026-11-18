@@ -18,6 +18,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 
 import type { PendingUploadOwner } from "../../assets/AttachmentUpload.ts";
+import type { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { KinAttachmentStore } from "../chat/KinAttachmentStore.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
@@ -51,7 +52,11 @@ export type ThroughKey = {
   readonly sessionId: string;
   readonly sees: (
     recordId: string,
-  ) => Effect.Effect<boolean, KinChatError | SqlError.SqlError, SqlClient.SqlClient>;
+  ) => Effect.Effect<
+    boolean,
+    KinChatError | PersistenceSqlError | SqlError.SqlError,
+    SqlClient.SqlClient
+  >;
 };
 
 /**
