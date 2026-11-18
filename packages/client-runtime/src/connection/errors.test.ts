@@ -6,6 +6,7 @@ import {
 import { describe, expect, it } from "@effect/vitest";
 
 import {
+  KIN_JOIN_DEVICE_LIMIT,
   KIN_JOIN_LINK_SPENT,
   mapKinInviteError,
   mapManagedRelayError,
@@ -128,6 +129,12 @@ describe("mapKinInviteError", () => {
       reason: "authentication",
       detail: KIN_JOIN_LINK_SPENT,
     });
+    // A full set of devices is said as such, not as a used link.
+    expect(
+      mapKinInviteError(
+        new RemoteEnvironmentAuthUndeclaredStatusError({ status: 409, requestUrl }),
+      ),
+    ).toMatchObject({ _tag: "ConnectionBlockedError", detail: KIN_JOIN_DEVICE_LIMIT });
     // Kin switched off answers 503: the link is not spent, so it must not read as used.
     expect(
       mapKinInviteError(

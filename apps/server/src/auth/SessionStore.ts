@@ -461,6 +461,7 @@ export class SessionStore extends Context.Service<
 const SIGNING_SECRET_NAME = "server-signing-key";
 const DEFAULT_SESSION_TTL = Duration.days(30);
 const DEFAULT_WEBSOCKET_TOKEN_TTL = Duration.minutes(5);
+const SESSION_RECHECK_INTERVAL = Duration.minutes(1);
 
 const SessionClaims = Schema.Struct({
   v: Schema.Literals([1, 2]),
@@ -1166,7 +1167,10 @@ const make = Effect.gen(function* () {
           const now = yield* DateTime.now;
           const remaining = current.expiresAt.epochMilliseconds - now.epochMilliseconds;
           if (remaining > 0) {
-            yield* Effect.raceFirst(nextRemoval, Effect.sleep(Duration.millis(remaining)));
+            // Another process (the CLI) writes revocations without publishing here, so the rows
+            // are read again at least every minute.
+            const wait = Math.min(remaining, Duration.toMillis(SESSION_RECHECK_INTERVAL));
+            yield* Effect.raceFirst(nextRemoval, Effect.sleep(Duration.millis(wait)));
             continue;
           }
           const successorId =

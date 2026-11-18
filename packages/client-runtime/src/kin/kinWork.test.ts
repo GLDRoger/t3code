@@ -475,6 +475,36 @@ describe("kinWorkItemView", () => {
     expect(view.links.map((held) => [held.label, held.open?.type ?? null])).toEqual([
       ["PR #12 merged", "url"],
     ]);
+    // A web link offers Remove only where the host says this viewer may change its links.
+    const figma = {
+      ...link,
+      kind: "url",
+      target: "https://figma.example/f",
+      label: "Screens",
+    } as const;
+    const can = {
+      states: [],
+      edit: true,
+      party: false,
+      project: false,
+      clearProject: false,
+      give: false,
+      takeBack: false,
+      mark: false,
+      unmark: false,
+      share: false,
+      confirm: false,
+    };
+    const removable = (extra: Partial<Parameters<typeof detail>[0]>) =>
+      kinWorkItemView(detail({ links: [figma], ...extra }), names, now, 50, place).links.map(
+        (held) => held.removeUrl ?? null,
+      );
+    expect(removable({})).toEqual([null]);
+    expect(removable({ can })).toEqual([null]);
+    expect(removable({ can: { ...can, links: true } })).toEqual(["https://figma.example/f"]);
+    expect(kinWorkItemView(detail({ links: [figma] }), names, now, 50, place).links[0]?.label).toBe(
+      "Screens · figma.example",
+    );
   });
 
   it("puts who sees a task as one answer, and a pick changes only what it must", () => {
