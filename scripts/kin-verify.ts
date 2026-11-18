@@ -63,7 +63,7 @@ const HELP = `kin-verify [--instance <name>] <command>
   as <person> web type [--name "<field>"] "<text>" [--enter]
   as <person> web attach <file> [<file>…]  files in the open chat's composer; then type --enter
   as <person> web wait "<text>" [--gone] [--timeout <s>]
-  as <person> web screenshot <path> [--full]   (refuses paths under ~/.t3)
+  as <person> web screenshot <path> [--full] [--width <px>] [--height <px>] [--light|--dark]
   as <person> rpc <method> ['<json>']     a client RPC as that person (orgId is filled in)
   as <person> wire <method> ['<json>'] --watch a,b,c [--settle <s>] [--find "<text>"]
                                           the RPC as that person; prints what each watcher's open
@@ -327,6 +327,19 @@ async function web(instance: Instance, person: string, args: Args) {
     case "screenshot": {
       const path = rest[0];
       if (path === undefined) throw new VerifyError("screenshot needs an explicit path");
+      const width = flag(args, "width");
+      const height = flag(args, "height");
+      const colorScheme = args.flags.has("dark")
+        ? "dark"
+        : args.flags.has("light")
+          ? "light"
+          : null;
+      if (width !== undefined || height !== undefined || colorScheme !== null)
+        await Web.view(session, {
+          width: Number(width ?? 1280),
+          height: Number(height ?? 900),
+          colorScheme,
+        });
       console.log(`saved ${await Web.screenshot(session, path, args.flags.has("full"))}`);
       return;
     }
