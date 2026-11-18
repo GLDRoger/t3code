@@ -4,6 +4,7 @@ import {
   type AuthSessionId,
   EnvironmentAuthenticatedAuth,
   EnvironmentHttpApi,
+  KIN_RECORD_COMMENTS_PAGE,
   type KinPersonId,
   type KinTasksKeysIssueInput,
 } from "@t3tools/contracts";
@@ -217,6 +218,16 @@ it.effect("a key reaches only tasks its person holds, narrowly and as them, even
       FROM kin_record_changes WHERE record_id = ${hers.recordId} ORDER BY seq DESC LIMIT 1`;
     assert.deepInclude(change, { kind: "person", actor: zoya.personId, viaKey: zoyaKey.sessionId });
     assert.include(change?.fields, '"to":"doing"');
+    // Notes taken back never hide one still standing, however many there are.
+    for (let n = 0; n <= KIN_RECORD_COMMENTS_PAGE; n++)
+      yield* commentMine(zoyaKey, { key: hers.key, text: `Invented: draft ${n}` });
+    yield* sql`UPDATE kin_record_comments SET removed_at = 1, removed_by_kind = 'person',
+        removed_by_id = ${zoya.personId}
+      WHERE record_id = ${hers.recordId} AND body LIKE 'Invented: draft %'`;
+    assert.deepStrictEqual(
+      (yield* getMine(zoyaKey, hers.key)).comments.map((one) => one.text),
+      ["Invented: the hall is booked"],
+    );
     // Done, then back to open: both hers to set.
     assert.strictEqual(
       (yield* setStateMine(zoyaKey, { key: hers.key, state: "done" })).state,

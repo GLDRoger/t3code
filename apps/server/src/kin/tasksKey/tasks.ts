@@ -1,17 +1,12 @@
 import { KinChatError, type KinRecordState } from "@t3tools/contracts";
-import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { dayIn } from "../work/money.ts";
-import {
-  commentsPage,
-  insertComment,
-  personSeesRecord,
-  requestHashOf,
-} from "../work/recordComments.ts";
+import { latestComments, personSeesRecord, requestHashOf } from "../work/recordComments.ts";
+import { comment } from "../work/workComments.ts";
 import { iso, notFound, ownerZone, workFailure } from "../work/recordRows.ts";
 import { holderOf, type TasksKeyHolder } from "./TasksKeys.ts";
 
@@ -94,8 +89,7 @@ const readOne = Effect.fn("KinTasksKey.readOne")(function* (holder: TasksKeyHold
   if (row === undefined) return yield* notFound(key);
   const [task] = yield* shape(holder, [row]);
   if (task === undefined) return yield* notFound(key);
-  const page = yield* commentsPage(holder.orgId, row.recordId);
-  const shown = page.comments.filter((one) => one.removed === undefined).slice(-COMMENTS_SHOWN);
+  const shown = (yield* latestComments(holder.orgId, row.recordId, COMMENTS_SHOWN)).comments;
   const ids = [
     ...new Set(shown.map((one) => (one.by._tag === "person" ? one.by.personId : one.by.agentId))),
   ];
@@ -134,32 +128,37 @@ export const getMine = Effect.fn("KinTasksKey.get")(function* (
   }).pipe(sql.withTransaction, workFailure);
 });
 
-/** As the person, through this key; the same words again from this key are the same comment. */
+/**
+ * As the person, through this key, by the app's own comment path, so the same people are told.
+ * The same words again from this key are the same comment.
+ */
 export const commentMine = Effect.fn("KinTasksKey.comment")(function* (
   holder: TasksKeyHolder,
   input: { readonly key: string; readonly text: string },
 ) {
   const sql = yield* SqlClient.SqlClient;
-  return yield* Effect.gen(function* () {
-    yield* stillTheirs(holder);
-    const requestHash = requestHashOf(input.text, []);
-    const written = yield* insertComment({
+  const written = yield* comment(
+    [{ _tag: "person", orgId: holder.orgId, personId: holder.personId }],
+    {
       orgId: holder.orgId,
       key: input.key,
-      author: { _tag: "person", personId: holder.personId },
-      requestId: `key:${holder.sessionId}:${requestHash}`,
-      requestHash,
       body: input.text,
-      files: [],
-      now: yield* Clock.currentTimeMillis,
+      clientRequestId: `key:${holder.sessionId}:${requestHashOf(input.text, [])}`,
+    },
+    undefined,
+    {
+      sessionId: holder.sessionId,
+      // In the comment's own transaction: the key is still live and the task still theirs.
       sees: (recordId) =>
-        sql`SELECT 1 FROM kin_records r WHERE ${held(sql, holder)} AND r.record_id = ${recordId}`.pipe(
+        stillTheirs(holder).pipe(
+          Effect.andThen(
+            sql`SELECT 1 FROM kin_records r WHERE ${held(sql, holder)} AND r.record_id = ${recordId}`,
+          ),
           Effect.map((found) => found.length > 0),
         ),
-      codingAgentKey: holder.sessionId,
-    });
-    return { key: input.key, posted: written.created };
-  }).pipe(sql.withTransaction, workFailure);
+    },
+  );
+  return { key: input.key, posted: written.created };
 });
 
 /** Starts, finishes or reopens a task the person holds, as them, through this key. */

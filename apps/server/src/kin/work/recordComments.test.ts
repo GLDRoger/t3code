@@ -3,6 +3,7 @@ import "../chat/KinChatService.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  AuthSessionId,
   EnvironmentId,
   KinAgentId,
   KinChatError,
@@ -28,6 +29,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { commentMine } from "../tasksKey/tasks.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadWork from "./leadWork.ts";
 import * as OwnerClients from "./ownerClients.ts";
@@ -501,12 +503,29 @@ it.effect("a person's comment tells who holds the task and who asked for it, onc
       { chatId: "zoya-chat", body: line },
     ]);
     assert.deepStrictEqual(posted.toSorted(), ["dev-chat", "zoya-chat"]);
+    // Dev's own coding agent, through his key, is Dev commenting: the asker is told, once.
+    yield* sql`INSERT INTO auth_sessions (session_id, subject, method, scopes, issued_at, expires_at)
+      VALUES ('dev-key', 'kin-coding-agent', 'bearer-access-token', '["kin:tasks"]', ${at},
+        '2026-12-11T00:00:00.000Z')`;
+    yield* sql`INSERT INTO kin_tasks_keys (session_id, org_id, person_id, label, created_at, expires_at)
+      VALUES ('dev-key', ${orgId}, ${devId}, 'Invented laptop', 0, ${Date.parse("2026-12-11T00:00:00.000Z")})`;
+    const devKey = { orgId, personId: devId, sessionId: AuthSessionId.make("dev-key") };
+    for (const _ of [1, 2])
+      yield* commentMine(devKey, { key: made.key, text: "Invented: proofs are in" }).pipe(
+        Effect.provide(hub),
+      );
+    assert.deepStrictEqual((yield* told).slice(2), [
+      {
+        chatId: "zoya-chat",
+        body: `Dev commented on ${made.key} Invented: print the menus: Invented: proofs are in.`,
+      },
+    ]);
     // Someone removed from the company is told nothing; the asker still is.
     yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = ${devId}`;
     yield* say(meera, made.key, "Invented: and the gold ink", "second").pipe(Effect.provide(hub));
     assert.deepStrictEqual(
       (yield* told).map((one) => one.chatId),
-      ["dev-chat", "zoya-chat", "zoya-chat"],
+      ["dev-chat", "zoya-chat", "zoya-chat", "zoya-chat"],
     );
   }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
 );
