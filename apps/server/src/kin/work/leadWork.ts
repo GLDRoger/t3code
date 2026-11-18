@@ -67,7 +67,15 @@ import {
   taskSpecChanged,
 } from "./leadSpine.ts";
 import { fieldList, fieldText, isMoney, LISTS, listOf, parseFields, shownField } from "./lists.ts";
-import { addUp, dayIn, formatMoney, parseAmount } from "./money.ts";
+import {
+  addUp,
+  dayIn,
+  farAbove,
+  formatMoney,
+  issuedAfterDue,
+  largestIn,
+  parseAmount,
+} from "./money.ts";
 import {
   endOfDay,
   iso,
@@ -367,6 +375,7 @@ const CreateRow = Schema.Struct({
   fields: Schema.optional(FieldInputs),
   sensitive: Schema.optional(Schema.Literal(true)),
   suggested: Schema.optional(Schema.Boolean),
+  confirmed: Schema.optional(Schema.Boolean),
   ...SpineInputs,
   ...GoalInputs,
 });
@@ -917,9 +926,14 @@ const listFor = Effect.fn("KinWorkTools.list")(function* (lead: Lead, id: string
   return def;
 });
 
-/** An amount a lead wrote, in the list's currency unless it names one. */
-const amountFrom = (def: ListDef, amount: string, currency: string | undefined) => {
-  const parsed = parseAmount(amount, currency ?? def.currency);
+/** An amount a lead wrote, in the currency it names, else the entry's own, else the list's. */
+const amountFrom = (
+  def: ListDef,
+  amount: string,
+  currency: string | undefined,
+  stored: string | null | undefined,
+) => {
+  const parsed = parseAmount(amount, currency ?? stored ?? def.currency);
   if ("error" in parsed) return Effect.fail(parsed.error);
   if (currency !== undefined && parsed.money.currency !== currency)
     return Effect.fail(
@@ -927,6 +941,41 @@ const amountFrom = (def: ListDef, amount: string, currency: string | undefined) 
     );
   return Effect.succeed(parsed.money);
 };
+
+/**
+ * What reads like a slip in an agent's amount or dates: one far above the list, or an invoice
+ * issued after its own due day. `confirmed` on the row saves it anyway.
+ */
+const slipCheck = Effect.fn("KinWorkTools.slipCheck")(function* (
+  lead: Lead,
+  def: ListDef,
+  change: {
+    readonly amount: KinMoney | null | undefined;
+    readonly dateAt: number | null | undefined;
+    readonly dueAt: number | null | undefined;
+    readonly before?: RecordRow | undefined;
+  },
+) {
+  if (change.amount !== undefined && change.amount !== null) {
+    const far = farAbove(
+      def.name,
+      change.amount,
+      yield* largestIn(lead.orgId, def.id, change.amount.currency, change.before?.recordId),
+      yield* homeCurrency(lead.orgId),
+    );
+    if (far !== undefined)
+      return yield* Effect.fail(
+        new SensitiveRefusal({ reason: "invalid_state", message: far }),
+      ).pipe(asField("amount"));
+  }
+  if (def.id !== "invoices" || (change.dateAt === undefined && change.dueAt === undefined)) return;
+  const late = issuedAfterDue(
+    change.dateAt === undefined ? (change.before?.dateAt ?? null) : change.dateAt,
+    change.dueAt === undefined ? (change.before?.dueAt ?? null) : change.dueAt,
+    yield* ownerZone(lead.orgId),
+  );
+  if (late !== undefined) return yield* Effect.fail(invalid(late)).pipe(asField("date"));
+});
 
 /** What a row or an update adds for a defined list, or Work's amount and repeat. */
 const moneyPatch = Effect.fn("KinWorkTools.moneyPatch")(function* (
@@ -939,11 +988,13 @@ const moneyPatch = Effect.fn("KinWorkTools.moneyPatch")(function* (
     readonly repeat?: KinRepeatRule | null | undefined;
     readonly fields?: FieldInputs | undefined;
   },
+  /** The edited entry's currency, which an amount naming none stays in. */
+  stored?: string | null,
 ) {
   const amount: KinMoney | null | undefined =
     row.amount === undefined || row.amount === null
       ? row.amount
-      : yield* amountFrom(def, row.amount, row.currency).pipe(asField("amount"));
+      : yield* amountFrom(def, row.amount, row.currency, stored).pipe(asField("amount"));
   const date =
     row.date === undefined
       ? undefined
@@ -1601,6 +1652,12 @@ const createRow = Effect.fnUntraced(function* (
       ? undefined
       : yield* sameNamed(lead, list, row.title, partyId ?? null);
   const money = yield* moneyPatch(lead, def, row);
+  if (row.confirmed !== true)
+    yield* slipCheck(lead, def, {
+      amount: money.amount,
+      dateAt: "dateAt" in money ? money.dateAt : undefined,
+      dueAt: "dueAt" in due && typeof due.dueAt === "number" ? due.dueAt : undefined,
+    });
   const spine = yield* spineOf(lead, def, row, projectId);
   const spineSet = Object.fromEntries(
     Object.entries(spine.fields).filter((entry) => entry[1] !== null),
@@ -1880,7 +1937,14 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     ...spine.fields,
     ...(yield* goalFields(lead.orgId, input, parseFields(before.fieldsJson))),
   };
-  const money = yield* moneyPatch(lead, def, input);
+  const money = yield* moneyPatch(lead, def, input, before.currency);
+  if (input.confirmed !== true)
+    yield* slipCheck(lead, def, {
+      amount: money.amount,
+      dateAt: "dateAt" in money ? money.dateAt : undefined,
+      dueAt: patch.dueAt,
+      before,
+    });
   const inProject = projectId !== undefined ? projectId : spine.projectId;
   const written: Patch = {
     ...patch,

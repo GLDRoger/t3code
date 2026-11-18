@@ -21,7 +21,7 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { type FieldValue, isMoney, LISTS, type ListName, sensitiveFields } from "./lists.ts";
 import { homeCurrency } from "./companyProfile.ts";
 import { companyRegion, NEUTRAL_PAID_WITH } from "./statements/statementRegion.ts";
-import { isCurrency } from "./money.ts";
+import { dayIn, isCurrency } from "./money.ts";
 import { cardAnswer } from "./ownerCards.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 
@@ -282,6 +282,26 @@ const isPreset = (id: string): id is PresetId => (PRESET_IDS as ReadonlyArray<st
 /** Whether an entry in `state` owes its balance: not closed, and not an Invoices draft. */
 export const owesIn = (def: ListDef, state: KinRecordState) =>
   state !== "done" && state !== "dropped" && !(def.id === "invoices" && state === "open");
+/**
+ * Where a new entry with no state asked for starts: an invoice is Issued only once it has an
+ * issue day or a number, else Draft; an expense is Paid only on or before today, else To pay.
+ */
+export const startState = (
+  def: ListDef,
+  entry: {
+    readonly dateAt: number | null;
+    readonly numbered: boolean;
+    readonly now: number;
+    readonly zone: string;
+  },
+): KinRecordState => {
+  const fallback = def.states.includes("open") ? "open" : def.defaultState;
+  if (def.id === "invoices" && def.defaultState === "waiting")
+    return entry.dateAt !== null || entry.numbered ? "waiting" : fallback;
+  if (def.id === "expenses" && def.defaultState === "done" && entry.dateAt !== null)
+    return dayIn(entry.dateAt, entry.zone) > dayIn(entry.now, entry.zone) ? fallback : "done";
+  return def.defaultState;
+};
 /** The state an entry paid over time returns to while something is still unpaid on it. */
 export const owedState = (def: ListDef) =>
   (["waiting", "open", "doing"] as const).find((state) => def.states.includes(state));

@@ -318,7 +318,7 @@ describe("amounts", () => {
       ["PKR 1,500", 1_500, "PKR"],
     ] as const)
       assert.deepStrictEqual(parseAmount(text, "INR"), { money: { minor, currency } }, text);
-    for (const text of ["12.345", "$5 and ₹5", "a lot", "JPY 1.5", "99999999999999 crore"])
+    for (const text of ["12.345", "$5 and ₹5", "a lot", "JPY 1.5", "99999999999999 crore", "-20"])
       assert.isTrue("error" in parseAmount(text, "INR"), text);
   });
 
@@ -340,6 +340,17 @@ describe("amounts", () => {
         { minor: Number.MAX_SAFE_INTEGER, currency: "EUR" },
         { minor: 3, currency: "USD" },
       ],
+    );
+    // A refund row takes its part off, and a total may go below zero.
+    assert.deepStrictEqual(
+      addUp(
+        [
+          { minor: 500, currency: "INR" },
+          { minor: -700, currency: "INR" },
+        ],
+        "INR",
+      ),
+      [{ minor: -200, currency: "INR" }],
     );
     // A company whose home currency is USD reads its own total first.
     assert.deepStrictEqual(
@@ -441,45 +452,56 @@ describe("lists through the tools", () => {
         records: [{ list: "expenses", title: "Taxi ₹450" }],
       }).pipe(Effect.flip);
       assert.include(titled, { reason: "invalid_state" });
+      const rows = [
+        {
+          list: "expenses",
+          title: "Invented taxi",
+          amount: "0.10",
+          category: "travel",
+          date: "2026-11-02",
+        },
+        {
+          list: "expenses",
+          title: "Invented cab",
+          amount: "0.20",
+          category: "travel",
+          date: "2026-11-03",
+        },
+        {
+          list: "expenses",
+          title: "Invented stand",
+          amount: "4.2 lakh",
+          category: "hardware",
+          date: "2026-11-04",
+        },
+        {
+          list: "expenses",
+          title: "Invented domain",
+          amount: "$12.34",
+          category: "software",
+          date: "2026-11-05",
+        },
+        {
+          list: "expenses",
+          title: "Invented hosting",
+          amount: "USD 0.66",
+          category: "software",
+          date: "2026-11-06",
+        },
+      ];
+      // K023: 4.2 lakh after rows of paise reads like a slip until the agent says it is right.
+      const slip = yield* LeadWork.create(scope, { sourceEventId: yes, records: rows }).pipe(
+        Effect.flip,
+      );
+      assert.include(
+        slip.message,
+        'Row 3 ("Invented stand"): ₹4,20,000.00 is far above anything in Expenses (largest ₹0.20).',
+      );
       const created = yield* LeadWork.create(scope, {
         sourceEventId: yes,
-        records: [
-          {
-            list: "expenses",
-            title: "Invented taxi",
-            amount: "0.10",
-            category: "travel",
-            date: "2026-11-02",
-          },
-          {
-            list: "expenses",
-            title: "Invented cab",
-            amount: "0.20",
-            category: "travel",
-            date: "2026-11-03",
-          },
-          {
-            list: "expenses",
-            title: "Invented stand",
-            amount: "4.2 lakh",
-            category: "hardware",
-            date: "2026-11-04",
-          },
-          {
-            list: "expenses",
-            title: "Invented domain",
-            amount: "$12.34",
-            category: "software",
-            date: "2026-11-05",
-          },
-          {
-            list: "expenses",
-            title: "Invented hosting",
-            amount: "USD 0.66",
-            category: "software",
-            date: "2026-11-06",
-          },
-        ],
+        records: rows.map((row) =>
+          row.title === "Invented stand" ? { ...row, confirmed: true } : row,
+        ),
       });
       assert.deepStrictEqual(
         created.records.map((one) => one.key),
@@ -584,6 +606,10 @@ describe("lists through the tools", () => {
           [{ minor: 42_000_000, currency: "INR" }],
         ],
       );
+      // K004: an amount-only edit of a dollar expense stays in dollars, not the list's rupees.
+      yield* LeadWork.update(scope, { sourceEventId: yes, key: "EXP-4", amount: "15" });
+      assert.deepStrictEqual((yield* records.get(orgId, "EXP-4"))?.currency, "USD");
+      assert.strictEqual((yield* records.get(orgId, "EXP-4"))?.amountMinor, 1_500);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -896,6 +922,7 @@ describe("invoices", () => {
             title: "Invented October retainer",
             client: "Invented Acme",
             amount: "1 lakh",
+            date: "2026-10-01",
             due: "2026-11-01",
           },
         ],
@@ -1049,6 +1076,7 @@ describe("invoices", () => {
             title: "Invented November retainer",
             client: "Invented Acme",
             amount: "1,18,000",
+            date: "2026-11-08",
           },
         ],
       });
@@ -1084,7 +1112,13 @@ describe("invoices", () => {
       yield* LeadWork.create(scope, {
         sourceEventId: overpaid,
         records: [
-          { list: "invoices", title: "Invented extra", client: "Invented Acme", amount: "1,000" },
+          {
+            list: "invoices",
+            title: "Invented extra",
+            client: "Invented Acme",
+            amount: "1,000",
+            date: "2026-11-08",
+          },
         ],
       });
       yield* LeadMoney.payment(scope, {
@@ -1098,7 +1132,13 @@ describe("invoices", () => {
       yield* LeadWork.create(scope, {
         sourceEventId: overpaid,
         records: [
-          { list: "invoices", title: "Invented part", client: "Invented Acme", amount: "2,000" },
+          {
+            list: "invoices",
+            title: "Invented part",
+            client: "Invented Acme",
+            amount: "2,000",
+            date: "2026-11-08",
+          },
         ],
       });
       const part = { ...tds, key: "INV-4", amount: "900", withheld: "100" };
@@ -1109,6 +1149,73 @@ describe("invoices", () => {
         });
       const parted = (yield* records.get(orgId, "INV-4"))!;
       assert.deepStrictEqual([parted.paid, parted.withheld], [100_000, 10_000]);
+
+      // K085: an invoice with no issue day and no number is a Draft, and nothing is owed on it.
+      const owedBefore = (yield* OwnerMoney.money(people, { orgId })).owed.total;
+      yield* LeadWork.create(scope, {
+        sourceEventId: overpaid,
+        records: [
+          { list: "invoices", title: "Invented draft", client: "Invented Acme", amount: "5,000" },
+        ],
+      });
+      assert.strictEqual((yield* records.get(orgId, "INV-5"))!.state, "open");
+      assert.deepStrictEqual((yield* OwnerMoney.money(people, { orgId })).owed.total, owedBefore);
+      // K234: issued after its own due day reads like a slip, until the agent says it is right.
+      const backwards = {
+        list: "invoices",
+        title: "Invented backwards",
+        client: "Invented Acme",
+        amount: "3,000",
+        date: "2026-11-09",
+        due: "2026-11-01",
+      };
+      assert.include(
+        (yield* LeadWork.create(scope, { sourceEventId: overpaid, records: [backwards] }).pipe(
+          Effect.flip,
+        )).message,
+        "An invoice issued 2026-11-09 can't fall due 2026-11-01, before it.",
+      );
+      yield* LeadWork.create(scope, {
+        sourceEventId: overpaid,
+        records: [{ ...backwards, confirmed: true }],
+      });
+
+      // K150: an invoice for 0 is refused on the owner's own path too.
+      const ownerEdit = (amount: { minor: number; currency: string }) =>
+        Effect.gen(function* () {
+          const row = yield* records.get(orgId, "INV-5");
+          return yield* OwnerWork.update(people, { orgId, key: "INV-5", rev: row!.rev, amount });
+        });
+      assert.include(
+        (yield* Effect.flip(ownerEdit({ minor: 0, currency: "INR" }))).message,
+        "An invoice for 0 isn't owed; leave the amount off or drop it.",
+      );
+      // An agent's figure a thousand times the largest invoice is checked first...
+      assert.include(
+        (yield* LeadWork.update(scope, {
+          sourceEventId: overpaid,
+          key: "INV-4",
+          amount: "900 crore",
+        }).pipe(Effect.flip)).message,
+        "is far above anything in Invoices",
+      );
+
+      // ...while the owner typed theirs, so it is not asked again.
+      assert.strictEqual(
+        (yield* ownerEdit({ minor: 900_000_000_000, currency: "INR" })).amount?.minor,
+        900_000_000_000,
+      );
+      // K086: a client with money owed can't be dropped, and the refusal names what is unpaid.
+      const dropped = yield* LeadWork.update(scope, {
+        sourceEventId: overpaid,
+        key: "C-1",
+        state: "dropped",
+      }).pipe(Effect.flip);
+      assert.strictEqual(
+        dropped.message,
+        "C-1 still owes on 4 unpaid invoices: INV-3 (₹1,000.00 owed), INV-4 (₹1,000.00 owed), INV-1 (₹9,999.00 owed), INV-6 (₹3,000.00 owed). Record their payments or void them first.",
+      );
+      assert.strictEqual((yield* records.get(orgId, "C-1"))!.state, "open");
     }).pipe(Effect.provide(layer)),
   );
 
@@ -1429,7 +1536,9 @@ describe("the owner's taps", () => {
       const asked = yield* turn(3, "Invoice");
       yield* LeadWork.create(scope, {
         sourceEventId: asked,
-        records: [{ list: "invoices", title: "Invented retainer", amount: "1 lakh" }],
+        records: [
+          { list: "invoices", title: "Invented retainer", amount: "1 lakh", date: "2026-11-01" },
+        ],
       });
       yield* OwnerMoney.recordPayment(people, {
         orgId,
@@ -1625,14 +1734,22 @@ describe("the owner's taps", () => {
             title: "Invented October retainer",
             client: "Invented Acme",
             amount: "1 lakh",
+            date: "2026-10-01",
             due: "2026-11-01",
           },
-          { list: "invoices", title: "Invented one-off", amount: "50,000", due: "2026-12-01" },
+          {
+            list: "invoices",
+            title: "Invented one-off",
+            amount: "50,000",
+            date: "2026-11-01",
+            due: "2026-12-01",
+          },
           {
             list: "invoices",
             title: "Invented old audit",
             client: "Invented Birch",
             amount: "10,000",
+            date: "2026-08-01",
             due: "2026-09-01",
           },
           // A draft past its date is not owed yet, whatever its due date says.
@@ -2741,7 +2858,12 @@ describe("money answers", () => {
             originKey: key,
           });
         // 20:00 UTC on 31 October is already 1 November in India; 19:00 UTC on 30 November is December.
-        yield* spend("flight", "travel", 12_000, Date.parse("2026-10-31T20:00:00.000Z"));
+        const { row: flight } = yield* spend(
+          "flight",
+          "travel",
+          12_000,
+          Date.parse("2026-10-31T20:00:00.000Z"),
+        );
         yield* spend("train", "travel", 3_000, Date.parse("2026-11-30T19:00:00.000Z"));
         yield* spend("hosting", "software", 5_000, on("2026-11-10"));
         yield* spend("dinner", "meals", 20_000, on("2026-11-11"), launch.recordId);
@@ -2749,6 +2871,42 @@ describe("money answers", () => {
         const asked = yield* turn(
           3,
           "Budget 10k a month for travel, 5k for software, 1 lakh for the launch",
+        );
+        // An expense below zero, a refund, is refused on every path until phones read one.
+        const refund = {
+          list: "expenses",
+          title: "Invented refund",
+          category: "travel",
+          amount: "-1,500",
+          date: "2026-11-05",
+        };
+        const below = "amount: -1,500 is below zero; Kin records an amount of 0 or more.";
+        assert.strictEqual(
+          (yield* LeadWork.create(scope, { sourceEventId: asked, records: [refund] }).pipe(
+            Effect.flip,
+          )).message,
+          below,
+        );
+        assert.strictEqual(
+          (yield* LeadWork.update(scope, {
+            sourceEventId: asked,
+            key: flight.key,
+            amount: "-1,500",
+          }).pipe(Effect.flip)).message,
+          below,
+        );
+        assert.strictEqual(
+          (yield* OwnerWork.update(people, {
+            orgId,
+            key: flight.key,
+            rev: flight.rev,
+            amount: { minor: -150_000, currency: "INR" },
+          }).pipe(Effect.flip)).message,
+          "An amount never goes below zero; give 0 or more.",
+        );
+        assert.strictEqual(
+          (yield* Effect.flip(spend("refund", "travel", -1_500, on("2026-11-05")))).message,
+          "An amount never goes below zero; give 0 or more.",
         );
         for (const input of [
           { category: "Travel", limit: "10k" },

@@ -1148,7 +1148,13 @@ it.effect(
       yield* LeadWork.create(scope, {
         sourceEventId: "ask-event",
         records: [
-          { list: "invoices", title: "Invented November work", client: "C-1", amount: "900" },
+          {
+            list: "invoices",
+            title: "Invented November work",
+            client: "C-1",
+            amount: "900",
+            state: "waiting",
+          },
         ],
       });
       yield* LeadMoney.payment(scope, {

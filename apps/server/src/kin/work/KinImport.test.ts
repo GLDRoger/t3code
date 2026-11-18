@@ -338,6 +338,13 @@ describe("KinImport", () => {
             payments: [{ source: "pay1", amount: "1", paidOn: "2026-05-01" }],
           },
         },
+        // A slip: a thousand times the largest invoice, or issued after its own due day.
+        ...[
+          { source: "x6", amount: "99999999999" },
+          { source: "x7", amount: "100", date: "2026-06-02", due: "2026-06-01" },
+          { source: "x8", amount: "100", date: "2026-06-02", due: "2026-06-01", confirmed: true },
+        ].map((one) => ({ entry: { list: "invoices", title: `Slip ${one.source}`, ...one } })),
+        { entry: { source: "x9", list: "expenses", title: "A refund", amount: "-1500" } },
       ];
       const report = yield* imports.apply(
         orgId,
@@ -353,10 +360,19 @@ describe("KinImport", () => {
           [12, "entry", "x3"],
           [13, "entry", "x4"],
           [14, "payment", "pay1"],
-          [15, "file", null],
+          [15, "entry", "x6"],
+          [16, "entry", "x7"],
+          [18, "file", null],
+          [19, "file", null],
         ],
       );
-      assert.deepStrictEqual([report.entries.create, report.entries.problems], [6, 5]);
+      assert.include(
+        report.problems[8]!.reason,
+        'Expected a string matching the RegExp ^\\d{1,15}(?:\\.\\d{1,6})?$\n  at ["entry"]["amount"]',
+      );
+      assert.include(report.problems[6]!.reason, "is far above anything in Invoices");
+      assert.include(report.problems[7]!.reason, "can't fall due 2026-06-01, before it");
+      assert.deepStrictEqual([report.entries.create, report.entries.problems], [7, 7]);
     }).pipe(Effect.provide(layer)),
   );
 

@@ -19,6 +19,7 @@ import {
   type KinRecordState,
   type KinWorkPrincipal,
   KinRecordId,
+  mentionsKinMoney,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -38,7 +39,6 @@ import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
-import { mentionsMoney } from "../memory/sensitivity.ts";
 import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { homeCurrency } from "./companyProfile.ts";
 import { commentsPage } from "./recordComments.ts";
@@ -69,6 +69,7 @@ import {
   latestSeq,
   moneyDay,
   notFound,
+  owedInvoices,
   ownerZone,
   principal,
   principalId,
@@ -90,6 +91,7 @@ import {
   listDef,
   owedState,
   owesIn,
+  startState,
   stateLabel,
   unknownList,
   verifyRefs,
@@ -350,7 +352,7 @@ const checkInput = (
     readonly repeat?: KinRepeatRule | null | undefined;
   },
 ): KinChatError | undefined => {
-  if (input.title !== undefined && mentionsMoney(input.title))
+  if (input.title !== undefined && mentionsKinMoney(input.title))
     return invalid(
       "A title never holds an amount: give the amount on its own and keep the title to what it was for.",
     );
@@ -358,6 +360,7 @@ const checkInput = (
     if (!def.amount && def.builtIn !== "work") return invalid(`A ${def.noun} has no amount.`);
     if (!isCurrency(input.amount.currency))
       return invalid(`${input.amount.currency} is not a currency code.`);
+    if (input.amount.minor < 0) return invalid("An amount never goes below zero; give 0 or more.");
   }
   // A Work meeting's start is its date; due stays what someone owes by when.
   if (
@@ -391,6 +394,18 @@ const checkInput = (
     );
   return input.fields === undefined ? undefined : checkFields(def, input.fields);
 };
+
+/** An invoice, or a renewal on Dates, for nothing: it isn't owed, so it isn't kept as owed. */
+const zeroOwed = (
+  def: ListDef,
+  amount: KinMoney | null | undefined,
+  category: string | null | undefined,
+) =>
+  amount?.minor === 0 && (def.id === "invoices" || (def.id === "dates" && category === "renewal"))
+    ? invalid(
+        `${def.id === "invoices" ? "An invoice" : "A renewal"} for 0 isn't owed; leave the amount off or drop it.`,
+      )
+    : undefined;
 
 export class KinRecords extends Context.Service<
   KinRecords,
@@ -978,6 +993,8 @@ const make = Effect.gen(function* () {
       repeat: input.repeat,
     });
     if (invalidFor !== undefined) return yield* invalidFor;
+    const zero = zeroOwed(def, input.amount, input.category);
+    if (zero !== undefined) return yield* zero;
     if (list === "receipts" && RECEIPT_TIES.some((field) => field in fields))
       return yield* invalid(RECEIPT_TIES_ARE_KINS);
     if (writer.actor._tag !== "person" && numberingOf(def) !== undefined && "number" in fields)
@@ -999,7 +1016,14 @@ const make = Effect.gen(function* () {
         : yield* storedRepeat(orgId, input.repeat, input.dueAt ?? null, input.dateAt ?? null));
     const now = yield* Clock.currentTimeMillis;
     const key = yield* ensureRegister(orgId, def, now);
-    const state = input.state ?? def.defaultState;
+    const state =
+      input.state ??
+      startState(def, {
+        dateAt: input.dateAt ?? null,
+        numbered: "number" in fields,
+        now,
+        zone: def.id === "expenses" ? yield* ownerZone(orgId).pipe(provideSql) : "UTC",
+      });
     const waitingOn = state === "waiting" ? (input.waitingOn ?? null) : null;
     const givenAway =
       !(writer.actor._tag === "agent" && samePrincipal(writer.actor, input.owner)) &&
@@ -1218,6 +1242,8 @@ const make = Effect.gen(function* () {
           repeat: patch.repeat,
         });
         if (invalidFor !== undefined) return yield* invalidFor;
+        const zero = zeroOwed(def, patch.amount, patch.category ?? row.category);
+        if (zero !== undefined) return yield* zero;
         if (list === "receipts") {
           if (RECEIPT_TIES.some((field) => field in (patch.fields ?? {})))
             return yield* invalid(RECEIPT_TIES_ARE_KINS);
@@ -1373,6 +1399,20 @@ const make = Effect.gen(function* () {
             return yield* new KinChatError({
               reason: "invalid_state",
               message: `${row.key} still has ${open.length} open ${list === "clients" ? "entries or projects" : "entries"} pointing at it: ${named.join(", ")}${more > 0 ? ` and ${more} more` : ""}. Close or move them first.`,
+            });
+          }
+          const unpaid =
+            list === "clients"
+              ? yield* owedInvoices({ orgId, now, partyId: row.recordId }).pipe(provideSql)
+              : [];
+          if (unpaid.length > 0) {
+            const named = unpaid
+              .slice(0, OPEN_KEYS_NAMED)
+              .map((one) => `${one.key} (${formatMoney(one.balance)} owed)`);
+            const more = unpaid.length - named.length;
+            return yield* new SensitiveRefusal({
+              reason: "invalid_state",
+              message: `${row.key} still owes on ${unpaid.length} unpaid ${unpaid.length === 1 ? "invoice" : "invoices"}: ${named.join(", ")}${more > 0 ? ` and ${more} more` : ""}. Record their payments or void them first.`,
             });
           }
         }
