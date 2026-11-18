@@ -1,4 +1,5 @@
 import {
+  KinAgentId,
   KinChatError,
   KinChatId,
   KinChoiceCardState,
@@ -48,6 +49,7 @@ import {
  */
 
 type DrawTurn = Parameters<typeof viewOf>[0];
+type DrawLead = Pick<DrawTurn, "orgId" | "agentId" | "wakeupId">;
 const refuse = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const notFound = (what: string) =>
   new KinChatError({ reason: "not_found", message: `No ${what}. Name one from this turn.` });
@@ -180,14 +182,14 @@ const teamMay = Effect.fn("KinCardActions.teamMay")(function* (
 });
 
 type DrawnTurn = {
-  readonly drawn: Effect.Success<ReturnType<typeof drawOf>>;
+  readonly drawn: CardDraw;
   readonly teammates: ReadonlyArray<KinPersonId>;
 };
 type RunInput = CardActionInput & { readonly kind: RunPlan["kind"] };
 
 /** One action that runs by itself, drawn as this turn could do it for this card's readers. */
 const drawRun = Effect.fn("KinCardActions.drawRun")(function* (
-  lead: DrawTurn,
+  lead: DrawLead,
   input: RunInput,
   { drawn, teammates }: DrawnTurn,
 ) {
@@ -284,7 +286,7 @@ const drawRun = Effect.fn("KinCardActions.drawRun")(function* (
 
 /** "Take the default" of an open question of this agent's, with that default's own action. */
 const drawDefault = Effect.fn("KinCardActions.drawDefault")(function* (
-  lead: DrawTurn,
+  lead: DrawLead,
   target: string,
   turn: DrawnTurn,
 ) {
@@ -300,9 +302,15 @@ const drawDefault = Effect.fn("KinCardActions.drawDefault")(function* (
   const source = yield* defaultSource(orgId, row, option.optionId);
   if (source === undefined)
     return yield* refuse("That question's card is gone or answered, so there's no default.");
-  // Its action is drawn again for this turn and this card's readers; it may not differ.
   const sealed = source.final;
-  const final = sealed === undefined || sealed.kind === "take_default" ? null : sealed;
+  if (sealed?.kind === "take_default")
+    return yield* refuse(
+      `That question's default only takes another question's default. Offer what it runs directly${
+        sealed.final === null ? "" : `: ${sealed.final.kind} ${actionOf(sealed.final).target}`
+      }.`,
+    );
+  // Its action is drawn again for this turn and this card's readers; it may not differ.
+  const final = sealed ?? null;
   if (final !== null && !sameAction(final, yield* drawRun(lead, actionOf(final), turn)))
     return yield* refuse(`${lineOf(final)}: that changed since it was offered.`);
   return {
@@ -379,7 +387,37 @@ const defaultSource = Effect.fn("KinCardActions.defaultSource")(function* (
     !state.options.some((one) => one.optionId === optionId && one.label === row.defaultLabel)
   )
     return undefined;
-  return { widgetId: shown, final: (yield* plansOf(orgId, asked)).get(optionId) };
+  return { widgetId: shown, final: (yield* plansOf(orgId, shown)).get(optionId) };
+});
+
+/**
+ * A raised question's action option, drawn again as a new card's would be: for the people its
+ * card was drawn for, the chat's readers now and the record as it is now. Undefined when that
+ * draw no longer holds, so the raised card leaves the option off.
+ */
+export const redraw = Effect.fn("KinCardActions.redraw")(function* (
+  orgId: KinOrgId,
+  chatId: KinChatId,
+  sealed: CardPlan,
+) {
+  const lead = {
+    orgId,
+    agentId: KinAgentId.make(sealed.draw.agentId),
+    wakeupId: sealed.draw.wakeupId,
+  };
+  const turn = { drawn: sealed.draw, teammates: yield* teammatesIn(orgId, chatId) };
+  const plan = yield* Effect.gen(function* () {
+    const one: CardPlan =
+      sealed.kind === "take_default"
+        ? yield* drawDefault(lead, sealed.questionId, turn)
+        : yield* drawRun(lead, actionOf(sealed), turn);
+    return Option.some(one);
+  }).pipe(Effect.catchTags({ KinChatError: () => Effect.succeed(Option.none<CardPlan>()) }));
+  if (Option.isNone(plan)) return undefined;
+  const one = plan.value;
+  if ("recordId" in one && "recordId" in sealed && one.recordId !== sealed.recordId)
+    return undefined;
+  return { plan: one, label: labelOf(one), line: lineOf(one) };
 });
 
 const deferralCard = Effect.fn("KinCardActions.deferralCard")(function* (

@@ -141,6 +141,17 @@ export const plansOf = Effect.fn("KinCardPlans.plansOf")(function* (
   );
 });
 
+/** Every option of a card sealed with an action, whether or not its plan can still be read. */
+export const sealedOptions = Effect.fn("KinCardPlans.sealedOptions")(function* (
+  orgId: KinOrgId,
+  widgetId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ optionId: string }>`SELECT option_id AS "optionId"
+    FROM kin_card_plans WHERE org_id = ${orgId} AND widget_id = ${widgetId} ORDER BY option_id`;
+  return new Set(rows.map((row) => row.optionId));
+});
+
 /** The tap that ran a card's plan: a later tap on the card returns its message. */
 export const markRan = Effect.fn("KinCardPlans.markRan")(function* (input: {
   readonly orgId: KinOrgId;

@@ -1005,6 +1005,9 @@ export const proposalToCreate = Effect.fn("KinRegisters.proposalToCreate")(funct
       register_id AS id, name, key_prefix AS prefix FROM kin_registers
     WHERE org_id = ${orgId} ORDER BY register_id`;
   const name = proposal.name.trim().toLowerCase();
+  // Kin's own lists are stored on first use, so their names are taken before then.
+  const builtIn = Object.values(LISTS).find((list) => list.name.toLowerCase() === name);
+  if (builtIn !== undefined) return `there is already a list “${builtIn.name}”`;
   const taken = lists.find(
     (list) =>
       list.id === proposal.id ||

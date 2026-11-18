@@ -432,7 +432,30 @@ it.effect("a tap on an action option runs it once, as the server wrote it", () =
         default: "none",
       });
       assert.isFalse(lookalike.ok);
+      // Read as a person reads them, two spaces are one: these buttons would look the same.
+      const spaced = yield* callAs("finance", "kin_ask", {
+        question: "Drop the signage now?",
+        options: [
+          { label: "Yes", action: { kind: "drop", target: later.key } },
+          { label: `Drop  ${later.key}` },
+        ],
+        default: "none",
+      });
+      assert.isFalse(spaced.ok);
       assert.strictEqual((yield* kin.stateOf(later.key)).state, "open");
+      // "none" is no default, even when an action option is labelled "none".
+      const noneLabelled = yield* callAs("finance", "kin_ask", {
+        question: "Is the signage settled?",
+        options: [
+          { label: "none", action: { kind: "done", target: later.key } },
+          { label: "Keep it" },
+        ],
+        default: "none",
+      });
+      assert.isTrue(noneLabelled.ok, JSON.stringify(noneLabelled.value));
+      assert.isNull(
+        (yield* Questions.readQuestion(orgId, noneLabelled.value.question as string))?.defaultLabel,
+      );
     }).pipe(Effect.provide(layer)),
   ),
 );
@@ -526,6 +549,56 @@ it.effect("a stale card, a reaction, a passed day or a foreign key runs nothing"
       const taken = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
         AND dedupe_key LIKE 'question:%'`;
       assert.lengthOf(taken, 0);
+
+      // Raised on its next morning, the card's action is drawn again: a tap on the raised card
+      // runs it once. One whose task closed before the raise is left off, and so is the default.
+      const shut = yield* kin.task("Return the sample tiles");
+      yield* kin.turn("finance", kin.chatOf("finance"), "And the tiles?");
+      const gone = yield* callAs("finance", "kin_ask", {
+        ...closeIt(shut.key),
+        options: [...closeIt(shut.key).options, { label: "Ask me Friday" }],
+        default: "Close it",
+      });
+      assert.isTrue(gone.ok, JSON.stringify(gone.value));
+      yield* kin.records.update(
+        orgId,
+        { actor: { _tag: "person", personId: owner.personId }, via: "owner" },
+        shut.key,
+        { state: "done" },
+      );
+      const question = (id: unknown) => Questions.readQuestion(orgId, id as string);
+      const raiseAt = Math.max(
+        (yield* question(daily.value.question))!.actAt,
+        (yield* question(gone.value.question))!.actAt,
+      );
+      yield* TestClock.setTime(raiseAt);
+      yield* Questions.settleDue(orgId, raiseAt, {
+        chat: kin.chats,
+        queue: Context.get(kin.services, KinEventQueue.KinEventQueue),
+      });
+      const raised = (yield* question(daily.value.question))!;
+      assert.isNotNull(raised.raiseWidgetId);
+      assert.strictEqual(raised.defaultLabel, `Mark ${timed.key} done`);
+      assert.deepStrictEqual(card(yield* kin.widget(raised.raiseWidgetId)).options[0], {
+        optionId: "option-1",
+        label: `Mark ${timed.key} done`,
+        action: { line: `Mark ${timed.key} “Send the Lumen proposal” done` },
+      });
+      const ran = yield* kin.tap(owner, raised.raiseWidgetId, "option-1", "raised");
+      assert.deepInclude(JSON.parse(ran.body), { handled: true });
+      assert.deepStrictEqual(yield* kin.stateOf(timed.key), { state: "done", rev: timed.rev + 1 });
+      const again = yield* kin.tap(owner, raised.raiseWidgetId, "option-1", "raised-again");
+      assert.strictEqual(again.messageId, ran.messageId);
+      assert.strictEqual((yield* kin.stateOf(timed.key)).rev, timed.rev + 1);
+      const without = (yield* question(gone.value.question))!;
+      assert.isNull(without.defaultLabel);
+      assert.deepStrictEqual(card(yield* kin.widget(without.raiseWidgetId)).options, [
+        { optionId: "option-1", label: "Not yet" },
+        { optionId: "option-2", label: "Ask me Friday" },
+      ]);
+      const plain = JSON.stringify((yield* kin.widget(without.raiseWidgetId)).state);
+      assert.notInclude(plain, `Mark ${shut.key}`);
+      assert.notInclude(plain, '"action"');
 
       // The lead that drew it retired: the owner's tap can't commit its plan.
       yield* kin.turn("chief", kin.chatOf("chief"), "Renewals?");
@@ -747,6 +820,29 @@ it.effect("take the default runs the default's own action; a list is made as pro
         "Nothing was done",
       );
 
+      // A default that only takes another question's default can't be taken in turn.
+      yield* kin.turn("finance", chatId, "What else is waiting?");
+      const relay = yield* callAs("finance", "kin_ask", {
+        question: "Go with the GST default?",
+        options: [
+          {
+            label: "Go with it",
+            action: { kind: "take_default", target: question.value.question },
+          },
+          { label: "Later" },
+        ],
+        default: "Go with it",
+      });
+      assert.isTrue(relay.ok, JSON.stringify(relay.value));
+      const counts = sql`SELECT (SELECT COUNT(*) FROM kin_widgets WHERE org_id = ${orgId}) AS widgets,
+        (SELECT COUNT(*) FROM kin_card_plans WHERE org_id = ${orgId}) AS plans,
+        (SELECT COUNT(*) FROM kin_questions WHERE org_id = ${orgId}) AS questions`;
+      const before = yield* counts;
+      const chained = yield* takeDefault(relay.value.question);
+      assert.isFalse(chained.ok);
+      assert.match(String(chained.value.message), /Offer what it runs directly: done/);
+      assert.deepStrictEqual(yield* counts, before);
+
       yield* kin.turn("finance", chatId, "Remind me what you asked.");
       const nudge = yield* takeDefault(question.value.question);
       assert.isTrue(nudge.ok, JSON.stringify(nudge.value));
@@ -867,6 +963,24 @@ it.effect("take the default runs the default's own action; a list is made as pro
       assert.strictEqual(
         card(yield* kin.widget(clinics.value.widgetId)).outcome?.title,
         "Nothing was done",
+      );
+
+      // Kin's own list names are taken before their lists are first used.
+      assert.lengthOf(yield* listOf("clients"), 0);
+      const clientBook = yield* proposal("client_book", "Clients", "CBK");
+      assert.isFalse((yield* offer(clientBook)).ok);
+      const patients = yield* offer(yield* proposal("patients", "Patients"));
+      assert.isTrue(patients.ok, JSON.stringify(patients.value));
+      const [asClients] = yield* sql<{ json: string }>`SELECT definition_json AS json
+        FROM kin_list_proposals WHERE org_id = ${orgId} AND proposal_id = ${clientBook}`;
+      yield* sql`UPDATE kin_card_plans SET plan_json = json_set(plan_json,
+          '$.proposalId', ${clientBook}, '$.definition', ${asClients!.json})
+        WHERE widget_id = ${patients.value.widgetId as string}`;
+      yield* kin.tap(owner, patients.value.widgetId, "option-1", "patients");
+      assert.lengthOf(yield* listOf("client_book"), 0);
+      assert.include(
+        card(yield* kin.widget(patients.value.widgetId)).outcome?.text,
+        "There is already a list “Clients”",
       );
 
       // Even a sealed plan pointed at an extension changes no list at the tap.

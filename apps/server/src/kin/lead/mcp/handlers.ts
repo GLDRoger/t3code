@@ -131,14 +131,18 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         const one = drawn[index];
         return one === undefined ? [] : [{ optionId: option.optionId, plan: one.plan }];
       });
-      // The default may name an option by the agent's words or by the server's button.
-      const wanted = chosen.trim().toLowerCase();
-      const names = (label: string) => label.trim().toLowerCase() === wanted;
-      const named = card.options.flatMap((option, index) =>
-        names(option.label) || names(options[index]!.label) ? [index] : [],
-      );
+      // The default may name an option by the agent's words or by the server's button; "none"
+      // is read first, so no option's label can take it.
+      const wanted = ChoiceCard.readAs(chosen);
+      const none = wanted === "none";
+      const names = (label: string) => ChoiceCard.readAs(label) === wanted;
+      const named = none
+        ? []
+        : card.options.flatMap((option, index) =>
+            names(option.label) || names(options[index]!.label) ? [index] : [],
+          );
       if (plans.length > 0) {
-        const labels = options.map((option) => option.label.trim().toLowerCase());
+        const labels = options.map((option) => ChoiceCard.readAs(option.label));
         const twice = options.find((_, index) => labels.indexOf(labels[index]!) !== index);
         if (twice !== undefined)
           return yield* new KinChatError({
@@ -160,7 +164,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         key: `${wakeupId}:${key}`,
         question: card.question,
         labels: options.map((option) => option.label),
-        default: at === undefined ? chosen : options[at]!.label,
+        default: none ? "none" : at === undefined ? chosen : options[at]!.label,
         by,
         about,
         intent,

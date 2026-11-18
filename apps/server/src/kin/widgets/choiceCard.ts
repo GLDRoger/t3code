@@ -82,6 +82,10 @@ export const CloseResult = Schema.Struct({ question: KinTrimmedText, state: KinT
 const decode = Schema.decodeUnknownEffect(KinChoiceCardState);
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 
+/** A label as a person reads it: two that read the same here look the same on any button. */
+export const readAs = (label: string) =>
+  label.normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
+
 const DETAIL_MAX = 2000;
 /**
  * An option that runs an action shows the server's button and line and has no yes/no kind, so no
