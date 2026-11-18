@@ -110,7 +110,7 @@ import { TurnEvent } from "../lead/eventIds.ts";
 
 export const Who = KinToolText(
   120,
-  '"me" for you, "owner" for the owner, an agent\'s agentId from kin_leads or people_read, or a teammate\'s name exactly as people_read lists it (or its personId when two share a name).',
+  '"you" for yourself; "me" for the person who asked in this turn; "owner" for the owner; an agent\'s agentId from kin_leads or people_read; or a teammate\'s name exactly as people_read lists it (or its personId when two share a name).',
 );
 const Due = Schema.NullOr(
   Schema.String.check(
@@ -545,7 +545,8 @@ export const sourceOf = Effect.fn("KinWorkTools.sourceOf")(function* (lead: Lead
     : undefined;
 });
 
-const NO_ASKER = '"me" has no one person in this turn.';
+const NO_ASKER =
+  '"me" is the person who asked, and no one person asked in this turn. Use "you" for yourself, or name the person.';
 /** "me" is the one person whose act the turn carries out (`turnAsker`); "you" is the calling lead. */
 export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (lead: Lead, who: string) {
   const sql = yield* SqlClient.SqlClient;

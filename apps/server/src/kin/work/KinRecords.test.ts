@@ -285,7 +285,7 @@ it.effect('"me" is the one person who asked in the turn, and "you" is the lead i
       WHERE event_id = 'ask-event'`;
     const refused = yield* Effect.flip(give("W-2", "me"));
     assert.include(refused, { reason: "invalid_state" });
-    assert.include(refused.message, '"me"');
+    assert.include(refused.message, 'Use "you" for yourself, or name the person.');
     assert.include(yield* Effect.flip(LeadWork.query(scopeOf(lead), { owner: "me" })), {
       reason: "invalid_state",
     });
