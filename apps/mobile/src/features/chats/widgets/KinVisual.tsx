@@ -19,7 +19,7 @@ import {
 } from "@t3tools/shared/kinVisual";
 import { kinVisualSaveBytes } from "@t3tools/shared/kinVisualSvg";
 import { AsyncResult } from "effect/reactivity";
-import { memo, useEffect, useRef, useState } from "react";
+import { createContext, memo, use, useEffect, useRef, useState } from "react";
 import { Modal, Platform, Pressable, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
@@ -41,6 +41,10 @@ import { fromVisualPage } from "./kinVisualMessage";
 const TOUCH_WINDOW_MS = 1500;
 // Kept across remounts, so a card scrolled back into view does not jump.
 const measuredHeights = new Map<string, number>();
+let mountedFrames = 0;
+
+/** Whether the row holding a frame is on screen; a list row says so, anywhere else it is. */
+export const KinVisualInView = createContext(true);
 
 const location = (url: string) => url.split(/[?#]/, 1)[0];
 
@@ -84,6 +88,16 @@ function KinVisualWebView(props: {
     shownTheme.current = theme;
     postTheme(webView.current, theme);
   }, [theme]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- counts live WebViews for the dev-only cost check in Metro's log
+  useEffect(() => {
+    if (!__DEV__) return;
+    mountedFrames += 1;
+    console.debug(`[kin-visual] frames mounted: ${mountedFrames}`);
+    return () => {
+      mountedFrames -= 1;
+      console.debug(`[kin-visual] frames mounted: ${mountedFrames}`);
+    };
+  }, []);
   const restart = () => {
     crashes.current += 1;
     if (crashes.current > 1) {
@@ -260,7 +274,9 @@ function KinVisualFullScreen(props: {
 export const KinVisual = memo(function KinVisual(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
-  readonly visual: KinVisualCardState;
+  readonly visual: KinVisualCardState & {
+    readonly heights?: ReadonlyArray<readonly [number, number]> | undefined;
+  };
 }) {
   const { attachmentId, title } = props.visual;
   const resource = {
@@ -288,11 +304,20 @@ export const KinVisual = memo(function KinVisual(props: {
   const canAllow = useAtomValue(kinClient.visualHostAllow.permissionAtom(props.environmentId));
   const allow = useAtomCommand(kinClient.visualHostAllow, { reportFailure: false });
   const height = htmlRenderFrameHeight(
-    { attachmentId, title, height: props.visual.height },
+    {
+      attachmentId,
+      title,
+      height: props.visual.height,
+      ...(props.visual.heights === undefined ? {} : { heights: props.visual.heights }),
+    },
     width,
     contentHeight,
   );
   const showing = uri !== null && failed === null;
+  // A frame off screen gives back its WebView; its box keeps the height, so nothing moves. It
+  // comes back on the address minted since, as the one it first loaded may have expired.
+  const inView = use(KinVisualInView);
+  if (!inView && asset._tag === "Success" && uri !== null && uri !== asset.url) setUri(asset.url);
   const retry = async () => {
     const next = await refresh().catch(() => null);
     if (next === null) {
@@ -344,7 +369,7 @@ export const KinVisual = memo(function KinVisual(props: {
         ) : null}
       </View>
       <View style={{ height }} onLayout={(event) => setWidth(event.nativeEvent.layout.width)}>
-        {showing ? (
+        {showing && !inView ? null : showing ? (
           <KinVisualWebView
             key={`${uri}:${attempt}`}
             uri={uri}

@@ -5,7 +5,6 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { kinChartView } from "@t3tools/client-runtime/kin/kinChart";
 import {
   kinDocFileId,
   kinDocMarkdown,
@@ -39,13 +38,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { KIN_DOC_COMPANY, KIN_DOC_SHARE } from "@t3tools/client-runtime/kin/kinWork";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
-import {
-  EnvironmentId,
-  KinOrgId,
-  KinRecordKey,
-  type KinDocDetail,
-  type KinDocEmbed,
-} from "@t3tools/contracts";
+import { EnvironmentId, KinOrgId, KinRecordKey, type KinDocDetail } from "@t3tools/contracts";
 import * as Linking from "expo-linking";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -95,8 +88,7 @@ import { useKinWorkLink } from "./state/kinWorkLink";
 import { kinHostConnected } from "./state/useKinHost";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
-import { KinVisual } from "./widgets/KinVisual";
-import { KinChartCard } from "./widgets/KinWidgetView";
+import { KinEmbedView } from "./widgets/KinEmbedView";
 
 export type KinDocParams = {
   readonly environmentId: string;
@@ -147,23 +139,6 @@ function useKinDocImageSource(environmentId: EnvironmentId): MarkdownImageSource
     if (uri === null) throw new Error("The doc's image URL is invalid");
     return { uri };
   };
-}
-
-/** What the host drew for a doc's block, at the page's width like a card in a chat. */
-function KinDocEmbedView(props: KinWorkTarget & { readonly embed: KinDocEmbed }) {
-  const { embed } = props;
-  switch (embed._tag) {
-    case "chart":
-      return <KinChartCard view={kinChartView(embed.chart)} />;
-    case "visual":
-      return <KinVisual environmentId={props.environmentId} orgId={props.orgId} visual={embed} />;
-    case "broken":
-      return (
-        <Text textRole="footnote" className="text-foreground-muted">
-          {embed.message}
-        </Text>
-      );
-  }
 }
 
 /** A teammate's Change is a suggestion the owner decides on. */
@@ -493,7 +468,7 @@ function KinDocBody(
           )
         ) : (
           <View className="mb-3">
-            <KinDocEmbedView environmentId={environmentId} orgId={orgId} embed={piece.embed} />
+            <KinEmbedView environmentId={environmentId} orgId={orgId} embed={piece.embed} />
           </View>
         )}
       </Fragment>

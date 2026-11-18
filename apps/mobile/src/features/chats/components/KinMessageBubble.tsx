@@ -57,14 +57,21 @@ import {
 import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
 import { kinCardDraws, KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
-import { kinMessageLayout } from "@t3tools/client-runtime/kin/kinMessagePage";
+import {
+  kinDraftMarkdown,
+  kinMessageCopyText,
+  kinMessageLayout,
+  kinPageHead,
+} from "@t3tools/client-runtime/kin/kinMessagePage";
 import { AgentMessageFoldHeader, MessageAttachmentList } from "../../threads/ThreadFeed";
 import { attachmentImageGallery } from "../../threads/messageImageGallery";
 import { useResolveClassNames } from "uniwind";
 import { SymbolView } from "../../../components/ui/AppSymbol";
-import { useEffect, useState } from "react";
+import { useViewabilityAmount } from "@legendapp/list/react-native";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { kinOutbox } from "../state/kinOutboxDelivery";
+import { KinVisualInView } from "../widgets/KinVisual";
 import { KinWidgetView } from "../widgets/KinWidgetView";
 import { KinAvatar } from "./KinAvatar";
 import { KinDocRefs } from "./KinDocRefs";
@@ -230,20 +237,30 @@ export function KinMessageBubble(props: {
     ...(hasBody ? [{ name: "copy", label: "Copy" }] : []),
   ];
 
+  // A page's card is its foot, across the page's width.
+  const card = (
+    <KinWidgetView
+      widget={props.widget}
+      environmentId={props.environmentId}
+      viewerPersonId={props.viewerPersonId}
+      onOpenLink={props.onLinkPress}
+      heldFor={props.heldFor ?? null}
+      {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
+    />
+  );
   const page =
     hasBubble && layout !== "bubble" ? (
       <View className="w-full gap-1">
         <KinMessagePage
           body={message.body}
           links={message.links}
+          embeds={message.embeds}
+          where={{ environmentId: props.environmentId, orgId: message.orgId }}
           textStyle={props.markdownStyle}
           onLinkPress={props.onLinkPress}
           onOpenTarget={onOpenTarget}
-          brief={
-            layout === "brief"
-              ? { createdAt: message.createdAt, firstName: props.firstName ?? null }
-              : null
-          }
+          head={kinPageHead(message, props.firstName ?? null)}
+          foot={hasCard ? card : null}
         />
         {wideTable ? (
           <Text textRole="caption" className="text-foreground-muted">
@@ -270,7 +287,7 @@ export function KinMessageBubble(props: {
         onAccessibilityAction={(event) => {
           const name = event.nativeEvent.actionName;
           if (name === "copy") {
-            copyTextWithHaptic(message.body, { target: "kin-message" });
+            copyTextWithHaptic(kinMessageCopyText(message), { target: "kin-message" });
             return;
           }
           if (name.startsWith("react-")) {
@@ -328,6 +345,23 @@ export function KinMessageBubble(props: {
       </View>
     ) : null;
 
+  const pressablePage =
+    page === null ? null : onOpenActions === null ? (
+      page
+    ) : (
+      // The page's own headings and text stay VoiceOver's, in order; this only takes the long press.
+      <Pressable
+        accessible={false}
+        onLongPress={() => {
+          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          onOpenActions();
+        }}
+        className="w-full"
+      >
+        {page}
+      </Pressable>
+    );
+  const framed = message.embeds?.some((embed) => embed._tag === "visual") === true;
   return (
     <View
       className={cn(
@@ -364,20 +398,10 @@ export function KinMessageBubble(props: {
           own={row.own}
         />
       )}
-      {page === null ? null : onOpenActions === null ? (
-        page
+      {page === null ? null : framed ? (
+        <KinFramesInView>{pressablePage}</KinFramesInView>
       ) : (
-        // The page's own headings and text stay VoiceOver's, in order; this only takes the long press.
-        <Pressable
-          accessible={false}
-          onLongPress={() => {
-            void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-            onOpenActions();
-          }}
-          className="w-full"
-        >
-          {page}
-        </Pressable>
+        pressablePage
       )}
       {bubble === null ? null : onOpenActions === null ? (
         <View className={row.own ? OWN_WIDTH_CLASS_NAME : OTHER_WIDTH_CLASS_NAME}>{bubble}</View>
@@ -397,18 +421,7 @@ export function KinMessageBubble(props: {
           {bubble}
         </Pressable>
       )}
-      {hasCard ? (
-        <View className="w-[85%]">
-          <KinWidgetView
-            widget={props.widget}
-            environmentId={props.environmentId}
-            viewerPersonId={props.viewerPersonId}
-            onOpenLink={props.onLinkPress}
-            heldFor={props.heldFor ?? null}
-            {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
-          />
-        </View>
-      ) : null}
+      {hasCard && page === null ? <View className="w-[85%]">{card}</View> : null}
       {props.reactions.length > 0 ? (
         <View className={cn("flex-row flex-wrap gap-1.5 px-1", row.own && "justify-end")}>
           {props.reactions.map((chip) => (
@@ -432,6 +445,13 @@ export function KinMessageBubble(props: {
   );
 }
 
+/** Tells a page's frames whether its row is on screen, so only those load a WebView. */
+function KinFramesInView(props: { readonly children: ReactNode }) {
+  const [inView, setInView] = useState(false);
+  useViewabilityAmount(useCallback((token) => setInView(token.sizeVisible > 0), []));
+  return <KinVisualInView value={inView}>{props.children}</KinVisualInView>;
+}
+
 /**
  * A reply still streaming, laid out exactly as its message will be: the list keeps this row's
  * key and slot when the message lands, so nothing moves or flashes.
@@ -443,6 +463,8 @@ export function KinDraftBubble(props: {
   readonly direct: boolean;
 }) {
   const { row } = props;
+  const text = kinDraftMarkdown(row.draft.text);
+  const page = kinPageShape(text) === "page" || text !== row.draft.text;
   return (
     <View className={cn("items-start gap-1 px-4", rowSpacing(row.continues))}>
       {row.showAuthor && !props.direct ? (
@@ -452,27 +474,25 @@ export function KinDraftBubble(props: {
         accessible
         accessibilityLabel={kinSentences([
           `${row.authorLabel}, agent`,
-          kinPlainText(row.draft.text),
+          kinPlainText(text),
           "Still writing",
         ])}
-        className={
-          kinPageShape(row.draft.text) === "page"
-            ? "w-full"
-            : cn("gap-1", OTHER_WIDTH_CLASS_NAME, OTHER_BUBBLE_CLASS_NAME)
-        }
+        className={page ? "w-full" : cn("gap-1", OTHER_WIDTH_CLASS_NAME, OTHER_BUBBLE_CLASS_NAME)}
       >
-        {kinPageShape(row.draft.text) === "page" ? (
+        {page ? (
           <KinMessagePage
-            body={row.draft.text}
+            body={text}
             links={undefined}
+            embeds={undefined}
+            where={null}
             textStyle={props.markdownStyle}
             onLinkPress={props.onLinkPress}
             onOpenTarget={NO_TARGET}
-            brief={null}
+            head={null}
           />
         ) : (
           <SelectableMarkdownText
-            markdown={kinBodyMarkdown(row.draft.text)}
+            markdown={kinBodyMarkdown(text)}
             textStyle={props.markdownStyle}
             preserveSoftBreaks
             onLinkPress={props.onLinkPress}

@@ -751,6 +751,14 @@ describe("message labels", () => {
       "Tech lead, agent. Started. 9:30.",
     ],
     [
+      "a page's figure by its title, not its id",
+      row({
+        body: "Two are late.\n\n```kin_visual This week\nf_aaaaaaaaaa\n```",
+        embeds: [{ _tag: "visual", title: "This week", attachmentId: "a1", height: 90 }],
+      }),
+      "Tech lead, agent. Two are late. This week. 9:30.",
+    ],
+    [
       "a body ending in an ellipsis",
       row({ body: "Checking the logs…" }),
       "Tech lead, agent. Checking the logs… 9:30.",

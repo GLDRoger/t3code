@@ -7,6 +7,8 @@ import {
   kinIsBrief,
   kinPageSections,
   kinPageShape,
+  kinPlainBody,
+  KIN_FIGURE_SCHEME,
   type KinMessage,
   type KinMessageLink,
   type KinPageSection,
@@ -16,20 +18,67 @@ import {
   formatComposerContextHref,
   parseComposerContextHref,
 } from "@t3tools/shared/composerContextReferences";
+import { kinDocBlockIndex, kinDocBlocks, kinDocParts } from "@t3tools/shared/kinDocBlocks";
 
 /**
- * How a message is drawn: a bubble, a page (an agent's long or structured message, full width
- * with real headings), or a brief (an agent's check-in, a page under a greeting).
+ * How a message is drawn: a bubble, or a page (an agent's long or structured message, or one
+ * holding figures, full width with real headings). A brief is a page under a greeting.
  */
-export type KinMessageLayout = "bubble" | "page" | "brief";
+export type KinMessageLayout = "bubble" | "page";
 
-export function kinMessageLayout(
-  message: Pick<KinMessage, "author" | "body" | "form" | "status">,
-): KinMessageLayout {
+type Shaped = Pick<KinMessage, "author" | "body" | "form" | "status" | "embeds">;
+
+export function kinMessageLayout(message: Shaped): KinMessageLayout {
   if (message.status === "deleted" || message.author._tag === "human") return "bubble";
-  if (kinIsBrief(message.body, message.form)) return "brief";
+  if ((message.embeds?.length ?? 0) > 0 || kinIsBrief(message.body, message.form)) return "page";
   return kinPageShape(message.body);
 }
+
+/** A brief's greeting and date over its page; null for every other page. */
+export function kinPageHead(
+  message: Pick<KinMessage, "body" | "form" | "createdAt">,
+  firstName: string | null,
+) {
+  return kinIsBrief(message.body, message.form) ? kinBriefHead(message.createdAt, firstName) : null;
+}
+
+/** The text Copy gives: the body with each figure as its title in brackets. */
+export const kinMessageCopyText = (message: Pick<KinMessage, "body" | "embeds">) =>
+  kinMessageText(message, (title) => `[${title}]`);
+
+/** The body with each figure as its title, as `figure` writes it. */
+export function kinMessageText(
+  message: Pick<KinMessage, "body" | "embeds">,
+  figure: (title: string) => string,
+): string {
+  const blocks = kinDocBlocks(message.body);
+  return kinDocParts(message.body)
+    .map((part) => {
+      if (part.type === "text") return part.text.replace(/^\n+|\n+$/g, "");
+      const { kind, content, info } = part.block;
+      const embed = message.embeds?.[kinDocBlockIndex(blocks, kind, content)];
+      const title =
+        embed?._tag === "chart"
+          ? embed.chart.title
+          : embed?._tag === "visual"
+            ? embed.title
+            : info !== ""
+              ? info
+              : kind === "chart"
+                ? "Chart"
+                : "Visual";
+      return figure(title);
+    })
+    .join("\n\n");
+}
+
+const DRAFT_FIGURE = new RegExp(`!\\[([^\\]\\n]*)\\]\\(${KIN_FIGURE_SCHEME}[^)\\s]*\\)`, "g");
+
+/** A reply still streaming: a figure it names shows as its title until the message posts. */
+export const kinDraftMarkdown = (text: string) =>
+  text.replace(DRAFT_FIGURE, (_match, title: string) =>
+    title.trim() === "" ? "*Figure*" : `*Figure: ${title.trim()}*`,
+  );
 
 // On the web a link rides T3's context-reference href, which its markdown keeps; the phone's
 // renderer draws those as chips, so there it is a plain `kin-link:<n>`.
@@ -120,7 +169,7 @@ export function kinPageView(markdown: string, brief = false): KinPageView {
 const briefDate = kinWhenFormat("longDay");
 
 /** A brief's head: "Good morning, Rhea" by the reader's time of day when it came, and its date. */
-export function kinBriefHead(createdAt: string, firstName: string | null) {
+function kinBriefHead(createdAt: string, firstName: string | null) {
   const date = new Date(createdAt);
   const greeting = kinGreeting(date.getHours());
   return {
@@ -129,19 +178,25 @@ export function kinBriefHead(createdAt: string, firstName: string | null) {
   };
 }
 
+// A figure is drawn far taller than the lines that hold it.
+const FIGURE_LINES = 8;
+
 /** A long page shows its start on the phone, with Read more. */
-export const kinPageCollapses = (markdown: string) =>
-  markdown.length > 900 || markdown.split("\n").length > 22;
+export function kinPageCollapses(markdown: string) {
+  const figures = kinDocBlocks(markdown);
+  const lines =
+    markdown.split("\n").length +
+    figures.reduce((sum, block) => sum + FIGURE_LINES - block.content.split("\n").length - 2, 0);
+  return kinPlainBody(markdown).length > 900 || lines > 22;
+}
 
 /**
  * The line a chat list shows for an agent's message, still markdown: a page's first thing under
  * "Needs you" (else its first line), after the greeting for a brief.
  */
-export function kinMessageGistMarkdown(
-  message: Pick<KinMessage, "author" | "body" | "form" | "status" | "createdAt">,
-): string {
-  const layout = kinMessageLayout(message);
-  if (layout === "bubble") return message.body;
+export function kinMessageGistMarkdown(message: Shaped & Pick<KinMessage, "createdAt">): string {
+  if (kinMessageLayout(message) === "bubble") return message.body;
   const gist = kinPageGist(message.body);
-  return layout === "brief" ? `${kinBriefHead(message.createdAt, null).greeting} · ${gist}` : gist;
+  const head = kinPageHead(message, null);
+  return head === null ? gist : `${head.greeting} · ${gist}`;
 }

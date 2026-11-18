@@ -8,7 +8,11 @@ import {
 } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
 import { kinCardDraws, KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
-import { kinMessageLayout } from "@t3tools/client-runtime/kin/kinMessagePage";
+import {
+  kinDraftMarkdown,
+  kinMessageLayout,
+  kinPageHead,
+} from "@t3tools/client-runtime/kin/kinMessagePage";
 import { kinDocRefLabel } from "@t3tools/client-runtime/kin/kinDocs";
 import {
   KIN_OUTBOX_STATUS,
@@ -194,6 +198,17 @@ export function KinMessageRow(props: {
   const canReact = onReact !== null && !deleted;
   const layout = row.own || !hasBody ? "bubble" : kinMessageLayout(message);
   const label = kinMessageLabel(row, formatTime(message.createdAt));
+  // A page's card is its foot, across the page's width.
+  const onPage = hasBubble && layout !== "bubble";
+  const card = (
+    <KinCard
+      widget={props.widget}
+      environmentId={props.environmentId}
+      orgId={props.orgId}
+      viewerPersonId={props.viewerPersonId}
+      heldFor={props.heldFor}
+    />
+  );
 
   return (
     <div
@@ -242,19 +257,17 @@ export function KinMessageRow(props: {
         <KinDocRefs refs={refs} environmentId={props.environmentId} orgId={props.orgId} />
       )}
       <div className={cn("flex w-full items-center gap-1", row.own && "flex-row-reverse")}>
-        {hasBubble && layout !== "bubble" ? (
+        {onPage ? (
           <div className="min-w-0 flex-1">
             <KinMessagePage
               environmentId={props.environmentId}
               orgId={props.orgId}
               body={message.body}
               links={message.links}
+              embeds={message.embeds}
               label={label}
-              brief={
-                layout === "brief"
-                  ? { createdAt: message.createdAt, firstName: props.firstName ?? null }
-                  : null
-              }
+              head={kinPageHead(message, props.firstName ?? null)}
+              foot={hasCard ? card : null}
             />
             {message.editedAt !== null ? (
               <p className="pt-0.5 text-xs text-muted-foreground">Edited</p>
@@ -283,17 +296,9 @@ export function KinMessageRow(props: {
           <KinReactMenu mine={mine} onReact={onReact} />
         ) : null}
       </div>
-      {hasCard ? (
+      {hasCard && !onPage ? (
         <div className="flex w-full items-start gap-1">
-          <div className="min-w-0 max-w-[85%] flex-1">
-            <KinCard
-              widget={props.widget}
-              environmentId={props.environmentId}
-              orgId={props.orgId}
-              viewerPersonId={props.viewerPersonId}
-              heldFor={props.heldFor}
-            />
-          </div>
+          <div className="min-w-0 max-w-[85%] flex-1">{card}</div>
           {canReact && !hasBubble ? <KinReactMenu mine={mine} onReact={onReact} /> : null}
         </div>
       ) : null}
@@ -357,28 +362,26 @@ export function KinDraftRow(props: {
   readonly direct: boolean;
 }) {
   const { row } = props;
-  const label = kinSentences([
-    `${row.authorLabel}, agent`,
-    kinPlainText(row.draft.text),
-    "Still writing",
-  ]);
+  const text = kinDraftMarkdown(row.draft.text);
+  const label = kinSentences([`${row.authorLabel}, agent`, kinPlainText(text), "Still writing"]);
   return (
     <div className={cn(ROW, rowSpacing(row.continues), "items-start")}>
       {row.showAuthor && !props.direct ? (
         <HeadLine label={row.authorLabel} avatar={kinAgentAvatar(row.draft.agentId)} />
       ) : null}
-      {kinPageShape(row.draft.text) === "page" ? (
+      {kinPageShape(text) === "page" || text !== row.draft.text ? (
         <KinMessagePage
           environmentId={props.environmentId}
           orgId={props.orgId}
-          body={row.draft.text}
+          body={text}
           links={undefined}
+          embeds={undefined}
           label={label}
-          brief={null}
+          head={null}
         />
       ) : (
         <div role="article" aria-label={label} className={OTHER_BUBBLE}>
-          <KinBody markdown={row.draft.text} environmentId={props.environmentId} />
+          <KinBody markdown={text} environmentId={props.environmentId} />
         </div>
       )}
     </div>

@@ -20,6 +20,7 @@ import {
   kinIsPeopleChat,
   kinPageGist,
   kinPageShape,
+  kinPlainBody,
   kinWhenParts,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -116,7 +117,7 @@ const kinPushBody = (text: string) => {
 
 /** What a card asks, in its own words: its message, else its question or title. */
 const kinCardWords = (body: string, state: unknown) => {
-  const said = kinPushBody(body);
+  const said = kinPushBody(kinPageShape(body) === "page" ? kinPageGist(body) : kinPlainBody(body));
   if (said !== "") return said;
   const field = (key: string) =>
     typeof state === "object" && state !== null && key in state
@@ -377,6 +378,7 @@ const make = Effect.gen(function* () {
       FROM kin_messages m
       WHERE m.org_id = ${orgId} AND m.message_id = ${messageId} AND m.status = 'posted'
         AND m.kind != 'widget_action' AND m.silent = 0
+        AND NOT (m.widget_id IS NOT NULL AND m.source_wakeup_id IS NOT NULL AND m.body != '')
         -- A key change's notice rings as that change's own push instead.
         AND NOT EXISTS (SELECT 1 FROM kin_key_pushes p
           WHERE p.org_id = m.org_id AND p.message_id = m.message_id)`;
@@ -388,7 +390,7 @@ const make = Effect.gen(function* () {
         ? `${kinGreeting(yield* ownerHour(orgId))} · ${kinPageGist(row.body)}`
         : kinPageShape(row.body) === "page"
           ? kinPageGist(row.body)
-          : row.body,
+          : kinPlainBody(row.body),
     );
     if (row.is_card === 1 && body === "") return undefined;
     const chat = yield* chatName(orgId, row.chat_id);

@@ -2,6 +2,10 @@ import { ACTIVE_RUN_STATUSES } from "../../orchestration-v2/ThreadManagementServ
 import type { McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import {
   KIN_TEAM_ROOM_TEAM_ID,
+  KIN_MESSAGE_FIGURES_MAX,
+  KIN_MESSAGE_BODY_MAX_LENGTH,
+  KIN_FIGURE_SCHEME,
+  KinEmbed,
   KinWakeupId,
   KinOrg,
   KinOrgId,
@@ -34,6 +38,7 @@ import {
   NonNegativeInt,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
+import { kinDocBlocks } from "@t3tools/shared/kinDocBlocks";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -106,6 +111,7 @@ type InsertMessage = Omit<KinMessage, "seq" | "authorRole" | "clientMessageId" |
   readonly caller?: McpThreadCaller | undefined;
   // The reply bridge posts for a wake-up it resolved itself; its running row is the authority.
   readonly wakeupId?: KinWakeupId | undefined;
+  readonly placeReplyFigures?: true | undefined;
   // Only Kin itself (worker task cards, a failed send's mail again) posts outside a wake-up.
   readonly serverPosted?: true;
   /** Shown in the chat, but never pushed and never counted as unread or on the badge. */
@@ -171,6 +177,29 @@ const memberColumns = `org_id AS "orgId", chat_id AS "chatId", member_id AS "mem
  ELSE json_object('_tag', principal_kind, 'agentId', agent_id) END AS principal`;
 const StoredAttachments = Schema.Array(KinAttachment);
 const encodeAttachments = Schema.encodeEffect(Schema.fromJsonString(StoredAttachments));
+const StoredEmbeds = Schema.Array(KinEmbed).check(Schema.isMaxLength(KIN_MESSAGE_FIGURES_MAX));
+const encodeEmbeds = Schema.encodeEffect(Schema.fromJsonString(StoredEmbeds));
+const StoredFigure = Schema.Struct({
+  id: Schema.String,
+  embed: Schema.fromJsonString(KinEmbed),
+  attachmentId: Schema.NullOr(Schema.String),
+});
+const decodeFigures = Schema.decodeUnknownEffect(Schema.Array(StoredFigure));
+type ReplyScope = ChatScope & {
+  readonly agentId: KinAgentId;
+  readonly threadId: ThreadId;
+  readonly wakeupId: KinWakeupId;
+};
+const figureToken = new RegExp(`!?\\[([^\\]\\n]*)\\]\\(${KIN_FIGURE_SCHEME}([^\\s)]*)\\)`, "g");
+const figureBlock = (figure: typeof StoredFigure.Type) => {
+  const info =
+    figure.embed._tag === "visual"
+      ? `kin_visual ${figure.embed.title.replace(/[\s`]+/g, " ").trim()}`
+      : figure.embed._tag === "chart"
+        ? `kin_chart ${figure.embed.chart.title.replace(/[\s`]+/g, " ").trim()}`
+        : "kin_visual";
+  return `\`\`\`${info}\n${figure.id}\n\`\`\``;
+};
 const StoredRefs = Schema.Array(KinMessageRef);
 const encodeRefs = Schema.encodeEffect(Schema.fromJsonString(StoredRefs));
 const {
@@ -180,6 +209,7 @@ const {
   relay: _relay,
   when: _when,
   links: _links,
+  embeds: _embeds,
   form: _form,
   ...messageRowFields
 } = KinMessage.fields;
@@ -193,6 +223,7 @@ const MessageRow = Schema.Struct({
   storedClientMessageId: Schema.NullOr(Schema.String),
   storedAttachments: Schema.NullOr(Schema.fromJsonString(StoredAttachments)),
   storedRefs: Schema.NullOr(Schema.fromJsonString(StoredRefs)),
+  storedEmbeds: Schema.NullOr(Schema.fromJsonString(StoredEmbeds)),
   storedForm: Schema.NullOr(Schema.Literal("brief")),
   author: Schema.fromJsonString(KinMessage.fields.author),
   mentions: Schema.fromJsonString(KinMessage.fields.mentions),
@@ -208,12 +239,14 @@ const MessageRow = Schema.Struct({
         storedRelay,
         storedWhen,
         storedForm,
+        storedEmbeds,
         ...message
       }): KinMessage => ({
         ...message,
         ...(storedWhen === null ? {} : { when: storedWhen }),
         ...(storedDiscussionId === null ? {} : { discussionId: storedDiscussionId }),
         ...(storedRelay === null ? {} : { relay: storedRelay }),
+        ...(storedEmbeds === null ? {} : { embeds: storedEmbeds }),
         ...(storedForm === null ? {} : { form: storedForm }),
         ...(storedAttachments === null ? {} : { attachments: storedAttachments }),
         ...(storedRefs === null ? {} : { refs: storedRefs }),
@@ -229,12 +262,14 @@ const MessageRow = Schema.Struct({
         when,
         links: _links,
         form,
+        embeds,
         ...message
       }) => ({
         ...message,
         storedWhen: when ?? null,
         storedDiscussionId: discussionId ?? null,
         storedRelay: relay ?? null,
+        storedEmbeds: embeds ?? null,
         storedForm: form ?? null,
         storedAttachments: attachments ?? null,
         storedRefs: refs ?? null,
@@ -244,7 +279,7 @@ const MessageRow = Schema.Struct({
     }),
   ),
 );
-const messageColumns = `org_id AS "orgId", chat_id AS "chatId", message_id AS "messageId", seq AS "seq", change_seq AS "changeSeq", client_message_id AS "storedClientMessageId", author_role AS "authorRole", kind AS "kind", body AS "body", attachments_json AS "storedAttachments", refs_json AS "storedRefs", form AS "storedForm", intent AS "intent", mentions_json AS "mentions", reply_to AS "replyTo", widget_id AS "widgetId", floor_run_id AS "floorRunId", status AS "status", sent_by AS "sentBy", created_at AS "createdAt", edited_at AS "editedAt", discussion_id AS "storedDiscussionId", relay_json AS "storedRelay", when_json AS "storedWhen", CASE author_kind WHEN 'human' THEN json_object('_tag', 'human', 'personId', author_person_id, 'memberId', author_member_id)
+const messageColumns = `org_id AS "orgId", chat_id AS "chatId", message_id AS "messageId", seq AS "seq", change_seq AS "changeSeq", client_message_id AS "storedClientMessageId", author_role AS "authorRole", kind AS "kind", body AS "body", attachments_json AS "storedAttachments", refs_json AS "storedRefs", form AS "storedForm", embeds_json AS "storedEmbeds", intent AS "intent", mentions_json AS "mentions", reply_to AS "replyTo", widget_id AS "widgetId", floor_run_id AS "floorRunId", status AS "status", sent_by AS "sentBy", created_at AS "createdAt", edited_at AS "editedAt", discussion_id AS "storedDiscussionId", relay_json AS "storedRelay", when_json AS "storedWhen", CASE author_kind WHEN 'human' THEN json_object('_tag', 'human', 'personId', author_person_id, 'memberId', author_member_id)
  WHEN 'agent' THEN json_object('_tag', 'agent', 'agentId', author_agent_id, 'memberId', author_member_id,
  'ownerPersonId', author_owner_person_id, 'threadId', author_thread_id)
  ELSE json_object('_tag', author_kind) END AS author`;
@@ -481,6 +516,7 @@ export class KinChatRepository extends Context.Service<
      * A wake-up's one reply grows by its next segment: the same lead thread's posted text, while
      * that wake-up runs. The new body keeps the old one as its start.
      */
+    readonly replyCard: (input: ReplyScope) => Effect.Effect<KinMessageId | null, RepositoryError>;
     readonly extendAgentReply: (
       input: ChatScope & {
         readonly messageId: KinMessageId;
@@ -864,6 +900,111 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toRepositoryError("KinChatRepository.wakeupRunning")),
   );
+  const briefForm = Effect.fn("KinChatRepository.briefForm")(function* (input: {
+    orgId: KinOrgId;
+    wakeupId?: KinWakeupId | undefined;
+    audience: WriteAudience;
+    kind: KinMessage["kind"];
+    author: KinMessage["author"];
+  }) {
+    if (
+      input.author._tag !== "agent" ||
+      input.kind !== "text" ||
+      input.wakeupId === undefined ||
+      input.audience === "chat"
+    )
+      return null;
+    return (yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${input.orgId}
+                AND wakeup_id = ${input.wakeupId}
+                AND ((tag = 'pulse' AND json_extract(json, '$.checkIn') IS NOT NULL)
+                  OR (tag = 'routine' AND json_extract(json, '$.routine') IN ('morning_brief', 'evening_summary')))
+                AND NOT EXISTS (SELECT 1 FROM kin_events m WHERE m.org_id = kin_events.org_id
+                  AND m.wakeup_id = kin_events.wakeup_id AND m.tag = 'chat.message')
+                LIMIT 1`).length > 0
+      ? ("brief" as const)
+      : null;
+  });
+  const replyCard = Effect.fn("KinChatRepository.replyCard")(
+    function* (input: ReplyScope) {
+      const cards = yield* sql<{ id: KinMessageId; eligible: number }>`SELECT m.message_id AS id,
+          (m.seq = c.last_seq AND m.body = '' AND m.status = 'posted' AND m.kind = 'text' AND w.type <> 'approval') AS eligible
+        FROM kin_messages m JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+        JOIN kin_widgets w ON w.org_id = m.org_id AND w.widget_id = m.widget_id
+        WHERE m.org_id = ${input.orgId} AND m.chat_id = ${input.chatId}
+          AND m.author_agent_id = ${input.agentId} AND m.author_thread_id = ${input.threadId}
+          AND m.source_wakeup_id = ${input.wakeupId}
+        LIMIT 2`;
+      if (cards.length === 1 && cards[0]?.eligible === 1) return cards[0].id;
+      if (cards.length > 0) yield* Effect.logDebug("Kin skipped joining a reply to its card");
+      return null;
+    },
+    Effect.mapError(toRepositoryError("KinChatRepository.replyCard")),
+  );
+  const placeFigures = Effect.fn("KinChatRepository.placeFigures")(function* (
+    input: ReplyScope & { readonly body: string; readonly previous?: KinMessage },
+  ) {
+    const { body: prior = "", embeds: existing = [] } = input.previous ?? {};
+    const figures = yield* decodeFigures(
+      yield* sql`SELECT figure_id AS id, embed_json AS embed, attachment_id AS "attachmentId"
+      FROM kin_turn_figures WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}
+        AND agent_id = ${input.agentId} AND chat_id = ${input.chatId} AND message_id IS NULL
+      ORDER BY created_at, rowid`,
+    );
+    const tail = input.body
+      .slice(prior.length)
+      .replace(/^([ ]{0,3}(?:`{3,}|~{3,})[ \t]*)kin_(?:chart|visual)\b/gm, "$1text");
+    const candidates = new Map(figures.map((figure) => [figure.id, figure]));
+    let body = prior + tail.replace(figureToken, (_token, title: string) => title);
+    const placed = new Map<string, typeof StoredFigure.Type>();
+    const room = KIN_MESSAGE_FIGURES_MAX - existing.length;
+    const accept = (next: string, figure: typeof StoredFigure.Type) => {
+      if (
+        placed.size >= room ||
+        next.length > KIN_MESSAGE_BODY_MAX_LENGTH ||
+        !kinDocBlocks(next).some((block) => block.content === figure.id)
+      )
+        return false;
+      body = next;
+      placed.set(figure.id, figure);
+      return true;
+    };
+    let at = prior.length;
+    for (const line of tail.split("\n")) {
+      const stripped = line.replace(figureToken, (_token, title: string) => title);
+      const token = [...line.trim().matchAll(figureToken)][0];
+      const figure = token?.[0] === line.trim() ? candidates.get(token?.[2] ?? "") : undefined;
+      const block = figure === undefined ? "" : figureBlock(figure);
+      const next =
+        figure !== undefined &&
+        !placed.has(figure.id) &&
+        accept(body.slice(0, at) + block + body.slice(at + stripped.length), figure);
+      at += (next ? block.length : stripped.length) + 1;
+    }
+    for (const figure of figures)
+      if (!placed.has(figure.id))
+        accept(`${body}${body === "" ? "" : "\n\n"}${figureBlock(figure)}`, figure);
+    const ordered = kinDocBlocks(body).flatMap((block) => {
+      const figure = placed.get(block.content);
+      return figure === undefined ? [] : [figure];
+    });
+    return {
+      body,
+      embeds: [...existing, ...ordered.map((figure) => figure.embed)],
+      figures: ordered,
+    };
+  });
+  const keepFigures = Effect.fn("KinChatRepository.keepFigures")(function* (
+    input: ChatScope & { readonly messageId: KinMessageId },
+    figures: ReadonlyArray<typeof StoredFigure.Type>,
+  ) {
+    for (const figure of figures) {
+      yield* sql`UPDATE kin_turn_figures SET message_id = ${input.messageId}
+        WHERE org_id = ${input.orgId} AND figure_id = ${figure.id} AND message_id IS NULL`;
+      if (figure.attachmentId !== null)
+        yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
+          VALUES (${figure.attachmentId}, ${input.orgId}, ${input.chatId}, ${input.messageId})`;
+    }
+  });
   // Inside the write's transaction, so a join commits wholly before or after this write.
   const ownerOnly = Effect.fn("KinChatRepository.ownerOnly")(function* (
     audience: WriteAudience,
@@ -1586,6 +1727,7 @@ const make = Effect.gen(function* () {
       },
       Effect.mapError(toRepositoryError("KinChatRepository.findClientMessage")),
     ),
+    replyCard,
     extendAgentReply: Effect.fn("KinChatRepository.extendAgentReply")(
       function* (input) {
         yield* decodeBody(input.body);
@@ -1599,8 +1741,15 @@ const make = Effect.gen(function* () {
               message.author.threadId !== input.threadId ||
               message.status !== "posted" ||
               message.kind !== "text" ||
-              message.widgetId !== null ||
-              !(yield* named_(input.orgId, input.chatId, input.body)).body.startsWith(message.body)
+              !input.body.startsWith(message.body) ||
+              (message.widgetId !== null &&
+                message.body === "" &&
+                (yield* replyCard(input)) !== input.messageId) ||
+              (message.widgetId !== null &&
+                message.body !== "" &&
+                (yield* sql`SELECT 1 FROM kin_messages
+                WHERE org_id = ${input.orgId} AND message_id = ${input.messageId} AND source_wakeup_id = ${input.wakeupId}`)
+                  .length === 0)
             )
               return yield* new KinChatError({
                 reason: "not_found",
@@ -1612,9 +1761,15 @@ const make = Effect.gen(function* () {
                 message: "Kin wake-up is not running.",
               });
             yield* ownerOnly(input.audience, input);
-            const named = yield* named_(input.orgId, input.chatId, input.body);
-            yield* sql`UPDATE kin_messages SET body = ${named.body}
+            const placed = yield* placeFigures({ ...input, previous: message });
+            const named = yield* named_(input.orgId, input.chatId, placed.body);
+            const form =
+              message.form ??
+              (yield* briefForm({ ...input, kind: message.kind, author: message.author }));
+            yield* sql`UPDATE kin_messages SET body = ${named.body}, form = ${form},
+              embeds_json = ${placed.embeds.length === 0 ? null : yield* encodeEmbeds(placed.embeds)}
               WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id = ${input.messageId}`;
+            yield* keepFigures(input, placed.figures);
             yield* keepNames(input.orgId, input.messageId, named.json);
             return yield* requireRecord(messageOne(input));
           }),
@@ -1797,37 +1952,39 @@ const make = Effect.gen(function* () {
  WHERE chat_id = ${input.chatId} AND org_id = ${input.orgId} RETURNING last_seq`,
             })(input);
             const seq = (yield* requireRecord(Effect.succeed(allocated))).last_seq;
-            // A check-in's or brief's reply in the chat it answers, not a relay it sent on, and not
-            // a reply to someone's message that came in the same wake-up.
-            const brief =
+            const form = yield* briefForm(input);
+            const placed =
               author._tag === "agent" &&
               input.kind === "text" &&
               input.wakeupId !== undefined &&
-              input.audience !== "chat" &&
-              (yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${input.orgId}
-                AND wakeup_id = ${input.wakeupId}
-                AND ((tag = 'pulse' AND json_extract(json, '$.checkIn') IS NOT NULL)
-                  OR (tag = 'routine' AND json_extract(json, '$.routine') IN ('morning_brief', 'evening_summary')))
-                AND NOT EXISTS (SELECT 1 FROM kin_events m WHERE m.org_id = kin_events.org_id
-                  AND m.wakeup_id = kin_events.wakeup_id AND m.tag = 'chat.message')
-                LIMIT 1`).length > 0;
+              input.placeReplyFigures === true &&
+              input.body !== "" &&
+              input.widgetId === null
+                ? yield* placeFigures({
+                    ...input,
+                    agentId: author.agentId,
+                    threadId: author.threadId,
+                    wakeupId: input.wakeupId,
+                  })
+                : { body: input.body, embeds: input.embeds ?? [], figures: [] };
             // People read an entry by its name, not Kin's key for it.
             const named =
               author._tag === "agent" && input.kind === "text"
-                ? yield* named_(input.orgId, input.chatId, input.body)
-                : { body: input.body, json: null };
+                ? yield* named_(input.orgId, input.chatId, placed.body)
+                : { body: placed.body, json: null };
             const inserted =
               yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id, author_agent_id,
  author_owner_person_id, author_thread_id, author_member_id, author_role, kind, body, attachments_json, refs_json, intent, mentions_json, reply_to,
- widget_id, floor_run_id, status, sent_by, client_message_id, created_at, edited_at, silent, form, discussion_id, relay_json, when_json)
+ widget_id, floor_run_id, status, sent_by, client_message_id, created_at, edited_at, silent, form, discussion_id, relay_json, when_json, embeds_json, source_wakeup_id)
  VALUES (${input.messageId}, ${input.orgId}, ${input.chatId}, ${seq}, ${author._tag},
  ${member?.principal._tag === "person" ? member.principal.personId : null}, ${member?.principal._tag === "agent" ? member.principal.agentId : null},
  ${agent?.ownerPersonId ?? null}, ${author._tag === "agent" ? author.threadId : null},
  ${memberId}, ${member?.role ?? "member"}, ${input.kind}, ${named.body}, ${attachmentsJson}, ${refs.length === 0 ? null : yield* encodeRefs(refs)}, ${input.intent}, ${mentions}, ${input.replyTo},
  ${input.widgetId}, ${input.floorRunId}, ${input.status}, ${input.sentBy}, ${clientId}, ${input.createdAt}, ${input.editedAt},
- ${input.silent === true ? 1 : 0}, ${brief ? "brief" : null}, ${input.discussionId ?? null},
+ ${input.silent === true ? 1 : 0}, ${form}, ${input.discussionId ?? null},
  ${input.relay === undefined ? null : yield* encodeRelay(input.relay)},
- ${input.when === undefined ? null : yield* encodeWhen(input.when)})
+ ${input.when === undefined ? null : yield* encodeWhen(input.when)},
+ ${placed.embeds.length === 0 ? null : yield* encodeEmbeds(placed.embeds)}, ${input.body === "" && author._tag === "agent" ? (input.wakeupId ?? null) : null})
  ON CONFLICT DO NOTHING RETURNING message_id`;
             if (inserted.length === 0)
               return yield* new KinChatError({
@@ -1835,6 +1992,7 @@ const make = Effect.gen(function* () {
                 message: "Kin record not found.",
               });
             yield* keepNames(input.orgId, input.messageId, named.json);
+            yield* keepFigures(input, placed.figures);
             // Which chat owns each file: what reading one by id is checked against.
             for (const attachment of attachments)
               yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
@@ -2070,6 +2228,9 @@ const make = Effect.gen(function* () {
           FROM kin_message_attachments
           WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
           ORDER BY attachment_id`;
+        const unplaced = yield* sql<{ id: string }>`SELECT attachment_id AS id FROM kin_turn_figures
+          WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
+            AND message_id IS NULL AND attachment_id IS NOT NULL`;
         const taskCards = yield* SqlSchema.findAll({
           Request: Schema.Unknown,
           Result: WidgetRow,
@@ -2117,6 +2278,7 @@ const make = Effect.gen(function* () {
         yield* sql`DELETE FROM kin_reactions WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
         yield* sql`DELETE FROM kin_message_attachments WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
         yield* sql`DELETE FROM kin_widgets WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
+        yield* sql`DELETE FROM kin_turn_figures WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
         yield* sql`DELETE FROM kin_messages WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
         // `last_seq` keeps counting: members' read and join positions are seqs of this chat.
         const [counters] = yield* sql<{ lastSeq: number; lastChangeSeq: number }>`
@@ -2127,7 +2289,10 @@ const make = Effect.gen(function* () {
         return {
           lastSeq: counters!.lastSeq,
           lastChangeSeq: counters!.lastChangeSeq,
-          attachmentIds: attachments.flatMap((row) => (row.kept === 1 ? [] : [row.id])),
+          attachmentIds: [
+            ...attachments.flatMap((row) => (row.kept === 1 ? [] : [row.id])),
+            ...unplaced.map((row) => row.id),
+          ],
           keptFiles: attachments.filter((row) => row.kept === 1).length,
           waiting,
           taskCards,

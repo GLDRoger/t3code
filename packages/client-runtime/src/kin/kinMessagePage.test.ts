@@ -1,11 +1,15 @@
 import { describe, expect, it } from "@effect/vitest";
-import type { KinMessage, KinMessageLink } from "@t3tools/contracts";
+import type { KinChartCardState, KinMessage, KinMessageLink } from "@t3tools/contracts";
 
 import {
+  kinDraftMarkdown,
   kinLinkedMarkdown,
   kinLinkOf,
+  kinMessageCopyText,
   kinMessageGistMarkdown,
   kinMessageLayout,
+  kinPageCollapses,
+  kinPageHead,
   kinPageView,
 } from "./kinMessagePage.ts";
 
@@ -55,14 +59,89 @@ describe("kinMessageLayout", () => {
     expect(kinMessageLayout(said(body))).toBe(layout);
   });
 
-  it("keeps people's messages and deleted ones as bubbles, and a brief with a section as a brief", () => {
+  it("keeps people's messages and deleted ones as bubbles, and a brief with a section as a page under a head", () => {
     expect(kinMessageLayout(said("## Plan\nShip.", { author: human }))).toBe("bubble");
     expect(kinMessageLayout(said("## Plan\nShip.", { status: "deleted" }))).toBe("bubble");
-    expect(kinMessageLayout(said(BRIEF, { form: "brief" }))).toBe("brief");
-    // A one-line check-in reply has nothing for the big greeting to head.
-    expect(kinMessageLayout(said("Quiet day. Nothing needs you.", { form: "brief" }))).toBe(
-      "bubble",
+    expect(kinMessageLayout(said(BRIEF, { form: "brief" }))).toBe("page");
+    expect(kinPageHead(said(BRIEF, { form: "brief" }), "Rhea")?.greeting).toMatch(
+      /^Good (morning|afternoon|evening), Rhea$/,
     );
+    expect(kinPageHead(said("## Plan\nShip."), "Rhea")).toBeNull();
+    // A one-line check-in reply has nothing for the big greeting to head.
+    const quiet = said("Quiet day. Nothing needs you.", { form: "brief" });
+    expect(kinMessageLayout(quiet)).toBe("bubble");
+    expect(kinPageHead(quiet, "Rhea")).toBeNull();
+  });
+
+  it("a message with a figure is a page", () => {
+    expect(
+      kinMessageLayout(said("Two tasks are late.", { embeds: [{ _tag: "broken", message: "x" }] })),
+    ).toBe("page");
+    expect(kinMessageLayout(said(FIGURED, { embeds: FIGURES }))).toBe("page");
+    expect(kinMessageLayout(said("Two tasks are late.", { embeds: [] }))).toBe("bubble");
+    expect(kinMessageLayout(said(FIGURED, { embeds: FIGURES, status: "deleted" }))).toBe("bubble");
+  });
+});
+
+const FIGURES: NonNullable<KinMessage["embeds"]> = [
+  { _tag: "visual", title: "This week", attachmentId: "att_1", height: 90 },
+  {
+    _tag: "chart",
+    chart: { title: "Cash by month" } as unknown as KinChartCardState,
+  },
+];
+const FIGURED = [
+  "Two tasks are late and INV-1 is 12 days overdue.",
+  "",
+  "```kin_visual This week",
+  "f_aaaaaaaaaa",
+  "```",
+  "",
+  "## Money",
+  "- ₹1.2L came in.",
+  "",
+  "```kin_chart",
+  "f_bbbbbbbbbb",
+  "```",
+].join("\n");
+
+describe("a page's figures", () => {
+  it("copy text names figures by title", () => {
+    expect(kinMessageCopyText(said(FIGURED, { embeds: FIGURES }))).toBe(
+      [
+        "Two tasks are late and INV-1 is 12 days overdue.",
+        "",
+        "[This week]",
+        "",
+        "## Money",
+        "- ₹1.2L came in.",
+        "",
+        "[Cash by month]",
+      ].join("\n"),
+    );
+    // A figure the host couldn't draw still says what it was.
+    expect(kinMessageCopyText(said("```kin_chart\nf_cccccccccc\n```"))).toBe("[Chart]");
+    expect(kinMessageCopyText(said("Done."))).toBe("Done.");
+  });
+
+  it("gives a list a page's takeaway, not its figures", () => {
+    expect(kinMessageGistMarkdown(said(FIGURED, { embeds: FIGURES }))).toBe(
+      "Two tasks are late and INV-1 is 12 days overdue.",
+    );
+  });
+
+  it("counts each figure as eight lines toward Read more", () => {
+    const lines = Array.from({ length: 6 }, (_, at) => `Line ${at}.`).join("\n");
+    expect(kinPageCollapses(lines)).toBe(false);
+    expect(kinPageCollapses(`${lines}\n\n${FIGURED}`)).toBe(true);
+  });
+
+  it("shows a figure still being written as its title", () => {
+    expect(
+      kinDraftMarkdown(
+        "Late.\n\n![This week](kin-figure:f_aaaaaaaaaa)\n![x](https://a.example/x.png)",
+      ),
+    ).toBe("Late.\n\n*Figure: This week*\n![x](https://a.example/x.png)");
   });
 });
 

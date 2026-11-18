@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
 import * as Kin from "./kinChat.ts";
+import { KIN_FIGURE_SCHEME, KIN_MESSAGE_PAGES_MAX } from "./kinEmbed.ts";
 import { KinCheckRun } from "./kinApprovals.ts";
 import { KinListUpdateInput } from "./kinFinance.ts";
 import { KinPushRegisterDeviceInput } from "./kinPush.ts";
@@ -76,6 +77,18 @@ const message = {
   sentBy: null,
   createdAt: at,
   editedAt: null,
+};
+const decodeMessage = Schema.decodeUnknownSync(Kin.KinMessage);
+const visualEmbed = {
+  _tag: "visual",
+  title: "This week",
+  attachmentId: "figure-1",
+  height: 90,
+  heights: [
+    [390, 95],
+    [1280, 90],
+  ],
+  sensitive: true,
 };
 const task = {
   taskId: "task-1",
@@ -224,6 +237,14 @@ const samples = {
   KinChatMember: [member],
   KinAuthor: authors,
   KinMessage: [
+    {
+      ...message,
+      body: `![This week](${KIN_FIGURE_SCHEME}f_test000001)`,
+      embeds: Array.from({ length: KIN_MESSAGE_PAGES_MAX }, (_, i) => ({
+        ...visualEmbed,
+        attachmentId: `figure-${i}`,
+      })),
+    },
     ...authors.map((author) => ({ ...message, author })),
     { ...message, changeSeq: 2, clientMessageId: "pending" },
   ],
@@ -436,6 +457,12 @@ describe("Kin chat contracts", () => {
       expect(encode(decoded)).toEqual(wire);
       expect(decode(encode(decoded))).toEqual(decoded);
     }
+  });
+
+  it("rejects five message figures", () => {
+    expect(() =>
+      decodeMessage({ ...message, embeds: Array.from({ length: 5 }, () => ({ ...visualEmbed })) }),
+    ).toThrow();
   });
 
   it("discards a client-supplied author", () => {

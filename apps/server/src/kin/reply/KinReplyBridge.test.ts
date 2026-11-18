@@ -3,6 +3,10 @@ import { kinSecretsTest } from "../lead/layer.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import {
   AuthSessionId,
+  EnvironmentId,
+  KIN_DOC_CARD,
+  ProviderInstanceId,
+  KIN_CHOICE_CARD_ACTION,
   AuthStandardClientScopes,
   EventId,
   KinAgentId,
@@ -56,6 +60,7 @@ import {
   type WakeupEventBase,
 } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
+import * as LeadDocs from "../work/leadDocs.ts";
 import * as ChatWake from "../lead/ChatWake.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import {
@@ -231,7 +236,7 @@ const setup = Effect.fn("test.setup")(function* (input: {
   }) => Effect.Effect<
     (base: WakeupEventBase) => KinEvent,
     never,
-    Kin.KinServer | SqlClient.SqlClient
+    Kin.KinServer | SqlClient.SqlClient | Orchestrator.OrchestratorV2
   >;
 }) {
   const kin = yield* Kin.KinServer;
@@ -338,7 +343,8 @@ const setup = Effect.fn("test.setup")(function* (input: {
     authorKind: string;
     intent: string | null;
     floorRunId: string | null;
-  }>`SELECT body, author_kind AS "authorKind", intent, floor_run_id AS "floorRunId" FROM kin_messages
+    widgetId: string | null;
+  }>`SELECT body, author_kind AS "authorKind", intent, floor_run_id AS "floorRunId", widget_id AS "widgetId" FROM kin_messages
     WHERE org_id = ${owner.orgId} AND chat_id = ${chatId} AND author_kind != 'human' ORDER BY seq`;
   return {
     services,
@@ -382,6 +388,211 @@ it.effect("posts the lead run's plain text to the chat it answers, as one agent 
     assert.strictEqual(run!.turns, 1);
     assert.strictEqual(fake.rescues, 0);
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["choice", "intervening item", "doc"] as const)(
+  "joins its own last card only (%s)",
+  (scenario) =>
+    Effect.gen(function* () {
+      const {
+        services,
+        sql,
+        chats,
+        identity,
+        owner,
+        chatId,
+        wakeupId,
+        fake,
+        runId,
+        complete,
+        posted,
+      } = yield* setup({
+        ask: scenario === "doc" ? "Write the Lumen kickoff brief." : "When should we launch?",
+      });
+      if (scenario === "doc") {
+        yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE org_id = ${owner.orgId} AND agent_id = ${agentId}`;
+        const made = yield* LeadDocs.create(
+          {
+            environmentId: EnvironmentId.make("fixture"),
+            requestNamespace: "fixture",
+            issuedAt: 0,
+            capabilities: new Set(),
+            client: undefined,
+            thread: {
+              threadId,
+              providerSessionId: "fixture",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+            },
+          },
+          {
+            sourceEventId: `event:${wakeupId}`,
+            title: "Lumen kickoff brief",
+            body: "## Kickoff\nReview the launch plan.",
+          },
+        ).pipe(Effect.provide(services));
+        fake.items = [text("a", 1, "Wrote the brief.", runId)];
+        yield* complete;
+        const history = yield* chats.history(owner, { chatId, beforeSeq: 99, limit: 20 });
+        const card = history.widgets.find((widget) => widget.type === KIN_DOC_CARD);
+        assert.isDefined(card);
+        assert.deepInclude(card.state as object, { key: made.key, title: made.title, version: 1 });
+        const rows = (yield* posted).filter((row) => row.authorKind === "agent");
+        assert.deepStrictEqual(
+          rows.map((row) => [row.body, row.widgetId]),
+          [["Wrote the brief.", card.widgetId]],
+        );
+        return;
+      }
+      const intervening = scenario === "intervening item";
+      const lead = Option.getOrThrow(
+        yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId }),
+      );
+      const card = yield* chats.ask(lead, {
+        chatId,
+        clientMessageId: "launch-question",
+        question: "Which launch day?",
+        options: [{ label: "Monday" }, { label: "Wednesday" }],
+      });
+      if (intervening)
+        yield* chats.notice({
+          orgId: owner.orgId,
+          chatId,
+          messageId: KinMessageId.make("next"),
+          audience: "chat",
+          body: "A new update arrived.",
+        });
+      fake.items = [text("a", 1, "Friday won't hold.", runId)];
+      yield* complete;
+      const rows = (yield* posted).filter((row) => row.authorKind === "agent");
+      assert.deepStrictEqual(
+        rows.map((row) => [row.body, row.widgetId]),
+        intervening
+          ? [
+              ["", card.widgetId],
+              ["Friday won't hold.", null],
+            ]
+          : [["Friday won't hold.", card.widgetId]],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([true, false])(
+  "settles a staged chart with and without a text reply (%s)",
+  (hasReply) =>
+    Effect.gen(function* () {
+      const { chats, identity, owner, chatId, wakeupId, fake, runId, complete, posted, sql } =
+        yield* setup({ ask: "How were signups this week?" });
+      const lead = Option.getOrThrow(
+        yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId }),
+      );
+      const staged = yield* chats.chart(lead, {
+        chatId,
+        clientMessageId: "signups",
+        intent: "answer",
+        chart: "bar",
+        title: "Signups",
+        unit: { kind: "count" },
+        labels: ["Mon", "Tue", "Wed"],
+        series: [{ name: "Signups", values: [4, 6, 8] }],
+      });
+      assert.isTrue("figure" in staged);
+      assert.lengthOf(yield* posted, 0);
+      fake.items = hasReply ? [text("a", 1, "Signups doubled.", runId)] : [];
+      yield* complete;
+      const rows = (yield* posted).filter((row) => row.authorKind === "agent");
+      assert.lengthOf(rows, 1);
+      if (hasReply) {
+        assert.include(rows[0]?.body, "Signups doubled.\n\n```kin_chart");
+        assert.isNull(rows[0]?.widgetId);
+      } else {
+        assert.strictEqual(rows[0]?.body, "");
+        assert.match(rows[0]?.widgetId ?? "", /^chart:/);
+      }
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_turn_figures WHERE message_id IS NOT NULL`, 1);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  { reply: "Noted.", ownOutcome: false, separate: false },
+  {
+    reply: "Takeaway: launch moved.\n\n## Schedule\nThe revised draft starts Wednesday.",
+    ownOutcome: false,
+    separate: true,
+  },
+  { reply: "Noted.", ownOutcome: true, separate: true },
+])(
+  "settles a tapped choice inline only for a short follow-up (%#)",
+  ({ reply, ownOutcome, separate }) =>
+    Effect.gen(function* () {
+      const { chats, owner, chatId, fake, runId, complete, posted } = yield* setup({
+        event: ({ owner, direct, ownerMember }) =>
+          Effect.gen(function* () {
+            const services = Option.getOrThrow((yield* Kin.KinServer).services);
+            const chats = Context.get(services, KinChatService);
+            const identity = Context.get(services, KinIdentity);
+            const prompt = yield* chats.send(owner, {
+              chatId: direct,
+              body: "Plan the launch.",
+              clientMessageId: "question-origin",
+            });
+            const id = yield* startAgentWakeup({
+              orgId: owner.orgId,
+              agentId,
+              threadId,
+              message: prompt,
+            });
+            const lead = Option.getOrThrow(
+              yield* identity.agentForWakeup({
+                orgId: owner.orgId,
+                wakeupId: KinWakeupId.make(id),
+              }),
+            );
+            const card = yield* chats.ask(lead, {
+              chatId: direct,
+              clientMessageId: "launch-choice",
+              question: "Which day?",
+              options: [{ label: "Monday" }, { label: "Wednesday" }],
+            });
+            const action = yield* chats.act(owner, {
+              widgetId: card.widgetId,
+              revision: card.revision,
+              actionId: KIN_CHOICE_CARD_ACTION,
+              value: "option-2",
+              clientActionId: "picked",
+            });
+            if (ownOutcome) {
+              const sql = yield* SqlClient.SqlClient;
+              yield* sql`UPDATE kin_widgets SET state_json = json_set(state_json, '$.outcome', json(${JSON.stringify({ title: "Updated", text: "Kin recorded it." })}))
+            WHERE widget_id = ${card.widgetId}`;
+            }
+            return (base: WakeupEventBase) =>
+              ({
+                ...base,
+                _tag: "widget.action",
+                chatId: direct,
+                messageId: action.messageId,
+                actionId: KIN_CHOICE_CARD_ACTION,
+                provenance: human(owner, ownerMember),
+              }) as const;
+          }).pipe(Effect.orDie),
+      });
+      fake.items = [text("a", 1, reply, runId)];
+      yield* complete;
+      const rows = yield* posted;
+      assert.deepStrictEqual(
+        rows.filter((row) => row.widgetId === null).map((row) => row.body),
+        separate ? [reply] : [],
+      );
+      const history = yield* chats.history(owner, { chatId, beforeSeq: 99, limit: 20 });
+      const card = history.widgets.find((widget) => widget.type === "choice");
+      assert.isNotNull(card?.closedAt);
+      const expected = ownOutcome
+        ? { title: "Updated", text: "Kin recorded it." }
+        : separate
+          ? undefined
+          : { title: "You chose “Wednesday”", text: reply };
+      assert.deepStrictEqual((card?.state as { outcome?: unknown } | undefined)?.outcome, expected);
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect("labels each phase of a wake-up once per change and clears when the reply settles", () =>
@@ -1088,7 +1299,7 @@ it.effect.each([
     yield* complete;
     assert.strictEqual(fake.rescues, 0);
     assert.deepStrictEqual(
-      (yield* posted).filter((row) => row.intent !== "question").map((row) => row.body),
+      (yield* posted).filter((row) => row.body !== "").map((row) => row.body),
       expected,
     );
   }).pipe(Effect.provide(layer)),

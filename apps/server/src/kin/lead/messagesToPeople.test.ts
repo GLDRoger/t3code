@@ -11,6 +11,7 @@ import {
   KinMemoryItemId,
   type KinOrgId,
   KinPersonId,
+  KinWakeupId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -29,6 +30,7 @@ import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvo
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import { KinAttachmentStore } from "../chat/KinAttachmentStore.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
@@ -105,6 +107,11 @@ const layer = Layer.mergeAll(
   Layer.provideMerge(
     Kin.layer.pipe(
       Layer.provide(kinSecretsTest),
+      Layer.provide(
+        Layer.mock(KinAttachmentStore)({
+          storePage: () => Effect.succeed("kin-chat-team-week-html"),
+        }),
+      ),
       Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
       Layer.provideMerge(environment),
     ),
@@ -620,12 +627,47 @@ it.effect("a visual in a teammate's chat goes only when everyone there may see i
           height: 120,
         });
       yield* says(zoya, zoyasChat, "Show me my week as a picture");
-      // This fixture stores no files, so a page that passes every check stops at storing it.
       const mine = yield* visual("Your week", "7 tasks done, 2 waiting");
-      assert.strictEqual(mine.value.message, "Attachments are unavailable.");
+      assert.isTrue(mine.ok);
+      assert.match(String(mine.value.figure), /kin-figure:f_[A-Za-z0-9_-]{10}/);
       const hidden = yield* visual("This month", "47200 billed");
       assert.isFalse(hidden.ok);
       assert.match(String(hidden.value.message), /not everyone in this chat may see/);
+      const chart = (values: ReadonlyArray<number>, money: boolean) =>
+        call("kin_chart", {
+          chart: "bar",
+          title: "This week",
+          unit: money ? { kind: "money", currency: "INR" } : { kind: "count" },
+          labels: ["Mon", "Tue", "Wed"],
+          series: [{ name: "Invoiced", values }],
+        });
+      const hiddenChart = yield* chart([4_720_000, 100, 200], true);
+      assert.isFalse(hiddenChart.ok);
+      assert.match(String(hiddenChart.value.message), /not everyone in this chat may see/);
+      const shared = yield* chart([7, 2, 1], false);
+      assert.isTrue(shared.ok, String(shared.value.message));
+      assert.match(String(shared.value.figure), /kin-figure:f_[A-Za-z0-9_-]{10}/);
+      const [turn] = yield* sql<{
+        wakeupId: string;
+      }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
+        WHERE org_id = ${orgId} AND agent_id = ${chief} AND status = 'running'`;
+      const lead = Option.getOrThrow(
+        yield* identity.agentForWakeup({ orgId, wakeupId: KinWakeupId.make(turn!.wakeupId) }),
+      );
+      yield* chats.send(lead, {
+        chatId: zoyasChat,
+        body: "A few tasks this week.",
+        clientMessageId: "shared-figure",
+        placeReplyFigures: true,
+        intent: "answer",
+      });
+      const history = yield* chats.history(zoya, { chatId: zoyasChat, beforeSeq: 99, limit: 20 });
+      const replies = history.messages.filter((message) => message.author._tag === "agent");
+      assert.lengthOf(replies, 1);
+      assert.deepStrictEqual(
+        replies[0]?.embeds?.map((embed) => embed._tag),
+        ["visual", "chart"],
+      );
     }).pipe(Effect.provide(layer)),
   ),
 );
