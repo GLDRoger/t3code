@@ -85,6 +85,7 @@ const MEMBER = [
   "kin.work.list",
   "kin.work.lists",
   "kin.work.money",
+  "kin.work.nudge",
   "kin.work.parties",
   "kin.work.party",
   "kin.work.project",
