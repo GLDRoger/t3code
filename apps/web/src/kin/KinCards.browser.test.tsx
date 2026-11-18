@@ -50,6 +50,10 @@ vi.mock(import("./kinClient"), async () => {
       connectionSetSendFrom: { permissionAtom: () => allowed },
       connectionSendEdited: { permissionAtom: () => (state.canEdit ? allowed : denied) },
     },
+    // Imported by the pages a card can open; no test here reaches them.
+    refreshKinAgents: () => {},
+    retryKinAccess: () => {},
+    kinReads: {},
   } as never;
 });
 vi.mock(import("../connection/catalog"), async () => {
