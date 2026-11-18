@@ -68,7 +68,7 @@ function KinInviteForm(target: KinTeamTarget) {
   const [made, setMade] = useState<KinMadeInvite | null>(null);
   const checked = kinTeammateNameCheck(name);
 
-  const save = async (person: ReturnType<typeof kinRemovedNamesake> = null) => {
+  const save = async (person: ReturnType<typeof kinRemovedNamesake> = null, newPerson?: true) => {
     if (saving || !allowed) return;
     if (!checked.ok) return setProblem(checked.problem);
     setSaving(true);
@@ -76,6 +76,7 @@ function KinInviteForm(target: KinTeamTarget) {
     const result = await actions.makeLink({
       displayName: person?.displayName ?? checked.name,
       personId: person?.personId ?? null,
+      ...(newPerson === true ? { newPerson } : {}),
       replaces:
         person === null
           ? null
@@ -86,12 +87,11 @@ function KinInviteForm(target: KinTeamTarget) {
     const removed = result.bringBack === true ? kinRemovedNamesake(list, checked.name) : null;
     // The host's offer to bring back a removed person by this name, instead of a second one.
     if (removed === null) return setProblem(result.problem);
-    Dialog.confirm({
-      title: KIN_TEAM_ADD_COPY.title,
-      message: result.problem,
-      confirmText: `Bring back ${removed.displayName}`,
-      onConfirm: () => void save(removed),
-    });
+    Dialog.alert(KIN_TEAM_ADD_COPY.title, result.problem, [
+      { text: "Cancel", style: "cancel" },
+      { text: KIN_TEAM_ADD_COPY.someoneElse, onPress: () => void save(null, true) },
+      { text: `Bring back ${removed.displayName}`, onPress: () => void save(removed) },
+    ]);
   };
 
   return (

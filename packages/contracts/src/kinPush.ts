@@ -42,8 +42,9 @@ export const KinPushCategory = Schema.Literals([
 export type KinPushCategory = typeof KinPushCategory.Type;
 
 /**
- * The one thing a push is about, when it is about one: a card's message in the push's chat, or
- * an entry by its key. A tap opens it; a build that doesn't know it opens `deepLink`.
+ * The one thing a push is about, when it is about one: a card's message in the push's chat, an
+ * entry by its key, or the reader's own Tasks when it names several of theirs. A tap opens it; a
+ * build that doesn't know it opens `deepLink`.
  */
 export const KinPushSubject = Schema.Union([
   Schema.TaggedStruct("message", { messageId: KinMessageId }),
@@ -51,6 +52,7 @@ export const KinPushSubject = Schema.Union([
     key: KinRecordKey,
     kind: Schema.Literals(["task", "client", "project", "doc", "entry"]),
   }),
+  Schema.TaggedStruct("tasks", {}),
 ]);
 export type KinPushSubject = typeof KinPushSubject.Type;
 
