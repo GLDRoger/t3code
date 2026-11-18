@@ -393,7 +393,9 @@ const CreateRow = Schema.Struct({
     description:
       "true when an amount far above the rest of its list, or an invoice issued after its due day, is right as given.",
   }),
-  besides: Schema.optional(Schema.Array(KinRecordKey).check(Schema.isMaxLength(20))),
+  besides: Schema.optional(Schema.Array(KinRecordKey).check(Schema.isMaxLength(20))).annotate({
+    description: "Keys of open entries this row repeats on purpose, as a refusal named them.",
+  }),
   ...SpineInputs,
   ...GoalInputs,
 });
