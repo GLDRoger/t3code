@@ -1,4 +1,9 @@
-import type { KinTurnChange, KinTurnChanges } from "@t3tools/contracts";
+import type {
+  KinMessageLink,
+  KinMessageLinkTarget,
+  KinTurnChange,
+  KinTurnChanges,
+} from "@t3tools/contracts";
 
 /** How many entries the line names before "and N more". */
 const NAMED = 2;
@@ -8,6 +13,8 @@ const NAMED = 2;
  * counting the changes about any other. Null when the turn changed nothing, or for a reply from an
  * older host, which has no receipt.
  */
+export const KIN_TURN_RECEIPT_LABEL = "What this reply changed";
+
 export function kinTurnReceiptLine(turn: KinTurnChanges | undefined): string | null {
   if (turn === undefined || turn.count === 0) return null;
   const named = [...new Set(turn.items.map((item) => item.key))].slice(0, NAMED);
@@ -21,6 +28,7 @@ export type KinTurnReceiptUndo = "undo" | "undone" | "none";
 export interface KinTurnReceiptRow {
   readonly id: string;
   readonly key: string;
+  readonly kind: KinTurnChange["kind"];
   readonly title: string;
   readonly what: string;
   /** `undo` offers Undo (`kin.lead.undoChange` with `change`); `undone` says it was put back. */
@@ -38,6 +46,7 @@ export function kinTurnReceiptRows(turn: KinTurnChanges | undefined): {
     rows: turn.items.map((item) => ({
       id: `${item.change.agentId}:${item.change.seq}`,
       key: item.key,
+      kind: item.kind,
       title: item.title,
       what: item.what,
       undo: item.undone ? "undone" : item.undoable ? "undo" : "none",
@@ -45,4 +54,18 @@ export function kinTurnReceiptRows(turn: KinTurnChanges | undefined): {
     })),
     more: turn.more === 0 ? null : `${turn.more} more ${turn.more === 1 ? "change" : "changes"}`,
   };
+}
+
+/**
+ * Where a row opens: the kind the change carries, else the reply's own link to that key; an entry
+ * neither names (an older host) opens in the task sheet, as attention rows do.
+ */
+export function kinTurnReceiptTarget(
+  row: Pick<KinTurnChange, "key" | "kind">,
+  links: ReadonlyArray<KinMessageLink> | undefined,
+): Extract<KinMessageLinkTarget, { readonly _tag: "record" }> {
+  if (row.kind !== undefined) return { _tag: "record", key: row.key, kind: row.kind };
+  for (const link of links ?? [])
+    if (link.to._tag === "record" && link.to.key === row.key) return link.to;
+  return { _tag: "record", key: row.key, kind: "task" };
 }

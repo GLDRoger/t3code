@@ -56,6 +56,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
+import { kinTurnReceiptLine } from "@t3tools/client-runtime/kin/kinTurnReceipt";
 import { kinCardDraws, KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
   kinDraftMarkdown,
@@ -199,6 +200,8 @@ export function KinMessageBubble(props: {
   readonly onOpenPerson?: (personId: KinPersonId) => void;
   /** The reader's first name, for a brief's greeting. */
   readonly firstName?: string | null;
+  /** Opens the sheet of what this reply's turn changed. */
+  readonly onOpenReceipt: () => void;
 }) {
   const { row, onReact, onOpenActions } = props;
   const onOpenTarget = useKinOpenTarget(props.environmentId, row.message.orgId);
@@ -226,6 +229,7 @@ export function KinMessageBubble(props: {
   const hasBubble =
     (!hasCard && attachments.length === 0) || hasBody || suggested || message.editedAt !== null;
   const mine = new Set(props.reactions.flatMap((chip) => (chip.mine ? [chip.emoji] : [])));
+  const receipt = deleted ? null : kinTurnReceiptLine(message.turnChanges);
   // The sheet's actions, reachable without the long press.
   const sheetActions = [
     ...(onReact === null || deleted
@@ -422,6 +426,19 @@ export function KinMessageBubble(props: {
         </Pressable>
       )}
       {hasCard && page === null ? <View className="w-[85%]">{card}</View> : null}
+      {receipt === null ? null : (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${receipt}. Show the changes`}
+          hitSlop={8}
+          onPress={props.onOpenReceipt}
+          className="max-w-full px-1 active:opacity-60"
+        >
+          <Text textRole="caption" numberOfLines={1} className="text-foreground-muted">
+            {receipt}
+          </Text>
+        </Pressable>
+      )}
       {props.reactions.length > 0 ? (
         <View className={cn("flex-row flex-wrap gap-1.5 px-1", row.own && "justify-end")}>
           {props.reactions.map((chip) => (
