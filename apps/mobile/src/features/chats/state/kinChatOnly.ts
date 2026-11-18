@@ -168,12 +168,17 @@ export function installKinChatOnlyMemory(): () => void {
 }
 
 const renewAtom = connectionAtomRuntime.fn(
-  (environmentId: EnvironmentId, get) => {
-    const entry = get(environmentCatalog.catalogValueAtom).entries.get(environmentId);
+  (input: { readonly environmentId: EnvironmentId; readonly failed: () => void }, get) => {
+    const entry = get(environmentCatalog.catalogValueAtom).entries.get(input.environmentId);
     return entry === undefined
       ? Effect.void
       : renewKinTeammateDevice(entry).pipe(
-          Effect.catch(() => Effect.logWarning("Renewing this device's Kin sign-in failed")),
+          Effect.asVoid,
+          Effect.catch(() =>
+            Effect.sync(input.failed).pipe(
+              Effect.andThen(Effect.logWarning("Renewing this device's Kin sign-in failed")),
+            ),
+          ),
         );
   },
   { concurrent: true },
@@ -181,7 +186,8 @@ const renewAtom = connectionAtomRuntime.fn(
 
 /**
  * Renews each teammate session once a run, so a phone in use never reaches its deadline. The
- * open socket stays; the next connection uses the new token. Offline, it waits for the next run.
+ * open socket stays, and the host moves its deadline too. A failed try is asked again the next
+ * time the connection comes back.
  */
 export function installKinDeviceRenewal(): () => void {
   const renewed = new Set<EnvironmentId>();
@@ -194,7 +200,10 @@ export function installKinDeviceRenewal(): () => void {
       for (const environmentId of state.chatOnly) {
         if (renewed.has(environmentId)) continue;
         renewed.add(environmentId);
-        appAtomRegistry.set(renewAtom, environmentId);
+        appAtomRegistry.set(renewAtom, {
+          environmentId,
+          failed: () => renewed.delete(environmentId),
+        });
       }
     },
     { immediate: true },

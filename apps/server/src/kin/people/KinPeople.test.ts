@@ -253,11 +253,13 @@ it.effect("a teammate links, lists, renews and removes only their own devices", 
     // The owner pairs through T3 Code; a link would make them a teammate.
     assert.equal(yield* refused(service.linkDevice(ownerSession, { orgId })), "not_allowed");
     const link = yield* service.linkDevice(asha.session, { orgId });
-    assert.match(link.code, /^KIN-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
-    const typed = link.code.toLowerCase().replaceAll("-", "").replace(/^kin/, "kin-");
-    const laptop = yield* service.accept({ secret: typed, label: "Laptop", deviceType: "desktop" });
+    const laptop = yield* service.accept({
+      secret: link.secret,
+      label: "Laptop",
+      deviceType: "desktop",
+    });
     assert.equal(laptop.person.personId, asha.person.personId);
-    assert.equal(yield* refused(service.accept({ secret: link.code })), "not_found");
+    assert.equal(yield* refused(service.accept({ secret: link.secret })), "not_found");
 
     const mine = (yield* service.listDevices(asha.session, {
       orgId,
@@ -287,21 +289,17 @@ it.effect("a teammate links, lists, renews and removes only their own devices", 
     // A person's own link never brings back someone the owner removed.
     const ravisLink = yield* service.linkDevice(ravi.session, { orgId });
     yield* service.removeAccess(ownerSession, { orgId, personId: ravi.person.personId });
-    assert.equal(yield* refused(service.accept({ secret: ravisLink.code })), "not_found");
+    assert.equal(yield* refused(service.accept({ secret: ravisLink.secret })), "not_found");
 
     // A newer link replaces an unused one, and an unused one lapses after ten minutes.
     const stale = yield* service.linkDevice(asha.session, { orgId });
     const fresh = yield* service.linkDevice(asha.session, { orgId });
-    assert.equal(yield* refused(service.accept({ secret: stale.code })), "not_found");
+    assert.equal(yield* refused(service.accept({ secret: stale.secret })), "not_found");
     yield* TestClock.adjust("10 minutes");
     assert.equal(yield* refused(service.accept({ secret: fresh.secret })), "not_found");
 
-    // Wrong codes pause only the address sending them; everyone else's code still works.
-    const guessed = yield* service.linkDevice(asha.session, { orgId });
-    for (let miss = 0; miss < 20; miss += 1)
-      yield* refused(service.accept({ secret: "KIN-AAAA-AAAA" }, "guesser"));
-    assert.equal(yield* refused(service.accept({ secret: guessed.code }, "guesser")), "not_found");
-    const tablet = yield* service.accept({ secret: guessed.code, label: "Tablet" }, "tablet");
+    const tabletLink = yield* service.linkDevice(asha.session, { orgId });
+    const tablet = yield* service.accept({ secret: tabletLink.secret, label: "Tablet" });
     yield* service.revokeDevice(asha.session, {
       orgId,
       personId: asha.person.personId,
@@ -338,6 +336,108 @@ it.effect("a teammate links, lists, renews and removes only their own devices", 
           .pipe(Effect.orElseSucceed(() => Option.none())),
       ),
     );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("removing a device takes the devices linked from it and the links it left open", () =>
+  Effect.gen(function* () {
+    const service = yield* People.KinPeople;
+    const identity = yield* KinIdentity;
+    const sessions = yield* SessionStore;
+    yield* pairSession(ownerSession.sessionId);
+    const orgId = identity.owner.orgId;
+    const invite = yield* service.createInvite(ownerSession, { orgId, displayName: "Asha" });
+    const phone = yield* service.accept({ secret: invite.secret });
+    const personId = phone.person.personId;
+    const as = (accepted: { readonly accessToken: string }) =>
+      sessions.verify(accepted.accessToken);
+    const linkFrom = Effect.fn("test.linkFrom")(function* (
+      from: { readonly accessToken: string },
+      label: string,
+    ) {
+      const link = yield* service.linkDevice(yield* as(from), { orgId });
+      return yield* service.accept({ secret: link.secret, label });
+    });
+    const refused = <A, E extends object>(effect: Effect.Effect<A, E>) =>
+      effect.pipe(
+        Effect.flip,
+        Effect.map((error) => ("reason" in error ? error.reason : undefined)),
+      );
+
+    // Two devices redeem one code at once: exactly one session comes of it.
+    const shared = yield* service.linkDevice(yield* as(phone), { orgId });
+    const raced = yield* Effect.all(
+      [
+        service.accept({ secret: shared.secret, label: "Laptop" }).pipe(Effect.result),
+        service.accept({ secret: shared.secret, label: "Other" }).pipe(Effect.result),
+      ],
+      { concurrency: "unbounded" },
+    );
+    const won = raced.filter((result) => result._tag === "Success");
+    assert.equal(won.length, 1);
+    const laptop = won[0]!.success;
+    const tablet = yield* linkFrom(laptop, "Tablet");
+    const watch = yield* linkFrom(phone, "Watch");
+
+    // A device linked from another removes itself and what it linked, never the phone above it.
+    const fromLaptop = (yield* service.listDevices(yield* as(laptop), { orgId, personId })).devices;
+    assert.deepStrictEqual(
+      Object.fromEntries(fromLaptop.map((d) => [d.label, [d.linkedFrom, d.removable]])),
+      {
+        Asha: [null, false],
+        Laptop: [phone.sessionId, true],
+        Tablet: [laptop.sessionId, true],
+        Watch: [phone.sessionId, false],
+      },
+    );
+    assert.equal(
+      yield* refused(
+        service.revokeDevice(yield* as(tablet), { orgId, personId, sessionId: phone.sessionId }),
+      ),
+      "not_allowed",
+    );
+    // Self-links are the person's own: the owner's invite list doesn't show or cancel them.
+    const open = yield* service.linkDevice(yield* as(laptop), { orgId });
+    assert.deepStrictEqual((yield* service.listInvites(ownerSession, orgId)).invites, []);
+    const [openRow] = yield* (yield* SqlClient.SqlClient)<{
+      invite_id: string;
+    }>`SELECT invite_id FROM kin_people_invites WHERE made_by_session_id = ${laptop.sessionId}
+      AND consumed_at IS NULL AND revoked_at IS NULL`;
+    assert.equal(
+      yield* refused(
+        service.revokeInvite(ownerSession, {
+          orgId,
+          inviteId: openRow!.invite_id as never,
+        }),
+      ),
+      "not_found",
+    );
+
+    // The phone removes the laptop: the tablet linked from it goes too, and the laptop's open
+    // code is dead before anyone redeems it. The watch, linked from the phone, stays.
+    yield* service.revokeDevice(yield* as(phone), { orgId, personId, sessionId: laptop.sessionId });
+    for (const gone of [laptop, tablet])
+      assert.equal((yield* sessions.verify(gone.accessToken).pipe(Effect.result))._tag, "Failure");
+    assert.equal(yield* refused(service.accept({ secret: open.secret })), "not_found");
+    assert.equal((yield* as(watch)).sessionId, watch.sessionId);
+
+    // An issuer signed out some other way still can't have its code redeemed.
+    const fromWatch = yield* service.linkDevice(yield* as(watch), { orgId });
+    yield* sessions.revoke(watch.sessionId);
+    assert.equal(yield* refused(service.accept({ secret: fromWatch.secret })), "not_found");
+    const listed = (yield* service.listDevices(ownerSession, { orgId, personId })).devices;
+    assert.isNotNull(listed.find((d) => d.sessionId === watch.sessionId)!.revokedAt);
+
+    // The device limit holds when a code is used, not only when it is made.
+    for (let n = 0; n < 8; n += 1) yield* linkFrom(phone, `Device ${n}`);
+    const lastLink = yield* service.linkDevice(yield* as(phone), { orgId });
+    const back = yield* service.createInvite(ownerSession, {
+      orgId,
+      displayName: "Asha",
+      personId,
+    });
+    yield* service.accept({ secret: back.secret });
+    assert.equal(yield* refused(service.accept({ secret: lastLink.secret })), "limit");
   }).pipe(Effect.provide(layer)),
 );
 

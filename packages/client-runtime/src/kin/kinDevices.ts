@@ -18,21 +18,19 @@ import { formatKinTime } from "./kinScreenState.ts";
 
 export const KIN_DEVICES_COPY = {
   title: "Linked devices",
-  rowDetail: "Phones and computers signed in as you",
+  rowDetail: "Phones and browsers signed in as you",
   footer:
     "Each device stays signed in while you use it. One unused for 30 days signs out; link it again here.",
   empty: "No devices linked yet.",
   link: "Link a device",
   linkDetail: `Works once, for ${KIN_DEVICE_LINK_TTL_MINUTES} minutes. Making a new one cancels this one.`,
   replaces: "Making a new one cancels this one.",
-  computerTitle: "On a computer with Claude Code or T3 Code",
-  computerDetail:
-    "Run the command, or paste the code into a Claude Code or T3 Code session and ask it to link Kin.",
-  renew: "Make a new code",
+  renew: "Make a new link",
   dropped:
-    "The connection dropped before the link could be shown. Make a new code once you're back online.",
-  phoneTitle: "On a phone or in a browser",
-  phoneDetail: "Open the link, or scan the code.",
+    "The connection dropped before the link could be shown. Make a new link once you're back online.",
+  scan: "Scan this with the new phone, or open the link in the new browser.",
+  expired: "This link has run out",
+  expiredDetail: `Links work for ${KIN_DEVICE_LINK_TTL_MINUTES} minutes. Make a new one for the device.`,
   limit: `You have ${KIN_DEVICE_LIMIT} devices linked, the most Kin allows. Remove one you no longer use, then link the new one.`,
   remove: "Remove",
   ownerFooter: "Removing a device signs it out right away.",
@@ -67,7 +65,7 @@ export function kinDeviceLabel(device: KinPersonDevice): string {
 }
 
 // @effect-diagnostics globalDate:off - the shared clock-and-day labels take a Date.
-/** "Linked 3 Nov · Last used 9:41". */
+/** "Linked 3 Nov · Last connected 9:41": when it last opened a connection, not its last use. */
 export function kinDeviceLine(device: KinPersonDevice, now: Date): string {
   const linked = new Date(device.boundAt);
   const day =
@@ -75,33 +73,79 @@ export function kinDeviceLine(device: KinPersonDevice, now: Date): string {
   const used =
     device.lastConnectedAt === null || device.lastConnectedAt === undefined
       ? ""
-      : ` · Last used ${formatKinTime(new Date(device.lastConnectedAt), now)}`;
+      : ` · Last connected ${formatKinTime(new Date(device.lastConnectedAt), now)}`;
   return `Linked ${day}${used}`;
 }
 
-/** The confirmation before a device is signed out. */
+/** Whether the asking device may remove this one. Older hosts don't say, and allowed it. */
+export function kinDeviceRemovable(device: KinPersonDevice): boolean {
+  return device.removable !== false;
+}
+
+/** The devices linked from this one, down the line: removing it signs them out too. */
+export function kinDevicesLinkedFrom(
+  device: KinPersonDevice,
+  devices: ReadonlyArray<KinPersonDevice>,
+): ReadonlyArray<KinPersonDevice> {
+  const gone = new Set<string>([device.sessionId]);
+  const linked: Array<KinPersonDevice> = [];
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const other of devices)
+      if (other.linkedFrom != null && gone.has(other.linkedFrom) && !gone.has(other.sessionId)) {
+        gone.add(other.sessionId);
+        linked.push(other);
+        grew = true;
+      }
+  }
+  return linked;
+}
+
+/**
+ * The device a link this one just made brought in: linked from this device since the link was
+ * made. Read from the host's list, so a list that loads late can't name an old device.
+ */
+export function kinDeviceJustLinked(
+  devices: ReadonlyArray<KinPersonDevice>,
+  linkExpiresAt: string,
+): KinPersonDevice | null {
+  const here = devices.find((device) => device.current === true);
+  if (here === undefined) return null;
+  const madeAt = Date.parse(linkExpiresAt) - KIN_DEVICE_LINK_TTL_MINUTES * 60_000;
+  return (
+    devices.find(
+      (device) => device.linkedFrom === here.sessionId && Date.parse(device.boundAt) >= madeAt,
+    ) ?? null
+  );
+}
+
+/** The confirmation before a device is signed out, naming what goes with it. */
 export function kinRemoveDeviceCopy(
   device: KinPersonDevice,
   mine: boolean,
+  devices: ReadonlyArray<KinPersonDevice> = [],
 ): { readonly title: string; readonly detail: string } {
+  const linked = kinDevicesLinkedFrom(device, devices);
+  const names = linked.map(kinDeviceLabel);
+  const also =
+    names.length === 0
+      ? ""
+      : names.length === 1
+        ? ` ${names[0]}, linked from it, is signed out too.`
+        : ` So are the devices linked from it: ${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}.`;
   return {
     title: `Remove ${kinDeviceLabel(device)}?`,
     detail:
       device.current === true
-        ? "It's signed out right away. This is the device you're using, so you'll be signed out here and need a new link to come back."
+        ? `It's signed out right away.${also} This is the device you're using, so you'll be signed out here and need a new link to come back.`
         : mine
-          ? "It's signed out right away. Linking it again needs a new code."
-          : "It's signed out right away. Their other devices stay signed in.",
+          ? `It's signed out right away.${also} Linking it again needs a new link.`
+          : `It's signed out right away.${also} Their other devices stay signed in.`,
   };
 }
 
-/** What a computer runs to link itself with a code. */
-export function kinDeviceJoinCommand(code: string, httpBaseUrl: string): string {
-  return `kin-mcp-bridge join ${code} --server ${new URL(httpBaseUrl).origin}`;
-}
-
 /**
- * How long a fresh code still works, to the minute. `nowMs` may trail the real time by up to a
+ * How long a fresh link still works, to the minute. `nowMs` may trail the real time by up to a
  * minute (the shared minute tick), so the count is capped at the code's lifetime.
  */
 export function kinDeviceLinkLeft(
@@ -120,16 +164,17 @@ export function kinDeviceLinkLeft(
 
 const isChatError = Schema.is(KinChatError);
 
-/** Why no code was made, in the person's words. */
+/** Why no link was made, in the person's words. */
 export function kinDeviceLinkProblem(error: unknown): string {
   if (isChatError(error) && error.reason === "limit") return KIN_DEVICES_COPY.limit;
-  return kinFailureText(error, "Couldn't make a code.", {
+  return kinFailureText(error, "Couldn't make a link.", {
     refused: "Your account can't link devices here.",
   });
 }
 
 export function kinRemoveDeviceProblem(error: unknown): string {
   return kinFailureText(error, "Couldn't remove that device.", {
+    refused: "Remove this device from the phone you joined with, or ask the owner.",
     gone: "That device was already signed out.",
   });
 }

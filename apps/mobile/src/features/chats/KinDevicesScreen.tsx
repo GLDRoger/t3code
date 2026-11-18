@@ -3,11 +3,12 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import {
   KIN_DEVICES_COPY,
   kinActiveDevices,
-  kinDeviceJoinCommand,
+  kinDeviceJustLinked,
   kinDeviceLabel,
   kinDeviceLine,
   kinDeviceLinkLeft,
   kinDeviceLinkProblem,
+  kinDeviceRemovable,
   kinRemoveDeviceCopy,
   kinRemoveDeviceProblem,
 } from "@t3tools/client-runtime/kin/kinDevices";
@@ -65,7 +66,7 @@ const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
 const decodePersonId = Schema.decodeUnknownOption(KinPersonId);
 
-/** The phones and computers signed in as you, and the way to add one more. */
+/** The phones and browsers signed in as you, and the way to add one more. */
 export function KinDevicesScreen({ route }: StaticScreenProps<KinDevicesParams>) {
   const navigation = useNavigation();
   const environmentId = Option.getOrNull(decodeEnvironmentId(route.params.environmentId));
@@ -75,8 +76,6 @@ export function KinDevicesScreen({ route }: StaticScreenProps<KinDevicesParams>)
   const [made, setMade] = useState<KinPeopleLinkDeviceResult | null>(null);
   const [linking, setLinking] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  // The devices signed in before this code, so the one it links can be named when it arrives.
-  const [known, setKnown] = useState<ReadonlySet<string>>(new Set());
   const target =
     environmentId === null || orgId === null || personId === null
       ? null
@@ -93,20 +92,8 @@ export function KinDevicesScreen({ route }: StaticScreenProps<KinDevicesParams>)
       { reportFailure: false, reportDefect: true },
     );
     setLinking(false);
-    if (AsyncResult.isSuccess(outcome)) {
-      const listed = Option.getOrNull(
-        AsyncResult.value(
-          appAtomRegistry.get(
-            kinClient.devices({
-              environmentId: target.environmentId,
-              input: { orgId: target.orgId, personId: target.personId },
-            }),
-          ),
-        ),
-      );
-      setKnown(new Set(listed?.devices.map((device) => device.sessionId) ?? []));
-      setMade(outcome.value);
-    } else setProblem(kinDeviceLinkProblem(squashAtomCommandFailure(outcome)));
+    if (AsyncResult.isSuccess(outcome)) setMade(outcome.value);
+    else setProblem(kinDeviceLinkProblem(squashAtomCommandFailure(outcome)));
   };
 
   return (
@@ -132,8 +119,8 @@ export function KinDevicesScreen({ route }: StaticScreenProps<KinDevicesParams>)
             <KinDeviceLinkView
               made={made}
               target={target}
-              known={known}
               linking={linking}
+              problem={problem}
               onRenew={() => void link()}
             />
           ) : (
@@ -175,7 +162,7 @@ export function KinDeviceList(props: {
   const devices = held === null ? null : kinActiveDevices(held.devices, nowMs);
 
   const remove = (device: KinPersonDevice) => {
-    const copy = kinRemoveDeviceCopy(device, props.self);
+    const copy = kinRemoveDeviceCopy(device, props.self, devices ?? []);
     Dialog.confirm({
       title: copy.title,
       message: copy.detail,
@@ -231,15 +218,19 @@ export function KinDeviceList(props: {
               <ListActionRow
                 icon={device.deviceType === "mobile" ? "iphone" : "laptopcomputer"}
                 label={kinDeviceLabel(device)}
-                accessibilityLabel={`${KIN_DEVICES_COPY.remove} ${kinDeviceLabel(device)}`}
-                detail={KIN_DEVICES_COPY.remove}
+                {...(kinDeviceRemovable(device)
+                  ? {
+                      accessibilityLabel: `${KIN_DEVICES_COPY.remove} ${kinDeviceLabel(device)}`,
+                      detail: KIN_DEVICES_COPY.remove,
+                    }
+                  : {})}
                 description={
                   device.current === true
                     ? `This device · ${kinDeviceLine(device, new Date(nowMs))}`
                     : kinDeviceLine(device, new Date(nowMs))
                 }
                 loading={removing === device.sessionId}
-                disabled={removing !== null}
+                disabled={removing !== null || !kinDeviceRemovable(device)}
                 onPress={() => remove(device)}
               />
             </View>
@@ -250,12 +241,13 @@ export function KinDeviceList(props: {
   );
 }
 
-/** The code, command, link and QR for one more device; shown once, then gone. */
+/** The link and QR for one more device; shown once, then gone. */
 function KinDeviceLinkView(props: {
   readonly made: KinPeopleLinkDeviceResult;
   readonly target: KinDevicesTarget;
-  readonly known: ReadonlySet<string>;
   readonly linking: boolean;
+  /** Why the last "Make a new link" failed. */
+  readonly problem: string | null;
   readonly onRenew: () => void;
 }) {
   const { made } = props;
@@ -268,21 +260,18 @@ function KinDeviceLinkView(props: {
       useAtomValue(kinClient.devices({ environmentId, input: { orgId, personId } })),
     ),
   );
-  const [copied, setCopied] = useState<"code" | "command" | "link" | null>(null);
+  const [copied, setCopied] = useState(false);
   const nowMs = useNowMinuteMs();
   if (connection === null) {
     return <ErrorBanner message={KIN_DEVICES_COPY.dropped} />;
   }
   const link = kinInviteLink(connection.httpBaseUrl, made.secret);
-  const command = kinDeviceJoinCommand(made.code, connection.httpBaseUrl);
   const left = kinDeviceLinkLeft(made.expiresAt, nowMs);
   const joined =
     listed === null
-      ? undefined
-      : kinActiveDevices(listed.devices, nowMs).find(
-          (device) => !props.known.has(device.sessionId),
-        );
-  if (joined !== undefined)
+      ? null
+      : kinDeviceJustLinked(kinActiveDevices(listed.devices, nowMs), made.expiresAt);
+  if (joined !== null)
     return (
       <EmptyState
         variant="plain"
@@ -292,55 +281,31 @@ function KinDeviceLinkView(props: {
     );
   if (left.expired)
     return (
-      <EmptyState
-        variant="plain"
-        title="This code has run out"
-        detail="Codes work for 10 minutes. Make a new one for the device."
-        action={
-          <Button
-            tone="primary"
-            label={KIN_DEVICES_COPY.renew}
-            loading={props.linking}
-            onPress={props.onRenew}
-          />
-        }
-      />
+      <>
+        {props.problem === null ? null : <ErrorBanner message={props.problem} />}
+        <EmptyState
+          variant="plain"
+          title={KIN_DEVICES_COPY.expired}
+          detail={KIN_DEVICES_COPY.expiredDetail}
+          action={
+            <Button
+              tone="primary"
+              label={KIN_DEVICES_COPY.renew}
+              loading={props.linking}
+              onPress={props.onRenew}
+            />
+          }
+        />
+      </>
     );
-  const copy = (what: "code" | "command" | "link", text: string) =>
-    void tryCopyTextWithHaptic(text, { target: what }).then((ok) => setCopied(ok ? what : null));
   return (
     <>
-      <View className="items-center gap-2 px-2">
-        <Text
-          textRole="title"
-          selectable
-          accessibilityLabel={`Code ${made.code.split("").join(" ")}`}
-          className="font-mono text-3xl tracking-widest text-foreground"
-        >
-          {made.code}
-        </Text>
-        <Text textRole="footnote" className="text-center text-foreground-muted">
-          {left.text}
-        </Text>
-      </View>
-      <ListSection title={KIN_DEVICES_COPY.computerTitle} footer={KIN_DEVICES_COPY.computerDetail}>
-        <ListActionRow
-          icon={copied === "code" ? "checkmark" : "doc.on.doc"}
-          label={copied === "code" ? "Copied" : "Copy code"}
-          onPress={() => copy("code", made.code)}
-        />
-        <View className="border-t border-border-subtle">
-          <ListActionRow
-            icon={copied === "command" ? "checkmark" : "terminal"}
-            label={copied === "command" ? "Copied" : "Copy command"}
-            description={command}
-            onPress={() => copy("command", command)}
-          />
-        </View>
-      </ListSection>
-      <ListSection title={KIN_DEVICES_COPY.phoneTitle} footer={KIN_DEVICES_COPY.phoneDetail}>
-        <View className="items-center px-4 py-4">
+      <ListSection footer={`${left.text} ${KIN_DEVICES_COPY.replaces}`}>
+        <View className="items-center gap-3 px-4 py-5">
           <KinQrCode value={link} size={200} />
+          <Text textRole="footnote" className="text-center text-foreground-muted">
+            {KIN_DEVICES_COPY.scan}
+          </Text>
         </View>
       </ListSection>
       {kinInviteLinkLocalOnly(connection.httpBaseUrl) ? (
@@ -358,9 +323,11 @@ function KinDeviceLinkView(props: {
         />
         <Button
           tone="secondary"
-          icon={copied === "link" ? "checkmark" : "doc.on.doc"}
-          label={copied === "link" ? "Copied" : "Copy link"}
-          onPress={() => copy("link", link)}
+          icon={copied ? "checkmark" : "doc.on.doc"}
+          label={copied ? "Copied" : "Copy link"}
+          onPress={() =>
+            void tryCopyTextWithHaptic(link, { target: "link" }).then((ok) => setCopied(ok))
+          }
         />
       </View>
     </>

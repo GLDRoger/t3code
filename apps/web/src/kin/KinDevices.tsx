@@ -2,11 +2,12 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_DEVICES_COPY,
   kinActiveDevices,
-  kinDeviceJoinCommand,
+  kinDeviceJustLinked,
   kinDeviceLabel,
   kinDeviceLine,
   kinDeviceLinkLeft,
   kinDeviceLinkProblem,
+  kinDeviceRemovable,
   kinRemoveDeviceCopy,
   kinRemoveDeviceProblem,
 } from "@t3tools/client-runtime/kin/kinDevices";
@@ -90,32 +91,22 @@ export function KinMyDevices(props: KinDevicesTarget) {
   const link = useAtomCommand(kinClient.deviceLink, { reportFailure: false });
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  // The code on screen, and the devices already signed in when it was made.
-  const [made, setMade] = useState<{
-    readonly code: KinPeopleLinkDeviceResult;
-    /** Null when the list wasn't read yet, so no device can be told apart as new. */
-    readonly known: ReadonlySet<string> | null;
-  } | null>(null);
-  // A device that joined since: its join refreshes "people", which reads this list again.
+  // The link on screen; dropped when the dialog closes.
+  const [made, setMade] = useState<KinPeopleLinkDeviceResult | null>(null);
+  // A device that joined with it: its join refreshes "people", which reads this list again.
   const joined =
-    made === null || made.known === null
-      ? null
-      : (devices?.find((device) => made.known?.has(device.sessionId) === false) ?? null);
-  const makeCode = async () => {
+    made === null || devices === null ? null : kinDeviceJustLinked(devices, made.expiresAt);
+  const makeLink = async () => {
     if (busy) return;
     setBusy(true);
     setProblem(null);
-    const known = devices === null ? null : new Set(devices.map((device) => device.sessionId));
     const result = await link({
       environmentId: props.environmentId,
       input: { orgId: props.orgId },
     });
     setBusy(false);
-    if (AsyncResult.isSuccess(result)) setMade({ code: result.value, known });
-    else {
-      setMade(null);
-      setProblem(kinDeviceLinkProblem(squashAtomCommandFailure(result)));
-    }
+    if (AsyncResult.isSuccess(result)) setMade(result.value);
+    else setProblem(kinDeviceLinkProblem(squashAtomCommandFailure(result)));
   };
   return (
     <section className="flex flex-col gap-2">
@@ -127,22 +118,23 @@ export function KinMyDevices(props: KinDevicesTarget) {
         className="self-start"
         disabled={busy}
         aria-busy={busy}
-        onClick={() => void makeCode()}
+        onClick={() => void makeLink()}
       >
-        Link a device
+        {KIN_DEVICES_COPY.link}
       </Button>
-      {problem === null ? null : (
+      {problem === null || made !== null ? null : (
         <p role="alert" className="text-xs text-destructive-foreground">
           {problem}
         </p>
       )}
       {made === null ? null : (
         <KinLinkDeviceDialog
-          made={made.code}
+          made={made}
           joined={joined === null ? null : kinDeviceLabel(joined)}
           environmentId={props.environmentId}
           busy={busy}
-          onRenew={() => void makeCode()}
+          problem={problem}
+          onRenew={() => void makeLink()}
           onClose={() => {
             setMade(null);
             void refreshDevices(props);
@@ -170,7 +162,7 @@ function KinDeviceList(props: KinDevicesTarget & { readonly mine: boolean }) {
   const [asked, setAsked] = useState<KinPersonDevice | null>(null);
   const [removing, setRemoving] = useState<ReadonlySet<string>>(new Set());
   const [problem, setProblem] = useState<string | null>(null);
-  const copy = asked === null ? null : kinRemoveDeviceCopy(asked, props.mine);
+  const copy = asked === null ? null : kinRemoveDeviceCopy(asked, props.mine, devices ?? []);
 
   const removeDevice = async (device: KinPersonDevice) => {
     setProblem(null);
@@ -222,14 +214,16 @@ function KinDeviceList(props: KinDevicesTarget & { readonly mine: boolean }) {
                 </span>
                 <span className="text-xs text-muted-foreground">{kinDeviceLine(device, now)}</span>
               </span>
-              <Button
-                size="sm"
-                variant="ghost-destructive"
-                aria-label={`Remove ${kinDeviceLabel(device)}`}
-                onClick={() => setAsked(device)}
-              >
-                Remove
-              </Button>
+              {kinDeviceRemovable(device) ? (
+                <Button
+                  size="sm"
+                  variant="ghost-destructive"
+                  aria-label={`Remove ${kinDeviceLabel(device)}`}
+                  onClick={() => setAsked(device)}
+                >
+                  {KIN_DEVICES_COPY.remove}
+                </Button>
+              ) : null}
             </li>
           ))}
         </ul>
@@ -278,22 +272,22 @@ function CopyButton(props: {
   );
 }
 
-/** The code and link the host just made, shown once; dropped when the dialog closes. */
+/** The link the host just made, shown once; dropped when the dialog closes. */
 function KinLinkDeviceDialog(props: {
   readonly made: KinPeopleLinkDeviceResult;
   /** The label of a device that joined with it, once one has. */
   readonly joined: string | null;
   readonly environmentId: EnvironmentId;
   readonly busy: boolean;
+  /** Why the last "Make a new link" failed. */
+  readonly problem: string | null;
   readonly onRenew: () => void;
   readonly onClose: () => void;
 }) {
   const { made } = props;
   const connection = Option.getOrNull(usePreparedConnection(props.environmentId));
   const left = kinDeviceLinkLeft(made.expiresAt, useNowMinuteMs());
-  const base = connection?.httpBaseUrl ?? null;
-  const link = base === null ? null : kinInviteLink(base, made.secret);
-  const command = base === null ? null : kinDeviceJoinCommand(made.code, base);
+  const link = connection === null ? null : kinInviteLink(connection.httpBaseUrl, made.secret);
   return (
     <Dialog
       open
@@ -301,12 +295,12 @@ function KinLinkDeviceDialog(props: {
         if (!open) props.onClose();
       }}
     >
-      <DialogPopup className="max-w-lg">
+      <DialogPopup className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Link a device</DialogTitle>
+          <DialogTitle>{KIN_DEVICES_COPY.link}</DialogTitle>
           <DialogDescription>
-            The device signs in as you. Anyone with this code or link can do the same until it's
-            used, so only put it on your own device.
+            The device signs in as you. Anyone with this link can do the same until it's used, so
+            only open it on your own device.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
@@ -315,54 +309,42 @@ function KinLinkDeviceDialog(props: {
               <AlertDescription>{props.joined} is linked and signed in as you.</AlertDescription>
             </Alert>
           ) : left.expired ? (
-            <Alert variant="warning">
-              <AlertDescription>
-                This code has run out. Make a new one to link a device.
-              </AlertDescription>
-            </Alert>
-          ) : link === null || command === null ? (
+            <div className="flex flex-col gap-3">
+              <Alert variant="warning">
+                <AlertDescription>{KIN_DEVICES_COPY.expiredDetail}</AlertDescription>
+              </Alert>
+              {props.problem === null ? null : (
+                <Alert variant="error">
+                  <AlertDescription>{props.problem}</AlertDescription>
+                </Alert>
+              )}
+            </div>
+          ) : link === null ? (
             <Alert variant="error">
               <AlertDescription>{KIN_DEVICES_COPY.dropped}</AlertDescription>
             </Alert>
           ) : (
-            <div className="flex flex-col gap-5">
-              <div className="flex items-start gap-4">
-                <div className="flex min-w-0 flex-1 flex-col gap-2">
-                  <p className="text-xs text-muted-foreground">Code</p>
-                  <p className="select-all font-mono text-2xl font-semibold tracking-wide text-foreground">
-                    {made.code}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {left.text} {KIN_DEVICES_COPY.replaces}
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    <CopyButton text={made.code} label="Copy code" what="device code" />
-                    <CopyButton text={link} label="Copy link" what="device link" />
-                  </div>
-                </div>
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center gap-4">
                 <div className="shrink-0 rounded-lg bg-white p-1.5">
                   <QRCodeSvg
                     value={link}
-                    size={112}
+                    size={128}
                     level="M"
                     marginSize={2}
-                    title="Link for your phone"
+                    title="Link for your new device"
                   />
                 </div>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <p className="text-sm text-foreground">{KIN_DEVICES_COPY.computerTitle}</p>
-                <p className="text-xs text-muted-foreground">{KIN_DEVICES_COPY.computerDetail}</p>
-                <code className="block select-all break-all rounded-md bg-muted px-3 py-2 font-mono text-xs text-foreground">
-                  {command}
-                </code>
-                <div>
-                  <CopyButton text={command} label="Copy command" what="link command" />
+                <div className="flex min-w-0 flex-1 flex-col gap-2">
+                  <p className="text-sm text-foreground">{KIN_DEVICES_COPY.scan}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {left.text} {KIN_DEVICES_COPY.replaces}
+                  </p>
+                  <div>
+                    <CopyButton text={link} label="Copy link" what="device link" />
+                  </div>
                 </div>
               </div>
-              <p className="text-sm text-muted-foreground">
-                On a phone or in a browser, scan the code or open the link.
-              </p>
               {kinInviteLinkLocalOnly(link) ? (
                 <Alert variant="warning">
                   <AlertDescription>{KIN_INVITE_LOCAL_ONLY_NOTE}</AlertDescription>

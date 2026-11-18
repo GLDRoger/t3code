@@ -816,6 +816,39 @@ describe("KinPushSender", () => {
     { arbitrary: { runs: 30 } },
   );
 
+  it.effect("tells a person on their phones each time they link a device, loud", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { notify, sql } = yield* seed;
+      yield* sql`INSERT INTO auth_sessions (session_id, subject, scopes, method, issued_at,
+          expires_at, client_label)
+        VALUES ('sess-laptop', 'kin-member', '[]', 'bearer-access-token', ${T},
+          '2026-12-07T00:00:00.000Z', 'Laptop')`;
+      for (const id of ["sess-member", "sess-laptop"])
+        yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+          VALUES (${id}, 'org_01', ${member}, ${NOW})`;
+      const linked = { _tag: "device", orgId, sessionId: "sess-laptop" } as const;
+      assert.deepStrictEqual(yield* notify(linked), {
+        status: "ready",
+        sent: 1,
+        suppressed: 0,
+        failed: 0,
+      });
+      const [push] = apns.sent;
+      assert.equal(push!.token, memberPhone);
+      assert.include(JSON.stringify(push!.payload), "Laptop can now use your Kin");
+      assert.equal(
+        (push!.payload as { body: { deepLink: string } }).body.deepLink,
+        "/kin/env_kin/org_01/people/h_member/devices",
+      );
+      // A device already removed again announces nothing.
+      apns.sent.length = 0;
+      yield* sql`UPDATE kin_session_bindings SET revoked_at = ${NOW} WHERE session_id = 'sess-laptop'`;
+      yield* notify(linked);
+      assert.deepStrictEqual(apns.sent, []);
+    }).pipe(Effect.provide(build(apns)));
+  });
+
   it.effect("sends a read's new badge, with no banner, to the reader's other devices", () => {
     const apns = makeApns();
     return Effect.gen(function* () {

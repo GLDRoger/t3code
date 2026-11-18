@@ -16,6 +16,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
+  ignoresBrowserCookie,
   isBrowserOriginAllowed,
   parseBearerToken,
   trustedBrowserOrigins,
@@ -29,8 +30,19 @@ import * as People from "./KinPeople.ts";
 
 const decodeAccept = Schema.decodeUnknownEffect(KinInviteAcceptRequest);
 const noStore = { "cache-control": "no-store" };
-const clientOf = (request: HttpServerRequest.HttpServerRequest) =>
-  deriveAuthClientMetadata({ request }).ipAddress ?? "unknown";
+
+/**
+ * Stricter than a cookie read: this sets a fresh session cookie, so it needs a browser's own
+ * Origin, scheme included, or one of the app's trusted origins.
+ */
+const renewOriginAllowed = (
+  request: HttpServerRequest.HttpServerRequest,
+  origins: ReadonlySet<string>,
+) => {
+  const origin = request.headers.origin;
+  if (origin === undefined || ignoresBrowserCookie(request.headers, origins)) return false;
+  return origins.has(origin) || Option.exists(requestUrl(request), (url) => url.origin === origin);
+};
 
 /** The device's own session renewed; none when it is not a live, bound teammate device. */
 const renewDevice = Effect.fn("KinPeopleHttp.renewDevice")(function* (token: string) {
@@ -74,7 +86,7 @@ export const layer = Layer.effectDiscard(
         const request = yield* HttpServerRequest.HttpServerRequest;
         const input = yield* request.json.pipe(Effect.flatMap(decodeAccept));
         const people = yield* People.make.pipe(Effect.provideContext(kin.services.value));
-        const result = yield* people.accept(input, clientOf(request));
+        const result = yield* people.accept(input);
         return yield* HttpServerResponse.json(result, { headers: { "cache-control": "no-store" } });
       }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
     );
@@ -96,8 +108,7 @@ export const layer = Layer.effectDiscard(
       KIN_DEVICE_BROWSER_RENEW_ROUTE,
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        if (!isBrowserOriginAllowed(request, origins))
-          return HttpServerResponse.empty({ status: 403 });
+        if (!renewOriginAllowed(request, origins)) return HttpServerResponse.empty({ status: 403 });
         const sessions = yield* SessionStore;
         const token = request.cookies[sessions.cookieName];
         if (token === undefined) return HttpServerResponse.empty({ status: 401 });
@@ -142,10 +153,7 @@ export const layer = Layer.effectDiscard(
         return yield* Effect.gen(function* () {
           // A browser says what it is through its user agent, not the request body.
           const deviceType = deriveAuthClientMetadata({ request }).deviceType;
-          const result = yield* (yield* People.make).accept(
-            { ...input, deviceType },
-            clientOf(request),
-          );
+          const result = yield* (yield* People.make).accept({ ...input, deviceType });
           return yield* HttpServerResponse.empty({
             status: 204,
             headers: { "cache-control": "no-store" },

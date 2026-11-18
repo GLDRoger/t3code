@@ -56,6 +56,8 @@ export type KinPushNotification =
       /** The turn's own messages that posted the card: whoever they rang already heard of it. */
       readonly covered?: ReadonlyArray<KinMessageId>;
     }
+  /** A person linked one more device themself: their other phones hear of it, every time. */
+  | { readonly _tag: "device"; readonly orgId: KinOrgId; readonly sessionId: string }
   /** A member's read mark moved: their other devices get the new badge, with no banner. */
   | {
       readonly _tag: "read";
@@ -93,6 +95,8 @@ type Push = {
   readonly collapseId?: string;
   readonly data: KinPushData;
   readonly recipients: ReadonlyArray<Recipient>;
+  /** A device the push is about, which needs no word of itself. */
+  readonly exceptSession?: string;
 };
 
 /** The longest body a banner shows before iOS cuts it; we cut at a word first. */
@@ -639,10 +643,10 @@ const make = Effect.gen(function* () {
   });
 
   const deliver = Effect.fn("KinPushSender.deliver")(function* (orgId: KinOrgId, push: Push) {
-    const targets = yield* devices.forPeople(
+    const targets = (yield* devices.forPeople(
       orgId,
       push.recipients.map((recipient) => recipient.personId),
-    );
+    )).filter((device) => device.sessionId !== push.exceptSession);
     const recipients = new Map<KinPersonId, { silent: boolean; badge: number }>();
     for (const recipient of push.recipients) {
       let silent = recipient.silent;
@@ -725,6 +729,33 @@ const make = Effect.gen(function* () {
     return { sent: count("sent"), suppressed: count("suppressed"), failed: count("failed") };
   });
 
+  const devicePush = Effect.fn("KinPushSender.devicePush")(function* (
+    orgId: KinOrgId,
+    sessionId: string,
+  ) {
+    const [row] = yield* sql<{ person_id: KinPersonId; client_label: string | null }>`
+      SELECT b.person_id, a.client_label FROM kin_session_bindings b
+      LEFT JOIN auth_sessions a ON a.session_id = b.session_id
+      WHERE b.org_id = ${orgId} AND b.session_id = ${sessionId} AND b.revoked_at IS NULL`;
+    if (row === undefined) return undefined;
+    const push: Push = {
+      category: "kin.message",
+      title: "New device linked",
+      body: `${row.client_label ?? "A device"} can now use your Kin. Not you? Remove it in Linked devices.`,
+      chatId: undefined,
+      source: undefined,
+      data: {
+        kin: 1,
+        orgId,
+        deepLink: `/kin/${host}/${segment(orgId)}/people/${segment(row.person_id)}/devices`,
+      },
+      // Someone else signing in as them rings through quiet hours.
+      recipients: [{ personId: row.person_id, silent: false }],
+      exceptSession: sessionId,
+    };
+    return push;
+  });
+
   const nothing: KinPushOutcome = { status: apns.status, sent: 0, suppressed: 0, failed: 0 };
 
   const run = Effect.fn("KinPushSender.run")(
@@ -740,13 +771,15 @@ const make = Effect.gen(function* () {
       const push =
         notification._tag === "approval"
           ? yield* approvalPush(notification.orgId, notification.actionId)
-          : notification._tag === "message"
-            ? yield* messagePush(notification.orgId, notification.messageId)
-            : yield* widgetPush(
-                notification.orgId,
-                notification.widgetId,
-                notification.covered ?? [],
-              );
+          : notification._tag === "device"
+            ? yield* devicePush(notification.orgId, notification.sessionId)
+            : notification._tag === "message"
+              ? yield* messagePush(notification.orgId, notification.messageId)
+              : yield* widgetPush(
+                  notification.orgId,
+                  notification.widgetId,
+                  notification.covered ?? [],
+                );
       if (push === undefined || push.recipients.length === 0) return nothing;
       const outcome: KinPushOutcome = {
         status: apns.status,

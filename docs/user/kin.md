@@ -30,15 +30,16 @@ A join link works once and lasts a week. If yours has expired or was used, ask f
 ### Linked devices
 
 Once you're in, you add your other devices yourself. Open **Linked devices** (under your name on the
-web, in **Settings** on the phone) and choose **Link a device**. Kin shows a code such as
-`KIN-7Q4M-X2PA`, a link and a QR code. Each works once, for 10 minutes. On a phone or in a browser,
-scan the QR code or open the link. On a computer, run the command shown, or paste the code into
-Claude Code or T3 Code and ask it to link Kin. That computer's agents can then
-[read your tasks](#your-tasks-from-your-own-computer).
+web, in **Settings** on the phone) and choose **Link a device**. Kin shows a link and a QR code that
+work once, for 10 minutes. Scan the QR code with the new phone, or open the link in the new
+browser. Each time a device is linked, your phones get a notification, so you'd hear of one you
+didn't add.
 
 A device stays signed in while you use it. One left unused for 30 days signs out, and you link it
-again the same way. Remove a device from the same list to sign it out at once. You can have 10
-devices at a time. The owner can see and remove a teammate's devices on the **Team** page.
+again the same way. You can have 10 devices at a time. Remove a device from the same list to sign it
+out at once; the devices linked from it are signed out too. A device you linked can remove itself
+and the devices linked from it, but not the phone you joined with. The owner can see and remove a
+teammate's devices on the **Team** page.
 
 ### Your profile
 
@@ -242,14 +243,6 @@ handling one. When nothing needs attention, the section isn't there.
 
 Keep amounts, rates and client terms out of task titles and notes. Project people read those; put
 the figures in the quote or the invoice.
-
-### Your tasks from your own computer
-
-Once you've [linked your computer](#linked-devices), Claude Code and T3 Code sessions on it can read
-your Tasks and move your own. Ask one to "check my Kin tasks" or "do W-12". It sees what you see in
-Tasks, except **Only me** tasks and money. It can set your own task to open, doing, waiting or done
-and add a note signed with its name; it can't give tasks away, change dates or delete anything.
-Teammates' tasks are read-only to it.
 
 ## Clients and projects
 

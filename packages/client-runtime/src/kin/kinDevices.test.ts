@@ -2,7 +2,12 @@
 import { AuthSessionId, type KinPersonDevice } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinActiveDevices, kinDeviceLinkLeft } from "./kinDevices.ts";
+import {
+  kinActiveDevices,
+  kinDeviceJustLinked,
+  kinDeviceLinkLeft,
+  kinDevicesLinkedFrom,
+} from "./kinDevices.ts";
 
 const now = Date.parse("2026-11-18T10:00:00Z");
 const device = (id: string, change: Partial<KinPersonDevice> = {}): KinPersonDevice => ({
@@ -45,5 +50,74 @@ describe("kinDeviceLinkLeft", () => {
     const left = kinDeviceLinkLeft(new Date(now + before).toISOString(), now);
     expect(left.expired).toBe(expired);
     if (!left.expired) expect(left.text).toContain(text);
+  });
+});
+
+describe("kinDeviceJustLinked", () => {
+  // A link made at 09:55 runs out at 10:05.
+  const expiresAt = "2026-11-18T10:05:00.000Z";
+  it.each([
+    [
+      "names the device this one linked since the link was made",
+      "new",
+      [
+        device("phone", { current: true }),
+        device("old", { linkedFrom: AuthSessionId.make("phone") }),
+        device("new", {
+          linkedFrom: AuthSessionId.make("phone"),
+          boundAt: "2026-11-18T09:57:00.000Z",
+        }),
+      ],
+    ],
+    [
+      "never an older device, however late the list loads",
+      null,
+      [
+        device("phone", { current: true }),
+        device("old", { linkedFrom: AuthSessionId.make("phone") }),
+      ],
+    ],
+    [
+      "never a device another one linked meanwhile",
+      null,
+      [
+        device("phone", { current: true }),
+        device("laptop", {
+          linkedFrom: AuthSessionId.make("tablet"),
+          boundAt: "2026-11-18T09:57:00.000Z",
+        }),
+      ],
+    ],
+    [
+      "nothing before the host says which device is this one",
+      null,
+      [
+        device("new", {
+          linkedFrom: AuthSessionId.make("phone"),
+          boundAt: "2026-11-18T09:57:00.000Z",
+        }),
+      ],
+    ],
+  ] as const)("%s", (_name, label, devices) => {
+    expect(kinDeviceJustLinked(devices, expiresAt)?.label ?? null).toBe(label);
+  });
+});
+
+describe("kinDevicesLinkedFrom", () => {
+  it("finds every device down the line, and none above or beside", () => {
+    const devices = [
+      device("phone"),
+      device("laptop", { linkedFrom: AuthSessionId.make("phone") }),
+      device("tablet", { linkedFrom: AuthSessionId.make("laptop") }),
+      device("watch", { linkedFrom: AuthSessionId.make("phone") }),
+    ];
+    expect(kinDevicesLinkedFrom(devices[1]!, devices).map((held) => held.label)).toEqual([
+      "tablet",
+    ]);
+    expect(kinDevicesLinkedFrom(devices[0]!, devices).map((held) => held.label)).toEqual([
+      "laptop",
+      "tablet",
+      "watch",
+    ]);
   });
 });

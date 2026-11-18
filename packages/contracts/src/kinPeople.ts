@@ -117,10 +117,14 @@ export const KinPersonDevice = Schema.Struct({
   boundAt: IsoDateTime,
   expiresAt: Schema.NullOr(IsoDateTime),
   revokedAt: Schema.NullOr(IsoDateTime),
-  /** When it last opened a connection; absent from older hosts. */
+  /** When it last opened a connection, which is not the same as last use. Absent from older hosts. */
   lastConnectedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** The device asking. Absent from older hosts. */
   current: Schema.optional(Schema.Boolean),
+  /** The device whose code linked this one; removing that device removes this one too. */
+  linkedFrom: Schema.optional(Schema.NullOr(AuthSessionId)),
+  /** Whether the device asking may remove this one. Absent from older hosts. */
+  removable: Schema.optional(Schema.Boolean),
 });
 export type KinPersonDevice = typeof KinPersonDevice.Type;
 
@@ -143,12 +147,10 @@ export type KinPeopleRevokeDeviceInput = typeof KinPeopleRevokeDeviceInput.Type;
 export const KinPeopleRevokeDeviceResult = Schema.Struct({ revoked: Schema.Boolean });
 export type KinPeopleRevokeDeviceResult = typeof KinPeopleRevokeDeviceResult.Type;
 
-/** A person links one more of their own devices: a code and a link, each good once, briefly. */
+/** A person links one more of their own devices: a link, good once, briefly. */
 export const KinPeopleLinkDeviceInput = Schema.Struct({ orgId: KinOrgId });
 export type KinPeopleLinkDeviceInput = typeof KinPeopleLinkDeviceInput.Type;
 export const KinPeopleLinkDeviceResult = Schema.Struct({
-  /** Typed or pasted, such as `KIN-7Q4M-X2PA`; the accept route takes it as `secret`. */
-  code: TrimmedNonEmptyString,
   /** The join link's secret, as `createInvite` gives it. */
   secret: TrimmedNonEmptyString,
   expiresAt: IsoDateTime,
@@ -157,8 +159,6 @@ export type KinPeopleLinkDeviceResult = typeof KinPeopleLinkDeviceResult.Type;
 export const KIN_DEVICE_LINK_TTL_MINUTES = 10;
 /** Devices one person may have signed in at once. */
 export const KIN_DEVICE_LIMIT = 10;
-/** A device code: `KIN-` then two groups of four, letters and digits that can't be misread. */
-export const KIN_DEVICE_CODE_PATTERN = /^KIN-?([A-HJ-NP-Z2-9]{4})-?([A-HJ-NP-Z2-9]{4})$/i;
 
 /** Signs a person out everywhere and cancels their unused invite links. They stay a person. */
 export const KinPeopleRemoveAccessInput = Schema.Struct({

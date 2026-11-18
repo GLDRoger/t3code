@@ -5,13 +5,19 @@ let lastAskedAt: number | null = null;
 
 /**
  * Keeps a teammate's browser session from running out while it is in use: the host answers with a
- * fresh cookie. Asked on the first load and then at most once a day; a session that isn't a
- * renewable teammate's (401/403) or a failed request changes nothing, so neither is reported.
+ * fresh cookie. Asked on the first load and then at most once a day. A session that isn't a
+ * renewable teammate's (401/403) settles it for the day; a failed request asks again next load.
  */
 export function renewKinBrowserSession(now: number = Date.now()): void {
   if (lastAskedAt !== null && now - lastAskedAt < RENEW_EVERY_MS) return;
   lastAskedAt = now;
-  void fetch(KIN_DEVICE_BROWSER_RENEW_ROUTE, { method: "POST", credentials: "same-origin" }).catch(
-    () => undefined,
+  const retry = () => {
+    if (lastAskedAt === now) lastAskedAt = null;
+  };
+  void fetch(KIN_DEVICE_BROWSER_RENEW_ROUTE, { method: "POST", credentials: "same-origin" }).then(
+    (response) => {
+      if (!response.ok && response.status !== 401 && response.status !== 403) retry();
+    },
+    retry,
   );
 }
