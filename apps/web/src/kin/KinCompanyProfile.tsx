@@ -1,8 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_COMPANY,
-  KIN_COMPANY_SECTIONS,
+  kinCompanyEditSections,
   kinCompanyDraftOf,
+  kinDeviceRegion,
   kinCompanyEmpty,
   kinCompanyInput,
   kinCompanyRead,
@@ -147,7 +148,7 @@ function Profile(
               variant="outline"
               onClick={() => {
                 setSaved(false);
-                setDraft(kinCompanyDraftOf(profile));
+                setDraft(kinCompanyDraftOf(profile, kinDeviceRegion()));
               }}
             >
               <PencilIcon />
@@ -194,7 +195,7 @@ function Profile(
       }}
     >
       {lock}
-      {KIN_COMPANY_SECTIONS.map((section) => (
+      {kinCompanyEditSections(profile, draft).map((section) => (
         <fieldset key={section.title} className="flex flex-col gap-3">
           <legend className="pb-2 text-xs font-medium text-muted-foreground">
             {section.title}

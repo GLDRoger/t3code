@@ -400,6 +400,10 @@ describe("amounts", () => {
     assert.strictEqual(financialYearOf("2026-03-31"), "FY2025-26");
     assert.strictEqual(financialYearOf("2026-04-01"), "FY2026-27");
     assert.strictEqual(financialYearOf("2099-12-31"), "FY2099-00");
+    // A year from January is named by its one year; one from July spans two.
+    assert.strictEqual(financialYearOf("2026-03-31", 1), "FY2026");
+    assert.strictEqual(financialYearOf("2026-06-30", 7), "FY2025-26");
+    assert.strictEqual(financialYearOf("2026-07-01", 7), "FY2026-27");
   });
 });
 
@@ -2088,6 +2092,131 @@ describe("the company profile", () => {
         assert.deepStrictEqual(yield* paidWith, ways, home);
       }
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "reads a profile stored before countries by its currency, and a new country as its own",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const nobank = {
+          accountName: null,
+          accountNumber: null,
+          bankName: null,
+          branch: null,
+          upi: null,
+        };
+        // Shaped as an Indian company's profile is stored today: no country, year or tax.
+        const before = {
+          legalName: "Ambermill Private Limited",
+          tradeName: null,
+          address: null,
+          gstin: "29ABCDE1234F1Z5",
+          pan: null,
+          placeOfSupply: "Karnataka",
+          sac: "998314",
+          bank: { ...nobank, ifsc: "ABCD0123456" },
+          homeCurrency: "INR",
+          rates: [],
+        };
+        yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+          updated_by_kind, updated_by_id)
+        VALUES (${orgId}, ${JSON.stringify(before)}, 1, ${NOW}, 'person', 'cos-owner')`;
+        const read = () => OwnerMoney.companyProfile(people, { orgId });
+        const filings = Effect.gen(function* () {
+          const proposal = yield* proposalFor(orgId, { template: "dates" });
+          assert(proposal._tag === "new");
+          return {
+            categories: proposal.definition.categories.slice(0, 2),
+            labels: proposal.definition.categoryLabels ?? {},
+          };
+        });
+        const year = Effect.map(OwnerMoney.money(people, { orgId }), (summary) => [
+          summary.financialYear,
+          summary.financialYearStartMonth,
+        ]);
+        assert.deepInclude(yield* read(), {
+          country: "IN",
+          financialYearStartMonth: 4,
+          tax: null,
+          homeCurrency: "INR",
+        });
+        assert.deepStrictEqual(yield* filings, { categories: ["gst", "tds"], labels: {} });
+        assert.deepStrictEqual(yield* year, ["FY2026-27", 4]);
+        // A save from a client that knows no countries stores none, so it still reads as India.
+        let rev = (yield* OwnerMoney.setCompanyProfile(people, {
+          orgId,
+          rev: 1,
+          tradeName: "Ambermill",
+        })).rev;
+        const [stored] = yield* sql<{ country: string | null }>`SELECT json_type(profile_json,
+        '$.country') AS country FROM kin_company_profile WHERE org_id = ${orgId}`;
+        assert.deepStrictEqual(stored, { country: null });
+        assert.include(yield* read(), { country: "IN" });
+
+        // A new country brings its currency and year; the tax given with it stands.
+        const vat = { name: "VAT", rate: "20", pricesInclude: null };
+        rev = (yield* OwnerMoney.setCompanyProfile(people, { orgId, rev, country: "GB", tax: vat }))
+          .rev;
+        assert.deepInclude(yield* read(), {
+          country: "GB",
+          homeCurrency: "GBP",
+          financialYearStartMonth: 4,
+          tax: vat,
+        });
+        assert.deepStrictEqual(yield* filings, {
+          categories: ["vat", "paye"],
+          labels: { vat: "VAT", paye: "PAYE" },
+        });
+        // An older client's save keeps what it doesn't know.
+        rev = (yield* OwnerMoney.setCompanyProfile(people, {
+          orgId,
+          rev,
+          legalName: "Ambermill Ltd",
+        })).rev;
+        assert.deepInclude(yield* read(), { country: "GB", tax: vat, financialYearStartMonth: 4 });
+        assert.deepStrictEqual(yield* year, ["FY2026-27", 4]);
+
+        rev = (yield* OwnerMoney.setCompanyProfile(people, { orgId, rev, country: "US" })).rev;
+        assert.deepInclude(yield* read(), {
+          homeCurrency: "USD",
+          financialYearStartMonth: 1,
+          tax: { name: "Sales tax", rate: null, pricesInclude: null },
+        });
+        assert.deepStrictEqual(yield* year, ["FY2026", 1]);
+        yield* defined(1, { template: "invoices" });
+        const asked = yield* turn(3, "Draft an invoice for Invented Acme");
+        yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            { list: "clients", title: "Invented Acme" },
+            {
+              list: "invoices",
+              title: "Invented retainer",
+              client: "Invented Acme",
+              amount: "1,000",
+            },
+          ],
+        });
+        assert.strictEqual(
+          (yield* OwnerMoney.issue(people, { orgId, key: "INV-1" })).number,
+          "INV/2026/001",
+        );
+
+        // No country: no tax, a calendar year, and none of India's filings.
+        yield* OwnerMoney.setCompanyProfile(people, { orgId, rev, country: null });
+        assert.deepInclude(yield* read(), {
+          country: null,
+          homeCurrency: "USD",
+          financialYearStartMonth: 1,
+          tax: null,
+        });
+        const unset = yield* filings;
+        assert.deepStrictEqual(unset.labels, {});
+        assert.notInclude(unset.categories, "gst");
+        assert.notInclude(unset.categories, "tds");
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("is set by the owner, and by a lead only through a card the owner confirms", () =>

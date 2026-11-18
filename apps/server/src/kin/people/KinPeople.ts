@@ -65,7 +65,7 @@ import { accessOf, accessSql, isOwnerHimself, mayActAsOwner, ownerLevel } from "
 import { KIN_DEFAULT_QUIET_HOURS, stillAway } from "../triggers/quietHours.ts";
 import { profileSets } from "./profileFields.ts";
 import { reholdAfter, validZone } from "../triggers/quietHold.ts";
-import { homeCurrency } from "../work/companyProfile.ts";
+import { companyMoney } from "../work/companyProfile.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { closeHeldQuestions } from "../questions/openQuestions.ts";
 
@@ -936,9 +936,10 @@ export const make = Effect.gen(function* () {
         ? { clients: true, docs: true, money: true }
         : { clients: places.clients, docs: places.docs, money: places.money },
       leads: places.leads,
-      homeCurrency: yield* homeCurrency(input.orgId).pipe(
+      ...(yield* companyMoney(input.orgId).pipe(
+        Effect.map(({ homeCurrency, country }) => ({ homeCurrency, country })),
         Effect.provideService(SqlClient.SqlClient, sql),
-      ),
+      )),
     };
   });
   const setPlaces = Effect.fn("KinPeople.setPlaces")(function* (

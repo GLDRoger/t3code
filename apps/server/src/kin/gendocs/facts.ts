@@ -3,7 +3,8 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { readProfile } from "../work/companyProfile.ts";
+import { type CompanyMoney, readProfile } from "../work/companyProfile.ts";
+import { GST_REGIME, type TaxRegime } from "./compute.ts";
 import { logoFile, logoPath } from "./brand.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { type FieldValues, parseFields } from "../work/lists.ts";
@@ -55,8 +56,20 @@ const cellOf = (fields: FieldValues, key: string): Cell => {
 const amountOf = (minor: number | null, currency: string | null): Money | null =>
   minor === null || currency === null ? null : { minor, currency };
 
+/** The tax a document charges, by the company's country: GST in India, else its own one tax. */
+export const taxRegimeOf = (money: Pick<CompanyMoney, "country" | "tax">): TaxRegime =>
+  money.country === "IN"
+    ? GST_REGIME
+    : {
+        _tag: "flat",
+        name: money.tax?.name ?? "Tax",
+        rate: money.tax?.rate ?? null,
+        pricesInclude: money.tax?.pricesInclude === true,
+      };
+
 export type Gathered = {
   readonly facts: Facts;
+  readonly tax: TaxRegime;
   readonly currency: string;
   /** Whether what this input reads is confidential, by where it comes from (`jobSensitive`). */
   readonly sensitive: (input: InputDecl) => boolean;
@@ -367,7 +380,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
     input.type === "money" ||
     Object.values(input.columns).includes("money") ||
     fromSource(sourceOf(input.from), input);
-  return { facts, currency, sensitive, number, logo } satisfies Gathered;
+  return { facts, currency, sensitive, number, logo, tax: taxRegimeOf(profile) } satisfies Gathered;
 });
 
 /**

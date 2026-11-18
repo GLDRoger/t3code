@@ -3,6 +3,8 @@ import {
   KIN_EXPORT_LEAVES,
   KinCompanyBank,
   KinCompanyProfileData,
+  KinCompanyTax,
+  KinCountryCode,
   type KinCompanyProfile,
   type KinCompanyProfileSetInput,
   type KinOrgId,
@@ -53,6 +55,10 @@ export type KinCompanyFieldId =
   | "legalName"
   | "tradeName"
   | "address"
+  | "country"
+  | "financialYearStartMonth"
+  | "taxName"
+  | "taxRate"
   | "gstin"
   | "pan"
   | "placeOfSupply"
@@ -76,10 +82,12 @@ interface FieldSpec {
   /** Ids written in capitals with no spaces. */
   readonly code?: true;
   readonly problem?: string;
+  /** Shown only for a company in India, or only for one elsewhere. */
+  readonly india?: boolean;
 }
 
 /** The form in the order an invoice needs it. */
-export const KIN_COMPANY_SECTIONS: ReadonlyArray<{
+const KIN_COMPANY_SECTIONS: ReadonlyArray<{
   readonly title: string;
   readonly fields: ReadonlyArray<FieldSpec>;
 }> = [
@@ -100,28 +108,59 @@ export const KIN_COMPANY_SECTIONS: ReadonlyArray<{
     title: "Tax",
     fields: [
       {
+        id: "country",
+        label: "Country",
+        placeholder: "GB",
+        code: true,
+        problem: "A country is its two-letter code, like GB, US or IN.",
+      },
+      {
+        id: "financialYearStartMonth",
+        label: "Financial year starts in",
+        placeholder: "April",
+        problem: "Name the month the year starts in, like January or April.",
+      },
+      {
+        id: "taxName",
+        label: "Tax charged",
+        placeholder: "VAT",
+        india: false,
+        problem: "Name the tax in 40 characters or fewer, like VAT.",
+      },
+      {
+        id: "taxRate",
+        label: "Tax rate, in percent",
+        placeholder: "20",
+        india: false,
+        problem: "Write the rate as a percent from 0 to 100, like 20 or 7.5.",
+      },
+      {
         id: "gstin",
         label: "GSTIN",
         placeholder: "29ABCDE1234F1Z5",
+        india: true,
         code: true,
         problem: "A GSTIN is 15 characters, like 29ABCDE1234F1Z5.",
       },
       {
         id: "pan",
+        india: true,
         label: "PAN",
         placeholder: "ABCDE1234F",
         code: true,
         problem: "A PAN is 10 characters, like ABCDE1234F.",
       },
-      { id: "placeOfSupply", label: "Place of supply", placeholder: "Karnataka" },
+      { id: "placeOfSupply", india: true, label: "Place of supply", placeholder: "Karnataka" },
       {
         id: "sac",
+        india: true,
         label: "Usual SAC code",
         placeholder: "998314",
         problem: "A SAC code is 4 to 8 digits.",
       },
       {
         id: "lutNumber",
+        india: true,
         label: "LUT ARN, for exports",
         placeholder: "AD290426001234X",
         code: true,
@@ -129,6 +168,7 @@ export const KIN_COMPANY_SECTIONS: ReadonlyArray<{
       },
       {
         id: "lutDate",
+        india: true,
         label: "LUT filed on",
         placeholder: "2026-04-01",
         problem: "Write the day as YYYY-MM-DD, like 2026-04-01.",
@@ -148,6 +188,7 @@ export const KIN_COMPANY_SECTIONS: ReadonlyArray<{
       },
       {
         id: "ifsc",
+        india: true,
         label: "IFSC",
         placeholder: "HDFC0001234",
         code: true,
@@ -157,6 +198,7 @@ export const KIN_COMPANY_SECTIONS: ReadonlyArray<{
       { id: "branch", label: "Branch", placeholder: "Indiranagar, Bengaluru" },
       {
         id: "upi",
+        india: true,
         label: "UPI ID",
         placeholder: "acme@hdfcbank",
         problem: "A UPI ID looks like name@bank.",
@@ -165,11 +207,43 @@ export const KIN_COMPANY_SECTIONS: ReadonlyArray<{
   },
 ];
 
+const MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+/** A month typed as its name, its first three letters or its number. */
+const monthOf = (text: string): number | null => {
+  const typed = text.trim().toLowerCase();
+  if (/^\d{1,2}$/.test(typed))
+    return Number(typed) >= 1 && Number(typed) <= 12 ? Number(typed) : null;
+  const index = MONTHS.findIndex(
+    (name) => typed.length >= 3 && name.toLowerCase().startsWith(typed),
+  );
+  return index === -1 ? null : index + 1;
+};
+const MONEY_FIELDS = ["country", "financialYearStartMonth", "taxName", "taxRate"] as const;
+const isMoneyField = (id: KinCompanyFieldId): id is (typeof MONEY_FIELDS)[number] =>
+  (MONEY_FIELDS as ReadonlyArray<string>).includes(id);
+
 const BANK = ["accountName", "accountNumber", "ifsc", "bankName", "branch", "upi"] as const;
 const isBank = (id: KinCompanyFieldId): id is (typeof BANK)[number] =>
   (BANK as ReadonlyArray<string>).includes(id);
 
 const valid: Record<KinCompanyFieldId, (value: string | null) => boolean> = {
+  country: Schema.is(Schema.NullOr(KinCountryCode)),
+  financialYearStartMonth: (value) => value !== null && monthOf(value) !== null,
+  taxName: Schema.is(Schema.NullOr(KinCompanyTax.fields.name)),
+  taxRate: Schema.is(KinCompanyTax.fields.rate),
   legalName: Schema.is(KinCompanyProfileData.fields.legalName),
   tradeName: Schema.is(KinCompanyProfileData.fields.tradeName),
   address: Schema.is(KinCompanyProfileData.fields.address),
@@ -187,19 +261,81 @@ const valid: Record<KinCompanyFieldId, (value: string | null) => boolean> = {
   upi: Schema.is(KinCompanyBank.fields.upi),
 };
 
-const stored = (profile: KinCompanyProfile, id: KinCompanyFieldId): string | null =>
-  isBank(id) ? profile.bank[id] : (profile[id] ?? null);
+const stored = (profile: KinCompanyProfile, id: KinCompanyFieldId): string | null => {
+  if (isBank(id)) return profile.bank[id];
+  switch (id) {
+    case "country":
+      return profile.country ?? null;
+    case "financialYearStartMonth":
+      return MONTHS[(profile.financialYearStartMonth ?? 4) - 1] ?? null;
+    case "taxName":
+      return profile.tax?.name ?? null;
+    case "taxRate":
+      return profile.tax?.rate ?? null;
+    default:
+      return profile[id] ?? null;
+  }
+};
 
-export const kinCompanyDraftOf = (profile: KinCompanyProfile): KinCompanyDraft =>
-  Object.fromEntries(
+/** This device's region, such as GB from en-GB; null where its locale names none. */
+export function kinDeviceRegion(): string | null {
+  try {
+    const locale =
+      (typeof navigator === "undefined" ? undefined : navigator.language) ??
+      Intl.DateTimeFormat().resolvedOptions().locale;
+    return /^[a-z]{2,3}(?:-[A-Z][a-z]{3})?-([A-Z]{2})\b/.exec(locale)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The form as the profile reads. A company that never saved its details is offered `region`, the
+ * device's, as its country: saving it brings that country's currency, year and tax.
+ */
+export const kinCompanyDraftOf = (
+  profile: KinCompanyProfile,
+  region: string | null = null,
+): KinCompanyDraft => {
+  const draft = Object.fromEntries(
     KIN_COMPANY_SECTIONS.flatMap((section) =>
       section.fields.map((field) => [field.id, stored(profile, field.id) ?? ""]),
     ),
   ) as KinCompanyDraft;
+  return profile.rev === 0 && region !== null ? { ...draft, country: region } : draft;
+};
+
+/**
+ * The form's sections for a company in `country`: India's tax ids only for India, and for a host
+ * too old to say; the company's own tax everywhere else.
+ */
+const kinCompanySections = (country: string | null | undefined) => {
+  const india = country === undefined || country === "IN";
+  return KIN_COMPANY_SECTIONS.map((section) => ({
+    ...section,
+    fields: section.fields.filter((field) => field.india === undefined || field.india === india),
+  }));
+};
+
+/** The sections while editing: they follow the country typed, once it is a whole code. */
+export const kinCompanyEditSections = (profile: KinCompanyProfile, draft: KinCompanyDraft) => {
+  const typed = draft.country.trim().toUpperCase();
+  return kinCompanySections(
+    profile.country === undefined
+      ? undefined
+      : typed === ""
+        ? null
+        : /^[A-Z]{2}$/.test(typed)
+          ? typed
+          : profile.country,
+  );
+};
 
 /** Nothing has been filled in yet. */
 export const kinCompanyEmpty = (profile: KinCompanyProfile) =>
-  Object.values(kinCompanyDraftOf(profile)).every((value) => value === "");
+  Object.entries(kinCompanyDraftOf(profile)).every(
+    ([id, value]) => isMoneyField(id as KinCompanyFieldId) || value === "",
+  );
 
 /** What was typed as the host keeps it: trimmed, ids in capitals without spaces, empty as none. */
 const cleaned = (field: FieldSpec, text: string): string | null => {
@@ -222,8 +358,9 @@ export function kinCompanyInput(
       readonly problems: Readonly<Partial<Record<KinCompanyFieldId, string>>>;
     } {
   const problems: Partial<Record<KinCompanyFieldId, string>> = {};
-  const top: Record<string, string | null> = {};
+  const top: Record<string, unknown> = {};
   const bank: Record<string, string | null> = {};
+  const money: Partial<Record<(typeof MONEY_FIELDS)[number], string | null>> = {};
   for (const field of KIN_COMPANY_SECTIONS.flatMap((section) => section.fields)) {
     const value = cleaned(field, draft[field.id]);
     if (value === stored(profile, field.id)) continue;
@@ -231,7 +368,20 @@ export function kinCompanyInput(
       problems[field.id] = field.problem ?? `${field.label} is too long.`;
       continue;
     }
-    (isBank(field.id) ? bank : top)[field.id] = value;
+    if (isMoneyField(field.id)) money[field.id] = value;
+    else (isBank(field.id) ? bank : top)[field.id] = value;
+  }
+  if (money.country !== undefined) top.country = money.country;
+  if (money.financialYearStartMonth != null)
+    top.financialYearStartMonth = monthOf(money.financialYearStartMonth);
+  if (money.taxName !== undefined || money.taxRate !== undefined) {
+    const name = money.taxName === undefined ? (profile.tax?.name ?? null) : money.taxName;
+    const rate = money.taxRate === undefined ? (profile.tax?.rate ?? null) : money.taxRate;
+    if (name === null && rate !== null)
+      problems.taxName = "Name the tax this rate is for, like VAT.";
+    else
+      top.tax =
+        name === null ? null : { name, rate, pricesInclude: profile.tax?.pricesInclude ?? null };
   }
   if (Object.keys(problems).length > 0) return { ok: false, problems };
   if (Object.keys(top).length === 0 && Object.keys(bank).length === 0)
@@ -256,7 +406,7 @@ export function kinCompanyRead(profile: KinCompanyProfile): ReadonlyArray<{
     readonly value: string;
   }>;
 }> {
-  return KIN_COMPANY_SECTIONS.map((section) => ({
+  return kinCompanySections(profile.country).map((section) => ({
     title: section.title,
     rows: section.fields.flatMap((field) => {
       const value = stored(profile, field.id);

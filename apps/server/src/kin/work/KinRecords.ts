@@ -40,7 +40,7 @@ import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
-import { homeCurrency } from "./companyProfile.ts";
+import { companyMoney, homeCurrency } from "./companyProfile.ts";
 import { commentsPage } from "./recordComments.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal } from "./sensitiveReads.ts";
@@ -2104,11 +2104,15 @@ const make = Effect.gen(function* () {
           by === "month" || by === "financialYear"
             ? yield* ownerZone(orgId).pipe(provideSql)
             : "UTC";
+        const startMonth =
+          by === "financialYear"
+            ? (yield* companyMoney(orgId).pipe(provideSql)).financialYearStartMonth
+            : 1;
         const keyOf = (row: (typeof rows)[number]): string | null =>
           by === "month"
             ? monthOf(dayIn(row.at, zone))
             : by === "financialYear"
-              ? financialYearOf(dayIn(row.at, zone))
+              ? financialYearOf(dayIn(row.at, zone), startMonth)
               : by === "party"
                 ? row.party
                 : by === "owner"

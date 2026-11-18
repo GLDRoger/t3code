@@ -10,8 +10,16 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { homeCurrency } from "./companyProfile.ts";
-import { addUp, dayIn, financialYearOf, formatMoney, monthOf, shiftMonth } from "./money.ts";
+import { companyMoney, homeCurrency } from "./companyProfile.ts";
+import {
+  addUp,
+  dayIn,
+  financialYearOf,
+  financialYearStart,
+  formatMoney,
+  monthOf,
+  shiftMonth,
+} from "./money.ts";
 import {
   countedEntry,
   fieldDateAt,
@@ -200,13 +208,13 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   const sql = yield* SqlClient.SqlClient;
   const seen = seenBy(sql, viewer);
   const zone = yield* ownerZone(orgId);
-  const home = yield* homeCurrency(orgId);
+  const { homeCurrency: home, financialYearStartMonth } = yield* companyMoney(orgId);
   const today = dayIn(now, zone);
   const thisMonth = monthOf(today);
   const lastMonth = shiftMonth(thisMonth, -1);
   const firstMonth = shiftMonth(thisMonth, -11);
-  const financialYear = financialYearOf(today);
-  const fyStart = `${financialYear.slice(2, 6)}-04-01`;
+  const financialYear = financialYearOf(today, financialYearStartMonth);
+  const fyStart = financialYearStart(financialYear, financialYearStartMonth);
   const months = Array.from({ length: 12 }, (_, index) => shiftMonth(firstMonth, index));
   // The year's series and the financial year so far, whichever reaches further back.
   const since = `${firstMonth}-01` < fyStart ? `${firstMonth}-01` : fyStart;
@@ -324,6 +332,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     thisMonth,
     lastMonth,
     financialYear,
+    financialYearStartMonth,
     owed: {
       total: addUp(
         owing.map((one) => one.balance),
