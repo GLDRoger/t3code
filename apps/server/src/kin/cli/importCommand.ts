@@ -75,7 +75,7 @@ const describeImport = (report: KinImport.ImportReport) =>
     ...report.clientMatches.map((one) =>
       one.made === null
         ? `Client ${one.source} (${one.name}) is ${one.key}, matched by name.`
-        : `Client ${one.source} (${one.name}) isn't ${one.key}: its GSTIN differs, so it is a new client, ${one.made}.`,
+        : `Client ${one.source} (${one.name}) isn't ${one.key}: its ${report.taxIdLabel} differs, so it is a new client, ${one.made}.`,
     ),
     ...report.problems.map(
       (one) =>

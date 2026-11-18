@@ -12,6 +12,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { KinListContext } from "./kinLists.ts";
 import {
   kinCycleStep,
+  kinFinancialYearStart,
   kinRenewalsBetween,
   kinSubscriptionsList,
   kinSubscriptionsView,
@@ -96,6 +97,25 @@ describe("kinSubscriptions", () => {
       "2026-09-20",
       "2026-10-20",
     ]);
+  });
+
+  it("counts the year so far from the company's own first month", () => {
+    expect(kinFinancialYearStart(context.now)).toBe("2026-04-01");
+    expect(kinFinancialYearStart(context.now, 7)).toBe("2026-07-01");
+    expect(kinFinancialYearStart(new Date(2026, 5, 30), 7)).toBe("2025-07-01");
+    expect(kinFinancialYearStart(new Date(2026, 0, 1), 1)).toBe("2026-01-01");
+    // A ₹2,000 monthly plan renewing on the 20th: July to October in a year from July.
+    const monthly = entry("SUB-1", {
+      amount: { minor: 2_000_00, currency: "INR" },
+      dateAt: day("2026-11-20"),
+      fields: { billing: "Monthly" },
+    });
+    const soFar = (start: string) =>
+      kinSubscriptionsView(def, [monthly], context, rates, start).yearSoFar.map(
+        (line) => line.text,
+      );
+    expect(soFar(kinFinancialYearStart(context.now, 7))).toEqual(["₹8,000"]);
+    expect(soFar(kinFinancialYearStart(context.now))).toEqual(["₹14,000"]);
   });
 
   it("finds the list by its name", () => {
