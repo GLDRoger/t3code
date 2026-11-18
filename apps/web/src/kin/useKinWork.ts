@@ -379,6 +379,7 @@ const noChoicesAtom: Atom.Atom<
     {
       readonly clients: ReadonlyArray<KinPartyRow>;
       readonly projects: ReadonlyArray<KinProjectRow>;
+      readonly doneProjects: ReadonlyArray<KinProjectRow>;
     },
     unknown
   >
@@ -394,6 +395,7 @@ export function useKinWorkChoices(target: KinWorkTarget, enabled: boolean) {
   return {
     clients: (held?.clients ?? []).map(kinWorkRefOf),
     projects: (held?.projects ?? []).map(kinWorkRefOf),
+    doneProjects: (held?.doneProjects ?? []).map(kinWorkRefOf),
   };
 }
 
