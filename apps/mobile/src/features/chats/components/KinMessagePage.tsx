@@ -138,6 +138,7 @@ function KinPageSection(props: PageText & { readonly title: string; readonly mar
     <View className="gap-1.5 border-t border-border-subtle pt-3">
       <Pressable
         accessibilityRole="header"
+        accessibilityLabel={props.title}
         accessibilityState={{ expanded: open }}
         accessibilityHint={open ? "Folds this part away." : "Shows this part."}
         onPress={() => setOpen(!open)}
