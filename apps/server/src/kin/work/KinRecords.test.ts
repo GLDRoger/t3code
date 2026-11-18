@@ -538,6 +538,10 @@ it.effect(
         // Their own; the owner level anyone's (`handOver`).
         "kin.work.handOver",
         "kin.work.update",
+        // Anyone who sees the entry; its author or the owner level removes one.
+        "kin.work.comment",
+        "kin.work.commentRemove",
+        "kin.work.comments",
         // Its lead too; the service refuses anyone else (`teamGuard`).
         "kin.work.projectPeople",
       ]);
@@ -545,7 +549,7 @@ it.effect(
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 42);
+      assert.lengthOf(methods, 45);
       for (const method of methods)
         assert.strictEqual(kinRpcAccess(method) === "person", teammate.has(method), method);
     }).pipe(Effect.provide(layer)),

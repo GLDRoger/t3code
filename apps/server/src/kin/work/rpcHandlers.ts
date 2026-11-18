@@ -15,6 +15,7 @@ import * as Option from "effect/Option";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Stream from "effect/Stream";
 
+import { sessionUploadOwner } from "../../assets/AttachmentUpload.ts";
 import { AssetSigner } from "../../assets/AssetSigner.ts";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -35,6 +36,7 @@ import * as MoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as MoneyStream from "./moneyStream.ts";
 import * as Statements from "./ownerStatements.ts";
 import * as Work from "./ownerWork.ts";
+import * as Comments from "./workComments.ts";
 import * as WorkStream from "./workStream.ts";
 
 const group = RpcGroup.make(...KinWorkRpcs, ...KinDocsRpcs);
@@ -116,6 +118,17 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       }),
       "kin.work.handBack": Effect.fn("KinWork.rpc.handBack")(function* (input) {
         return yield* call((people) => Work.handBack(people, input));
+      }),
+      "kin.work.comment": Effect.fn("KinWork.rpc.comment")(function* (input) {
+        return yield* call((people) =>
+          Comments.comment(people, input, sessionUploadOwner(session)),
+        );
+      }),
+      "kin.work.commentRemove": Effect.fn("KinWork.rpc.commentRemove")(function* (input) {
+        return yield* call((people) => Comments.removeOne(people, input));
+      }),
+      "kin.work.comments": Effect.fn("KinWork.rpc.comments")(function* (input) {
+        return yield* call((people) => Comments.page(people, input));
       }),
       "kin.work.handOver": Effect.fn("KinWork.rpc.handOver")(function* (input) {
         return yield* call((people) => Work.handOver(people, input));

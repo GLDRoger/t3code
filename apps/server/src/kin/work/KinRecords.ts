@@ -12,6 +12,7 @@ import {
   type KinOrgId,
   KinPersonId,
   type KinRecordChangeVia,
+  type KinRecordDetail,
   type KinRecordLinkKind,
   type KinRecordRelation,
   type KinRecordSide,
@@ -40,6 +41,7 @@ import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { mentionsMoney } from "../memory/sensitivity.ts";
 import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { homeCurrency } from "./companyProfile.ts";
+import { commentsPage } from "./recordComments.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal } from "./sensitiveReads.ts";
 import {
@@ -487,8 +489,24 @@ export class KinRecords extends Context.Service<
     readonly detail: (
       row: RecordRow,
       changeLimit?: number,
-    ) => Effect.Effect<Effect.Success<ReturnType<typeof toDetail>>, KinChatError>;
+    ) => Effect.Effect<
+      Effect.Success<ReturnType<typeof toDetail>> &
+        Pick<KinRecordDetail, "askedBy" | "comments" | "olderComments">,
+      KinChatError
+    >;
     readonly seq: (orgId: KinOrgId) => Effect.Effect<number, KinChatError>;
+    /**
+     * In the caller's transaction: a person's comment on a task an agent holds wakes that agent
+     * once per comment, on that person's authority, as their message to it would. False when
+     * nobody is woken, as when the agent is theirs to message no longer.
+     */
+    readonly commented: (
+      orgId: KinOrgId,
+      personId: KinPersonId,
+      row: RecordRow,
+      commentSeq: number,
+      note: string,
+    ) => Effect.Effect<boolean, KinChatError>;
     /**
      * The latest change number now, then again with the entry after every committed change, its
      * list, and the people besides the owner who may see it after that change (`teamView.ts`).
@@ -567,10 +585,11 @@ const make = Effect.gen(function* () {
           ? writer.actor.personId
           : null;
     const [change] = yield* sql<{ seq: number }>`INSERT INTO kin_record_changes (org_id, record_id,
-        rev, at, actor_kind, actor_id, via, kind, fields_json, wakeup_id, chat_id)
+        rev, at, actor_kind, actor_id, via, kind, fields_json, wakeup_id, chat_id,
+        asked_by_person_id)
       VALUES (${orgId}, ${row.recordId}, ${row.rev}, ${now}, ${writer.actor._tag}, ${actorId},
         ${writer.via}, ${kind}, ${yield* encodeFields(fields)}, ${writer.wakeupId ?? null},
-        ${writer.chatId ?? null})
+        ${writer.chatId ?? null}, ${writer.actor._tag === "agent" ? (writer.askedBy ?? null) : null})
       RETURNING seq`;
     const seq = change?.seq ?? 0;
     // Who sees it as this change leaves it, and what else of theirs it showed or hid (`personSees`).
@@ -695,7 +714,7 @@ const make = Effect.gen(function* () {
     assignedBy: KinPersonId | null,
     seq: number,
     now: number,
-    reason: "assigned" | "withdrawn" | "handed_back" = "assigned",
+    reason: "assigned" | "withdrawn" | "handed_back" | "commented" = "assigned",
     note?: string | null,
   ) {
     // Looking after a client or leading a project is not an instruction to do anything.
@@ -995,7 +1014,7 @@ const make = Effect.gen(function* () {
         created_by_id, assigned_by_person_id, assigned_at, origin_key, created_at, updated_at,
         closed_at, party_id, project_id, repo, fields_json, amount_minor, currency, date_at,
         date_all_day, repeat_json, request_hash, team_shared, title_by, notes_by,
-        assigned_by_agent_id, marked_by_person_id)
+        assigned_by_agent_id, marked_by_person_id, asked_by_person_id)
       VALUES (${orgId}, ${recordId}, ${list}, ${key}, ${input.title}, ${state},
         ${waitingOn?._tag ?? null}, ${waitingOn === null ? null : principalId(waitingOn)},
         ${input.owner._tag}, ${principalId(input.owner)}, ${input.side ?? "ours"},
@@ -1014,7 +1033,7 @@ const make = Effect.gen(function* () {
         ${options.authors === undefined ? author : options.authors.title},
         ${notes === "" ? null : options.authors === undefined ? author : options.authors.notes},
         ${givenAway && writer.actor._tag === "agent" && writer.askedBy == null ? writer.actor.agentId : null},
-        ${input.sensitive === true ? textBy(writer) : null})`;
+        ${input.sensitive === true ? textBy(writer) : null}, ${textBy(writer)})`;
     const changes: Array<FieldChange> = [
       { field: "title", from: null, to: input.title },
       { field: "state", from: null, to: state },
@@ -2205,8 +2224,61 @@ const make = Effect.gen(function* () {
     }),
     detail: Effect.fn("KinRecords.detail")(function* (row, changeLimit) {
       const now = yield* Clock.currentTimeMillis;
-      return yield* failed(toDetail(row, now, changeLimit).pipe(provideSql));
+      return yield* failed(
+        Effect.gen(function* () {
+          const detail = yield* toDetail(row, now, changeLimit);
+          const [record] = yield* sql<{ askedBy: string | null }>`SELECT
+              asked_by_person_id AS "askedBy" FROM kin_records
+            WHERE org_id = ${row.orgId} AND record_id = ${row.recordId}`;
+          const seqs = detail.changes.map((change) => change.seq);
+          const askers = new Map(
+            seqs.length === 0
+              ? []
+              : (yield* sql<{ seq: number; askedBy: string }>`SELECT seq,
+                    asked_by_person_id AS "askedBy" FROM kin_record_changes
+                  WHERE org_id = ${row.orgId} AND record_id = ${row.recordId}
+                    AND seq IN ${sql.in(seqs)} AND asked_by_person_id IS NOT NULL
+                  ORDER BY seq`).map((one) => [one.seq, KinPersonId.make(one.askedBy)] as const),
+          );
+          const page = yield* commentsPage(row.orgId as KinOrgId, row.recordId);
+          return {
+            ...detail,
+            changes: detail.changes.map((change) => {
+              const askedBy = askers.get(change.seq);
+              return askedBy === undefined ? change : { ...change, askedBy };
+            }),
+            ...(record?.askedBy == null ? {} : { askedBy: KinPersonId.make(record.askedBy) }),
+            comments: page.comments,
+            olderComments: page.older,
+          };
+        }).pipe(provideSql),
+      );
     }),
+    commented: Effect.fn("KinRecords.commented")(
+      function* (orgId, personId, row, commentSeq, note) {
+        const now = yield* Clock.currentTimeMillis;
+        const writer: Writer = {
+          actor: { _tag: "person", personId },
+          via: "owner",
+          askedBy: personId,
+        };
+        return yield* wakeLead(
+          orgId,
+          writer,
+          row,
+          principal(row.ownerKind, row.ownerId) ?? { _tag: "person", personId },
+          personId,
+          commentSeq,
+          now,
+          "commented",
+          note.length > 280 ? `${note.slice(0, 279)}…` : note,
+        ).pipe(
+          // A teammate whose agent this no longer is still comments; the agent just isn't woken.
+          Effect.catchTags({ KinChatError: () => Effect.succeed(false) }),
+        );
+      },
+      (effect) => failed(effect),
+    ),
     seq: Effect.fn("KinRecords.seq")(function* (orgId) {
       return yield* failed(latestSeq(orgId).pipe(provideSql));
     }),
