@@ -63,6 +63,7 @@ it.effect.each([
       "journal/2026/12-31.md": "journal\n",
       ".github/workflows/memory-check.yml": "name: x\n",
       "people/demo.md": fixtureItem({ id: "demo", kind: "person" }),
+      "decisions/.gitkeep": "",
     },
     failures: [],
   },
@@ -83,6 +84,8 @@ it.effect.each([
       "people/CLAUDE.md": fixtureItem({ id: "x3", kind: "person" }),
       "objectives/.claude/settings.json": "{}",
       "relationships/AGENTS.md": "x",
+      "people/.gitkeep": "Invented instructions",
+      "objectives/nested/.gitkeep": "",
     },
     failures: [
       "claims/.claude/settings.json:1 Hidden paths are not allowed in Kin's unowned folders",
@@ -96,6 +99,8 @@ it.effect.each([
       "journal/.claude/skills/x/SKILL.md:1 Hidden paths are not allowed in Kin's unowned folders",
       "journal/CLAUDE.md:1 Kin's unowned folders only hold item and journal files",
       "objectives/.claude/settings.json:1 Hidden paths are not allowed in Kin's unowned folders",
+      "objectives/nested/.gitkeep:1 Hidden paths are not allowed in Kin's unowned folders",
+      "people/.gitkeep:1 A .gitkeep must be empty",
       "people/CLAUDE.md:1 Kin's unowned folders only hold item and journal files",
       "relationships/AGENTS.md:1 Kin's unowned folders only hold item and journal files",
     ],
@@ -327,6 +332,8 @@ it.layer(NodeServices.layer)((it) => {
       yield* fs.makeDirectory(`${root}/commitments`);
       yield* fs.writeFileString(`${root}/rules.md`, "Invented rules\n");
       yield* fs.writeFileString(`${root}/commitments/x.md`, "x");
+      // A set-up placeholder is read from disk, and passes only because it is empty.
+      yield* fs.writeFileString(`${root}/commitments/.gitkeep`, "");
       yield* fs.symlink("../rules.md", `${root}/commitments/link.md`);
       git("add", "rules.md", "commitments");
       git("update-index", "--add", "--cacheinfo", `160000,${"a".repeat(40)},claims/sub`);

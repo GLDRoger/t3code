@@ -9,7 +9,13 @@ import * as Stream from "effect/Stream";
 import { Argument, Command } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-import { formatLintFailure, isLintedPath, lintMemoryFiles, type MemoryTreeEntry } from "./lint.ts";
+import {
+  formatLintFailure,
+  isLintedPath,
+  isPlaceholderPath,
+  lintMemoryFiles,
+  type MemoryTreeEntry,
+} from "./lint.ts";
 
 const walkModes: Partial<Record<FileSystem.File.Type, string>> = {
   File: "100644",
@@ -68,7 +74,8 @@ export const readMemoryDirectory = Effect.fn("MemoryLint.readDirectory")(functio
   const files: Array<MemoryTreeEntry> = [];
   for (const entry of listed)
     files.push(
-      ["100644", "100755"].includes(entry.mode) && isLintedPath(entry.path)
+      ["100644", "100755"].includes(entry.mode) &&
+        (isLintedPath(entry.path) || isPlaceholderPath(entry.path))
         ? { ...entry, content: yield* fs.readFile(path.join(root, entry.path)) }
         : entry,
     );

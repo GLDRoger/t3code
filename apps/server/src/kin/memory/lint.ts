@@ -53,10 +53,16 @@ export const kinShapeFailure = (path: string) => {
   return "Kin's unowned folders only hold item and journal files";
 };
 
-const entryFailure = ({ path, mode }: MemoryTreeEntry) => {
+/** A folder's `.gitkeep` from the repo's set-up. Kin never writes one, and an empty file carries nothing. */
+export const isPlaceholderPath = (path: string) =>
+  kinOnlyRoots.some((root) => path === `${root}/.gitkeep`);
+
+const entryFailure = ({ path, mode, content }: MemoryTreeEntry) => {
   if (mode === "120000") return "Symlinks are not allowed";
   if (mode === "160000") return "Submodules are not allowed";
   if (!regularModes.includes(mode)) return "Not a regular file";
+  if (isPlaceholderPath(path))
+    return content?.byteLength === 0 ? undefined : "A .gitkeep must be empty";
   return kinShapeFailure(path);
 };
 
