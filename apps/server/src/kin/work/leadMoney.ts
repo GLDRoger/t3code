@@ -59,6 +59,7 @@ import {
   attachCard,
   carryOut,
   type FieldDef,
+  isUnissuedDraft,
   listDef,
   PRESET_IDS,
   propose,
@@ -353,6 +354,10 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
   const writer = yield* writerFor(lead);
   const before = yield* records.get(lead.orgId, input.key);
   if (before === undefined) return yield* notFound(input.key);
+  if (input.void === undefined && (yield* isUnissuedDraft(lead.orgId, before)))
+    return yield* invalid(
+      `${before.key} is a draft, so nothing is owed on it yet. Issue it first with kin_issue, which takes its date as the issue day (else today; set date with record_update first if the owner gave another), then record the payment.`,
+    );
   let paymentId: string | undefined;
   let tdsPaymentId: string | undefined;
   if (input.void !== undefined) {
