@@ -90,7 +90,7 @@ describe("kinLinked", () => {
 
   it("orders groups, drops itself, repeats and what opens nowhere, and caps each group", () => {
     const tasks = ["W-2", "W-3", "W-4", "W-5", "W-6", "W-7", "W-8"];
-    const { groups, unlisted } = kinLinked({
+    const detail = {
       key: "D-11",
       party: ref("C-5"),
       links: [
@@ -108,11 +108,16 @@ describe("kinLinked", () => {
       ],
       linkedFrom: tasks.map(recordLink),
       linkedFromMore: 10,
-    });
+    } as const;
+    const { groups, unlisted } = kinLinked(detail);
     expect(groups.map((one) => [one.group, one.items.map((item) => item.key), one.more])).toEqual([
       ["tasks", ["W-2", "W-3", "W-4", "W-5", "W-6"], 2],
       ["client", ["C-5"], 0],
     ]);
     expect(unlisted).toBe(10);
+    expect(kinLinked(detail, 5, new Set(["tasks"])).groups[0]).toMatchObject({
+      items: tasks.map((key) => ({ key })),
+      more: 0,
+    });
   });
 });

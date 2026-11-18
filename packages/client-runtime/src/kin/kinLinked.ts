@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 
 import type { KinNotificationDestination } from "./kinNotificationDestination.ts";
+import type { KinWorkLinkView } from "./kinWork.ts";
 
 type RecordKind = Extract<KinNotificationDestination, { readonly _tag: "record" }>["kind"];
 
@@ -20,6 +21,22 @@ const KIN_LINKED_GROUPS = [
   "people",
 ] as const;
 export type KinLinkedGroupName = (typeof KIN_LINKED_GROUPS)[number];
+
+export const KIN_LINKED = {
+  group: {
+    tasks: "Tasks",
+    projects: "Projects",
+    client: "Client",
+    money: "Money",
+    docs: "Docs",
+    chats: "Chats",
+    people: "People",
+  } satisfies Record<KinLinkedGroupName, string>,
+  /** A message link the host gave no label. */
+  message: "Where this came from",
+  more: (count: number) => `${count} more`,
+  unlisted: (count: number) => `${count} more link here, not shown`,
+} as const;
 
 export type KinLinkedKind = RecordKind | "contact" | "message";
 /** One linked thing; `title` is null for a message the host gave no label, for the screen to word. */
@@ -93,6 +110,8 @@ export function kinLinked(
       Pick<KinRecordDetail, "project" | "party" | "milestone" | "linkedFrom" | "linkedFromMore">
     >,
   limit = 5,
+  /** Groups opened past `limit` in place: the detail already holds the rest. */
+  expanded: ReadonlySet<KinLinkedGroupName> = new Set(),
 ): KinLinked {
   const seen = new Set([detail.key]);
   const items: Array<KinLinkedItem> = [];
@@ -109,9 +128,12 @@ export function kinLinked(
   }
   const groups = KIN_LINKED_GROUPS.flatMap((group): ReadonlyArray<KinLinkedGroup> => {
     const all = items.filter((item) => GROUP_OF[item.kind] === group);
-    return all.length === 0
-      ? []
-      : [{ group, items: all.slice(0, limit), more: Math.max(0, all.length - limit) }];
+    const shown = expanded.has(group) ? all : all.slice(0, limit);
+    return all.length === 0 ? [] : [{ group, items: shown, more: all.length - shown.length }];
   });
   return { groups, unlisted: detail.linkedFromMore ?? 0 };
 }
+
+/** The own links `kinLinked` leaves to the screen: pull requests, workers, notes, web pages, unseen records. */
+export const kinLinkedRest = (links: ReadonlyArray<KinWorkLinkView>) =>
+  links.filter((link) => link.kind !== "message" && (link.kind !== "task" || link.open === null));

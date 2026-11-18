@@ -23,6 +23,12 @@ import {
   type KinWorkRef,
 } from "@t3tools/client-runtime/kin/kinWork";
 import {
+  KIN_LINKED,
+  kinLinked,
+  kinLinkedRest,
+  type KinLinkedGroupName,
+} from "@t3tools/client-runtime/kin/kinLinked";
+import {
   KIN_TASK_RECORD,
   kinBriefBy,
   kinNextStep,
@@ -46,7 +52,7 @@ import {
   type KinRecordDetail,
   type KinRecordKey,
 } from "@t3tools/contracts";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import {
@@ -118,6 +124,7 @@ import { KinWorkRow } from "./KinWorkTasks";
 import { KinWorkSection as Section } from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
+import { openDestination } from "./KinNotifications";
 import { useNowMinuteMs } from "./useKinClock";
 import {
   useKinWorkItemWatch,
@@ -188,6 +195,7 @@ export function KinWorkItemSheet(
             links={
               <KinWorkLinks
                 {...props}
+                item={state.item}
                 links={kinWorkItemView(state.item, names, now, KIN_RECORD_CHANGES_CAP, place).links}
               />
             }
@@ -926,7 +934,12 @@ function KinWorkItem(
           now={props.now}
           note={view.historyNote}
         />
-        <KinWorkLinks {...props} title={KIN_TASK_RECORD.linked} links={view.links} />
+        <KinWorkLinks
+          {...props}
+          item={props.shown}
+          title={KIN_TASK_RECORD.linked}
+          links={view.links}
+        />
       </div>
       {!props.canComment || edit !== null ? null : (
         <div className="px-4 pt-2 pb-4">
@@ -952,9 +965,10 @@ function KinWorkItem(
   );
 }
 
-/** What an entry points at: the message it came from, a pull request, another entry. */
-function KinWorkLinks(
+/** Everything linked to an entry, both ways, by kind; then its pull requests, workers and pages. */
+export function KinWorkLinks(
   props: KinWorkTarget & {
+    readonly item: Parameters<typeof kinLinked>[0];
     readonly links: ReadonlyArray<KinWorkLinkView>;
     /** A task's reads "Linked", as the phone's does; a list entry's keeps "Links". */
     readonly title?: string;
@@ -962,22 +976,65 @@ function KinWorkLinks(
     readonly onClose: () => void;
   },
 ) {
-  if (props.links.length === 0) return null;
+  const navigate = useNavigate();
+  const [expanded, setExpanded] = useState<ReadonlySet<KinLinkedGroupName>>(new Set());
+  const linked = kinLinked(props.item, undefined, expanded);
+  const rest = kinLinkedRest(props.links);
+  if (linked.groups.length === 0 && rest.length === 0 && linked.unlisted === 0) return null;
   return (
     <Section title={props.title ?? "Links"}>
-      <ul className="flex flex-col">
-        {props.links.map((link) => (
-          <li key={link.key}>
-            <KinWorkLink
-              link={link}
-              environmentId={props.environmentId}
-              orgId={props.orgId}
-              onOpen={props.onClose}
-              onOpenKey={props.onOpenKey}
-            />
-          </li>
-        ))}
-      </ul>
+      {linked.groups.map((group) => (
+        <div key={group.group} className="flex flex-col">
+          <h4 className="px-1 text-xs text-muted-foreground">{KIN_LINKED.group[group.group]}</h4>
+          <ul className="flex flex-col">
+            {group.items.map((item) => (
+              <li key={item.key}>
+                <button
+                  type="button"
+                  onClick={() => void openDestination(navigate, props, item.open)}
+                  className={`${LINK_ROW} ${LINK_ROW_OPENS}`}
+                >
+                  {item.kind === "message" ? null : (
+                    <span className="shrink-0 text-xs text-muted-foreground">{item.key}</span>
+                  )}
+                  <span className="min-w-0 flex-1 truncate text-foreground">
+                    {item.title ?? KIN_LINKED.message}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          {group.more === 0 ? null : (
+            <div>
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={() => setExpanded(new Set([...expanded, group.group]))}
+              >
+                {KIN_LINKED.more(group.more)}
+              </Button>
+            </div>
+          )}
+        </div>
+      ))}
+      {rest.length === 0 ? null : (
+        <ul className="flex flex-col">
+          {rest.map((link) => (
+            <li key={link.key}>
+              <KinWorkLink
+                link={link}
+                environmentId={props.environmentId}
+                orgId={props.orgId}
+                onOpen={props.onClose}
+                onOpenKey={props.onOpenKey}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+      {linked.unlisted === 0 ? null : (
+        <p className="px-1 text-xs text-muted-foreground">{KIN_LINKED.unlisted(linked.unlisted)}</p>
+      )}
     </Section>
   );
 }
