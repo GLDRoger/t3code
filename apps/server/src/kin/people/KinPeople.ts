@@ -675,7 +675,14 @@ export const make = Effect.gen(function* () {
         RETURNING session_id`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.removeAccess")),
           );
-          yield* Effect.forEach(rows, (row) =>
+          const keys = yield* sql<{
+            session_id: AuthSessionId;
+          }>`UPDATE kin_tasks_keys SET revoked_at = ${now}
+        WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND revoked_at IS NULL
+        RETURNING session_id`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessKeys")),
+          );
+          yield* Effect.forEach([...rows, ...keys], (row) =>
             sessions
               .revoke(row.session_id)
               .pipe(Effect.mapError(toPersistenceSqlError("KinPeople.revokeSession"))),
