@@ -49,8 +49,8 @@ describe("a task's Linked section", () => {
     await expect.element(screen.getByText("Ambermill shelf 7")).toBeVisible();
     await expect.element(screen.getByRole("button", { name: "1 more" })).not.toBeInTheDocument();
 
-    await userEvent.click(page.getByRole("button", { name: /D-11/ }));
-    expect(onOpenKey).toHaveBeenCalledWith("D-11");
+    await userEvent.click(page.getByRole("button", { name: /W-7/ }));
+    expect(onOpenKey).toHaveBeenCalledWith("W-7");
   });
 
   it("on a doc, shows a task linking to it and a doc it links to, and opens the task", async () => {

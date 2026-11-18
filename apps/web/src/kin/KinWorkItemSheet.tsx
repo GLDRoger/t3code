@@ -987,9 +987,10 @@ export function KinWorkLinks(
       title={props.title ?? "Links"}
       // Both panels show the entry's client, project and milestone in their rows already.
       parentsShown
+      // A task or list entry opens on this panel; a doc, client or project has its own page.
       onOpen={(item) =>
-        item.open._tag === "record"
-          ? props.onOpenKey(item.key)
+        item.open._tag === "record" && (item.open.kind === "task" || item.open.kind === "entry")
+          ? props.onOpenKey(item.open.key)
           : void openDestination(navigate, props, item.open)
       }
     >
