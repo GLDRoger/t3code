@@ -715,7 +715,14 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
         (${orgId}, 'expenses', 'Expenses', 'EXP', 0, 0, ${JSON.stringify(presetDefinition("expenses", "INR"))})`;
     yield* LeadWork.create(scope, {
       sourceEventId: "ask-event",
-      records: [{ list: "invoices", title: "Invented October retainer", amount: "1 lakh" }],
+      records: [
+        {
+          list: "invoices",
+          title: "Invented October retainer",
+          amount: "1 lakh",
+          state: "waiting",
+        },
+      ],
     });
     // One row per tool the lead has: a tool added without one fails to typecheck and here.
     // A definition shows no entry, so proposing one marks nothing.

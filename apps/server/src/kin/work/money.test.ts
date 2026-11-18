@@ -1255,6 +1255,24 @@ describe("invoices", () => {
         }).pipe(Effect.flip);
         assert.include(unissued, { reason: "invalid_state" });
         assert.include(unissued.message, "Issue it first");
+        // The agent's payment on a draft is refused by the same rule, and writes nothing.
+        const agentPays = LeadMoney.payment(scope, {
+          sourceEventId: asked,
+          key: "INV-1",
+          amount: "1,000",
+          paidOn: "2026-11-05",
+        });
+        const refused = yield* Effect.flip(agentPays);
+        assert.include(refused, { reason: "invalid_state" });
+        assert.strictEqual(
+          refused.message,
+          "INV-1 is a draft, so nothing is owed on it yet. Issue it first with kin_issue, which takes its date as the issue day (else today; set date with record_update first if the owner gave another), then record the payment.",
+        );
+        const sql = yield* SqlClient.SqlClient;
+        const paymentsOn = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_record_payments p
+          JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
+          WHERE p.org_id = ${orgId} AND r.key = 'INV-1'`;
+        assert.deepStrictEqual(yield* paymentsOn, [{ n: 0 }]);
         // Two issues at once get consecutive numbers, one each.
         const both = yield* Effect.all(
           [
@@ -1275,6 +1293,10 @@ describe("invoices", () => {
           ],
         );
         const first = both.find((one) => one.key === "INV-1")!;
+        // Issued, the same payment is recorded, once.
+        assert.strictEqual((yield* agentPays).received, "₹1,000.00");
+        yield* agentPays;
+        assert.deepStrictEqual(yield* paymentsOn, [{ n: 1 }]);
         // A failed build is retried with the number it was given; asking again issues nothing.
         const again = yield* OwnerMoney.issue(people, { orgId, key: "INV-1" });
         assert.deepStrictEqual(again, { ...first, issued: false });
@@ -1348,7 +1370,6 @@ describe("invoices", () => {
         assert.deepStrictEqual([backdated.number, backdated.notice], ["INV/27-28/002", notice]);
         assert.strictEqual((yield* records.get(orgId, "INV-6"))!.notes, notice);
         // Kin's own words, written as Kin's: not the owner's, whatever the list calls its entries.
-        const sql = yield* SqlClient.SqlClient;
         assert.deepStrictEqual(
           yield* sql`SELECT c.actor_kind AS kind FROM kin_record_changes c
             JOIN kin_records r ON r.org_id = c.org_id AND r.record_id = c.record_id

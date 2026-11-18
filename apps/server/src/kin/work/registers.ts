@@ -18,7 +18,15 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
-import { type FieldValue, isMoney, LISTS, type ListName, sensitiveFields } from "./lists.ts";
+import {
+  fieldText,
+  type FieldValue,
+  isMoney,
+  LISTS,
+  type ListName,
+  parseFields,
+  sensitiveFields,
+} from "./lists.ts";
 import { homeCurrency } from "./companyProfile.ts";
 import { companyRegion, NEUTRAL_PAID_WITH } from "./statements/statementRegion.ts";
 import { dayIn, isCurrency } from "./money.ts";
@@ -516,6 +524,20 @@ export const numberingOf = (def: ListDef): KinNumberingRule | undefined =>
   (def.builtIn === null && (def.id === "invoices" || def.id === "receipts" || def.id === "quotes")
     ? PRESETS[def.id].numbering
     : undefined);
+
+/** A draft invoice: open with no number yet, so nothing is owed and nothing can be paid on it. */
+export const isUnissuedDraft = Effect.fn("KinRegisters.isUnissuedDraft")(function* (
+  orgId: KinOrgId,
+  entry: { readonly registerId: string; readonly state: string; readonly fieldsJson: string },
+) {
+  if (entry.registerId !== "invoices" || entry.state !== "open") return false;
+  const def = yield* listDef(orgId, "invoices");
+  return (
+    def !== undefined &&
+    numberingOf(def) !== undefined &&
+    (fieldText(parseFields(entry.fieldsJson), "number") ?? "").trim() === ""
+  );
+});
 
 const shownLabels = (labels: Readonly<Record<string, string>> | undefined) => {
   const shown = Object.entries(labels ?? {}).filter(([category, label]) => label !== category);

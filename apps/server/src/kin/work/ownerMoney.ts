@@ -39,7 +39,6 @@ import * as Numbers from "../gendocs/numbering.ts";
 import { listReceipts, makeReceipt as makeReceiptFor } from "../gendocs/receipts.ts";
 import { readProfile, setProfile } from "./companyProfile.ts";
 import { KinRecords } from "./KinRecords.ts";
-import { fieldText, parseFields } from "./lists.ts";
 import { dates as datesView, moneySummary } from "./moneyViews.ts";
 import { found, ownerWriter, theOwner, viewerOf } from "./ownerWork.ts";
 import { iso, workFailure } from "./recordRows.ts";
@@ -47,8 +46,8 @@ import {
   allLists,
   encodeDefinition,
   type FieldDef,
+  isUnissuedDraft,
   listDef,
-  numberingOf,
   openCounts,
   storedCategoryLabels,
   toDefinition,
@@ -359,15 +358,7 @@ export const recordPayment = Effect.fn("KinMoney.recordPayment")(function* (
   const sql = yield* SqlClient.SqlClient;
   // A draft invoice isn't owed until it is issued, so nothing can be paid on it yet.
   const entry = yield* records.get(input.orgId, input.key);
-  const def =
-    entry?.registerId === "invoices" ? yield* listDef(input.orgId, "invoices") : undefined;
-  if (
-    entry !== undefined &&
-    def !== undefined &&
-    numberingOf(def) !== undefined &&
-    entry.state === "open" &&
-    (fieldText(parseFields(entry.fieldsJson), "number") ?? "").trim() === ""
-  )
+  if (entry !== undefined && (yield* isUnissuedDraft(input.orgId, entry)))
     return yield* invalid(
       `${entry.key} is a draft. Issue it first, so it has its number and counts as owed, then record the payment.`,
     );
