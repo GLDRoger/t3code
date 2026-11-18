@@ -90,7 +90,7 @@ function KinTurnReceiptList(props: {
   return (
     <ul aria-label={KIN_TURN_RECEIPT_LABEL} className="flex flex-col">
       {rows.map((row) => {
-        const place = kinRecordPlace(kinTurnReceiptTarget(row.key, props.links));
+        const place = kinRecordPlace(kinTurnReceiptTarget(row, props.links));
         const undone = row.undo === "undone";
         return (
           <li key={row.id} className="flex items-start gap-2 py-1.5">

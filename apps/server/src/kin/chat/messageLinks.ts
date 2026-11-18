@@ -126,7 +126,9 @@ const STATE_WORDS: Record<string, string> = {
   done: "Done",
   dropped: "Dropped",
 };
-const kindOf = (register: string): Extract<KinMessageLinkTarget, { _tag: "record" }>["kind"] =>
+export const kindOf = (
+  register: string,
+): Extract<KinMessageLinkTarget, { _tag: "record" }>["kind"] =>
   register === "work" || register === "milestones"
     ? "task"
     : register === "clients"
