@@ -99,6 +99,8 @@ export function KinWorkDueRow(props: {
   readonly now: Date;
   readonly disabled: boolean;
   readonly onAct: (action: KinWorkAction) => void;
+  /** Past due and still open: drawn in the danger colour. */
+  readonly late?: boolean;
 }) {
   const { view, now } = props;
   const due = view.due === null ? KIN_WORK_COPY.noDate : capital(view.due);
@@ -126,7 +128,13 @@ export function KinWorkDueRow(props: {
       }}
     >
       <View pointerEvents="none">
-        <ListRowLayout icon="clock" label="Due" detail={due} disabled={props.disabled} />
+        <ListRowLayout
+          icon="clock"
+          label="Due"
+          detail={due}
+          disabled={props.disabled}
+          {...(props.late ? { tone: "danger" as const } : {})}
+        />
       </View>
     </Menu>
   );
