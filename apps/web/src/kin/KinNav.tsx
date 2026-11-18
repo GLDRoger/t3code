@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
-import { kinAttentionBadge, kinTasksBadgeCount } from "@t3tools/client-runtime/kin/kinAttention";
+import { kinAttentionBadge } from "@t3tools/client-runtime/kin/kinAttention";
+import { kinOpenBadge } from "@t3tools/client-runtime/kin/kinOpenView";
 import { kinWorkListsMoved } from "@t3tools/client-runtime/kin/kinWorkStream";
 import {
   KIN_DESTINATION_NAMES,
@@ -36,6 +37,7 @@ import {
 } from "./kinListSwitch";
 import { useKinAttention } from "./useKinAttention";
 import { useKinHost } from "./useKinHost";
+import { useKinOpen } from "./useKinOpen";
 import { useKinDestinations, useKinMyDueTasks } from "./useKinPlaces";
 import { useKinWorkDirectory, type KinWorkTarget } from "./useKinWork";
 
@@ -57,12 +59,15 @@ function useKinNavEntries(target: KinWorkTarget): ReadonlyArray<KinNavEntry> {
   const { work, ownerLevel, destinations } = useKinDestinations(target);
   const ready = work._tag === "ready";
   const unread = useAtomValue(kinInboxUnreadAtom(target.environmentId));
-  const attention = useKinAttention(target, ownerLevel && work._tag !== "refused", true);
+  // Where the host streams the open list, every level's badge is its count; else today's reads.
+  const open = useKinOpen(target);
+  const before = open === null;
+  const attention = useKinAttention(target, before && ownerLevel && work._tag !== "refused", true);
   // Anyone else's badge counts their own late and due-today tasks, the ones "On me" marks.
-  const directory = useKinWorkDirectory(target, ready && !ownerLevel);
+  const directory = useKinWorkDirectory(target, before && ready && !ownerLevel);
   const mineDue = useKinMyDueTasks(
     target,
-    ready && !ownerLevel ? directory.names.me : null,
+    before && ready && !ownerLevel ? directory.names.me : null,
     ready && !work.stale ? kinWorkListsMoved(work.live, ["work"]) : null,
   );
   const key = destinations.join(",");
@@ -79,7 +84,9 @@ function useKinNavEntries(target: KinWorkTarget): ReadonlyArray<KinNavEntry> {
       destination === "chats"
         ? kinAttentionBadge(unread)
         : destination === "tasks"
-          ? kinAttentionBadge(kinTasksBadgeCount({ ownerLevel, attention, mineDue }))
+          ? kinAttentionBadge(
+              open === undefined ? 0 : kinOpenBadge({ open, ownerLevel, attention, mineDue }),
+            )
           : null,
   }));
 }
