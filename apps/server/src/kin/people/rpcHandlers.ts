@@ -54,6 +54,7 @@ export const makeKinPeopleHandlers = Effect.fn("makeKinPeopleHandlers")(function
     "kin.people.createInvite": (input) => run((p) => p.createInvite(session, input)),
     "kin.people.listDevices": (input) => run((p) => p.listDevices(session, input)),
     "kin.people.revokeDevice": (input) => run((p) => p.revokeDevice(session, input)),
+    "kin.people.linkDevice": (input) => run((p) => p.linkDevice(session, input)),
     "kin.people.removeAccess": (input) => run((p) => p.removeAccess(session, input)),
     "kin.people.setGithubLogin": (input) => run((p) => p.setGithubLogin(session, input)),
     "kin.people.setAccess": (input) => run((p) => p.setAccess(session, input)),

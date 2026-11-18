@@ -946,6 +946,10 @@
     "./kin/kinDraft": {
       "types": "./src/kin/kinDraft.ts",
       "default": "./src/kin/kinDraft.ts"
+    },
+    "./kin/kinDevices": {
+      "types": "./src/kin/kinDevices.ts",
+      "default": "./src/kin/kinDevices.ts"
     }
   },
   "scripts": {

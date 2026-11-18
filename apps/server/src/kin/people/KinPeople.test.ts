@@ -4,6 +4,7 @@ import {
   AuthKinChatScope,
   AuthStandardClientScopes,
   AuthSessionId,
+  KIN_DEVICE_LINKED_NOTICE,
   KinAgentId,
   KinMessageId,
   KinOrgId,
@@ -38,6 +39,7 @@ import { KinIdentity, KinIdentityConfig } from "../chat/KinIdentity.ts";
 import { layerKinAuthTest, pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { readProfile } from "../work/companyProfile.ts";
 import * as Records from "../work/KinRecords.ts";
+import { KinPushSender, type KinPushNotification } from "../push/KinPushSender.ts";
 import * as People from "./KinPeople.ts";
 
 const database = layerKinAuthTest("kin-people-");
@@ -228,6 +230,499 @@ it.effect(
         member.person.personId,
       );
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a teammate links, lists and removes only their own devices", () =>
+  Effect.gen(function* () {
+    const service = yield* People.KinPeople;
+    const identity = yield* KinIdentity;
+    const sessions = yield* SessionStore;
+    yield* pairSession(ownerSession.sessionId);
+    const orgId = identity.owner.orgId;
+    const join = Effect.fn("test.join")(function* (displayName: string) {
+      const invite = yield* service.createInvite(ownerSession, { orgId, displayName });
+      const accepted = yield* service.accept({ secret: invite.secret });
+      return { ...accepted, session: yield* sessions.verify(accepted.accessToken) };
+    });
+    const asha = yield* join("Asha");
+    const ravi = yield* join("Ravi");
+    const refused = <A, E extends object>(effect: Effect.Effect<A, E>) =>
+      effect.pipe(
+        Effect.flip,
+        Effect.map((error) => ("reason" in error ? error.reason : undefined)),
+      );
+
+    // The owner pairs through T3 Code; a link would make them a teammate.
+    assert.equal(yield* refused(service.linkDevice(ownerSession, { orgId })), "not_allowed");
+    const link = yield* service.linkDevice(asha.session, { orgId });
+    const laptop = yield* service.accept({
+      secret: link.secret,
+      label: "Laptop",
+      deviceType: "desktop",
+    });
+    assert.equal(laptop.person.personId, asha.person.personId);
+    assert.equal(yield* refused(service.accept({ secret: link.secret })), "not_found");
+
+    const mine = (yield* service.listDevices(asha.session, {
+      orgId,
+      personId: asha.person.personId,
+    })).devices;
+    assert.deepStrictEqual(
+      Object.fromEntries(
+        mine.map((device) => [device.sessionId, [device.current, device.deviceType]]),
+      ),
+      { [asha.sessionId]: [true, "mobile"], [laptop.sessionId]: [false, "desktop"] },
+    );
+    assert.equal(
+      yield* refused(service.listDevices(asha.session, { orgId, personId: ravi.person.personId })),
+      "not_allowed",
+    );
+    assert.equal(
+      yield* refused(
+        service.revokeDevice(asha.session, {
+          orgId,
+          personId: ravi.person.personId,
+          sessionId: ravi.sessionId,
+        }),
+      ),
+      "not_allowed",
+    );
+
+    // A person's own link never brings back someone the owner removed.
+    const ravisLink = yield* service.linkDevice(ravi.session, { orgId });
+    yield* service.removeAccess(ownerSession, { orgId, personId: ravi.person.personId });
+    assert.equal(yield* refused(service.accept({ secret: ravisLink.secret })), "not_found");
+
+    // A newer link replaces an unused one, and an unused one lapses after ten minutes.
+    const stale = yield* service.linkDevice(asha.session, { orgId });
+    const fresh = yield* service.linkDevice(asha.session, { orgId });
+    assert.equal(yield* refused(service.accept({ secret: stale.secret })), "not_found");
+    yield* TestClock.adjust("10 minutes");
+    assert.equal(yield* refused(service.accept({ secret: fresh.secret })), "not_found");
+
+    const tabletLink = yield* service.linkDevice(asha.session, { orgId });
+    const tablet = yield* service.accept({ secret: tabletLink.secret, label: "Tablet" });
+    yield* service.revokeDevice(asha.session, {
+      orgId,
+      personId: asha.person.personId,
+      sessionId: (yield* sessions.verify(tablet.accessToken)).sessionId,
+    });
+
+    // Removing a device ends it, and a connection that already holds it can't act as it.
+    const laptopSession = yield* sessions.verify(laptop.accessToken);
+    yield* service.revokeDevice(ownerSession, {
+      orgId,
+      personId: asha.person.personId,
+      sessionId: laptop.sessionId,
+    });
+    assert.equal((yield* sessions.verify(laptop.accessToken).pipe(Effect.result))._tag, "Failure");
+    assert.equal(yield* refused(service.linkDevice(laptopSession, { orgId })), "not_allowed");
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("removing a device takes the devices linked from it and the links it left open", () =>
+  Effect.gen(function* () {
+    // Every device a person links themself rings their phones; an owner's invite doesn't.
+    const told: Array<KinPushNotification> = [];
+    const service = yield* People.make.pipe(
+      Effect.provideService(
+        KinPushSender,
+        KinPushSender.of({
+          status: "ready",
+          notify: (notification) =>
+            Effect.sync(() => told.push(notification)).pipe(
+              Effect.andThen(
+                Effect.forkChild(
+                  Effect.succeed({ status: "ready", sent: 1, suppressed: 0, failed: 0 } as const),
+                ),
+              ),
+            ),
+          flushKeyPushes: Effect.succeed(0),
+        }),
+      ),
+    );
+    const identity = yield* KinIdentity;
+    const sessions = yield* SessionStore;
+    yield* pairSession(ownerSession.sessionId);
+    const orgId = identity.owner.orgId;
+    const invite = yield* service.createInvite(ownerSession, { orgId, displayName: "Asha" });
+    const phone = yield* service.accept({ secret: invite.secret });
+    const personId = phone.person.personId;
+    const as = (accepted: { readonly accessToken: string }) =>
+      sessions.verify(accepted.accessToken);
+    const linkFrom = Effect.fn("test.linkFrom")(function* (
+      from: { readonly accessToken: string },
+      label: string,
+    ) {
+      const link = yield* service.linkDevice(yield* as(from), { orgId });
+      return yield* service.accept({ secret: link.secret, label });
+    });
+    const refused = <A, E extends object>(effect: Effect.Effect<A, E>) =>
+      effect.pipe(
+        Effect.flip,
+        Effect.map((error) => ("reason" in error ? error.reason : undefined)),
+      );
+
+    // Two devices redeem one code at once: exactly one session comes of it, and no orphan.
+    const sql = yield* SqlClient.SqlClient;
+    const sessionCount = sql<{ n: number }>`SELECT count(*) AS n FROM auth_sessions`.pipe(
+      Effect.map(([row]) => row!.n),
+    );
+    const sessionsBefore = yield* sessionCount;
+    const shared = yield* service.linkDevice(yield* as(phone), { orgId });
+    const raced = yield* Effect.all(
+      [
+        service.accept({ secret: shared.secret, label: "Laptop" }).pipe(Effect.result),
+        service.accept({ secret: shared.secret, label: "Laptop" }).pipe(Effect.result),
+      ],
+      { concurrency: "unbounded" },
+    );
+    const saved = yield* sql<{ session_id: string }>`SELECT session_id FROM kin_session_bindings
+      WHERE link_id = ${shared.linkId}`;
+    const won = raced.flatMap((result) => (result._tag === "Success" ? [result.success] : []));
+    assert.deepStrictEqual(
+      [
+        saved.map((row) => row.session_id),
+        won.map((joined) => joined.sessionId),
+        (yield* sessionCount) - sessionsBefore,
+      ],
+      [[won[0]?.sessionId], [won[0]?.sessionId], 1],
+    );
+    const laptop = won[0]!;
+    const tablet = yield* linkFrom(laptop, "Tablet");
+    const watch = yield* linkFrom(phone, "Watch");
+    assert.deepStrictEqual(
+      told.map((notification) => ("sessionId" in notification ? notification.sessionId : null)),
+      [laptop.sessionId, tablet.sessionId, watch.sessionId],
+    );
+
+    // A device linked from another removes itself and what it linked, never the phone above it.
+    const fromLaptop = (yield* service.listDevices(yield* as(laptop), { orgId, personId })).devices;
+    assert.deepStrictEqual(
+      Object.fromEntries(fromLaptop.map((d) => [d.label, [d.linkedFrom, d.removable]])),
+      {
+        Asha: [null, false],
+        Laptop: [phone.sessionId, true],
+        Tablet: [laptop.sessionId, true],
+        Watch: [phone.sessionId, false],
+      },
+    );
+    assert.equal(
+      yield* refused(
+        service.revokeDevice(yield* as(tablet), { orgId, personId, sessionId: phone.sessionId }),
+      ),
+      "not_allowed",
+    );
+    // Self-links are the person's own: the owner's invite list doesn't show or cancel them.
+    const open = yield* service.linkDevice(yield* as(laptop), { orgId });
+    assert.deepStrictEqual((yield* service.listInvites(ownerSession, orgId)).invites, []);
+    const [openRow] = yield* sql<{
+      invite_id: string;
+    }>`SELECT invite_id FROM kin_people_invites WHERE made_by_session_id = ${laptop.sessionId}
+      AND consumed_at IS NULL AND revoked_at IS NULL`;
+    assert.equal(
+      yield* refused(
+        service.revokeInvite(ownerSession, {
+          orgId,
+          inviteId: openRow!.invite_id as never,
+        }),
+      ),
+      "not_found",
+    );
+
+    // The phone removes the laptop: the tablet linked from it goes too, and the laptop's open
+    // code is dead before anyone redeems it. The watch, linked from the phone, stays.
+    const tabletSession = yield* as(tablet);
+    const laptopAsSeen = yield* as(laptop);
+    yield* service.revokeDevice(yield* as(phone), { orgId, personId, sessionId: laptop.sessionId });
+    for (const gone of [laptop, tablet])
+      assert.equal((yield* sessions.verify(gone.accessToken).pipe(Effect.result))._tag, "Failure");
+    // Neither can act through a connection that already held it.
+    for (const held of [tabletSession, laptopAsSeen])
+      assert.equal(yield* refused(service.linkDevice(held, { orgId })), "not_allowed");
+    assert.equal(yield* refused(service.accept({ secret: open.secret })), "not_found");
+    assert.equal((yield* as(watch)).sessionId, watch.sessionId);
+
+    // Signed out outside Kin (Sharing & access, the CLI): the watch still takes what it linked,
+    // and its open link is dead.
+    const strap = yield* linkFrom(watch, "Strap");
+    const strapSession = yield* as(strap);
+    const fromWatch = yield* service.linkDevice(yield* as(watch), { orgId });
+    yield* sessions.revoke(watch.sessionId);
+    assert.equal(yield* refused(service.accept({ secret: fromWatch.secret })), "not_found");
+    assert.equal((yield* sessions.verify(strap.accessToken).pipe(Effect.result))._tag, "Failure");
+    assert.equal(yield* refused(service.linkDevice(strapSession, { orgId })), "not_allowed");
+    const listed = (yield* service.listDevices(ownerSession, { orgId, personId })).devices;
+    assert.isNotNull(listed.find((d) => d.sessionId === watch.sessionId)!.revokedAt);
+
+    // The device limit holds when a code is used, not only when it is made.
+    for (let n = 0; n < 8; n += 1) yield* linkFrom(phone, `Device ${n}`);
+    const lastLink = yield* service.linkDevice(yield* as(phone), { orgId });
+    const back = yield* service.createInvite(ownerSession, {
+      orgId,
+      displayName: "Asha",
+      personId,
+    });
+    yield* service.accept({ secret: back.secret });
+    assert.equal(yield* refused(service.accept({ secret: lastLink.secret })), "limit");
+    // So is an owner's invite for someone already at the limit.
+    const once = yield* service.createInvite(ownerSession, {
+      orgId,
+      displayName: "Asha",
+      personId,
+    });
+    assert.equal(yield* refused(service.accept({ secret: once.secret })), "limit");
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a co-owner's own devices answer to the device that linked them", () =>
+  Effect.gen(function* () {
+    const service = yield* People.KinPeople;
+    const identity = yield* KinIdentity;
+    const sessions = yield* SessionStore;
+    yield* pairSession(ownerSession.sessionId);
+    const orgId = identity.owner.orgId;
+    const refused = <A, E extends object>(effect: Effect.Effect<A, E>) =>
+      effect.pipe(
+        Effect.flip,
+        Effect.map((error) => ("reason" in error ? error.reason : undefined)),
+      );
+    const join = Effect.fn("test.join")(function* (displayName: string) {
+      const invite = yield* service.createInvite(ownerSession, { orgId, displayName });
+      return yield* service.accept({ secret: invite.secret });
+    });
+    const phone = yield* join("Asha");
+    const personId = phone.person.personId;
+    yield* service.setAccess(ownerSession, { orgId, personId, access: "co_owner" });
+    const link = yield* service.linkDevice(yield* sessions.verify(phone.accessToken), { orgId });
+    const laptop = yield* service.accept({ secret: link.secret, label: "Laptop" });
+    const laptopSession = yield* sessions.verify(laptop.accessToken);
+
+    // No device of hers starts a line of its own that would outlive the one it came from.
+    for (const from of [phone, laptop])
+      assert.equal(
+        yield* refused(
+          service.createInvite(yield* sessions.verify(from.accessToken), {
+            orgId,
+            displayName: "Asha",
+            personId,
+          }),
+        ),
+        "not_allowed",
+      );
+    // The laptop's unspent link dies with it, and so would anything linked from it.
+    const open = yield* service.linkDevice(laptopSession, { orgId });
+    const tablet = yield* service.accept({
+      secret: (yield* service.linkDevice(laptopSession, { orgId })).secret,
+      label: "Tablet",
+    });
+    yield* service.revokeDevice(ownerSession, { orgId, personId, sessionId: laptop.sessionId });
+    assert.equal(yield* refused(service.accept({ secret: open.secret })), "not_found");
+    assert.equal((yield* sessions.verify(tablet.accessToken).pipe(Effect.result))._tag, "Failure");
+    // A fresh start for her comes from the owner.
+    const back = yield* service.createInvite(ownerSession, {
+      orgId,
+      displayName: "Asha",
+      personId,
+    });
+    assert.equal((yield* service.accept({ secret: back.secret })).person.personId, personId);
+  }).pipe(Effect.provide(layer)),
+);
+
+/**
+ * Lands `land` in the gap just before a racing call opens its write's transaction. An
+ * implementation that read who may act before that point would write on what `land` changed.
+ */
+const makeBarrier = Effect.fn("test.barrier")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  let armed: Effect.Effect<void> | null = null;
+  const hit = Effect.suspend(() => {
+    const land = armed;
+    armed = null;
+    return land ?? Effect.void;
+  });
+  const gapped = new Proxy(sql, {
+    get: (target, key, receiver) =>
+      key === "withTransaction"
+        ? <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            hit.pipe(Effect.andThen(target.withTransaction(effect)))
+        : Reflect.get(target, key, receiver),
+  });
+  return {
+    sql: gapped,
+    arm: <E>(land: Effect.Effect<void, E>) => {
+      armed = Effect.orDie(land);
+    },
+  };
+});
+
+/** What each write saw of its maker the instant it happened, from triggers on the tables. */
+const witness = Effect.fn("test.witness")(function* (personId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE test_witness (what TEXT NOT NULL, seen TEXT)`;
+  yield* sql`CREATE TRIGGER test_witness_link AFTER INSERT ON kin_people_invites
+    WHEN NEW.made_by_session_id IS NOT NULL BEGIN
+      INSERT INTO test_witness VALUES ('link', (SELECT CASE WHEN revoked_at IS NULL
+        THEN 'live' ELSE 'signed out' END FROM auth_sessions
+        WHERE session_id = NEW.made_by_session_id));
+    END`;
+  yield* sql`CREATE TRIGGER test_witness_device AFTER INSERT ON kin_session_bindings
+    WHEN NEW.parent_session_id IS NOT NULL BEGIN
+      INSERT INTO test_witness VALUES ('device', (SELECT CASE WHEN revoked_at IS NULL
+        THEN 'live' ELSE 'signed out' END FROM auth_sessions
+        WHERE session_id = NEW.parent_session_id));
+    END`;
+  yield* sql`CREATE TRIGGER test_witness_invite AFTER INSERT ON kin_people_invites
+    WHEN NEW.made_by_session_id IS NULL BEGIN
+      INSERT INTO test_witness VALUES ('invite',
+        (SELECT access FROM kin_people WHERE person_id = ${sql.literal(`'${personId}'`)}));
+    END`;
+  return sql<{ what: string; seen: string | null }>`SELECT what, seen FROM test_witness`;
+});
+
+it.effect(
+  "a removal or demotion landing just before a call's write never lets the call write on it",
+  () =>
+    Effect.gen(function* () {
+      const identity = yield* KinIdentity;
+      const sessions = yield* SessionStore;
+      const plain = yield* People.KinPeople;
+      const barrier = yield* makeBarrier();
+      // The same service, with the barrier in front of every transaction it opens.
+      const service = yield* People.make.pipe(
+        Effect.provideService(SqlClient.SqlClient, barrier.sql),
+      );
+      yield* pairSession(ownerSession.sessionId);
+      const orgId = identity.owner.orgId;
+      const join = Effect.fn("test.join")(function* (displayName: string) {
+        const invite = yield* plain.createInvite(ownerSession, { orgId, displayName });
+        return yield* plain.accept({ secret: invite.secret });
+      });
+      const phone = yield* join("Asha");
+      const personId = phone.person.personId;
+      const seen = yield* witness(personId);
+      const as = (accepted: { readonly accessToken: string }) =>
+        sessions.verify(accepted.accessToken);
+      const linkFrom = Effect.fn("test.linkFrom")(function* (
+        from: { readonly accessToken: string },
+        label: string,
+      ) {
+        const link = yield* plain.linkDevice(yield* as(from), { orgId });
+        return yield* plain.accept({ secret: link.secret, label });
+      });
+      const remove = (sessionId: AuthSessionId) =>
+        plain.revokeDevice(ownerSession, { orgId, personId, sessionId }).pipe(Effect.asVoid);
+      const signedOut = (accepted: { readonly accessToken: string }) =>
+        sessions.verify(accepted.accessToken).pipe(
+          Effect.result,
+          Effect.map((result) => result._tag === "Failure"),
+        );
+
+      // Mint: the laptop is removed as its link is being made.
+      const laptop = yield* linkFrom(phone, "Laptop");
+      const laptopSession = yield* as(laptop);
+      barrier.arm(remove(laptop.sessionId));
+      const minted = yield* service.linkDevice(laptopSession, { orgId }).pipe(Effect.option);
+      if (Option.isSome(minted))
+        assert.isTrue(
+          Option.isNone(yield* plain.accept({ secret: minted.value.secret }).pipe(Effect.option)),
+        );
+
+      // Redeem: the tablet's link is used just as the tablet is removed.
+      const tablet = yield* linkFrom(phone, "Tablet");
+      const pending = yield* plain.linkDevice(yield* as(tablet), { orgId });
+      barrier.arm(remove(tablet.sessionId));
+      const redeemed = yield* service
+        .accept({ secret: pending.secret, label: "Watch" })
+        .pipe(Effect.option);
+      if (Option.isSome(redeemed)) assert.isTrue(yield* signedOut(redeemed.value));
+
+      // Demotion: a co-owner invites someone just as the owner makes her a member.
+      yield* plain.setAccess(ownerSession, { orgId, personId, access: "co_owner" });
+      barrier.arm(
+        plain.setAccess(ownerSession, { orgId, personId, access: "member" }).pipe(Effect.asVoid),
+      );
+      yield* service
+        .createInvite(yield* as(phone), { orgId, displayName: "Guest" })
+        .pipe(Effect.option);
+
+      // Whatever order the database chose, each write saw a live maker at her real level.
+      assert.deepStrictEqual(
+        (yield* seen).filter((row) => row.seen !== "live" && row.seen !== "co_owner"),
+        [],
+      );
+      assert.isTrue(yield* signedOut(laptop));
+      assert.isTrue(yield* signedOut(tablet));
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("removing a device whose own session already ended still signs out what it linked", () =>
+  Effect.gen(function* () {
+    const service = yield* People.KinPeople;
+    const identity = yield* KinIdentity;
+    const sessions = yield* SessionStore;
+    const sql = yield* SqlClient.SqlClient;
+    yield* pairSession(ownerSession.sessionId);
+    const orgId = identity.owner.orgId;
+    const invite = yield* service.createInvite(ownerSession, { orgId, displayName: "Asha" });
+    const phone = yield* service.accept({ secret: invite.secret });
+    const personId = phone.person.personId;
+    const as = (accepted: { readonly accessToken: string }) =>
+      sessions.verify(accepted.accessToken);
+    const linkFrom = Effect.fn("test.linkFrom")(function* (
+      from: { readonly accessToken: string },
+      label: string,
+    ) {
+      const link = yield* service.linkDevice(yield* as(from), { orgId });
+      return yield* service.accept({ secret: link.secret, label });
+    });
+    const signedOut = (accepted: { readonly accessToken: string }) =>
+      sessions.verify(accepted.accessToken).pipe(
+        Effect.result,
+        Effect.map((result) => result._tag === "Failure"),
+      );
+
+    // The laptop's session ends without Kin hearing (an older server, a hand edit): its binding
+    // stays, and the tablet linked from it is still signed in.
+    const laptop = yield* linkFrom(phone, "Laptop");
+    const laptopSession = yield* as(laptop);
+    const tablet = yield* linkFrom(laptop, "Tablet");
+    const open = yield* service.linkDevice(yield* as(tablet), { orgId });
+    yield* sql`UPDATE auth_sessions SET revoked_at = '2026-01-01T00:00:00.000Z'
+      WHERE session_id = ${laptop.sessionId}`;
+    assert.isFalse(yield* signedOut(tablet));
+    // A connection that still holds the ended session acts as no one.
+    assert.deepStrictEqual(yield* identity.resolve(laptopSession), []);
+    // Removing the laptop walks from it anyway.
+    yield* service.revokeDevice(ownerSession, { orgId, personId, sessionId: laptop.sessionId });
+    assert.isTrue(yield* signedOut(tablet));
+    assert.isTrue(
+      Option.isNone(yield* service.accept({ secret: open.secret }).pipe(Effect.option)),
+    );
+
+    // A device that pairs again in place is signed out, and takes what it linked.
+    const watch = yield* linkFrom(phone, "Watch");
+    const strap = yield* linkFrom(watch, "Strap");
+    const [held] = yield* sql<{
+      method: "browser-session-cookie" | "bearer-access-token" | "dpop-access-token";
+    }>`SELECT method FROM auth_sessions WHERE session_id = ${watch.sessionId}`;
+    yield* sessions.issue({
+      subject: "kin-member",
+      method: held!.method,
+      replaceSessionId: watch.sessionId,
+    });
+    assert.isTrue(yield* signedOut(watch));
+    assert.isTrue(yield* signedOut(strap));
+
+    // The walk keeps to one person: a forged link from Asha's phone to Ravi's device is not hers.
+    const raviInvite = yield* service.createInvite(ownerSession, { orgId, displayName: "Ravi" });
+    const ravi = yield* service.accept({ secret: raviInvite.secret });
+    yield* sql`UPDATE kin_session_bindings SET parent_session_id = ${phone.sessionId}
+      WHERE session_id = ${ravi.sessionId}`;
+    yield* service.revokeDevice(ownerSession, { orgId, personId, sessionId: phone.sessionId });
+    assert.isTrue(yield* signedOut(phone));
+    assert.isFalse(yield* signedOut(ravi));
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect.each(["create", "accept"] as const)("rejects owner binding at %s", (stage) =>
@@ -660,6 +1155,47 @@ const teamLayer = Layer.mergeAll(People.layer, Groups.layer).pipe(
   Layer.provideMerge(identities),
   Layer.provideMerge(database),
   Layer.provideMerge(environment),
+);
+
+it.effect("with no Team agent, a linked device is told in the person's own direct chats", () =>
+  Effect.gen(function* () {
+    const service = yield* People.KinPeople;
+    const identity = yield* KinIdentity;
+    const sessions = yield* SessionStore;
+    const sql = yield* SqlClient.SqlClient;
+    const repo = yield* Repository.KinChatRepository;
+    const chats = yield* Service.KinChatService;
+    const { owner } = identity;
+    const { orgId } = owner;
+    yield* pairSession(ownerSession.sessionId);
+    const tech = KinAgentId.make("tech");
+    yield* repo.insertAgent({
+      orgId,
+      agentId: tech,
+      ownerPersonId: owner.personId,
+      displayName: "Tech lead",
+      role: "lead",
+      createdAt: at,
+    });
+    const ownerChat = yield* chats.createDirect(owner, { orgId, agentId: tech });
+    yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+      VALUES (${tech}, ${orgId}, 'Tech lead', 0, '{}', '[]', ${ownerChat.chatId})`;
+    const mira = yield* service.accept({
+      secret: (yield* service.createInvite(ownerSession, { orgId, displayName: "Mira" })).secret,
+    });
+    const person = { _tag: "person" as const, orgId, personId: mira.person.personId };
+    yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at, revoked_at)
+      VALUES (${orgId}, ${tech}, ${person.personId}, ${owner.personId}, 0, NULL)`;
+    const direct = yield* chats.createDirect(person, { orgId, agentId: tech });
+    const told = sql<{ chat_id: string; body: string }>`SELECT chat_id, body FROM kin_messages
+      WHERE author_kind = 'system' AND body = ${KIN_DEVICE_LINKED_NOTICE}`;
+    assert.deepStrictEqual(yield* told, []);
+    const link = yield* service.linkDevice(yield* sessions.verify(mira.accessToken), { orgId });
+    yield* service.accept({ secret: link.secret, label: "Laptop" });
+    assert.deepStrictEqual(yield* told, [
+      { chat_id: direct.chatId, body: KIN_DEVICE_LINKED_NOTICE },
+    ]);
+  }).pipe(Effect.provide(teamLayer)),
 );
 
 // Review 14: removing someone left their turns running and their events queued.
