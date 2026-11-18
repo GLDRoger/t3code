@@ -1,5 +1,7 @@
 import {
   KinChatError,
+  formatKinMoney,
+  type KinChartUnit,
   type KinAgentIntent,
   KinChatId,
   type KinMessage,
@@ -44,7 +46,10 @@ import { directKey } from "./LeadAccess.ts";
 import { holdFor, holdLine, urgentNow } from "../triggers/quietHold.ts";
 import { unreadableBy } from "../work/teamView.ts";
 
-type PostInput = KinMessagesSendInput & { readonly intent: KinAgentIntent };
+type PostInput = KinMessagesSendInput & {
+  readonly intent: KinAgentIntent;
+  readonly placeReplyFigures?: true;
+};
 type PostToInput = PostInput & {
   /** Why it can't wait for their quiet hours: logged, and it posts now. */
   readonly urgent?: string | undefined;
@@ -128,12 +133,20 @@ export class KinLevelGate extends Context.Service<
     readonly chart: (
       agent: AgentIdentity,
       input: ChartInput,
-    ) => Effect.Effect<KinWidget, KinChatError>;
+    ) => Effect.Effect<KinWidget | { readonly figure: string }, KinChatError>;
     /** `kin_visual`'s card, gated like a post. */
     readonly visual: (
       agent: AgentIdentity,
       input: VisualInput,
-    ) => Effect.Effect<KinWidget, KinChatError>;
+    ) => Effect.Effect<KinWidget | { readonly figure: string }, KinChatError>;
+    readonly settleFigures: (
+      ...args: Parameters<KinChatService["Service"]["settleFigures"]>
+    ) => Effect.Effect<void, KinChatError>;
+    readonly setChoiceOutcome: (
+      agent: AgentIdentity,
+      input: Parameters<KinChatService["Service"]["setChoiceOutcome"]>[1],
+      bind: () => Effect.Effect<void, SqlError.SqlError>,
+    ) => Effect.Effect<boolean, KinChatError>;
     /** `kin_react`: the lead's reaction, gated like a post since it can stand for its reply. */
     readonly react: (
       agent: AgentIdentity,
@@ -506,9 +519,57 @@ const make = Effect.gen(function* () {
     showCard: Effect.fn("KinLevelGate.showCard")((agent, input) =>
       gated("gated card", agent, input.chatId, chat.showCard(agent, input)),
     ),
-    chart: Effect.fn("KinLevelGate.chart")((agent, input) =>
-      gated("gated chart", agent, input.chatId, chat.chart(agent, input)),
+    settleFigures: Effect.fn("KinLevelGate.settleFigures")((agent, chatId, intent) =>
+      gated("gated figures", agent, chatId, chat.settleFigures(agent, chatId, intent)),
     ),
+    setChoiceOutcome: Effect.fn("KinLevelGate.setChoiceOutcome")((agent, input, bind) =>
+      gated(
+        "gated choice outcome",
+        agent,
+        input.chatId,
+        chat
+          .setChoiceOutcome(agent, input)
+          .pipe(Effect.tap((saved) => (saved ? bind() : Effect.void))),
+      ),
+    ),
+    chart: Effect.fn("KinLevelGate.chart")(function* (agent, input) {
+      const label = (unit: KinChartUnit, value: number | null) =>
+        value === null
+          ? ""
+          : unit.kind === "money"
+            ? formatKinMoney(Math.round(value), unit.currency)
+            : String(value);
+      const words = [
+        input.title,
+        input.caption,
+        ...(input.labels ?? []),
+        ...(input.series ?? []).flatMap((series) => [
+          series.name,
+          ...series.values.map((value) => label(input.unit, value)),
+        ]),
+        ...(input.comparison === undefined
+          ? []
+          : [
+              input.comparison.name,
+              ...input.comparison.values.map((value) => label(input.unit, value)),
+            ]),
+        ...(input.target === undefined
+          ? []
+          : [input.target.name, label(input.unit, input.target.value)]),
+        input.scatter?.xName,
+        input.scatter?.yName,
+        ...(input.scatter?.series ?? []).flatMap((series) => [
+          series.name,
+          ...series.points.flatMap((point) => [
+            point.label,
+            label(input.scatter?.xUnit ?? { kind: "count" }, point.x),
+            label(input.unit, point.y),
+          ]),
+        ]),
+      ];
+      yield* everyoneSees(agent, words.join("\n"));
+      return yield* gated("gated chart", agent, input.chatId, chat.chart(agent, input));
+    }),
     visual: Effect.fn("KinLevelGate.visual")(function* (agent, input) {
       yield* everyoneSees(agent, `${input.title}\n${input.html.replace(/<[^>]*>/g, " ")}`);
       return yield* gated("gated visual", agent, input.chatId, chat.visual(agent, input));

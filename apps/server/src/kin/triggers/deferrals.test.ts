@@ -34,7 +34,7 @@ import * as Budget from "../lead/KinBudget.ts";
 import * as Queue from "../lead/KinEventQueue.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
 import { leadWakeup } from "../lead/LeadDelivery.testkit.ts";
-import { laneFor } from "../reply/KinReplyBridge.ts";
+import { laneFor } from "../reply/replyLane.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { fakeRepository } from "../memory/__fixtures__/repository.ts";
 import * as Memory from "../memory/Memory.ts";

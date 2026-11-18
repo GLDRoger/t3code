@@ -23,7 +23,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { effectiveAudience } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
-import { laneFor } from "../reply/KinReplyBridge.ts";
+import { laneFor } from "../reply/replyLane.ts";
 import { DOC_BODY_MAX, outlineOf, sectionsOf, WHOLE_DOC } from "./docBody.ts";
 import * as Docs from "./docs.ts";
 import {

@@ -796,7 +796,9 @@ it.effect(
       // A chart goes where a message could, and nowhere a message couldn't.
       assert.deepInclude(yield* chart("group-1").pipe(Effect.flip), NOT_ALLOWED);
       assert.deepInclude(yield* chart("other-direct").pipe(Effect.flip), NOT_ALLOWED);
-      assert.include(yield* chart(chat.chatId), { type: "chart", chatId: chat.chatId });
+      const chartResult = yield* chart(chat.chatId);
+      if ("figure" in chartResult) assert.match(chartResult.figure, /kin-figure:f_/);
+      else assert.include(chartResult, { type: "chart", chatId: chat.chatId });
       const react = (chatId: string) =>
         gate.react(agent, {
           chatId: KinChatId.make(chatId),
