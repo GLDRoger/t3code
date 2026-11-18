@@ -90,6 +90,7 @@ import { askForKinNotifications } from "./notifications/installKinNotifications"
 import { kinStackWithoutChat } from "./state/kinChatStack";
 import { resetRootStack } from "../../lib/root-stack-reset";
 import { KinMessageSheet } from "./components/KinMessageSheet";
+import { KinTurnReceiptSheet } from "./components/KinTurnReceiptSheet";
 import { KinChatTitle } from "./components/KinChatTitle";
 import {
   KinOfflineState,
@@ -996,6 +997,7 @@ function KinChatFeed(props: {
   const openActions = (messageId: string) =>
     setActions((current) => ({ messageId, open: current.open + 1 }));
   const actionsFor = actions.messageId === "" ? null : actions.messageId;
+  const [receiptFor, setReceiptFor] = useState<string | null>(null);
   const safeBottom = useSafeAreaInsets().bottom;
   // Clears the home indicator; the keyboard offset gives that space back while the keyboard is up.
   const composerInset = Math.max(safeBottom, KIN_COMPOSER_GUTTER);
@@ -1352,6 +1354,7 @@ function KinChatFeed(props: {
                 ? () => openActions(message.messageId)
                 : null
             }
+            onOpenReceipt={() => setReceiptFor(message.messageId)}
             onLinkPress={onLinkPress}
             widget={widget}
             environmentId={props.environmentId}
@@ -1584,6 +1587,13 @@ function KinChatFeed(props: {
           (candidate) => candidate.type === "message" && candidate.message.messageId === actionsFor,
         );
   const actionsMessage = actionsRow?.type === "message" ? actionsRow.message : null;
+  const receiptRow =
+    receiptFor === null
+      ? undefined
+      : feedRows.find(
+          (candidate) => candidate.type === "message" && candidate.message.messageId === receiptFor,
+        );
+  const receiptMessage = receiptRow?.type === "message" ? receiptRow.message : null;
 
   return (
     <View className="flex-1">
@@ -1734,6 +1744,14 @@ function KinChatFeed(props: {
           environmentId={props.environmentId}
           markdownStyle={markdownStyle}
           onClose={() => setActions((current) => ({ ...current, messageId: "" }))}
+        />
+      )}
+      {receiptMessage === null ? null : (
+        <KinTurnReceiptSheet
+          message={receiptMessage}
+          environmentId={props.environmentId}
+          connected={props.connected}
+          onClose={() => setReceiptFor(null)}
         />
       )}
     </View>

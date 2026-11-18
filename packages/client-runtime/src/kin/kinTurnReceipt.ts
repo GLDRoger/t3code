@@ -1,4 +1,9 @@
-import type { KinTurnChange, KinTurnChanges } from "@t3tools/contracts";
+import type {
+  KinMessageLink,
+  KinMessageLinkTarget,
+  KinTurnChange,
+  KinTurnChanges,
+} from "@t3tools/contracts";
 
 /** How many entries the line names before "and N more". */
 const NAMED = 2;
@@ -45,4 +50,17 @@ export function kinTurnReceiptRows(turn: KinTurnChanges | undefined): {
     })),
     more: turn.more === 0 ? null : `${turn.more} more ${turn.more === 1 ? "change" : "changes"}`,
   };
+}
+
+/**
+ * Where a row opens. A change names only its key, so the kind comes from the reply's own links;
+ * an entry the reply doesn't name opens in the task sheet, as attention rows do.
+ */
+export function kinTurnReceiptTarget(
+  key: string,
+  links: ReadonlyArray<KinMessageLink> | undefined,
+): Extract<KinMessageLinkTarget, { readonly _tag: "record" }> {
+  for (const link of links ?? [])
+    if (link.to._tag === "record" && link.to.key === key) return link.to;
+  return { _tag: "record", key, kind: "task" };
 }
