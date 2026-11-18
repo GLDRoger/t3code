@@ -1,7 +1,8 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format a mail thread's date for React render, outside an Effect runtime.
 import {
   KIN_CHOICE_CARD_ACTION,
-  type KinChatError,
+  KinChatError,
+  type KinConnectionSendEditedInput,
   KIN_CHOICE_CARD_TTL_MS,
   KinChoiceCardState,
   type KinPersonId,
@@ -64,7 +65,31 @@ export interface KinSendView {
   readonly attachments: ReadonlyArray<{ readonly name: string; readonly detail: string }>;
   /** After the tap: "Sending…", "Sent", or why it wasn't sent. */
   readonly outcome: { readonly tone: "pending" | "ok" | "error"; readonly text: string } | null;
+  /** A mail's words as stored, which a person may change before it goes; null on other cards. */
+  readonly edit: KinSendEditDraft | null;
 }
+
+/** A mail card's editable words, as its form holds them: addresses comma-separated. */
+export interface KinSendEditDraft {
+  readonly to: string;
+  readonly cc: string;
+  readonly subject: string;
+  readonly body: string;
+}
+
+export const KIN_SEND_EDIT_COPY = {
+  edit: "Edit",
+  editHint: "Change the mail's words before it goes",
+  send: "Send edited mail",
+  sending: "Sending…",
+  discard: "Discard edits",
+  to: "To",
+  cc: "Cc",
+  subject: "Subject",
+  body: "Message",
+  addresses: "Separate addresses with commas.",
+  attachments: "Attached files go as they are.",
+} as const;
 
 export interface KinSendFromChoice {
   readonly id: string;
@@ -184,6 +209,15 @@ function kinSendView(send: KinSendCard, now: Date): KinSendView {
             ? { tone: "ok", text: send.action === "event" ? "Saved and invitations sent" : "Sent" }
             : // Kin's reason says what happened, including "may or may not have gone".
               { tone: "error", text: send.outcome.reason ?? "Not sent: Kin couldn't send it." },
+    edit:
+      send.action === "email" || send.action === "reply"
+        ? {
+            to: send.to.join(", "),
+            cc: send.cc.join(", "),
+            subject: send.subject,
+            body: send.body,
+          }
+        : null,
   };
 }
 
@@ -386,4 +420,47 @@ export function kinChoiceFailureNotice(cause: KinChatError): KinCardNotice {
   if ((cause.reason === "conflict" || cause.reason === "widget_changed") && said !== "")
     return { kind: cause.reason === "conflict" ? "error" : "stale", text: said };
   return kinActionFailureNotice(cause);
+}
+
+/** Whether the card offers Edit: an unanswered mail card the viewer may confirm, not yet sent. */
+export function kinSendEditOffered(
+  view: KinChoiceCardView,
+  phase: KinChoicePhase,
+  canConfirm: boolean,
+): boolean {
+  return (
+    canConfirm &&
+    phase === "open" &&
+    view.answer === null &&
+    view.send?.edit != null &&
+    view.send.outcome === null
+  );
+}
+
+const addresses = (typed: string) => typed.split(/[,;\s]+/u).filter((one) => one !== "");
+
+/** The edited mail as the host takes it; the host checks every field. */
+export function kinSendEditInput(
+  view: Pick<KinChoiceCardView, "orgId" | "widgetId" | "revision">,
+  draft: KinSendEditDraft,
+  clientActionId: string,
+): KinConnectionSendEditedInput {
+  return {
+    orgId: view.orgId,
+    widgetId: view.widgetId,
+    revision: view.revision,
+    clientActionId,
+    to: addresses(draft.to),
+    cc: addresses(draft.cc),
+    subject: draft.subject,
+    body: draft.body,
+  };
+}
+
+const isKinChatError = Schema.is(KinChatError);
+/** Why the edited mail didn't go: the host's own sentence where it gave one. */
+export function kinSendEditFailure(cause: unknown): string {
+  return isKinChatError(cause) && cause.reason !== "disabled" && cause.message.trim() !== ""
+    ? cause.message.trim()
+    : kinActionFailureNotice(cause).text;
 }

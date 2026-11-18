@@ -16,7 +16,12 @@ import {
   kinChoiceAnswered,
   kinChoiceFailureNotice,
   kinChoicePhase,
+  kinSendEditFailure,
+  kinSendEditInput,
+  kinSendEditOffered,
+  KIN_SEND_EDIT_COPY,
   type KinChoiceCardView,
+  type KinSendEditDraft,
 } from "@t3tools/client-runtime/kin/kinChoicePresentation";
 import {
   createKinCardActions,
@@ -55,7 +60,7 @@ import {
   MenuRadioItem,
   MenuTrigger,
 } from "../components/ui/menu";
-import { Fragment, memo, useRef, useState, type ReactNode } from "react";
+import { Fragment, memo, useId, useRef, useState, type ReactNode } from "react";
 
 import { useAssetUrls } from "../assets/assetUrls";
 import { AttachmentImage } from "../components/media/AttachmentImage";
@@ -65,6 +70,9 @@ import { useNowMinuteMs } from "./useKinClock";
 import { cn, randomUUID } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
 import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Textarea } from "../components/ui/textarea";
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { KinChart } from "./KinChart";
 import { KinSocialPackCard, KinSocialWeekCard } from "./KinSocialCards";
@@ -361,6 +369,11 @@ function KinChoiceCard(props: {
   const [switching, setSwitching] = useState(false);
   const [switchProblem, setSwitchProblem] = useState<string | null>(null);
   const setSendFrom = useAtomCommand(kinClient.connectionSetSendFrom, { reportFailure: false });
+  const canEdit = useAtomValue(kinClient.connectionSendEdited.permissionAtom(environmentId));
+  const sendEdited = useAtomCommand(kinClient.connectionSendEdited, { reportFailure: false });
+  const [editing, setEditing] = useState<KinSendEditDraft | null>(null);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editProblem, setEditProblem] = useState<string | null>(null);
   const [lastStatus, setLastStatus] = useState<
     (KinCardStatus & { readonly optionId: string }) | null
   >(null);
@@ -415,11 +428,43 @@ function KinChoiceCard(props: {
   };
 
   const answered = kinChoiceAnswered(choice, props.viewerPersonId, sentOption?.label ?? null);
+  const editable =
+    answered === null && pending === null && kinSendEditOffered(choice, phase, canAct && canEdit);
+  const shownEdit = editable ? editing : null;
+
+  const sendEdit = async () => {
+    if (shownEdit === null || editBusy) return;
+    setEditBusy(true);
+    setEditProblem(null);
+    const result = await sendEdited({
+      environmentId,
+      input: kinSendEditInput(choice, shownEdit, randomUUID()),
+    });
+    setEditBusy(false);
+    if (AsyncResult.isFailure(result)) {
+      setEditProblem(kinSendEditFailure(squashAtomCommandFailure(result)));
+      return;
+    }
+    setEditing(null);
+  };
 
   return (
     <CardFrame label={kinChoiceAccessibilityLabel(choice, answered?.text ?? null)}>
       <p className="font-medium text-foreground">{choice.question}</p>
-      {choice.send !== null ? (
+      {choice.send !== null && shownEdit !== null ? (
+        <KinSendEditor
+          send={choice.send}
+          draft={shownEdit}
+          busy={editBusy}
+          problem={editProblem}
+          onChange={(draft) => setEditing(draft)}
+          onSend={() => void sendEdit()}
+          onDiscard={() => {
+            setEditing(null);
+            setEditProblem(null);
+          }}
+        />
+      ) : choice.send !== null ? (
         <KinSendDetail
           send={choice.send}
           pickFrom={
@@ -442,7 +487,7 @@ function KinChoiceCard(props: {
         <p className="text-xs text-muted-foreground">{choice.closedText}</p>
       ) : !canAct ? (
         <p className="text-xs text-muted-foreground">{CANT_ACT_TEXT}</p>
-      ) : (
+      ) : shownEdit !== null ? null : (
         <>
           <CardNotice notice={status?.notice} />
           <div className="flex flex-col gap-1.5 pt-1">
@@ -458,10 +503,136 @@ function KinChoiceCard(props: {
                 {option.label}
               </Button>
             ))}
+            {editable && choice.send?.edit != null ? (
+              <Button
+                variant="outline"
+                size="sm-multiline"
+                disabled={switching}
+                onClick={() => {
+                  setEditProblem(null);
+                  setEditing(choice.send?.edit ?? null);
+                }}
+              >
+                {KIN_SEND_EDIT_COPY.edit}
+              </Button>
+            ) : null}
           </div>
         </>
       )}
     </CardFrame>
+  );
+}
+
+/**
+ * A mail card's To, Cc, Subject and Body, editable in place; its files go as drawn. Sending sends
+ * the mail as it stands here; the host checks every field and says what it refused.
+ */
+function KinSendEditor(props: {
+  readonly send: NonNullable<KinChoiceCardView["send"]>;
+  readonly draft: KinSendEditDraft;
+  readonly busy: boolean;
+  readonly problem: string | null;
+  readonly onChange: (draft: KinSendEditDraft) => void;
+  readonly onSend: () => void;
+  readonly onDiscard: () => void;
+}) {
+  const { send, draft, busy } = props;
+  const id = useId();
+  const field = (name: keyof KinSendEditDraft, value: string) =>
+    props.onChange({ ...draft, [name]: value });
+  return (
+    <form
+      className="flex flex-col gap-2"
+      onSubmit={(event) => {
+        event.preventDefault();
+        props.onSend();
+      }}
+    >
+      <p className="text-xs text-muted-foreground">{send.heading}</p>
+      <div className="flex flex-col gap-1">
+        <Label htmlFor={`${id}-to`}>{KIN_SEND_EDIT_COPY.to}</Label>
+        <Input
+          id={`${id}-to`}
+          size="sm"
+          value={draft.to}
+          autoComplete="off"
+          aria-describedby={`${id}-addresses`}
+          disabled={busy}
+          onChange={(event) => field("to", event.target.value)}
+        />
+      </div>
+      <div className="flex flex-col gap-1">
+        <Label htmlFor={`${id}-cc`}>{KIN_SEND_EDIT_COPY.cc}</Label>
+        <Input
+          id={`${id}-cc`}
+          size="sm"
+          value={draft.cc}
+          autoComplete="off"
+          aria-describedby={`${id}-addresses`}
+          disabled={busy}
+          onChange={(event) => field("cc", event.target.value)}
+        />
+        <p id={`${id}-addresses`} className="text-xs text-muted-foreground">
+          {KIN_SEND_EDIT_COPY.addresses}
+        </p>
+      </div>
+      <div className="flex flex-col gap-1">
+        <Label htmlFor={`${id}-subject`}>{KIN_SEND_EDIT_COPY.subject}</Label>
+        <Input
+          id={`${id}-subject`}
+          size="sm"
+          value={draft.subject}
+          autoComplete="off"
+          disabled={busy}
+          onChange={(event) => field("subject", event.target.value)}
+        />
+      </div>
+      <div className="flex flex-col gap-1">
+        <Label htmlFor={`${id}-body`}>{KIN_SEND_EDIT_COPY.body}</Label>
+        <Textarea
+          id={`${id}-body`}
+          rows={8}
+          value={draft.body}
+          disabled={busy}
+          onChange={(event) => field("body", event.target.value)}
+        />
+      </div>
+      {send.attachments.length === 0 ? null : (
+        <div className="flex flex-col gap-1">
+          <ul className="flex flex-col gap-1">
+            {send.attachments.map((file) => (
+              <li key={file.name} className="flex items-start gap-2 text-xs">
+                <FileTextIcon
+                  aria-hidden
+                  className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+                />
+                <span className="min-w-0 break-words text-foreground">{file.name}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="text-xs text-muted-foreground">{KIN_SEND_EDIT_COPY.attachments}</p>
+        </div>
+      )}
+      {props.problem === null ? null : (
+        <p role="alert" className="text-xs text-destructive-foreground">
+          {props.problem}
+        </p>
+      )}
+      <div className="flex flex-col gap-1.5 pt-1">
+        <Button type="submit" size="sm-multiline" aria-busy={busy} disabled={busy}>
+          {busy ? KIN_SEND_EDIT_COPY.sending : KIN_SEND_EDIT_COPY.send}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm-multiline"
+          disabled={busy}
+          onClick={props.onDiscard}
+        >
+          {KIN_SEND_EDIT_COPY.discard}
+        </Button>
+      </div>
+    </form>
   );
 }
 

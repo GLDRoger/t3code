@@ -147,8 +147,11 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
         // Kinds are stored data: a demotion holds from the very next call, a promotion likewise.
         yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = 'ravi'`;
         assert.isFalse(yield* allowed("ravi", "kin.work.recordPayment"));
+        // Sending a mail with one's own edits is a Confirm: whoever may confirm, as they stand now.
+        assert.isFalse(yield* allowed("ravi", "kin.connections.sendEdited"));
         yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = 'meera'`;
         assert.isTrue(yield* allowed("meera", "kin.work.recordPayment"));
+        assert.isTrue(yield* allowed("meera", "kin.connections.sendEdited"));
         // Someone the org doesn't know is refused, not admitted as a member of nothing.
         assert.isFalse(yield* allowed("stranger", "kin.work.recordPayment"));
         // Team memory is the owner's call: a co-owner (now Meera) may set it, a member never.

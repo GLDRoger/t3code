@@ -35,7 +35,13 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { fromConnections, poll } from "../pulse/outside.ts";
 import * as ConnectionSecrets from "./ConnectionSecrets.ts";
-import { ASKED, KinConnections, SHARED_CONNECTIONS } from "./ConnectionsService.ts";
+import {
+  ASK_CLOSED,
+  ASKED,
+  type EditCards,
+  KinConnections,
+  SHARED_CONNECTIONS,
+} from "./ConnectionsService.ts";
 import * as Connections from "./ConnectionsService.ts";
 import { guarded } from "./EgressGuard.ts";
 import { type FakeMail, makeFakeMail } from "./FakeMail.ts";
@@ -346,6 +352,126 @@ const tap = (widgetId: string, personId: KinPersonId, confirmed = true) =>
     );
     return asked?._tag === "send" ? yield* connections.sendAsk(orgId, asked.askId) : asked;
   });
+/** A card as the chat stores it, so an edit checks what the person saw. */
+const stored = (card: Card) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const state = {
+      question: card.question,
+      detail: card.detail ?? null,
+      options: [
+        { optionId: "option-1", label: "Confirm", kind: "yes" },
+        { optionId: "option-2", label: "Cancel", kind: "no" },
+      ],
+      send: card.send,
+      answer: null,
+    };
+    yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+        author_agent_id, author_owner_person_id, author_thread_id, author_member_id, author_role,
+        kind, body, mentions_json, status, created_at)
+      VALUES (${`m-${card.widgetId}`}, ${orgId}, ${card.chatId}, ${1000 + ++wakes}, 'agent',
+        ${lead}, ${owner}, 'cos-thread', ${`${card.chatId}-lead`}, 'member', 'text', '', '[]',
+        'posted', ${stamp})`;
+    yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type,
+        revision, state_json, awaiting_json, updated_at)
+      VALUES (${card.widgetId}, ${orgId}, ${card.chatId}, ${`m-${card.widgetId}`}, 'native',
+        'choice', 1, ${JSON.stringify(state)}, ${JSON.stringify([owner])},
+        '2026-11-16T09:00:00.000Z')`;
+  });
+/**
+ * The chat side of an edit as the transport binds it: the new card shows, and the person's
+ * Confirm on it is an ordinary tap. Each tap's answer is kept, to send once the edit commits.
+ */
+const editCards = (cards: Array<Card>, taps: Array<{ widgetId: string; askId?: string }>) =>
+  Effect.map(
+    Effect.all([KinConnections, SqlClient.SqlClient]),
+    ([connections, sql]): EditCards => ({
+      close: (widgetId) =>
+        Effect.sync(() => cards.push({ ...cards[0]!, widgetId: `closed:${widgetId}` })),
+      post: (_agent, card) =>
+        Effect.sync(() => {
+          const widgetId = `w-${cards.length + 1}`;
+          cards.push({ ...card, options: [], widgetId });
+          return {
+            orgId,
+            chatId: card.chatId,
+            widgetId: KinWidgetId.make(widgetId),
+            messageId: KinMessageId.make(`m-${widgetId}`),
+            widgetClass: "native" as const,
+            type: "choice",
+            revision: 1,
+            state: {
+              question: card.question,
+              detail: card.detail,
+              options: [
+                { optionId: "option-1", label: "Confirm", kind: "yes" },
+                { optionId: "option-2", label: "Cancel", kind: "no" },
+              ],
+              send: card.send,
+              answer: null,
+            },
+            source: null,
+            feed: null,
+            awaiting: [owner],
+            pinnedAt: null,
+            closedAt: null,
+            updatedAt: stamp,
+          };
+        }),
+      act: (person, input) =>
+        connections
+          .answerAsk({
+            orgId,
+            widgetId: input.widgetId,
+            personId: person.personId,
+            confirmed: input.value === "option-1",
+            via: "tap",
+            now: NOW,
+          })
+          .pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.tap((asked) =>
+              Effect.sync(() =>
+                taps.push({
+                  widgetId: input.widgetId,
+                  ...(asked?._tag === "send" ? { askId: asked.askId } : {}),
+                }),
+              ),
+            ),
+          ),
+    }),
+  );
+/** The person's own words on a card, sent in one step, then the send once it committed. */
+const sendEdited = (
+  cards: Array<Card>,
+  card: Card,
+  personId: KinPersonId,
+  edit: { to: ReadonlyArray<string>; cc?: ReadonlyArray<string>; subject?: string; body?: string },
+  press = "press-1",
+) =>
+  Effect.gen(function* () {
+    const connections = yield* KinConnections;
+    const taps: Array<{ widgetId: string; askId?: string }> = [];
+    const done = yield* connections.sendEdited(
+      people(personId),
+      {
+        orgId,
+        widgetId: card.widgetId,
+        revision: 1,
+        clientActionId: press,
+        to: edit.to,
+        cc: edit.cc ?? card.send?.cc ?? [],
+        subject: edit.subject ?? card.send?.subject ?? "",
+        body: edit.body ?? card.send?.body ?? "",
+      },
+      yield* editCards(cards, taps),
+    );
+    const outcomes = yield* Effect.forEach(
+      taps.flatMap((one) => (one.askId === undefined ? [] : [one.askId])),
+      (askId) => connections.sendAsk(orgId, askId),
+    );
+    return { ...done, taps, outcomes };
+  });
 const outside = Effect.gen(function* () {
   return fromConnections(yield* KinConnections, yield* SqlClient.SqlClient);
 });
@@ -590,6 +716,137 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.strictEqual(shared.message, SHARED_CONNECTIONS);
       }),
     ),
+  );
+
+  it.effect("a person's edit on a mail card sends exactly the edited mail, once", () =>
+    setUp((fake, cards) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* connect(fake, "google", ACCOUNTS);
+        yield* wake({ person: owner });
+        const draft = {
+          to: ["ravi@lumen.example"],
+          subject: "Kickoff",
+          body: "Hi Ravi,\nSee you Monday.\nArjun",
+        };
+        yield* callTool(ACCOUNTS, "mail_send", draft);
+        const card = cards.at(-1)!;
+        yield* stored(card);
+        const asks = sql<{ state: string; decidedBy: string | null; payload: string }>`SELECT
+            state, decided_by AS "decidedBy", payload_json AS payload
+          FROM kin_connection_asks ORDER BY rowid`;
+
+        // Only someone who may Confirm the card may send it edited.
+        const notYours = yield* sendEdited(cards, card, member, { to: draft.to }).pipe(Effect.flip);
+        assert.strictEqual(notYours.reason, "not_allowed");
+        // The server checks the edit as it checked the draft; the card stays open.
+        const bad = yield* sendEdited(cards, card, owner, { to: ["ravi at lumen"] }).pipe(
+          Effect.flip,
+        );
+        assert.deepInclude(bad, {
+          reason: "invalid_state",
+          message: "ravi at lumen in To isn't a plain address such as ana@example.com.",
+        });
+        assert.deepStrictEqual(
+          (yield* asks).map((one) => one.state),
+          ["open"],
+        );
+
+        // Two devices send different edits at once: one wins, the other was answered.
+        const edited = {
+          to: ["ravi@lumen.example", "dev@lumen.example"],
+          cc: ["meera@invented-co.example"],
+          body: "Hi Ravi and Dev,\nSee you Monday at 10.\nArjun",
+        };
+        const [first, second] = yield* Effect.all(
+          [
+            sendEdited(cards, card, owner, edited).pipe(Effect.result),
+            sendEdited(cards, card, owner, { to: draft.to, body: "Other words." }, "press-2").pipe(
+              Effect.result,
+            ),
+          ],
+          { concurrency: 2 },
+        );
+        const won = first._tag === "Success" ? first.success : undefined;
+        assert.isDefined(won);
+        assert.deepInclude(second._tag === "Failure" ? second.failure : {}, {
+          reason: "widget_changed",
+          message: "This was already answered.",
+        });
+        assert.deepStrictEqual(won!.outcomes, [{ state: "sent", reason: null }]);
+        assert.strictEqual(won!.taps[0]!.widgetId, won!.widgetId);
+        assert.strictEqual(cards.at(-1)!.widgetId, won!.widgetId);
+        assert.isTrue(cards.some((one) => one.widgetId === `closed:${card.widgetId}`));
+        const sent = fake.sent();
+        assert.lengthOf(sent, 1);
+        assert.deepInclude(sent[0], {
+          to: edited.to,
+          cc: edited.cc,
+          subject: draft.subject,
+          body: edited.body,
+        });
+        const [replaced, went] = yield* asks;
+        assert.deepInclude(replaced, { state: "stale", decidedBy: owner });
+        assert.deepInclude(went, { state: "sent", decidedBy: owner });
+        assert.strictEqual(JSON.parse(went!.payload).body, edited.body);
+
+        // A retry of the press that went answers as it did and sends nothing more.
+        const retried = yield* sendEdited(cards, card, owner, edited);
+        assert.strictEqual(retried.widgetId, won!.widgetId);
+        assert.lengthOf(fake.sent(), 1);
+        // The agent's repeat of its own draft is told what became of it, and draws no card.
+        const shown = cards.length;
+        const repeat = yield* callTool(ACCOUNTS, "mail_send", draft);
+        assert.strictEqual(repeat.note, ASK_CLOSED.sent);
+        assert.lengthOf(cards, shown);
+        assert.lengthOf(fake.sent(), 1);
+      }),
+    ),
+  );
+
+  it.effect(
+    "an edit keeps the outside mark, sends unchanged as a Confirm, and a moved sign-in refuses it",
+    () =>
+      setUp((fake, cards) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* connect(fake, "google", ACCOUNTS);
+          yield* wake({ person: owner });
+          yield* callTool("mail", "mail_search", { query: "from:ravi@lumen.example" });
+          const draft = { to: ["ravi@lumen.example"], subject: "Notes", body: "Notes below." };
+          yield* callTool(ACCOUNTS, "mail_send", draft);
+          const plain = cards.at(-1)!;
+          yield* stored(plain);
+          // An edit that changes nothing is the ordinary Confirm on the card itself.
+          const same = yield* sendEdited(cards, plain, owner, draft);
+          assert.strictEqual(same.widgetId, plain.widgetId);
+          assert.deepStrictEqual(same.outcomes, [{ state: "sent", reason: null }]);
+          assert.lengthOf(fake.sent(), 1);
+
+          yield* callTool(ACCOUNTS, "mail_send", { ...draft, subject: "Notes, again" });
+          const card = cards.at(-1)!;
+          assert.include(card.question, "Drafted after reading");
+          yield* stored(card);
+          yield* sql`UPDATE kin_connections SET sign_in_gen = sign_in_gen + 1`;
+          const moved = yield* sendEdited(cards, card, owner, {
+            to: draft.to,
+            body: "Notes below, edited.",
+          });
+          const shown = cards.at(-1)!;
+          assert.strictEqual(shown.widgetId, moved.widgetId);
+          assert.strictEqual(shown.question, card.question);
+          assert.strictEqual(shown.send?.body, "Notes below, edited.");
+          // Refused at its Confirm as any card whose account moved is, with nothing sent.
+          assert.deepStrictEqual(moved.taps, [{ widgetId: moved.widgetId }]);
+          assert.lengthOf(fake.sent(), 1);
+          const [went] = yield* sql<{ state: string; reason: string; outside: string | null }>`
+            SELECT state, reason, outside_from AS outside FROM kin_connection_asks
+            WHERE widget_id = ${moved.widgetId}`;
+          assert.strictEqual(went?.state, "stale");
+          assert.include(went?.reason ?? "", "since this card was made, so nothing was sent.");
+          assert.isNotNull(went?.outside);
+        }),
+      ),
   );
 
   it.effect("a deleted Outlook meeting is in the next read of what changed", () =>

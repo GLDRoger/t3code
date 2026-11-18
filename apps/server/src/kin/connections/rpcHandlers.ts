@@ -31,6 +31,10 @@ import { KinGitHubLogin } from "./GitHubLogin.ts";
 
 const group = RpcGroup.make(...KinConnectionRpcs);
 const isChatError = Schema.is(KinChatError);
+const chatFailure = (error: unknown) =>
+  isChatError(error)
+    ? error
+    : new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
 const disabled = new KinChatError({
   reason: "disabled",
   message: "Kin is not running on this host.",
@@ -247,6 +251,26 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
     "kin.connections.signInFinish": (input) => call((c, people) => c.signInFinish(people, input)),
     "kin.connections.setSignInClient": (input) =>
       call((c, people) => c.setSignInClient(people, input)),
+    "kin.connections.sendEdited": (input) =>
+      call((c, people, chat) =>
+        c.sendEdited(people, input, {
+          close: (widgetId) =>
+            chat
+              .closeReplaced({ orgId: input.orgId, widgetId: KinWidgetId.make(widgetId) })
+              .pipe(Effect.mapError(chatFailure)),
+          post: (agent, card) =>
+            chat
+              .ask(agent, {
+                ...card,
+                options: [
+                  { label: "Confirm", kind: "yes" },
+                  { label: "Cancel", kind: "no" },
+                ],
+              })
+              .pipe(Effect.mapError(chatFailure)),
+          act: (person, act) => chat.act(person, act).pipe(Effect.mapError(chatFailure)),
+        }),
+      ),
     "kin.connections.setSendFrom": (input) =>
       call((c, people, chat) =>
         c.setSendFrom(people, input, (card) =>
@@ -258,13 +282,7 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
               detail: card.detail,
               send: card.send,
             })
-            .pipe(
-              Effect.mapError((error) =>
-                isChatError(error)
-                  ? error
-                  : new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
-              ),
-            ),
+            .pipe(Effect.mapError(chatFailure)),
         ),
       ),
   });

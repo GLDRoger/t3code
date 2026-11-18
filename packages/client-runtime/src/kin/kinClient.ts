@@ -773,6 +773,12 @@ export function makeKinClient<R, ER>(
       tag: "kin.connections.setSignInClient",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:client` },
     }),
+    /** A person sends a mail card's mail with their own edits, as a Confirm. */
+    connectionSendEdited: createKinRpcCommand(runtime, {
+      label: "kin:connection:sendEdited",
+      tag: "kin.connections.sendEdited",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.widgetId },
+    }),
     /** The owner switches an open send card's From before Confirm. */
     connectionSetSendFrom: createKinRpcCommand(runtime, {
       label: "kin:connection:setSendFrom",

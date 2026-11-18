@@ -6,7 +6,7 @@ import type { EnvironmentId, KinPersonId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { Image as ExpoImage } from "expo-image";
 import { memo, useRef, useState } from "react";
-import { Pressable, View } from "react-native";
+import { Pressable, TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
 import { AppText as Text } from "../../../components/ui/AppText";
@@ -26,7 +26,12 @@ import {
   kinChoiceAnswered,
   kinChoiceFailureNotice,
   kinChoicePhase,
+  kinSendEditFailure,
+  kinSendEditInput,
+  kinSendEditOffered,
+  KIN_SEND_EDIT_COPY,
   type KinChoiceCardView,
+  type KinSendEditDraft,
 } from "@t3tools/client-runtime/kin/kinChoicePresentation";
 import {
   createKinCardActions,
@@ -177,6 +182,107 @@ function SendDetail(props: {
   );
 }
 
+/**
+ * A mail card's To, Cc, Subject and Body, editable in place; its files go as drawn. Sending sends
+ * the mail as it stands here; the host checks every field and says what it refused.
+ */
+function SendEditor(props: {
+  readonly send: NonNullable<KinChoiceCardView["send"]>;
+  readonly draft: KinSendEditDraft;
+  readonly busy: boolean;
+  readonly problem: string | null;
+  readonly onChange: (draft: KinSendEditDraft) => void;
+  readonly onSend: () => void;
+  readonly onDiscard: () => void;
+}) {
+  const { send, draft, busy } = props;
+  const line = (name: "to" | "cc" | "subject", label: string, address: boolean) => (
+    <View className="gap-1 rounded-xl bg-subtle px-3 py-2">
+      <Text textRole="caption" className="text-foreground-muted">
+        {label}
+      </Text>
+      <TextInput
+        accessibilityLabel={label}
+        accessibilityHint={address ? KIN_SEND_EDIT_COPY.addresses : undefined}
+        value={draft[name]}
+        editable={!busy}
+        autoCapitalize={address ? "none" : "sentences"}
+        autoCorrect={!address}
+        keyboardType={address ? "email-address" : "default"}
+        onChangeText={(value) => props.onChange({ ...draft, [name]: value })}
+        className="min-h-8 font-sans text-base text-foreground"
+      />
+    </View>
+  );
+  return (
+    <View className="gap-2">
+      <Text textRole="footnote" className="text-foreground-muted">
+        {send.heading}
+      </Text>
+      {line("to", KIN_SEND_EDIT_COPY.to, true)}
+      {line("cc", KIN_SEND_EDIT_COPY.cc, true)}
+      <Text textRole="caption" className="text-foreground-muted">
+        {KIN_SEND_EDIT_COPY.addresses}
+      </Text>
+      {line("subject", KIN_SEND_EDIT_COPY.subject, false)}
+      <View className="gap-1 rounded-xl bg-subtle px-3 py-2">
+        <Text textRole="caption" className="text-foreground-muted">
+          {KIN_SEND_EDIT_COPY.body}
+        </Text>
+        <TextInput
+          accessibilityLabel={KIN_SEND_EDIT_COPY.body}
+          value={draft.body}
+          editable={!busy}
+          multiline
+          textAlignVertical="top"
+          onChangeText={(body) => props.onChange({ ...draft, body })}
+          className="min-h-24 font-sans text-base text-foreground"
+        />
+      </View>
+      {send.attachments.length === 0 ? null : (
+        <View className="gap-0.5">
+          {send.attachments.map((file) => (
+            <Text key={file.name} textRole="footnote" className="font-t3-medium text-foreground">
+              Attached: {file.name}
+            </Text>
+          ))}
+          <Text textRole="caption" className="text-foreground-muted">
+            {KIN_SEND_EDIT_COPY.attachments}
+          </Text>
+        </View>
+      )}
+      {props.problem === null ? null : (
+        <Text
+          accessibilityRole="alert"
+          accessibilityLiveRegion="polite"
+          textRole="footnote"
+          className="font-t3-medium text-danger-foreground"
+        >
+          {props.problem}
+        </Text>
+      )}
+      <View className="gap-2 pt-1">
+        <Button
+          label={busy ? KIN_SEND_EDIT_COPY.sending : KIN_SEND_EDIT_COPY.send}
+          tone="primary"
+          size="compact"
+          fullWidth
+          loading={busy}
+          onPress={props.onSend}
+        />
+        <Button
+          label={KIN_SEND_EDIT_COPY.discard}
+          tone="outline"
+          size="compact"
+          fullWidth
+          disabled={busy}
+          onPress={props.onDiscard}
+        />
+      </View>
+    </View>
+  );
+}
+
 /** The card's picture, such as a logo to confirm, at a bounded size. */
 function ChoiceImage(props: {
   readonly environmentId: EnvironmentId;
@@ -237,6 +343,11 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   const [switching, setSwitching] = useState(false);
   const [switchProblem, setSwitchProblem] = useState<string | null>(null);
   const setSendFrom = useAtomCommand(kinClient.connectionSetSendFrom, { reportFailure: false });
+  const canEdit = useAtomValue(kinClient.connectionSendEdited.permissionAtom(environmentId));
+  const sendEdited = useAtomCommand(kinClient.connectionSendEdited, { reportFailure: false });
+  const [editing, setEditing] = useState<KinSendEditDraft | null>(null);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editProblem, setEditProblem] = useState<string | null>(null);
   const [lastStatus, setLastStatus] = useState<
     (KinCardStatus & { readonly optionId: string }) | null
   >(null);
@@ -297,6 +408,26 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   };
 
   const answered = kinChoiceAnswered(choice, props.viewerPersonId, sentOption?.label ?? null);
+  const editable =
+    answered === null && pending === null && kinSendEditOffered(choice, phase, canAct && canEdit);
+  const shownEdit = editable ? editing : null;
+
+  const sendEdit = async () => {
+    if (shownEdit === null || editBusy) return;
+    setEditBusy(true);
+    setEditProblem(null);
+    const result = await sendEdited({
+      environmentId,
+      input: kinSendEditInput(choice, shownEdit, uuidv4()),
+    });
+    setEditBusy(false);
+    if (AsyncResult.isFailure(result)) {
+      setEditProblem(kinSendEditFailure(squashAtomCommandFailure(result)));
+      return;
+    }
+    setEditing(null);
+  };
+
   const fromPicker =
     choice.send !== null &&
     phase === "open" &&
@@ -309,15 +440,28 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   return (
     <View className="gap-2.5 rounded-[20px] border border-border bg-card-alt p-4">
       <View
-        // Grouped for VoiceOver, except while Change sits inside: a group hides its buttons.
-        accessible={fromPicker === null}
+        // Grouped for VoiceOver, except while Change or the editor sits inside: a group hides them.
+        accessible={fromPicker === null && shownEdit === null}
         accessibilityLabel={kinChoiceAccessibilityLabel(choice, answered?.text ?? null)}
         className="gap-1.5"
       >
         <Text textRole="headline" className="font-t3-bold text-foreground">
           {choice.question}
         </Text>
-        {choice.send !== null ? (
+        {choice.send !== null && shownEdit !== null ? (
+          <SendEditor
+            send={choice.send}
+            draft={shownEdit}
+            busy={editBusy}
+            problem={editProblem}
+            onChange={setEditing}
+            onSend={() => void sendEdit()}
+            onDiscard={() => {
+              setEditing(null);
+              setEditProblem(null);
+            }}
+          />
+        ) : choice.send !== null ? (
           <SendDetail send={choice.send} pickFrom={fromPicker} />
         ) : choice.detail === null ? null : (
           <Text textRole="footnote" className="text-foreground-secondary">
@@ -347,7 +491,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
         <Text textRole="footnote" className="text-foreground-muted">
           {KIN_DEVICE_COPY.cantAct("phone", "answer")}
         </Text>
-      ) : (
+      ) : shownEdit !== null ? null : (
         <>
           {status?.notice == null ? null : (
             <Text
@@ -378,6 +522,20 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
                 onPress={() => void press(option.id)}
               />
             ))}
+            {editable && choice.send?.edit != null ? (
+              <Button
+                label={KIN_SEND_EDIT_COPY.edit}
+                accessibilityHint={KIN_SEND_EDIT_COPY.editHint}
+                tone="outline"
+                size="compact"
+                fullWidth
+                disabled={switching}
+                onPress={() => {
+                  setEditProblem(null);
+                  setEditing(choice.send?.edit ?? null);
+                }}
+              />
+            ) : null}
           </View>
         </>
       )}

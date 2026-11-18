@@ -16,6 +16,9 @@ import {
   kinChoicePhase,
   kinQuotedInZone,
   kinAddressPieces,
+  kinSendEditFailure,
+  kinSendEditInput,
+  kinSendEditOffered,
   kinThreadDate,
 } from "./kinChoicePresentation.ts";
 import { formatKinTime } from "./kinScreenState.ts";
@@ -418,6 +421,83 @@ describe("choice cards", () => {
       "Reply sent",
       "Not sent",
     ]);
+  });
+
+  it("offers a mail's own words to edit before it goes, and hands them over as typed", () => {
+    const mail = (send: Record<string, unknown>, answer: unknown = null) =>
+      choice({
+        state: {
+          ...choiceState(answer),
+          send: {
+            service: "Gmail",
+            action: "email",
+            from: "rhea@ambermill.example",
+            to: ["anita@orbitdental.example", "dev@orbitdental.example"],
+            cc: [],
+            subject: "Invoice",
+            body: "Hi Anita,\n\nAttached.",
+            attachments: [],
+            outcome: null,
+            ...send,
+          },
+        },
+      });
+    const open = mail({});
+    expect(open.send?.edit).toEqual({
+      to: "anita@orbitdental.example, dev@orbitdental.example",
+      cc: "",
+      subject: "Invoice",
+      body: "Hi Anita,\n\nAttached.",
+    });
+    expect(kinSendEditOffered(open, "open", true)).toBe(true);
+    expect(kinSendEditOffered(open, "open", false)).toBe(false);
+    expect(kinSendEditOffered(open, "expired", true)).toBe(false);
+    const sending = mail({
+      outcome: { state: "sending", reason: null, at: "2026-11-08T09:06:00.000Z" },
+    });
+    expect(kinSendEditOffered(sending, "open", true)).toBe(false);
+    const answered = mail(
+      {},
+      {
+        optionId: "option-1",
+        personId: "owner",
+        via: "tap",
+        emoji: null,
+        answeredAt: "2026-11-08T09:05:00.000Z",
+      },
+    );
+    expect(kinSendEditOffered(answered, "answered", true)).toBe(false);
+    // An event or a plain call keeps Confirm and Cancel only.
+    expect(mail({ action: "event" }).send?.edit).toBeNull();
+    expect(mail({ action: "call" }).send?.edit).toBeNull();
+
+    expect(
+      kinSendEditInput(
+        open,
+        {
+          to: " anita@orbitdental.example,dev@orbitdental.example; ",
+          cc: "rhea@ambermill.example",
+          subject: "Invoice for November",
+          body: "Hi Anita,\n\nAttached, with the GST line.\n",
+        },
+        "press-1",
+      ),
+    ).toEqual({
+      orgId: "org",
+      widgetId: "w1",
+      revision: 1,
+      clientActionId: "press-1",
+      to: ["anita@orbitdental.example", "dev@orbitdental.example"],
+      cc: ["rhea@ambermill.example"],
+      subject: "Invoice for November",
+      body: "Hi Anita,\n\nAttached, with the GST line.\n",
+    });
+    // The host's refusal is the line under the form, in its own words.
+    const said = "anita at orbit in To isn't a plain address such as ana@example.com.";
+    expect(kinSendEditFailure(new KinChatError({ reason: "invalid_state", message: said }))).toBe(
+      said,
+    );
+    expect(kinSendEditFailure(new Error("socket closed"))).not.toBe("");
   });
 
   it("says a refused answer in the host's words when its figures changed", () => {

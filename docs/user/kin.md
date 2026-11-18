@@ -323,7 +323,9 @@ account is for ("accounts@ is for invoices") and it sends from the right one. A 
 from the account and thread the email is in.
 
 The card shows exactly what will be sent, from which account, to whom. One **Confirm** sends it
-once. Only the owner or a co-owner can confirm.
+once. Only the owner or a co-owner can confirm. To fix a mail's words yourself, tap **Edit**:
+change To, Cc, Subject or the message, then **Send edited mail** sends it as you left it, with
+no new draft from the agent. Attached files go as they were.
 
 ### GitHub
 
