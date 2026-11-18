@@ -188,6 +188,25 @@ export type LinkInput = {
   readonly chatId?: KinChatId | null;
   readonly label?: string | null;
 };
+/** What `kinWorkMove` and its order read of a record, for every match at once. */
+export type MoveRow = {
+  readonly recordId: string;
+  readonly key: string;
+  readonly state: KinRecordState;
+  readonly ownerKind: "person" | "agent";
+  readonly ownerId: string;
+  readonly waitingOnKind: "person" | "agent" | null;
+  readonly waitingOnId: string | null;
+  readonly dueAt: number | null;
+  readonly confirmed: number;
+  /** Who asked for it: stored, else the person who made it, else the person who gave it. */
+  readonly askedBy: string | null;
+  readonly assignedBy: string | null;
+  readonly assignedByAgent: string | null;
+  readonly createdAt: number;
+};
+const MOVE_ROWS_CAP = 5_000;
+
 export type QueryInput = {
   /** Default `work`. */
   readonly list?: string;
@@ -209,6 +228,8 @@ export type QueryInput = {
   readonly paidTo?: string;
   readonly text?: string;
   readonly keys?: ReadonlyArray<string>;
+  /** Closed at or after this time. */
+  readonly closedAfter?: number;
   /** `null`: entries with no category. */
   readonly category?: string | null;
   readonly side?: KinRecordSide;
@@ -465,6 +486,11 @@ export class KinRecords extends Context.Service<
       { readonly rows: ReadonlyArray<RecordRow>; readonly total: number; readonly seq: number },
       KinChatError
     >;
+    /** Every match of `query`'s filter, unpaged, as `kinWorkMove` reads it; at most `MOVE_ROWS_CAP`. */
+    readonly moveRows: (
+      orgId: KinOrgId,
+      input: QueryInput,
+    ) => Effect.Effect<ReadonlyArray<MoveRow>, KinChatError>;
     /** Counts per group over the same filter as `query`, most first, at most 50 groups. */
     readonly groups: (
       orgId: KinOrgId,
@@ -2136,6 +2162,7 @@ const make = Effect.gen(function* () {
     if (input.side !== undefined) where.push(sql`r.side = ${input.side}`);
     if (input.keys !== undefined && input.keys.length > 0)
       where.push(sql`r.key IN ${sql.in(input.keys)}`);
+    if (input.closedAfter !== undefined) where.push(sql`r.closed_at >= ${input.closedAfter}`);
     const text = input.text?.trim().toLowerCase();
     if (text !== undefined && text !== "")
       where.push(sql`(instr(lower(r.title), ${text}) > 0 OR instr(lower(r.notes), ${text}) > 0)`);
@@ -2170,6 +2197,25 @@ const make = Effect.gen(function* () {
           ORDER BY ${order}
           LIMIT ${limit} OFFSET ${Math.max(input.offset ?? 0, 0)}`;
         return { rows, total: count?.total ?? 0, seq };
+      }),
+    );
+  });
+
+  const moveRows = Effect.fn("KinRecords.moveRows")(function* (orgId: KinOrgId, input: QueryInput) {
+    return yield* failed(
+      Effect.gen(function* () {
+        const now = input.at ?? (yield* Clock.currentTimeMillis);
+        return yield* sql<MoveRow>`SELECT r.record_id AS "recordId", r.key, r.state,
+            r.owner_kind AS "ownerKind", r.owner_id AS "ownerId",
+            r.waiting_on_kind AS "waitingOnKind", r.waiting_on_id AS "waitingOnId",
+            r.due_at AS "dueAt", r.confirmed,
+            COALESCE(r.asked_by_person_id,
+              CASE WHEN r.created_by_kind = 'person' THEN r.created_by_id END,
+              r.assigned_by_person_id) AS "askedBy",
+            r.assigned_by_person_id AS "assignedBy", r.assigned_by_agent_id AS "assignedByAgent",
+            r.created_at AS "createdAt"
+          FROM kin_records r WHERE ${filterOf(orgId, input, now)}
+          ORDER BY r.record_id LIMIT ${MOVE_ROWS_CAP}`;
       }),
     );
   });
@@ -2215,6 +2261,7 @@ const make = Effect.gen(function* () {
     voidPayment,
     totals,
     query,
+    moveRows,
     groups,
     get: Effect.fn("KinRecords.get")(function* (orgId, key) {
       return yield* failed(byKey(orgId, key).pipe(provideSql));

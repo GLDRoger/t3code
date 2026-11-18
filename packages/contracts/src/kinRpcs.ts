@@ -328,6 +328,7 @@ const KIN_RPC_ACCESS = {
   "kin.work.assign": "person",
   "kin.work.update": "person",
   "kin.work.handBack": "person",
+  "kin.work.nudge": "person",
   "kin.work.handOver": "person",
   // Anyone who sees the entry; its author or the owner level removes one (`recordComments.ts`).
   "kin.work.comment": "person",
@@ -581,6 +582,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.create": "kin-work",
   "kin.work.assign": "kin-work",
   "kin.work.handBack": "kin-work",
+  "kin.work.nudge": "kin-work",
   "kin.work.handOver": "kin-work",
   "kin.work.comment": "kin-work",
   "kin.work.commentRemove": "kin-work",

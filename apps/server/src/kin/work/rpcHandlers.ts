@@ -122,6 +122,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.handBack": Effect.fn("KinWork.rpc.handBack")(function* (input) {
         return yield* call((people) => Work.handBack(people, input));
       }),
+      "kin.work.nudge": Effect.fn("KinWork.rpc.nudge")(function* (input) {
+        return yield* call((people) => Work.nudge(people, input));
+      }),
       "kin.work.comment": Effect.fn("KinWork.rpc.comment")(function* (input) {
         return yield* call((people) =>
           Comments.comment(people, input, sessionUploadOwner(session)),
