@@ -268,8 +268,11 @@ describe("KinRefreshHub", () => {
       kin_memory_labels: ["memory/sensitivity.ts"],
       // The repository writes only the first-start owner, before any client, and test seeds.
       kin_people: ["people/KinPeople.ts", "chat/KinChatRepository.ts", "lead/peopleUpdate.ts"],
-      kin_people_invites: ["people/KinPeople.ts"],
-      kin_session_bindings: ["people/KinPeople.ts"],
+      // A sign-out's cascade (auth/linkedDevices.ts) runs in the session store, below Kin's hub.
+      // Kin's Remove touches the topic itself; one from Sharing & access shows at the next read,
+      // and the signed-out devices' sockets close at once.
+      kin_people_invites: ["people/KinPeople.ts", "auth/linkedDevices.ts"],
+      kin_session_bindings: ["people/KinPeople.ts", "auth/linkedDevices.ts"],
       // The runner's thread and the hidden level are never part of a lead's list.
       kin_leads: ["lead/KinLeadProvision.ts", "lead/WakeupRunner.ts", "lead/KinLevels.ts"],
       kin_lead_access: ["lead/KinLeadProvision.ts", "people/KinPeople.ts"],
