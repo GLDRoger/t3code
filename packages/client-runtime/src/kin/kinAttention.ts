@@ -336,8 +336,9 @@ export function kinNeedsYouBeside(
 }
 
 /**
- * The block over Tasks, the owner's and a co-owner's only: company-wide things, never a task the
- * list already shows under "On me", which carries its own mark. Null when nothing is in it.
+ * The block over Tasks, the owner's and a co-owner's only: company-wide things, never drawing a
+ * task the list already shows under "On me", which carries its own mark, though it counts it.
+ * Null when nothing is in it.
  */
 export function kinTasksBlock(input: {
   readonly ownerLevel: boolean;
@@ -354,8 +355,13 @@ export function kinTasksBlock(input: {
 }): {
   readonly attention: ReadonlyArray<KinAttentionRow>;
   readonly needs: ReadonlyArray<KinNeedsYouRow>;
-  /** The things in it, as the Tasks badge counts them: Money's row is as many as it says. */
+  /**
+   * Every thing, as the Tasks badge counts them, the ones under "On me" included: Money's row is
+   * as many as it says.
+   */
   readonly total: number;
+  /** Of `total`, the things drawn under "On me" below rather than here. */
+  readonly onMe: number;
   /** Whether rows sit past the first few, so "See all" has something to show. */
   readonly more: boolean;
 } | null {
@@ -368,7 +374,8 @@ export function kinTasksBlock(input: {
   );
   if (attention.length === 0 && needs.length === 0 && input.handled === 0) return null;
   const rows = attention.length + needs.length + input.hidden;
-  const total = rows + needs.reduce((sum, row) => sum + (row.count ?? 1) - 1, 0);
+  const onMe = input.attention.length - attention.length + input.needs.length - needs.length;
+  const total = rows + onMe + input.needs.reduce((sum, row) => sum + (row.count ?? 1) - 1, 0);
   // The rows it shows, so the list below keeps every task the block doesn't. A money row leads,
   // so a long run of attention rows never hides it.
   const limit = input.expanded ? rows : KIN_NEEDS_YOU_SHOWN;
@@ -381,6 +388,7 @@ export function kinTasksBlock(input: {
       ...needs.slice(lead, lead + Math.max(0, limit - lead - shownAttention.length)),
     ],
     total,
+    onMe,
     more: rows > KIN_NEEDS_YOU_SHOWN,
   };
 }
