@@ -384,11 +384,16 @@ const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
         (fact) => fact.key,
       ),
     );
-    const theirs = tell.filter((fact) => sees.has(fact.key));
-    const noticeId = yield* tellHolder({ ctx, personId, agentId: entry.agentId, facts: theirs });
+    const noticeId = yield* tellHolder({
+      ctx,
+      personId,
+      agentId: entry.agentId,
+      facts: tell.filter((fact) => sees.has(fact.key)),
+      unnamed: tell.filter((fact) => !sees.has(fact.key)),
+    });
     if (noticeId === undefined) continue;
-    yield* markTold({ orgId, personId: to, eventId: noticeId, facts: theirs, at, zone });
-    for (const fact of theirs) told.push({ agentId: entry.agentId, to, key: fact.key });
+    yield* markTold({ orgId, personId: to, eventId: noticeId, facts: tell, at, zone });
+    for (const fact of tell) told.push({ agentId: entry.agentId, to, key: fact.key });
   }
   for (const [agentId, groups] of wakes) {
     // One event carries at most 50 facts: the rest stay untold for the next pass.
