@@ -510,6 +510,9 @@ function KinPlaceView({
           inPane={wide}
           onGo={open}
           linkTo={(section) => docLink(shown.doc, section)}
+          onOpenKey={setOpenKey}
+          onOpenClient={openClient}
+          onOpenProject={openProject}
         />
       );
     if ("subscriptions" in shown)
