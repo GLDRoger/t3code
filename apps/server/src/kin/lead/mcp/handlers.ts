@@ -118,19 +118,40 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       const sql = yield* SqlClient.SqlClient;
       const now = yield* Clock.currentTimeMillis;
       const chatId = lane.value.chatId;
-      // Each action is checked as this turn could do it, and its line is the server's own.
-      const drawn = yield* Effect.forEach(card.options, (option) =>
+      // Each action is checked as this turn could do it; its button and line are the server's own.
+      const drawAll = Effect.forEach(card.options, (option) =>
         option.action === undefined
           ? Effect.undefined
           : CardActions.draw(lead, chatId, option.action),
       );
-      const asked = { ...card, actionLines: drawn.map((one) => one?.line) };
+      const drawn = yield* drawAll;
+      const asked = { ...card, actions: drawn };
       const options = ChoiceCard.choiceCardState(asked).options;
       const plans = options.flatMap((option, index) => {
         const one = drawn[index];
         return one === undefined ? [] : [{ optionId: option.optionId, plan: one.plan }];
       });
+      // The default may name an option by the agent's words or by the server's button.
       const wanted = chosen.trim().toLowerCase();
+      const names = (label: string) => label.trim().toLowerCase() === wanted;
+      const named = card.options.flatMap((option, index) =>
+        names(option.label) || names(options[index]!.label) ? [index] : [],
+      );
+      if (plans.length > 0) {
+        const labels = options.map((option) => option.label.trim().toLowerCase());
+        const twice = options.find((_, index) => labels.indexOf(labels[index]!) !== index);
+        if (twice !== undefined)
+          return yield* new KinChatError({
+            reason: "invalid_state",
+            message: `Two options would read “${twice.label}”. Kin labels an option with an action by what it does; give the others their own words.`,
+          });
+        if (named.length > 1)
+          return yield* new KinChatError({
+            reason: "invalid_state",
+            message: `default “${chosen}” names more than one option. Give each option its own label.`,
+          });
+      }
+      const at = named[0];
       // A refused repeat posts nothing; an allowed one is stored in its card's own transaction.
       const plan = yield* Questions.planAsk({
         orgId: lead.orgId,
@@ -138,21 +159,37 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         chatId,
         key: `${wakeupId}:${key}`,
         question: card.question,
-        labels: card.options.map((option) => option.label),
-        default: chosen,
+        labels: options.map((option) => option.label),
+        default: at === undefined ? chosen : options[at]!.label,
         by,
         about,
         intent,
         now,
-        acts: card.options.some(
-          (option) => option.action !== undefined && option.label.trim().toLowerCase() === wanted,
-        ),
+        acts: at !== undefined && drawn[at] !== undefined,
       });
+      // Drawn again inside the card's transaction: what was checked is what is stored.
+      const recheck = drawAll.pipe(
+        Effect.flatMap((again) =>
+          again.every(
+            (one, index) => JSON.stringify(one?.plan) === JSON.stringify(drawn[index]?.plan),
+          )
+            ? Effect.void
+            : Effect.fail(
+                new KinChatError({
+                  reason: "invalid_state",
+                  message: "What an option names changed while its card was made. Ask again.",
+                }),
+              ),
+        ),
+        Effect.mapError(failure),
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
       const result = yield* (yield* KinLevelGate).ask(
         { ...lead, wakeupId },
         {
           ...asked,
           ...(plan === undefined ? {} : { untilAnswered: true as const }),
+          ...(plans.length === 0 ? {} : { recheck }),
           chatId,
           clientMessageId: `kin-ask:${wakeupId}:${key.slice(0, 32)}`,
         },

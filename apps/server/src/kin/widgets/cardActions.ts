@@ -1,6 +1,7 @@
 import {
   KinChatError,
   KinChatId,
+  KinChoiceCardState,
   KinDeferralCard,
   KinEventId,
   type KinChoiceOutcome,
@@ -21,7 +22,7 @@ import { SHARED_REFUSAL, aborted, peopleBehind } from "../lead/Audience.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import * as Memory from "../memory/Memory.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
-import { answerCard, readQuestion } from "../questions/openQuestions.ts";
+import { type QuestionRow, answerCard, readQuestion } from "../questions/openQuestions.ts";
 import {
   KinDeferralStopSwitch,
   deferralLead,
@@ -30,7 +31,7 @@ import {
 } from "../triggers/deferrals.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { viewOf } from "../work/leadWork.ts";
-import { defineProposed, proposalShown } from "../work/registers.ts";
+import { defineProposed, proposalToCreate } from "../work/registers.ts";
 import { teamGuard, viewVisible } from "../work/teamView.ts";
 import {
   type CardActionInput,
@@ -53,12 +54,35 @@ const notFound = (what: string) =>
 const notAllowed = (message: string) => new KinChatError({ reason: "not_allowed", message });
 const PENDING_RUNS = ["heads_up", "asked", "grace"];
 const decodeDeferralCard = Schema.decodeOption(Schema.fromJsonString(KinDeferralCard));
+const decodeChoice = Schema.decodeUnknownOption(Schema.fromJsonString(KinChoiceCardState));
+const decodeAwaiting = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
 const quoted = (text: string, max = 80) => {
   const flat = text.replace(/\s+/g, " ").trim();
   return `“${flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`}”`;
 };
 
-/** The line a card shows for a plan: the real verb and target, written by the server. */
+const LABEL_MAX = 80;
+/** The option's button for a plan: the verb and its key, written by the server, never the agent. */
+const labelOf = (plan: CardPlan): string => {
+  switch (plan.kind) {
+    case "done":
+      return `Mark ${plan.key} done`;
+    case "drop":
+      return `Drop ${plan.key}`;
+    case "start":
+      return "Start it now";
+    case "create_list":
+      return "Create the list";
+    case "take_default": {
+      const label = `Take the default: ${plan.label}`;
+      return label.length <= LABEL_MAX ? label : `${label.slice(0, LABEL_MAX - 1)}…`;
+    }
+  }
+};
+
+/** The line a card shows under it: the real verb and target, with its title. */
 const lineOf = (plan: CardPlan): string => {
   switch (plan.kind) {
     case "done":
@@ -68,9 +92,7 @@ const lineOf = (plan: CardPlan): string => {
     case "start":
       return `Start ${quoted(plan.title)} now`;
     case "create_list":
-      return plan.listRev === null
-        ? `Create the list ${quoted(plan.name, 60)}`
-        : `Add the proposed fields to ${quoted(plan.name, 60)}`;
+      return `Create the list ${quoted(plan.name, 60)}`;
     case "take_default": {
       const went = `Go with ${quoted(plan.label, 40)} on ${quoted(plan.question, 60)}`;
       return plan.final === null ? went : `${went}: ${lineOf(plan.final)}`;
@@ -157,18 +179,19 @@ const teamMay = Effect.fn("KinCardActions.teamMay")(function* (
   return true;
 });
 
-/**
- * Resolves an option's action in the agent's turn, as that turn could do it: refused here when
- * it couldn't. The plan names exactly what a tap runs; `line` is what the card shows for it.
- */
-export const draw = Effect.fn("KinCardActions.draw")(function* (
+type DrawnTurn = {
+  readonly drawn: Effect.Success<ReturnType<typeof drawOf>>;
+  readonly teammates: ReadonlyArray<KinPersonId>;
+};
+type RunInput = CardActionInput & { readonly kind: RunPlan["kind"] };
+
+/** One action that runs by itself, drawn as this turn could do it for this card's readers. */
+const drawRun = Effect.fn("KinCardActions.drawRun")(function* (
   lead: DrawTurn,
-  chatId: KinChatId,
-  input: CardActionInput,
+  input: RunInput,
+  { drawn, teammates }: DrawnTurn,
 ) {
   const orgId = lead.orgId;
-  const drawn = yield* drawOf(lead);
-  const teammates = yield* teammatesIn(orgId, chatId);
   const ownerTier = Effect.fn("KinCardActions.ownerTier")(function* (tool: string) {
     if (
       drawn.ceiling !== "owner" ||
@@ -177,7 +200,7 @@ export const draw = Effect.fn("KinCardActions.draw")(function* (
     )
       return yield* notAllowed(SHARED_REFUSAL);
   });
-  const plan: CardPlan = yield* Effect.gen(function* () {
+  const plan: RunPlan = yield* Effect.gen(function* () {
     switch (input.kind) {
       case "done":
       case "drop": {
@@ -206,6 +229,9 @@ export const draw = Effect.fn("KinCardActions.draw")(function* (
       }
       case "start": {
         yield* ownerTier("kin_defer");
+        // The tap checks this again; a card never offers a start Kin can't make now.
+        if (yield* (yield* KinDeferralStopSwitch).isStopped(orgId))
+          return yield* refuse("Kin's deferred work is stopped, so a card can't start it now.");
         const sql = yield* SqlClient.SqlClient;
         const [run] = yield* sql<{ state: string; dueAt: number | null }>`SELECT state,
             due_at AS "dueAt" FROM kin_deferral_runs
@@ -240,44 +266,120 @@ export const draw = Effect.fn("KinCardActions.draw")(function* (
             AND agent_id = ${lead.agentId}`;
         if (row === undefined) return yield* notFound(`proposal ${input.target.slice(0, 40)}`);
         if (row.definedAt !== null) return yield* refuse("That list was made already.");
-        const shown = yield* proposalShown(orgId, row.json);
-        if (shown === undefined) return yield* refuse("That proposal can no longer be read.");
+        const proposal = yield* proposalToCreate(orgId, row.json);
+        if (typeof proposal === "string")
+          return yield* refuse(`Not offered: ${proposal}. A card only creates a new list.`);
         return {
           kind: "create_list",
           proposalId: input.target,
           definition: row.json,
-          ...shown,
-          draw: drawn,
-        } as const;
-      }
-      case "take_default": {
-        const row = yield* readQuestion(orgId, input.target);
-        if (row === undefined || row.agentId !== lead.agentId || row.state !== "open")
-          return yield* notFound(`open question ${input.target.slice(0, 40)} of yours`);
-        const widgetId = row.raiseWidgetId ?? row.widgetId;
-        const option = row.options.find((one) => one.label === row.defaultLabel);
-        if (widgetId === null || option === undefined || row.defaultLabel === null)
-          return yield* refuse("That question has no default to take.");
-        if (teammates.some((person) => person !== row.personId))
-          return yield* notAllowed(SHARED_REFUSAL);
-        const final =
-          row.widgetId === null
-            ? undefined
-            : (yield* plansOf(orgId, row.widgetId)).get(option.optionId);
-        return {
-          kind: "take_default",
-          questionId: row.questionId,
-          question: row.question,
-          widgetId,
-          optionId: option.optionId,
-          label: row.defaultLabel,
-          final: final === undefined || final.kind === "take_default" ? null : final,
+          name: proposal.name,
           draw: drawn,
         } as const;
       }
     }
   });
-  return { plan, line: lineOf(plan) };
+  return plan;
+});
+
+/** "Take the default" of an open question of this agent's, with that default's own action. */
+const drawDefault = Effect.fn("KinCardActions.drawDefault")(function* (
+  lead: DrawTurn,
+  target: string,
+  turn: DrawnTurn,
+) {
+  const orgId = lead.orgId;
+  const row = yield* readQuestion(orgId, target);
+  if (row === undefined || row.agentId !== lead.agentId || row.state !== "open")
+    return yield* notFound(`open question ${target.slice(0, 40)} of yours`);
+  const option = row.options.find((one) => one.label === row.defaultLabel);
+  if (option === undefined || row.defaultLabel === null)
+    return yield* refuse("That question has no default to take.");
+  if (turn.teammates.some((person) => person !== row.personId))
+    return yield* notAllowed(SHARED_REFUSAL);
+  const source = yield* defaultSource(orgId, row, option.optionId);
+  if (source === undefined)
+    return yield* refuse("That question's card is gone or answered, so there's no default.");
+  // Its action is drawn again for this turn and this card's readers; it may not differ.
+  const sealed = source.final;
+  const final = sealed === undefined || sealed.kind === "take_default" ? null : sealed;
+  if (final !== null && !sameAction(final, yield* drawRun(lead, actionOf(final), turn)))
+    return yield* refuse(`${lineOf(final)}: that changed since it was offered.`);
+  return {
+    kind: "take_default",
+    questionId: row.questionId,
+    question: row.question,
+    widgetId: source.widgetId,
+    optionId: option.optionId,
+    label: row.defaultLabel,
+    final,
+    draw: turn.drawn,
+  } as const;
+});
+
+/**
+ * Resolves an option's action in the agent's turn, as that turn could do it: refused here when
+ * it couldn't. The plan names exactly what a tap runs; `label` and `line` are what the card shows.
+ */
+export const draw = Effect.fn("KinCardActions.draw")(function* (
+  lead: DrawTurn,
+  chatId: KinChatId,
+  input: CardActionInput,
+) {
+  const turn = { drawn: yield* drawOf(lead), teammates: yield* teammatesIn(lead.orgId, chatId) };
+  const plan: CardPlan =
+    input.kind === "take_default"
+      ? yield* drawDefault(lead, input.target, turn)
+      : yield* drawRun(lead, { kind: input.kind, target: input.target }, turn);
+  return { plan, label: labelOf(plan), line: lineOf(plan) };
+});
+
+/** The action a sealed plan runs, as an agent names it. */
+const actionOf = (plan: RunPlan): RunInput => ({
+  kind: plan.kind,
+  target:
+    plan.kind === "start" ? plan.itemId : plan.kind === "create_list" ? plan.proposalId : plan.key,
+});
+/** The same action on the same thing at the same revision, whoever drew it. */
+const sameAction = (a: CardPlan, b: CardPlan) =>
+  JSON.stringify({ ...a, draw: null }) === JSON.stringify({ ...b, draw: null });
+
+/**
+ * A question's card while it still offers its person the default option, by its sealed id, and
+ * that option's own plan from the card it was asked on. Undefined once either card is gone.
+ */
+const defaultSource = Effect.fn("KinCardActions.defaultSource")(function* (
+  orgId: KinOrgId,
+  row: QuestionRow,
+  optionId: string,
+) {
+  const asked = row.widgetId;
+  const shown = row.raiseWidgetId ?? row.widgetId;
+  if (asked === null || shown === null || row.defaultLabel === null) return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  const cards = yield* sql<{
+    widgetId: string;
+    state: string;
+    awaiting: string;
+    closedAt: string | null;
+  }>`SELECT widget_id AS "widgetId", state_json AS state, awaiting_json AS awaiting,
+      closed_at AS "closedAt"
+    FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${row.chatId}
+      AND type = 'choice' AND widget_id IN ${sql.in([...new Set([asked, shown])])}
+    ORDER BY widget_id`;
+  const live = cards.find((one) => one.widgetId === shown);
+  if (live === undefined || live.closedAt !== null || !cards.some((one) => one.widgetId === asked))
+    return undefined;
+  const state = Option.getOrUndefined(decodeChoice(live.state));
+  const awaiting = Option.getOrElse(decodeAwaiting(live.awaiting), (): ReadonlyArray<string> => []);
+  if (
+    state === undefined ||
+    state.answer !== null ||
+    !awaiting.includes(row.personId) ||
+    !state.options.some((one) => one.optionId === optionId && one.label === row.defaultLabel)
+  )
+    return undefined;
+  return { widgetId: shown, final: (yield* plansOf(orgId, asked)).get(optionId) };
 });
 
 const deferralCard = Effect.fn("KinCardActions.deferralCard")(function* (
@@ -311,6 +413,18 @@ const drawHolds = Effect.fn("KinCardActions.drawHolds")(function* (orgId: KinOrg
   return undefined;
 });
 
+/** The first of these draws that no longer holds, and why. */
+const drawsHold = Effect.fn("KinCardActions.drawsHold")(function* (
+  orgId: KinOrgId,
+  draws: ReadonlyArray<CardDraw>,
+) {
+  for (const one of draws) {
+    const why = yield* drawHolds(orgId, one);
+    if (why !== undefined) return why;
+  }
+  return undefined;
+});
+
 export type ActionTap = {
   readonly orgId: KinOrgId;
   readonly widget: KinWidget;
@@ -322,7 +436,8 @@ export type ActionTap = {
 /**
  * Runs a sealed plan for a person's tap, inside the tap's transaction. The tapper's own right to
  * do it now is required, and refuses the tap (the card stays open for someone who may); a change
- * since the draw, or a drawer who no longer could, closes the card with what was not done.
+ * since the draw, or a drawer who no longer could, closes the card with what was not done. A
+ * failure after a write fails the tap, so its transaction leaves nothing behind.
  */
 export const run = Effect.fn("KinCardActions.run")(function* (
   tap: ActionTap,
@@ -332,7 +447,7 @@ export const run = Effect.fn("KinCardActions.run")(function* (
     readonly chat: Pick<KinChatService["Service"], "closeReplaced">;
   },
 ) {
-  if (plan.kind !== "take_default") return yield* runOne(tap, plan, deps.records);
+  if (plan.kind !== "take_default") return yield* runOne(tap, plan, deps.records, []);
   const row = yield* readQuestion(tap.orgId, plan.questionId);
   if (row !== undefined && row.personId !== tap.personId)
     return yield* notAllowed("Only the person it was asked of can answer this question.");
@@ -340,13 +455,16 @@ export const run = Effect.fn("KinCardActions.run")(function* (
     row === undefined ||
     row.state !== "open" ||
     row.agentId !== plan.draw.agentId ||
-    row.defaultLabel !== plan.label ||
-    (row.raiseWidgetId ?? row.widgetId) !== plan.widgetId
+    row.defaultLabel !== plan.label
   )
     return nothingDone(`${quoted(plan.question)} isn't open as it was`);
+  if ((yield* defaultSource(tap.orgId, row, plan.optionId))?.widgetId !== plan.widgetId)
+    return nothingDone(`the card that asked ${quoted(plan.question)} is gone or changed`);
   const why = yield* drawHolds(tap.orgId, plan.draw);
   if (why !== undefined) return nothingDone(why);
-  const done = plan.final === null ? undefined : yield* runOne(tap, plan.final, deps.records);
+  // Both draws must still hold: the card that asked, and this one that takes its default.
+  const done =
+    plan.final === null ? undefined : yield* runOne(tap, plan.final, deps.records, [plan.draw]);
   if (done?.title === NOTHING_DONE) return done;
   yield* answerCard({
     orgId: tap.orgId,
@@ -366,12 +484,21 @@ export const run = Effect.fn("KinCardActions.run")(function* (
   return done ?? { title: went.title, text: `Answered ${quoted(plan.question)} with its default.` };
 });
 
+/** A start the queue refused after its run moved: the whole tap rolls back, and says so. */
+const notStarted = (title: string) =>
+  new KinChatError({
+    reason: "conflict",
+    message: `${quoted(title)} couldn't start just now, so nothing changed. Try again.`,
+  });
+
 const runOne = Effect.fn("KinCardActions.runOne")(function* (
   tap: ActionTap,
   plan: RunPlan,
   records: KinRecords["Service"],
+  also: ReadonlyArray<CardDraw>,
 ) {
   const { orgId, personId } = tap;
+  const draws = [plan.draw, ...also];
   const owner = yield* ownerLevel(orgId, personId);
   switch (plan.kind) {
     case "done":
@@ -381,10 +508,11 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
       if (row === undefined) return nothingDone(`${plan.key} is gone`);
       if (!owner) yield* teamGuard(orgId, personId, { row, changes: true, input: { state } });
       if (row.rev !== plan.rev) return nothingDone(`${plan.key} changed since this was offered`);
-      const why = yield* drawHolds(orgId, plan.draw);
+      const why = yield* drawsHold(orgId, draws);
       if (why !== undefined) return nothingDone(why);
-      if (!(yield* teamMay(orgId, plan.draw, row, state)))
-        return nothingDone(`whoever it was offered for can no longer change ${plan.key}`);
+      for (const one of draws)
+        if (!(yield* teamMay(orgId, one, row, state)))
+          return nothingDone(`whoever it was offered for can no longer change ${plan.key}`);
       yield* records.update(
         orgId,
         {
@@ -414,7 +542,7 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
         runRow.dueAt !== plan.dueAt
       )
         return nothingDone(`${quoted(plan.title)} isn't waiting to start any more`);
-      const why = yield* drawHolds(orgId, plan.draw);
+      const why = yield* drawsHold(orgId, draws);
       if (why !== undefined) return nothingDone(why);
       if (yield* (yield* KinDeferralStopSwitch).isStopped(orgId))
         return nothingDone("Kin's deferred work is stopped");
@@ -427,6 +555,7 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
       if ((yield* deferralLead(sql, orgId, item)) === undefined)
         return nothingDone("no agent can take it now");
       // The same start a fire or a [Start now] makes: one `deferral.due`, keyed by the due fire.
+      // It returns false only before it writes; a refusal after the run moved fails the tap.
       const started = yield* (yield* makeDeferralStarter)({
         orgId,
         itemId: KinMemoryItemId.make(plan.itemId),
@@ -439,10 +568,10 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
         item,
       }).pipe(
         Effect.catchTags({
-          KinEventQueueConflict: () => Effect.succeed(false),
-          KinEventQueueRetiredAgent: () => Effect.succeed(false),
-          KinEventQueueUnknownAgent: () => Effect.succeed(false),
-          KinEventQueueUnknownEvent: () => Effect.succeed(false),
+          KinEventQueueConflict: () => Effect.fail(notStarted(plan.title)),
+          KinEventQueueRetiredAgent: () => Effect.fail(notStarted(plan.title)),
+          KinEventQueueUnknownAgent: () => Effect.fail(notStarted(plan.title)),
+          KinEventQueueUnknownEvent: () => Effect.fail(notStarted(plan.title)),
         }),
       );
       if (!started) return nothingDone(`${quoted(plan.title)} couldn't start`);
@@ -451,19 +580,16 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
     case "create_list": {
       if (!owner) return yield* notAllowed("Only an owner can create a list.");
       const why =
-        (yield* drawHolds(orgId, plan.draw)) ??
+        (yield* drawsHold(orgId, draws)) ??
         (yield* defineProposed({
           orgId,
           agentId: plan.draw.agentId,
           proposalId: plan.proposalId,
           definition: plan.definition,
-          listRev: plan.listRev,
           now: tap.now,
         }));
       if (why !== undefined) return nothingDone(why);
-      return plan.listRev === null
-        ? { title: "List created", text: `Created the list ${quoted(plan.name, 60)}.` }
-        : { title: "List changed", text: `Added the proposed fields to ${quoted(plan.name, 60)}.` };
+      return { title: "List created", text: `Created the list ${quoted(plan.name, 60)}.` };
     }
   }
 });

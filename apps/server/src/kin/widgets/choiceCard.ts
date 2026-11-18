@@ -56,8 +56,13 @@ export type AskInput = typeof AskInput.Type & {
   readonly send?: KinSendCard;
   /** An agent's open question: it takes taps until the question closes. */
   readonly untilAnswered?: true;
-  /** The server's line for each option that runs a fixed action (`cardActions.ts`), by index. */
-  readonly actionLines?: ReadonlyArray<string | undefined>;
+  /**
+   * The server's button and line for each option that runs a fixed action (`cardActions.ts`), by
+   * index: the agent's own label for that option is never shown.
+   */
+  readonly actions?: ReadonlyArray<{ readonly label: string; readonly line: string } | undefined>;
+  /** Runs in the card's own transaction before it is stored: a refusal stores nothing. */
+  readonly recheck?: Effect.Effect<void, KinChatError>;
 };
 export const AskResult = Schema.Struct({
   widgetId: KinTrimmedText,
@@ -79,17 +84,17 @@ const invalid = (message: string) => new KinChatError({ reason: "invalid_state",
 
 const DETAIL_MAX = 2000;
 /**
- * An option that runs an action shows the server's line and has no yes/no kind, so no reaction
- * can pick it. The lines are in `detail` too, for clients that don't read `action`.
+ * An option that runs an action shows the server's button and line and has no yes/no kind, so no
+ * reaction can pick it. The lines are in `detail` too, for clients that don't read `action`.
  */
 export const choiceCardState = (input: AskInput): KinChoiceCardState => {
   const options = input.options.map((option, index) => {
-    const line = input.actionLines?.[index];
+    const action = input.actions?.[index];
     return {
       optionId: `option-${index + 1}`,
-      label: option.label,
-      ...(option.kind === undefined || line !== undefined ? {} : { kind: option.kind }),
-      ...(line === undefined ? {} : { action: { line } }),
+      label: action?.label ?? option.label,
+      ...(option.kind === undefined || action !== undefined ? {} : { kind: option.kind }),
+      ...(action === undefined ? {} : { action: { line: action.line } }),
     };
   });
   const note = kinChoiceActionNote(options);

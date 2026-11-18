@@ -58,8 +58,6 @@ const ListPlan = Schema.Struct({
   /** The proposal's stored definition as validated; a different one at tap runs nothing. */
   definition: Schema.String,
   name: Schema.String,
-  /** The list's revision when the proposal adds to one; null when it makes a new one. */
-  listRev: Schema.NullOr(Schema.Number),
   draw: CardDraw,
 });
 const RunPlan = Schema.Union([RecordPlan, StartPlan, ListPlan]);
@@ -105,29 +103,34 @@ export const sealPlans = Effect.fn("KinCardPlans.seal")(function* (input: {
 /** The plan an option runs, and the message of the tap that ran it; undefined for a plain option. */
 export const planFor = Effect.fn("KinCardPlans.planFor")(function* (input: {
   readonly orgId: KinOrgId;
+  readonly chatId: KinChatId;
   readonly widgetId: string;
   readonly optionId: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ json: string; ran: string | null }>`SELECT plan_json AS json,
-      ran_message_id AS ran FROM kin_card_plans
+  const [row] = yield* sql<{ json: string; chatId: string; ran: string | null }>`SELECT
+      plan_json AS json, chat_id AS "chatId", ran_message_id AS ran FROM kin_card_plans
     WHERE org_id = ${input.orgId} AND widget_id = ${input.widgetId}
       AND option_id = ${input.optionId}`;
   if (row === undefined) return undefined;
-  // A row nobody can read runs nothing: the tap is refused rather than taken as plain.
-  const plan = Option.getOrUndefined(decodePlan(row.json));
+  // A row nobody can read, or sealed for another chat, runs nothing: the tap is refused rather
+  // than taken as plain.
+  const plan =
+    row.chatId === input.chatId ? Option.getOrUndefined(decodePlan(row.json)) : undefined;
   return { plan, ran: row.ran === null ? null : KinMessageId.make(row.ran) };
 });
 
-/** Every option of a card that runs an action, by option id. */
+/** Every option of a card still in its chat that runs an action, by option id. */
 export const plansOf = Effect.fn("KinCardPlans.plansOf")(function* (
   orgId: KinOrgId,
   widgetId: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ optionId: string; json: string }>`SELECT option_id AS "optionId",
-      plan_json AS json FROM kin_card_plans
-    WHERE org_id = ${orgId} AND widget_id = ${widgetId} ORDER BY option_id`;
+  const rows = yield* sql<{ optionId: string; json: string }>`SELECT p.option_id AS "optionId",
+      p.plan_json AS json FROM kin_card_plans p
+    JOIN kin_widgets w ON w.org_id = p.org_id AND w.widget_id = p.widget_id
+      AND w.chat_id = p.chat_id
+    WHERE p.org_id = ${orgId} AND p.widget_id = ${widgetId} ORDER BY p.option_id`;
   return new Map(
     rows.flatMap((row) => {
       const plan = Option.getOrUndefined(decodePlan(row.json));

@@ -918,6 +918,7 @@ const make = Effect.gen(function* () {
         ? undefined
         : yield* CardPlans.planFor({
             orgId: identity.orgId,
+            chatId: widget.chatId,
             widgetId: widget.widgetId,
             optionId: choice.option.optionId,
           }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(cardTapError));
@@ -2887,13 +2888,16 @@ const make = Effect.gen(function* () {
     }, transaction),
     ask: Effect.fn("KinChatService.ask")(
       (identity, input) =>
-        postCard(identity, {
-          chatId: input.chatId,
-          clientMessageId: input.clientMessageId,
-          type: "choice",
-          intent: "question",
-          state: validateState("choice", ChoiceCard.choiceCardState(input)),
-        }),
+        Effect.andThen(
+          input.recheck ?? Effect.void,
+          postCard(identity, {
+            chatId: input.chatId,
+            clientMessageId: input.clientMessageId,
+            type: "choice",
+            intent: "question",
+            state: validateState("choice", ChoiceCard.choiceCardState(input)),
+          }),
+        ),
       transaction,
     ),
     replyCard: Effect.fn("KinChatService.replyCard")(function* (agent, chatId) {

@@ -2277,6 +2277,13 @@ const make = Effect.gen(function* () {
         yield* sql`DELETE FROM kin_reaction_wakes WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
         yield* sql`DELETE FROM kin_reactions WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
         yield* sql`DELETE FROM kin_message_attachments WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
+        // A removed card runs nothing: its sealed plans go, and the questions it asks close.
+        const cards = sql`SELECT widget_id FROM kin_widgets
+          WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
+        yield* sql`UPDATE kin_questions SET state = 'withdrawn', closed_at = ${input.clearedAtMs}
+          WHERE org_id = ${input.orgId} AND state = 'open'
+            AND (widget_id IN (${cards}) OR raise_widget_id IN (${cards}))`;
+        yield* sql`DELETE FROM kin_card_plans WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
         yield* sql`DELETE FROM kin_widgets WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
         yield* sql`DELETE FROM kin_turn_figures WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
         yield* sql`DELETE FROM kin_messages WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
