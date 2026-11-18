@@ -22,7 +22,6 @@ import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 import { useKinOpenTarget } from "./KinMessagePage";
 
-
 /** The changes one agent reply's turn made, each opening its entry, with Undo where Kin can. */
 export function KinTurnReceiptSheet(props: {
   /** Read from the feed on every render, so a refreshed reply redraws the open sheet. */

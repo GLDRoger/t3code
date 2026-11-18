@@ -24,7 +24,6 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
 import { kinRecordPlace } from "./kinPlaces";
 
-
 /** "Changed W-25 and W-26" under an agent's reply; a click lists each change with its Undo. */
 export function KinTurnReceipt(props: {
   readonly line: string;
