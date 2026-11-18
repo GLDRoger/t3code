@@ -263,7 +263,7 @@ describe("a task's links and its project's note", () => {
     );
     const pinned = page.getByLabelText("From the project");
     await expect.element(pinned.getByText("From the project", { exact: true })).toBeVisible();
-    await expect.element(pinned.getByText(/Rhea/)).toBeVisible();
+    await expect.element(pinned.getByText(/You,/)).toBeVisible();
     await expect.element(pinned.getByText("Invented: brand blue is #1a4f8b")).toBeVisible();
     await userEvent.click(page.getByRole("button", { name: "Ambermill shop" }));
     expect(onOpenProject).toHaveBeenCalledWith("P-4");
