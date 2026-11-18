@@ -23,6 +23,16 @@ import {
   type KinWorkRef,
 } from "@t3tools/client-runtime/kin/kinWork";
 import {
+  KIN_TASK_RECORD,
+  kinBriefBy,
+  kinNextStep,
+  kinRecordAskedBy,
+  kinRecordChip,
+  kinRecordWho,
+  type KinNextStepAct,
+  type KinRecordWho,
+} from "@t3tools/client-runtime/kin/kinTaskRecord";
+import {
   KIN_WORK_COPY,
   kinWorkApplied,
   kinWorkStatusOffer,
@@ -51,6 +61,7 @@ import {
 import {
   CheckIcon,
   ChevronDownIcon,
+  EllipsisIcon,
   Undo2Icon,
   ExternalLinkIcon,
   LinkIcon,
@@ -66,7 +77,6 @@ import { useId, useState } from "react";
 
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
-import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Calendar } from "../components/ui/calendar";
 import { Input } from "../components/ui/input";
@@ -96,6 +106,12 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { KinNotesVersions } from "./KinConfirm";
+import {
+  KinNextStepCard,
+  KinRecordChip,
+  KinTaskActivity,
+  KinTaskNoteComposer,
+} from "./KinTaskRecord";
 import { KinListEntry } from "./KinWorkEntry";
 import { KinWorkAudienceRow } from "./KinWorkShareRow";
 import { KinWorkRow } from "./KinWorkTasks";
@@ -121,7 +137,7 @@ const LINK_ICON: Record<KinWorkLinkView["kind"], typeof LinkIcon> = {
   link: LinkIcon,
 };
 
-/** One task beside the list: where it stands, who has it, what it links to and how it got here. */
+/** One task beside the list: where it stands, its next step, who has it, and what happened to it. */
 export function KinWorkItemSheet(
   props: KinWorkTarget & {
     readonly itemKey: KinRecordKey;
@@ -143,6 +159,7 @@ export function KinWorkItemSheet(
   const result = useAtomValue(itemAtom);
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
   const canGive = useAtomValue(kinClient.workAssign.permissionAtom(environmentId));
+  const canComment = useAtomValue(kinClient.workComment.permissionAtom(environmentId));
   const place = useKinWorkPlace(environmentId);
   const now = new Date(useNowMinuteMs());
   const state = kinWorkItemState(result, changed.answers[itemKey] ?? null);
@@ -179,6 +196,7 @@ export function KinWorkItemSheet(
           <KinWorkItem
             {...props}
             item={state.item}
+            shown={kinWorkApplied(state.item, changed)}
             view={kinWorkItemView(
               kinWorkApplied(state.item, changed),
               names,
@@ -192,6 +210,7 @@ export function KinWorkItemSheet(
             edit={changed.edit?.key === itemKey ? changed.edit : null}
             canChange={canChange}
             canGive={canGive}
+            canComment={canComment}
             onAct={(action) => void changes.run(state.item, action, names)}
             onUndo={() => void changes.undo(names, state.item)}
             onStartEdit={() => changes.startEdit(state.item)}
@@ -240,88 +259,81 @@ export function KinWorkItemSheet(
     </Sheet>
   );
 }
-
 /** The holder gives the task back to whoever gave it, saying why if they like. */
 function KinWorkHandBack(
   props: KinWorkTarget & {
     readonly itemKey: KinRecordKey;
     readonly to: string;
-    readonly disabled: boolean;
+    readonly open: boolean;
+    readonly onOpenChange: (open: boolean) => void;
     readonly onDone: () => void;
   },
 ) {
   const { environmentId, orgId, itemKey } = props;
   const handBack = useAtomCommand(kinClient.workHandBack, { reportFailure: false });
-  const [open, setOpen] = useState(false);
   const [note, setNote] = useState("");
   const [pending, setPending] = useState(false);
   const [failed, setFailed] = useState(false);
   const noteId = useId();
   return (
-    <>
-      <Button size="sm" variant="outline" disabled={props.disabled} onClick={() => setOpen(true)}>
-        <Undo2Icon />
-        {KIN_WORK_HAND_BACK.button}
-      </Button>
-      <AlertDialog
-        open={open}
-        onOpenChange={(next) => {
-          if (!pending) setOpen(next);
-        }}
-      >
-        <AlertDialogPopup>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{KIN_WORK_HAND_BACK.title}</AlertDialogTitle>
-            <AlertDialogDescription>{KIN_WORK_HAND_BACK.detail(props.to)}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <div className="flex flex-col gap-1.5 px-6">
-            <Label htmlFor={noteId}>{KIN_WORK_HAND_BACK.reasonLabel}</Label>
-            <Textarea
-              id={noteId}
-              value={note}
-              maxLength={280}
-              placeholder={KIN_WORK_HAND_BACK.reasonPlaceholder}
-              onChange={(event) => setNote(event.target.value)}
-            />
-            {failed ? (
-              <p role="alert" className="text-xs text-destructive-foreground">
-                {KIN_WORK_HAND_BACK.failed}
-              </p>
-            ) : null}
-          </div>
-          <AlertDialogFooter>
-            <AlertDialogClose render={<Button variant="outline" disabled={pending} />}>
-              {KIN_WORK_COPY.cancel}
-            </AlertDialogClose>
-            <Button
-              disabled={pending}
-              onClick={() => {
-                setPending(true);
-                setFailed(false);
-                const trimmed = note.trim();
-                void handBack({
-                  environmentId,
-                  input: { orgId, key: itemKey, ...(trimmed === "" ? {} : { note: trimmed }) },
-                }).then((outcome) => {
-                  setPending(false);
-                  if (AsyncResult.isFailure(outcome)) {
-                    setFailed(true);
-                    return;
-                  }
-                  setOpen(false);
-                  appAtomRegistry.refresh(
-                    kinClient.workItem({ environmentId, input: { orgId, key: itemKey } }),
-                  );
-                  props.onDone();
-                });
-              }}
-            >
-              {KIN_WORK_HAND_BACK.confirm}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
-    </>
+    <AlertDialog
+      open={props.open}
+      onOpenChange={(next) => {
+        if (!pending) props.onOpenChange(next);
+      }}
+    >
+      <AlertDialogPopup>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{KIN_WORK_HAND_BACK.title}</AlertDialogTitle>
+          <AlertDialogDescription>{KIN_WORK_HAND_BACK.detail(props.to)}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <div className="flex flex-col gap-1.5 px-6">
+          <Label htmlFor={noteId}>{KIN_WORK_HAND_BACK.reasonLabel}</Label>
+          <Textarea
+            id={noteId}
+            value={note}
+            maxLength={280}
+            placeholder={KIN_WORK_HAND_BACK.reasonPlaceholder}
+            onChange={(event) => setNote(event.target.value)}
+          />
+          {failed ? (
+            <p role="alert" className="text-xs text-destructive-foreground">
+              {KIN_WORK_HAND_BACK.failed}
+            </p>
+          ) : null}
+        </div>
+        <AlertDialogFooter>
+          <AlertDialogClose render={<Button variant="outline" disabled={pending} />}>
+            {KIN_WORK_COPY.cancel}
+          </AlertDialogClose>
+          <Button
+            disabled={pending}
+            onClick={() => {
+              setPending(true);
+              setFailed(false);
+              const trimmed = note.trim();
+              void handBack({
+                environmentId,
+                input: { orgId, key: itemKey, ...(trimmed === "" ? {} : { note: trimmed }) },
+              }).then((outcome) => {
+                setPending(false);
+                if (AsyncResult.isFailure(outcome)) {
+                  setFailed(true);
+                  return;
+                }
+                props.onOpenChange(false);
+                appAtomRegistry.refresh(
+                  kinClient.workItem({ environmentId, input: { orgId, key: itemKey } }),
+                );
+                props.onDone();
+              });
+            }}
+          >
+            {KIN_WORK_HAND_BACK.confirm}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogPopup>
+    </AlertDialog>
   );
 }
 
@@ -353,9 +365,36 @@ function KinWorkNoticeLine(props: {
   );
 }
 
+/** A person or agent in Details, with their picture so an agent reads as one at a glance. */
+function DetailPerson(props: {
+  readonly label: string;
+  readonly who: KinRecordWho;
+  readonly extra?: string | null;
+}) {
+  return (
+    <>
+      <dt className="text-muted-foreground">{props.label}</dt>
+      <dd className="flex min-w-0 items-center gap-2">
+        <KinAvatar avatar={props.who.avatar} size="sm" />
+        <span className="truncate text-foreground">{props.who.name}</span>
+        {props.extra == null ? null : (
+          <span className="shrink-0 text-xs text-muted-foreground">{props.extra}</span>
+        )}
+      </dd>
+    </>
+  );
+}
+
+/**
+ * A task as one page, in the order the phone draws it: where it stands and its title, the next
+ * step with its one action, Details, the Brief, Activity with notes, and what it links to. The
+ * less-used moves sit in the More menu; "Add a note…" is pinned at the foot.
+ */
 function KinWorkItem(
   props: KinWorkTarget & {
     readonly item: KinRecordDetail;
+    /** The task with this browser's unsaved changes applied, as `view` reads it. */
+    readonly shown: KinRecordDetail;
     readonly view: KinWorkItemView;
     readonly directory: KinWorkDirectory;
     readonly now: Date;
@@ -364,6 +403,7 @@ function KinWorkItem(
     readonly edit: KinWorkEdit | null;
     readonly canChange: boolean;
     readonly canGive: boolean;
+    readonly canComment: boolean;
     readonly onAct: (action: KinWorkAction) => void;
     readonly onUndo: () => void;
     readonly onStartEdit: () => void;
@@ -377,9 +417,10 @@ function KinWorkItem(
     readonly onClose: () => void;
   },
 ) {
-  const { view, environmentId, orgId, saving, edit } = props;
+  const { view, environmentId, orgId, saving, edit, shown } = props;
   const { orgs, people, joined, invited, names } = props.directory;
   const opensClients = useKinOpensClients(environmentId);
+  const [handingBack, setHandingBack] = useState(false);
   // Each control shows only where the host said it takes it (`view.can`).
   const change = props.canChange ? props.onAct : null;
   const give = props.canGive ? props.onAct : null;
@@ -407,138 +448,333 @@ function KinWorkItem(
   const titleId = useId();
   const notesId = useId();
   const { choices } = props;
+  const step = kinNextStep({
+    item: shown,
+    view,
+    names,
+    now: props.now,
+    change: change !== null,
+    give: give !== null,
+  });
+  const chip = kinRecordChip(shown, view, names, props.now);
+  const askedBy = kinRecordAskedBy(props.item);
+  const briefBy = kinBriefBy(shown, names, props.now);
+  const stepAct = (id: KinNextStepAct) => {
+    if (change === null) return;
+    if (id === "keep") return change({ type: "confirm" });
+    if (id === "decline") return change({ type: "decline" });
+    if (id === "done") return change({ type: "state", state: "done" });
+    if (id === "reopen") return change({ type: "state", state: "open" });
+  };
+  const status = change !== null && (offer.reopen || (!view.closed && (offer.done || offer.menu)));
+  const giving = give !== null && view.assignLabel !== null;
+  const more = (reword !== null && edit === null) || status || giving || view.handBackTo !== null;
   return (
     <>
       <SheetHeader>
-        <div className="flex flex-col gap-1 pe-8">
-          <SheetDescription>{`${view.key} · ${view.heading}`}</SheetDescription>
-          <SheetTitle>{view.title}</SheetTitle>
-        </div>
-      </SheetHeader>
-      <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
-        <div className="flex flex-col gap-3">
-          {view.suggestion === null || change === null || !view.can.confirm ? null : (
-            <Alert variant="info">
-              <AlertDescription>{view.suggestion} Keep it?</AlertDescription>
-              <AlertAction>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={saving}
-                  onClick={() => change({ type: "decline" })}
-                >
-                  {KIN_WORK_COPY.decline}
-                </Button>
-                <Button size="xs" disabled={saving} onClick={() => change({ type: "confirm" })}>
-                  {KIN_WORK_COPY.keep}
-                </Button>
-              </AlertAction>
-            </Alert>
-          )}
-          <div className="flex flex-wrap items-center gap-2 text-sm text-foreground">
-            <KinWorkStateIcon state={view.state} />
-            <span>{view.status}</span>
-            {view.late ? (
-              <Badge size="sm" variant="error">
-                Late
-              </Badge>
-            ) : null}
+        <div className="flex flex-col gap-2 pe-8 wrap-break-word">
+          <div className="flex flex-wrap items-center gap-2">
+            <KinRecordChip tone={chip.tone} label={chip.label} />
+            <SheetDescription>
+              {view.heading === "Task" ? view.key : `${view.key} · ${view.heading}`}
+            </SheetDescription>
             {saving ? (
               <span role="status" className="text-xs text-muted-foreground">
                 {KIN_WORK_COPY.saving}
               </span>
             ) : null}
+            {!more ? null : (
+              <div className="ms-auto">
+                <Menu>
+                  <MenuTrigger
+                    render={
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        disabled={saving}
+                        aria-label={KIN_TASK_RECORD.more}
+                      />
+                    }
+                  >
+                    <EllipsisIcon />
+                  </MenuTrigger>
+                  <MenuPopup align="end">
+                    {reword === null || edit !== null ? null : (
+                      <MenuItem onClick={props.onStartEdit}>
+                        <PencilIcon />
+                        {KIN_TASK_RECORD.editAll}
+                      </MenuItem>
+                    )}
+                    {!status || change === null ? null : (
+                      <MenuGroup>
+                        <MenuGroupLabel>{KIN_WORK_COPY.status}</MenuGroupLabel>
+                        {offer.done && !view.closed ? (
+                          <MenuItem onClick={() => change({ type: "state", state: "done" })}>
+                            <CheckIcon />
+                            {KIN_WORK_COPY.done}
+                          </MenuItem>
+                        ) : null}
+                        {offer.reopen ? (
+                          <MenuItem onClick={() => change({ type: "state", state: "open" })}>
+                            <RotateCcwIcon />
+                            {KIN_WORK_COPY.reopen}
+                          </MenuItem>
+                        ) : null}
+                        {offer.menu && !view.closed ? (
+                          <StatusItems
+                            view={view}
+                            offer={offer}
+                            waitingOn={waitingOn}
+                            onAct={change}
+                          />
+                        ) : null}
+                      </MenuGroup>
+                    )}
+                    {!giving || give === null || view.assignLabel === null ? null : (
+                      <>
+                        <MenuSeparator />
+                        <MenuSub>
+                          <MenuSubTrigger>{view.assignLabel}</MenuSubTrigger>
+                          <MenuSubPopup>
+                            <GiveItems
+                              assignees={assignees}
+                              onGive={(to) => give({ type: "give", to: to.principal })}
+                            />
+                          </MenuSubPopup>
+                        </MenuSub>
+                        {!view.takeBack ? null : (
+                          <MenuItem onClick={() => give({ type: "takeBack" })}>
+                            {KIN_WORK_COPY.takeBack}
+                          </MenuItem>
+                        )}
+                      </>
+                    )}
+                    {view.handBackTo === null || change === null ? null : (
+                      <MenuItem onClick={() => setHandingBack(true)}>
+                        <Undo2Icon />
+                        {KIN_WORK_HAND_BACK.button}
+                      </MenuItem>
+                    )}
+                  </MenuPopup>
+                </Menu>
+              </div>
+            )}
           </div>
-          {change === null ||
-          !(offer.done || offer.reopen || offer.menu || view.handBackTo) ? null : (
-            <div className="flex flex-wrap items-center gap-2">
-              {offer.reopen ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={saving}
-                  onClick={() => change({ type: "state", state: "open" })}
-                >
-                  <RotateCcwIcon />
-                  {KIN_WORK_COPY.reopen}
-                </Button>
-              ) : view.closed ? null : (
-                <>
-                  {offer.done ? (
-                    <Button
-                      size="sm"
-                      disabled={saving}
-                      onClick={() => change({ type: "state", state: "done" })}
-                    >
-                      <CheckIcon />
-                      {KIN_WORK_COPY.done}
-                    </Button>
-                  ) : null}
-                  {offer.menu ? (
-                    <StatusMenu
-                      view={view}
-                      offer={offer}
-                      waitingOn={waitingOn}
-                      saving={saving}
-                      onAct={change}
-                    />
-                  ) : null}
-                  {view.handBackTo === null ? null : (
-                    <KinWorkHandBack
-                      environmentId={environmentId}
-                      orgId={orgId}
-                      itemKey={view.key}
-                      to={view.handBackTo}
-                      disabled={saving}
-                      onDone={props.onClose}
-                    />
-                  )}
-                </>
+          {edit !== null ? null : <SheetTitle>{view.title}</SheetTitle>}
+          {view.remarks.map((remark) => (
+            <p key={remark} className="text-xs text-muted-foreground">
+              {remark}
+            </p>
+          ))}
+        </div>
+      </SheetHeader>
+      <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
+        {edit === null ? null : (
+          <form
+            className="flex flex-col gap-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              props.onSaveEdit();
+            }}
+          >
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={titleId}>Title</Label>
+              <Input
+                id={titleId}
+                value={edit.title}
+                maxLength={KIN_WORK_TITLE_MAX}
+                autoComplete="off"
+                autoFocus
+                onChange={(event) => props.onEdit({ title: event.target.value })}
+              />
+              {moved?.title == null ? null : (
+                <p className="text-xs text-muted-foreground">It now says: {moved.title}</p>
               )}
             </div>
-          )}
-          {change === null || !(offer.done || offer.menu) || view.leadNote === null ? null : (
-            <p className="text-xs text-muted-foreground">{view.leadNote}</p>
-          )}
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={notesId}>{KIN_TASK_RECORD.brief}</Label>
+              <Textarea
+                id={notesId}
+                rows={4}
+                value={edit.notes}
+                maxLength={KIN_WORK_NOTES_MAX}
+                onChange={(event) => props.onEdit({ notes: event.target.value })}
+              />
+              {moved?.notes == null ? null : (
+                <p className="whitespace-pre-wrap text-xs text-muted-foreground">
+                  {KIN_TASK_RECORD.briefMoved} {moved.notes}
+                </p>
+              )}
+            </div>
+            {props.notice === null ? null : (
+              <KinWorkNoticeLine notice={props.notice} saving={saving} onUndo={props.onUndo} />
+            )}
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={saving}
+                onClick={props.onCancelEdit}
+              >
+                {KIN_WORK_COPY.cancel}
+              </Button>
+              <Button type="submit" size="sm" disabled={saving} aria-busy={saving}>
+                {KIN_WORK_COPY.save}
+              </Button>
+            </div>
+          </form>
+        )}
+        <div className="flex flex-col gap-3">
+          <KinNextStepCard
+            step={step}
+            footnote={
+              step.acts.some((act) => act.id === "done" || act.id === "reopen")
+                ? view.leadNote
+                : null
+            }
+          >
+            {step.acts.length === 0 ? null : (
+              <div className="flex flex-wrap items-center gap-2">
+                {step.acts.map((act, index) => {
+                  const variant = index === 0 ? "default" : "outline";
+                  if (act.id === "openWaiting")
+                    return step.waiting === null ? null : (
+                      <Button
+                        key={act.id}
+                        size="sm"
+                        variant={variant}
+                        onClick={props.onClose}
+                        render={
+                          <Link
+                            to="/kin/$environmentId/$orgId/$chatId"
+                            params={{ environmentId, orgId, chatId: step.waiting.chatId }}
+                            search={{ message: step.waiting.messageId }}
+                          />
+                        }
+                      >
+                        <MessageSquareIcon />
+                        {act.label}
+                      </Button>
+                    );
+                  if (act.id === "give")
+                    return give === null ? null : (
+                      <Menu key={act.id}>
+                        <MenuTrigger
+                          render={<Button size="sm" variant={variant} disabled={saving} />}
+                        >
+                          {act.label}
+                          <ChevronDownIcon />
+                        </MenuTrigger>
+                        <MenuPopup align="start">
+                          <GiveItems
+                            assignees={assignees}
+                            onGive={(to) => give({ type: "give", to: to.principal })}
+                          />
+                        </MenuPopup>
+                      </Menu>
+                    );
+                  if (act.id === "handBack")
+                    return (
+                      <Button
+                        key={act.id}
+                        size="sm"
+                        variant={variant}
+                        disabled={saving}
+                        onClick={() => setHandingBack(true)}
+                      >
+                        <Undo2Icon />
+                        {act.label}
+                      </Button>
+                    );
+                  return (
+                    <Button
+                      key={act.id}
+                      size="sm"
+                      variant={variant}
+                      disabled={saving}
+                      aria-busy={saving && index === 0}
+                      onClick={() => stepAct(act.id)}
+                    >
+                      {act.id === "keep" || act.id === "done" ? <CheckIcon /> : null}
+                      {act.id === "reopen" ? <RotateCcwIcon /> : null}
+                      {act.label}
+                    </Button>
+                  );
+                })}
+              </div>
+            )}
+          </KinNextStepCard>
           {props.notice === null || edit !== null ? null : (
             <KinWorkNoticeLine notice={props.notice} saving={saving} onUndo={props.onUndo} />
           )}
+        </div>
+        <Section title={KIN_TASK_RECORD.details}>
           <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-2 text-sm">
-            <dt className="text-muted-foreground">With</dt>
-            <dd className="flex min-w-0 items-center gap-2">
-              <KinAvatar avatar={view.owner.avatar} size="sm" />
-              <span className="truncate text-foreground">{view.owner.name}</span>
-              {view.owner.retired ? (
-                <span className="shrink-0 text-xs text-muted-foreground">{KIN_RETIRED_LABEL}</span>
-              ) : null}
-            </dd>
-            {view.given === null && view.reason === null ? null : (
+            {askedBy === null ? null : (
+              <DetailPerson label={KIN_TASK_RECORD.askedBy} who={kinRecordWho(askedBy, names)} />
+            )}
+            <DetailPerson
+              label={KIN_TASK_RECORD.heldBy}
+              who={{ name: view.owner.name, avatar: view.owner.avatar }}
+              extra={view.owner.retired ? KIN_RETIRED_LABEL : null}
+            />
+            {view.given === null && (view.reason === null || step.words !== null) ? null : (
               <dd className="col-start-2 -mt-1 flex min-w-0 flex-col gap-0.5 text-xs">
                 {view.given === null ? null : (
                   <span className="text-muted-foreground">{view.given}</span>
                 )}
-                {view.reason === null ? null : (
+                {view.reason === null || step.words !== null ? null : (
                   <span className="text-foreground/80">“{view.reason}”</span>
                 )}
               </dd>
             )}
-            <dt className="text-muted-foreground">Due</dt>
+            {view.owner.principal._tag === "agent" ? (
+              <dd className="col-start-2 -mt-1">
+                <KinWorkLeadChat
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  agentId={view.owner.principal.agentId}
+                  name={view.owner.name}
+                  onOpen={props.onClose}
+                />
+              </dd>
+            ) : null}
+            <dt className="text-muted-foreground">{KIN_TASK_RECORD.due}</dt>
             <dd className="flex min-w-0 items-center gap-2 text-foreground">
               {reword === null || view.closed ? (
-                <span className="first-letter:uppercase">{view.due ?? KIN_WORK_COPY.noDate}</span>
+                <span
+                  className={
+                    view.late
+                      ? "text-destructive-foreground first-letter:uppercase"
+                      : "first-letter:uppercase"
+                  }
+                >
+                  {view.due ?? KIN_WORK_COPY.noDate}
+                </span>
               ) : (
                 <DueMenu view={view} now={props.now} saving={saving} onAct={reword} />
               )}
             </dd>
-            {view.repeat === null && !(change !== null && view.can.repeat === true) ? null : (
+            {choices === null || (!view.can.project && view.project === null) ? null : (
               <>
-                <dt className="text-muted-foreground">{KIN_WORK_REPEAT.label}</dt>
+                <dt className="text-muted-foreground">{KIN_WORK_NEW_COPY.projectLabel}</dt>
                 <dd className="flex min-w-0 items-center gap-2 text-foreground">
-                  {change === null || view.can.repeat !== true || view.closed ? (
-                    <span>{view.repeat?.text ?? KIN_WORK_REPEAT.never}</span>
-                  ) : (
-                    <RepeatMenu view={view} saving={saving} onAct={change} />
-                  )}
+                  <PlaceMenu
+                    label={KIN_WORK_NEW_COPY.projectLabel}
+                    value={view.project}
+                    choices={choices.projects}
+                    saving={saving}
+                    clearable={view.can.clearProject}
+                    onPick={
+                      change === null || !view.can.project
+                        ? null
+                        : (project) => change({ type: "place", project })
+                    }
+                    onOpen={() => {
+                      if (view.project !== null) props.onOpenProject(view.project.key);
+                    }}
+                  />
                 </dd>
               </>
             )}
@@ -580,28 +816,6 @@ function KinWorkItem(
                 </dd>
               </>
             )}
-            {choices === null || (!view.can.project && view.project === null) ? null : (
-              <>
-                <dt className="text-muted-foreground">{KIN_WORK_NEW_COPY.projectLabel}</dt>
-                <dd className="flex min-w-0 items-center gap-2 text-foreground">
-                  <PlaceMenu
-                    label={KIN_WORK_NEW_COPY.projectLabel}
-                    value={view.project}
-                    choices={choices.projects}
-                    saving={saving}
-                    clearable={view.can.clearProject}
-                    onPick={
-                      change === null || !view.can.project
-                        ? null
-                        : (project) => change({ type: "place", project })
-                    }
-                    onOpen={() => {
-                      if (view.project !== null) props.onOpenProject(view.project.key);
-                    }}
-                  />
-                </dd>
-              </>
-            )}
             {view.milestone === null ? null : (
               <>
                 <dt className="text-muted-foreground">{KIN_WORK_MILESTONE.label}</dt>
@@ -618,6 +832,18 @@ function KinWorkItem(
                 </dd>
               </>
             )}
+            {view.repeat === null && !(change !== null && view.can.repeat === true) ? null : (
+              <>
+                <dt className="text-muted-foreground">{KIN_WORK_REPEAT.label}</dt>
+                <dd className="flex min-w-0 items-center gap-2 text-foreground">
+                  {change === null || view.can.repeat !== true || view.closed ? (
+                    <span>{view.repeat?.text ?? KIN_WORK_REPEAT.never}</span>
+                  ) : (
+                    <RepeatMenu view={view} saving={saving} onAct={change} />
+                  )}
+                </dd>
+              </>
+            )}
           </dl>
           <KinWorkAudienceRow
             environmentId={environmentId}
@@ -628,48 +854,7 @@ function KinWorkItem(
             disabled={saving}
             onMark={change === null ? null : (on) => change({ type: "private", private: on })}
           />
-          {view.remarks.map((remark) => (
-            <p key={remark} className="text-xs text-muted-foreground">
-              {remark}
-            </p>
-          ))}
-        </div>
-        {give === null && view.owner.principal._tag !== "agent" ? null : (
-          <div className="flex flex-col items-start gap-2">
-            <div className="flex flex-wrap gap-2">
-              {give === null || view.assignLabel === null ? null : (
-                <GiveMenu
-                  label={view.assignLabel}
-                  assignees={assignees}
-                  busy={saving}
-                  onGive={(to) => give({ type: "give", to: to.principal })}
-                />
-              )}
-              {give === null || !view.takeBack ? null : (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={saving}
-                  onClick={() => give({ type: "takeBack" })}
-                >
-                  {KIN_WORK_COPY.takeBack}
-                </Button>
-              )}
-              {view.owner.principal._tag === "agent" ? (
-                <KinWorkLeadChat
-                  environmentId={environmentId}
-                  orgId={orgId}
-                  agentId={view.owner.principal.agentId}
-                  name={view.owner.name}
-                  onOpen={props.onClose}
-                />
-              ) : null}
-            </div>
-            {give === null || view.assignLabel === null ? null : (
-              <p className="text-xs text-muted-foreground">{KIN_WORK_ASSIGN.leadsHint}</p>
-            )}
-          </div>
-        )}
+        </Section>
         {view.tasks === null ? null : (
           <Section title={KIN_WORK_MILESTONE.tasks}>
             {view.tasks.length === 0 ? (
@@ -690,77 +875,38 @@ function KinWorkItem(
             )}
           </Section>
         )}
-        {edit !== null ? (
-          <form
-            className="flex flex-col gap-3"
-            onSubmit={(event) => {
-              event.preventDefault();
-              props.onSaveEdit();
-            }}
-          >
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor={titleId}>Title</Label>
-              <Input
-                id={titleId}
-                value={edit.title}
-                maxLength={KIN_WORK_TITLE_MAX}
-                autoComplete="off"
-                autoFocus
-                onChange={(event) => props.onEdit({ title: event.target.value })}
-              />
-              {moved?.title == null ? null : (
-                <p className="text-xs text-muted-foreground">It now says: {moved.title}</p>
-              )}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor={notesId}>Notes</Label>
-              <Textarea
-                id={notesId}
-                rows={4}
-                value={edit.notes}
-                maxLength={KIN_WORK_NOTES_MAX}
-                onChange={(event) => props.onEdit({ notes: event.target.value })}
-              />
-              {moved?.notes == null ? null : (
-                <p className="whitespace-pre-wrap text-xs text-muted-foreground">
-                  They now say: {moved.notes}
-                </p>
-              )}
-            </div>
-            {props.notice === null ? null : (
-              <KinWorkNoticeLine notice={props.notice} saving={saving} onUndo={props.onUndo} />
-            )}
-            <div className="flex justify-end gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled={saving}
-                onClick={props.onCancelEdit}
-              >
-                {KIN_WORK_COPY.cancel}
-              </Button>
-              <Button type="submit" size="sm" disabled={saving} aria-busy={saving}>
-                {KIN_WORK_COPY.save}
-              </Button>
-            </div>
-          </form>
-        ) : view.notes === null && reword === null ? null : (
+        {edit !== null ? null : (
           <Section
-            title="Notes"
+            title={KIN_TASK_RECORD.brief}
             action={
               reword === null ? null : (
-                <Button size="xs" variant="ghost" disabled={saving} onClick={props.onStartEdit}>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  disabled={saving}
+                  aria-label="Edit the brief"
+                  onClick={props.onStartEdit}
+                >
                   <PencilIcon />
-                  {KIN_WORK_COPY.edit}
+                  {KIN_TASK_RECORD.edit}
                 </Button>
               )
             }
           >
-            {view.notes === null ? (
-              <p className="text-sm text-muted-foreground">No notes.</p>
-            ) : (
-              <p className="whitespace-pre-wrap text-sm text-foreground">{view.notes}</p>
+            <p
+              className={
+                view.notes === null
+                  ? "text-sm text-muted-foreground"
+                  : "whitespace-pre-wrap wrap-break-word text-sm text-foreground"
+              }
+            >
+              {view.notes ?? KIN_TASK_RECORD.noBrief}
+            </p>
+            {briefBy === null ? null : (
+              <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                {briefBy.avatar === null ? null : <KinAvatar avatar={briefBy.avatar} size="xs" />}
+                {briefBy.name}, {briefBy.when}
+              </p>
             )}
             <KinNotesVersions
               item={props.item}
@@ -771,23 +917,37 @@ function KinWorkItem(
             />
           </Section>
         )}
-        <KinWorkLinks {...props} links={view.links} />
-        <Section title="History">
-          <ol className="flex flex-col gap-1.5">
-            {view.history.map((line) => (
-              <li key={line.key} className="flex gap-3 text-sm">
-                <span className="w-14 shrink-0 text-xs leading-5 text-muted-foreground tabular-nums">
-                  {line.when}
-                </span>
-                <span className="min-w-0 flex-1 text-foreground">{line.text}</span>
-              </li>
-            ))}
-          </ol>
-          {view.historyNote === null ? null : (
-            <p className="text-xs text-muted-foreground">{view.historyNote}</p>
-          )}
-        </Section>
+        <KinTaskActivity
+          environmentId={environmentId}
+          orgId={orgId}
+          itemKey={props.item.key}
+          item={props.item}
+          names={names}
+          now={props.now}
+          note={view.historyNote}
+        />
+        <KinWorkLinks {...props} title={KIN_TASK_RECORD.linked} links={view.links} />
       </div>
+      {!props.canComment || edit !== null ? null : (
+        <div className="px-4 pt-2 pb-4">
+          <KinTaskNoteComposer
+            environmentId={environmentId}
+            orgId={orgId}
+            itemKey={props.item.key}
+          />
+        </div>
+      )}
+      {view.handBackTo === null || change === null ? null : (
+        <KinWorkHandBack
+          environmentId={environmentId}
+          orgId={orgId}
+          itemKey={view.key}
+          to={view.handBackTo}
+          open={handingBack}
+          onOpenChange={setHandingBack}
+          onDone={props.onClose}
+        />
+      )}
     </>
   );
 }
@@ -796,13 +956,15 @@ function KinWorkItem(
 function KinWorkLinks(
   props: KinWorkTarget & {
     readonly links: ReadonlyArray<KinWorkLinkView>;
+    /** A task's reads "Linked", as the phone's does; a list entry's keeps "Links". */
+    readonly title?: string;
     readonly onOpenKey: (key: KinRecordKey) => void;
     readonly onClose: () => void;
   },
 ) {
   if (props.links.length === 0) return null;
   return (
-    <Section title="Links">
+    <Section title={props.title ?? "Links"}>
       <ul className="flex flex-col">
         {props.links.map((link) => (
           <li key={link.key}>
@@ -908,78 +1070,68 @@ function PlaceMenu(props: {
 }
 
 /** Where the task stands, other than done: started, waiting on someone, or not worth doing. */
-function StatusMenu(props: {
+function StatusItems(props: {
   readonly view: KinWorkItemView;
   readonly offer: ReturnType<typeof kinWorkStatusOffer>;
   readonly waitingOn: ReturnType<typeof kinWorkAssignees>;
-  readonly saving: boolean;
   readonly onAct: (action: KinWorkAction) => void;
 }) {
   const { view, offer } = props;
   const people = [...props.waitingOn.people, ...props.waitingOn.leads];
   return (
-    <Menu>
-      <MenuTrigger render={<Button size="sm" variant="outline" disabled={props.saving} />}>
-        {KIN_WORK_COPY.status}
-        <ChevronDownIcon />
-      </MenuTrigger>
-      <MenuPopup align="start">
-        {offer.states.map((choice) => (
-          <MenuItem
-            key={choice.state}
-            disabled={view.state === choice.state}
-            onClick={() => props.onAct({ type: "state", state: choice.state })}
-          >
-            <KinWorkStateIcon state={choice.state} />
-            {choice.label}
-          </MenuItem>
-        ))}
-        {!offer.waiting ? null : (
-          <MenuSub>
-            <MenuSubTrigger>
-              <KinWorkStateIcon state="waiting" />
-              {KIN_WORK_COPY.waitingOn}
-            </MenuSubTrigger>
-            <MenuSubPopup>
-              {people.map((row) => (
-                <MenuItem
-                  key={row.key}
-                  disabled={row.current || row.invited}
-                  onClick={() =>
-                    props.onAct({ type: "state", state: "waiting", waitingOn: row.principal })
-                  }
-                >
-                  <KinAvatar avatar={row.avatar} size="xs" />
-                  <span className="min-w-0 flex-1 truncate">{row.name}</span>
-                  {row.invited ? (
-                    <span className="text-xs text-muted-foreground">Invited</span>
-                  ) : null}
-                </MenuItem>
-              ))}
-              {people.length === 0 ? null : <MenuSeparator />}
+    <>
+      {offer.states.map((choice) => (
+        <MenuItem
+          key={choice.state}
+          disabled={view.state === choice.state}
+          onClick={() => props.onAct({ type: "state", state: choice.state })}
+        >
+          <KinWorkStateIcon state={choice.state} />
+          {choice.label}
+        </MenuItem>
+      ))}
+      {!offer.waiting ? null : (
+        <MenuSub>
+          <MenuSubTrigger>
+            <KinWorkStateIcon state="waiting" />
+            {KIN_WORK_COPY.waitingOn}
+          </MenuSubTrigger>
+          <MenuSubPopup>
+            {people.map((row) => (
               <MenuItem
-                disabled={view.state === "waiting" && view.waitingOn === null}
-                onClick={() => props.onAct({ type: "state", state: "waiting", waitingOn: null })}
+                key={row.key}
+                disabled={row.current || row.invited}
+                onClick={() =>
+                  props.onAct({ type: "state", state: "waiting", waitingOn: row.principal })
+                }
               >
-                {KIN_WORK_COPY.waitingOnNobody}
+                <KinAvatar avatar={row.avatar} size="xs" />
+                <span className="min-w-0 flex-1 truncate">{row.name}</span>
+                {row.invited ? (
+                  <span className="text-xs text-muted-foreground">Invited</span>
+                ) : null}
               </MenuItem>
-            </MenuSubPopup>
-          </MenuSub>
-        )}
-        {!offer.drop ? null : (
-          <>
-            <MenuSeparator />
+            ))}
+            {people.length === 0 ? null : <MenuSeparator />}
             <MenuItem
-              variant="destructive"
-              onClick={() => props.onAct({ type: "state", state: "dropped" })}
+              disabled={view.state === "waiting" && view.waitingOn === null}
+              onClick={() => props.onAct({ type: "state", state: "waiting", waitingOn: null })}
             >
-              <KinWorkStateIcon state="dropped" />
-              {KIN_WORK_COPY.drop}
+              {KIN_WORK_COPY.waitingOnNobody}
             </MenuItem>
-          </>
-        )}
-      </MenuPopup>
-    </Menu>
+          </MenuSubPopup>
+        </MenuSub>
+      )}
+      {!offer.drop ? null : (
+        <MenuItem
+          variant="destructive"
+          onClick={() => props.onAct({ type: "state", state: "dropped" })}
+        >
+          <KinWorkStateIcon state="dropped" />
+          {KIN_WORK_COPY.drop}
+        </MenuItem>
+      )}
+    </>
   );
 }
 
@@ -1098,10 +1250,9 @@ function DueMenu(props: {
   );
 }
 
-function GiveMenu(props: {
-  readonly label: string;
+/** Who the task can go to: agents first, then people; giving to an agent starts it at once. */
+function GiveItems(props: {
   readonly assignees: ReturnType<typeof kinWorkAssignees>;
-  readonly busy: boolean;
   readonly onGive: (to: KinWorkAssignee) => void;
 }) {
   const { assignees } = props;
@@ -1127,17 +1278,15 @@ function GiveMenu(props: {
       </MenuGroup>
     );
   return (
-    <Menu>
-      <MenuTrigger
-        render={<Button size="sm" variant="outline" disabled={props.busy} aria-busy={props.busy} />}
-      >
-        {props.label}
-      </MenuTrigger>
-      <MenuPopup align="start">
-        {group(KIN_WORK_ASSIGN.leads, assignees.leads)}
-        {group(KIN_WORK_ASSIGN.people, assignees.people)}
-      </MenuPopup>
-    </Menu>
+    <>
+      {group(KIN_WORK_ASSIGN.leads, assignees.leads)}
+      {assignees.leads.length === 0 ? null : (
+        <p className="max-w-64 px-2 pb-1.5 text-xs text-muted-foreground">
+          {KIN_WORK_ASSIGN.leadsHint}
+        </p>
+      )}
+      {group(KIN_WORK_ASSIGN.people, assignees.people)}
+    </>
   );
 }
 
