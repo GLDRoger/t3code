@@ -349,42 +349,46 @@ const enabled = (options: { readonly recordsPairings: boolean }) =>
               ),
             ),
             // Signing out a whole device blocks its key, as signing out its active session does.
-            revokeByProofKey: Effect.fn("ProofKeySessions.revokeByProofKey")((thumbprint) =>
-              sql
-                .withTransaction(
-                  Effect.gen(function* () {
-                    const now = yield* DateTime.now;
-                    yield* sql`UPDATE kin_auth_session_keys SET individually_revoked = ${UNCONDITIONAL_BLOCK}, repaired_at = NULL
+            revokeByProofKey: Effect.fn("ProofKeySessions.revokeByProofKey")(
+              (thumbprint, callerSessionId) =>
+                sql
+                  .withTransaction(
+                    Effect.gen(function* () {
+                      const now = yield* DateTime.now;
+                      yield* sql`UPDATE kin_auth_session_keys SET individually_revoked = ${UNCONDITIONAL_BLOCK}, repaired_at = NULL
               WHERE proof_key_thumbprint = ${thumbprint}`;
-                    yield* sql`UPDATE kin_auth_key_repairs SET consumed_at = ${now.epochMilliseconds}
+                      yield* sql`UPDATE kin_auth_key_repairs SET consumed_at = ${now.epochMilliseconds}
               WHERE consumed_at IS NULL AND thumbprint = ${thumbprint}`;
-                    const count = yield* store.revokeByProofKey(thumbprint);
-                    const keyed = yield* sessionsOf(sql`${thumbprint}`);
-                    const linked = yield* revokeLinkedDevices(
-                      sql,
-                      keyed.map((row) => row.session_id),
-                    );
-                    yield* ended(linked.orgs);
-                    yield* sql.afterCommit(
-                      Effect.forEach(linked.signedOut, (id) => removed(id as AuthSessionId), {
-                        discard: true,
-                      }),
-                    );
-                    return count + linked.signedOut.length;
-                  }),
-                )
-                .pipe(
-                  Effect.catchTags({
-                    SqlError: (cause) =>
-                      Effect.fail(
-                        new SessionStore.ProofKeySessionsError({
-                          operation: "revoke",
-                          cause: toPersistenceSqlError("ProofKeySessions.revokeByProofKey")(cause),
+                      const count = yield* store.revokeByProofKey(thumbprint);
+                      const keyed = yield* sessionsOf(sql`${thumbprint}`);
+                      const linked = yield* revokeLinkedDevices(
+                        sql,
+                        keyed.map((row) => row.session_id),
+                        callerSessionId ?? null,
+                      );
+                      yield* ended(linked.orgs);
+                      yield* sql.afterCommit(
+                        Effect.forEach(linked.signedOut, (id) => removed(id as AuthSessionId), {
+                          discard: true,
                         }),
-                      ),
-                  }),
-                  Effect.uninterruptible,
-                ),
+                      );
+                      return count + linked.signedOut.length;
+                    }),
+                  )
+                  .pipe(
+                    Effect.catchTags({
+                      SqlError: (cause) =>
+                        Effect.fail(
+                          new SessionStore.ProofKeySessionsError({
+                            operation: "revoke",
+                            cause: toPersistenceSqlError("ProofKeySessions.revokeByProofKey")(
+                              cause,
+                            ),
+                          }),
+                        ),
+                    }),
+                    Effect.uninterruptible,
+                  ),
             ),
           };
         },

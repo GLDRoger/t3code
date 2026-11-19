@@ -38,7 +38,7 @@ import { ChevronLeftIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 
 import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
-import { searchableSetting } from "../components/settings/settingsSearch";
+import { useSearchableSetting } from "../components/settings/settingsSearch";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -112,6 +112,7 @@ export function KinConnectionsSettings() {
 }
 
 function ConnectionsList(props: Target) {
+  const searchableSetting = useSearchableSetting();
   const { environmentId, orgId } = props;
   const listAtom = kinClient.connections({ environmentId, input: { orgId } });
   const result = useAtomValue(listAtom);
