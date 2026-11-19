@@ -825,6 +825,13 @@ export const KinBudgetLimits = Schema.Struct({
   teammateUnits: Schema.optional(Schema.NullOr(KinBudgetUnits)),
 });
 export type KinBudgetLimits = typeof KinBudgetLimits.Type;
+/** The daily limits Settings offers, smallest first, as multiples of the host's usual one. */
+export const KIN_DAILY_LIMIT_STEPS = [
+  { times: 0.5, label: "Half the usual" },
+  { times: 1, label: "The usual" },
+  { times: 2, label: "Twice the usual" },
+  { times: 5, label: "Five times the usual" },
+] as const;
 export const KinBudget = Schema.Struct({
   orgId: KinOrgId,
   day: Schema.String.check(

@@ -79,6 +79,7 @@ import {
   connectionEverById,
   connectionView,
   liveConnections,
+  pausedRefusal as paused,
   resolveConnection,
   sendAsOf,
   toolsOf,
@@ -168,7 +169,6 @@ export const ASK_CLOSED = {
 export const OFFERED = "The owner will see a card to connect it.";
 const SEVERAL_ACCOUNTS =
   "There are several mail accounts: name one by its id or address. Connection mail on a mail search, inbox list or calendar list reads every one of them (connection google or microsoft reads that provider's). A reply always goes from the account its thread is in, whatever you name. For a new email or event, pick the account and from address by the owner's notes, then by the account earlier mail with that person or client went through; with neither, use the first account listed. The card shows the owner the account and From, and he can switch them there.";
-const paused = (label: string) => `The owner paused ${label}. Only the owner can resume it.`;
 const signedOut = (label: string) =>
   `${label}'s sign-in expired. The owner can sign in again in Settings.`;
 const SIGN_IN_TTL = Duration.minutes(10);
@@ -329,6 +329,7 @@ type AskRow = {
   readonly pinDigest: string;
   readonly payload: string;
   readonly agentId: string;
+  readonly wakeupId: string;
   readonly chatId: string;
   readonly state: string;
   readonly entryRecordId: string | null;
@@ -2574,7 +2575,8 @@ const make = Effect.gen(function* () {
 
   const askRow = (sql: SqlClient.SqlClient, orgId: KinOrgId) => sql`SELECT k.ask_id AS "askId",
       k.connection_id AS "connectionId", k.tool_name AS "toolName", k.pin_digest AS "pinDigest",
-      k.payload_json AS payload, k.agent_id AS "agentId", k.chat_id AS "chatId", k.state,
+      k.payload_json AS payload, k.agent_id AS "agentId", k.wakeup_id AS "wakeupId",
+      k.chat_id AS "chatId", k.state,
       k.entry_record_id AS "entryRecordId", a.owner_person_id AS owner, l.thread_id AS "threadId",
       k.widget_id AS "widgetId", k.reason, k.account, k.sign_in_gen AS "signInGen",
       k.outside_from AS "outsideFrom", k.decided_by AS "decidedBy",
@@ -3134,6 +3136,7 @@ const make = Effect.gen(function* () {
       yield* markQuotesSent(records.value, {
         orgId,
         personId: row.owner,
+        wakeupId: row.wakeupId,
         entryRecordIds: prepared.attachments.flatMap((one) =>
           one.entryRecordId === null ? [] : [one.entryRecordId],
         ),
