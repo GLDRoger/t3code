@@ -52,7 +52,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { KinAwayField } from "./KinAway";
 import { useOpenKinPeopleChat } from "./KinPeopleChat";
-import { kinSettingsSectionIn, useKinSettingTarget } from "./kinSettingsAddress";
+import { kinSettingsSectionIn } from "./kinSettingsAddress";
 import type { KIN_PROFILE_SETTINGS_SEARCH_ITEMS } from "./kinSettingsSearch";
 
 type KinProfileSearchId = (typeof KIN_PROFILE_SETTINGS_SEARCH_ITEMS)[number]["id"];
@@ -374,12 +374,10 @@ function Field(props: {
   readonly target?: string | undefined;
   readonly children: React.ReactNode;
 }) {
-  const targetRef = useKinSettingTarget(props.target);
   return (
     <section
       id={props.target}
       tabIndex={props.target === undefined ? undefined : -1}
-      ref={targetRef}
       className="flex flex-col gap-1"
     >
       <h3 className="text-xs font-medium text-muted-foreground">{props.label}</h3>

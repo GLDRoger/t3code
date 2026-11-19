@@ -43,7 +43,6 @@ import { toastManager } from "../components/ui/toast";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
 import { useKinFormOpen } from "./kinOverlayParts";
-import { useKinSettingTarget } from "./kinSettingsAddress";
 import { useKinWorkDirectory } from "./useKinWork";
 
 /**
@@ -60,7 +59,6 @@ export function KinAwayField(props: {
   readonly target?: string | undefined;
 }) {
   const { profile } = props;
-  const targetRef = useKinSettingTarget(props.target);
   const update = useAtomCommand(kinClient.profileUpdate, { reportFailure: false });
   const [picking, setPicking] = useKinFormOpen();
   const [busy, setBusy] = useState(false);
@@ -83,7 +81,6 @@ export function KinAwayField(props: {
     <section
       id={props.target}
       tabIndex={props.target === undefined ? undefined : -1}
-      ref={targetRef}
       className="flex flex-col gap-1"
     >
       <h3 className="text-xs font-medium text-muted-foreground">{KIN_AWAY.label}</h3>

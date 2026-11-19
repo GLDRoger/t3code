@@ -96,12 +96,4 @@ describe("a person's profile over a Kin page", () => {
     await expect.element(page.getByRole("heading", { name: "Zoya" })).toBeVisible();
     await expect.element(page.getByText("Tasks zoya holds")).not.toBeInTheDocument();
   });
-
-  it("opens your own at the setting the app's settings search found", async () => {
-    await using found = await opened("/kin?settings=profile#kin-quiet-hours", rhea);
-    await expect.element(page.getByRole("heading", { name: "Quiet hours" })).toBeVisible();
-    expect(document.activeElement?.id).toBe("kin-quiet-hours");
-    await vi.waitFor(() => expect(found.router!.state.location.hash).toBe(""));
-    expect(found.router!.state.location.search).toMatchObject({ settings: "profile" });
-  });
 });

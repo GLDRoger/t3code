@@ -92,7 +92,9 @@ import {
   kinSettingsFindIn,
   kinSettingsSectionIn,
   openKinSettings,
+  useKinSettingLanding,
 } from "./kinSettingsAddress";
+import { kinSettingsPageHolding } from "./kinSettingsSearch";
 import { rememberKinTeammate } from "./kinTeammateMark";
 import { KinTeamView } from "./KinTeamView";
 import { useKinHost, useKinWorkingAgents } from "./useKinHost";
@@ -175,9 +177,15 @@ export function KinSettingsMoved(props: {
   readonly fallback: React.ReactNode;
 }) {
   const target = kinNewLeadTarget(useKinHost());
+  const hash = useLocation({ select: (location) => location.hash.replace(/^#/, "") });
+  // As the address named it on arrival; the redirect itself takes the hash away.
+  const [found] = useState(hash);
   if (target === null) return props.fallback;
   // The hash is the setting a settings search found, so Settings opens at it.
-  return <Navigate to="/kin" search={{ settings: props.page }} hash replace />;
+  const settings = kinSettingsPageHolding(props.page, found);
+  return (
+    <Navigate to="/kin" search={found === "" ? { settings } : { settings, at: found }} replace />
+  );
 }
 
 /** Settings, open over the Kin page on screen while the address names a section. */
@@ -207,6 +215,7 @@ function KinSettingsModal(props: { readonly target: KinSettingsTarget; readonly 
   const page = kinSettingsPageOf(wanted, groups);
   const waiting = !atIndex && page !== wanted && !known;
   const show = (section: KinSettingsPage | "") => openKinSettings(router.history, section);
+  const landing = useKinSettingLanding();
   return (
     <AppRouteModal label={KIN_SETTINGS_TITLE} onClose={() => closeKinSettings(router.history)}>
       <div className="relative flex min-h-0 flex-1">
@@ -253,7 +262,7 @@ function KinSettingsModal(props: { readonly target: KinSettingsTarget; readonly 
               <AppRouteModalClose />
             </div>
           </header>
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <div ref={landing} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
             {waiting ? null : <KinSettingsPageBody page={page} target={target} />}
           </div>
         </div>
