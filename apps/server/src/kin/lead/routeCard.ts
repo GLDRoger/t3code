@@ -48,10 +48,6 @@ export type TeammateAsk = {
   readonly personName: string;
 };
 
-/** Kin's line in the asking chat when their request went to `agent`. */
-export const forwardedLine = (agent: string) =>
-  `Passed on to ${agent}, who answers you in your chat with it.`;
-
 const LABEL_MAX = 80;
 const NOT_THIS_TIME = "Not this time";
 /** The card's button and the line under it, for each answer: written by Kin. */
@@ -125,7 +121,7 @@ export const forward = Effect.fn("KinRouteCard.forward")(function* (input: {
     chatId: message.chatId,
     audience: "chat",
     messageId: KinMessageId.make(`kin-forwarded-${hashOf(key)}`),
-    body: forwardedLine(input.to.name),
+    body: `Passed on to ${input.to.name}, who answers you in your chat with it.`,
     silent: true,
   });
   return eventId;
