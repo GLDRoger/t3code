@@ -338,12 +338,17 @@ export const setProfile = Effect.fn("KinCompanyProfile.set")(function* (
           rev = kin_company_profile.rev + 1, updated_at = excluded.updated_at,
           updated_by_kind = excluded.updated_by_kind, updated_by_id = excluded.updated_by_id`;
       // Lists made while waiting took no currency of their own (`registers.ts` `listCurrency`).
-      if (pending && !stillPending)
-        yield* sql`UPDATE kin_registers SET definition_json = json_remove(
-            json_set(definition_json, '$.currency', ${next.homeCurrency}), '$.currencyPending'),
-            rev = rev + 1
-          WHERE org_id = ${orgId} AND json_extract(definition_json, '$.currencyPending') = 1`;
-      yield* (yield* KinRefreshObserver).touch(orgId, "company");
+      const rewritten =
+        pending && !stillPending
+          ? yield* sql`UPDATE kin_registers SET definition_json = json_remove(
+                json_set(definition_json, '$.currency', ${next.homeCurrency}), '$.currencyPending'),
+                rev = rev + 1
+              WHERE org_id = ${orgId} AND json_extract(definition_json, '$.currencyPending') = 1
+              RETURNING register_id`
+          : [];
+      const observer = yield* KinRefreshObserver;
+      yield* observer.touch(orgId, "company");
+      if (rewritten.length > 0) yield* observer.touch(orgId, "workLists");
       return yield* readProfile(orgId);
     }),
   );

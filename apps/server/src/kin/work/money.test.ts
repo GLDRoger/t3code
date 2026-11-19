@@ -255,6 +255,17 @@ const seed = Effect.gen(function* () {
     VALUES (${lead}, ${orgId}, 'Lead lead', 0, 'lead-thread', '{}', '[]', 'lead-chat')`;
 });
 
+/** The choices a list's Paid with field offers. */
+const paidWith = (list: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const [row] = yield* sql<{ choices: string }>`SELECT json_extract(field.value, '$.choices')
+        AS choices
+      FROM kin_registers r, json_each(json_extract(r.definition_json, '$.fields')) field
+      WHERE r.register_id = ${list} AND json_extract(field.value, '$.key') = 'paidWith'`;
+    return JSON.parse(row!.choices) as ReadonlyArray<string>;
+  });
+
 /** Proposes a list in one turn and creates it from the owner's yes in the next. */
 const defined = (n: number, input: Omit<typeof LeadMoney.DefineInput.Type, "sourceEventId">) =>
   Effect.gen(function* () {
@@ -2373,6 +2384,8 @@ describe("the company profile", () => {
           { list: "invoices", currency: "GBP", waiting: null },
         ],
       );
+      // Asked for while waiting, Expenses has no country's ways to pay: no UPI in the UK.
+      assert.deepStrictEqual(yield* paidWith("expenses"), ["card", "bank", "cash"]);
       // Once chosen, it never waits again, even saved with no country.
       yield* OwnerMoney.setCompanyProfile(people, { orgId, rev: yield* rev(), country: null });
       assert.isFalse(yield* countryNeeded(orgId));
@@ -2387,6 +2400,7 @@ describe("the company profile", () => {
           updated_by_kind, updated_by_id)
         VALUES (${orgId}, ${yield* newCompanyProfileJson}, 1, 0, 'person', ${ownerId})`;
       yield* defined(2, { template: "dates" });
+      yield* defined(6, { template: "expenses" });
       // A code that names no country is refused, and the company still waits.
       const unknown = OwnerMoney.setCompanyProfile(people, { orgId, rev: 0, country: "XX" });
       assert.strictEqual(
@@ -2402,7 +2416,7 @@ describe("the company profile", () => {
         financialYearStartMonth: 1,
         tax: null,
       });
-      const renewals = yield* turn(4, "Track the domain renewal");
+      const renewals = yield* turn(8, "Track the domain renewal");
       yield* LeadWork.create(scope, {
         sourceEventId: renewals,
         records: [
@@ -2415,10 +2429,15 @@ describe("the company profile", () => {
         [{ minor: 9_000, currency: "JPY" }],
       );
       assert.deepStrictEqual(
-        yield* sql`SELECT json_extract(definition_json, '$.currency') AS currency
-          FROM kin_registers WHERE register_id = 'dates'`,
-        [{ currency: "JPY" }],
+        yield* sql`SELECT register_id AS list, json_extract(definition_json, '$.currency') AS currency
+          FROM kin_registers WHERE built_in = 0 ORDER BY register_id`,
+        [
+          { list: "dates", currency: "JPY" },
+          { list: "expenses", currency: "JPY" },
+        ],
       );
+      // Made while waiting, it keeps the ways any company pays, not the placeholder's UPI.
+      assert.deepStrictEqual(yield* paidWith("expenses"), ["card", "bank", "cash"]);
     }).pipe(Effect.provide(layer)),
   );
 

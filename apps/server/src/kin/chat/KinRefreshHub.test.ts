@@ -201,6 +201,32 @@ describe("KinRefreshHub", () => {
       }).pipe(Effect.scoped, Effect.provide(paired)),
   );
 
+  it.effect("moves the lists a new company made while waiting when its country is saved", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const { owner: me } = yield* KinIdentity;
+      yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+          updated_by_kind, updated_by_id)
+        VALUES (${me.orgId}, ${yield* newCompanyProfileJson}, 1, 0, 'person', ${me.personId})`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json, rev)
+        VALUES (${me.orgId}, 'expenses', 'Expenses', 'EXP', 0, 0,
+          ${JSON.stringify({ currency: "INR", currencyPending: true })}, 1)`;
+      const { queue, first } = yield* watch(me.orgId);
+      yield* setProfile(
+        me.orgId,
+        { _tag: "person", personId: me.personId },
+        { country: "GB" },
+        undefined,
+      );
+      yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+      assert.deepInclude(yield* Queue.take(queue), {
+        company: (first.company ?? 0) + 1,
+        workLists: (first.workLists ?? 0) + 1,
+      });
+    }).pipe(Effect.scoped, Effect.provide(paired)),
+  );
+
   it.effect(
     "refuses to start Kin's services on the no-op observer, which would drop every notice",
     () =>

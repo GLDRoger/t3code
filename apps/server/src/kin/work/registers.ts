@@ -256,9 +256,15 @@ const DATE_CATEGORIES = ["income tax", "company", "payroll", "renewal", "other"]
  * its currency's region), and its Dates start with its country's filings. Lists already made
  * keep their choices.
  */
-const presetFor = (id: PresetId, money: Pick<CompanyMoney, "homeCurrency" | "country">) => {
+const presetFor = (
+  id: PresetId,
+  money: Pick<CompanyMoney, "homeCurrency" | "country">,
+  countryPending = false,
+) => {
   const preset = PRESETS[id];
-  const paidWith = companyRegion(money.homeCurrency)?.paidWith ?? NEUTRAL_PAID_WITH;
+  // A company still waiting on its country has only the placeholder's, so it gets no country's ways.
+  const paidWith =
+    (countryPending ? undefined : companyRegion(money.homeCurrency)?.paidWith) ?? NEUTRAL_PAID_WITH;
   const filings = regionOf(money.country)?.filings ?? [];
   return {
     ...preset,
@@ -843,7 +849,7 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
   const { pending, ...money } = yield* companyMoneyState(orgId);
   const home = money.homeCurrency;
   const preset = (PRESET_IDS as ReadonlyArray<string>).includes(named)
-    ? presetFor(named as PresetId, money)
+    ? presetFor(named as PresetId, money, pending)
     : undefined;
   if (preset === undefined && (isBuiltIn(named) || named === "docs"))
     return yield* invalid(`${input.name ?? named} is one of Kin's own lists already.`);
@@ -1166,15 +1172,21 @@ export const listOrPreset = Effect.fn("KinRegisters.listOrPreset")(function* (
   id: string,
   now: number,
 ) {
+  const sql = yield* SqlClient.SqlClient;
   const existing = yield* listDef(orgId, id);
   if (existing !== undefined || !isRecipeList(id)) return existing;
-  const proposal = yield* proposalFor(orgId, { template: id as PresetId });
-  yield* defineList(orgId, proposal, now).pipe(
-    // Two first quotes at once: the other made it, which is the same list.
-    Effect.catchIf(
-      (error) => isChatError(error) && error.reason === "conflict",
-      () => Effect.void,
-    ),
+  // One transaction, so a country saved meanwhile either rewrites this list or comes after it.
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const proposal = yield* proposalFor(orgId, { template: id as PresetId });
+      yield* defineList(orgId, proposal, now).pipe(
+        // Two first quotes at once: the other made it, which is the same list.
+        Effect.catchIf(
+          (error) => isChatError(error) && error.reason === "conflict",
+          () => Effect.void,
+        ),
+      );
+      return yield* listDef(orgId, id);
+    }),
   );
-  return yield* listDef(orgId, id);
 });
