@@ -1319,11 +1319,6 @@ function linkView(
   }
 }
 
-/**
- * "Client stays Kestrel" when the task's last change moved it to another project and its client,
- * being neither project's, stayed (the host moves one that was the old project's). `clientOf` is
- * each project's client key by project key, from the pickers' rows; an unknown project says nothing.
- */
 /** The clients or projects whose name holds every word typed, in the order given. */
 export function kinWorkRefsMatching<R extends KinWorkRef>(
   refs: ReadonlyArray<R>,
@@ -1340,6 +1335,12 @@ export function kinWorkRefsMatching<R extends KinWorkRef>(
   });
 }
 
+/**
+ * "Client stays Kestrel" when the task's last change moved it to another project and its client,
+ * being neither project's, stayed (the host moves one that was the old project's); and the line
+ * for a new client that took it off another client's project, as the host does. `clientOf` is
+ * each project's client key by project key, from the pickers' rows; an unknown project says nothing.
+ */
 export function kinWorkClientStays(
   item: Pick<KinRecordDetail, "party" | "project" | "changes">,
   clientOf: ReadonlyMap<string, string | null>,
@@ -1350,6 +1351,16 @@ export function kinWorkClientStays(
     null,
   );
   const moved = last?.fields.find((field) => field.field === "project");
+  if (
+    party !== undefined &&
+    project === undefined &&
+    moved?.to === null &&
+    moved.from !== null &&
+    last?.fields.some((field) => field.field === "party") === true
+  ) {
+    const was = clientOf.get(moved.from);
+    return was == null || was === party.key ? null : KIN_WORK_NEW_COPY.projectLeft(moved.from);
+  }
   if (party === undefined || project === undefined || last === null || moved === undefined)
     return null;
   if (moved.to !== project.key || last.fields.some((field) => field.field === "party")) return null;
@@ -1737,6 +1748,8 @@ export const KIN_WORK_NEW_COPY = {
   noMatch: "Nothing by that name.",
   /** A task moved to another project keeps a client that is neither project's. */
   clientStays: (name: string) => `Client stays ${name}`,
+  /** A task given another client left its project, which is a different client's. */
+  projectLeft: (key: string) => `No longer on ${key}: that project is another client's`,
 };
 
 /** What happens next, said before the owner commits to it. */
