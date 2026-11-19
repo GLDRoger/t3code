@@ -9,6 +9,7 @@ import {
   kinTaskGroupedChip,
   kinTaskLine,
   kinTaskStep,
+  kinTaskStepStatusShown,
   kinTasksByMove,
   kinTasksGroupedBy,
   type KinTaskLine,
@@ -444,7 +445,7 @@ export function KinWorkTaskList(
                       quietNoDate: shown !== null,
                     })}
                     step={shown}
-                    status={steps.status[record.key] ?? null}
+                    status={kinTaskStepStatusShown(steps.status[record.key], shown)}
                     saving={changed.pending[item.key] !== undefined}
                     selected={item.key === props.openKey}
                     onOpen={() => props.onOpen(record.key)}

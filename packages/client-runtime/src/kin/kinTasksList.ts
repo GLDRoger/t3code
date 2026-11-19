@@ -165,6 +165,20 @@ export type KinTaskStep =
 
 const QUESTION_BUTTONS = 3;
 
+/**
+ * What a row's step did stands for the card it answered (`widgetId`): once the list reads a newer
+ * card for the row, such as the same mail back after a failed send, the row offers that one.
+ */
+export function kinTaskStepStatusShown<S extends object>(
+  status: S | undefined,
+  step: KinTaskStep | null,
+): S | null {
+  if (status === undefined) return null;
+  const answered = "widgetId" in status ? status.widgetId : undefined;
+  const card = step === null || step.kind === "nudge" ? undefined : step.card.widgetId;
+  return answered === undefined || card === undefined || card === answered ? status : null;
+}
+
 export function kinTaskStep(
   record: KinRecord,
   move: KinWorkRowMove | null,

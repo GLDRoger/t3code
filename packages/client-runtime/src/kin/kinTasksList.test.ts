@@ -21,6 +21,7 @@ import {
   kinNeedsYouCount,
   kinTaskLine,
   kinTaskStep,
+  kinTaskStepStatusShown,
   kinTasksByMove,
   kinTaskFilterProjects,
   kinTasksGroupedBy,
@@ -318,6 +319,25 @@ describe("kinTaskStep", () => {
         line: expected.line,
         nudged: expected.nudged,
       });
+  });
+});
+
+describe("kinTaskStepStatusShown", () => {
+  it("keeps a step's outcome only while the row still offers the card it answered", () => {
+    const sent = { kind: "done", text: "Sent to Orbit Dental", widgetId: "w-1" } as const;
+    const step = (widgetId: string) =>
+      kinTaskStep(
+        row("A", { owner: chief }),
+        { key: "A", group: "needsYou", card: card({ widgetId: KinWidgetId.make(widgetId) }) },
+        names,
+        now,
+      );
+    expect(kinTaskStepStatusShown(sent, step("w-1"))).toBe(sent);
+    expect(kinTaskStepStatusShown(sent, null)).toBe(sent);
+    // The send failed and the same mail came back on a fresh card: the row offers that one.
+    expect(kinTaskStepStatusShown(sent, step("w-2"))).toBeNull();
+    const busy = { kind: "busy", id: "confirm" } as const;
+    expect(kinTaskStepStatusShown(busy, step("w-2"))).toBe(busy);
   });
 });
 

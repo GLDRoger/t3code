@@ -190,21 +190,29 @@ const showOutcome = Effect.fn("KinCardAnswers.outcome")(function* (
         .pipe(Effect.as(false)),
     ),
   );
+  if (state === "sending") return;
   // Another card for the same mail takes the warning that this try may have gone, or loses it.
-  if (state !== "sending") {
-    const redrawn = yield* connections.openWarnings(orgId, widgetId);
-    for (const one of redrawn)
-      yield* chat
-        .setSendCard({ ...one, orgId, widgetId: KinWidgetId.make(one.widgetId) })
-        .pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Kin couldn't redraw a card for the same mail", { cause }),
-          ),
-        );
-    if (redrawn.length > 0) yield* tasksReread(orgId);
-  }
-  if (!told || fresh === undefined) return;
-  const again = yield* connections.freshAsk(orgId, fresh, now);
+  const redrawn = yield* connections.openWarnings(orgId, widgetId);
+  for (const one of redrawn)
+    yield* chat
+      .setSendCard({ ...one, orgId, widgetId: KinWidgetId.make(one.widgetId) })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't redraw a card for the same mail", { cause }),
+        ),
+      );
+  // A Tasks row offers its entry's open card: this one is answered, and the mail may follow.
+  yield* drawAgain(orgId, told ? fresh : undefined, now).pipe(Effect.ensuring(tasksReread(orgId)));
+});
+
+const drawAgain = Effect.fn("KinCardAnswers.drawAgain")(function* (
+  orgId: KinOrgId,
+  fresh: StaleAsk | undefined,
+  now: number,
+) {
+  if (fresh === undefined) return;
+  const chat = yield* KinChatService;
+  const again = yield* (yield* KinConnections).freshAsk(orgId, fresh, now);
   if (again === undefined) return;
   const drawn = yield* chat.ask(again.agent, {
     chatId: again.chatId,

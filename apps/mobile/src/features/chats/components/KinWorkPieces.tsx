@@ -273,8 +273,8 @@ export function KinWorkTaskRow(props: {
 /** What a row's step is doing: on its way, done in the host's words, or refused with its reason. */
 export type KinTaskStepStatus =
   | { readonly kind: "busy"; readonly id: string }
-  | { readonly kind: "done"; readonly text: string }
-  | { readonly kind: "failed"; readonly text: string };
+  | { readonly kind: "done"; readonly text: string; readonly widgetId?: string }
+  | { readonly kind: "failed"; readonly text: string; readonly widgetId?: string };
 
 const LEAD_TONE = {
   late: "text-danger-foreground",
