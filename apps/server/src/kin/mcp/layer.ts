@@ -12,6 +12,10 @@ import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as AgentSession from "../lead/AgentSession.ts";
 import * as KinLead from "../lead/layer.ts";
+import * as DevClock from "../DevClock.ts";
+import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
+import { ThreadLaunchService } from "../../orchestration-v2/ThreadLaunchService.ts";
+import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -110,6 +114,14 @@ export const transport = (base: typeof McpHttpServer.layer) =>
               Layer.provide(Layer.succeedContext(kin.services.value)),
             ),
             KinLead.layerMcp.pipe(
+              // Agents' turns run on Kin's clock; T3's orchestration keeps the one its worker reads.
+              Layer.provide(
+                Layer.mergeAll(
+                  DevClock.realClockFor(OrchestratorV2),
+                  DevClock.realClockFor(ThreadLaunchService),
+                  DevClock.realClockFor(ThreadManagementService),
+                ),
+              ),
               Layer.provide(Layer.succeedContext(kin.services.value)),
               Layer.provide(SqlitePersistence.layerConfig),
             ),

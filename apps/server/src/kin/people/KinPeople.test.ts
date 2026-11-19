@@ -13,6 +13,7 @@ import {
   ThreadId,
   type KinChatId,
 } from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -1050,6 +1051,29 @@ it.effect(
       });
       assert.deepInclude(switched, { clients: true, docs: false, money: true, leads: [] });
       assert.deepEqual(yield* placesOf(raviSession), { clients: true, docs: false, money: true });
+      // Every kind is told the host's public address for the links it makes, and nothing while it has none.
+      const coOwner = yield* service.setAccess(ownerSession, {
+        orgId,
+        personId: meera.person.personId,
+        access: "co_owner",
+      });
+      assert.equal(coOwner.access, "co_owner");
+      const meeraSession = yield* sessions.verify(meera.accessToken);
+      const addressed = ConfigProvider.layer(
+        ConfigProvider.fromUnknown({ KIN_PUBLIC_URL: "https://kin.ambermill.example.test" }),
+      );
+      for (const session of [ownerSession, meeraSession, raviSession]) {
+        assert.equal(
+          (yield* service.accessMe(session, { orgId }).pipe(Effect.provide(addressed))).publicUrl,
+          "https://kin.ambermill.example.test",
+        );
+        assert.notProperty(yield* service.accessMe(session, { orgId }), "publicUrl");
+      }
+      yield* service.setAccess(ownerSession, {
+        orgId,
+        personId: meera.person.personId,
+        access: "member",
+      });
       // H12: a member names the team, as their profiles do; who may do what stays the owner's.
       const named = yield* service.list(raviSession, orgId);
       assert.includeMembers(
