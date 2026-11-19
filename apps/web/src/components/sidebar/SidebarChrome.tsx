@@ -1,4 +1,10 @@
-import { ArrowLeftIcon, ArrowRightIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  ArrowRightIcon,
+  ChartNoAxesColumnIcon,
+  CodeIcon,
+  SettingsIcon,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { memo } from "react";
 import { Link, useLocation, useNavigate, useRouter } from "@tanstack/react-router";
@@ -33,7 +39,8 @@ import {
 } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPreferences";
-import { kinListAt, kinListShownAt } from "../../kin/kinListSwitch";
+import { KIN_CODING_ENTRY, kinCodingEntryShown } from "@t3tools/client-runtime/kin/kinListSwitch";
+import { kinListAt, kinListShownAt, kinListSwitchHref } from "../../kin/kinListSwitch";
 import { openKinSettings } from "../../kin/kinSettingsAddress";
 import { isChatOnlySession } from "../../environments/primary";
 import { useKinListSwitch } from "../../kin/useKinListSwitch";
@@ -265,6 +272,10 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   });
   const pullRequestsSupported = usePullRequestsSupported();
   const issuesSupported = useIssuesSupported();
+  const coding = kinCodingEntryShown({
+    current: overKin ? "kin" : "threads",
+    chatOnly: isChatOnlySession(),
+  });
   const closeMobileSidebar = () => {
     if (isMobile) {
       setOpenMobile(false);
@@ -294,6 +305,11 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     void navigate({ to: "/usage" });
   };
 
+  const handleCodingClick = () => {
+    closeMobileSidebar();
+    void navigate({ href: kinListSwitchHref("kin") });
+  };
+
   const handleBackClick = () => {
     closeMobileSidebar();
     void navigateToMainApp();
@@ -315,6 +331,13 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             label="Settings"
             onClick={handleSettingsClick}
           />
+          {coding ? (
+            <SidebarUtilityItem
+              icon={<CodeIcon />}
+              label={KIN_CODING_ENTRY}
+              onClick={handleCodingClick}
+            />
+          ) : null}
           {/* Pull requests, issues and usage are about coding threads, which Kin doesn't offer. */}
           {pullRequestsSupported && !overKin ? (
             <SidebarUtilityItem
