@@ -64,6 +64,7 @@ import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { abortChatTurns } from "../lead/Audience.ts";
+import { closeUngranted } from "../lead/directClose.ts";
 import { onPersonRemoved } from "../lead/ChatSharing.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
@@ -1250,6 +1251,12 @@ export const make = Effect.gen(function* () {
                 )),
               );
             }
+          // A member writes only to the leads they were let message; after the aborts, so
+          // what those turns held is dropped too, not queued again.
+          if (before === "co_owner" && input.access === "member")
+            yield* closeUngranted({ repo, hub, presence }, input.orgId, input.personId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
           if (turns.length > 0 && Option.isSome(stop))
             yield* sql.afterCommit(
               stop.value.abortTurns(

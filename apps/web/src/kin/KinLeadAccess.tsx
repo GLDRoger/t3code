@@ -7,12 +7,11 @@ import {
   KIN_AGENTS_COPY,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import {
-  kinOwnerLevel,
-  type EnvironmentId,
-  type KinLeadAccessResult,
-  type KinLeadProfile,
-  type KinPersonId,
+import type {
+  EnvironmentId,
+  KinLeadAccessResult,
+  KinLeadProfile,
+  KinPersonId,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -75,13 +74,18 @@ export function KinLeadAccess(props: {
   const allowed = read?.people ?? null;
   // The team agent is everyone's: no one is added or removed there.
   const everyone = read?.everyone === true;
-  const org = Option.getOrNull(AsyncResult.value(people))?.people ?? [];
-  const candidates = kinLeadAccessCandidates(everyone ? [] : org, allowed ?? [], props.personId);
-  const coOwner = (personId: string | undefined) =>
-    kinOwnerLevel(org.find((one) => one.personId === personId)?.access);
+  const candidates = kinLeadAccessCandidates(
+    everyone ? [] : (Option.getOrNull(AsyncResult.value(people))?.people ?? []),
+    allowed ?? [],
+    props.personId,
+  );
 
   const change = async (
-    person: { readonly personId: KinPersonId; readonly displayName: string },
+    person: {
+      readonly personId: KinPersonId;
+      readonly displayName: string;
+      readonly ownerLevel?: boolean | undefined;
+    },
     on: boolean,
   ) => {
     if (busy) return;
@@ -93,7 +97,7 @@ export function KinLeadAccess(props: {
     if (AsyncResult.isSuccess(result)) {
       appAtomRegistry.refresh(accessAtom);
       setNote({
-        text: kinLeadAccessChanged(person.displayName, lead.name, on, coOwner(person.personId)),
+        text: kinLeadAccessChanged(person.displayName, lead.name, on, person.ownerLevel),
         failed: false,
       });
       return;
@@ -114,7 +118,7 @@ export function KinLeadAccess(props: {
         </p>
       ) : everyone || allowed.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          {everyone ? KIN_LEAD_EVERYONE : "Only you."}
+          {everyone ? KIN_LEAD_EVERYONE : KIN_AGENTS_COPY.onlyOwners}
         </p>
       ) : (
         <ul className="flex flex-col gap-1">
@@ -183,7 +187,7 @@ export function KinLeadAccess(props: {
               {KIN_AGENTS_COPY.removeAccess(
                 removing?.displayName ?? "",
                 lead.name,
-                coOwner(removing?.personId),
+                removing?.ownerLevel,
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>

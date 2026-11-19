@@ -1491,6 +1491,16 @@ describe("KinActionExecutor", () => {
       "kin/lead/routeCard.ts",
       "kin/people/rpcHandlers.ts",
     ]);
+    // Closing a person's chat with a lead only takes writing away. It runs inside an owner-checked
+    // revoke or team-agent switch, and the owner's own co-owner-to-member change.
+    assert.deepStrictEqual(importers("kin/lead/directClose.ts"), [
+      "kin/lead/KinLeadProvision.ts",
+      "kin/people/KinPeople.ts",
+    ]);
+    assert.match(
+      source("kin/people/KinPeople.ts"),
+      /if \(!isOwnerHimself\(identity\.owner, caller\.personId\)\) return yield\* ownerOnly;[\s\S]*if \(before === "co_owner" && input\.access === "member"\)\s*yield\* closeUngranted\(/,
+    );
     // A route card grants only on a tap, as the owner-level person who tapped. `kin_hand_off`
     // imports this file to draw the card and cannot reach the grant.
     const routeCard = source("kin/lead/routeCard.ts");

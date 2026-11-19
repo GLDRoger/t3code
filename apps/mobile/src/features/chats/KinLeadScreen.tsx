@@ -5,7 +5,6 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import {
   EnvironmentId,
   KinOrgId,
-  kinOwnerLevel,
   type KinChatId,
   type KinChatSummary,
   type KinLeadAccessResult,
@@ -83,6 +82,7 @@ const kinSentenceParts = (parts: ReadonlyArray<string | null>) =>
   parts.filter((part) => part !== null).join(" · ") || null;
 
 type AccessResult = AsyncResult.AsyncResult<KinLeadAccessResult, unknown>;
+type AccessPerson = KinLeadAccessResult["people"][number];
 type PeopleResult = AsyncResult.AsyncResult<KinPeopleListResult, unknown>;
 // Read only by a session that may change who messages a lead; others ask the host nothing.
 const noAccessAtom: Atom.Atom<AccessResult> = Atom.make(AsyncResult.initial());
@@ -428,12 +428,18 @@ function KinLeadAccess(props: {
   const allowed = read?.people ?? null;
   // The team agent is everyone's: no one is added or removed there.
   const everyone = read?.everyone === true;
-  const org = Option.getOrNull(AsyncResult.value(people))?.people ?? [];
-  const candidates = kinLeadAccessCandidates(everyone ? [] : org, allowed ?? [], personId);
-  const coOwner = (id: string) => kinOwnerLevel(org.find((one) => one.personId === id)?.access);
+  const candidates = kinLeadAccessCandidates(
+    everyone ? [] : (Option.getOrNull(AsyncResult.value(people))?.people ?? []),
+    allowed ?? [],
+    personId,
+  );
 
   const change = async (
-    person: { readonly personId: KinPersonId; readonly displayName: string },
+    person: {
+      readonly personId: KinPersonId;
+      readonly displayName: string;
+      readonly ownerLevel?: boolean | undefined;
+    },
     on: boolean,
   ) => {
     if (busy !== null) return;
@@ -445,7 +451,7 @@ function KinLeadAccess(props: {
     if (AsyncResult.isSuccess(result)) {
       appAtomRegistry.refresh(accessAtom);
       setNote({
-        text: kinLeadAccessChanged(person.displayName, lead.name, on, coOwner(person.personId)),
+        text: kinLeadAccessChanged(person.displayName, lead.name, on, person.ownerLevel),
         failed: false,
       });
       return;
@@ -467,14 +473,10 @@ function KinLeadAccess(props: {
       { text: "Cancel", style: "cancel" as const },
     ]);
 
-  const askRemove = (person: { readonly personId: KinPersonId; readonly displayName: string }) =>
+  const askRemove = (person: AccessPerson) =>
     Dialog.confirm({
       title: `Remove ${person.displayName}?`,
-      message: KIN_AGENTS_COPY.removeAccess(
-        person.displayName,
-        lead.name,
-        coOwner(person.personId),
-      ),
+      message: KIN_AGENTS_COPY.removeAccess(person.displayName, lead.name, person.ownerLevel),
       confirmText: "Remove",
       destructive: true,
       onConfirm: () => void change(person, false),
@@ -500,7 +502,7 @@ function KinLeadAccess(props: {
       ) : everyone || allowed.length === 0 ? (
         <View className="px-4 py-3">
           <Text textRole="body" className="text-foreground-muted">
-            {everyone ? KIN_LEAD_EVERYONE : "Only you."}
+            {everyone ? KIN_LEAD_EVERYONE : KIN_AGENTS_COPY.onlyOwners}
           </Text>
         </View>
       ) : (
