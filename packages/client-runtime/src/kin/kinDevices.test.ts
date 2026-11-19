@@ -88,15 +88,30 @@ describe("kinRemoveDeviceCopy", () => {
   });
 
   it.each([
-    ["no key", undefined, null],
-    ["none left", 0, null],
-    ["one key", 1, "This also ends the coding-agent key made on it."],
-    ["two keys", 2, "This also ends the coding-agent keys made on it."],
-  ] as const)("says the keys it ends only when it made some: %s", (_name, keysMade, sentence) => {
-    const phone = device("phone", keysMade === undefined ? {} : { keysMade });
-    const detail = kinRemoveDeviceCopy(phone, true, [phone], now).detail;
-    expect(detail.match(/This also ends .*?\./)?.[0] ?? null).toBe(sentence);
-  });
+    ["no key", undefined, undefined, null],
+    ["none left", 0, 0, null],
+    ["one key", 1, undefined, "This also ends the coding-agent key made on it."],
+    ["two keys", 2, 0, "This also ends the coding-agent keys made on it."],
+    ["one below", 0, 1, "This also ends the coding-agent key made on these devices."],
+    ["here and below", 1, 2, "This also ends the coding-agent keys made on these devices."],
+  ] as const)(
+    "says the keys it ends only when it made some: %s",
+    (_name, keysMade, belowMade, sentence) => {
+      const phone = device("phone", keysMade === undefined ? {} : { keysMade });
+      const laptop = device("laptop", {
+        linkedFrom: phone.sessionId,
+        ...(belowMade === undefined ? {} : { keysMade: belowMade }),
+      });
+      // Run out already: the dialog doesn't name it, so doesn't count its keys either.
+      const old = device("old", {
+        linkedFrom: phone.sessionId,
+        expiresAt: "2026-11-10T09:00:00.000Z",
+        keysMade: 3,
+      });
+      const detail = kinRemoveDeviceCopy(phone, true, [phone, laptop, old], now).detail;
+      expect(detail.match(/This also ends .*?\./)?.[0] ?? null).toBe(sentence);
+    },
+  );
 });
 
 describe("kinDevicesLinkedFrom", () => {

@@ -115,18 +115,20 @@ export function kinRemoveDeviceCopy(
   nowMs: number,
 ): { readonly title: string; readonly detail: string } {
   const active = new Set(kinActiveDevices(devices, nowMs).map((held) => held.sessionId));
-  const names = kinDevicesLinkedFrom(device, devices)
-    .filter((held) => active.has(held.sessionId))
-    .map(kinDeviceLabel);
+  const below = kinDevicesLinkedFrom(device, devices).filter((held) => active.has(held.sessionId));
+  const names = below.map(kinDeviceLabel);
   const also =
     names.length === 0
       ? ""
       : names.length === 1
         ? ` ${names[0]}, linked from it, is signed out too.`
         : ` So are the devices linked from it: ${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}.`;
-  const keys = device.keysMade ?? 0;
+  const own = device.keysMade ?? 0;
+  const keys = below.reduce((sum, held) => sum + (held.keysMade ?? 0), own);
   const ends =
-    keys === 0 ? "" : ` This also ends the coding-agent ${keys === 1 ? "key" : "keys"} made on it.`;
+    keys === 0
+      ? ""
+      : ` This also ends the coding-agent ${keys === 1 ? "key" : "keys"} made on ${keys === own ? "it" : "these devices"}.`;
   return {
     title: `Remove ${kinDeviceLabel(device)}?`,
     detail:

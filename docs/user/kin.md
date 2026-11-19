@@ -271,7 +271,8 @@ Kin at a different address than the app you made the key in, use that address wi
 
 Choose **Remove** beside a key to stop it; the coding agent loses access on its next call. The owner
 and co-owners can see and remove a teammate's keys on their profile, and removing someone's access
-ends all of their keys. Removing the device a key was made on ends that key too.
+ends all of their keys. Removing the device a key was made on ends that key too. A key made before
+this update isn't tied to a device, so remove it here yourself.
 
 ## Clients and projects
 
