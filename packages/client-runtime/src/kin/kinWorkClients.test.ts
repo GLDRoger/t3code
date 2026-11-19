@@ -285,7 +285,7 @@ describe("kinClientPageView", () => {
     expect(kinClientPageView(page({}), names, now, true).line).toBe("Client");
   });
 
-  it("leads with the soonest thing owed, and a vendor has no Next step row", () => {
+  it("opens with the soonest thing owed, and a vendor has no Next step row", () => {
     const next = {
       key: KinRecordKey.make("W-38"),
       title: "Send the revised proposal",

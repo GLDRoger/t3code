@@ -212,7 +212,6 @@ export const KIN_CLIENTS = {
   tags: "Tags",
   makeClient: "Make it a client",
   makeProspect: "Make it a prospect again",
-  kindFailed: "That didn't change.",
 };
 
 export const KIN_CLIENTS_SHOW = [
@@ -678,7 +677,7 @@ export interface KinOwedView {
   readonly more: string | null;
 }
 
-/** The soonest open thing we owe a client or prospect: what its page leads with. */
+/** The soonest open thing we owe a client or prospect: the first thing its page shows. */
 export interface KinClientNextView {
   readonly key: KinRecordKey;
   readonly title: string;

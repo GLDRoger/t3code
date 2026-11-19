@@ -185,7 +185,7 @@ const clientScreen = (onAddTask: (() => void) | null, onOpenTask = vi.fn()) => (
 );
 
 describe("a client's page", () => {
-  it("leads a prospect with where it came from, who looks after it and that nothing is next", async () => {
+  it("opens a prospect on where it came from, who looks after it and that nothing is next", async () => {
     setup({ page: clientPage({ prospect: true, source: "Harbour trade fair" }) });
     const onAddTask = vi.fn();
     await using _screen = await render(clientScreen(onAddTask));
