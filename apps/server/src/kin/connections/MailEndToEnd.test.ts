@@ -268,7 +268,7 @@ const docVersion = (version: number) =>
 let wakes = 0;
 /** One running turn of a lead: a person's message in their chat, or the pulse event queued. */
 const wake = (
-  from: { readonly person: KinPersonId } | { readonly eventId: string },
+  from: { readonly person: KinPersonId; readonly says?: string } | { readonly eventId: string },
   agentId: KinAgentId = lead,
 ) =>
   Effect.gen(function* () {
@@ -292,7 +292,7 @@ const wake = (
         created_at)
       VALUES (${messageId}, ${orgId}, ${chatId}, ${wakes}, 'human', ${from.person},
         ${`${chatId}-person`}, ${from.person === owner ? "owner" : "member"}, 'text',
-        'Send Ravi the November invoice.', '[]', 'posted', ${stamp})`;
+        ${from.says ?? "Send Ravi the November invoice."}, '[]', 'posted', ${stamp})`;
     const event = {
       _tag: "chat.message",
       orgId,
@@ -906,6 +906,99 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           assert.strictEqual(yield* marks, 2);
         }),
       ),
+  );
+
+  it.effect("a mail about the one open task its turn names shows on that task's row", () =>
+    setUp((fake, cards) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+          VALUES (${orgId}, 'work', 'Work', 'W', 0)`;
+        for (const [n, state] of [
+          [1, "open"],
+          [2, "doing"],
+          [3, "done"],
+        ] as const)
+          yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title,
+              owner_kind, owner_id, created_by_kind, origin_key, created_at, updated_at,
+              fields_json, state)
+            VALUES (${orgId}, ${`rec_w${n}`}, 'work', ${`W-${n}`}, ${`Invented task ${n}`},
+              'person', ${owner}, 'person', ${`w${n}`}, 0, 0, '{}', ${state})`;
+        const entry = sql<{ entry: string | null }>`SELECT entry_record_id AS entry
+          FROM kin_connection_asks ORDER BY rowid DESC LIMIT 1`.pipe(
+          Effect.map(([row]) => row?.entry ?? null),
+        );
+        const row = waitingCards(orgId, owner, [{ recordId: "rec_w1", key: "W-1" }]).pipe(
+          Effect.map((found) => found.get("rec_w1")?.widgetId),
+        );
+        yield* connect(fake, "microsoft", HELLO);
+        const draft = (subject: string, to = "ravi@lumen.example") =>
+          callTool(HELLO, "mail_send", {
+            to: [to],
+            subject,
+            body: "Can both clinics join a dry run?",
+          }).pipe(Effect.map(() => cards.findLast((one) => !one.widgetId.startsWith("closed:"))!));
+
+        yield* wake({
+          person: owner,
+          says: "Draft a short mail to Ravi about W-1, for my approval.",
+        });
+        const first = yield* draft("Pilot check");
+        yield* stored(first);
+        assert.strictEqual(yield* entry, "rec_w1");
+        assert.strictEqual(yield* row, first.widgetId);
+
+        // The redraft about the same task replaces it, there and in the chat.
+        yield* wake({ person: owner, says: "Redraft the W-1 mail as one short sentence." });
+        const second = yield* draft("Pilot check, short");
+        yield* stored(second);
+        assert.include(
+          cards.map((one) => one.widgetId),
+          `closed:${first.widgetId}`,
+        );
+        assert.strictEqual(yield* row, second.widgetId);
+
+        // About the same task to other people, it is another mail: both stand.
+        yield* TestClock.adjust("1 minute");
+        yield* wake({ person: owner, says: "Also mail Asha about W-1." });
+        const other = yield* draft("Pilot check", "asha@lumen.example");
+        yield* stored(other);
+        assert.notInclude(
+          cards.map((one) => one.widgetId),
+          `closed:${second.widgetId}`,
+        );
+        assert.strictEqual(yield* row, other.widgetId);
+
+        // A refused send's fresh card stays on the task's row.
+        fake.failWith(HELLO, 400);
+        const failed = yield* tap(other.widgetId, owner);
+        fake.failWith(HELLO, null);
+        if (failed === undefined || !("state" in failed) || failed.fresh === undefined)
+          return assert.fail("no fresh card after a failed send");
+        assert.isDefined(yield* (yield* KinConnections).freshAsk(orgId, failed.fresh, NOW));
+        assert.strictEqual(yield* entry, "rec_w1");
+
+        // No task, or not exactly one open one, ties nothing; the draft's own words count too.
+        for (const [says, subject, tied] of [
+          ["Mail Ravi about W-1 and W-2.", "Two tasks", null],
+          ["Mail Ravi about W-3.", "A done task", null],
+          ["Mail Ravi about W-9.", "No such task", null],
+          ["Mail Ravi the dry-run plan.", "Dry run plan (W-2)", "rec_w2"],
+        ] as const) {
+          yield* wake({ person: owner, says });
+          yield* draft(subject);
+          assert.strictEqual(yield* entry, tied, says);
+        }
+        assert.lengthOf(fake.sent(), 0);
+
+        // Its task dropped since, a mail tied by its turn, not by a file, still goes as before.
+        const plan = cards.findLast((one) => !one.widgetId.startsWith("closed:"))!;
+        yield* stored(plan);
+        yield* sql`UPDATE kin_records SET state = 'dropped' WHERE record_id = 'rec_w2'`;
+        assert.deepStrictEqual(yield* tap(plan.widgetId, owner), { state: "sent", reason: null });
+        assert.lengthOf(fake.sent(), 1);
+      }),
+    ),
   );
 
   it.effect("a co-owner confirms in her own chat; a member can't", () =>

@@ -123,6 +123,7 @@ import { resultText } from "./ResultText.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import {
   attachmentOf,
+  namedTask,
   attachmentsCurrent,
   choiceId,
   editedMail,
@@ -403,7 +404,7 @@ const askBlocked = Effect.fnUntraced(function* (
   )
     return `${row.toolName} changed or was switched off since this card was made, so nothing was sent.`;
   return (
-    (yield* subjectClosed(orgId, prepared, row.entryRecordId)) ??
+    (yield* subjectClosed(orgId, prepared)) ??
     ((yield* attachmentsCurrent(orgId, prepared))
       ? null
       : `The attached document changed since this card was made, so nothing was sent. ${FRESH_BELOW}`)
@@ -2289,17 +2290,24 @@ const make = Effect.gen(function* () {
     a: { readonly payload: string; readonly entry: string | null },
     b: { readonly payload: string; readonly entry: string | null },
   ) => {
-    if (a.entry !== null && a.entry === b.entry) return true;
     const one = Option.getOrUndefined(decodePrepared(a.payload));
     const other = Option.getOrUndefined(decodePrepared(b.payload));
-    return (
+    const samePeople =
       one?._tag === "email" &&
       other?._tag === "email" &&
-      one.threadId !== null &&
-      one.threadId === other.threadId &&
       one.to.length === other.to.length &&
-      one.to.every((address) => other.to.includes(address))
-    );
+      one.to.every((address) => other.to.includes(address));
+    // A document's mail is one mail whoever it goes to; a task's, one for each set of people.
+    if (a.entry !== null && a.entry === b.entry)
+      return (
+        samePeople ||
+        [one, other].some(
+          (mail) =>
+            mail?._tag === "email" &&
+            mail.attachments.some((file) => file.entryRecordId === a.entry),
+        )
+      );
+    return samePeople && one.threadId !== null && one.threadId === other.threadId;
   };
   /** Narrows to asks that could be the same mail, so no page limit can hide the one that is. */
   const maybeSameMail = (ask: { readonly payload: string; readonly entry: string | null }) =>
@@ -2540,7 +2548,11 @@ const make = Effect.gen(function* () {
       );
     const entryRecordId =
       prepared._tag === "email"
-        ? (prepared.attachments.find((one) => one.entryRecordId !== null)?.entryRecordId ?? null)
+        ? (prepared.attachments.find((one) => one.entryRecordId !== null)?.entryRecordId ??
+          (yield* namedTask({ ...turn, chatId: chat.chatId }, [
+            prepared.subject,
+            prepared.body,
+          ]).pipe(provideSql)))
         : null;
     const now = yield* Clock.currentTimeMillis;
     const replaced: Array<string> = [];
@@ -3257,7 +3269,10 @@ const make = Effect.gen(function* () {
         : from.state === "sent" || from.state === "failed"
           ? stale.row.askId
           : afterOf(from.result);
-    const entry = attachments.find((one) => one.entryRecordId !== null)?.entryRecordId ?? null;
+    // A mail tied to a task by its turn, not by a file, keeps that tie.
+    const entry =
+      attachments.find((one) => one.entryRecordId !== null)?.entryRecordId ??
+      stale.row.entryRecordId;
     yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
         pin_digest, payload_json, agent_id, wakeup_id, chat_id, entry_record_id, proposed_at,
         account, sign_in_gen, outside_from, result_json)
