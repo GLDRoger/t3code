@@ -5,35 +5,40 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import {
   KIN_CLIENTS,
+  KIN_CLIENTS_TABS,
   KIN_PROJECTS,
   KIN_PROJECT_VIEWS,
   kinClientRow,
   kinClientsNothing,
-  kinProjectRow,
+  kinProjectsByClient,
   kinProjectsNothing,
+  type KinClientsTab,
   type KinHealthView,
   type KinProjectsFilter,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { KIN_WORK_HOME, kinWorkAskDraft } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
+import { Atom } from "effect/reactivity";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
 import type { AppBarAction, AppBarMenu } from "../../components/ui/AppBar.types";
+import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ScreenContent } from "../../components/ui/ScreenContent";
+import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
+import { appAtomRegistry } from "../../state/atom-registry";
 import { kinTabBar, useKinTab } from "./components/KinTab";
 import { KinWorkLoading, KinWorkPrivateMark, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 import { useKinAskAgent } from "./state/useKinMoney";
-import { useKinChoicesLive } from "./state/useKinWorkHome";
 import {
   refreshKinWorkLive,
   useKinClientsList,
@@ -75,8 +80,6 @@ export function KinWorkNamedRow(props: {
   readonly onPress: () => void;
   /** Inside a rounded section the divider keeps to the section's edges. */
   readonly inset?: boolean;
-  /** A project drawn under its client in the clients list. */
-  readonly nested?: boolean;
 }) {
   const { row } = props;
   return (
@@ -87,12 +90,12 @@ export function KinWorkNamedRow(props: {
         onPress={props.onPress}
         className={cn(
           "min-h-16 flex-row items-start gap-3 py-3 active:opacity-60",
-          props.inset ? "px-4" : props.nested ? "pl-10 pr-5" : "px-5",
+          props.inset ? "px-4" : "px-5",
         )}
       >
         <View className="min-w-0 flex-1 gap-0.5">
           <View className="flex-row items-center gap-2">
-            <Text textRole="body" numberOfLines={1} className="min-w-0 shrink text-foreground">
+            <Text textRole="body" numberOfLines={2} className="min-w-0 shrink text-foreground">
               {row.name}
             </Text>
             {row.private ? <KinWorkPrivateMark label="" /> : null}
@@ -114,12 +117,7 @@ export function KinWorkNamedRow(props: {
           </Text>
         ) : null}
       </Pressable>
-      <View
-        className={cn(
-          "h-px bg-border-subtle",
-          props.inset ? "ml-4" : props.nested ? "ml-10" : "ml-5",
-        )}
-      />
+      <View className={cn("h-px bg-border-subtle", props.inset ? "ml-4" : "ml-5")} />
     </>
   );
 }
@@ -130,6 +128,16 @@ type ListProps = KinWorkTarget & {
   readonly directory: KinWorkDirectory;
 };
 
+type ListItem =
+  | { readonly type: "row"; readonly id: string; readonly row: NamedRow }
+  | {
+      readonly type: "group";
+      readonly id: string;
+      readonly title: string;
+      /** The client the heading opens; null for projects not for a client. */
+      readonly party: KinRecordKey | null;
+    };
+
 /** Clients or projects as a list: only the rows in view mount, and more load at the foot. */
 function NamedList(props: {
   readonly environmentId: EnvironmentId;
@@ -138,7 +146,10 @@ function NamedList(props: {
   readonly menu: AppBarMenu;
   readonly ask: AppBarAction | null;
   readonly stale: boolean;
-  readonly rows: ReadonlyArray<NamedRow>;
+  /** Above the rows: which of Clients and Projects shows. */
+  readonly header: React.ReactNode;
+  readonly items: ReadonlyArray<ListItem>;
+  readonly shown: number;
   readonly state: {
     readonly loading: boolean;
     readonly failed: unknown;
@@ -150,27 +161,17 @@ function NamedList(props: {
   readonly list: { readonly refresh: () => void; readonly loadMore: () => Promise<void> | void };
   readonly search: { readonly text: string; readonly placeholder: string };
   readonly onSearch: (text: string) => void;
-  /** Below the rows: the projects with no client, under the clients. */
-  readonly after?: React.ReactNode;
-  readonly nothing: {
-    readonly title: string;
-    readonly detail: string;
-    readonly offerNew: boolean;
-  };
+  readonly nothing: React.ReactNode;
   readonly add: { readonly label: string; readonly onPress: () => void } | null;
   readonly loading: string;
   readonly loadFailed: string;
   readonly extra: unknown;
   readonly onOpen: (key: KinRecordKey) => void;
-  /** The rows drawn under a row, such as a client's open projects, and where one opens. */
-  readonly under?: {
-    readonly rows: (key: KinRecordKey) => ReadonlyArray<NamedRow>;
-    readonly onOpen: (key: KinRecordKey) => void;
-  };
+  readonly onOpenClient: (key: KinRecordKey) => void;
 }) {
   const navigation = useNavigation();
   const tab = useKinTab();
-  const { state, list, add, nothing, rows, under } = props;
+  const { state, list, add, items } = props;
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
@@ -195,7 +196,7 @@ function NamedList(props: {
         })}
       />
       <ScreenContent surface="screen">
-        <LegendList<NamedRow>
+        <LegendList<ListItem>
           renderScrollComponent={NativeScrollView}
           className="flex-1"
           contentInsetAdjustmentBehavior="automatic"
@@ -203,19 +204,21 @@ function NamedList(props: {
           keyboardShouldPersistTaps="handled"
           // The search field, or the dock, floats over the foot of the list.
           contentContainerStyle={{ paddingBottom: tab === null ? 96 : 32 + tab.bottomClearance }}
-          data={rows}
-          keyExtractor={(row) => row.key}
+          data={items}
+          keyExtractor={(item) => item.id}
+          getItemType={(item) => item.type}
           extraData={props.extra}
           estimatedItemSize={72}
           recycleItems
           onEndReached={() => void list.loadMore()}
           onEndReachedThreshold={0.5}
           ListHeaderComponent={
-            props.stale ? (
-              <View className="px-4 pt-2">
+            <View className="gap-2 px-4 pt-2">
+              {props.header}
+              {props.stale ? (
                 <KinWorkStaleNotice environmentId={props.environmentId} onRetry={list.refresh} />
-              </View>
-            ) : null
+              ) : null}
+            </View>
           }
           ListEmptyComponent={
             <View className="px-4 pt-4">
@@ -228,106 +231,124 @@ function NamedList(props: {
                   onRetry={list.refresh}
                 />
               ) : (
-                <EmptyState
-                  variant="plain"
-                  title={nothing.title}
-                  detail={nothing.detail}
-                  {...(nothing.offerNew && add !== null
-                    ? { action: <Button tone="primary" label={add.label} onPress={add.onPress} /> }
-                    : {})}
-                />
+                props.nothing
               )}
             </View>
           }
           ListFooterComponent={
-            <>
-              {!state.more ? null : (
-                <View className="items-start gap-2 px-5 py-4">
-                  <Text textRole="footnote" className="text-foreground-muted">
-                    {state.moreFailed
-                      ? "Couldn't load more."
-                      : `Showing ${rows.length} of ${state.total ?? rows.length}`}
-                  </Text>
-                  <Button
-                    tone="secondary"
-                    size="compact"
-                    label={state.moreFailed ? KIN_RETRY : "Show more"}
-                    loading={state.loadingMore}
-                    disabled={state.loadingMore}
-                    onPress={() => void list.loadMore()}
-                  />
-                </View>
-              )}
-              {props.after}
-            </>
-          }
-          renderItem={({ item: row }) => (
-            <>
-              <KinWorkNamedRow row={row} onPress={() => props.onOpen(row.key)} />
-              {under?.rows(row.key).map((child) => (
-                <KinWorkNamedRow
-                  key={child.key}
-                  nested
-                  row={child}
-                  onPress={() => under.onOpen(child.key)}
+            !state.more ? null : (
+              <View className="items-start gap-2 px-5 py-4">
+                <Text textRole="footnote" className="text-foreground-muted">
+                  {state.moreFailed
+                    ? "Couldn't load more."
+                    : `Showing ${props.shown} of ${state.total ?? props.shown}`}
+                </Text>
+                <Button
+                  tone="secondary"
+                  size="compact"
+                  label={state.moreFailed ? KIN_RETRY : "Show more"}
+                  loading={state.loadingMore}
+                  disabled={state.loadingMore}
+                  onPress={() => void list.loadMore()}
                 />
-              ))}
-            </>
-          )}
+              </View>
+            )
+          }
+          renderItem={({ item }) =>
+            item.type === "group" ? (
+              <KinProjectsGroupHeading item={item} onOpen={props.onOpenClient} />
+            ) : (
+              <KinWorkNamedRow row={item.row} onPress={() => props.onOpen(item.row.key)} />
+            )
+          }
         />
       </ScreenContent>
     </View>
   );
 }
 
-type Showing = "clients" | "closed" | KinProjectsFilter["view"];
+/** A client's heading over its projects opens the client; "Not for a client" opens nothing. */
+function KinProjectsGroupHeading(props: {
+  readonly item: Extract<ListItem, { readonly type: "group" }>;
+  readonly onOpen: (key: KinRecordKey) => void;
+}) {
+  const { title, party } = props.item;
+  const text = (
+    <Text
+      textRole="footnote"
+      accessibilityRole="header"
+      numberOfLines={2}
+      className="min-w-0 shrink font-t3-medium text-foreground-muted"
+    >
+      {title}
+    </Text>
+  );
+  return party === null ? (
+    <View className="px-5 pt-5 pb-1">{text}</View>
+  ) : (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={title}
+      accessibilityHint="Opens the client"
+      onPress={() => props.onOpen(party)}
+      className="flex-row items-center gap-1.5 px-5 pt-5 pb-1 active:opacity-60"
+    >
+      {text}
+      <SymbolView
+        name="chevron.right"
+        size={12}
+        tintColorClassName="accent-icon-muted"
+        type="monochrome"
+      />
+    </Pressable>
+  );
+}
 
-/** Clients' one menu: active or closed clients, or projects by how far along they are. */
-function showMenu(showing: Showing, onShow: (showing: Showing) => void): AppBarMenu {
+/** Kept while the app stays open, so Clients opens on the side last chosen. */
+const kinClientsTabAtom = Atom.make<KinClientsTab>("clients").pipe(Atom.keepAlive);
+
+type Showing = { readonly closed: boolean; readonly view: KinProjectsFilter["view"] };
+
+/** The Show menu holds the states of whichever of Clients and Projects is showing. */
+function showMenu(
+  tab: KinClientsTab,
+  showing: Showing,
+  onShow: (showing: Showing) => void,
+): AppBarMenu {
   return {
     title: KIN_WORK_HOME.show,
     icon: "line.3.horizontal.decrease.circle",
-    items: [
-      {
-        id: "clients",
-        title: KIN_CLIENTS.title,
-        inline: true,
-        items: [
-          {
-            id: "clients",
-            title: "Active",
-            selected: showing === "clients",
-            onPress: () => onShow("clients"),
-          },
-          {
-            id: "closed",
-            title: KIN_CLIENTS.closed,
-            selected: showing === "closed",
-            onPress: () => onShow("closed"),
-          },
-        ],
-      },
-      {
-        id: "projects",
-        title: KIN_PROJECTS.title,
-        inline: true,
-        items: KIN_PROJECT_VIEWS.map((view) => ({
-          id: `projects:${view.id}`,
-          title: `${KIN_PROJECTS.title}: ${view.label.toLowerCase()}`,
-          selected: showing === view.id,
-          onPress: () => onShow(view.id),
-        })),
-      },
-    ],
+    items:
+      tab === "clients"
+        ? [
+            {
+              id: "active",
+              title: KIN_CLIENTS.active,
+              selected: !showing.closed,
+              onPress: () => onShow({ ...showing, closed: false }),
+            },
+            {
+              id: "closed",
+              title: KIN_CLIENTS.closed,
+              selected: showing.closed,
+              onPress: () => onShow({ ...showing, closed: true }),
+            },
+          ]
+        : KIN_PROJECT_VIEWS.map((view) => ({
+            id: view.id,
+            title: view.label,
+            selected: showing.view === view.id,
+            onPress: () => onShow({ ...showing, view: view.id }),
+          })),
   };
 }
 
-/**
- * Clients, with each one's projects on its own page. Projects with no client sit under the list,
- * and the menu turns the list into projects by how far along they are.
- */
+/** Clients, or their projects grouped under them, one segment at a time. */
 export function KinClientsList(props: ListProps & { readonly projects: boolean }) {
-  const [showing, setShowing] = useState<Showing>(props.projects ? "open" : "clients");
+  const [tab, setTab] = useState<KinClientsTab>(() =>
+    props.projects ? "projects" : appAtomRegistry.get(kinClientsTabAtom),
+  );
+  const [showing, setShowing] = useState<Showing>({ closed: false, view: "open" });
   const agent = useKinAskAgent(props, "clients");
   const ask =
     agent === null
@@ -337,15 +358,33 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
           icon: "bubble.left" as const,
           onPress: () => agent.ask(kinWorkAskDraft("clients")),
         };
-  const menu = showMenu(showing, setShowing);
-  return showing === "clients" || showing === "closed" ? (
-    <ClientsView key={showing} {...props} closed={showing === "closed"} menu={menu} ask={ask} />
+  const view = {
+    menu: showMenu(tab, showing, setShowing),
+    ask,
+    header: (
+      <SegmentedControl
+        options={KIN_CLIENTS_TABS.map((held) => ({ value: held.id, label: held.label }))}
+        selected={tab}
+        onSelect={(next) => {
+          appAtomRegistry.set(kinClientsTabAtom, next);
+          setTab(next);
+        }}
+        role="tab"
+      />
+    ),
+  };
+  return tab === "clients" ? (
+    <ClientsView key={`clients:${showing.closed}`} {...props} {...view} closed={showing.closed} />
   ) : (
-    <ProjectsView key={showing} {...props} view={showing} menu={menu} ask={ask} />
+    <ProjectsView key={`projects:${showing.view}`} {...props} {...view} view={showing.view} />
   );
 }
 
-type ViewProps = ListProps & { readonly menu: AppBarMenu; readonly ask: AppBarAction | null };
+type ViewProps = ListProps & {
+  readonly menu: AppBarMenu;
+  readonly ask: AppBarAction | null;
+  readonly header: React.ReactNode;
+};
 
 function ClientsView(props: ViewProps & { readonly closed: boolean }) {
   const navigation = useNavigation();
@@ -356,20 +395,29 @@ function ClientsView(props: ViewProps & { readonly closed: boolean }) {
   const seq = props.stale ? null : props.live.seq;
   const { state, list } = useKinClientsList(props, seq, props.closed);
   const { filter } = state;
-  // Open projects sit under their client, and those with no client after the clients.
-  const choices = useKinChoicesLive(props, !props.closed);
-  const projects = choices?.projects ?? [];
-  const noClient = filter.text.trim() === "" ? projects.filter((row) => row.party === null) : [];
-  const openProject = (project: KinRecordKey) =>
-    navigation.navigate("KinProject", { environmentId, orgId, project });
+  const nothing = kinClientsNothing(filter, scope);
+  const add = canAdd
+    ? {
+        label: KIN_CLIENTS.add,
+        onPress: () => navigation.navigate("KinClientForm", { environmentId, orgId }),
+      }
+    : null;
+  const openClient = (to: KinRecordKey) =>
+    navigation.navigate("KinClient", { environmentId, orgId, party: to });
   return (
     <NamedList
       environmentId={environmentId}
       title={KIN_CLIENTS.title}
       menu={props.menu}
       ask={props.ask}
+      header={props.header}
       stale={props.stale || state.stale}
-      rows={state.records.map((row) => kinClientRow(row, props.directory.names, now))}
+      items={state.records.map((row) => ({
+        type: "row" as const,
+        id: row.key,
+        row: kinClientRow(row, props.directory.names, now),
+      }))}
+      shown={state.records.length}
       state={state}
       list={{
         loadMore: list.loadMore,
@@ -379,51 +427,24 @@ function ClientsView(props: ViewProps & { readonly closed: boolean }) {
           list.refresh();
         },
       }}
-      extra={[state, projects]}
-      under={{
-        rows: (client) =>
-          projects
-            .filter((row) => row.party?.key === client)
-            // Under its client, the row needn't name it again.
-            .map((row) => kinProjectRow(row, props.directory.names, now, row.party ?? undefined)),
-        onOpen: openProject,
-      }}
+      extra={state}
       search={{ text: filter.text, placeholder: KIN_CLIENTS.search }}
       onSearch={(text) => list.setFilter({ ...filter, text })}
-      after={
-        noClient.length === 0 ? null : (
-          <View className="pt-4">
-            <View className="px-5 pb-1">
-              <Text
-                textRole="footnote"
-                accessibilityRole="header"
-                className="font-t3-medium text-foreground-muted"
-              >
-                {`${KIN_WORK_HOME.noClient} · ${noClient.length}`}
-              </Text>
-            </View>
-            {noClient.map((row) => (
-              <KinWorkNamedRow
-                key={row.key}
-                row={kinProjectRow(row, props.directory.names, now)}
-                onPress={() => openProject(row.key)}
-              />
-            ))}
-          </View>
-        )
+      nothing={
+        <EmptyState
+          variant="plain"
+          title={nothing.title}
+          detail={nothing.detail}
+          {...(nothing.offerNew && add !== null
+            ? { action: <Button tone="primary" label={add.label} onPress={add.onPress} /> }
+            : {})}
+        />
       }
-      nothing={kinClientsNothing(filter, scope)}
-      add={
-        canAdd
-          ? {
-              label: KIN_CLIENTS.add,
-              onPress: () => navigation.navigate("KinClientForm", { environmentId, orgId }),
-            }
-          : null
-      }
+      add={add}
       loading="Loading clients"
       loadFailed={KIN_CLIENTS.loadFailed}
-      onOpen={(to) => navigation.navigate("KinClient", { environmentId, orgId, party: to })}
+      onOpen={openClient}
+      onOpenClient={openClient}
     />
   );
 }
@@ -440,14 +461,22 @@ function ProjectsView(props: ViewProps & { readonly view: KinProjectsFilter["vie
     props.view,
   );
   const { filter } = state;
+  const items = kinProjectsByClient(state.records, props.directory.names, now).flatMap(
+    (group): ReadonlyArray<ListItem> => [
+      { type: "group", id: `group:${group.id}`, title: group.title, party: group.party },
+      ...group.rows.map((row): ListItem => ({ type: "row", id: row.key, row })),
+    ],
+  );
   return (
     <NamedList
       environmentId={environmentId}
-      title={KIN_PROJECTS.title}
+      title={KIN_CLIENTS.title}
       menu={props.menu}
       ask={props.ask}
+      header={props.header}
       stale={props.stale || state.stale}
-      rows={state.records.map((row) => kinProjectRow(row, props.directory.names, now))}
+      items={items}
+      shown={state.records.length}
       state={state}
       list={{
         loadMore: list.loadMore,
@@ -460,7 +489,11 @@ function ProjectsView(props: ViewProps & { readonly view: KinProjectsFilter["vie
       extra={state}
       search={{ text: filter.text, placeholder: KIN_PROJECTS.search }}
       onSearch={(text) => list.setFilter({ ...filter, text })}
-      nothing={kinProjectsNothing(filter, scope)}
+      nothing={
+        <Text textRole="body" className="px-1 text-foreground-muted">
+          {kinProjectsNothing(filter, scope).title}
+        </Text>
+      }
       add={
         canAdd
           ? {
@@ -472,6 +505,7 @@ function ProjectsView(props: ViewProps & { readonly view: KinProjectsFilter["vie
       loading="Loading projects"
       loadFailed={KIN_PROJECTS.loadFailed}
       onOpen={(project) => navigation.navigate("KinProject", { environmentId, orgId, project })}
+      onOpenClient={(party) => navigation.navigate("KinClient", { environmentId, orgId, party })}
     />
   );
 }

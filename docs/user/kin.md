@@ -254,6 +254,22 @@ handling one. When nothing needs attention, the section isn't there.
 Keep amounts, rates and client terms out of task titles and notes. Project people read those; put
 the figures in the quote or the invoice.
 
+### Your tasks in your own coding agent
+
+A coding agent key lets your own coding agent, such as Claude Code, Codex or Cursor, read the tasks
+you hold, add notes to them, and set them to to-do, in progress or done. It can't reach anyone
+else's tasks, or any chats, money or files.
+
+To make one, open **Settings → Profile** and choose **Make a
+key** under **Coding agent keys**. Name it for the computer or tool it's for. Kin shows the key, its
+address and ready-to-paste setup for common coding agents once; copy them before you close it. You
+can hold three keys at a time, and each works for 30 days. If your coding agent's computer reaches
+Kin at a different address than the app you made the key in, use that address with the same ending.
+
+Choose **Remove** beside a key to stop it; the coding agent loses access on its next call. The owner
+and co-owners can see and remove a teammate's keys on their profile, and removing someone's access
+ends all of their keys.
+
 ## Clients and projects
 
 Clients lists each client and their projects, with when you last spoke to them and what's next.

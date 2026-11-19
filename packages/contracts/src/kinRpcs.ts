@@ -48,6 +48,7 @@ import {
 } from "./kinChat.ts";
 import { KinPushRpcs, KIN_PUSH_RPC_SCOPES } from "./kinPush.ts";
 import { KinPeopleRpcs, KIN_PEOPLE_RPC_SCOPES } from "./kinPeople.ts";
+import { KinTasksKeyRpcs, KIN_TASKS_KEY_RPC_SCOPES } from "./kinTasksKey.ts";
 import { KinVisualRpcs, KIN_VISUAL_RPC_SCOPES } from "./kinVisual.ts";
 import { KinConnectionRpcs, KIN_CONNECTION_RPC_SCOPES } from "./kinConnections.ts";
 import { KinSocialRpcs, KIN_SOCIAL_RPC_SCOPES } from "./kinSocial.ts";
@@ -188,6 +189,7 @@ export const KinRpcs = [
   ...KinStatementRpcs,
   ...KinPushRpcs,
   ...KinPeopleRpcs,
+  ...KinTasksKeyRpcs,
   ...KinConnectionRpcs,
   ...KinSocialRpcs,
   ...KinRefreshRpcs,
@@ -207,6 +209,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_STATEMENT_RPC_SCOPES,
   ...KIN_PUSH_RPC_SCOPES,
   ...KIN_PEOPLE_RPC_SCOPES,
+  ...KIN_TASKS_KEY_RPC_SCOPES,
   ...KIN_VISUAL_RPC_SCOPES,
   ...KIN_CONNECTION_RPC_SCOPES,
   ...KIN_SOCIAL_RPC_SCOPES,
@@ -421,6 +424,10 @@ const KIN_RPC_ACCESS = {
   "kin.people.setAccess": "org_owner",
   "kin.people.setPlaces": "owner_level",
   "kin.access.me": "person",
+  // Each person's own coding-agent keys; the service lets the owner level see and end others'.
+  "kin.tasksKeys.issue": "person",
+  "kin.tasksKeys.list": "person",
+  "kin.tasksKeys.revoke": "person",
   "kin.refreshes.subscribe": "person",
   // Needs attention and goals: the service shows a member only what they may see.
   "kin.pulse.read": "person",
@@ -493,6 +500,9 @@ export const KIN_RPC_AGGREGATES = {
   "kin.people.profiles": "kin-people",
   "kin.people.updateProfile": "kin-people",
   "kin.org.setTeamAgent": "kin-people",
+  "kin.tasksKeys.issue": "kin-people",
+  "kin.tasksKeys.list": "kin-people",
+  "kin.tasksKeys.revoke": "kin-people",
 
   "kin.refreshes.subscribe": "kin-refreshes",
   "kin.refreshes.announce": "kin-refreshes",

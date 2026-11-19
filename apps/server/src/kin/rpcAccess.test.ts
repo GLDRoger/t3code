@@ -1,11 +1,13 @@
 import { assert, it } from "@effect/vitest";
 import {
   AuthKinChatScope,
+  AuthKinTasksScope,
   AuthSessionId,
   KinOrgId,
   KinPersonId,
   KinRpcs,
   kinRpcAccess,
+  WsRpcGroup,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -13,6 +15,7 @@ import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { AuthenticatedSession } from "../auth/EnvironmentAuth.ts";
+import { authorizeRpc } from "../auth/RpcAuthorization.ts";
 import { layerKinAuthTest } from "./auth/ProofKeySessions.testkit.ts";
 import { KinIdentity } from "./chat/KinIdentity.ts";
 import type { Services } from "./KinServer.ts";
@@ -69,6 +72,9 @@ const MEMBER = [
   "kin.push.watch",
   "kin.refreshes.subscribe",
   "kin.search",
+  "kin.tasksKeys.issue",
+  "kin.tasksKeys.list",
+  "kin.tasksKeys.revoke",
   "kin.triggers.getTimeZone",
   "kin.widgets.act",
   "kin.work.assign",
@@ -164,3 +170,18 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
       }),
   );
 });
+
+it.effect("a coding agent key reaches no RPC: every method T3 and Kin serve refuses it", () =>
+  Effect.gen(function* () {
+    const admitted: Array<string> = [];
+    for (const method of WsRpcGroup.requests.keys()) {
+      // A payload that doesn't decode is refused too: only a clean pass counts as reached.
+      const result = yield* Effect.suspend(() =>
+        authorizeRpc([AuthKinTasksScope], method, {}),
+      ).pipe(Effect.exit);
+      if (result._tag === "Success") admitted.push(method);
+    }
+    assert.isAbove(WsRpcGroup.requests.size, KinRpcs.length);
+    assert.deepStrictEqual(admitted, []);
+  }),
+);

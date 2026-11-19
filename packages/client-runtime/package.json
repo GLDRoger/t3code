@@ -863,6 +863,10 @@
       "types": "./src/kin/kinTasksList.ts",
       "default": "./src/kin/kinTasksList.ts"
     },
+    "./kin/kinTasksKeys": {
+      "types": "./src/kin/kinTasksKeys.ts",
+      "default": "./src/kin/kinTasksKeys.ts"
+    },
     "./kin/kinWork": {
       "types": "./src/kin/kinWork.ts",
       "default": "./src/kin/kinWork.ts"

@@ -12,20 +12,26 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../../policy/ManagedPolicy.ts";
 import { layerAuth } from "../../server.ts";
 
-/** T3 auth with Kin on, so session issue and revoke write the proof key marks #54 defines. */
-export const layerKinAuthTest = (prefix: string) =>
+/** T3 auth over a fresh directory, or a given one to reopen it as a restart would. */
+export const layerAuthTest = (
+  dir: string | { readonly prefix: string },
+  kin: "on" | "off" = "on",
+) =>
   layerAuth.pipe(
     Layer.provide(ManagedPolicy.layerTest()),
     Layer.provide(
       Layer.succeed(
         ConfigProvider.ConfigProvider,
-        ConfigProvider.fromEnv({ env: { KIN_ENABLED: "true" } }),
+        ConfigProvider.fromEnv({ env: { KIN_ENABLED: kin === "on" ? "true" : "false" } }),
       ),
     ),
     Layer.provideMerge(Sqlite.layerConfig),
-    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix })),
+    Layer.provide(ServerConfig.layerTest(process.cwd(), dir)),
     Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
+
+/** T3 auth with Kin on, so session issue and revoke write the proof key marks #54 defines. */
+export const layerKinAuthTest = (prefix: string) => layerAuthTest({ prefix });
 
 /** The owner's `--repair-proof-key` pairing, exchanged by the phone holding that key. */
 export const repairProofKey = Effect.fn("ProofKeySessions.testkit.repairProofKey")(function* (

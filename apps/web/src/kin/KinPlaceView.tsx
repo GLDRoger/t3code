@@ -61,7 +61,6 @@ import { KinWorkTaskList } from "./KinWorkTasks";
 import { kinClient, retryKinAccess } from "./kinClient";
 import {
   KIN_PLACE_PATH,
-  kinPlaceOfRecord,
   kinRecordOf,
   kinSearchOf,
   kinTaskAddress,
@@ -531,14 +530,6 @@ export function KinPlaceView({
         onAdd={addTask === null ? null : () => addTask(KIN_WORK_NO_DRAFT)}
         initial={narrowed}
         choices={hostClients ? choices : null}
-        needsYou={{
-          onOpenTask: setOpenKey,
-          onOpenList: (start) => {
-            setListStart(start);
-            onGo(kinPlaceOfRecord({ list: start.list }), { list: start.list }, false);
-          },
-          onOpenMoney: () => onGo("money", null, false),
-        }}
       />
     );
   };

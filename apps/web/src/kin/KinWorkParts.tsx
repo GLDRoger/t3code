@@ -313,6 +313,8 @@ export interface KinFilterGroup {
   }>;
   readonly onChange: (value: string) => void;
   readonly long?: boolean;
+  /** Said once under the choices, such as the fixed order inside each group. */
+  readonly note?: string;
 }
 
 /** A place's one Filter control, and what it is narrowed to as one chip that clears it. */
@@ -320,6 +322,8 @@ export function KinFilter(props: {
   readonly groups: ReadonlyArray<KinFilterGroup>;
   readonly chip: string | null;
   readonly onClear: () => void;
+  /** A grouping other than the default, as its own chip that puts the default back. */
+  readonly grouped?: { readonly label: string; readonly onClear: () => void } | null;
 }) {
   const groups = props.groups.filter((group) => group.options.length > 1);
   if (groups.length === 0) return null;
@@ -364,12 +368,29 @@ export function KinFilter(props: {
                 <>
                   <MenuGroupLabel>{group.label}</MenuGroupLabel>
                   {radio(group)}
+                  {group.note === undefined ? null : (
+                    <p className="max-w-64 px-2 py-1.5 text-xs text-muted-foreground">
+                      {group.note}
+                    </p>
+                  )}
                 </>
               )}
             </MenuGroup>
           ))}
         </MenuPopup>
       </Menu>
+      {props.grouped == null ? null : (
+        <Button
+          size="xs"
+          variant="secondary"
+          aria-label={`${props.grouped.label}. Clear grouping`}
+          onClick={props.grouped.onClear}
+          className="min-w-0"
+        >
+          <span className="truncate">{props.grouped.label}</span>
+          <XIcon aria-hidden />
+        </Button>
+      )}
       {props.chip === null ? null : (
         <Button
           size="xs"

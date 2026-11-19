@@ -24,6 +24,7 @@ import { KinServer, type Services } from "./KinServer.ts";
 import { accessOf } from "./people/KinAccess.ts";
 import { makeKinPushHandlers } from "./push/rpcHandlers.ts";
 import { makeKinWorkHandlers } from "./work/rpcHandlers.ts";
+import { makeKinTasksKeyHandlers } from "./tasksKey/rpcHandlers.ts";
 
 const group = RpcGroup.make(...KinRpcs);
 // Every Kin group's error union holds this, and a member's client already reads it as a refusal.
@@ -63,6 +64,7 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
   const services = Option.flatMap(kin, (kin) => kin.services);
   const handlers = group.of({
     ...(yield* makeKinPeopleHandlers(session)),
+    ...(yield* makeKinTasksKeyHandlers(session)),
     ...(yield* makeKinChatHandlers(session)),
     ...(yield* makeKinApprovalHandlers(session, services)),
     ...(yield* makeKinLevelHandlers(session)),
