@@ -595,7 +595,7 @@ it.live(
         ] as const)
           assert.deepStrictEqual(
             yield* service.write(scope, { ...fresh, item: { ...unnamed, ...changed } }),
-            { itemId },
+            { itemId: KinMemoryItemId.make(itemId) },
           );
         assert.strictEqual(
           (yield* service.write(scope, { ...fresh, op: "update" }).pipe(Effect.flip)).message,

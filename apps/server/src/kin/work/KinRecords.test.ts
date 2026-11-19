@@ -2817,7 +2817,10 @@ it.effect(
           "Lead lead gave you W-1 Invented: draft the onboarding copy. Why: Invented: after the launch.",
         ],
       );
-      // Held, then moved on: the one never told hears nothing of it, and the mark goes.
+      // Held, then moved on: the one never told hears nothing of it, and the mark goes. A new
+      // turn, so the owner's hand moves above came before it.
+      yield* sql`UPDATE kin_wakeups SET started_at = ${yield* Clock.currentTimeMillis}
+        WHERE wakeup_id = 'wake'`;
       yield* LeadWork.update(scope, {
         sourceEventId: "ask-event",
         key: "W-3",

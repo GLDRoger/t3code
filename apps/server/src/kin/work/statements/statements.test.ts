@@ -33,6 +33,7 @@ import * as Queue from "effect/Queue";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Clock from "effect/Clock";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerSecretStore from "../../../auth/ServerSecretStore.ts";
@@ -181,7 +182,7 @@ const turn = (
         'owner', 'text', ${body}, '[]', 'posted', ${at}, ${JSON.stringify(attachments)})`;
     yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
         status, event_ids, audience)
-      VALUES (${`wake-${n}`}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running',
+      VALUES (${`wake-${n}`}, ${orgId}, ${lead}, 'lead-thread', 'test', ${yield* Clock.currentTimeMillis}, 'running',
         ${JSON.stringify([`event-${n}`])}, ${audience})`;
     const event = {
       _tag: "chat.message",
