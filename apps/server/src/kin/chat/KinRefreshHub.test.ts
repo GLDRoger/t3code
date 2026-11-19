@@ -315,9 +315,8 @@ describe("KinRefreshHub", () => {
         "lead/peopleUpdate.ts",
         "lead/awaySet.ts",
       ],
-      // A sign-out's cascade (auth/linkedDevices.ts) runs in the session store, below Kin's hub.
-      // Kin's Remove touches the topic itself; one from Sharing & access shows at the next read,
-      // and the signed-out devices' sockets close at once.
+      // A sign-out's cascade (auth/linkedDevices.ts) runs in the session store, below Kin's hub,
+      // and returns the companies it changed: the session store tells the hub after commit.
       kin_people_invites: ["people/KinPeople.ts", "auth/linkedDevices.ts"],
       kin_session_bindings: ["people/KinPeople.ts", "auth/linkedDevices.ts"],
       // The runner's thread and the hidden level are never part of a lead's list.
@@ -328,7 +327,7 @@ describe("KinRefreshHub", () => {
       kin_visual_hosts: ["chat/KinVisualHosts.ts"],
       kin_money_budgets: ["work/budgets.ts"],
       // A key's last use, written as the key is admitted, shows at the next read.
-      kin_tasks_keys: ["tasksKey/TasksKeys.ts", "people/KinPeople.ts"],
+      kin_tasks_keys: ["tasksKey/TasksKeys.ts", "people/KinPeople.ts", "auth/linkedDevices.ts"],
     };
     const write = new RegExp(
       `(?:INSERT INTO|UPDATE|DELETE FROM)\\s+(${Object.keys(writers).join("|")})\\b`,

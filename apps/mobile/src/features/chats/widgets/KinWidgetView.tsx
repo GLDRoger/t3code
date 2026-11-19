@@ -49,6 +49,8 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
   readonly heldFor?: string | null;
   /** The chat's agents by id, for the doc card's "by Growth". */
   readonly agentNames?: ReadonlyMap<string, string>;
+  /** The message's own long press, for a card that takes presses across its whole face. */
+  readonly onLongPress?: () => void;
 }) {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const access = useAtomValue(kinAccessAtom(connectionAtomRuntime, props.environmentId));
@@ -98,6 +100,7 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
           environmentId={props.environmentId}
           orgId={props.widget.orgId}
           {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
+          {...(props.onLongPress === undefined ? {} : { onLongPress: props.onLongPress })}
         />
       );
     case "statement_review":

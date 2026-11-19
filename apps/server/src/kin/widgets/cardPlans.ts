@@ -129,6 +129,12 @@ const decodePlan = Schema.decodeUnknownOption(PlanJson);
 export const isTaken = (plan: CardPlan): plan is TakenPlan =>
   plan.kind === "undo_default" || plan.kind === "keep_default";
 
+/** Whether Kin may take this action as a question's default at its day: a task's done or drop. */
+export const takesAsDefault = <P extends { readonly kind: CardPlan["kind"] }>(
+  plan: P,
+): plan is Extract<P, { readonly kind: "done" | "drop" }> =>
+  plan.kind === "done" || plan.kind === "drop";
+
 /** Whether a tap on this plan is finished by the server, so it wakes no lead. */
 export const runsItself = (plan: CardPlan) => plan.kind !== "take_default" || plan.final !== null;
 

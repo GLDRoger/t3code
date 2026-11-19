@@ -24,7 +24,13 @@ import { isOrgPaused } from "../lead/orgState.ts";
 import { holdFor } from "../triggers/quietHold.ts";
 import { storedWorkHours } from "../triggers/quietHours.ts";
 import type * as CardActions from "../widgets/cardActions.ts";
-import { type CardPlan, plansOf, sealPlans, sealedOptions } from "../widgets/cardPlans.ts";
+import {
+  type CardPlan,
+  plansOf,
+  sealPlans,
+  sealedOptions,
+  takesAsDefault,
+} from "../widgets/cardPlans.ts";
 import { choiceCardState } from "../widgets/choiceCard.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { ownerZone } from "../work/recordRows.ts";
@@ -38,7 +44,7 @@ import {
   normaliseIntent,
   raiseAt,
   repeats,
-  safeDefault,
+  unsafeDefault,
 } from "./rules.ts";
 import { TAKEN_KEY, tellDeclined, tellTaken } from "./defaultTaken.ts";
 
@@ -183,6 +189,8 @@ const alreadyAsked = (open: QuestionRow, now: number, zone: string) =>
       : "It has no safe default, so it waits for them"
   }. It is in their Waiting on you; don't ask it again.`;
 
+/** Why a question's default waits for its person: none set, money, sending out, its kind of action, or a task whose closing Undo couldn't put back. */
+export type Untaken = "none" | "money" | "leaves" | "action" | "repeats" | "handed_back";
 export type AskPlan = {
   readonly questionId: string;
   readonly orgId: KinOrgId;
@@ -197,6 +205,10 @@ export type AskPlan = {
   readonly askedAt: number;
   readonly dueAt: number;
   readonly actAt: number;
+  /** Why Kin won't take the default on its own, when it won't. */
+  readonly untaken?: Untaken | undefined;
+  /** What the asker is told when Kin won't take the default on its own. */
+  readonly note?: string | undefined;
   /** An identical call already recorded it: the retry answers with the same card. */
   readonly retry: boolean;
 };
@@ -218,8 +230,10 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
   readonly about?: ReadonlyArray<string> | undefined;
   readonly intent?: string | undefined;
   readonly now: number;
-  /** The default's fixed action: a task's done or drop may be taken at its day, any other only by a tap. */
-  readonly acts?: CardPlan["kind"] | undefined;
+  /** The default's sealed action: only one `takesAsDefault` allows is taken at its day. */
+  readonly acts?: CardPlan | undefined;
+  /** Why that done or drop won't be taken at its day (`untakenAtDay`). */
+  readonly held?: "repeats" | "handed_back" | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const wanted = input.default.trim().toLowerCase();
@@ -241,12 +255,13 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
   if (named !== undefined && "refused" in named) return yield* refuse(named.refused);
   const dueAt = named?.at ?? defaultDue(input.now, clock.zone, clock.days);
   const about = normaliseAbout(input.about);
-  const safe =
-    (input.acts === undefined || input.acts === "done" || input.acts === "drop") &&
-    safeDefault(label, input.question, {
+  const untaken: Untaken | undefined =
+    unsafeDefault(label, input.question, {
       labels: input.labels,
       aboutMoney: yield* aboutMoney(input.orgId, about),
-    });
+    }) ?? (input.acts === undefined || takesAsDefault(input.acts) ? input.held : "action");
+  const safe = untaken === undefined;
+  const actAt = safe ? dueAt : raiseAt(dueAt, clock.zone, clock.days);
   const intent = normaliseIntent(input.intent);
   if (seen === undefined)
     for (const open of yield* openFor(input.orgId, personId))
@@ -261,14 +276,29 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
     question: oneLine(input.question, 240),
     defaultLabel: label,
     safe,
+    untaken,
     about,
     intent,
     askedAt: input.now,
     dueAt,
-    actAt: safe ? dueAt : raiseAt(dueAt, clock.zone, clock.days),
+    actAt,
+    ...(untaken === undefined ? {} : { note: untakenNote(label, untaken) }),
     retry: seen !== undefined,
   } satisfies AskPlan;
 });
+
+const UNTAKEN_WHY: Record<Exclude<Untaken, "none">, string> = {
+  money: "the card mentions an amount or a percentage, or is about a money record",
+  leaves: "the wording suggests sending something out or moving money",
+  action: "only a tap runs that option's action",
+  repeats: "its task repeats",
+  handed_back: "its task was handed back",
+};
+/** What Kin won't do with the default, and the rule that says so; nothing about later. */
+const untakenNote = (label: string | null, why: Untaken) =>
+  why === "none" || label === null
+    ? "Kin won't take any answer on its own: no default was set."
+    : `Kin won't take “${label}” on its own: ${UNTAKEN_WHY[why]}.`;
 
 /** Stores a planned question with the card that asks it; a retry stores nothing more. */
 export const recordAsk = Effect.fn("KinQuestions.recordAsk")(function* (

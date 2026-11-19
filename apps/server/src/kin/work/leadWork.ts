@@ -496,6 +496,8 @@ const Updated = Schema.Struct({
   ...Marks.fields,
   /** Other contacts with the same email. */
   sameEmail: Schema.optional(Schema.Array(Named)),
+  /** A new client took the task off its project, which is another client's. */
+  projectLeft: Schema.optional(Schema.String),
 });
 /** One entry's change at the top level; with keys, each entry's in entries. */
 export const UpdateResult = Schema.Struct({
@@ -509,6 +511,7 @@ export const UpdateResult = Schema.Struct({
   changed: Schema.optional(Updated.fields.changed),
   ...Marks.fields,
   sameEmail: Updated.fields.sameEmail,
+  projectLeft: Updated.fields.projectLeft,
   entries: Schema.optional(Schema.Array(Updated)),
 });
 
@@ -2443,6 +2446,11 @@ const updateCore = Effect.fnUntraced(function* (
       ...marksOf(lists, after),
       ...(hiddenFrom.length === 0 ? {} : { noLongerSeenBy: hiddenFrom }),
       ...(sameEmail === undefined ? {} : { sameEmail }),
+      ...(written.projectId === undefined && before.projectKey !== null && after.projectId === null
+        ? {
+            projectLeft: `${before.projectKey} is another client's project, so ${after.key} is on no project now. Give it a project of its client with project if it needs one.`,
+          }
+        : {}),
     },
     // A holder never told it was theirs is not told it was taken either.
     notices: releases

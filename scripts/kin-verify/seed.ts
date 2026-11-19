@@ -4,6 +4,7 @@ import * as NodePath from "node:path";
 
 import { acceptInvite, ownerToken, originOf, runTurn } from "./actors.ts";
 import { benchImport, benchTurns } from "./benchSeed.ts";
+import { lookbookTurns } from "./lookbookSeed.ts";
 import {
   type Instance,
   ORG,
@@ -14,7 +15,7 @@ import {
 } from "./instance.ts";
 import { RpcConnection, VerifyError } from "./rpc.ts";
 
-export const SEEDS = ["lifecycle", "empty", "bench"] as const;
+export const SEEDS = ["lifecycle", "empty", "bench", "lookbook"] as const;
 export type SeedName = (typeof SEEDS)[number];
 
 /** Days from today, as the YYYY-MM-DD the import reads. Every date is relative, so runs agree. */
@@ -409,4 +410,5 @@ export async function seedTurns(instance: Instance, name: SeedName) {
   if (response?.result === undefined || response.result.isError === true)
     throw new VerifyError(`seed: doc_create failed: ${JSON.stringify(doc).slice(0, 300)}`);
   if (name === "bench") await benchTurns(instance);
+  if (name === "lookbook") await lookbookTurns(instance);
 }

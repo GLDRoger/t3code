@@ -1478,18 +1478,28 @@ describe("KinActionExecutor", () => {
     // nothing, since no shared context holds it (the production layer test checks the output).
     assert.notInclude(source("kin/KinServer.ts"), "KinActionExecutor");
 
-    // Leads are the owner's: the `kin lead` CLI, RPCs that check the caller owns the lead, and reads
-    // of only what's the caller's (`profiles`, `contacts`, also by the refresh stream). Nothing else
-    // the server runs (MCP, agent toolkits, routes, schedules) reaches this module, and no RPC
-    // reaches what the CLI does unchecked.
+    // Leads are the owner's: the `kin lead` CLI, RPCs that check the caller owns the lead, reads
+    // of only what's the caller's (`profiles`, `contacts`, also by the refresh stream), and the
+    // owner's own tap on a route card. Nothing else the server runs (MCP, agent toolkits, HTTP
+    // routes, schedules) reaches this module, and no RPC reaches what the CLI does unchecked.
     assert.deepStrictEqual(importers("kin/lead/KinLeadProvision.ts"), [
       "kin/chat/refreshes.ts",
       "kin/chat/rpcHandlers.ts",
       "kin/cli/lead.ts",
       "kin/lead/agentPage.ts",
       "kin/lead/agentUpdate.ts",
+      "kin/lead/routeCard.ts",
       "kin/people/rpcHandlers.ts",
     ]);
+    // A route card grants only on a tap, as the owner-level person who tapped. `kin_hand_off`
+    // imports this file to draw the card and cannot reach the grant.
+    const routeCard = source("kin/lead/routeCard.ts");
+    assert.strictEqual(routeCard.match(/\bLeadProvision\.\w+/g)?.join(), "LeadProvision.allow");
+    assert.match(
+      routeCard,
+      /if \(!\(yield\* ownerLevel\(orgId, tap\.personId\)\)\)[\s\S]*LeadProvision\.allow\(\{\s*editor: \{ _tag: "person", personId: tap\.personId \}/,
+    );
+    assert.notMatch(source("kin/lead/Handoff.ts"), /\brunRoute\b/);
     // An agent's page reads and retires as its checked owner; a turn's model change is the
     // owner's or a co-owner's own words, saved with them as the editor (`updateAgent`).
     assert.match(

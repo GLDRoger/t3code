@@ -19,6 +19,11 @@ import * as Schema from "effect/Schema";
 
 import { CardActionInput } from "./cardPlans.ts";
 
+/** Why a question with fewer than two answers gets no card, and what to do with it instead. */
+export const FEWER_THAN_TWO =
+  "A card needs at least two answers, so nothing was asked: send it as a plain message instead.";
+/** A card outside one person's direct chat: no question is stored, so nothing times it. */
+export const NOTHING_TIMED = "No default and no day were set: this isn't one person's direct chat.";
 /** What `kin_ask` takes: the server assigns option ids, so a lead can't collide them. */
 export const AskInput = Schema.Struct({
   question: KinChoiceCardState.fields.question,
@@ -39,7 +44,8 @@ export const LeadAskInput = Schema.Struct({
       kind: KinChoiceOption.fields.kind,
       action: Schema.optional(CardActionInput),
     }),
-  ).check(Schema.isMinLength(2), Schema.isMaxLength(4)),
+    // Fewer than two is refused in the handler, with what to do instead (`FEWER_THAN_TWO`).
+  ).check(Schema.isMaxLength(4)),
   default: KinTrimmedText.check(Schema.isMaxLength(80)),
   by: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(10))),
   about: Schema.optional(
@@ -71,6 +77,15 @@ export const AskResult = Schema.Struct({
   question: Schema.optional(KinTrimmedText),
   /** The day Kin takes the default, or raises it again when there is none. */
   by: Schema.optional(KinTrimmedText),
+  /**
+   * Why Kin won't take a default on its own (`planAsk`), or `group`: not one person's direct
+   * chat, so no question, default or day was stored.
+   */
+  untaken: Schema.optional(
+    Schema.Literals(["none", "money", "leaves", "action", "repeats", "handed_back", "group"]),
+  ),
+  /** Set when Kin won't take the default on its own: why, and what happens instead. */
+  note: Schema.optional(KinTrimmedText),
 });
 export const CloseInput = Schema.Struct({
   question: KinTrimmedText.check(Schema.isMaxLength(40)),

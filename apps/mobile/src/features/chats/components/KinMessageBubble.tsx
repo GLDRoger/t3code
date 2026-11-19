@@ -250,6 +250,14 @@ export function KinMessageBubble(props: {
       onOpenLink={props.onLinkPress}
       heldFor={props.heldFor ?? null}
       {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
+      {...(onOpenActions === null
+        ? {}
+        : {
+            onLongPress: () => {
+              void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              onOpenActions();
+            },
+          })}
     />
   );
   const page =
