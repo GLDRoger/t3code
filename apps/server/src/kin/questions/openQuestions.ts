@@ -695,14 +695,15 @@ const takeDefault = Effect.fn("KinQuestions.takeDefault")(function* (
     });
     yield* deps.queue.enqueue(event);
   }
-  const went = `No answer by ${dayWord(row.dueAt, now, clock.zone).replace(/^on /, "")}, so ${row.agentName} went with “${row.defaultLabel ?? ""}”.`;
+  // The person's own notice says nobody answered (`tellTaken`): the card only reads as closed.
+  const went = `Went with “${row.defaultLabel ?? ""}”`;
   for (const widgetId of cardIds(row))
     yield* deps.chat.closeReplaced({
       orgId,
       widgetId: KinWidgetId.make(widgetId),
       outcome: {
-        title: `Went with “${row.defaultLabel ?? ""}”`,
-        text: acts ? went : `${went} Say "undo it" in the chat to reverse.`,
+        title: went,
+        text: acts ? `${went}.` : `${went}. Say "undo it" in the chat to reverse.`,
       },
     });
   return true;

@@ -1,3 +1,4 @@
+import { LegendList } from "@legendapp/list/react-native";
 import { KIN_WORK_NEW_COPY, type KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { kinTaskProjectMenu } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { KIN_PICKER_COPY, kinPickerSearchView } from "@t3tools/client-runtime/kin/kinWorkList";
@@ -10,6 +11,13 @@ import { ListChoiceRow } from "../../../components/ui/ListChoiceRow";
 import { ListRow } from "../../../components/ui/ListRow";
 import { SearchField } from "../../../components/ui/SearchField";
 import { useKinPickerSearch, type KinWorkTarget } from "../state/useKinWork";
+
+type PickerRow =
+  | { readonly type: "label"; readonly id: string; readonly label: string }
+  | { readonly type: "choice"; readonly id: string; readonly ref: KinWorkRef | null };
+
+// About seven rows: the picker scrolls within the form rather than lengthening it.
+const LIST_MAX_HEIGHT = 340;
 
 /**
  * A client or project, found by typing part of its name: the row opens a search field over the
@@ -57,6 +65,25 @@ export function KinWorkPlacePicker(props: {
     held: extra !== undefined && held?.key === extra.key ? null : held,
   });
   const groups = kinTaskProjectMenu({ projects: view.open, doneProjects: view.done });
+  const typed = query.trim() !== "";
+  const rows: ReadonlyArray<PickerRow> = [
+    ...(typed || (props.clearable === false && held !== null)
+      ? []
+      : [{ type: "choice" as const, id: "none", ref: null }]),
+    ...(extra === undefined || typed
+      ? []
+      : [{ type: "choice" as const, id: `extra:${extra.key}`, ref: extra }]),
+    ...groups.flatMap((group) => [
+      ...(group.label === null
+        ? []
+        : [{ type: "label" as const, id: `label:${group.label}`, label: group.label }]),
+      ...group.choices.map((choice) => ({
+        type: "choice" as const,
+        id: `${group.label ?? ""}:${choice.key}`,
+        ref: choice,
+      })),
+    ]),
+  ];
   const close = () => {
     setOpen(false);
     search.type("");
@@ -117,40 +144,32 @@ export function KinWorkPlacePicker(props: {
               onChangeText={search.type}
             />
           </View>
-          {query.trim() !== "" || (props.clearable === false && held !== null) ? null : (
-            <ListChoiceRow
-              label={none}
-              selected={held === null}
-              separated
-              onPress={() => pick(null)}
-            />
-          )}
-          {extra === undefined || query.trim() !== "" ? null : (
-            <ListChoiceRow
-              label={extra.title}
-              selected={held?.key === extra.key}
-              separated
-              onPress={() => pick(extra)}
-            />
-          )}
-          {groups.map((group) => (
-            <View key={group.label ?? ""}>
-              {group.label === null ? null : (
+          {/* oxlint-disable-next-line t3code/require-registered-list-scroll -- nested in the form's own registered scroll view */}
+          <LegendList<PickerRow>
+            style={{ maxHeight: LIST_MAX_HEIGHT }}
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
+            data={rows}
+            keyExtractor={(row) => row.id}
+            getItemType={(row) => row.type}
+            extraData={held?.key ?? null}
+            estimatedItemSize={48}
+            recycleItems
+            renderItem={({ item: row }) =>
+              row.type === "label" ? (
                 <Text textRole="footnote" className="px-4 pt-3 pb-1 text-foreground-muted">
-                  {group.label}
+                  {row.label}
                 </Text>
-              )}
-              {group.choices.map((choice) => (
+              ) : (
                 <ListChoiceRow
-                  key={choice.key}
-                  label={choice.title}
-                  selected={choice.key === held?.key}
+                  label={row.ref?.title ?? none}
+                  selected={row.ref === null ? held === null : row.ref.key === held?.key}
                   separated
-                  onPress={() => pick(choice)}
+                  onPress={() => pick(row.ref)}
                 />
-              ))}
-            </View>
-          ))}
+              )
+            }
+          />
           {view.failure !== null ? (
             <ListChoiceRow
               label={view.failure.text}
