@@ -505,11 +505,15 @@ const routes = (phase: Phase) =>
       for (const one of held)
         outcomes.push([
           one.route,
-          (yield* copies(one.chatId, one)) === 1 ? "arrived when free, once" : "not delivered once",
+          (yield* copies(one.chatId, one)) === 1
+            ? "arrived when free, once"
+            : one.route === UNHEARD && (yield* copies(one.chatId, one)) === 0
+              ? "dropped, no longer theirs"
+              : "not delivered once",
         ]);
       const devs = yield* rowsIn(sql, orgId, devsChat);
       const order = held
-        .filter((one) => one.chatId === devsChat)
+        .filter((one) => one.chatId === devsChat && one.route !== UNHEARD)
         .map((one) => devs.findIndex((row) => row.body.includes(one.body)));
       assert.deepStrictEqual(
         order,
@@ -534,11 +538,14 @@ const ROUTES = [
   "hand-back notice → who gave it",
   "a relay answering her message from 5 minutes ago",
 ];
+// Dev hands the task back before his held notice of it posts: it is no longer his to hear of.
+const UNHEARD = ROUTES[9]!;
 /** Every route, `now` arriving at once and the rest held, then each of those delivered once. */
 const expected = (now: ReadonlyArray<string>): Array<readonly [string, string]> => [
   ...ROUTES.map((route) => [route, now.includes(route) ? "arrived" : "held"] as const),
   ...ROUTES.filter((route) => !now.includes(route)).map(
-    (route) => [route, "arrived when free, once"] as const,
+    (route) =>
+      [route, route === UNHEARD ? "dropped, no longer theirs" : "arrived when free, once"] as const,
   ),
 ];
 const ANSWERS = ["the teammate's own reply after a relay", ROUTES[11]!];
@@ -877,6 +884,9 @@ it.effect(
           access, time_zone, work_hours_json)
         VALUES (${zoyaId}, ${orgId}, 'zoya', 'Zoya Sheikh', ${at}, 'member', 'Asia/Kolkata',
           '{"days":[1,2,3,4,5],"start":"10:00","end":"18:00"}')`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+          access, time_zone)
+        VALUES ('dev', ${orgId}, 'dev', 'Dev Kulkarni', ${at}, 'member', 'Asia/Kolkata')`;
         yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
         VALUES ('zoya-session', ${orgId}, ${zoyaId}, 0)`;
         yield* sql`UPDATE kin_people SET display_name = 'Rhea Kapoor' WHERE person_id = ${owner.personId}`;
@@ -915,10 +925,13 @@ it.effect(
             { title: "Invented brochure proof", owner: "Zoya Sheikh", due: "2026-11-17" },
             { title: "Invented price sheet", owner: "Rhea Kapoor" },
             { title: "Invented venue list", owner: "Rhea Kapoor" },
+            { title: "Invented poster", owner: "Rhea Kapoor" },
+            { title: "Invented flyer", owner: "Rhea Kapoor" },
+            { title: "Invented banner", owner: "Rhea Kapoor" },
           ],
         });
         assert.isTrue(created.ok, JSON.stringify(created.value));
-        const [, proof, prices, venues] = (
+        const [, proof, prices, venues, poster, flyer, banner] = (
           created.value.records as ReadonlyArray<{ key: string }>
         ).map((record) => record.key);
 
@@ -1023,23 +1036,86 @@ it.effect(
         });
         assert.isTrue(nudged.ok, JSON.stringify(nudged.value));
 
+        // A third task waits with the others; one moved on to Dev before she is back is never
+        // hers to hear of, and Dev hears of it now; one given with tell: false holds nothing.
+        const more = yield* says(owner, ownerChat, "Give Zoya the poster and the flyer.");
+        for (const key of [poster, flyer]) {
+          const one = yield* call("record_assign", {
+            sourceEventId: more,
+            tasks: [{ key, to: "Zoya Sheikh", reason: "She drew the last one" }],
+          });
+          assert.isTrue(one.ok, JSON.stringify(one.value));
+        }
+        const onward = yield* says(owner, ownerChat, "Actually, the flyer is Dev's.");
+        assert.isTrue(
+          (yield* call("record_assign", {
+            sourceEventId: onward,
+            tasks: [{ key: flyer, to: "Dev Kulkarni", reason: "Zoya is away" }],
+          })).ok,
+        );
+        const quiet = yield* says(owner, ownerChat, "Give Zoya the banner, don't tell her yet.");
+        assert.isTrue(
+          (yield* call("record_assign", {
+            sourceEventId: quiet,
+            tell: false,
+            tasks: [{ key: banner, to: "Zoya Sheikh", reason: "She has the files" }],
+          })).ok,
+        );
+        const holders = yield* sql<{ key: string; owner: string }>`SELECT key, owner_id AS owner
+          FROM kin_records WHERE org_id = ${orgId} AND key IN ${sql.in([prices!, venues!, poster!, flyer!, banner!])}
+          ORDER BY key`;
+        assert.deepStrictEqual(Object.fromEntries(holders.map((row) => [row.key, row.owner])), {
+          [prices!]: zoyaId,
+          [venues!]: zoyaId,
+          [poster!]: zoyaId,
+          [flyer!]: "dev",
+          [banner!]: zoyaId,
+        });
+        const told = (rows: ReadonlyArray<{ body: string }>) =>
+          rows.filter((row) =>
+            [prices!, venues!, poster!, flyer!, banner!].some((key) => row.body.includes(key)),
+          );
+        assert.deepStrictEqual(told(yield* rowsIn(sql, orgId, zoyasChat)), []);
+        const [devsChat] = yield* sql<{ chatId: KinChatId }>`SELECT chat_id AS "chatId"
+          FROM kin_chats WHERE org_id = ${orgId} AND direct_key = ${`dev:${chief}`}`;
+
         // Thursday 10:00 her time, her first working hour back: each goes once.
         const back = Date.UTC(2026, 10, 19, 4, 30);
         const waiting = yield* sql<{ at: number }>`SELECT deliver_at AS at FROM kin_held_posts
         WHERE org_id = ${orgId} AND person_id = ${zoyaId} AND delivered_at IS NULL`;
-        assert.deepStrictEqual(waiting, [{ at: back }, { at: back }, { at: back }, { at: back }]);
+        assert.deepStrictEqual(
+          waiting,
+          Array.from({ length: 5 }, () => ({ at: back })),
+        );
         yield* TestClock.setTime(back - 60_000);
         assert.strictEqual(yield* deliverHeld(orgId, chats), 0);
         yield* TestClock.setTime(back);
-        assert.strictEqual(yield* deliverHeld(orgId, chats), 4);
+        assert.strictEqual(yield* deliverHeld(orgId, chats), 3);
         assert.strictEqual(yield* deliverHeld(orgId, chats), 0);
         const hers = yield* rowsIn(sql, orgId, zoyasChat);
-        for (const said of [
-          `gave you ${prices}`,
-          venues!,
-          "The client signed.",
-          "anything blocking it?",
-        ])
+        const [notice, ...again] = told(hers);
+        assert.deepStrictEqual(again, []);
+        // One message, worded from each task as it stands now, whoever gave it.
+        assert.strictEqual(
+          notice?.body,
+          [
+            "Chief of staff gave you 2 tasks:",
+            `• ${prices} Invented price sheet. Why: She knows the client`,
+            `• ${poster} Invented poster. Why: She drew the last one`,
+            "",
+            `Rhea Kapoor gave you ${venues} Invented venue list.`,
+          ].join("\n"),
+        );
+        for (const key of [flyer!, banner!])
+          assert.isFalse(
+            hers.some((row) => row.body.includes(key)),
+            `${key}: ${JSON.stringify(hers)}`,
+          );
+        assert.lengthOf(
+          (yield* rowsIn(sql, orgId, devsChat!.chatId)).filter((row) => row.body.includes(flyer!)),
+          1,
+        );
+        for (const said of ["The client signed.", "anything blocking it?"])
           assert.strictEqual(
             hers.filter((row) => row.body.includes(said)).length,
             1,

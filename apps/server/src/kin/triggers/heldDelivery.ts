@@ -14,6 +14,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { WriteAudience } from "../chat/KinChatRepository.ts";
 import type { KinChatService } from "../chat/KinChatService.ts";
+import { heldGivenBody, isGivenHeld } from "../work/assignNotices.ts";
 import { personQuietUntil } from "./quietHold.ts";
 
 /** A delivered held line's message id is this before its first hold's id. */
@@ -46,11 +47,11 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
     WHERE org_id = ${orgId} AND delivered_at IS NULL AND deliver_at <= ${now}
     ORDER BY held_at, rowid`;
   const groups = new Map<string, Array<(typeof rows)[number]>>();
-  for (const row of rows)
-    groups.set(`${row.chatId}\0${row.personId}\0${row.kind}`, [
-      ...(groups.get(`${row.chatId}\0${row.personId}\0${row.kind}`) ?? []),
-      row,
-    ]);
+  for (const row of rows) {
+    // Tasks given while they waited post as one message, whoever gave them.
+    const key = `${row.chatId}\0${row.personId}\0${isGivenHeld(row.kind) ? "given" : row.kind}`;
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
   let posted = 0;
   for (const group of groups.values()) {
     const first = group[0]!;
@@ -59,6 +60,18 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
     if (quietUntil !== undefined) {
       yield* sql`UPDATE kin_held_posts SET deliver_at = ${quietUntil}
         WHERE org_id = ${orgId} AND hold_id IN ${sql.in(group.map((row) => row.holdId))}`;
+      continue;
+    }
+    const ids = group.map((row) => row.holdId);
+    const body = isGivenHeld(first.kind)
+      ? yield* heldGivenBody(
+          orgId,
+          first.personId,
+          group.map((row) => row.kind),
+        )
+      : [...new Set(group.map((row) => row.body))].join("\n\n");
+    if (body === undefined) {
+      yield* sql`DELETE FROM kin_held_posts WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
       continue;
     }
     // One that can't post (they left the chat) stays held and doesn't block the others.
@@ -70,7 +83,7 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
             chatId: KinChatId.make(first.chatId),
             messageId: KinMessageId.make(`${HELD_ID}${first.holdId}`),
             audience: first.audience,
-            body: [...new Set(group.map((row) => row.body))].join("\n\n"),
+            body,
             ...(first.agentId === null ? {} : { from: first.agentId }),
             ...(first.waits === 1 ? { waitingFor: first.personId } : {}),
             ...Option.match(decodeRelay(first.relay ?? undefined), {
@@ -79,7 +92,7 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
             }),
           });
           yield* sql`UPDATE kin_held_posts SET delivered_at = ${now}
-          WHERE org_id = ${orgId} AND hold_id IN ${sql.in(group.map((row) => row.holdId))}`;
+          WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
         }),
       )
       .pipe(
