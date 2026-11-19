@@ -10,6 +10,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
@@ -44,6 +45,7 @@ import {
   MAX_REPORTED_DEPTH,
   toolOutcome,
 } from "../telemetry/ProviderDimensions.ts";
+import { plainly } from "./plainParameterIssue.ts";
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
@@ -547,13 +549,18 @@ const decodeAsAdvertised = <Tools extends Record<string, Tool.Any>>(
   toolkit: Toolkit.Toolkit<Tools>,
 ): Toolkit.Toolkit<Tools> =>
   Toolkit.make(
-    ...Object.values(toolkit.tools).map((tool) =>
-      tool.setParameters(
+    ...Object.values(toolkit.tools).map((tool) => {
+      const codec = Schema.toCodecJson(tool.parametersSchema);
+      return tool.setParameters(
         advertisedArgumentsOnly(tool).pipe(
-          Schema.decodeTo(Schema.toCodecJson(tool.parametersSchema)),
+          Schema.decodeTo(Schema.Record(Schema.String, Schema.Unknown), {
+            decode: plainly(codec),
+            encode: SchemaGetter.passthrough(),
+          }),
+          Schema.decodeTo(codec),
         ),
-      ),
-    ),
+      );
+    }),
   ) as unknown as Toolkit.Toolkit<Tools>;
 
 const parameterValidationMessage = (error: unknown) =>

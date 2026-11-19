@@ -21,6 +21,7 @@ import {
   KIN_TEXT_LOCALE,
   calendarTimeMillis,
   formatKinLate,
+  formatKinWhen,
   isCalendarDay,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -84,6 +85,7 @@ import {
   notFound,
   owedInvoices,
   ownerZone,
+  parseChanges,
   principalId,
   type RecordRow,
   sensitiveNow,
@@ -2189,6 +2191,81 @@ const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function* (
   });
 });
 
+/** A person's change in the History's words (client-runtime `kinWorkChangeText`), for a refusal. */
+const personDid = (
+  list: string,
+  kind: string,
+  fieldsJson: string,
+  holder: (text: string | null) => string | undefined,
+) => {
+  const fields = parseChanges(fieldsJson);
+  const state = fields.find((field) => field.field === "state");
+  const closes = list === "clients" || list === "contacts";
+  if (kind === "created") return "added it";
+  if (state?.from === "done" || state?.from === "dropped")
+    if (state.to !== "done" && state.to !== "dropped") return "reopened it";
+  if (state?.to === "doing") return "started on it";
+  if (state?.to === "done")
+    return closes ? "closed it" : list === "invoices" ? "marked it paid" : "finished it";
+  if (state?.to === "dropped")
+    return closes
+      ? "closed it"
+      : list === "invoices" || list === "receipts"
+        ? "voided it"
+        : "dropped it";
+  if (state?.to === "open") return "put it back to not started";
+  if (state?.to === "waiting") return "marked it waiting";
+  const owner = fields.find((field) => field.field === "owner");
+  if (owner !== undefined) return `gave it to ${holder(owner.to) ?? "someone"}`;
+  if (fields.length === 1 && fields[0]?.field === "title") return "renamed it";
+  return fields.length === 0
+    ? "updated it"
+    : `changed its ${fields.map((field) => field.field).join(", ")}`;
+};
+/** K014: with no expectedRev, a person's change since the turn began is not written over blind. */
+const unseenPersonChange = Effect.fn("KinWorkTools.unseenPersonChange")(function* (
+  lead: Lead,
+  before: RecordRow,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  // Kin's own follow-up to a person's change (a label kept on) doesn't hide it.
+  const [last] = yield* sql<{
+    at: number;
+    actorKind: string;
+    actorId: string | null;
+    kind: string;
+    fieldsJson: string;
+  }>`SELECT at, actor_kind AS "actorKind", actor_id AS "actorId", kind,
+      fields_json AS "fieldsJson"
+    FROM kin_record_changes WHERE org_id = ${lead.orgId} AND record_id = ${before.recordId}
+      AND actor_kind <> 'system'
+    ORDER BY seq DESC LIMIT 1`;
+  if (last === undefined || last.actorKind !== "person" || last.actorId === null) return;
+  // The change that woke the turn was made before its claim, so it is not after it.
+  if (last.at <= lead.startedAt) return;
+  const named = yield* namer(lead);
+  const shown = (who: string | undefined) => (who === "owner" ? "the owner" : who);
+  const holder = (text: string | null) => {
+    const [kind, ...rest] = (text ?? "").split(":");
+    const id = rest.join(":");
+    if (text === `person:${last.actorId}`) return "themselves";
+    return kind === "agent"
+      ? named({ _tag: "agent", agentId: KinAgentId.make(id) })
+      : kind === "person"
+        ? shown(named({ _tag: "person", personId: KinPersonId.make(id) }))
+        : undefined;
+  };
+  const name = shown(named({ _tag: "person", personId: KinPersonId.make(last.actorId) }));
+  const at = formatKinWhen(last.at, "time", {
+    zone: yield* ownerZone(lead.orgId),
+    locale: KIN_TEXT_LOCALE,
+  });
+  return yield* new KinChatError({
+    reason: "conflict",
+    message: `${before.key} changed since your turn began (${name ?? "a person"} ${personDid(listOf(before.registerId), last.kind, last.fieldsJson, holder)} at ${at}). Read it again with record_get and pass expectedRev.`,
+  });
+});
+
 type Change = Omit<typeof UpdateInput.Type, "key" | "keys">;
 const runUpdate = Effect.fnUntraced(function* (
   lead: Lead,
@@ -2219,7 +2296,13 @@ const runUpdateMany = Effect.fnUntraced(function* (lead: Lead, input: typeof Upd
     entries: done.map((one) => one.result),
   };
 });
-const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: Change) {
+/** `assign` takes no expectedRev, so a person's newer change can't refuse it to a dead end. */
+const updateCore = Effect.fnUntraced(function* (
+  lead: Lead,
+  key: string,
+  input: Change,
+  via: "update" | "assign" = "update",
+) {
   yield* admitted(lead, "record_update", { ...input, key });
   const records = yield* KinRecords;
   const team = yield* viewOf(lead);
@@ -2290,6 +2373,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     ...money,
     ...spine.at,
   };
+  if (via === "update" && input.expectedRev === undefined) yield* unseenPersonChange(lead, before);
   const seenBefore = yield* teamPairs(lead.orgId, [before.recordId]);
   const after = yield* records.update(lead.orgId, writer, key, written, input.expectedRev);
   const seenAfter = new Set(
@@ -2349,13 +2433,18 @@ const runAssign = Effect.fnUntraced(function* (lead: Lead, input: typeof AssignI
     (task) => task.key,
     (task) =>
       Effect.gen(function* () {
-        const { notices, held } = yield* updateCore(lead, task.key, {
-          sourceEventId: input.sourceEventId,
-          owner: task.to,
-          reason: task.reason,
-          ...(task.due === undefined ? {} : { due: task.due }),
-          ...(input.tell === undefined ? {} : { tell: input.tell }),
-        });
+        const { notices, held } = yield* updateCore(
+          lead,
+          task.key,
+          {
+            sourceEventId: input.sourceEventId,
+            owner: task.to,
+            reason: task.reason,
+            ...(task.due === undefined ? {} : { due: task.due }),
+            ...(input.tell === undefined ? {} : { tell: input.tell }),
+          },
+          "assign",
+        );
         const after = yield* records.get(lead.orgId, task.key);
         return {
           notices,

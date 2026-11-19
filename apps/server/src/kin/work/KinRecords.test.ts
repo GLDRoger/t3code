@@ -315,14 +315,23 @@ it.effect("record_update changes only named fields, logs each change, and both o
       state: "doing",
     });
     assert.deepStrictEqual(moved, { key: "W-2", rev: 2, state: "doing", changed: ["state"] });
-    // The owner retitles it from a client while the lead moves its due date: both land.
-    yield* records.update(
-      orgId,
-      { actor: { _tag: "person", personId: ownerId }, via: "owner", askedBy: ownerId },
-      "W-2",
-      { title: "Draft the invented pricing page v2" },
-    );
-    yield* LeadWork.update(scopeOf(lead), { key: "W-2", sourceEventId: "ask-event", due: null });
+    // K014: a teammate retitles it during the turn; the lead's blind write is refused, a read one lands.
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+        dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+      VALUES (${orgId}, 'America/New_York', '08:00', '18:00', '02:00', 0, 1, '09:00', '[]')`;
+    yield* TestClock.setTime(Date.parse("2026-11-11T17:50:00Z"));
+    const mateWrites = { actor: mate, via: "owner" as const, askedBy: mateId };
+    yield* records.update(orgId, mateWrites, "W-2", {
+      title: "Draft the invented pricing page v2",
+    });
+    const blind = { key: "W-2", sourceEventId: "ask-event", due: null };
+    assert.deepInclude(yield* Effect.flip(LeadWork.update(scopeOf(lead), blind)), {
+      reason: "conflict",
+      message:
+        "W-2 changed since your turn began (Mate renamed it at 12:50). Read it again with record_get and pass expectedRev.",
+    });
+    yield* LeadWork.update(scopeOf(lead), { ...blind, expectedRev: 3 });
     const got = yield* LeadWork.get(scopeOf(lead), { key: "W-2" });
     assert.include(got, { title: "Draft the invented pricing page v2", state: "doing", rev: 4 });
     assert.notProperty(got, "due");
@@ -330,7 +339,7 @@ it.effect("record_update changes only named fields, logs each change, and both o
       got.history.map((line) => [line.by, line.change]),
       [
         ["Lead lead (you)", "due: cleared"],
-        ["owner", "title: Draft the invented pricing page v2"],
+        ["Mate", "title: Draft the invented pricing page v2"],
         ["Lead lead (you)", "state: doing"],
         ["Lead lead (you)", "created"],
       ],
@@ -355,6 +364,21 @@ it.effect("record_update changes only named fields, logs each change, and both o
       ),
       { reason: "conflict" },
     );
+    // One entry a person changed this turn refuses a keys call whole, by name; one changed before
+    // the turn began does not.
+    yield* records.update(orgId, mateWrites, "W-3", { notes: "Invented: mate's note" });
+    const tripped = yield* Effect.flip(
+      LeadWork.updateMany(scopeOf(lead), {
+        keys: ["W-1", "W-3"],
+        sourceEventId: "ask-event",
+        state: "doing",
+      }),
+    );
+    assert.match(tripped.message, /^W-3 changed since your turn began \(Mate changed its notes/);
+    assert.include(tripped.message, "Nothing in this call was saved");
+    assert.include(yield* LeadWork.get(scopeOf(lead), { key: "W-1" }), { rev: 1, state: "open" });
+    yield* sql`UPDATE kin_wakeups SET started_at = ${Date.parse("2026-11-11T18:00:00Z")}
+      WHERE wakeup_id = 'wake'`;
     // V24: keys changes several entries the same way, all or none.
     const both = yield* LeadWork.updateMany(scopeOf(lead), {
       keys: ["W-1", "W-3"],
@@ -365,7 +389,7 @@ it.effect("record_update changes only named fields, logs each change, and both o
       both.entries.map((one) => [one.key, one.rev, one.changed]),
       [
         ["W-1", 2, ["state"]],
-        ["W-3", 2, ["state"]],
+        ["W-3", 3, ["state"]],
       ],
     );
     const none = yield* Effect.flip(
@@ -2853,7 +2877,10 @@ it.effect(
           "Lead lead gave you W-1 Invented: draft the onboarding copy. Why: Invented: after the launch.",
         ],
       );
-      // Held, then moved on: the one never told hears nothing of it, and the mark goes.
+      // Held, then moved on: the one never told hears nothing of it, and the mark goes. A new
+      // turn, so the owner's hand moves above came before it.
+      yield* sql`UPDATE kin_wakeups SET started_at = ${yield* Clock.currentTimeMillis}
+        WHERE wakeup_id = 'wake'`;
       yield* LeadWork.update(scope, {
         sourceEventId: "ask-event",
         key: "W-3",
