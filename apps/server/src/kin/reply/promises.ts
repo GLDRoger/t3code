@@ -88,6 +88,8 @@ export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wak
     UNION ALL SELECT 1 FROM kin_held_posts WHERE org_id = ${wake.orgId}
       AND (substr(kind, 1, ${relayPrefix(wake.wakeupId).length}) = ${relayPrefix(wake.wakeupId)}
         OR (held_at >= ${wake.startedAt} AND substr(kind, 1, 11) = 'kin-assign-'))
+    UNION ALL SELECT 1 FROM kin_questions WHERE org_id = ${wake.orgId}
+      AND agent_id = ${wake.agentId} AND for_chat_id = ${wake.chatId} AND asked_at >= ${wake.startedAt}
     UNION ALL SELECT 1 FROM kin_pulse_nudges WHERE org_id = ${wake.orgId}
       AND agent_id = ${wake.agentId} AND sent_at >= ${wake.startedAt}
     UNION ALL SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${wake.orgId}
