@@ -3,6 +3,7 @@ import {
   KinChatError,
   KinChatId,
   KinMemoryItemId,
+  type KinBriefSaveInput,
   type KinCheckInActInput,
   type KinCheckInSaveInput,
   type KinOrgId,
@@ -14,9 +15,9 @@ import type * as SqlError from "effect/sql/SqlError";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
-import { theOwner } from "../work/ownerWork.ts";
+import { theOwner, viewerOf } from "../work/ownerWork.ts";
 import { ownerZone } from "../work/recordRows.ts";
-import { onHostClock } from "./checkInSeeds.ts";
+import { BRIEF_SLUGS, onHostClock } from "./checkInSeeds.ts";
 
 /**
  * Check-ins as Kin Settings shows them, in the owner's time. Run now, off, on and remove are taps
@@ -151,4 +152,92 @@ export const act = Effect.fn("KinCheckIns.act")(function* (
       break;
   }
   return yield* read(input.orgId);
+}, unread);
+
+/**
+ * The seeded check-ins this person receives, as their briefs: those whose agent posts to them.
+ * The same rows the chat moves (`kin_schedule` with replaces) and Check-ins lists.
+ */
+const briefsOf = Effect.fn("KinBriefs.read")(function* (orgId: KinOrgId, personId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const zone = yield* ownerZone(orgId);
+  const now = yield* Clock.currentTimeMillis;
+  const host = KinSchedules.hostTimeZone();
+  const briefs = [];
+  for (const kind of BRIEF_SLUGS) {
+    const row = yield* KinSchedules.readSchedule(sql, orgId, `checkin-${kind}`);
+    if (row === undefined || row.deletedAt !== null || row.checkIn !== 1) continue;
+    const [agent] = yield* sql<{ owner: string }>`SELECT owner_person_id AS owner FROM kin_agents
+      WHERE org_id = ${orgId} AND agent_id = ${row.agentId} AND retired_at IS NULL`;
+    if (agent?.owner !== personId) continue;
+    const task = yield* KinSchedules.readNativeTask(sql, row.taskId);
+    const every = task === undefined ? undefined : KinSchedules.everyOf(task, row.looseAt);
+    if (task === undefined || every === undefined) continue;
+    const own = onHostClock(every.at, every.days, host, zone, now);
+    briefs.push({
+      kind,
+      at: own.at,
+      days: own.days,
+      around: KinSchedules.isAround(task, row.looseAt),
+      on: (row.pendingEnabled ?? task.enabled) === 1,
+      row,
+      task,
+    });
+  }
+  return { zone, briefs };
+});
+const shown = (read: Effect.Success<ReturnType<typeof briefsOf>>) => ({
+  zone: read.zone,
+  briefs: read.briefs.map(({ kind, at, days, around, on }) => ({ kind, at, days, around, on })),
+});
+
+export const briefs = Effect.fn("KinBriefs.list")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  orgId: KinOrgId,
+) {
+  const { person } = yield* viewerOf(people, orgId);
+  return shown(yield* briefsOf(orgId, person.personId));
+}, unread);
+
+/** A new time or days saves the task now; on and off are taps the schedules' next pass applies. */
+export const saveBrief = Effect.fn("KinBriefs.save")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinBriefSaveInput,
+) {
+  const { person } = yield* viewerOf(people, input.orgId);
+  const brief = (yield* briefsOf(input.orgId, person.personId)).briefs.find(
+    (one) => one.kind === input.kind,
+  );
+  if (brief === undefined)
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: "That brief isn't yours to change.",
+    });
+  const sql = yield* SqlClient.SqlClient;
+  const now = yield* Clock.currentTimeMillis;
+  const { row, task } = brief;
+  if (input.at !== brief.at || input.days.join() !== brief.days.join()) {
+    const schedules = yield* KinSchedules.KinSchedules;
+    const zone = yield* ownerZone(input.orgId);
+    yield* schedules.save({
+      orgId: input.orgId,
+      agentId: row.agentId,
+      scheduleId: row.scheduleId,
+      existing: true,
+      chatId: row.chatId,
+      // Not the seed's: a default moved here stays where it was put (`followOwnerZone`).
+      sourceEvent: `kin-settings:briefs:${input.orgId}`,
+      saidBy: person.personId,
+      title: task.title,
+      prompt: task.prompt,
+      every: onHostClock(input.at, input.days, zone, KinSchedules.hostTimeZone(), now),
+      around: row.looseAt !== null,
+      checkIn: true,
+      now,
+    });
+  }
+  if (input.on !== brief.on)
+    yield* sql`UPDATE kin_schedules SET pending_enabled = ${input.on ? 1 : 0}, updated_at = ${now}
+      WHERE task_id = ${row.taskId} AND deleted_at IS NULL`;
+  return shown(yield* briefsOf(input.orgId, person.personId));
 }, unread);

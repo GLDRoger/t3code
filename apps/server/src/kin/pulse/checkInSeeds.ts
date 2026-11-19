@@ -9,16 +9,22 @@ import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { ownerZone } from "../work/recordRows.ts";
 
 const WEEKDAYS = [1, 2, 3, 4, 5];
-/** The check-ins every company starts with, in the owner's time; he moves or removes them in chat. */
+const EVERY_DAY = [0, 1, 2, 3, 4, 5, 6];
+/**
+ * The check-ins every company starts with, in the owner's time; he moves or removes them in chat
+ * or Settings. `seed` marks a batch written once per company: one added later gets its own.
+ */
 const CHECK_IN_SEEDS = [
   {
+    seed: "check-ins",
     slug: "morning",
     title: "Morning check-in",
     at: "09:30",
-    days: WEEKDAYS,
+    days: EVERY_DAY,
     what: "Morning check-in: look over what needs attention and what came in since the last check-in, and move what you can.",
   },
   {
+    seed: "check-ins",
     slug: "afternoon",
     title: "Afternoon check-in",
     at: "15:30",
@@ -26,13 +32,26 @@ const CHECK_IN_SEEDS = [
     what: "Afternoon check-in: look over what needs attention and what came in since the last check-in, and move what you can.",
   },
   {
+    seed: "check-ins",
     slug: "weekly",
     title: "Weekly brief",
     at: "09:00",
     days: [1],
     what: "Weekly brief: in one short message, tell the owner what slipped last week, what is due this week and what needs his decision.",
   },
+  {
+    seed: "check-in-evening",
+    slug: "evening",
+    title: "Evening summary",
+    at: "18:30",
+    days: WEEKDAYS,
+    what: "Evening summary.",
+  },
 ] as const;
+
+/** The seeded check-ins a person sets in Settings as their briefs, by `checkin-<slug>`. */
+export const BRIEF_SLUGS = ["morning", "afternoon", "evening"] as const;
+export type BriefSlug = (typeof BRIEF_SLUGS)[number];
 
 const offsetMinutes = (zone: string, at: number) =>
   DateTime.zonedOffset(DateTime.makeZonedUnsafe(at, { timeZone: zone })) / 60_000;
@@ -99,16 +118,19 @@ export const followOwnerZone = Effect.fn("KinPulse.followOwnerZone")(function* (
 
 /**
  * Writes the default check-ins once per company, for the Chief of staff, once it has one; true
- * once written, now or before. A company that removed them doesn't get them back.
+ * once every batch is written, now or before. A company that removed them doesn't get them back.
  */
 export const seedCheckIns = Effect.fn("KinPulse.seedCheckIns")(function* (
   orgId: KinOrgId,
   schedules: KinSchedules.KinSchedules["Service"],
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [done] = yield* sql`SELECT 1 FROM kin_pulse_seeds
-    WHERE org_id = ${orgId} AND seed = 'check-ins'`;
-  if (done !== undefined) return true;
+  const done = new Set(
+    (yield* sql<{ seed: string }>`SELECT seed FROM kin_pulse_seeds
+      WHERE org_id = ${orgId} ORDER BY seed`).map((row) => row.seed),
+  );
+  const due = CHECK_IN_SEEDS.filter((seed) => !done.has(seed.seed));
+  if (due.length === 0) return true;
   const chief = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
   if (chief === undefined) return false;
   const [owner] = yield* sql<{ personId: string }>`SELECT owner_person_id AS "personId"
@@ -116,7 +138,7 @@ export const seedCheckIns = Effect.fn("KinPulse.seedCheckIns")(function* (
   if (owner === undefined) return false;
   const now = yield* Clock.currentTimeMillis;
   const zone = yield* ownerZone(orgId);
-  for (const seed of CHECK_IN_SEEDS)
+  for (const seed of due)
     yield* schedules.save({
       orgId,
       agentId: KinAgentId.make(chief.agentId),
@@ -132,7 +154,8 @@ export const seedCheckIns = Effect.fn("KinPulse.seedCheckIns")(function* (
       checkIn: true,
       now,
     });
-  yield* sql`INSERT INTO kin_pulse_seeds (org_id, seed, seeded_at)
-    VALUES (${orgId}, 'check-ins', ${now}) ON CONFLICT (org_id, seed) DO NOTHING`;
+  for (const seed of new Set(due.map((one) => one.seed)))
+    yield* sql`INSERT INTO kin_pulse_seeds (org_id, seed, seeded_at)
+      VALUES (${orgId}, ${seed}, ${now}) ON CONFLICT (org_id, seed) DO NOTHING`;
   return true;
 });

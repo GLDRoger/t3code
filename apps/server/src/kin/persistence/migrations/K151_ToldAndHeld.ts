@@ -36,7 +36,7 @@ export default Effect.gen(function* () {
     rang_at INTEGER NOT NULL,
     PRIMARY KEY (org_id, person_id)
   )`;
-  // 21:00 to 08:00 was a default no one could change; the owner's own answer is 22:00 to 07:00.
+  // 21:00 to 08:00 was a default no one could change; 22:00 to 07:00 is the new default.
   yield* sql`UPDATE kin_trigger_settings SET quiet_hours_json = '{"from":"22:00","to":"07:00"}'
     WHERE quiet_hours_json = '{"from":"21:00","to":"08:00"}'`;
   yield* sql`CREATE INDEX IF NOT EXISTS kin_held_posts_due

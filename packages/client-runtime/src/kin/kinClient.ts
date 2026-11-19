@@ -22,6 +22,7 @@ import {
   type KinDocsSubscribeInput,
   type KinBudgetGetInput,
   type KinGoalsInput,
+  type KinBriefsInput,
   type KinCheckInsInput,
   type KinOpenReadInput,
   type KinPulseListInput,
@@ -279,6 +280,11 @@ export function makeKinClient<R, ER>(
     tag: "kin.checkIns.list",
   });
   const readCheckIns = kinGuardedRead(checkInsRead);
+  const briefsRead = createKinRpcCommand(runtime, {
+    label: "kin:briefs:read",
+    tag: "kin.briefs.list",
+  });
+  const readBriefs = kinGuardedRead(briefsRead);
 
   const workSummaryRead = createKinRpcCommand(runtime, {
     label: "kin:work:summary:read",
@@ -1196,6 +1202,19 @@ export function makeKinClient<R, ER>(
       label: "kin:checkIns:act",
       tag: "kin.checkIns.act",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.scheduleId },
+    }),
+    /** The caller's own briefs in the company's time, for Settings; none for who gets none. */
+    briefs: createEnvironmentQueryAtomFamily(runtime, {
+      label: "kin:briefs",
+      execute: Effect.fn("KinClient.briefs")(function* (input: KinBriefsInput) {
+        return yield* readBriefs(input);
+      }),
+      staleTimeMs: 30_000,
+    }),
+    briefSave: createKinRpcCommand(runtime, {
+      label: "kin:briefs:save",
+      tag: "kin.briefs.save",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.kind },
     }),
     budget: createKinQueryAtomFamily(runtime, {
       label: "kin:budget",

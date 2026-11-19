@@ -73,6 +73,7 @@ import {
 } from "./classify.ts";
 import { KinPresence, syncQueued } from "./KinPresence.ts";
 import { missingCard, NUDGE_PREFIX, relayPrefix, unkeptPromise } from "./promises.ts";
+import { weeklyFigures } from "../pulse/weekly.ts";
 import { flagTextQuestion } from "../questions/openQuestions.ts";
 
 export { rescueMessageId };
@@ -175,6 +176,8 @@ type Wake = {
   // Events a steer carries, by its number, until its message shows in the thread.
   readonly steerEvents: Map<number, ReadonlyArray<string>>;
   movedNoticed: boolean;
+  // The weekly brief's figures went into its page.
+  weekShown: boolean;
   lastOutputAt: number;
   state: KinPresenceState;
   label: string | null;
@@ -493,9 +496,17 @@ const make = Effect.gen(function* () {
         AND agent_id = ${wake.agentId} AND chat_id = ${wake.lane.chatId} AND message_id IS NULL LIMIT 1`;
     return rows.length > 0;
   });
-  // The morning check-in reads as a page with sections however it was written: its reply gets a
-  // heading when it opens with none. Only the bridge's own reply; a tool post stays as written.
-  // The id is the seeded morning check-in's (`pulse/checkIn.ts`).
+  // The seeded brief this wake-up runs alone (`pulse/checkInSeeds.ts`), not a turn someone asked.
+  const briefIn = (wake: Wake, scheduleIds: ReadonlyArray<string>) =>
+    sql`SELECT 1 FROM kin_events e WHERE e.org_id = ${wake.orgId}
+      AND e.wakeup_id = ${wake.wakeupId} AND e.tag = 'pulse'
+      AND json_extract(e.json, '$.checkIn.scheduleId') IN ${sql.in(scheduleIds)}
+      AND NOT EXISTS (SELECT 1 FROM kin_events m WHERE m.org_id = e.org_id
+        AND m.wakeup_id = e.wakeup_id AND m.tag = 'chat.message')
+      LIMIT 1`.pipe(Effect.map((rows) => rows.length > 0));
+  // The morning brief and evening summary read as a page with sections however they were written:
+  // the reply gets a heading when it opens with none. Only the bridge's own reply; a tool post
+  // stays as written.
   const underMorningHeading = Effect.fn("KinReplyBridge.underMorningHeading")(function* (
     wake: Wake,
     text: string,
@@ -506,14 +517,27 @@ const make = Effect.gen(function* () {
       kinPageSections(text).some(({ title }) => title !== null)
     )
       return text;
-    const morning = yield* sql`SELECT 1 FROM kin_events e WHERE e.org_id = ${wake.orgId}
-      AND e.wakeup_id = ${wake.wakeupId} AND e.tag = 'pulse'
-      AND json_extract(e.json, '$.checkIn.scheduleId') = 'checkin-morning'
-      AND NOT EXISTS (SELECT 1 FROM kin_events m WHERE m.org_id = e.org_id
-        AND m.wakeup_id = e.wakeup_id AND m.tag = 'chat.message')
-      LIMIT 1`;
-    return morning.length > 0 ? `## Today\n\n${text}` : text;
+    return (yield* briefIn(wake, ["checkin-morning", "checkin-evening"]))
+      ? `## Today\n\n${text}`
+      : text;
   });
+  // The weekly brief's page carries Kin's own figures as its last section, once, under the
+  // agent's words, so no figure there is one a model picked or retyped.
+  const placeWeekFigures = Effect.fn("KinReplyBridge.placeWeekFigures")(
+    function* (wake: Wake) {
+      const slot = wake.slots.get(-1);
+      if (wake.weekShown || wake.withheld !== null || slot === undefined) return;
+      if (!(yield* briefIn(wake, ["checkin-weekly"]))) return;
+      wake.weekShown = true;
+      const figures = yield* weeklyFigures({
+        orgId: wake.orgId,
+        now: yield* Clock.currentTimeMillis,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      const result = yield* extend(wake, slot, figures, -1);
+      if (result._tag === "withheld") wake.withheld = result.reason;
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Kin weekly figures not placed", { cause })),
+  );
   const post = Effect.fn("KinReplyBridge.post")(function* (wake: Wake, segment: Segment) {
     const end = (messageId: KinMessageId | null) =>
       segment.drafting
@@ -1054,6 +1078,7 @@ const make = Effect.gen(function* () {
             yield* post(wake, note);
           }
           yield* flushOverflow(wake);
+          yield* placeWeekFigures(wake);
           yield* settleFigures(wake);
           yield* keptPromises(wake);
           // A reply ending on a question to the one person here: stored as open, for every agent.
@@ -1322,6 +1347,7 @@ const make = Effect.gen(function* () {
         heard: [{ ordinal: -1, eventIds: own.map((row) => row.eventId) }],
         steerEvents: new Map(),
         movedNoticed: false,
+        weekShown: false,
         lastOutputAt: now,
         state: "starting",
         label: PHASE_LABELS.preparing,

@@ -73,6 +73,7 @@ import {
 } from "./classify.ts";
 import { KinPresence } from "./KinPresence.ts";
 import * as ReplyBridge from "./KinReplyBridge.ts";
+import { WEEK_FIGURES_TITLE } from "../pulse/weekly.ts";
 
 const threadId = ThreadId.make("lead-thread");
 const agentId = KinAgentId.make("lead");
@@ -395,8 +396,9 @@ it.effect.each([
   ["checkin-morning", "One client has gone quiet. A reminder is drafted.", true],
   ["checkin-morning", "## Needs you\nOne card waits.", false],
   ["checkin-afternoon", "One client has gone quiet. A reminder is drafted.", false],
+  ["checkin-evening", "Nothing moved today.", true],
 ] as const)(
-  "the morning check-in's reply opens under a heading when written with none (%s, %s)",
+  "the morning and evening briefs' reply opens under a heading when written with none (%s, %s)",
   ([scheduleId, written, headed]) =>
     Effect.gen(function* () {
       const { fake, runId, complete, sql, chatId } = yield* setup({
@@ -427,6 +429,43 @@ it.effect.each([
         ],
       );
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("the weekly brief's page carries Kin's own figures once, as its last section", () =>
+  Effect.gen(function* () {
+    const { fake, runId, complete, sql, chatId } = yield* setup({
+      event: () =>
+        Effect.succeed((base) => ({
+          ...base,
+          _tag: "pulse",
+          provenance: { _tag: "system" },
+          factKeys: [],
+          checkIn: {
+            scheduleId: KinMemoryItemId.make("checkin-weekly"),
+            title: "Weekly brief",
+            what: "Look over the week.",
+            slot: "s",
+          },
+        })),
+    });
+    fake.items = [
+      text("a", 1, "## Needs you\nOne quote waits on your answer.", runId),
+      text("b", 2, "The rest can wait.", runId),
+    ];
+    yield* complete;
+    const rows = yield* sql<{ body: string; form: string | null }>`SELECT body, form
+      FROM kin_messages WHERE chat_id = ${chatId} AND author_kind = 'agent' ORDER BY seq`;
+    assert.lengthOf(rows, 1);
+    const [page] = rows;
+    assert.strictEqual(page!.form, "brief");
+    const [words, figures] = page!.body.split(`\n\n## ${WEEK_FIGURES_TITLE}\n\n`);
+    assert.strictEqual(
+      words,
+      "## Needs you\nOne quote waits on your answer.\n\nThe rest can wait.",
+    );
+    assert.include(figures, "Goals: none set");
+    assert.lengthOf(page!.body.split(WEEK_FIGURES_TITLE), 2);
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect.each(["choice", "intervening item", "doc"] as const)(

@@ -68,7 +68,7 @@ import * as RoutineContent from "./RoutineContent.ts";
 import * as LeadDelivery from "./LeadDelivery.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
-import { isMorningCheckIn } from "../pulse/weekly.ts";
+import { isEveningCheckIn, isMorningCheckIn } from "../pulse/weekly.ts";
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
@@ -982,6 +982,18 @@ const make = Effect.gen(function* () {
                 const facts = yield* routineContent.value.morningFacts(orgId, agentId).pipe(
                   Effect.catch((error) =>
                     Effect.logWarning("Kin morning facts unavailable", {
+                      cause: error.cause,
+                    }).pipe(Effect.as(null)),
+                  ),
+                );
+                if (facts !== null) routineFacts.set(event.eventId, facts);
+              }
+            // The evening check-in carries the retired evening summary's sections as facts.
+            if (Option.isSome(routineContent))
+              for (const event of events.filter(isEveningCheckIn)) {
+                const facts = yield* routineContent.value.eveningFacts(orgId, agentId).pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("Kin evening facts unavailable", {
                       cause: error.cause,
                     }).pipe(Effect.as(null)),
                   ),

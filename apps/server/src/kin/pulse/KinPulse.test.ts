@@ -31,7 +31,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { buildPulseSection } from "./prompt.ts";
 import { projectLastMoved } from "./senses/projects.ts";
-import { buildWeeklySection, wantsWeekly } from "./weekly.ts";
+import { buildWeeklySection, wantsWeekly, WEEK_FIGURES_TITLE, weeklyFigures } from "./weekly.ts";
 
 // Invented org, people, entries and money only; nothing here reads a real database.
 const orgId = KinOrgId.make("org");
@@ -1130,6 +1130,23 @@ describe("KinPulse", () => {
         });
       assert.isTrue(wantsWeekly([checkIn("checkin-weekly")]));
       assert.isFalse(wantsWeekly([checkIn("checkin-morning")]));
+
+      // Kin's own figures for the Monday page: one titled section, each line from these rows.
+      const now = yield* buildWeeklySection({ orgId, now: at });
+      const figures = yield* weeklyFigures({ orgId, now: at });
+      assert.lengthOf(figures.split(`## ${WEEK_FIGURES_TITLE}`), 2);
+      assert.isTrue(figures.startsWith(`## ${WEEK_FIGURES_TITLE}\n\n${now.week}\n\n`));
+      assert.include(figures, `Goals:\n${now.goals.map((line) => `- ${line}`).join("\n")}`);
+      assert.include(figures, `Overdue:\n- ${String(yield* overdueLine)}`);
+      assert.include(figures, "Open quotes:\n- QT-1: ₹6,00,000.00, sent, no answer yet");
+      // Any currency: the same rows kept in euros read in euros, and no rupee is left.
+      yield* sql`UPDATE kin_records SET currency = 'EUR',
+          fields_json = REPLACE(fields_json, '"INR"', '"EUR"')
+        WHERE org_id = ${orgId}`;
+      yield* sql`UPDATE kin_record_payments SET currency = 'EUR' WHERE org_id = ${orgId}`;
+      const euros = yield* weeklyFigures({ orgId, now: at });
+      assert.include(euros, "Open quotes:\n- QT-1: €600,000.00, sent, no answer yet");
+      assert.notInclude(euros, "₹");
     }).pipe(Effect.provide(layer)),
   );
 });

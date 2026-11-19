@@ -440,6 +440,9 @@ const KIN_RPC_ACCESS = {
   "kin.checkIns.list": "owner_level",
   "kin.checkIns.save": "owner_level",
   "kin.checkIns.act": "owner_level",
+  // A person's own briefs; the service changes only the ones they receive.
+  "kin.briefs.list": "person",
+  "kin.briefs.save": "person",
   "kin.people.setOwnerName": "org_owner",
   // The host CLI's own writes, from the owner's session.
   "kin.refreshes.announce": "org_owner",
@@ -516,6 +519,8 @@ export const KIN_RPC_AGGREGATES = {
   "kin.checkIns.list": "kin-pulse",
   "kin.checkIns.save": "kin-pulse",
   "kin.checkIns.act": "kin-pulse",
+  "kin.briefs.list": "kin-pulse",
+  "kin.briefs.save": "kin-pulse",
   "kin.budget.get": "kin-budget",
   "kin.budget.set": "kin-budget",
   "kin.org.get": "kin-org",

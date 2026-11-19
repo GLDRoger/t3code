@@ -104,6 +104,11 @@ export class KinRoutineContent extends Context.Service<
       orgId: KinOrgId,
       agentId: KinAgentId,
     ) => Effect.Effect<string | null, KinRoutineContentError>;
+    /** The evening summary's sections as JSON, for the evening check-in; null with no live lead. */
+    readonly eveningFacts: (
+      orgId: KinOrgId,
+      agentId: KinAgentId,
+    ) => Effect.Effect<string | null, KinRoutineContentError>;
   }
 >()("t3/kin/lead/RoutineContent/KinRoutineContent") {}
 
@@ -535,7 +540,30 @@ const make = Effect.gen(function* () {
       ),
   );
 
-  return KinRoutineContent.of({ prepare, post, morningFacts });
+  const eveningFacts = Effect.fn("KinRoutineContent.eveningFacts")(
+    function* (orgId: KinOrgId, agentId: KinAgentId) {
+      const owner = yield* lead(orgId, agentId);
+      if (owner === undefined) return null;
+      const gathered = yield* gather(orgId, { routine: "evening_summary", agentId }, owner);
+      return gathered.facts.routine === "evening_summary"
+        ? yield* encodeFacts(gathered.facts)
+        : null;
+    },
+    (effect, orgId) =>
+      effect.pipe(
+        Effect.mapError(
+          (cause) =>
+            new KinRoutineContentError({
+              orgId,
+              cause: isSqlError(cause)
+                ? toPersistenceSqlError("KinRoutineContent.eveningFacts")(cause)
+                : cause,
+            }),
+        ),
+      ),
+  );
+
+  return KinRoutineContent.of({ prepare, post, morningFacts, eveningFacts });
 });
 
 export const layer = Layer.effect(KinRoutineContent, make).pipe(Layer.provide(MemoryCache.layer));

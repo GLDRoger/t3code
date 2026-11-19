@@ -46,11 +46,13 @@ const OUTSIDE_CAP = 60;
 /** The seeded check-in the weekly brief stands in for on its day. */
 const MORNING = "checkin-morning";
 const WEEKLY = "checkin-weekly";
+/** The briefs: sent at their time on a quiet day too, unlike a check-in with nothing to tell. */
+const BRIEFS: ReadonlySet<string> = new Set([MORNING, WEEKLY, "checkin-evening"]);
 
 /**
  * One check-in at the slot's minute: what the owner hasn't been told and what is new outside.
- * With nothing untold no model runs; Run now tells every open fact. On a weekly brief's day the
- * morning check-in is the brief. `slot` keys the event, so a slot queues once.
+ * With nothing untold no model runs, except for a brief; Run now tells every open fact. On a
+ * weekly brief's day the morning check-in is the brief. `slot` keys the event, so a slot queues once.
  */
 export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   readonly orgId: KinOrgId;
@@ -86,15 +88,16 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
     .map((line) => byId.get(`${line.source}\0${line.id}`) ?? line)
     .toSorted((a, b) => Number(b.matched !== undefined) - Number(a.matched !== undefined))
     .slice(0, OUTSIDE_CAP);
-  if (facts.length === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
+  const brief = BRIEFS.has(input.scheduleId);
+  if (!brief && facts.length === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
   const slot = input.manualId ?? dayIn(input.dueAt, input.zone);
   const dedupeKey = `checkin:${input.scheduleId}:${slot}`;
   const eventId = KinEventId.make(`pulse-${sha(`${orgId}\0${dedupeKey}`).slice(0, 32)}`);
   const sql = yield* SqlClient.SqlClient;
   if (input.manualId === undefined && input.scheduleId === MORNING) {
-    const [brief] = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
+    const [weekly] = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
       AND dedupe_key = ${`checkin:${WEEKLY}:${slot}`} AND state != 'failed' LIMIT 1`;
-    if (brief !== undefined) return { _tag: "folded" } as const;
+    if (weekly !== undefined) return { _tag: "folded" } as const;
   }
   // The same slot fired again, as after a restart: its stored event and minute stand.
   const [stored] = yield* sql<{ notBefore: number | null; queuedAt: number }>`
@@ -112,7 +115,7 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   if (agent === undefined) return { _tag: "nothing_new" } as const;
   const told = { orgId, personId: agent.owner, at, zone: yield* ownerZone(orgId) };
   const tell = input.manualId !== undefined ? facts : yield* untold({ ...told, facts });
-  if (tell.length === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
+  if (!brief && tell.length === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
   // The minute is picked in the window as it stands that day, never from a late start: a run
   // that starts after its minute fires at once.
   const minute =

@@ -335,6 +335,41 @@ describe("pulse check-ins", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("a quiet day still brings the briefs; a quiet afternoon check-in stays silent", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const run = (scheduleId: string, at: number) =>
+        queueCheckIn({
+          orgId,
+          agentId: chief,
+          scheduleId: KinMemoryItemId.make(scheduleId),
+          title: scheduleId,
+          what: "Check-in.",
+          dueAt: at,
+          looseAt: null,
+          zone: "UTC",
+          at,
+          outside: nothingOutside,
+        });
+      // Nothing open anywhere and nothing new outside.
+      const TUESDAY = MONDAY + DAY;
+      assert.deepStrictEqual(yield* run("checkin-afternoon", TUESDAY + 15 * HOUR), {
+        _tag: "nothing_new",
+      });
+      for (const [scheduleId, at] of [
+        ["checkin-morning", TUESDAY + 9 * HOUR],
+        ["checkin-evening", TUESDAY + 18 * HOUR],
+        ["checkin-weekly", MONDAY + 7 * DAY + 9 * HOUR],
+      ] as const)
+        assert.include(yield* run(scheduleId, at), { _tag: "queued", facts: 0, outside: 0 });
+      assert.deepStrictEqual((yield* pulseEvents).map((event) => event.key).toSorted(), [
+        "checkin:checkin-evening:2026-11-17",
+        "checkin:checkin-morning:2026-11-17",
+        "checkin:checkin-weekly:2026-11-23",
+      ]);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("a check-in in the owner's quiet hours waits for 08:00; Run now never does", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -657,7 +692,8 @@ describe("pulse check-ins", () => {
         [
           {
             scheduleId: KinMemoryItemId.make("checkin-morning"),
-            every: onHostClock("09:30", weekdays, "Asia/Kolkata", host, MONDAY),
+            // The morning brief's default is every day: one seeded on weekdays gets the weekend too.
+            every: onHostClock("09:30", [0, 1, 2, 3, 4, 5, 6], "Asia/Kolkata", host, MONDAY),
             existing: true,
             around: true,
           },

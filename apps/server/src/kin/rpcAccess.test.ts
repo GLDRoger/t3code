@@ -35,6 +35,9 @@ const session = (person: string): AuthenticatedSession => ({
 // them only their places.
 const MEMBER = [
   "kin.access.me",
+  // Their own briefs; the service shows and changes only the ones they receive.
+  "kin.briefs.list",
+  "kin.briefs.save",
   "kin.chat.history",
   "kin.chat.members",
   "kin.chat.subscribe",

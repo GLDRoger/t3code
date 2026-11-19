@@ -32,6 +32,10 @@ export const wantsWeekly = (events: ReadonlyArray<KinEvent>) =>
 const MORNING_CHECK_IN = "checkin-morning";
 export const isMorningCheckIn = (event: KinEvent) =>
   event._tag === "pulse" && event.checkIn?.scheduleId === MORNING_CHECK_IN;
+/** The seeded evening check-in, which carries what the retired evening summary did. */
+const EVENING_CHECK_IN = "checkin-evening";
+export const isEveningCheckIn = (event: KinEvent) =>
+  event._tag === "pulse" && event.checkIn?.scheduleId === EVENING_CHECK_IN;
 const WEEK_MS = 7 * DAY_MS;
 const FREE_HORIZON_MS = 3 * DAY_MS;
 const LATE_OVERLOAD = 3;
@@ -44,7 +48,7 @@ const RENEWALS_AHEAD_MS = 30 * DAY_MS;
  * The week for the owner's weekly brief, counted from Kin's rows: goals first, then projects by
  * how they moved, money in and out and what is overdue, who is overloaded or free, and next week.
  */
-export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (input: {
+const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
   readonly orgId: KinOrgId;
   readonly now: number;
 }) {
@@ -237,7 +241,15 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
     limit: CAP,
   })).facts.filter((fact) => fact.sense === "client_cold" || fact.sense === "client_quiet");
 
-  return {
+  const unpaidLine = (one: (typeof owed)[number]) =>
+    `${one.key}${one.partyTitle === null ? "" : ` ${one.partyTitle}`}: ${formatMoney(one.balance)} ${
+      one.dueAt === null
+        ? "unpaid, no due date"
+        : isOverdue(one)
+          ? `unpaid, overdue ${formatKinLate(one.dueAt, now, { zone, locale: KIN_TEXT_LOCALE })}; ${overdueMail.get(one.recordId)}`
+          : `due ${dayIn(one.dueAt, zone)}`
+    }`;
+  const section = {
     week: `${dayIn(weekAgo, zone)} to ${dayIn(now, zone)}`,
     goals: goals.map(goalLine),
     projects: Object.fromEntries(Object.entries(byStatus).filter(([, rows]) => rows.length > 0)),
@@ -245,16 +257,7 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
       inThisWeek: totals(received),
       outThisWeek: totals(spent),
       unpaidTotal: totals(owed.map((one) => one.balance)),
-      unpaid: owed.map(
-        (one) =>
-          `${one.key}${one.partyTitle === null ? "" : ` ${one.partyTitle}`}: ${formatMoney(one.balance)} ${
-            one.dueAt === null
-              ? "unpaid, no due date"
-              : isOverdue(one)
-                ? `unpaid, overdue ${formatKinLate(one.dueAt, now, { zone, locale: KIN_TEXT_LOCALE })}; ${overdueMail.get(one.recordId)}`
-                : `due ${dayIn(one.dueAt, zone)}`
-          }`,
-      ),
+      unpaid: owed.map(unpaidLine),
       openQuotes: quotes.map(
         (one) =>
           `${one.key}${one.client === null ? "" : ` ${one.client}`}${one.minor === null || one.currency === null ? "" : `: ${formatMoney({ minor: one.minor, currency: one.currency })}`}, ${one.state === "open" ? "draft, not sent" : "sent, no answer yet"}`,
@@ -289,4 +292,63 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
         `${dayIn(one.dueAt, zone)} ${one.key} ${one.title}${one.list === "milestones" ? " (milestone)" : one.list === "invoices" ? " (invoice due)" : one.list === "projects" ? " (project target)" : ""}`,
     ),
   };
+  return {
+    section,
+    overdue: owed.filter(isOverdue).map(unpaidLine),
+    notYetDue: owed.filter((one) => !isOverdue(one)).map(unpaidLine),
+  };
+});
+
+export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly now: number;
+}) {
+  return (yield* weekRows(input)).section;
+});
+
+export const WEEK_FIGURES_TITLE = "The week, from Kin's records";
+
+/**
+ * The week's figures as Kin writes them into the weekly brief's page, one titled section the
+ * agent's words sit around: every figure from the rows, none chosen or retyped by a model.
+ */
+export const weeklyFigures = Effect.fn("KinWeekly.figures")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly now: number;
+}) {
+  const { section: week, overdue, notYetDue } = yield* weekRows(input);
+  const block = (title: string, lines: ReadonlyArray<string>, empty?: string) =>
+    lines.length === 0
+      ? empty === undefined
+        ? []
+        : [`${title}: ${empty}`]
+      : [`${title}:`, ...lines.map((line) => `- ${line}`)];
+  const money = [
+    week.money.inThisWeek.length === 0 ? null : `In this week: ${week.money.inThisWeek.join(", ")}`,
+    week.money.outThisWeek.length === 0
+      ? null
+      : `Out this week: ${week.money.outThisWeek.join(", ")}`,
+    week.money.unpaidTotal.length === 0
+      ? null
+      : `Still to come in: ${week.money.unpaidTotal.join(", ")}`,
+  ].filter((line) => line !== null);
+  const blocks = [
+    block("Goals", week.goals, "none set"),
+    block("Money", money),
+    block("Overdue", overdue, "nothing"),
+    block("Invoices not yet due", notYetDue),
+    block("Open quotes", week.money.openQuotes, "none"),
+    block("Renewals this month", week.money.renewalsThisMonth, "none"),
+    block("Cold clients", week.clients.cold),
+    block("Quiet clients", week.clients.quiet),
+    block("Behind", week.projects.behind ?? []),
+    block(
+      "Meetings with no outcome noted",
+      week.meetings.lastWeek.filter((line) => line.endsWith("no outcome noted yet")),
+    ),
+    block("Coming up", week.meetings.comingUp),
+  ].filter((lines) => lines.length > 0);
+  return [`## ${WEEK_FIGURES_TITLE}`, week.week, ...blocks.map((lines) => lines.join("\n"))].join(
+    "\n\n",
+  );
 });

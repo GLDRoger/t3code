@@ -1743,6 +1743,39 @@ it.effect("a due reminder states its facts once and always gets a reply", () =>
   }).pipe(Effect.provide(layer)),
 );
 
+// Owner, 19 Nov: the morning brief comes every morning, a quiet one too, and so do the evening
+// summary and the weekly brief; only another check-in may end silent.
+it.effect.each([
+  ["checkin-morning", false],
+  ["checkin-evening", false],
+  ["checkin-weekly", false],
+  ["checkin-afternoon", true],
+] as const)("a brief's turn is never told to stay silent (%s)", ([scheduleId, mayBeSilent]) =>
+  Effect.gen(function* () {
+    yield* leadWithOwner;
+    const prompt = yield* KinLeadPrompt;
+    const event = decodeEvent({
+      _tag: "pulse",
+      orgId,
+      agentId,
+      eventId: `pulse-${scheduleId}`,
+      receivedAt: timestamp,
+      provenance: { _tag: "system" },
+      dedupeKey: null,
+      factKeys: [],
+      checkIn: { scheduleId, title: "Check-in", what: "Look.", slot: "s" },
+    });
+    yield* stored(scheduleId, [event]);
+    const built = yield* prompt.build({
+      ...input,
+      wakeupId: KinWakeupId.make(scheduleId),
+      lane: { chatId, mode: "notice" },
+      events: [event],
+    });
+    expect(built.includes("Nobody is waiting on this turn")).toBe(mayBeSilent);
+  }).pipe(Effect.provide(layer)),
+);
+
 // Haiku 5.5 evals (Nov 2026): outside text told the agent to start a worker. A check-in shows
 // mail lines anyone can write, so its turn is outside-read and the tool gate refuses coding work.
 // The same one rule for GitHub: a trigger whose author can't write to the repo is outside text,
