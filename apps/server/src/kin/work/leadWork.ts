@@ -44,7 +44,7 @@ import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { heldUntil } from "../triggers/quietHold.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { sentMail, SentMailView } from "../connections/Sending.ts";
-import { homeCurrency } from "./companyProfile.ts";
+import { countryFirst, homeCurrency, isCountryFirst } from "./companyProfile.ts";
 import { partyPage, projectDetail } from "./crm.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { fold, matchName } from "./nameMatch.ts";
@@ -1265,8 +1265,8 @@ type Refusal = { readonly label: string; readonly error: KinChatError };
 
 /** One answer for a call's refused items: each by name, and that nothing in the call was saved. */
 const refusedCall = (total: number, refused: ReadonlyArray<Refusal>) => {
-  const first = refused[0]!;
-  if (total === 1) return first.error;
+  const first = refused.find((one) => isCountryFirst(one.error)) ?? refused[0]!;
+  if (total === 1 || isCountryFirst(first.error)) return first.error;
   const named = refused
     .slice(0, NAMED_REFUSALS)
     .map(({ label, error }) =>
@@ -1772,6 +1772,8 @@ const createRow = Effect.fnUntraced(function* (
   notices: Array<AssignNotice>,
 ) {
   const records = yield* KinRecords;
+  // Before the list is read, so an expense for a list not made yet says what comes first.
+  if (row.amount !== undefined) yield* countryFirst(lead.orgId);
   const def = yield* listFor(lead, row.list ?? "work");
   const list = def.id;
   // A client or contact is the owner's to look after unless told otherwise.

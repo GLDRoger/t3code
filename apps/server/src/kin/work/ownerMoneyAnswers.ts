@@ -20,6 +20,7 @@ import { invoiceFromQuote as draftFromQuote, quotedInputs } from "../gendocs/quo
 import { defaultRecipes } from "../gendocs/recipeDefaults.ts";
 import { KinWorkspace } from "../gendocs/workspace.ts";
 import { budgetsView, setBudget as setBudgetFor } from "./budgets.ts";
+import { countryFirst } from "./companyProfile.ts";
 import { dayIn } from "./money.ts";
 import { cashEstimate, cashPosition, outlook as outlookOf } from "./moneyAnswers.ts";
 import { KinRecords } from "./KinRecords.ts";
@@ -192,6 +193,7 @@ export const setBudget = Effect.fn("KinMoneyAnswers.rpc.setBudget")(function* (
   const person = yield* theOwner(people, input.orgId);
   if (input.category === null && input.project === null)
     return yield* invalid("A budget is for a category, a project, or a category in a project.");
+  if (input.limitMinor !== null) yield* countryFirst(input.orgId);
   const expenses = yield* listDef(input.orgId, "expenses");
   if (expenses === undefined)
     return yield* invalid("There is no expenses list yet, so nothing to budget.");

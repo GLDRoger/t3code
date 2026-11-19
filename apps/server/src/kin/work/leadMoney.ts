@@ -32,6 +32,7 @@ import { budgetsAnswer, budgetsView, setBudget } from "./budgets.ts";
 import {
   attachChangeCard,
   changeLines,
+  countryFirst,
   proposeChange,
   readProfile,
   replaceOlderChanges,
@@ -530,6 +531,7 @@ const runBudget = Effect.fnUntraced(function* (lead: Lead, input: typeof BudgetI
     });
   if (input.category === undefined && input.project === undefined)
     return yield* invalid("A budget is for a category, a project, or a category in a project.");
+  if (input.limit !== null) yield* countryFirst(lead.orgId);
   const expenses = yield* listDef(lead.orgId, "expenses");
   if (expenses === undefined)
     return yield* invalid("There is no expenses list yet: track expenses first.");

@@ -39,7 +39,7 @@ import * as Presence from "../reply/KinPresence.ts";
 import { KinIdentity, KinIdentityConfig } from "../chat/KinIdentity.ts";
 import { layerKinAuthTest, pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { personHoldNow } from "../triggers/quietHold.ts";
-import { readProfile } from "../work/companyProfile.ts";
+import { newCompanyProfileJson, readProfile, setProfile } from "../work/companyProfile.ts";
 import * as Records from "../work/KinRecords.ts";
 import { KinPushSender, type KinPushNotification } from "../push/KinPushSender.ts";
 import * as TasksKeys from "../tasksKey/TasksKeys.ts";
@@ -1021,6 +1021,22 @@ it.effect(
       assert.equal(raviMe.homeCurrency, "GBP");
       assert.equal(raviMe.financialYearStartMonth, 7);
       assert.notProperty(raviMe, "rates");
+      assert.notProperty(raviMe, "countryNeeded");
+      // A company made new says so to everyone until its country is chosen; then never again.
+      yield* (yield* SqlClient.SqlClient)`UPDATE kin_company_profile
+        SET profile_json = ${yield* newCompanyProfileJson} WHERE org_id = ${orgId}`;
+      for (const session of [raviSession, ownerSession])
+        assert.isTrue((yield* service.accessMe(session, { orgId })).countryNeeded);
+      yield* setProfile(
+        orgId,
+        { _tag: "person", personId: identity.owner.personId },
+        {
+          country: "GB",
+          financialYearStartMonth: 7,
+        },
+        0,
+      );
+      assert.notProperty(yield* service.accessMe(raviSession, { orgId }), "countryNeeded");
       // A new teammate starts with client names and shared docs; money stays off until switched.
       const placesOf = (session: Parameters<typeof service.accessMe>[0]) =>
         service.accessMe(session, { orgId }).pipe(Effect.map((me) => me.places));
