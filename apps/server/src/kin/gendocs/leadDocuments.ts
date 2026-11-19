@@ -471,7 +471,10 @@ export const receipt = leadTool("KinDocuments.receipt", (lead, input: typeof Rec
       const amount =
         input.advance === undefined
           ? undefined
-          : parseAmount(input.advance.amount, yield* recordingCurrency(lead.orgId));
+          : parseAmount(
+              input.advance.amount,
+              yield* recordingCurrency(lead.orgId, { saved: true }),
+            );
       if (amount !== undefined && "error" in amount) return yield* amount.error;
       request = {
         ...(input.payment === undefined ? {} : { paymentId: input.payment }),

@@ -135,7 +135,9 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       : ((yield* issuedNumber(orgId, entry.recordId)) ??
         (recipe.numbered ? null : (cellOf(fields, "number") as string | null)));
   // An amount the requester gives is read in the company's currency, which waits on its country.
-  const home = givesMoney(recipe, given) ? yield* recordingCurrency(orgId) : profile.homeCurrency;
+  const home = givesMoney(recipe, given)
+    ? yield* recordingCurrency(orgId, { saved: entry !== undefined })
+    : profile.homeCurrency;
   const currency = entry?.currency ?? def?.currency ?? home;
   const day = (ms: number | null) => (ms === null ? null : dayIn(ms, zone));
   const clientDef = client === undefined ? undefined : yield* listDef(orgId, client.registerId);

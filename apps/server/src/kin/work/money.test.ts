@@ -2290,7 +2290,8 @@ describe("the company profile", () => {
         ]);
       // A batch, such as a client with its invoice, saved nothing; one entry wasn't created.
       const saved = countryFirstMessage("Owner", { saved: true });
-      const refused = [saved, refusal, refusal, refusal, refusal];
+      // A budget's limit is a change to a setting: nothing was saved.
+      const refused = [saved, refusal, saved, refusal, refusal];
       const asked = yield* turn(1, "Invoice Invented Kestrel 1,200 for the brand kit");
       assert.deepStrictEqual(yield* refusedIn(asked), refused);
       // A task works as before; an amount on it is money, and waits too.

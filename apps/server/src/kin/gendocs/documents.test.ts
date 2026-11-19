@@ -1644,7 +1644,11 @@ describe("receipts", () => {
       const gathered = (inputs: Record<string, unknown>) =>
         gatherFacts(orgId, probe, undefined, inputs);
       const refusal = countryFirstMessage("Owner");
-      assert.strictEqual((yield* Effect.flip(advance())).message, refusal);
+      // An advance goes on a client already kept: nothing was saved.
+      assert.strictEqual(
+        (yield* Effect.flip(advance())).message,
+        countryFirstMessage("Owner", { saved: true }),
+      );
       assert.strictEqual((yield* Effect.flip(gathered({ fee: "500" }))).message, refusal);
       assert.strictEqual((yield* Effect.flip(gathered({ lines: given.lines }))).message, refusal);
       // Nothing was proposed or put to the owner; a document with no amount given is made.

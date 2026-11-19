@@ -149,7 +149,7 @@ export interface CountryAsk {
 export const countryFirstMessage = (owner: string, ask: CountryAsk = {}) =>
   `Nothing was ${ask.saved === true ? "saved" : "created"}: ${NOT_CHOSEN}, ${
     ask.forTeammate === true
-      ? `and Kin records no money until ${owner} chooses it in Settings, Company details.`
+      ? "and Kin records no money until an owner chooses it in Settings, Company details."
       : `so Kin can't tell its currency or tax. Ask ${owner} to choose it in Settings, Company details.`
   }`;
 /** A refusal no fix to the call itself answers: the company's country comes first. */
@@ -212,10 +212,13 @@ export const countryFirst = Effect.fn("KinCompanyProfile.countryFirst")(function
  * The company's money for a write that turns a bare amount into money or keeps the currency it
  * reads: refused while the country is not chosen, read with that state in one query.
  */
-const recordingMoney = Effect.fn("KinCompanyProfile.recordingMoney")(function* (orgId: KinOrgId) {
+const recordingMoney = Effect.fn("KinCompanyProfile.recordingMoney")(function* (
+  orgId: KinOrgId,
+  ask?: CountryAsk,
+) {
   const sql = yield* SqlClient.SqlClient;
   const stored = yield* storedProfile(orgId);
-  if (stored.pending) return yield* yield* countryRefusal(orgId);
+  if (stored.pending) return yield* yield* countryRefusal(orgId, ask);
   yield* markSettled(sql, orgId);
   return moneyOf(stored.data);
 });
@@ -223,8 +226,9 @@ const recordingMoney = Effect.fn("KinCompanyProfile.recordingMoney")(function* (
 /** The currency a bare amount in a write is in: refused while the country is not chosen. */
 export const recordingCurrency = Effect.fn("KinCompanyProfile.recordingCurrency")(function* (
   orgId: KinOrgId,
+  ask?: CountryAsk,
 ) {
-  return (yield* recordingMoney(orgId)).homeCurrency;
+  return (yield* recordingMoney(orgId, ask)).homeCurrency;
 });
 
 /** The profile with its country, year and tax as they read, set or not. */

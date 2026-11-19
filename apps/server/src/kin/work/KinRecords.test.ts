@@ -53,7 +53,7 @@ import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import { readPeople } from "../lead/peopleRead.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { importWork } from "./importWork.ts";
-import { countryFirstMessage, newCompanyProfileJson } from "./companyProfile.ts";
+import { newCompanyProfileJson } from "./companyProfile.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadDocs from "./leadDocs.ts";
 import * as LeadMoney from "./leadMoney.ts";
@@ -667,8 +667,8 @@ it.effect(
           ]),
         ],
         [
-          countryFirstMessage("Owner", { forTeammate: true }),
-          countryFirstMessage("Owner", { saved: true, forTeammate: true }),
+          "Nothing was created: this company's country isn't chosen yet, and Kin records no money until an owner chooses it in Settings, Company details.",
+          "Nothing was saved: this company's country isn't chosen yet, and Kin records no money until an owner chooses it in Settings, Company details.",
         ],
       );
       yield* sql`DELETE FROM kin_company_profile WHERE org_id = ${orgId}`;
