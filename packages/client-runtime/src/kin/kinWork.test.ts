@@ -350,6 +350,25 @@ describe("kinWorkItemView", () => {
             fields: [{ field: "dueAllDay", from: "false", to: "true" }],
           },
           {
+            seq: 1.8,
+            at,
+            by: lead,
+            via: "lead",
+            kind: "updated",
+            fields: [{ field: "untold", from: `person:${priya.personId}`, to: null }],
+          },
+          {
+            seq: 1.7,
+            at,
+            by: lead,
+            via: "lead",
+            kind: "updated",
+            fields: [
+              { field: "owner", from: `person:${me.personId}`, to: `person:${priya.personId}` },
+              { field: "untold", from: null, to: `person:${priya.personId}` },
+            ],
+          },
+          {
             seq: 1.5,
             at,
             by: me,
@@ -372,6 +391,8 @@ describe("kinWorkItemView", () => {
       "Tech lead marked it waiting on Priya",
       "You gave it to Tech lead",
       "Tech lead updated it",
+      "Tech lead told Priya",
+      "Tech lead gave it to Priya, not told yet",
       "You set it to repeat every month",
       "You added this",
     ]);

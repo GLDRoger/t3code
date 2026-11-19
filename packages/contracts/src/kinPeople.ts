@@ -25,6 +25,7 @@ import {
   KinRoleTags,
   KinTrimmedText,
 } from "./kinChat.ts";
+import { KinMonthNumber } from "./kinFinance.ts";
 import { KinCurrency, KinDay } from "./kinMoney.ts";
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
 import { KinRecordRef } from "./kinWork.ts";
@@ -214,6 +215,8 @@ export const KinAccessMeResult = Schema.Struct({
   homeCurrency: Schema.optional(KinCurrency),
   /** The company's country, ISO 3166 alpha-2, null for none; absent from an older host. */
   country: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isPattern(/^[A-Z]{2}$/)))),
+  /** The month the company's financial year starts in, 1 for January; absent from an older host. */
+  financialYearStartMonth: Schema.optional(KinMonthNumber),
 });
 export type KinAccessMeResult = typeof KinAccessMeResult.Type;
 

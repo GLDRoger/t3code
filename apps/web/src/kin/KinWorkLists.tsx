@@ -153,7 +153,7 @@ function KinListEntries(
   const [layout, setLayout] = useState<Layout>("rows");
   const [editing, setEditing] = useState(false);
   const { filter } = state;
-  const header = kinListHeader(def, filter, totals, state.total);
+  const header = kinListHeader(def, filter, totals, state.total, context.yearStartMonth);
   const rows = state.records.map((record) =>
     kinListRow(record, def, context, { party: filter.party?.key ?? null }),
   );

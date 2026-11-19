@@ -58,7 +58,7 @@ function useKinSubscriptions(
     state.records,
     context,
     rates,
-    kinFinancialYearStart(new Date(useNowMinuteMs())),
+    kinFinancialYearStart(new Date(useNowMinuteMs()), context.yearStartMonth),
   );
   return { state, entries, view };
 }

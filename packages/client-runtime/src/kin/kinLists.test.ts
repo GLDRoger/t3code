@@ -217,6 +217,18 @@ describe("a list by its definition", () => {
     const narrowed = header.groups[0]!.narrowed!;
     expect(narrowed.period).toEqual({ from: "2026-11-01", to: "2026-11-30" });
     expect(kinListHeader(expenses, narrowed, totals, 1).groups[0]!.narrowed!.period).toBeNull();
+    // A financial year's group runs from the company's first month: April where the host doesn't say.
+    const byYear = { ...KIN_LIST_DEFAULT_FILTER, groupBy: "financialYear" as const };
+    const years = {
+      total: totals.total,
+      groups: [{ group: "FY2026-27", count: 3, total: totals.total }],
+    };
+    const yearOf = (startMonth?: number) =>
+      kinListHeader(expenses, byYear, years, 3, startMonth).groups[0]!.narrowed!.period!;
+    expect(yearOf()).toEqual({ from: "2026-04-01", to: "2027-03-31" });
+    expect(yearOf(4)).toEqual({ from: "2026-04-01", to: "2027-03-31" });
+    expect(yearOf(7)).toEqual({ from: "2026-07-01", to: "2027-06-30" });
+    expect(kinListFilterLabel(expenses, { ...byYear, period: yearOf(7) })).toBe("FY 2026–27");
   });
 
   it("draws any list's own fields by type, in rows, columns and the entry", () => {

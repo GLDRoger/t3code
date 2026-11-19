@@ -40,15 +40,20 @@ export const IMPORTED_SERIES = "imported";
 
 /**
  * Where an issued number sits: `OBK/2026-27/013` and `OBK/26-27/013` in the list's series for
- * 26-27, `OBK/13` in a running one, anything else in a series of its own Kin never continues.
+ * 26-27, `INV/2026/004` in the one for 2026 when the company's year starts in January
+ * (`startMonth` 1), `OBK/13` in a running one, anything else in a series Kin never continues.
  */
-export const seriesOf = (rule: KinNumberingRule, number: string) => {
+export const seriesOf = (rule: KinNumberingRule, number: string, startMonth: number) => {
   const prefix = rule.prefix.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
   if (rule.series === "running") {
     const found = new RegExp(`^${prefix}[/-](\\d{1,9})$`).exec(number);
     if (found !== null)
       return { series: `${rule.prefix}|running`, seq: Number.parseInt(found[1]!, 10) };
   } else {
+    const calendar =
+      startMonth === 1 ? new RegExp(`^${prefix}[/-](\\d{4})[/-](\\d{1,9})$`).exec(number) : null;
+    if (calendar !== null)
+      return { series: `${rule.prefix}|${calendar[1]}`, seq: Number.parseInt(calendar[2]!, 10) };
     const found = new RegExp(`^${prefix}[/-](?:\\d{2})?(\\d{2})-(\\d{2})[/-](\\d{1,9})$`).exec(
       number,
     );
@@ -115,13 +120,12 @@ const seriesToday = Effect.fn("KinNumbers.seriesToday")(function* (
   const now = yield* Clock.currentTimeMillis;
   const zone = yield* ownerZone(orgId);
   const day = dayIn(now, zone);
-  const year =
-    rule.series === "financial_year"
-      ? financialYear(day, (yield* companyMoney(orgId)).financialYearStartMonth)
-      : null;
+  const { financialYearStartMonth: startMonth } = yield* companyMoney(orgId);
+  const year = rule.series === "financial_year" ? financialYear(day, startMonth) : null;
   const series = `${rule.prefix}|${year ?? "running"}`;
   // A receipt number the old system issued may still sit only in a payment's note: past it.
-  const floor = registerId === "receipts" ? yield* notedFloor(orgId, rule, year, series) : 0;
+  const floor =
+    registerId === "receipts" ? yield* notedFloor(orgId, rule, year, series, startMonth) : 0;
   return { now, zone, day, year, series, floor };
 });
 
@@ -341,6 +345,7 @@ const notedFloor = Effect.fn("KinNumbers.notedFloor")(function* (
   rule: KinNumberingRule,
   year: string | null,
   series: string,
+  startMonth: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const notes = yield* sql<{ note: string }>`SELECT note FROM kin_record_payments
@@ -350,7 +355,7 @@ const notedFloor = Effect.fn("KinNumbers.notedFloor")(function* (
   let highest = 0;
   for (const { note } of notes)
     for (const number of receiptNumbersIn(note)) {
-      const at = seriesOf(rule, number);
+      const at = seriesOf(rule, number, startMonth);
       if (at.series === series && formatNumber(rule, year, at.seq).length <= MAX_NUMBER_LENGTH)
         highest = Math.max(highest, at.seq);
     }
@@ -386,7 +391,11 @@ export const adopt = Effect.fn("KinNumbers.adopt")(function* (
       }
       if (!/^[A-Za-z0-9/-]{1,32}$/.test(number))
         return yield* invalid(`${number.slice(0, 40)} isn't a number Kin can keep.`);
-      const { series, seq } = seriesOf(rule, number);
+      const { series, seq } = seriesOf(
+        rule,
+        number,
+        (yield* companyMoney(orgId)).financialYearStartMonth,
+      );
       if (
         !series.startsWith(`${IMPORTED_SERIES}|`) &&
         formatNumber(rule, series.split("|")[1] ?? null, seq + 1).length > MAX_NUMBER_LENGTH

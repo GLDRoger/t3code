@@ -37,11 +37,13 @@ export const LISTS: Record<ListName, List> = {
     states: ["open", "doing", "waiting", "done", "dropped"],
     categories: ["task", "issue", "obligation", "meeting"],
     // The project spine: a milestone's key, S/M/L, why its holder was picked, the doc section it
-    // came from with that section's hash then, and a meeting's people and place.
+    // came from with that section's hash then, a meeting's people and place, and the holder not
+    // told yet that it is theirs.
     fields: [
       "milestone",
       "size",
       "reason",
+      "untold",
       "fromDoc",
       "fromSection",
       "fromHash",

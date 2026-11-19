@@ -904,6 +904,12 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
       ],
       // The comment's own key and id: nothing of the entry.
       record_comment: [Comments.leadComment(scope, { key: "W-2", body: "Invented note" }), false],
+      // The entry's key and its web links: nothing of its content.
+      record_link: [
+        Comments.leadLink(scope, { key: "W-2", url: "https://invented.example/brief" }),
+        false,
+      ],
+      project_note: [Comments.leadProjectNote(scope, { key: "P-1", note: "Invented" }), false],
       list_define: [
         LeadMoney.define(scope, { sourceEventId: "ask-event", name: "Invented leave" }),
         false,

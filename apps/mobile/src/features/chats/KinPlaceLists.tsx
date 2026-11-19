@@ -95,7 +95,7 @@ function PlaceList(props: Shared & { readonly def: KinListDefinition }) {
   const { state, totals } = useKinListEntries(props, def.list, filter, props.seq);
   const openList = useKinOpenPlaceList(props);
   if (state.total === null || state.total === 0) return null;
-  const header = kinListHeader(def, filter, totals, state.total);
+  const header = kinListHeader(def, filter, totals, state.total, context.yearStartMonth);
   return (
     <ListSection title={def.name} {...(header.summary === null ? {} : { footer: header.summary })}>
       {state.records.slice(0, SHOWN).map((record) => {

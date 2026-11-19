@@ -97,7 +97,7 @@ function PlaceList(props: Shared & { readonly def: KinListDefinition }) {
   const context = useKinListContext(props, props.directory);
   const { state, totals } = useKinListEntries(props, def.list, filter, props.seq);
   if (state.total === null || state.total === 0) return null;
-  const header = kinListHeader(def, filter, totals, state.total);
+  const header = kinListHeader(def, filter, totals, state.total, context.yearStartMonth);
   return (
     <KinWorkSection
       title={def.name}

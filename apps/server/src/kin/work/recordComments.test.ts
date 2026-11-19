@@ -687,6 +687,38 @@ it.effect(
       assert.lengthOf(urls(removed), 0);
       // Already gone, a second remove answers with the sheet as it is.
       assert.lengthOf(urls(yield* OwnerWork.removeLink([rhea], link)), 0);
+      // An agent in Rhea's turn adds and takes off a link by the same rules, as its own change.
+      yield* rheaTurn;
+      const agent = { key: made.key, url: "https://figma.example/file/invented-screens" };
+      assert.deepStrictEqual(yield* Comments.leadLink(scope, { ...agent, name: "Screens" }), {
+        key: made.key,
+        links: [{ url: agent.url, name: "Screens" }],
+      });
+      const sheet = yield* OwnerWork.get([rhea], { orgId, key: made.key });
+      assert.deepInclude(sheet.changes[0], { kind: "linked", by: toChief });
+      assert.deepStrictEqual(
+        (yield* LeadWork.get(scope, { key: made.key })).links.filter((one) => one.kind === "url"),
+        [{ kind: "url", relation: "relates", target: agent.url, name: "Screens" }],
+      );
+      assert.include(
+        yield* Effect.flip(Comments.leadLink(scope, { ...agent, url: "javascript:alert(1)" })),
+        {
+          reason: "invalid_state",
+          message: "A link needs a web address that starts with https:// or http://.",
+        },
+      );
+      assert.deepStrictEqual(
+        (yield* Comments.leadLink(scope, { ...agent, remove: true })).links,
+        [],
+      );
+      // Acting for Arjun, who sees the shared task but may not edit it, it is refused.
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('chief-chat-arjun', ${orgId}, 'chief-chat', 'person', ${arjunId}, 'member', ${at})`;
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
+      assert.include(yield* Effect.flip(Comments.leadLink(scope, agent)), {
+        reason: "not_allowed",
+        message: "Only someone who may edit this can change its links.",
+      });
     }).pipe(Effect.provide(layer)),
 );
 
@@ -758,5 +790,36 @@ it.effect(
       assert.isNull((yield* note(site.key, "", "clear")).note);
       assert.isUndefined(yield* noteOn(rhea, footer.key));
       assert.isUndefined((yield* OwnerClients.project([rhea], { orgId, key: site.key })).note);
+      // In Rhea's turn an agent sets and clears it, and reads it on each task as the project's.
+      yield* rheaTurn;
+      const launch = "Invented: launch is on the 3rd";
+      assert.deepStrictEqual(
+        yield* Comments.leadProjectNote(scope, { key: site.key, note: launch }),
+        {
+          key: site.key,
+          note: launch,
+        },
+      );
+      assert.deepInclude(yield* noteOn(rhea, footer.key), { body: launch, by: toChief });
+      const fromSite = { from: `${site.key} Invented site`, text: launch };
+      assert.deepStrictEqual(
+        (yield* LeadWork.get(scope, { key: footer.key })).projectNote,
+        fromSite,
+      );
+      assert.isNull((yield* Comments.leadProjectNote(scope, { key: site.key, note: null })).note);
+      assert.notProperty(yield* LeadWork.get(scope, { key: footer.key }), "projectNote");
+      yield* note(site.key, launch);
+      // Acting for Zoya, who isn't on the project, it reads her task without it and can't change it.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('zoya-session', ${orgId}, ${zoyaId}, 0)`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('chief-chat-zoya', ${orgId}, 'chief-chat', 'person', ${zoyaId}, 'member', ${at})`;
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
+      assert.notProperty(yield* LeadWork.get(scope, { key: footer.key }), "projectNote");
+      assert.include(
+        yield* Effect.flip(Comments.leadProjectNote(scope, { key: site.key, note: null })),
+        { reason: "not_allowed" },
+      );
     }).pipe(Effect.provide(layer)),
 );

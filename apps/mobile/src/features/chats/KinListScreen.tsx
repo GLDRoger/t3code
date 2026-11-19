@@ -423,7 +423,7 @@ function KinListEntries(
     rev.current = def.rev;
     refresh();
   }, [def.rev, refresh]);
-  const header = kinListHeader(def, filter, totals, state.total);
+  const header = kinListHeader(def, filter, totals, state.total, context.yearStartMonth);
   const rows = state.records.map((record) =>
     kinListRow(record, def, context, { party: filter.party?.key ?? null }),
   );

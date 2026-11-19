@@ -1427,6 +1427,17 @@ const make = Effect.gen(function* () {
           delete merged.reason;
           fieldsChanged = true;
         }
+        // A notice held for one holder means nothing once it moves to another.
+        if (
+          patch.owner !== undefined &&
+          !samePrincipal(patch.owner, before.owner) &&
+          patch.fields?.untold === undefined &&
+          merged.untold !== undefined
+        ) {
+          changes.push({ field: "untold", from: shownField(merged.untold), to: null });
+          delete merged.untold;
+          fieldsChanged = true;
+        }
         if (fieldsChanged) set("fields_json", yield* encodeFieldValues(merged));
         const amount = amountOf(row) ?? null;
         const byOwner = writer.via === "owner";
