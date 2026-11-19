@@ -29,6 +29,8 @@ export const KIN_COMPANY = {
   timeZoneFromHost:
     "None set yet, so Kin uses the computer's. Open Kin on your phone to set yours.",
   empty: "Nothing here yet. Add what goes on your invoices.",
+  /** A new company's suggested country, the device's, which it takes only with a tap. */
+  useCountry: (name: string) => `Use ${name}?`,
   changed:
     "These changed while you were editing. What you typed is still here. Check what's new, then save again.",
   onlyOwner: {
@@ -291,19 +293,46 @@ export function kinDeviceRegion(): string | null {
 
 /**
  * The form as the profile reads. A company that never saved its details is offered `region`, the
- * device's, as its country: saving it brings that country's currency, year and tax.
+ * device's, as its country: saving it brings that country's currency, year and tax. A new company
+ * still `waiting` on its country gets it only as a suggestion (`kinCompanyCountrySuggestion`).
  */
 export const kinCompanyDraftOf = (
   profile: KinCompanyProfile,
   region: string | null = null,
+  waiting = false,
 ): KinCompanyDraft => {
   const draft = Object.fromEntries(
     KIN_COMPANY_SECTIONS.flatMap((section) =>
       section.fields.map((field) => [field.id, stored(profile, field.id) ?? ""]),
     ),
   ) as KinCompanyDraft;
-  return profile.rev === 0 && region !== null ? { ...draft, country: region } : draft;
+  return !waiting && profile.rev === 0 && region !== null ? { ...draft, country: region } : draft;
 };
+
+/** "India" for IN, or the code where this device can't name it. */
+const countryName = (code: string): string => {
+  try {
+    return new Intl.DisplayNames(undefined, { type: "region" }).of(code) ?? code;
+  } catch {
+    return code;
+  }
+};
+
+/**
+ * The device's country offered to a company still waiting on its own, while none is typed: it is
+ * in the draft only once accepted, so a save that didn't choose a country never sets one.
+ */
+export const kinCompanyCountrySuggestion = (
+  draft: KinCompanyDraft,
+  region: string | null,
+  waiting: boolean,
+): { readonly label: string; readonly accept: () => KinCompanyDraft } | null =>
+  !waiting || region === null || draft.country.trim() !== "" || !valid.country(region)
+    ? null
+    : {
+        label: KIN_COMPANY.useCountry(countryName(region)),
+        accept: () => ({ ...draft, country: region }),
+      };
 
 /**
  * The form's sections for a company in `country`: India's tax ids only for India, and for a host

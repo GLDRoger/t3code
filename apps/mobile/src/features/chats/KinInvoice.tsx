@@ -2,9 +2,10 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_INVOICES,
-  KIN_RECEIPT_MODES,
   KIN_RECEIPTS,
   kinReceiptModeLabel,
+  kinReceiptModes,
+  kinReceiptReferencePlaceholder,
   kinAdvanceDraft,
   kinAdvanceInput,
   kinBase64Bytes,
@@ -72,6 +73,7 @@ import {
 import { KinLinesFields } from "./KinMoneyAnswers";
 import { kinClient } from "./state/kinClient";
 import {
+  useKinCompanyCountry,
   useKinHomeCurrency,
   useKinMoneyActions,
   useKinReceipts,
@@ -796,6 +798,7 @@ function ReceiptForm(props: KinWorkTarget) {
   const actions = useKinMoneyActions(props);
   // A plain number is in the home currency; a typed symbol or code still names its own.
   const home = useKinHomeCurrency(props) ?? KIN_DEFAULT_HOME_CURRENCY;
+  const country = useKinCompanyCountry(props);
   const now = new Date(useNowMinuteMs());
   const today = kinWorkDayOf(now);
   const [draft, setDraft] = useState<KinAdvanceDraft>(() => kinAdvanceDraft(today));
@@ -901,7 +904,7 @@ function ReceiptForm(props: KinWorkTarget) {
           accessibilityLabel={`${KIN_RECEIPTS.mode}: ${kinReceiptModeLabel(draft.mode)}. Change`}
           actions={[
             { id: "", title: KIN_RECEIPTS.noMode, state: draft.mode === "" ? "on" : "off" },
-            ...KIN_RECEIPT_MODES.map((one) => ({
+            ...kinReceiptModes(country).map((one) => ({
               id: one.value,
               title: one.label,
               state: one.value === draft.mode ? ("on" as const) : ("off" as const),
@@ -918,7 +921,7 @@ function ReceiptForm(props: KinWorkTarget) {
         label={KIN_RECEIPTS.reference}
         value={draft.reference}
         onChangeText={(reference) => setDraft({ ...draft, reference })}
-        placeholder={KIN_RECEIPTS.referencePlaceholder}
+        placeholder={kinReceiptReferencePlaceholder(country)}
         maxLength={120}
       />
     </KinWorkFrame>

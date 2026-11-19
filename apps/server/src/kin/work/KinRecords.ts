@@ -44,7 +44,7 @@ import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
-import { companyMoney, homeCurrency } from "./companyProfile.ts";
+import { companyMoney, countryFirst, homeCurrency } from "./companyProfile.ts";
 import { commentsPage } from "./recordComments.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal } from "./sensitiveReads.ts";
@@ -53,6 +53,7 @@ import {
   checkFor,
   encodeFieldValues,
   type FieldValue,
+  isMoney,
   LISTS,
   type ListName,
   parseFields,
@@ -409,6 +410,13 @@ const FIELD_NAMES: Readonly<Record<string, string>> = {
 /** What a refusal may quote of an entry that isn't sensitive; money, notes and a list's own fields it doesn't. */
 const QUOTED = new Set(["title", "state", "owner", "waitingOn", "due", "date", "category", "side"]);
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+/** Whether an entry's amount or fields put money on it. */
+const recordsMoney = (
+  amount: KinMoney | null | undefined,
+  fields: Readonly<Record<string, FieldValue | null>> | undefined,
+) =>
+  (amount !== undefined && amount !== null) ||
+  Object.values(fields ?? {}).some((value) => value !== null && isMoney(value));
 const NUMBERS_ARE_ISSUED =
   "Kin gives this list's entries their numbers when they are issued, so nothing else sets one. Issue the entry instead; an invoice numbered elsewhere keeps that number in its notes.";
 /** A receipt's payment, invoice and number are Kin's own (`gendocs/receipts.ts` writes them). */
@@ -1202,6 +1210,9 @@ const make = Effect.gen(function* () {
         });
       return { row: existing, created: false };
     }
+    // Before the list is read: an amount for a list not made yet waits on the country too.
+    // A list that may hold money takes entries without any, such as a deadline with no fee.
+    if (recordsMoney(input.amount, input.fields)) yield* countryFirst(orgId).pipe(provideSql);
     const def = yield* resolveList(orgId, input.list ?? "work");
     if (def.archivedAt !== null)
       return yield* invalid(`${def.name} is archived; the owner can restore it.`);
@@ -1472,6 +1483,8 @@ const make = Effect.gen(function* () {
           repeat: patch.repeat,
         });
         if (invalidFor !== undefined) return yield* invalidFor;
+        if (recordsMoney(patch.amount, patch.fields))
+          yield* countryFirst(orgId, { saved: true }).pipe(provideSql);
         const zero = zeroOwed(def, patch.amount, patch.category ?? row.category);
         if (zero !== undefined) return yield* zero;
         if (list === "receipts") {

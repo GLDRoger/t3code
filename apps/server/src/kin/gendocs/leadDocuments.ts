@@ -15,7 +15,7 @@ import { isOrgPaused } from "../lead/orgState.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { shown } from "../work/leadDocs.ts";
 import { askOwner } from "../work/leadMoney.ts";
-import { homeCurrency } from "../work/companyProfile.ts";
+import { recordingCurrency } from "../work/companyProfile.ts";
 import { parseAmount } from "../work/money.ts";
 import { admitted, askedBy, type Lead, leadTool, sourceOf, writerFor } from "../work/leadWork.ts";
 import { issueEntry } from "./amounts.ts";
@@ -471,7 +471,10 @@ export const receipt = leadTool("KinDocuments.receipt", (lead, input: typeof Rec
       const amount =
         input.advance === undefined
           ? undefined
-          : parseAmount(input.advance.amount, yield* homeCurrency(lead.orgId));
+          : parseAmount(
+              input.advance.amount,
+              yield* recordingCurrency(lead.orgId, { saved: true }),
+            );
       if (amount !== undefined && "error" in amount) return yield* amount.error;
       request = {
         ...(input.payment === undefined ? {} : { paymentId: input.payment }),

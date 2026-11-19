@@ -22,6 +22,7 @@ import { KIN_SUBSCRIPTIONS } from "@t3tools/client-runtime/kin/kinSubscriptions"
 import { KIN_WORK_HOME, kinWorkAskDraft } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import { useAtomValue } from "@effect/atom-react";
+import type { KinMoneySummary } from "@t3tools/contracts";
 import {
   KIN_CURRENCY,
   kinEstimatesByLine,
@@ -56,10 +57,12 @@ import { cn } from "../../lib/cn";
 import { useKinTab } from "./components/KinTab";
 import { KinFoldSection, KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
-import { useKinViewerScope } from "./state/kinChatOnly";
+import { KinChooseCountry } from "./components/KinCountryFirst";
+import { useKinIsOwnerLevel, useKinPlaceReach, useKinViewerScope } from "./state/kinChatOnly";
 import {
   kinListsOf,
   useKinAskAgent,
+  useKinCountryNeeded,
   useKinLists,
   useKinMoneySummary,
   useKinRates,
@@ -90,6 +93,8 @@ function AreaFrame(props: {
   readonly target: KinWorkTarget;
   readonly stale: boolean;
   readonly onRefresh: () => void;
+  /** While the company's country is not chosen, only a goal is offered: nothing that records money. */
+  readonly waiting?: boolean;
   readonly children: React.ReactNode;
 }) {
   const navigation = useNavigation();
@@ -104,7 +109,7 @@ function AreaFrame(props: {
     environmentId: String(props.target.environmentId),
     orgId: String(props.target.orgId),
   };
-  const addItems: ReadonlyArray<AppBarMenuItem> = [
+  const offered: ReadonlyArray<AppBarMenuItem> = [
     ...(agent === null
       ? []
       : [
@@ -165,6 +170,7 @@ function AreaFrame(props: {
           },
         ]),
   ];
+  const addItems = props.waiting === true ? offered.filter((item) => item.id === "goal") : offered;
   // The counts may be what failed, so they are read again with the area's own figures.
   const refresh = () => {
     refreshKinWorkLive(props.target);
@@ -391,6 +397,9 @@ export function KinMoneyArea(props: Shared) {
   const openList = useKinOpenList(target);
   const { names } = props.directory;
   const scope = useKinViewerScope(props.environmentId);
+  const countryNeeded = useKinCountryNeeded(target);
+  const ownerLevel = useKinIsOwnerLevel(props.environmentId);
+  const reach = useKinPlaceReach(props.environmentId);
   const scopeNote = kinScopeNote("money", scope);
   const { state } = money;
   const frame = {
@@ -401,6 +410,51 @@ export function KinMoneyArea(props: Shared) {
       lists.refresh();
     },
   };
+  const upcoming = (summary: KinMoneySummary) =>
+    summary.upcomingTotal === 0 ? null : datesAllowed ? (
+      <KinFoldSection
+        title={KIN_MONEY.upcoming}
+        summary={KIN_MONEY.upcomingCount(summary.upcomingTotal)}
+        onOpen={() => navigation.navigate("KinDates", target)}
+      />
+    ) : (
+      // A teammate can't read the whole calendar; what Money already sent unfolds here.
+      <KinFoldSection
+        title={KIN_MONEY.upcoming}
+        summary={KIN_MONEY.upcomingCount(summary.upcomingTotal)}
+      >
+        {kinDatesAgenda(summary.upcoming, names, now).flatMap((day) =>
+          day.rows.map((row) => (
+            <KinDateRowLine
+              key={row.id}
+              row={row}
+              onPress={() => navigation.navigate("KinWorkItem", { ...target, task: row.key })}
+            />
+          )),
+        )}
+      </KinFoldSection>
+    );
+  // No figures and nothing that records money; Dates and Goals stay. A teammate kept out of
+  // Money sees Money's own refusal, as before.
+  if (countryNeeded && (ownerLevel || reach?.money === true)) {
+    return (
+      <AreaFrame {...frame} waiting>
+        {ownerLevel ? (
+          <EmptyState
+            variant="plain"
+            {...KIN_MONEY.countryFirst}
+            action={<KinChooseCountry target={target} />}
+          />
+        ) : (
+          <EmptyState variant="plain" {...KIN_MONEY.countryFirstMember} />
+        )}
+        <View className="gap-2">
+          {state._tag === "ready" ? upcoming(state.value) : null}
+          <KinGoals {...target} seq={seq} />
+        </View>
+      </AreaFrame>
+    );
+  }
   if (state._tag !== "ready") {
     return (
       <AreaFrame {...frame}>
@@ -582,29 +636,7 @@ export function KinMoneyArea(props: Shared) {
           seq={seq}
           rates={rates}
         />
-        {summary.upcomingTotal === 0 ? null : datesAllowed ? (
-          <KinFoldSection
-            title={KIN_MONEY.upcoming}
-            summary={KIN_MONEY.upcomingCount(summary.upcomingTotal)}
-            onOpen={() => navigation.navigate("KinDates", target)}
-          />
-        ) : (
-          // A teammate can't read the whole calendar; what Money already sent unfolds here.
-          <KinFoldSection
-            title={KIN_MONEY.upcoming}
-            summary={KIN_MONEY.upcomingCount(summary.upcomingTotal)}
-          >
-            {kinDatesAgenda(summary.upcoming, names, now).flatMap((day) =>
-              day.rows.map((row) => (
-                <KinDateRowLine
-                  key={row.id}
-                  row={row}
-                  onPress={() => navigation.navigate("KinWorkItem", { ...target, task: row.key })}
-                />
-              )),
-            )}
-          </KinFoldSection>
-        )}
+        {upcoming(summary)}
         <KinReceiptsSection {...target} seq={seq} />
         <KinGoals {...target} seq={seq} />
         <KinFoldSection title={view.yearLabel} summary={null}>

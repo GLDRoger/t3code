@@ -36,6 +36,7 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { countryFirstMessage, newCompanyProfileJson, setProfile } from "../work/companyProfile.ts";
 import * as Docs from "../work/docs.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as LeadMoney from "../work/leadMoney.ts";
@@ -1643,6 +1644,75 @@ describe("receipts", () => {
         );
         yield* answerCard(`kin-receipt:${towardsInvoice.proposal}`, "no");
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("wait for a new company's country before reading an amount they are given", () =>
+    Effect.gen(function* () {
+      const asked = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      // As a company created now starts: its country not chosen (`chat/KinIdentity.test.ts`).
+      yield* sql`UPDATE kin_company_profile SET profile_json = ${yield* newCompanyProfileJson}
+        WHERE org_id = ${orgId}`;
+      const [client] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'clients'`;
+      const advance = () =>
+        LeadDocuments.receipt(scope, {
+          sourceEventId: asked,
+          advance: {
+            client: KinRecordKey.make(client!.key),
+            amount: "500",
+            receivedOn: "2026-11-05",
+          },
+        });
+      const probe = parseRecipe(
+        "---\nname: probe\ntitle: Probe\ndescription: probe\nsensitive: true\noutputs: [a.pdf]\ninputs:\n  fee: {type: money}\n  lines: {type: table, columns: {item: text, price: money}}\n---\nGo.\n",
+      );
+      if ("reason" in probe) return assert.fail(probe.reason);
+      const given = { fee: "500", lines: [{ item: "Invented kit", price: "40" }] };
+      const gathered = (inputs: Record<string, unknown>) =>
+        gatherFacts(orgId, probe, undefined, inputs);
+      const refusal = countryFirstMessage("Owner");
+      // An advance goes on a client already kept: nothing was saved.
+      assert.strictEqual(
+        (yield* Effect.flip(advance())).message,
+        countryFirstMessage("Owner", { saved: true }),
+      );
+      assert.strictEqual((yield* Effect.flip(gathered({ fee: "500" }))).message, refusal);
+      assert.strictEqual((yield* Effect.flip(gathered({ lines: given.lines }))).message, refusal);
+      // Nothing was proposed or put to the owner; a document with no amount given is made.
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_receipt_proposals`, 0);
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_widgets WHERE widget_id LIKE '%kin-receipt%'`,
+        0,
+      );
+      yield* gathered({});
+      // Nor is a table with a money column and no amount in it: text only, a blank price, no rows.
+      yield* gathered({ lines: [{ item: "Invented kit" }, { item: "Invented box", price: null }] });
+      yield* gathered({ lines: [] });
+
+      yield* setProfile(orgId, { _tag: "person", personId: ownerId }, { country: "GB" }, undefined);
+      const proposed = yield* advance();
+      assert.strictEqual(proposed.status, "proposed");
+      const [request] = yield* sql<{ json: string }>`SELECT request_json AS json
+        FROM kin_receipt_proposals`;
+      assert.deepStrictEqual(JSON.parse(request!.json).advance.amount, {
+        minor: 50_000,
+        currency: "GBP",
+      });
+      const facts = yield* gathered(given);
+      const assembled = assembleInputs(probe, given, facts.facts, facts.currency);
+      if ("error" in assembled) return assert.fail(assembled.error.message);
+      assert.deepStrictEqual(
+        [
+          assembled.inputs.fee,
+          (assembled.inputs.lines as ReadonlyArray<{ price: unknown }>)[0]?.price,
+        ],
+        [
+          { minor: 50_000, currency: "GBP" },
+          { minor: 4_000, currency: "GBP" },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("never number a receipt again into money once its payment is taken back", () =>

@@ -44,7 +44,7 @@ import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { heldUntil } from "../triggers/quietHold.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { sentMail, SentMailView } from "../connections/Sending.ts";
-import { homeCurrency } from "./companyProfile.ts";
+import { countryFirst, countryRefusal, homeCurrency, isCountryFirst } from "./companyProfile.ts";
 import { partyPage, projectDetail } from "./crm.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { fold, matchName } from "./nameMatch.ts";
@@ -1304,8 +1304,8 @@ type Refusal = { readonly label: string; readonly error: KinChatError };
 
 /** One answer for a call's refused items: each by name, and that nothing in the call was saved. */
 const refusedCall = (total: number, refused: ReadonlyArray<Refusal>) => {
-  const first = refused[0]!;
-  if (total === 1) return first.error;
+  const first = refused.find((one) => isCountryFirst(one.error)) ?? refused[0]!;
+  if (total === 1 || isCountryFirst(first.error)) return first.error;
   const named = refused
     .slice(0, NAMED_REFUSALS)
     .map(({ label, error }) =>
@@ -1811,6 +1811,8 @@ const createRow = Effect.fnUntraced(function* (
   notices: Array<AssignNotice>,
 ) {
   const records = yield* KinRecords;
+  // Before the list is read, so an expense for a list not made yet says what comes first.
+  if (row.amount !== undefined) yield* countryFirst(lead.orgId);
   const def = yield* listFor(lead, row.list ?? "work");
   const list = def.id;
   // A client or contact is the owner's to look after unless told otherwise.
@@ -1965,7 +1967,24 @@ const createRow = Effect.fnUntraced(function* (
 });
 const orList = (items: ReadonlyArray<string>) =>
   items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} or ${items.at(-1)}`;
-export const create = leadTool("KinWorkTools.create", runCreate);
+/** The country refusal as the call reads it: in a batch nothing was saved; whose choice it is. */
+const countryWorded = <A, E, R>(lead: Lead, saved: boolean, call: Effect.Effect<A, E, R>) =>
+  call.pipe(
+    Effect.catchIf(
+      (error) => isKinChatError(error) && isCountryFirst(error),
+      () =>
+        Effect.gen(function* () {
+          const team = yield* viewOf(lead).pipe(Effect.orElseSucceed(() => undefined));
+          return yield* yield* countryRefusal(lead.orgId, {
+            saved,
+            forTeammate: team !== undefined,
+          });
+        }),
+    ),
+  );
+export const create = leadTool("KinWorkTools.create", (lead, input: typeof CreateInput.Type) =>
+  countryWorded(lead, input.records.length > 1, runCreate(lead, input)),
+);
 
 /** A client's kind or an entry's category; a client with neither is a client. */
 const categoryOf = (
@@ -2396,8 +2415,15 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     held: holds ? [giving.personId] : [],
   };
 });
-export const update = leadTool("KinWorkTools.update", runUpdate);
-export const updateMany = leadTool("KinWorkTools.updateMany", runUpdateMany);
+export const update = leadTool(
+  "KinWorkTools.update",
+  (lead, input: Change & { readonly key: string }) =>
+    countryWorded(lead, true, runUpdate(lead, input)),
+);
+export const updateMany = leadTool(
+  "KinWorkTools.updateMany",
+  (lead, input: typeof UpdateInput.Type) => countryWorded(lead, true, runUpdateMany(lead, input)),
+);
 
 /** Several tasks given out at once, all or none: each person hears once, however many came to them. */
 const runAssign = Effect.fnUntraced(function* (lead: Lead, input: typeof AssignInput.Type) {
