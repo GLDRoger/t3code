@@ -283,7 +283,10 @@ async function settled(
   await page.mouse.move((size?.width ?? 1) - 1, 0);
   while (performance.now() < deadline) {
     const ready = (await page.evaluate(READY_SCRIPT).catch(() => false)) === true;
-    counts = ((await page.evaluate(MASK).catch(() => null)) as typeof counts | null) ?? counts;
+    // A second pass finds the text already hidden; the most any pass hid is what the screen hides.
+    const hid = (await page.evaluate(MASK).catch(() => null)) as typeof counts | null;
+    if (hid !== null)
+      counts = { clock: Math.max(counts.clock, hid.clock), ago: Math.max(counts.ago, hid.ago) };
     shot = await page.screenshot({ animations: "disabled", caret: "hide", scale: "css" });
     if (ready && previous !== undefined && previous.equals(shot))
       return { shot, settled: true, masked: masked() };
@@ -502,8 +505,9 @@ export async function capture(options: CaptureOptions): Promise<Manifest> {
             masked: shot.masked,
             ...(shot.settled ? {} : { unsettled: true }),
           });
-          if (screen.name === "chats-list" || screen.name === "zoya-chats-list")
-            tab[screen.person] ??= await tabOf(page);
+          // The tab on Kin's home and on a place, which take different paths.
+          if (/(^|-)(chats-list|tasks)$/.test(screen.name))
+            tab[`${screen.person} on ${screen.name}`] ??= await tabOf(page);
           options.log(`${file}${shot.settled ? "" : " (still moving after 20 s)"}`);
         } catch (error) {
           const message = (error as Error).message.split("\n")[0] ?? String(error);

@@ -32,7 +32,7 @@ export interface Manifest {
   readonly timeZone: string;
   readonly sizes: ReadonlyArray<{ name: SizeName; width: number; height: number }>;
   readonly screens: ReadonlyArray<ManifestScreen>;
-  /** What a screenshot cannot see: the browser tab's title and icon, per person. */
+  /** What a screenshot cannot see: the browser tab's title and icon, per person and screen. */
   readonly tab: Readonly<
     Record<string, { title: string; icon: string; iconSha256: string | null }>
   >;
