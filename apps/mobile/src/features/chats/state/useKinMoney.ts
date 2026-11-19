@@ -415,6 +415,14 @@ export function useKinHomeCurrency(target: KinWorkTarget) {
   return useAtomValue(kinAccessMeAtom(connectionAtomRuntime, target.environmentId))?.homeCurrency;
 }
 
+/** Whether the company was made new and its country is not chosen: no money is recorded until it is. */
+export function useKinCountryNeeded(target: KinWorkTarget) {
+  return (
+    useAtomValue(kinAccessMeAtom(connectionAtomRuntime, target.environmentId))?.countryNeeded ===
+    true
+  );
+}
+
 /** The company's country, which decides whether forms ask for India's tax fields. */
 export function useKinCompanyCountry(target: KinWorkTarget) {
   return useAtomValue(kinAccessMeAtom(connectionAtomRuntime, target.environmentId))?.country;

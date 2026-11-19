@@ -8,6 +8,9 @@ export const KIN_INTRO_PROMPTS: ReadonlyArray<{ readonly text: string; readonly 
   { text: "Remind me tomorrow at 9 to ", send: false },
 ];
 
+/** On the intro while a company made new has no country (`countryNeeded`): opens Company details. */
+export const KIN_INTRO_COUNTRY = "Choose your company's country";
+
 /**
  * The intro shows in the owner's direct chat with their lead until the owner has said anything.
  * It stays hidden while older messages are unread from the host: one of them may be the owner's.

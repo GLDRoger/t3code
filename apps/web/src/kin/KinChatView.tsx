@@ -46,7 +46,11 @@ import {
   type KinChatState,
   type KinInboxState,
 } from "@t3tools/client-runtime/kin/kinInboxModel";
-import { KIN_INTRO_PROMPTS, kinIntroVisible } from "@t3tools/client-runtime/kin/kinIntro";
+import {
+  KIN_INTRO_COUNTRY,
+  KIN_INTRO_PROMPTS,
+  kinIntroVisible,
+} from "@t3tools/client-runtime/kin/kinIntro";
 import {
   kinAgentGroups,
   kinHeldCardAgent,
@@ -107,7 +111,7 @@ import {
   type KinWakeupId,
   kinWhenFormat,
 } from "@t3tools/contracts";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouter } from "@tanstack/react-router";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -180,6 +184,9 @@ import { KinStandInLine } from "./KinStandInLine";
 import { KIN_UNSENT_ATTRIBUTE } from "./KinUpdatedLine";
 import { kinAccessCopy } from "./kinTeammateMark";
 import { useKinHostAt } from "./useKinHost";
+import { useKinCountryNeeded } from "./useKinMoney";
+import { useKinOwnerLevel } from "./useKinOwnerLevel";
+import { openKinSettings } from "./kinSettingsAddress";
 import { useKinProfiles } from "./kinPictures";
 import { kinDraftAtom, kinDraftKey, restoreDraft } from "./kinDraft";
 import { Skeleton } from "../components/ui/skeleton";
@@ -1031,6 +1038,7 @@ function KinChatFeed(props: {
   const intro =
     showIntro && props.agentName !== null ? (
       <KinIntro
+        environmentId={props.environmentId}
         agentName={props.agentName}
         charter={props.charter}
         onSend={(text) => void sendText(text)}
@@ -1254,11 +1262,16 @@ function KinPresenceLine(props: {
 
 /** First run in the owner's chat with their lead: what it does and a few asks to start with. */
 function KinIntro(props: {
+  readonly environmentId: EnvironmentId;
   readonly agentName: string;
   readonly charter: string | null;
   readonly onSend: (text: string) => void;
   readonly onStart: (text: string) => void;
 }) {
+  const router = useRouter();
+  const countryNeeded = useKinCountryNeeded(props);
+  const ownerLevel = useKinOwnerLevel(props.environmentId);
+  const countryFirst = countryNeeded && ownerLevel;
   return (
     <Empty size="compact">
       <EmptyHeader>
@@ -1269,6 +1282,11 @@ function KinIntro(props: {
         </EmptyDescription>
       </EmptyHeader>
       <div className="flex flex-wrap justify-center gap-2">
+        {countryFirst ? (
+          <Button size="sm" onClick={() => openKinSettings(router.history, "company")}>
+            {KIN_INTRO_COUNTRY}
+          </Button>
+        ) : null}
         {KIN_INTRO_PROMPTS.map((prompt) =>
           prompt.send ? (
             <Button

@@ -120,7 +120,8 @@ function makeKinAccess<R, ER>(
       );
     }),
     staleTimeMs: 30_000,
-    // A kind change moves `leads` and `people` for everyone, members included.
+    // A kind change moves `leads` and `people` for everyone, members included; a country chosen
+    // moves the company's money.
     refreshTrigger: (target: {
       readonly environmentId: EnvironmentId;
       readonly input: KinAccessMeInput;
@@ -129,7 +130,8 @@ function makeKinAccess<R, ER>(
       if (trigger === undefined) {
         const leads = refreshes("leads")(target);
         const people = refreshes("people")(target);
-        trigger = Atom.make((get) => `${get(leads)}|${get(people)}`);
+        const company = refreshes("company")(target);
+        trigger = Atom.make((get) => `${get(leads)}|${get(people)}|${get(company)}`);
         triggers.set(`${target.environmentId}:${target.input.orgId}`, trigger);
       }
       return trigger;

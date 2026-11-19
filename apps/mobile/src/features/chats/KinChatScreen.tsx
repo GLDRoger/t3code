@@ -34,6 +34,7 @@ import {
   type KinPresence,
   type KinWakeupId,
   KIN_TEAM_ROOM_TEAM_ID,
+  KinOrgId,
   kinWhenFormat,
 } from "@t3tools/contracts";
 import * as Exit from "effect/Exit";
@@ -1492,6 +1493,8 @@ function KinChatFeed(props: {
   const intro =
     showIntro && props.agentName !== null ? (
       <KinIntro
+        environmentId={props.environmentId}
+        orgId={KinOrgId.make(props.orgId)}
         agentName={props.agentName}
         charter={props.charter}
         onSend={sendSample}

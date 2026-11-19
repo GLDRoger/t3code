@@ -31,6 +31,7 @@ import { Button } from "../components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { cn } from "../lib/utils";
 import { KinChart } from "./KinChart";
+import { KinCountryFirst } from "./KinCountryFirst";
 import { KinEstimateText, KinRatesDialog, KinSetRateButton } from "./KinMoneyEstimate";
 import { kinClient } from "./kinClient";
 import {
@@ -163,23 +164,31 @@ function AmountRow(props: {
   );
 }
 
+type MoneyProps = KinWorkTarget & {
+  readonly live: KinWorkLive;
+  readonly stale: boolean;
+  readonly directory: KinWorkDirectory;
+  readonly lists: KinListsHandle;
+  readonly onOpenList: (open: KinListOpen) => void;
+  readonly onOpenKey: (key: KinRecordKey) => void;
+  readonly onDates: () => void;
+  readonly onSubscriptions: () => void;
+  readonly onOpenDoc: (key: KinRecordKey) => void;
+};
+
 /**
  * Money: who owes us and how late, what came in and went out, the year so far and what is due.
  * The host adds everything up; this only lays it out and says where each figure came from.
  */
-export function KinWorkMoney(
-  props: KinWorkTarget & {
-    readonly live: KinWorkLive;
-    readonly stale: boolean;
-    readonly directory: KinWorkDirectory;
-    readonly lists: KinListsHandle;
-    readonly onOpenList: (open: KinListOpen) => void;
-    readonly onOpenKey: (key: KinRecordKey) => void;
-    readonly onDates: () => void;
-    readonly onSubscriptions: () => void;
-    readonly onOpenDoc: (key: KinRecordKey) => void;
-  },
-) {
+export function KinWorkMoney(props: MoneyProps) {
+  return (
+    <KinCountryFirst environmentId={props.environmentId}>
+      <MoneyScreen {...props} />
+    </KinCountryFirst>
+  );
+}
+
+function MoneyScreen(props: MoneyProps) {
   const { names } = props.directory;
   const { state, refresh } = useKinMoneySummary(props, { enabled: true, use: "screen" });
   const agent = useKinAskAgent(props);
