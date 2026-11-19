@@ -24,7 +24,13 @@ import { isOrgPaused } from "../lead/orgState.ts";
 import { holdFor } from "../triggers/quietHold.ts";
 import { storedWorkHours } from "../triggers/quietHours.ts";
 import type * as CardActions from "../widgets/cardActions.ts";
-import { type CardPlan, plansOf, sealPlans, sealedOptions } from "../widgets/cardPlans.ts";
+import {
+  type CardPlan,
+  plansOf,
+  sealPlans,
+  sealedOptions,
+  takesAsDefault,
+} from "../widgets/cardPlans.ts";
 import { choiceCardState } from "../widgets/choiceCard.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { ownerZone } from "../work/recordRows.ts";
@@ -224,8 +230,8 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
   readonly about?: ReadonlyArray<string> | undefined;
   readonly intent?: string | undefined;
   readonly now: number;
-  /** The default's fixed action: a task's done or drop may be taken at its day, any other only by a tap. */
-  readonly acts?: CardPlan["kind"] | undefined;
+  /** The default's sealed action: only one `takesAsDefault` allows is taken at its day. */
+  readonly acts?: CardPlan | undefined;
   /** Why that done or drop won't be taken at its day (`untakenAtDay`). */
   readonly held?: "repeats" | "handed_back" | undefined;
 }) {
@@ -253,10 +259,7 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
     unsafeDefault(label, input.question, {
       labels: input.labels,
       aboutMoney: yield* aboutMoney(input.orgId, about),
-    }) ??
-    (input.acts === undefined || input.acts === "done" || input.acts === "drop"
-      ? input.held
-      : "action");
+    }) ?? (input.acts === undefined || takesAsDefault(input.acts) ? input.held : "action");
   const safe = untaken === undefined;
   const actAt = safe ? dueAt : raiseAt(dueAt, clock.zone, clock.days);
   const intent = normaliseIntent(input.intent);

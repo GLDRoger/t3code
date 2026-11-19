@@ -44,6 +44,7 @@ import {
   type RunPlan,
   isTaken,
   plansOf,
+  takesAsDefault,
 } from "./cardPlans.ts";
 
 /*
@@ -578,7 +579,7 @@ export const untakenAtDay = Effect.fn("KinCardActions.untakenAtDay")(function* (
   orgId: KinOrgId,
   plan: CardPlan,
 ) {
-  if (plan.kind !== "done" && plan.kind !== "drop") return undefined;
+  if (!takesAsDefault(plan)) return undefined;
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ repeat: string | null; handedBack: number | null }>`SELECT
       repeat_json AS repeat, handed_back_at AS "handedBack" FROM kin_records
@@ -598,8 +599,7 @@ export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
   question: Pick<QuestionRow, "questionId" | "agentId" | "chatId" | "widgetId" | "raiseWidgetId">,
   records: KinRecords["Service"],
 ) {
-  if ((plan.kind !== "done" && plan.kind !== "drop") || plan.draw.agentId !== question.agentId)
-    return false;
+  if (!takesAsDefault(plan) || plan.draw.agentId !== question.agentId) return false;
   const state = plan.kind === "done" ? "done" : "dropped";
   const row = yield* recordRow(orgId, { recordId: plan.recordId });
   if (row === undefined || row.rev !== plan.rev) return false;

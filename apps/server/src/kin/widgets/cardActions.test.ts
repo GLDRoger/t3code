@@ -61,7 +61,7 @@ import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { presetDefinition, propose } from "../work/registers.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import * as CardActions from "./cardActions.ts";
-import { plansOf } from "./cardPlans.ts";
+import { plansOf, takesAsDefault } from "./cardPlans.ts";
 import { FEWER_THAN_TWO } from "./choiceCard.ts";
 
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -1714,6 +1714,22 @@ it.effect("a default Kin couldn't undo, or on a task changed since, waits for it
           undefined,
           undefined,
         ],
+      );
+      // One rule, read when asked and at the day: only a task's done or drop is taken.
+      assert.deepStrictEqual(
+        (
+          [
+            "done",
+            "drop",
+            "start",
+            "create_list",
+            "take_default",
+            "let_talk",
+            "undo_default",
+            "keep_default",
+          ] as const
+        ).filter((kind) => takesAsDefault({ kind })),
+        ["done", "drop"],
       );
       // An open question with no answers to tap gets no card, and is told what to do instead.
       const open = yield* callAs("finance", "kin_ask", {

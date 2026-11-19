@@ -183,7 +183,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         about,
         intent,
         now,
-        acts: defaultPlan?.kind,
+        acts: defaultPlan,
         held:
           defaultPlan === undefined
             ? undefined
