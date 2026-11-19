@@ -96,8 +96,11 @@ import { KinAvatar } from "./KinAvatar";
 import { KinTeammateDevices } from "./KinDevices";
 import { KinInviteDialog, type KinInviteDialogState } from "./KinInviteDialog";
 import { KinAwayField, KinHandOverButton } from "./KinAway";
+import { KinPersonTasks } from "./KinPersonTasks";
+import { KIN_PLACE_PATH } from "./kinPlaces";
 import { useKinProfiles } from "./kinPictures";
 import { KIN_HAND_OVER } from "@t3tools/client-runtime/kin/kinHandOver";
+import { KIN_PERSON_TASKS } from "@t3tools/client-runtime/kin/kinTasksList";
 import { kinClient } from "./kinClient";
 import { kinProfileRequestAtom, kinTeamAddRequestAtom } from "./kinTeamForm";
 import { openKinProfile } from "./KinProfileSheet";
@@ -463,6 +466,7 @@ function KinTeammateDialog(props: {
               environmentId={props.environmentId}
               orgId={props.orgId}
               personId={teammate.personId}
+              onLeave={props.onClose}
             />
           )}
           {kinTeammateKindEditable(teammate, props.viewer) ? (
@@ -883,14 +887,18 @@ function useKinProfile(environmentId: EnvironmentId, orgId: KinOrgId, personId: 
   return held?.profiles.find((profile) => profile.personId === personId) ?? null;
 }
 
-/** Away, and giving all their open tasks to someone, from the teammate's own page. */
+/** Away, their tasks, and giving all their open tasks to someone, from the teammate's own page. */
 function KinTeammateAway(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly personId: KinPersonId;
+  /** Closes the page before Tasks opens under it. */
+  readonly onLeave: () => void;
 }) {
   const profile = useKinProfile(props.environmentId, props.orgId, props.personId);
+  const navigate = useNavigate();
   if (profile === null) return null;
+  const params = { environmentId: props.environmentId, orgId: props.orgId };
   return (
     <>
       <KinAwayField
@@ -900,16 +908,29 @@ function KinTeammateAway(props: {
         mine={false}
         mayEdit={profile.canEdit === true}
       />
-      {(profile.load?.open ?? 0) === 0 ? null : (
-        <Section title="Tasks">
+      <Section title={KIN_PERSON_TASKS.title}>
+        <KinPersonTasks
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          personId={props.personId}
+          onOpenTask={(task) => {
+            props.onLeave();
+            void navigate({ to: KIN_PLACE_PATH.tasks, params, search: { task } });
+          }}
+          onSeeAll={() => {
+            props.onLeave();
+            void navigate({ to: KIN_PLACE_PATH.tasks, params, search: { person: props.personId } });
+          }}
+        />
+        {(profile.load?.open ?? 0) === 0 ? null : (
           <KinHandOverButton
             environmentId={props.environmentId}
             orgId={props.orgId}
             from={{ _tag: "person", personId: props.personId }}
             fromName={profile.displayName}
           />
-        </Section>
-      )}
+        )}
+      </Section>
     </>
   );
 }

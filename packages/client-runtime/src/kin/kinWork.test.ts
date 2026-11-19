@@ -21,6 +21,9 @@ import type { AtomCommandResult } from "../state/runtime.ts";
 import {
   KIN_WORK_DEFAULT_FILTER,
   KIN_WORK_NO_DRAFT,
+  KIN_WORK_TITLE_TOO_LONG,
+  kinWorkDueText,
+  kinWorkTitleCount,
   createKinWorkActions,
   kinWorkDraftCheck,
   kinWorkHostClients,
@@ -724,6 +727,40 @@ describe("kinWorkRow", () => {
     expect(kinWorkRow(due, far, now).due).toContain("21");
   });
 
+  // K227: the day and the today it counts from are both the owner's, and a day has no time.
+  it.each([
+    [
+      "Asia/Kolkata",
+      "2026-11-20T18:29:59.999Z",
+      "2026-11-19T18:29:00.000Z",
+      "2026-11-19T18:31:00.000Z",
+    ],
+    [
+      "America/New_York",
+      "2026-11-21T04:59:59.999Z",
+      "2026-11-20T04:59:00.000Z",
+      "2026-11-20T05:01:00.000Z",
+    ],
+    ["UTC", "2026-11-20T23:59:59.999Z", "2026-11-19T23:59:00.000Z", "2026-11-20T00:01:00.000Z"],
+  ])("prints a due day as the day only where the owner is (%s)", (zone, dueAt, before, after) => {
+    const where = { ...names, zone };
+    const due = { dueAt, dueAllDay: true };
+    expect(kinWorkDueText(due, where, new Date(before))).toBe("tomorrow");
+    expect(kinWorkDueText(due, where, new Date(after))).toBe("today");
+  });
+
+  it("says who it waits on only while it is waiting, and never doubles a title's full stop", () => {
+    expect(kinWorkRow(record({ state: "waiting", waitingOn: priya }), names, now).status).toBe(
+      "Waiting on Priya",
+    );
+    // K224: a stale waitingOn on a task under way reads as where it stands; the holder leads.
+    const doing = kinWorkRow(record({ state: "doing", waitingOn: priya, owner: lead }), names, now);
+    expect([doing.status, doing.holder]).toEqual(["In progress", "Tech lead"]);
+    // K228
+    const label = kinWorkRow(record({ title: "Call the bank." }), names, now).accessibilityLabel;
+    expect(label).toBe("Call the bank. You");
+  });
+
   it("names the project, else the client except in a list of only theirs, and nothing on an older host", () => {
     const party = {
       recordId: KinRecordId.make("rec-c"),
@@ -796,6 +833,18 @@ describe("kinWorkAssignees", () => {
 });
 
 describe("kinWorkDraftCheck", () => {
+  it("counts a long title from 240 and refuses one past 280 on Save, never cutting it", () => {
+    expect(kinWorkTitleCount("x".repeat(239))).toBeNull();
+    expect(kinWorkTitleCount("x".repeat(240))).toBe("240 of 280");
+    const long = "x".repeat(300);
+    expect(kinWorkTitleCount(long)).toBe("300 of 280");
+    expect(kinWorkDraftCheck({ ...KIN_WORK_NO_DRAFT, title: long })).toEqual({
+      ok: false,
+      problem: KIN_WORK_TITLE_TOO_LONG,
+    });
+    expect(kinWorkDraftCheck({ ...KIN_WORK_NO_DRAFT, title: "x".repeat(280) }).ok).toBe(true);
+  });
+
   it("sends a picked day as an all-day date and leaves out what was left blank", () => {
     expect(
       kinWorkDraftCheck({
@@ -810,11 +859,21 @@ describe("kinWorkDraftCheck", () => {
       input: { title: "Send the quote", owner: lead, dueAt: "2026-11-14", dueAllDay: true },
     });
     expect(kinWorkDraftCheck({ ...KIN_WORK_NO_DRAFT, title: " " }).ok).toBe(false);
-    // What a client owes is theirs to do; with no client, whose move it is means nothing.
+    // K187: a client alone is a plain task about them; saying who owes it makes an obligation.
     const party = { key: "C-1" as const, title: "Invented Foods" };
+    expect(kinWorkDraftCheck({ ...KIN_WORK_NO_DRAFT, title: "Sign", party })).toEqual({
+      ok: true,
+      input: { title: "Sign", party: "C-1" },
+    });
+    expect(kinWorkDraftCheck({ ...KIN_WORK_NO_DRAFT, title: "Sign", party, side: "ours" })).toEqual(
+      { ok: true, input: { title: "Sign", party: "C-1", category: "obligation" } },
+    );
     expect(
       kinWorkDraftCheck({ ...KIN_WORK_NO_DRAFT, title: "Sign", party, side: "theirs" }),
-    ).toEqual({ ok: true, input: { title: "Sign", party: "C-1", side: "theirs" } });
+    ).toEqual({
+      ok: true,
+      input: { title: "Sign", party: "C-1", category: "obligation", side: "theirs" },
+    });
     expect(kinWorkDraftCheck({ ...KIN_WORK_NO_DRAFT, title: "Sign", side: "theirs" })).toEqual({
       ok: true,
       input: { title: "Sign" },

@@ -21,7 +21,9 @@ import {
   kinTaskLine,
   kinTaskStep,
   kinTasksByMove,
+  kinTaskFilterProjects,
   kinTasksGroupedBy,
+  kinTasksMostUrgent,
 } from "./kinTasksList.ts";
 import type { KinWorkNames } from "./kinWork.ts";
 
@@ -311,6 +313,40 @@ describe("kinTaskLine", () => {
     expect(line.lead?.tone ?? null).toBe(tone);
     expect(line.lead?.text ?? null).toBe(text);
     expect(line.rest).toBe(rest);
+  });
+});
+
+describe("a person's page and the project filter", () => {
+  it("lists a person's five most urgent open tasks in Tasks' own order", () => {
+    const rows = [
+      row("W-1"),
+      row("W-2", { dueAt: "2026-11-25T09:00:00.000Z" }),
+      row("W-3", late("2026-11-16T09:00:00.000Z")),
+      row("W-4", { dueAt: "2026-11-20T09:00:00.000Z" }),
+      row("W-5", { state: "done", ...late("2026-11-10T09:00:00.000Z") }),
+      row("W-6", late("2026-11-12T09:00:00.000Z")),
+      row("W-7", { createdAt: "2026-10-01T09:00:00.000Z" }),
+    ];
+    expect(kinTasksMostUrgent(rows, 5).map((one) => one.key)).toEqual([
+      "W-6",
+      "W-3",
+      "W-4",
+      "W-2",
+      "W-7",
+    ]);
+  });
+
+  it("offers a teammate every project of a task they see, not only the ones they are on", () => {
+    const theirs = { key: "P-1", title: "Lumen booking app" } as const;
+    const other = { recordId: KinRecordId.make("p-2"), key: "P-2", title: "Kin" } as const;
+    const rows = [
+      row("W-1", { owner: zoya, project: { recordId: KinRecordId.make("p-1"), ...theirs } }),
+      row("W-2", { owner: zoya, project: other }),
+      row("W-3", { owner: zoya, project: other }),
+      row("W-4", { owner: zoya }),
+    ];
+    expect(kinTaskFilterProjects([theirs], rows)).toEqual([theirs, { key: "P-2", title: "Kin" }]);
+    expect(kinTaskFilterProjects([theirs], [rows[0]!])).toEqual([theirs]);
   });
 });
 

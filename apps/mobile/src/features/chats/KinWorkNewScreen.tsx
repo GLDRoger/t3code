@@ -6,7 +6,6 @@ import {
   KIN_WORK_NOTES_MAX,
   kinWorkOnlyOwner,
   KIN_WORK_REPEAT,
-  KIN_WORK_TITLE_MAX,
   createKinWorkActions,
   kinSameRepeat,
   kinWorkAssignees,
@@ -14,6 +13,8 @@ import {
   kinWorkDraftFor,
   kinWorkDraftHint,
   kinWorkDraftWords,
+  kinWorkTitleCount,
+  kinWorkTitleTooLong,
   kinWorkHostClients,
   kinWorkDueChoices,
   kinWorkDueLabel,
@@ -38,7 +39,8 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { uuidv4 } from "../../lib/uuid";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { KinWorkPlaceRow, KinWorkSideRow } from "./components/KinWorkTaskMenus";
+import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
+import { KinWorkSideRow } from "./components/KinWorkTaskMenus";
 import { kinWorkRefParam, type KinWorkParams } from "./KinWorkScreen";
 import { kinClient } from "./state/kinClient";
 import {
@@ -91,7 +93,8 @@ export function KinWorkNewScreen({ route }: StaticScreenProps<KinWorkParams>) {
       start={kinWorkDraftFor({
         party: kinWorkRefParam(route.params.party, route.params.partyName),
         project: kinWorkRefParam(route.params.project, route.params.projectName),
-        side: route.params.side === "theirs" ? "theirs" : "ours",
+        side:
+          route.params.side === "theirs" ? "theirs" : route.params.side === "ours" ? "ours" : null,
       })}
     />
   );
@@ -128,6 +131,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
   const offersClient = choices.clients.length > 0 || draft.party !== null;
   const offersProject = choices.projects.length > 0 || draft.project !== null;
   const words = kinWorkDraftWords(draft);
+  const titleCount = kinWorkTitleCount(draft.title);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const assignees = kinWorkAssignees({
@@ -161,7 +165,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
       <AppBar
         // The bar is too narrow for the client's name, which the Client row below carries.
         title={
-          draft.party === null
+          draft.party === null || draft.side === null
             ? words.title
             : draft.side === "theirs"
               ? KIN_CLIENTS.theyOwe
@@ -198,13 +202,24 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                     autoFocus
                     autoCapitalize="sentences"
                     returnKeyType="done"
-                    maxLength={KIN_WORK_TITLE_MAX}
                     onChangeText={(title) => setDraft({ ...draft, title })}
                     textAlignVertical="center"
                     placeholder={words.titlePlaceholder}
                     placeholderTextColorClassName="accent-placeholder"
                     className="min-h-8 font-sans text-base text-foreground"
                   />
+                  {titleCount === null ? null : (
+                    <Text
+                      textRole="footnote"
+                      className={
+                        kinWorkTitleTooLong(draft.title)
+                          ? "text-danger-foreground tabular-nums"
+                          : "text-foreground-muted tabular-nums"
+                      }
+                    >
+                      {titleCount}
+                    </Text>
+                  )}
                 </View>
               </ListSection>
               <View className="gap-2">
@@ -283,10 +298,9 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
               {!hostClients || (!offersClient && !offersProject) ? null : (
                 <ListSection>
                   {!offersClient ? null : (
-                    <KinWorkPlaceRow
+                    <KinWorkPlacePicker
                       icon="person.2"
                       label={KIN_WORK_NEW_COPY.clientLabel}
-                      none={KIN_WORK_NEW_COPY.none}
                       held={draft.party}
                       choices={choices.clients}
                       disabled={saving}
@@ -301,10 +315,9 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                     />
                   )}
                   {!offersProject ? null : (
-                    <KinWorkPlaceRow
+                    <KinWorkPlacePicker
                       icon="folder"
                       label={KIN_WORK_NEW_COPY.projectLabel}
-                      none={KIN_WORK_NEW_COPY.none}
                       held={draft.project}
                       choices={choices.projects}
                       disabled={saving}

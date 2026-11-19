@@ -110,6 +110,8 @@ export const KinLeadTracking = Schema.Struct({
   title: Schema.String.check(Schema.isMaxLength(280)),
   // When it is due; absent for work under way and for scheduled tasks.
   dueAt: Schema.optional(Schema.toEncoded(CanonicalUtcTimestamp)),
+  // A due day with no time: `dueAt` is that day's end where the owner is. Absent from older hosts.
+  dueAllDay: Schema.optional(Schema.Boolean),
   chatId: Schema.NullOr(KinChatId),
   // Work entries only: the entry's key and state, so a row opens its entry.
   key: Schema.optional(KinRecordKey),

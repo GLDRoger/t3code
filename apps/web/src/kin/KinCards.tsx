@@ -16,7 +16,15 @@ import {
   kinChoiceAnswered,
   kinChoiceFailureNotice,
   kinChoicePhase,
+  kinSendEditBound,
+  kinSendEditInput,
+  kinSendEditOffered,
+  kinSendEditRefused,
+  kinSendEditStart,
+  KIN_SEND_EDIT_COPY,
   type KinChoiceCardView,
+  type KinSendEditDraft,
+  type KinSendEditing,
 } from "@t3tools/client-runtime/kin/kinChoicePresentation";
 import {
   createKinCardActions,
@@ -55,7 +63,7 @@ import {
   MenuRadioItem,
   MenuTrigger,
 } from "../components/ui/menu";
-import { Fragment, memo, useRef, useState, type ReactNode } from "react";
+import { Fragment, memo, useId, useRef, useState, type ReactNode } from "react";
 
 import { useAssetUrls } from "../assets/assetUrls";
 import { AttachmentImage } from "../components/media/AttachmentImage";
@@ -65,6 +73,9 @@ import { useNowMinuteMs } from "./useKinClock";
 import { cn, randomUUID } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
 import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Textarea } from "../components/ui/textarea";
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { KinChart } from "./KinChart";
 import { KinSocialPackCard, KinSocialWeekCard } from "./KinSocialCards";
@@ -361,6 +372,10 @@ function KinChoiceCard(props: {
   const [switching, setSwitching] = useState(false);
   const [switchProblem, setSwitchProblem] = useState<string | null>(null);
   const setSendFrom = useAtomCommand(kinClient.connectionSetSendFrom, { reportFailure: false });
+  const canEdit = useAtomValue(kinClient.connectionSendEdited.permissionAtom(environmentId));
+  const sendEdited = useAtomCommand(kinClient.connectionSendEdited, { reportFailure: false });
+  const [editing, setEditing] = useState<KinSendEditing | null>(null);
+  const [editBusy, setEditBusy] = useState(false);
   const [lastStatus, setLastStatus] = useState<
     (KinCardStatus & { readonly optionId: string }) | null
   >(null);
@@ -415,11 +430,43 @@ function KinChoiceCard(props: {
   };
 
   const answered = kinChoiceAnswered(choice, props.viewerPersonId, sentOption?.label ?? null);
+  const editable =
+    answered === null && pending === null && kinSendEditOffered(choice, phase, canAct && canEdit);
+  const shownEdit = editable ? editing : null;
+
+  const editBound = shownEdit === null ? null : kinSendEditBound(shownEdit, choice);
+
+  const sendEdit = async () => {
+    if (shownEdit === null || editBusy || editBound?.ready !== true) return;
+    setEditBusy(true);
+    const result = await sendEdited({
+      environmentId,
+      input: kinSendEditInput(choice, shownEdit, randomUUID()),
+    });
+    setEditBusy(false);
+    setEditing(
+      AsyncResult.isFailure(result)
+        ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
+        : null,
+    );
+  };
 
   return (
     <CardFrame label={kinChoiceAccessibilityLabel(choice, answered?.text ?? null)}>
       <p className="font-medium text-foreground">{choice.question}</p>
-      {choice.send !== null ? (
+      {choice.send !== null && shownEdit !== null ? (
+        <KinSendEditor
+          send={choice.send}
+          draft={shownEdit.draft}
+          busy={editBusy}
+          problem={shownEdit.problem}
+          review={editBound?.review === true}
+          ready={editBound?.ready === true}
+          onChange={(draft) => setEditing({ ...shownEdit, draft })}
+          onSend={() => void sendEdit()}
+          onDiscard={() => setEditing(null)}
+        />
+      ) : choice.send !== null ? (
         <KinSendDetail
           send={choice.send}
           pickFrom={
@@ -442,7 +489,7 @@ function KinChoiceCard(props: {
         <p className="text-xs text-muted-foreground">{choice.closedText}</p>
       ) : !canAct ? (
         <p className="text-xs text-muted-foreground">{CANT_ACT_TEXT}</p>
-      ) : (
+      ) : shownEdit !== null ? null : (
         <>
           <CardNotice notice={status?.notice} />
           <div className="flex flex-col gap-1.5 pt-1">
@@ -462,10 +509,190 @@ function KinChoiceCard(props: {
                 )}
               </div>
             ))}
+            {editable ? (
+              <Button
+                variant="outline"
+                size="sm-multiline"
+                disabled={switching}
+                onClick={() => setEditing(kinSendEditStart(choice))}
+              >
+                {KIN_SEND_EDIT_COPY.edit}
+              </Button>
+            ) : null}
           </div>
         </>
       )}
     </CardFrame>
+  );
+}
+
+/**
+ * A mail card's To, Cc, Subject and Body, editable in place; its From, quote and files go as
+ * drawn and show here. Only the Send button sends, never Enter in a field.
+ */
+function KinSendEditor(props: {
+  readonly send: NonNullable<KinChoiceCardView["send"]>;
+  readonly draft: KinSendEditDraft;
+  readonly busy: boolean;
+  readonly problem: string | null;
+  /** The card changed under the editor: who it goes from now is shown again beside Send. */
+  readonly review: boolean;
+  readonly ready: boolean;
+  readonly onChange: (draft: KinSendEditDraft) => void;
+  readonly onSend: () => void;
+  readonly onDiscard: () => void;
+}) {
+  const { send, draft, busy } = props;
+  const id = useId();
+  const field = (name: keyof KinSendEditDraft, value: string) =>
+    props.onChange({ ...draft, [name]: value });
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-xs text-muted-foreground">{send.heading}</p>
+      {send.from.length === 0 ? null : <KinSendLines lines={send.from} />}
+      <div className="flex flex-col gap-1">
+        <Label htmlFor={`${id}-to`}>{KIN_SEND_EDIT_COPY.to}</Label>
+        <Input
+          id={`${id}-to`}
+          size="sm"
+          value={draft.to}
+          autoComplete="off"
+          aria-describedby={`${id}-addresses`}
+          disabled={busy}
+          onChange={(event) => field("to", event.target.value)}
+        />
+      </div>
+      <div className="flex flex-col gap-1">
+        <Label htmlFor={`${id}-cc`}>{KIN_SEND_EDIT_COPY.cc}</Label>
+        <Input
+          id={`${id}-cc`}
+          size="sm"
+          value={draft.cc}
+          autoComplete="off"
+          aria-describedby={`${id}-addresses`}
+          disabled={busy}
+          onChange={(event) => field("cc", event.target.value)}
+        />
+        <p id={`${id}-addresses`} className="text-xs text-muted-foreground">
+          {KIN_SEND_EDIT_COPY.addresses}
+        </p>
+      </div>
+      <div className="flex flex-col gap-1">
+        <Label htmlFor={`${id}-subject`}>{KIN_SEND_EDIT_COPY.subject}</Label>
+        <Input
+          id={`${id}-subject`}
+          size="sm"
+          value={draft.subject}
+          autoComplete="off"
+          disabled={busy}
+          onChange={(event) => field("subject", event.target.value)}
+        />
+      </div>
+      <div className="flex flex-col gap-1">
+        <Label htmlFor={`${id}-body`}>{KIN_SEND_EDIT_COPY.body}</Label>
+        <Textarea
+          id={`${id}-body`}
+          rows={8}
+          value={draft.body}
+          disabled={busy}
+          onChange={(event) => field("body", event.target.value)}
+        />
+      </div>
+      {send.quoted === null ? null : (
+        <div className="flex flex-col gap-1">
+          <KinSendMessage label={KIN_SEND_EDIT_COPY.quotedLabel} body={null} quoted={send.quoted} />
+          <p className="text-xs text-muted-foreground">{KIN_SEND_EDIT_COPY.quoted}</p>
+        </div>
+      )}
+      {send.attachments.length === 0 ? null : (
+        <div className="flex flex-col gap-1">
+          <ul className="flex flex-col gap-1">
+            {send.attachments.map((file) => (
+              <li key={file.name} className="flex items-start gap-2 text-xs">
+                <FileTextIcon
+                  aria-hidden
+                  className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+                />
+                <span className="min-w-0 break-words text-foreground">{file.name}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="text-xs text-muted-foreground">{KIN_SEND_EDIT_COPY.attachments}</p>
+        </div>
+      )}
+      {props.problem === null ? null : (
+        <p role="alert" className="text-xs text-destructive-foreground">
+          {props.problem}
+        </p>
+      )}
+      {props.review && props.problem !== null && send.from.length > 0 ? (
+        <KinSendLines lines={send.from} />
+      ) : null}
+      <div className="flex flex-col gap-1.5 pt-1">
+        <Button
+          type="button"
+          size="sm-multiline"
+          aria-busy={busy}
+          disabled={busy || !props.ready}
+          onClick={props.onSend}
+        >
+          {busy ? KIN_SEND_EDIT_COPY.sending : KIN_SEND_EDIT_COPY.send}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm-multiline"
+          disabled={busy}
+          onClick={props.onDiscard}
+        >
+          {KIN_SEND_EDIT_COPY.discard}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** A send card's labelled lines; `fromAction` sits at the end of its From line. */
+function KinSendLines(props: {
+  readonly lines: NonNullable<KinChoiceCardView["send"]>["lines"];
+  readonly fromAction?: ReactNode;
+}) {
+  return (
+    <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+      {props.lines.map((line) => (
+        <div key={line.label} className="contents">
+          <dt className="text-muted-foreground">{line.label}</dt>
+          <dd className="flex min-w-0 items-start justify-between gap-2">
+            <span className="min-w-0 break-words text-foreground">
+              <AddressPieces value={line.value} />
+            </span>
+            {line.label === "From" ? props.fromAction : null}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+/** The mail's words as they go, with the earlier message quoted below them. */
+function KinSendMessage(props: {
+  readonly label: string;
+  readonly body: string | null;
+  readonly quoted: string | null;
+}) {
+  return (
+    <div
+      tabIndex={0}
+      aria-label={props.label}
+      className="max-h-80 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 px-3 py-2 text-sm text-foreground"
+    >
+      {props.body}
+      {props.quoted === null ? null : (
+        <span className={cn("block text-muted-foreground", props.body !== null && "mt-3")}>
+          {props.quoted}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -512,68 +739,52 @@ function KinSendDetail(props: {
           )}
         </div>
       )}
-      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
-        {send.lines.map((line) => (
-          <div key={line.label} className="contents">
-            <dt className="text-muted-foreground">{line.label}</dt>
-            <dd className="flex min-w-0 items-start justify-between gap-2">
-              <span className="min-w-0 break-words text-foreground">
-                <AddressPieces value={line.value} />
-              </span>
-              {line.label === "From" && pickFrom !== null ? (
-                <Menu>
-                  <MenuTrigger
-                    render={
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        aria-busy={pickFrom.busy}
-                        disabled={pickFrom.busy}
-                      />
-                    }
-                  >
-                    {pickFrom.busy ? "Changing…" : "Change"}
-                  </MenuTrigger>
-                  <MenuPopup align="end" side="bottom">
-                    <MenuRadioGroup
-                      value={current}
-                      onValueChange={(value) => pickFrom.pick(String(value))}
-                    >
-                      {accounts.map((account) => (
-                        <MenuGroup key={account}>
-                          {accounts.length > 1 ? <MenuGroupLabel>{account}</MenuGroupLabel> : null}
-                          {send.fromChoices
-                            .filter((one) => one.account === account)
-                            .map((one) => (
-                              <MenuRadioItem key={one.id} value={one.id} closeOnClick>
-                                {one.label}
-                              </MenuRadioItem>
-                            ))}
-                        </MenuGroup>
-                      ))}
-                    </MenuRadioGroup>
-                  </MenuPopup>
-                </Menu>
-              ) : null}
-            </dd>
-          </div>
-        ))}
-      </dl>
+      <KinSendLines
+        lines={send.lines}
+        fromAction={
+          pickFrom === null ? null : (
+            <Menu>
+              <MenuTrigger
+                render={
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    aria-busy={pickFrom.busy}
+                    disabled={pickFrom.busy}
+                  />
+                }
+              >
+                {pickFrom.busy ? "Changing…" : "Change"}
+              </MenuTrigger>
+              <MenuPopup align="end" side="bottom">
+                <MenuRadioGroup
+                  value={current}
+                  onValueChange={(value) => pickFrom.pick(String(value))}
+                >
+                  {accounts.map((account) => (
+                    <MenuGroup key={account}>
+                      {accounts.length > 1 ? <MenuGroupLabel>{account}</MenuGroupLabel> : null}
+                      {send.fromChoices
+                        .filter((one) => one.account === account)
+                        .map((one) => (
+                          <MenuRadioItem key={one.id} value={one.id} closeOnClick>
+                            {one.label}
+                          </MenuRadioItem>
+                        ))}
+                    </MenuGroup>
+                  ))}
+                </MenuRadioGroup>
+              </MenuPopup>
+            </Menu>
+          )
+        }
+      />
       {pickFrom?.problem == null ? null : (
         <p role="alert" className="text-xs text-destructive-foreground">
           {pickFrom.problem}
         </p>
       )}
-      <div
-        tabIndex={0}
-        aria-label="Message"
-        className="max-h-80 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 px-3 py-2 text-sm text-foreground"
-      >
-        {send.body}
-        {send.quoted === null ? null : (
-          <span className="mt-3 block text-muted-foreground">{send.quoted}</span>
-        )}
-      </div>
+      <KinSendMessage label="Message" body={send.body} quoted={send.quoted} />
       {send.attachments.length === 0 ? null : (
         <ul className="flex flex-col gap-1">
           {send.attachments.map((file) => (

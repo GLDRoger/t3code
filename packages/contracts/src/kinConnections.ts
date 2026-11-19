@@ -408,6 +408,29 @@ export const KinConnectionSetSendFrom = Schema.Struct({ revision: NonNegativeInt
 export type KinConnectionSetSendFrom = typeof KinConnectionSetSendFrom.Type;
 
 /**
+ * A person's own words on an unanswered mail card, sent in the same step: the card is replaced by
+ * one with exactly this mail, confirmed as an ordinary Confirm is. Attachments stay as drawn.
+ */
+export const KinConnectionSendEditedInput = Schema.Struct({
+  orgId: KinOrgId,
+  widgetId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  /** The card revision the person edited; a card that changed since is refused. */
+  revision: NonNegativeInt,
+  /** One per press: a retry of the same press answers as the first did. */
+  clientActionId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  to: Schema.Array(Schema.String.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
+  cc: Schema.Array(Schema.String.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
+  subject: Schema.String.check(Schema.isMaxLength(400)),
+  body: Schema.String.check(Schema.isMaxLength(24_000)),
+});
+export type KinConnectionSendEditedInput = typeof KinConnectionSendEditedInput.Type;
+/** The card that now carries the mail and its outcome. */
+export const KinConnectionSendEdited = Schema.Struct({
+  widgetId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+});
+export type KinConnectionSendEdited = typeof KinConnectionSendEdited.Type;
+
+/**
  * GitHub as the owner's own login on the host: `gh` and git act as him, and T3 uses the same
  * token. One account at a time; another account means Disconnect, then Connect.
  */
@@ -728,6 +751,11 @@ export const KinConnectionRpcs = [
     success: KinConnectionSetSendFrom,
     error: KinError,
   }),
+  Rpc.make("kin.connections.sendEdited", {
+    payload: KinConnectionSendEditedInput,
+    success: KinConnectionSendEdited,
+    error: KinError,
+  }),
   Rpc.make("kin.github.connect.status", {
     payload: KinGitHubInput,
     success: KinGitHubStatus,
@@ -797,6 +825,7 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.connections.signInFinish": AuthKinChatScope,
   "kin.connections.setSignInClient": AuthKinChatScope,
   "kin.connections.setSendFrom": AuthKinChatScope,
+  "kin.connections.sendEdited": AuthKinChatScope,
   "kin.github.connect.status": AuthKinChatScope,
   "kin.github.connect.start": AuthKinChatScope,
   "kin.github.connect.cancel": AuthKinChatScope,

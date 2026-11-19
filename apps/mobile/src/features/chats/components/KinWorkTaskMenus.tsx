@@ -253,17 +253,18 @@ export function KinWorkPlaceRow(props: {
 }
 
 const SIDES = [
+  { id: "none", title: KIN_WORK_NEW_COPY.sideNone },
   { id: "ours", title: KIN_WORK_NEW_COPY.sideOurs },
   { id: "theirs", title: KIN_WORK_NEW_COPY.sideTheirs },
 ] as const;
 
-/** Whose move it is, for a task under a client: ours to do, or theirs. */
+/** Who owes a task under a client, which makes it an obligation; nobody by default. */
 export function KinWorkSideRow(props: {
-  readonly side: "ours" | "theirs";
+  readonly side: "ours" | "theirs" | null;
   readonly disabled: boolean;
-  readonly onPick: (side: "ours" | "theirs") => void;
+  readonly onPick: (side: "ours" | "theirs" | null) => void;
 }) {
-  const detail = SIDES.find((side) => side.id === props.side)?.title ?? "";
+  const detail = SIDES.find((side) => side.id === (props.side ?? "none"))?.title ?? "";
   return (
     <Menu
       title={KIN_WORK_NEW_COPY.sideLabel}
@@ -272,11 +273,12 @@ export function KinWorkSideRow(props: {
       actions={SIDES.map((side) => ({
         id: side.id,
         title: side.title,
-        state: side.id === props.side ? ("on" as const) : ("off" as const),
+        state: side.id === (props.side ?? "none") ? ("on" as const) : ("off" as const),
       }))}
       onPressAction={({ nativeEvent: { event } }) => {
         if (props.disabled) return;
         if (event === "ours" || event === "theirs") props.onPick(event);
+        else if (event === "none") props.onPick(null);
       }}
     >
       <View pointerEvents="none">

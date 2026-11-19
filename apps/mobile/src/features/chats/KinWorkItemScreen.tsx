@@ -35,12 +35,14 @@ import {
   KIN_WORK_NOTES_MAX,
   kinWorkOnlyOwner,
   KIN_WORK_REPEAT,
-  KIN_WORK_TITLE_MAX,
   kinSameRepeat,
   kinWorkAssignees,
+  kinWorkClientStays,
   kinWorkHostClients,
   kinWorkItemState,
   kinWorkItemView,
+  kinWorkTitleCount,
+  kinWorkTitleTooLong,
   type KinWorkItemView,
   type KinWorkLinkView,
 } from "@t3tools/client-runtime/kin/kinWork";
@@ -406,6 +408,7 @@ function KinWorkItemBody(props: ItemTarget) {
   }
   const shown = kinWorkApplied(item, changed);
   const view = kinWorkItemView(shown, names, now, KIN_RECORD_CHANGES_CAP, place);
+  const clientStays = hostClients ? kinWorkClientStays(shown, choices.projectClients) : null;
   const saving = changed.pending[itemKey] !== undefined;
   const notice = kinWorkItemNotice(changed, item);
   // Each control shows only where the host said it takes it (`view.can`).
@@ -684,13 +687,24 @@ function KinWorkItemBody(props: ItemTarget) {
                 autoFocus
                 autoCapitalize="sentences"
                 returnKeyType="done"
-                maxLength={KIN_WORK_TITLE_MAX}
                 onChangeText={(title) => changes.setEdit({ title })}
                 textAlignVertical="center"
                 placeholder={KIN_WORK_NEW_COPY.titlePlaceholder}
                 placeholderTextColorClassName="accent-placeholder"
                 className="min-h-8 font-sans text-base text-foreground"
               />
+              {kinWorkTitleCount(edit.title) === null ? null : (
+                <Text
+                  textRole="footnote"
+                  className={
+                    kinWorkTitleTooLong(edit.title)
+                      ? "text-danger-foreground tabular-nums"
+                      : "text-foreground-muted tabular-nums"
+                  }
+                >
+                  {kinWorkTitleCount(edit.title)}
+                </Text>
+              )}
             </View>
             <View className="gap-2 px-4 py-3">
               <Text className="text-sm text-foreground-muted">{KIN_TASK_RECORD.brief}</Text>
@@ -842,6 +856,11 @@ function KinWorkItemBody(props: ItemTarget) {
             onOpen={openParty}
             side={{ value: view.side, onPick: (side) => act({ type: "place", side }) }}
           />
+        )}
+        {clientStays === null ? null : (
+          <Text textRole="footnote" className="px-4 pb-3 text-foreground-muted">
+            {clientStays}
+          </Text>
         )}
         {view.milestone === null ? null : (
           <ListRow
