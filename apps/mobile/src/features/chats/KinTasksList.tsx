@@ -272,16 +272,14 @@ export function KinTasksList(
         title={props.title}
         refresh={{ accessibilityLabel: "Refresh", onPress: refresh }}
         actions={[
-          ...(agent === null
+          // Inside a project, the project's own bar asks about the project instead.
+          ...(agent === null || within !== undefined
             ? []
             : [
                 {
                   accessibilityLabel: `Ask ${agent.name}`,
                   icon: "bubble.left" as const,
-                  onPress: () =>
-                    agent.ask(
-                      kinWorkAskDraft("tasks", within === undefined ? narrowed : props.title),
-                    ),
+                  onPress: () => agent.ask(kinWorkAskDraft("tasks", narrowed)),
                 },
               ]),
           ...(add === null
