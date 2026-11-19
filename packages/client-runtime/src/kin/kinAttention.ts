@@ -72,8 +72,10 @@ const URGENT = KIN_PULSE_URGENT;
 /** Open facts Needs you asks for: the rows it shows before "See all", and some to spare. */
 export const KIN_NEEDS_YOU_PAGE = 8;
 
-/** A client's own matters; its late or due tasks are Tasks', so the client page doesn't repeat them. */
+/** A client's own matters, and its tasks that are late or due. */
 const CLIENT_MATTERS = new Set<KinPulseFact["sense"]>([
+  "task_late",
+  "task_due_soon",
   "client_cold",
   "client_quiet",
   "client_waiting_on_us",
