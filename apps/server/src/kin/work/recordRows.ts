@@ -148,19 +148,28 @@ export const actorOf = (kind: string, id: string | null): Actor =>
 /** Lists whose entries are private only by their own label: a task never inherits one. */
 export const OWN_LABEL_LISTS = ["work", "milestones"] as const;
 
+/** Whether `r`'s client, its project or its project's client is labelled sensitive. */
+const parentLabelled = (sql: SqlClient.SqlClient) => sql`EXISTS (SELECT 1 FROM kin_records s
+    WHERE s.org_id = r.org_id AND s.sensitive = 1 AND s.record_id IN (r.party_id, r.project_id,
+      (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id)))`;
+
 /**
- * Whether `r`'s client, its project or its project's client is labelled sensitive (design 4.9).
+ * Whether `r` inherits a label from its client or project (design 4.9).
  * Tasks and milestones are private only when marked so themselves.
  */
-export const inheritedSensitive = (
-  sql: SqlClient.SqlClient,
-) => sql`(r.register_id NOT IN ${sql.in(OWN_LABEL_LISTS)} AND EXISTS (SELECT 1 FROM kin_records s
-    WHERE s.org_id = r.org_id AND s.sensitive = 1 AND s.record_id IN (r.party_id, r.project_id,
-      (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id))))`;
+export const inheritedSensitive = (sql: SqlClient.SqlClient) =>
+  sql`(r.register_id NOT IN ${sql.in(OWN_LABEL_LISTS)} AND ${parentLabelled(sql)})`;
 
-/** `r`'s own label or one it inherits: the one definition every sensitivity check uses. */
+/** `r`'s own label or one it inherits: the one check every screen and Kin agent uses. */
 export const sensitiveNow = (sql: SqlClient.SqlClient) =>
   sql`(r.sensitive = 1 OR ${inheritedSensitive(sql)})`;
+
+/**
+ * What a coding-agent key never reaches: `r`'s own label, or its client's, project's or project's
+ * client's, tasks included. Screens and Kin's own agents keep `sensitiveNow`.
+ */
+export const keySensitive = (sql: SqlClient.SqlClient) =>
+  sql`(r.sensitive = 1 OR ${parentLabelled(sql)})`;
 
 /**
  * Whether an entry is sensitive now: its own label, or its client's, project's or project's

@@ -26,6 +26,7 @@ import {
   isAlive,
   ORG,
   processTree,
+  readJson,
   readSeed,
   readState,
   ROOT,
@@ -33,6 +34,7 @@ import {
   startServer,
   stopTree,
   tailLog,
+  writeJson,
   writeSeed,
   writeState,
 } from "./kin-verify/instance.ts";
@@ -79,7 +81,10 @@ const HELP = `kin-verify [--instance <name>] <command>
                                           Sign in again does once the vendor approves (fake mailbox only)
   push sent                               what Kin would have pushed, per person's device (no APNs)
   social profile <name> <platform:handle>... [all-profiles] | social past <profileId> '<json>' | social fail-next <accountId> <reason> | social posts
-  clock advance <90m|12h|3d|2w> | clock set-date <YYYY-MM-DD>
+  clock show                              this instance's now, in the company's zone and UTC
+  clock set "<mon 09:01|tomorrow 09:30|2026-11-23 09:30>"   move now forward to then (company zone)
+  clock advance <90m|12h|3d|2w>           move now forward; nothing restarts
+  clock age <3d>                          move every stored Kin time back instead (restarts)
   db "<select …>"                         read-only SQL on this instance's database
   phone pair [--android] [--as <person>]  deep link that pairs the dev client to this instance
   phone metro [--full-app]                Metro for this checkout, as the Kin app (stopped by down)`;
@@ -518,14 +523,125 @@ async function tool(instance: Instance, args: Args) {
     console.log(args.flags.has("raw") ? JSON.stringify(result) : describeResult(result));
 }
 
+const MINUTE = 60_000;
+// The server's `DevClock.DEV_CLOCK_FILE`, in its state directory.
+const devClockFile = (instance: Instance) => NodePath.join(instance.userdata, "kin-dev-clock.json");
+const readOffset = (instance: Instance) =>
+  readJson<{ offsetMs: number }>(devClockFile(instance))?.offsetMs ?? 0;
+
+function companyZone(instance: Instance) {
+  const db = database(instance);
+  try {
+    const row = db
+      .prepare("SELECT time_zone AS zone FROM kin_trigger_settings WHERE org_id = ?")
+      .get(ORG) as { zone: string | null } | undefined;
+    return row?.zone ?? "UTC";
+  } finally {
+    db.close();
+  }
+}
+
+/** Wall-clock parts of `ms` in `zone`. */
+function partsIn(ms: number, zone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: zone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    weekday: "short",
+    hourCycle: "h23",
+  }).formatToParts(ms);
+  const part = (type: string) => parts.find((one) => one.type === type)!.value;
+  return {
+    date: `${part("year")}-${part("month")}-${part("day")}`,
+    time: `${part("hour")}:${part("minute")}`,
+    weekday: part("weekday").toLowerCase().slice(0, 3),
+  };
+}
+
+/** The instant `date` `time` reads on a wall clock in `zone`. */
+function instantIn(date: string, time: string, zone: string) {
+  const wall = Date.parse(`${date}T${time}:00Z`);
+  let at = wall;
+  for (let pass = 0; pass < 2; pass++) {
+    const seen = partsIn(at, zone);
+    at += wall - Date.parse(`${seen.date}T${seen.time}:00Z`);
+  }
+  return at;
+}
+
+const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+
+/** "2026-11-23 09:30", "tomorrow 09:30", "mon 09:01" or "09:31" (the next one), in `zone`. */
+function parseWhen(text: string, now: number, zone: string) {
+  const match = /^(?:(\S+)\s+)?(\d{1,2}):(\d{2})$/.exec(text.trim().toLowerCase());
+  const day = match?.[1];
+  const weekday =
+    day === undefined || day === "today" || day === "tomorrow" || /^\d{4}-\d{2}-\d{2}$/.test(day)
+      ? undefined
+      : WEEKDAYS.indexOf(day.slice(0, 3));
+  if (match === null || weekday === -1)
+    throw new VerifyError(
+      `clock set "${text}": use "2026-11-23 09:30", "tomorrow 09:30", "mon 09:01" or "09:31"`,
+    );
+  const time = `${match[2]!.padStart(2, "0")}:${match[3]}`;
+  if (day !== undefined && /^\d/.test(day)) return instantIn(day, time, zone);
+  const today = Date.parse(`${partsIn(now, zone).date}T12:00:00Z`);
+  for (let ahead = day === "tomorrow" ? 1 : 0; ahead < 15; ahead++) {
+    const noon = new Date(today + ahead * 86_400_000);
+    if (weekday !== undefined && noon.getUTCDay() !== weekday) continue;
+    const at = instantIn(noon.toISOString().slice(0, 10), time, zone);
+    // The moved clock runs on: the minute it is in now still counts as next.
+    if (day === "today" || day === "tomorrow" || at >= Math.floor(now / MINUTE) * MINUTE) return at;
+  }
+  throw new VerifyError(`clock set "${text}": no such time in the next two weeks`);
+}
+
+function showClock(instance: Instance) {
+  const zone = companyZone(instance);
+  const offsetMs = readOffset(instance);
+  const now = Date.now() + offsetMs;
+  const { date, time, weekday } = partsIn(now, zone);
+  return `clock: ${weekday} ${date} ${time} ${zone} · ${new Date(now).toISOString().slice(0, 16)}Z UTC · moved +${Math.round(offsetMs / MINUTE)}m`;
+}
+
+/**
+ * `set`, `advance` and `show` move the dev server's now forward (Kin's clock, and the Kin
+ * screens of browsers kv drives); `age` moves stored times back and restarts, as before.
+ */
 async function clock(instance: Instance, args: Args) {
   const [action, value] = args.positional;
+  if (action === "show") return console.log(showClock(instance));
+  if (action === "set" || action === "set-date" || action === "advance") {
+    if (value === undefined) throw new VerifyError(`clock ${action} needs a value`);
+    const offsetMs = readOffset(instance);
+    const now = Date.now() + offsetMs;
+    const realMinute = Math.floor(Date.now() / MINUTE) * MINUTE;
+    const next =
+      action === "advance"
+        ? offsetMs + parseDuration(value)
+        : parseWhen(action === "set-date" ? `${value} 00:00` : value, now, companyZone(instance)) -
+          realMinute;
+    // Whole minutes, so the moved clock turns its minutes when the real one does.
+    const rounded = Math.floor(next / MINUTE) * MINUTE;
+    if (Math.floor((rounded + Date.now()) / MINUTE) < Math.floor(now / MINUTE))
+      throw new VerifyError("the clock only moves forward; `kv down --wipe` starts over");
+    // Already in that minute: nothing to move.
+    if (rounded <= offsetMs) return console.log(showClock(instance));
+    writeJson(devClockFile(instance), { offsetMs: rounded });
+    // The server reads the file each second; a moved slot runs on its next tick.
+    await sleep(1_500);
+    console.log(`${showClock(instance)} · browsers follow on their next web command`);
+    return;
+  }
   let ms: number;
-  if (action === "advance" && value !== undefined) ms = parseDuration(value);
-  else if (action === "set-date" && value !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    ms = Date.parse(`${value}T00:00:00`) - new Date(new Date().toDateString()).getTime();
-    if (ms <= 0) throw new VerifyError("set-date only moves forward: give a date after today");
-  } else throw new VerifyError("clock advance <90m|12h|3d|2w> or clock set-date <YYYY-MM-DD>");
+  if (action === "age" && value !== undefined) ms = parseDuration(value);
+  else
+    throw new VerifyError(
+      'clock show | clock set "<mon 09:01|tomorrow 09:30|2026-11-23 09:30>" | clock advance <90m|12h|3d|2w> | clock age <3d>',
+    );
   const state = readState(instance);
   const wasRunning = state !== undefined && isAlive(state.pid);
   if (wasRunning) await stopTree(state.pid);

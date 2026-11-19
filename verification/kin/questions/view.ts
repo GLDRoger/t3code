@@ -8,7 +8,7 @@ const ofQ = (value: Value | undefined, q: number): Value | undefined =>
 export const title = "A question an agent asks you, its default and its day";
 
 export const guide =
-  "Finance and the Chief of staff may each want to ask you the same thing (say, whether to draft VIOM's reminder). Each box is where the questions stand; each arrow is something that happens: an agent asks, you tap an answer, an agent marks it answered or withdraws it, a day passes, Kin's host stops or starts, the day comes and the default is taken, a question with no safe default is raised once more, or the agent does its default. Red boxes are where a rule below breaks.";
+  "Finance and the Chief of staff may each want to ask you the same thing (say, whether to draft VIOM's reminder), for themselves or for someone else's chat. Each box is where the questions stand; each arrow is something that happens: an agent asks, a question held for your quiet hours reaches you, you tap an answer, an agent marks it answered or withdraws it, a day passes, Kin's host stops or starts, the day comes and the default is taken, a question with no safe default is raised once more, or the agent does its default. Red boxes are where a rule below breaks.";
 
 /** The chart is drawn without restarts; the rules are checked with one. */
 export const chartConstants = { MaxOutages: "0" };
@@ -26,7 +26,13 @@ export const rules: Record<string, string> = {
     "While a question is open, its card takes your tap, however long ago it was asked.",
   RaisedOnce: "A question with no safe default is raised once more, never twice.",
   AlwaysEnds:
-    "Every question ends: you answer it, the default is taken and done, or it is withdrawn; one with no safe default is raised once and then waits in Waiting on you. A restart loses none.",
+    "Every question ends: you answer it, the default is taken and done, or it is withdrawn; one with no safe default is raised once and then waits in Waiting on you. One held for your quiet hours reaches you first. A restart loses none.",
+  NoDefaultForOther:
+    "A question asked for someone else's chat has no default: nobody answers it for you, and it waits for you.",
+  OneWake:
+    "Your answer to a question asked for someone else's chat wakes the agent once, in the chat that asked, and starts no turn in your own chat.",
+  AnswerGoesBack:
+    "Your answer to a question asked for someone else's chat always reaches the chat that asked, however Kin restarts.",
 };
 
 export const variants = [
@@ -70,6 +76,21 @@ export const variants = [
     breaks: "AlwaysEnds",
     what: "the day is kept by a timer in memory, which a restart loses",
   },
+  {
+    name: "default-for-other",
+    breaks: "NoDefaultForOther",
+    what: "a question asked for someone else's chat keeps the default the agent named",
+  },
+  {
+    name: "tap-wakes-there",
+    breaks: "OneWake",
+    what: "the tap on a question asked for someone else also starts a turn in the chat it was tapped in",
+  },
+  {
+    name: "after-commit",
+    breaks: "AnswerGoesBack",
+    what: "the answer is sent back after the tap commits, from memory, which a restart loses",
+  },
 ];
 
 const WORDS: Record<string, string> = {
@@ -87,9 +108,14 @@ const one = (vars: Vars, q: number) => {
   const safe = ofQ(vars["safe"], q) === true;
   const raised = ofQ(vars["raised"], q) === true;
   const done = Number(ofQ(vars["done"], q) ?? 0);
-  return `${who}'s ${safe ? "" : "no-default "}question ${WORDS[st] ?? st}${
-    raised ? ", raised again" : ""
-  }${done > 0 ? ", done" : ""}`;
+  const other = ofQ(vars["other"], q) === true;
+  const held = other && ofQ(vars["posted"], q) !== true;
+  const back = Number(ofQ(vars["back"], q) ?? 0);
+  return `${who}'s ${safe ? "" : "no-default "}question${other ? " for another chat" : ""} ${
+    WORDS[st] ?? st
+  }${held ? ", held" : ""}${raised ? ", raised again" : ""}${done > 0 ? ", done" : ""}${
+    back > 0 ? ", answer sent back" : ""
+  }`;
 };
 
 export const state = (vars: Vars) => {
@@ -121,6 +147,10 @@ export const step = (action: string) => {
       return "The next morning: Kin raises it once more";
     case "RunTurn":
       return "The agent does its default and says so";
+    case "Post":
+      return "Your quiet hours end: the held question reaches you";
+    case "Deliver":
+      return "The answer, kept in memory, is sent back";
     default:
       return null;
   }

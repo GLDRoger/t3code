@@ -5,8 +5,9 @@ chat list. Agents are contacts like anyone else. You ask them for things in plai
 keep Tasks, Money, Clients and Docs current for you.
 
 Kin has five places: **Chats**, **Tasks**, **Money**, **Clients** and **Docs**. On the phone they
-are the dock; on the web and the desktop app they sit at the top of the sidebar, and become the same
-dock at the bottom of a narrow window. `⌘1` to `⌘5` (`Ctrl` on Windows and Linux) open them.
+are the dock; on the web and the desktop app they sit at the top of the sidebar, which in a narrow
+window slides in from the menu button at the top left. `⌘1` to `⌘5` (`Ctrl` on Windows and Linux)
+open them.
 **Settings** is the gear at the bottom left on the web and the desktop app, and the gear on Chats on
 the phone and in a narrow window. It opens over whatever you're looking at; close it to carry on
 where you were. What you see in each depends on your place in the team; see
@@ -264,7 +265,8 @@ the figures in the quote or the invoice.
 
 A coding agent key lets your own coding agent, such as Claude Code, Codex or Cursor, read the tasks
 you hold, add notes to them, and set them to to-do, in progress or done. It can't reach anyone
-else's tasks, or any chats, money or files.
+else's tasks, anything labelled sensitive or under a client or project labelled sensitive, or any
+chats, money or files.
 
 To make one, open **Settings → Profile** and choose **Make a
 key** under **Coding agent keys**. Name it for the computer or tool it's for. Kin shows the key, its
@@ -275,7 +277,7 @@ Kin at a different address than the app you made the key in, use that address wi
 Choose **Remove** beside a key to stop it; the coding agent loses access on its next call. The owner
 and co-owners can see and remove a teammate's keys on their profile, and removing someone's access
 ends all of their keys. Removing the device a key was made on ends that key too. A key made before
-this update isn't tied to a device, so remove it here yourself.
+keys were tied to a device has ended; make a new one.
 
 ## Clients and projects
 
@@ -525,15 +527,20 @@ they reach it, only your urgent messages run, on the agent's usual model, until 
 ## Recommendations
 
 When the same hold-up keeps happening and a setting would end it, Kin suggests the change once, as a
-card in your chat with the Chief of staff, so it waits in Needs you without ringing. Today that's a
-teammate who keeps asking for another agent's work while your cards on it run out: the card offers
-to let them message that agent directly. Nothing changes until you tap the change itself;
+card in your chat with the Chief of staff, so it waits in Needs you without ringing. Kin suggests:
+
+- letting a teammate message an agent directly, when they keep asking for its work and your cards on it run out;
+- raising the daily limit one step, when it is one of the choices in **Daily limit** and Kin told you on three of the last seven days that it was reached (this can cost more);
+- resuming a connection that has been paused for days while your agents keep being refused on it for that pause, unless something else would still stop it: an error, a sign-in, changes waiting for your look, or no tool switched on;
+- resuming an agent that has been paused for days with work queued for it since, unless Kin is stopped for the whole company.
+
+Nothing changes until you tap the change itself;
 **Not now** keeps it quiet for 30 days, then 90, then for good. Kin suggests at most one thing a day, never in your
 quiet hours, never while Needs you is full, and not in a company's first two weeks.
 
 **Settings → Recommendations**, under Company (the owner only), lists every suggestion and what came of it, with
 **Ask again** for one you put off. A change you made from a suggestion is changed back where it lives: a done row
-opens that agent's page, where you choose who can message it.
+opens that place, the agent's page, **Daily limit**, or the connection.
 
 ## Memory
 

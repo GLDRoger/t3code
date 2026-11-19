@@ -48,13 +48,16 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
           chat: yield* KinChatService,
         });
   // An agent's open question on this card is answered: its default is never taken.
-  yield* answerCard({
-    orgId: input.orgId,
-    widgetId: input.widget.widgetId,
-    personId: input.personId,
-    label: input.option.label,
-    now: input.now,
-  });
+  const sentBack = yield* answerCard(
+    {
+      orgId: input.orgId,
+      widgetId: input.widget.widgetId,
+      personId: input.personId,
+      label: input.option.label,
+      now: input.now,
+    },
+    yield* KinChatService,
+  );
   const currency = yield* answerCurrencyCard({
     orgId: input.orgId,
     widgetId: input.widget.widgetId,
@@ -108,7 +111,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
       title: "Currency set",
       text: `The statement is read in ${input.option.label}.`,
     };
-  return undefined;
+  return sentBack;
 });
 
 /**

@@ -1,3 +1,4 @@
+import { kinNow } from "@t3tools/client-runtime/kin/kinNow";
 import {
   KIN_WORK_ASSIGN,
   KIN_WORK_NEW_COPY,
@@ -81,7 +82,7 @@ export function KinWorkNewDialog(
   );
   // One id for the form's life: trying again after a dropped answer never adds a second task.
   const [requestId] = useState(randomUUID);
-  const [today] = useState(() => kinWorkDayOf(new Date()));
+  const [today] = useState(() => kinWorkDayOf(kinNow()));
   const [draft, setDraft] = useState<KinWorkDraft>(props.start);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);

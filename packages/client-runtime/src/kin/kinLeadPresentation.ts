@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers word due days for React render, outside an Effect runtime.
+import { kinNow } from "./kinNow.ts";
 import type {
   KinAgentId,
   KinChatSummary,
@@ -144,7 +145,7 @@ const TRACKING_KINDS: Record<KinLeadTracking["kind"], string> = {
 export function kinLeadTrackingDetail(
   item: Pick<KinLeadTracking, "kind" | "dueAt" | "dueAllDay" | "state" | "waitingOn">,
   timeZone?: string,
-  now: Date = new Date(),
+  now: Date = kinNow(),
   names: KinWorkNames | null = null,
 ): string {
   const kind =

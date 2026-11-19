@@ -655,8 +655,13 @@ it.effect("a person's comment tells who holds the task and who asked for it, onc
     yield* sql`INSERT INTO auth_sessions (session_id, subject, method, scopes, issued_at, expires_at)
       VALUES ('dev-key', 'kin-coding-agent', 'bearer-access-token', '["kin:tasks"]', ${at},
         '2026-12-11T00:00:00.000Z')`;
-    yield* sql`INSERT INTO kin_tasks_keys (session_id, org_id, person_id, label, created_at, expires_at)
-      VALUES ('dev-key', ${orgId}, ${devId}, 'Invented laptop', 0, ${Date.parse("2026-12-11T00:00:00.000Z")})`;
+    // Made on his bound laptop: a key with no recorded device, or a person with none, acts as no one.
+    yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES ('dev-laptop', ${orgId}, ${devId}, 0)`;
+    yield* sql`INSERT INTO kin_tasks_keys (session_id, org_id, person_id, label, created_at, expires_at,
+        made_by_session_id)
+      VALUES ('dev-key', ${orgId}, ${devId}, 'Invented laptop', 0, ${Date.parse("2026-12-11T00:00:00.000Z")},
+        'dev-laptop')`;
     const devKey = { orgId, personId: devId, sessionId: AuthSessionId.make("dev-key") };
     for (const _ of [1, 2])
       yield* commentMine(devKey, { key: made.key, text: "Invented: proofs are in" }).pipe(

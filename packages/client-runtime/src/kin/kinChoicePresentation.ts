@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format a mail thread's date for React render, outside an Effect runtime.
+import { kinNow } from "./kinNow.ts";
 import {
   KIN_CHOICE_CARD_ACTION,
   KinChatError,
@@ -179,7 +180,7 @@ const kb = (bytes: number) =>
  * The provider's date of a thread's last message (RFC 2822 from Gmail, ISO from Microsoft), in
  * the reader's zone; null where it gave none we can read. Nothing mailed before 1995 is real.
  */
-export function kinThreadDate(raw: string | null, now: Date = new Date()): string | null {
+export function kinThreadDate(raw: string | null, now: Date = kinNow()): string | null {
   if (raw === null) return null;
   const at = new Date(raw.trim());
   return Number.isNaN(at.getTime()) || at.getTime() < Date.UTC(1995, 0, 1)
@@ -317,7 +318,7 @@ const line = (text: string) => text.replace(/\s+/g, " ").trim();
 
 export function kinChoiceCardView(
   widget: KinWidget,
-  now: Date = new Date(),
+  now: Date = kinNow(),
 ): KinChoiceCardView | null {
   const state = decode(widget.state);
   if (Option.isNone(state)) return null;
@@ -489,7 +490,7 @@ export function kinChoiceAnswered(
 export function kinChoiceUndoneLine(
   view: Pick<KinChoiceCardView, "undone">,
   viewerPersonId: KinPersonId | null,
-  now: Date = new Date(),
+  now: Date = kinNow(),
 ): string | null {
   const { undone } = view;
   if (undone === null) return null;

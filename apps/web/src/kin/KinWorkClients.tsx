@@ -645,7 +645,7 @@ function ClientPage(
               KIN_CLIENTS.weOwe,
               view.weOwe,
               KIN_CLIENTS.nothingOwed,
-              <span className="flex items-center gap-1">
+              <span className="flex flex-wrap items-center justify-end gap-1">
                 {addTask("ours", KIN_CLIENTS.addWeOwe)}
                 {view.theyOwe.total === 0 ? addTask("theirs", KIN_CLIENTS.addTheyOwe) : null}
               </span>,

@@ -882,7 +882,7 @@ export function makeKinClient<R, ER>(
     }),
     /**
      * What Kin suggested to the owner and what came of each: his alone. Read again when a
-     * suggestion moves, or an agent's access does (a done row reads the live grant).
+     * suggestion moves, or a setting a done row reads live does: an agent, the limit, a connection.
      */
     recommendations: createKinQueryAtomFamily(runtime, {
       label: "kin:recommendations",
@@ -896,7 +896,7 @@ export function makeKinClient<R, ER>(
       }) =>
         Atom.make(
           (get) =>
-            `${get(kinRefreshOn("recommendations")(target))}|${get(kinRefreshOn("leads")(target))}`,
+            `${get(kinRefreshOn("recommendations")(target))}|${get(kinRefreshOn("leads")(target))}|${get(kinRefreshOn("budget")(target))}|${get(kinRefreshOn("connections")(target))}`,
         ),
     }),
     /** Its `permissionAtom` is whether Settings shows Recommendations at all. */
