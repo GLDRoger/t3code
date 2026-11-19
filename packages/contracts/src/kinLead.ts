@@ -321,6 +321,8 @@ export const KinLeadAccessResult = Schema.Struct({
       personId: KinPersonId,
       displayName: TrimmedNonEmptyString,
       since: Schema.toEncoded(CanonicalUtcTimestamp),
+      /** Owner or co-owner: they message every agent, row or not. An older server leaves it out. */
+      ownerLevel: Schema.optional(Schema.Boolean),
     }),
   ),
 });
