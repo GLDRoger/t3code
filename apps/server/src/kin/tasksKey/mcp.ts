@@ -122,7 +122,13 @@ type Admitted = Effect.Effect<
   TasksKeyCaller
 >;
 /** Every request, every tool call: a bearer key only, re-read each time, so revoking is at once. */
-const auth = HttpRouter.middleware<{ provides: TasksKeyCaller }>()(
+// Stated, not inferred: inferred, the checker's file order can leave these as `unknown`.
+const auth = HttpRouter.middleware<{ provides: TasksKeyCaller }>()<
+  Types.unhandled,
+  HttpServerRequest.HttpServerRequest,
+  never,
+  KinServer
+>(
   Effect.gen(function* () {
     const kin = yield* KinServer;
     const sessions = yield* Effect.serviceOption(SessionStore);
