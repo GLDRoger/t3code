@@ -12,10 +12,17 @@ import {
   type KinWaitingItem,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import { Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import { kinAttention, kinTasksAttention, kinTasksBlock } from "./kinAttention.ts";
-import { kinOpenBadge, kinOpenNeeds, kinOpenShown, kinOpenWaiting } from "./kinOpenView.ts";
+import {
+  kinOpenBadge,
+  kinOpenNeeds,
+  kinOpenShown,
+  kinOpenWaiting,
+  kinOpenWaitingAtom,
+} from "./kinOpenView.ts";
 import type { KinWorkNames } from "./kinWork.ts";
 import { kinNeedsYou } from "./kinWorkHome.ts";
 
@@ -189,5 +196,34 @@ describe("kinOpenNeeds", () => {
       expect(shown.counts).toEqual({ needsYou, waiting: 1 });
       expect(shown.rows.map((row) => row.id)).toEqual(ids);
     }
+  });
+});
+
+describe("kinOpenWaitingAtom", () => {
+  it("keeps the same value through a change elsewhere in the list, and a new one when an item changes", () => {
+    const read = Atom.make<KinOpenRead | null | undefined>(open());
+    const registry = AtomRegistry.make();
+    const waitingOf = kinOpenWaitingAtom(read);
+    using _mounted = { [Symbol.dispose]: registry.mount(waitingOf) };
+    const before = registry.get(waitingOf);
+    expect(before).toEqual([waiting]);
+
+    const edited = { ...today, title: "Invented task W-6, renamed" };
+    registry.set(read, { ...open(), rows: [...rows.slice(0, -1), taskRow(edited)] });
+    expect(registry.get(waitingOf)).toBe(before);
+
+    const answered = { ...waiting, question: "Send the Lumen invoice tomorrow?" };
+    registry.set(read, {
+      ...open(),
+      rows: rows.map((row): KinOpenRow =>
+        row.item._tag === "waiting"
+          ? { ...row, item: { _tag: "waiting", waiting: answered } }
+          : row,
+      ),
+    });
+    expect(registry.get(waitingOf)).toEqual([answered]);
+
+    registry.set(read, null);
+    expect(registry.get(waitingOf)).toBeNull();
   });
 });

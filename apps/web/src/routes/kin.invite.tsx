@@ -83,7 +83,7 @@ function KinInviteView() {
       ) : step === "limit" ? (
         <StandalonePageHeader
           title="You already have 10 devices signed in"
-          description="Remove one you no longer use in Linked devices, then make a new link for this one."
+          description="Remove one you no longer use in Your devices, then make a new link for this one."
         />
       ) : step === "spent" ? (
         <StandalonePageHeader

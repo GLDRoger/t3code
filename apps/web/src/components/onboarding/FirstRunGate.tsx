@@ -9,6 +9,7 @@ import {
   useClientSettings,
   useClientSettingsHydrationStatus,
 } from "../../hooks/useSettings";
+import { APP_BASE_NAME } from "../../branding";
 import { completeOnboarding } from "../../onboarding/firstRun";
 import {
   isFirstRunWorkspaceProvenanceAuthoritative,
@@ -197,7 +198,7 @@ function FirstRunRecovery({
         <p className="mt-2 text-sm text-muted-foreground">
           {settingsReadFailed
             ? "Your saved settings could not be loaded."
-            : "T3 Code could not confirm this workspace."}
+            : `${APP_BASE_NAME} could not confirm this workspace.`}
         </p>
         <Button
           className="mt-5"

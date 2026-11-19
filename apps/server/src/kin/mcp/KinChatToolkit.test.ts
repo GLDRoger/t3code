@@ -1,3 +1,4 @@
+import * as NodeURL from "node:url";
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { kinSecretsTest } from "../lead/layer.testkit.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
@@ -1047,7 +1048,7 @@ it.effect("keeps trusted persistence, waiting and hub APIs outside the toolkit",
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const source = yield* fs.readFileString(
-      new URL("./KinChatToolkit.ts", import.meta.url).pathname,
+      NodeURL.fileURLToPath(new URL("./KinChatToolkit.ts", import.meta.url)),
     );
     assert.notMatch(source, /import[^;]*(?:KinChatRepository|KinChatHub)/);
     assert.notMatch(source, /\.addWaiting\(|\.subscribeForViewer\(/);
