@@ -163,6 +163,8 @@ export const KinDocRow = Schema.Struct({
   /** The owner shared it with the team: members who can see Docs read it. */
   shared: Schema.optional(Schema.Literal(true)),
   archived: Schema.Boolean,
+  /** The company's What we sell, pinned first in Docs. */
+  whatWeSell: Schema.optional(Schema.Literal(true)),
   bodyKind: KinDocBodyKind,
   /** The latest version, with its "what changed" line. */
   latest: KinDocVersion,
@@ -235,6 +237,8 @@ export const KinDocsListInput = Schema.Struct({
   files: Schema.optional(Schema.Boolean),
   /** Only docs changed at or after this time; `total` then counts those. */
   changedSince: Schema.optional(IsoDateTime),
+  /** Only the company's What we sell, unarchived and seen by this viewer; none when there is none. */
+  whatWeSell: Schema.optional(Schema.Boolean),
   /** Rows carry `KinDocLatestSlim`; the full version stays on `kin.docs.get`. */
   acceptSlimLatest: Schema.optional(Schema.Boolean),
   cursor: Schema.optional(PageCursor),
@@ -310,6 +314,10 @@ export const KinDocRestoreInput = Schema.Struct({
   latest: PositiveInt,
 });
 export type KinDocRestoreInput = typeof KinDocRestoreInput.Type;
+
+/** The owner level starts What we sell: Kin writes its outline once, or brings an archived one back. */
+export const KinDocStartWhatWeSellInput = Schema.Struct({ orgId: KinOrgId });
+export type KinDocStartWhatWeSellInput = typeof KinDocStartWhatWeSellInput.Type;
 
 /** One input a recipe asks for, as its RECIPE.md declares it. */
 export const KinRecipeInput = Schema.Struct({
@@ -572,6 +580,7 @@ const KIN_DOCS_WS_METHODS = {
   clearRecipeLabel: "kin.docs.clearRecipeLabel",
   labelRecipe: "kin.docs.labelRecipe",
   setDefaultRecipe: "kin.docs.setDefaultRecipe",
+  startWhatWeSell: "kin.docs.startWhatWeSell",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -637,6 +646,11 @@ export const KinDocsRpcs = [
     success: KinRecipeDefaultResult,
     error,
   }),
+  Rpc.make(KIN_DOCS_WS_METHODS.startWhatWeSell, {
+    payload: KinDocStartWhatWeSellInput,
+    success: KinDocDetail,
+    error,
+  }),
 ] as const;
 
 export const KIN_DOCS_RPC_SCOPES = {
@@ -660,4 +674,6 @@ export const KIN_DOCS_RPC_SCOPES = {
   [KIN_DOCS_WS_METHODS.labelRecipe]: AuthKinChatScope,
   // Which recipe makes a list's documents, as undoing a recipe's change is.
   [KIN_DOCS_WS_METHODS.setDefaultRecipe]: AuthKinChatScope,
+  // Writes Kin's outline once, as restore writes a version; it starts no agent work.
+  [KIN_DOCS_WS_METHODS.startWhatWeSell]: AuthKinChatScope,
 } as const;
