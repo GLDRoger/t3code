@@ -435,6 +435,69 @@ it.effect("Remove is offered exactly where revoke would take it", () =>
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("removing a device ends the keys made on it and down its chain, and nothing else", () =>
+  Effect.gen(function* () {
+    const { orgId, rhea, zoya } = yield* team;
+    const people = yield* People.KinPeople;
+    const sessions = yield* SessionStore;
+    const sql = yield* SqlClient.SqlClient;
+    const linkFrom = Effect.fn("test.linkFrom")(function* (from: AuthenticatedSession) {
+      const link = yield* people.linkDevice(from, { orgId });
+      const joined = yield* people.accept({ secret: link.secret });
+      return yield* sessions.verify(joined.accessToken);
+    });
+    const keyOn = Effect.fn("test.keyOn")(function* (device: AuthenticatedSession) {
+      return (yield* TasksKeys.issue(device, { orgId })).secret;
+    });
+    const works = (secret: string) => TasksKeys.admit(secret).pipe(Effect.map(Option.isSome));
+    const remove = (by: AuthenticatedSession, device: AuthenticatedSession) =>
+      people.revokeDevice(by, { orgId, personId: zoya.personId, sessionId: device.sessionId });
+
+    const laptop = yield* linkFrom(zoya.app);
+    const onPhone = yield* keyOn(zoya.app);
+    const onLaptop = yield* keyOn(laptop);
+    // A key made before keys recorded their maker.
+    const unrecorded = yield* keyOn(laptop);
+    const { sessionId: unrecordedId } = yield* admitted(unrecorded);
+    yield* sql`UPDATE kin_tasks_keys SET made_by_session_id = NULL WHERE session_id = ${unrecordedId}`;
+    // Remove says which keys go with a device: only the live ones it made.
+    const made = Effect.fn("test.made")(function* (by: AuthenticatedSession) {
+      const { devices } = yield* people.listDevices(by, { orgId, personId: zoya.personId });
+      return devices.map((one) => [one.sessionId, one.keysMade]);
+    });
+    assert.deepStrictEqual(yield* made(rhea.app), [
+      [zoya.app.sessionId, 1],
+      [laptop.sessionId, 1],
+    ]);
+
+    // The phone removes the laptop: the laptop's key ends, the phone's stays.
+    yield* remove(zoya.app, laptop);
+    assert.deepStrictEqual(yield* Effect.forEach([onPhone, onLaptop, unrecorded], works), [
+      true,
+      false,
+      true,
+    ]);
+    assert.lengthOf((yield* TasksKeys.list(zoya.app, { orgId })).keys, 2);
+
+    // A device that merely lapses ends none of its keys.
+    const strap = yield* linkFrom(yield* linkFrom(zoya.app));
+    const onStrap = yield* keyOn(strap);
+    yield* sql`UPDATE auth_sessions SET expires_at = '2000-01-01T00:00:00.000Z'
+      WHERE session_id = ${strap.sessionId}`;
+    assert.isTrue(yield* works(onStrap));
+
+    // The owner removes her first phone: every key made down its chain ends, two links down and
+    // lapsed too; the key with no maker stays.
+    yield* remove(rhea.app, zoya.app);
+    assert.deepStrictEqual(yield* Effect.forEach([onPhone, onStrap, unrecorded], works), [
+      false,
+      false,
+      true,
+    ]);
+    assert.lengthOf((yield* TasksKeys.list(rhea.app, { orgId, personId: zoya.personId })).keys, 1);
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("names T3 Connect's tunnel as the address, and nothing while none serves this host", () =>
   Effect.gen(function* () {
     const { orgId, zoya } = yield* team;

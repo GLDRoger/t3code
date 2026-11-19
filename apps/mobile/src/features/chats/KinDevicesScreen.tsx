@@ -113,7 +113,7 @@ export function KinDevicesScreen({ route }: StaticScreenProps<KinDevicesParams>)
             <EmptyState
               variant="plain"
               title="This link doesn't open anything"
-              detail="Open Linked devices from Settings."
+              detail="Open Your devices from Settings."
             />
           ) : made !== null ? (
             <KinDeviceLinkView

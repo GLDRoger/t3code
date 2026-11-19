@@ -86,6 +86,17 @@ describe("kinRemoveDeviceCopy", () => {
       " laptop, linked from it, is signed out too.",
     );
   });
+
+  it.each([
+    ["no key", undefined, null],
+    ["none left", 0, null],
+    ["one key", 1, "This also ends the coding-agent key made on it."],
+    ["two keys", 2, "This also ends the coding-agent keys made on it."],
+  ] as const)("says the keys it ends only when it made some: %s", (_name, keysMade, sentence) => {
+    const phone = device("phone", keysMade === undefined ? {} : { keysMade });
+    const detail = kinRemoveDeviceCopy(phone, true, [phone], now).detail;
+    expect(detail.match(/This also ends .*?\./)?.[0] ?? null).toBe(sentence);
+  });
 });
 
 describe("kinDevicesLinkedFrom", () => {
