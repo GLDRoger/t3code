@@ -1,4 +1,5 @@
 import {
+  EnvironmentId,
   KinChatError,
   kinApplyWorkRow,
   kinCompactRecord,
@@ -26,6 +27,7 @@ import {
   KIN_PICKER_SEARCH_CAP,
   KIN_WORK_PAGE,
   createKinPickerSearch,
+  createKinPickerSearchSlot,
   kinPickerSearchView,
   createKinListEntries,
   createKinListKeeper,
@@ -477,5 +479,48 @@ describe("createKinPickerSearch", () => {
     await h.search.retry();
     expect(h.asked).toHaveLength(2);
     expect(view(h.search, null).note).toBe(KIN_PICKER_COPY.narrow);
+  });
+
+  it("follows its target: a picker reused for another host or company asks that one", async () => {
+    const asked: Array<readonly [string, KinPartiesInput]> = [];
+    const timers: Array<() => void> = [];
+    const slot = createKinPickerSearchSlot((target) =>
+      createKinPickerSearch({
+        ...target,
+        readClients: async (input) => {
+          asked.push([target.environmentId, input]);
+          return named(["Invented Kestrel Freight"]);
+        },
+        readProjects: () => {
+          throw new Error("A client picker never reads projects.");
+        },
+        onChange: () => {},
+        schedule: (run) => {
+          timers.push(run);
+          return () => timers.splice(timers.indexOf(run), 1);
+        },
+      }),
+    );
+    const other = KinOrgId.make("invented-other-org");
+    const at = (environment: string, org: KinOrgId) =>
+      slot({
+        environmentId: EnvironmentId.make(environment),
+        orgId: org,
+        kind: "clients",
+        done: false,
+      });
+    const first = at("env-a", orgId);
+    expect(at("env-a", orgId)).toBe(first);
+    const moved = at("env-a", other);
+    expect(moved).not.toBe(first);
+    expect(moved.getState().text).toBe("");
+    moved.type("kestrel");
+    timers.shift()?.();
+    at("env-b", other).type("kestrel");
+    timers.shift()?.();
+    expect(asked.map(([environmentId, input]) => [environmentId, input.orgId])).toEqual([
+      ["env-a", other],
+      ["env-b", other],
+    ]);
   });
 });

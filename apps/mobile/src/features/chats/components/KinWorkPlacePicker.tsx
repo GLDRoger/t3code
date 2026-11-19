@@ -22,6 +22,10 @@ export function KinWorkPlacePicker(props: {
   readonly icon: AppSymbolName;
   readonly label: string;
   readonly held: KinWorkRef | null;
+  /** What picking nothing means here; "None" unless the screen says otherwise. */
+  readonly none?: string;
+  /** One more choice that is not a client or project, such as "No client", offered untyped. */
+  readonly extra?: KinWorkRef;
   readonly choices: ReadonlyArray<KinWorkRef>;
   /** A task's done projects, offered after the open ones so a late task can still be filed there. */
   readonly done?: ReadonlyArray<KinWorkRef>;
@@ -36,7 +40,8 @@ export function KinWorkPlacePicker(props: {
     readonly onPick: (side: "ours" | "theirs") => void;
   };
 }) {
-  const { held, side } = props;
+  const { held, side, extra } = props;
+  const none = props.none ?? KIN_WORK_NEW_COPY.none;
   const [open, setOpen] = useState(false);
   const inputRef = useRef<TextInputInstance>(null);
   const search = useKinPickerSearch(
@@ -49,7 +54,7 @@ export function KinWorkPlacePicker(props: {
     noun: props.noun,
     search: search.state,
     loaded: { open: props.choices, done: props.done ?? [] },
-    held,
+    held: extra !== undefined && held?.key === extra.key ? null : held,
   });
   const groups = kinTaskProjectMenu({ projects: view.open, doneProjects: view.done });
   const close = () => {
@@ -65,7 +70,7 @@ export function KinWorkPlacePicker(props: {
       <ListRow
         icon={props.icon}
         label={props.label}
-        detail={held?.title ?? KIN_WORK_NEW_COPY.none}
+        detail={held?.title ?? none}
         {...(held !== null && side?.value === "theirs"
           ? { description: KIN_WORK_NEW_COPY.sideTheirs }
           : {})}
@@ -114,10 +119,18 @@ export function KinWorkPlacePicker(props: {
           </View>
           {query.trim() !== "" || (props.clearable === false && held !== null) ? null : (
             <ListChoiceRow
-              label={KIN_WORK_NEW_COPY.none}
+              label={none}
               selected={held === null}
               separated
               onPress={() => pick(null)}
+            />
+          )}
+          {extra === undefined || query.trim() !== "" ? null : (
+            <ListChoiceRow
+              label={extra.title}
+              selected={held?.key === extra.key}
+              separated
+              onPress={() => pick(extra)}
             />
           )}
           {groups.map((group) => (

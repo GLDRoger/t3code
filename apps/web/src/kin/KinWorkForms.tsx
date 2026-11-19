@@ -66,6 +66,7 @@ import { useKinCompanyCountry, useKinHomeCurrency } from "./useKinMoney.ts";
 import { KinProjectPeoplePicker } from "./KinProjectPeople";
 import { KinWorkPrivateMark, KinWorkProblem } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
+import { KinPlaceCombobox } from "./KinPlaceCombobox";
 import { kinHostConnected } from "./useKinHost";
 import {
   kinWorkChoicesAtom,
@@ -582,7 +583,6 @@ export function KinContactDialog(
   );
 }
 
-const NO_CLIENT = "none";
 const NO_BILLING = "none";
 
 /** A project, new or being edited. Its health is worked out by the host, so there is none here. */
@@ -665,11 +665,6 @@ export function KinProjectDialog(
     startsOn: useId(),
     renewsOn: useId(),
   };
-  // The client it already has stays pickable after that client closes.
-  const clients =
-    draft.party === null || props.choices.clients.some((row) => row.key === draft.party?.key)
-      ? props.choices.clients
-      : [draft.party, ...props.choices.clients];
   const save = async () => {
     const outcome = await form.save();
     if (!outcome.saved) return;
@@ -701,25 +696,15 @@ export function KinProjectDialog(
       </Field>
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="flex flex-col gap-1.5">
-          <Label>{COPY.project.party}</Label>
-          <Select
-            value={draft.party?.key ?? NO_CLIENT}
-            onValueChange={(value) =>
-              form.edit({ party: clients.find((row) => row.key === value) ?? null })
-            }
-          >
-            <SelectTrigger className="w-full min-w-0" aria-label={COPY.project.party}>
-              <SelectValue>{draft.party?.title ?? COPY.project.noClient}</SelectValue>
-            </SelectTrigger>
-            <SelectPopup alignItemWithTrigger={false}>
-              <SelectItem value={NO_CLIENT}>{COPY.project.noClient}</SelectItem>
-              {clients.map((row) => (
-                <SelectItem key={row.key} value={row.key}>
-                  {row.title}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
+          <KinPlaceCombobox
+            target={{ environmentId, orgId }}
+            noun="client"
+            label={COPY.project.party}
+            placeholder={COPY.project.noClient}
+            value={draft.party}
+            choices={props.choices.clients}
+            onChange={(party) => form.edit({ party })}
+          />
           {moved.party === undefined ? null : (
             <p className="text-xs text-muted-foreground">
               It now says: {moved.party?.title ?? COPY.project.noClient}

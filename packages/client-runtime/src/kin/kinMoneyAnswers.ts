@@ -20,7 +20,7 @@ import * as Schema from "effect/Schema";
 
 import { kinEstimate, type KinRates } from "./kinCurrency.ts";
 import { kinCategoryLabel, kinMoneyText, kinParseMoney, kinTotalsLines } from "./kinLists.ts";
-import { kinWorkDueLabel } from "./kinWork.ts";
+import { kinWorkDueLabel, type KinWorkRef } from "./kinWork.ts";
 
 /**
  * Money's cash, next 30 days, budgets and quotes as the owner reads them. Every figure is the
@@ -447,13 +447,16 @@ export function kinBudgetsSummary(views: ReadonlyArray<Pick<KinBudgetView, "stat
 
 export interface KinBudgetDraft {
   readonly category: string | null;
-  readonly project: KinRecordKey | null;
+  /** The project with its name, which a project past the first page can only bring itself. */
+  readonly project: KinWorkRef | null;
   readonly limit: string;
 }
 
 export const kinBudgetDraftOf = (budget: KinMoneyBudget | null): KinBudgetDraft => ({
   category: budget?.category ?? null,
-  project: budget?.project?.key ?? null,
+  project: !budget?.project?.key
+    ? null
+    : { key: budget.project.key, title: budget.project.title ?? budget.project.key },
   limit: budget === null ? "" : kinMoneyText(budget.limit),
 });
 
@@ -475,7 +478,7 @@ export function kinBudgetInput(
     input: {
       orgId,
       category: draft.category,
-      project: draft.project,
+      project: draft.project?.key ?? null,
       currency: limit.currency,
       limitMinor: limit.minor,
       clientRequestId,
