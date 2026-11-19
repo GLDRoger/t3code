@@ -48,6 +48,9 @@ const layer = KinEventQueue.layer.pipe(
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Invented Studio', ${stamp})`;
+  // The company keeps UTC, as the host the tests pass does, whatever clock runs them.
+  yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'UTC', '08:30', '18:30', '03:00',
+    0, 1, '09:00', '[]')`;
   yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
       time_zone, work_hours_json)
     VALUES (${owner}, ${orgId}, 'owner', 'Arjun', ${stamp}, NULL, NULL),
@@ -73,6 +76,12 @@ const seed = Effect.gen(function* () {
   ] as const)
     yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
       VALUES (${orgId}, ${id}, ${id}, ${prefix}, 1, 0)`;
+});
+
+const companyClock = Effect.fn("test.companyClock")(function* (zone: string, quiet = "[]") {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_trigger_settings SET time_zone = ${zone}, quiet_hours_json = ${quiet}
+    WHERE org_id = ${orgId}`;
 });
 
 const record = Effect.fn("test.record")(function* (row: {
@@ -226,9 +235,7 @@ describe("pulse check-ins", () => {
         assert.isTrue(ends.every((minute) => minute <= 25 * MINUTE));
         yield* record({ key: "W-20", list: "work", title: "Invented card", dueAt: SLOT + 6 * DAY });
         // 17:25 on the owner's UTC clock: before his quiet hours, so nothing holds it.
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'UTC', '08:30', '18:30',
-          '03:00', 0, 1, '09:00', '{"from":"22:00","to":"08:00"}')`;
+        yield* companyClock("UTC", '{"from":"22:00","to":"08:00"}');
         // Noticed two hours late, after the window closed: at once, not a further offset.
         const caught = yield* checkIn(SLOT + 7 * DAY, nothingOutside, SLOT + 7 * DAY + 2 * HOUR);
         assert.strictEqual(
@@ -391,8 +398,7 @@ describe("pulse check-ins", () => {
       ]);
       // A company in Tokyo on a UTC host: its Monday 07:00 morning is Sunday 22:00 here, its
       // Monday 09:15 weekly Monday 00:15. Its Monday is still one page.
-      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Tokyo', '08:30', '18:30',
-        '03:00', 0, 1, '09:00', '[]')`;
+      yield* companyClock("Asia/Tokyo");
       yield* sql`UPDATE scheduled_tasks SET schedule_json = json_set(schedule_json, '$.timeOfDay', '00:15')
         WHERE task_id = ${KinSchedules.scheduleTaskId(orgId, "checkin-weekly")}`;
       const tokyo = MONDAY + 28 * DAY;
@@ -439,9 +445,7 @@ describe("pulse check-ins", () => {
       ]);
       // An evening summary its owner's quiet hours would hold past midnight in the company's
       // zone isn't queued: 22:30 in Tokyo is 13:30 on this UTC host, and 08:00 there still today.
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Tokyo', '08:30', '18:30',
-        '03:00', 0, 1, '09:00', '{"from":"22:00","to":"08:00"}')`;
+      yield* companyClock("Asia/Tokyo", '{"from":"22:00","to":"08:00"}');
       assert.deepStrictEqual(
         yield* run("checkin-evening", TUESDAY + DAY + 13 * HOUR + 30 * MINUTE),
         { _tag: "past_its_day" },
@@ -452,9 +456,7 @@ describe("pulse check-ins", () => {
   it.effect("a check-in in the owner's quiet hours waits for 08:00; Run now never does", () =>
     Effect.gen(function* () {
       yield* seed;
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'UTC', '08:30', '18:30',
-        '03:00', 0, 1, '09:00', '{"from":"22:00","to":"08:00"}')`;
+      yield* companyClock("UTC", '{"from":"22:00","to":"08:00"}');
       yield* record({ key: "W-1", list: "work", title: "Invented site copy", dueAt: MONDAY - DAY });
       const night = MONDAY + 23 * HOUR + 30 * MINUTE;
       const at = (scheduleId: string, manualId?: string) =>
@@ -484,9 +486,7 @@ describe("pulse check-ins", () => {
   it.effect("server lines in someone's quiet hours post once at 08:00, merged per chat", () =>
     Effect.gen(function* () {
       yield* seed;
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'UTC', '08:30', '18:30',
-        '03:00', 0, 1, '09:00', '{"from":"22:00","to":"08:00"}')`;
+      yield* companyClock("UTC", '{"from":"22:00","to":"08:00"}');
       const posted: Array<{ messageId: string; body: string }> = [];
       const chat = {
         notice: (input: { readonly messageId: string; readonly body: string }) =>
@@ -715,26 +715,36 @@ describe("pulse check-ins", () => {
       days: [0],
     });
   });
-  // G08: check-ins seeded while the zone was unset stayed on that clock after it was set.
-  it.effect("default check-ins follow the owner's zone once set; one he moved stays put", () =>
-    Effect.gen(function* () {
-      yield* seed;
-      const sql = yield* SqlClient.SqlClient;
-      yield* TestClock.setTime(MONDAY);
-      const host = KinSchedules.hostTimeZone();
-      const weekdays = [1, 2, 3, 4, 5];
-      const seededAt = (zone: string) => onHostClock("09:30", weekdays, zone, host, MONDAY);
-      // A loose check-in's native task starts its window five minutes early.
-      const fiveBefore = (at: string) => {
-        const minutes = Math.max(0, Number(at.slice(0, 2)) * 60 + Number(at.slice(3)) - 5);
-        return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
-      };
-      for (const [slug, source, at] of [
-        ["morning", `kin-seed:check-ins:${orgId}`, seededAt("Pacific/Honolulu")],
-        ["afternoon", "chat-event", seededAt("Pacific/Honolulu")],
-      ] as const) {
-        const taskId = KinSchedules.scheduleTaskId(orgId, `checkin-${slug}`);
-        yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json,
+  // G08: check-ins seeded while the zone was unset stayed on that clock after it was set. The
+  // zones span the globe, so on any host some lie more than half a day from it.
+  it.effect.each([
+    "Pacific/Honolulu",
+    "Pacific/Kiritimati",
+    "Pacific/Pago_Pago",
+    "Pacific/Auckland",
+    "America/Los_Angeles",
+    "UTC",
+  ])(
+    "default check-ins follow the owner's zone once set; one he moved stays put (from %s)",
+    (from) =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* TestClock.setTime(MONDAY);
+        const host = KinSchedules.hostTimeZone();
+        const weekdays = [1, 2, 3, 4, 5];
+        const seededAt = (zone: string) => onHostClock("09:30", weekdays, zone, host, MONDAY);
+        // A loose check-in's native task starts its window five minutes early.
+        const fiveBefore = (at: string) => {
+          const minutes = Math.max(0, Number(at.slice(0, 2)) * 60 + Number(at.slice(3)) - 5);
+          return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+        };
+        for (const [slug, source, at] of [
+          ["morning", `kin-seed:check-ins:${orgId}`, seededAt(from)],
+          ["afternoon", "chat-event", seededAt(from)],
+        ] as const) {
+          const taskId = KinSchedules.scheduleTaskId(orgId, `checkin-${slug}`);
+          yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json,
             project_id, workspace_strategy_json, model_selection_json, runtime_mode,
             interaction_mode, created_by, creation_source, created_at, updated_at,
             last_run_status, run_count)
@@ -744,42 +754,39 @@ describe("pulse check-ins", () => {
             weekdays: at.days,
           })}, 'project', '{}', '{}', 'approval-required', 'plan', 'system', 'server', ${stamp},
             ${stamp}, 'never', 0)`;
-        yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+          yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
             source_event, said_by, audience, content_sha256, inbox_thread_id, created_at,
             updated_at, loose_at, check_in)
           VALUES (${taskId}, ${orgId}, ${`checkin-${slug}`}, ${chief}, ${`chat-${chief}`},
             ${source}, ${owner}, 'owner_only', 'hash', 'inbox', 0, 0, ${at.at}, 1)`;
-      }
-      yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief,
-          evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check,
-          quiet_hours_json)
-        VALUES (${orgId}, 'Asia/Kolkata', '08:00', '18:00', '02:00', 0, 1, '09:00', '[]')`;
-      const saved: Array<KinSchedules.SaveInput> = [];
-      const schedules = KinSchedules.KinSchedules.of({
-        save: (input) => Effect.sync(() => void saved.push(input)),
-        cancel: () => Effect.void,
-        applyTaps: () => Effect.void,
-      });
-      yield* followOwnerZone(orgId, schedules);
-      assert.deepStrictEqual(
-        saved.map(({ scheduleId, every, existing, around }) => ({
-          scheduleId,
-          every,
-          existing,
-          around,
-        })),
-        [
-          {
-            scheduleId: KinMemoryItemId.make("checkin-morning"),
-            // The morning brief's default is every day: one seeded on weekdays gets the weekend too.
-            every: onHostClock("09:30", [0, 1, 2, 3, 4, 5, 6], "Asia/Kolkata", host, MONDAY),
-            existing: true,
-            around: true,
-          },
-        ],
-      );
-      assert.isTrue(saved.every((input) => input.keepWording === true));
-    }).pipe(Effect.provide(layer)),
+        }
+        yield* companyClock("Europe/London");
+        const saved: Array<KinSchedules.SaveInput> = [];
+        const schedules = KinSchedules.KinSchedules.of({
+          save: (input) => Effect.sync(() => void saved.push(input)),
+          cancel: () => Effect.void,
+          applyTaps: () => Effect.void,
+        });
+        yield* followOwnerZone(orgId, schedules);
+        assert.deepStrictEqual(
+          saved.map(({ scheduleId, every, existing, around }) => ({
+            scheduleId,
+            every,
+            existing,
+            around,
+          })),
+          [
+            {
+              scheduleId: KinMemoryItemId.make("checkin-morning"),
+              // The morning brief's default is every day: one seeded on weekdays gets the weekend too.
+              every: onHostClock("09:30", [0, 1, 2, 3, 4, 5, 6], "Europe/London", host, MONDAY),
+              existing: true,
+              around: true,
+            },
+          ],
+        );
+        assert.isTrue(saved.every((input) => input.keepWording === true));
+      }).pipe(Effect.provide(layer)),
   );
   it.effect.each([
     { name: "Friday taken off", days: [1, 2, 3, 4] },

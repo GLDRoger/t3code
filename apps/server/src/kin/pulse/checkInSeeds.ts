@@ -80,16 +80,26 @@ const seedSource = (orgId: KinOrgId) => `kin-seed:check-ins:${orgId}`;
 const EARLIER_DAYS: Partial<Record<string, ReadonlyArray<number>>> = { morning: WEEKDAYS };
 const minutesOf = (at: string) => Number(at.slice(0, 2)) * 60 + Number(at.slice(3));
 /**
- * The host days a default was put on, as its stored host time says: the offset that moved
- * `seedAt` to `hostAt`, taken within half a day, moves the days across midnight with it.
+ * The host days a default could have been put on, as its stored host time says: each shift from
+ * `seedAt` to `hostAt` a real zone could make on this host (UTC-12 to UTC+14, an hour's slack for
+ * a clock change since) moves the days across midnight with it.
  */
-const daysAt = (seedAt: string, days: ReadonlyArray<number>, hostAt: string) => {
+const daysAt = (
+  seedAt: string,
+  days: ReadonlyArray<number>,
+  hostAt: string,
+  hostOffset: number,
+) => {
   const moved = (((minutesOf(hostAt) - minutesOf(seedAt)) % 1440) + 1440) % 1440;
-  const by = Math.floor((minutesOf(seedAt) + (moved >= 720 ? moved - 1440 : moved)) / 1440);
-  return days
-    .map((day) => (((day + by) % 7) + 7) % 7)
-    .toSorted((a, b) => a - b)
-    .join();
+  return [moved - 1440, moved, moved + 1440]
+    .filter((shift) => shift >= hostOffset - 15 * 60 && shift <= hostOffset + 13 * 60)
+    .map((shift) => {
+      const by = Math.floor((minutesOf(seedAt) + shift) / 1440);
+      return days
+        .map((day) => (((day + by) % 7) + 7) % 7)
+        .toSorted((a, b) => a - b)
+        .join();
+    });
 };
 
 /**
@@ -116,7 +126,7 @@ export const followOwnerZone = Effect.fn("KinPulse.followOwnerZone")(function* (
     const host = KinSchedules.hostTimeZone();
     const seeded = [seed.days, EARLIER_DAYS[seed.slug] ?? seed.days].flatMap((days) => [
       onHostClock(seed.at, days, zone, host, now).days.join(),
-      daysAt(seed.at, days, current.at),
+      ...daysAt(seed.at, days, current.at, offsetMinutes(host, now)),
     ]);
     if (!seeded.includes(current.days.join())) continue;
     const every = onHostClock(seed.at, seed.days, zone, host, now);
