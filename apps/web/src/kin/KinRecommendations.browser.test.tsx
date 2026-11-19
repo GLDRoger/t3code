@@ -10,13 +10,16 @@ import { KinRecommendationsSettings } from "./KinRecommendations";
 const host = vi.hoisted(() => ({
   rows: [] as KinRecommendationRow[],
   calls: [] as string[],
+  show: () => {},
 }));
 
 vi.mock("./kinClient", async () => {
   const { Atom: A, AsyncResult: R } = await import("effect/reactivity");
   const { appAtomRegistry: registry } = await import("../rpc/atomRegistry");
-  const list = A.make(R.success({ rows: host.rows })).pipe(A.keepAlive);
+  // Read from the host on every refresh, as the page's own refresh after Ask again does.
+  const list = A.make(() => R.success({ rows: host.rows })).pipe(A.keepAlive);
   const allowed = A.make(true);
+  host.show = () => registry.refresh(list);
   return {
     kinClient: {
       recommendations: () => list,
@@ -29,7 +32,6 @@ vi.mock("./kinClient", async () => {
               ? { ...row, outcome: "Not now on 3 Nov. Kin may suggest it again.", action: null }
               : row,
           );
-          registry.set(list, R.success({ rows: host.rows }));
           return R.success({ rows: host.rows });
         },
       },
@@ -55,6 +57,7 @@ const row = (recId: string, change: Partial<KinRecommendationRow>): KinRecommend
 function setup(rows: ReadonlyArray<KinRecommendationRow>) {
   host.rows = [...rows];
   host.calls.length = 0;
+  host.show();
 }
 
 const settingsPage = () => (
