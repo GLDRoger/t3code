@@ -930,7 +930,7 @@ const runTeammate = <A, E>(
 // The host's chats, 18 Nov 2026: a teammate asked the Chief of staff for something the Tech
 // lead owns; it promised to pass it on and no tool could, until the owner typed it himself.
 it.effect(
-  "a teammate's own request reaches the agent that owns it once, at their access, said once in each chat and not to the owner",
+  "a teammate's own request reaches the agent that owns it once, at their access, saying where it came from, and not to the owner",
   () =>
     runTeammate(({ ctx, handoff, mate }) =>
       Effect.gen(function* () {
@@ -973,9 +973,19 @@ it.effect(
           copies.map((copy) => copy.body),
           ["Why did the staging deploy fail last night?"],
         );
-        // One row in each chat: her words where they went, and Kin's line where she asked.
+        // Where her words came from sits above them, and is the arrival she hasn't read yet.
         const routed = copies[0]!.chatId as KinChatId;
-        assert.lengthOf(yield* systemRows(sql, orgId, routed), 0);
+        const arrived = yield* sql<{ kind: string; body: string; silent: number }>`SELECT
+            author_kind AS kind, body, silent FROM kin_messages
+          WHERE org_id = ${orgId} AND chat_id = ${routed} ORDER BY seq`;
+        assert.deepStrictEqual(arrived, [
+          {
+            kind: "system",
+            body: "Passed on from your chat with Chief of staff. Tech lead answers you here.",
+            silent: 0,
+          },
+          { kind: "human", body: "Why did the staging deploy fail last night?", silent: 0 },
+        ]);
         assert.deepStrictEqual(yield* systemRows(sql, orgId, mate.direct), [
           { body: "Passed on to Tech lead, who answers you in your chat with it." },
         ]);

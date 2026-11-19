@@ -86,7 +86,13 @@ export const forward = Effect.fn("KinRouteCard.forward")(function* (input: {
   const asker = { _tag: "person" as const, orgId, personId };
   const direct = yield* chat.createDirect(asker, { orgId, agentId: input.to.agentId });
   const key = `forward:${message.messageId}`;
-  // Their own words are the one row here; where it went is said in the chat they asked in.
+  yield* chat.notice({
+    orgId,
+    chatId: direct.chatId,
+    audience: "chat",
+    messageId: KinMessageId.make(`kin-forward-${hashOf(key)}`),
+    body: `Passed on from your chat with ${input.from.name}. ${input.to.name} answers you here.`,
+  });
   const copy = yield* chat.send(asker, {
     chatId: direct.chatId,
     clientMessageId: key,
