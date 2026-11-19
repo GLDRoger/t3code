@@ -637,6 +637,12 @@ it.effect("only the asker takes an answer from the person's own words, and she c
         }),
       });
       yield* refused("finance", /own message/);
+      // A file sent with no words is not words: it takes no answer.
+      const fileOnly = yield* say(chatOf("finance"), "a file, no caption");
+      yield* sql`UPDATE kin_messages SET body = '' WHERE org_id = ${orgId}
+        AND message_id = ${fileOnly.messageId}`;
+      yield* wake("finance", fileOnly);
+      yield* refused("finance", /own message/);
       const meera = { _tag: "person" as const, orgId, personId: KinPersonId.make("meera") };
       const group = (yield* Context.get(services, KinGroups).create([owner], {
         orgId,
@@ -745,7 +751,7 @@ it.effect("only the asker takes an answer from the person's own words, and she c
       assert.isTrue((yield* answer("finance")).ok);
       assert.strictEqual(
         yield* toldFinance,
-        "Your question to Rhea Rao, “Shall I draft VIOM's payment reminder for INV-8?”: Rhea Rao undid the answer you took from their words. It has since been answered: “Draft it”; go by that, not the undone answer, and don't ask again.",
+        "Your question to Rhea Rao, “Shall I draft VIOM's payment reminder for INV-8?”: Rhea Rao undid the answer you took from their words. It has since been answered: “Draft it”. Don't act on the undone answer, and don't ask again.",
       );
       // Finance retired since: her Undo keeps the answer, says why, and leaves nothing waiting.
       const [second] = yield* repo.listOpenWaiting({ orgId, personId: owner.personId });

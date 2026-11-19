@@ -418,7 +418,7 @@ const wokenByTheirWords = Effect.fn("KinQuestions.wokenByTheirWords")(function* 
       AND e.tag = 'chat.message' AND json_extract(e.json, '$.origin') IS NULL
       AND m.chat_id = ${row.chatId} AND m.author_kind = 'human'
       AND m.author_person_id = ${row.personId} AND m.origin_json IS NULL
-      AND m.status = 'posted'
+      AND m.status = 'posted' AND trim(m.body) <> ''
       AND ${card === undefined ? sql`m.created_at > ${iso(row.askedAt)}` : sql`m.seq > ${card.seq}`}
       AND m.seq > ${undone?.seq ?? -1}
       -- A copy kin_take_private posted before copies were marked: its claim's key is its client id.
@@ -1145,7 +1145,7 @@ export const undoneTurnText = Effect.fn("KinQuestions.undoneTurnText")(function*
       row.state === "open"
         ? "It is open again on its card, waiting for their answer with no default. Don't act on that answer or ask again; wait for theirs."
         : row.state === "answered"
-          ? `It has since been answered${row.answer === null ? "" : `: “${row.answer}”`}; go by that, not the undone answer, and don't ask again.`
+          ? `It has since been answered${row.answer === null ? "" : `: “${row.answer}”`}. Don't act on the undone answer, and don't ask again.`
           : "It has since been closed, so don't act on the undone answer or ask again.";
     return `Your question to ${who}, “${row.question}”: ${who} undid the answer you took from their words. ${now}`;
   }
