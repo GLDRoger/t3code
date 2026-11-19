@@ -288,7 +288,7 @@ export class KinChatService extends Context.Service<
     readonly closeReplaced: (input: {
       readonly orgId: KinOrgId;
       readonly widgetId: KinWidgetId;
-      readonly outcome?: { readonly title: string; readonly text: string };
+      readonly outcome?: KinChoiceOutcome;
     }) => Effect.Effect<void, ServiceError>;
     /** Server-only: what became of a send card's Confirm: sending, then sent or failed. */
     readonly setSendOutcome: (input: {

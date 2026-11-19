@@ -868,7 +868,7 @@ function KinWorkItem(
               <>
                 <dt className="text-muted-foreground">{KIN_WORK_NEW_COPY.projectLabel}</dt>
                 <dd className="flex min-w-0 items-center gap-2 text-foreground">
-                  <PlaceMenu
+                  <KinTaskPlaceMenu
                     target={{ environmentId, orgId }}
                     noun="project"
                     label={KIN_WORK_NEW_COPY.projectLabel}
@@ -893,7 +893,7 @@ function KinWorkItem(
               <>
                 <dt className="text-muted-foreground">{KIN_WORK_NEW_COPY.clientLabel}</dt>
                 <dd className="flex min-w-0 flex-wrap items-center gap-2 text-foreground">
-                  <PlaceMenu
+                  <KinTaskPlaceMenu
                     target={{ environmentId, orgId }}
                     noun="client"
                     label={KIN_WORK_NEW_COPY.clientLabel}
@@ -1193,11 +1193,12 @@ export function KinLinkedGroups(props: {
 }
 
 const PLACE_ROW = "flex min-w-0 flex-1 truncate";
-// A short list is quicker scanned than searched.
-const PLACE_SEARCH_FROM = 8;
 
-/** The client or project a task is under: pick another, take it off, or open the one it has. */
-function PlaceMenu(props: {
+/**
+ * The client or project a task is under: pick another, found by typing as the new-task form
+ * does, take it off, or open the one it has.
+ */
+export function KinTaskPlaceMenu(props: {
   readonly target: KinWorkTarget;
   readonly noun: "client" | "project";
   readonly label: string;
@@ -1232,7 +1233,10 @@ function PlaceMenu(props: {
     held: value,
   });
   const groups = kinTaskProjectMenu({ projects: view.open, doneProjects: view.done });
-  const searchable = props.choices.length + (props.done?.length ?? 0) > PLACE_SEARCH_FROM;
+  const first = groups
+    .flatMap((group) => group.choices)
+    .find((choice) => choice.key !== value?.key);
+  const [open, setOpen] = useState(false);
   if (onPick === null) {
     if (value === null) return null;
     const { onOpen } = props;
@@ -1246,8 +1250,10 @@ function PlaceMenu(props: {
   }
   return (
     <Menu
-      onOpenChange={(open) => {
-        if (!open) search.type("");
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) search.type("");
       }}
     >
       <MenuTrigger
@@ -1264,16 +1270,21 @@ function PlaceMenu(props: {
         <ChevronDownIcon />
       </MenuTrigger>
       <MenuPopup align="start" className="max-w-80">
-        {!searchable ? null : (
-          <MenuSearchInput
-            autoFocus
-            busy={view.loading}
-            value={query}
-            onChange={(event) => search.type(event.currentTarget.value)}
-            placeholder={`Find a ${props.noun}`}
-            aria-label={`Find a ${props.noun}`}
-          />
-        )}
+        <MenuSearchInput
+          autoFocus
+          busy={view.loading}
+          value={query}
+          onChange={(event) => search.type(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" || query.trim() === "" || first === undefined) return;
+            event.preventDefault();
+            setOpen(false);
+            search.type("");
+            onPick(first);
+          }}
+          placeholder={`Find a ${props.noun}`}
+          aria-label={`Find a ${props.noun}`}
+        />
         {value === null || props.onOpen === null ? null : (
           <>
             <MenuItem onClick={props.onOpen}>
