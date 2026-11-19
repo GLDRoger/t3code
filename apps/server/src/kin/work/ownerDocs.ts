@@ -7,6 +7,7 @@ import {
   type KinDocHistoryInput,
   type KinDocLabelInput,
   type KinDocRestoreInput,
+  type KinDocStartWhatWeSellInput,
   type KinDocRenderInput,
   type KinDocRenderResult,
   type KinDocsListInput,
@@ -42,6 +43,7 @@ import { docEmbeds } from "./docFiles.ts";
 import * as Docs from "./docs.ts";
 import { KinRecords, type Tick } from "./KinRecords.ts";
 import { LISTS } from "./lists.ts";
+import { OFFERINGS_ORIGIN, startOfferings, withOfferings } from "./offerings.ts";
 import { inList, ownerWriter, theOwner, viewerOf } from "./ownerWork.ts";
 import {
   iso,
@@ -125,7 +127,7 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
       linked = new Set([...(linked ?? seen)].filter((id) => seen.has(id)));
     }
   return {
-    ...Docs.toDocRow(row, latest, now),
+    ...withOfferings(Docs.toDocRow(row, latest, now), row, latest),
     version: Docs.toVersion(shown),
     body: shown.body,
     outline: [...outlineOf(shown.body)],
@@ -199,6 +201,7 @@ const listWhere = Effect.fn("KinDocs.listWhere")(function* (
     ...(input.changedSince === undefined
       ? []
       : [sql`r.updated_at >= ${Date.parse(input.changedSince)}`]),
+    ...(input.whatWeSell === true ? [sql`r.origin_key = ${OFFERINGS_ORIGIN}`] : []),
   ]);
 });
 
@@ -230,7 +233,7 @@ export const list = Effect.fn("KinDocs.list")(
       docs: rows.flatMap((row) => {
         const version = latest.get(row.recordId);
         if (version === undefined) return [];
-        const doc = Docs.toDocRow(row, version, now);
+        const doc = withOfferings(Docs.toDocRow(row, version, now), row, version);
         return [input.acceptSlimLatest === true ? kinSlimDocRow(doc) : doc];
       }),
       total: count?.total ?? 0,
@@ -340,6 +343,16 @@ export const restore = Effect.fn("KinDocs.restore")(
   Effect.catchTags({ SqlError: () => unavailable }),
 );
 
+/** The owner level starts What we sell from its empty state, then talks it through with an agent. */
+export const startWhatWeSell = Effect.fn("KinDocs.startWhatWeSell")(
+  function* (people: ReadonlyArray<PersonIdentity>, input: KinDocStartWhatWeSellInput) {
+    const person = yield* theOwner(people, input.orgId);
+    const row = yield* startOfferings(input.orgId, ownerWriter(person), person.personId);
+    return yield* detailOf(input.orgId, { recordId: row.recordId }, KIN_OWNER_LEVEL);
+  },
+  Effect.catchTags({ SqlError: () => unavailable }),
+);
+
 /** At most this many remembered items lead a search; entries fill the rest. */
 const MEMORY_HITS = 5;
 export const search = Effect.fn("KinDocs.search")(
@@ -438,7 +451,7 @@ const listedOf = Effect.fn("KinDocs.listedOf")(
       total: count?.total ?? 0,
       ...(row === undefined || version === undefined
         ? { unlisted: true as const }
-        : { row: kinSlimDocRow(Docs.toDocRow(row, version, now)) }),
+        : { row: kinSlimDocRow(withOfferings(Docs.toDocRow(row, version, now), row, version)) }),
     };
   },
   Effect.catchTags({ SqlError: () => unavailable }),

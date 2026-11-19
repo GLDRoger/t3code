@@ -33,6 +33,7 @@ import { sectionsOf } from "./docBody.ts";
 import * as Docs from "./docs.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadDocs from "./leadDocs.ts";
+import { findOfferings, OFFERINGS_ORIGIN, offeringsIndex } from "./offerings.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
 import { playbookIndex, playbookThreshold } from "./playbooks.ts";
 import { PLAYBOOK_SEEDS, seedPlaybooks } from "./playbookSeeds.ts";
@@ -1412,4 +1413,79 @@ it.effect(
         chasing.key,
       );
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "What we sell is found by its origin key and made once, kept by the sales agent; archived, it leaves the pinned read until started again",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_leads SET domain = 'chief-of-staff' WHERE agent_id = ${lead}`;
+      yield* sql`UPDATE kin_leads SET domain = 'sales' WHERE agent_id = ${other}`;
+      const mate = { _tag: "person" as const, orgId, personId: mateId };
+      const pinned = () => OwnerDocs.list([owner], { orgId, whatWeSell: true });
+      assert.isUndefined(yield* findOfferings(orgId));
+      assert.lengthOf((yield* pinned()).docs, 0);
+
+      const start = OwnerDocs.startWhatWeSell([owner], { orgId });
+      const [first, second] = yield* Effect.all([start, start], { concurrency: 2 });
+      assert.strictEqual(first.key, second.key);
+      const [made] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records
+        WHERE org_id = ${orgId} AND origin_key = ${OFFERINGS_ORIGIN}`;
+      assert.strictEqual(made!.count, 1);
+      assert.strictEqual(first.latest.version, 1);
+      assert.deepStrictEqual(first.owner, { _tag: "agent", agentId: other });
+      assert.strictEqual(first.company, true);
+      assert.strictEqual(first.kind, "other");
+      assert.isFalse(first.sensitive);
+      assert.deepStrictEqual(offeringsIndex(first.body), [
+        "Who is a good customer for us",
+        "Our first offering",
+      ]);
+      assert.deepStrictEqual(first.whatWeSell, { offerings: 1 });
+      assert.deepStrictEqual(
+        (yield* pinned()).docs.map((doc) => [doc.key, doc.whatWeSell]),
+        [[first.key, { offerings: 1 }]],
+      );
+      // Only the owner level starts it.
+      assert.strictEqual(
+        reasonOf(yield* Effect.flip(OwnerDocs.startWhatWeSell([mate], { orgId }))),
+        "not_allowed",
+      );
+
+      // Archived, it is no longer pinned; started again, the same doc comes back as it was left.
+      yield* Docs.move(orgId, agentWriter(other), { key: first.key }, { archived: true });
+      assert.lengthOf((yield* pinned()).docs, 0);
+      const again = yield* OwnerDocs.startWhatWeSell([owner], { orgId });
+      assert.strictEqual(again.key, first.key);
+      assert.isFalse(again.archived);
+      assert.strictEqual(again.latest.version, 1);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a teammate with Docs reads What we sell, and their turn's agent can't change it", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_people SET sees_docs = 1 WHERE person_id = ${mateId}`;
+    const doc = yield* OwnerDocs.startWhatWeSell([owner], { orgId });
+    const mate = { _tag: "person" as const, orgId, personId: mateId };
+    assert.deepStrictEqual(
+      (yield* OwnerDocs.list([mate], { orgId, whatWeSell: true })).docs.map((row) => row.key),
+      [doc.key],
+    );
+    yield* turn("mate", "shared");
+    assert.strictEqual((yield* LeadDocs.read(scopeOf(lead), { key: doc.key })).key, doc.key);
+    const edited = yield* Effect.flip(
+      LeadDocs.edit(scopeOf(lead), {
+        key: doc.key,
+        sourceEventId: "ask-event",
+        summary: "Added a worry",
+        operations: [{ op: "append", text: "They worry about invented downtime." }],
+      }),
+    );
+    assert.strictEqual(reasonOf(edited), "not_allowed");
+    assert.strictEqual((yield* Docs.versionOf(orgId, doc.recordId))!.version, 1);
+  }).pipe(Effect.provide(layer)),
 );
