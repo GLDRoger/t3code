@@ -173,8 +173,8 @@ function ProjectPage(
   const summary = (
     <div className="flex flex-col gap-6 pb-3">
       <div className="flex flex-col gap-2">
-        <div className="flex items-start gap-2">
-          <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="flex flex-wrap items-start gap-2">
+          <div className="flex min-w-56 flex-1 flex-col gap-1">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <h2 className="truncate text-lg font-medium text-foreground">{view.name}</h2>
               {view.health === null ? null : <KinWorkHealthBadge health={view.health} />}
