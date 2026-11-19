@@ -1,3 +1,4 @@
+import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import type { ChatAttachment } from "@t3tools/contracts";
@@ -101,7 +102,7 @@ it.effect(
       const memo = file("kin-chat-memo-m4a", "Memo.m4a", "audio/mp4");
       const fs = yield* FileSystem.FileSystem;
       const objectStreams = yield* fs.readFile(
-        new URL("./fixtures/object-streams.pdf", import.meta.url).pathname,
+        NodeURL.fileURLToPath(new URL("./fixtures/object-streams.pdf", import.meta.url)),
       );
       const dir = yield* stored([
         [photo, new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])],

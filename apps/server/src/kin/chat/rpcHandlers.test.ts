@@ -1,3 +1,4 @@
+import * as NodeURL from "node:url";
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { kinHostDependencies } from "../lead/layer.testkit.ts";
 import { assert, it } from "@effect/vitest";
@@ -418,7 +419,9 @@ it.effect("caps the chats one connection keeps open with a plain refusal", () =>
 it.effect("keeps transport handlers out of persistence", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const source = yield* fs.readFileString(new URL("./rpcHandlers.ts", import.meta.url).pathname);
+    const source = yield* fs.readFileString(
+      NodeURL.fileURLToPath(new URL("./rpcHandlers.ts", import.meta.url)),
+    );
     assert.notMatch(source, /KinChatRepository|sql\/SqlClient|(?:kin|\.\.)\/persistence/);
   }).pipe(Effect.provide(NodeServices.layer)),
 );
