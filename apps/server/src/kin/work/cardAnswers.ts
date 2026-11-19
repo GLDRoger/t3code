@@ -72,6 +72,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
     confirmed: input.option.kind === "yes",
     via: input.via,
     now: input.now,
+    checkedSent: input.checkedSent === true,
   });
   if (asked !== undefined && asked._tag !== "declined")
     yield* sql.afterCommit(afterTap(sendAsked(input, asked), scope));
@@ -150,6 +151,16 @@ const showOutcome = Effect.fn("KinCardAnswers.outcome")(function* (
         .pipe(Effect.as(false)),
     ),
   );
+  // Another card for the same mail takes the warning that this try may have gone, or loses it.
+  if (state !== "sending")
+    for (const one of yield* connections.openWarnings(orgId, widgetId))
+      yield* chat
+        .setSendCard({ ...one, orgId, widgetId: KinWidgetId.make(one.widgetId) })
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin couldn't redraw a card for the same mail", { cause }),
+          ),
+        );
   if (!told || fresh === undefined) return;
   const again = yield* connections.freshAsk(orgId, fresh, now);
   if (again === undefined) return;

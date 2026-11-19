@@ -422,6 +422,8 @@ export const KinConnectionSendEditedInput = Schema.Struct({
   cc: Schema.Array(Schema.String.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
   subject: Schema.String.check(Schema.isMaxLength(400)),
   body: Schema.String.check(Schema.isMaxLength(24_000)),
+  /** The person checked the account's sent mail, as the card's `send.mayHaveGone` asks. */
+  checkedSent: Schema.optional(Schema.Literal(true)),
 });
 export type KinConnectionSendEditedInput = typeof KinConnectionSendEditedInput.Type;
 /** The card that now carries the mail and its outcome. */

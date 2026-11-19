@@ -13,6 +13,7 @@ import {
   type KinWorkSummary,
 } from "@t3tools/contracts";
 
+import { kinMayHaveGoneLine } from "./kinChoicePresentation.ts";
 import { kinLateWords } from "./kinTaskRecord.ts";
 import {
   kinWorkClosed,
@@ -137,8 +138,13 @@ export type KinTaskStep =
       readonly kind: "send";
       readonly line: string;
       readonly card: KinWorkMoveCard;
-      /** The card's Confirm; null on a card with none, which only Review opens. */
+      /**
+       * The card's Confirm; null on a card with none, or one whose earlier try may have gone,
+       * which only Review opens.
+       */
       readonly approve: KinChoiceOption | null;
+      /** That an earlier try at this mail may already have gone (`kinMayHaveGoneLine`). */
+      readonly mayHaveGone: string | null;
       /** Who it goes to, for "Sent to …" once confirmed. */
       readonly to: string | null;
     }
@@ -163,6 +169,7 @@ export function kinTaskStep(
   record: KinRecord,
   move: KinWorkRowMove | null,
   names: KinWorkNames,
+  now: Date = new Date(),
 ): KinTaskStep | null {
   if (move === null || kinWorkClosed(record.state)) return null;
   const { card } = move;
@@ -172,7 +179,12 @@ export function kinTaskStep(
           kind: "send",
           line: card.preview,
           card,
-          approve: card.options.find((option) => option.kind === "yes") ?? null,
+          approve:
+            card.mayHaveGone === undefined
+              ? (card.options.find((option) => option.kind === "yes") ?? null)
+              : null,
+          mayHaveGone:
+            card.mayHaveGone === undefined ? null : kinMayHaveGoneLine(card.mayHaveGone.at, now),
           to: record.party?.title ?? null,
         }
       : {

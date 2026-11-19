@@ -84,6 +84,11 @@ export interface KinSendView {
   readonly edit: KinSendEditDraft | null;
   /** Who saved the words shown over the agent's draft; null while they are the agent's. */
   readonly edited: { readonly personId: KinPersonId; readonly name: string } | null;
+  /**
+   * On an unanswered card, that an earlier try at this mail may already have gone, and when;
+   * its Confirm (`confirmId`) then needs the person's tick that they checked. Null otherwise.
+   */
+  readonly mayHaveGone: { readonly line: string; readonly confirmId: string | null } | null;
 }
 
 /** A mail card's editable words, as its form holds them: addresses comma-separated. */
@@ -114,6 +119,19 @@ export const KIN_SEND_EDIT_COPY = {
   quotedLabel: "Quoted message",
   quoted: "The quoted message goes below yours as it is.",
 } as const;
+
+/** The tick a card for a mail that may already have gone needs before its Confirm. */
+export const KIN_SEND_CHECKED = "I've checked the sent mail";
+
+/** "An earlier try at this mail at 9:52 AM may already have gone…", or on another day. */
+export function kinMayHaveGoneLine(at: string, now: Date = new Date()): string {
+  const tried = new Date(at);
+  const when =
+    tried.toDateString() === now.toDateString()
+      ? `at ${formatKinWhen(tried, "time")}`
+      : `on ${formatKinWhen(tried, "dayTime")}`;
+  return `An earlier try at this mail ${when} may already have gone. Check the account's sent mail before you confirm.`;
+}
 
 /** An open editor: the words as typed, bound to the card revision it was opened on. */
 export interface KinSendEditing {
@@ -180,7 +198,7 @@ export function kinQuotedInZone(quoted: string, raw: string | null): string {
   return `On ${day} at ${time}, ${quoted.slice(`On ${raw}, `.length)}`;
 }
 
-function kinSendView(send: KinSendCard, now: Date): KinSendView {
+function kinSendView(send: KinSendCard, now: Date, confirmId: string | null): KinSendView {
   // Cards from before accounts carry only the account, in `from`.
   const account = send.account === undefined ? send.from : send.account;
   const legacy = send.account === undefined ? (send.from === null ? "" : ` from ${send.from}`) : "";
@@ -258,6 +276,10 @@ function kinSendView(send: KinSendCard, now: Date): KinSendView {
           }
         : null,
     edited: send.edited ?? null,
+    mayHaveGone:
+      send.mayHaveGone === undefined || send.outcome !== null
+        ? null
+        : { line: kinMayHaveGoneLine(send.mayHaveGone.at, now), confirmId },
   };
 }
 
@@ -302,7 +324,14 @@ export function kinChoiceCardView(
     card.answer === null
       ? undefined
       : options.find((option) => option.id === card.answer?.optionId);
-  const send = card.send === undefined ? null : kinSendView(card.send, now);
+  const send =
+    card.send === undefined
+      ? null
+      : kinSendView(
+          card.send,
+          now,
+          card.options.find((option) => option.kind === "yes")?.optionId ?? null,
+        );
   return {
     orgId: widget.orgId,
     widgetId: widget.widgetId,
@@ -475,6 +504,7 @@ export function kinChoiceAccessibilityLabel(
         ? [view.send.body === null ? null : `Message: ${view.send.body}`, view.send.quoted]
         : []),
       ...view.send.attachments.map((file) => `Attached: ${file.name}`),
+      view.send.mayHaveGone?.line ?? null,
       view.send.outcome?.text ?? null,
       status,
     ]);
@@ -486,10 +516,12 @@ export function kinChoiceAccessibilityLabel(
   ]);
 }
 
+/** `checked`: the person ticked that they checked the sent mail, as `send.mayHaveGone` asks. */
 export function kinChoiceActInput(
   view: Pick<KinChoiceCardView, "widgetId" | "revision">,
   optionId: string,
   clientActionId: string,
+  checked = false,
 ): KinWidgetsActInput {
   return {
     widgetId: view.widgetId,
@@ -497,7 +529,21 @@ export function kinChoiceActInput(
     actionId: KIN_CHOICE_CARD_ACTION,
     value: optionId,
     clientActionId,
+    ...(checked ? { checkedSent: true as const } : {}),
   };
+}
+
+/**
+ * Whether a press waits for the sent-mail tick: Send edited mail (no `optionId`) or the card's
+ * Confirm, on a card for a mail an earlier try at which may already have gone.
+ */
+export function kinSendCheckPending(
+  view: Pick<KinChoiceCardView, "send">,
+  checked: boolean,
+  optionId?: string,
+): boolean {
+  const gone = view.send?.mayHaveGone ?? null;
+  return gone !== null && !checked && (optionId === undefined || optionId === gone.confirmId);
 }
 
 /**
@@ -599,6 +645,8 @@ export function kinSendEditControls(
   view: Pick<KinChoiceCardView, "revision">,
   busy: KinSendEditBusy,
   open: boolean,
+  /** Send waits for the sent-mail tick (`kinSendCheckPending`). */
+  unchecked = false,
 ): {
   readonly save: KinSendEditButton;
   readonly send: KinSendEditButton;
@@ -613,7 +661,7 @@ export function kinSendEditControls(
     },
     send: {
       label: busy === "sending" ? KIN_SEND_EDIT_COPY.sending : KIN_SEND_EDIT_COPY.send,
-      disabled: !takes,
+      disabled: !takes || unchecked,
     },
     discard: {
       label: busy === "discarding" ? KIN_SEND_EDIT_COPY.discarding : KIN_SEND_EDIT_COPY.discard,
@@ -667,6 +715,7 @@ export function kinSendEditInput(
   view: Pick<KinChoiceCardView, "orgId" | "widgetId" | "revision">,
   editing: KinSendEditing,
   clientActionId: string,
+  checked = false,
 ): KinConnectionSendEditedInput {
   return {
     orgId: view.orgId,
@@ -677,6 +726,7 @@ export function kinSendEditInput(
     cc: addresses(editing.draft.cc),
     subject: editing.draft.subject,
     body: editing.draft.body,
+    ...(checked ? { checkedSent: true as const } : {}),
   };
 }
 

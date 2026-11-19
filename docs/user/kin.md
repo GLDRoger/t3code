@@ -371,6 +371,11 @@ them too. If the card changed meanwhile, your words stay on that device until th
 or the app restarts, and show again on the card for you to check and save. **Discard edits** puts
 the agent's draft back. Attached files go as they were.
 
+If an earlier try at a mail may already have gone (the account gave no clear answer, or Kin
+restarted while sending), every card for that mail says so, in any chat. Check the account's sent
+mail, then tick **I've checked the sent mail** to Confirm. From Tasks, open the card with
+**Review**.
+
 ### GitHub
 
 GitHub connects as your own login on your Kin's computer, from the phone or the web: **Settings →

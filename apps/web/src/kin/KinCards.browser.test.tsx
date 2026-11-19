@@ -7,6 +7,7 @@ import {
   type KinConnectionSendEditedInput,
   type KinWaitingItem,
   type KinWidget,
+  type KinWidgetsActInput,
 } from "@t3tools/contracts";
 import type { Atom } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -28,6 +29,8 @@ const state = vi.hoisted(() => ({
   canEdit: null as Atom.Writable<boolean> | null,
   sent: [] as Array<KinConnectionSendEditedInput>,
   saved: [] as Array<KinConnectionSaveEditedInput>,
+  /** Each tap on a card's option, as posted. */
+  acted: [] as Array<KinWidgetsActInput>,
   /** How each send is answered, in order: a refusal in the host's words, or null for done. */
   answers: [] as Array<{ reason: "invalid_state" | "widget_changed"; message: string } | null>,
   /** How each save is answered, in the same way. */
@@ -42,8 +45,15 @@ vi.mock(import("~/state/use-atom-command"), async () => {
   return {
     useAtomCommand: ((command: { readonly label: string }) =>
       async (value: {
-        readonly input: KinConnectionSendEditedInput | KinConnectionSaveEditedInput;
+        readonly input:
+          | KinConnectionSendEditedInput
+          | KinConnectionSaveEditedInput
+          | KinWidgetsActInput;
       }) => {
+        if (command.label === "kin:widget:act" && "actionId" in value.input) {
+          state.acted.push(value.input);
+          return AsyncResult.success({});
+        }
         if ("edit" in value.input) {
           state.saved.push(value.input);
           const refused = state.saveAnswers.shift() ?? null;
@@ -53,7 +63,7 @@ vi.mock(import("~/state/use-atom-command"), async () => {
         }
         if (command.label !== "kin:connection:sendEdited")
           return AsyncResult.failure(Cause.fail("unused"));
-        state.sent.push(value.input);
+        state.sent.push(value.input as KinConnectionSendEditedInput);
         const refusal = state.answers.shift() ?? null;
         return refusal === null
           ? AsyncResult.success({ widgetId: "choice:m2" })
@@ -93,6 +103,7 @@ function setup() {
   appAtomRegistry.set(state.canEdit!, true);
   state.sent.length = 0;
   state.saved.length = 0;
+  state.acted.length = 0;
   state.answers.length = 0;
   state.saveAnswers.length = 0;
   state.waiting = null;
@@ -302,6 +313,29 @@ describe("a mail card's Edit", () => {
     appAtomRegistry.set(state.canEdit!, false);
     await expect.element(page.getByRole("button", { name: "Confirm" })).toBeVisible();
     await expect.element(page.getByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+  });
+
+  it("holds Confirm and Send edited for the tick while an earlier try may have gone, then carries it", async () => {
+    setup();
+    await using screen = await render(
+      view(mail({ send: { mayHaveGone: { at: "2026-11-19T08:30:00.000Z" } } })),
+    );
+    await expect.element(screen.getByText(/may already have gone/)).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Confirm" })).toBeDisabled();
+    await expect.element(page.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    await userEvent.click(page.getByRole("button", { name: "Edit" }));
+    await expect.element(page.getByRole("button", { name: "Send edited mail" })).toBeDisabled();
+    const tick = page.getByRole("checkbox", { name: "I've checked the sent mail" });
+    await userEvent.click(tick);
+    await expect.element(tick).toBeChecked();
+    await userEvent.fill(page.getByLabelText("Message"), "Hi Anita,\nResending the invoice.\nRhea");
+    await userEvent.click(page.getByRole("button", { name: "Send edited mail" }));
+    await expect.element(page.getByLabelText("To")).not.toBeInTheDocument();
+    expect(state.sent[0]).toMatchObject({ widgetId: "choice:m1", checkedSent: true });
+    // The plain Confirm carries the same tick.
+    await userEvent.click(page.getByRole("button", { name: "Confirm" }));
+    await vi.waitFor(() => expect(state.acted).toHaveLength(1));
+    expect(state.acted[0]).toMatchObject({ value: "option-1", checkedSent: true });
   });
 
   it("shows a reply's From and the quote that goes with it, and Enter in a field sends nothing", async () => {

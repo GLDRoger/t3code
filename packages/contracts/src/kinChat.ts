@@ -473,6 +473,11 @@ export const KinSendCard = Schema.Struct({
       at: IsoDateTime,
     }),
   ),
+  /**
+   * Set on an unanswered mail card while an earlier try at the same mail may already have gone
+   * (when it ended). Its Confirm then carries `checkedSent`; the host refuses one without.
+   */
+  mayHaveGone: Schema.optionalKey(Schema.Struct({ at: IsoDateTime })),
   /** Set while the words shown are a person's saved edit, not the agent's draft: who, by name. */
   edited: Schema.optionalKey(
     Schema.Struct({
@@ -911,6 +916,8 @@ export const KinWidgetsActInput = Schema.Struct({
   actionId: TrimmedNonEmptyString,
   value: Schema.optional(Schema.Unknown),
   clientActionId: TrimmedNonEmptyString,
+  /** The person checked the account's sent mail, as a card's `send.mayHaveGone` asks. */
+  checkedSent: Schema.optional(Schema.Literal(true)),
 });
 export type KinWidgetsActInput = typeof KinWidgetsActInput.Type;
 /** Adds (`on: true`) or withdraws the caller's reaction. A lead reacts only through `kin_react`. */

@@ -33,6 +33,8 @@ import {
   kinSendEditShown,
   kinSendEditStart,
   kinSendEditUnsaved,
+  kinSendCheckPending,
+  KIN_SEND_CHECKED,
   KIN_SEND_EDIT_COPY,
   type KinSendEditBusy,
   type KinChoiceCardView,
@@ -98,6 +100,7 @@ import { useNowMinuteMs } from "./useKinClock";
 import { cn, randomUUID } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
 import { Button } from "../components/ui/button";
+import { Checkbox } from "../components/ui/checkbox";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
@@ -408,6 +411,13 @@ function KinChoiceCard(props: {
   const [lastStatus, setLastStatus] = useState<
     (KinCardStatus & { readonly optionId: string }) | null
   >(null);
+  // The person's tick that they checked the sent mail; the press reads it when it posts.
+  const [checked, setChecked] = useState(false);
+  const checkedNow = useRef(false);
+  const check = (next: boolean) => {
+    checkedNow.current = next;
+    setChecked(next);
+  };
   const status = visibleKinCardStatus(lastStatus, choice.revision);
   const phase = kinChoicePhase(choice, nowMs);
   const sentOption =
@@ -420,7 +430,7 @@ function KinChoiceCard(props: {
     if (actions.current === null)
       actions.current = createKinCardActions<KinChoiceCardView, string>({
         newId: randomUUID,
-        toInput: kinChoiceActInput,
+        toInput: (view, optionId, id) => kinChoiceActInput(view, optionId, id, checkedNow.current),
         failureNotice: kinChoiceFailureNotice,
         post,
       });
@@ -481,7 +491,7 @@ function KinChoiceCard(props: {
     setEditBusy("sending");
     const result = await sendEdited({
       environmentId,
-      input: kinSendEditInput(choice, shownEdit, randomUUID()),
+      input: kinSendEditInput(choice, shownEdit, randomUUID(), checked),
     });
     setEditBusy(null);
     settle(
@@ -556,7 +566,13 @@ function KinChoiceCard(props: {
           busy={editBusy !== null}
           problem={shownEdit.problem}
           review={editBound?.review === true}
-          controls={kinSendEditControls(shownEdit, choice, editBusy, editable)}
+          controls={kinSendEditControls(
+            shownEdit,
+            choice,
+            editBusy,
+            editable,
+            kinSendCheckPending(choice, checked),
+          )}
           onChange={(draft) => setEditing({ ...shownEdit, draft })}
           onSave={() => void saveEdit()}
           onSend={() => void sendEdit()}
@@ -578,6 +594,14 @@ function KinChoiceCard(props: {
       {choice.image === null ? null : (
         <KinChoiceImage environmentId={environmentId} image={choice.image} />
       )}
+      {choice.send?.mayHaveGone == null || answered !== null || phase !== "open" ? null : (
+        <KinSendMayHaveGone
+          line={choice.send.mayHaveGone.line}
+          checked={checked}
+          disabled={!canAct || pending !== null || editBusy !== null}
+          onChange={check}
+        />
+      )}
       {answered !== null ? (
         answered.text === null ? null : (
           <p className="text-xs font-medium text-muted-foreground">{answered.text}</p>
@@ -596,7 +620,9 @@ function KinChoiceCard(props: {
                   variant="outline"
                   size="sm-multiline"
                   aria-busy={pending === option.id}
-                  disabled={pending !== null || switching}
+                  disabled={
+                    pending !== null || switching || kinSendCheckPending(choice, checked, option.id)
+                  }
                   onClick={() => void press(option.id)}
                 >
                   {option.label}
@@ -764,6 +790,34 @@ function KinSendEditor(props: {
         >
           {controls.discard.label}
         </Button>
+      </div>
+    </div>
+  );
+}
+
+/** An earlier try at this mail may have gone: the closed card's warning, and the tick Confirm needs. */
+function KinSendMayHaveGone(props: {
+  readonly line: string;
+  readonly checked: boolean;
+  readonly disabled: boolean;
+  readonly onChange: (checked: boolean) => void;
+}) {
+  const id = useId();
+  return (
+    <div className="flex flex-col gap-1.5">
+      <p role="status" className="text-xs font-medium text-destructive-foreground">
+        {props.line}
+      </p>
+      <div className="flex items-start gap-2">
+        <Checkbox
+          id={id}
+          checked={props.checked}
+          disabled={props.disabled}
+          onCheckedChange={(next) => props.onChange(next)}
+        />
+        <label htmlFor={id} className="cursor-pointer text-xs text-foreground">
+          {KIN_SEND_CHECKED}
+        </label>
       </div>
     </div>
   );

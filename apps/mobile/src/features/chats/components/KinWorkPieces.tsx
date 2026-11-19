@@ -388,6 +388,11 @@ export function KinTaskRow(props: {
               </Text>
             </View>
           )}
+          {step?.kind !== "send" || step.mayHaveGone === null ? null : (
+            <Text textRole="footnote" className="font-t3-medium text-danger-foreground">
+              {step.mayHaveGone}
+            </Text>
+          )}
           {step === null ? null : status?.kind === "done" ? (
             <Text textRole="footnote" className="font-t3-medium text-foreground">
               {status.text}

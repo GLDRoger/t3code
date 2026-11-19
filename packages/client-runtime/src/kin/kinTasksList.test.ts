@@ -15,6 +15,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
+import { kinMayHaveGoneLine } from "./kinChoicePresentation.ts";
 import { kinRecordMove } from "./kinTaskRecord.ts";
 import {
   kinNeedsYouCount,
@@ -240,7 +241,22 @@ describe("kinTaskStep", () => {
         },
       } as Partial<KinRecord>),
       { key: "A", group: "needsYou", card: card() },
-      { kind: "send", approveId: "confirm", to: "Orbit Dental" },
+      { kind: "send", approveId: "confirm", to: "Orbit Dental", gone: null },
+    ],
+    [
+      "a draft whose earlier try may have gone: only Review, which holds the tick, and why",
+      row("M", { owner: chief }),
+      {
+        key: "M",
+        group: "needsYou",
+        card: card({ mayHaveGone: { at: "2026-11-18T07:00:00.000Z" } }),
+      },
+      {
+        kind: "send",
+        approveId: null,
+        to: null,
+        gone: kinMayHaveGoneLine("2026-11-18T07:00:00.000Z", now),
+      },
     ],
     [
       "a question: its first three options",
@@ -274,12 +290,13 @@ describe("kinTaskStep", () => {
       null,
     ],
   ] as const)("%s", (_name, record, move, expected) => {
-    const step = kinTaskStep(record, move as KinWorkRowMove, names);
+    const step = kinTaskStep(record, move as KinWorkRowMove, names, now);
     if (expected === null) return expect(step).toBeNull();
     expect(step?.kind).toBe(expected.kind);
     if (step?.kind === "send" && "approveId" in expected) {
-      expect(step.approve?.optionId).toBe(expected.approveId);
+      expect(step.approve?.optionId ?? null).toBe(expected.approveId);
       expect(step.to).toBe(expected.to);
+      expect(step.mayHaveGone).toBe(expected.gone);
     }
     if (step?.kind === "question" && "options" in expected)
       expect(step.options.map((option) => option.label)).toEqual(expected.options);

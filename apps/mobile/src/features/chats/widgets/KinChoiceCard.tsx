@@ -10,6 +10,7 @@ import { memo, useEffect, useEffectEvent, useRef, useState, type ReactNode } fro
 import { AppState, Pressable, TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
+import { SymbolView } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
 import { cn } from "../../../lib/cn";
@@ -46,6 +47,8 @@ import {
   kinSendEditShown,
   kinSendEditStart,
   kinSendEditUnsaved,
+  kinSendCheckPending,
+  KIN_SEND_CHECKED,
   KIN_SEND_EDIT_COPY,
   type KinSendEditBusy,
   type KinChoiceCardView,
@@ -374,6 +377,46 @@ function SendEditor(props: {
   );
 }
 
+/** An earlier try at this mail may have gone: the closed card's warning, and the tick Confirm needs. */
+function SendMayHaveGone(props: {
+  readonly line: string;
+  readonly checked: boolean;
+  readonly disabled: boolean;
+  readonly onChange: (checked: boolean) => void;
+}) {
+  return (
+    <View className="gap-1.5">
+      {/* The card's spoken label already says it. */}
+      <Text
+        textRole="footnote"
+        className="font-t3-medium text-danger-foreground"
+        importantForAccessibility="no"
+        accessibilityElementsHidden
+      >
+        {props.line}
+      </Text>
+      <Pressable
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked: props.checked, disabled: props.disabled }}
+        accessibilityLabel={KIN_SEND_CHECKED}
+        disabled={props.disabled}
+        onPress={() => props.onChange(!props.checked)}
+        className="min-h-11 flex-row items-center gap-3 active:opacity-70"
+      >
+        <SymbolView
+          name={props.checked ? "checkmark.circle.fill" : "circle"}
+          size={20}
+          tintColorClassName={props.checked ? "accent-primary" : "accent-icon-muted"}
+          type="monochrome"
+        />
+        <Text textRole="footnote" className="min-w-0 flex-1 text-foreground">
+          {KIN_SEND_CHECKED}
+        </Text>
+      </Pressable>
+    </View>
+  );
+}
+
 /** The card's picture, such as a logo to confirm, at a bounded size. */
 function ChoiceImage(props: {
   readonly environmentId: EnvironmentId;
@@ -445,6 +488,13 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   const [lastStatus, setLastStatus] = useState<
     (KinCardStatus & { readonly optionId: string }) | null
   >(null);
+  // The person's tick that they checked the sent mail; the press reads it when it posts.
+  const [checked, setChecked] = useState(false);
+  const checkedNow = useRef(false);
+  const check = (next: boolean) => {
+    checkedNow.current = next;
+    setChecked(next);
+  };
   const status = visibleKinCardStatus(lastStatus, choice.revision);
   const phase = kinChoicePhase(choice, nowMs);
   // Until the answered card arrives, the tapped option already reads as chosen.
@@ -458,7 +508,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
     if (actions.current === null)
       actions.current = createKinCardActions<KinChoiceCardView, string>({
         newId: uuidv4,
-        toInput: kinChoiceActInput,
+        toInput: (view, optionId, id) => kinChoiceActInput(view, optionId, id, checkedNow.current),
         failureNotice: kinChoiceFailureNotice,
         post: async (input) => {
           const result = await post({ environmentId, input });
@@ -523,7 +573,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
     setEditBusy("sending");
     const result = await sendEdited({
       environmentId,
-      input: kinSendEditInput(choice, shownEdit, uuidv4()),
+      input: kinSendEditInput(choice, shownEdit, uuidv4(), checked),
     });
     setEditBusy(null);
     settle(
@@ -624,7 +674,13 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
             busy={editBusy !== null}
             problem={shownEdit.problem}
             review={editBound?.review === true}
-            controls={kinSendEditControls(shownEdit, choice, editBusy, editable)}
+            controls={kinSendEditControls(
+              shownEdit,
+              choice,
+              editBusy,
+              editable,
+              kinSendCheckPending(choice, checked),
+            )}
             onChange={(draft) => setEditing({ ...shownEdit, draft })}
             onSave={() => void saveEdit()}
             onSend={() => void sendEdit()}
@@ -640,6 +696,14 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       </View>
       {choice.image === null ? null : (
         <ChoiceImage environmentId={environmentId} image={choice.image} />
+      )}
+      {choice.send?.mayHaveGone == null || answered !== null || phase !== "open" ? null : (
+        <SendMayHaveGone
+          line={choice.send.mayHaveGone.line}
+          checked={checked}
+          disabled={!canAct || pending !== null || editBusy !== null}
+          onChange={check}
+        />
       )}
       {answered !== null ? (
         answered.text === null ? null : (
@@ -687,7 +751,11 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
                   size="compact"
                   fullWidth
                   loading={pending === option.id}
-                  disabled={(pending !== null && pending !== option.id) || switching}
+                  disabled={
+                    (pending !== null && pending !== option.id) ||
+                    switching ||
+                    kinSendCheckPending(choice, checked, option.id)
+                  }
                   onPress={() => void press(option.id)}
                 />
                 {option.action === null ? null : (

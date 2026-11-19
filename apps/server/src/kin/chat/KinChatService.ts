@@ -160,6 +160,8 @@ export type ChoiceAnswerHandler = (input: {
   readonly plan?: CardPlans.CardPlan;
   readonly via: "tap" | "reaction";
   readonly now: number;
+  /** The tap's word that the person checked the sent mail (`KinWidgetsActInput.checkedSent`). */
+  readonly checkedSent?: boolean;
 }) => Effect.Effect<
   KinChoiceOutcome | undefined,
   KinChatError | Repository.RepositoryError | SqlError.SqlError | Schema.SchemaError
@@ -1107,6 +1109,7 @@ const make = Effect.gen(function* () {
             ...(sealed?.plan === undefined ? {} : { plan: sealed.plan }),
             via: reaction === null ? "tap" : "reaction",
             now: yield* Clock.currentTimeMillis,
+            ...(request.checkedSent === true ? { checkedSent: true } : {}),
           }).pipe(
             Effect.mapError((cause) =>
               SqlError.isSqlError(cause) || Schema.isSchemaError(cause)

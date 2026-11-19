@@ -614,6 +614,9 @@ function KinTaskRow(props: {
             <span className="line-clamp-2 min-w-0">{step.line}</span>
           </p>
         )}
+        {step?.kind !== "send" || step.mayHaveGone === null ? null : (
+          <p className="px-2 text-xs font-medium text-destructive-foreground">{step.mayHaveGone}</p>
+        )}
         {step === null ? null : status?.kind === "done" ? (
           <p role="status" className="px-2 text-xs font-medium text-foreground">
             {status.text}

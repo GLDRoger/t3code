@@ -18,6 +18,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -35,6 +36,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { fromConnections, poll } from "../pulse/outside.ts";
+import { waitingCards } from "../work/recordComments.ts";
 import * as ConnectionSecrets from "./ConnectionSecrets.ts";
 import {
   ASK_CLOSED,
@@ -43,6 +45,7 @@ import {
   EDITED_OVER,
   type EditCards,
   KinConnections,
+  NOT_CHECKED,
   type SaveCards,
   SHARED_CONNECTIONS,
 } from "./ConnectionsService.ts";
@@ -381,13 +384,24 @@ const callTool = (
   Effect.gen(function* () {
     return yield* (yield* KinConnections).call(as, { connection, tool, arguments: args });
   });
-/** A person's tap on a card, in the tap's transaction, then the send once it committed. */
-const tap = (widgetId: string, personId: KinPersonId, confirmed = true) =>
+/**
+ * A person's tap on a card, in the tap's transaction, then the send once it committed. `checked`:
+ * they ticked that they checked the sent mail.
+ */
+const tap = (widgetId: string, personId: KinPersonId, confirmed = true, checked = false) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const connections = yield* KinConnections;
     const asked = yield* sql.withTransaction(
-      connections.answerAsk({ orgId, widgetId, personId, confirmed, via: "tap", now: NOW }),
+      connections.answerAsk({
+        orgId,
+        widgetId,
+        personId,
+        confirmed,
+        via: "tap",
+        now: NOW,
+        checkedSent: checked,
+      }),
     );
     return asked?._tag === "send" ? yield* connections.sendAsk(orgId, asked.askId) : asked;
   });
@@ -428,9 +442,12 @@ const editCards = (cards: Array<Card>, taps: Array<{ widgetId: string; askId?: s
       close: (widgetId) =>
         Effect.sync(() => cards.push({ ...cards[0]!, widgetId: `closed:${widgetId}` })),
       post: (_agent, card) =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
           const widgetId = `w-${cards.length + 1}`;
-          cards.push({ ...card, options: [], widgetId });
+          const shown: Card = { ...card, options: [], widgetId };
+          cards.push(shown);
+          // Stored as the chat stores it in the edit's transaction, so its Confirm reads it.
+          yield* stored(shown).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
           return {
             orgId,
             chatId: card.chatId,
@@ -468,6 +485,7 @@ const editCards = (cards: Array<Card>, taps: Array<{ widgetId: string; askId?: s
             confirmed: input.value === "option-1",
             via: "tap",
             now: NOW,
+            checkedSent: input.checkedSent === true,
           })
           .pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
@@ -490,6 +508,7 @@ const sendEdited = (
   edit: { to: ReadonlyArray<string>; cc?: ReadonlyArray<string>; subject?: string; body?: string },
   press = "press-1",
   revision = 1,
+  checked = false,
 ) =>
   Effect.gen(function* () {
     const connections = yield* KinConnections;
@@ -505,6 +524,7 @@ const sendEdited = (
         cc: edit.cc ?? card.send?.cc ?? [],
         subject: edit.subject ?? card.send?.subject ?? "",
         body: edit.body ?? card.send?.body ?? "",
+        ...(checked ? { checkedSent: true as const } : {}),
       },
       yield* editCards(cards, taps),
     );
@@ -880,7 +900,9 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         const [replaced, went] = yield* asks;
         assert.deepInclude(replaced, { state: "stale", decidedBy: owner });
         assert.deepInclude(went, { state: "sent", decidedBy: owner });
-        assert.strictEqual(JSON.parse(went!.payload).body, edited.body);
+        // The agent's draft stays the edited copy's own, with the person's words kept beside it.
+        assert.strictEqual(JSON.parse(went!.payload).body, draft.body);
+        assert.strictEqual(JSON.parse(went!.payload).confirmed.body, edited.body);
 
         // A retry of the press that went answers as it did and sends nothing more.
         const retried = yield* sendEdited(cards, card, owner, edited);
@@ -1448,6 +1470,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         // A 503 once the send left may have gone: never resent, and the mail comes back to check.
         const third = yield* reply("Yes, and the PDF is attached.");
         fake.setDown(HELLO, true);
+        const triedAt = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
         const broke = yield* tap(third.widgetId, owner);
         if (broke === undefined || !("state" in broke) || broke.fresh === undefined)
           return assert.fail("no fresh card after a failed send");
@@ -1463,14 +1486,52 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.deepInclude(owed, { widgetId: third.widgetId, state: "failed" });
         const retry = yield* connections.freshAsk(orgId, owed.fresh, NOW);
         if (retry === undefined) return assert.fail("no fresh card");
+        // The retry says an earlier try may have gone, and when.
+        assert.deepStrictEqual(retry.card.send.mayHaveGone, { at: triedAt });
         yield* retry.bind("w-retry");
         assert.lengthOf(yield* connections.interruptedSends(orgId, later), 0);
-        assert.deepStrictEqual(yield* tap("w-retry", owner), { state: "sent", reason: null });
+        const sql = yield* SqlClient.SqlClient;
+        const askOn = (widgetId: string) =>
+          sql<{ state: string }>`SELECT state FROM kin_connection_asks
+            WHERE widget_id = ${widgetId}`.pipe(Effect.map(([row]) => row?.state));
+        assert.deepInclude(yield* tap("w-retry", owner).pipe(Effect.flip), {
+          reason: "conflict",
+          message: NOT_CHECKED,
+        });
+        assert.strictEqual(yield* askOn("w-retry"), "open");
+        // Finance redrafts the same reply in its own chat: its card warns too, Finance's tool
+        // result says nothing of the earlier try, and Confirm there needs the same tick.
+        yield* wake({ person: owner }, finance);
+        assert.deepStrictEqual(
+          yield* callTool(
+            HELLO,
+            "mail_reply",
+            { threadId: inbound.threadId, body: "Yes, and the PDF is attached. Finance" },
+            financeScope,
+          ),
+          { note: ASKED },
+        );
+        const redraft = cards.findLast((one) => !one.widgetId.startsWith("closed:"))!;
+        assert.strictEqual(redraft.chatId, "fin-owner");
+        assert.deepStrictEqual(redraft.send?.mayHaveGone, { at: triedAt });
+        assert.strictEqual(yield* askOn("w-retry"), "stale");
+        assert.deepInclude(yield* tap(redraft.widgetId, owner).pipe(Effect.flip), {
+          reason: "conflict",
+          message: NOT_CHECKED,
+        });
+        assert.strictEqual(yield* askOn(redraft.widgetId), "open");
+        assert.lengthOf(fake.sent(), 2);
+        assert.deepStrictEqual(yield* tap(redraft.widgetId, owner, true, true), {
+          state: "sent",
+          reason: null,
+        });
         assert.lengthOf(fake.sent(), 3);
 
         // Kin restarts between the Confirm and the send: at start the card fails, the mail is back.
+        // Drawn after a try that went, it carries no warning.
+        yield* wake({ person: owner });
         const fourth = yield* reply("Yes. Thanks for checking.");
-        const sql = yield* SqlClient.SqlClient;
+        assert.notProperty(fourth.send, "mayHaveGone");
         const confirmed = yield* sql.withTransaction(
           connections.answerAsk({
             orgId,
@@ -1490,6 +1551,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.lengthOf(yield* connections.interruptedSends(orgId, NOW + 1), 0);
         const resumed = yield* connections.freshAsk(orgId, cut.fresh, NOW);
         if (resumed === undefined) return assert.fail("no fresh card");
+        assert.notProperty(resumed.card.send, "mayHaveGone");
         yield* resumed.bind("w-resumed");
         assert.deepStrictEqual(yield* tap("w-resumed", owner), { state: "sent", reason: null });
         assert.lengthOf(fake.sent(), 4);
@@ -1509,18 +1571,115 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         );
         if (sending?._tag !== "send") return assert.fail("not sending");
         const correction = yield* reply("Yes, the total is 59,000 including GST.");
+        yield* stored(correction);
         fake.setDown(HELLO, true);
         const lost = yield* connections.sendAsk(orgId, sending.askId);
         fake.setDown(HELLO, false);
         assert.strictEqual(lost.state, "failed");
         assert.isUndefined(lost.fresh);
         assert.include(lost.reason ?? "", "This may or may not have gone.");
-        assert.deepStrictEqual(yield* tap(correction.widgetId, owner), {
+        // The correction was drawn before that try ended: it is redrawn with the warning.
+        const [warned, ...more] = yield* connections.openWarnings(orgId, draft.widgetId);
+        assert.lengthOf(more, 0);
+        assert.strictEqual(warned?.widgetId, correction.widgetId);
+        assert.isDefined(warned?.send.mayHaveGone);
+        assert.include(yield* tap(correction.widgetId, owner).pipe(Effect.flip), {
+          reason: "conflict",
+        });
+        assert.deepStrictEqual(yield* tap(correction.widgetId, owner, true, true), {
           state: "sent",
           reason: null,
         });
         assert.lengthOf(fake.sent(), 5);
         assert.include(fake.sent()[4]!.body, "including GST");
+
+        // Kin restarts after the request left: the mail that comes back warns too. On Tasks, a
+        // document's row says so, and its Approve, an ordinary tap, is refused without the tick.
+        yield* wake({ person: owner });
+        const filed = yield* callTool(HELLO, "mail_reply", {
+          threadId: inbound.threadId,
+          body: "The invoice is attached.",
+          attachments: ["INV-1"],
+        }).pipe(Effect.map(() => cards.at(-1)!));
+        const claimed = yield* sql.withTransaction(
+          connections.answerAsk({
+            orgId,
+            widgetId: filed.widgetId,
+            personId: owner,
+            confirmed: true,
+            via: "tap",
+            now: NOW,
+          }),
+        );
+        if (claimed?._tag !== "send") return assert.fail("not sending");
+        yield* sql`UPDATE kin_connection_asks SET dispatched_at = ${NOW}
+          WHERE ask_id = ${claimed.askId}`;
+        const restartedAt = (yield* Clock.currentTimeMillis) + 1;
+        const [left] = yield* connections.interruptedSends(orgId, restartedAt);
+        if (left?.fresh === undefined) return assert.fail("no fresh card after a restart");
+        assert.include(left.reason ?? "", "Kin restarted while sending this.");
+        const refiled = yield* connections.freshAsk(orgId, left.fresh, NOW);
+        if (refiled === undefined) return assert.fail("no fresh card");
+        assert.deepStrictEqual(refiled.card.send.mayHaveGone, {
+          at: DateTime.formatIso(DateTime.makeUnsafe(restartedAt - 1)),
+        });
+        yield* refiled.bind("w-refiled");
+        yield* stored({ ...filed, widgetId: "w-refiled", send: refiled.card.send });
+        const row = (yield* waitingCards(orgId, owner, [
+          { recordId: "rec_inv", key: "INV-1" },
+        ])).get("rec_inv");
+        assert.strictEqual(row?.widgetId, "w-refiled");
+        assert.deepStrictEqual(row?.mayHaveGone, refiled.card.send.mayHaveGone);
+        assert.include(yield* tap("w-refiled", owner).pipe(Effect.flip), { reason: "conflict" });
+        assert.lengthOf(fake.sent(), 5);
+        assert.deepStrictEqual(yield* tap("w-refiled", owner, true, true), {
+          state: "sent",
+          reason: null,
+        });
+        assert.lengthOf(fake.sent(), 6);
+
+        // Send edited mail with words of their own, refused by an expired sign-in at dispatch:
+        // the mail comes back with their words marked over the agent's draft, which Discard
+        // restores and Confirm then sends.
+        const asked = yield* reply("Yes, all settled.");
+        assert.notProperty(asked.send, "mayHaveGone");
+        yield* stored(asked);
+        const mine = {
+          to: ["ravi@lumen.example", "dev@lumen.example"],
+          cc: ["meera@invented-co.example"],
+          subject: "Re: Invoice question, settled",
+          body: "Yes, all settled. Thank you, Ravi.",
+        };
+        fake.setExpired(HELLO, true);
+        yield* TestClock.adjust("2 hours");
+        const typed = yield* sendEdited(cards, asked, owner, mine, "press-expired");
+        const [expired] = typed.outcomes;
+        if (expired?.fresh === undefined) return assert.fail("no fresh card after Send edited");
+        assert.include(expired.reason ?? "", "needs signing in again");
+        assert.lengthOf(fake.sent(), 6);
+        yield* signInAgain;
+        const returned = yield* connections.freshAsk(orgId, expired.fresh, NOW);
+        if (returned === undefined) return assert.fail("no fresh card");
+        assert.deepInclude(returned.card.send, {
+          ...mine,
+          edited: { personId: owner, name: "Arjun" },
+        });
+        yield* returned.bind("w-back");
+        yield* stored({ ...asked, widgetId: "w-back", send: returned.card.send });
+        yield* saveEdited({ ...asked, widgetId: "w-back" }, owner, 1, null);
+        const [undone] = yield* sql<{ state: string }>`SELECT state_json AS state
+          FROM kin_widgets WHERE widget_id = 'w-back'`;
+        const agents = {
+          to: ["ravi@lumen.example"],
+          cc: [],
+          subject: "Re: Invoice question",
+          body: "Yes, all settled.",
+        };
+        assert.deepInclude(JSON.parse(undone!.state).send, agents);
+        assert.notProperty(JSON.parse(undone!.state).send, "edited");
+        assert.deepStrictEqual(yield* tap("w-back", owner), { state: "sent", reason: null });
+        assert.deepInclude(fake.sent()[6], { to: agents.to, cc: [], subject: agents.subject });
+        assert.match(fake.sent()[6]!.body, /^Yes, all settled\.\n\nOn /);
       }),
     ),
   );

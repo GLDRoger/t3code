@@ -455,19 +455,20 @@ export const waitingCards = Effect.fn("KinRecordComments.waitingCards")(function
     const prepared = Option.getOrUndefined(decodePrepared(ask.payload));
     if (prepared === undefined) continue;
     // The row offers Confirm, so it names what Confirm sends: a person's saved edit, when one is on the card.
-    const mail =
-      prepared._tag === "email"
-        ? shownMail(prepared, Option.getOrUndefined(decodeChoice(ask.state))?.send)
-        : undefined;
+    const send = Option.getOrUndefined(decodeChoice(ask.state))?.send;
+    const mail = prepared._tag === "email" ? shownMail(prepared, send) : undefined;
     found.set(
       ask.recordId,
       prepared._tag === "email" && mail !== undefined
-        ? card(
-            "send",
-            ask,
-            `To ${mail.to.join(", ")}: ${mail.subject}`,
-            prepared.attachments.map((file) => ({ name: file.name, mimeType: file.mimeType })),
-          )
+        ? {
+            ...card(
+              "send",
+              ask,
+              `To ${mail.to.join(", ")}: ${mail.subject}`,
+              prepared.attachments.map((file) => ({ name: file.name, mimeType: file.mimeType })),
+            ),
+            ...(send?.mayHaveGone === undefined ? {} : { mayHaveGone: send.mayHaveGone }),
+          }
         : card(
             "send",
             ask,
@@ -493,7 +494,7 @@ const waitingFor = Effect.fn("KinRecordComments.waiting")(function* (
 ) {
   const found = (yield* waitingCards(orgId, personId, [record])).get(record.recordId);
   if (found === undefined) return undefined;
-  const { revision: _revision, options: _options, ...waiting } = found;
+  const { revision: _revision, options: _options, mayHaveGone: _gone, ...waiting } = found;
   return waiting satisfies KinRecordWaiting;
 });
 
