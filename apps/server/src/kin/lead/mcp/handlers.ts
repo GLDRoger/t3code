@@ -54,6 +54,12 @@ const admitted = (
     ),
   );
 
+/** What a figure call did and what the person sees, so the reply needs nothing in its place. */
+const shownLine = (what: "chart" | "page", inReply: boolean) =>
+  inReply
+    ? `Made. The ${what} shows under your reply; to show it at another point in the reply, put figure there on a line of its own.`
+    : `Posted. The ${what} is in the chat now, as its own message.`;
+
 // Kin's service checks the persisted lead and wake-up, rather than T3 thread-control grants.
 export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
   kin_leads: McpToolAccess.reads(
@@ -300,8 +306,12 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         },
       );
       return "figure" in result
-        ? result
-        : { widgetId: result.widgetId, messageId: result.messageId };
+        ? { ...result, next: shownLine("chart", true) }
+        : {
+            widgetId: result.widgetId,
+            messageId: result.messageId,
+            next: shownLine("chart", false),
+          };
     }, Effect.mapError(failure)),
   ),
   kin_visual: McpToolAccess.actsAsCaller(
@@ -323,8 +333,12 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         },
       );
       return "figure" in result
-        ? result
-        : { widgetId: result.widgetId, messageId: result.messageId };
+        ? { ...result, next: shownLine("page", true) }
+        : {
+            widgetId: result.widgetId,
+            messageId: result.messageId,
+            next: shownLine("page", false),
+          };
     }, Effect.mapError(failure)),
   ),
   kin_react: McpToolAccess.actsAsCaller(
