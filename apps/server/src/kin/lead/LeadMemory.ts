@@ -169,11 +169,13 @@ export const JournalInput = Schema.Struct({
 });
 export const ItemResult = Schema.Struct({ itemId: KinMemoryItemId });
 /**
- * A follow-up that asks or chases someone else asks nothing yet: at its due time Kin wakes the
- * lead to do it. `back` is their day back when they are away then.
+ * A follow-up posts nothing now. `scheduled` is what its due run does (`deferralFlow`): a reminder;
+ * a start or an ask of someone else handed to a lead; a card asking whoever set it; a chase's
+ * ping. `asks` is who an ask or chase is for, with their stored return date when away then.
  */
 export const DeferResult = Schema.Struct({
   itemId: KinMemoryItemId,
+  scheduled: Schema.Literals(["reminder", "start", "ask_follow_up", "due_card", "chase_ping"]),
   note: Schema.optional(Schema.String),
   asks: Schema.optional(
     Schema.Struct({ name: Schema.String, back: Schema.optional(Schema.String) }),
@@ -1257,21 +1259,42 @@ const make = Effect.gen(function* () {
           );
           if (replaced !== undefined && replaced.deletedAt === null)
             yield* schedules.cancel(ctx.orgId, replaced.scheduleId);
-          if (asked === undefined || asked === source.saidBy) return { itemId: id };
-          const [person] = yield* sql<{ name: string; zone: string | null; back: string | null }>`
-            SELECT display_name AS name, time_zone AS zone, away_until AS back FROM kin_people
-            WHERE org_id = ${ctx.orgId} AND handle = ${asked} AND removed_at IS NULL
-            ORDER BY person_id LIMIT 1`;
-          if (person === undefined) return { itemId: id };
+          const other = asked !== undefined && asked !== source.saidBy;
+          const scheduled =
+            input.onDue === "remind"
+              ? ("reminder" as const)
+              : input.onDue === "start"
+                ? ("start" as const)
+                : input.onDue === "chase"
+                  ? ("chase_ping" as const)
+                  : other
+                    ? ("ask_follow_up" as const)
+                    : ("due_card" as const);
+          // Who the due run asks or pings: a chase with no one named pings whoever set it.
+          const target =
+            scheduled === "chase_ping" ? (asked ?? source.saidBy) : other ? asked : undefined;
+          const [person] =
+            target === undefined
+              ? []
+              : yield* sql<{ name: string; zone: string | null; back: string | null }>`
+                  SELECT display_name AS name, time_zone AS zone, away_until AS back FROM kin_people
+                  WHERE org_id = ${ctx.orgId} AND handle = ${target} AND removed_at IS NULL
+                  ORDER BY person_id LIMIT 1`;
+          if (person === undefined) return { itemId: id, scheduled };
           const zone = validZone(person.zone) ?? (yield* ownerZone(ctx.orgId).pipe(provideSql));
           const away = stillAway(person.back, zone, Date.parse(input.due));
           return {
             itemId: id,
-            note: `Nothing is asked yet: at its due time Kin wakes you to ask ${person.name} yourself, and no question is open until you do.${
-              away && person.back !== null
-                ? ` ${person.name} is away and back on ${person.back}.`
-                : ""
-            }`,
+            scheduled,
+            ...(other
+              ? {
+                  note: `Nothing is asked yet: at its due time Kin wakes you to ask ${person.name} yourself, and no question is open until you do.${
+                    away && person.back !== null
+                      ? ` ${person.name} is away and back on ${person.back}.`
+                      : ""
+                  }`,
+                }
+              : {}),
             asks: {
               name: person.name,
               ...(away && person.back !== null ? { back: person.back } : {}),

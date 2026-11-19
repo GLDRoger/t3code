@@ -88,7 +88,10 @@ const kinServices = Layer.unwrap(
       Team.layer,
       Layer.mock(LeadMemory)({
         defer: (_scope, input) =>
-          Effect.succeed({ itemId: KinMemoryItemId.make(`def-${input.what}`) }),
+          Effect.succeed({
+            itemId: KinMemoryItemId.make(`def-${input.what}`),
+            scheduled: "reminder" as const,
+          }),
         // Says which event reached it, so a test sees what the tool gate filled in.
         cancel: (_scope, input) =>
           Effect.succeed({

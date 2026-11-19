@@ -616,6 +616,23 @@ it.live(
         );
         const second = yield* service.defer(scope, { ...deferred, what: "Another invented task" });
         assert.notStrictEqual(second.itemId, first.itemId);
+        // Every follow-up says what its due run does, whoever it is for.
+        assert.strictEqual(first.scheduled, "due_card");
+        for (const [onDue, ask, scheduled, asks] of [
+          ["remind", undefined, "reminder", undefined],
+          ["start", undefined, "start", undefined],
+          ["chase", undefined, "chase_ping", { name: "Owner" }],
+          ["chase", "Memb", "chase_ping", { name: "Member" }],
+        ] as const) {
+          const set = yield* service.defer(scope, {
+            ...deferred,
+            what: `Invented ${onDue} ${ask ?? "self"}`,
+            onDue,
+            ...(ask === undefined ? {} : { ask }),
+          });
+          assert.strictEqual(set.scheduled, scheduled, `${onDue} ${ask}`);
+          assert.deepStrictEqual(set.asks, asks, `${onDue} ${ask}`);
+        }
         // Who to ask is named as people are found here, and kept as the item's person.
         const askMember = { ...deferred, what: "Invented ask", ask: "Memb" };
         const asked = yield* service.defer(scope, askMember);
@@ -623,6 +640,7 @@ it.live(
         // Nothing is asked yet: the result names who Kin wakes the lead to ask, and their day
         // back when they are away at that time.
         assert.deepStrictEqual(asked.asks, { name: "Member" });
+        assert.strictEqual(asked.scheduled, "ask_follow_up");
         assert.strictEqual(
           asked.note,
           "Nothing is asked yet: at its due time Kin wakes you to ask Member yourself, and no question is open until you do.",
