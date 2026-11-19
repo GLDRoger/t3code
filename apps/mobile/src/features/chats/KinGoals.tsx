@@ -18,6 +18,7 @@ import { RowPressable } from "../../components/ui/RowPressable";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
+import { KinCountryFirstField } from "./components/KinCountryFirst";
 import { KinFoldSection, KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
 import { FormMessage, FormShell, NO_LINK, keyParam, targetOf } from "./KinWorkFormScreens";
 import { useKinGoals } from "./state/useKinAttention";
@@ -149,10 +150,11 @@ function GoalFormRead(
       : (goals.state.value.goals.find((one) => one.key === props.goalKey) ?? null);
   if (props.goalKey !== null && goal === null)
     return <FormMessage title={props.title}>{NO_LINK}</FormMessage>;
-  return <GoalForm goal={goal} goals={goals} title={props.title} />;
+  return <GoalForm target={props} goal={goal} goals={goals} title={props.title} />;
 }
 
 function GoalForm(props: {
+  readonly target: KinWorkTarget;
   readonly goal: KinGoal | null;
   readonly goals: ReturnType<typeof useKinGoals>;
   readonly title: string;
@@ -223,15 +225,21 @@ function GoalForm(props: {
         ))}
       </ListSection>
       <ListSection>
-        <KinWorkTextField
+        <KinCountryFirstField
+          target={props.target}
           label={KIN_GOALS.target}
-          value={draft.target}
-          keyboard="numbers"
-          disabled={saving}
-          maxLength={60}
-          placeholder={KIN_GOALS.targetHint[draft.measure]}
-          onChangeText={(target) => edit({ target })}
-        />
+          money={draft.measure === "revenue_received"}
+        >
+          <KinWorkTextField
+            label={KIN_GOALS.target}
+            value={draft.target}
+            keyboard="numbers"
+            disabled={saving}
+            maxLength={60}
+            placeholder={KIN_GOALS.targetHint[draft.measure]}
+            onChangeText={(target) => edit({ target })}
+          />
+        </KinCountryFirstField>
         {manual ? (
           <>
             <KinWorkTextField

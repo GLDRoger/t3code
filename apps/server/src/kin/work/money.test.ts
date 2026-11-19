@@ -28,7 +28,16 @@ import { KinWorkspace } from "../gendocs/workspace.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
-import { answerChange, changeLines } from "./companyProfile.ts";
+import {
+  answerChange,
+  changeLines,
+  countryFirstMessage,
+  countryNeeded,
+  newCompanyProfileJson,
+  readProfile,
+  setProfile,
+} from "./companyProfile.ts";
+import * as Goals from "./goals.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
@@ -245,6 +254,17 @@ const seed = Effect.gen(function* () {
       worker_projects_json, owner_chat_id)
     VALUES (${lead}, ${orgId}, 'Lead lead', 0, 'lead-thread', '{}', '[]', 'lead-chat')`;
 });
+
+/** The choices a list's Paid with field offers. */
+const paidWith = (list: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const [row] = yield* sql<{ choices: string }>`SELECT json_extract(field.value, '$.choices')
+        AS choices
+      FROM kin_registers r, json_each(json_extract(r.definition_json, '$.fields')) field
+      WHERE r.register_id = ${list} AND json_extract(field.value, '$.key') = 'paidWith'`;
+    return JSON.parse(row!.choices) as ReadonlyArray<string>;
+  });
 
 /** Proposes a list in one turn and creates it from the owner's yes in the next. */
 const defined = (n: number, input: Omit<typeof LeadMoney.DefineInput.Type, "sourceEventId">) =>
@@ -866,6 +886,55 @@ describe("lists through the tools", () => {
         yield* OwnerWork.confirm(people, { orgId, key: blurry!.key, rev: blurry!.rev });
         assert.strictEqual((yield* records.get(orgId, blurry!.key))!.confirmed, 1);
       }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("goals through the tools", () => {
+  it.effect("asks for a fresh target when a goal's measure changes between money and a count", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const asked = yield* turn(1, "Set a goal of 12 tasks done by December");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          {
+            list: "goals",
+            title: "Invented: twelve tasks",
+            measure: "tasks_done",
+            target: "12",
+            due: "2026-12-31",
+          },
+        ],
+      });
+      const changed = yield* turn(2, "Make that goal about revenue received instead");
+      const measureOnly = LeadWork.update(scope, {
+        sourceEventId: changed,
+        key: "G-1",
+        measure: "revenue_received",
+      });
+      assert.strictEqual(
+        (yield* Effect.flip(measureOnly)).message,
+        `A revenue received goal's target is an amount: send the target with the measure, such as target "50,000".`,
+      );
+      const sql = yield* SqlClient.SqlClient;
+      assert.deepStrictEqual(
+        yield* sql`SELECT json_extract(fields_json, '$.measure') AS measure,
+            json_extract(fields_json, '$.target') AS target
+          FROM kin_records WHERE register_id = 'goals'`,
+        [{ measure: "tasks_done", target: "12" }],
+      );
+      yield* LeadWork.update(scope, {
+        sourceEventId: changed,
+        key: "G-1",
+        measure: "revenue_received",
+        target: "50,000",
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT json_extract(fields_json, '$.target.minor') AS minor
+          FROM kin_records WHERE register_id = 'goals'`,
+        [{ minor: 5_000_000 }],
+      );
+    }).pipe(Effect.provide(layer)),
   );
 });
 
@@ -2159,6 +2228,269 @@ describe("the company profile", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("records no money for a company created now until its country is chosen", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      // The row `bootstrapIdentity` writes for a company it creates (`chat/KinIdentity.test.ts`).
+      yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+          updated_by_kind, updated_by_id)
+        VALUES (${orgId}, ${yield* newCompanyProfileJson}, 1, 0, 'person', ${ownerId})`;
+      const refusal = countryFirstMessage("Owner");
+      const invoice = (sourceEventId: string) =>
+        LeadWork.create(scope, {
+          sourceEventId,
+          records: [
+            { list: "clients", title: "Invented Kestrel" },
+            {
+              list: "invoices",
+              title: "Invented brand kit",
+              client: "Invented Kestrel",
+              amount: "1,200",
+            },
+          ],
+        });
+      const expense = (sourceEventId: string) =>
+        LeadWork.create(scope, {
+          sourceEventId,
+          records: [
+            { list: "expenses", title: "Invented fonts", amount: "40", category: "software" },
+          ],
+        });
+      const budget = (sourceEventId: string) =>
+        LeadMoney.budget(scope, { sourceEventId, category: "travel", limit: "500" });
+      const ownersBudget = OwnerMoneyAnswers.setBudget(people, {
+        orgId,
+        category: "travel",
+        project: null,
+        currency: "GBP",
+        limitMinor: 50_000,
+        clientRequestId: "new-company-budget",
+      });
+      const goal = (clientRequestId: string) =>
+        Goals.save(people, {
+          orgId,
+          title: "Invented revenue",
+          measure: "revenue_received",
+          target: "5,000",
+          startsOn: "2026-11-01",
+          dueOn: "2026-12-31",
+          clientRequestId,
+        });
+      // Each call keeps its own type: a list of them makes the checker pick one for all.
+      const said = <A, R>(call: Effect.Effect<A, { readonly message: string }, R>) =>
+        Effect.map(Effect.flip(call), (error) => error.message);
+      const refusedIn = (sourceEventId: string) =>
+        Effect.all([
+          said(invoice(sourceEventId)),
+          said(expense(sourceEventId)),
+          said(budget(sourceEventId)),
+          said(ownersBudget),
+          said(goal("new-company-goal")),
+        ]);
+      // A batch, such as a client with its invoice, saved nothing; one entry wasn't created.
+      const saved = countryFirstMessage("Owner", { saved: true });
+      // A budget's limit is a change to a setting: nothing was saved.
+      const refused = [saved, refusal, saved, refusal, refusal];
+      const asked = yield* turn(1, "Invoice Invented Kestrel 1,200 for the brand kit");
+      assert.deepStrictEqual(yield* refusedIn(asked), refused);
+      // A task works as before; an amount on it is money, and waits too.
+      const task = yield* OwnerWork.create(people, {
+        orgId,
+        title: "Invented: send the brand kit",
+        clientRequestId: "new-company-task",
+      });
+      const priced = OwnerWork.update(people, {
+        orgId,
+        key: task.key,
+        rev: task.rev,
+        amount: { minor: 120_000, currency: "GBP" },
+      });
+      assert.strictEqual((yield* Effect.flip(priced)).message, saved);
+      // Dates and a deadline with no fee work; a fee waits. A list asked for now takes no currency.
+      yield* defined(2, { template: "dates" });
+      const renewals = yield* turn(4, "Track the domain renewal");
+      const deadline = (title: string, amount?: string) =>
+        LeadWork.create(scope, {
+          sourceEventId: renewals,
+          records: [
+            {
+              list: "dates",
+              title,
+              due: "2026-12-31",
+              category: "renewal",
+              ...(amount === undefined ? {} : { amount }),
+            },
+          ],
+        });
+      yield* deadline("Invented domain renewal");
+      assert.strictEqual(yield* said(deadline("Invented licence renewal", "90")), refusal);
+      const tracking = yield* turn(5, "Start tracking expenses");
+      const expenses = yield* LeadMoney.define(scope, {
+        sourceEventId: tracking,
+        template: "expenses",
+      });
+      assert.strictEqual(expenses.status, "proposed");
+      assert.deepStrictEqual(
+        yield* sql`SELECT register_id AS list FROM kin_records ORDER BY register_id`,
+        [{ list: "dates" }, { list: "work" }],
+      );
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_money_budgets`, 0);
+
+      // A logo, the owner's Confirm on a details card, a save with no country: still waiting.
+      const owner = { _tag: "person" as const, personId: ownerId };
+      yield* setProfile(
+        orgId,
+        owner,
+        {
+          logo: {
+            attachmentId: "kin-chat-invented-png",
+            name: "logo.png",
+            mimeType: "image/png",
+            width: 400,
+            height: 120,
+            bytes: 1_000,
+            sha256: "a".repeat(64),
+          },
+        },
+        undefined,
+      );
+      yield* LeadMoney.profile(scope, {
+        sourceEventId: tracking,
+        set: { legalName: "Invented Kestrel Limited" },
+      });
+      const [card] = yield* sql<{ widgetId: string }>`SELECT widget_id AS "widgetId"
+        FROM kin_profile_changes`;
+      yield* answerChange({
+        orgId,
+        widgetId: card!.widgetId,
+        personId: ownerId,
+        confirmed: true,
+        via: "tap",
+        now: NOW,
+      });
+      const rev = () => readProfile(orgId).pipe(Effect.map((one) => one.rev));
+      yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: yield* rev(),
+        address: "1 Invented Road",
+      });
+      yield* OwnerMoney.setCompanyProfile(people, { orgId, rev: yield* rev(), country: null });
+      assert.deepInclude(yield* readProfile(orgId), {
+        legalName: "Invented Kestrel Limited",
+        address: "1 Invented Road",
+        country: null,
+      });
+      assert.isTrue(yield* countryNeeded(orgId));
+      assert.deepStrictEqual(yield* refusedIn(yield* turn(6, "Invoice Invented Kestrel")), refused);
+
+      yield* OwnerMoney.setCompanyProfile(people, { orgId, rev: yield* rev(), country: "GB" });
+      assert.isFalse(yield* countryNeeded(orgId));
+      // The list asked for before is made in pounds; so is Dates, made while waiting.
+      const yes = yield* turn(7, "Yes, go ahead");
+      yield* LeadMoney.define(scope, { sourceEventId: yes, proposal: expenses.proposal! });
+      yield* defined(8, { template: "invoices" });
+      const again = yield* turn(10, "Invoice Invented Kestrel 1,200 for the brand kit");
+      yield* LeadWork.create(scope, {
+        sourceEventId: again,
+        records: [
+          { list: "clients", title: "Invented Kestrel" },
+          {
+            list: "invoices",
+            title: "Invented brand kit",
+            client: "Invented Kestrel",
+            amount: "1,200",
+          },
+          { list: "expenses", title: "Invented fonts", amount: "40", category: "software" },
+          { list: "dates", title: "Invented licence renewal", due: "2026-12-31", amount: "90" },
+        ],
+      });
+      yield* LeadMoney.budget(scope, { sourceEventId: again, category: "travel", limit: "500" });
+      yield* goal("country-chosen-goal");
+      assert.deepStrictEqual(
+        yield* sql`SELECT register_id AS list, currency FROM kin_records
+          WHERE amount_minor IS NOT NULL ORDER BY register_id`,
+        [
+          { list: "dates", currency: "GBP" },
+          { list: "expenses", currency: "GBP" },
+          { list: "invoices", currency: "GBP" },
+        ],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT json_extract(fields_json, '$.target.currency') AS currency
+          FROM kin_records WHERE register_id = 'goals'`,
+        [{ currency: "GBP" }],
+      );
+      assert.deepStrictEqual(yield* sql`SELECT currency FROM kin_money_budgets`, [
+        { currency: "GBP" },
+      ]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT register_id AS list, json_extract(definition_json, '$.currency')
+            AS currency, json_extract(definition_json, '$.currencyPending') AS waiting
+          FROM kin_registers WHERE built_in = 0 ORDER BY register_id`,
+        [
+          { list: "dates", currency: "GBP", waiting: null },
+          { list: "expenses", currency: "GBP", waiting: null },
+          { list: "invoices", currency: "GBP", waiting: null },
+        ],
+      );
+      // Asked for while waiting, Expenses has no country's ways to pay: no UPI in the UK.
+      assert.deepStrictEqual(yield* paidWith("expenses"), ["card", "bank", "cash"]);
+      // Once chosen, it never waits again, even saved with no country.
+      yield* OwnerMoney.setCompanyProfile(people, { orgId, rev: yield* rev(), country: null });
+      assert.isFalse(yield* countryNeeded(orgId));
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("gives a new company the currency of whichever country it chooses first", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+          updated_by_kind, updated_by_id)
+        VALUES (${orgId}, ${yield* newCompanyProfileJson}, 1, 0, 'person', ${ownerId})`;
+      yield* defined(2, { template: "dates" });
+      yield* defined(6, { template: "expenses" });
+      // A code that names no country is refused, and the company still waits.
+      const unknown = OwnerMoney.setCompanyProfile(people, { orgId, rev: 0, country: "XX" });
+      assert.strictEqual(
+        (yield* Effect.flip(unknown)).message,
+        "Country: XX isn't a country Kin knows. Write its two-letter code, like GB, US or IN.",
+      );
+      assert.isTrue(yield* countryNeeded(orgId));
+      // Japan has no row of its own in Kin's regions: its yen, a calendar year and no tax.
+      yield* OwnerMoney.setCompanyProfile(people, { orgId, rev: 0, country: "JP" });
+      assert.deepInclude(yield* readProfile(orgId), {
+        country: "JP",
+        homeCurrency: "JPY",
+        financialYearStartMonth: 1,
+        tax: null,
+      });
+      const renewals = yield* turn(8, "Track the domain renewal");
+      yield* LeadWork.create(scope, {
+        sourceEventId: renewals,
+        records: [
+          { list: "dates", title: "Invented licence renewal", due: "2026-12-31", amount: "9000" },
+        ],
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT amount_minor AS minor, currency FROM kin_records
+          WHERE amount_minor IS NOT NULL`,
+        [{ minor: 9_000, currency: "JPY" }],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT register_id AS list, json_extract(definition_json, '$.currency') AS currency
+          FROM kin_registers WHERE built_in = 0 ORDER BY register_id`,
+        [
+          { list: "dates", currency: "JPY" },
+          { list: "expenses", currency: "JPY" },
+        ],
+      );
+      // Made while waiting, it keeps the ways any company pays, not the placeholder's UPI.
+      assert.deepStrictEqual(yield* paidWith("expenses"), ["card", "bank", "cash"]);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "reads a profile stored before countries by its currency, and a new country as its own",
     () =>
@@ -2281,6 +2613,17 @@ describe("the company profile", () => {
         assert.deepStrictEqual(unset.labels, {});
         assert.notInclude(unset.categories, "gst");
         assert.notInclude(unset.categories, "tds");
+        // Saved with no country, it was never a company made new: its money is made as before.
+        const later = yield* turn(5, "Another invoice for Invented Acme");
+        yield* LeadWork.create(scope, {
+          sourceEventId: later,
+          records: [
+            { list: "invoices", title: "Invented extra", client: "Invented Acme", amount: "500" },
+          ],
+        });
+        assert.deepInclude(yield* OwnerMoney.issue(people, { orgId, key: "INV-2" }), {
+          number: "INV/2026/002",
+        });
       }).pipe(Effect.provide(layer)),
   );
 

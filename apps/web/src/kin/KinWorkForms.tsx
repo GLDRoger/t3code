@@ -62,6 +62,7 @@ import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinCountryFirstField } from "./KinCountryFirst";
 import { useKinCompanyCountry, useKinHomeCurrency } from "./useKinMoney.ts";
 import { KinProjectPeoplePicker } from "./KinProjectPeople";
 import { KinWorkPrivateMark, KinWorkProblem } from "./KinWorkParts";
@@ -751,16 +752,18 @@ export function KinProjectDialog(
             </SelectPopup>
           </Select>
         </div>
-        <Field id={ids.value} label={COPY.project.value} moved={moved.value}>
-          <Input
-            id={ids.value}
-            value={draft.value}
-            inputMode="decimal"
-            placeholder={COPY.project.valuePlaceholder}
-            autoComplete="off"
-            onChange={(event) => form.edit({ value: event.target.value })}
-          />
-        </Field>
+        <KinCountryFirstField environmentId={environmentId} label={COPY.project.value}>
+          <Field id={ids.value} label={COPY.project.value} moved={moved.value}>
+            <Input
+              id={ids.value}
+              value={draft.value}
+              inputMode="decimal"
+              placeholder={COPY.project.valuePlaceholder}
+              autoComplete="off"
+              onChange={(event) => form.edit({ value: event.target.value })}
+            />
+          </Field>
+        </KinCountryFirstField>
         <Field id={ids.startsOn} label={COPY.project.startsOn} moved={moved.startsOn ?? undefined}>
           <Input
             id={ids.startsOn}
