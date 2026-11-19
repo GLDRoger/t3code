@@ -95,18 +95,23 @@ const moneyOf = (profile: KinCompanyProfileData): CompanyMoney => {
   };
 };
 
+/**
+ * The row a company created now starts with: its country not chosen. A company with no row was
+ * made before countries and keeps reading as India (`countryBefore`).
+ */
+export const newCompanyProfileJson = encodeProfile({ ...EMPTY, country: null });
+
 const storedProfile = Effect.fn("KinCompanyProfile.stored")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ json: string; rev: number; updatedAt: number }>`
     SELECT profile_json AS json, rev, updated_at AS "updatedAt" FROM kin_company_profile
     WHERE org_id = ${orgId}`;
-  return row === undefined
-    ? { data: EMPTY, rev: 0, updatedAt: null }
-    : {
-        data: Option.getOrElse(decodeProfile(row.json), () => EMPTY),
-        rev: row.rev,
-        updatedAt: iso(row.updatedAt),
-      };
+  if (row === undefined) return { data: EMPTY, rev: 0, updatedAt: null };
+  const data = Option.getOrElse(decodeProfile(row.json), () => EMPTY);
+  // The new company's row (updated_at 0) was never saved: its forms still offer the device's country.
+  return row.updatedAt === 0
+    ? { data, rev: 0, updatedAt: null }
+    : { data, rev: row.rev, updatedAt: iso(row.updatedAt) };
 });
 
 /** The profile with its country, year and tax as they read, set or not. */
