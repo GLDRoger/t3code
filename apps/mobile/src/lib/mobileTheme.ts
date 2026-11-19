@@ -29,6 +29,7 @@ export const MOBILE_THEME_OPTIONS: ReadonlyArray<{
   readonly label: string;
 }> = [
   // The app's own look, named for the app it is in.
+  // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
   { id: DEFAULT_MOBILE_THEME_ID, label: KIN_ONLY ? "Kin" : "T3 Code" },
   { id: "material-you", label: "Material You" },
   ...BUILT_IN_THEMES.map((theme) => ({ id: theme.id as MobileThemeId, label: theme.label })),
