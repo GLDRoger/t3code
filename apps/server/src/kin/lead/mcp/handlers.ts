@@ -57,7 +57,7 @@ const admitted = (
 /** What a figure call did and what the person sees, so the reply needs nothing in its place. */
 const shownLine = (what: "chart" | "page", inReply: boolean) =>
   inReply
-    ? `Made. The ${what} shows under your reply; to show it at another point in the reply, put figure there on a line of its own.`
+    ? `Made. The ${what} shows under your reply; to show it elsewhere in the reply, copy its figure line there exactly, on a line of its own.`
     : `Posted. The ${what} is in the chat now, as its own message.`;
 
 // Kin's service checks the persisted lead and wake-up, rather than T3 thread-control grants.
