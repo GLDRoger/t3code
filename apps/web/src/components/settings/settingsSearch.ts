@@ -16,6 +16,7 @@ import { writeLocalStorageValue } from "../../hooks/useLocalStorage";
 import type { MessageResolver } from "../../i18n/messages";
 import { commandLabel } from "./KeybindingsSettings.logic";
 import type { ResolvedSettingsScope } from "./settingsScope";
+import { KIN_PROFILE_SETTINGS_SEARCH_ITEMS } from "../../kin/kinSettingsSearch";
 
 export type SettingsPath =
   | "/settings/projects"
@@ -41,6 +42,7 @@ export type SettingsPath =
   | "/settings/company"
   | "/settings/check-ins"
   | "/settings/kin-connections"
+  | "/settings/kin-profile"
   | "/settings/maintenance"
   | "/settings/labs"
   | "/settings/about"
@@ -122,6 +124,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/company": msg("Company details"),
   "/settings/check-ins": msg("Check-ins"),
   "/settings/kin-connections": msg("Connections"),
+  "/settings/kin-profile": msg("Profile"),
   "/settings/maintenance": msg("Maintenance"),
   "/settings/labs": msg("Labs"),
   "/settings/about": msg("About"),
@@ -143,6 +146,7 @@ export const KIN_ONLY_SETTINGS_PATHS: ReadonlySet<SettingsPath> = new Set([
   "/settings/approvals",
   "/settings/check-ins",
   "/settings/kin-connections",
+  "/settings/kin-profile",
 ]);
 
 /** Kin's pages, which Kin's own Settings holds while a host runs Kin. */
@@ -151,6 +155,7 @@ export const KIN_MOVED_SETTINGS_PATHS: ReadonlySet<SettingsPath> = new Set([
   "/settings/check-ins",
   "/settings/company",
   "/settings/kin-connections",
+  "/settings/kin-profile",
 ]);
 
 /** Sidebar order. A group with a hidden heading is set apart on screen by space alone. */
@@ -1402,6 +1407,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/check-ins",
     searchTerms: ["kin schedule morning afternoon weekly brief routine time run now"],
   },
+  ...KIN_PROFILE_SETTINGS_SEARCH_ITEMS,
   {
     id: "network-access",
     title: msg("Network access"),
@@ -1565,6 +1571,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/company": null,
   "/settings/check-ins": null,
   "/settings/kin-connections": null,
+  "/settings/kin-profile": null,
   "/settings/scheduled-tasks": null,
   "/settings/maintenance": null,
   "/settings/labs": null,
