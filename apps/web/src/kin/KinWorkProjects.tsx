@@ -42,6 +42,7 @@ import {
 } from "../components/ui/sheet";
 import { Switch } from "../components/ui/switch";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinAskRecord } from "./KinAskRecord";
 import { KinAttentionSection } from "./KinAttention";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinProjectNoteSection } from "./KinProjectNote";
@@ -172,8 +173,8 @@ function ProjectPage(
   const summary = (
     <div className="flex flex-col gap-6 pb-3">
       <div className="flex flex-col gap-2">
-        <div className="flex items-start gap-2">
-          <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="flex flex-wrap items-start gap-2">
+          <div className="flex min-w-56 flex-1 flex-col gap-1">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <h2 className="truncate text-lg font-medium text-foreground">{view.name}</h2>
               {view.health === null ? null : <KinWorkHealthBadge health={view.health} />}
@@ -205,42 +206,55 @@ function ProjectPage(
               <p className="text-sm text-muted-foreground">{view.terms}</p>
             )}
           </div>
-          {canChange ? (
-            <div className="flex shrink-0 items-center gap-1">
-              <Button size="sm" variant="outline" disabled={busy} onClick={() => setEditing(true)}>
-                <PencilIcon />
-                {KIN_PROJECTS.edit}
-              </Button>
-              <Menu>
-                <MenuTrigger
-                  render={
-                    <Button size="icon-sm" variant="ghost" aria-label="More" disabled={busy} />
-                  }
+          <div className="flex shrink-0 items-center gap-1">
+            <KinAskRecord
+              environmentId={environmentId}
+              orgId={orgId}
+              record={{ key: view.key, title: view.name }}
+              disabled={busy}
+            />
+            {canChange ? (
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => setEditing(true)}
                 >
-                  <EllipsisIcon />
-                </MenuTrigger>
-                <MenuPopup align="end">
-                  {view.closed === null ? (
-                    <>
-                      <MenuItem onClick={() => void change({ state: "done" })}>
-                        {KIN_PROJECTS.done}
+                  <PencilIcon />
+                  {KIN_PROJECTS.edit}
+                </Button>
+                <Menu>
+                  <MenuTrigger
+                    render={
+                      <Button size="icon-sm" variant="ghost" aria-label="More" disabled={busy} />
+                    }
+                  >
+                    <EllipsisIcon />
+                  </MenuTrigger>
+                  <MenuPopup align="end">
+                    {view.closed === null ? (
+                      <>
+                        <MenuItem onClick={() => void change({ state: "done" })}>
+                          {KIN_PROJECTS.done}
+                        </MenuItem>
+                        <MenuItem
+                          variant="destructive"
+                          onClick={() => void change({ state: "dropped" })}
+                        >
+                          {KIN_PROJECTS.drop}
+                        </MenuItem>
+                      </>
+                    ) : (
+                      <MenuItem onClick={() => void change({ state: "open" })}>
+                        {KIN_PROJECTS.reopen}
                       </MenuItem>
-                      <MenuItem
-                        variant="destructive"
-                        onClick={() => void change({ state: "dropped" })}
-                      >
-                        {KIN_PROJECTS.drop}
-                      </MenuItem>
-                    </>
-                  ) : (
-                    <MenuItem onClick={() => void change({ state: "open" })}>
-                      {KIN_PROJECTS.reopen}
-                    </MenuItem>
-                  )}
-                </MenuPopup>
-              </Menu>
-            </div>
-          ) : null}
+                    )}
+                  </MenuPopup>
+                </Menu>
+              </>
+            ) : null}
+          </div>
         </div>
         {view.why.length === 0 ? null : (
           <p className="text-sm text-foreground">{view.why.join(" ")}</p>

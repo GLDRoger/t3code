@@ -106,6 +106,7 @@ import { KinMakeDocumentStep, type KinMakeStep } from "./KinInvoice";
 import { KinWorkFrame, KinWorkLoading, KinWorkTaskRow } from "./components/KinWorkPieces";
 import { KinWorkAudienceRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
+import { useKinAskRecord } from "./state/useKinAskRecord";
 import {
   useKinWork,
   useKinWorkAnswer,
@@ -278,6 +279,8 @@ function KinWorkItemBody(props: ItemTarget) {
   const choices = useKinWorkChoices(props, hostClients && canChange);
   const now = new Date(useNowMinuteMs());
   const back = () => navigation.goBack();
+  const task = state._tag === "ready" && state.item.list === undefined ? state.item : null;
+  const asker = useKinAskRecord(props, task === null ? null : { key: task.key, title: task.title });
 
   if (state._tag !== "ready") {
     return (
@@ -648,7 +651,8 @@ function KinWorkItemBody(props: ItemTarget) {
     <KinWorkFrame
       title={view.title}
       onBack={back}
-      menus={menus}
+      actions={asker.actions}
+      menus={[...asker.menus, ...menus]}
       form={edit !== null}
       {...(footer === undefined ? {} : { footer })}
     >

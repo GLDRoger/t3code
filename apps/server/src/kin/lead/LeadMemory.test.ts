@@ -584,6 +584,23 @@ it.live(
           }),
           { itemId: "new-claim" },
         );
+        // K055: a create needs no id; it is the title's slug, numbered past what is taken.
+        const { id: _id, ...unnamed } = quoted.item;
+        const fresh = { ...quoted, item: unnamed };
+        assert.deepStrictEqual(yield* service.write(scope, fresh), { itemId: "invented-claim" });
+        assert.deepStrictEqual(yield* service.write(scope, fresh), { itemId: "invented-claim" });
+        for (const [changed, itemId] of [
+          [{ body: "Another invented body" }, "invented-claim-2"],
+          [{ title: "A item" }, "a-item-2"],
+        ] as const)
+          assert.deepStrictEqual(
+            yield* service.write(scope, { ...fresh, item: { ...unnamed, ...changed } }),
+            { itemId: KinMemoryItemId.make(itemId) },
+          );
+        assert.strictEqual(
+          (yield* service.write(scope, { ...fresh, op: "update" }).pipe(Effect.flip)).message,
+          "update needs `id`: the item's id, from memory_search.",
+        );
         const deferred = yield* decodeDefer({
           what: "Invented maintenance",
           due: "2026-11-13T09:00:00+05:30",
@@ -1123,7 +1140,13 @@ it.live(
         yield* sql`UPDATE kin_chat_members SET left_at = NULL WHERE member_id = 'fixture-member-membership'`;
         // The owner kept one back in the turn above; what he said the team could know in chat,
         // and the routine's suggestion, wait for his yes in Memory.
-        assert.deepStrictEqual(yield* claims, ["new-claim", "status-claim"]);
+        assert.deepStrictEqual(yield* claims, [
+          "a-item-2",
+          "invented-claim",
+          "invented-claim-2",
+          "new-claim",
+          "status-claim",
+        ]);
         for (const id of ["routine-claim", "private-item", "spare-item"])
           assert.strictEqual(
             visibility(

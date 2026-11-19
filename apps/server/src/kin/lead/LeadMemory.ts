@@ -67,6 +67,7 @@ import { deferralOrigin } from "../triggers/deferralOrigin.ts";
 import { cancelDeferralRun } from "../triggers/KinTriggerService.ts";
 import { scheduledTaskTriggerId } from "../widgets/scheduledTaskCard.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
+import { slug } from "../work/docBody.ts";
 import { turnSensitive } from "../work/sensitiveReads.ts";
 import { TurnEvent } from "./eventIds.ts";
 
@@ -107,7 +108,7 @@ export const WriteInput = Schema.Struct({
   op: Schema.Literals(["create", "update", "supersede", "invalidate"]),
   item: Schema.Struct({
     ...writableFields,
-    id: itemId,
+    id: Schema.optional(itemId),
     chat: Schema.optional(KinChatId),
     review_by: Schema.optional(MemoryItemFrontMatter.fields.review_by),
     body: text,
@@ -796,10 +797,27 @@ const make = Effect.gen(function* () {
       }),
     );
   });
+  /** A create's id from its title, numbered on past what exists or this wake-up already wrote. */
+  const freshId = Effect.fn("LeadMemory.freshId")(function* (
+    ctx: Effect.Success<ReturnType<typeof resolve>>,
+    input: typeof WriteInput.Type,
+  ) {
+    if (input.op !== "create")
+      return yield* invalid(`${input.op} needs \`id\`: the item's id, from memory_search.`);
+    const taken = new Set((yield* memory.items(ctx.orgId)).map((item) => item.head.id));
+    const base = slug(input.item.title, "item");
+    for (let n = 1; ; n++) {
+      const id = KinMemoryItemId.make(n === 1 ? base : `${base}-${n}`);
+      if (yield* receipted(ctx, `item:${id}`, { ...input, item: { ...input.item, id } })) return id;
+      const [written] =
+        yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${ctx.orgId} AND wakeup_id = ${ctx.wakeupId} AND call_key = ${`item:${id}`}`;
+      if (!taken.has(id) && written === undefined) return id;
+    }
+  });
   const stage = Effect.fn("LeadMemory.stage")(function* (
     ctx: Effect.Success<ReturnType<typeof resolve>>,
     audience: TurnAudience,
-    input: typeof WriteInput.Type,
+    input: typeof WriteInput.Type & { readonly item: { readonly id: KinMemoryItemId } },
   ) {
     yield* sharedWrites(ctx.orgId, audience);
     if (input.item.kind === "deferral" && input.op !== "update" && input.op !== "invalidate")
@@ -1040,7 +1058,8 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           // Again under the lock: who reads the turn may have changed since.
           const now = yield* turn(scope);
-          return yield* stage(now.ctx, now.audience, input);
+          const id = input.item.id ?? (yield* freshId(now.ctx, input));
+          return yield* stage(now.ctx, now.audience, { ...input, item: { ...input.item, id } });
         }),
       );
     }, Effect.mapError(failure)),
