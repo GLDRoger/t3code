@@ -867,7 +867,7 @@ export const undoneTurnText = Effect.fn("KinQuestions.undoneTurnText")(function*
   const row = yield* readQuestion(orgId, questionId);
   if (row === undefined || row.state !== "default_taken" || row.defaultLabel === null)
     return undefined;
-  return `Your question to ${yield* personName(orgId, row.personId)}, “${row.question}”, got no answer, so Kin took your default “${row.defaultLabel}”. It has now been undone on Kin's note to them: what it changed is back as it was. Don't do it again or ask the same again; ask anew only if it still needs deciding.`;
+  return `Your question to ${yield* personName(orgId, row.personId)}, “${row.question}”, got no answer, so Kin took your default “${row.defaultLabel}”. It has now been undone: what it changed is back as it was. Don't do it again or ask the same again; ask anew only if it still needs deciding.`;
 });
 
 /**
