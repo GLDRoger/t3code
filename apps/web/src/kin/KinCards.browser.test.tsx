@@ -4,6 +4,7 @@ import {
   KinOrgId,
   KinPersonId,
   type KinConnectionSendEditedInput,
+  type KinWaitingItem,
   type KinWidget,
 } from "@t3tools/contracts";
 import type { Atom } from "effect/reactivity";
@@ -22,6 +23,8 @@ const state = vi.hoisted(() => ({
   sent: [] as Array<KinConnectionSendEditedInput>,
   /** How each send is answered, in order: a refusal in the host's words, or null for done. */
   answers: [] as Array<{ reason: "invalid_state" | "widget_changed"; message: string } | null>,
+  /** What the open list says waits on the reader. */
+  waiting: null as ReadonlyArray<KinWaitingItem> | null,
 }));
 
 vi.mock(import("~/state/use-atom-command"), async () => {
@@ -63,6 +66,7 @@ vi.mock(import("../connection/catalog"), async () => {
     environmentCatalog: { catalogValueAtom: Atom.make({ isReady: false, entries: new Map() }) },
   } as never;
 });
+vi.mock(import("./useKinOpen"), () => ({ useKinOpenWaiting: () => state.waiting }) as never);
 vi.mock(import("./useKinOwnerLevel"), () => ({ useKinOwnerLevelKnown: () => true }) as never);
 vi.mock(import("./useKinClock"), () => ({ useNowMinuteMs: () => POSTED + 60_000 }) as never);
 
@@ -70,6 +74,7 @@ function setup() {
   appAtomRegistry.set(state.canEdit!, true);
   state.sent.length = 0;
   state.answers.length = 0;
+  state.waiting = null;
 }
 
 const RHEA = "rhea@ambermill.example";
@@ -261,5 +266,91 @@ describe("a mail card's Edit", () => {
     await expect.element(page.getByLabelText("Subject")).not.toBeInTheDocument();
     expect(state.sent).toHaveLength(2);
     expect(state.sent[1]).toMatchObject({ revision: 3, body: words });
+  });
+});
+
+// Chief of staff asked Rhea whether to close a task, and marks it done if nobody answers.
+const asked = (change: Record<string, unknown> = {}): KinWidget =>
+  ({
+    ...mail(),
+    widgetId: "choice:q1",
+    messageId: "q1",
+    revision: 1,
+    state: {
+      question: "Can we close Design the booking flow screens?",
+      detail: null,
+      options: [
+        { optionId: "option-1", label: "Keep open" },
+        { optionId: "option-2", label: "Mark W-1 done" },
+      ],
+      untilAnswered: true,
+      answer: null,
+    },
+    ...change,
+  }) as never;
+const waitingOn = (fallback: string | null): KinWaitingItem =>
+  ({
+    waitingId: "w-1",
+    orgId: "org-1",
+    personId: "rhea",
+    chatId: "cos-rhea",
+    messageId: "q1",
+    widgetId: "choice:q1",
+    reason: "question",
+    createdAt: "2026-11-19T09:00:00.000Z",
+    resolvedAt: null,
+    resolution: null,
+    ask: {
+      agent: "Chief of staff",
+      default: fallback,
+      by: "2026-11-20T14:00:00.000Z",
+      revision: 1,
+      options: [
+        { optionId: "option-1", label: "Keep open" },
+        { optionId: "option-2", label: "Mark W-1 done" },
+      ],
+    },
+  }) as never;
+
+describe("an agent's open question", () => {
+  it("names under the question what Kin takes, and when, if nobody answers", async () => {
+    setup();
+    state.waiting = [waitingOn("Mark W-1 done")];
+    await using screen = await render(view(asked()));
+    await expect
+      .element(page.getByText(/^If nobody answers by .+ at .+: Mark W-1 done\.$/))
+      .toBeVisible();
+    // Kin won't take it on its own: the card says nothing more than it did.
+    state.waiting = [waitingOn(null)];
+    await screen.rerender(view(asked({ revision: 2 })));
+    await expect.element(page.getByText(/If nobody answers/)).not.toBeInTheDocument();
+  });
+
+  it("marks a taken default's note Undone, with who and when, once it is put back", async () => {
+    setup();
+    const note = (personId: string, name: string) =>
+      asked({
+        closedAt: "2026-11-19T09:00:30.000Z",
+        state: {
+          question: "Nobody answered, so I went with “Mark W-1 done” for W-1 Design the screens.",
+          detail: null,
+          options: [
+            { optionId: "option-1", label: "Undo" },
+            { optionId: "option-2", label: "Keep it" },
+          ],
+          untilAnswered: true,
+          outcome: {
+            title: "Undone",
+            text: "Put W-1 “Design the screens” back as it was.",
+            undone: { personId, name, at: "2026-11-19T09:00:30.000Z" },
+          },
+          answer: null,
+        },
+      });
+    await using screen = await render(view(note("rhea", "Rhea Kapoor")));
+    await expect.element(page.getByText(/^Undone by you at .+\.$/)).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+    await screen.rerender(view(note("zoya", "Zoya Sheikh")));
+    await expect.element(page.getByText(/^Undone by Zoya Sheikh at .+\.$/)).toBeVisible();
   });
 });

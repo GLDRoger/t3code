@@ -501,6 +501,14 @@ export const KinChoiceCardState = Schema.Struct({
     Schema.Struct({
       title: KinTrimmedText.check(Schema.isMaxLength(120)),
       text: KinText.check(Schema.isMaxLength(600)),
+      /** Set when the person undid what a default Kin took: who, by name then, and when. */
+      undone: Schema.optionalKey(
+        Schema.Struct({
+          personId: KinPersonId,
+          name: KinTrimmedText.check(Schema.isMaxLength(200)),
+          at: IsoDateTime,
+        }),
+      ),
     }),
   ),
   // The first answer settles the card.

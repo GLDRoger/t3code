@@ -7,6 +7,7 @@ import {
   EnvironmentId,
   KinAgentId,
   type KinChatId,
+  type KinChoiceOutcome,
   KinEvent,
   KinMemberId,
   KinMemoryItemId,
@@ -16,6 +17,7 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -282,7 +284,7 @@ type CardState = {
     readonly action?: { readonly line: string };
   }>;
   readonly answer: unknown;
-  readonly outcome?: { readonly title: string; readonly text: string };
+  readonly outcome?: KinChoiceOutcome;
 };
 const card = (widget: { readonly state: unknown }) => widget.state as CardState;
 const decodeEvent = Schema.decodeEffect(KinEvent);
@@ -1404,6 +1406,11 @@ it.effect("a default that closes a task is taken at its day, told once, and undo
       assert.deepStrictEqual(card(yield* kin.widget(note.widgetId)).outcome, {
         title: "Undone",
         text: `Put ${row.key} “Review the Apex deck” back as it was.`,
+        undone: {
+          personId: owner.personId,
+          name: "Rhea Rao",
+          at: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+        },
       });
       const [undone] = yield* sql<{ actor: string; fields: string }>`SELECT
           actor_kind || ':' || actor_id AS actor, fields_json AS fields
@@ -1809,6 +1816,11 @@ it.effect("Undo puts back only what a default changed, from its note or the agen
       assert.deepStrictEqual(card(closed).outcome, {
         title: "Undone",
         text: `Put ${receipts.key} “File the Apex receipts” back as it was.`,
+        undone: {
+          personId: owner.personId,
+          name: "Rhea Rao",
+          at: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+        },
       });
       yield* kin.tap(owner, pageNote!.widgetId, "option-1", "undo-receipts").pipe(Effect.flip);
       assert.deepStrictEqual(yield* kin.stateOf(receipts.key), reopened);

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   KIN_OUTLOOK,
+  kinBudgetDraftOf,
   kinBudgetInput,
   kinBudgetRemoval,
   kinBudgetsSummary,
@@ -124,6 +125,12 @@ describe("kinBudgets", () => {
       null,
     );
     expect(euros.map((one) => one.notCounted)).toEqual(["+ €768 not counted in this USD budget"]);
+    // A project the host gives no name for is gone: never shown by its key.
+    const nameless = { ...budget("d", 0, 100, "ok"), project: { key: "P-7", title: null } };
+    expect(kinBudgetsView({ month: "2026-11", budgets: [nameless] }, null, null)[0]?.label).toBe(
+      "travel in a removed project",
+    );
+    expect(kinBudgetDraftOf(nameless).project).toBeNull();
   });
 
   it("says in a line what is over or near, else that all are within their limits", () => {
