@@ -1119,6 +1119,11 @@ export function kinWorkChangeText(
           : `gave it to ${kinWorkName(to, names, "you")}`,
     );
   }
+  // A held notice: `untold` names the holder not told yet, and clears once they are.
+  const untold = field("untold");
+  const told = owner === undefined ? principalFromText(untold?.from ?? null) : null;
+  if (untold?.to != null) clauses.push("not told yet");
+  else if (told !== null) clauses.push(`told ${kinWorkName(told, names, "you")}`);
   const state = field("state")?.to;
   const waitingOn = principalFromText(field("waitingOn")?.to ?? null);
   const reopened =

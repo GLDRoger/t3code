@@ -48,7 +48,7 @@ export const millisOf = (shown: string | null) => {
 };
 
 /** Words that ride along with a move and go when it is put back; nothing to restore of their own. */
-export const ALONG = new Set(["reason", "handedBack"]);
+export const ALONG = new Set(["reason", "handedBack", "untold"]);
 
 /**
  * What putting back one change's old values writes, or undefined when Kin can't do it on its own:
