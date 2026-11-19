@@ -988,7 +988,7 @@ const make = Effect.gen(function* () {
     }
     return yield* new KinChatError({
       reason: "conflict",
-      message: `Nothing changed on ${row.key}: ${clauses.join("; ")}.`,
+      message: `Nothing changed on ${row.key}: ${clauses.join("; ")}. Tell whoever asked, and change it only if they say so.`,
     });
   });
 

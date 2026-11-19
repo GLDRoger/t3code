@@ -512,7 +512,7 @@ const keptForPerson = [
       assert.deepInclude(refused, {
         reason: "conflict",
         message:
-          'Nothing changed on W-1: Mate changed its title to "Invented pricing v2" on Wed 11 Nov, 10:01.',
+          'Nothing changed on W-1: Mate changed its title to "Invented pricing v2" on Wed 11 Nov, 10:01. Tell whoever asked, and change it only if they say so.',
       });
       assert.strictEqual(yield* titleOf(scene), "Invented pricing v2");
       assert.strictEqual(yield* scene.agentChanges, 0);
