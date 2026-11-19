@@ -87,6 +87,14 @@ it.effect("a promise to tell someone stands only when the turn told them", () =>
     assert.isUndefined(yield* unkeptPromise(wake));
     yield* sql`DELETE FROM kin_held_posts`;
     assert.strictEqual(yield* unkeptPromise(wake), "Ishaan");
+    // So does a question put to him for this chat, held for his quiet hours with no card yet.
+    yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id, kind,
+        question, safe, asked_at, due_at, act_at, state, for_chat_id, for_person_id)
+      VALUES ('q-held', ${orgId}, ${chief}, 'ishaan', 'owner-chat', 'card',
+        'Does 1 February work?', 0, ${Date.parse(at)}, 0, 0, 'open', 'zoya-chat', 'zoya')`;
+    assert.isUndefined(yield* unkeptPromise(wake));
+    yield* sql`DELETE FROM kin_questions`;
+    assert.strictEqual(yield* unkeptPromise(wake), "Ishaan");
     yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_role,
         kind, body, mentions_json, status, created_at)
       VALUES (${`${relayPrefix("wake")}ishaan`}, ${orgId}, 'owner-chat', 1, 'system', 'member',

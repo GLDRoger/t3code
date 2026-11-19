@@ -18,8 +18,8 @@ import type { KinWorkTarget } from "./useKinWork";
 /** What a row's step is doing: on its way, done in the host's words, or refused with its reason. */
 export type KinTaskStepStatus =
   | { readonly kind: "busy"; readonly id: string }
-  | { readonly kind: "done"; readonly text: string }
-  | { readonly kind: "failed"; readonly text: string };
+  | { readonly kind: "done"; readonly text: string; readonly widgetId?: string }
+  | { readonly kind: "failed"; readonly text: string; readonly widgetId?: string };
 
 /**
  * A Tasks row's step, taken from the row as the phone takes it: a draft's Confirm and a question's
@@ -64,12 +64,17 @@ export function useKinTaskSteps(target: KinWorkTarget) {
       );
       if (outcome.status === "ignored") return;
       if (outcome.status === "failed")
-        return mark(key, { kind: "failed", text: outcome.notice.text });
+        return mark(key, {
+          kind: "failed",
+          text: outcome.notice.text,
+          widgetId: step.card.widgetId,
+        });
       const label = step.card.options.find((option) => option.optionId === optionId)?.label;
       mark(key, {
         kind: "done",
         text:
           step.kind === "send" ? KIN_TASKS.sent(step.to) : KIN_TASKS.answered(label ?? optionId),
+        widgetId: step.card.widgetId,
       });
     },
     nudge: async (key: string) => {

@@ -389,7 +389,7 @@ export function KinPlaceView({
 
   const header = (
     <WorkspacePageHeader electron={isElectron}>
-      {/* A place is a destination of the dock on a narrow window, so only a record has a Back. */}
+      {/* A place is reached from the sidebar, so only a record has a Back. */}
       {(record === null && !taskPage) || wide ? null : (
         <Button
           size="icon-sm"

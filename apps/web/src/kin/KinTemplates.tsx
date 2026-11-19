@@ -1,3 +1,4 @@
+import { kinNow } from "@t3tools/client-runtime/kin/kinNow";
 import { useAtomValue } from "@effect/atom-react";
 
 import { kinListSend } from "@t3tools/client-runtime/kin/kinLists";
@@ -74,7 +75,7 @@ export function KinTemplatesSection(props: KinWorkTarget) {
     readonly url: string;
     readonly file: KinPreviewFile;
   } | null>(null);
-  const [now] = useState(() => new Date());
+  const [now] = useState(() => kinNow());
   const closePreview = () => {
     if (shown !== null) URL.revokeObjectURL(shown.url);
     setShown(null);

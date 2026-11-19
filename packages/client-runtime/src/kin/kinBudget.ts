@@ -1,13 +1,7 @@
-import type { KinBudget, KinBudgetLimits } from "@t3tools/contracts";
+import { KIN_DAILY_LIMIT_STEPS, type KinBudget, type KinBudgetLimits } from "@t3tools/contracts";
 
 // What a host that doesn't send its own usual limit means by it; choices scale both.
 const FALLBACK_USUAL = { leadUnits: 2_000_000, workerUnits: 6_000_000 };
-const CHOICES = [
-  { times: 0.5, label: "Half the usual" },
-  { times: 1, label: "The usual" },
-  { times: 2, label: "Twice the usual" },
-  { times: 5, label: "Five times the usual" },
-] as const;
 
 export const KIN_DAILY_LIMIT = {
   title: "Daily limit",
@@ -43,7 +37,7 @@ export function kinDailyLimitChoices(budget: KinBudget | null): {
       label: KIN_DAILY_LIMIT.none,
       limits: { leadUnits: null, workerUnits: null, ...kept },
     },
-    ...CHOICES.map(({ times, label }) => ({
+    ...KIN_DAILY_LIMIT_STEPS.map(({ times, label }) => ({
       value: String(times),
       label,
       limits: {

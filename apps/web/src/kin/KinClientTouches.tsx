@@ -1,3 +1,4 @@
+import { kinNow } from "@t3tools/client-runtime/kin/kinNow";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
@@ -138,7 +139,7 @@ function TouchDialog(
   const log = useAtomCommand(kinClient.workTouchLog, { reportFailure: false });
   const [requestId] = useState(randomUUID);
   const [kind, setKind] = useState<KinTouchKind>("call");
-  const [today] = useState(() => kinLocalDay(new Date()));
+  const [today] = useState(() => kinLocalDay(kinNow()));
   const [day, setDay] = useState(today);
   const [note, setNote] = useState("");
   const [nextTitle, setNextTitle] = useState("");
@@ -155,7 +156,7 @@ function TouchDialog(
     }
     setSaving(true);
     setFailed(null);
-    const at = kinTouchAt(day, new Date());
+    const at = kinTouchAt(day, kinNow());
     const result = await log({
       environmentId: props.environmentId,
       input: {

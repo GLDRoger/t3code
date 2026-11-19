@@ -35,6 +35,9 @@ import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
+import { KinConnections, NOT_CHECKED } from "../connections/ConnectionsService.ts";
+import { fileStore, makeFakeMail } from "../connections/FakeMail.ts";
+import * as ServerConfig from "../../config.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
@@ -102,29 +105,51 @@ const kinServices = Layer.unwrap(
     );
   }),
 );
-const layer = Layer.mergeAll(
-  McpHttpServer.toolkitRegistration(KinLeadToolkit, leadHandlers),
-  McpHttpServer.toolkitRegistration(KinWorkToolkit, workHandlers),
-  McpHttpServer.toolkitRegistration(KinDocumentToolkit, documentHandlers),
-  KinToolGate.layer,
-).pipe(
-  Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
-  Layer.provideMerge(kinServices),
-  Layer.provideMerge(
-    Layer.mock(ThreadManagement.ThreadManagementService)({
-      getThreadShell: (id) => Effect.succeed({ ...liveThreadShell(id), providerInstanceId }),
-    }),
+const HELLO = "hello@ambermill.example";
+/** As a dev server runs: its mail goes to the fake mailbox, where `HELLO` is connected at start. */
+const devMail = Layer.mergeAll(
+  Layer.effect(
+    ServerConfig.ServerConfig,
+    Effect.map(ServerConfig.ServerConfig, (config) => ({
+      ...config,
+      devUrl: new URL("http://localhost:5733"),
+    })),
   ),
-  Layer.provideMerge(
-    Kin.layer.pipe(
-      Layer.provide(kinSecretsTest),
-      Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
-      Layer.provideMerge(environment),
+  ConfigProvider.layer(
+    ConfigProvider.fromUnknown({ KIN_ENABLED: true, KIN_DEV_FAKE_MAIL: `microsoft:${HELLO}` }),
+  ),
+).pipe(Layer.provide(kinSecretsTest));
+const layerOver = (dev: boolean) =>
+  Layer.mergeAll(
+    McpHttpServer.toolkitRegistration(KinLeadToolkit, leadHandlers),
+    McpHttpServer.toolkitRegistration(KinWorkToolkit, workHandlers),
+    McpHttpServer.toolkitRegistration(KinDocumentToolkit, documentHandlers),
+    KinToolGate.layer,
+  ).pipe(
+    Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+    Layer.provideMerge(kinServices),
+    Layer.provideMerge(
+      Layer.mock(ThreadManagement.ThreadManagementService)({
+        getThreadShell: (id) => Effect.succeed({ ...liveThreadShell(id), providerInstanceId }),
+      }),
     ),
-  ),
-  Layer.provideMerge(authorityLayer),
-  Layer.provideMerge(kinSecretsTest),
-);
+    Layer.provideMerge(
+      Kin.layer.pipe(
+        Layer.provide(
+          dev
+            ? devMail
+            : Layer.merge(
+                kinSecretsTest,
+                ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true })),
+              ),
+        ),
+        Layer.provideMerge(environment),
+      ),
+    ),
+    Layer.provideMerge(authorityLayer),
+    Layer.provideMerge(kinSecretsTest),
+  );
+const layer = layerOver(false);
 
 /** A tool call exactly as an agent's provider sends it: its JSON answer, or its refusal. */
 const callAs = Effect.fn("test.callAs")(function* (
@@ -2305,5 +2330,112 @@ it.effect("a receipt Confirm's own writes are the tap's, not newer than it", () 
       );
       assert.strictEqual((yield* records.get(orgId, invoice.row.key))!.paid, 500_00);
     }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// The production layer attaches both of a choice card's callbacks to `act`: a Confirm refused for
+// its sent-mail tick redraws that card once with the warning, and only that refusal does.
+it.effect("a Confirm refused for its sent-mail tick redraws that card once, with the tick", () =>
+  Effect.andThen(
+    TestClock.setTime(MON),
+    Effect.gen(function* () {
+      const kin = yield* ambermill;
+      const { owner, orgId, sql, chats } = kin;
+      const connections = Context.get(kin.services, KinConnections);
+      const { stateDir } = yield* ServerConfig.ServerConfig;
+      const fake = makeFakeMail(fileStore(`${stateDir}/kin-fake-mail.json`));
+      yield* Effect.gen(function* () {
+        yield* kin.turn("chief", kin.chatOf("chief"), "Send Ravi the invoice, and Zoya the plan");
+        const draft = (to: string, subject: string) =>
+          Effect.gen(function* () {
+            yield* connections.call(scopeOf("chief"), {
+              connection: HELLO,
+              tool: "mail_send",
+              arguments: { to: [to], subject, body: `${subject}, attached.` },
+            });
+            const [row] = yield* sql<{ askId: string; widgetId: string }>`SELECT ask_id AS "askId",
+                widget_id AS "widgetId" FROM kin_connection_asks ORDER BY rowid DESC LIMIT 1`;
+            return row!;
+          });
+        const first = yield* draft("ravi@lumen.example", "Invoice");
+        const retry = yield* draft("ravi@lumen.example", "Invoice again");
+        const other = yield* draft("zoya@lumen.example", "Plan");
+        // The first try ended with no clear answer after the retry's card was drawn: it shows no
+        // warning, as a card drawn while that try was sending does.
+        yield* sql`UPDATE kin_connection_asks SET state = 'failed', done_at = ${MON},
+            result_json = '{"mayHaveGone":true}' WHERE ask_id = ${first.askId}`;
+        yield* sql`UPDATE kin_connection_asks SET result_json = ${JSON.stringify({ after: first.askId })}
+            WHERE ask_id = ${retry.askId}`;
+        const gone = { tryId: first.askId, at: DateTime.formatIso(DateTime.makeUnsafe(MON)) };
+        const confirmOf = (widget: { readonly state: unknown }) =>
+          card(widget).options.find((option) => option.kind === "yes")!.optionId;
+        const press = (
+          who: { readonly _tag: "person"; readonly personId: KinPersonId },
+          widgetId: string,
+          clientActionId: string,
+          checkedSent?: typeof gone,
+          revision?: number,
+        ) =>
+          kin.widget(widgetId).pipe(
+            Effect.flatMap((shown) =>
+              chats.act(
+                { ...who, orgId },
+                {
+                  widgetId: shown.widgetId,
+                  revision: revision ?? shown.revision,
+                  actionId: "choose",
+                  value: confirmOf(shown),
+                  clientActionId,
+                  ...(checkedSent === undefined ? {} : { checkedSent }),
+                },
+              ),
+            ),
+          );
+        const shown = (widgetId: string) =>
+          kin.widget(widgetId).pipe(
+            Effect.map((one) => ({
+              revision: one.revision,
+              mayHaveGone: (one.state as { send?: { mayHaveGone?: unknown } }).send?.mayHaveGone,
+            })),
+          );
+        const askState = (askId: string) =>
+          sql<{
+            state: string;
+          }>`SELECT state FROM kin_connection_asks WHERE ask_id = ${askId}`.pipe(
+            Effect.map(([one]) => one!.state),
+          );
+        const before = yield* shown(retry.widgetId);
+        const untouched = yield* shown(other.widgetId);
+        assert.isUndefined(before.mayHaveGone);
+
+        // A non-member's press and a press on an outdated revision redraw nothing.
+        yield* press(kin.person("dev"), retry.widgetId, "dev-press").pipe(Effect.flip);
+        yield* press(owner, retry.widgetId, "stale-press", undefined, before.revision + 5).pipe(
+          Effect.flip,
+        );
+        assert.deepStrictEqual(yield* shown(retry.widgetId), before);
+
+        // Unticked: refused, sends nothing, and the card is redrawn once with the warning.
+        assert.deepInclude(yield* press(owner, retry.widgetId, "press-1").pipe(Effect.flip), {
+          reason: "conflict",
+          message: NOT_CHECKED,
+        });
+        const warned = yield* shown(retry.widgetId);
+        assert.deepStrictEqual(warned, { revision: before.revision + 1, mayHaveGone: gone });
+        assert.strictEqual(yield* askState(retry.askId), "open");
+        assert.lengthOf(fake.sent(), 0);
+        assert.deepStrictEqual(yield* shown(other.widgetId), untouched);
+        // Unticked again at the new revision: refused, and no second redraw.
+        assert.deepInclude(yield* press(owner, retry.widgetId, "press-2").pipe(Effect.flip), {
+          message: NOT_CHECKED,
+        });
+        assert.deepStrictEqual(yield* shown(retry.widgetId), warned);
+        // Ticked for that try: the Confirm counts, and its one send is on its way.
+        yield* press(owner, retry.widgetId, "press-3", gone);
+        assert.strictEqual(yield* askState(retry.askId), "sending");
+        assert.lengthOf(fake.sent(), 0);
+        assert.deepStrictEqual(yield* shown(other.widgetId), untouched);
+      });
+    }).pipe(Effect.provide(layerOver(true))),
   ),
 );

@@ -84,6 +84,7 @@ import {
   repeatOf,
   samePrincipal,
   selectRecords,
+  keySensitive,
   sensitiveNow,
   type StoredRepeat,
   toDetail,
@@ -295,6 +296,10 @@ export type QueryInput = {
   /** Only what every one of these people may see (`viewSees`). */
   // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- the owner-level primitive; person reads and writes reach it through ownerWork/leadWork, which set it.
   readonly view?: ReadonlyArray<KinPersonId>;
+  /** Server-only, never from a client: soonest due first, whatever the state. */
+  readonly order?: "dueFirst";
+  /** Server-only, never from a client: nothing a coding-agent key may not reach, before the limit. */
+  readonly withoutSensitive?: boolean;
 };
 
 const isChatError = Schema.is(KinChatError);
@@ -2463,6 +2468,7 @@ const make = Effect.gen(function* () {
     const where = [sql`r.org_id = ${orgId}`, sql`r.register_id = ${input.list ?? "work"}`];
     if (input.team !== undefined) where.push(personSees(sql, input.team));
     if (input.view !== undefined) where.push(viewSees(sql, input.view));
+    if (input.withoutSensitive === true) where.push(sql`NOT ${keySensitive(sql)}`);
     if (input.partyId !== undefined) where.push(sql`r.party_id IS ${input.partyId}`);
     if (input.projectId !== undefined) where.push(sql`r.project_id = ${input.projectId}`);
     if (input.repo !== undefined) where.push(sql`lower(r.repo) = lower(${input.repo})`);
@@ -2515,12 +2521,14 @@ const make = Effect.gen(function* () {
         // list open and soonest due first, then newest.
         const list = input.list ?? "work";
         const order =
-          list === "work"
-            ? sql`CASE r.state WHEN 'doing' THEN 0 WHEN 'waiting' THEN 1 WHEN 'open' THEN 2
+          input.order === "dueFirst"
+            ? sql`r.due_at IS NULL, r.due_at, r.created_at, r.key`
+            : list === "work"
+              ? sql`CASE r.state WHEN 'doing' THEN 0 WHEN 'waiting' THEN 1 WHEN 'open' THEN 2
                 ELSE 3 END, r.due_at IS NULL, r.due_at, r.created_at, r.key`
-            : isBuiltIn(list)
-              ? sql`r.state IN ('done', 'dropped'), lower(r.title), r.key`
-              : sql`r.state IN ('done', 'dropped'), r.due_at IS NULL, r.due_at,
+              : isBuiltIn(list)
+                ? sql`r.state IN ('done', 'dropped'), lower(r.title), r.key`
+                : sql`r.state IN ('done', 'dropped'), r.due_at IS NULL, r.due_at,
                   ${moneyDay(sql)} DESC, r.created_at DESC, r.key`;
         const rows = yield* sql<RecordRow>`${selectRecords(sql)} WHERE ${filter}
           ORDER BY ${order}

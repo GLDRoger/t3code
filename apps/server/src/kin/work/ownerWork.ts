@@ -33,11 +33,18 @@ import { mayActAsOwner } from "../people/KinAccess.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { readableFrom } from "../chat/sharing.ts";
+import {
+  type CodingAgentConnection,
+  connectionEnded,
+  connectionLive,
+  connectionReaches,
+} from "./codingAgent.ts";
 import { summaryGroups } from "./crm.ts";
 import {
   KinRecords,
   requestHashOf,
   type Patch,
+  type QueryInput,
   type Tick,
   type Totals,
   type Writer,
@@ -129,6 +136,39 @@ export const asViewer = Effect.fn("KinWork.asViewer")(function* <A, R>(
   if (!viewer.teammate) return yield* write;
   const sql = yield* SqlClient.SqlClient;
   return yield* sql.withTransaction(write).pipe(workFailure);
+});
+
+/**
+ * In the caller's transaction: the caller as their own screen reads them, and the coding agent's
+ * key still theirs and live. Anything else is the key ended.
+ */
+export const connectionViewer = Effect.fn("KinWork.connectionViewer")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  connection: CodingAgentConnection,
+  orgId: KinOrgId,
+) {
+  const viewer = yield* viewerOf(people, orgId);
+  if (
+    orgId !== connection.orgId ||
+    viewer.person.personId !== connection.personId ||
+    !(yield* connectionLive(connection).pipe(workFailure))
+  )
+    return yield* connectionEnded;
+  return viewer;
+});
+/** A coding agent's call: its checks and its work in one transaction. */
+const throughConnection = Effect.fn("KinWork.throughConnection")(function* <A, R>(
+  people: ReadonlyArray<PersonIdentity>,
+  connection: CodingAgentConnection,
+  orgId: KinOrgId,
+  run: (viewer: Viewer) => Effect.Effect<A, KinChatError, R>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* connectionViewer(people, connection, orgId).pipe(
+    Effect.flatMap(run),
+    sql.withTransaction,
+    workFailure,
+  );
 });
 
 const millis = (value: string, field: string) => {
@@ -344,11 +384,32 @@ const teamAgent = Effect.fn("KinWork.teamAgent")(function* (
   );
 });
 
+/**
+ * With a coding agent's connection, only what its key reaches: open tasks the person holds and
+ * nothing labelled sensitive, soonest due first, filtered before the page is cut.
+ */
 export const list = Effect.fn("KinWork.list")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinWorkListInput,
+  connection?: CodingAgentConnection,
 ) {
-  const viewer = yield* viewerOf(people, input.orgId);
+  if (connection === undefined) return yield* listAs(yield* viewerOf(people, input.orgId), input);
+  const held: KinWorkListInput = {
+    orgId: input.orgId,
+    owner: { _tag: "person", personId: connection.personId },
+    open: true,
+    ...(input.limit === undefined ? {} : { limit: input.limit }),
+  };
+  return yield* throughConnection(people, connection, input.orgId, (viewer) =>
+    listAs(viewer, held, { order: "dueFirst", withoutSensitive: true }),
+  );
+});
+
+const listAs = Effect.fn("KinWork.listAs")(function* (
+  viewer: Viewer,
+  input: KinWorkListInput,
+  internal: Pick<QueryInput, "order" | "withoutSensitive"> = {},
+) {
   // A task's amount is the owner's, so sums and money filters over tasks are too; a list's
   // entries a teammate sees whole (`personSees`), figures included.
   if (
@@ -429,7 +490,12 @@ export const list = Effect.fn("KinWork.list")(function* (
             limit,
             at,
           })
-        : yield* records.query(input.orgId, { ...filter, offset: cursor.offset, limit });
+        : yield* records.query(input.orgId, {
+            ...filter,
+            ...internal,
+            offset: cursor.offset,
+            limit,
+          });
   // The sums are of every match and the same on each page, so only the first page pays for them.
   const totals =
     input.totalsBy === undefined || input.cursor !== undefined
@@ -510,16 +576,33 @@ const found = Effect.fn("KinWork.found")(function* (
 });
 
 export { found };
+/** With a coding agent's connection, also only an entry its key reaches; any other is unknown. */
 export const get = Effect.fn("KinWork.get")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinWorkGetInput,
+  connection?: CodingAgentConnection,
 ) {
-  const viewer = yield* viewerOf(people, input.orgId);
+  if (connection === undefined) return yield* getAs(yield* viewerOf(people, input.orgId), input);
+  return yield* throughConnection(people, connection, input.orgId, (viewer) =>
+    getAs(viewer, input, connection),
+  );
+});
+
+const getAs = Effect.fn("KinWork.getAs")(function* (
+  viewer: Viewer,
+  input: KinWorkGetInput,
+  connection?: CodingAgentConnection,
+) {
   const records = yield* KinRecords;
   const seq = viewer.teammate
     ? yield* teamSeq(input.orgId, viewer.person.personId).pipe(workFailure)
     : undefined;
   const row = yield* found(input.orgId, input);
+  if (
+    connection !== undefined &&
+    !(yield* connectionReaches(connection, row.recordId).pipe(workFailure))
+  )
+    return yield* notFound("key" in input ? input.key : "with that id");
   const shown = yield* shownTo(
     viewer,
     yield* records.detail(row, KIN_RECORD_CHANGES_CAP),
@@ -954,10 +1037,27 @@ export const handOver = Effect.fn("KinWork.handOver")(function* (
   return { keys: moved, kept };
 });
 
+/**
+ * With a coding agent's connection, only a task its key reaches, and only its state (with who it
+ * waits on); the change is marked with the key.
+ */
 export const update = Effect.fn("KinWork.update")(function* (
   people: ReadonlyArray<PersonIdentity>,
-  input: KinWorkUpdateInput,
+  // A coding agent sets a state without a revision, as its key always has.
+  input: Omit<KinWorkUpdateInput, "rev"> & { readonly rev?: number },
+  connection?: CodingAgentConnection,
 ) {
+  if (connection !== undefined) {
+    const { orgId, key, rev, state, waitingOn, ...rest } = input;
+    if (Object.values(rest).some((value) => value !== undefined)) return yield* TEAM_REFUSED;
+    const patch: Patch = {
+      ...(state === undefined ? {} : { state }),
+      ...(waitingOn === undefined ? {} : { waitingOn }),
+    };
+    return yield* throughConnection(people, connection, orgId, (viewer) =>
+      change(viewer, orgId, key, patch, rev, connection),
+    );
+  }
   const viewer = yield* viewerOf(people, input.orgId);
   const { person } = viewer;
   // The rest of a teammate's patch is `teamGuard`'s: a project's lead may set more inside it.
@@ -1219,12 +1319,28 @@ const change = Effect.fn("KinWork.change")(function* (
   key: string,
   patch: Patch,
   rev: number | undefined,
+  connection?: CodingAgentConnection,
 ) {
   const records = yield* KinRecords;
   return yield* asViewer(
     viewer,
     Effect.gen(function* () {
-      const row = yield* records.update(orgId, writerOf(viewer), key, patch, rev);
+      if (connection !== undefined) {
+        const held = yield* records.get(orgId, key);
+        if (
+          held === undefined ||
+          !(yield* connectionReaches(connection, held.recordId).pipe(workFailure))
+        )
+          return yield* notFound(key);
+      }
+      const writer = writerOf(viewer);
+      const row = yield* records.update(
+        orgId,
+        connection === undefined ? writer : { ...writer, codingAgentKey: connection.sessionId },
+        key,
+        patch,
+        rev,
+      );
       const detail = yield* records.detail(row, KIN_RECORD_CHANGES_CAP);
       // A lead may make something of their project private (`teamGuard`), even out of their view.
       return yield* shownTo(viewer, detail, row, row, undefined, patch.sensitive === true);
