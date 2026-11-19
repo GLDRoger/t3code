@@ -11,6 +11,7 @@ import {
   KIN_PROFILE_TALK_MAX,
   kinHoursLine,
   kinMayEditProfile,
+  kinProfileShowsTasks,
   kinPersonSeed,
   kinProfileChanges,
   kinProfileDraft,
@@ -60,6 +61,8 @@ export type KinProfileParams = {
   readonly environmentId: string;
   readonly orgId: string;
   readonly personId: string;
+  /** Opened from their teammate page, which already lists their tasks. */
+  readonly over?: "teammate";
 };
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
@@ -256,13 +259,16 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
         mine={target.mine}
         mayEdit={target.mayEdit}
       />
-      {target.mine ? null : (
+      {kinProfileShowsTasks({
+        mine: target.mine,
+        overTheirTasks: route.params.over === "teammate",
+      }) ? (
         <KinPersonTasks
           environmentId={target.environmentId}
           orgId={target.orgId}
           personId={profile.personId}
         />
-      )}
+      ) : null}
       <ListSection title={KIN_PROFILE_COPY.quietLabel}>
         <View className="px-4 py-3">
           <Text textRole="body" className="text-foreground">

@@ -11,6 +11,7 @@ import {
   kinPersonSeed,
   kinProfileChanges,
   kinProfileDraft,
+  kinProfileShowsTasks,
   kinQuietLine,
   type KinProfileDraft,
   type KinProfileHolding,
@@ -230,7 +231,8 @@ function KinProfileSheet(props: {
           <KinProfileBody {...props.target} />
           {/* Over Settings, the Team page behind it already lists what they hold. Leaving the
               sheet's address closes it. */}
-          {profile.mine || profile.profile === null || props.inDialog ? null : (
+          {profile.profile === null ||
+          !kinProfileShowsTasks({ mine: profile.mine, overTheirTasks: props.inDialog }) ? null : (
             <Field label={KIN_PERSON_TASKS.title}>
               <KinPersonTasks
                 environmentId={environmentId}
