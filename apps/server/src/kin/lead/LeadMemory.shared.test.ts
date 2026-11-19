@@ -642,6 +642,7 @@ it.effect("a teammate's turn sets their own reminder, in their own chat, and not
       itemId: KinMemoryItemId.make("def-hers-too"),
       outcome: "stopped",
       ...cancelled,
+      note: "Stopped: it doesn't run.",
     });
     const stoppedRun = yield* sql<{ state: string }>`SELECT state FROM kin_deferral_runs
       WHERE org_id = ${orgId} AND item_id = 'def-hers-too'`;
@@ -652,6 +653,7 @@ it.effect("a teammate's turn sets their own reminder, in their own chat, and not
       outcome: "stopped",
       title: "Invented def-cancelled",
       due: cancelled.due,
+      note: "Stopped: it doesn't run.",
     });
     // Not armed yet: cancelled before anything could run.
     assert.deepStrictEqual(yield* cancel("def-unarmed"), {
@@ -659,6 +661,7 @@ it.effect("a teammate's turn sets their own reminder, in their own chat, and not
       outcome: "not_armed",
       title: "Invented def-unarmed",
       due: cancelled.due,
+      note: "Cancelled: nothing had been armed yet.",
     });
     // Its reminder already went out: not stopped, said so, and nothing staged.
     assert.deepStrictEqual(yield* cancel("def-reminded"), {
@@ -667,6 +670,7 @@ it.effect("a teammate's turn sets their own reminder, in their own chat, and not
       handedOff: "reminder",
       title: "Invented def-reminded",
       due: cancelled.due,
+      note: "Not stopped: its due run already handed off its reminder.",
     });
     // Replacing takes only an open one: an already cancelled one is refused, and stages nothing.
     assert.strictEqual(

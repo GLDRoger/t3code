@@ -618,6 +618,10 @@ it.live(
         assert.notStrictEqual(second.itemId, first.itemId);
         // Every follow-up says what its due run does, whoever it is for.
         assert.strictEqual(first.scheduled, "due_card");
+        assert.strictEqual(
+          first.note,
+          "No question was posted. Set for its due time: a card in its chat asking to start, move or cancel it.",
+        );
         for (const [onDue, ask, scheduled, asks] of [
           ["remind", undefined, "reminder", undefined],
           ["start", undefined, "start", undefined],
@@ -631,6 +635,7 @@ it.live(
             ...(ask === undefined ? {} : { ask }),
           });
           assert.strictEqual(set.scheduled, scheduled, `${onDue} ${ask}`);
+          assert.match(set.note ?? "", /^No question was posted\. Set for its due time: a /);
           assert.deepStrictEqual(set.asks, asks, `${onDue} ${ask}`);
         }
         // Who to ask is named as people are found here, and kept as the item's person.
@@ -643,13 +648,13 @@ it.live(
         assert.strictEqual(asked.scheduled, "ask_follow_up");
         assert.strictEqual(
           asked.note,
-          "Nothing is asked yet: at its due time Kin wakes you to ask Member yourself, and no question is open until you do.",
+          "No question was posted. Set for its due time: a follow-up to ask Member, handed to an agent.",
         );
         yield* sql`UPDATE kin_people SET away_until = '2026-11-16'
           WHERE org_id = ${orgId} AND person_id = 'fixture-member'`;
         const whileAway = yield* service.defer(scope, { ...askMember, what: "Invented ask, away" });
         assert.deepStrictEqual(whileAway.asks, { name: "Member", back: "2026-11-16" });
-        assert.include(whileAway.note, "Member is away and back on 2026-11-16.");
+        assert.include(whileAway.note, " Recorded return date: 2026-11-16.");
         yield* sql`UPDATE kin_people SET away_until = NULL
           WHERE org_id = ${orgId} AND person_id = 'fixture-member'`;
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
@@ -905,6 +910,7 @@ it.live(
           itemId: scheduled.itemId,
           outcome: "stopped",
           title: "Summarise the open PRs",
+          note: "Stopped: it doesn't run.",
         } as const;
         assert.deepStrictEqual(
           yield* service.cancel(scope, {
@@ -1204,10 +1210,9 @@ it.live(
             VALUES (${orgId}, ${itemId}, ${runState}, 0, ${onDue}, '{}', 0)
             ON CONFLICT (org_id, item_id) DO UPDATE SET state = excluded.state,
               on_due = excluded.on_due`;
-          assert.deepInclude(
-            yield* service.cancel(scope, { itemId, sourceEventId: "fixture-event" }),
-            { outcome: "handed_off", handedOff },
-          );
+          const late = yield* service.cancel(scope, { itemId, sourceEventId: "fixture-event" });
+          assert.deepInclude(late, { outcome: "handed_off", handedOff });
+          assert.match(late.note ?? "", /^Not stopped: its due run already handed off /);
           const kept = yield* sql<{ state: string }>`SELECT state FROM kin_deferral_runs
             WHERE org_id = ${orgId} AND item_id = ${itemId}`;
           assert.deepStrictEqual(kept, [{ state: runState }]);

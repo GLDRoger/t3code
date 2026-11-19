@@ -21,7 +21,9 @@ import { CardActionInput } from "./cardPlans.ts";
 
 /** Why a question with fewer than two answers gets no card, and what to do with it instead. */
 export const FEWER_THAN_TWO =
-  "A card needs at least two answers to tap, so nothing was asked: send the question to them as a plain message, and if the answer must not be lost, track it as a task waiting on them.";
+  "A card needs at least two answers, so nothing was asked: send it as a plain message instead.";
+/** A card outside one person's direct chat: no question is stored, so nothing times it. */
+export const NOTHING_TIMED = "No default and no day were set: this isn't one person's direct chat.";
 /** What `kin_ask` takes: the server assigns option ids, so a lead can't collide them. */
 export const AskInput = Schema.Struct({
   question: KinChoiceCardState.fields.question,

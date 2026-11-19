@@ -282,27 +282,23 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
     askedAt: input.now,
     dueAt,
     actAt,
-    ...(untaken === undefined
-      ? {}
-      : { note: untakenNote(label, untaken, dayWord(actAt, input.now, clock.zone)) }),
+    ...(untaken === undefined ? {} : { note: untakenNote(label, untaken) }),
     retry: seen !== undefined,
   } satisfies AskPlan;
 });
 
 const UNTAKEN_WHY: Record<Exclude<Untaken, "none">, string> = {
-  money: "it concerns money",
-  leaves: "it would send something out of the company or move money",
+  money: "the card mentions money or is about a money record",
+  leaves: "the wording suggests sending something out or moving money",
   action: "only a tap runs that option's action",
-  repeats: "closing a repeating task makes its next one, which Undo can't take back",
-  handed_back: "closing a handed-back task clears that, which Undo can't take back",
+  repeats: "its task repeats",
+  handed_back: "its task was handed back",
 };
-/** What the asker hears when Kin won't take the default, so its words match the card's. */
-const untakenNote = (label: string | null, why: Untaken, raised: string) =>
-  `${
-    why === "none" || label === null
-      ? "With no default,"
-      : `Kin won't take “${label}” on its own: ${UNTAKEN_WHY[why]}, so`
-  } nothing happens until they answer; Kin raises it with them once more ${raised}.`;
+/** What Kin won't do with the default, and the rule that says so; nothing about later. */
+const untakenNote = (label: string | null, why: Untaken) =>
+  why === "none" || label === null
+    ? "Kin won't take any answer on its own: no default was set."
+    : `Kin won't take “${label}” on its own: ${UNTAKEN_WHY[why]}.`;
 
 /** Stores a planned question with the card that asks it; a retry stores nothing more. */
 export const recordAsk = Effect.fn("KinQuestions.recordAsk")(function* (

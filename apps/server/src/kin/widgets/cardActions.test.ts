@@ -62,7 +62,7 @@ import { presetDefinition, propose } from "../work/registers.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import * as CardActions from "./cardActions.ts";
 import { plansOf, takesAsDefault } from "./cardPlans.ts";
-import { FEWER_THAN_TWO } from "./choiceCard.ts";
+import { FEWER_THAN_TWO, NOTHING_TIMED } from "./choiceCard.ts";
 
 const providerInstanceId = ProviderInstanceId.make("codex");
 const at = "2026-10-01T00:00:00.000Z";
@@ -323,9 +323,9 @@ it.effect("a tap on an action option runs it once, as the server wrote it", () =
         "widgetId",
       ]);
       assert.strictEqual(asked.value.untaken, "none");
-      assert.match(
-        asked.value.note as string,
-        /^With no default, nothing happens until they answer; Kin raises it with them once more /,
+      assert.strictEqual(
+        asked.value.note,
+        "Kin won't take any answer on its own: no default was set.",
       );
       const drawn = yield* kin.widget(asked.value.widgetId);
       const line = `Mark ${row.key} “Set up the appointments API” done`;
@@ -790,6 +790,7 @@ it.effect("in a shared chat only an awaited person who may do it runs it", () =>
       assert.isTrue(asked.ok, JSON.stringify(asked.value));
       // Not one person's chat: a card, but no question, default or day is kept, and it says so.
       assert.strictEqual(asked.value.untaken, "group");
+      assert.strictEqual(asked.value.note, NOTHING_TIMED);
       assert.isUndefined(asked.value.by);
 
       yield* sql`UPDATE kin_session_bindings SET revoked_at = 1 WHERE person_id = 'dev'`;
@@ -1719,8 +1720,8 @@ it.effect("a default Kin couldn't undo, or on a task changed since, waits for it
       assert.deepStrictEqual(
         asked.map((one) => one.note),
         [
-          "Kin won't take “Mark W-1 done” on its own: closing a repeating task makes its next one, which Undo can't take back, so nothing happens until they answer; Kin raises it with them once more on Wednesday.",
-          "Kin won't take “Mark W-2 done” on its own: closing a handed-back task clears that, which Undo can't take back, so nothing happens until they answer; Kin raises it with them once more on Wednesday.",
+          "Kin won't take “Mark W-1 done” on its own: its task repeats.",
+          "Kin won't take “Mark W-2 done” on its own: its task was handed back.",
           undefined,
           undefined,
         ],

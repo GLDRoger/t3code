@@ -236,6 +236,7 @@ const TEAM_FILTERS = "From a chat other people read, search memory only by kind 
 /** What `memory_label` with sensitive false returns, for the lead to pass on as it is. */
 export const AWAITING_OWNER =
   "Not shared yet: these wait for your yes in Memory, then the team can know them.";
+const STOPPED = "Stopped: it doesn't run.";
 const SHARE_NEEDS_OWNER =
   "Only the owner's own message, in a chat only they read, lets the team know something. Ask the owner first.";
 // What a teammate's messages can cause shared turns to save, per person per day.
@@ -648,6 +649,21 @@ const make = Effect.gen(function* () {
           ? ("ask" as const)
           : ("start" as const)
         : ("reminder" as const);
+  const HANDED_OFF = {
+    start: "the work to an agent",
+    ask: "the ask to an agent",
+    ping: "its ping",
+    reminder: "its reminder",
+  } as const;
+  const cancelNote = (done: {
+    readonly outcome: "stopped" | "not_armed" | "handed_off";
+    readonly handedOff?: keyof typeof HANDED_OFF;
+  }) =>
+    done.outcome === "stopped"
+      ? STOPPED
+      : done.outcome === "not_armed"
+        ? "Cancelled: nothing had been armed yet."
+        : `Not stopped: its due run already handed off ${HANDED_OFF[done.handedOff ?? "start"]}.`;
   /**
    * Only the lead that set an item up cancels it, asked from the chat it was set up in or that
    * lead's owner chat. The run stops in the same transaction as the checks; memory follows at commit.
@@ -734,6 +750,7 @@ const make = Effect.gen(function* () {
       ...allowed,
       title: head.title,
       ...(head.due === null ? {} : { due: head.due }),
+      note: cancelNote(allowed),
     };
     // Already cancelled, or past stopping: a cancel that stopped nothing changes nothing.
     if (already || allowed.outcome === "handed_off") return cancelled;
@@ -1280,25 +1297,34 @@ const make = Effect.gen(function* () {
                   SELECT display_name AS name, time_zone AS zone, away_until AS back FROM kin_people
                   WHERE org_id = ${ctx.orgId} AND handle = ${target} AND removed_at IS NULL
                   ORDER BY person_id LIMIT 1`;
-          if (person === undefined) return { itemId: id, scheduled };
-          const zone = validZone(person.zone) ?? (yield* ownerZone(ctx.orgId).pipe(provideSql));
-          const away = stillAway(person.back, zone, Date.parse(input.due));
+          const zone =
+            person === undefined
+              ? undefined
+              : (validZone(person.zone) ?? (yield* ownerZone(ctx.orgId).pipe(provideSql)));
+          const back =
+            person !== undefined &&
+            zone !== undefined &&
+            person.back !== null &&
+            stillAway(person.back, zone, Date.parse(input.due))
+              ? person.back
+              : undefined;
+          const to = person === undefined ? "" : ` ${person.name}`;
+          const set = {
+            reminder: "a reminder",
+            start: "a start, handed to an agent",
+            ask_follow_up: `a follow-up to ask${to}, handed to an agent`,
+            due_card: "a card in its chat asking to start, move or cancel it",
+            chase_ping: `a ping${to === "" ? "" : ` to${to}`}`,
+          }[scheduled];
           return {
             itemId: id,
             scheduled,
-            ...(other
-              ? {
-                  note: `Nothing is asked yet: at its due time Kin wakes you to ask ${person.name} yourself, and no question is open until you do.${
-                    away && person.back !== null
-                      ? ` ${person.name} is away and back on ${person.back}.`
-                      : ""
-                  }`,
-                }
-              : {}),
-            asks: {
-              name: person.name,
-              ...(away && person.back !== null ? { back: person.back } : {}),
-            },
+            note: `No question was posted. Set for its due time: ${set}.${
+              back === undefined ? "" : ` Recorded return date: ${back}.`
+            }`,
+            ...(person === undefined
+              ? {}
+              : { asks: { name: person.name, ...(back === undefined ? {} : { back }) } }),
           };
         }),
       );
@@ -1451,6 +1477,7 @@ const make = Effect.gen(function* () {
             itemId: input.itemId,
             outcome: "stopped" as const,
             ...(task === undefined ? {} : { title: task.title }),
+            note: STOPPED,
           };
         }),
       );

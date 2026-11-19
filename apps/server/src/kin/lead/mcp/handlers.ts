@@ -231,7 +231,12 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
               }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       );
       return plan === undefined
-        ? { widgetId: result.widgetId, messageId: result.messageId, untaken: "group" as const }
+        ? {
+            widgetId: result.widgetId,
+            messageId: result.messageId,
+            untaken: "group" as const,
+            note: ChoiceCard.NOTHING_TIMED,
+          }
         : {
             widgetId: result.widgetId,
             messageId: result.messageId,
