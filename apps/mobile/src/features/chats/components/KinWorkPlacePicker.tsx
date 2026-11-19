@@ -2,8 +2,9 @@ import { LegendList } from "@legendapp/list/react-native";
 import { KIN_WORK_NEW_COPY, type KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { kinTaskProjectMenu } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { KIN_PICKER_COPY, kinPickerSearchView } from "@t3tools/client-runtime/kin/kinWorkList";
-import { useRef, useState } from "react";
+import { type ComponentRef, use, useEffect, useRef, useState } from "react";
 import { View, type TextInputInstance } from "react-native";
+import { useKeyboardState } from "react-native-keyboard-controller";
 
 import type { AppSymbolName } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
@@ -11,6 +12,7 @@ import { ListChoiceRow } from "../../../components/ui/ListChoiceRow";
 import { ListRow } from "../../../components/ui/ListRow";
 import { SearchField } from "../../../components/ui/SearchField";
 import { useKinPickerSearch, type KinWorkTarget } from "../state/useKinWork";
+import { KinWorkAboveKeyboard } from "./KinWorkPieces";
 
 type PickerRow =
   | { readonly type: "label"; readonly id: string; readonly label: string }
@@ -18,11 +20,14 @@ type PickerRow =
 
 // About seven rows: the picker scrolls within the form rather than lengthening it.
 const LIST_MAX_HEIGHT = 340;
+// Four rows: with the search field, they fit above the keyboard on the smallest iPhone.
+const KEYBOARD_LIST_MAX_HEIGHT = 192;
 
 /**
  * A client or project, found by typing part of its name: the row opens a search field over the
  * choices, as the time zone picker does, typing asks the host about every one the person may see,
- * and a pick closes it.
+ * and a pick closes it. Opening the held one and who owes it come after the choices, so a tap
+ * just under the row always lands in the search.
  */
 export function KinWorkPlacePicker(props: {
   readonly target: KinWorkTarget;
@@ -52,6 +57,13 @@ export function KinWorkPlacePicker(props: {
   const none = props.none ?? KIN_WORK_NEW_COPY.none;
   const [open, setOpen] = useState(false);
   const inputRef = useRef<TextInputInstance>(null);
+  const found = useRef<ComponentRef<typeof View>>(null);
+  const aboveKeyboard = use(KinWorkAboveKeyboard);
+  const keyboardUp = useKeyboardState((keyboard) => keyboard.isVisible);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the native scroll view so the search and its rows clear the keyboard once it is up
+  useEffect(() => {
+    if (open && keyboardUp && found.current !== null) aboveKeyboard?.(found.current);
+  }, [open, keyboardUp, aboveKeyboard]);
   const search = useKinPickerSearch(
     props.target,
     props.noun === "client" ? "clients" : "projects",
@@ -106,6 +118,57 @@ export function KinWorkPlacePicker(props: {
       />
       {!open ? null : (
         <>
+          <View ref={found} collapsable={false}>
+            <View className="flex-row px-4 py-2">
+              <SearchField
+                autoFocus
+                inputRef={inputRef}
+                accessibilityLabel={`Find a ${props.noun}`}
+                clearAccessibilityLabel="Clear search"
+                placeholder={`Find a ${props.noun}`}
+                value={query}
+                onChangeText={search.type}
+              />
+            </View>
+            {/* oxlint-disable-next-line t3code/require-registered-list-scroll -- nested in the form's own registered scroll view */}
+            <LegendList<PickerRow>
+              style={{ maxHeight: keyboardUp ? KEYBOARD_LIST_MAX_HEIGHT : LIST_MAX_HEIGHT }}
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+              data={rows}
+              keyExtractor={(row) => row.id}
+              getItemType={(row) => row.type}
+              extraData={held?.key ?? null}
+              estimatedItemSize={48}
+              recycleItems
+              renderItem={({ item: row }) =>
+                row.type === "label" ? (
+                  <Text textRole="footnote" className="px-4 pt-3 pb-1 text-foreground-muted">
+                    {row.label}
+                  </Text>
+                ) : (
+                  <ListChoiceRow
+                    label={row.ref?.title ?? none}
+                    selected={row.ref === null ? held === null : row.ref.key === held?.key}
+                    separated
+                    onPress={() => pick(row.ref)}
+                  />
+                )
+              }
+            />
+          </View>
+          {view.failure !== null ? (
+            <ListChoiceRow
+              label={view.failure.text}
+              selected={false}
+              disabled={!view.failure.retry}
+              onPress={() => void search.retry()}
+            />
+          ) : view.loading || view.note !== null || groups.length === 0 ? (
+            <Text textRole="footnote" className="px-4 py-3 text-foreground-muted">
+              {view.loading ? KIN_PICKER_COPY.searching : (view.note ?? KIN_WORK_NEW_COPY.noMatch)}
+            </Text>
+          ) : null}
           {held === null || props.onOpen === undefined ? null : (
             <ListChoiceRow
               label={`Open ${held.title}`}
@@ -133,55 +196,6 @@ export function KinWorkPlacePicker(props: {
               }}
             />
           )}
-          <View className="flex-row px-4 py-2">
-            <SearchField
-              autoFocus
-              inputRef={inputRef}
-              accessibilityLabel={`Find a ${props.noun}`}
-              clearAccessibilityLabel="Clear search"
-              placeholder={`Find a ${props.noun}`}
-              value={query}
-              onChangeText={search.type}
-            />
-          </View>
-          {/* oxlint-disable-next-line t3code/require-registered-list-scroll -- nested in the form's own registered scroll view */}
-          <LegendList<PickerRow>
-            style={{ maxHeight: LIST_MAX_HEIGHT }}
-            nestedScrollEnabled
-            keyboardShouldPersistTaps="handled"
-            data={rows}
-            keyExtractor={(row) => row.id}
-            getItemType={(row) => row.type}
-            extraData={held?.key ?? null}
-            estimatedItemSize={48}
-            recycleItems
-            renderItem={({ item: row }) =>
-              row.type === "label" ? (
-                <Text textRole="footnote" className="px-4 pt-3 pb-1 text-foreground-muted">
-                  {row.label}
-                </Text>
-              ) : (
-                <ListChoiceRow
-                  label={row.ref?.title ?? none}
-                  selected={row.ref === null ? held === null : row.ref.key === held?.key}
-                  separated
-                  onPress={() => pick(row.ref)}
-                />
-              )
-            }
-          />
-          {view.failure !== null ? (
-            <ListChoiceRow
-              label={view.failure.text}
-              selected={false}
-              disabled={!view.failure.retry}
-              onPress={() => void search.retry()}
-            />
-          ) : view.loading || view.note !== null || groups.length === 0 ? (
-            <Text textRole="footnote" className="px-4 py-3 text-foreground-muted">
-              {view.loading ? KIN_PICKER_COPY.searching : (view.note ?? KIN_WORK_NEW_COPY.noMatch)}
-            </Text>
-          ) : null}
         </>
       )}
     </>

@@ -1374,7 +1374,24 @@ const make = Effect.gen(function* () {
         const sets: Array<Statement.Fragment> = [];
         const set = (column: string, value: string | number | null) =>
           sets.push(sql`${sql(column)} = ${value}`);
-        const projectId = patch.projectId === undefined ? row.projectId : patch.projectId;
+        // A task given another client leaves a project of a different client; one with none stays.
+        const [heldIn] =
+          row.registerId !== "work" ||
+          patch.projectId !== undefined ||
+          row.projectId === null ||
+          patch.partyId === undefined ||
+          patch.partyId === null ||
+          patch.partyId === row.partyId
+            ? []
+            : yield* sql<{ partyId: string | null }>`SELECT party_id AS "partyId" FROM kin_records
+                WHERE org_id = ${orgId} AND record_id = ${row.projectId}`;
+        const offProject =
+          heldIn !== undefined && heldIn.partyId !== null && heldIn.partyId !== patch.partyId;
+        const projectId = offProject
+          ? null
+          : patch.projectId === undefined
+            ? row.projectId
+            : patch.projectId;
         const project =
           patch.projectId === undefined || patch.projectId === null
             ? undefined
