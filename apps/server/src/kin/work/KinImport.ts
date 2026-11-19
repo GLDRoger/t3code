@@ -59,6 +59,17 @@ const NOT_ENTRIES = ["clients", "projects", "docs"];
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+const COUNTRY_FIRST =
+  "This row has money, and Kin records none until the company's country is chosen in Settings, Company details. Import the file again once it is.";
+/** Whether a row puts money on its entry: an amount, a payment, or an amount in a field. */
+const withMoney = (spec: ImportEntry, def: ListDef) =>
+  spec.amount !== undefined ||
+  (spec.payments ?? []).length > 0 ||
+  Object.entries(spec.fields ?? {}).some(
+    ([key, value]) =>
+      typeof value !== "string" ||
+      def.fields.some((one) => one.key === key && one.type === "money"),
+  );
 const decodeHeader = Schema.decodeUnknownEffect(Schema.fromJsonString(ImportHeader));
 const decodeRow = Schema.decodeUnknownEffect(Schema.fromJsonString(ImportRow));
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -673,6 +684,8 @@ const make = Effect.gen(function* () {
       if (failedLists.has(spec.list)) return fail(`Its list ${spec.list} couldn't be made.`);
       const def = yield* listOf(spec.list);
       if (def === undefined) return fail(`There is no list ${spec.list}; name it in the header.`);
+      // Before any amount is read, so no line shows one in the placeholder currency.
+      if (company.pending && withMoney(spec, def)) return fail(COUNTRY_FIRST);
       const currency = spec.currency ?? def.currency;
       const parsed = spec.amount === undefined ? undefined : parseAmount(spec.amount, currency);
       if (parsed !== undefined && "error" in parsed) return fail(parsed.error.message);
