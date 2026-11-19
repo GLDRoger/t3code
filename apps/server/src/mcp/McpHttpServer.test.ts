@@ -53,6 +53,7 @@ import * as ServerHttp from "../http.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
+import { plainParameterIssue } from "./plainParameterIssue.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
@@ -720,7 +721,7 @@ it.effect.each([
 ] as const)("puts a bad argument plainly: %j", ([input, sentence]) =>
   Effect.gen(function* () {
     const issue = yield* Effect.flip(decodePlainInput(input, { errors: "all", reportInput: true }));
-    expect(McpHttpServer.plainParameterIssue(issue.issue)).toBe(sentence);
+    expect(plainParameterIssue(issue.issue)).toBe(sentence);
   }),
 );
 
