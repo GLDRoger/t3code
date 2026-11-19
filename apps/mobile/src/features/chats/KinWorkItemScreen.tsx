@@ -471,7 +471,7 @@ function KinWorkItemBody(props: ItemTarget) {
     view,
     change: act !== null,
     give: canGive,
-    editing: edit !== null,
+    step: step.acts,
   });
   const repeatShown = view.repeat?.text ?? KIN_WORK_REPEAT.never;
   const dated = view.due !== null;
@@ -853,13 +853,6 @@ function KinWorkItemBody(props: ItemTarget) {
             names={names}
             disabled={saving}
             onMark={act === null ? null : (on) => act({ type: "private", private: on })}
-          />
-        )}
-        {!controls.page.edit ? null : (
-          <ListActionRow
-            label={KIN_TASK_RECORD.editAll}
-            disabled={saving}
-            onPress={() => changes.startEdit(item)}
           />
         )}
       </ListSection>

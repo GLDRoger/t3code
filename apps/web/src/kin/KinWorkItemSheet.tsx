@@ -559,7 +559,7 @@ function KinWorkItem(
     view,
     change: change !== null,
     give: give !== null,
-    editing: edit !== null,
+    step: step.acts,
   });
   const status = change === null ? null : controls.page.status;
   const more = Object.values(controls.menu).some(Boolean);
@@ -801,39 +801,31 @@ function KinWorkItem(
               </div>
             )}
           </KinNextStepCard>
-          {status === null && !controls.page.edit ? null : (
+          {status === null || change === null ? null : (
             <div className="flex flex-wrap items-center gap-2">
-              {status === null || change === null ? null : (
-                <Menu>
-                  <MenuTrigger render={<Button size="sm" variant="outline" disabled={saving} />}>
-                    {KIN_WORK_COPY.status}
-                    <ChevronDownIcon />
-                  </MenuTrigger>
-                  <MenuPopup align="start">
-                    {status.done ? (
-                      <MenuItem onClick={() => change({ type: "state", state: "done" })}>
-                        <CheckIcon />
-                        {KIN_WORK_COPY.done}
-                      </MenuItem>
-                    ) : null}
-                    {status.reopen ? (
-                      <MenuItem onClick={() => change({ type: "state", state: "open" })}>
-                        <RotateCcwIcon />
-                        {KIN_WORK_COPY.reopen}
-                      </MenuItem>
-                    ) : null}
-                    {status.states || status.waiting ? (
-                      <StatusItems view={view} offer={offer} waitingOn={waitingOn} onAct={change} />
-                    ) : null}
-                  </MenuPopup>
-                </Menu>
-              )}
-              {!controls.page.edit ? null : (
-                <Button size="sm" variant="outline" disabled={saving} onClick={props.onStartEdit}>
-                  <PencilIcon />
-                  {KIN_TASK_RECORD.editAll}
-                </Button>
-              )}
+              <Menu>
+                <MenuTrigger render={<Button size="sm" variant="outline" disabled={saving} />}>
+                  {KIN_WORK_COPY.status}
+                  <ChevronDownIcon />
+                </MenuTrigger>
+                <MenuPopup align="start">
+                  {status.done ? (
+                    <MenuItem onClick={() => change({ type: "state", state: "done" })}>
+                      <CheckIcon />
+                      {KIN_WORK_COPY.done}
+                    </MenuItem>
+                  ) : null}
+                  {status.reopen ? (
+                    <MenuItem onClick={() => change({ type: "state", state: "open" })}>
+                      <RotateCcwIcon />
+                      {KIN_WORK_COPY.reopen}
+                    </MenuItem>
+                  ) : null}
+                  {status.states || status.waiting ? (
+                    <StatusItems view={view} offer={offer} waitingOn={waitingOn} onAct={change} />
+                  ) : null}
+                </MenuPopup>
+              </Menu>
             </div>
           )}
           {props.notice === null || edit !== null ? null : (

@@ -286,8 +286,11 @@ describe("kinTaskControls", () => {
     item: KinRecordDetail,
     who: KinWorkNames,
     can: { change: boolean; give: boolean },
-    editing = false,
-  ) => kinTaskControls({ view: kinWorkItemView(item, who, now, 50, place), ...can, editing });
+  ) => {
+    const view = kinWorkItemView(item, who, now, 50, place);
+    const step = kinNextStep({ item, view, names: who, now, ...can }).acts;
+    return kinTaskControls({ view, ...can, step });
+  };
 
   it.each([
     {
@@ -295,15 +298,15 @@ describe("kinTaskControls", () => {
       item: task(),
       names,
       can: { change: true, give: true },
-      page: { status: { done: true, reopen: false, states: true, waiting: true }, edit: true },
+      page: { status: { done: true, reopen: false, states: true, waiting: true } },
       menu: { give: true, takeBack: true, handBack: false, drop: true },
     },
     {
-      who: "a member holding a task the owner gave",
+      who: "a member holding a task the owner gave, whose card already offers Done",
       item: task({ owner: zoya, can: memberHolds }),
       names: asZoya,
       can: { change: true, give: true },
-      page: { status: { done: true, reopen: false, states: true, waiting: true }, edit: true },
+      page: { status: { done: false, reopen: false, states: true, waiting: true } },
       menu: { give: true, takeBack: false, handBack: true, drop: true },
     },
     {
@@ -311,7 +314,7 @@ describe("kinTaskControls", () => {
       item: task({ can: readOnly }),
       names: asZoya,
       can: { change: true, give: true },
-      page: { status: null, edit: false },
+      page: { status: null },
       menu: { give: false, takeBack: false, handBack: false, drop: false },
     },
     {
@@ -319,11 +322,11 @@ describe("kinTaskControls", () => {
       item: task(),
       names,
       can: { change: false, give: false },
-      page: { status: null, edit: false },
+      page: { status: null },
       menu: { give: false, takeBack: false, handBack: false, drop: false },
     },
     {
-      who: "the owner on a done task",
+      who: "the owner on a done task, whose card already offers Reopen",
       item: task({
         state: "done",
         closedAt: "2026-11-14T10:00:00.000Z",
@@ -331,15 +334,11 @@ describe("kinTaskControls", () => {
       }),
       names,
       can: { change: true, give: true },
-      page: { status: { done: false, reopen: true, states: false, waiting: false }, edit: true },
+      page: { status: null },
       menu: { give: false, takeBack: false, handBack: false, drop: false },
     },
-  ])("puts status and edit on the page and the rest in the menu for $who", (row) => {
+  ])("puts status on the page and the rest in the menu for $who", (row) => {
     expect(controls(row.item, row.names, row.can)).toEqual({ page: row.page, menu: row.menu });
-  });
-
-  it("hides the page's edit while the title and brief are open", () => {
-    expect(controls(task(), names, { change: true, give: true }, true).page.edit).toBe(false);
   });
 });
 
