@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinStartListFor, kinSwitcherDot } from "./kinListSwitch.ts";
+import { kinCodingEntryShown, kinStartListFor, kinSwitcherDot } from "./kinListSwitch.ts";
 
 describe("kinStartListFor", () => {
   it.each([
@@ -14,6 +14,18 @@ describe("kinStartListFor", () => {
     { setting: "lastUsed", lastUsed: "kin", kinSeen: false, expected: "threads" },
   ] as const)("$setting, last $lastUsed, seen $kinSeen opens $expected", (row) => {
     expect(kinStartListFor(row)).toBe(row.expected);
+  });
+});
+
+describe("kinCodingEntryShown", () => {
+  it.each([
+    { current: "kin", chatOnly: false, expected: true },
+    // A teammate's session reaches Kin chats only; it has no coding threads to open.
+    { current: "kin", chatOnly: true, expected: false },
+    // In the coding area Kin's own destinations are the way back; the entry is Kin's alone.
+    { current: "threads", chatOnly: false, expected: false },
+  ] as const)("over $current, chat-only $chatOnly: $expected", (row) => {
+    expect(kinCodingEntryShown(row)).toBe(row.expected);
   });
 });
 
