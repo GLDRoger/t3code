@@ -418,6 +418,8 @@ const editCards = (cards: Array<Card>, taps: Array<{ widgetId: string; askId?: s
             updatedAt: stamp,
           };
         }),
+      // The chat's own membership and reading checks; its tests cover them.
+      canTap: () => Effect.void,
       act: (person, input) =>
         connections
           .answerAsk({
@@ -807,7 +809,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
   );
 
   it.effect(
-    "an edit keeps the outside mark, sends unchanged as a Confirm, and a moved sign-in refuses it",
+    "an edit keeps the outside mark, sends unchanged as a Confirm, and a moved sign-in or a chat read below owner level refuses it",
     () =>
       setUp((fake, cards) =>
         Effect.gen(function* () {
@@ -847,6 +849,41 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           assert.strictEqual(went?.state, "stale");
           assert.include(went?.reason ?? "", "since this card was made, so nothing was sent.");
           assert.isNotNull(went?.outside);
+
+          // A co-owner reads the chat when the card is drawn, and is a member by the edit: the
+          // edit would show the new words to her and could never record its outcome.
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+              person_id, role, joined_at)
+            VALUES ('cos-owner-asha', ${orgId}, 'cos-owner', 'person', ${coOwner}, 'member',
+              ${stamp})`;
+          yield* callTool(ACCOUNTS, "mail_send", { ...draft, subject: "Notes, third" });
+          const group = cards.at(-1)!;
+          yield* stored(group);
+          yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = ${coOwner}`;
+          const before = yield* sql<{ state: string; payload: string }>`SELECT state,
+              payload_json AS payload
+            FROM kin_connection_asks WHERE widget_id = ${group.widgetId}`;
+          const drawn = cards.length;
+          const demoted = yield* sendEdited(cards, group, owner, {
+            to: draft.to,
+            body: "Notes for the team.",
+          }).pipe(Effect.flip);
+          assert.deepInclude(demoted, {
+            reason: "not_allowed",
+            message:
+              "This chat now includes someone who can't confirm mail, so nothing was sent. Ask for a new draft in your own chat.",
+          });
+          assert.lengthOf(cards, drawn);
+          assert.deepStrictEqual(
+            yield* sql`SELECT state, payload_json AS payload FROM kin_connection_asks
+              WHERE widget_id = ${group.widgetId}`,
+            before,
+          );
+          assert.lengthOf(
+            yield* sql`SELECT 1 FROM kin_connection_asks WHERE payload_json LIKE '%for the team%'`,
+            0,
+          );
+          assert.lengthOf(fake.sent(), 1);
         }),
       ),
   );

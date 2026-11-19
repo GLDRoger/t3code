@@ -65,6 +65,7 @@ import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { type AgentIdentity, KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { chatShared } from "../chat/sharing.ts";
 import { effectiveAudience, turnChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
@@ -481,6 +482,8 @@ export type EditCards = {
       readonly send: KinSendCard;
     },
   ) => Effect.Effect<KinWidget, KinChatError>;
+  /** Refuses as `act` would if this person tapped the card now: membership, writing, reading. */
+  readonly canTap: (person: PersonIdentity, widgetId: string) => Effect.Effect<void, KinChatError>;
   /** The person's own tap, as `kin.widgets.act` takes it. */
   readonly act: (
     person: PersonIdentity,
@@ -2722,6 +2725,13 @@ const make = Effect.gen(function* () {
           return yield* fail(
             "unavailable",
             `${signedOut.accountLabel ?? signedOut.label} needs signing in again in Settings › Connections. Nothing was sent; send it again once it's back.`,
+          );
+        yield* cards.canTap(person, input.widgetId);
+        // The outcome write's own test: a mail's card only goes where no one below owner level reads.
+        if (yield* chatShared(sql, { orgId: input.orgId, chatId: row.chatId }))
+          return yield* fail(
+            "not_allowed",
+            "This chat now includes someone who can't confirm mail, so nothing was sent. Ask for a new draft in your own chat.",
           );
         const tap = (widgetId: string, revision: number, optionId: string) =>
           cards.act(person, {

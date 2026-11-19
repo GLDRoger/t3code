@@ -308,6 +308,11 @@ export class KinChatService extends Context.Service<
       identity: PersonCaller,
       input: KinWidgetsActInput,
     ) => Effect.Effect<KinMessage, ServiceError>;
+    /** Whether `act` would let this person tap the card at all: an active writing member who reads it. */
+    readonly canTap: (
+      identity: PersonIdentity,
+      input: { readonly widgetId: KinWidgetId },
+    ) => Effect.Effect<void, ServiceError>;
     /** Posts a lead's choice card under the same floor and flood rules as its text replies. */
     /**
      * Turns the caller's reaction on or off; one per member per message, so a new one replaces
@@ -721,6 +726,17 @@ const make = Effect.gen(function* () {
     memberReads(sql, { orgId: member.orgId, memberId: member.memberId, messageId, floorOf }).pipe(
       Effect.mapError(toPersistenceSqlError("KinChatService.readable")),
     );
+  /** The card a person's tap is on, and their membership: active, writing, and reading it. */
+  const tapTarget = Effect.fn("KinChatService.tapTarget")(function* (
+    identity: PersonIdentity,
+    widgetId: KinWidgetId,
+  ) {
+    const widget = yield* requireRecord(repo.getWidget({ orgId: identity.orgId, widgetId }));
+    const member = yield* memberFor(identity, widget.chatId);
+    yield* canWrite(identity, member);
+    if (!(yield* readable(member, widget.messageId))) return yield* notFound;
+    return { widget, member };
+  });
   /** `readable`, and for a shared turn nothing below the chat's history floor, as `read` gives it. */
   const callerReads = Effect.fn("KinChatService.callerReads")(function* (
     identity: Identity,
@@ -2685,12 +2701,7 @@ const make = Effect.gen(function* () {
     act: Effect.fn("KinChatService.act")(function* (identity, input) {
       identity = yield* personFor(identity, input);
       const request = yield* decodeAct(input).pipe(Effect.mapError(() => invalidState));
-      const widget = yield* requireRecord(
-        repo.getWidget({ orgId: identity.orgId, widgetId: request.widgetId }),
-      );
-      const member = yield* memberFor(identity, widget.chatId);
-      yield* canWrite(identity, member);
-      if (!(yield* readable(member, widget.messageId))) return yield* notFound;
+      const { widget, member } = yield* tapTarget(identity, request.widgetId);
       if (widget.type === "approval")
         return yield* new KinChatError({
           reason: "use_approvals",
@@ -2730,6 +2741,9 @@ const make = Effect.gen(function* () {
         return yield* notAllowed;
       return yield* actOn(identity, member, widget, request, null);
     }, transaction),
+    canTap: Effect.fn("KinChatService.canTap")(function* (identity, input) {
+      yield* tapTarget(identity, input.widgetId);
+    }),
     react: Effect.fn("KinChatService.react")(function* (caller, input) {
       const request = yield* decodeReact({
         messageId: input.messageId,

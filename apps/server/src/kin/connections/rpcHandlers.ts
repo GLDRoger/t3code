@@ -268,6 +268,10 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
                 ],
               })
               .pipe(Effect.mapError(chatFailure)),
+          canTap: (person, widgetId) =>
+            chat
+              .canTap(person, { widgetId: KinWidgetId.make(widgetId) })
+              .pipe(Effect.mapError(chatFailure)),
           act: (person, act) => chat.act(person, act).pipe(Effect.mapError(chatFailure)),
         }),
       ),
