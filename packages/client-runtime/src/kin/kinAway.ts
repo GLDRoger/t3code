@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format days and times for React render, outside an Effect runtime.
+import { kinNow } from "./kinNow.ts";
 import { kinWhenFormat, formatKinWhen, kinWhenParts } from "@t3tools/contracts";
 import type { KinMessage, KinMessageWhen, KinPersonProfile } from "@t3tools/contracts";
 
@@ -40,7 +41,7 @@ const kinDayIn = (now: Date, zone: string | null) => {
 };
 
 /** "Thu 19 Nov", or with its year when not this one. */
-export const kinAwayDay = (day: string, now: Date = new Date()) => {
+export const kinAwayDay = (day: string, now: Date = kinNow()) => {
   const [year, month, date] = day.split("-").map(Number);
   const at = new Date(Date.UTC(year ?? 1970, (month ?? 1) - 1, date ?? 1, 12));
   return formatKinWhen(at, year === now.getFullYear() ? "day" : "dayYear", { zone: "UTC" }).replace(

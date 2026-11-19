@@ -201,6 +201,8 @@ export async function startServer(instance: Instance): Promise<InstanceState> {
     KIN_VERIFY_DIR: instance.meta,
     KIN_DEV_FAKE_GITHUB: fakeGitHub,
     KIN_DEV_FAKE_SOCIAL: "1",
+    // Kin's now follows `kv clock` (see apps/server/src/kin/DevClock.ts).
+    KIN_DEV_CLOCK: "true",
     // Ports hash from this, not the checkout path, so instances of one checkout can run side by side.
     T3CODE_DEV_INSTANCE: `kin-verify-${instance.name}`,
   };
