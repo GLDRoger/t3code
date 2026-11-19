@@ -518,15 +518,20 @@ they reach it, only your urgent messages run, on the agent's usual model, until 
 ## Recommendations
 
 When the same hold-up keeps happening and a setting would end it, Kin suggests the change once, as a
-card in your chat with the Chief of staff, so it waits in Needs you without ringing. Today that's a
-teammate who keeps asking for another agent's work while your cards on it run out: the card offers
-to let them message that agent directly. Nothing changes until you tap the change itself;
+card in your chat with the Chief of staff, so it waits in Needs you without ringing. Kin suggests:
+
+- letting a teammate message an agent directly, when they keep asking for its work and your cards on it run out;
+- raising the daily limit one step, when your agents used it up on three of the last seven days (this can cost more);
+- resuming a connection that has been paused for days while your agents keep being refused on it;
+- resuming an agent that has been paused for days with work waiting for it.
+
+Nothing changes until you tap the change itself;
 **Not now** keeps it quiet for 30 days, then 90, then for good. Kin suggests at most one thing a day, never in your
 quiet hours, never while Needs you is full, and not in a company's first two weeks.
 
 **Settings → Recommendations**, under Company (the owner only), lists every suggestion and what came of it, with
 **Ask again** for one you put off. A change you made from a suggestion is changed back where it lives: a done row
-opens that agent's page, where you choose who can message it.
+opens that place, the agent's page, **Daily limit**, or the connection.
 
 ## Memory
 
