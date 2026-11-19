@@ -1494,17 +1494,33 @@ it.effect.each([
   },
   // A second message in the same wake-up went nowhere: it is still owed words.
   { items: ["kin_hand_off"], another: true, rescues: 1, expected: ["system:Ada didn't reply."] },
+  // Cancelled before the other agent started: Kin's two lines are the answer.
+  {
+    items: ["kin_hand_off", "NO_REPLY"],
+    route: "told",
+    rescues: 0,
+    expected: ["system:Cancelled."],
+  },
+  // A stale route Kin said nothing about answers nobody.
+  { items: ["kin_hand_off"], route: "stale", rescues: 1, expected: ["system:Ada didn't reply."] },
 ])(
   "a request passed on is answered by Kin's line, and only that request (%#)",
-  ({ items, another, rescues, expected }) =>
+  ({ items, another, route, rescues, expected }) =>
     Effect.gen(function* () {
-      const { fake, runId, complete, posted, message, owner, wakeupId, sql } = yield* setup({
-        ask: "What did we spend on travel in March?",
-      });
+      const { fake, runId, complete, posted, message, owner, wakeupId, sql, direct } = yield* setup(
+        {
+          ask: "What did we spend on travel in March?",
+        },
+      );
       yield* sql`INSERT INTO kin_handoffs (org_id, message_id, from_agent_id, to_agent_id, event_id,
           created_at, route_state)
         VALUES (${owner.orgId}, ${message!.messageId}, ${agentId}, 'finance', 'forward-travel', 0,
-          'passed')`;
+          ${route === undefined ? "passed" : "stale"})`;
+      if (route === "told")
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            author_role, kind, body, mentions_json, status, created_at)
+          VALUES ('kin-forward-stale:forward-travel', ${owner.orgId}, ${direct.chatId}, 1000,
+            'system', 'member', 'text', 'Cancelled.', '[]', 'posted', '1970-01-01T00:00:00.000Z')`;
       if (another === true)
         yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
             received_at, queued_at, state, wakeup_id)

@@ -442,13 +442,13 @@ const make = Effect.gen(function* () {
       passed: false as const,
       note: mayNow
         ? `${owner} was asked on a card whether to let ${person} message ${agent} and hasn't answered yet, so this request has not gone to ${agent}. ${directly}`
-        : `${person} may not message ${agent}, so ${owner} has been asked on a card whether to let them and hasn't answered yet; nothing has gone to ${agent}. A yes lets this request reach ${agent} and lets ${person} message ${agent} from then on. ${confirm} When ${owner} answers yes or not this time, Kin posts it in this chat. Tell ${person} it is with ${owner}, and promise nothing more.`,
+        : `${person} may not message ${agent}, so ${owner} has been asked on a card whether to let them and hasn't answered yet; nothing has gone to ${agent}. The card asks ${owner} to let this request reach ${agent} and to let ${person} message ${agent} from then on. ${confirm} When a yes or a not this time takes effect, Kin posts it in this chat. Tell ${person} it is with ${owner}, and promise nothing more.`,
     };
     const alreadyAsked = {
       passed: false as const,
       note: mayNow
         ? `${owner} was asked on a card about an earlier request of ${person}'s for ${agent} and hasn't answered yet; this message was not passed on. ${directly}`
-        : `${owner} has already been asked on a card about an earlier request of ${person}'s for ${agent} and hasn't answered yet, so this message was not passed on. A yes lets that earlier request reach ${agent} and lets ${person} message ${agent} from then on. ${confirm} Tell ${person} so, and promise nothing more.`,
+        : `${owner} has already been asked on a card about an earlier request of ${person}'s for ${agent} and hasn't answered yet, so this message was not passed on. That card asks ${owner} to let that earlier request reach ${agent} and to let ${person} message ${agent} from then on. ${confirm} Tell ${person} so, and promise nothing more.`,
     };
     /** Who answered the card, by name, and when, on the owner's clock; nothing when not stored. */
     const decision = Effect.fnUntraced(function* (widgetId: KinWidgetId) {
@@ -483,7 +483,9 @@ const make = Effect.gen(function* () {
         ORDER BY message_id`;
       if (record === undefined) return undefined;
       if (record.toAgentId !== dest.agentId)
-        return yield* refuse("This was already passed on, and a request goes to one agent only.");
+        return yield* refuse(
+          "This request is already recorded for another agent, and a request goes to one agent only.",
+        );
       const letThem = (tap: { by: string; on: string } | undefined) =>
         tap === undefined
           ? `On the card, the answer was to let ${person} message ${agent}`
@@ -558,7 +560,7 @@ const make = Effect.gen(function* () {
           note: `${letThem(yield* decision(record.widgetId))}, and their earlier request went there; this message was not passed on. ${mayNow ? `Tell ${person} they can message ${agent} directly now.` : `${person} may not message ${agent} now, so tell them this message wasn't passed on.`}`,
         };
       }
-      // Kin's copy reached the other chat before the turn there was called off.
+      // Kin's copy is in the other chat; only the turn's cancelling is known, not what was read.
       const [copied] =
         record.state === "stale"
           ? yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${ctx.orgId}
@@ -568,11 +570,16 @@ const make = Effect.gen(function* () {
       if (copied !== undefined)
         return {
           passed: false as const,
-          note: `This request is in ${person}'s chat with ${agent}, but ${agent} didn't start on it, so it hasn't been answered there yet. ${mayNow ? `${person} can ask ${agent} about it there.` : `${person} may not message ${agent} now.`} Tell ${person} so, and promise nothing more.`,
+          note: `This request is in ${person}'s chat with ${agent}, but the turn that would have answered it was cancelled. ${mayNow ? `${person} can ask ${agent} about it there.` : `${person} may not message ${agent} now.`} Tell ${person} so, and promise nothing more.`,
+        };
+      if (waited)
+        return {
+          passed: false as const,
+          note: `${card === undefined ? `What came of the earlier request of ${person}'s for ${agent} is no longer recorded` : `An earlier request of ${person}'s for ${agent} was cancelled without an answer from ${agent}`}, and this message, which waited on it, was not passed on. Tell ${person} so; ${again}`,
         };
       return {
         passed: false as const,
-        note: `This wasn't passed on to ${agent} after all, so nothing reached it. Tell ${person} so; ${again}`,
+        note: `This request to ${agent} was cancelled without an answer from ${agent}. Tell ${person} so; ${again}`,
       };
     });
     const before = yield* recorded();

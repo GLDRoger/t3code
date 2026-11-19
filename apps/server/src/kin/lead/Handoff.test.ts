@@ -1183,14 +1183,14 @@ it.effect(
         // What the owner's yes does, and what it doesn't: what leaves the company needs her Confirm.
         assert.deepStrictEqual(waits, {
           passed: false,
-          note: `Meera may not message Tech lead, so ${me} has been asked on a card whether to let them and hasn't answered yet; nothing has gone to Tech lead. A yes lets this request reach Tech lead and lets Meera message Tech lead from then on. Anything that would leave the company, such as a mail or a payment, still needs ${me}'s own Confirm. When ${me} answers yes or not this time, Kin posts it in this chat. Tell Meera it is with ${me}, and promise nothing more.`,
+          note: `Meera may not message Tech lead, so ${me} has been asked on a card whether to let them and hasn't answered yet; nothing has gone to Tech lead. The card asks ${me} to let this request reach Tech lead and to let Meera message Tech lead from then on. Anything that would leave the company, such as a mail or a payment, still needs ${me}'s own Confirm. When a yes or a not this time takes effect, Kin posts it in this chat. Tell Meera it is with ${me}, and promise nothing more.`,
         });
         // The same again waits on the same card; another agent for it is refused.
         assert.deepStrictEqual(yield* mate.pass("engineering"), waits);
         assert.strictEqual((yield* Effect.flip(mate.pass("Ops"))).reason, "not_allowed");
         // Her next message waits on that card.
         yield* mate.ask("meera-second", "And the read replica's too?");
-        const waited = `${me} has already been asked on a card about an earlier request of Meera's for Tech lead and hasn't answered yet, so this message was not passed on. A yes lets that earlier request reach Tech lead and lets Meera message Tech lead from then on. Anything that would leave the company, such as a mail or a payment, still needs ${me}'s own Confirm. Tell Meera so, and promise nothing more.`;
+        const waited = `${me} has already been asked on a card about an earlier request of Meera's for Tech lead and hasn't answered yet, so this message was not passed on. That card asks ${me} to let that earlier request reach Tech lead and to let Meera message Tech lead from then on. Anything that would leave the company, such as a mail or a payment, still needs ${me}'s own Confirm. Tell Meera so, and promise nothing more.`;
         assert.deepStrictEqual(yield* mate.pass("Tech lead", "meera-second"), {
           passed: false,
           note: waited,
@@ -1533,7 +1533,9 @@ it.effect(
         );
         const told = [
           { body: "Passed on to Tech lead, who answers you in your chat with it." },
-          { body: "This wasn't passed on to Tech lead after all." },
+          {
+            body: "The request passed on to Tech lead was cancelled, so Tech lead won't answer it.",
+          },
         ];
         assert.deepStrictEqual(yield* systemRows(sql, orgId, mate.direct), told);
         // The Tech lead's next turns add nothing.
@@ -1547,7 +1549,7 @@ it.effect(
         // Her words are in her chat with the Tech lead: they reached it, unanswered.
         assert.deepStrictEqual(yield* mate.pass("Tech lead"), {
           passed: false,
-          note: "This request is in Meera's chat with Tech lead, but Tech lead didn't start on it, so it hasn't been answered there yet. Meera may not message Tech lead now. Tell Meera so, and promise nothing more.",
+          note: "This request is in Meera's chat with Tech lead, but the turn that would have answered it was cancelled. Meera may not message Tech lead now. Tell Meera so, and promise nothing more.",
         });
       }),
     ),
