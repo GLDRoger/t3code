@@ -93,7 +93,8 @@ export type KinSettingsPage =
   | "connections"
   | "memory"
   | "company"
-  | "approvals";
+  | "approvals"
+  | "recommendations";
 
 const KIN_SETTINGS_PAGES: ReadonlyArray<KinSettingsPage> = [
   "profile",
@@ -106,6 +107,7 @@ const KIN_SETTINGS_PAGES: ReadonlyArray<KinSettingsPage> = [
   "memory",
   "company",
   "approvals",
+  "recommendations",
 ];
 
 export const KIN_SETTINGS_PAGE_TITLES: Readonly<Record<KinSettingsPage, string>> = {
@@ -119,6 +121,7 @@ export const KIN_SETTINGS_PAGE_TITLES: Readonly<Record<KinSettingsPage, string>>
   memory: "Memory",
   company: "Company details",
   approvals: "Approvals",
+  recommendations: "Recommendations",
 };
 
 export type KinSettingsGroupId = "you" | "company" | "computer";
@@ -139,12 +142,14 @@ export interface KinSettingsGroup {
 /**
  * What Settings holds for this person. Everyone has You; the owner and co-owners add Company; This
  * computer (the app's own settings) shows only where the session can open them. `notifications`
- * says whether this surface has Kin notifications to set.
+ * says whether this surface has Kin notifications to set; `recommendations` whether this is the
+ * owner, who alone sees what Kin suggested.
  */
 export function kinSettingsGroups(input: {
   readonly ownerLevel: boolean;
   readonly computer: boolean;
   readonly notifications: boolean;
+  readonly recommendations: boolean;
 }): ReadonlyArray<KinSettingsGroup> {
   const you: KinSettingsGroup = {
     id: "you",
@@ -157,7 +162,16 @@ export function kinSettingsGroups(input: {
     {
       id: "company",
       title: KIN_SETTINGS_GROUP_TITLES.company,
-      pages: ["team", "agents", "check-ins", "connections", "memory", "company", "approvals"],
+      pages: [
+        "team",
+        "agents",
+        "check-ins",
+        "connections",
+        "memory",
+        "company",
+        "approvals",
+        ...(input.recommendations ? (["recommendations"] as const) : []),
+      ],
     },
     ...(input.computer
       ? [{ id: "computer" as const, title: KIN_SETTINGS_GROUP_TITLES.computer, pages: [] }]

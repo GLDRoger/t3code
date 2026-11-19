@@ -219,6 +219,8 @@ export const KinAccessMeResult = Schema.Struct({
   country: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isPattern(/^[A-Z]{2}$/)))),
   /** The month the company's financial year starts in, 1 for January; absent from an older host. */
   financialYearStartMonth: Schema.optional(KinMonthNumber),
+  /** True while a company created new has no country chosen: nothing that records money is made until it is. */
+  countryNeeded: Schema.optional(Schema.Boolean),
 });
 export type KinAccessMeResult = typeof KinAccessMeResult.Type;
 

@@ -436,6 +436,23 @@ describe("KinPushSender", () => {
       ]);
       // It stacks under the chat like its messages do.
       assert.match(apns.sent[0]?.collapseId ?? "", /^kin:/);
+      // Kin's own unprompted card (a recommendation) waits on them without ringing: a badge only.
+      apns.sent.length = 0;
+      const unprompted = yield* postWidget(
+        sql,
+        "choice",
+        { question: "Let Meera message Tech lead directly?", options: [] },
+        [member],
+        "",
+      );
+      yield* sql`UPDATE kin_messages SET silent = 1 WHERE message_id =
+        (SELECT message_id FROM kin_widgets WHERE widget_id = ${unprompted})`;
+      yield* notify({ _tag: "widget", orgId, widgetId: unprompted });
+      assert.isAbove(apns.sent.length, 0);
+      assert.deepStrictEqual(
+        alerts(apns.sent).filter((alert) => alert !== undefined),
+        [],
+      );
 
       // A card that waits on someone rings as a card, not again as its message.
       const card = yield* postWidget(sql, "task", { status: "needs_decision" }, [member]);

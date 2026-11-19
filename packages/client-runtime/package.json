@@ -962,6 +962,10 @@
     "./kin/kinDevices": {
       "types": "./src/kin/kinDevices.ts",
       "default": "./src/kin/kinDevices.ts"
+    },
+    "./kin/kinRecommendations": {
+      "types": "./src/kin/kinRecommendations.ts",
+      "default": "./src/kin/kinRecommendations.ts"
     }
   },
   "scripts": {

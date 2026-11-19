@@ -31,6 +31,7 @@ import { Button } from "../components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { cn } from "../lib/utils";
 import { KinChart } from "./KinChart";
+import { KinCountryFirst } from "./KinCountryFirst";
 import { KinEstimateText, KinRatesDialog, KinSetRateButton } from "./KinMoneyEstimate";
 import { kinClient } from "./kinClient";
 import {
@@ -163,23 +164,72 @@ function AmountRow(props: {
   );
 }
 
+type MoneyProps = KinWorkTarget & {
+  readonly live: KinWorkLive;
+  readonly stale: boolean;
+  readonly directory: KinWorkDirectory;
+  readonly lists: KinListsHandle;
+  readonly onOpenList: (open: KinListOpen) => void;
+  readonly onOpenKey: (key: KinRecordKey) => void;
+  readonly onDates: () => void;
+  readonly onSubscriptions: () => void;
+  readonly onOpenDoc: (key: KinRecordKey) => void;
+};
+
 /**
  * Money: who owes us and how late, what came in and went out, the year so far and what is due.
  * The host adds everything up; this only lays it out and says where each figure came from.
  */
-export function KinWorkMoney(
-  props: KinWorkTarget & {
-    readonly live: KinWorkLive;
-    readonly stale: boolean;
-    readonly directory: KinWorkDirectory;
-    readonly lists: KinListsHandle;
-    readonly onOpenList: (open: KinListOpen) => void;
-    readonly onOpenKey: (key: KinRecordKey) => void;
-    readonly onDates: () => void;
-    readonly onSubscriptions: () => void;
-    readonly onOpenDoc: (key: KinRecordKey) => void;
-  },
-) {
+export function KinWorkMoney(props: MoneyProps) {
+  return (
+    <KinCountryFirst environmentId={props.environmentId} waiting={<WaitingMoney {...props} />}>
+      <MoneyScreen {...props} />
+    </KinCountryFirst>
+  );
+}
+
+/** Money while the country waits: no figures and nothing that records money; Dates and Goals stay. */
+function WaitingMoney(props: MoneyProps) {
+  const { state } = useKinMoneySummary(props, { enabled: true, use: "screen" });
+  const goals = useKinGoals(props, { enabled: true, money: true });
+  const [adding, setAdding] = useState(false);
+  const upcoming = state._tag === "ready" ? state.value.upcomingTotal : 0;
+  const none = goals.state._tag === "ready" && goals.state.value.goals.length === 0;
+  return (
+    <>
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-1 px-4">
+        {upcoming === 0 ? null : (
+          <KinWorkSection
+            title={KIN_MONEY.upcoming}
+            fold={{ summary: KIN_MONEY.upcomingCount(upcoming), onOpen: props.onDates }}
+          >
+            {null}
+          </KinWorkSection>
+        )}
+        <KinGoals {...props} goals={goals} />
+        {/* With goals, their section has its own Add. */}
+        {none && goals.canSave ? (
+          <div>
+            <Button size="sm" variant="ghost" onClick={() => setAdding(true)}>
+              <PlusIcon />
+              {KIN_GOALS.add}
+            </Button>
+          </div>
+        ) : null}
+      </div>
+      {adding ? (
+        <KinGoalSheet
+          environmentId={props.environmentId}
+          goal={null}
+          goals={goals}
+          onClose={() => setAdding(false)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function MoneyScreen(props: MoneyProps) {
   const { names } = props.directory;
   const { state, refresh } = useKinMoneySummary(props, { enabled: true, use: "screen" });
   const agent = useKinAskAgent(props);
@@ -255,7 +305,12 @@ export function KinWorkMoney(
   const dialogs = (
     <>
       {adding === "goal" ? (
-        <KinGoalSheet goal={null} goals={goals} onClose={() => setAdding(null)} />
+        <KinGoalSheet
+          environmentId={props.environmentId}
+          goal={null}
+          goals={goals}
+          onClose={() => setAdding(null)}
+        />
       ) : adding === "budget" ? (
         <KinBudgetDialog
           {...props}

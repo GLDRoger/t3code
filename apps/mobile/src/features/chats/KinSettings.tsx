@@ -59,6 +59,7 @@ import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
 const noSessionAtom = Atom.make(null);
+const noPermissionAtom = Atom.make(false);
 
 const CONNECTION_LABEL: Record<EnvironmentPresentation["connection"]["phase"], string> = {
   connected: "Connected",
@@ -81,8 +82,14 @@ const COMPANY_ROWS: Partial<
   Record<
     KinSettingsPage,
     {
-      readonly icon: "person.2" | "robot" | "brain" | "link" | "doc.text";
-      readonly route: "KinTeam" | "KinAgents" | "KinMemory" | "KinConnections" | "KinCompany";
+      readonly icon: "person.2" | "robot" | "brain" | "link" | "doc.text" | "slider.horizontal.3";
+      readonly route:
+        | "KinTeam"
+        | "KinAgents"
+        | "KinMemory"
+        | "KinConnections"
+        | "KinCompany"
+        | "KinRecommendations";
     }
   >
 > = {
@@ -91,6 +98,7 @@ const COMPANY_ROWS: Partial<
   connections: { icon: "link", route: "KinConnections" },
   memory: { icon: "brain", route: "KinMemory" },
   company: { icon: "doc.text", route: "KinCompany" },
+  recommendations: { icon: "slider.horizontal.3", route: "KinRecommendations" },
 };
 
 export function KinSettings(props: {
@@ -141,10 +149,17 @@ export function KinSettings(props: {
       : null;
   const pages = kinHomeTabs(session, ownerLevel);
   // The same You and Company as web Settings; the phone adds its own rows to each.
+  // The owner alone, as the host gates `kin.recommendations.*`: a co-owner sees none of it.
+  const recommendations = useAtomValue(
+    host._tag === "host"
+      ? kinClient.recommendationAskAgain.permissionAtom(host.environmentId)
+      : noPermissionAtom,
+  );
   const groups = kinSettingsGroups({
     ownerLevel: company !== null,
     computer: false,
     notifications: true,
+    recommendations,
   });
   const you = groups[0]!;
   const companyGroup = groups.find((group) => group.id === "company");
