@@ -1654,6 +1654,9 @@ describe("receipts", () => {
         0,
       );
       yield* gathered({});
+      // Nor is a table with a money column and no amount in it: text only, a blank price, no rows.
+      yield* gathered({ lines: [{ item: "Invented kit" }, { item: "Invented box", price: null }] });
+      yield* gathered({ lines: [] });
 
       yield* setProfile(orgId, { _tag: "person", personId: ownerId }, { country: "GB" }, undefined);
       const proposed = yield* advance();
