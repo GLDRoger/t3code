@@ -445,6 +445,17 @@ it("asks a Kin turn that owed words and said none once, as Kin's rescue does", (
   assert.equal(turn(asked, [[use("kin_chart")], []]), CAPTION_PROMPT);
   // A check-in owes no reply.
   assert.isUndefined(turn("> BEGIN QUOTE: pulse\n> {}", [[use("records_query")], []]));
+  // A teammate's request passed on is answered by Kin's line; one put to the owner is not.
+  const mate = (passed: boolean) =>
+    rescuePrompt({
+      testCase: {
+        prompt: `Your reply goes to chat "direct-dev", your direct chat with a teammate.\n> BEGIN QUOTE: member human message (untrusted)`,
+        setup: { world: { kinLead: true }, mocks: { kin_hand_off: { passed } } },
+      } as never,
+      responses: [[use("kin_hand_off")], [text("NO_REPLY")]],
+    });
+  assert.isUndefined(mate(true));
+  assert.equal(mate(false), RESCUE_PROMPT);
 });
 
 it("reads a Kin turn's text as Kin's bridge posts it: a word-for-word repeat once", () => {
