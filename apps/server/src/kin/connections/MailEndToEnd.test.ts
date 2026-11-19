@@ -38,6 +38,7 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { fromConnections, poll } from "../pulse/outside.ts";
 import * as KinRecords from "../work/KinRecords.ts";
+import { presetDefinition } from "../work/registers.ts";
 import { waitingCards } from "../work/recordComments.ts";
 import * as ConnectionSecrets from "./ConnectionSecrets.ts";
 import {
@@ -827,6 +828,82 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             reason: null,
           });
           assert.deepInclude(fake.sent()[2], { account: HELLO, threadId: outlookSent.threadId });
+        }),
+      ),
+  );
+
+  it.effect(
+    "a quote reads as sent once its mail has gone, once, and never on a cancel or a failure",
+    () =>
+      setUp((fake, cards) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const connections = yield* KinConnections;
+          yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+            created_at, definition_json)
+          VALUES (${orgId}, 'quotes', 'Quotes', 'QT', 0, 0,
+            ${JSON.stringify(presetDefinition("quotes", "INR"))})`;
+          yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+            owner_id, created_by_kind, origin_key, created_at, updated_at, party_id, fields_json,
+            amount_minor, currency, state)
+          VALUES (${orgId}, 'rec_qt', 'quotes', 'QT-1', 'Lumen Studio: redesign', 'person',
+            ${owner}, 'person', 'qt', 0, 0, 'rec_lumen', '{}', 5900000, 'INR', 'open')`;
+          yield* sql`UPDATE kin_doc_jobs SET entry_record_id = 'rec_qt' WHERE worker_id = 'job-1'`;
+          const state = sql<{ state: string }>`SELECT state FROM kin_records
+          WHERE record_id = 'rec_qt'`.pipe(Effect.map(([row]) => row!.state));
+          const marks = sql<{ n: number }>`SELECT count(*) AS n FROM kin_record_changes
+          WHERE record_id = 'rec_qt' AND kind = 'updated'`.pipe(Effect.map(([row]) => row!.n));
+          yield* connect(fake, "google", ACCOUNTS);
+          yield* wake({ person: owner });
+          const draft = {
+            to: ["ravi@lumen.example"],
+            subject: "Quote QT-1",
+            body: "Hi Ravi,\n\nThe redesign quote is attached.\n\nArjun",
+            attachments: ["QT-1"],
+          };
+
+          // Cancelled: nothing went, so the quote stays a draft.
+          yield* callTool(ACCOUNTS, "mail_send", draft);
+          yield* tap(cards.at(-1)!.widgetId, owner, false);
+          assert.strictEqual(yield* state, "open");
+
+          // Refused by the mailbox: nothing went, the quote stays a draft.
+          yield* callTool(ACCOUNTS, "mail_send", { ...draft, body: `${draft.body}\n` });
+          fake.failWith(ACCOUNTS, 400);
+          const failed = yield* tap(cards.at(-1)!.widgetId, owner);
+          fake.failWith(ACCOUNTS, null);
+          if (failed === undefined || !("state" in failed) || failed.fresh === undefined)
+            return assert.fail("no fresh card after a failed send");
+          assert.strictEqual(failed.state, "failed");
+          assert.lengthOf(fake.sent(), 0);
+          assert.strictEqual(yield* state, "open");
+
+          // The retry that goes marks it sent, once; a repeat of that send marks nothing more.
+          const retry = yield* connections.freshAsk(orgId, failed.fresh, NOW);
+          if (retry === undefined) return assert.fail("no fresh card");
+          yield* retry.bind("w-retry");
+          yield* stored({ ...cards.at(-1)!, widgetId: "w-retry", send: retry.card.send });
+          assert.deepStrictEqual(yield* tap("w-retry", owner), { state: "sent", reason: null });
+          assert.lengthOf(fake.sent(), 1);
+          assert.strictEqual(yield* state, "waiting");
+          assert.strictEqual(yield* marks, 1);
+          const [went] = yield* sql<{ askId: string }>`SELECT ask_id AS "askId"
+          FROM kin_connection_asks WHERE state = 'sent'`;
+          yield* connections.sendAsk(orgId, went!.askId);
+          assert.strictEqual(yield* marks, 1);
+
+          // Sent edited from the card's editor: marked too.
+          yield* sql`UPDATE kin_records SET state = 'open' WHERE record_id = 'rec_qt'`;
+          yield* callTool(ACCOUNTS, "mail_send", { ...draft, subject: "Quote QT-1, revised" });
+          const card = cards.at(-1)!;
+          yield* stored(card);
+          const edited = yield* sendEdited(cards, card, owner, {
+            to: draft.to,
+            body: "Hi Ravi,\n\nThe revised quote is attached.\n\nArjun",
+          });
+          assert.deepStrictEqual(edited.outcomes, [{ state: "sent", reason: null }]);
+          assert.strictEqual(yield* state, "waiting");
+          assert.strictEqual(yield* marks, 2);
         }),
       ),
   );

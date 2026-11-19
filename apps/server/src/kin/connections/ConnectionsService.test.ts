@@ -70,6 +70,7 @@ import { GOOGLE_SCOPES } from "./Google.ts";
 import { challengeOf } from "./OAuth.ts";
 import { promptLine } from "./ConnectionRows.ts";
 import { staleAsksStranded } from "./strandedAsks.ts";
+import * as KinEventQueue from "../lead/KinEventQueue.ts";
 
 // Invented org, people and services only; no request leaves the process.
 const orgId = KinOrgId.make("org");
@@ -373,6 +374,7 @@ const layerFor = (
         touch: (_org, topic) => Effect.sync(() => void touches.push(topic)),
       }),
     ),
+    Layer.provide(KinEventQueue.layer),
     Layer.provideMerge(KinPersistence.layer),
     Layer.provideMerge(Sqlite.layerMemory),
     Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),

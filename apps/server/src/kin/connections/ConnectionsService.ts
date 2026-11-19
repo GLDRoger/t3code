@@ -146,7 +146,7 @@ import {
   subjectClosed,
 } from "./Sending.ts";
 import { choiceExpired } from "../widgets/choiceCard.ts";
-import { KinRecords } from "../work/KinRecords.ts";
+import { KinRecords, layer as recordsLayer } from "../work/KinRecords.ts";
 import { KinGitHubLogin } from "./GitHubLogin.ts";
 import { textLocale } from "../work/companyProfile.ts";
 import { ownerZone } from "../work/recordRows.ts";
@@ -735,8 +735,7 @@ const make = Effect.gen(function* () {
     Config.withDefault(DEFAULT_SIGN_IN_ADDRESS),
   );
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
-  // Absent in tests that build connections alone; a sent quote then stays as it was.
-  const records = yield* Effect.serviceOption(KinRecords);
+  const records = yield* KinRecords;
   // GitHub is the owner's own host login (GitHubLogin.ts), not a gateway connection.
   const githubLogin = yield* Effect.serviceOption(KinGitHubLogin);
   const githubAccount = Option.isSome(githubLogin)
@@ -2667,12 +2666,9 @@ const make = Effect.gen(function* () {
     );
     if (replaced.length > 0) yield* levelGate.closeReplaced(turn, replaced);
     // A mail filed under an entry shows on its Tasks row, in place of any card this replaced.
-    // Read from the caller (the agent's MCP call has Kin's services): this layer is built beside
-    // `KinRecords`, not on it, so `records` above is empty on a running server.
-    const caller = yield* Effect.serviceOption(KinRecords);
-    if (entryRecordId !== null && Option.isSome(caller))
+    if (entryRecordId !== null)
       yield* sql.afterCommit(
-        caller.value
+        records
           .announce(turn.orgId)
           .pipe(
             Effect.catchCause((cause) =>
@@ -3347,13 +3343,17 @@ const make = Effect.gen(function* () {
       reason: string | null,
       result: unknown,
       owes = false,
+      /** In the same transaction, only when this call is the one that settled the ask. */
+      settled: Effect.Effect<void> = Effect.void,
     ) {
       const now = yield* Clock.currentTimeMillis;
-      yield* sql`UPDATE kin_connection_asks SET state = ${state}, reason = ${reason},
+      const wrote = yield* sql`UPDATE kin_connection_asks SET state = ${state}, reason = ${reason},
           result_json = ${result === null ? null : toJson(result)}, done_at = ${now},
           owes_card = ${owes ? 1 : 0}
         WHERE org_id = ${orgId} AND ask_id = ${askId} AND state = 'sending'
-          AND (dispatched_at IS NOT NULL) = ${claimed ? 1 : 0}`;
+          AND (dispatched_at IS NOT NULL) = ${claimed ? 1 : 0}
+        RETURNING 1`;
+      if (wrote.length > 0) yield* settled;
       yield* touched(orgId);
       return { state, reason } satisfies AskOutcome;
     });
@@ -3571,21 +3571,25 @@ const make = Effect.gen(function* () {
       );
       return again(failed, row, drafted, after ?? connection);
     }
-    const done = yield* finish(true, "sent", null, sent.success);
-    if (prepared._tag === "email" && Option.isSome(records))
-      yield* markQuotesSent(records.value, {
-        orgId,
-        personId: row.owner,
-        wakeupId: row.wakeupId,
-        entryRecordIds: prepared.attachments.flatMap((one) =>
-          one.entryRecordId === null ? [] : [one.entryRecordId],
-        ),
-      }).pipe(
-        provideSql,
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Kin couldn't mark a sent quote as sent", { cause }),
-        ),
-      );
+    const quotesSent =
+      prepared._tag === "email"
+        ? markQuotesSent(records, {
+            orgId,
+            personId: row.owner,
+            wakeupId: row.wakeupId,
+            entryRecordIds: prepared.attachments.flatMap((one) =>
+              one.entryRecordId === null ? [] : [one.entryRecordId],
+            ),
+          }).pipe(
+            provideSql,
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin couldn't mark a sent quote as sent", { cause }),
+            ),
+          )
+        : Effect.void;
+    const done = yield* sql.withTransaction(
+      finish(true, "sent", null, sent.success, false, quotesSent),
+    );
     if (prepared._tag === "email")
       yield* sentToClient({
         orgId,
@@ -3978,4 +3982,5 @@ const make = Effect.gen(function* () {
 });
 
 /** Needs the guarded gateway and the secret store; built inside Kin's own layers. */
-export const layer = Layer.effect(KinConnections, make);
+// Records are built once per layer graph (by reference), so this is the server's own instance.
+export const layer = Layer.effect(KinConnections, make).pipe(Layer.provide(recordsLayer));
