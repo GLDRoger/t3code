@@ -85,31 +85,38 @@ export const endpoint = <A, E, R>(registrations: Layer.Layer<A, E, R>) =>
     Layer.provide(auth),
   );
 
+/** `/mcp` is always `base`, T3's own; with Kin on, under Kin's policy for a lead's delegated tasks. */
 export const transport = (base: typeof McpHttpServer.layer) =>
-  Layer.merge(
-    base,
-    Layer.unwrap(
-      Effect.gen(function* () {
-        const kin = yield* KinServer;
-        // T3's own tools are served here too, shown to a lead only as `AgentSession` allows:
-        // never scheduling or thread-launch tools, which would start work outside Kin's chats.
-        return Option.isSome(kin.services)
-          ? endpoint(
-              Layer.mergeAll(
-                McpHttpServer.layerTools,
-                registration,
-                KinConnectionsMcp.registration.pipe(
-                  Layer.provide(Layer.succeedContext(kin.services.value)),
-                ),
-                KinLead.layerMcp.pipe(
-                  Layer.provide(Layer.succeedContext(kin.services.value)),
-                  Layer.provide(SqlitePersistence.layerConfig),
-                ),
-              ),
-            )
-          : Layer.empty;
-      }),
-    ),
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const kin = yield* KinServer;
+      if (Option.isNone(kin.services)) return base;
+      // T3's own tools are served here too, shown to a lead only as `AgentSession` allows:
+      // never scheduling or thread-launch tools, which would start work outside Kin's chats.
+      return Layer.merge(
+        base.pipe(
+          Layer.provide(
+            Layer.succeed(
+              McpHttpServer.McpToolPolicy,
+              KinToolGate.workerPolicy(kin.services.value),
+            ),
+          ),
+        ),
+        endpoint(
+          Layer.mergeAll(
+            McpHttpServer.layerTools,
+            registration,
+            KinConnectionsMcp.registration.pipe(
+              Layer.provide(Layer.succeedContext(kin.services.value)),
+            ),
+            KinLead.layerMcp.pipe(
+              Layer.provide(Layer.succeedContext(kin.services.value)),
+              Layer.provide(SqlitePersistence.layerConfig),
+            ),
+          ),
+        ),
+      );
+    }),
   );
 
 export const registry = <E, R>(base: Layer.Layer<McpSessionRegistry.McpSessionRegistry, E, R>) =>

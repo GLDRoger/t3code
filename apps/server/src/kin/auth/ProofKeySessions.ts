@@ -191,9 +191,22 @@ const enabled = (options: { readonly recordsPairings: boolean }) =>
         },
         Effect.mapError(toPersistenceSqlError("ProofKeySessions.recordPairedSession")),
       );
+      // The host CLI's single-session revoke keeps Kin's session-level rule (approvals spec
+      // section 4): offline it has no caller; through a running server it signs in as `cli`
+      // (`RunningServer.serverClient`).
+      const revokesSessionOnly = Effect.fn("ProofKeySessions.revokesSessionOnly")(
+        function* (callerSessionId: AuthSessionId | undefined) {
+          if (callerSessionId === undefined) return true;
+          const rows =
+            yield* sql`SELECT 1 FROM auth_sessions WHERE session_id = ${callerSessionId} AND subject = 'cli'`;
+          return rows.length > 0;
+        },
+        Effect.mapError(toPersistenceSqlError("ProofKeySessions.revokesSessionOnly")),
+      );
       return SessionHooks.of({
         recordRepair: hooks.recordRepair,
         checkExchange: hooks.checkExchange,
+        revokesSessionOnly,
         // The CLI never exchanges a pairing credential, and may run before K027 has.
         recordPairedSession: options.recordsPairings ? recordPairedSession : () => Effect.void,
         wrap: (notifications) => (store) => {
