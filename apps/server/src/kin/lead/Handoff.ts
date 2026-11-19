@@ -9,6 +9,7 @@ import {
   KinPersonId,
   KinWakeupId,
   TrimmedNonEmptyString,
+  formatKinWhen,
   type KinWidgetId,
   type ThreadId,
   type KinOrgId,
@@ -25,6 +26,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 import { textLocale } from "../work/companyProfile.ts";
+import { ownerZone } from "../work/recordRows.ts";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
@@ -46,7 +48,13 @@ import { messageBodyLimit } from "./LeadPrompt.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import { directKey } from "./LeadAccess.ts";
 import { outsideStamp, stampEvent } from "./OutsideContent.ts";
-import { type TeammateAsk, forward, forwardEventId, hashOf, routeShown } from "./routeCard.ts";
+import {
+  type TeammateAsk,
+  forward,
+  forwardEventId,
+  forwardedLine,
+  routeShown,
+} from "./routeCard.ts";
 import { type CardDraw, type RoutePlan, sealPlans } from "../widgets/cardPlans.ts";
 import { choiceExpired } from "../widgets/choiceCard.ts";
 import { isHeld, type KinLevelGate } from "./LevelGate.ts";
@@ -95,6 +103,8 @@ export const HandOffResult = Schema.Union([
     // The lead it went to, by name, to tell the owner.
     to: Schema.String,
     passed: Schema.Literal(true),
+    // A teammate's request: what they were already shown of it.
+    note: Schema.optional(Schema.String),
   }),
   // A teammate's request to an agent they may not message: it waits on the owner's card.
   Schema.Struct({ passed: Schema.Literal(false), note: Schema.String }),
@@ -212,10 +222,6 @@ const matching = <T extends { readonly name: string; readonly domain: string }>(
 };
 const ONE_HOP =
   "This was already passed on to you by another agent, so it stops with you. Answer it, or say in one line what you can't do.";
-const waitsOnOwner = (person: string) => ({
-  passed: false as const,
-  note: `This needs the owner's go-ahead, and they have been asked. Tell ${person} so, and promise nothing more.`,
-});
 
 /**
  * A lead passes a request the owner made to another of that owner's leads, and sees which leads
@@ -428,10 +434,37 @@ const make = Effect.gen(function* () {
       });
     const { messageId } = ask.message;
     const now = yield* Clock.currentTimeMillis;
+    const person = ask.personName;
+    const agent = dest.name;
+    const [ownerRow] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+      WHERE org_id = ${ctx.orgId} AND person_id = ${self.ownerPersonId} ORDER BY person_id`;
+    const owner = ownerRow?.name ?? "the owner";
+    const alreadyShown = `Kin has already shown ${person} this line in your chat: "${forwardedLine(agent)}" Don't say it again; add only what it doesn't say.`;
+    const waits = {
+      passed: false as const,
+      note: `${person} may not message ${agent}, so ${owner} has been asked on a card whether to let them; nothing has gone to ${agent}. If ${owner} says yes, this request reaches ${agent} and ${person} may message ${agent} from then on; anything ${agent} then drafts or sends still needs its own approval. Kin tells ${person} the answer in this chat. Tell ${person} it is with ${owner}, and promise nothing more.`,
+    };
     const alreadyAsked = {
       passed: false as const,
-      note: `The owner has already been asked about an earlier request of ${ask.personName}'s for that agent, so nothing more was sent. Tell ${ask.personName} so, and promise nothing more.`,
+      note: `${owner} has already been asked on a card about an earlier request of ${person}'s for ${agent}, so nothing more was sent. If ${owner} says yes, that earlier request reaches ${agent} and ${person} may message ${agent} from then on; anything ${agent} drafts or sends still needs its own approval. Tell ${person} so, and promise nothing more.`,
     };
+    /** Who answered the card, by name, and when, on the owner's clock. */
+    const decision = Effect.fnUntraced(function* (widgetId: KinWidgetId) {
+      const [tap] = yield* sql<{ name: string | null; at: string }>`SELECT
+          p.display_name AS name, m.created_at AS at
+        FROM kin_card_plans c
+        JOIN kin_messages m ON m.org_id = c.org_id AND m.message_id = c.ran_message_id
+        LEFT JOIN kin_people p ON p.org_id = m.org_id AND p.person_id = m.author_person_id
+        WHERE c.org_id = ${ctx.orgId} AND c.widget_id = ${widgetId} AND c.ran_message_id IS NOT NULL
+        ORDER BY m.seq LIMIT 1`;
+      if (tap === undefined) return { by: owner, on: "" };
+      const clock = {
+        zone: yield* ownerZone(ctx.orgId).pipe(access),
+        locale: yield* textLocale(ctx.orgId).pipe(access),
+      };
+      const on = formatKinWhen(Date.parse(tap.at), "dayTime", clock).replace(/,/g, "");
+      return { by: tap.name ?? owner, on: ` on ${on}` };
+    });
     /**
      * Where this message already went: there again is what came of it as it stands now, from
      * the card it was asked on or waited on, elsewhere refused.
@@ -447,7 +480,16 @@ const make = Effect.gen(function* () {
       if (record === undefined) return undefined;
       if (record.toAgentId !== dest.agentId)
         return yield* refuse("This was already passed on, and a request goes to one agent only.");
-      if (record.state === "passed") return { to: dest.name, passed: true as const };
+      if (record.state === "passed") {
+        if (record.widgetId === null)
+          return { to: agent, passed: true as const, note: alreadyShown };
+        const { by, on } = yield* decision(record.widgetId);
+        return {
+          to: agent,
+          passed: true as const,
+          note: `${by} let ${person} message ${agent}${on}, and this request went to ${agent}, which answers ${person} in their chat with it. ${alreadyShown}`,
+        };
+      }
       const [card] =
         record.widgetId === null || (record.state !== "pending" && record.state !== "waited")
           ? []
@@ -456,6 +498,7 @@ const make = Effect.gen(function* () {
                 AND route_state <> 'waited'
               ORDER BY message_id LIMIT 1`;
       const state = card?.state ?? record.state;
+      const earlier = record.state === "waited" ? "an earlier request" : "this request";
       if (state === "pending" && record.widgetId !== null) {
         const widget = yield* repo.getWidget({ orgId: ctx.orgId, widgetId: record.widgetId });
         if (
@@ -463,18 +506,30 @@ const make = Effect.gen(function* () {
           widget.value.closedAt === null &&
           !choiceExpired(widget.value, now)
         )
-          return record.state === "pending" ? waitsOnOwner(ask.personName) : alreadyAsked;
+          return record.state === "pending" ? waits : alreadyAsked;
         return {
           passed: false as const,
-          note: `The owner's card on this expired unanswered, so nothing was passed on. Tell ${ask.personName} so; a new message of theirs may ask again.`,
+          note: `The card asking ${owner} about ${earlier} of ${person}'s for ${agent} expired unanswered, so nothing was passed on. Tell ${person} so; a new message of theirs may ask again.`,
         };
       }
-      return state === "declined"
-        ? {
-            passed: false as const,
-            note: `The owner said not this time, so nothing was passed on. Tell ${ask.personName} so, and promise nothing more.`,
-          }
-        : { passed: false as const, note: NOTHING };
+      if (state === "declined" && record.widgetId !== null) {
+        const { by, on } = yield* decision(record.widgetId);
+        return {
+          passed: false as const,
+          note: `${by} said not this time${on} to ${earlier} of ${person}'s for ${agent}, so nothing was passed on, and Kin has told ${person} so in this chat. Tell ${person} it was declined; pass on a new message of theirs only if it asks for something new, which asks ${owner} again.`,
+        };
+      }
+      if (state === "passed" && record.widgetId !== null) {
+        const { by, on } = yield* decision(record.widgetId);
+        return {
+          passed: false as const,
+          note: `${by} let ${person} message ${agent}${on}, and their earlier request went there; this message was not passed on. Tell ${person} they can now message ${agent} directly.`,
+        };
+      }
+      return {
+        passed: false as const,
+        note: `This wasn't passed on to ${agent} after all, so nothing reached it. Tell ${person} so; a new message of theirs may ask again.`,
+      };
     });
     const before = yield* recorded();
     if (before !== undefined) return before;
@@ -517,16 +572,7 @@ const make = Effect.gen(function* () {
         Effect.provideService(KinChatRepository, repo),
         access,
       );
-      // Who asked which agent, and nothing of the request or its answer.
-      yield* chat.notice({
-        orgId: ctx.orgId,
-        chatId: self.ownerChatId,
-        audience: "owner",
-        messageId: KinMessageId.make(`kin-forward-told-${hashOf(`forward:${messageId}`)}`),
-        body: `${ask.personName} asked for something ${target.name} handles; it went to ${target.name}.`,
-        silent: true,
-      });
-      return { to: target.name, passed: true as const };
+      return { to: target.name, passed: true as const, note: alreadyShown };
     }
     const [thread] = yield* sql<{ threadId: ThreadId }>`SELECT thread_id AS "threadId"
       FROM kin_leads WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId}
@@ -586,7 +632,7 @@ const make = Effect.gen(function* () {
     yield* sql`UPDATE kin_handoffs SET route_widget_id = ${card.widgetId}
       WHERE org_id = ${ctx.orgId} AND message_id = ${messageId}`;
     yield* stampEvent(ctx.orgId, card.widgetId, outside).pipe(access);
-    return waitsOnOwner(ask.personName);
+    return waits;
   });
 
   /** The owner's card on this teammate and agent that still waits for a tap, if there is one. */

@@ -31,7 +31,7 @@ import { stampEvent } from "./OutsideContent.ts";
  * answers are fixed actions (`cardActions.ts`) that run here, as the owner's tap, with no turn.
  */
 
-export const hashOf = (key: string) =>
+const hashOf = (key: string) =>
   NodeCrypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
 /** The wake-up a routed request starts: one per teammate message, whoever retries. */
 export const forwardEventId = (messageId: string) =>
@@ -47,6 +47,10 @@ export type TeammateAsk = {
   readonly personId: KinPersonId;
   readonly personName: string;
 };
+
+/** Kin's line in the asking chat when their request went to `agent`. */
+export const forwardedLine = (agent: string) =>
+  `Passed on to ${agent}, who answers you in your chat with it.`;
 
 const LABEL_MAX = 80;
 const NOT_THIS_TIME = "Not this time";
@@ -82,13 +86,7 @@ export const forward = Effect.fn("KinRouteCard.forward")(function* (input: {
   const asker = { _tag: "person" as const, orgId, personId };
   const direct = yield* chat.createDirect(asker, { orgId, agentId: input.to.agentId });
   const key = `forward:${message.messageId}`;
-  yield* chat.notice({
-    orgId,
-    chatId: direct.chatId,
-    audience: "chat",
-    messageId: KinMessageId.make(`kin-forward-${hashOf(key)}`),
-    body: `Passed on from your chat with ${input.from.name}. ${input.to.name} answers you here.`,
-  });
+  // Their own words are the one row here; where it went is said in the chat they asked in.
   const copy = yield* chat.send(asker, {
     chatId: direct.chatId,
     clientMessageId: key,
@@ -121,7 +119,7 @@ export const forward = Effect.fn("KinRouteCard.forward")(function* (input: {
     chatId: message.chatId,
     audience: "chat",
     messageId: KinMessageId.make(`kin-forwarded-${hashOf(key)}`),
-    body: `Passed on to ${input.to.name}, who answers you in your chat with it.`,
+    body: forwardedLine(input.to.name),
     silent: true,
   });
   return eventId;
