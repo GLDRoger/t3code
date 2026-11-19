@@ -423,7 +423,7 @@ it.effect.each<{
   /** Posted with a tool before the turn's reply. */
   readonly posted?: string;
   readonly failed?: true;
-  /** The evening summary's own day; the test clock's is 1970-01-01. */
+  /** The evening summary's own day; the test clock's, in the company's UTC, is 1970-01-01. */
   readonly day?: string;
 }>([
   {
@@ -535,6 +535,8 @@ it.effect.each<{
         ...(row.failed === undefined ? {} : { factKeys: ["invoice:INV-7:overdue"] }),
       }),
     });
+    yield* sql`INSERT INTO kin_trigger_settings VALUES (${owner.orgId}, 'UTC', '08:30', '18:30',
+      '03:00', 0, 1, '09:00', '[]')`;
     if (row.posted !== undefined) {
       const lead = Option.getOrThrow(
         yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId }),
