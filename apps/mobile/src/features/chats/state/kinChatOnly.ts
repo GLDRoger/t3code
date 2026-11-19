@@ -1,5 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
 import { kinAccessAtom, kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import {
+  kinClientsStartFilter,
+  kinSeesClients,
+  type KinClientsFilter,
+} from "@t3tools/client-runtime/kin/kinWorkClients";
 import { kinPlaceReach, type KinPlaceReach } from "@t3tools/client-runtime/kin/kinJoin";
 import { kinViewerScope, type KinViewerScope } from "@t3tools/client-runtime/kin/kinViewerScope";
 import {
@@ -211,4 +216,18 @@ export function useKinOpensClients(environmentId: EnvironmentId): boolean {
 /** Whether the host says the viewer is the owner or a co-owner here; false until it has. */
 export function useKinIsOwnerLevel(environmentId: EnvironmentId): boolean {
   return kinOwnerLevel(useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId))?.access);
+}
+
+/**
+ * Whether the viewer sees every client and may add a prospect: owner level, or Clients on. Null
+ * until the host says who they are.
+ */
+export function useKinSeesClients(environmentId: EnvironmentId): boolean | null {
+  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
+  return me == null ? null : kinSeesClients(me);
+}
+
+/** Where the clients list starts: a teammate with Clients on, on their own. */
+export function useKinClientsStart(environmentId: EnvironmentId): KinClientsFilter {
+  return kinClientsStartFilter(useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)));
 }
