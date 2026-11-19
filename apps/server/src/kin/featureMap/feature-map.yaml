@@ -467,6 +467,17 @@ features:
       - .agents/skills/verify-kin/scripts/private-task-hidden.sh
       - .agents/skills/verify-kin/scripts/lead-undoes-only-me.sh
 
+  - id: coding-entry
+    name: Coding, T3's coding threads and pull requests, from Kin
+    tab: chats
+    web: [home, button:Coding]
+    roles: { owner: web, co_owner: none, lead: none, member: none }
+    note: >-
+      One quiet entry beside the gear at the foot of Kin's sidebar, and Go to Coding in the command
+      palette, for a session that can open coding threads; a teammate's chat-only session gets
+      neither. Kin's destinations above the threads lead back. The phone is Kin only.
+    proof: [packages/client-runtime/src/kin/kinListSwitch.test.ts]
+
   - id: work-links
     name: Tasks, Money, Clients or Docs opened from the coding app
     tab: tasks
