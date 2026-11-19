@@ -76,10 +76,21 @@ export const onHostClock = (
 };
 
 const seedSource = (orgId: KinOrgId) => `kin-seed:check-ins:${orgId}`;
+/** Days an earlier build seeded a default on: a row still on them was never given its own. */
+const EARLIER_DAYS: Partial<Record<string, ReadonlyArray<number>>> = { morning: WEEKDAYS };
+/** The days as the host clock may have moved them across midnight, a day either way. */
+const shifted = (days: ReadonlyArray<number>) =>
+  [-1, 0, 1].map((by) =>
+    days
+      .map((day) => (((day + by) % 7) + 7) % 7)
+      .toSorted((a, b) => a - b)
+      .join(),
+  );
 
 /**
  * Keeps each default check-in the owner hasn't moved at its time in his zone as it is now: set
- * after seeding, changed, or across a clock change. One moved in chat or on T3's screen stays put.
+ * after seeding, changed, or across a clock change. One moved in chat or on T3's screen, its
+ * time or only its days, stays put.
  */
 export const followOwnerZone = Effect.fn("KinPulse.followOwnerZone")(function* (
   orgId: KinOrgId,
@@ -96,6 +107,8 @@ export const followOwnerZone = Effect.fn("KinPulse.followOwnerZone")(function* (
     if (task === undefined || row.looseAt === null) continue;
     const current = KinSchedules.everyOf(task, row.looseAt);
     if (current === undefined || current.at !== row.looseAt) continue;
+    const seeded = [seed.days, EARLIER_DAYS[seed.slug] ?? seed.days].flatMap(shifted);
+    if (!seeded.includes(current.days.join())) continue;
     const every = onHostClock(seed.at, seed.days, zone, KinSchedules.hostTimeZone(), now);
     if (every.at === current.at && every.days.join() === current.days.join()) continue;
     yield* schedules.save({
@@ -111,6 +124,7 @@ export const followOwnerZone = Effect.fn("KinPulse.followOwnerZone")(function* (
       every,
       around: true,
       checkIn: true,
+      keepWording: true,
       now,
     });
   }

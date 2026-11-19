@@ -27,6 +27,7 @@ import {
   KinRecordId,
   ScheduledTaskId,
   ScheduledTaskWebhookDeliveryId,
+  kinIsBrief,
   type KinEvent,
   type KinMessage,
   type OrchestrationV2DomainEvent,
@@ -392,79 +393,138 @@ it.effect("posts the lead run's plain text to the chat it answers, as one agent 
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect.each([
-  ["checkin-morning", "One client has gone quiet. A reminder is drafted.", true],
-  ["checkin-morning", "## Needs you\nOne card waits.", false],
-  ["checkin-afternoon", "One client has gone quiet. A reminder is drafted.", false],
-  ["checkin-evening", "Nothing moved today.", true],
-] as const)(
-  "the morning and evening briefs' reply opens under a heading when written with none (%s, %s)",
-  ([scheduleId, written, headed]) =>
-    Effect.gen(function* () {
-      const { fake, runId, complete, sql, chatId } = yield* setup({
-        event: () =>
-          Effect.succeed((base) => ({
-            ...base,
-            _tag: "pulse",
-            provenance: { _tag: "system" },
-            factKeys: [],
-            checkIn: {
-              scheduleId: KinMemoryItemId.make(scheduleId),
-              title: "Check-in",
-              what: "Look.",
-              slot: "s",
-            },
-          })),
-      });
-      fake.items = [text("a", 1, written, runId), text("b", 2, "Nothing else today.", runId)];
-      yield* complete;
-      assert.deepStrictEqual(
-        yield* sql`SELECT body, form FROM kin_messages
-          WHERE chat_id = ${chatId} AND author_kind = 'agent' ORDER BY seq`,
-        [
-          {
-            body: `${headed ? "## Today\n\n" : ""}${written}\n\nNothing else today.`,
-            form: "brief",
-          },
-        ],
-      );
-    }).pipe(Effect.provide(layer)),
-);
+const checkInEvent = (scheduleId: string, figures?: true) => () =>
+  Effect.succeed((base: WakeupEventBase): KinEvent => ({
+    ...base,
+    _tag: "pulse",
+    provenance: { _tag: "system" },
+    factKeys: [],
+    checkIn: {
+      scheduleId: KinMemoryItemId.make(scheduleId),
+      title: "Check-in",
+      what: "Look.",
+      slot: "s",
+      ...(figures === undefined ? {} : { figures }),
+    },
+  }));
 
-it.effect("the weekly brief's page carries Kin's own figures once, as its last section", () =>
+const LONG = "One quote waits on your answer. ".repeat(490);
+it.effect.each([
+  {
+    name: "plain prose",
+    scheduleId: "checkin-morning",
+    written: ["One client has gone quiet. A reminder is drafted.", "Nothing else today."],
+    stored: [
+      "## Today\n\nOne client has gone quiet. A reminder is drafted.\n\nNothing else today.",
+    ],
+  },
+  {
+    name: "headed",
+    scheduleId: "checkin-morning",
+    written: ["## Needs you\nOne card waits.", "Nothing else today."],
+    stored: ["## Needs you\nOne card waits.\n\nNothing else today."],
+  },
+  {
+    name: "a bare label",
+    scheduleId: "checkin-morning",
+    written: ["Today:\nNothing needs you."],
+    stored: ["## Today\n\nToday:\nNothing needs you."],
+  },
+  {
+    name: "NO_REPLY",
+    scheduleId: "checkin-morning",
+    written: ["NO_REPLY"],
+    stored: [ReplyBridge.QUIET_PAGE],
+  },
+  {
+    name: "a quiet morning, silence",
+    scheduleId: "checkin-morning",
+    written: [],
+    stored: [ReplyBridge.QUIET_PAGE],
+  },
+  {
+    name: "an afternoon check-in",
+    scheduleId: "checkin-afternoon",
+    written: ["One client has gone quiet. A reminder is drafted."],
+    stored: ["One client has gone quiet. A reminder is drafted."],
+  },
+  {
+    name: "an afternoon NO_REPLY",
+    scheduleId: "checkin-afternoon",
+    written: ["NO_REPLY"],
+    stored: [],
+  },
+  {
+    name: "the evening summary",
+    scheduleId: "checkin-evening",
+    written: ["Nothing moved today."],
+    stored: ["## Today\n\nNothing moved today."],
+  },
+])("the morning brief's turn ends as one page whatever it wrote ($name)", (row) =>
   Effect.gen(function* () {
     const { fake, runId, complete, sql, chatId } = yield* setup({
-      event: () =>
-        Effect.succeed((base) => ({
-          ...base,
-          _tag: "pulse",
-          provenance: { _tag: "system" },
-          factKeys: [],
-          checkIn: {
-            scheduleId: KinMemoryItemId.make("checkin-weekly"),
-            title: "Weekly brief",
-            what: "Look over the week.",
-            slot: "s",
-          },
-        })),
+      event: checkInEvent(row.scheduleId),
     });
-    fake.items = [
-      text("a", 1, "## Needs you\nOne quote waits on your answer.", runId),
-      text("b", 2, "The rest can wait.", runId),
-    ];
+    fake.items = row.written.map((body, index) => text(`t${index}`, index + 1, body, runId));
     yield* complete;
     const rows = yield* sql<{ body: string; form: string | null }>`SELECT body, form
       FROM kin_messages WHERE chat_id = ${chatId} AND author_kind = 'agent' ORDER BY seq`;
-    assert.lengthOf(rows, 1);
-    const [page] = rows;
-    assert.strictEqual(page!.form, "brief");
-    const [words, figures] = page!.body.split(`\n\n## ${WEEK_FIGURES_TITLE}\n\n`);
-    assert.strictEqual(
-      words,
-      "## Needs you\nOne quote waits on your answer.\n\nThe rest can wait.",
+    assert.deepStrictEqual(
+      rows.map((one) => one.body),
+      row.stored,
     );
-    assert.include(figures, "Goals: none set");
-    assert.lengthOf(page!.body.split(WEEK_FIGURES_TITLE), 2);
+    // As the clients draw it: a page under the greeting, never a bubble.
+    if (row.scheduleId === "checkin-morning")
+      assert.isTrue(rows.every((one) => kinIsBrief(one.body, one.form)));
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  {
+    name: "the weekly brief",
+    scheduleId: "checkin-weekly",
+    written: ["## Needs you\nOne quote waits on your answer.", "The rest can wait."],
+    words: "## Needs you\nOne quote waits on your answer.\n\nThe rest can wait.",
+  },
+  {
+    name: "the weekly brief, NO_REPLY",
+    scheduleId: "checkin-weekly",
+    written: ["NO_REPLY"],
+    words: ReplyBridge.QUIET_PAGE,
+  },
+  {
+    name: "the morning brief on its day, silence",
+    scheduleId: "checkin-morning",
+    written: [],
+    words: ReplyBridge.QUIET_PAGE,
+  },
+  {
+    name: "a page with no room left",
+    scheduleId: "checkin-weekly",
+    written: [`## Needs you\n${LONG}`],
+    words: `## Needs you\n${LONG}`.trim(),
+  },
+])("the week's figures are Kin's own section of that page, whatever it wrote ($name)", (row) =>
+  Effect.gen(function* () {
+    const { fake, runId, complete, sql, chatId } = yield* setup({
+      event: checkInEvent(row.scheduleId, row.scheduleId === "checkin-morning" ? true : undefined),
+    });
+    fake.items = row.written.map((body, index) => text(`t${index}`, index + 1, body, runId));
+    yield* complete;
+    const rows = yield* sql<{ body: string; form: string | null }>`SELECT body, form
+      FROM kin_messages WHERE chat_id = ${chatId} AND author_kind = 'agent' ORDER BY seq`;
+    const figures = `## ${WEEK_FIGURES_TITLE}`;
+    // Joined when it fits, else following as its own message: never cut.
+    const bodies = rows.map((one) => one.body);
+    const [page, after] =
+      bodies.length === 1
+        ? bodies[0]!.split(`\n\n${figures}`)
+        : [bodies[0]!, bodies[1]!.slice(figures.length)];
+    assert.strictEqual(page, row.words);
+    assert.include(after, "Goals: none set");
+    assert.lengthOf(bodies.join("\n").split(WEEK_FIGURES_TITLE), 2);
+    assert.lengthOf(bodies, row.words.length > 15_000 ? 2 : 1);
+    assert.isTrue(kinIsBrief(rows[0]!.body, rows[0]!.form));
   }).pipe(Effect.provide(layer)),
 );
 

@@ -884,8 +884,9 @@ features:
     note: >-
       Under You, for the person the briefs are sent to (today the owner): the morning brief's days
       and time, and the afternoon check-in's and evening summary's time and on or off. These are the
-      seeded check-ins, the same rows the chat moves and Check-ins lists. The morning brief and the
-      evening summary come on a quiet day too; Monday's weekly brief carries Kin's own figures.
+      seeded check-ins, the same rows the chat moves and Check-ins lists. The morning brief comes on a
+      quiet day too, always as a page; the evening summary only on a day with something to sum up.
+      On Monday one page carries Kin's own figures, the first of the morning and weekly briefs.
     proof:
       - apps/server/src/kin/triggers/scheduledTasks.test.ts
       - apps/server/src/kin/pulse/checkIn.test.ts

@@ -22,11 +22,13 @@ export const WEEKLY_RULE =
   "This is the weekly brief, the owner's one post this morning. Below are the week's figures from these rows: goals, money still to come and overdue, open quotes, renewals this month, cold clients and meetings. Kin adds them to your post as its last section, so don't restate a figure; give your judgement in a few short lines: what matters most this week and why, and each decision as what you did or will do and how to stop it. A meeting that already happened is not coming up; a follow-up you set is not a meeting. Each overdue line says what mail went and what waits on a Confirm, as recorded now: never call something sent a draft.";
 /** The seeded weekly check-in's schedule (`checkin-<slug>`), which arrives as a pulse event. */
 const WEEKLY_CHECK_IN = "checkin-weekly";
+/** A page the week's figures go on: the weekly brief, or the morning one on its day. */
 export const wantsWeekly = (events: ReadonlyArray<KinEvent>) =>
   events.some(
     (event) =>
       (event._tag === "routine" && event.weekly === true) ||
-      (event._tag === "pulse" && event.checkIn?.scheduleId === WEEKLY_CHECK_IN),
+      (event._tag === "pulse" &&
+        (event.checkIn?.scheduleId === WEEKLY_CHECK_IN || event.checkIn?.figures === true)),
   );
 /** The seeded morning check-in, which carries what the retired morning brief did. */
 const MORNING_CHECK_IN = "checkin-morning";
@@ -43,6 +45,8 @@ const CAP = 20;
 const OPEN = ["open", "doing", "waiting"] as const;
 
 const RENEWALS_AHEAD_MS = 30 * DAY_MS;
+const NO_OUTCOME = "no outcome noted yet";
+const INVOICE_DUE = " (invoice due)";
 
 /**
  * The week for the owner's weekly brief, counted from Kin's rows: goals first, then projects by
@@ -272,7 +276,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
         .filter((one) => one.at < now)
         .map(
           (one) =>
-            `${when(one.at)} ${one.key} ${one.title}: ${one.state === "done" ? "outcome noted" : "happened, no outcome noted yet"}`,
+            `${when(one.at)} ${one.key} ${one.title}: ${one.state === "done" ? "outcome noted" : `happened, ${NO_OUTCOME}`}`,
         ),
       comingUp: meetings
         .filter((one) => one.at >= now)
@@ -289,7 +293,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     people: { overloaded, free },
     nextWeek: next.map(
       (one) =>
-        `${dayIn(one.dueAt, zone)} ${one.key} ${one.title}${one.list === "milestones" ? " (milestone)" : one.list === "invoices" ? " (invoice due)" : one.list === "projects" ? " (project target)" : ""}`,
+        `${dayIn(one.dueAt, zone)} ${one.key} ${one.title}${one.list === "milestones" ? " (milestone)" : one.list === "invoices" ? INVOICE_DUE : one.list === "projects" ? " (project target)" : ""}`,
     ),
   };
   return {
@@ -299,11 +303,21 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
   };
 });
 
+/** The week for the agent to judge: only what the figures section (`weeklyFigures`) doesn't show. */
 export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (input: {
   readonly orgId: KinOrgId;
   readonly now: number;
 }) {
-  return (yield* weekRows(input)).section;
+  const { section: week } = yield* weekRows(input);
+  return {
+    week: week.week,
+    projects: Object.fromEntries(
+      Object.entries(week.projects).filter(([status]) => status !== "behind"),
+    ),
+    meetingsLastWeek: week.meetings.lastWeek.filter((line) => !line.endsWith(NO_OUTCOME)),
+    people: week.people,
+    nextWeek: week.nextWeek.filter((line) => !line.endsWith(INVOICE_DUE)),
+  };
 });
 
 export const WEEK_FIGURES_TITLE = "The week, from Kin's records";
@@ -344,7 +358,7 @@ export const weeklyFigures = Effect.fn("KinWeekly.figures")(function* (input: {
     block("Behind", week.projects.behind ?? []),
     block(
       "Meetings with no outcome noted",
-      week.meetings.lastWeek.filter((line) => line.endsWith("no outcome noted yet")),
+      week.meetings.lastWeek.filter((line) => line.endsWith(NO_OUTCOME)),
     ),
     block("Coming up", week.meetings.comingUp),
   ].filter((lines) => lines.length > 0);

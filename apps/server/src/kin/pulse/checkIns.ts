@@ -199,7 +199,10 @@ export const briefs = Effect.fn("KinBriefs.list")(function* (
   return shown(yield* briefsOf(orgId, person.personId));
 }, unread);
 
-/** A new time or days saves the task now; on and off are taps the schedules' next pass applies. */
+/**
+ * A new time or days saves the task now, and only those: how it fires and its wording, approved
+ * or waiting for a confirm, stay. On and off are taps the schedules' next pass applies.
+ */
 export const saveBrief = Effect.fn("KinBriefs.save")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinBriefSaveInput,
@@ -231,8 +234,10 @@ export const saveBrief = Effect.fn("KinBriefs.save")(function* (
       title: task.title,
       prompt: task.prompt,
       every: onHostClock(input.at, input.days, zone, KinSchedules.hostTimeZone(), now),
-      around: row.looseAt !== null,
+      // As it fires now: one made exact on T3's screen stays exact.
+      around: brief.around,
       checkIn: true,
+      keepWording: true,
       now,
     });
   }

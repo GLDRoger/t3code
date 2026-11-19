@@ -576,6 +576,49 @@ describe("KinEventQueue", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect(
+    "the morning page is a turn of its own: a message neither joins nor steers into it",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const sql = yield* SqlClient.SqlClient;
+        const message = (id: string) =>
+          stored(id, "chat-lead-a").pipe(Effect.andThen(event(id, "chat.message")));
+        const ids = (events: ReadonlyArray<{ readonly eventId: string }>) =>
+          events.map((entry) => entry.eventId);
+        yield* queue.enqueue(
+          yield* decodeEvent({
+            _tag: "pulse",
+            eventId: "morning",
+            orgId: "a",
+            agentId: "lead-a",
+            receivedAt: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+            dedupeKey: "checkin:checkin-morning:2026-11-09",
+            provenance: { _tag: "system" },
+            factKeys: [],
+            checkIn: { scheduleId: "checkin-morning", title: "Morning", what: "Look.", slot: "s" },
+          }),
+        );
+        yield* queue.enqueue(yield* message("owner-ask"));
+        yield* TestClock.adjust("2 seconds");
+        // The owner's message first, on its own; the morning brief right after, alone.
+        assert.deepStrictEqual(ids(yield* Effect.scoped(queue.claim(input("ask")))), ["owner-ask"]);
+        yield* finish("ask");
+        yield* TestClock.adjust("20 seconds");
+        const morning = input("morning");
+        assert.deepStrictEqual(ids(yield* Effect.scoped(queue.claim(morning))), ["morning"]);
+        yield* sql`UPDATE kin_wakeups SET run_id = 'run' WHERE wakeup_id = 'morning'`;
+        yield* queue.enqueue(yield* message("owner-again"));
+        assert.deepStrictEqual(yield* queue.steer(morning), []);
+        yield* finish("morning");
+        yield* TestClock.adjust("20 seconds");
+        assert.deepStrictEqual(ids(yield* Effect.scoped(queue.claim(input("again")))), [
+          "owner-again",
+        ]);
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("claims one chat per wake-up and steers only that chat's human messages into it", () =>
     Effect.gen(function* () {
       yield* seed();

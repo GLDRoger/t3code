@@ -1048,14 +1048,10 @@ describe("KinPulse", () => {
       const people = (yield* read(at, { _tag: "people", people: [mate] })).facts;
       assert.isFalse(people.some((fact) => fact.sense === "goal_behind"));
 
-      // The weekly brief leads with goals, then overdue money from the same rows.
-      const week = yield* buildWeeklySection({ orgId, now: at });
-      assert.match(week.goals[0]!, /^G-1 .*₹1,00,000 of ₹10,00,000.*behind$/);
-      assert.isTrue(
-        week.money.unpaid.some((line) =>
-          /^INV-1:.*unpaid, overdue for \d+ days; no mail with it on record$/.test(line),
-        ),
-      );
+      // The weekly brief's figures lead with goals, then overdue money from the same rows.
+      const week = yield* weeklyFigures({ orgId, now: at });
+      assert.match(week, /^Goals:\n- G-1 .*₹1,00,000 of ₹10,00,000.*behind$/m);
+      assert.match(week, /^- INV-1:.*unpaid, overdue for \d+ days; no mail with it on record$/m);
       // Run 4: the brief called a reminder sent 45 s earlier a draft. Its lines read the record.
       const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO kin_connections (org_id, connection_id, label, kind, url_host, auth,
@@ -1092,8 +1088,8 @@ describe("KinPulse", () => {
           entryRecordId: "r-INV-1",
         },
       ]);
-      const overdueLine = Effect.map(buildWeeklySection({ orgId, now: at }), (now) =>
-        now.money.unpaid.find((line) => line.startsWith("INV-1:")),
+      const overdueLine = Effect.map(weeklyFigures({ orgId, now: at }), (now) =>
+        now.split("\n").find((line) => line.startsWith("- INV-1:")),
       );
       assert.match(
         String(yield* overdueLine),
@@ -1108,8 +1104,8 @@ describe("KinPulse", () => {
           result_json = '{"threadId":"t-1"}' WHERE ask_id = 'draft'`;
       assert.match(String(yield* overdueLine), /, reminder sent \S+$/);
       // The weekly brief carries the renewal and the open quote it was missing.
-      assert.include(week.money.renewalsThisMonth.join("\n"), "DT-1");
-      assert.deepStrictEqual(week.money.openQuotes, ["QT-1: ₹6,00,000.00, sent, no answer yet"]);
+      assert.match(week, /^Renewals this month:\n- .*DT-1/m);
+      assert.include(week, "Open quotes:\n- QT-1: ₹6,00,000.00, sent, no answer yet");
       // The seeded weekly check-in arrives as a pulse and gets the same section.
       const checkIn = (scheduleId: string) =>
         decodeEvent({
@@ -1126,19 +1122,30 @@ describe("KinPulse", () => {
             title: "Check-in",
             what: "Look over the week.",
             slot: "2026-11-16",
+            ...(scheduleId === "checkin-morning-figures" ? { figures: true } : {}),
           },
         });
       assert.isTrue(wantsWeekly([checkIn("checkin-weekly")]));
+      assert.isTrue(wantsWeekly([checkIn("checkin-morning-figures")]));
       assert.isFalse(wantsWeekly([checkIn("checkin-morning")]));
 
-      // Kin's own figures for the Monday page: one titled section, each line from these rows.
+      // Kin's own figures for the Monday page: one titled section, each line from these rows. The
+      // agent's prompt has the rest of the week, never a row the figures show.
       const now = yield* buildWeeklySection({ orgId, now: at });
       const figures = yield* weeklyFigures({ orgId, now: at });
       assert.lengthOf(figures.split(`## ${WEEK_FIGURES_TITLE}`), 2);
       assert.isTrue(figures.startsWith(`## ${WEEK_FIGURES_TITLE}\n\n${now.week}\n\n`));
-      assert.include(figures, `Goals:\n${now.goals.map((line) => `- ${line}`).join("\n")}`);
-      assert.include(figures, `Overdue:\n- ${String(yield* overdueLine)}`);
-      assert.include(figures, "Open quotes:\n- QT-1: ₹6,00,000.00, sent, no answer yet");
+      assert.include(figures, `Overdue:\n${String(yield* overdueLine)}`);
+      assert.deepStrictEqual(Object.keys(now), [
+        "week",
+        "projects",
+        "meetingsLastWeek",
+        "people",
+        "nextWeek",
+      ]);
+      assert.notProperty(now.projects, "behind");
+      for (const line of [...now.meetingsLastWeek, ...now.nextWeek])
+        assert.notInclude(figures, line);
       // Any currency: the same rows kept in euros read in euros, and no rupee is left.
       yield* sql`UPDATE kin_records SET currency = 'EUR',
           fields_json = REPLACE(fields_json, '"INR"', '"EUR"')

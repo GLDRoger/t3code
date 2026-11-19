@@ -32,6 +32,7 @@ import * as MemoryCache from "../memory/MemoryCache.ts";
 import { deferralWidgetId } from "../triggers/deferrals.ts";
 import {
   renderRoutine,
+  routineEmpty,
   type EveningFacts,
   type MorningFacts,
   type RoutineGithubGap,
@@ -104,7 +105,10 @@ export class KinRoutineContent extends Context.Service<
       orgId: KinOrgId,
       agentId: KinAgentId,
     ) => Effect.Effect<string | null, KinRoutineContentError>;
-    /** The evening summary's sections as JSON, for the evening check-in; null with no live lead. */
+    /**
+     * The evening summary's sections as JSON, for the evening check-in; null with no live lead or
+     * nothing to sum up today.
+     */
     readonly eveningFacts: (
       orgId: KinOrgId,
       agentId: KinAgentId,
@@ -545,7 +549,7 @@ const make = Effect.gen(function* () {
       const owner = yield* lead(orgId, agentId);
       if (owner === undefined) return null;
       const gathered = yield* gather(orgId, { routine: "evening_summary", agentId }, owner);
-      return gathered.facts.routine === "evening_summary"
+      return gathered.facts.routine === "evening_summary" && !routineEmpty(gathered.facts)
         ? yield* encodeFacts(gathered.facts)
         : null;
     },

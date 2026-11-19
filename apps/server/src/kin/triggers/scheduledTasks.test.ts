@@ -26,6 +26,7 @@ import { checkInIndex } from "../pulse/prompt.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as Budget from "../lead/KinBudget.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
+import * as RoutineContent from "../lead/RoutineContent.ts";
 import { leadWakeup } from "../lead/LeadDelivery.testkit.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as TriggerScheduler from "./KinTriggerScheduler.ts";
@@ -61,7 +62,10 @@ const identity = Layer.mock(KinIdentity)({
 });
 
 /** Kin's consumer over the real native scheduler; `recorded` holds what would be bare threads. */
-const harness = (projects?: Set<string>) => {
+const harness = (
+  projects?: Set<string>,
+  routine: Layer.Layer<never> | Layer.Layer<RoutineContent.KinRoutineContent> = Layer.empty,
+) => {
   const recorded = {
     launches: [] as ThreadLaunchService.ThreadLaunchInput[],
     sends: [] as string[],
@@ -84,6 +88,7 @@ const harness = (projects?: Set<string>) => {
         }),
       }),
     ),
+    Layer.provideMerge(routine),
   );
   return { recorded, workers, kinTicks, layer };
 };
@@ -755,7 +760,14 @@ it.effect(
 it.effect(
   "briefs are their receiver's own: Settings and the chat move one schedule, and days and off reach it",
   () => {
-    const { layer, kinTicks, workers } = harness();
+    // What the evening summary would sum up today, as `KinRoutineContent` gathers it.
+    const today: { evening: string | null } = { evening: null };
+    const { layer, kinTicks, workers } = harness(
+      undefined,
+      Layer.mock(RoutineContent.KinRoutineContent)({
+        eveningFacts: () => Effect.sync(() => today.evening),
+      }),
+    );
     return Effect.gen(function* () {
       yield* setup();
       const sql = yield* SqlClient.SqlClient;
@@ -776,15 +788,20 @@ it.effect(
         { kind: "evening", at: "18:30", days: weekdays, around: true, on: true },
       ]);
 
-      // A quiet evening still brings its summary, at its time.
-      const evening = yield* native("Evening summary");
-      yield* TestClock.setTime(Date.parse(evening.nextRunAt!));
-      yield* workers.get("scheduled-tasks")!;
-      yield* drain;
+      // A day with nothing to sum up brings no evening summary; a day with something does.
       const summaries = sql<{ key: string }>`SELECT dedupe_key AS key FROM kin_events
         WHERE org_id = ${orgId} AND tag = 'pulse' AND dedupe_key LIKE 'checkin:checkin-evening:%'
         ORDER BY queued_at`;
-      assert.lengthOf(yield* summaries, 1);
+      for (const [facts, queued] of [
+        [null, 0],
+        ['{"routine":"evening_summary"}', 1],
+      ] as const) {
+        today.evening = facts;
+        yield* TestClock.setTime(Date.parse((yield* native("Evening summary")).nextRunAt!));
+        yield* workers.get("scheduled-tasks")!;
+        yield* drain;
+        assert.lengthOf(yield* summaries, queued);
+      }
 
       // Off: the task stops, so its next slot brings nothing; on again, it comes back.
       const save = (input: Omit<Parameters<typeof CheckIns.saveBrief>[1], "orgId">) =>
@@ -847,6 +864,29 @@ it.effect(
       assert.lengthOf(
         (yield* tasks.list()).tasks.filter((one) => one.title.startsWith("After")),
         1,
+      );
+
+      // Made exact on T3's screen, with new wording not yet confirmed: a new time keeps it
+      // exact, and approves no wording.
+      const afternoon = KinSchedules.scheduleTaskId(orgId, "checkin-afternoon");
+      yield* sql`UPDATE scheduled_tasks SET prompt = 'Afternoon check-in, and chase every invoice.',
+        schedule_json = json_set(schedule_json, '$.timeOfDay', '17:00') WHERE task_id = ${afternoon}`;
+      yield* sql`UPDATE kin_schedules SET asked_sha256 = 'asked' WHERE task_id = ${afternoon}`;
+      const approved = (yield* KinSchedules.readSchedule(sql, orgId, "checkin-afternoon"))!;
+      assert.include((yield* CheckIns.briefs(people, orgId)).briefs[1], { around: false });
+      assert.include(
+        (yield* save({ kind: "afternoon", at: "18:00", days: weekdays, on: true })).briefs[1],
+        { at: "18:00", around: false },
+      );
+      const moved = (yield* KinSchedules.readSchedule(sql, orgId, "checkin-afternoon"))!;
+      assert.include(moved, {
+        contentSha256: approved.contentSha256,
+        askedSha256: "asked",
+        looseAt: null,
+      });
+      assert.strictEqual(
+        (yield* KinSchedules.readNativeTask(sql, afternoon))!.prompt,
+        "Afternoon check-in, and chase every invoice.",
       );
 
       // Someone else, a co-owner included, has no briefs here and changes none of these.
