@@ -619,7 +619,15 @@ it.effect("a teammate's turn sets their own reminder, in their own chat, and not
       reminder("def-elsewhere", { chat: KinChatId.make("group-chat") }),
       reminder("def-starts", { on_due: "start" }),
       reminder("def-cancelled", { status: "cancelled" }),
+      reminder("def-unarmed"),
+      reminder("def-reminded"),
     ];
+    // A due run's state says what a cancel can still stop: armed, or already reminded.
+    const run = (itemId: string, runState: string) =>
+      sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due, snapshot_json, updated_at)
+        VALUES (${orgId}, ${itemId}, ${runState}, ${Date.parse("2026-11-19T10:00:00Z")}, 'remind', '{}', 0)`;
+    yield* run("def-hers-too", "armed");
+    yield* run("def-reminded", "reminded");
     const cancel = (itemId: string) =>
       service.cancel(scopeOf(leads.a), {
         itemId: KinMemoryItemId.make(itemId),
@@ -632,12 +640,32 @@ it.effect("a teammate's turn sets their own reminder, in their own chat, and not
     };
     assert.deepStrictEqual(yield* cancel("def-hers-too"), {
       itemId: KinMemoryItemId.make("def-hers-too"),
+      outcome: "stopped",
       ...cancelled,
     });
+    const stoppedRun = yield* sql<{ state: string }>`SELECT state FROM kin_deferral_runs
+      WHERE org_id = ${orgId} AND item_id = 'def-hers-too'`;
+    assert.deepStrictEqual(stoppedRun, [{ state: "undone" }]);
     // One she cancelled before: cancelling it again says what it was and stages nothing.
     assert.deepStrictEqual(yield* cancel("def-cancelled"), {
       itemId: KinMemoryItemId.make("def-cancelled"),
+      outcome: "stopped",
       title: "Invented def-cancelled",
+      due: cancelled.due,
+    });
+    // Not armed yet: cancelled before anything could run.
+    assert.deepStrictEqual(yield* cancel("def-unarmed"), {
+      itemId: KinMemoryItemId.make("def-unarmed"),
+      outcome: "not_armed",
+      title: "Invented def-unarmed",
+      due: cancelled.due,
+    });
+    // Its reminder already went out: not stopped, said so, and nothing staged.
+    assert.deepStrictEqual(yield* cancel("def-reminded"), {
+      itemId: KinMemoryItemId.make("def-reminded"),
+      outcome: "handed_off",
+      handedOff: "reminder",
+      title: "Invented def-reminded",
       due: cancelled.due,
     });
     // Replacing takes only an open one: an already cancelled one is refused, and stages nothing.
@@ -651,7 +679,7 @@ it.effect("a teammate's turn sets their own reminder, in their own chat, and not
       assert.strictEqual(moved.message, SHARED_REFUSAL, other);
       assert.strictEqual((yield* Effect.flip(cancel(other))).message, SHARED_REFUSAL, other);
     }
-    // Her replacement and her cancel, nothing for anyone else.
-    assert.lengthOf(staged, 4);
+    // Her replacement and her two cancels, nothing for anyone else.
+    assert.lengthOf(staged, 5);
   }).pipe(Effect.provide(layer)),
 );

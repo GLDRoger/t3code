@@ -873,8 +873,28 @@ it.live(
         );
         yield* copied(null);
         const scheduled = yield* service.schedule(scope, scheduleInput);
-        // kin_cancel removes a native schedule through the same owner-only gate.
-        yield* service.cancel(scope, { itemId: scheduled.itemId, sourceEventId: "fixture-event" });
+        yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json,
+            project_id, workspace_strategy_json, model_selection_json, runtime_mode,
+            interaction_mode, created_by, creation_source, created_at, updated_at,
+            last_run_status, run_count)
+          VALUES (${KinSchedules.scheduleTaskId(orgId, scheduled.itemId)}, 'Summarise the open PRs',
+            'Summarise the open PRs', 1, '{"type":"fixed_time","timeOfDay":"08:00"}', 'project',
+            '{}', '{}', 'approval-required', 'plan', 'system', 'server', '2026-11-08T00:00:00.000Z',
+            '2026-11-08T00:00:00.000Z', 'never', 0)`;
+        // kin_cancel removes a native schedule through the same owner-only gate, by the title its
+        // task had before the cancel removed it.
+        const scheduleCancelled = {
+          itemId: scheduled.itemId,
+          outcome: "stopped",
+          title: "Summarise the open PRs",
+        } as const;
+        assert.deepStrictEqual(
+          yield* service.cancel(scope, {
+            itemId: scheduled.itemId,
+            sourceEventId: "fixture-event",
+          }),
+          scheduleCancelled,
+        );
         // kin_defer can turn a native schedule into a one-off: the schedule goes once it is staged.
         const recurring = yield* service.schedule(scope, {
           ...scheduleInput,
@@ -927,8 +947,13 @@ it.live(
           yield* git(remote, ["show", `${committed.commit}:claims/new-claim.md`]),
           "quote: The demo client wants every report as a PDF",
         );
-        // A schedule is a native task with its Kin row now, not a memory item.
-        assert.notInclude(files, `deferrals/${scheduled.itemId}.md`);
+        // A schedule is a native task with its Kin row now; memory keeps only its cancel's receipt.
+        const receipt = yield* git(remote, [
+          "show",
+          `${committed.commit}:deferrals/${scheduled.itemId}.md`,
+        ]);
+        assert.include(receipt, "status: cancelled");
+        assert.notInclude(receipt, "every:");
         assert.deepInclude(nativeSaves[0], {
           scheduleId: scheduled.itemId,
           existing: false,
@@ -1141,6 +1166,34 @@ it.live(
         assert.deepStrictEqual(stopped, [{ state: "undone" }]);
         // Cancelling it again is the same staged change, not a conflict.
         yield* service.cancel(scope, { itemId: reminder.itemId, sourceEventId: "fixture-event" });
+        // Its row gone with Kin's tick, the cancelled schedule's receipt still answers its lead.
+        yield* sql`DELETE FROM kin_schedules WHERE schedule_id = ${scheduled.itemId}`;
+        assert.deepStrictEqual(
+          yield* service.cancel(scope, {
+            itemId: scheduled.itemId,
+            sourceEventId: "fixture-event",
+          }),
+          scheduleCancelled,
+        );
+        // A due run that already handed its work on isn't stopped, and the cancel says what went.
+        for (const [itemId, runState, onDue, handedOff] of [
+          [asked.itemId, "started", "ask", "ask"],
+          [second.itemId, "started", "start", "start"],
+          [whileAway.itemId, "chased", "chase", "ping"],
+        ] as const) {
+          yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due,
+              snapshot_json, updated_at)
+            VALUES (${orgId}, ${itemId}, ${runState}, 0, ${onDue}, '{}', 0)
+            ON CONFLICT (org_id, item_id) DO UPDATE SET state = excluded.state,
+              on_due = excluded.on_due`;
+          assert.deepInclude(
+            yield* service.cancel(scope, { itemId, sourceEventId: "fixture-event" }),
+            { outcome: "handed_off", handedOff },
+          );
+          const kept = yield* sql<{ state: string }>`SELECT state FROM kin_deferral_runs
+            WHERE org_id = ${orgId} AND item_id = ${itemId}`;
+          assert.deepStrictEqual(kept, [{ state: runState }]);
+        }
         const cancelCommit = yield* writerService.commitWakeup(orgId, "cancel-wakeup", "completed");
         assert.include(
           yield* git(remote, ["show", `${cancelCommit.commit}:deferrals/${reminder.itemId}.md`]),

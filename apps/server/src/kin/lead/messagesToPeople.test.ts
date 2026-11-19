@@ -91,7 +91,11 @@ const kinServices = Layer.unwrap(
           Effect.succeed({ itemId: KinMemoryItemId.make(`def-${input.what}`) }),
         // Says which event reached it, so a test sees what the tool gate filled in.
         cancel: (_scope, input) =>
-          Effect.succeed({ itemId: input.itemId, title: input.sourceEventId }),
+          Effect.succeed({
+            itemId: input.itemId,
+            outcome: "stopped" as const,
+            title: input.sourceEventId,
+          }),
       }),
     ).pipe(Layer.provideMerge(Layer.succeedContext(services)));
   }),
