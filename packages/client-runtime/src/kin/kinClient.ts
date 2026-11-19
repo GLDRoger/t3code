@@ -43,6 +43,7 @@ import {
   type KinConnectionRef,
   type KinConnectionsInput,
   type KinTasksKeysListInput,
+  type KinRecommendationsInput,
   type KinSocialInput,
   type KinGitHubInput,
   type KinProjectPageInput,
@@ -253,6 +254,11 @@ export function makeKinClient<R, ER>(
     tag: "kin.tasksKeys.list",
   });
   const readTasksKeys = kinGuardedRead(tasksKeysRead);
+  const recommendationsRead = createKinRpcCommand(runtime, {
+    label: "kin:recommendations:read",
+    tag: "kin.recommendations.list",
+  });
+  const readRecommendations = kinGuardedRead(recommendationsRead);
 
   const memoryRead = createKinRpcCommand(runtime, {
     label: "kin:memory:read",
@@ -866,6 +872,31 @@ export function makeKinClient<R, ER>(
       }),
       staleTimeMs: 30_000,
       refreshTrigger: kinRefreshOn("people"),
+    }),
+    /**
+     * What Kin suggested to the owner and what came of each: his alone. Read again when a
+     * suggestion moves, or an agent's access does (a done row reads the live grant).
+     */
+    recommendations: createKinQueryAtomFamily(runtime, {
+      label: "kin:recommendations",
+      execute: Effect.fn("KinClient.recommendations")(function* (input: KinRecommendationsInput) {
+        return yield* readRecommendations(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: (target: {
+        readonly environmentId: EnvironmentId;
+        readonly input: KinRecommendationsInput;
+      }) =>
+        Atom.make(
+          (get) =>
+            `${get(kinRefreshOn("recommendations")(target))}|${get(kinRefreshOn("leads")(target))}`,
+        ),
+    }),
+    /** Its `permissionAtom` is whether Settings shows Recommendations at all. */
+    recommendationAskAgain: createKinRpcCommand(runtime, {
+      label: "kin:recommendation:ask-again",
+      tag: "kin.recommendations.askAgain",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.recId },
     }),
     /** Makes a key for the caller. The answer carries the secret once; nothing here keeps it. */
     tasksKeyIssue: createKinRpcCommand(runtime, {
