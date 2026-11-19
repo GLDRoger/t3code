@@ -2666,6 +2666,20 @@ const make = Effect.gen(function* () {
         ),
     );
     if (replaced.length > 0) yield* levelGate.closeReplaced(turn, replaced);
+    // A mail filed under an entry shows on its Tasks row, in place of any card this replaced.
+    // Read from the caller (the agent's MCP call has Kin's services): this layer is built beside
+    // `KinRecords`, not on it, so `records` above is empty on a running server.
+    const caller = yield* Effect.serviceOption(KinRecords);
+    if (entryRecordId !== null && Option.isSome(caller))
+      yield* sql.afterCommit(
+        caller.value
+          .announce(turn.orgId)
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin couldn't tell Tasks to read again", { cause }),
+            ),
+          ),
+      );
     yield* record(turn, { ...entry, status: "awaiting_approval" });
     const note = outside === undefined ? ASKED : DRAFTED;
     const names = [...new Set(savedOver.map((one) => one.name))].join(" and ");

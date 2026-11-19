@@ -37,6 +37,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { fromConnections, poll } from "../pulse/outside.ts";
+import * as KinRecords from "../work/KinRecords.ts";
 import { waitingCards } from "../work/recordComments.ts";
 import * as ConnectionSecrets from "./ConnectionSecrets.ts";
 import {
@@ -130,8 +131,9 @@ const gateFor = (cards: Array<Card>) =>
     ),
   );
 
+// Records beside connections, as on a running server (`kin/layer.ts`), not under them.
 const layerFor = (fake: FakeMail, cards: Array<Card>) =>
-  Connections.layer.pipe(
+  Layer.merge(Connections.layer, KinRecords.layer).pipe(
     Layer.provide(gateFor(cards)),
     Layer.provide(ConnectionSecrets.layer),
     Layer.provide(McpGateway.layer),
@@ -740,12 +742,19 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           assert.include(found.quoted ?? "", String.raw`\"account\":\"${ACCOUNTS}\"`);
           assert.include(found.quoted ?? "", "Billing contact");
 
+          // An open Tasks list reads again once a mail for an entry is drawn (`KinRecords.announce`).
+          const taken = sql<{ seq: number }>`SELECT seq FROM sqlite_sequence
+            WHERE name = 'kin_record_changes'`.pipe(Effect.map(([row]) => row?.seq ?? 0));
+          // As a host that logged changes before: `announce` takes the number after the last.
+          yield* sql`INSERT INTO sqlite_sequence (name, seq) VALUES ('kin_record_changes', 7)`;
+          const before = yield* taken;
           yield* callTool(ACCOUNTS, "mail_send", {
             to: ["ravi@lumen.example"],
             subject: "Invoice INV/26-27/001",
             body: "Hi Ravi,\n\nThe November invoice is attached.\n\nArjun",
             attachments: ["INV-1"],
           });
+          assert.strictEqual(yield* taken, before + 1);
           const card = cards.at(-1)!;
           // Drafted after the search, which read both accounts: either may be named.
           assert.oneOf(card.question, [
