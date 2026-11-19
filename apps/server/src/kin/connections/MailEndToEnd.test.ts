@@ -386,9 +386,9 @@ const callTool = (
   });
 /**
  * A person's tap on a card, in the tap's transaction, then the send once it committed. `checked`:
- * they ticked that they checked the sent mail.
+ * the try (`send.mayHaveGone.at`) they ticked that they checked the sent mail for.
  */
-const tap = (widgetId: string, personId: KinPersonId, confirmed = true, checked = false) =>
+const tap = (widgetId: string, personId: KinPersonId, confirmed = true, checked?: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const connections = yield* KinConnections;
@@ -400,7 +400,7 @@ const tap = (widgetId: string, personId: KinPersonId, confirmed = true, checked 
         confirmed,
         via: "tap",
         now: NOW,
-        checkedSent: checked,
+        ...(checked === undefined ? {} : { checkedSent: checked }),
       }),
     );
     return asked?._tag === "send" ? yield* connections.sendAsk(orgId, asked.askId) : asked;
@@ -485,7 +485,7 @@ const editCards = (cards: Array<Card>, taps: Array<{ widgetId: string; askId?: s
             confirmed: input.value === "option-1",
             via: "tap",
             now: NOW,
-            checkedSent: input.checkedSent === true,
+            ...(input.checkedSent === undefined ? {} : { checkedSent: input.checkedSent }),
           })
           .pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
@@ -498,6 +498,7 @@ const editCards = (cards: Array<Card>, taps: Array<{ widgetId: string; askId?: s
               ),
             ),
           ),
+      rewrite: rewriteIn(sql),
     }),
   );
 /** The person's own words on a card, sent in one step, then the send once it committed. */
@@ -508,7 +509,7 @@ const sendEdited = (
   edit: { to: ReadonlyArray<string>; cc?: ReadonlyArray<string>; subject?: string; body?: string },
   press = "press-1",
   revision = 1,
-  checked = false,
+  checked?: string,
 ) =>
   Effect.gen(function* () {
     const connections = yield* KinConnections;
@@ -524,7 +525,7 @@ const sendEdited = (
         cc: edit.cc ?? card.send?.cc ?? [],
         subject: edit.subject ?? card.send?.subject ?? "",
         body: edit.body ?? card.send?.body ?? "",
-        ...(checked ? { checkedSent: true as const } : {}),
+        ...(checked === undefined ? {} : { checkedSent: checked }),
       },
       yield* editCards(cards, taps),
     );
@@ -537,7 +538,11 @@ const sendEdited = (
 /** The chat side of a saved edit: the stored card is redrawn in place, one revision on. */
 const saveCards = Effect.map(SqlClient.SqlClient, (sql): SaveCards => ({
   canTap: () => Effect.void,
-  rewrite: (card) =>
+  rewrite: rewriteIn(sql),
+}));
+/** A stored card redrawn in place, bound to its revision, as the chat's `setSendCard` does. */
+function rewriteIn(sql: SqlClient.SqlClient): SaveCards["rewrite"] {
+  return (card) =>
     Effect.gen(function* () {
       const [row] = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
           WHERE widget_id = ${card.widgetId} AND revision = ${card.revision}`.pipe(Effect.orDie);
@@ -548,8 +553,8 @@ const saveCards = Effect.map(SqlClient.SqlClient, (sql): SaveCards => ({
             revision = revision + 1
           WHERE widget_id = ${card.widgetId}`.pipe(Effect.orDie);
       return { revision: card.revision + 1 };
-    }),
-}));
+    });
+}
 /** A person's words kept on a card without sending; `null` puts the agent's draft back. */
 const saveEdited = (
   card: Card,
@@ -1442,6 +1447,8 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         const fresh = yield* connections.freshAsk(orgId, failed.fresh, NOW);
         if (fresh === undefined) return assert.fail("no fresh card");
         assert.strictEqual(fresh.card.send.account, HELLO);
+        // A known refusal is no try that may have gone.
+        assert.notProperty(fresh.card.send, "mayHaveGone");
         assert.deepInclude(fresh.card.send, {
           ...theirs,
           edited: { personId: owner, name: "Arjun" },
@@ -1521,7 +1528,45 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         });
         assert.strictEqual(yield* askOn(redraft.widgetId), "open");
         assert.lengthOf(fake.sent(), 2);
-        assert.deepStrictEqual(yield* tap(redraft.widgetId, owner, true, true), {
+        // A tick acknowledges one try. Ticked for that one (A), the redraft is confirmed: try B.
+        // While B is on its way the agent puts up card C for the same mail, warned of A; B then
+        // ends unknown too, and C, redrawn with B, takes only a tick for B.
+        const tryB = yield* sql.withTransaction(
+          connections.answerAsk({
+            orgId,
+            widgetId: redraft.widgetId,
+            personId: owner,
+            confirmed: true,
+            via: "tap",
+            now: NOW,
+            checkedSent: triedAt,
+          }),
+        );
+        if (tryB?._tag !== "send") return assert.fail("try B not sending");
+        yield* wake({ person: owner });
+        const cardC = yield* reply("Yes, and the PDF is attached. C");
+        assert.deepStrictEqual(cardC.send?.mayHaveGone, { at: triedAt });
+        yield* stored(cardC);
+        yield* TestClock.adjust("1 minute");
+        const triedB = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+        fake.setDown(HELLO, true);
+        const endedB = yield* connections.sendAsk(orgId, tryB.askId);
+        fake.setDown(HELLO, false);
+        assert.include(endedB.reason ?? "", "This may or may not have gone.");
+        assert.deepStrictEqual(
+          (yield* connections.openWarnings(orgId, redraft.widgetId)).map((one) => [
+            one.widgetId,
+            one.send.mayHaveGone,
+          ]),
+          [[cardC.widgetId, { at: triedB }]],
+        );
+        assert.deepInclude(yield* tap(cardC.widgetId, owner, true, triedAt).pipe(Effect.flip), {
+          reason: "conflict",
+          message: NOT_CHECKED,
+        });
+        assert.strictEqual(yield* askOn(cardC.widgetId), "open");
+        assert.lengthOf(fake.sent(), 2);
+        assert.deepStrictEqual(yield* tap(cardC.widgetId, owner, true, triedB), {
           state: "sent",
           reason: null,
         });
@@ -1586,10 +1631,13 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.include(yield* tap(correction.widgetId, owner).pipe(Effect.flip), {
           reason: "conflict",
         });
-        assert.deepStrictEqual(yield* tap(correction.widgetId, owner, true, true), {
-          state: "sent",
-          reason: null,
-        });
+        assert.deepStrictEqual(
+          yield* tap(correction.widgetId, owner, true, warned?.send.mayHaveGone?.at),
+          {
+            state: "sent",
+            reason: null,
+          },
+        );
         assert.lengthOf(fake.sent(), 5);
         assert.include(fake.sent()[4]!.body, "including GST");
 
@@ -1632,7 +1680,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.deepStrictEqual(row?.mayHaveGone, refiled.card.send.mayHaveGone);
         assert.include(yield* tap("w-refiled", owner).pipe(Effect.flip), { reason: "conflict" });
         assert.lengthOf(fake.sent(), 5);
-        assert.deepStrictEqual(yield* tap("w-refiled", owner, true, true), {
+        assert.deepStrictEqual(yield* tap("w-refiled", owner, true, row?.mayHaveGone?.at), {
           state: "sent",
           reason: null,
         });
@@ -1680,6 +1728,112 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.deepStrictEqual(yield* tap("w-back", owner), { state: "sent", reason: null });
         assert.deepInclude(fake.sent()[6], { to: agents.to, cc: [], subject: agents.subject });
         assert.match(fake.sent()[6]!.body, /^Yes, all settled\.\n\nOn /);
+
+        // The warning follows where a try went. Send edited moves a reply to Dev, and the account
+        // gives no clear answer: a later card to Dev in the thread warns, though the try's draft
+        // was to Ravi; a card whose saved words go elsewhere does not, and Discard brings it back.
+        const toRavi = yield* reply("The receipt is on its way.");
+        yield* stored(toRavi);
+        const movedAt = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+        fake.setDown(HELLO, true);
+        const moved = yield* sendEdited(cards, toRavi, owner, { to: ["dev@lumen.example"] }, "m");
+        fake.setDown(HELLO, false);
+        assert.include(moved.outcomes[0]?.reason ?? "", "This may or may not have gone.");
+        assert.lengthOf(fake.sent(), 7);
+        fake.deliver({
+          to: HELLO,
+          from: "Dev <dev@lumen.example>",
+          subject: "Re: Invoice question",
+          body: "Did the receipt go out?",
+          threadId: inbound.threadId,
+          at: NOW,
+        });
+        yield* wake({ person: owner });
+        const toDev = yield* reply("The receipt is on its way.");
+        assert.deepStrictEqual(toDev.send?.to, ["dev@lumen.example"]);
+        assert.deepStrictEqual(toDev.send?.mayHaveGone, { at: movedAt });
+        yield* stored(toDev);
+        assert.deepInclude(yield* tap(toDev.widgetId, owner).pipe(Effect.flip), {
+          message: NOT_CHECKED,
+        });
+        const shownOn = (widgetId: string) =>
+          sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+            WHERE widget_id = ${widgetId}`.pipe(Effect.map(([one]) => JSON.parse(one!.state).send));
+        const away = {
+          to: ["ravi@lumen.example"],
+          cc: [],
+          subject: toDev.send!.subject,
+          body: toDev.send!.body,
+        };
+        yield* saveEdited(toDev, owner, 1, away);
+        assert.notProperty(yield* shownOn(toDev.widgetId), "mayHaveGone");
+        yield* saveEdited(toDev, owner, 2, null);
+        assert.deepStrictEqual((yield* shownOn(toDev.widgetId)).mayHaveGone, { at: movedAt });
+        yield* saveEdited(toDev, owner, 3, away);
+        assert.notProperty(yield* shownOn(toDev.widgetId), "mayHaveGone");
+        assert.deepStrictEqual(yield* tap(toDev.widgetId, owner), { state: "sent", reason: null });
+        assert.deepStrictEqual(fake.sent()[7]?.to, ["ravi@lumen.example"]);
+
+        // A try that ended unknown before the marker existed still warns, by its reason. Its
+        // retry, drawn by that build without the warning, refuses a Confirm without the tick and
+        // is redrawn with it in the same call, Send edited's included.
+        const zoya = fake.deliver({
+          to: HELLO,
+          from: "Zoya <zoya@lumen.example>",
+          subject: "Statement",
+          body: "Could you send the statement?",
+          at: NOW,
+        });
+        yield* wake({ person: owner });
+        const old = yield* callTool(HELLO, "mail_reply", {
+          threadId: zoya.threadId,
+          body: "Here it is.",
+        }).pipe(Effect.map(() => cards.at(-1)!));
+        fake.setDown(HELLO, true);
+        const oldTry = yield* tap(old.widgetId, owner);
+        fake.setDown(HELLO, false);
+        if (oldTry === undefined || !("state" in oldTry) || oldTry.fresh === undefined)
+          return assert.fail("no fresh card after the old try");
+        const [oldRow] = yield* sql<{ doneAt: number }>`UPDATE kin_connection_asks
+            SET result_json = NULL WHERE widget_id = ${old.widgetId}
+            RETURNING done_at AS "doneAt"`;
+        const oldAt = DateTime.formatIso(DateTime.makeUnsafe(oldRow!.doneAt));
+        const again = yield* connections.freshAsk(orgId, oldTry.fresh, NOW);
+        if (again === undefined) return assert.fail("no fresh card");
+        assert.deepStrictEqual(again.card.send.mayHaveGone, { at: oldAt });
+        yield* again.bind("w-legacy");
+        const { mayHaveGone: _drawnWith, ...unwarned } = again.card.send;
+        const legacy: Card = { ...old, widgetId: "w-legacy", send: unwarned };
+        yield* stored(legacy);
+        const pressed = yield* sendEdited(cards, legacy, owner, { to: unwarned.to }, "legacy").pipe(
+          Effect.flip,
+        );
+        assert.deepInclude(pressed, { reason: "conflict", message: NOT_CHECKED });
+        assert.deepStrictEqual((yield* shownOn("w-legacy")).mayHaveGone, { at: oldAt });
+        assert.strictEqual(yield* askOn("w-legacy"), "open");
+        yield* sql`UPDATE kin_widgets SET state_json = json_remove(state_json, '$.send.mayHaveGone')
+          WHERE widget_id = 'w-legacy'`;
+        assert.deepInclude(yield* tap("w-legacy", owner).pipe(Effect.flip), {
+          message: NOT_CHECKED,
+        });
+        yield* connections.redrawWarning(orgId, "w-legacy", (yield* saveCards).rewrite);
+        assert.deepStrictEqual((yield* shownOn("w-legacy")).mayHaveGone, { at: oldAt });
+        assert.lengthOf(fake.sent(), 8);
+        // Another agent's new card for that mail warns too.
+        yield* wake({ person: owner }, finance);
+        yield* callTool(
+          HELLO,
+          "mail_reply",
+          { threadId: zoya.threadId, body: "Here it is. Finance" },
+          financeScope,
+        );
+        const fromFinance = cards.findLast((one) => !one.widgetId.startsWith("closed:"))!;
+        assert.deepStrictEqual(fromFinance.send?.mayHaveGone, { at: oldAt });
+        assert.deepStrictEqual(yield* tap(fromFinance.widgetId, owner, true, oldAt), {
+          state: "sent",
+          reason: null,
+        });
+        assert.lengthOf(fake.sent(), 9);
       }),
     ),
   );

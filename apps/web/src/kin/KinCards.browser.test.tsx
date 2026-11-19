@@ -323,19 +323,26 @@ describe("a mail card's Edit", () => {
     await expect.element(screen.getByText(/may already have gone/)).toBeVisible();
     await expect.element(page.getByRole("button", { name: "Confirm" })).toBeDisabled();
     await expect.element(page.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    const tick = page.getByRole("checkbox", { name: "I've checked the sent mail" });
+    await userEvent.click(tick);
+    await expect.element(page.getByRole("button", { name: "Confirm" })).toBeEnabled();
+    // A later try becomes the reason: the tick was for the earlier one, so it clears.
+    const later = "2026-11-19T08:45:00.000Z";
+    await screen.rerender(view(mail({ revision: 3, send: { mayHaveGone: { at: later } } })));
+    await expect.element(tick).not.toBeChecked();
+    await expect.element(page.getByRole("button", { name: "Confirm" })).toBeDisabled();
     await userEvent.click(page.getByRole("button", { name: "Edit" }));
     await expect.element(page.getByRole("button", { name: "Send edited mail" })).toBeDisabled();
-    const tick = page.getByRole("checkbox", { name: "I've checked the sent mail" });
     await userEvent.click(tick);
     await expect.element(tick).toBeChecked();
     await userEvent.fill(page.getByLabelText("Message"), "Hi Anita,\nResending the invoice.\nRhea");
     await userEvent.click(page.getByRole("button", { name: "Send edited mail" }));
     await expect.element(page.getByLabelText("To")).not.toBeInTheDocument();
-    expect(state.sent[0]).toMatchObject({ widgetId: "choice:m1", checkedSent: true });
+    expect(state.sent[0]).toMatchObject({ widgetId: "choice:m1", checkedSent: later });
     // The plain Confirm carries the same tick.
     await userEvent.click(page.getByRole("button", { name: "Confirm" }));
     await vi.waitFor(() => expect(state.acted).toHaveLength(1));
-    expect(state.acted[0]).toMatchObject({ value: "option-1", checkedSent: true });
+    expect(state.acted[0]).toMatchObject({ value: "option-1", checkedSent: later });
   });
 
   it("shows a reply's From and the quote that goes with it, and Enter in a field sends nothing", async () => {

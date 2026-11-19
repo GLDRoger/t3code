@@ -1,14 +1,19 @@
-import { type KinOrgId, type KinPersonId, KinWidgetId } from "@t3tools/contracts";
+import { KinChatError, type KinOrgId, type KinPersonId, KinWidgetId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { isPrivateWriteRefused } from "../chat/KinChatRepository.ts";
-import { type ChoiceAnswerHandler, KinChatService } from "../chat/KinChatService.ts";
-import { KinConnections, type StaleAsk } from "../connections/ConnectionsService.ts";
+import {
+  type ChoiceAnswerHandler,
+  type ChoiceRefusedHandler,
+  KinChatService,
+} from "../chat/KinChatService.ts";
+import { isNotChecked, KinConnections, type StaleAsk } from "../connections/ConnectionsService.ts";
 import { cardDecision } from "../memory/decisions.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
@@ -72,7 +77,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
     confirmed: input.option.kind === "yes",
     via: input.via,
     now: input.now,
-    checkedSent: input.checkedSent === true,
+    ...(input.checkedSent === undefined ? {} : { checkedSent: input.checkedSent }),
   });
   if (asked !== undefined && asked._tag !== "declined")
     yield* sql.afterCommit(afterTap(sendAsked(input, asked), scope));
@@ -106,6 +111,39 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   return undefined;
 });
 
+/**
+ * After a Confirm refused for its sent-mail tick: a card that doesn't show the warning that stands
+ * is redrawn with it, so the person has the box to tick.
+ */
+export const refusedChoice = Effect.fn("KinCardAnswers.refused")(function* (
+  input: Parameters<ChoiceRefusedHandler>[0],
+) {
+  if (!isNotChecked(input.error)) return;
+  const chat = yield* KinChatService;
+  let redrawn = false;
+  yield* (yield* KinConnections).redrawWarning(input.orgId, input.widgetId, (card) =>
+    chat
+      .setSendCard({ ...card, orgId: input.orgId, widgetId: KinWidgetId.make(card.widgetId) })
+      .pipe(
+        Effect.tap(() => Effect.sync(() => (redrawn = true))),
+        Effect.mapError((cause) =>
+          isChatError(cause)
+            ? cause
+            : new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
+        ),
+      ),
+  );
+  if (redrawn) yield* tasksReread(input.orgId);
+});
+
+/** A mail card's warning moved: Tasks rows read again, so a row offers what its card now does. */
+const tasksReread = (orgId: KinOrgId) =>
+  Effect.flatMap(KinRecords, (records) => records.announce(orgId)).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin couldn't tell Tasks to read again", { cause }),
+    ),
+  );
+
 /** Saves the answer to memory once the tap commits, when the owner or a co-owner gave it. */
 const saveDecision = Effect.fn("KinCardAnswers.saveDecision")(function* (
   input: Parameters<ChoiceAnswerHandler>[0],
@@ -126,6 +164,7 @@ const saveDecision = Effect.fn("KinCardAnswers.saveDecision")(function* (
     yield* sql.afterCommit(afterTap(memory.value.recordDecision(input.orgId, decision), scope));
 });
 
+const isChatError = Schema.is(KinChatError);
 const at = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 /** A send card's outcome line, and the same mail on a fresh card when it came back. */
@@ -152,8 +191,9 @@ const showOutcome = Effect.fn("KinCardAnswers.outcome")(function* (
     ),
   );
   // Another card for the same mail takes the warning that this try may have gone, or loses it.
-  if (state !== "sending")
-    for (const one of yield* connections.openWarnings(orgId, widgetId))
+  if (state !== "sending") {
+    const redrawn = yield* connections.openWarnings(orgId, widgetId);
+    for (const one of redrawn)
       yield* chat
         .setSendCard({ ...one, orgId, widgetId: KinWidgetId.make(one.widgetId) })
         .pipe(
@@ -161,6 +201,8 @@ const showOutcome = Effect.fn("KinCardAnswers.outcome")(function* (
             Effect.logWarning("Kin couldn't redraw a card for the same mail", { cause }),
           ),
         );
+    if (redrawn.length > 0) yield* tasksReread(orgId);
+  }
   if (!told || fresh === undefined) return;
   const again = yield* connections.freshAsk(orgId, fresh, now);
   if (again === undefined) return;

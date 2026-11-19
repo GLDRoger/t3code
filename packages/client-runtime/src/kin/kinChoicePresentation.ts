@@ -88,7 +88,12 @@ export interface KinSendView {
    * On an unanswered card, that an earlier try at this mail may already have gone, and when;
    * its Confirm (`confirmId`) then needs the person's tick that they checked. Null otherwise.
    */
-  readonly mayHaveGone: { readonly line: string; readonly confirmId: string | null } | null;
+  readonly mayHaveGone: {
+    readonly line: string;
+    /** The try it is about; a tick acknowledges this one only. */
+    readonly at: string;
+    readonly confirmId: string | null;
+  } | null;
 }
 
 /** A mail card's editable words, as its form holds them: addresses comma-separated. */
@@ -279,7 +284,11 @@ function kinSendView(send: KinSendCard, now: Date, confirmId: string | null): Ki
     mayHaveGone:
       send.mayHaveGone === undefined || send.outcome !== null
         ? null
-        : { line: kinMayHaveGoneLine(send.mayHaveGone.at, now), confirmId },
+        : {
+            line: kinMayHaveGoneLine(send.mayHaveGone.at, now),
+            at: send.mayHaveGone.at,
+            confirmId,
+          },
   };
 }
 
@@ -516,12 +525,12 @@ export function kinChoiceAccessibilityLabel(
   ]);
 }
 
-/** `checked`: the person ticked that they checked the sent mail, as `send.mayHaveGone` asks. */
+/** `checkedSent`: the try the person's sent-mail tick is for (`kinSendTicked`). */
 export function kinChoiceActInput(
   view: Pick<KinChoiceCardView, "widgetId" | "revision">,
   optionId: string,
   clientActionId: string,
-  checked = false,
+  checkedSent: string | null = null,
 ): KinWidgetsActInput {
   return {
     widgetId: view.widgetId,
@@ -529,8 +538,20 @@ export function kinChoiceActInput(
     actionId: KIN_CHOICE_CARD_ACTION,
     value: optionId,
     clientActionId,
-    ...(checked ? { checkedSent: true as const } : {}),
+    ...(checkedSent === null ? {} : { checkedSent }),
   };
+}
+
+/**
+ * The try a person's tick (the `at` they ticked for) acknowledges on this card now: null once
+ * the warning names another try, so a tick never carries over to a later one.
+ */
+export function kinSendTicked(
+  view: Pick<KinChoiceCardView, "send">,
+  ticked: string | null,
+): string | null {
+  const gone = view.send?.mayHaveGone ?? null;
+  return gone !== null && gone.at === ticked ? ticked : null;
 }
 
 /**
@@ -539,11 +560,15 @@ export function kinChoiceActInput(
  */
 export function kinSendCheckPending(
   view: Pick<KinChoiceCardView, "send">,
-  checked: boolean,
+  ticked: string | null,
   optionId?: string,
 ): boolean {
   const gone = view.send?.mayHaveGone ?? null;
-  return gone !== null && !checked && (optionId === undefined || optionId === gone.confirmId);
+  return (
+    gone !== null &&
+    kinSendTicked(view, ticked) === null &&
+    (optionId === undefined || optionId === gone.confirmId)
+  );
 }
 
 /**
@@ -715,7 +740,7 @@ export function kinSendEditInput(
   view: Pick<KinChoiceCardView, "orgId" | "widgetId" | "revision">,
   editing: KinSendEditing,
   clientActionId: string,
-  checked = false,
+  checkedSent: string | null = null,
 ): KinConnectionSendEditedInput {
   return {
     orgId: view.orgId,
@@ -726,7 +751,7 @@ export function kinSendEditInput(
     cc: addresses(editing.draft.cc),
     subject: editing.draft.subject,
     body: editing.draft.body,
-    ...(checked ? { checkedSent: true as const } : {}),
+    ...(checkedSent === null ? {} : { checkedSent }),
   };
 }
 

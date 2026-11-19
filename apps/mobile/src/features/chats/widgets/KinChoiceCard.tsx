@@ -48,6 +48,7 @@ import {
   kinSendEditStart,
   kinSendEditUnsaved,
   kinSendCheckPending,
+  kinSendTicked,
   KIN_SEND_CHECKED,
   KIN_SEND_EDIT_COPY,
   type KinSendEditBusy,
@@ -380,18 +381,19 @@ function SendEditor(props: {
 /** An earlier try at this mail may have gone: the closed card's warning, and the tick Confirm needs. */
 function SendMayHaveGone(props: {
   readonly line: string;
+  /** The card's spoken label says the line; ungrouped (editing, picking From), the line speaks. */
+  readonly grouped: boolean;
   readonly checked: boolean;
   readonly disabled: boolean;
   readonly onChange: (checked: boolean) => void;
 }) {
   return (
     <View className="gap-1.5">
-      {/* The card's spoken label already says it. */}
       <Text
         textRole="footnote"
         className="font-t3-medium text-danger-foreground"
-        importantForAccessibility="no"
-        accessibilityElementsHidden
+        importantForAccessibility={props.grouped ? "no" : "auto"}
+        accessibilityElementsHidden={props.grouped}
       >
         {props.line}
       </Text>
@@ -488,13 +490,15 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   const [lastStatus, setLastStatus] = useState<
     (KinCardStatus & { readonly optionId: string }) | null
   >(null);
-  // The person's tick that they checked the sent mail; the press reads it when it posts.
-  const [checked, setChecked] = useState(false);
-  const checkedNow = useRef(false);
+  // The try the person ticked they checked the sent mail for; the press reads it when it posts.
+  // It counts only while the card's warning names that try (`kinSendTicked`).
+  const [ticked, setTicked] = useState<string | null>(null);
+  const tickedNow = useRef<string | null>(null);
   const check = (next: boolean) => {
-    checkedNow.current = next;
-    setChecked(next);
+    tickedNow.current = next ? (choice.send?.mayHaveGone?.at ?? null) : null;
+    setTicked(tickedNow.current);
   };
+  const checked = kinSendTicked(choice, ticked) !== null;
   const status = visibleKinCardStatus(lastStatus, choice.revision);
   const phase = kinChoicePhase(choice, nowMs);
   // Until the answered card arrives, the tapped option already reads as chosen.
@@ -508,7 +512,8 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
     if (actions.current === null)
       actions.current = createKinCardActions<KinChoiceCardView, string>({
         newId: uuidv4,
-        toInput: (view, optionId, id) => kinChoiceActInput(view, optionId, id, checkedNow.current),
+        toInput: (view, optionId, id) =>
+          kinChoiceActInput(view, optionId, id, kinSendTicked(view, tickedNow.current)),
         failureNotice: kinChoiceFailureNotice,
         post: async (input) => {
           const result = await post({ environmentId, input });
@@ -573,7 +578,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
     setEditBusy("sending");
     const result = await sendEdited({
       environmentId,
-      input: kinSendEditInput(choice, shownEdit, uuidv4(), checked),
+      input: kinSendEditInput(choice, shownEdit, uuidv4(), kinSendTicked(choice, ticked)),
     });
     setEditBusy(null);
     settle(
@@ -649,11 +654,12 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       ? { busy: switching, problem: switchProblem, pick: (id: string) => void pickFrom(id) }
       : null;
 
+  const grouped = fromPicker === null && shownEdit === null;
   return (
     <View className="gap-2.5 rounded-[20px] border border-border bg-card-alt p-4">
       <View
         // Grouped for VoiceOver, except while Change or the editor sits inside: a group hides them.
-        accessible={fromPicker === null && shownEdit === null}
+        accessible={grouped}
         accessibilityLabel={kinChoiceAccessibilityLabel(choice, answered?.text ?? takes, edited, {
           message: true,
         })}
@@ -679,7 +685,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
               choice,
               editBusy,
               editable,
-              kinSendCheckPending(choice, checked),
+              kinSendCheckPending(choice, ticked),
             )}
             onChange={(draft) => setEditing({ ...shownEdit, draft })}
             onSave={() => void saveEdit()}
@@ -700,6 +706,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       {choice.send?.mayHaveGone == null || answered !== null || phase !== "open" ? null : (
         <SendMayHaveGone
           line={choice.send.mayHaveGone.line}
+          grouped={grouped}
           checked={checked}
           disabled={!canAct || pending !== null || editBusy !== null}
           onChange={check}
@@ -754,7 +761,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
                   disabled={
                     (pending !== null && pending !== option.id) ||
                     switching ||
-                    kinSendCheckPending(choice, checked, option.id)
+                    kinSendCheckPending(choice, ticked, option.id)
                   }
                   onPress={() => void press(option.id)}
                 />

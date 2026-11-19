@@ -34,6 +34,7 @@ import {
   kinSendEditStart,
   kinSendEditUnsaved,
   kinSendCheckPending,
+  kinSendTicked,
   KIN_SEND_CHECKED,
   KIN_SEND_EDIT_COPY,
   type KinSendEditBusy,
@@ -411,13 +412,15 @@ function KinChoiceCard(props: {
   const [lastStatus, setLastStatus] = useState<
     (KinCardStatus & { readonly optionId: string }) | null
   >(null);
-  // The person's tick that they checked the sent mail; the press reads it when it posts.
-  const [checked, setChecked] = useState(false);
-  const checkedNow = useRef(false);
+  // The try the person ticked they checked the sent mail for; the press reads it when it posts.
+  // It counts only while the card's warning names that try (`kinSendTicked`).
+  const [ticked, setTicked] = useState<string | null>(null);
+  const tickedNow = useRef<string | null>(null);
   const check = (next: boolean) => {
-    checkedNow.current = next;
-    setChecked(next);
+    tickedNow.current = next ? (choice.send?.mayHaveGone?.at ?? null) : null;
+    setTicked(tickedNow.current);
   };
+  const checked = kinSendTicked(choice, ticked) !== null;
   const status = visibleKinCardStatus(lastStatus, choice.revision);
   const phase = kinChoicePhase(choice, nowMs);
   const sentOption =
@@ -430,7 +433,8 @@ function KinChoiceCard(props: {
     if (actions.current === null)
       actions.current = createKinCardActions<KinChoiceCardView, string>({
         newId: randomUUID,
-        toInput: (view, optionId, id) => kinChoiceActInput(view, optionId, id, checkedNow.current),
+        toInput: (view, optionId, id) =>
+          kinChoiceActInput(view, optionId, id, kinSendTicked(view, tickedNow.current)),
         failureNotice: kinChoiceFailureNotice,
         post,
       });
@@ -491,7 +495,7 @@ function KinChoiceCard(props: {
     setEditBusy("sending");
     const result = await sendEdited({
       environmentId,
-      input: kinSendEditInput(choice, shownEdit, randomUUID(), checked),
+      input: kinSendEditInput(choice, shownEdit, randomUUID(), kinSendTicked(choice, ticked)),
     });
     setEditBusy(null);
     settle(
@@ -571,7 +575,7 @@ function KinChoiceCard(props: {
             choice,
             editBusy,
             editable,
-            kinSendCheckPending(choice, checked),
+            kinSendCheckPending(choice, ticked),
           )}
           onChange={(draft) => setEditing({ ...shownEdit, draft })}
           onSave={() => void saveEdit()}
@@ -621,7 +625,7 @@ function KinChoiceCard(props: {
                   size="sm-multiline"
                   aria-busy={pending === option.id}
                   disabled={
-                    pending !== null || switching || kinSendCheckPending(choice, checked, option.id)
+                    pending !== null || switching || kinSendCheckPending(choice, ticked, option.id)
                   }
                   onClick={() => void press(option.id)}
                 >

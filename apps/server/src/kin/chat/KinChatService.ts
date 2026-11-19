@@ -146,6 +146,12 @@ type WidgetUpsertInput = {
   readonly awaiting?: ReadonlyArray<KinPersonId> | undefined;
   readonly closed?: boolean | undefined;
 };
+/** After a refused choice tap rolled back, as its own step: a redraw that offers what it lacked. */
+export type ChoiceRefusedHandler = (input: {
+  readonly orgId: KinOrgId;
+  readonly widgetId: KinWidgetId;
+  readonly error: unknown;
+}) => Effect.Effect<void>;
 /**
  * Server work an owner's answer on a choice card carries out, in the tap's own transaction:
  * attached by the layer that has records and documents, which the chat layer sits under.
@@ -160,8 +166,8 @@ export type ChoiceAnswerHandler = (input: {
   readonly plan?: CardPlans.CardPlan;
   readonly via: "tap" | "reaction";
   readonly now: number;
-  /** The tap's word that the person checked the sent mail (`KinWidgetsActInput.checkedSent`). */
-  readonly checkedSent?: boolean;
+  /** The try the person's sent-mail tick acknowledges (`KinWidgetsActInput.checkedSent`). */
+  readonly checkedSent?: string;
 }) => Effect.Effect<
   KinChoiceOutcome | undefined,
   KinChatError | Repository.RepositoryError | SqlError.SqlError | Schema.SchemaError
@@ -174,8 +180,10 @@ type WaitingInput = Pick<
 export class KinChatService extends Context.Service<
   KinChatService,
   {
+    /** `refused`: after a refused tap on a choice card rolled back, as its own step. */
     readonly attachChoiceAnswers: (
       handler: ChoiceAnswerHandler,
+      refused?: ChoiceRefusedHandler,
     ) => Effect.Effect<void, never, Scope.Scope>;
     readonly notice: (input: {
       readonly messageId: KinMessageId;
@@ -518,6 +526,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const refresh = yield* KinRefreshObserver;
   let onChoice: ChoiceAnswerHandler | undefined;
+  let onRefused: ChoiceRefusedHandler | undefined;
   const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     sql
       .withTransaction(effect)
@@ -910,6 +919,24 @@ const make = Effect.gen(function* () {
     }
     return message;
   });
+  /** After a refused tap rolled back: what its card's answers hand on, such as a redraw. */
+  const refusedTap = (caller: PersonCaller, input: KinWidgetsActInput, error: unknown) => {
+    const refused = onRefused;
+    if (refused === undefined || !isKinChatError(error) || error.reason !== "conflict")
+      return Effect.void;
+    return personFor(caller, input).pipe(
+      Effect.flatMap((identity) =>
+        refused({ orgId: identity.orgId, widgetId: input.widgetId, error }),
+      ),
+      Effect.ignore,
+    );
+  };
+  /** `act`'s transaction; a refused tap's card answers then run after its rollback. */
+  const refusedAfter = <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+    caller: PersonCaller,
+    input: KinWidgetsActInput,
+  ) => transaction(effect).pipe(Effect.tapError((error) => refusedTap(caller, input, error)));
   // A tap, or an owner's yes/no reaction mapped to its option: the same checks and compare-and-set.
   const actOn = Effect.fn("KinChatService.actOn")(function* (
     identity: PersonIdentity,
@@ -1109,7 +1136,7 @@ const make = Effect.gen(function* () {
             ...(sealed?.plan === undefined ? {} : { plan: sealed.plan }),
             via: reaction === null ? "tap" : "reaction",
             now: yield* Clock.currentTimeMillis,
-            ...(request.checkedSent === true ? { checkedSent: true } : {}),
+            ...(request.checkedSent === undefined ? {} : { checkedSent: request.checkedSent }),
           }).pipe(
             Effect.mapError((cause) =>
               SqlError.isSqlError(cause) || Schema.isSchemaError(cause)
@@ -1691,17 +1718,21 @@ const make = Effect.gen(function* () {
       }
       return { message, waiting };
     }, transaction),
-    attachChoiceAnswers: Effect.fn("KinChatService.attachChoiceAnswers")(function* (handler) {
-      yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          onChoice = handler;
-        }),
-        () =>
+    attachChoiceAnswers: Effect.fn("KinChatService.attachChoiceAnswers")(
+      function* (handler, refused) {
+        yield* Effect.acquireRelease(
           Effect.sync(() => {
-            if (onChoice === handler) onChoice = undefined;
+            onChoice = handler;
+            onRefused = refused;
           }),
-      );
-    }),
+          () =>
+            Effect.sync(() => {
+              if (onChoice === handler) onChoice = undefined;
+              if (onRefused === refused) onRefused = undefined;
+            }),
+        );
+      },
+    ),
     resolveNotice: Effect.fn("KinChatService.resolveNotice")(function* (input) {
       const item = yield* requireRecord(repo.getWaiting(input));
       if (item.reason !== "question" || item.messageId === null) return yield* notAllowed;
@@ -2756,7 +2787,7 @@ const make = Effect.gen(function* () {
       )
         return yield* notAllowed;
       return yield* actOn(identity, member, widget, request, null);
-    }, transaction),
+    }, refusedAfter),
     canTap: Effect.fn("KinChatService.canTap")(function* (identity, input) {
       yield* tapTarget(identity, input.widgetId);
     }),

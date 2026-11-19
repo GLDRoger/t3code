@@ -2,7 +2,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinChatError, KinOrgId } from "./kinChat.ts";
 
 /**
@@ -422,8 +422,8 @@ export const KinConnectionSendEditedInput = Schema.Struct({
   cc: Schema.Array(Schema.String.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
   subject: Schema.String.check(Schema.isMaxLength(400)),
   body: Schema.String.check(Schema.isMaxLength(24_000)),
-  /** The person checked the account's sent mail, as the card's `send.mayHaveGone` asks. */
-  checkedSent: Schema.optional(Schema.Literal(true)),
+  /** The `send.mayHaveGone.at` of the try the person checked the sent mail for. */
+  checkedSent: Schema.optional(IsoDateTime),
 });
 export type KinConnectionSendEditedInput = typeof KinConnectionSendEditedInput.Type;
 /** The card that now carries the mail and its outcome. */
