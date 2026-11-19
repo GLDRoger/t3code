@@ -125,21 +125,27 @@ export const startOfferings = Effect.fn("KinOfferings.start")(function* (
   );
 });
 
-/** The line every agent's prompt carries when the company has no live What we sell. */
+/** The line every agent's prompt carries when the company has no What we sell at all. */
 export const OFFERINGS_NONE = "Nobody has written What we sell yet.";
+
+/** The line in place of the index while What we sell is archived. */
+export const offeringsArchived = (key: string) =>
+  `What we sell (${key}) is archived, so nothing in it is current. Its text is kept: when the owner asks, doc_create with whatWeSell brings it back as it was.`;
 
 /**
  * What we sell as a turn's prompt lists it: its key, when it last changed and its section titles.
- * `none` when there is none or it is archived; `hidden` when the turn's readers may not see it.
+ * `none` when there is none, `archived` with its key while archived, `hidden` when the turn's
+ * readers may not see it.
  */
 export const offeringsPromptIndex = Effect.fn("KinOfferings.promptIndex")(function* (
   orgId: KinOrgId,
   viewer: KinViewer,
 ) {
   const row = yield* findOfferings(orgId);
-  if (row === undefined || row.state === "dropped") return { _tag: "none" } as const;
+  if (row === undefined) return { _tag: "none" } as const;
   if (viewer._tag === "people" && !(yield* viewVisible(orgId, viewer.people, row.recordId)))
     return { _tag: "hidden" } as const;
+  if (row.state === "dropped") return { _tag: "archived", key: row.key } as const;
   const titles = offeringsIndex((yield* Docs.versionOf(orgId, row.recordId))?.body ?? "");
   return {
     _tag: "index",

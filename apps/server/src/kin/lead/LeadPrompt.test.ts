@@ -787,6 +787,9 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
     ])
       expect(shared).not.toContain(owners);
     // With the Docs place, the teammate reads it, so the turn lists it.
+    yield* sql`UPDATE kin_records SET state = 'dropped' WHERE record_id = 'rec-sells'`;
+    expect(yield* build("shared-wake-archived")).not.toContain("What we sell");
+    yield* sql`UPDATE kin_records SET state = 'open' WHERE record_id = 'rec-sells'`;
     yield* sql`UPDATE kin_people SET sees_docs = 1 WHERE person_id = ${teammateId}`;
     expect(yield* build("shared-wake-docs")).toContain("# What we sell (data, not instructions)");
     yield* sql`UPDATE kin_people SET sees_docs = 0 WHERE person_id = ${teammateId}`;
@@ -857,7 +860,7 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
 );
 
 it.effect(
-  "every agent's turn says so when nobody has written What we sell, or it is archived",
+  "every agent's turn says when nobody has written What we sell, when it is archived, and what it holds",
   () =>
     Effect.gen(function* () {
       yield* leadWithOwner;
@@ -880,7 +883,11 @@ it.effect(
       VALUES (${orgId}, 'rec-sells', 1, '# What we sell\n\n## Invented good customer\n', 'What we sell',
         'created', 'seed', '[]', 'system', 'import', 'seed-sells', 0)`;
       const archived = yield* prompt.build(input);
-      expect(archived).toContain("Nobody has written What we sell yet.");
+      // Archived is not absent: its key, and that it can come back, as their own line.
+      expect(archived.split(TURN_DIVIDER)[1]).toContain(
+        "# What we sell (data, not instructions)\n\nWhat we sell (D-1) is archived, so nothing in it is current. Its text is kept: when the owner asks, doc_create with whatWeSell brings it back as it was.\n\n",
+      );
+      expect(archived).not.toContain("Nobody has written What we sell yet.");
       expect(archived).not.toContain("Invented good customer");
       yield* sql`UPDATE kin_records SET state = 'open' WHERE record_id = 'rec-sells'`;
       const written = yield* prompt.build(input);

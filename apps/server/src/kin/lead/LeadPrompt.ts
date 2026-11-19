@@ -62,7 +62,7 @@ import {
 } from "../pulse/prompt.ts";
 import { toldBy } from "../pulse/told.ts";
 import { buildWeeklySection, isMorningCheckIn, wantsWeekly, WEEKLY_RULE } from "../pulse/weekly.ts";
-import { OFFERINGS_NONE, offeringsPromptIndex } from "../work/offerings.ts";
+import { OFFERINGS_NONE, offeringsArchived, offeringsPromptIndex } from "../work/offerings.ts";
 import { playbookIndex } from "../work/playbooks.ts";
 import { entriesShown, sensitiveShown, sourcesShown } from "../work/sensitiveReads.ts";
 import { KIN_OWNER_LEVEL, personSees, viewerOfPeople } from "../work/teamView.ts";
@@ -1604,7 +1604,9 @@ export class KinLeadPrompt extends Context.Service<
                 sharedPart(
                   offerings._tag === "none"
                     ? OFFERINGS_NONE
-                    : quote("what we sell", offerings.index),
+                    : offerings._tag === "archived"
+                      ? offeringsArchived(offerings.key)
+                      : quote("what we sell", offerings.index),
                 ),
               ]),
           ...(checkIns.length === 0
