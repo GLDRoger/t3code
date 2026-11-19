@@ -24,12 +24,14 @@
       // electron-builder loads the macOS signer and the Linux afterPack hook by path, and mobile-e2e.ts runs
       // agent-device's CLI by path, and mobile-behavior.ts spawns its runner by path.
       // release-desktop.yml runs the desktop launch check through xvfb-run, which knip
-      // does not trace. kin-verify, kin-bench and kin-release-check run by hand, and a dev server spawns its scripted agent by path.
-      // The Kin host's update.sh runs kin-served-brand by path.
+      // does not trace. kin-verify, kin-bench, kin-lookbook and kin-release-check run by hand, a dev server spawns its scripted agent by path,
+      // and a look book instance preloads its clock with --import. The Kin host's update.sh runs kin-served-brand by path.
       "entry": [
         // These fixture scripts are injected into a browser page by path.
         "fixtures/*/*.js",
         "kin-bench.ts",
+        "kin-lookbook.ts",
+        "kin-lookbook/preload.ts",
         "kin-model.ts",
         "kin-release-check.ts",
         "kin-served-brand.ts",

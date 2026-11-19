@@ -149,20 +149,24 @@ const moneyTerm = (text: string) =>
   [...text.matchAll(CODE_BESIDE_NUMBER)].some((found) => isKinCurrency(found[1] ?? found[2] ?? ""));
 
 /**
- * Whether Kin may take `label` on its own at the day: never when the asker said "none", when the
- * question is about a money record, when any option names an amount or a rate, or when the
- * default, or a bare yes's question, reads as sending something out or moving money.
+ * Why Kin may not take `label` on its own at the day, or undefined when it may: never when the
+ * asker said "none", when the question is about a money record, when any option names an amount
+ * or a rate, or when the default, or a bare yes's question, reads as sending something out or
+ * moving money.
  */
-export const safeDefault = (
+export const unsafeDefault = (
   label: string | null,
   question: string,
   terms: { readonly labels?: ReadonlyArray<string>; readonly aboutMoney?: boolean } = {},
-) => {
-  if (label === null || terms.aboutMoney === true) return false;
+): "none" | "money" | "leaves" | undefined => {
+  if (label === null) return "none";
+  if (terms.aboutMoney === true) return "money";
   const bare = label.trim().split(/\s+/).length <= 3;
-  if ([label, ...(terms.labels ?? []), ...(bare ? [question] : [])].some(moneyTerm)) return false;
-  return !LEAVES.test(label) && !(bare && LEAVES.test(question));
+  if ([label, ...(terms.labels ?? []), ...(bare ? [question] : [])].some(moneyTerm)) return "money";
+  return LEAVES.test(label) || (bare && LEAVES.test(question)) ? "leaves" : undefined;
 };
+export const safeDefault = (...args: Parameters<typeof unsafeDefault>) =>
+  unsafeDefault(...args) === undefined;
 
 /** "today", "tomorrow", "on Wednesday", "on Wed 3 Dec", "yesterday", "on Monday" (past), on `zone`'s clock. */
 export const dayWord = (at: number, now: number, zone: string) => {

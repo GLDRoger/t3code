@@ -50,14 +50,22 @@ const TasksKeyToolkit = Toolkit.make(
     description:
       "List the open Kin tasks held by the person this key belongs to, soonest due first: key, title, state, due date and project.",
     success: Schema.Struct({ tasks: Schema.Array(TaskSummary), more: Schema.Boolean }),
-  }),
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
   Tool.make("get_task", {
     ...shared,
     description:
       "Read one of that person's tasks: title, brief, state, due date, project and the newest comments. A task they don't hold is not found.",
     parameters: Schema.Struct({ key: TaskKey }),
     success: TaskDetail,
-  }),
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
   Tool.make("comment_on_task", {
     ...shared,
     description:
@@ -69,7 +77,11 @@ const TasksKeyToolkit = Toolkit.make(
       }),
     }),
     success: Schema.Struct({ key: Schema.String, posted: Schema.Boolean }),
-  }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
   Tool.make("set_task_state", {
     ...shared,
     description:
@@ -79,7 +91,11 @@ const TasksKeyToolkit = Toolkit.make(
       state: Schema.Literals(["open", "doing", "done"]),
     }),
     success: TaskDetail,
-  }),
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
 );
 
 // Read from the request, not declared: tool services are built with the server, and the holder

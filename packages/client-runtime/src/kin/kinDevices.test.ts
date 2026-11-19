@@ -88,25 +88,39 @@ describe("kinRemoveDeviceCopy", () => {
   });
 
   it.each([
-    ["no key", undefined, undefined, null],
-    ["none left", 0, 0, null],
-    ["one key", 1, undefined, "This also ends the coding-agent key made on it."],
-    ["two keys", 2, 0, "This also ends the coding-agent keys made on it."],
-    ["one below", 0, 1, "This also ends the coding-agent key made on these devices."],
-    ["here and below", 1, 2, "This also ends the coding-agent keys made on these devices."],
+    ["no key", undefined, undefined, undefined, null],
+    ["none left", 0, 0, 0, null],
+    ["one key", 1, undefined, undefined, "This also ends the coding-agent key made on it."],
+    ["two keys", 2, 0, 0, "This also ends the coding-agent keys made on it."],
+    ["one below", 0, 1, 0, "This also ends the coding-agent key made on these devices."],
+    ["here and below", 1, 2, 0, "This also ends the coding-agent keys made on these devices."],
+    [
+      "only on one signed out below",
+      0,
+      0,
+      1,
+      "This also ends the coding-agent key made on it or on devices linked from it.",
+    ],
+    [
+      "here and on one signed out below",
+      1,
+      undefined,
+      1,
+      "This also ends the coding-agent keys made on it or on devices linked from it.",
+    ],
   ] as const)(
     "says the keys it ends only when it made some: %s",
-    (_name, keysMade, belowMade, sentence) => {
+    (_name, keysMade, belowMade, lapsedMade, sentence) => {
       const phone = device("phone", keysMade === undefined ? {} : { keysMade });
       const laptop = device("laptop", {
         linkedFrom: phone.sessionId,
         ...(belowMade === undefined ? {} : { keysMade: belowMade }),
       });
-      // Run out already: the dialog doesn't name it, so doesn't count its keys either.
+      // Run out already: the dialog doesn't name it, but its keys end too.
       const old = device("old", {
         linkedFrom: phone.sessionId,
         expiresAt: "2026-11-10T09:00:00.000Z",
-        keysMade: 3,
+        ...(lapsedMade === undefined ? {} : { keysMade: lapsedMade }),
       });
       const detail = kinRemoveDeviceCopy(phone, true, [phone, laptop, old], now).detail;
       expect(detail.match(/This also ends .*?\./)?.[0] ?? null).toBe(sentence);

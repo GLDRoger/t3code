@@ -24,7 +24,19 @@ import * as TasksKeys from "./TasksKeys.ts";
 const decodeTools = Schema.decodeUnknownSync(
   Schema.fromJsonString(
     Schema.Struct({
-      result: Schema.Struct({ tools: Schema.Array(Schema.Struct({ name: Schema.String })) }),
+      result: Schema.Struct({
+        tools: Schema.Array(
+          Schema.Struct({
+            name: Schema.String,
+            annotations: Schema.Struct({
+              readOnlyHint: Schema.Boolean,
+              destructiveHint: Schema.Boolean,
+              idempotentHint: Schema.Boolean,
+              openWorldHint: Schema.Boolean,
+            }),
+          }),
+        ),
+      }),
     }),
   ),
 );
@@ -151,11 +163,27 @@ it.effect(
         params: {},
         ...(session === undefined ? {} : { session }),
       });
+      // A person's own terminal client asks before a call by these; a flip shows here.
+      const read = { readOnly: true, destructive: false, idempotent: true, openWorld: false };
+      const write = { readOnly: false, destructive: false, idempotent: true, openWorld: false };
       assert.deepStrictEqual(
-        decodeTools(yield* text(listed))
-          .result.tools.map((tool) => tool.name)
-          .toSorted(),
-        ["comment_on_task", "get_task", "list_my_tasks", "set_task_state"],
+        Object.fromEntries(
+          decodeTools(yield* text(listed)).result.tools.map(({ name, annotations }) => [
+            name,
+            {
+              readOnly: annotations.readOnlyHint,
+              destructive: annotations.destructiveHint,
+              idempotent: annotations.idempotentHint,
+              openWorld: annotations.openWorldHint,
+            },
+          ]),
+        ),
+        {
+          list_my_tasks: read,
+          get_task: read,
+          comment_on_task: write,
+          set_task_state: write,
+        },
       );
       const mine = yield* call({
         token: issued.secret,
