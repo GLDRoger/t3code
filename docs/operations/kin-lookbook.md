@@ -4,7 +4,7 @@ The look book captures every main Kin screen on the invented company (Ambermill)
 
 ## When
 
-Before every deploy and every phone build. It makes no model turns and costs nothing; a capture takes about four minutes.
+Before every deploy and every phone build. It makes no model turns and costs nothing; a capture takes about nine minutes, most of it waiting for each staged message to start on a fresh minute.
 
 ## Commands
 
