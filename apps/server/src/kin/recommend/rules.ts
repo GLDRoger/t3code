@@ -13,6 +13,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { callable, pausedRefusal, toolsOf } from "../connections/ConnectionRows.ts";
 import { USUAL_LIMITS } from "../lead/KinBudget.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import { accessSql } from "../people/KinAccess.ts";
@@ -258,40 +259,63 @@ const LIMIT_WINDOW_DAYS = 7;
 
 const decodeLimits = Schema.decodeUnknownOption(Schema.fromJsonString(KinBudgetLimits));
 
-/** The agents' daily limit now, and its name as Settings shows it: null when it is no choice there. */
+const stepUnits = (times: number) => ({
+  leadUnits: Math.round(USUAL_LIMITS.leadUnits * times),
+  workerUnits: Math.round(USUAL_LIMITS.workerUnits * times),
+});
+
+/**
+ * The agents' daily limits now, lead and worker, and their name as Settings shows them: a choice
+ * there is the whole pair, so any other pair has no name (null).
+ */
 export const limitNow = Effect.fn("KinRecommendRules.limitNow")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const [stored] = yield* sql<{ limits: string }>`SELECT limits_json AS limits
     FROM kin_budget_limits WHERE org_id = ${orgId}`;
   const limits = Option.getOrUndefined(decodeLimits(stored?.limits ?? null));
   const leadUnits = limits?.leadUnits ?? null;
-  if (leadUnits === null) return { leadUnits, step: -1, name: "No limit" } as const;
-  const step = KIN_DAILY_LIMIT_STEPS.findIndex(
-    (one) => Math.round(USUAL_LIMITS.leadUnits * one.times) === leadUnits,
-  );
-  return { leadUnits, step, name: step === -1 ? null : KIN_DAILY_LIMIT_STEPS[step]!.label };
+  const workerUnits = limits?.workerUnits ?? null;
+  if (leadUnits === null && workerUnits === null)
+    return { leadUnits, workerUnits, step: -1, name: "No limit" } as const;
+  const step = KIN_DAILY_LIMIT_STEPS.findIndex((one) => {
+    const pair = stepUnits(one.times);
+    return pair.leadUnits === leadUnits && pair.workerUnits === workerUnits;
+  });
+  return {
+    leadUnits,
+    workerUnits,
+    step,
+    name: step === -1 ? null : KIN_DAILY_LIMIT_STEPS[step]!.label,
+  };
 });
 
 const timesWord = (times: number) =>
   times === 2 ? "twice" : times === 2.5 ? "two and a half times" : `${times} times`;
 
 /**
- * Rule 2: the agents used up the daily limit, as it is now, on several of the last seven days,
- * each a day Kin told the owner their other work would wait (`kin_budget.exhausted_notified_at`).
- * The next choice up in Settings, never past the top, and never a limit set some other way.
+ * Rule 2: on several of the last seven days Kin told the owner the daily limit was used up
+ * (`kin_budget.exhausted_notified_at`) and the agents spent at least today's limit. The limit row
+ * keeps no time it was set, so the card claims nothing about which limit those days had. The next
+ * choice up in Settings, only from one of its choices, never past the top.
  */
 export const dailyLimit = Effect.fn("KinRecommendRules.dailyLimit")(function* (ctx: RuleContext) {
   const sql = yield* SqlClient.SqlClient;
   const subject = "org";
   const silent = (reason: string): Verdict => ({ _tag: "silent", subject, reason });
   const limit = yield* limitNow(ctx.orgId);
-  if (limit.leadUnits === null) return [silent("there is no daily limit")];
-  if (limit.name === null) return [silent("the daily limit was set to its own amount")];
+  if (limit.leadUnits === null && limit.workerUnits === null)
+    return [silent("there is no daily limit")];
+  if (limit.name === null || limit.leadUnits === null || limit.workerUnits === null)
+    return [silent("the daily limit was set to its own amount")];
   const next = KIN_DAILY_LIMIT_STEPS[limit.step + 1];
   if (next === undefined) return [silent(`the daily limit is already ${limit.name}`)];
-  // Today and the six days before it, on the owner's clock, as `kin_budget.day` is kept.
-  const first = dayIn(ctx.at - (LIMIT_WINDOW_DAYS - 1) * DAY_MS, ctx.zone);
+  // Today and the six calendar days before it, on the owner's clock, as `kin_budget.day` is kept.
   const today = dayIn(ctx.at, ctx.zone);
+  const first = DateTime.formatIsoDate(
+    DateTime.subtract(DateTime.makeUnsafe(`${today}T00:00:00.000Z`), {
+      days: LIMIT_WINDOW_DAYS - 1,
+    }),
+  );
   // The owner's share is what teammates' turns didn't spend, as `KinBudget.admit` reads it.
   const [days] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_budget b
     WHERE b.org_id = ${ctx.orgId} AND b.day >= ${first} AND b.day <= ${today}
@@ -309,15 +333,16 @@ export const dailyLimit = Effect.fn("KinRecommendRules.dailyLimit")(function* (c
         rule: DAILY_LIMIT,
         subject,
         weight: count,
-        noticed: `Your agents used up the daily limit, ${from.label}, on ${count} of the last ${LIMIT_WINDOW_DAYS} days, and each of those days Kin told you their other work would wait.`,
+        noticed: `Kin told you on ${count} of the last ${LIMIT_WINDOW_DAYS} days that the daily limit was reached. It is ${from.label} now.`,
         ask: `Raise the daily limit from ${from.label} to ${next.label}?`,
-        gives: `Your agents could then use up to ${timesWord(next.times / from.times)} as much of your model plan each day, which can cost you more. Nothing is raised unless you tap.`,
+        gives: `Your agents could then do up to ${timesWord(next.times / from.times)} as much each day, which can cost you more. Nothing is raised unless you tap.`,
         change: {
           kind: "daily_limit",
           fromLeadUnits: limit.leadUnits,
+          fromWorkerUnits: limit.workerUnits,
           fromName: from.label,
-          toLeadUnits: Math.round(USUAL_LIMITS.leadUnits * next.times),
-          toWorkerUnits: Math.round(USUAL_LIMITS.workerUnits * next.times),
+          toLeadUnits: stepUnits(next.times).leadUnits,
+          toWorkerUnits: stepUnits(next.times).workerUnits,
           toName: next.label,
         },
       },
@@ -344,18 +369,19 @@ export const connectionNow = Effect.fn("KinRecommendRules.connectionNow")(functi
   return row;
 });
 
-/** "Finance", "Finance and Tech lead", or "3 of your agents". */
-const whoTried = (names: ReadonlyArray<string>) =>
-  names.length === 1
-    ? names[0]!
-    : names.length === 2
-      ? `${names[0]} and ${names[1]}`
-      : `${names.length} of your agents`;
+/** "Finance", "Finance and Tech lead", or "3 of your agents"; one it can't name is "an agent". */
+const whoTried = (names: ReadonlyArray<string | null>) => {
+  const [one, two] = names;
+  if (names.length === 1) return one ?? "an agent";
+  return names.length === 2 && one != null && two != null
+    ? `${one} and ${two}`
+    : `${names.length} of your agents`;
+};
 
 /**
- * Rule 3: a paused connection agents keep being refused on. While a connection is paused every
- * call on it is refused before anything else is checked (`KinConnections` `callOn`), so a refused
- * call on it since its pause began is a try the pause stopped.
+ * Rule 3: a paused connection agents keep being refused on for its pause (`KinConnections`
+ * `callOn` logs that refusal by `pausedRefusal`), and that would work once resumed as its stored
+ * state stands: no error from its last refresh, no review or sign-in it waits on, a tool on.
  */
 export const connectionPaused = Effect.fn("KinRecommendRules.connectionPaused")(function* (
   ctx: RuleContext,
@@ -368,9 +394,10 @@ export const connectionPaused = Effect.fn("KinRecommendRules.connectionPaused")(
     name: string;
     pausedAt: number;
     state: string;
+    lastError: string | null;
     removedAt: number | null;
   }>`SELECT connection_id AS "connectionId", label AS name, paused_at AS "pausedAt", state,
-      removed_at AS "removedAt"
+      last_error AS "lastError", removed_at AS "removedAt"
     FROM kin_connections WHERE org_id = ${orgId} AND paused_at IS NOT NULL
       ${only === undefined ? sql`AND removed_at IS NULL` : sql`AND connection_id = ${only.connectionId}`}
     ORDER BY connection_id`;
@@ -386,18 +413,34 @@ export const connectionPaused = Effect.fn("KinRecommendRules.connectionPaused")(
       silent(`${row.name} needs signing in again, which resuming wouldn't fix`);
       continue;
     }
+    if (row.state === "error" || row.lastError !== null) {
+      silent(`${row.name} can't connect right now, which resuming wouldn't fix`);
+      continue;
+    }
+    if (row.state === "needs_review") {
+      silent(
+        `${row.name} waits for you to look at what changed in it, which resuming wouldn't fix`,
+      );
+      continue;
+    }
+    if (!(yield* toolsOf(orgId, row.connectionId)).some(callable)) {
+      silent(`none of the tools on ${row.name} is switched on, which resuming wouldn't fix`);
+      continue;
+    }
     if (at - row.pausedAt < PAUSED_MS) {
       silent(`${row.name} was paused only recently`);
       continue;
     }
-    const tries = yield* sql<{ name: string; count: number }>`SELECT
-        COALESCE(l.name, k.agent_id) AS name, COUNT(*) AS count
+    // The refusal names the connection as it was called then: any name matches.
+    const tries = yield* sql<{ name: string | null; count: number }>`SELECT
+        l.name AS name, COUNT(*) AS count
       FROM kin_connection_calls k
       LEFT JOIN kin_leads l ON l.org_id = k.org_id AND l.agent_id = k.agent_id
       WHERE k.org_id = ${orgId} AND k.connection_id = ${row.connectionId}
-        AND k.status = 'refused' AND k.created_at >= ${row.pausedAt}
+        AND k.status = 'refused' AND k.refused_reason LIKE ${pausedRefusal("%")}
+        AND k.created_at >= ${row.pausedAt}
         AND k.created_at > ${at - CONNECTION_WINDOW_MS} AND k.created_at <= ${at}
-      GROUP BY k.agent_id ORDER BY name, k.agent_id`;
+      GROUP BY k.agent_id ORDER BY l.name IS NULL, l.name, k.agent_id`;
     const count = tries.reduce((sum, one) => sum + one.count, 0);
     if (count < PAUSED_HELD) {
       silent(`your agents haven't tried ${row.name} often since it was paused`);
@@ -446,8 +489,8 @@ export const agentNow = Effect.fn("KinRecommendRules.agentNow")(function* (
 });
 
 /**
- * Rule 5: a paused agent with work waiting for it. A paused agent's queued events are never
- * claimed (`KinEventQueue` `readyLeads`), so each is a thing that waits for its resume.
+ * Rule 5: a paused agent with work queued since its pause. A paused agent's queued events are
+ * never claimed (`KinEventQueue` `readyLeads`), so each is a thing that waits for its resume.
  */
 export const agentPaused = Effect.fn("KinRecommendRules.agentPaused")(function* (
   ctx: RuleContext,
@@ -460,16 +503,8 @@ export const agentPaused = Effect.fn("KinRecommendRules.agentPaused")(function* 
     name: string;
     pausedAt: string;
     retiredAt: string | null;
-    waiting: number;
-    yours: number;
   }>`SELECT a.agent_id AS "agentId", l.name, a.paused_at AS "pausedAt",
-      a.retired_at AS "retiredAt",
-      (SELECT COUNT(*) FROM kin_events e WHERE e.org_id = a.org_id AND e.agent_id = a.agent_id
-        AND e.state = 'queued') AS waiting,
-      (SELECT COUNT(*) FROM kin_events e WHERE e.org_id = a.org_id AND e.agent_id = a.agent_id
-        AND e.state = 'queued' AND e.tag = 'chat.message'
-        AND json_extract(e.json, '$.provenance._tag') = 'human'
-        AND json_extract(e.json, '$.provenance.personId') = ${ctx.ownerId}) AS yours
+      a.retired_at AS "retiredAt"
     FROM kin_agents a JOIN kin_leads l ON l.org_id = a.org_id AND l.agent_id = a.agent_id
     WHERE a.org_id = ${orgId} AND a.role = 'lead' AND a.owner_person_id = ${ctx.ownerId}
       AND a.paused_at IS NOT NULL
@@ -480,17 +515,26 @@ export const agentPaused = Effect.fn("KinRecommendRules.agentPaused")(function* 
     const subject = `agent:${row.agentId}`;
     const silent = (reason: string) => verdicts.push({ _tag: "silent", subject, reason });
     const pausedAt = Date.parse(row.pausedAt);
+    // Only what was queued since the pause waits on it; older work was there before it.
+    const [queued] = yield* sql<{ waiting: number; yours: number }>`SELECT COUNT(*) AS waiting,
+        COALESCE(SUM(e.tag = 'chat.message'
+          AND json_extract(e.json, '$.provenance._tag') = 'human'
+          AND json_extract(e.json, '$.provenance.personId') = ${ctx.ownerId}), 0) AS yours
+      FROM kin_events e WHERE e.org_id = ${orgId} AND e.agent_id = ${row.agentId}
+        AND e.state = 'queued' AND e.queued_at >= ${pausedAt}`;
+    const waiting = queued?.waiting ?? 0;
+    const yours = queued?.yours ?? 0;
     if (row.retiredAt !== null) silent(`${row.name} is no longer there`);
     else if (at - pausedAt < PAUSED_MS) silent(`${row.name} was paused only recently`);
-    else if (row.waiting < PAUSED_HELD) silent(`not much waits for ${row.name}`);
+    else if (waiting < PAUSED_HELD) silent(`not much waits for ${row.name}`);
     else
       verdicts.push({
         _tag: "fires",
         candidate: {
           rule: AGENT_PAUSED,
           subject,
-          weight: row.waiting,
-          noticed: `${row.name} has been paused since ${formatDay(ctx, pausedAt)}, and ${row.waiting} things wait for it${row.yours === 0 ? "" : `, ${row.yours} of them ${row.yours === 1 ? "a message" : "messages"} from you`}.`,
+          weight: waiting,
+          noticed: `${row.name} has been paused since ${formatDay(ctx, pausedAt)}, and ${waiting} things wait for it${yours === 0 ? "" : `, ${yours} of them ${yours === 1 ? "a message" : "messages"} from you`}.`,
           ask: `Resume ${row.name}?`,
           gives: `${row.name} would then pick up what waits for it.`,
           change: { kind: "agent_resume", agentId: row.agentId, agentName: row.name, pausedAt },

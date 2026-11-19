@@ -13,6 +13,7 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import * as LeadProvision from "../lead/KinLeadProvision.ts";
+import { isOrgPaused } from "../lead/orgState.ts";
 import { accessSql } from "../people/KinAccess.ts";
 import type { RecommendPlan } from "../widgets/cardPlans.ts";
 import { DECLINE_QUIET_MS, onlyOwner, ruleContext, storedRows } from "./ledger.ts";
@@ -102,7 +103,8 @@ const subjectMoved = Effect.fn("KinRecommendCard.subjectMoved")(function* (
     }
     case "daily_limit": {
       const limit = yield* limitNow(orgId);
-      if (limit.leadUnits === change.fromLeadUnits) return null;
+      if (limit.leadUnits === change.fromLeadUnits && limit.workerUnits === change.fromWorkerUnits)
+        return null;
       return limit.name === null
         ? "the daily limit was set to its own amount since Kin drew this card"
         : `the daily limit is now ${limit.name}`;
@@ -123,6 +125,8 @@ const subjectMoved = Effect.fn("KinRecommendCard.subjectMoved")(function* (
       if (now.pausedAt === null) return `${name} isn't paused any more`;
       if (now.pausedAt !== change.pausedAt)
         return `${name} was resumed and paused again since Kin drew this card`;
+      if (yield* isOrgPaused(orgId))
+        return `Kin is stopped for the whole company, so ${name} wouldn't start`;
       return now.name === change.agentName ? null : renamed;
     }
   }
@@ -166,14 +170,14 @@ const make = Effect.fn("KinRecommendCard.make")(function* (
         orgId,
         limits: { leadUnits: change.toLeadUnits, workerUnits: change.toWorkerUnits },
       });
-      return `The daily limit is now ${change.toName}. Settings, under Company details, is where you change it.`;
+      return `The daily limit is now ${change.toName}. Daily limit, in Settings, is where you change it.`;
     case "connection_resume":
       yield* (yield* KinConnections).update(people, {
         orgId,
         connectionId: KinConnectionId.make(change.connectionId),
         paused: false,
       });
-      return `${change.connectionName} is running again. Settings, under Connections, is where you pause it.`;
+      return `${change.connectionName} is no longer paused. Settings, under Connections, is where you pause it.`;
     case "agent_resume":
       yield* LeadProvision.setPaused({
         by: { _tag: "person", personId },
@@ -181,7 +185,7 @@ const make = Effect.fn("KinRecommendCard.make")(function* (
         agentId: KinAgentId.make(change.agentId),
         paused: false,
       });
-      return `${change.agentName} is running again. ${change.agentName}'s page is where you pause it.`;
+      return `${change.agentName} is no longer paused. ${change.agentName}'s page is where you pause it.`;
   }
 });
 

@@ -521,9 +521,9 @@ When the same hold-up keeps happening and a setting would end it, Kin suggests t
 card in your chat with the Chief of staff, so it waits in Needs you without ringing. Kin suggests:
 
 - letting a teammate message an agent directly, when they keep asking for its work and your cards on it run out;
-- raising the daily limit one step, when your agents used it up on three of the last seven days (this can cost more);
-- resuming a connection that has been paused for days while your agents keep being refused on it;
-- resuming an agent that has been paused for days with work waiting for it.
+- raising the daily limit one step, when it is one of the choices in **Daily limit** and Kin told you on three of the last seven days that it was reached (this can cost more);
+- resuming a connection that has been paused for days while your agents keep being refused on it for that pause, unless something else would still stop it: an error, a sign-in, changes waiting for your look, or no tool switched on;
+- resuming an agent that has been paused for days with work queued for it since, unless Kin is stopped for the whole company.
 
 Nothing changes until you tap the change itself;
 **Not now** keeps it quiet for 30 days, then 90, then for good. Kin suggests at most one thing a day, never in your

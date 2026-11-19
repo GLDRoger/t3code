@@ -301,7 +301,7 @@ const doneNow = Effect.fn("KinRecommend.doneNow")(function* (
     case "daily_limit": {
       const limit = yield* limitNow(orgId);
       const open = { kind: "open_daily_limit" as const, label: DAILY_LIMIT_LABEL };
-      if (limit.leadUnits === change.toLeadUnits)
+      if (limit.leadUnits === change.toLeadUnits && limit.workerUnits === change.toWorkerUnits)
         return shown(`Done ${decided}: the daily limit is ${change.toName}.`, open);
       return shown(
         limit.name === null
@@ -325,7 +325,7 @@ const doneNow = Effect.fn("KinRecommend.doneNow")(function* (
       return shown(
         now.state === "needs_sign_in"
           ? `Done ${decided}: ${name} was resumed. It needs signing in again now.`
-          : `Done ${decided}: ${name} is running.`,
+          : `Done ${decided}: ${name} is no longer paused.`,
         open,
       );
     }
@@ -341,7 +341,7 @@ const doneNow = Effect.fn("KinRecommend.doneNow")(function* (
       };
       return shown(
         now.pausedAt === null
-          ? `Done ${decided}: ${name} is running.`
+          ? `Done ${decided}: ${name} is no longer paused.`
           : `Done ${decided}. ${name} was paused again since.`,
         open,
       );

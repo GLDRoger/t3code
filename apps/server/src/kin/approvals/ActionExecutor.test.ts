@@ -1513,6 +1513,27 @@ describe("KinActionExecutor", () => {
       recommendCard,
       /LeadProvision\.allow\(\{\s*editor: \{ _tag: "person", personId \}[\s\S]*LeadProvision\.setPaused\(\{\s*by: \{ _tag: "person", personId \}/,
     );
+    // The daily limit and a connection's pause change the same way, in `make` as the owner who
+    // tapped: one call each, through the method their own Settings place calls.
+    assert.strictEqual(
+      recommendCard.match(/\(yield\* (?:KinBudget|KinConnections)\)\.\w+/g)?.join(),
+      "(yield* KinBudget).set,(yield* KinConnections).update",
+    );
+    assert.lengthOf(recommendCard.match(/\bKin(?:Budget|Connections)\b(?!\.ts)/g) ?? [], 4);
+    assert.match(
+      recommendCard,
+      /const make = [\s\S]*const people = \[\{ _tag: "person" as const, orgId, personId \}\];[\s\S]*\(yield\* KinBudget\)\.set\(people, \{[\s\S]*\(yield\* KinConnections\)\.update\(people, \{/,
+    );
+    // The rules only read: the budget module's one constant and the connections' row readers.
+    const recommendRules = source("kin/recommend/rules.ts");
+    assert.match(recommendRules, /import \{ USUAL_LIMITS \} from "\.\.\/lead\/KinBudget\.ts";/);
+    assert.lengthOf(recommendRules.match(/from "\.\.\/lead\/KinBudget\.ts"/g) ?? [], 1);
+    assert.notMatch(recommendRules, /yield\* KinBudget\b/);
+    assert.match(
+      recommendRules,
+      /import \{ callable, pausedRefusal, toolsOf \} from "\.\.\/connections\/ConnectionRows\.ts";/,
+    );
+    assert.notMatch(recommendRules, /ConnectionsService\.ts|yield\* KinConnections\b/);
     assert.lengthOf(recommendCard.match(/(?<![.\w])make\(/g) ?? [], 1);
     assert.match(
       recommendCard,

@@ -997,9 +997,14 @@ const USUAL = 2_000_000;
 const limits = (ctx: Ctx) =>
   ctx.sql<{ json: string }>`SELECT limits_json AS json FROM kin_budget_limits
     WHERE org_id = ${ctx.orgId}`.pipe(Effect.map((rows) => JSON.parse(rows[0]!.json) as unknown));
-const setLimit = (ctx: Ctx, leadUnits: number | null) =>
+/** Settings' pair for `leadUnits` (workers three times it), unless `workerUnits` says otherwise. */
+const setLimit = (
+  ctx: Ctx,
+  leadUnits: number | null,
+  workerUnits = leadUnits === null ? null : leadUnits * 3,
+) =>
   ctx.sql`INSERT INTO kin_budget_limits (org_id, limits_json)
-    VALUES (${ctx.orgId}, ${JSON.stringify({ leadUnits, workerUnits: leadUnits === null ? null : leadUnits * 3, teammateUnits: 500_000 })})
+    VALUES (${ctx.orgId}, ${JSON.stringify({ leadUnits, workerUnits, teammateUnits: 500_000 })})
     ON CONFLICT (org_id) DO UPDATE SET limits_json = excluded.limits_json`;
 /** A day the agents spent `units` and Kin told Rhea work would wait, or didn't (`told: false`). */
 const limitDay = (ctx: Ctx, day: string, units: number, told = true) =>
@@ -1008,7 +1013,7 @@ const limitDay = (ctx: Ctx, day: string, units: number, told = true) =>
     ON CONFLICT (org_id, day) DO UPDATE SET lead_units = excluded.lead_units,
       exhausted_notified_at = excluded.exhausted_notified_at`;
 const LIMIT_NOTICED =
-  "Your agents used up the daily limit, The usual, on 3 of the last 7 days, and each of those days Kin told you their other work would wait.";
+  "Kin told you on 3 of the last 7 days that the daily limit was reached. It is The usual now.";
 /** At The usual, used up on three of the last seven days: the threshold, exactly. */
 const limitReached = (ctx: Ctx) =>
   Effect.gen(function* () {
@@ -1036,10 +1041,11 @@ it.effect(
               noticed: LIMIT_NOTICED,
               ask: "Raise the daily limit from The usual to Twice the usual?",
               gives:
-                "Your agents could then use up to twice as much of your model plan each day, which can cost you more. Nothing is raised unless you tap.",
+                "Your agents could then do up to twice as much each day, which can cost you more. Nothing is raised unless you tap.",
               change: {
                 kind: "daily_limit",
                 fromLeadUnits: USUAL,
+                fromWorkerUnits: 6_000_000,
                 fromName: "The usual",
                 toLeadUnits: 2 * USUAL,
                 toWorkerUnits: 12_000_000,
@@ -1084,8 +1090,29 @@ it.effect(
         assert.strictEqual(yield* reason, "the daily limit is already Five times the usual");
         yield* setLimit(ctx, 1_234_567);
         assert.strictEqual(yield* reason, "the daily limit was set to its own amount");
+        // A choice in Settings is the whole pair: The usual's lead amount with another worker
+        // amount, or none, is a pair of its own.
+        for (const workers of [30_000_000, null]) {
+          yield* setLimit(ctx, USUAL, workers);
+          assert.strictEqual(yield* reason, "the daily limit was set to its own amount");
+        }
         yield* setLimit(ctx, null);
         assert.strictEqual(yield* reason, "there is no daily limit");
+        // Seven calendar days on the owner's clock, a short day among them: just after midnight
+        // on 9 Mar 2026 in New York, 2 Mar is eight days back, not in the window.
+        yield* setLimit(ctx, USUAL);
+        const newYork = {
+          orgId: ctx.orgId,
+          ownerId: ctx.owner.personId,
+          at: Date.parse("2026-03-09T04:30:00.000Z"),
+          zone: "America/New_York",
+          locale: "en-GB",
+        };
+        for (const day of ["2026-03-02", "2026-03-05", "2026-03-09"])
+          yield* limitDay(ctx, day, USUAL);
+        assert.strictEqual(reasonOf(yield* dailyLimit(newYork)), fewer);
+        yield* limitDay(ctx, "2026-03-03", USUAL);
+        assert.strictEqual(reasonOf(yield* dailyLimit(newYork)), "fires");
       }),
     ),
 );
@@ -1127,7 +1154,7 @@ it.effect(
         });
         assert.deepStrictEqual(yield* outcomeOf(ctx), {
           title: "Done",
-          text: "The daily limit is now Twice the usual. Settings, under Company details, is where you change it.",
+          text: "The daily limit is now Twice the usual. Daily limit, in Settings, is where you change it.",
         });
         const open = { kind: "open_daily_limit" as const, label: "Open Daily limit" };
         assert.deepStrictEqual(yield* list(ctx), [
@@ -1142,6 +1169,15 @@ it.effect(
           {
             outcome:
               "Done 1 Jan: the daily limit went to Twice the usual. It is Five times the usual now.",
+            action: open,
+          },
+        ]);
+        // Twice the usual's lead amount with another worker amount is no longer Twice the usual.
+        yield* setLimit(ctx, 2 * USUAL, 30_000_000);
+        assert.deepStrictEqual(yield* list(ctx), [
+          {
+            outcome:
+              "Done 1 Jan: the daily limit went to Twice the usual. It has its own amount now.",
             action: open,
           },
         ]);
@@ -1164,13 +1200,28 @@ it.effect(
           });
           assert.deepInclude(yield* limits(ctx), { leadUnits: USUAL / 2 });
         }
+        // Only the workers' amount moved: the card no longer names the pair as it is.
+        for (const option of ["option-1", "option-2"] as const) {
+          yield* TestClock.adjust("24 hours");
+          yield* setLimit(ctx, USUAL);
+          for (const day of ["1970-01-03", "1970-01-04", "1970-01-05"])
+            yield* limitDay(ctx, day, USUAL);
+          assert.strictEqual((yield* tick(ctx))._tag, "posted");
+          yield* setLimit(ctx, USUAL, 30_000_000);
+          yield* tap(ctx, (yield* cards(ctx)).at(-1)!.widgetId, option);
+          assert.deepStrictEqual(yield* outcomeOf(ctx), {
+            title: "Nothing changed",
+            text: "Nothing changed: the daily limit was set to its own amount since Kin drew this card.",
+          });
+          assert.deepInclude(yield* limits(ctx), { leadUnits: USUAL, workerUnits: 30_000_000 });
+        }
         assert.strictEqual(yield* declines(ctx), 0);
       }),
     ),
 );
 
 const zoho = KinConnectionId.make("conn-zoho");
-/** Zoho Books, paused `days` ago. */
+/** Zoho Books, paused `days` ago, with one tool on as the owner accepted it. */
 const pausedZoho = (ctx: Ctx, days: number) =>
   Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
@@ -1179,15 +1230,28 @@ const pausedZoho = (ctx: Ctx, days: number) =>
       VALUES (${ctx.orgId}, ${zoho}, 'zoho_books', 'Zoho Books', 'remote',
         'https://books.zoho.example/mcp', 'books.zoho.example', 'none', 'closed', 'active',
         0, 0, ${now - days * DAY})`;
+    yield* ctx.sql`INSERT INTO kin_connection_tools (org_id, connection_id, tool_name,
+        definition_json, pin_digest, accepted_digest, mode, suggested_mode, open_world, first_seen_at)
+      VALUES (${ctx.orgId}, ${zoho}, 'list_invoices', '{"name":"list_invoices"}', 'pin', 'pin',
+        'read', 'read', 0, 0)`;
   });
-/** One call an agent made on Zoho Books `hoursAgo`, refused unless said otherwise. */
-const zohoCall = (ctx: Ctx, agentId: string, hoursAgo: number, status = "refused") =>
+/**
+ * One call an agent made on Zoho Books `hoursAgo`, refused for its pause unless said otherwise:
+ * `refused` with another reason, or a call that ran.
+ */
+const zohoCall = (
+  ctx: Ctx,
+  agentId: string,
+  hoursAgo: number,
+  status = "refused",
+  reason = "The owner paused Zoho Books. Only the owner can resume it.",
+) =>
   Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     yield* ctx.sql`INSERT INTO kin_connection_calls (org_id, call_id, connection_id, tool_name,
         agent_id, wakeup_id, status, refused_reason, created_at)
-      VALUES (${ctx.orgId}, ${`call-${agentId}-${now - hoursAgo * 60 * 60 * 1000}-${status}`}, ${zoho}, 'list_invoices',
-        ${agentId}, ${`${agentId}-wake`}, ${status}, 'The owner paused Zoho Books.',
+      VALUES (${ctx.orgId}, ${`call-${agentId}-${now - hoursAgo * 60 * 60 * 1000}-${status}-${reason.length}`}, ${zoho}, 'list_invoices',
+        ${agentId}, ${`${agentId}-wake`}, ${status}, ${status === "refused" ? reason : null},
         ${now - hoursAgo * 60 * 60 * 1000})`;
   });
 const ZOHO_NOTICED =
@@ -1241,17 +1305,24 @@ it.effect(
               WHERE org_id = ${orgId}`,
           );
         const tryOnly = Effect.fn("RecommendTest.tryOnly")(function* (
-          calls: ReadonlyArray<readonly [string, number, string?]>,
+          calls: ReadonlyArray<readonly [string, number, string?, string?]>,
         ) {
           yield* sql`DELETE FROM kin_connection_calls WHERE org_id = ${orgId}`;
-          for (const [agentId, hours, status] of calls)
-            yield* zohoCall(ctx, agentId, hours, status);
+          for (const [agentId, hours, status, why] of calls)
+            yield* zohoCall(ctx, agentId, hours, status, why);
         });
         // A call that ran isn't a try the pause stopped.
         yield* tryOnly([
           ["tech", 2],
           ["tech", 30],
           ["tech", 60, "ok"],
+        ]);
+        assert.strictEqual(yield* reason, fewer);
+        // Nor is one refused for another reason, under any name the connection had then.
+        yield* tryOnly([
+          ["tech", 2],
+          ["tech", 30, "refused", "list_invoices is off. Only the owner can turn it on."],
+          ["tech", 60, "refused", "The owner paused Zoho. Only the owner can resume it."],
         ]);
         assert.strictEqual(yield* reason, fewer);
         // A refusal from before this pause began isn't one either, until the pause is older.
@@ -1291,6 +1362,54 @@ it.effect(
           two?._tag === "fires" ? two.candidate.noticed : "",
           "In the last 7 days Chief of staff and Tech lead tried to use it 3 times and couldn't.",
         );
+        // An agent whose name can't be read is never named by its id.
+        yield* tryOnly([
+          ["tech", 2],
+          ["tech", 30],
+          ["gone-agent", 5],
+        ]);
+        const [unnamed] = yield* asked(ctx, connectionPaused);
+        assert.include(
+          unnamed?._tag === "fires" ? unnamed.candidate.noticed : "",
+          "In the last 7 days 2 of your agents tried to use it 3 times and couldn't.",
+        );
+        yield* tryOnly([
+          ["gone-agent", 2],
+          ["gone-agent", 30],
+          ["gone-agent", 5],
+        ]);
+        const [one] = yield* asked(ctx, connectionPaused);
+        assert.include(
+          one?._tag === "fires" ? one.candidate.noticed : "",
+          "In the last 7 days an agent tried to use it 3 times and couldn't.",
+        );
+        // Resuming wouldn't make it work: an error from its last refresh, a review it waits on,
+        // or no tool on as the owner accepted it.
+        const cannot = "Zoho Books can't connect right now, which resuming wouldn't fix";
+        for (const broken of [
+          sql`UPDATE kin_connections SET state = 'error' WHERE org_id = ${orgId}`,
+          sql`UPDATE kin_connections SET state = 'active', last_error = 'HTTP 503' WHERE org_id = ${orgId}`,
+        ]) {
+          yield* broken;
+          assert.strictEqual(yield* reason, cannot);
+        }
+        yield* sql`UPDATE kin_connections SET state = 'needs_review', last_error = NULL WHERE org_id = ${orgId}`;
+        assert.strictEqual(
+          yield* reason,
+          "Zoho Books waits for you to look at what changed in it, which resuming wouldn't fix",
+        );
+        yield* sql`UPDATE kin_connections SET state = 'active' WHERE org_id = ${orgId}`;
+        const noTools =
+          "none of the tools on Zoho Books is switched on, which resuming wouldn't fix";
+        for (const off of [
+          sql`UPDATE kin_connection_tools SET mode = 'off' WHERE org_id = ${orgId}`,
+          sql`UPDATE kin_connection_tools SET mode = 'read', accepted_digest = NULL WHERE org_id = ${orgId}`,
+        ]) {
+          yield* off;
+          assert.strictEqual(yield* reason, noTools);
+        }
+        yield* sql`UPDATE kin_connection_tools SET accepted_digest = 'pin' WHERE org_id = ${orgId}`;
+        assert.strictEqual(yield* reason, "fires");
         // Resuming wouldn't help one that needs signing in, and a removed one isn't there.
         yield* sql`UPDATE kin_connections SET state = 'needs_sign_in' WHERE org_id = ${orgId}`;
         assert.strictEqual(
@@ -1338,7 +1457,7 @@ it.effect(
         assert.isNull(yield* zohoPausedAt(ctx));
         assert.deepStrictEqual(yield* outcomeOf(ctx), {
           title: "Done",
-          text: "Zoho Books is running again. Settings, under Connections, is where you pause it.",
+          text: "Zoho Books is no longer paused. Settings, under Connections, is where you pause it.",
         });
         const open = {
           kind: "open_connection" as const,
@@ -1347,7 +1466,7 @@ it.effect(
         };
         const row = Effect.map(list(ctx), (rows) => rows[0]);
         assert.deepStrictEqual(yield* row, {
-          outcome: "Done 1 Jan: Zoho Books is running.",
+          outcome: "Done 1 Jan: Zoho Books is no longer paused.",
           action: open,
         });
         yield* connections.update(people(ctx), { ...ref, paused: true });
@@ -1386,6 +1505,19 @@ it.effect(
           });
           assert.strictEqual(yield* zohoPausedAt(ctx), repaused);
         }
+        // Drawn again, then its refresh failed before Do it: resuming wouldn't make it work.
+        yield* TestClock.adjust("24 hours");
+        yield* sql`UPDATE kin_connections SET paused_at = ${(yield* Clock.currentTimeMillis) - 4 * DAY}
+          WHERE org_id = ${orgId}`;
+        for (const hours of [1, 2, 3]) yield* zohoCall(ctx, "tech", hours);
+        assert.strictEqual((yield* tick(ctx))._tag, "posted");
+        yield* sql`UPDATE kin_connections SET state = 'error', last_error = 'HTTP 503' WHERE org_id = ${orgId}`;
+        yield* tap(ctx, (yield* cards(ctx)).at(-1)!.widgetId, "option-1");
+        assert.deepStrictEqual(yield* outcomeOf(ctx), {
+          title: "Nothing changed",
+          text: "Nothing changed: Zoho Books can't connect right now, which resuming wouldn't fix.",
+        });
+        assert.isNotNull(yield* zohoPausedAt(ctx));
         assert.strictEqual(yield* declines(ctx), 0);
       }),
     ),
@@ -1435,6 +1567,11 @@ it.effect(
             },
           },
         ]);
+        // Work queued before the pause began was there before it: it isn't held by it.
+        yield* sql`UPDATE kin_events SET queued_at = ${pausedAt - 1} WHERE org_id = ${orgId} AND event_id = 'tech-2'`;
+        assert.strictEqual(yield* reason, "not much waits for Tech lead");
+        yield* sql`UPDATE kin_events SET queued_at = ${pausedAt} WHERE org_id = ${orgId} AND event_id = 'tech-2'`;
+        assert.strictEqual(yield* reason, "fires");
         // Done or expired work doesn't wait, and a teammate's message isn't Rhea's.
         yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId} AND event_id = 'tech-2'`;
         assert.strictEqual(yield* reason, "not much waits for Tech lead");
@@ -1494,12 +1631,12 @@ it.effect(
         assert.isNull(yield* techPausedAt(ctx));
         assert.deepStrictEqual(yield* outcomeOf(ctx), {
           title: "Done",
-          text: "Tech lead is running again. Tech lead's page is where you pause it.",
+          text: "Tech lead is no longer paused. Tech lead's page is where you pause it.",
         });
         const open = { kind: "open_agent" as const, label: "Open Tech lead's page", agentId: tech };
         const row = Effect.map(list(ctx), (rows) => rows[0]);
         assert.deepStrictEqual(yield* row, {
-          outcome: "Done 1 Jan: Tech lead is running.",
+          outcome: "Done 1 Jan: Tech lead is no longer paused.",
           action: open,
         });
         yield* page(true);
@@ -1532,6 +1669,29 @@ it.effect(
             text: "Nothing changed: Tech lead was resumed and paused again since Kin drew this card.",
           });
           assert.strictEqual(yield* techPausedAt(ctx), repaused);
+        }
+        // Drawn again, then Kin was stopped for the whole company before either tap.
+        for (const option of ["option-1", "option-2"] as const) {
+          yield* TestClock.adjust("24 hours");
+          yield* sql`UPDATE kin_agents SET paused_at = ${isoAt((yield* Clock.currentTimeMillis) - 4 * DAY)}
+            WHERE org_id = ${orgId} AND agent_id = ${tech}`;
+          yield* sql`UPDATE kin_events SET state = 'queued',
+              queued_at = ${(yield* Clock.currentTimeMillis) - 4 * DAY}
+            WHERE org_id = ${orgId} AND agent_id = ${tech}`;
+          assert.strictEqual((yield* tick(ctx))._tag, "posted");
+          yield* sql`INSERT INTO kin_org_state (org_id, paused, paused_at, paused_by, reason)
+            VALUES (${orgId}, 1, 0, ${owner.personId}, 'Invented stop')
+            ON CONFLICT (org_id) DO UPDATE SET paused = 1, paused_at = 0,
+              paused_by = ${owner.personId}, reason = 'Invented stop'`;
+          const paused = yield* techPausedAt(ctx);
+          yield* tap(ctx, (yield* cards(ctx)).at(-1)!.widgetId, option);
+          assert.deepStrictEqual(yield* outcomeOf(ctx), {
+            title: "Nothing changed",
+            text: "Nothing changed: Kin is stopped for the whole company, so Tech lead wouldn't start.",
+          });
+          assert.strictEqual(yield* techPausedAt(ctx), paused);
+          yield* sql`UPDATE kin_org_state SET paused = 0, paused_at = NULL, paused_by = NULL,
+            reason = NULL WHERE org_id = ${orgId}`;
         }
         assert.strictEqual(yield* declines(ctx), 0);
       }),

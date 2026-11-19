@@ -124,8 +124,9 @@ export const RecommendChange = Schema.Union([
   }),
   Schema.Struct({
     kind: Schema.Literal("daily_limit"),
-    /** The agents' limit the card was drawn at, and the next choice up it offers. */
+    /** The agents' limits the card was drawn at, both of them, and the next choice up it offers. */
     fromLeadUnits: Schema.Number,
+    fromWorkerUnits: Schema.Number,
     fromName: Schema.String,
     toLeadUnits: Schema.Number,
     toWorkerUnits: Schema.Number,
