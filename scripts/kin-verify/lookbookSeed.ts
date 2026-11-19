@@ -43,8 +43,15 @@ const LONG = `Here is where the Lumen Grove booking app stands.
 ## Risks
 - The pilot clinics want reminders in two languages; that may move the beta by a week.`;
 
+/**
+ * A chat shows a message's time once per clock minute, so each step starts at the top of a new
+ * minute: which messages share one is then the same every run, however fast it goes.
+ */
+const nextMinute = () => sleep(60_000 - (Date.now() % 60_000) + 1000);
+
 /** One scripted turn, waited out: a turn's card posts before its reply, which must land first. */
 async function turn(instance: Instance, input: Parameters<typeof runTurn>[1]) {
+  await nextMinute();
   for (const result of await runTurn(instance, input)) {
     const line = describeResult(result);
     if (!/^[^:]+: ok/.test(line)) throw new VerifyError(`lookbook seed: ${line}`);
@@ -114,6 +121,7 @@ export async function lookbookTurns(instance: Instance) {
         ).n;
       const before = replies();
       NodeFS.writeFileSync(NodePath.join(instance.meta, "checkin-reply.md"), LOOKBOOK_BRIEF);
+      await nextMinute();
       await owner.call("kin.checkIns.act", { orgId: ORG, scheduleId, action: "run_now" });
       for (let waited = 0; replies() === before; waited += 250) {
         if (waited > 120_000) throw new VerifyError("lookbook seed: the brief never posted");
@@ -186,6 +194,7 @@ export async function lookbookTurns(instance: Instance) {
       agentIds: [chief.agentId, agentOf(instance, "finance").agentId],
       personIds: [personIdOf(instance, "zoya")],
     })) as { chatId: string };
+    await nextMinute();
     await owner.call("kin.messages.send", {
       chatId: group.chatId,
       clientMessageId: "lookbook-group-1",
@@ -194,6 +203,7 @@ export async function lookbookTurns(instance: Instance) {
     await lookbookSettle(instance);
     const zoya = await rpcAs(instance, "zoya");
     try {
+      await nextMinute();
       await zoya.call("kin.messages.send", {
         chatId: group.chatId,
         clientMessageId: "lookbook-group-2",
