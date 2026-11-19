@@ -18,7 +18,8 @@ const orgId = KinOrgId.make("org-1");
 const rhea = KinPersonId.make("rhea");
 const zoya = KinPersonId.make("zoya");
 
-vi.mock("./useKinHost", () => ({
+vi.mock("./useKinHost", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./useKinHost")>()),
   useKinHostAt: () => ({
     _tag: "host",
     probe: {
