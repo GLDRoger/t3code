@@ -31,6 +31,7 @@ const TURNS: Record<string, ReadonlyArray<Record<string, unknown>>> = {
   passedOn: [
     message("zoya-chief", "zoya-own", { origin: { chatId: "group", agentId: "finance" } }),
   ],
+  copy: [message("zoya-chief", "zoya-copy")],
   routine: [{ _tag: "routine", routine: "morning_brief", provenance: { _tag: "system" } }],
   deferral: [
     {
@@ -184,6 +185,27 @@ describe("away_set", () => {
       assert.include(JSON.stringify(exit), "in their own chat with you");
       assert.deepStrictEqual(yield* awayDates(), before);
     }).pipe(Effect.provide(layer)),
+  );
+
+  // Kin's copy of her words in another chat (`kin_hand_off`) is never her own message there.
+  it.effect(
+    `a teammate's "I'm off till Monday" that is passed on sets no away date for anyone`,
+    () =>
+      Effect.gen(function* () {
+        yield* setup("copy");
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
+            created_at, origin_json)
+          VALUES ('zoya-copy', ${orgId}, 'zoya-chief', 2, 'human', 'zoya', 'member-zoya-own',
+            'member', 'text', 'I am off till Monday.', '[]', 'posted', ${at},
+            '{"agentId":"finance","chatId":"group","messageId":"zoya-group"}')`;
+        const before = yield* awayDates();
+        const exit = yield* Effect.exit(setAway(turn("copy"), { until: "2026-11-23" }));
+        assert.isTrue(Exit.isFailure(exit));
+        assert.deepStrictEqual(yield* awayDates(), before);
+        assert.isTrue(before.every((row) => row.away === null));
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("the owner's own chat reaches only the owner's own date", () =>

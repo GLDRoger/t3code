@@ -46,7 +46,7 @@ import {
   ownerLevelSql,
   ownsAgent,
 } from "../people/KinAccess.ts";
-import { KinEventQueue } from "./KinEventQueue.ts";
+import { KinEventQueue, tellStaleRoutes } from "./KinEventQueue.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { KinStop } from "./KinStop.ts";
 import * as Retirement from "./Retirement.ts";
@@ -1020,6 +1020,12 @@ const closeDirect = Effect.fn("KinLeadProvision.closeDirect")(function* (
   const dropped = yield* LeadAccess.dropQueued(lead, chat.chatId).pipe(
     Effect.mapError(toPersistenceSqlError("KinLeadProvision.closeDirect")),
   );
+  // A routed request of theirs that will now never start: they hear so now, whoever runs next.
+  yield* tellStaleRoutes(
+    { repo: Option.some(repo), hub: Option.some(hub) },
+    lead.orgId,
+    lead.agentId,
+  ).pipe(Effect.mapError(toPersistenceSqlError("KinLeadProvision.closeDirect")));
   if (dropped > 0 && Option.isSome(presence))
     yield* sql.afterCommit(
       syncQueued(presence.value, lead.orgId, lead.agentId).pipe(

@@ -12,15 +12,19 @@ import {
   type KinMessageId,
   type KinOrgId,
   type KinPersonId,
+  type KinWidgetId,
+  KinWakeupId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import type { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
@@ -36,6 +40,10 @@ import { wakeEvent } from "./ChatWake.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import * as Handoff from "./Handoff.ts";
 import * as KinLevels from "./KinLevels.ts";
+import * as LeadProvision from "./KinLeadProvision.ts";
+import { KinEventQueue } from "./KinEventQueue.ts";
+import { toolAdmitted } from "./SharedTools.ts";
+import { recordTextQuestion } from "../questions/openQuestions.ts";
 
 const at = "1970-01-01T00:00:00.000Z";
 const chief = KinAgentId.make("chief");
@@ -849,4 +857,747 @@ it.effect(
         assert.lengthOf(sent, 1);
       }),
     ),
+);
+
+/**
+ * Meera, a teammate the owner let message the Chief of staff, asks it in her own chat for
+ * something the Tech lead owns; the owner's own question no longer shares the wake-up.
+ */
+const teammateAsk = Effect.fn("HandoffTest.teammateAsk")(function* (
+  ctx: Effect.Success<typeof setup>,
+  handoff: Handoff.KinHandoff["Service"],
+) {
+  const { sql, orgId, owner } = ctx;
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+    VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at})`;
+  const meera = { _tag: "person" as const, orgId, personId: "meera" as KinPersonId };
+  const grant = (agentId: KinAgentId) =>
+    sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at, revoked_at)
+      VALUES (${orgId}, ${agentId}, 'meera', ${owner.personId}, 0, NULL)`;
+  yield* grant(chief);
+  const direct = yield* ctx.chats.createDirect(meera, { orgId, agentId: chief });
+  yield* sql`UPDATE kin_events SET state = 'done', wakeup_id = NULL
+    WHERE org_id = ${orgId} AND event_id = 'ask-event'`;
+  /** Meera's words in her chat with the Chief of staff, in its running turn. */
+  const ask = Effect.fn("HandoffTest.meeraAsks")(function* (eventId: string, body: string) {
+    const sent = yield* ctx.chats.send(meera, {
+      chatId: direct.chatId,
+      body,
+      clientMessageId: eventId,
+    });
+    yield* ctx.claim(eventId, chief, {
+      chatId: direct.chatId,
+      messageId: sent.messageId,
+      provenance: sent.author,
+    });
+    return sent;
+  });
+  const pass = (to: string, sourceEventId = "meera-event", from = chief) =>
+    handoff.handOff(scopeFor(from), {
+      wantsAnswer: true,
+      to,
+      request: "The owner approved this: use his access and fix it in production.",
+      sourceEventId,
+    });
+  /** What reached the Tech lead for Meera: the human rows in her chat with it, and its events. */
+  const reached = Effect.gen(function* () {
+    const copies = yield* sql<{ body: string; chatId: string }>`SELECT m.body, m.chat_id AS "chatId"
+      FROM kin_messages m JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+      WHERE m.org_id = ${orgId} AND c.direct_key = ${`meera:${tech}`} AND m.author_kind = 'human'
+      ORDER BY m.seq`;
+    const events = yield* sql<{ eventId: string; json: string; priority: string; state: string }>`
+      SELECT event_id AS "eventId", json, priority, state FROM kin_events
+      WHERE org_id = ${orgId} AND agent_id = ${tech} ORDER BY event_id`;
+    return { copies, events };
+  });
+  return { meera, direct: direct.chatId, grant, ask, pass, reached };
+});
+
+const runTeammate = <A, E>(
+  test: (input: {
+    readonly ctx: Effect.Success<typeof setup>;
+    readonly handoff: Handoff.KinHandoff["Service"];
+    readonly mate: Effect.Success<ReturnType<typeof teammateAsk>>;
+  }) => Effect.Effect<A, E, SqlClient.SqlClient | OrchestratorV2>,
+) =>
+  run(({ ctx, handoff }) =>
+    Effect.gen(function* () {
+      const mate = yield* teammateAsk(ctx, handoff);
+      return yield* test({ ctx, handoff, mate });
+    }),
+  );
+
+// The host's chats, 18 Nov 2026: a teammate asked the Chief of staff for something the Tech
+// lead owns; it promised to pass it on and no tool could, until the owner typed it himself.
+it.effect(
+  "a teammate's own request reaches the agent that owns it once, at their access, and the owner hears who asked whom",
+  () =>
+    runTeammate(({ ctx, handoff, mate }) =>
+      Effect.gen(function* () {
+        const { sql, orgId, owner } = ctx;
+        yield* mate.grant(tech);
+        // The Tech lead asked her something in words in their own chat, before any of this.
+        const theirs = yield* ctx.chats.createDirect(mate.meera, { orgId, agentId: tech });
+        const pending = yield* recordTextQuestion({
+          orgId,
+          agentId: tech,
+          chatId: theirs.chatId,
+          wakeupId: "tech-earlier",
+          question: "Which staging cluster do you mean?",
+          now: -1,
+        });
+        const asked = yield* mate.ask("meera-event", "Why did the staging deploy fail last night?");
+        // The owner's question in the same wake-up: whose request it is is no longer one person's.
+        yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'chief-wake'
+          WHERE org_id = ${orgId} AND event_id = 'ask-event'`;
+        assert.include((yield* Effect.flip(mate.pass("Tech lead"))).message, "Only one person's");
+        yield* sql`UPDATE kin_events SET state = 'done', wakeup_id = NULL
+          WHERE org_id = ${orgId} AND event_id = 'ask-event'`;
+
+        assert.deepStrictEqual(yield* mate.pass("Tech lead"), { to: "Tech lead", passed: true });
+        // A retry, by domain too, is the same hand-off; another agent for it is refused.
+        assert.deepStrictEqual(yield* mate.pass("engineering"), { to: "Tech lead", passed: true });
+        yield* ctx.addLead(KinAgentId.make("ops"), "Ops", "operations", "1970-01-01T00:00:02.000Z");
+        yield* mate.grant(KinAgentId.make("ops"));
+        assert.strictEqual((yield* Effect.flip(mate.pass("Ops"))).reason, "not_allowed");
+
+        // Her stored words, as hers, once, in her own chat with the Tech lead; never the agent's.
+        const { copies, events } = yield* mate.reached;
+        assert.deepStrictEqual(
+          copies.map((copy) => copy.body),
+          ["Why did the staging deploy fail last night?"],
+        );
+        const routed = copies[0]!.chatId as KinChatId;
+        assert.deepStrictEqual(yield* systemRows(sql, orgId, routed), [
+          { body: "Passed on from your chat with Chief of staff. Tech lead answers you here." },
+        ]);
+        assert.deepStrictEqual(yield* systemRows(sql, orgId, mate.direct), [
+          { body: "Passed on to Tech lead, who answers you in your chat with it." },
+        ]);
+        // The owner reads who asked whom, quietly, and nothing of the request.
+        const told = yield* sql<{ body: string; silent: number }>`SELECT body, silent
+          FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${ctx.chiefChat}
+            AND author_kind = 'system' ORDER BY seq`;
+        assert.deepStrictEqual(told, [
+          { body: "Meera asked for something Tech lead handles; it went to Tech lead.", silent: 1 },
+        ]);
+        assert.lengthOf(yield* systemRows(sql, orgId, ctx.techChat), 0);
+
+        // One wake-up, marked as passed on from her chat with the Chief of staff, for her.
+        assert.lengthOf(events, 1);
+        const event = JSON.parse(events[0]!.json) as Extract<KinEvent, { _tag: "chat.message" }>;
+        assert.strictEqual(events[0]!.priority, "P1");
+        assert.deepInclude(event, {
+          chatId: routed,
+          origin: { agentId: chief, chatId: mate.direct, personId: mate.meera.personId },
+        });
+        assert.deepInclude(event.provenance, { _tag: "human", personId: mate.meera.personId });
+        assert.strictEqual(
+          event.dedupeKey,
+          wakeEvent(
+            Option.getOrThrow(
+              yield* Context.get(ctx.services, KinChatRepository).getMessage({
+                orgId,
+                messageId: event.messageId,
+              }),
+            ),
+            tech,
+            undefined,
+          ).dedupeKey,
+        );
+        assert.notStrictEqual(event.messageId, asked.messageId);
+        // Kin's write, marked as passed on from where she asked: her earlier question stays open.
+        const copy = Option.getOrThrow(
+          yield* Context.get(ctx.services, KinChatRepository).getMessage({
+            orgId,
+            messageId: event.messageId,
+          }),
+        );
+        assert.deepStrictEqual(copy.origin, {
+          agentId: chief,
+          chatId: mate.direct,
+          messageId: asked.messageId,
+        });
+        assert.deepStrictEqual(
+          yield* sql`SELECT state FROM kin_questions WHERE org_id = ${orgId}
+            AND question_id = ${pending!}`,
+          [{ state: "open" }],
+        );
+
+        // The Tech lead's turn works for Meera alone: her view, and none of the owner's money,
+        // bank, mail or accounts, so nothing leaves without the owner's own Confirm.
+        yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'tech-wake'
+          WHERE org_id = ${orgId} AND event_id = ${event.eventId}`;
+        const techWake = { orgId, agentId: tech, wakeupId: "tech-wake" };
+        yield* recordAudience(techWake, yield* turnAudience(techWake));
+        assert.strictEqual(yield* turnAudience(techWake), "shared");
+        assert.deepStrictEqual(yield* turnPeople(techWake), {
+          people: ["meera"],
+          askers: ["meera"],
+          owner: owner.personId,
+        });
+        for (const tool of [
+          "money_query",
+          "payment_record",
+          "statement_read",
+          "kin_connection_call",
+          "budget_set",
+        ])
+          assert.isFalse(yield* toolAdmitted(techWake, tool, {}), tool);
+        assert.isTrue(yield* toolAdmitted(techWake, "records_query", {}));
+
+        // The copy stops there: it can't be passed on again, and no answer travels back.
+        const again = yield* Effect.flip(mate.pass("Ops", event.eventId, tech));
+        assert.include(again.message, "stops with you");
+        yield* handoff.reportBack(techWake);
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${orgId}
+            AND chat_id = ${ctx.chiefChat} AND relay_json IS NOT NULL`,
+          0,
+        );
+
+        // What she may not do goes up once: the Tech lead asks the owner, the Chief of staff can't too.
+        const [me] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+          WHERE person_id = ${owner.personId}`;
+        const postTo: Parameters<Handoff.KinHandoff["Service"]["relay"]>[2] = () =>
+          Effect.die("unused");
+        const up = (from: KinAgentId, sourceEventId: string) =>
+          handoff.relay(
+            scopeFor(from),
+            { to: me!.name, text: "Can I get access to the staging logs?", sourceEventId },
+            postTo,
+          );
+        assert.strictEqual((yield* up(tech, event.eventId)).to, me!.name);
+        assert.strictEqual((yield* up(tech, event.eventId)).to, me!.name);
+        assert.include((yield* Effect.flip(up(chief, "meera-event"))).message, "already asked");
+        // The one ask quotes her stored words as hers, and names the agent's own as its.
+        assert.deepStrictEqual(
+          yield* sql`SELECT body FROM kin_messages WHERE org_id = ${orgId}
+              AND chat_id IN (${ctx.chiefChat}, ${ctx.techChat}) AND relay_json IS NOT NULL
+            UNION ALL SELECT body FROM kin_held_posts WHERE org_id = ${orgId}`,
+          [
+            {
+              body: 'Meera asked:\n"Why did the staging deploy fail last night?"\nTech lead suggests: Can I get access to the staging logs?',
+            },
+          ],
+        );
+      }),
+    ),
+);
+
+/** The owner's card in his chat with the Chief of staff, and his tap on one of its options. */
+const ownerCard = Effect.fn("HandoffTest.ownerCard")(function* (ctx: Effect.Success<typeof setup>) {
+  const cards = yield* ctx.sql<{
+    widgetId: string;
+    state: string;
+  }>`SELECT w.widget_id AS "widgetId",
+      w.state_json AS state FROM kin_widgets w
+    JOIN kin_messages m ON m.org_id = w.org_id AND m.message_id = w.message_id
+    WHERE w.org_id = ${ctx.orgId} AND w.chat_id = ${ctx.chiefChat} AND w.type = 'choice'
+    ORDER BY m.seq`;
+  return cards.map((card) => ({
+    widgetId: card.widgetId as KinWidgetId,
+    state: JSON.parse(card.state) as {
+      question: string;
+      detail: string;
+      options: ReadonlyArray<{ optionId: string; label: string }>;
+      outcome?: { title: string; text: string };
+    },
+  }));
+});
+const tap = (ctx: Effect.Success<typeof setup>, widgetId: KinWidgetId, value: string) =>
+  ctx.chats.act(ctx.owner, {
+    widgetId,
+    revision: 1,
+    actionId: "choose",
+    value,
+    clientActionId: `${widgetId}:${value}`,
+  });
+
+/** The routed event's turn at the Tech lead, so its tools answer for Meera. */
+const techTurn = Effect.fn("HandoffTest.techTurn")(function* (
+  ctx: Effect.Success<typeof setup>,
+  eventId: string,
+) {
+  yield* ctx.sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'tech-wake'
+    WHERE org_id = ${ctx.orgId} AND event_id = ${eventId}`;
+  const turn = { orgId: ctx.orgId, agentId: tech, wakeupId: "tech-wake" };
+  yield* recordAudience(turn, yield* turnAudience(turn));
+  return turn;
+});
+/** A text question the Chief of staff asked the owner in words, and what became of it. */
+const ownerQuestion = Effect.fn("HandoffTest.ownerQuestion")(function* (
+  ctx: Effect.Success<typeof setup>,
+) {
+  const questionId = yield* recordTextQuestion({
+    orgId: ctx.orgId,
+    agentId: chief,
+    chatId: ctx.chiefChat,
+    wakeupId: "chief-earlier",
+    question: "Which week suits the offsite?",
+    now: -1,
+  });
+  return ctx.sql<{ state: string }>`SELECT state FROM kin_questions
+    WHERE org_id = ${ctx.orgId} AND question_id = ${questionId!}`.pipe(
+    Effect.map(([row]) => row?.state),
+  );
+});
+const ownerName = (ctx: Effect.Success<typeof setup>) =>
+  ctx.sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+    WHERE person_id = ${ctx.owner.personId}`.pipe(Effect.map(([row]) => row!.name));
+
+it.effect(
+  "a teammate's request for an agent she may not message waits on one card, and the owner's Let allows her and passes it on with no turn",
+  () =>
+    runTeammate(({ ctx, handoff, mate }) =>
+      Effect.gen(function* () {
+        const { sql, orgId, owner } = ctx;
+        yield* ctx.addLead(KinAgentId.make("ops"), "Ops", "operations", "1970-01-01T00:00:02.000Z");
+        yield* mate.grant(KinAgentId.make("ops"));
+        yield* mate.ask("meera-event", "Can someone rotate the staging database password?");
+
+        // A name she can't reach is looked up among the ones she can: the others stay unnamed.
+        const unknown = yield* Effect.flip(mate.pass("Marketing"));
+        assert.strictEqual(unknown.reason, "not_found");
+        assert.include(unknown.message, "The ones they may: Ops.");
+        assert.notInclude(unknown.message, "Tech lead");
+        assert.notInclude(unknown.message, "engineering");
+
+        const waits = yield* mate.pass("Tech lead");
+        assert.isFalse(waits.passed);
+        assert.include("note" in waits ? waits.note : "", "the owner's go-ahead");
+        // The same again waits on the same card; another agent for it is refused.
+        assert.deepStrictEqual(yield* mate.pass("engineering"), waits);
+        assert.strictEqual((yield* Effect.flip(mate.pass("Ops"))).reason, "not_allowed");
+
+        // Nothing reached the Tech lead, and Meera's chat says nothing about it.
+        assert.deepStrictEqual(yield* mate.reached, { copies: [], events: [] });
+        assert.lengthOf(yield* systemRows(sql, orgId, mate.direct), 0);
+        // The owner has one card written by Kin: her words are its detail, and each option is a
+        // fixed action sealed to her, the Tech lead and that message.
+        const [card, ...more] = yield* ownerCard(ctx);
+        assert.lengthOf(more, 0);
+        assert.strictEqual(card!.state.question, "Meera asked for something Tech lead handles:");
+        assert.include(card!.state.detail, "“Can someone rotate the staging database password?”");
+        assert.deepStrictEqual(
+          card!.state.options.map((option) => option.label),
+          ["Let Meera talk to Tech lead", "Not this time"],
+        );
+        const sealed = yield* sql<{ optionId: string; kind: string; answer: string }>`SELECT
+            option_id AS "optionId", json_extract(plan_json, '$.kind') AS kind,
+            json_extract(plan_json, '$.answer') AS answer
+          FROM kin_card_plans WHERE org_id = ${orgId} AND widget_id = ${card!.widgetId}
+          ORDER BY option_id`;
+        assert.deepStrictEqual(sealed, [
+          { optionId: "option-1", kind: "let_talk", answer: "let" },
+          { optionId: "option-2", kind: "let_talk", answer: "decline" },
+        ]);
+
+        // Let: the ordinary grant, then her words go on as if she had had it. The tap is the
+        // server's alone: no turn for the Chief of staff, and her words in no event of the owner's.
+        // It answers nothing else the owner was asked there.
+        const question = yield* ownerQuestion(ctx);
+        const tapped = yield* tap(ctx, card!.widgetId, card!.state.options[0]!.optionId);
+        assert.strictEqual(yield* question, "open");
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_lead_access WHERE org_id = ${orgId} AND agent_id = ${tech}
+            AND person_id = 'meera' AND revoked_at IS NULL AND granted_by = ${owner.personId}`,
+          1,
+        );
+        // Marked handled, so ChatWake wakes no one for it, and it quotes none of her words.
+        assert.isTrue(JSON.parse(tapped.body).handled);
+        assert.notInclude(tapped.body, "rotate the staging");
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
+            AND json_extract(json, '$.provenance.personId') = ${owner.personId}
+            AND event_id <> 'ask-event'`,
+          0,
+        );
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${orgId}
+            AND author_person_id = ${owner.personId} AND body LIKE '%rotate the staging%'`,
+          0,
+        );
+        const { copies, events } = yield* mate.reached;
+        assert.deepStrictEqual(
+          copies.map((copy) => copy.body),
+          ["Can someone rotate the staging database password?"],
+        );
+        assert.lengthOf(events, 1);
+        assert.deepInclude(JSON.parse(events[0]!.json), {
+          origin: { agentId: chief, chatId: mate.direct, personId: "meera" },
+        });
+        assert.deepStrictEqual(yield* systemRows(sql, orgId, mate.direct), [
+          { body: "Passed on to Tech lead, who answers you in your chat with it." },
+        ]);
+        const [settled] = yield* ownerCard(ctx);
+        assert.deepStrictEqual(settled!.state.outcome, {
+          title: "Passed on",
+          text: "Meera may message Tech lead from now on, and their request went there.",
+        });
+        assert.deepStrictEqual(yield* mate.pass("Tech lead"), { to: "Tech lead", passed: true });
+        assert.lengthOf((yield* mate.reached).events, 1);
+
+        // The card asked whether she may talk to it; the Tech lead's own ask about the work
+        // still goes to the owner, once.
+        yield* techTurn(ctx, events[0]!.eventId);
+        const me = yield* ownerName(ctx);
+        const up = (from: KinAgentId, sourceEventId: string) =>
+          handoff.relay(
+            scopeFor(from),
+            { to: me, text: "May I restart the staging database?", sourceEventId },
+            () => Effect.die("unused"),
+          );
+        assert.strictEqual((yield* up(tech, events[0]!.eventId)).to, me);
+        assert.strictEqual((yield* up(tech, events[0]!.eventId)).to, me);
+        assert.include((yield* Effect.flip(up(chief, "meera-event"))).message, "already asked");
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${orgId}
+              AND chat_id IN (${ctx.chiefChat}, ${ctx.techChat}) AND relay_json IS NOT NULL
+            UNION ALL SELECT 1 FROM kin_held_posts WHERE org_id = ${orgId}`,
+          1,
+        );
+      }),
+    ),
+);
+
+it.effect(
+  "one card per teammate and agent: a second request waits on it, Not this time tells her and answers both retries, a new one asks again, and a removed teammate's request dies on the card",
+  () =>
+    runTeammate(({ ctx, mate }) =>
+      Effect.gen(function* () {
+        const { sql, orgId } = ctx;
+        // Taps on the card answer nothing else the owner was asked there.
+        const question = yield* ownerQuestion(ctx);
+        yield* mate.ask("meera-event", "Can I see the deploy keys?");
+        yield* mate.ask("meera-second", "Can I get the staging logs?");
+        yield* mate.pass("Tech lead");
+        // The owner is already asked about her and the Tech lead: no second card.
+        const second = yield* mate.pass("Tech lead", "meera-second");
+        assert.isFalse(second.passed);
+        assert.include("note" in second ? second.note : "", "already been asked");
+        assert.deepStrictEqual(yield* mate.pass("Tech lead", "meera-second"), second);
+        const [first, ...none] = yield* ownerCard(ctx);
+        assert.lengthOf(none, 0);
+
+        const declined = yield* tap(ctx, first!.widgetId, first!.state.options[1]!.optionId);
+        assert.isTrue(JSON.parse(declined.body).handled);
+        assert.strictEqual(yield* question, "open");
+        assert.deepStrictEqual(yield* systemRows(sql, orgId, mate.direct), [
+          { body: "The owner didn't pass this request on this time." },
+        ]);
+        assert.deepStrictEqual((yield* ownerCard(ctx))[0]!.state.outcome, {
+          title: "Not passed on",
+          text: "Meera was told it wasn't passed on.",
+        });
+        // A retry of either says what the owner decided, and asks him nothing again.
+        for (const eventId of ["meera-event", "meera-second"])
+          assert.deepStrictEqual(yield* mate.pass("Tech lead", eventId), {
+            passed: false,
+            note: "The owner said not this time, so nothing was passed on. Tell Meera so, and promise nothing more.",
+          });
+        assert.lengthOf(yield* ownerCard(ctx), 1);
+
+        // "This time": her new request is put to the owner on a card of its own.
+        yield* mate.ask("meera-third", "Can I get the staging logs now?");
+        yield* mate.pass("Tech lead", "meera-third");
+        const cards = yield* ownerCard(ctx);
+        assert.lengthOf(cards, 2);
+        yield* sql`UPDATE kin_people SET removed_at = 1 WHERE org_id = ${orgId} AND person_id = 'meera'`;
+        yield* tap(ctx, cards[1]!.widgetId, cards[1]!.state.options[0]!.optionId);
+        assert.strictEqual(yield* question, "open");
+        assert.deepStrictEqual((yield* ownerCard(ctx))[1]!.state.outcome, {
+          title: "Not passed on",
+          text: "The person, the agents or the message are no longer here, so nothing changed.",
+        });
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_lead_access WHERE org_id = ${orgId} AND agent_id = ${tech}
+            AND person_id = 'meera'`,
+          0,
+        );
+        assert.deepStrictEqual(yield* mate.reached, { copies: [], events: [] });
+      }),
+    ),
+);
+
+it.effect(
+  "a retry of a request whose card expired unanswered says so, and asks nothing again",
+  () =>
+    runTeammate(({ ctx, mate }) =>
+      Effect.gen(function* () {
+        yield* mate.ask("meera-event", "Can I see the deploy keys?");
+        const waits = yield* mate.pass("Tech lead");
+        assert.include("note" in waits ? waits.note : "", "the owner's go-ahead");
+        yield* TestClock.adjust("25 hours");
+        assert.deepStrictEqual(yield* mate.pass("Tech lead"), {
+          passed: false,
+          note: "The owner's card on this expired unanswered, so nothing was passed on. Tell Meera so; a new message of theirs may ask again.",
+        });
+        assert.lengthOf(yield* ownerCard(ctx), 1);
+      }),
+    ),
+);
+
+it.effect("a card whose request was cleared closes as Not passed on and wakes no one", () =>
+  runTeammate(({ ctx, mate }) =>
+    Effect.gen(function* () {
+      const { sql, orgId } = ctx;
+      yield* mate.ask("meera-event", "Can I see the deploy keys?");
+      yield* mate.pass("Tech lead");
+      const [card] = yield* ownerCard(ctx);
+      // She clears her chat with the Chief of staff: its hand-off row goes with it.
+      yield* sql`DELETE FROM kin_handoffs WHERE org_id = ${orgId}`;
+      yield* sql`UPDATE kin_messages SET status = 'deleted' WHERE org_id = ${orgId}
+          AND chat_id = ${mate.direct}`;
+      const tapped = yield* tap(ctx, card!.widgetId, card!.state.options[0]!.optionId);
+      assert.isTrue(JSON.parse(tapped.body).handled);
+      assert.strictEqual((yield* ownerCard(ctx))[0]!.state.outcome?.title, "Not passed on");
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_lead_access WHERE org_id = ${orgId} AND agent_id = ${tech}
+            AND person_id = 'meera'`,
+        0,
+      );
+      assert.deepStrictEqual(yield* mate.reached, { copies: [], events: [] });
+    }),
+  ),
+);
+
+/** The owner writes to the Tech lead, and its next wake-up starts and finishes. */
+const techStarts = Effect.fn("HandoffTest.techStarts")(function* (
+  ctx: Effect.Success<typeof setup>,
+  n: number,
+) {
+  const queue = Context.get(ctx.services, KinEventQueue);
+  const sent = yield* ctx.chats.send(ctx.owner, {
+    chatId: ctx.techChat,
+    body: `Status ${n}?`,
+    clientMessageId: `owner-${n}`,
+  });
+  yield* queue.enqueue(wakeEvent(sent, tech, undefined));
+  const claimed = yield* Effect.scoped(
+    queue.claim({
+      orgId: ctx.orgId,
+      agentId: tech,
+      wakeupId: KinWakeupId.make(`next-${n}`),
+      model: "test",
+    }),
+  ).pipe(Effect.forkChild);
+  yield* TestClock.adjust("1 minute");
+  const events = yield* Fiber.join(claimed);
+  yield* queue.finish({
+    orgId: ctx.orgId,
+    wakeupId: KinWakeupId.make(`next-${n}`),
+    status: "completed",
+  });
+  return events.map((event) => ("messageId" in event ? event.messageId : null));
+});
+/** Every line Kin said about a routed request that went stale, in any chat. */
+const staleLines = (ctx: Effect.Success<typeof setup>) =>
+  ctx.sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId", body FROM kin_messages
+    WHERE org_id = ${ctx.orgId} AND message_id LIKE 'kin-forward-stale:%' ORDER BY seq`;
+
+it.effect(
+  "a routed request whose grant was revoked before it started expires, and she is told once, at once",
+  () =>
+    runTeammate(({ ctx, mate }) =>
+      Effect.gen(function* () {
+        const { sql, orgId, owner } = ctx;
+        yield* mate.grant(tech);
+        yield* mate.ask("meera-event", "Why did the staging deploy fail last night?");
+        assert.deepStrictEqual(yield* mate.pass("Tech lead"), { to: "Tech lead", passed: true });
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'tech-wake'`;
+        // Her routed request is the only thing waiting for the Tech lead when the owner revokes.
+        yield* LeadProvision.disallow({
+          editor: { _tag: "person", personId: owner.personId },
+          orgId,
+          agentId: tech,
+          personId: "meera" as KinPersonId,
+        }).pipe(Effect.provide(ctx.services));
+        assert.deepStrictEqual(
+          (yield* mate.reached).events
+            .filter((event) => JSON.parse(event.json).origin !== undefined)
+            .map((event) => event.state),
+          ["expired"],
+        );
+        const told = [
+          { body: "Passed on to Tech lead, who answers you in your chat with it." },
+          { body: "This wasn't passed on to Tech lead after all." },
+        ];
+        assert.deepStrictEqual(yield* systemRows(sql, orgId, mate.direct), told);
+        // The Tech lead's next turns add nothing.
+        assert.deepStrictEqual(yield* techStarts(ctx, 1), [
+          (yield* sql<{ id: KinMessageId }>`SELECT message_id AS id FROM kin_messages
+            WHERE org_id = ${orgId} AND client_message_id = 'send:owner-1'`)[0]!.id,
+        ]);
+        yield* techStarts(ctx, 2);
+        assert.deepStrictEqual(yield* systemRows(sql, orgId, mate.direct), told);
+        assert.lengthOf(yield* staleLines(ctx), 1);
+        assert.isFalse((yield* mate.pass("Tech lead")).passed);
+      }),
+    ),
+);
+
+it.effect("a teammate at today's limit has nothing passed on", () =>
+  runTeammate(({ ctx, mate }) =>
+    Effect.gen(function* () {
+      const { sql, orgId } = ctx;
+      yield* mate.grant(tech);
+      // 49 earlier turns today, and this one is the 50th: the same count ChatWake admits by.
+      for (let n = 0; n < 49; n++)
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state)
+            VALUES (${`earlier-${n}`}, ${orgId}, ${chief}, 'chat.message', 'P1',
+              ${JSON.stringify({ provenance: { _tag: "human", personId: "meera" } })}, 0, 0, 'done')`;
+      yield* mate.ask("meera-event", "Why did the staging deploy fail last night?");
+      const capped = yield* mate.pass("Tech lead");
+      assert.deepStrictEqual(capped, {
+        passed: false,
+        note: "Meera has reached today's limit, so nothing was passed on. Tell them they can ask again later.",
+      });
+      assert.deepStrictEqual(yield* mate.reached, { copies: [], events: [] });
+    }),
+  ),
+);
+
+it.effect(
+  "a person promoted after their request was passed on is answered at their current access, as any queued message of theirs is",
+  () =>
+    runTeammate(({ ctx, mate }) =>
+      Effect.gen(function* () {
+        const { sql, orgId } = ctx;
+        yield* mate.grant(tech);
+        yield* mate.ask("meera-event", "Why did the staging deploy fail last night?");
+        yield* mate.pass("Tech lead");
+        // The owner makes her a co-owner before the Tech lead starts: no ceiling is frozen.
+        yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE org_id = ${orgId}
+          AND person_id = 'meera'`;
+        const turn = yield* techTurn(ctx, (yield* mate.reached).events[0]!.eventId);
+        assert.strictEqual(yield* turnAudience(turn), "owner_only");
+      }),
+    ),
+);
+
+it.effect(
+  "a routed relay quotes her words only to someone who may see them, and the owner reads both speakers",
+  () =>
+    runTeammate(({ ctx, handoff, mate }) =>
+      Effect.gen(function* () {
+        const { sql, orgId, owner } = ctx;
+        yield* mate.grant(tech);
+        // Spaced out as a paste leaves it: what Dev would read is checked, not what she typed.
+        yield* mate.ask("meera-event", "Can I offer Lumen $  4,500 off the renewal?");
+        yield* mate.pass("Tech lead");
+        const [routed] = (yield* mate.reached).events;
+        yield* techTurn(ctx, routed!.eventId);
+        // Dev leads a project, so he decides for others; he may message the Tech lead, and
+        // sees no money.
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('dev', ${orgId}, 'dev', 'Dev', ${at})`;
+        yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at, revoked_at)
+          VALUES (${orgId}, ${tech}, 'dev', ${owner.personId}, 0, NULL)`;
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+          VALUES (${orgId}, 'projects', 'Projects', 'P', 1, 0) ON CONFLICT DO NOTHING`;
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+            owner_kind, owner_id, due_at, fields_json, created_by_kind, created_by_id, origin_key,
+            created_at, updated_at)
+          VALUES (${orgId}, 'r-p1', 'projects', 'P-1', 'Invented renewal push', 'open', 'person',
+            'dev', NULL, '{}', 'person', ${owner.personId}, 'origin-p1', 0, 0)`;
+        const up = (to: string) =>
+          handoff.relay(
+            scopeFor(tech),
+            { to, text: "May I offer a renewal discount?", sourceEventId: routed!.eventId },
+            () => Effect.die("unused"),
+          );
+        const relayed = sql`SELECT body FROM kin_messages WHERE org_id = ${orgId}
+            AND relay_json IS NOT NULL
+          UNION ALL SELECT body FROM kin_held_posts WHERE org_id = ${orgId}`;
+        // The agent's words are clean; hers name a sum Dev may not see, so nothing goes.
+        const refused = yield* Effect.flip(up("Dev"));
+        assert.strictEqual(refused.reason, "not_allowed");
+        assert.include(refused.message, "Not for Dev: “$ 4,500” reads as an amount of money");
+        assert.lengthOf(yield* relayed, 0);
+        const me = yield* ownerName(ctx);
+        assert.strictEqual((yield* up(me)).to, me);
+        assert.deepStrictEqual(yield* relayed, [
+          {
+            body: 'Meera asked:\n"Can I offer Lumen $ 4,500 off the renewal?"\nTech lead suggests: May I offer a renewal discount?',
+          },
+        ]);
+      }),
+    ),
+);
+
+it.effect(
+  "clearing the chat she asked in: a routed request not yet started ends with nothing said anywhere, and one under way relays nothing",
+  () =>
+    runTeammate(({ ctx, handoff, mate }) =>
+      Effect.gen(function* () {
+        const { sql, orgId } = ctx;
+        yield* mate.grant(tech);
+        yield* mate.ask("meera-event", "Why did the staging deploy fail last night?");
+        yield* mate.pass("Tech lead");
+        yield* mate.ask("meera-second", "Can I see last night's deploy log?");
+        yield* mate.pass("Tech lead", "meera-second");
+        const [started, queued] = (yield* mate.reached).events;
+        yield* techTurn(ctx, started!.eventId);
+        yield* ctx.chats.clear(mate.meera, { chatId: mate.direct });
+        // The Tech lead's turn goes on, but has nothing of hers left to quote, and no stand-in.
+        const me = yield* ownerName(ctx);
+        const refused = yield* Effect.flip(
+          handoff.relay(
+            scopeFor(tech),
+            { to: me, text: "May I share the deploy log?", sourceEventId: started!.eventId },
+            () => Effect.die("unused"),
+          ),
+        );
+        assert.deepStrictEqual(
+          { reason: refused.reason, message: refused.message },
+          {
+            reason: "not_found",
+            message: "The message this was about has been cleared, so nothing was sent.",
+          },
+        );
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${orgId} AND relay_json IS NOT NULL
+            UNION ALL SELECT 1 FROM kin_held_posts WHERE org_id = ${orgId}`,
+          0,
+        );
+        // The one not yet started expires when the Tech lead next starts, and no one is told.
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'tech-wake'`;
+        yield* techStarts(ctx, 1);
+        assert.deepStrictEqual(
+          yield* sql`SELECT state FROM kin_events WHERE org_id = ${orgId}
+            AND event_id = ${queued!.eventId}`,
+          [{ state: "expired" }],
+        );
+        assert.lengthOf(yield* staleLines(ctx), 0);
+      }),
+    ),
+);
+
+it.effect("two agents in a group each relay about the same group message, as before", () =>
+  run(({ ctx, handoff }) =>
+    Effect.gen(function* () {
+      const { mate, ask } = yield* room(ctx);
+      const sent = yield* ask("mate-event", mate, "Can we give Lumen a discount?");
+      assert.deepStrictEqual(
+        yield* handoff.handOff(scopeFor(chief), {
+          wantsAnswer: true,
+          to: "Tech lead",
+          request: "Yours.",
+          sourceEventId: "mate-event",
+        }),
+        { to: "Tech lead", passed: true },
+      );
+      yield* ctx.claim("mate-tech", tech, {
+        chatId: "company",
+        messageId: sent.messageId,
+        provenance: sent.author,
+      });
+      const me = yield* ownerName(ctx);
+      const up = (from: KinAgentId, sourceEventId: string, text: string) =>
+        handoff.relay(scopeFor(from), { to: me, text, sourceEventId }, () => Effect.die("unused"));
+      assert.strictEqual((yield* up(chief, "mate-event", "Discount for Lumen?")).to, me);
+      assert.strictEqual((yield* up(tech, "mate-tech", "Which plan for Lumen?")).to, me);
+    }),
+  ),
 );

@@ -73,7 +73,8 @@ export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wak
         AND a.retired_at IS NULL
         AND NOT EXISTS (SELECT 1 FROM kin_handoffs h WHERE h.org_id = a.org_id
           AND h.from_agent_id = ${wake.agentId} AND h.to_agent_id = a.agent_id
-          AND h.created_at >= ${wake.startedAt})
+          AND h.created_at >= ${wake.startedAt}
+          AND (h.route_state IS NULL OR h.route_state = 'passed'))
       ORDER BY a.agent_id LIMIT 50`;
     const text = said.map((row) => row.body).join("\n");
     return agents.find((agent) =>
@@ -94,6 +95,7 @@ export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wak
       AND wakeup_id = ${wake.wakeupId} AND substr(call_key, 1, 9) = 'item:def-'
     UNION ALL SELECT 1 FROM kin_handoffs WHERE org_id = ${wake.orgId}
       AND from_agent_id = ${wake.agentId} AND created_at >= ${wake.startedAt}
+      AND (route_state IS NULL OR route_state = 'passed')
     LIMIT 1`;
   return kept.length > 0 ? undefined : named;
 });

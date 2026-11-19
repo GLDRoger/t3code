@@ -51,6 +51,7 @@ import {
   type KinAttachment,
   type KinDiscussionId,
   type KinMessage,
+  type KinMessageOrigin,
   type KinMessageRelay,
   type KinMessageWhen,
   type KinMessagesMarkReadInput,
@@ -132,6 +133,8 @@ type SendInput = KinMessagesSendInput & {
   readonly forChat?: true;
   /** With `forChat`: another person's words the agent passes on (`kin_relay`). */
   readonly relay?: KinMessageRelay;
+  /** A person's words Kin posts again for them (`kin_hand_off`): no reply of theirs here. */
+  readonly passedOn?: KinMessageOrigin;
 };
 type WidgetUpsertInput = {
   readonly chatId: KinChatId;
@@ -804,6 +807,9 @@ const make = Effect.gen(function* () {
       readonly clientId: { readonly kind: "send" | "act"; readonly id: string } | null;
       readonly forChat?: boolean;
       readonly relay?: KinMessageRelay | undefined;
+      readonly passedOn?: KinMessageOrigin | undefined;
+      /** False for a tap whose fixed action the server ran: it answers nothing else here. */
+      readonly replies?: false;
     },
   ) {
     // A reply the caller names must be one it may read; a hidden one reads as missing.
@@ -838,6 +844,9 @@ const make = Effect.gen(function* () {
       widgetId: input.widgetId,
       floorRunId: input.floorRunId ?? null,
       ...(input.forChat === true && input.relay !== undefined ? { relay: input.relay } : {}),
+      ...(identity._tag === "person" && input.passedOn !== undefined
+        ? { origin: input.passedOn }
+        : {}),
       status: "posted",
       sentBy: null,
       clientMessageId: input.clientId,
@@ -865,7 +874,7 @@ const make = Effect.gen(function* () {
         });
       }
     }
-    if (identity._tag === "person") {
+    if (identity._tag === "person" && message.origin === undefined && input.replies !== false) {
       // Their words answer an agent's question asked in text here before them.
       yield* answerByReply({
         orgId: identity.orgId,
@@ -1112,6 +1121,7 @@ const make = Effect.gen(function* () {
       replyTo: widget.messageId,
       widgetId: widget.widgetId,
       clientId: { kind: "act", id: request.clientActionId },
+      ...(runs ? { replies: false as const } : {}),
     });
     if (sealed !== undefined && choice !== null)
       yield* CardPlans.markRan({
@@ -1373,6 +1383,7 @@ const make = Effect.gen(function* () {
       forChat: toPerson,
       placeReplyFigures: input.placeReplyFigures,
       relay: toPerson ? input.relay : undefined,
+      passedOn: input.passedOn,
     });
     // A reply someone waits on doesn't use up the hourly room for unprompted notices.
     if (

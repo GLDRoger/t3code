@@ -217,6 +217,8 @@ const make = Effect.gen(function* () {
     function* (message: KinMessage) {
       if (message.author._tag !== "human" || message.status !== "posted") return;
       if (message.kind !== "text" && message.kind !== "widget_action") return;
+      // Kin's copy of a person's words (`kin_hand_off`) is woken once by the hand-off itself.
+      if (message.origin !== undefined) return;
       const leads = yield* sql<{
         agentId: string;
         memberId: string;

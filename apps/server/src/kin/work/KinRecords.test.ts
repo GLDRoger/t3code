@@ -3477,7 +3477,15 @@ it.effect(
       });
       yield* give;
       yield* bounce;
-      // The owner asked in this turn: his word sends it back.
+      // A copy of an owner-level person's words Kin passed on (`origin`) is no word of theirs here.
+      const copied = (origin: string | null) =>
+        sql`UPDATE kin_messages SET origin_json = ${origin} WHERE org_id = ${orgId}
+          AND message_id = (SELECT json_extract(json, '$.messageId') FROM kin_events
+            WHERE org_id = ${orgId} AND event_id = 'ask-event')`;
+      yield* copied(JSON.stringify({ agentId: "chief", chatId: "first-chat", messageId: "first" }));
+      assert.include((yield* Effect.flip(give)).message, "no repo yet");
+      // Said here, the owner's own word sends it back.
+      yield* copied(null);
       yield* give;
       yield* bounce;
       // A turn the owner's words didn't start, as a hand back's wake: it doesn't go straight back.

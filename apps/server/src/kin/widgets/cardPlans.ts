@@ -77,6 +77,25 @@ const DefaultPlan = Schema.Struct({
   draw: CardDraw,
 });
 /**
+ * Kin's own card on a teammate's request for an agent they may not message (`routeCard.ts`):
+ * let them, and pass on that one message, or tell them it wasn't. Never drawn by an agent.
+ */
+const RoutePlan = Schema.Struct({
+  kind: Schema.Literal("let_talk"),
+  answer: Schema.Literals(["let", "decline"]),
+  personId: Schema.String,
+  personName: Schema.String,
+  /** The agent that owns the request, and the one it was asked of. */
+  agentId: Schema.String,
+  agentName: Schema.String,
+  fromName: Schema.String,
+  /** The teammate's own message, in their direct chat with the agent it was asked of. */
+  messageId: Schema.String,
+  chatId: Schema.String,
+  draw: CardDraw,
+});
+export type RoutePlan = typeof RoutePlan.Type;
+/**
  * On Kin's note that a question's default was taken at its day: Undo puts back the one change it
  * made (`seq`, which left the entry at `rev`), Keep leaves it. Sealed by the server, never drawn.
  */
@@ -94,7 +113,14 @@ const TakenPlan = Schema.Struct({
   hidden: Schema.optional(Schema.Literal(true)),
 });
 export type TakenPlan = typeof TakenPlan.Type;
-export const CardPlan = Schema.Union([RecordPlan, StartPlan, ListPlan, DefaultPlan, TakenPlan]);
+export const CardPlan = Schema.Union([
+  RecordPlan,
+  StartPlan,
+  ListPlan,
+  DefaultPlan,
+  RoutePlan,
+  TakenPlan,
+]);
 export type CardPlan = typeof CardPlan.Type;
 const PlanJson = Schema.fromJsonString(CardPlan);
 const encodePlan = Schema.encodeEffect(PlanJson);

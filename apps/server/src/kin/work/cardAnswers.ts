@@ -27,6 +27,12 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   scope: Scope.Scope,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  // Kin's own route card answers nothing else, and is no decision to remember.
+  if (input.plan?.kind === "let_talk")
+    return yield* CardActions.run(input, input.plan, {
+      records: yield* KinRecords,
+      chat: yield* KinChatService,
+    });
   // The option's sealed action runs here, as this tap, before anything the card answers.
   const ran =
     input.plan === undefined

@@ -554,10 +554,18 @@ describe("pulse check-ins", () => {
         yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
           role, joined_at)
         VALUES ('m-mate', ${orgId}, 'chat-mate', 'person', ${mate}, 'member', ${stamp})`;
+        // A request of theirs Kin passed on into this chat is no answer to the nudge.
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
+          created_at, origin_json)
+        VALUES ('copy', ${orgId}, 'chat-mate', 1, 'human', ${mate}, 'm-mate', 'member', 'text',
+          'Can Finance send it?', '[]', 'posted', '2026-11-16T11:00:00.000Z',
+          '{"messageId":"asked","chatId":"chat-elsewhere"}')`;
+        assert.include(yield* send(MONDAY + DAY + 10 * HOUR, factKey), "hasn't answered");
         yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
           author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
           created_at)
-        VALUES ('reply', ${orgId}, 'chat-mate', 1, 'human', ${mate}, 'm-mate', 'member', 'text',
+        VALUES ('reply', ${orgId}, 'chat-mate', 2, 'human', ${mate}, 'm-mate', 'member', 'text',
           'On it', '[]', 'posted', '2026-11-16T12:00:00.000Z')`;
         assert.strictEqual(yield* send(MONDAY + DAY + 10 * HOUR, factKey), "sent");
         assert.deepStrictEqual(posted.slice(1), [["pulse-nudge:mate:2026-11-17", undefined]]);

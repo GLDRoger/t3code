@@ -20,6 +20,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { KinChatService } from "../chat/KinChatService.ts";
 import { SHARED_REFUSAL, aborted, peopleBehind } from "../lead/Audience.ts";
+import { routeShown, runRoute } from "../lead/routeCard.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import * as Memory from "../memory/Memory.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
@@ -84,6 +85,8 @@ const labelOf = (plan: CardPlan): string => {
       const label = `Take the default: ${plan.label}`;
       return label.length <= LABEL_MAX ? label : `${label.slice(0, LABEL_MAX - 1)}…`;
     }
+    case "let_talk":
+      return routeShown(plan).label;
     case "undo_default":
       return "Undo";
     case "keep_default":
@@ -106,6 +109,8 @@ const lineOf = (plan: CardPlan): string => {
       const went = `Go with ${quoted(plan.label, 40)} on ${quoted(plan.question, 60)}`;
       return plan.final === null ? went : `${went}: ${lineOf(plan.final)}`;
     }
+    case "let_talk":
+      return routeShown(plan).line;
     case "undo_default":
       return undoLine(plan);
     case "keep_default":
@@ -314,6 +319,7 @@ const drawDefault = Effect.fn("KinCardActions.drawDefault")(function* (
   if (source === undefined)
     return yield* refuse("That question's card is gone or answered, so there's no default.");
   const sealed = source.final;
+  if (sealed?.kind === "let_talk") return yield* refuse("That question has no default to take.");
   if (sealed?.kind === "take_default")
     return yield* refuse(
       `That question's default only takes another question's default. Offer what it runs directly${
@@ -417,7 +423,7 @@ export const redraw = Effect.fn("KinCardActions.redraw")(function* (
   chatId: KinChatId,
   sealed: CardPlan,
 ) {
-  if (isTaken(sealed)) return undefined;
+  if (sealed.kind === "let_talk" || isTaken(sealed)) return undefined;
   const lead = {
     orgId,
     agentId: KinAgentId.make(sealed.draw.agentId),
@@ -505,6 +511,7 @@ export const run = Effect.fn("KinCardActions.run")(function* (
     readonly chat: Pick<KinChatService["Service"], "closeReplaced">;
   },
 ) {
+  if (plan.kind === "let_talk") return yield* runRoute(tap, plan);
   if (isTaken(plan))
     return yield* runTaken(
       {
