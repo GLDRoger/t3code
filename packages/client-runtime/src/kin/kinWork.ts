@@ -472,6 +472,14 @@ const STATE_LABEL: Record<KinRecordState, string> = {
 const dayFormat = kinWhenFormat("day");
 const dayYearFormat = kinWhenFormat("dateYear");
 const clockFormat = kinWhenFormat("time");
+/** "12:16 AM" as the clock reads in `zone`, the company's, else this device's. */
+export const kinWorkClock = (date: Date, zone: string | null) => {
+  try {
+    return zone === null ? clockFormat.format(date) : kinWhenFormat("time", { zone }).format(date);
+  } catch {
+    return clockFormat.format(date);
+  }
+};
 
 const startOfDay = (date: Date) =>
   new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
@@ -506,9 +514,9 @@ export const kinWorkDueText = (
   if (record.dueAt === null) return null;
   const due = new Date(record.dueAt);
   if (Number.isNaN(due.getTime())) return null;
-  // An all-day date is a day where the owner is, and so is the today it is counted from.
-  if (record.dueAllDay) return kinWorkDay(dayInZone(due, names.zone), dayInZone(now, names.zone));
-  return `${kinWorkDay(due, now)}, ${clockFormat.format(due)}`;
+  // Due days and times are the owner's, and so is the today they are counted from.
+  const day = kinWorkDay(dayInZone(due, names.zone), dayInZone(now, names.zone));
+  return record.dueAllDay ? day : `${day}, ${kinWorkClock(due, names.zone)}`;
 };
 
 /** Days from today to the due day (0 today, negative past), counted as `kinWorkDueText` says it. */
@@ -520,9 +528,7 @@ export const kinWorkDueDays = (
   if (record.dueAt === null) return null;
   const due = new Date(record.dueAt);
   if (Number.isNaN(due.getTime())) return null;
-  const [day, today] = record.dueAllDay
-    ? [dayInZone(due, names.zone), dayInZone(now, names.zone)]
-    : [due, now];
+  const [day, today] = [dayInZone(due, names.zone), dayInZone(now, names.zone)];
   return Math.round((startOfDay(day) - startOfDay(today)) / DAY_MS);
 };
 
