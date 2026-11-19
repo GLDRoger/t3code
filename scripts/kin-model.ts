@@ -98,6 +98,7 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
   ],
   questions: [
     "apps/server/src/kin/questions/openQuestions.ts",
+    "apps/server/src/kin/questions/askPerson.ts",
     "apps/server/src/kin/questions/rules.ts",
     "apps/server/src/kin/widgets/choiceCard.ts",
     "apps/server/src/kin/work/cardAnswers.ts",

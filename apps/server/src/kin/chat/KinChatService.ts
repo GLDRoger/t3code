@@ -90,7 +90,7 @@ import * as ChartCard from "../widgets/chartCard.ts";
 import * as VisualCard from "../widgets/visualCard.ts";
 import * as CardPlans from "../widgets/cardPlans.ts";
 import * as ChoiceCard from "../widgets/choiceCard.ts";
-import { answerByReply } from "../questions/openQuestions.ts";
+import { answerByReply, askedForCard } from "../questions/openQuestions.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
@@ -345,6 +345,8 @@ export class KinChatService extends Context.Service<
       input: ChoiceCard.AskInput & {
         readonly chatId: KinChatId;
         readonly clientMessageId: string;
+        /** For the one person whose chat it is, its words already checked for them (`askTo`). */
+        readonly forChat?: true;
         /** Kin's own unprompted card: it waits in Needs you but never rings. */
         readonly silent?: true;
       },
@@ -969,7 +971,14 @@ const make = Effect.gen(function* () {
         reason: "not_allowed",
         message: "This option runs only from a tap on it.",
       });
-    const runs = sealed?.plan !== undefined && CardPlans.runsItself(sealed.plan);
+    // A question asked for another chat answers there: its tap starts no turn here.
+    const runs =
+      (sealed?.plan !== undefined && CardPlans.runsItself(sealed.plan)) ||
+      (choice !== null &&
+        (yield* askedForCard(identity.orgId, widget.widgetId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(cardTapError),
+        )));
     const body = yield* encodeAction({
       widgetId: request.widgetId,
       revision: request.revision,
@@ -1424,6 +1433,7 @@ const make = Effect.gen(function* () {
       readonly state: Effect.Effect<unknown, KinChatError>;
       /** A stored file the card draws; read under the same rule as the message. */
       readonly file?: string;
+      readonly forChat?: true;
       readonly silent?: true | undefined;
     },
   ) {
@@ -1473,6 +1483,7 @@ const make = Effect.gen(function* () {
       floorRunId: authorization.runId,
       clientId: { kind: "send", id: input.clientMessageId },
       publish: false,
+      ...(input.forChat === true ? { forChat: true } : {}),
       silent: input.silent,
     });
     if (authorization.runId === null && authorization.owed !== true)
@@ -1500,7 +1511,10 @@ const make = Effect.gen(function* () {
       closedAt: null,
       updatedAt: yield* now,
     };
-    yield* repo.insertWidget({ ...widget, audience: yield* authorAudience(identity) });
+    yield* repo.insertWidget({
+      ...widget,
+      audience: input.forChat === true ? "chat" : yield* authorAudience(identity),
+    });
     if (input.file !== undefined)
       yield* repo.attachCardFile({
         orgId: identity.orgId,
@@ -2988,6 +3002,7 @@ const make = Effect.gen(function* () {
             type: "choice",
             intent: "question",
             state: validateState("choice", ChoiceCard.choiceCardState(input)),
+            ...(input.forChat === true ? { forChat: true as const } : {}),
             silent: input.silent,
           }),
         ),

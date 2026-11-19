@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { IsoDateTime, KinTrimmedText } from "./baseSchemas.ts";
 import { KinAgentId, KinChatError, KinOrgId } from "./kinChat.ts";
+import { KinConnectionId } from "./kinConnections.ts";
 
 /**
  * Settings → Company → Recommendations: each change Kin suggested to the owner, with what came of
@@ -13,12 +14,18 @@ export const KinRecommendationsInput = Schema.Struct({ orgId: KinOrgId });
 export type KinRecommendationsInput = typeof KinRecommendationsInput.Type;
 
 /**
- * The one button a row offers: let Kin suggest it again, or open the agent's page, where who can
- * message it is changed.
+ * The one button a row offers: let Kin suggest it again, or open the place where the setting it
+ * changed lives: the agent's page, Daily limit in Company details, or the connection.
  */
 export const KinRecommendationAction = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("ask_again"), label: KinTrimmedText }),
   Schema.Struct({ kind: Schema.Literal("open_agent"), label: KinTrimmedText, agentId: KinAgentId }),
+  Schema.Struct({ kind: Schema.Literal("open_daily_limit"), label: KinTrimmedText }),
+  Schema.Struct({
+    kind: Schema.Literal("open_connection"),
+    label: KinTrimmedText,
+    connectionId: KinConnectionId,
+  }),
 ]);
 export type KinRecommendationAction = typeof KinRecommendationAction.Type;
 

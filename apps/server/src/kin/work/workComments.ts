@@ -17,10 +17,8 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import type * as SqlError from "effect/sql/SqlError";
 
 import type { PendingUploadOwner } from "../../assets/AttachmentUpload.ts";
-import type { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { KinAttachmentStore } from "../chat/KinAttachmentStore.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
@@ -28,10 +26,12 @@ import { type AssignNotice, tellPeople } from "./assignNotices.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { KinToolText } from "./leadSchemas.ts";
 import { admitted, leadTool, type Lead, namer, viewOf, viewWriter, writerFor } from "./leadWork.ts";
+import { type CodingAgentConnection, connectionReaches } from "./codingAgent.ts";
 import {
   type ActingBy,
   actingAs,
   addLinkBy,
+  connectionViewer,
   found,
   removeLinkBy,
   tellOnScreen,
@@ -57,27 +57,16 @@ const oneLine = (text: string, max: number) => {
   return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
 };
 
-/** The person's own coding agent writing as them: what its key reaches, and the key it marks. */
-export type ThroughKey = {
-  readonly sessionId: string;
-  readonly sees: (
-    recordId: string,
-  ) => Effect.Effect<
-    boolean,
-    KinChatError | PersistenceSqlError | SqlError.SqlError,
-    SqlClient.SqlClient
-  >;
-};
-
 /**
  * A person says something on an entry they see, with files they just uploaded. When an agent
  * holds it, it is woken once with their words, on their authority. Nothing on the entry changes.
+ * Through their coding agent's connection, the entry must also be one its key reaches.
  */
 export const comment = Effect.fn("KinWorkComments.comment")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinWorkCommentInput,
   uploader?: PendingUploadOwner,
-  through?: ThroughKey,
+  connection?: CodingAgentConnection,
 ) {
   const viewer = yield* viewerOf(people, input.orgId);
   const personId = viewer.person.personId;
@@ -88,6 +77,7 @@ export const comment = Effect.fn("KinWorkComments.comment")(function* (
   const requestHash = requestHashOf(input.body, requested);
   const write = Effect.fn("KinWorkComments.write")(
     function* (files: ReadonlyArray<KinAttachment>) {
+      if (connection !== undefined) yield* connectionViewer(people, connection, input.orgId);
       const written = yield* insertComment({
         orgId: input.orgId,
         key: input.key,
@@ -98,10 +88,14 @@ export const comment = Effect.fn("KinWorkComments.comment")(function* (
         files,
         now: yield* Clock.currentTimeMillis,
         sees: (recordId) =>
-          through === undefined
+          connection === undefined
             ? personSeesRecord(input.orgId, personId, recordId)
-            : through.sees(recordId),
-        ...(through === undefined ? {} : { codingAgentKey: through.sessionId }),
+            : Effect.zipWith(
+                personSeesRecord(input.orgId, personId, recordId),
+                connectionReaches(connection, recordId),
+                (screen, key) => screen && key,
+              ),
+        ...(connection === undefined ? {} : { codingAgentKey: connection.sessionId }),
       });
       const holder = yield* records.getById(input.orgId, written.recordId);
       if (written.created && holder?.ownerKind === "agent")
