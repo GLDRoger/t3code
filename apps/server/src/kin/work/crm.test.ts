@@ -314,6 +314,35 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+// The company is UTC+14; the four TZ runs put the server 14, 8.5, 22 and 1 hours from it.
+it.effect("a timed due is told on the company's day and clock, whatever the server's zone", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Etc/GMT-14', '08:30', '18:30',
+      '03:00', 0, 1, '09:00', '[]')`;
+    yield* LeadWork.create(scope, {
+      sourceEventId: "ask-event",
+      records: [
+        { list: "projects", title: "Invented booking app" },
+        {
+          list: "milestones",
+          title: "Invented booking flow ready",
+          project: "Invented booking app",
+          due: "2026-12-04T10:16:00.000Z",
+        },
+      ],
+    });
+    const companyClock = "2026-12-05T00:16:00.000+14:00";
+    assert.include(yield* LeadWork.get(scope, { key: "M-1" }), { due: companyClock });
+    const dates = yield* LeadMoney.datesQuery(scope, { from: "2026-12-05", to: "2026-12-05" });
+    assert.deepStrictEqual(
+      dates.dates.map((one) => [one.key, one.on]),
+      [["M-1", companyClock]],
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("the client page shows both directions, its contacts, projects and one history", () =>
   Effect.gen(function* () {
     yield* seed;

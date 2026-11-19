@@ -151,8 +151,10 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
         : yield* sql`SELECT 1 FROM kin_connection_asks WHERE org_id = ${orgId}
             AND state = 'open' AND json_extract(payload_json, '$.threadId') = ${thread} LIMIT 1`;
     return [
-      `sent ${first.at.slice(0, 10)} from ${first.from}`,
-      later === undefined ? "no reminder since" : `reminder sent ${later.at.slice(0, 10)}`,
+      `sent ${dayIn(Date.parse(first.at), zone)} from ${first.from}`,
+      later === undefined
+        ? "no reminder since"
+        : `reminder sent ${dayIn(Date.parse(later.at), zone)}`,
       ...(waiting.length > 0 ? ["a reply waits on the owner's Confirm"] : []),
     ].join(", ");
   });

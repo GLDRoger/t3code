@@ -4,6 +4,8 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { sentMail, type SentMail } from "../connections/Sending.ts";
+import { timeIn } from "../work/money.ts";
+import { ownerZone } from "../work/recordRows.ts";
 import { clientHistory } from "./clientHistory.ts";
 import { headStarts } from "./headStart.ts";
 import * as KinPulse from "./KinPulse.ts";
@@ -93,6 +95,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
         yield* clientHistory(input.orgId, fact.subject.recordId, input.now),
       );
   const starts = yield* headStarts(input.orgId, shown);
+  const zone = yield* ownerZone(input.orgId);
   const row = (fact: KinPulseFact) => ({
     key: fact.key,
     about: `${fact.subject.key === fact.subject.title ? fact.subject.title : `${fact.subject.key} ${fact.subject.title}`}`,
@@ -107,7 +110,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
     ...(mailed.has(fact.key)
       ? {
           sentIn: (({ at, connection, account, from, to, subject, threadId }) => ({
-            at,
+            at: timeIn(Date.parse(at), zone),
             connection,
             account,
             from,
@@ -123,7 +126,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
     ...(fact.handled === null
       ? {}
       : {
-          inHand: `${who(fact.handled.by)}${fact.handled.until === null ? ", not a problem" : ` until ${DateTime.formatIso(fact.handled.until)}`}${fact.handled.note === null ? "" : `: ${fact.handled.note}`}`,
+          inHand: `${who(fact.handled.by)}${fact.handled.until === null ? ", not a problem" : ` until ${timeIn(DateTime.toEpochMillis(fact.handled.until), zone)}`}${fact.handled.note === null ? "" : `: ${fact.handled.note}`}`,
         }),
     ...(fact.sensitive ? { sensitive: true } : {}),
     ...(woke.has(fact.key) ? { wokeYou: true } : {}),
@@ -141,7 +144,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   }
   const team = yield* teamHoursNow(input.orgId, input.now);
   return {
-    asOf: all.asOf,
+    asOf: timeIn(DateTime.toEpochMillis(all.asOf), zone),
     total: checkIn ? all.facts.length : all.total,
     ...(team.length === 0 ? {} : { teamHours: team }),
     ...(starts.mail === undefined ? {} : { mailFrom: starts.mail }),
