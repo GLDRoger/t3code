@@ -464,10 +464,16 @@ const make = Effect.gen(function* () {
           !choiceExpired(widget.value, now)
         )
           return record.state === "pending" ? waitsOnOwner(ask.personName) : alreadyAsked;
-        return { passed: false as const, note: NOTHING };
+        return {
+          passed: false as const,
+          note: `The owner's card on this expired unanswered, so nothing was passed on. Tell ${ask.personName} so; a new message of theirs may ask again.`,
+        };
       }
       return state === "declined"
-        ? { passed: false as const, note: NOTHING }
+        ? {
+            passed: false as const,
+            note: `The owner said not this time, so nothing was passed on. Tell ${ask.personName} so, and promise nothing more.`,
+          }
         : { passed: false as const, note: NOTHING };
     });
     const before = yield* recorded();
@@ -904,7 +910,11 @@ const make = Effect.gen(function* () {
         `${to.name} doesn't decide for others. Pass it to the owner, a co-owner or the project's lead.`,
       );
     const original = yield* routedFrom(ctx, input.sourceEventId);
-    if (original === "cleared") return yield* missing();
+    if (original === "cleared")
+      return yield* new KinChatError({
+        reason: "not_found",
+        message: "The message this was about has been cleared, so nothing was sent.",
+      });
     // A routed relay quotes her stored words too, so they are held to the same reader.
     if (!toOwnerSide)
       for (const text of original === undefined ? [input.text] : [input.text, original.body]) {

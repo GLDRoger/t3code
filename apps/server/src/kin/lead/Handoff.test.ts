@@ -1294,7 +1294,7 @@ it.effect(
         for (const eventId of ["meera-event", "meera-second"])
           assert.deepStrictEqual(yield* mate.pass("Tech lead", eventId), {
             passed: false,
-            note: "Nothing was passed on.",
+            note: "The owner said not this time, so nothing was passed on. Tell Meera so, and promise nothing more.",
           });
         assert.lengthOf(yield* ownerCard(ctx), 1);
 
@@ -1331,7 +1331,7 @@ it.effect(
         yield* TestClock.adjust("25 hours");
         assert.deepStrictEqual(yield* mate.pass("Tech lead"), {
           passed: false,
-          note: "Nothing was passed on.",
+          note: "The owner's card on this expired unanswered, so nothing was passed on. Tell Meera so; a new message of theirs may ask again.",
         });
         assert.lengthOf(yield* ownerCard(ctx), 1);
       }),
@@ -1548,7 +1548,13 @@ it.effect(
             () => Effect.die("unused"),
           ),
         );
-        assert.strictEqual(refused.reason, "not_found");
+        assert.deepStrictEqual(
+          { reason: refused.reason, message: refused.message },
+          {
+            reason: "not_found",
+            message: "The message this was about has been cleared, so nothing was sent.",
+          },
+        );
         assert.lengthOf(
           yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${orgId} AND relay_json IS NOT NULL
             UNION ALL SELECT 1 FROM kin_held_posts WHERE org_id = ${orgId}`,
