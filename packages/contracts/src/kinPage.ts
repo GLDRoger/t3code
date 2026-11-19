@@ -90,7 +90,7 @@ export function kinPageShape(body: string): KinPageShape {
  * Whether the text is cut into titled sections: a written heading, or two section labels. One
  * "Today:" line is a label, as `kinPageShape` reads it, not a section.
  */
-export function kinHasSections(body: string): boolean {
+function kinHasSections(body: string): boolean {
   let fenced = false;
   let labels = 0;
   for (const line of body.split("\n")) {
@@ -102,6 +102,10 @@ export function kinHasSections(body: string): boolean {
   }
   return false;
 }
+
+/** Text a brief's page can be as written: titled sections, not one label over a line. */
+export const kinIsPage = (body: string) =>
+  kinHasSections(body) && kinPageSections(body).some(({ title }) => title !== null);
 
 /** A brief reads under a greeting only with sections; a check-in that came back as one line doesn't. */
 export const kinIsBrief = (body: string, form: string | null | undefined) =>

@@ -384,6 +384,8 @@ export const KinBriefSaveInput = Schema.Struct({
   at: KinClockTime,
   days: KinWeekdays,
   on: Schema.Boolean,
+  /** What the person changed: only these are taken. An older client sends none: all of it is. */
+  changed: Schema.optional(Schema.Array(Schema.Literals(["at", "days", "on"]))),
 });
 export type KinBriefSaveInput = typeof KinBriefSaveInput.Type;
 

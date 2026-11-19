@@ -389,6 +389,19 @@ describe("pulse check-ins", () => {
         ["checkin:checkin-morning:2026-11-30", false],
         ["checkin:checkin-weekly:2026-12-07", true],
       ]);
+      // A company in Tokyo on a UTC host: its Monday 07:00 morning is Sunday 22:00 here, its
+      // Monday 09:15 weekly Monday 00:15. Its Monday is still one page.
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Tokyo', '08:30', '18:30',
+        '03:00', 0, 1, '09:00', '[]')`;
+      yield* sql`UPDATE scheduled_tasks SET schedule_json = json_set(schedule_json, '$.timeOfDay', '00:15')
+        WHERE task_id = ${KinSchedules.scheduleTaskId(orgId, "checkin-weekly")}`;
+      const tokyo = MONDAY + 28 * DAY;
+      assert.strictEqual((yield* run("checkin-morning", tokyo - 2 * HOUR))._tag, "queued");
+      assert.deepStrictEqual(yield* run("checkin-weekly", tokyo + 15 * MINUTE), {
+        _tag: "folded",
+        into: "checkin-morning",
+      });
+      assert.deepStrictEqual((yield* figures).at(-1), ["checkin:checkin-morning:2026-12-13", true]);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -424,14 +437,15 @@ describe("pulse check-ins", () => {
         "checkin:checkin-morning:2026-11-17",
         "checkin:checkin-weekly:2026-11-23",
       ]);
-      // An evening summary that its owner's quiet hours would hold past midnight isn't queued:
-      // the morning brief covers its day.
+      // An evening summary its owner's quiet hours would hold past midnight in the company's
+      // zone isn't queued: 22:30 in Tokyo is 13:30 on this UTC host, and 08:00 there still today.
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'UTC', '08:30', '18:30',
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Tokyo', '08:30', '18:30',
         '03:00', 0, 1, '09:00', '{"from":"22:00","to":"08:00"}')`;
-      assert.deepStrictEqual(yield* run("checkin-evening", TUESDAY + DAY + 22 * HOUR), {
-        _tag: "past_its_day",
-      });
+      assert.deepStrictEqual(
+        yield* run("checkin-evening", TUESDAY + DAY + 13 * HOUR + 30 * MINUTE),
+        { _tag: "past_its_day" },
+      );
     }).pipe(Effect.provide(layer)),
   );
 
@@ -767,14 +781,18 @@ describe("pulse check-ins", () => {
       assert.isTrue(saved.every((input) => input.keepWording === true));
     }).pipe(Effect.provide(layer)),
   );
-  it.effect("a default morning whose days alone were changed keeps them at rollout", () =>
+  it.effect.each([
+    { name: "Friday taken off", days: [1, 2, 3, 4] },
+    // Like the weekdays a day earlier, as a host clock could put them, but not so here.
+    { name: "Sunday to Thursday", days: [0, 1, 2, 3, 4] },
+  ])("a default morning whose days alone were changed keeps them at rollout ($name)", (row) =>
     Effect.gen(function* () {
       yield* seed;
       yield* TestClock.setTime(MONDAY);
       const host = KinSchedules.hostTimeZone();
-      // Seeded on weekdays at 09:30 in the company's zone, then Friday was taken off on T3's screen.
-      const at = onHostClock("09:30", [1, 2, 3, 4], "UTC", host, MONDAY);
-      const fiveBefore = onHostClock("09:25", [1, 2, 3, 4], "UTC", host, MONDAY);
+      // Seeded on weekdays at 09:30 in the company's zone, then its days changed on T3's screen.
+      const at = onHostClock("09:30", row.days, "UTC", host, MONDAY);
+      const fiveBefore = onHostClock("09:25", row.days, "UTC", host, MONDAY);
       yield* scheduleRow({ slug: "morning", at: fiveBefore.at, days: at.days, looseAt: at.at });
       const saved: Array<KinSchedules.SaveInput> = [];
       yield* followOwnerZone(

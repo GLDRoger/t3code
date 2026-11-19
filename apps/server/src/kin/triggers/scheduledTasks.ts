@@ -481,7 +481,8 @@ const make = Effect.gen(function* () {
               title,
               what: task.prompt,
               dueAt: Date.parse(fire.dueAt),
-              looseAt: row.looseAt,
+              // Made exact on T3's screen since, it fires at the time shown there.
+              looseAt: base.around ? row.looseAt : null,
               manualId: manual ? fire.fireId : undefined,
               zone: KinSchedules.hostTimeZone(),
               at: now,
@@ -502,7 +503,7 @@ const make = Effect.gen(function* () {
                         ? "The weekly brief covers it today."
                         : "The morning brief covers it today."
                       : result._tag === "past_its_day"
-                        ? "Its day is over by then: the morning brief covers it."
+                        ? "Its day is over by then, so it isn't sent."
                         : "Nothing untold since the last check-in.",
                 }
               : {

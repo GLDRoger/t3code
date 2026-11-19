@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinBriefLine, kinBriefProblem, kinCheckInDays } from "./kinCheckIns.ts";
+import { kinBriefLine, kinBriefProblem, kinBriefSave, kinCheckInDays } from "./kinCheckIns.ts";
 
 describe("kinCheckInDays", () => {
   it.each([
@@ -34,5 +34,14 @@ describe("a brief", () => {
     [{ at: "07:45", days: [] }, "Pick at least one day."],
   ])("%j can be saved: %s", (draft, problem) => {
     expect(kinBriefProblem(draft)).toBe(problem);
+  });
+  it.each([
+    [{ at: "07:45" }, ["at"]],
+    // The phone adds a day at the end: the same days in another order are no change.
+    [{ days: [1, 2, 3, 4, 5, 6, 0] }, []],
+    [{ days: [1, 2] }, ["days"]],
+    [{ on: false }, ["on"]],
+  ])("a save of %j names only %j as changed", (change, changed) => {
+    expect(kinBriefSave(morning, { ...morning, ...change }).changed).toEqual(changed);
   });
 });

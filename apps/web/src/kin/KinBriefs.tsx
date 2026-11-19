@@ -6,6 +6,7 @@ import {
   kinBriefHasDays,
   kinBriefLine,
   kinBriefProblem,
+  kinBriefSave,
 } from "@t3tools/client-runtime/kin/kinCheckIns";
 import type { EnvironmentId, KinBrief, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -41,11 +42,13 @@ export function KinBriefsSetting(props: {
   const value = Option.getOrNull(AsyncResult.value(result));
   if (value === null ? AsyncResult.isFailure(result) : value.briefs.length === 0) return null;
 
-  const change = async (next: KinBrief) => {
+  const change = async (opened: KinBrief, next: KinBrief) => {
     setBusy(next.kind);
     setFailed(false);
-    const { kind, at, days, on } = next;
-    const outcome = await save({ ...query, input: { orgId: props.orgId, kind, at, days, on } });
+    const outcome = await save({
+      ...query,
+      input: { orgId: props.orgId, ...kinBriefSave(opened, next) },
+    });
     setBusy(null);
     setFailed(AsyncResult.isFailure(outcome));
     refresh();
@@ -90,7 +93,7 @@ export function KinBriefsSetting(props: {
                     aria-label={`${KIN_BRIEFS.titles[brief.kind]}: ${brief.on ? KIN_BRIEFS.on : KIN_BRIEFS.off}`}
                     checked={brief.on}
                     disabled={busy === brief.kind}
-                    onCheckedChange={(on) => void change({ ...brief, on })}
+                    onCheckedChange={(on) => void change(brief, { ...brief, on })}
                   />
                 )}
               </div>
@@ -102,7 +105,7 @@ export function KinBriefsSetting(props: {
         <BriefDialog
           brief={editing}
           zone={value.zone}
-          onSave={change}
+          onSave={(draft) => change(editing, draft)}
           onClose={() => setEditing(null)}
         />
       )}

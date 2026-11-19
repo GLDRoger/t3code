@@ -7,6 +7,7 @@ import {
   kinBriefHasDays,
   kinBriefLine,
   kinBriefProblem,
+  kinBriefSave,
 } from "@t3tools/client-runtime/kin/kinCheckIns";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -116,6 +117,8 @@ function BriefForm(
 ) {
   const navigation = useNavigation();
   const save = useAtomCommand(kinClient.briefSave, { reportFailure: false });
+  // As the form opened: a refresh while it is open must not count as the person's change.
+  const [opened] = useState(props.brief);
   const [draft, setDraft] = useState(props.brief);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -124,10 +127,9 @@ function BriefForm(
     if (saving || invalid !== null) return;
     setSaving(true);
     setProblem(null);
-    const { kind, at, days, on } = draft;
     const done = await save({
       environmentId: props.environmentId,
-      input: { orgId: props.orgId, kind, at, days, on },
+      input: { orgId: props.orgId, ...kinBriefSave(opened, draft) },
     });
     setSaving(false);
     props.refresh();

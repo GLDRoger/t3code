@@ -25,8 +25,6 @@ import { fakeRepository } from "../memory/__fixtures__/repository.ts";
 import * as Memory from "../memory/Memory.ts";
 import { MemoryConfig } from "../memory/MemoryConfig.ts";
 import { deferralWidgetId } from "../triggers/deferrals.ts";
-import { hostTimeZone } from "../triggers/kinSchedules.ts";
-import { dayIn } from "../work/money.ts";
 import * as Queue from "./KinEventQueue.ts";
 import * as RoutineContent from "./RoutineContent.ts";
 import { renderRoutine, ROUTINE_MAX_LINES } from "./routines.ts";
@@ -610,11 +608,15 @@ it.effect("a failed brief retries on its own with a counted attempt", () =>
 
 it.effect("an evening summary that runs past its own day is not sent; its facts are untold", () =>
   Effect.gen(function* () {
-    yield* TestClock.setTime(now);
+    // Monday 22:30 in Tokyo, held by quiet hours to 08:00 there: still Monday on a UTC host.
+    yield* TestClock.setTime(now + 14 * 60 * 60_000);
     yield* Effect.gen(function* () {
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
-      const yesterday = dayIn(now - 24 * 60 * 60_000, hostTimeZone());
+      yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+          dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+        VALUES (${orgId}, 'Asia/Tokyo', '09:00', '18:00', '02:00', 0, 1, '09:00', '{}')`;
+      const monday = "2026-11-09";
       yield* (yield* Queue.KinEventQueue).enqueue(
         decodeEvent({
           _tag: "pulse",
@@ -622,14 +624,15 @@ it.effect("an evening summary that runs past its own day is not sent; its facts 
           agentId,
           eventId: "pulse-evening",
           receivedAt: timestamp,
-          dedupeKey: `checkin:checkin-evening:${yesterday}`,
+          dedupeKey: `checkin:checkin-evening:${monday}`,
           provenance: { _tag: "system" },
           factKeys: [],
           checkIn: {
             scheduleId: "checkin-evening",
             title: "Evening summary",
             what: "Evening summary.",
-            slot: yesterday,
+            slot: monday,
+            day: monday,
           },
         }),
       );

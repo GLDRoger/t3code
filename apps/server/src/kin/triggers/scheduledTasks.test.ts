@@ -32,6 +32,7 @@ import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as TriggerScheduler from "./KinTriggerScheduler.ts";
 import * as TriggerService from "./KinTriggerService.ts";
 import * as Retirement from "../lead/Retirement.ts";
+import { dayIn } from "../work/money.ts";
 import { addLead, fixture, item, orgId, seed } from "./routines.testkit.ts";
 import * as ScheduledTasks from "./scheduledTasks.ts";
 import * as KinSchedules from "./kinSchedules.ts";
@@ -839,8 +840,31 @@ it.effect(
         `checkin-morning Morning check-in: around ${morning.at}`,
       );
 
-      // The chat moves the same row (kin_schedule with replaces), and Settings shows it.
+      // A form opened before its days changed elsewhere saves its new time onto those days.
       const schedules = yield* KinSchedules.KinSchedules;
+      const opened = (yield* CheckIns.briefs(people, orgId)).briefs[0]!;
+      const chief = (yield* KinSchedules.readSchedule(sql, orgId, "checkin-morning"))!;
+      yield* schedules.save({
+        orgId,
+        agentId: chief.agentId,
+        scheduleId: chief.scheduleId,
+        existing: true,
+        chatId: chief.chatId,
+        sourceEvent: "chat-event",
+        saidBy: owner.personId,
+        title: "Morning check-in",
+        prompt: (yield* native("Morning check-in")).prompt,
+        every: onHostClock("08:00", [1, 2, 3], zone, host, yield* Clock.currentTimeMillis),
+        around: true,
+        checkIn: true,
+        now: yield* Clock.currentTimeMillis,
+      });
+      assert.include((yield* save({ ...opened, at: "08:15", changed: ["at"] })).briefs[0], {
+        at: "08:15",
+      });
+      assert.deepStrictEqual((yield* CheckIns.briefs(people, orgId)).briefs[0]!.days, [1, 2, 3]);
+
+      // The chat moves the same row (kin_schedule with replaces), and Settings shows it.
       const row = (yield* KinSchedules.readSchedule(sql, orgId, "checkin-afternoon"))!;
       yield* schedules.save({
         orgId,
@@ -869,11 +893,19 @@ it.effect(
       // Made exact on T3's screen, with new wording not yet confirmed: a new time keeps it
       // exact, and approves no wording.
       const afternoon = KinSchedules.scheduleTaskId(orgId, "checkin-afternoon");
+      const before = (yield* CheckIns.briefs(people, orgId)).briefs[1]!;
       yield* sql`UPDATE scheduled_tasks SET prompt = 'Afternoon check-in, and chase every invoice.',
         schedule_json = json_set(schedule_json, '$.timeOfDay', '17:00') WHERE task_id = ${afternoon}`;
       yield* sql`UPDATE kin_schedules SET asked_sha256 = 'asked' WHERE task_id = ${afternoon}`;
       const approved = (yield* KinSchedules.readSchedule(sql, orgId, "checkin-afternoon"))!;
-      assert.include((yield* CheckIns.briefs(people, orgId)).briefs[1], { around: false });
+      const exact = (yield* CheckIns.briefs(people, orgId)).briefs[1]!;
+      assert.include(exact, { around: false });
+      // Its switch, as the list showed it before that, turns it off and puts no time back.
+      assert.include((yield* save({ ...before, on: false, changed: ["on"] })).briefs[1], {
+        at: exact.at,
+        around: false,
+        on: false,
+      });
       assert.include(
         (yield* save({ kind: "afternoon", at: "18:00", days: weekdays, on: true })).briefs[1],
         { at: "18:00", around: false },
@@ -901,6 +933,28 @@ it.effect(
       }).pipe(Effect.flip);
       assert.include(refused, { _tag: "KinChatError", reason: "not_allowed" });
       assert.include((yield* CheckIns.briefs(people, orgId)).briefs[2], { at: "18:30", on: true });
+
+      // Made exact on T3's screen at a time before its old window, it fires at that time.
+      yield* save({ kind: "morning", at: "11:00", days: weekdays, on: true });
+      const nine = onHostClock("09:00", weekdays, zone, host, yield* Clock.currentTimeMillis);
+      const fires = KinSchedules.timeOnDayOf(
+        (yield* Clock.currentTimeMillis) + 24 * 60 * 60_000,
+        host,
+        nine.at,
+      );
+      const morningTask = KinSchedules.scheduleTaskId(orgId, "checkin-morning");
+      yield* sql`UPDATE scheduled_tasks SET next_run_at = ${DateTime.formatIso(DateTime.makeUnsafe(fires))},
+        schedule_json = json_set(schedule_json, '$.timeOfDay', ${nine.at},
+          '$.weekdays', json('[0,1,2,3,4,5,6]'))
+        WHERE task_id = ${morningTask}`;
+      yield* TestClock.setTime(fires);
+      yield* workers.get("scheduled-tasks")!;
+      yield* drain;
+      assert.deepStrictEqual(
+        yield* sql`SELECT not_before AS "notBefore" FROM kin_events WHERE org_id = ${orgId}
+          AND dedupe_key = ${`checkin:checkin-morning:${dayIn(fires, host)}`}`,
+        [{ notBefore: null }],
+      );
     }).pipe(Effect.provide(Layer.merge(layer, identity)));
   },
 );

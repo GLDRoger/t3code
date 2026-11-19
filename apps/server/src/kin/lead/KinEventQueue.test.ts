@@ -577,7 +577,7 @@ describe("KinEventQueue", () => {
   );
 
   it.effect(
-    "the morning page is a turn of its own: a message neither joins nor steers into it",
+    "the morning page is a turn of its own: it waits one turn for a message, which neither joins nor steers into it",
     () =>
       Effect.gen(function* () {
         yield* seed();
@@ -602,8 +602,11 @@ describe("KinEventQueue", () => {
         );
         yield* queue.enqueue(yield* message("owner-ask"));
         yield* TestClock.adjust("2 seconds");
-        // The owner's message first, on its own; the morning brief right after, alone.
+        // The owner's message first, on its own; the morning brief right after, alone, though
+        // the owner wrote again in the meantime.
         assert.deepStrictEqual(ids(yield* Effect.scoped(queue.claim(input("ask")))), ["owner-ask"]);
+        yield* TestClock.adjust("5 seconds");
+        yield* queue.enqueue(yield* message("owner-more"));
         yield* finish("ask");
         yield* TestClock.adjust("20 seconds");
         const morning = input("morning");
@@ -614,6 +617,7 @@ describe("KinEventQueue", () => {
         yield* finish("morning");
         yield* TestClock.adjust("20 seconds");
         assert.deepStrictEqual(ids(yield* Effect.scoped(queue.claim(input("again")))), [
+          "owner-more",
           "owner-again",
         ]);
       }).pipe(Effect.provide(layer)),

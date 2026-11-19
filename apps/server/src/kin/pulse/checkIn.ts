@@ -22,6 +22,7 @@ import {
   looseWindowStartAt,
   readNativeTask,
   readSchedule,
+  timeOnDayOf,
 } from "../triggers/kinSchedules.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
@@ -31,6 +32,7 @@ import { markTold, toldBy, untold } from "./told.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
 
 const MINUTE = 60_000;
+const DAY = 24 * 60 * MINUTE;
 const sha = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
 
 /**
@@ -52,26 +54,36 @@ const EVENING = "checkin-evening";
 /** The briefs: not skipped for a quiet pulse. The evening one has its own facts (`scheduledTasks`). */
 const BRIEFS: ReadonlySet<string> = new Set([MORNING, WEEKLY, EVENING]);
 
-/** Whether the weekly brief is set to come on the host day `dueAt` falls on. */
+/**
+ * Whether the weekly brief is set to come on the company's day `day`, near `at`. Its days are the
+ * host's, so its slot on the host day before or after may be the one that lands on `day`.
+ */
 const weeklyDue = Effect.fn("KinPulse.weeklyDue")(function* (
   orgId: KinOrgId,
-  dueAt: number,
-  zone: string,
+  day: string,
+  at: number,
+  zones: { readonly host: string; readonly company: string },
 ) {
   const sql = yield* SqlClient.SqlClient;
   const row = yield* readSchedule(sql, orgId, WEEKLY);
   if (row === undefined || row.deletedAt !== null || row.checkIn !== 1) return false;
   const task = yield* readNativeTask(sql, row.taskId);
   if (task === undefined || (row.pendingEnabled ?? task.enabled) !== 1) return false;
-  const weekDay = DateTime.toParts(DateTime.makeZonedUnsafe(dueAt, { timeZone: zone })).weekDay;
-  return everyOf(task, row.looseAt)?.days.includes(weekDay) === true;
+  const every = everyOf(task, row.looseAt);
+  if (every === undefined) return false;
+  return [-1, 0, 1].some((by) => {
+    const slot = timeOnDayOf(at + by * DAY, zones.host, every.at);
+    const weekDay = DateTime.toParts(
+      DateTime.makeZonedUnsafe(slot, { timeZone: zones.host }),
+    ).weekDay;
+    return every.days.includes(weekDay) && dayIn(slot, zones.company) === day;
+  });
 });
 
 /**
  * One check-in at the slot's minute: what the owner hasn't been told and what is new outside.
- * With nothing untold no model runs, except for a brief; Run now tells every open fact. On the
- * weekly brief's day the first of the morning and weekly briefs carries the week's figures and
- * the other is folded. `slot` keys the event, so a slot queues once.
+ * With nothing untold no model runs, except for a brief; Run now tells every open fact. `slot`,
+ * the host day, keys the event; `day`, the company's, is what the fold and the evening go by.
  */
 export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   readonly orgId: KinOrgId;
@@ -85,6 +97,7 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   readonly looseAt: string | null;
   /** A Run now tap: its own slot, at once. */
   readonly manualId?: string | undefined;
+  /** The host's zone, which native slots are in. */
   readonly zone: string;
   readonly at: number;
   readonly outside: OutsideRead;
@@ -113,13 +126,27 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   const dedupeKey = `checkin:${input.scheduleId}:${slot}`;
   const eventId = KinEventId.make(`pulse-${sha(`${orgId}\0${dedupeKey}`).slice(0, 32)}`);
   const sql = yield* SqlClient.SqlClient;
-  const page =
-    input.manualId === undefined && (input.scheduleId === MORNING || input.scheduleId === WEEKLY);
+  const company = yield* ownerZone(orgId);
+  // The minute is picked in the window as it stands that day, never from a late start: a run
+  // that starts after its minute fires at once.
+  const minute =
+    input.looseAt !== null && input.manualId === undefined
+      ? Math.max(
+          at,
+          looseWindowStartAt(input.dueAt, input.zone, input.looseAt) +
+            looseOffsetMs(input.scheduleId, slot, looseSpanMinutes(input.looseAt)),
+        )
+      : undefined;
+  const day = input.manualId === undefined ? dayIn(minute ?? at, company) : undefined;
+  const page = day !== undefined && (input.scheduleId === MORNING || input.scheduleId === WEEKLY);
   if (page) {
     const other = input.scheduleId === MORNING ? WEEKLY : MORNING;
     const [first] = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
-      AND dedupe_key = ${`checkin:${other}:${slot}`} AND state != 'failed'
-      AND (${other} = ${WEEKLY} OR json_extract(json, '$.checkIn.figures') = 1) LIMIT 1`;
+      AND json_extract(json, '$.checkIn.scheduleId') = ${other} AND state != 'failed'
+      AND (json_extract(json, '$.checkIn.day') = ${day}
+        OR (json_extract(json, '$.checkIn.day') IS NULL AND dedupe_key = ${`checkin:${other}:${slot}`}))
+      AND (${other} = ${WEEKLY} OR json_extract(json, '$.checkIn.figures') = 1)
+      ORDER BY event_id LIMIT 1`;
     if (first !== undefined) return { _tag: "folded", into: other } as const;
   }
   // The same slot fired again, as after a restart: its stored event and minute stand.
@@ -136,36 +163,28 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   const [agent] = yield* sql<{ owner: KinPersonId }>`SELECT owner_person_id AS owner
     FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${input.agentId}`;
   if (agent === undefined) return { _tag: "nothing_new" } as const;
-  const told = { orgId, personId: agent.owner, at, zone: yield* ownerZone(orgId) };
+  const told = { orgId, personId: agent.owner, at, zone: company };
   const tell = input.manualId !== undefined ? facts : yield* untold({ ...told, facts });
   if (!brief && tell.length === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
-  // The minute is picked in the window as it stands that day, never from a late start: a run
-  // that starts after its minute fires at once.
-  const minute =
-    input.looseAt !== null && input.manualId === undefined
-      ? Math.max(
-          at,
-          looseWindowStartAt(input.dueAt, input.zone, input.looseAt) +
-            looseOffsetMs(input.scheduleId, slot, looseSpanMinutes(input.looseAt)),
-        )
-      : undefined;
   // Nobody asked for it: one that lands in the owner's quiet hours waits for them to end.
   const quietUntil =
     input.manualId === undefined
       ? yield* agentQuietUntil(orgId, input.agentId, minute ?? at)
       : undefined;
   const notBefore = quietUntil ?? minute;
-  // The evening summary sums up its own day; held past it, the morning brief covers it.
+  // The evening summary sums up its own day; held past it, it isn't sent.
   if (
     input.scheduleId === EVENING &&
-    input.manualId === undefined &&
+    day !== undefined &&
     notBefore !== undefined &&
-    dayIn(notBefore, input.zone) !== slot
+    dayIn(notBefore, company) !== day
   )
     return { _tag: "past_its_day" } as const;
   const figures =
     input.scheduleId === WEEKLY ||
-    (page && input.scheduleId === MORNING && (yield* weeklyDue(orgId, input.dueAt, input.zone)));
+    (input.scheduleId === MORNING &&
+      day !== undefined &&
+      (yield* weeklyDue(orgId, day, minute ?? at, { host: input.zone, company })));
   const queued = yield* sql.withTransaction(
     queue
       .enqueue(
@@ -184,6 +203,7 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
             what: input.what.slice(0, 2000),
             slot: slot.slice(0, 200),
             ...(figures ? { figures: true } : {}),
+            ...(day === undefined ? {} : { day }),
           },
           ...(lines.length === 0 ? {} : { outside: lines }),
         }),

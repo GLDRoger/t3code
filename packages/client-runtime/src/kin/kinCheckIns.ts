@@ -1,4 +1,4 @@
-import type { KinBrief, KinCheckIn } from "@t3tools/contracts";
+import type { KinBrief, KinBriefSaveInput, KinCheckIn } from "@t3tools/contracts";
 
 import { kinZoneName } from "./kinTimeZone.ts";
 
@@ -127,4 +127,14 @@ export function kinBriefProblem(draft: Pick<KinBrief, "at" | "days">): string | 
   if (!CLOCK.test(draft.at)) return "Set a time such as 09:30.";
   if (draft.days.length === 0) return "Pick at least one day.";
   return null;
+}
+
+/** The save of a brief's form: what it changed from the brief as it opened, and only that. */
+export function kinBriefSave(opened: KinBrief, draft: KinBrief) {
+  const days = (brief: KinBrief) => [...brief.days].sort((a, b) => a - b).join();
+  const changed: Array<NonNullable<KinBriefSaveInput["changed"]>[number]> = [];
+  if (draft.at !== opened.at) changed.push("at");
+  if (days(draft) !== days(opened)) changed.push("days");
+  if (draft.on !== opened.on) changed.push("on");
+  return { kind: draft.kind, at: draft.at, days: draft.days, on: draft.on, changed };
 }

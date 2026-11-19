@@ -507,8 +507,8 @@ day; another check-in with nothing to report stays quiet.
 
 The briefs are yours to set under **Settings → Briefs** (in **Profile** on the web): which days the
 morning brief comes and when, and whether and when the afternoon check-in and evening summary come.
-Your quiet hours hold any of them that would land inside them; an evening summary they would hold
-past midnight isn't sent, and the next morning's brief covers that day.
+Your quiet hours hold any of them that would land inside them; an evening summary that would reach
+you after its day is over isn't sent.
 
 Owners and co-owners manage them under **Settings → Check-ins**: add one, turn one off, or **Run
 now**. Or say it in a chat: "check in at 11 instead".

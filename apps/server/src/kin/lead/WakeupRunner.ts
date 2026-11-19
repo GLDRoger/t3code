@@ -69,8 +69,8 @@ import * as LeadDelivery from "./LeadDelivery.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
 import { isEveningCheckIn, isMorningCheckIn } from "../pulse/weekly.ts";
-import { hostTimeZone } from "../triggers/kinSchedules.ts";
 import { dayIn } from "../work/money.ts";
+import { ownerZone } from "../work/recordRows.ts";
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
@@ -83,8 +83,6 @@ const WAKEUP_DEADLINE_MS = 900_000;
 const MAX_STEERS = 5;
 const STEER_EXTENSION_MS = 300_000;
 const WAKEUP_HARD_CAP_MS = 1_800_000;
-// A scheduled slot is its host day ("2026-11-19"); a Run now slot is its fire id.
-const DAY_SLOT = /^\d{4}-\d{2}-\d{2}$/;
 const deadlineAt = (startedAt: number, steers: number) =>
   startedAt + Math.min(WAKEUP_HARD_CAP_MS, WAKEUP_DEADLINE_MS + steers * STEER_EXTENSION_MS);
 const isSteerRun = (wakeupId: KinWakeupId, run: { readonly userMessageId: string }) =>
@@ -993,15 +991,21 @@ const make = Effect.gen(function* () {
                 if (facts !== null) routineFacts.set(event.eventId, facts);
               }
             // The evening check-in carries the retired evening summary's sections as facts. One
-            // past its own day, or with nothing to sum up, is not sent: what it was to tell is
-            // untold again, for the morning brief.
+            // past its own day in the company's zone, or with nothing to sum up, is not sent, and
+            // what it marked told is untold again.
             const dropped = new Set<string>();
             if (Option.isSome(routineContent))
               for (const event of events.filter(isEveningCheckIn)) {
-                const slot = event._tag === "pulse" ? event.checkIn?.slot : undefined;
-                const today = dayIn(yield* Clock.currentTimeMillis, hostTimeZone());
+                const day = event._tag === "pulse" ? event.checkIn?.day : undefined;
+                const today =
+                  day === undefined
+                    ? undefined
+                    : dayIn(
+                        yield* Clock.currentTimeMillis,
+                        yield* ownerZone(orgId).pipe(provideSql),
+                      );
                 const facts =
-                  slot !== undefined && DAY_SLOT.test(slot) && slot !== today
+                  day !== today
                     ? null
                     : yield* routineContent.value.eveningFacts(orgId, agentId).pipe(
                         Effect.catch((error) =>

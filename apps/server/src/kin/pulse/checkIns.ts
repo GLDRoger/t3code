@@ -201,7 +201,8 @@ export const briefs = Effect.fn("KinBriefs.list")(function* (
 
 /**
  * A new time or days saves the task now, and only those: how it fires and its wording, approved
- * or waiting for a confirm, stay. On and off are taps the schedules' next pass applies.
+ * or waiting for a confirm, stay. On and off are taps the schedules' next pass applies. Only what
+ * the person changed is taken, onto the brief as it is now, so an old form puts nothing back.
  */
 export const saveBrief = Effect.fn("KinBriefs.save")(function* (
   people: ReadonlyArray<PersonIdentity>,
@@ -219,7 +220,12 @@ export const saveBrief = Effect.fn("KinBriefs.save")(function* (
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
   const { row, task } = brief;
-  if (input.at !== brief.at || input.days.join() !== brief.days.join()) {
+  const taken = (field: "at" | "days" | "on") =>
+    input.changed === undefined || input.changed.includes(field);
+  const at = taken("at") ? input.at : brief.at;
+  const days = taken("days") ? input.days.toSorted((a, b) => a - b) : brief.days;
+  const on = taken("on") ? input.on : brief.on;
+  if (at !== brief.at || days.join() !== brief.days.join()) {
     const schedules = yield* KinSchedules.KinSchedules;
     const zone = yield* ownerZone(input.orgId);
     yield* schedules.save({
@@ -233,7 +239,7 @@ export const saveBrief = Effect.fn("KinBriefs.save")(function* (
       saidBy: person.personId,
       title: task.title,
       prompt: task.prompt,
-      every: onHostClock(input.at, input.days, zone, KinSchedules.hostTimeZone(), now),
+      every: onHostClock(at, days, zone, KinSchedules.hostTimeZone(), now),
       // As it fires now: one made exact on T3's screen stays exact.
       around: brief.around,
       checkIn: true,
@@ -241,8 +247,8 @@ export const saveBrief = Effect.fn("KinBriefs.save")(function* (
       now,
     });
   }
-  if (input.on !== brief.on)
-    yield* sql`UPDATE kin_schedules SET pending_enabled = ${input.on ? 1 : 0}, updated_at = ${now}
+  if (on !== brief.on)
+    yield* sql`UPDATE kin_schedules SET pending_enabled = ${on ? 1 : 0}, updated_at = ${now}
       WHERE task_id = ${row.taskId} AND deleted_at IS NULL`;
   return shown(yield* briefsOf(input.orgId, person.personId));
 }, unread);

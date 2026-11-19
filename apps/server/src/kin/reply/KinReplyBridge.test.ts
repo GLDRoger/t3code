@@ -393,23 +393,39 @@ it.effect("posts the lead run's plain text to the chat it answers, as one agent 
   }).pipe(Effect.provide(layer)),
 );
 
-const checkInEvent = (scheduleId: string, figures?: true) => () =>
-  Effect.succeed((base: WakeupEventBase): KinEvent => ({
-    ...base,
-    _tag: "pulse",
-    provenance: { _tag: "system" },
-    factKeys: [],
-    checkIn: {
-      scheduleId: KinMemoryItemId.make(scheduleId),
-      title: "Check-in",
-      what: "Look.",
-      slot: "s",
-      ...(figures === undefined ? {} : { figures }),
-    },
-  }));
+const checkInEvent =
+  (
+    scheduleId: string,
+    more: { readonly figures?: true; readonly day?: string; readonly factKeys?: string[] } = {},
+  ) =>
+  () =>
+    Effect.succeed((base: WakeupEventBase): KinEvent => ({
+      ...base,
+      _tag: "pulse",
+      provenance: { _tag: "system" },
+      factKeys: more.factKeys ?? [],
+      checkIn: {
+        scheduleId: KinMemoryItemId.make(scheduleId),
+        title: "Check-in",
+        what: "Look.",
+        slot: "s",
+        ...(more.figures === undefined ? {} : { figures: more.figures }),
+        ...(more.day === undefined ? {} : { day: more.day }),
+      },
+    }));
 
 const LONG = "One quote waits on your answer. ".repeat(490);
-it.effect.each([
+it.effect.each<{
+  readonly name: string;
+  readonly scheduleId: string;
+  readonly written: ReadonlyArray<string>;
+  readonly stored: ReadonlyArray<string>;
+  /** Posted with a tool before the turn's reply. */
+  readonly posted?: string;
+  readonly failed?: true;
+  /** The evening summary's own day; the test clock's is 1970-01-01. */
+  readonly day?: string;
+}>([
   {
     name: "plain prose",
     scheduleId: "checkin-morning",
@@ -443,6 +459,37 @@ it.effect.each([
     stored: [ReplyBridge.QUIET_PAGE],
   },
   {
+    name: "a page posted with a tool, then a different reply",
+    scheduleId: "checkin-morning",
+    posted: "## Needs you\nOne card waits.",
+    written: ["## Coming up\nA call at 11:00."],
+    stored: ["## Needs you\nOne card waits.", "## Coming up\nA call at 11:00."],
+  },
+  {
+    name: "prose posted with a tool, then a page",
+    scheduleId: "checkin-morning",
+    posted: "Drafting the reminders now.",
+    written: ["## Needs you\nTwo reminders wait on your Confirm."],
+    stored: [
+      "## Today\n\nDrafting the reminders now.",
+      "## Needs you\nTwo reminders wait on your Confirm.",
+    ],
+  },
+  {
+    name: "prose posted with a tool, then the same words again",
+    scheduleId: "checkin-morning",
+    posted: "One client has gone quiet.",
+    written: ["One client has gone quiet."],
+    stored: ["## Today\n\nOne client has gone quiet."],
+  },
+  {
+    name: "a failed turn on a morning with facts",
+    scheduleId: "checkin-morning",
+    written: [],
+    failed: true,
+    stored: [],
+  },
+  {
     name: "an afternoon check-in",
     scheduleId: "checkin-afternoon",
     written: ["One client has gone quiet. A reminder is drafted."],
@@ -458,24 +505,73 @@ it.effect.each([
     name: "the evening summary",
     scheduleId: "checkin-evening",
     written: ["Nothing moved today."],
+    day: "1970-01-01",
     stored: ["## Today\n\nNothing moved today."],
+  },
+  {
+    name: "the evening summary, its day over by the time it would post",
+    scheduleId: "checkin-evening",
+    written: ["Nothing moved today."],
+    day: "1969-12-31",
+    stored: [],
   },
 ])("the morning brief's turn ends as one page whatever it wrote ($name)", (row) =>
   Effect.gen(function* () {
-    const { fake, runId, complete, sql, chatId } = yield* setup({
-      event: checkInEvent(row.scheduleId),
+    const {
+      fake,
+      runId,
+      complete,
+      sql,
+      chatId,
+      bridge,
+      owner,
+      wakeupId,
+      projectId,
+      identity,
+      chats,
+    } = yield* setup({
+      event: checkInEvent(row.scheduleId, {
+        ...(row.day === undefined ? {} : { day: row.day }),
+        ...(row.failed === undefined ? {} : { factKeys: ["invoice:INV-7:overdue"] }),
+      }),
     });
+    if (row.posted !== undefined) {
+      const lead = Option.getOrThrow(
+        yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId }),
+      );
+      const post = chats.send(lead, {
+        chatId,
+        body: row.posted,
+        clientMessageId: "posted-now",
+        intent: "evidence",
+      });
+      const first = yield* post;
+      // A retry of it, word for word, is the same message, under the heading it was given.
+      assert.strictEqual((yield* post).messageId, first.messageId);
+    }
     fake.items = row.written.map((body, index) => text(`t${index}`, index + 1, body, runId));
-    yield* complete;
+    yield* row.failed === undefined
+      ? complete
+      : bridge.complete({
+          orgId: owner.orgId,
+          wakeupId,
+          projectId,
+          rootRunId: runId,
+          rescueUntil: null,
+        });
     const rows = yield* sql<{ body: string; form: string | null }>`SELECT body, form
       FROM kin_messages WHERE chat_id = ${chatId} AND author_kind = 'agent' ORDER BY seq`;
     assert.deepStrictEqual(
       rows.map((one) => one.body),
       row.stored,
     );
-    // As the clients draw it: a page under the greeting, never a bubble.
+    // As the clients draw it: the first a page under the greeting, never a bubble; all after it
+    // ordinary messages under it.
     if (row.scheduleId === "checkin-morning")
-      assert.isTrue(rows.every((one) => kinIsBrief(one.body, one.form)));
+      assert.deepStrictEqual(
+        rows.map((one) => kinIsBrief(one.body, one.form)),
+        rows.map((_, index) => index === 0),
+      );
   }).pipe(Effect.provide(layer)),
 );
 
@@ -507,7 +603,10 @@ it.effect.each([
 ])("the week's figures are Kin's own section of that page, whatever it wrote ($name)", (row) =>
   Effect.gen(function* () {
     const { fake, runId, complete, sql, chatId } = yield* setup({
-      event: checkInEvent(row.scheduleId, row.scheduleId === "checkin-morning" ? true : undefined),
+      event: checkInEvent(
+        row.scheduleId,
+        row.scheduleId === "checkin-morning" ? { figures: true } : {},
+      ),
     });
     fake.items = row.written.map((body, index) => text(`t${index}`, index + 1, body, runId));
     yield* complete;
@@ -524,7 +623,11 @@ it.effect.each([
     assert.include(after, "Goals: none set");
     assert.lengthOf(bodies.join("\n").split(WEEK_FIGURES_TITLE), 2);
     assert.lengthOf(bodies, row.words.length > 15_000 ? 2 : 1);
-    assert.isTrue(kinIsBrief(rows[0]!.body, rows[0]!.form));
+    // One page: figures that follow it are ordinary messages, with no greeting of their own.
+    assert.deepStrictEqual(
+      rows.map((one) => kinIsBrief(one.body, one.form)),
+      rows.map((_, index) => index === 0),
+    );
   }).pipe(Effect.provide(layer)),
 );
 

@@ -34,6 +34,7 @@ import {
   KinChatError,
   KinChatHistoryInput,
   type KinChatHistoryResult,
+  kinIsPage,
   ThreadId,
   IsoDateTime,
   NonNegativeInt,
@@ -915,8 +916,12 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toRepositoryError("KinChatRepository.wakeupRunning")),
   );
+  // A check-in or routine's own turn reads as a brief. The morning and weekly brief's turn has one
+  // page ("page"): the first text it stores in its owner's chat; all else it stores is ordinary.
   const briefForm = Effect.fn("KinChatRepository.briefForm")(function* (input: {
     orgId: KinOrgId;
+    chatId: KinChatId;
+    messageId: KinMessageId;
     wakeupId?: KinWakeupId | undefined;
     audience: WriteAudience;
     kind: KinMessage["kind"];
@@ -929,15 +934,36 @@ const make = Effect.gen(function* () {
       input.audience === "chat"
     )
       return null;
-    return (yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${input.orgId}
-                AND wakeup_id = ${input.wakeupId}
-                AND ((tag = 'pulse' AND json_extract(json, '$.checkIn') IS NOT NULL)
-                  OR (tag = 'routine' AND json_extract(json, '$.routine') IN ('morning_brief', 'evening_summary')))
-                AND NOT EXISTS (SELECT 1 FROM kin_events m WHERE m.org_id = kin_events.org_id
-                  AND m.wakeup_id = kin_events.wakeup_id AND m.tag = 'chat.message')
-                LIMIT 1`).length > 0
-      ? ("brief" as const)
-      : null;
+    const [brief] = yield* sql<{ page: number; lane: number }>`SELECT
+        json_extract(e.json, '$.checkIn.scheduleId') IN ('checkin-morning', 'checkin-weekly') AS page,
+        EXISTS (SELECT 1 FROM kin_leads l WHERE l.org_id = e.org_id AND l.agent_id = e.agent_id
+          AND l.owner_chat_id = ${input.chatId}) AS lane
+      FROM kin_events e WHERE e.org_id = ${input.orgId} AND e.wakeup_id = ${input.wakeupId}
+        AND ((e.tag = 'pulse' AND json_extract(e.json, '$.checkIn') IS NOT NULL)
+          OR (e.tag = 'routine' AND json_extract(e.json, '$.routine') IN ('morning_brief', 'evening_summary')))
+        AND NOT EXISTS (SELECT 1 FROM kin_events m WHERE m.org_id = e.org_id
+          AND m.wakeup_id = e.wakeup_id AND m.tag = 'chat.message')
+      ORDER BY e.event_id LIMIT 1`;
+    if (brief === undefined) return null;
+    if (brief.page !== 1) return "brief" as const;
+    if (brief.lane !== 1) return null;
+    const earlier = yield* sql`SELECT 1 FROM kin_messages m
+      JOIN kin_wakeups w ON w.org_id = m.org_id AND w.wakeup_id = ${input.wakeupId}
+      WHERE m.org_id = ${input.orgId} AND m.chat_id = ${input.chatId} AND m.author_kind = 'agent'
+        AND m.author_agent_id = w.agent_id AND m.author_thread_id = w.thread_id
+        AND m.created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', w.started_at / 1000.0, 'unixepoch')
+        AND m.kind = 'text' AND m.body <> '' AND m.status = 'posted'
+        AND m.message_id <> ${input.messageId}
+      LIMIT 1`;
+    return earlier.length === 0 ? ("page" as const) : null;
+  });
+  /** The stored form and body: the brief's page, or a card's empty message it joins, opens headed. */
+  const briefed = (form: "page" | "brief" | null, body: string, prior = "") => ({
+    form: form === "page" ? ("brief" as const) : form,
+    body:
+      form === "page" && prior === "" && body !== "" && !kinIsPage(body)
+        ? `## Today\n\n${body}`
+        : body,
   });
   const replyCard = Effect.fn("KinChatRepository.replyCard")(
     function* (input: ReplyScope) {
@@ -1781,12 +1807,14 @@ const make = Effect.gen(function* () {
                 message: "Kin wake-up is not running.",
               });
             yield* ownerOnly(input.audience, input);
-            const placed = yield* placeFigures({ ...input, previous: message });
+            const kept =
+              message.form === "brief" && message.body !== ""
+                ? message.form
+                : yield* briefForm({ ...input, kind: message.kind, author: message.author });
+            const shaped = briefed(kept, input.body, message.body);
+            const placed = yield* placeFigures({ ...input, body: shaped.body, previous: message });
             const named = yield* named_(input.orgId, input.chatId, placed.body);
-            const form =
-              message.form ??
-              (yield* briefForm({ ...input, kind: message.kind, author: message.author }));
-            yield* sql`UPDATE kin_messages SET body = ${named.body}, form = ${form},
+            yield* sql`UPDATE kin_messages SET body = ${named.body}, form = ${shaped.form},
               embeds_json = ${placed.embeds.length === 0 ? null : yield* encodeEmbeds(placed.embeds)}
               WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id = ${input.messageId}`;
             yield* keepFigures(input, placed.figures);
@@ -1850,7 +1878,9 @@ const make = Effect.gen(function* () {
                     message: "Kin message author identity conflict.",
                   });
                 if (
-                  existing.value.body !== input.body ||
+                  // The brief's page is stored under the heading Kin gave it (`briefed`).
+                  (existing.value.body !== input.body &&
+                    existing.value.body !== `## Today\n\n${input.body}`) ||
                   existing.value.intent !== input.intent ||
                   existing.value.replyTo !== input.replyTo ||
                   existing.value.widgetId !== input.widgetId ||
@@ -1972,21 +2002,22 @@ const make = Effect.gen(function* () {
  WHERE chat_id = ${input.chatId} AND org_id = ${input.orgId} RETURNING last_seq`,
             })(input);
             const seq = (yield* requireRecord(Effect.succeed(allocated))).last_seq;
-            const form = yield* briefForm(input);
+            const { form, body } = briefed(yield* briefForm(input), input.body);
             const placed =
               author._tag === "agent" &&
               input.kind === "text" &&
               input.wakeupId !== undefined &&
               input.placeReplyFigures === true &&
-              input.body !== "" &&
+              body !== "" &&
               input.widgetId === null
                 ? yield* placeFigures({
                     ...input,
+                    body,
                     agentId: author.agentId,
                     threadId: author.threadId,
                     wakeupId: input.wakeupId,
                   })
-                : { body: input.body, embeds: input.embeds ?? [], figures: [] };
+                : { body, embeds: input.embeds ?? [], figures: [] };
             // People read an entry by its name, not Kin's key for it.
             const named =
               author._tag === "agent" && input.kind === "text"
