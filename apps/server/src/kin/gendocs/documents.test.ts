@@ -2337,6 +2337,15 @@ describe("files the agent makes", () => {
       const made = listed.recipes.find((one) => one.name === "letterhead");
       assert.deepStrictEqual([made?.labelled, made?.files], [true, ["stamp.png"]]);
       assert.isFalse(yield* fs.exists(started.folder!));
+      // An undo that removed the new recipe says so, and so does the redo, so neither reads as failed.
+      const undo = () =>
+        LeadDocuments.undoRecipe(scope, { recipe: "letterhead", sourceEventId: asked });
+      const undone = yield* undo();
+      assert.isTrue(undone.removed);
+      assert.match(undone.next, /^Undone: .*the recipe is gone now/);
+      const redone = yield* undo();
+      assert.isFalse(redone.removed);
+      assert.match(redone.next, /^Undone: the letterhead recipe is back as it was/);
 
       // A sample holding the company's real details is refused, however often it is asked.
       const memo = (yield* writeRecipe("memo", { sourceEventId: asked })).folder!;

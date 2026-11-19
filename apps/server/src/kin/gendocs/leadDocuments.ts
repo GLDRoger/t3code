@@ -377,7 +377,13 @@ export const UndoResult = Schema.Struct({
   commit: Schema.String,
   /** True when the change undone made the recipe: it is gone until undone again. */
   removed: Schema.Boolean,
+  next: Schema.String,
 });
+
+const undoneLine = (recipe: string, removed: boolean) =>
+  removed
+    ? `Undone: the ${recipe} recipe's last change was making it, so the recipe is gone now. Undo again to bring it back.`
+    : `Undone: the ${recipe} recipe is back as it was before its last change, and files made from now on use it. Undo again to redo the change.`;
 
 export const undoRecipe = leadTool(
   "KinDocuments.undoRecipe",
@@ -394,7 +400,12 @@ export const undoRecipe = leadTool(
           reason: "invalid_state",
           message: `Nothing changed: ${undone.reason}.`,
         });
-      return { recipe: input.recipe, commit: undone.commit, removed: undone.removed };
+      return {
+        recipe: input.recipe,
+        commit: undone.commit,
+        removed: undone.removed,
+        next: undoneLine(input.recipe, undone.removed),
+      };
     }),
 );
 
