@@ -206,6 +206,73 @@ echo "current $(basename "$(readlink "$CURRENT")")"`);
     expect(said).toContain("didn't answer on http://127.0.0.1:3773 within 90s");
   });
 
+  it("keeps the previous build running when the web app the build packaged isn't Kin's", () => {
+    const repoRoot = NodePath.resolve(import.meta.dirname, "..");
+    // A whole update from main: the repo, mise and the build are stubs; the brand check is real.
+    const update = (packaged: string) =>
+      onFakeHost(`
+SHA="$(printf 'c%.0s' {1..40})"
+NEW="$BUILDS/$SHA"
+export KIN_UPDATE_HANDED_OVER=1
+mkdir -p "$REPO" && touch "$REPO/.env" "$HOME/calls"
+id() { if [ "$1" = -un ]; then echo kin; else command id "$@"; fi; }
+git() {
+  case "$*" in
+    *"branch --show-current"*) echo kin ;;
+    *rev-parse*) echo "$SHA" ;;
+    *"worktree add"*)
+      build "$SHA" 149 >/dev/null && rm "$NEW/apps/server/dist/bin.mjs" && touch "$NEW/.env.example"
+      echo '{ "engines": { "node": "24.13.1" } }' >"$NEW/package.json"
+      ln -s "${repoRoot}/scripts" "$NEW/scripts" ;;
+    *"worktree remove"*) return 1 ;;
+  esac
+}
+mise() {
+  [ "$1" = exec ] || return 0
+  shift 3
+  case "$*" in
+    "vp run build:desktop") package ;;
+    "node scripts/kin-served-brand.ts"*) shift && "${process.execPath}" "$@" || return ;;
+  esac
+}
+TITLE=Kin SHORT_NAME=Kin FAVICON="${repoRoot}/branding/assets/apps/web/public/favicon.ico"
+package() {
+  local client=apps/server/dist/client
+  mkdir -p "$client" apps/server/dist/visual-lib
+  touch apps/server/dist/bin.mjs apps/server/dist/visual-lib/{echarts,mermaid,d3}.js
+  cp "${repoRoot}"/branding/assets/apps/web/public/* "$client"
+  cp "$FAVICON" "$client/favicon.ico"
+  printf '<title>%s</title><link rel="icon" href="/favicon.ico"><link rel="manifest" href="/manifest.webmanifest">' "$TITLE" >"$client/index.html"
+  printf '{ "name": "Kin", "short_name": "%s", "icons": [{ "src": "icon-192x192.png" }] }' "$SHORT_NAME" >"$client/manifest.webmanifest"
+}
+${packaged}
+(main); echo "status $?"
+echo "current $(basename "$(readlink "$CURRENT")")"
+echo "stops $(grep -c 'stop kin-server' "$HOME/calls")"`);
+
+    const good = update("");
+    expect(good.out, good.said).toEqual([
+      expect.stringMatching(/apps\/server\/dist\/client is named Kin and has Kin's icons$/),
+      "status 0",
+      `current ${"c".repeat(40)}`,
+      "stops 1",
+    ]);
+    for (const [packaged, problem] of [
+      ['TITLE="T3 Code (Beta)"', 'index.html: <title> is "T3 Code (Beta)", not "Kin"'],
+      ["SHORT_NAME=T3", 'manifest.webmanifest: short_name is "T3", not "Kin"'],
+      // What the server build's development icon override copies over the client.
+      [
+        `FAVICON="${repoRoot}/assets/dev/blueprint-web-favicon.ico"`,
+        "favicon.ico is not Kin's icon",
+      ],
+    ] as const) {
+      const { out, said } = update(packaged);
+      expect(out, said).toEqual(["status 1", "current old", "stops 0"]);
+      expect(said).toContain(problem);
+      expect(said).toContain("failed; the server still runs");
+    }
+  });
+
   it("hands over to the merged script once, when the merge changed it", () => {
     const { out } = onFakeHost(`
 mkdir -p "$REPO/ops/kin/host"

@@ -221,20 +221,37 @@ export const checkSharedCopy = (
     );
 };
 
-/** Beside the two clients' Kin copy, where Kin's messages are written. */
-const KIN_MESSAGE_DIRS = ["apps/server/src/kin", "packages/client-runtime/src/kin"];
+/** Kin's own screens and messages: the web and phone clients', the server's and client-runtime's. */
+const KIN_NAME_DIRS = [
+  KIN_COPY_DIRS.web,
+  "apps/mobile/src/features/chats",
+  "apps/server/src/kin",
+  "packages/client-runtime/src/kin",
+];
+// isTestPath in scripts/lib/kinBrandEngine.ts; that module loads a native parser this script avoids.
+const TEST_PATH =
+  /(^|\/)(test|tests|__tests__|testkit|fixtures)\/|\.(test|spec|testkit|fixture)\.[^/]+$/;
+const LITERAL_OR_COMMENT =
+  /("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
 
-/** The product is Kin; "T3 Kin" is not its name anywhere a person reads it. */
+/** The product is Kin; "T3 Kin" is not its name anywhere a person reads it. Comments don't count. */
 export const checkProductName = (files: ReadonlyMap<string, string>) =>
-  [...files].flatMap(([file, source]) =>
-    source
-      .split("\n")
-      .flatMap((line, index) =>
-        /\bT3 Kin\b/.test(line)
-          ? [`kin name: ${file}:${index + 1} says "T3 Kin"; the product is called Kin.`]
-          : [],
-      ),
-  );
+  [...files]
+    .filter(([file]) => !TEST_PATH.test(file))
+    .flatMap(([file, source]) =>
+      source
+        // A comment goes, keeping its line breaks so line numbers stay right.
+        .replace(
+          LITERAL_OR_COMMENT,
+          (match, literal: string | undefined) => literal ?? match.replace(/[^\n]/g, ""),
+        )
+        .split("\n")
+        .flatMap((line, index) =>
+          /\bT3 Kin\b/.test(line)
+            ? [`kin name: ${file}:${index + 1} says "T3 Kin"; the product is called Kin.`]
+            : [],
+        ),
+    );
 
 /** All four checks for the branch at `root` against `ref`; problems, or none. */
 export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
@@ -301,14 +318,11 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
     }
     return files;
   });
-  const [webCopy, phoneCopy] = [
-    yield* copyFiles(KIN_COPY_DIRS.web),
-    yield* copyFiles(KIN_COPY_DIRS.phone),
-  ];
-  problems.push(...checkSharedCopy(webCopy, phoneCopy));
-  const named = new Map([...webCopy, ...phoneCopy]);
-  for (const dir of KIN_MESSAGE_DIRS)
-    for (const entry of yield* copyFiles(dir)) named.set(...entry);
+  problems.push(
+    ...checkSharedCopy(yield* copyFiles(KIN_COPY_DIRS.web), yield* copyFiles(KIN_COPY_DIRS.phone)),
+  );
+  const named = new Map<string, string>();
+  for (const dir of KIN_NAME_DIRS) for (const entry of yield* copyFiles(dir)) named.set(...entry);
   problems.push(...checkProductName(named));
 
   // The iOS build brands a copy and fails on any upstream identity left; catch that here.

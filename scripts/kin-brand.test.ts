@@ -9,6 +9,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as TestConsole from "effect/testing/TestConsole";
 
 import { kinBrand } from "./kin-brand.ts";
+import { matchesAny, parseBrandRules } from "./lib/kinBrandEngine.ts";
 import type { Guard } from "./lib/kinBrandGuards.ts";
 
 // Real git and a real filesystem, so these run on the wall clock.
@@ -320,18 +321,31 @@ describe("kin-brand", () => {
     }).pipe(Effect.scoped, Effect.provide(TestLayer)),
   );
 
-  it.live("brands one scope in place, only in a checkout git can undo", () =>
+  it.live("brands the real web scope in place, only in a checkout git can undo, once", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const { root, repo } = yield* makeRepo({
-        files: { "server/home.ts": 'export const home = ".t3";\n' },
-        rules: RULES.replace(
-          "ignore:",
-          "  - files: [server/home.ts]\n    from: .t3\n    to: .kin\n    exact: true\nignore:",
-        ).concat("scopes:\n  web:\n    reason: test\n    files: [app/**]\n"),
-      });
+      const git = (cwd: string, ...args: ReadonlyArray<string>) =>
+        spawner.string(ChildProcess.make("git", args, { cwd }));
+      const checkout = yield* path.fromFileUrl(new URL("..", import.meta.url));
+      const assets = path.join(checkout, "branding/assets");
+      const rules = yield* parseBrandRules(
+        yield* fs.readFileString(path.join(checkout, "branding/rules.yaml")),
+      );
+      const inScope = (file: string) => matchesAny(file, rules.scopes?.web?.files ?? []);
+      // The scope's own files, as upstream has them, and one the full brand rewrites.
+      const outside = "apps/mobile/app.config.ts";
+      const files = [...(yield* git(checkout, "ls-files")).split("\n").filter(inScope), outside];
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "kin-brand-test-" });
+      const repo = path.join(root, "repo");
+      for (const file of files) {
+        yield* fs.makeDirectory(path.dirname(path.join(repo, file)), { recursive: true });
+        yield* fs.copyFile(path.join(checkout, file), path.join(repo, file));
+      }
+      yield* fs.copy(path.join(checkout, "branding"), path.join(repo, "branding"));
+      yield* git(repo, "init", "-q");
+      yield* git(repo, "add", "apps", "assets");
       const target = path.join(root, "unused");
       assert.include(
         yield* failure(brand(repo, target, { inPlace: true })),
@@ -341,49 +355,99 @@ describe("kin-brand", () => {
         yield* failure(brand(repo, target, { inPlace: true, scope: "web" })),
         "without uncommitted changes",
       );
-      yield* spawner.string(
-        ChildProcess.make(
-          "git",
-          ["-c", "user.name=Rhea", "-c", "user.email=rhea@ambermill.invalid", "commit", "-qm", "x"],
-          { cwd: repo },
-        ),
+      yield* git(
+        repo,
+        "-c",
+        "user.name=Rhea",
+        "-c",
+        "user.email=rhea@ambermill.invalid",
+        "commit",
+        "-qm",
+        "x",
       );
 
-      yield* brand(repo, target, { inPlace: true, scope: "web" });
-      assert.strictEqual(
-        yield* fs.readFileString(path.join(repo, "app/name.ts")),
-        'export const name = "Kin";\n',
-      );
+      const assertBranded = Effect.fn("assertBranded")(function* () {
+        // Every icon the web app ships and every one the server build copies over them is Kin's.
+        const icons = (yield* fs.readDirectory(assets, { recursive: true })).filter(inScope);
+        assert.includeMembers(icons, [
+          "apps/web/public/favicon.ico",
+          "assets/dev/blueprint-web-favicon.ico",
+        ]);
+        for (const icon of icons)
+          assert.deepStrictEqual(
+            yield* fs.readFile(path.join(repo, icon)),
+            yield* fs.readFile(path.join(assets, icon)),
+            icon,
+          );
+        assert.include(
+          yield* fs.readFileString(path.join(repo, "apps/web/index.html")),
+          "<title>Kin</title>",
+        );
+        assert.include(
+          yield* fs.readFileString(path.join(repo, "apps/web/public/manifest.webmanifest")),
+          '"short_name": "Kin"',
+        );
+        assert.strictEqual(
+          yield* fs.readFileString(path.join(repo, outside)),
+          yield* fs.readFileString(path.join(checkout, outside)),
+        );
+      });
       // Outside the scope nothing changes, and its rules don't count as matching nothing.
-      assert.strictEqual(
-        yield* fs.readFileString(path.join(repo, "server/home.ts")),
-        'export const home = ".t3";\n',
-      );
+      yield* brand(repo, target, { inPlace: true, scope: "web" });
+      yield* assertBranded();
       assert.isFalse(yield* fs.exists(target));
+      // A second run refuses the branded tree rather than branding it twice.
+      assert.include(
+        yield* failure(brand(repo, target, { inPlace: true, scope: "web" })),
+        "without uncommitted changes",
+      );
+      yield* assertBranded();
     }).pipe(Effect.scoped, Effect.provide(TestLayer)),
   );
 
-  it.live("fails when the web app's first-paint name isn't Kin", () =>
-    Effect.gen(function* () {
-      const path = yield* Path.Path;
-      const files = {
-        "apps/web/index.html": "<html><head><title>T3 Code</title></head></html>\n",
-        "apps/web/public/manifest.webmanifest": '{ "name": "T3 Code", "short_name": "Kin" }\n',
-      };
-      const unbranded = yield* makeRepo({ files });
-      const message = yield* failure(brand(unbranded.repo, path.join(unbranded.root, "kin")));
-      assert.include(message, 'apps/web/index.html: <title> is "T3 Code", not "Kin"');
-      assert.include(message, 'apps/web/public/manifest.webmanifest: name is "T3 Code", not "Kin"');
-      assert.notInclude(message, "short_name");
+  it.live(
+    "fails when the web app's first-paint name isn't Kin, however its files are laid out",
+    () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        // Names in a comment or nested in the manifest don't count; a multi-line call does.
+        const files = {
+          "apps/web/index.html":
+            "<html><head><!-- <title>Kin</title> --><title>T3 Code</title></head></html>\n",
+          "apps/web/vite.config.ts":
+            'const title = formatAppDisplayName({\n  // baseName: "Kin",\n  baseName: "T3 Code",\n  stageLabel,\n});\n',
+          "apps/web/src/branding.logic.ts":
+            'export const stage = (input) =>\n  input.development\n    ? "Dev"\n    : "Beta";\n',
+          "apps/web/public/manifest.webmanifest":
+            '{ "icons": [{ "name": "Kin" }], "name": "T3 Code", "short_name": "Kin" }\n',
+        };
+        const unbranded = yield* makeRepo({ files });
+        const message = yield* failure(brand(unbranded.repo, path.join(unbranded.root, "kin")));
+        assert.include(message, 'apps/web/index.html: <title> is "T3 Code", not "Kin"');
+        assert.include(message, 'apps/web/vite.config.ts: the title the build stamps is "T3 Code"');
+        assert.include(
+          message,
+          'apps/web/src/branding.logic.ts: a production build\'s stage label is "Beta"',
+        );
+        assert.include(
+          message,
+          'apps/web/public/manifest.webmanifest: name is "T3 Code", not "Kin"',
+        );
+        assert.include(message, "apps/web/src/branding.ts is missing; it holds APP_BASE_NAME");
+        assert.notInclude(message, "short_name");
 
-      const branded = yield* makeRepo({
-        files,
-        rules: RULES.replace(
-          "ignore:",
-          "  - files: [apps/web/**]\n    from: T3 Code\n    to: Kin\nignore:",
-        ),
-      });
-      yield* brand(branded.repo, path.join(branded.root, "kin"));
-    }).pipe(Effect.scoped, Effect.provide(TestLayer)),
+        const branded = yield* makeRepo({
+          files: {
+            ...files,
+            "apps/web/src/branding.ts":
+              'export const APP_BASE_NAME =\n  injected?.baseName ??\n  "T3 Code";\n',
+          },
+          rules: RULES.replace(
+            "ignore:",
+            "  - files: [apps/web/**]\n    from: T3 Code\n    to: Kin\n  - files: [apps/web/src/branding.logic.ts]\n    from: Beta\n    to: Latest\n    exact: true\nignore:",
+          ),
+        });
+        yield* brand(branded.repo, path.join(branded.root, "kin"));
+      }).pipe(Effect.scoped, Effect.provide(TestLayer)),
   );
 });

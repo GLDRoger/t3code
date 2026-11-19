@@ -238,7 +238,7 @@ const copyAssets = Effect.fn("kinBrand.copyAssets")(function* (
     copied.push(file);
   }
   const assetFiles = new Set(entries.map((entry) => entry.split(path.sep).join("/")));
-  for (const file of Object.keys(hashes).filter((file) => !assetFiles.has(file))) {
+  for (const file of Object.keys(hashes).filter((file) => inScope(file) && !assetFiles.has(file))) {
     problems.push(`sourceAssets names ${file}, but branding/assets has no such file`);
   }
   return { copied, problems };
@@ -306,42 +306,70 @@ const emptyResult = (source: string, leaks: FileResult["leaks"]): FileResult => 
   leaks,
 });
 
+const JS_LITERAL_OR_COMMENT =
+  /("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
+/** The last group `pattern` captures in a script with its comments taken out. */
+const scriptValue = (pattern: RegExp) => (source: string) =>
+  pattern
+    .exec(
+      source.replace(JS_LITERAL_OR_COMMENT, (_match, literal: string | undefined) => literal ?? ""),
+    )
+    ?.at(-1);
+const decodeManifestNames = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      name: Schema.optional(Schema.Unknown),
+      short_name: Schema.optional(Schema.Unknown),
+    }),
+  ),
+);
+const manifestValue = (key: "name" | "short_name") => (source: string) => {
+  const value = Option.getOrUndefined(decodeManifestNames(source))?.[key];
+  return typeof value === "string" ? value : undefined;
+};
+
 /** The name a Kin web build shows before any script runs: tab title, installed app, its stage. */
 const NAME_CHECKS: ReadonlyArray<{
   readonly file: string;
   readonly what: string;
-  readonly read: RegExp;
+  readonly read: (source: string) => string | undefined;
   readonly want: string;
 }> = [
-  { file: "apps/web/index.html", what: "<title>", read: /<title>([^<]*)<\/title>/, want: "Kin" },
+  {
+    file: "apps/web/index.html",
+    what: "<title>",
+    read: (source) =>
+      /<title[^>]*>([^<]*)<\/title>/i.exec(source.replace(/<!--[\s\S]*?-->/g, ""))?.[1]?.trim(),
+    want: "Kin",
+  },
   {
     file: "apps/web/vite.config.ts",
     what: "the title the build stamps",
-    read: /formatAppDisplayName\(\{ baseName: "([^"]*)"/,
+    read: scriptValue(/formatAppDisplayName\(\s*\{[^}]*?\bbaseName:\s*(["'`])([^"'`]*)\1/),
     want: "Kin",
   },
   {
     file: "apps/web/src/branding.ts",
     what: "APP_BASE_NAME",
-    read: /APP_BASE_NAME = [^;]*\?\? "([^"]*)"/,
+    read: scriptValue(/\bAPP_BASE_NAME\s*=[^;]*?\?\?\s*(["'`])([^"'`]*)\1/),
     want: "Kin",
   },
   {
     file: "apps/web/src/branding.logic.ts",
     what: "a production build's stage label",
-    read: /input\.development \? "Dev" : "([^"]*)"/,
+    read: scriptValue(/\bdevelopment\s*\?\s*(["'`])Dev\1\s*:\s*(["'`])([^"'`]*)\2/),
     want: "Latest",
   },
   {
     file: "apps/web/public/manifest.webmanifest",
     what: "name",
-    read: /"name":\s*"([^"]*)"/,
+    read: manifestValue("name"),
     want: "Kin",
   },
   {
     file: "apps/web/public/manifest.webmanifest",
     what: "short_name",
-    read: /"short_name":\s*"([^"]*)"/,
+    read: manifestValue("short_name"),
     want: "Kin",
   },
 ];
@@ -515,12 +543,23 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
     { concurrency: 16, discard: true },
   );
 
-  for (const check of NAME_CHECKS.filter((check) => files.includes(check.file))) {
-    const found = check.read.exec(nameFiles.get(check.file) ?? "")?.[1];
-    if (found !== check.want) {
-      problems.push(
-        `${check.file}: ${check.what} is ${found === undefined ? "missing" : `"${found}"`}, not "${check.want}"`,
-      );
+  // Once the copy has a web app every name file must be there: a moved one would go unchecked.
+  if (files.some((file) => file.startsWith("apps/web/"))) {
+    for (const check of NAME_CHECKS.filter((check) => inScope(check.file))) {
+      if (!files.includes(check.file)) {
+        problems.push(
+          `${check.file} is missing; it holds ${check.what}, which must be "${check.want}"`,
+        );
+        continue;
+      }
+      const source =
+        nameFiles.get(check.file) ?? (yield* fs.readFileString(path.join(root, check.file)));
+      const found = check.read(source);
+      if (found !== check.want) {
+        problems.push(
+          `${check.file}: ${check.what} is ${found === undefined ? "missing" : `"${found}"`}, not "${check.want}"`,
+        );
+      }
     }
   }
 

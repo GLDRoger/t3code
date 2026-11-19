@@ -4,11 +4,11 @@
 #   ~/t3code/ops/kin/host/update.sh
 #
 # Fetches `kin` into the clone, builds it in its own worktree (~/kin-builds/<sha>): install,
-# the server's Kin contract tests, Kin's name on the web app, build. Only when all of that passes
-# does it stop the server, back up its database, point ~/kin-current at the new build and start
-# it. The running build is never touched. If the new build isn't healthy (up, answering,
-# migrated), it goes back to the previous build, and to the backup when the new build had
-# migrated the database.
+# the server's Kin contract tests, Kin's name on the web app, build, and a check that the web
+# app the build serves is named Kin with Kin's icons. Only when all of that passes does it stop
+# the server, back up its database, point ~/kin-current at the new build and start it. The
+# running build is never touched. If the new build isn't healthy (up, answering, migrated), it
+# goes back to the previous build, and to the backup when the new build had migrated the database.
 # Keeps the 3 newest builds and the 10 newest update backups. Also does the first install.
 #
 # Sourcing this file defines its functions and runs nothing (scripts/kin-update.test.ts).
@@ -352,6 +352,8 @@ main() {
   for lib in echarts mermaid d3; do
     [ -f "apps/server/dist/visual-lib/$lib.js" ] || { say "the build wrote no apps/server/dist/visual-lib/$lib.js, so visuals would draw without it."; false; }
   done
+  # The client the server serves, not the source: packaging copies its own icons over it.
+  mise exec "node@$node_version" -- node scripts/kin-served-brand.ts apps/server/dist/client
   trap - ERR
 
   deploy "$SHA" "$BUILD" "$PREVIOUS" "$node_version"

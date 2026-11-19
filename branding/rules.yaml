@@ -645,6 +645,9 @@ scopes:
       - apps/web/src/components/T3Wordmark.tsx
       - apps/web/src/components/sidebar/SidebarChrome.tsx
       - apps/web/src/components/ui/standalone-page.tsx
+      # The server build copies these over the client's icons (applyDevelopmentIconOverrides).
+      - assets/dev/blueprint-web-*
+    # apps/web/public/kin-icon.png stays one release for tabs that still link it; then delete it.
 
 sourceAssets:
   apps/web/src/components/T3Wordmark.tsx: ba20ddca13c7436ca7ad1f25fbc1acc67b95b9242573fd6e70611f389deabf4d
