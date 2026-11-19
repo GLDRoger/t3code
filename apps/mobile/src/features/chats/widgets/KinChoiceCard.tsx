@@ -26,6 +26,7 @@ import {
   kinChoiceAnswered,
   kinChoiceFailureNotice,
   kinChoicePhase,
+  kinSendEditBound,
   kinSendEditInput,
   kinSendEditOffered,
   kinSendEditRefused,
@@ -221,6 +222,9 @@ function SendEditor(props: {
   readonly draft: KinSendEditDraft;
   readonly busy: boolean;
   readonly problem: string | null;
+  /** The card changed under the editor: who it goes from now is shown again beside Send. */
+  readonly review: boolean;
+  readonly ready: boolean;
   readonly onChange: (draft: KinSendEditDraft) => void;
   readonly onSend: () => void;
   readonly onDiscard: () => void;
@@ -300,6 +304,9 @@ function SendEditor(props: {
           {props.problem}
         </Text>
       )}
+      {props.review && props.problem !== null && send.from.length > 0 ? (
+        <SendLines lines={send.from} />
+      ) : null}
       <View className="gap-2 pt-1">
         <Button
           label={busy ? KIN_SEND_EDIT_COPY.sending : KIN_SEND_EDIT_COPY.send}
@@ -307,6 +314,7 @@ function SendEditor(props: {
           size="compact"
           fullWidth
           loading={busy}
+          disabled={!props.ready}
           onPress={props.onSend}
         />
         <Button
@@ -449,9 +457,10 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   const editable =
     answered === null && pending === null && kinSendEditOffered(choice, phase, canAct && canEdit);
   const shownEdit = editable ? editing : null;
+  const editBound = shownEdit === null ? null : kinSendEditBound(shownEdit, choice);
 
   const sendEdit = async () => {
-    if (shownEdit === null || editBusy) return;
+    if (shownEdit === null || editBusy || editBound?.ready !== true) return;
     setEditBusy(true);
     const result = await sendEdited({
       environmentId,
@@ -491,6 +500,8 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
             draft={shownEdit.draft}
             busy={editBusy}
             problem={shownEdit.problem}
+            review={editBound?.review === true}
+            ready={editBound?.ready === true}
             onChange={(draft) => setEditing({ ...shownEdit, draft })}
             onSend={() => void sendEdit()}
             onDiscard={() => setEditing(null)}

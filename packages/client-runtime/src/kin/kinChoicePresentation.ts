@@ -107,6 +107,8 @@ export interface KinSendEditing {
   readonly draft: KinSendEditDraft;
   /** The host's last refusal, shown under the fields. */
   readonly problem: string | null;
+  /** The host refused `revision` as changed: Send waits for the card as it is now. */
+  readonly stale?: true;
 }
 
 export interface KinSendFromChoice {
@@ -476,16 +478,30 @@ export function kinSendEditStart(view: KinChoiceCardView): KinSendEditing | null
 
 const addresses = (typed: string) => typed.split(/[,;\s]+/u).filter((one) => one !== "");
 
-/** The edited mail as the host takes it, for the card the editor opened on; the host checks it. */
+/**
+ * What Send carries: the card the editor opened on, until the host says that card changed. Then it
+ * is dead: the editor shows the card's From again beside Send (`review`), and Send waits (`ready`)
+ * for the newer card and carries the one on screen beside it, as an ordinary tap does.
+ */
+export function kinSendEditBound(
+  editing: KinSendEditing,
+  view: Pick<KinChoiceCardView, "revision">,
+): { readonly revision: number; readonly ready: boolean; readonly review: boolean } {
+  return editing.stale === true
+    ? { revision: view.revision, ready: view.revision !== editing.revision, review: true }
+    : { revision: editing.revision, ready: true, review: false };
+}
+
+/** The edited mail as the host takes it, for the card Send is bound to; the host checks it. */
 export function kinSendEditInput(
-  view: Pick<KinChoiceCardView, "orgId" | "widgetId">,
+  view: Pick<KinChoiceCardView, "orgId" | "widgetId" | "revision">,
   editing: KinSendEditing,
   clientActionId: string,
 ): KinConnectionSendEditedInput {
   return {
     orgId: view.orgId,
     widgetId: view.widgetId,
-    revision: editing.revision,
+    revision: kinSendEditBound(editing, view).revision,
     clientActionId,
     to: addresses(editing.draft.to),
     cc: addresses(editing.draft.cc),
@@ -503,18 +519,21 @@ export function kinSendEditFailure(cause: unknown): string {
 }
 
 /**
- * A refused send keeps every typed word. Only the host's "this card changed" moves the editor to
- * the card as it stands now, once that refusal is on screen beside the card's new From.
+ * A refused send keeps every typed word. The host's "this card changed" marks the card that press
+ * carried (`view` is the card as it was at the press) as dead, so the next Send is for a newer one.
  */
 export function kinSendEditRefused(
   editing: KinSendEditing,
   view: Pick<KinChoiceCardView, "revision">,
   cause: unknown,
 ): KinSendEditing {
-  return {
-    draft: editing.draft,
-    problem: kinSendEditFailure(cause),
-    revision:
-      isKinChatError(cause) && cause.reason === "widget_changed" ? view.revision : editing.revision,
-  };
+  const problem = kinSendEditFailure(cause);
+  return isKinChatError(cause) && cause.reason === "widget_changed"
+    ? {
+        draft: editing.draft,
+        problem,
+        revision: kinSendEditBound(editing, view).revision,
+        stale: true,
+      }
+    : { ...editing, problem };
 }

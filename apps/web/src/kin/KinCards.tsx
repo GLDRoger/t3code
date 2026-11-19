@@ -16,6 +16,7 @@ import {
   kinChoiceAnswered,
   kinChoiceFailureNotice,
   kinChoicePhase,
+  kinSendEditBound,
   kinSendEditInput,
   kinSendEditOffered,
   kinSendEditRefused,
@@ -433,8 +434,10 @@ function KinChoiceCard(props: {
     answered === null && pending === null && kinSendEditOffered(choice, phase, canAct && canEdit);
   const shownEdit = editable ? editing : null;
 
+  const editBound = shownEdit === null ? null : kinSendEditBound(shownEdit, choice);
+
   const sendEdit = async () => {
-    if (shownEdit === null || editBusy) return;
+    if (shownEdit === null || editBusy || editBound?.ready !== true) return;
     setEditBusy(true);
     const result = await sendEdited({
       environmentId,
@@ -457,6 +460,8 @@ function KinChoiceCard(props: {
           draft={shownEdit.draft}
           busy={editBusy}
           problem={shownEdit.problem}
+          review={editBound?.review === true}
+          ready={editBound?.ready === true}
           onChange={(draft) => setEditing({ ...shownEdit, draft })}
           onSend={() => void sendEdit()}
           onDiscard={() => setEditing(null)}
@@ -530,6 +535,9 @@ function KinSendEditor(props: {
   readonly draft: KinSendEditDraft;
   readonly busy: boolean;
   readonly problem: string | null;
+  /** The card changed under the editor: who it goes from now is shown again beside Send. */
+  readonly review: boolean;
+  readonly ready: boolean;
   readonly onChange: (draft: KinSendEditDraft) => void;
   readonly onSend: () => void;
   readonly onDiscard: () => void;
@@ -617,12 +625,15 @@ function KinSendEditor(props: {
           {props.problem}
         </p>
       )}
+      {props.review && props.problem !== null && send.from.length > 0 ? (
+        <KinSendLines lines={send.from} />
+      ) : null}
       <div className="flex flex-col gap-1.5 pt-1">
         <Button
           type="button"
           size="sm-multiline"
           aria-busy={busy}
-          disabled={busy}
+          disabled={busy || !props.ready}
           onClick={props.onSend}
         >
           {busy ? KIN_SEND_EDIT_COPY.sending : KIN_SEND_EDIT_COPY.send}

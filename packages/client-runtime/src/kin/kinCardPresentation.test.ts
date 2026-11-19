@@ -17,6 +17,7 @@ import {
   kinQuotedInZone,
   kinAddressPieces,
   kinSendEditFailure,
+  kinSendEditBound,
   kinSendEditInput,
   kinSendEditOffered,
   kinSendEditRefused,
@@ -529,15 +530,33 @@ describe("choice cards", () => {
     expect(kinSendEditFailure(new Error("socket closed"))).not.toBe("");
     const invalid = new KinChatError({ reason: "invalid_state", message: said });
     expect(kinSendEditRefused(typed, sent, invalid)).toEqual({ ...typed, problem: said });
-    // Only "this card changed", once shown, moves the editor to the card as it stands.
-    const changed = "This card changed or was answered. Look at it again.";
-    expect(
-      kinSendEditRefused(
-        typed,
-        sent,
-        new KinChatError({ reason: "widget_changed", message: changed }),
-      ),
-    ).toEqual({ ...typed, revision: 2, problem: changed });
+    // "This card changed" kills the card that press carried. Send then waits for a newer card and
+    // carries the one on screen, whose From the editor shows again beside it.
+    const changed = new KinChatError({
+      reason: "widget_changed",
+      message: "This card changed or was answered. Look at it again.",
+    });
+    expect(kinSendEditBound(typed, sent)).toEqual({ revision: 1, ready: true, review: false });
+    // The refusal can arrive before the card's update does: nothing newer to send yet.
+    const early = kinSendEditRefused(typed, open, changed);
+    expect(early).toEqual({ ...typed, problem: changed.message, stale: true });
+    expect(kinSendEditBound(early, open)).toEqual({ revision: 1, ready: false, review: true });
+    expect(kinSendEditBound(early, sent)).toEqual({ revision: 2, ready: true, review: true });
+    expect(kinSendEditInput(sent, early, "press-2").revision).toBe(2);
+    // That one changed too before the second press landed: it is dead in its turn.
+    const again = kinSendEditRefused(early, sent, changed);
+    expect(again.revision).toBe(2);
+    expect(kinSendEditBound(again, sent).ready).toBe(false);
+    expect(kinSendEditBound(again, { revision: 3 })).toEqual({
+      revision: 3,
+      ready: true,
+      review: true,
+    });
+    // Another refusal after that keeps Send waiting on the card, not on the words.
+    expect(kinSendEditRefused(again, { revision: 3 }, invalid)).toEqual({
+      ...again,
+      problem: said,
+    });
 
     // What the editor shows besides the fields: who it goes from, and the quote that goes too.
     expect(sent.send?.from).toEqual([{ label: "From", value: "billing@ambermill.example" }]);

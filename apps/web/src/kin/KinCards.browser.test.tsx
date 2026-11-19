@@ -240,18 +240,24 @@ describe("a mail card's Edit", () => {
       "Hi Anita,\nThe invoice is attached.\nRhea\nPS: GST is on page 2.",
     );
 
-    // Change From on another device: the card moves on while this editor is open.
-    await screen.rerender(view(mail({ revision: 3, send: { from: BILLING, account: BILLING } })));
-    await expect.element(fromLine()).toHaveTextContent(BILLING);
-    await userEvent.click(page.getByRole("button", { name: "Send edited mail" }));
+    // From changed on another device. The host knows first: its refusal lands before the card's
+    // update does, so there is no newer card to send yet.
+    const send = page.getByRole("button", { name: "Send edited mail" });
+    await userEvent.click(send);
     await expect
       .element(page.getByRole("alert"))
       .toHaveTextContent("This card changed or was answered. Look at it again.");
     const words = "Hi Anita,\nThe invoice is attached.\nRhea\nPS: GST is on page 2.";
     await expect.element(page.getByLabelText("Message")).toHaveValue(words);
     expect(state.sent[0]).toMatchObject({ revision: 2, body: words });
+    await expect.element(send).toBeDisabled();
 
-    await userEvent.click(page.getByRole("button", { name: "Send edited mail" }));
+    // The card arrives: who it goes from now is beside Send, and Send carries that card.
+    await screen.rerender(view(mail({ revision: 3, send: { from: BILLING, account: BILLING } })));
+    await expect.element(fromLine().last()).toHaveTextContent(BILLING);
+    expect(fromLine().elements()).toHaveLength(2);
+    await expect.element(send).toBeEnabled();
+    await userEvent.click(send);
     await expect.element(page.getByLabelText("Subject")).not.toBeInTheDocument();
     expect(state.sent).toHaveLength(2);
     expect(state.sent[1]).toMatchObject({ revision: 3, body: words });
