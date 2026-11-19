@@ -29,22 +29,23 @@ places the owner turned on for you.
 
 A join link works once and lasts a week. If yours has expired or was used, ask for a new one.
 
-### Linked devices
+### Your devices
 
-Once you're in, you add your other devices yourself. Open **Linked devices** (under your name on the
+Once you're in, you add your other devices yourself. Open **Your devices** (under your name on the
 web, in **Settings** on the phone) and choose **Link a device**. Kin shows a link and a QR code that
 work once, for 10 minutes. Scan the QR code with the new phone, or open the link in the new
 browser. Each time a device is linked, Kin tells you in your chat with the Team agent; without a
 Team agent, in your direct chats. Your iPhones with notifications on also get an alert, when phone
 alerts are set up for your company's Kin. Android phones don't get this alert yet. If no notice
-reaches you, check **Linked devices** for any you didn't add.
+reaches you, check **Your devices** for any you didn't add.
 
 A linked device stays signed in for 30 days, then you link it again the same way. You can have 10
 devices at a time. Remove a device from the same list to sign it out at once, along with every
-device linked from it. Signing a device out from **Sharing & access** does the same. **Leave this
-team** on a phone only forgets the team on that phone: the device stays in your list until you
-remove it. A device you linked can remove itself and the devices linked from it, but not the
-phone you joined with. The owner can see and remove a teammate's devices on the **Team** page.
+device linked from it and the coding agent keys made on them. Signing a device out from **Sharing &
+access** does the same. **Leave this team** on a phone only forgets the team on that phone: the
+device stays in your list until you remove it. A device you linked can remove itself and the
+devices linked from it, but not the device you joined with. The owner can see and remove a
+teammate's devices on the **Team** page.
 
 ### Your profile
 
@@ -272,7 +273,8 @@ Kin at a different address than the app you made the key in, use that address wi
 
 Choose **Remove** beside a key to stop it; the coding agent loses access on its next call. The owner
 and co-owners can see and remove a teammate's keys on their profile, and removing someone's access
-ends all of their keys.
+ends all of their keys. Removing the device a key was made on ends that key too. A key made before
+this update isn't tied to a device, so remove it here yourself.
 
 ## Clients and projects
 

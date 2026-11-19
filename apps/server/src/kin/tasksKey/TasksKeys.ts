@@ -73,7 +73,7 @@ const toKey = (row: KeyRow, canRevoke: boolean): KinTasksKey => ({
 });
 
 /** Live: not revoked here or as a T3 session, not expired, and its person not removed. */
-const live = (sql: SqlClient.SqlClient, now: number) =>
+export const live = (sql: SqlClient.SqlClient, now: number) =>
   sql`k.revoked_at IS NULL AND k.expires_at > ${now}
     AND EXISTS (SELECT 1 FROM auth_sessions a WHERE a.session_id = k.session_id AND a.revoked_at IS NULL)
     AND EXISTS (SELECT 1 FROM kin_people p WHERE p.org_id = k.org_id AND p.person_id = k.person_id
@@ -182,9 +182,11 @@ export const issue = Effect.fn("KinTasksKeys.issue")(function* (
       expiresAt: issued.expiresAt.epochMilliseconds,
       lastUsedAt: null,
     };
+    // Made from this app session: removing that device ends the key (see revokeLinkedDevices).
     yield* sql`INSERT INTO kin_tasks_keys (session_id, org_id, person_id, label, created_at,
-        expires_at)
-      VALUES (${row.sessionId}, ${person.orgId}, ${row.personId}, ${label}, ${now}, ${row.expiresAt})`;
+        expires_at, made_by_session_id)
+      VALUES (${row.sessionId}, ${person.orgId}, ${row.personId}, ${label}, ${now}, ${row.expiresAt},
+        ${session.sessionId})`;
     const result: KinTasksKeysIssueResult = {
       key: toKey(row, true),
       secret: issued.token,
