@@ -197,6 +197,7 @@ function DayMenu(props: {
   readonly text: string | null;
   readonly day: string | null;
   readonly now: Date;
+  readonly zone: string | null;
   readonly disabled: boolean;
   readonly onPick: (day: string | null) => void;
 }) {
@@ -218,7 +219,7 @@ function DayMenu(props: {
         <ChevronDownIcon />
       </MenuTrigger>
       <MenuPopup align="start">
-        {kinWorkDueChoices(props.now).map((choice) => (
+        {kinWorkDueChoices(props.now, props.zone).map((choice) => (
           <MenuItem
             key={choice.day}
             disabled={choice.day === props.day}
@@ -363,6 +364,7 @@ function FieldEdit(
     readonly currency: string;
     readonly busy: boolean;
     readonly now: Date;
+    readonly zone: string | null;
     readonly previewKey: string;
     readonly people: ReadonlyArray<Choice>;
     readonly clients: ReadonlyArray<Ref>;
@@ -408,6 +410,7 @@ function FieldEdit(
           text={field.text}
           day={current}
           now={props.now}
+          zone={props.zone}
           disabled={busy}
           onPick={(day) => void props.onSet(day)}
         />
@@ -766,6 +769,7 @@ export function KinListEntry(
                       text={entry.date}
                       day={entry.dateDay}
                       now={props.now}
+                      zone={names.zone}
                       disabled={busy}
                       onPick={(day) =>
                         void changes.update(
@@ -790,6 +794,7 @@ export function KinListEntry(
                       text={entry.due}
                       day={entry.dueDay}
                       now={props.now}
+                      zone={names.zone}
                       disabled={busy}
                       onPick={(day) =>
                         void changes.update(
@@ -891,6 +896,7 @@ export function KinListEntry(
                           amountEdit?.currency ?? def?.currency ?? KIN_DEFAULT_HOME_CURRENCY
                         }
                         busy={busy}
+                        zone={names.zone}
                         previewKey={previewKey}
                         people={people}
                         clients={clients}

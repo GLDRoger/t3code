@@ -1791,10 +1791,23 @@ export function makeKinClient<R, ER>(
     refreshLeads(environmentId, orgId);
   };
 
+  /** After a save in Profile's Briefs or in Check-ins: both read the same rows, so both read again. */
+  const refreshKinBriefs = (environmentId: EnvironmentId, orgId: KinOrgId) => {
+    registry.refresh(kinClient.briefs({ environmentId, input: { orgId } }));
+    registry.refresh(kinClient.checkIns({ environmentId, input: { orgId } }));
+  };
+
   const retryAccess = (environmentId: EnvironmentId) =>
     retryKinAccess(runtime, registry, environmentId);
 
-  return { kinClient, refreshKinAgents, markKinHostKnown, retryKinWorkLive, retryAccess };
+  return {
+    kinClient,
+    refreshKinAgents,
+    refreshKinBriefs,
+    markKinHostKnown,
+    retryKinWorkLive,
+    retryAccess,
+  };
 }
 
 export type KinClient = ReturnType<typeof makeKinClient>["kinClient"];

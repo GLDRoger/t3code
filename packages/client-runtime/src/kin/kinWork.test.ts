@@ -22,6 +22,9 @@ import {
   KIN_WORK_DEFAULT_FILTER,
   KIN_WORK_NO_DRAFT,
   KIN_WORK_TITLE_TOO_LONG,
+  kinWorkDueChoices,
+  kinWorkDueDays,
+  kinWorkDueLabel,
   kinWorkDueText,
   kinWorkTitleCount,
   createKinWorkActions,
@@ -828,6 +831,57 @@ describe("kinWorkRow", () => {
     const due = { dueAt, dueAllDay: true };
     expect(kinWorkDueText(due, where, new Date(before))).toBe("tomorrow");
     expect(kinWorkDueText(due, where, new Date(after))).toBe("today");
+  });
+
+  // Play-test W-4, due Fri 4 Dec, stored as that day's end where the company is. Moving the device's
+  // zone mid-run is what its Los Angeles browser did: earlier formatters keep their zone, Date doesn't.
+  it.each([
+    ["UTC+12", "Etc/GMT-12", "2026-12-04T11:59:59.999Z"],
+    ["UTC-8", "Etc/GMT+8", "2026-12-05T07:59:59.999Z"],
+  ])("shows a %s company's all-day due as one day on every screen and device", (_, zone, dueAt) => {
+    const where = { ...names, zone };
+    const due = { dueAt, dueAllDay: true };
+    // A minute either side of the company's midnight starting Fri 4 Dec.
+    const midnight = Date.parse(dueAt) + 1 - 86_400_000;
+    const [before, after] = [new Date(midnight - 60_000), new Date(midnight + 60_000)];
+    const read = (now: Date) => ({
+      row: kinWorkRow(record(due), where, now).due,
+      detail: kinWorkItemView(detail(due), where, now, 50, place).due,
+      days: kinWorkDueDays(due, where, now),
+      picked: kinWorkItemView(detail(due), where, now, 50, place).dueDay,
+      label: kinWorkDueLabel("2026-12-04", now, zone),
+      today: kinWorkDueChoices(now, zone)[0]!.day,
+      far: kinWorkDueText(due, where, new Date("2026-11-20T00:00:00.000Z")),
+    });
+    const held = process.env.TZ;
+    try {
+      for (const device of [held, "Pacific/Kiritimati", "Pacific/Pago_Pago"]) {
+        if (device !== undefined) process.env.TZ = device;
+        expect([read(before), read(after)]).toEqual([
+          {
+            row: "Due tomorrow",
+            detail: "tomorrow",
+            days: 1,
+            picked: "2026-12-04",
+            label: "Tomorrow",
+            today: "2026-12-03",
+            far: "Fri, Dec 4",
+          },
+          {
+            row: "Due today",
+            detail: "today",
+            days: 0,
+            picked: "2026-12-04",
+            label: "Today",
+            today: "2026-12-04",
+            far: "Fri, Dec 4",
+          },
+        ]);
+      }
+    } finally {
+      if (held === undefined) delete process.env.TZ;
+      else process.env.TZ = held;
+    }
   });
 
   // The play-test's M-1: 4 Dec 10:16 UTC is 5 Dec 00:16 for a UTC+14 company, wherever it is read.

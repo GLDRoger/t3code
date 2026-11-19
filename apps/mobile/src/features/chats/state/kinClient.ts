@@ -107,6 +107,7 @@ export const markKinHostKnown = kin.markKinHostKnown;
 export const retryKinWorkLive = kin.retryKinWorkLive;
 export const retryKinAccess = kin.retryAccess;
 export const refreshKinAgents = kin.refreshKinAgents;
+export const refreshKinBriefs = kin.refreshKinBriefs;
 
 const approvalRead = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:approval:read",

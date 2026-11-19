@@ -1,4 +1,4 @@
-import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_CHECK_INS,
   KIN_WEEKDAYS,
@@ -30,7 +30,7 @@ import { Textarea } from "../components/ui/textarea";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
-import { kinClient } from "./kinClient";
+import { kinClient, refreshKinBriefs } from "./kinClient";
 import { KIN_DIALOG_PARTS, KIN_SHEET_PARTS } from "./kinOverlayParts";
 import { useKinHost } from "./useKinHost";
 import type { KinWorkTarget } from "./useKinWork";
@@ -48,7 +48,7 @@ function CheckIns(props: KinWorkTarget & { readonly inDialog: boolean }) {
   const query = { environmentId: props.environmentId, input: { orgId: props.orgId } };
   const atom = kinClient.checkIns(query);
   const result = useAtomValue(atom);
-  const refresh = useAtomRefresh(atom);
+  const refresh = () => refreshKinBriefs(props.environmentId, props.orgId);
   const canRead = useAtomValue(kinClient.checkInSave.permissionAtom(props.environmentId));
   const act = useAtomCommand(kinClient.checkInAct, { reportFailure: false });
   const save = useAtomCommand(kinClient.checkInSave, { reportFailure: false });

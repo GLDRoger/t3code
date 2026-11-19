@@ -1,4 +1,4 @@
-import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_BRIEFS,
   KIN_CHECK_INS,
@@ -20,7 +20,7 @@ import { Label } from "../components/ui/label";
 import { Switch } from "../components/ui/switch";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { useAtomCommand } from "../state/use-atom-command";
-import { kinClient } from "./kinClient";
+import { kinClient, refreshKinBriefs } from "./kinClient";
 import { KIN_DIALOG_PARTS } from "./kinOverlayParts";
 
 /**
@@ -34,7 +34,6 @@ export function KinBriefsSetting(props: {
   const query = { environmentId: props.environmentId, input: { orgId: props.orgId } };
   const atom = kinClient.briefs(query);
   const result = useAtomValue(atom);
-  const refresh = useAtomRefresh(atom);
   const save = useAtomCommand(kinClient.briefSave, { reportFailure: false });
   const [editing, setEditing] = useState<KinBrief | null>(null);
   const [failed, setFailed] = useState(false);
@@ -51,7 +50,7 @@ export function KinBriefsSetting(props: {
     });
     setBusy(null);
     setFailed(AsyncResult.isFailure(outcome));
-    refresh();
+    refreshKinBriefs(props.environmentId, props.orgId);
     return AsyncResult.isSuccess(outcome);
   };
 

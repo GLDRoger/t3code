@@ -1,4 +1,4 @@
-import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_CHECK_INS,
@@ -28,7 +28,7 @@ import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
 import { FormMessage, FormShell, NO_LINK, targetOf } from "./KinWorkFormScreens";
-import { kinClient } from "./state/kinClient";
+import { kinClient, refreshKinBriefs } from "./state/kinClient";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
@@ -46,7 +46,7 @@ function useCheckIns(target: Target) {
   return {
     result,
     value: Option.getOrNull(AsyncResult.value(result)),
-    refresh: useAtomRefresh(atom),
+    refresh: () => refreshKinBriefs(target.environmentId, target.orgId),
     canRead: useAtomValue(kinClient.checkInSave.permissionAtom(target.environmentId)),
   };
 }

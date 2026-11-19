@@ -737,7 +737,8 @@ const principalOf = (value: string): KinWorkPrincipal | null => {
       : null;
 };
 
-const dayText = (day: string, now: Date) => (DAY.test(day) ? kinWorkDueLabel(day, now) : day);
+const dayText = (day: string, now: Date, zone: string | null) =>
+  DAY.test(day) ? kinWorkDueLabel(day, now, zone) : day;
 
 /** A field's value as its type reads: a name, a day, an amount, how many files. */
 export function kinFieldText(
@@ -758,7 +759,7 @@ export function kinFieldText(
   if (value.trim() === "") return null;
   switch (field.type) {
     case "date":
-      return dayText(value, context.now);
+      return dayText(value, context.now, context.names.zone);
     case "person": {
       const who = principalOf(value);
       return who === null ? value : kinWorkName(who, context.names);
@@ -1147,7 +1148,7 @@ export function kinListEntryView(
     payments: (item.payments ?? []).map((payment: KinPayment) => ({
       paymentId: payment.paymentId,
       amount: kinMoneyText(payment.amount, true),
-      when: dayText(payment.paidOn, now),
+      when: dayText(payment.paidOn, now, names.zone),
       note:
         [payment.withheld === true ? KIN_LISTS.entry.payTds : null, payment.note.trim()]
           .filter((part) => part !== null && part !== "")
