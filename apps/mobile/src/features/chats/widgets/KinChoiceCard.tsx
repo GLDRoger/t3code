@@ -1,14 +1,16 @@
 import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { useAtomValue } from "@effect/atom-react";
+import { useNavigation } from "@react-navigation/native";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, KinPersonId } from "@t3tools/contracts";
+import type { EnvironmentId, KinPersonId, KinSendTry } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { Image as ExpoImage } from "expo-image";
-import { memo, useRef, useState, type ReactNode } from "react";
-import { Pressable, TextInput, View } from "react-native";
+import { memo, useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
+import { AppState, Pressable, TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
+import { SymbolView } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
 import { cn } from "../../../lib/cn";
@@ -30,13 +32,31 @@ import {
   kinChoicePhase,
   kinChoiceUndoneLine,
   kinSendEditBound,
+  kinSendEditControls,
+  kinSendEditDiscardInput,
+  kinSendEditedLine,
+  kinSendEditHeld,
+  kinSendEditHeldKey,
+  kinSendEditHold,
   kinSendEditInput,
+  kinSendEditKept,
+  kinSendEditLeaveSaves,
   kinSendEditOffered,
   kinSendEditRefused,
+  kinSendEditSaveInput,
+  kinSendEditShown,
   kinSendEditStart,
+  kinSendEditUnsaved,
+  kinSendEditWarned,
+  kinSendCheckPending,
+  kinSendTicked,
+  kinSendTry,
+  KIN_SEND_CHECKED,
   KIN_SEND_EDIT_COPY,
+  type KinSendEditBusy,
   type KinChoiceCardView,
   type KinSendEditDraft,
+  type KinSendEditAck,
   type KinSendEditing,
 } from "@t3tools/client-runtime/kin/kinChoicePresentation";
 import {
@@ -95,6 +115,8 @@ function SendMessage(props: { readonly body: string | null; readonly quoted: str
 /** Exactly what a send card sends: who, the subject, the whole body and each file. */
 function SendDetail(props: {
   readonly send: NonNullable<KinChoiceCardView["send"]>;
+  /** "Edited by you" while the words shown are a person's saved edit. */
+  readonly edited: string | null;
   /** Set while the owner may still switch From. */
   readonly pickFrom: {
     readonly busy: boolean;
@@ -188,6 +210,11 @@ function SendDetail(props: {
         </Text>
       )}
       <SendMessage body={send.body} quoted={send.quoted} />
+      {props.edited === null ? null : (
+        <Text textRole="footnote" className="text-foreground-muted">
+          {props.edited}
+        </Text>
+      )}
       {send.attachments.map((file) => (
         <View key={file.name} className="gap-0.5">
           <Text textRole="footnote" className="font-t3-medium text-foreground">
@@ -227,12 +254,13 @@ function SendEditor(props: {
   readonly problem: string | null;
   /** The card changed under the editor: who it goes from now is shown again beside Send. */
   readonly review: boolean;
-  readonly ready: boolean;
+  readonly controls: ReturnType<typeof kinSendEditControls>;
   readonly onChange: (draft: KinSendEditDraft) => void;
+  readonly onSave: () => void;
   readonly onSend: () => void;
   readonly onDiscard: () => void;
 }) {
-  const { send, draft, busy } = props;
+  const { send, draft, busy, controls } = props;
   const line = (name: "to" | "cc" | "subject", label: string, address: boolean) => (
     <View className="gap-1 rounded-xl bg-subtle px-3 py-2">
       <Text textRole="caption" className="text-foreground-muted">
@@ -268,7 +296,7 @@ function SendEditor(props: {
           {KIN_SEND_EDIT_COPY.body}
         </Text>
         <TextInput
-          accessibilityLabel={KIN_SEND_EDIT_COPY.body}
+          accessibilityLabel={KIN_SEND_EDIT_COPY.bodyName}
           value={draft.body}
           editable={!busy}
           multiline
@@ -310,25 +338,85 @@ function SendEditor(props: {
       {props.review && props.problem !== null && send.from.length > 0 ? (
         <SendLines lines={send.from} />
       ) : null}
+      {controls.notice === null ? null : (
+        <Text
+          accessibilityLiveRegion="polite"
+          textRole="footnote"
+          className="text-foreground-muted"
+        >
+          {controls.notice}
+        </Text>
+      )}
       <View className="gap-2 pt-1">
         <Button
-          label={busy ? KIN_SEND_EDIT_COPY.sending : KIN_SEND_EDIT_COPY.send}
-          tone="primary"
-          size="compact"
-          fullWidth
-          loading={busy}
-          disabled={!props.ready}
-          onPress={props.onSend}
-        />
-        <Button
-          label={KIN_SEND_EDIT_COPY.discard}
+          label={controls.save.label}
           tone="outline"
           size="compact"
           fullWidth
-          disabled={busy}
+          loading={controls.save.label === KIN_SEND_EDIT_COPY.saving}
+          disabled={controls.save.disabled}
+          onPress={props.onSave}
+        />
+        <Button
+          label={controls.send.label}
+          tone="primary"
+          size="compact"
+          fullWidth
+          loading={controls.send.label === KIN_SEND_EDIT_COPY.sending}
+          disabled={controls.send.disabled}
+          onPress={props.onSend}
+        />
+        <Button
+          label={controls.discard.label}
+          tone="outline"
+          size="compact"
+          fullWidth
+          loading={controls.discard.label === KIN_SEND_EDIT_COPY.discarding}
+          disabled={controls.discard.disabled}
           onPress={props.onDiscard}
         />
       </View>
+    </View>
+  );
+}
+
+/** An earlier try at this mail may have gone: the closed card's warning, and the tick Confirm needs. */
+function SendMayHaveGone(props: {
+  readonly line: string;
+  /** The card's spoken label says the line; ungrouped (editing, picking From), the line speaks. */
+  readonly grouped: boolean;
+  readonly checked: boolean;
+  readonly disabled: boolean;
+  readonly onChange: (checked: boolean) => void;
+}) {
+  return (
+    <View className="gap-1.5">
+      <Text
+        textRole="footnote"
+        className="font-t3-medium text-danger-foreground"
+        importantForAccessibility={props.grouped ? "no" : "auto"}
+        accessibilityElementsHidden={props.grouped}
+      >
+        {props.line}
+      </Text>
+      <Pressable
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked: props.checked, disabled: props.disabled }}
+        accessibilityLabel={KIN_SEND_CHECKED}
+        disabled={props.disabled}
+        onPress={() => props.onChange(!props.checked)}
+        className="min-h-11 flex-row items-center gap-3 active:opacity-70"
+      >
+        <SymbolView
+          name={props.checked ? "checkmark.circle.fill" : "circle"}
+          size={20}
+          tintColorClassName={props.checked ? "accent-primary" : "accent-icon-muted"}
+          type="monochrome"
+        />
+        <Text textRole="footnote" className="min-w-0 flex-1 text-foreground">
+          {KIN_SEND_CHECKED}
+        </Text>
+      </Pressable>
     </View>
   );
 }
@@ -395,11 +483,23 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   const setSendFrom = useAtomCommand(kinClient.connectionSetSendFrom, { reportFailure: false });
   const canEdit = useAtomValue(kinClient.connectionSendEdited.permissionAtom(environmentId));
   const sendEdited = useAtomCommand(kinClient.connectionSendEdited, { reportFailure: false });
-  const [editing, setEditing] = useState<KinSendEditing | null>(null);
-  const [editBusy, setEditBusy] = useState(false);
+  const saveEdited = useAtomCommand(kinClient.connectionSaveEdited, { reportFailure: false });
+  const heldKey = kinSendEditHeldKey(environmentId, props.viewerPersonId, choice.widgetId);
+  const [editing, setEditing] = useState<KinSendEditing | null>(() => kinSendEditHeld(heldKey));
+  const [editBusy, setEditBusy] = useState<KinSendEditBusy>(null);
+  // Kept with the editor closed: Edit before the card's update binds to what the host took.
+  const [ack, setAck] = useState<KinSendEditAck | null>(null);
   const [lastStatus, setLastStatus] = useState<
     (KinCardStatus & { readonly optionId: string }) | null
   >(null);
+  // The try the person ticked they checked the sent mail for; the press reads it when it posts.
+  // It counts only while the card's warning names that try (`kinSendTicked`).
+  const [ticked, setTicked] = useState<KinSendTry | null>(null);
+  const tickedNow = useRef<KinSendTry | null>(null);
+  const check = (next: boolean) => {
+    tickedNow.current = next ? kinSendTry(warnedView) : null;
+    setTicked(tickedNow.current);
+  };
   const status = visibleKinCardStatus(lastStatus, choice.revision);
   const phase = kinChoicePhase(choice, nowMs);
   // Until the answered card arrives, the tapped option already reads as chosen.
@@ -413,7 +513,8 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
     if (actions.current === null)
       actions.current = createKinCardActions<KinChoiceCardView, string>({
         newId: uuidv4,
-        toInput: kinChoiceActInput,
+        toInput: (view, optionId, id) =>
+          kinChoiceActInput(view, optionId, id, kinSendTicked(view, tickedNow.current)),
         failureNotice: kinChoiceFailureNotice,
         post: async (input) => {
           const result = await post({ environmentId, input });
@@ -459,8 +560,11 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   const answered = kinChoiceAnswered(choice, props.viewerPersonId, sentOption?.label ?? null);
   const editable =
     answered === null && pending === null && kinSendEditOffered(choice, phase, canAct && canEdit);
-  const shownEdit = editable ? editing : null;
+  const shownEdit = kinSendEditShown(editing, editable) ? editing : null;
   const editBound = shownEdit === null ? null : kinSendEditBound(shownEdit, choice);
+  // The tick answers the press on screen: the editor's for the words typed, else the card's.
+  const warnedView = kinSendEditWarned(choice, shownEdit, new Date(nowMs));
+  const checked = kinSendTicked(warnedView, ticked) !== null;
   const waiting = useKinOpenWaitingFor({ environmentId, orgId: choice.orgId });
   const takes =
     answered === null && phase === "open"
@@ -468,20 +572,82 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       : null;
   const undone = kinChoiceUndoneLine(choice, props.viewerPersonId, new Date(nowMs));
 
+  /** The editor after the host answered: words it refused stay on this device until let go. */
+  const settle = (next: KinSendEditing | null, kept: KinSendEditing | null = next) => {
+    kinSendEditHold(heldKey, kept);
+    setEditing(next);
+  };
   const sendEdit = async () => {
-    if (shownEdit === null || editBusy || editBound?.ready !== true) return;
-    setEditBusy(true);
+    if (shownEdit === null || editBusy !== null || editBound?.ready !== true) return;
+    setEditBusy("sending");
     const result = await sendEdited({
       environmentId,
-      input: kinSendEditInput(choice, shownEdit, uuidv4()),
+      input: kinSendEditInput(choice, shownEdit, uuidv4(), kinSendTicked(warnedView, ticked)),
     });
-    setEditBusy(false);
-    setEditing(
+    setEditBusy(null);
+    settle(
       AsyncResult.isFailure(result)
         ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
         : null,
     );
   };
+  /** Save closes the editor; a save on leaving keeps it open over the saved card. */
+  const saveEdit = async (stay = false) => {
+    if (shownEdit === null || editBusy !== null || editBound?.ready !== true) return;
+    if (!kinSendEditUnsaved(shownEdit)) return settle(null);
+    setEditBusy("saving");
+    const result = await saveEdited({
+      environmentId,
+      input: kinSendEditSaveInput(choice, shownEdit),
+    });
+    setEditBusy(null);
+    if (AsyncResult.isFailure(result))
+      return settle(kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result)));
+    if (AsyncResult.isSuccess(result))
+      setAck({ revision: result.value.revision, saved: shownEdit.draft });
+    settle(
+      stay && AsyncResult.isSuccess(result)
+        ? kinSendEditKept(shownEdit, result.value.revision)
+        : null,
+      null,
+    );
+  };
+  const discardEdit = async () => {
+    if (shownEdit === null || editBusy !== null) return;
+    const input = kinSendEditDiscardInput(choice, shownEdit, editable);
+    if (input === null) return settle(null);
+    setEditBusy("discarding");
+    const result = await saveEdited({ environmentId, input });
+    setEditBusy(null);
+    if (AsyncResult.isSuccess(result)) setAck({ revision: result.value.revision, saved: null });
+    settle(
+      AsyncResult.isFailure(result)
+        ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
+        : null,
+    );
+  };
+  const leave = useEffectEvent(() => {
+    if (kinSendEditLeaveSaves(shownEdit, editBusy, editable)) void saveEdit(true);
+    else if (shownEdit !== null && kinSendEditUnsaved(shownEdit))
+      kinSendEditHold(heldKey, shownEdit);
+  });
+  const navigation = useNavigation();
+  const editorOpen = shownEdit !== null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- unsaved words are kept when the app goes to the background, the chat loses focus or is left.
+  useEffect(() => {
+    if (!editorOpen) return;
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next === "background") leave();
+    });
+    // Opening another chat or a task from this one keeps this screen mounted, out of focus.
+    const blurred = navigation.addListener("blur", () => leave());
+    return () => {
+      subscription.remove();
+      blurred();
+      leave();
+    };
+  }, [editorOpen, navigation]);
+  const edited = kinSendEditedLine(choice, props.viewerPersonId);
 
   const fromPicker =
     choice.send !== null &&
@@ -492,12 +658,15 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       ? { busy: switching, problem: switchProblem, pick: (id: string) => void pickFrom(id) }
       : null;
 
+  const grouped = fromPicker === null && shownEdit === null;
   return (
     <View className="gap-2.5 rounded-[20px] border border-border bg-card-alt p-4">
       <View
         // Grouped for VoiceOver, except while Change or the editor sits inside: a group hides them.
-        accessible={fromPicker === null && shownEdit === null}
-        accessibilityLabel={kinChoiceAccessibilityLabel(choice, answered?.text ?? takes)}
+        accessible={grouped}
+        accessibilityLabel={kinChoiceAccessibilityLabel(choice, answered?.text ?? takes, edited, {
+          message: true,
+        })}
         className="gap-1.5"
       >
         <Text textRole="headline" className="font-t3-bold text-foreground">
@@ -512,16 +681,23 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
           <SendEditor
             send={choice.send}
             draft={shownEdit.draft}
-            busy={editBusy}
+            busy={editBusy !== null}
             problem={shownEdit.problem}
             review={editBound?.review === true}
-            ready={editBound?.ready === true}
+            controls={kinSendEditControls(
+              shownEdit,
+              choice,
+              editBusy,
+              editable,
+              kinSendCheckPending(warnedView, ticked),
+            )}
             onChange={(draft) => setEditing({ ...shownEdit, draft })}
+            onSave={() => void saveEdit()}
             onSend={() => void sendEdit()}
-            onDiscard={() => setEditing(null)}
+            onDiscard={() => void discardEdit()}
           />
         ) : choice.send !== null ? (
-          <SendDetail send={choice.send} pickFrom={fromPicker} />
+          <SendDetail send={choice.send} edited={edited} pickFrom={fromPicker} />
         ) : choice.detail === null ? null : (
           <Text textRole="footnote" className="text-foreground-secondary">
             {choice.detail}
@@ -530,6 +706,15 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       </View>
       {choice.image === null ? null : (
         <ChoiceImage environmentId={environmentId} image={choice.image} />
+      )}
+      {warnedView.send?.mayHaveGone == null || answered !== null || phase !== "open" ? null : (
+        <SendMayHaveGone
+          line={warnedView.send.mayHaveGone.line}
+          grouped={grouped}
+          checked={checked}
+          disabled={!canAct || pending !== null || editBusy !== null}
+          onChange={check}
+        />
       )}
       {answered !== null ? (
         answered.text === null ? null : (
@@ -577,7 +762,11 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
                   size="compact"
                   fullWidth
                   loading={pending === option.id}
-                  disabled={(pending !== null && pending !== option.id) || switching}
+                  disabled={
+                    (pending !== null && pending !== option.id) ||
+                    switching ||
+                    kinSendCheckPending(choice, ticked, option.id)
+                  }
                   onPress={() => void press(option.id)}
                 />
                 {option.action === null ? null : (
@@ -595,7 +784,9 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
                 size="compact"
                 fullWidth
                 disabled={switching}
-                onPress={() => setEditing(kinSendEditStart(choice))}
+                onPress={() =>
+                  setEditing(kinSendEditHeld(heldKey) ?? kinSendEditStart(choice, ack))
+                }
               />
             ) : null}
           </View>

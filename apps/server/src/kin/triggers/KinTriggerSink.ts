@@ -1,3 +1,4 @@
+import * as DevClock from "../DevClock.ts";
 import * as KinEnabled from "../KinEnabled.ts";
 import { type CommandId, KinTriggerFireId, KinTriggerFired } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -238,7 +239,10 @@ export function wrapTaskDispatch<E, R, E2, R2>(
     Layer.effect(
       ThreadLaunchService.ThreadLaunchService,
       Effect.gen(function* () {
-        const service = yield* ThreadLaunchService.ThreadLaunchService;
+        // T3's own launches keep the real clock; Kin's tasks go to the sink on the moved one.
+        const service = (yield* DevClock.KinDevClock).onRealClock(
+          yield* ThreadLaunchService.ThreadLaunchService,
+        );
         const sink = yield* KinTriggerSink;
         return ThreadLaunchService.ThreadLaunchService.of({
           ...service,
@@ -251,7 +255,9 @@ export function wrapTaskDispatch<E, R, E2, R2>(
     Layer.effect(
       ThreadManagementService.ThreadManagementService,
       Effect.gen(function* () {
-        const service = yield* ThreadManagementService.ThreadManagementService;
+        const service = (yield* DevClock.KinDevClock).onRealClock(
+          yield* ThreadManagementService.ThreadManagementService,
+        );
         const sql = yield* SqlClient.SqlClient;
         return ThreadManagementService.ThreadManagementService.of({
           ...service,
@@ -272,6 +278,7 @@ export function wrapTaskDispatch<E, R, E2, R2>(
       }),
     ),
   ).pipe(
+    Layer.provide(DevClock.layer),
     Layer.provide(layer),
     Layer.catchCause((cause) =>
       Layer.mergeAll(
@@ -306,5 +313,9 @@ export function wrapTaskDispatch<E, R, E2, R2>(
             : refusing("Kin is off"),
       ),
     ),
-  ).pipe(Layer.provide(KinEnabled.layer));
+  ).pipe(
+    Layer.provide(KinEnabled.layer),
+    // T3's scheduled tasks run Kin's check-ins, so they keep Kin's dev clock too.
+    Layer.merge(DevClock.layer),
+  );
 }

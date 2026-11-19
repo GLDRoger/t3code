@@ -28,6 +28,7 @@ import { KinGitHubAppSetup } from "../github/appSetup.ts";
 import { ghApiLayer, KinGitHubApi } from "../github/GitHubWatch.ts";
 import { agentsView, KinGitHubApp } from "../github/KinGitHubApp.ts";
 import { KinGitHubLogin } from "./GitHubLogin.ts";
+import { KinRecords } from "../work/KinRecords.ts";
 
 const group = RpcGroup.make(...KinConnectionRpcs);
 const isChatError = Schema.is(KinChatError);
@@ -52,6 +53,7 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
       connections: KinConnections["Service"],
       people: ReadonlyArray<PersonIdentity>,
       chat: KinChatService["Service"],
+      records: KinRecords["Service"],
     ) => Effect.Effect<A, KinChatError>,
   ) {
     if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
@@ -61,6 +63,7 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
       Context.get(services, KinConnections),
       people,
       Context.get(services, KinChatService),
+      Context.get(services, KinRecords),
     );
   });
   const github = Effect.fn("KinGitHubLogin.rpc")(function* <A>(
@@ -252,7 +255,7 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
     "kin.connections.setSignInClient": (input) =>
       call((c, people) => c.setSignInClient(people, input)),
     "kin.connections.sendEdited": (input) =>
-      call((c, people, chat) =>
+      call((c, people, chat, records) =>
         c.sendEdited(people, input, {
           close: (widgetId) =>
             chat
@@ -273,7 +276,48 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
               .canTap(person, { widgetId: KinWidgetId.make(widgetId) })
               .pipe(Effect.mapError(chatFailure)),
           act: (person, act) => chat.act(person, act).pipe(Effect.mapError(chatFailure)),
+          // Only the refusal's warning redraw rewrites here: Tasks rows read the warning again.
+          rewrite: (card) =>
+            chat
+              .setSendCard({
+                ...card,
+                orgId: input.orgId,
+                widgetId: KinWidgetId.make(card.widgetId),
+              })
+              .pipe(Effect.mapError(chatFailure), Effect.tap(records.announce(input.orgId))),
         }),
+      ),
+    "kin.connections.saveEdited": (input) =>
+      call((c, people, chat, records) =>
+        c
+          .saveEdited(people, input, {
+            canTap: (person, widgetId) =>
+              chat
+                .canTap(person, { widgetId: KinWidgetId.make(widgetId) })
+                .pipe(Effect.mapError(chatFailure)),
+            rewrite: (card) =>
+              chat
+                .setSendCard({
+                  orgId: input.orgId,
+                  widgetId: KinWidgetId.make(card.widgetId),
+                  revision: card.revision,
+                  detail: card.detail,
+                  send: card.send,
+                })
+                .pipe(Effect.mapError(chatFailure)),
+          })
+          .pipe(
+            // Saved words decide the card's warning: Tasks rows read it again.
+            Effect.tap(
+              records
+                .announce(input.orgId)
+                .pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("Kin couldn't tell Tasks to read again", { cause }),
+                  ),
+                ),
+            ),
+          ),
       ),
     "kin.connections.setSendFrom": (input) =>
       call((c, people, chat) =>

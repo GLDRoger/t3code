@@ -33,6 +33,12 @@ import { sectionsOf } from "./docBody.ts";
 import * as Docs from "./docs.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadDocs from "./leadDocs.ts";
+import {
+  findOfferings,
+  OFFERINGS_ORIGIN,
+  offeringsIndex,
+  offeringsPromptIndex,
+} from "./offerings.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
 import { playbookIndex, playbookThreshold } from "./playbooks.ts";
 import { PLAYBOOK_SEEDS, seedPlaybooks } from "./playbookSeeds.ts";
@@ -1412,4 +1418,171 @@ it.effect(
         chasing.key,
       );
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "What we sell is found by its origin key and made once, kept by the sales agent; archived, it leaves the pinned read until started again",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_leads SET domain = 'chief-of-staff' WHERE agent_id = ${lead}`;
+      yield* sql`UPDATE kin_leads SET domain = 'sales' WHERE agent_id = ${other}`;
+      const mate = { _tag: "person" as const, orgId, personId: mateId };
+      const pinned = () => OwnerDocs.list([owner], { orgId, whatWeSell: true });
+      assert.isUndefined(yield* findOfferings(orgId));
+      assert.lengthOf((yield* pinned()).docs, 0);
+
+      const start = OwnerDocs.startWhatWeSell([owner], { orgId });
+      const [first, second] = yield* Effect.all([start, start], { concurrency: 2 });
+      assert.strictEqual(first.key, second.key);
+      const [made] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records
+        WHERE org_id = ${orgId} AND origin_key = ${OFFERINGS_ORIGIN}`;
+      assert.strictEqual(made!.count, 1);
+      assert.strictEqual(first.latest.version, 1);
+      assert.deepStrictEqual(first.owner, { _tag: "agent", agentId: other });
+      assert.strictEqual(first.company, true);
+      assert.strictEqual(first.kind, "other");
+      assert.isFalse(first.sensitive);
+      assert.deepStrictEqual(offeringsIndex(first.body), [
+        "Who is a good customer for us",
+        "Our first offering",
+      ]);
+      assert.strictEqual(first.whatWeSell, true);
+      assert.deepStrictEqual(
+        (yield* pinned()).docs.map((doc) => [doc.key, doc.whatWeSell]),
+        [[first.key, true]],
+      );
+      // Only the owner level starts it.
+      assert.strictEqual(
+        reasonOf(yield* Effect.flip(OwnerDocs.startWhatWeSell([mate], { orgId }))),
+        "not_allowed",
+      );
+
+      // Archived, it is no longer pinned; started again, the same doc comes back as it was left.
+      yield* Docs.move(orgId, agentWriter(other), { key: first.key }, { archived: true });
+      assert.lengthOf((yield* pinned()).docs, 0);
+      const again = yield* OwnerDocs.startWhatWeSell([owner], { orgId });
+      assert.strictEqual(again.key, first.key);
+      assert.isFalse(again.archived);
+      assert.strictEqual(again.latest.version, 1);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "an agent's doc_create with whatWeSell starts the one What we sell, then gives its key; a teammate's turn can't",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* turn();
+      // An ordinary doc titled like it is left as it is; the flagged call makes the real one.
+      const plain = yield* LeadDocs.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        title: "What we sell",
+        body: "## Old list\nLedgerline.",
+        company: true,
+      });
+      const body =
+        "# What we sell\n\n## Who is a good customer for us\nInvented warehouses.\n\n## Ledgerline stock counts\nCounts stock for 380 a warehouse.\n";
+      const start = (text: string) =>
+        LeadDocs.create(scopeOf(lead), {
+          sourceEventId: "ask-event",
+          title: "Our offerings",
+          body: text,
+          sensitive: true,
+          whatWeSell: true,
+        });
+      const made = yield* start(body);
+      assert.notStrictEqual(made.key, plain.key);
+      assert.deepInclude(made, {
+        title: "What we sell",
+        version: 1,
+        changed: true,
+        kind: "other",
+        company: true,
+      });
+      assert.isUndefined(made.sensitive);
+      assert.notProperty(made, "note");
+      assert.strictEqual((yield* findOfferings(orgId))?.key, made.key);
+      const pinned = () => OwnerDocs.list([owner], { orgId, whatWeSell: true });
+      assert.deepStrictEqual(
+        (yield* pinned()).docs.map((doc) => [doc.key, doc.whatWeSell]),
+        [[made.key, true]],
+      );
+      const index = yield* offeringsPromptIndex(orgId, KIN_OWNER_LEVEL);
+      assert.deepStrictEqual(index._tag === "index" ? index.index.sections : index._tag, [
+        "Who is a good customer for us",
+        "Ledgerline stock counts",
+      ]);
+      assert.strictEqual(
+        (yield* Docs.docRow(orgId, { key: plain.key }, KIN_OWNER_LEVEL)).title,
+        "What we sell",
+      );
+
+      // Called again, it writes nothing and names the one there is.
+      const again = yield* start("## Something else");
+      assert.deepInclude(again, { key: made.key, version: 1, changed: false });
+      assert.include("note" in again ? again.note : "", made.key);
+      const [versions] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
+        FROM kin_doc_versions v JOIN kin_records r ON r.org_id = v.org_id AND r.record_id = v.record_id
+        WHERE r.org_id = ${orgId} AND r.origin_key = ${OFFERINGS_ORIGIN}`;
+      assert.strictEqual(versions!.count, 1);
+
+      // Archived, it comes back as the card's start brings it back.
+      yield* Docs.move(orgId, agentWriter(lead), { key: made.key }, { archived: true });
+      const back = yield* start(body);
+      assert.deepInclude(back, { key: made.key, version: 1 });
+      assert.notStrictEqual((yield* findOfferings(orgId))?.state, "dropped");
+      assert.lengthOf((yield* pinned()).docs, 1);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a teammate's shared turn can't start What we sell, and nothing is written", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_people SET sees_docs = 1 WHERE person_id = ${mateId}`;
+    yield* turn("mate", "shared");
+    const refused = yield* Effect.flip(
+      LeadDocs.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        title: "What we sell",
+        body: "## Ledgerline\nInvented.",
+        whatWeSell: true,
+      }),
+    );
+    assert.strictEqual(reasonOf(refused), "not_allowed");
+    assert.strictEqual(
+      "message" in refused ? refused.message : "",
+      "Only the owner or a co-owner starts What we sell, in a chat only they are in. Nothing was written.",
+    );
+    assert.isUndefined(yield* findOfferings(orgId));
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a teammate with Docs reads What we sell, and their turn's agent can't change it", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_people SET sees_docs = 1 WHERE person_id = ${mateId}`;
+    const doc = yield* OwnerDocs.startWhatWeSell([owner], { orgId });
+    const mate = { _tag: "person" as const, orgId, personId: mateId };
+    assert.deepStrictEqual(
+      (yield* OwnerDocs.list([mate], { orgId, whatWeSell: true })).docs.map((row) => row.key),
+      [doc.key],
+    );
+    yield* turn("mate", "shared");
+    assert.strictEqual((yield* LeadDocs.read(scopeOf(lead), { key: doc.key })).key, doc.key);
+    const edited = yield* Effect.flip(
+      LeadDocs.edit(scopeOf(lead), {
+        key: doc.key,
+        sourceEventId: "ask-event",
+        summary: "Added a worry",
+        operations: [{ op: "append", text: "They worry about invented downtime." }],
+      }),
+    );
+    assert.strictEqual(reasonOf(edited), "not_allowed");
+    assert.strictEqual((yield* Docs.versionOf(orgId, doc.recordId))!.version, 1);
+  }).pipe(Effect.provide(layer)),
 );

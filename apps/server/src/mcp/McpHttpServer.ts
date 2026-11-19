@@ -1,7 +1,9 @@
+import * as Cache from "effect/Cache";
 import * as KinScheduledTaskFence from "../kin/mcp/ScheduledTaskFence.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -35,6 +37,8 @@ import * as DeviceService from "../device/DeviceService.ts";
 import * as HtmlRender from "../htmlRender/HtmlRender.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as PullRequestWatchService from "../pullRequest/PullRequestWatchService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
@@ -170,6 +174,38 @@ const normalizeMcpHttpResponse = (
     : response;
 };
 
+// The first protocol is the fallback for clients that offer an unknown version.
+const mcpProtocols = [McpProtocol.v2025_06_18, McpProtocol.v2026_07_28] as const;
+
+/**
+ * Effect answers 400 to a notification a sessionless protocol does not define, because it requires
+ * `_meta` before it checks the method. The Go MCP SDK still sends `notifications/roots/list_changed`
+ * there and closes its connection on that 400. Remove once Effect ignores undefined notifications.
+ */
+const isUndefinedNotification = Effect.fnUntraced(function* (
+  request: HttpServerRequest.HttpServerRequest,
+) {
+  const method = request.headers["mcp-method"];
+  const protocol = mcpProtocols.find(
+    (candidate) => candidate.protocolVersion === request.headers["mcp-protocol-version"],
+  );
+  if (
+    request.method !== "POST" ||
+    protocol?.runtime._tag !== "Stateless" ||
+    !method?.startsWith("notifications/") ||
+    protocol.clientRpcs.requests.has(method)
+  ) {
+    return false;
+  }
+  const message = yield* Effect.orElseSucceed(request.json, () => undefined);
+  return (
+    Predicate.isReadonlyObject(message) &&
+    message.jsonrpc === "2.0" &&
+    message.method === method &&
+    !Predicate.hasProperty(message, "id")
+  );
+});
+
 // Session tokens are `<payload>.<signature>`; registry tokens are a bare base64url secret.
 const looksLikeProviderToken = (token: string) => token.length > 0 && !token.includes(".");
 
@@ -248,6 +284,24 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
     Effect.map((settings) => settings.linkedEnvironmentsEnabled),
     Effect.orElseSucceed(() => false),
   );
+  const pullRequests = yield* Effect.serviceOption(PullRequestService.PullRequestService);
+  const projections = yield* Effect.serviceOption(ProjectionStore.ProjectionStoreV2);
+  // Every request reads it, and a remote added mid-thread shows the tools within a minute.
+  const forgeOfThread = yield* Cache.make({
+    capacity: 1_000,
+    timeToLive: Duration.minutes(1),
+    lookup: (threadId: ThreadId): Effect.Effect<boolean | undefined> =>
+      Option.isNone(pullRequests) || Option.isNone(projections)
+        ? Effect.undefined
+        : projections.value.getThreadShell(threadId).pipe(
+            Effect.flatMap((thread) =>
+              thread === null
+                ? Effect.undefined
+                : pullRequests.value.servesProject(thread.projectId),
+            ),
+            Effect.orElseSucceed(() => undefined),
+          ),
+  });
   const authenticateRequest = Effect.fn("McpHttpServer.authenticateRequest")(function* (
     request: HttpServerRequest.HttpServerRequest,
   ) {
@@ -281,7 +335,11 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
     const linkedEnvironments = yield* linksEnabled;
     if (limited.client?.linked === true && !linkedEnvironments) return linkedEnvironmentsOff;
     const origin = Option.getOrUndefined(Option.map(requestUrl(request), (url) => url.origin));
-    return { ...limited, linkedEnvironments, origin };
+    const forge =
+      limited.thread === undefined
+        ? undefined
+        : yield* Cache.get(forgeOfThread, limited.thread.threadId);
+    return { ...limited, linkedEnvironments, origin, ...(forge === undefined ? {} : { forge }) };
   });
   // Untraced: a span here would wrap the tool call; the HTTP server span already covers it.
   return Effect.fnUntraced(function* (httpEffect) {
@@ -290,6 +348,7 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
     if (request.headers.origin !== undefined) return HttpServerResponse.empty({ status: 403 });
     const admitted = yield* authenticateRequest(request);
     if (HttpServerResponse.isHttpServerResponse(admitted)) return admitted;
+    if (yield* isUndefinedNotification(request)) return HttpServerResponse.empty({ status: 202 });
     return yield* httpEffect.pipe(
       Effect.provideService(McpInvocationContext.McpInvocationContext, admitted),
       Effect.map(normalizeMcpHttpResponse),
@@ -1352,6 +1411,22 @@ export class ToolCallRefused extends Schema.Error<ToolCallRefused>("t3/mcp/ToolC
   code: Schema.tag(-32003),
 }) {}
 
+const toolCallGateFn =
+  <R>(
+    refusal: (name: string, args: unknown) => Effect.Effect<string | undefined, never, R>,
+  ): McpServer.middleware.Fn<never, McpSchema.McpErrorBase | ToolCallRefused, R> =>
+  (effect, { method, target, payload }) =>
+    method !== "tools/call"
+      ? effect
+      : refusal(
+          target,
+          Predicate.hasProperty(payload, "arguments") ? payload.arguments : undefined,
+        ).pipe(
+          Effect.flatMap((message) =>
+            message === undefined ? effect : Effect.fail(new ToolCallRefused({ message })),
+          ),
+        );
+
 /**
  * Every tool call on the server this joins passes `admit` before its handler, whichever toolkit
  * registered the tool, including ones added later. `admit` sees the tool name and its raw
@@ -1362,17 +1437,9 @@ export const toolCallGate = <R>(
   refusal: string,
 ) =>
   McpServer.middleware()(
-    (effect, { method, target, payload }) =>
-      method !== "tools/call"
-        ? effect
-        : admit(
-            target,
-            Predicate.hasProperty(payload, "arguments") ? payload.arguments : undefined,
-          ).pipe(
-            Effect.flatMap((admitted) =>
-              admitted ? effect : Effect.fail(new ToolCallRefused({ message: refusal })),
-            ),
-          ),
+    toolCallGateFn((name, args) =>
+      Effect.map(admit(name, args), (admitted) => (admitted ? undefined : refusal)),
+    ),
     { global: true },
   );
 
@@ -1406,8 +1473,7 @@ export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE,
     name: "T3 Code",
     version: packageJson.version,
     path: MCP_HTTP_PATH,
-    // The first protocol is the fallback for clients that offer an unknown version.
-    protocols: [McpProtocol.v2025_06_18, McpProtocol.v2026_07_28],
+    protocols: mcpProtocols,
     allowSessionTermination: true,
     registrations,
   }).pipe(Layer.provide(layerMcpAuthMiddleware));
@@ -1434,9 +1500,16 @@ const layerToolExposure = Layer.effect(
   McpToolExposure.McpToolExposure,
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
+    const policy = yield* McpToolPolicy;
     return McpToolExposure.make(
       () =>
-        server.tools.map(({ tool }) => ({ name: tool.name, description: tool.description ?? "" })),
+        Effect.filter(
+          server.tools.map(({ tool }) => ({
+            name: tool.name,
+            description: tool.description ?? "",
+          })),
+          (tool) => policy.visible(tool.name),
+        ),
       () => server.notifications["notifications/tools/list_changed"]({}),
     );
   }),
@@ -1470,4 +1543,34 @@ export const layerToolSearch = Layer.mergeAll(
   layerDeferredListing,
 ).pipe(Layer.provide(layerToolExposure));
 
-export const layer = layerMcpTransport(Layer.mergeAll(layerTools, layerToolSearch));
+/**
+ * What a host narrows on `layer`: the tools a request lists, finds and may call, and a call's
+ * refusal, if any. The default narrows nothing; a host provides its own to `layer`.
+ */
+export const McpToolPolicy = Context.Reference<{
+  readonly visible: (name: string) => Effect.Effect<boolean>;
+  readonly refusal: (name: string, args: unknown) => Effect.Effect<string | undefined>;
+}>("t3/mcp/McpToolPolicy", {
+  defaultValue: () => ({
+    visible: () => Effect.succeed(true),
+    refusal: () => Effect.undefined,
+  }),
+});
+
+const layerToolPolicy = Layer.mergeAll(
+  McpServer.visibility(
+    Effect.map(
+      Effect.service(McpToolPolicy),
+      (policy) => (options: McpServer.MiddlewareOptions) => policy.visible(options.target),
+    ),
+    { global: true },
+  ),
+  McpServer.middleware()(
+    Effect.map(Effect.service(McpToolPolicy), (policy) => toolCallGateFn(policy.refusal)),
+    { global: true },
+  ),
+);
+
+export const layer = layerMcpTransport(
+  Layer.mergeAll(layerTools, layerToolSearch, layerToolPolicy),
+);

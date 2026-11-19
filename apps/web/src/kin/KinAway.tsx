@@ -1,3 +1,4 @@
+import { kinNow } from "@t3tools/client-runtime/kin/kinNow";
 import {
   KIN_AWAY,
   kinAwayDefault,
@@ -54,6 +55,8 @@ export function KinAwayField(props: {
   readonly profile: KinPersonProfile;
   readonly mine: boolean;
   readonly mayEdit: boolean;
+  /** The settings search id that lands here. */
+  readonly target?: string | undefined;
 }) {
   const { profile } = props;
   const update = useAtomCommand(kinClient.profileUpdate, { reportFailure: false });
@@ -75,7 +78,11 @@ export function KinAwayField(props: {
     return false;
   };
   return (
-    <section className="flex flex-col gap-1">
+    <section
+      id={props.target}
+      tabIndex={props.target === undefined ? undefined : -1}
+      className="flex flex-col gap-1"
+    >
       <h3 className="text-xs font-medium text-muted-foreground">{KIN_AWAY.label}</h3>
       {line === null ? null : <p className="text-sm text-foreground">{line}</p>}
       {props.mayEdit ? (
@@ -130,7 +137,7 @@ function KinAwayDialog(props: {
 }) {
   const { profile } = props;
   const [day, setDay] = useState(
-    () => profile.awayUntil ?? kinAwayDefault(new Date(), profile.timeZone),
+    () => profile.awayUntil ?? kinAwayDefault(kinNow(), profile.timeZone),
   );
   const [problem, setProblem] = useState<string | null>(null);
   const dayId = useId();
@@ -142,7 +149,7 @@ function KinAwayDialog(props: {
           className="contents"
           onSubmit={(event) => {
             event.preventDefault();
-            const wrong = kinAwayProblem(day, new Date(), profile.timeZone);
+            const wrong = kinAwayProblem(day, kinNow(), profile.timeZone);
             setProblem(wrong);
             if (wrong === null) void props.onSave(day);
           }}

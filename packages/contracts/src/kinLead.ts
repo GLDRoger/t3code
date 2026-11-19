@@ -74,6 +74,25 @@ export type KinLeadDomain = typeof KinLeadDomain.Type;
 export const KinLeadCharter = Schema.String.check(Schema.isMaxLength(1_000));
 export type KinLeadCharter = typeof KinLeadCharter.Type;
 
+/** Seats that sell, as owners name them. */
+const KIN_SALES_DOMAINS: ReadonlyArray<string> = ["growth", "sales", "business-development"];
+/**
+ * The agent that keeps What we sell: a selling seat's, else the Chief of staff's, else any. By
+ * id, so the host and every client pick the same one whatever order they hold leads in.
+ */
+export const kinSalesLead = <L extends { readonly agentId: string; readonly domain: string }>(
+  leads: ReadonlyArray<L>,
+): L | undefined => {
+  const byId = [...leads].sort((a, b) =>
+    a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0,
+  );
+  return (
+    byId.find((lead) => KIN_SALES_DOMAINS.includes(lead.domain)) ??
+    byId.find((lead) => lead.domain === "chief-of-staff") ??
+    byId[0]
+  );
+};
+
 /** What teammates see about a lead: a line or two the owner writes, shown to people it may talk to. */
 export const KinLeadIntro = Schema.String.check(Schema.isMaxLength(200));
 export type KinLeadIntro = typeof KinLeadIntro.Type;
@@ -698,12 +717,14 @@ export const KinEvent = Schema.Union([
       }),
       // An agent's open question reached its day unanswered: the asker takes its default. With
       // `undone`, the person put back what Kin's taking it changed; with `words` too, they
-      // instead undid the answer its asker took from their words.
+      // instead undid the answer its asker took from their words. With `answered`, the person
+      // asked for another chat answered, and the asker's turn there carries it on.
       Schema.Struct({
         type: Schema.Literal("question"),
         questionId: TrimmedNonEmptyString,
         undone: Schema.optional(Schema.Literal(true)),
         words: Schema.optional(Schema.Literal(true)),
+        answered: Schema.optional(Schema.Literal(true)),
       }),
       // One run of a scheduled task; `runId` names the fire or Run now tap that started it.
       Schema.Struct({
