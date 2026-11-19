@@ -79,8 +79,6 @@ import {
   FolderPlusIcon,
   MessageSquareDashedIcon,
   LinkIcon,
-  ContactRoundIcon,
-  FolderKanbanIcon,
   ListChecksIcon,
   MessageSquareIcon,
   PaletteIcon,
@@ -93,9 +91,6 @@ import {
   SquarePenIcon,
   TextSearchIcon,
   UserPlusIcon,
-  WalletIcon,
-  ListIcon,
-  CalendarDaysIcon,
 } from "lucide-react";
 import { openThreadFind } from "./chat/threadFindStore";
 import { dispatchPreviewAction } from "./preview/previewActionBus";
@@ -127,14 +122,9 @@ import { useKinPaletteHits } from "../kin/useKinDocs";
 import { useKinPaletteAgents, useOpenKinAgentPage } from "../kin/kinAgentPageLink";
 import { useKinHost } from "../kin/useKinHost";
 import { useKinListSwitch } from "../kin/useKinListSwitch";
-import {
-  kinDestinationLink,
-  kinListShownAt,
-  kinReturnHref,
-  kinShownDestinationsAtom,
-} from "../kin/kinListSwitch";
+import { kinListShownAt, kinReturnHref } from "../kin/kinListSwitch";
+import { useKinChatRows, useKinPlaceRows } from "../kin/kinPaletteRows";
 import { openKinSettings } from "../kin/kinSettingsAddress";
-import { KIN_DESTINATION_NAMES } from "@t3tools/client-runtime/kin/kinNavigation";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { copyThreadReference } from "../lib/copyThreadReference";
 import {
@@ -474,7 +464,7 @@ function OpenCommandPaletteDialog(props: {
   const inKin = kinListShownAt(pathname) === "kin";
   const router = useRouter();
   const kinListSwitch = useKinListSwitch();
-  const kinShown = useAtomValue(kinShownDestinationsAtom);
+  const kinPlaceRows = useKinPlaceRows();
   const kinNewLead = kinNewLeadTarget(useKinHost());
   const canCreateKinLead = useAtomValue(
     kinNewLead === null
@@ -523,6 +513,10 @@ function OpenCommandPaletteDialog(props: {
   const deferredQuery = useDeferredValue(query);
   const isActionsOnly = deferredQuery.startsWith(">");
   const kinAgents = useKinPaletteAgents(kinNewLead, canCreateKinLead);
+  const kinChatRows = useKinChatRows(
+    kinNewLead?.environmentId ?? null,
+    !isActionsOnly && deferredQuery.trim() !== "",
+  );
   const openKinAgentPage = useOpenKinAgentPage();
   const kinHits = useKinPaletteHits(
     canOpenKinWork ? kinNewLead : null,
@@ -1823,22 +1817,7 @@ function OpenCommandPaletteDialog(props: {
     },
   });
 
-  for (const [index, destination] of (kinShown?.destinations ?? []).entries()) {
-    const shown = kinShown;
-    if (shown === null) break;
-    actionItems.push({
-      kind: "action",
-      value: `action:kin-${destination}`,
-      searchTerms: ["kin", "go", "open", destination],
-      // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-      title: `Go to ${KIN_DESTINATION_NAMES[destination]}`,
-      icon: <MessagesSquareIcon className={ITEM_ICON_CLASS} />,
-      description: `${isMacPlatform(navigator.platform) ? "⌘" : "Ctrl+"}${index + 1}`,
-      run: async () => {
-        await navigate(kinDestinationLink(destination, shown.target));
-      },
-    });
-  }
+  actionItems.push(...kinPlaceRows);
 
   // Only the way back into Kin: Kin itself doesn't offer the coding threads.
   if (kinListSwitch !== null && kinListSwitch.current === "threads") {
@@ -1871,6 +1850,7 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
+  actionItems.push(...kinChatRows);
   if (kinNewLead !== null) {
     for (const agent of kinAgents) {
       actionItems.push({
@@ -1889,135 +1869,6 @@ function OpenCommandPaletteDialog(props: {
         },
       });
     }
-  }
-
-  if (kinNewLead !== null && canOpenKinWork) {
-    actionItems.push({
-      kind: "action",
-      value: "action:kin-work",
-      searchTerms: [
-        "kin",
-        "work",
-        "tasks",
-        "tracker",
-        "tickets",
-        "assign",
-        "late",
-        "due",
-        "agents",
-        "leads",
-      ],
-      // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-      title: "Tasks: what's open and who has it",
-      icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
-      run: async () => {
-        await navigate({
-          to: "/kin/$environmentId/$orgId/tasks",
-          params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
-        });
-      },
-    });
-  }
-
-  // A host from before clients and projects answers these with a plain note, not an error.
-  if (kinNewLead !== null && canOpenKinWork) {
-    actionItems.push(
-      {
-        kind: "action",
-        value: "action:kin-clients",
-        searchTerms: ["kin", "clients", "vendors", "crm", "contacts", "owe", "obligations"],
-        // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-        title: "Clients: what you owe them and what they owe you",
-        icon: <ContactRoundIcon className={ITEM_ICON_CLASS} />,
-        run: async () => {
-          await navigate({
-            to: "/kin/$environmentId/$orgId/clients",
-            params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
-          });
-        },
-      },
-      {
-        kind: "action",
-        value: "action:kin-projects",
-        searchTerms: ["kin", "projects", "status", "health", "blocked", "at risk", "late"],
-        // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-        title: "Projects: how each one is going",
-        icon: <FolderKanbanIcon className={ITEM_ICON_CLASS} />,
-        run: async () => {
-          await navigate({
-            to: "/kin/$environmentId/$orgId/clients",
-            params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
-          });
-        },
-      },
-      {
-        kind: "action",
-        value: "action:kin-docs",
-        searchTerms: ["kin", "docs", "documents", "notes", "plans", "proposals", "writing"],
-        // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-        title: "Docs: what your agents have written up",
-        icon: <FileTextIcon className={ITEM_ICON_CLASS} />,
-        run: async () => {
-          await navigate({
-            to: "/kin/$environmentId/$orgId/docs",
-            params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
-          });
-        },
-      },
-      {
-        kind: "action",
-        value: "action:kin-money",
-        searchTerms: [
-          "kin",
-          "money",
-          "invoices",
-          "expenses",
-          "owed",
-          "overdue",
-          "received",
-          "spent",
-          "receivables",
-        ],
-        // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-        title: "Money: who owes you, what came in and what went out",
-        icon: <WalletIcon className={ITEM_ICON_CLASS} />,
-        run: async () => {
-          await navigate({
-            to: "/kin/$environmentId/$orgId/money",
-            params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
-          });
-        },
-      },
-      {
-        kind: "action",
-        value: "action:kin-lists",
-        searchTerms: ["kin", "lists", "expenses", "invoices", "renewals", "tracking", "register"],
-        // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-        title: "Lists: everything your agents keep track of",
-        icon: <ListIcon className={ITEM_ICON_CLASS} />,
-        run: async () => {
-          await navigate({
-            to: "/kin/$environmentId/$orgId/docs",
-            params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
-          });
-        },
-      },
-      {
-        kind: "action",
-        value: "action:kin-dates",
-        searchTerms: ["kin", "dates", "calendar", "due", "agenda", "renewals", "gst", "filing"],
-        // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-        title: "Dates: everything due, across every list",
-        icon: <CalendarDaysIcon className={ITEM_ICON_CLASS} />,
-        run: async () => {
-          await navigate({
-            to: "/kin/$environmentId/$orgId/money",
-            params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
-            search: { dates: true },
-          });
-        },
-      },
-    );
   }
 
   if (kinNewLead !== null && canOpenKinMemory) {

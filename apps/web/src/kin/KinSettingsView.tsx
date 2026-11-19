@@ -93,7 +93,9 @@ import {
   kinSettingsFindIn,
   kinSettingsSectionIn,
   openKinSettings,
+  useKinSettingLanding,
 } from "./kinSettingsAddress";
+import { kinSettingsPageHolding } from "./kinSettingsSearch";
 import { rememberKinTeammate } from "./kinTeammateMark";
 import { KinTeamView } from "./KinTeamView";
 import { useKinHost, useKinWorkingAgents } from "./useKinHost";
@@ -176,9 +178,20 @@ export function KinSettingsMoved(props: {
   readonly fallback: React.ReactNode;
 }) {
   const target = kinNewLeadTarget(useKinHost());
+  const hash = useLocation({ select: (location) => location.hash.replace(/^#/, "") });
+  // As the address named it on arrival; the redirect itself takes the hash away.
+  const [found] = useState(hash);
   if (target === null) return props.fallback;
-  return <Navigate to="/kin" search={{ settings: props.page }} replace />;
+  // The hash is the setting a settings search found, so Settings opens at it.
+  const settings = kinSettingsPageHolding(props.page, found);
+  return (
+    <Navigate to="/kin" search={found === "" ? { settings } : { settings, at: found }} replace />
+  );
 }
+
+// A still ring, not the focus outline, so a click marks the row as Enter does; no motion.
+const KIN_FOUND_MARK =
+  "[&_[data-kin-setting-found]]:rounded-xl [&_[data-kin-setting-found]]:outline-none [&_[data-kin-setting-found]]:ring-2 [&_[data-kin-setting-found]]:ring-primary/60 [&_[data-kin-setting-found]]:ring-offset-4 [&_[data-kin-setting-found]]:ring-offset-background";
 
 /** Settings, open over the Kin page on screen while the address names a section. */
 export function KinSettingsModalHost() {
@@ -207,6 +220,7 @@ function KinSettingsModal(props: { readonly target: KinSettingsTarget; readonly 
   const page = kinSettingsPageOf(wanted, groups);
   const waiting = !atIndex && page !== wanted && !known;
   const show = (section: KinSettingsPage | "") => openKinSettings(router.history, section);
+  const landing = useKinSettingLanding();
   return (
     <AppRouteModal label={KIN_SETTINGS_TITLE} onClose={() => closeKinSettings(router.history)}>
       <div className="relative flex min-h-0 flex-1">
@@ -253,7 +267,10 @@ function KinSettingsModal(props: { readonly target: KinSettingsTarget; readonly 
               <AppRouteModalClose />
             </div>
           </header>
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <div
+            ref={landing}
+            className={cn("flex min-h-0 flex-1 flex-col overflow-y-auto", KIN_FOUND_MARK)}
+          >
             {waiting ? null : <KinSettingsPageBody page={page} target={target} />}
           </div>
         </div>
