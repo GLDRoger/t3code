@@ -498,9 +498,9 @@ const tookFromWords = (agentName: string, answer: string | null) =>
     ? `${agentName} took this from what you wrote.`
     : `${agentName} took this from what you wrote: ${answer}`;
 const notTheAsker = (row: QuestionRow, who: string) =>
-  `Only ${row.agentName}, who asked it, records ${who}'s answer.`;
+  `${row.agentName} asked this, so only ${row.agentName} records ${who}'s answer. Don't decide it: if what ${who} told you bears on it, say so to ${who} and leave the card, still open in ${who}'s chat with ${row.agentName}.`;
 const notTheirWords = (who: string) =>
-  `Only ${who}'s own message in the chat it was asked in, written since, records an answer.`;
+  `An answer is recorded only in a turn woken by ${who}'s own message in this question's chat, written since you asked; this turn wasn't. Leave it open: its card still takes ${who}'s tap.`;
 
 /** The asker hears once that the person undid the answer it took, so it doesn't act on it. */
 const tellAnswerUndone = Effect.fn("KinQuestions.tellAnswerUndone")(function* (
@@ -1086,8 +1086,10 @@ export const undoneTurnText = Effect.fn("KinQuestions.undoneTurnText")(function*
 ) {
   const row = yield* readQuestion(orgId, questionId);
   // Open again: its person undid the answer its asker took from their words (`runAnswered`).
-  if (row?.state === "open")
-    return `Your question to ${yield* personName(orgId, row.personId)}, “${row.question}”: they undid the answer you took from their words, so it is open again on its card. Don't act on that answer; wait for theirs.`;
+  if (row?.state === "open") {
+    const who = yield* personName(orgId, row.personId);
+    return `Your question to ${who}, “${row.question}”: ${who} undid the answer you took from their words, so it is open again on its card. Don't act on that answer or ask again; wait for theirs.`;
+  }
   if (row === undefined || row.state !== "default_taken" || row.defaultLabel === null)
     return undefined;
   return `Your question to ${yield* personName(orgId, row.personId)}, “${row.question}”, got no answer, so Kin took your default “${row.defaultLabel}”. It has now been undone: what it changed is back as it was. Don't do it again or ask the same again; ask anew only if it still needs deciding.`;
@@ -1124,7 +1126,7 @@ export const openQuestionsSection = Effect.fn("KinQuestions.section")(function* 
   return {
     heading: `# Open questions to ${who} (already asked; don't ask or repeat them)`,
     body: [
-      "Like a fact already told, each is with them once: never put one to them again, on a card or in words; at most say it is open and what happens at its day. When they answer one in words, kin_ask_close it as answered; withdraw your own when it no longer stands.",
+      "Like a fact already told, each is with them once: never put one to them again, on a card or in words; at most say it is open and what happens at its day. When they answer one of yours in words in its chat, kin_ask_close it as answered; withdraw yours when it no longer stands. Another agent's is that agent's to close.",
       ...lines,
     ].join("\n"),
   };

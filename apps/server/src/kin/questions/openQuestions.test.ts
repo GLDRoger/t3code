@@ -615,7 +615,7 @@ it.effect("only the asker takes an answer from the person's own words, and she c
         outcome: "withdrawn",
       });
       assert.isFalse(withdraw.ok);
-      yield* refused("chief", /Only Finance/);
+      yield* refused("chief", /only Finance records/);
       // Finance woken by Kin's own event, by Rhea's words in another chat, or by Meera.
       yield* startAgentWakeup({
         orgId,

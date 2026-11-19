@@ -165,7 +165,7 @@ export const KinLeadToolkit = Toolkit.make(
     ...chat,
     dependencies: [...chat.dependencies, KinServer],
     description:
-      "Close an open question your seat lists: answered when the person answered it in words, withdrawn (yours only) when it no longer stands. Its card stops taking taps and Kin won't take its default.",
+      "Close an open question you asked: answered when its person answered it in words, in the turn their message in its chat woke; withdrawn when it no longer stands. Its card stops taking taps and Kin won't take its default; they can undo an answer.",
     parameters: ChoiceCard.CloseInput,
     success: ChoiceCard.CloseResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
