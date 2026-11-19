@@ -40,7 +40,6 @@ import {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 import type { KinMakeStep } from "./KinInvoice";
 import { Pressable, View } from "react-native";
@@ -73,7 +72,8 @@ import {
   useKinInvoiceFromQuote,
   useKinOutlook,
 } from "./state/useKinMoneyAnswers";
-import { kinWorkChoicesAtom, type KinWorkTarget } from "./state/useKinWork";
+import { useKinWorkChoices, type KinWorkTarget } from "./state/useKinWork";
+import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 
 const PEEK = 5;
 type Section = KinWorkTarget & { readonly seq: number | null; readonly rates: KinRates | null };
@@ -566,8 +566,7 @@ function BudgetForm(props: KinWorkTarget & { readonly budget: KinMoneyBudget | n
   const rates = useKinRates(props);
   const lists = useKinLists(props, { enabled: true });
   const expenses = kinListsOf(lists).find((one) => one.list === "expenses") ?? null;
-  const held = Option.getOrNull(AsyncResult.value(useAtomValue(kinWorkChoicesAtom(props))));
-  const projects = held?.projects ?? [];
+  const { projects } = useKinWorkChoices(props, true);
   const [draft, setDraft] = useState<KinBudgetDraft>(() => kinBudgetDraftOf(budget));
   const [requestId] = useState(uuidv4);
   const [problem, setProblem] = useState<string | null>(null);
@@ -602,7 +601,6 @@ function BudgetForm(props: KinWorkTarget & { readonly budget: KinMoneyBudget | n
       onConfirm: () => void setter.set(input).then((ok) => (ok ? close() : undefined)),
     });
   };
-  const project = projects.find((one) => one.key === draft.project) ?? null;
   const shownProblem = problem ?? setter.problem;
   const ANY = "__any__";
   return (
@@ -641,33 +639,17 @@ function BudgetForm(props: KinWorkTarget & { readonly budget: KinMoneyBudget | n
             />
           </View>
         </Menu>
-        <Menu
-          title={KIN_BUDGETS.project}
-          accessibilityRole="button"
-          accessibilityLabel={`${KIN_BUDGETS.project}: ${project?.name ?? KIN_BUDGETS.anyProject}. Change`}
-          actions={[
-            {
-              id: ANY,
-              title: KIN_BUDGETS.anyProject,
-              state: draft.project === null ? ("on" as const) : ("off" as const),
-            },
-            ...projects.map((one) => ({
-              id: one.key,
-              title: one.name,
-              state: one.key === draft.project ? ("on" as const) : ("off" as const),
-            })),
-          ]}
-          onPressAction={({ nativeEvent: { event } }) =>
-            setDraft({ ...draft, project: projects.find((one) => one.key === event)?.key ?? null })
-          }
-        >
-          <View pointerEvents="none">
-            <ListRowLayout
-              label={project?.name ?? KIN_BUDGETS.anyProject}
-              detail={KIN_BUDGETS.project}
-            />
-          </View>
-        </Menu>
+        <KinWorkPlacePicker
+          target={props}
+          noun="project"
+          icon="folder"
+          label={KIN_BUDGETS.project}
+          none={KIN_BUDGETS.anyProject}
+          held={draft.project}
+          choices={projects}
+          disabled={setter.busy}
+          onPick={(project) => setDraft({ ...draft, project })}
+        />
       </ListSection>
       <ListSection>
         <KinWorkTextField

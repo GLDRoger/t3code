@@ -76,7 +76,7 @@ import {
   KinWorkTextField,
 } from "./components/KinWorkPieces";
 import { useKinCompanyCountry, useKinHomeCurrency } from "./state/useKinMoney.ts";
-import { KinWorkPlaceRow } from "./components/KinWorkTaskMenus";
+import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinProjectPeoplePicker } from "./KinProjectPeopleScreen";
 import { kinWorkRefParam, type KinWorkParams } from "./KinWorkScreen";
 import { kinClient } from "./state/kinClient";
@@ -852,7 +852,9 @@ function ProjectForm(
         />
       </ListSection>
       <ListSection>
-        <KinWorkPlaceRow
+        <KinWorkPlacePicker
+          target={{ environmentId, orgId }}
+          noun="client"
           icon="person.2"
           label={COPY.project.party}
           none={COPY.project.noClient}
