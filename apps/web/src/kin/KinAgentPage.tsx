@@ -92,7 +92,7 @@ function useKinAgentPageCan(environmentId: EnvironmentId) {
 export function KinAgentPageHost() {
   const { agent } = useSearch({ from: "/_chat/kin" });
   const params = useParams({ strict: false });
-  // The bare Chats screen names no place: the link opens on this Kin's own host, as the dock does.
+  // The bare Chats screen names no place: the link opens on this Kin's own host, as the nav does.
   const host = kinNewLeadTarget(useKinHost());
   const environmentId = params.environmentId ?? host?.environmentId;
   const orgId = params.orgId ?? host?.orgId;
