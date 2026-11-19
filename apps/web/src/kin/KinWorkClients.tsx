@@ -138,7 +138,7 @@ export function KinWorkClientsList(
                   label: KIN_CLIENTS.title,
                   value: filter.closed ? CLOSED : ACTIVE,
                   options: [
-                    { value: ACTIVE, label: "Active" },
+                    { value: ACTIVE, label: KIN_CLIENTS.active },
                     { value: CLOSED, label: KIN_CLIENTS.closed },
                   ],
                   onChange: (value) => list.setFilter({ ...filter, closed: value === CLOSED }),
