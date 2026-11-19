@@ -12,6 +12,7 @@ import {
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
 
+import { kinAwayDay } from "./kinAway.ts";
 import { kinSafeWebUrl } from "./kinLinks.ts";
 import { formatKinTime, type KinAvatarView } from "./kinScreenState.ts";
 import {
@@ -53,6 +54,8 @@ export const KIN_TASK_RECORD = {
   removeDetail: "It stays in Activity as removed, without its words or files.",
   noteTooLong: (max: number) => `Keep a note under ${max.toLocaleString()} characters.`,
   fromProject: "From the project",
+  toldWhenBack: (name: string, day: string) =>
+    `${name} is away until ${day}, so they'll be told when they're back.`,
 } as const;
 
 /** A task's note box and its notes, on web and phone. */
@@ -348,6 +351,10 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
     input.give && view.can.give ? [{ id: "give" as const, label: view.assignLabel ?? "" }] : [];
   const holder = kinRecordWho(item.owner, names);
   const due = kinWorkDueText(item, names, now);
+  const toldLater =
+    item.toldWhenBack === undefined
+      ? null
+      : KIN_TASK_RECORD.toldWhenBack(holder.name, kinAwayDay(item.toldWhenBack, now));
   if (view.suggestion !== null) {
     const acts =
       input.change && view.can.confirm
@@ -418,7 +425,7 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
       line: due === null ? "has this." : `has this. It was due ${due}.`,
       when: null,
       words: null,
-      note: giveAct.length === 0 ? KIN_TASK_RECORD.nothingNeeded : null,
+      note: toldLater ?? (giveAct.length === 0 ? KIN_TASK_RECORD.nothingNeeded : null),
       acts: giveAct,
     };
   }
@@ -453,7 +460,7 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
     line: item.state === "waiting" ? view.status.replace(/^Waiting/, "is waiting") : "has this",
     when: due === null ? null : `due ${due}`,
     words: null,
-    note: KIN_TASK_RECORD.nothingNeeded,
+    note: toldLater ?? KIN_TASK_RECORD.nothingNeeded,
     acts: [],
   };
 }
