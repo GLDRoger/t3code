@@ -151,9 +151,9 @@ describe("Kin's rows in the command palette", () => {
     await expect.element(page.getByRole("option", { name: /^Money: who owes you/ })).toBeVisible();
   });
 
-  it("offers a teammate without Money no Money and no Dates", async () => {
+  it("offers a teammate without Money no Money and no Dates, and Projects opens its tab", async () => {
     setup(["chats", "tasks", "clients", "docs"]);
-    await using _screen = await renderPalette();
+    await using screen = await renderPalette();
 
     const names = kinRowNames();
     expect(names.some((name) => name.startsWith("Money"))).toBe(false);
@@ -161,6 +161,13 @@ describe("Kin's rows in the command palette", () => {
     expect(names).toContain("Clients: what you owe them and what they owe you⌘3");
     expect(names).toContain("Projects: how each one is going");
     expect(names).toContain("Lists: everything your agents keep track of");
+
+    await userEvent.click(page.getByRole("option", { name: /^Projects: how each one is going/ }));
+    await vi.waitFor(() =>
+      expect(screen.router!.state.location.href).toBe(
+        `/kin/${target.environmentId}/${target.orgId}/clients?tab=projects`,
+      ),
+    );
   });
 
   it("finds a chat by its name and opens it, ahead of the agent's settings", async () => {

@@ -105,7 +105,11 @@ export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
             FolderKanbanIcon,
             ["projects", "status", "health", "blocked", "at risk", "late"],
             async () => {
-              await navigate({ to: KIN_PLACE_PATH.clients, params: target });
+              await navigate({
+                to: KIN_PLACE_PATH.clients,
+                params: target,
+                search: { tab: "projects" },
+              });
             },
           ),
         ]
