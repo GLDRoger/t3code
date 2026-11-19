@@ -3,6 +3,7 @@ import {
   KinEvent,
   KinMessageId,
   KinOrgId,
+  KinPersonId,
   KinRoutineCard,
   KinWidgetId,
   type KinAgentId,
@@ -29,7 +30,10 @@ import * as Chat from "../chat/KinChatService.ts";
 import { memoryDateMillis } from "../memory/frontMatter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
+import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { deferralWidgetId } from "../triggers/deferrals.ts";
+import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
+import { dayRecord, dayRecordEmpty } from "./dayRecord.ts";
 import {
   renderRoutine,
   routineEmpty,
@@ -341,7 +345,7 @@ const make = Effect.gen(function* () {
         yesterdayUnits: yield* budgetUnits(dayOf(dayStart - 1)),
         pastReview,
       };
-      return { day, dayLabel, timeLabel, facts };
+      return { day, dayLabel, timeLabel, facts, dayStart, dayEnd };
     }
 
     const done = (yield* taskCards(sql, orgId, dayStart)).flatMap(
@@ -399,7 +403,7 @@ const make = Effect.gen(function* () {
       failedWakeups: failed?.n ?? 0,
       failedDreams: dreams?.n ?? 0,
     };
-    return { day, dayLabel, timeLabel, facts };
+    return { day, dayLabel, timeLabel, facts, dayStart, dayEnd };
   });
 
   const prepare = Effect.fn("KinRoutineContent.prepare")(
@@ -549,9 +553,21 @@ const make = Effect.gen(function* () {
       const owner = yield* lead(orgId, agentId);
       if (owner === undefined) return null;
       const gathered = yield* gather(orgId, { routine: "evening_summary", agentId }, owner);
-      return gathered.facts.routine === "evening_summary" && !routineEmpty(gathered.facts)
-        ? yield* encodeFacts(gathered.facts)
-        : null;
+      if (gathered.facts.routine !== "evening_summary") return null;
+      const viewer = (yield* ownerLevelPeople(orgId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      )).has(owner.personId)
+        ? KIN_OWNER_LEVEL
+        : viewerOfPeople([KinPersonId.make(owner.personId)]);
+      const today = yield* dayRecord({
+        orgId,
+        from: gathered.dayStart,
+        until: gathered.dayEnd,
+        viewer,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      return routineEmpty(gathered.facts) && dayRecordEmpty(today)
+        ? null
+        : yield* encodeFacts(gathered.facts);
     },
     (effect, orgId) =>
       effect.pipe(
