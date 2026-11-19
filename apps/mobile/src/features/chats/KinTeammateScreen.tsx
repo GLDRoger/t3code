@@ -266,7 +266,7 @@ function KinTeammateDetails(props: {
             onPress={() => {
               const { personId } = teammate;
               if (personId === null) return;
-              navigation.navigate("KinProfile", { ...props.target, personId });
+              navigation.navigate("KinProfile", { ...props.target, personId, over: "teammate" });
             }}
           />
           {/* Their page is the record: their profile is edited in a sheet on it. */}

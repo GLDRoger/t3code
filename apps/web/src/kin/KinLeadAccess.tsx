@@ -81,7 +81,11 @@ export function KinLeadAccess(props: {
   );
 
   const change = async (
-    person: { readonly personId: KinPersonId; readonly displayName: string },
+    person: {
+      readonly personId: KinPersonId;
+      readonly displayName: string;
+      readonly ownerLevel?: boolean | undefined;
+    },
     on: boolean,
   ) => {
     if (busy) return;
@@ -92,7 +96,10 @@ export function KinLeadAccess(props: {
     setBusy(false);
     if (AsyncResult.isSuccess(result)) {
       appAtomRegistry.refresh(accessAtom);
-      setNote({ text: kinLeadAccessChanged(person.displayName, lead.name, on), failed: false });
+      setNote({
+        text: kinLeadAccessChanged(person.displayName, lead.name, on, person.ownerLevel),
+        failed: false,
+      });
       return;
     }
     setNote({
@@ -111,7 +118,7 @@ export function KinLeadAccess(props: {
         </p>
       ) : everyone || allowed.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          {everyone ? KIN_LEAD_EVERYONE : "Only you."}
+          {everyone ? KIN_LEAD_EVERYONE : KIN_AGENTS_COPY.onlyOwners}
         </p>
       ) : (
         <ul className="flex flex-col gap-1">
@@ -177,7 +184,11 @@ export function KinLeadAccess(props: {
           <AlertDialogHeader>
             <AlertDialogTitle>Remove {removing?.displayName}?</AlertDialogTitle>
             <AlertDialogDescription>
-              {KIN_AGENTS_COPY.removeAccess(removing?.displayName ?? "", lead.name)}
+              {KIN_AGENTS_COPY.removeAccess(
+                removing?.displayName ?? "",
+                lead.name,
+                removing?.ownerLevel,
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

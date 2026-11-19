@@ -103,16 +103,21 @@ export const recentTurns = Effect.fn("KinLeadAccess.recentTurns")(function* (inp
   return { turns: row?.turns ?? 0, oldestAt: row?.oldestAt ?? null };
 });
 
-/** A person's messages and tasks still waiting for the lead in their direct chat never run. */
+/**
+ * A person's messages and tasks still waiting for the lead in their direct chat never run, nor
+ * do those an aborted turn holds, which its finish would otherwise put back on the queue.
+ */
 export const dropQueued = Effect.fn("KinLeadAccess.dropQueued")(function* (
   pair: Pick<Pair, "orgId" | "agentId">,
   chatId: KinChatId,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const dropped = yield* sql`UPDATE kin_events SET state = 'expired'
-    WHERE org_id = ${pair.orgId} AND agent_id = ${pair.agentId} AND state = 'queued'
-      AND tag IN ('chat.message', 'widget.action', 'chat.reaction', 'record.changed')
-      AND json_extract(json, '$.chatId') = ${chatId}
+  const dropped = yield* sql`UPDATE kin_events AS e SET state = 'expired'
+    WHERE e.org_id = ${pair.orgId} AND e.agent_id = ${pair.agentId}
+      AND (e.state = 'queued' OR (e.state = 'claimed' AND EXISTS (SELECT 1 FROM kin_wakeups w
+        WHERE w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id AND w.aborted_at IS NOT NULL)))
+      AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction', 'record.changed')
+      AND json_extract(e.json, '$.chatId') = ${chatId}
     RETURNING event_id`;
   return dropped.length;
 });

@@ -1805,6 +1805,107 @@ it.effect("a default Kin couldn't undo, or on a task changed since, waits for it
   ),
 );
 
+// Finance is retired and restored with its questions held, as `Retirement` does it. One was
+// raised with a renamed task's choice left off, so its stored choices are the raise card's; the
+// other was never raised and its task was renamed while retired, leaving one choice and no card.
+it.effect(
+  "a restored question is raised with the choices that still hold, or closes saying why",
+  () =>
+    Effect.andThen(
+      TestClock.setTime(MON),
+      Effect.gen(function* () {
+        const kin = yield* ambermill;
+        const { owner, orgId, sql, chats } = kin;
+        const chatId = kin.chatOf("finance");
+        const financeId = KinAgentId.make("finance");
+        const byRhea = {
+          actor: { _tag: "person" as const, personId: owner.personId },
+          via: "owner" as const,
+          askedBy: owner.personId,
+        };
+        const rename = (key: string, title: string) =>
+          kin.records.update(orgId, byRhea, key, { title });
+        const ask = Effect.fn("test.ask")(function* (
+          body: string,
+          options: ReadonlyArray<{ readonly label: string; readonly action?: unknown }>,
+        ) {
+          yield* kin.turn("finance", chatId, body);
+          const asked = yield* callAs("finance", "kin_ask", {
+            question: body,
+            options,
+            default: "none",
+          });
+          assert.isTrue(asked.ok, JSON.stringify(asked.value));
+          return asked.value.question as string;
+        });
+        const question = (id: string) =>
+          Questions.readQuestion(orgId, id).pipe(Effect.map((row) => row!));
+        const a = yield* kin.task("Count the studio stock");
+        const b = yield* kin.task("File the studio invoices");
+        const c = yield* kin.task("Book the kiln service");
+        const both = yield* ask("Which studio task should I finish first?", [
+          { label: "Finish A", action: { kind: "done", target: a.key } },
+          { label: "Finish B", action: { kind: "done", target: b.key } },
+          { label: "Neither yet" },
+        ]);
+        yield* rename(a.key, "Count the studio stock twice");
+        yield* settleAt(kin, (yield* question(both)).actAt);
+        const firstRaise = (yield* question(both)).raiseWidgetId!;
+        assert.deepStrictEqual(
+          card(yield* kin.widget(firstRaise)).options.map((one) => one.label),
+          [`Mark ${b.key} done`, "Neither yet"],
+        );
+        const never = yield* ask("Is the kiln service finished?", [
+          { label: "Close it", action: { kind: "done", target: c.key } },
+          { label: "Not yet" },
+        ]);
+
+        const retiredAt = (yield* Clock.currentTimeMillis) + 60_000;
+        yield* Questions.closeHeldQuestions(
+          { orgId, holder: { agentId: financeId }, reason: () => "Retired.", closedAt: retiredAt },
+          chats,
+        );
+        yield* rename(c.key, "Book the kiln service again");
+        yield* Questions.reopenRetiredQuestions({
+          orgId,
+          agentId: financeId,
+          retiredAt,
+          now: retiredAt + 86_400_000,
+        });
+        yield* settleAt(
+          kin,
+          Math.max((yield* question(both)).actAt, (yield* question(never)).actAt),
+        );
+
+        // Raised again with both choices that hold, B's still marking B done.
+        const again = yield* question(both);
+        assert.notStrictEqual(again.raiseWidgetId, firstRaise);
+        const redrawn = yield* kin.widget(again.raiseWidgetId);
+        assert.isNull(redrawn.closedAt);
+        assert.deepStrictEqual(
+          card(redrawn).options.map((one) => one.label),
+          [`Mark ${b.key} done`, "Neither yet"],
+        );
+        yield* kin.tap(owner, again.raiseWidgetId, "option-1", "restored-b");
+        assert.strictEqual((yield* kin.stateOf(b.key)).state, "done");
+
+        // One choice left and its card closed at retirement: it closes, and Finance says why.
+        assert.strictEqual((yield* question(never)).state, "withdrawn");
+        assert.deepStrictEqual(
+          yield* sql<{ author: string | null }>`SELECT author_agent_id AS author FROM kin_messages
+          WHERE org_id = ${orgId} AND chat_id = ${chatId}
+            AND body = ${"I've closed my question “Is the kiln service finished?”: its choices changed since I asked. Tell me what you'd like."}`,
+          [{ author: "finance" }],
+        );
+        const waiting = yield* kin.repo.listOpenWaiting({ orgId, personId: owner.personId });
+        assert.notInclude(
+          waiting.map((item) => item.widgetId),
+          (yield* question(never)).widgetId,
+        );
+      }).pipe(Effect.provide(layer)),
+    ),
+);
+
 // Finance holds two tasks and its own defaults close both. Rhea's Undo on one note puts it back
 // exactly: still Finance's, given by nobody anew, and Finance hears once, by the undone event.
 // Undo of the other from Finance's page does the same, and closes that one's note as Undone, so
