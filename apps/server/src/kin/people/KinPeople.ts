@@ -64,6 +64,7 @@ import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { abortChatTurns } from "../lead/Audience.ts";
+import { closeUngranted } from "../lead/directClose.ts";
 import { onPersonRemoved } from "../lead/ChatSharing.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
@@ -432,7 +433,14 @@ export const make = Effect.gen(function* () {
     orgId: KinOrgId,
     personId: KinPersonId,
   ) {
-    const [gone] = yield* sql<{ removedAt: number | null }>`SELECT removed_at AS "removedAt"
+    const [gone] = yield* sql<{
+      removedAt: number | null;
+      was: string | null;
+      kept: string | null;
+    }>`SELECT removed_at AS "removedAt",
+        COALESCE(json_extract(removed_access_json, '$.from'),
+          json_extract(removed_access_json, '$.access')) AS was,
+        json_extract(removed_access_json, '$.access') AS kept
       FROM kin_people WHERE org_id = ${orgId} AND person_id = ${personId}`.pipe(
       Effect.mapError(toPersistenceSqlError("KinPeople.back")),
     );
@@ -457,6 +465,11 @@ export const make = Effect.gen(function* () {
         AND left_at = ${DateTime.formatIso(DateTime.makeUnsafe(removedAt))}`.pipe(
       Effect.mapError(toPersistenceSqlError("KinPeople.backChats")),
     );
+    // Made a member while removed: back as one, exactly as `setAccess` would have made them.
+    if (gone?.was === "co_owner" && gone.kept === "member")
+      yield* closeUngranted({ repo, hub, presence }, orgId, personId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
     yield* viewMoved(orgId, personId);
     yield* refresh.touch(orgId, "leads");
     // A co-owner talks to every agent in their own chat with it, as `setAccess` opens them.
@@ -1201,8 +1214,10 @@ export const make = Effect.gen(function* () {
           const caller = yield* owner(session, input.orgId);
           if (!isOwnerHimself(identity.owner, caller.personId)) return yield* ownerOnly;
           // Removed, it is the level a new link brings back; the row stays a member's meanwhile.
+          // `$.from` keeps the level they were removed at, for `bringBack`.
           const kept = yield* sql`UPDATE kin_people
-            SET removed_access_json = json_set(removed_access_json, '$.access', ${input.access})
+            SET removed_access_json = json_set(json_insert(removed_access_json, '$.from',
+                json_extract(removed_access_json, '$.access')), '$.access', ${input.access})
             WHERE org_id = ${input.orgId} AND person_id = ${input.personId}
               AND removed_at IS NOT NULL AND removed_access_json IS NOT NULL
             RETURNING person_id`.pipe(
@@ -1250,6 +1265,12 @@ export const make = Effect.gen(function* () {
                 )),
               );
             }
+          // A member writes only to the leads they were let message; after the aborts, so
+          // what those turns held is dropped too, not queued again.
+          if (before === "co_owner" && input.access === "member")
+            yield* closeUngranted({ repo, hub, presence }, input.orgId, input.personId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
           if (turns.length > 0 && Option.isSome(stop))
             yield* sql.afterCommit(
               stop.value.abortTurns(
