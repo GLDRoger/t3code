@@ -12,6 +12,7 @@ import {
   KinMemoryItemId,
   KinPersonId,
   KinWidgetId,
+  KIN_TAKEN_DEFAULT_FIELD,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -39,11 +40,12 @@ import * as Kin from "../layer.ts";
 import * as KinToolGate from "../mcp/KinToolGate.ts";
 import * as Handoff from "../lead/Handoff.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
-import { ownerLevelUndoAgentChange } from "../lead/agentChanges.ts";
+import { agentChanges, ownerLevelUndoAgentChange } from "../lead/agentChanges.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
 import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import * as KinOpen from "../open/KinOpen.ts";
+import { tellTaken } from "../questions/defaultTaken.ts";
 import * as Questions from "../questions/openQuestions.ts";
 import * as Team from "../team/KinTeam.ts";
 import {
@@ -55,6 +57,7 @@ import { KinRecords } from "../work/KinRecords.ts";
 import { handlers as workHandlers } from "../work/mcp/handlers.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { presetDefinition, propose } from "../work/registers.ts";
+import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import * as CardActions from "./cardActions.ts";
 import { plansOf } from "./cardPlans.ts";
 
@@ -1354,7 +1357,7 @@ it.effect("a default that closes a task is taken at its day, told once, and undo
           via: "lead",
           fields: [
             { field: "state", from: "open", to: "done" },
-            { field: "default", from: null, to: asked.value.question },
+            { field: KIN_TAKEN_DEFAULT_FIELD, from: null, to: asked.value.question },
           ],
         },
       );
@@ -1669,24 +1672,32 @@ it.effect("a default Kin couldn't undo, or on a task changed since, waits for it
         "Needs Rhea's sign-off",
       );
       const cover = yield* kin.task("Draft the Lumen cover note");
+      const proofs = yield* kin.task("Approve the Lumen proofs");
+      yield* kin.records.update(orgId, byRhea, proofs.key, {
+        state: "waiting",
+        waitingOn: { _tag: "agent", agentId: KinAgentId.make("chief") },
+      });
       const asked = [
         yield* askToClose(kin, rent, chatId),
         yield* askToClose(kin, tiles, chatId),
         yield* askToClose(kin, cover, chatId),
+        yield* askToClose(kin, proofs, chatId),
       ];
       yield* kin.records.update(orgId, byRhea, cover.key, { title: "Send the Lumen cover note" });
-      const keys = [rent.key, tiles.key, cover.key];
+      // Retired, the Chief of staff can't be waited on again, so Undo couldn't put proofs back.
+      yield* sql`UPDATE kin_agents SET retired_at = ${at} WHERE org_id = ${orgId} AND agent_id = 'chief'`;
+      const keys = [rent.key, tiles.key, cover.key, proofs.key];
       const before = yield* Effect.forEach(keys, kin.stateOf);
       assert.deepStrictEqual(
         before.map((one) => one.state),
-        ["open", "open", "open"],
+        ["open", "open", "open", "waiting"],
       );
 
-      assert.strictEqual(yield* settleAt(kin, Math.max(...asked.map((one) => one.due))), 3);
+      assert.strictEqual(yield* settleAt(kin, Math.max(...asked.map((one) => one.due))), 4);
       assert.deepStrictEqual(yield* Effect.forEach(keys, kin.stateOf), before);
       const marked = yield* sql`SELECT 1 FROM kin_record_changes c WHERE c.org_id = ${orgId}
         AND EXISTS (SELECT 1 FROM json_each(c.fields_json) f
-          WHERE json_extract(f.value, '$.field') = 'default')`;
+          WHERE json_extract(f.value, '$.field') = ${KIN_TAKEN_DEFAULT_FIELD})`;
       assert.lengthOf(marked, 0);
       const next = yield* sql`SELECT 1 FROM kin_records
         WHERE org_id = ${orgId} AND origin_key = ${`repeat:${rent.recordId}`}`;
@@ -1699,16 +1710,24 @@ it.effect("a default Kin couldn't undo, or on a task changed since, waits for it
         assert.deepInclude(question!, { state: "open", safe: false, raiseWidgetId: null });
 
       // Raised: the two on a fresh card, the renamed one's left with too few options for one,
-      // so its first card stays open for her.
-      yield* settleAt(kin, Math.max(...(yield* questions).map((one) => one!.actAt)));
+      // so its first card stays open for her, and Finance tells her once that it didn't go with it.
+      const raiseAt = Math.max(...(yield* questions).map((one) => one!.actAt));
+      yield* settleAt(kin, raiseAt);
       const [rentAsk, tilesAsk, coverAsk] = yield* questions;
-      for (const question of [rentAsk, tilesAsk, coverAsk]) {
+      for (const question of yield* questions) {
         assert.strictEqual(question!.state, "open");
         assert.isNotNull(question!.raisedAt);
       }
       assert.isNotNull(rentAsk!.raiseWidgetId);
       assert.isNotNull(tilesAsk!.raiseWidgetId);
       assert.isNull((yield* kin.widget(coverAsk!.widgetId)).closedAt);
+      const declined = sql<{ author: string | null; widgetId: string | null }>`SELECT
+          author_agent_id AS author, widget_id AS "widgetId" FROM kin_messages
+        WHERE org_id = ${orgId} AND chat_id = ${chatId}
+          AND body = ${"I didn't go with “Mark Send the Lumen cover note done”: Send the Lumen cover note changed since I asked. Tell me what you'd like."}`;
+      assert.deepStrictEqual(yield* declined, [{ author: "finance", widgetId: null }]);
+      yield* settleAt(kin, raiseAt + 60_000);
+      assert.lengthOf(yield* declined, 1);
       assert.deepStrictEqual(yield* Effect.forEach(keys, kin.stateOf), before);
     }).pipe(Effect.provide(layer)),
   ),
@@ -1794,6 +1813,236 @@ it.effect("Undo puts back only what a default changed, from its note or the agen
       yield* kin.tap(owner, pageNote!.widgetId, "option-1", "undo-receipts").pipe(Effect.flip);
       assert.deepStrictEqual(yield* kin.stateOf(receipts.key), reopened);
       assert.lengthOf(yield* events, before + 1);
+
+      // A list's own field called "default" is an ordinary field: Finance's edit of it lists as
+      // one, and the page's Undo refuses it as it does any list field, waking nobody.
+      const dates = presetDefinition("dates", "INR");
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json)
+        VALUES (${orgId}, 'filings', 'Filings', 'FIL', 0, 0, ${JSON.stringify({
+          ...dates,
+          fields: [
+            ...dates.fields,
+            { key: "default", label: "Default", type: "text", sensitive: false },
+          ],
+        })})`;
+      const filing = (yield* kin.records.create(
+        orgId,
+        { actor: { _tag: "person", personId: owner.personId }, via: "owner" },
+        {
+          list: "filings",
+          title: "Invented annual return",
+          owner: { _tag: "person", personId: owner.personId },
+          originKey: "annual return",
+        },
+      )).row;
+      yield* kin.records.update(
+        orgId,
+        { actor: { _tag: "agent", agentId: finance }, via: "lead" },
+        filing.key,
+        {
+          title: "Invented annual return, filed",
+          fields: { default: "Ship by Friday" },
+        },
+      );
+      const edited = yield* lastChange(filing.recordId);
+      const [listed] = (yield* agentChanges(KIN_OWNER_LEVEL, orgId, finance)).filter(
+        (one) => one.seq === edited.seq,
+      );
+      assert.deepInclude(listed!.fields, { field: "default", from: null, to: "Ship by Friday" });
+      assert.isFalse(listed!.undo);
+      const queuedBefore = (yield* events).length;
+      const refused = yield* ownerLevelUndoAgentChange({
+        orgId,
+        agentId: finance,
+        seq: edited.seq,
+        by: owner.personId,
+      }).pipe(Effect.flip);
+      assert.include(refused, { reason: "invalid_state" });
+      assert.lengthOf(yield* events, queuedBefore);
+      assert.strictEqual(
+        (yield* kin.records.get(orgId, filing.key))!.title,
+        "Invented annual return, filed",
+      );
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// Finance's defaults close tasks others hold. Dev presses Undo on his own: nobody tells him. Rhea
+// presses it on the Chief's: the Chief is woken once. Then on Dev's, while he is away: his notice
+// that it is open again is held for him, once, and Finance hears only its undone event.
+it.effect("whoever holds a task a default closed hears once that an Undo reopened it", () =>
+  Effect.andThen(
+    TestClock.setTime(MON),
+    Effect.gen(function* () {
+      const kin = yield* ambermill;
+      const { owner, orgId, sql } = kin;
+      const dev = kin.person("dev");
+      const finance = KinAgentId.make("finance");
+      yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+        VALUES (${orgId}, 'finance', ${owner.personId}, 0)`;
+      const devChat = (yield* kin.chats.createDirect(dev, { orgId, agentId: finance })).chatId;
+      const chatId = kin.chatOf("finance");
+      const events = (agent: string) =>
+        sql<{ key: string; tag: string }>`SELECT dedupe_key AS key, tag FROM kin_events
+          WHERE org_id = ${orgId} AND agent_id = ${agent} ORDER BY rowid`;
+      const assignment = (recordId: string) =>
+        sql`SELECT owner_kind AS kind, owner_id AS holder, assigned_by_person_id AS "givenBy",
+            assigned_at AS "givenAt" FROM kin_records
+          WHERE org_id = ${orgId} AND record_id = ${recordId}`;
+      const reopenedFor = (personId: string) =>
+        sql<{ body: string }>`SELECT body FROM kin_messages WHERE org_id = ${orgId}
+            AND body LIKE '%is open again%'
+            AND chat_id IN (SELECT chat_id FROM kin_chat_members WHERE org_id = ${orgId}
+              AND person_id = ${personId})
+          UNION ALL SELECT body FROM kin_held_posts WHERE org_id = ${orgId}
+            AND person_id = ${personId} AND body LIKE '%is open again%'
+          ORDER BY body`;
+      const undoNote = Effect.fn("test.undoNote")(function* (
+        who: { readonly _tag: "person"; readonly personId: KinPersonId },
+        questionId: string,
+      ) {
+        const [note] = yield* noticesOf(kin, questionId);
+        yield* kin.tap(who, note!.widgetId, "option-1", `undo-${questionId}`);
+      });
+
+      const own = yield* kin.task("Retouch the Lumen photos", dev.personId);
+      const ownAsk = yield* askToClose(kin, own, devChat, dev);
+      yield* settleAt(kin, ownAsk.due);
+      yield* undoNote(dev, ownAsk.question);
+      assert.strictEqual((yield* kin.stateOf(own.key)).state, "open");
+      assert.lengthOf(yield* reopenedFor("dev"), 0);
+
+      const chiefs = (yield* kin.records.create(
+        orgId,
+        {
+          actor: { _tag: "person", personId: owner.personId },
+          via: "owner",
+          askedBy: owner.personId,
+        },
+        {
+          title: "Book the Apex venue",
+          owner: { _tag: "agent", agentId: KinAgentId.make("chief") },
+          originKey: "Book the Apex venue",
+          team: true,
+        },
+      )).row;
+      const chiefAsk = yield* askToClose(kin, chiefs, chatId);
+      yield* settleAt(kin, chiefAsk.due);
+      const chiefGiven = yield* assignment(chiefs.recordId);
+      const chiefBefore = (yield* events("chief")).length;
+      const financeBefore = (yield* events("finance")).length;
+      yield* undoNote(owner, chiefAsk.question);
+      assert.strictEqual((yield* kin.stateOf(chiefs.key)).state, "open");
+      assert.deepStrictEqual(yield* assignment(chiefs.recordId), chiefGiven);
+      const woken = (yield* events("chief")).slice(chiefBefore);
+      assert.lengthOf(woken, 1);
+      assert.deepInclude(woken[0]!, { tag: "record.changed" });
+      assert.match(woken[0]!.key, new RegExp(`^record-assigned:${chiefs.recordId}:`));
+      assert.deepStrictEqual((yield* events("finance")).slice(financeBefore), [
+        { key: `question-undone:${chiefAsk.question}`, tag: "deferral.due" },
+      ]);
+
+      const devs = yield* kin.task("Print the Apex badges", dev.personId);
+      const devAsk = yield* askToClose(kin, devs, chatId);
+      yield* settleAt(kin, devAsk.due);
+      const devGiven = yield* assignment(devs.recordId);
+      const back = DateTime.formatIsoDate(DateTime.makeUnsafe(devAsk.due + 2 * 86_400_000));
+      yield* sql`UPDATE kin_people SET away_until = ${back} WHERE person_id = 'dev'`;
+      const financeLater = (yield* events("finance")).length;
+      yield* undoNote(owner, devAsk.question);
+      yield* settleAt(kin, devAsk.due + 60_000);
+      assert.deepStrictEqual(yield* assignment(devs.recordId), devGiven);
+      assert.deepStrictEqual((yield* events("finance")).slice(financeLater), [
+        { key: `question-undone:${devAsk.question}`, tag: "deferral.due" },
+      ]);
+      const told = `${devs.key} Print the Apex badges is open again: Rhea Rao undid a default Kin had taken.`;
+      assert.deepStrictEqual(yield* reopenedFor("dev"), [{ body: told }]);
+      const [held] = yield* sql<{ delivered: number | null }>`SELECT delivered_at AS delivered
+        FROM kin_held_posts WHERE org_id = ${orgId} AND person_id = 'dev'
+          AND body = ${told}`;
+      assert.isNull(held!.delivered);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// Meera is away when Finance's defaults close two of her tasks, and Rhea puts both back from
+// Finance's page before she is told. One was already picked by a pass that tells her only after
+// the Undo; the other waits for her return. Each reaches her once, as put back, with no Undo.
+it.effect("a default undone before its person is told reaches them once, as put back", () =>
+  Effect.andThen(
+    TestClock.setTime(MON),
+    Effect.gen(function* () {
+      const kin = yield* ambermill;
+      const { owner, orgId, sql } = kin;
+      const meera = kin.person("meera");
+      const finance = KinAgentId.make("finance");
+      const meeraChat = (yield* kin.chats.createDirect(meera, { orgId, agentId: finance })).chatId;
+      const said = sql<{ body: string; widgetId: string | null }>`SELECT body,
+          widget_id AS "widgetId" FROM kin_messages
+        WHERE org_id = ${orgId} AND chat_id = ${meeraChat} AND author_kind = 'agent'
+        ORDER BY seq`;
+      const reviewed = yield* kin.task("Review the Apex brief", meera.personId);
+      const printed = yield* kin.task("Print the Apex brief", meera.personId);
+      const waits = yield* askToClose(kin, reviewed, meeraChat, meera);
+      const picked = yield* askToClose(kin, printed, meeraChat, meera);
+      const due = Math.max(waits.due, picked.due);
+      const back = DateTime.formatIsoDate(DateTime.makeUnsafe(due + 86_400_000));
+      yield* sql`UPDATE kin_people SET away_until = ${back} WHERE person_id = 'meera'`;
+      assert.strictEqual(yield* settleAt(kin, due), 2);
+      const before = (yield* said).length;
+      const undoFromPage = Effect.fn("test.undoFromPage")(function* (recordId: string) {
+        const [taken] = yield* sql<{ seq: number }>`SELECT seq FROM kin_record_changes
+          WHERE org_id = ${orgId} AND record_id = ${recordId} ORDER BY seq DESC LIMIT 1`;
+        yield* ownerLevelUndoAgentChange({
+          orgId,
+          agentId: finance,
+          seq: taken!.seq,
+          by: owner.personId,
+        });
+      });
+
+      // A pass picked the second before the Undo landed: it tells her only after.
+      const stale = (yield* Questions.readQuestion(orgId, picked.question))!;
+      yield* undoFromPage(printed.recordId);
+      yield* sql.withTransaction(
+        tellTaken(
+          {
+            orgId,
+            questionId: stale.questionId,
+            agentId: stale.agentId,
+            personId: stale.personId,
+            chatId: stale.chatId,
+            label: stale.defaultLabel!,
+            question: stale.question,
+            about: stale.about,
+            now: due + 60_000,
+          },
+          kin.chats,
+        ),
+      );
+      yield* undoFromPage(reviewed.recordId);
+      assert.strictEqual((yield* kin.stateOf(reviewed.key)).state, "open");
+      yield* settleAt(kin, due + 120_000);
+
+      // Nothing else waits for her: the line says it, so no notice that her task is open again.
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_held_posts WHERE org_id = ${orgId} AND person_id = 'meera'`,
+        0,
+      );
+      const home = Date.parse(`${back}T12:00:00.000Z`);
+      yield* settleAt(kin, home);
+      yield* settleAt(kin, home + 60_000);
+      assert.deepStrictEqual((yield* said).slice(before), [
+        {
+          body: "Nobody answered, so I went with “Mark Print the Apex brief done” for Print the Apex brief. Rhea Rao has since put it back.",
+          widgetId: null,
+        },
+        {
+          body: "Nobody answered, so I went with “Mark Review the Apex brief done” for Review the Apex brief. Rhea Rao has since put it back.",
+          widgetId: null,
+        },
+      ]);
     }).pipe(Effect.provide(layer)),
   ),
 );

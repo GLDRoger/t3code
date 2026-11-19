@@ -129,6 +129,7 @@ export const ownerLevelUndoAgentChange = Effect.fn("KinAgentChanges.undo")(funct
         questionId,
         agentId: input.agentId,
         writer,
+        by: input.by,
         key: row.key,
         patch,
         name: row.key,

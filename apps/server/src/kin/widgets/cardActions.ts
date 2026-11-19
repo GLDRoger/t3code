@@ -559,7 +559,7 @@ export const run = Effect.fn("KinCardActions.run")(function* (
  * A question's sealed done or drop, taken at its day as the asker, marked as its default
  * (`takenFor`), while the task is as offered and its drawer still could. False otherwise, or when
  * closing does more than Undo puts back: a repeating task's next (`KinRecords.spawnNext`), a
- * handed-back one's mark.
+ * handed-back one's mark; or when putting it back would be refused.
  */
 export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
   orgId: KinOrgId,
@@ -573,11 +573,27 @@ export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
   const row = yield* recordRow(orgId, { recordId: plan.recordId });
   if (row === undefined || row.rev !== plan.rev) return false;
   const sql = yield* SqlClient.SqlClient;
-  const [more] = yield* sql<{ repeat: string | null; handedBack: number | null }>`SELECT
-      repeat_json AS repeat, handed_back_at AS "handedBack" FROM kin_records
+  const [more] = yield* sql<{
+    repeat: string | null;
+    handedBack: number | null;
+    waitingKind: string | null;
+    waitingId: string | null;
+  }>`SELECT repeat_json AS repeat, handed_back_at AS "handedBack",
+      waiting_on_kind AS "waitingKind", waiting_on_id AS "waitingId" FROM kin_records
     WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
   if (more === undefined || repeatOf(more.repeat) !== undefined || more.handedBack !== null)
     return false;
+  // Undo writes back who it waited on, which `update` checks is still here to wait on.
+  if (more.waitingKind !== null && more.waitingId !== null) {
+    const waits =
+      more.waitingKind === "agent"
+        ? { _tag: "agent" as const, agentId: KinAgentId.make(more.waitingId) }
+        : { _tag: "person" as const, personId: KinPersonId.make(more.waitingId) };
+    const back = yield* records
+      .principalExists(orgId, waits, "to wait on")
+      .pipe(Effect.as(true), Effect.catchTags({ KinChatError: () => Effect.succeed(false) }));
+    if (!back) return false;
+  }
   if ((yield* drawHolds(orgId, plan.draw)) !== undefined) return false;
   if (!(yield* teamMay(orgId, plan.draw, row, state))) return false;
   yield* records.update(

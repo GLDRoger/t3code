@@ -40,7 +40,7 @@ import {
   repeats,
   safeDefault,
 } from "./rules.ts";
-import { TAKEN_KEY, tellTaken } from "./defaultTaken.ts";
+import { TAKEN_KEY, tellDeclined, tellTaken } from "./defaultTaken.ts";
 
 export type QuestionState = "open" | "answered" | "default_taken" | "withdrawn";
 export type QuestionRow = {
@@ -530,10 +530,13 @@ export const settleDue = Effect.fn("KinQuestions.settleDue")(function* (
   deps: SettleDeps,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const due = (yield* sql<Raw>`SELECT ${sql.literal(COLUMNS)} ${sql.literal(FROM)}
-    WHERE q.org_id = ${orgId} AND q.state = 'open' AND q.act_at <= ${now}
-      AND (q.safe = 1 OR q.raised_at IS NULL)
-    ORDER BY q.act_at, q.question_id LIMIT 50`).map(toRow);
+  // Paused, Kin or its asker, a question waits for resume and fills no pass's batch.
+  const due = (yield* isOrgPaused(orgId))
+    ? []
+    : (yield* sql<Raw>`SELECT ${sql.literal(COLUMNS)} ${sql.literal(FROM)}
+        WHERE q.org_id = ${orgId} AND q.state = 'open' AND q.act_at <= ${now}
+          AND (q.safe = 1 OR q.raised_at IS NULL) AND a.paused_at IS NULL
+        ORDER BY q.act_at, q.question_id LIMIT 50`).map(toRow);
   let settled = 0;
   for (const row of due) {
     const done = yield* sql
@@ -711,7 +714,7 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
   orgId: KinOrgId,
   row: QuestionRow,
   now: number,
-  chat: Pick<KinChatService["Service"], "closeReplaced" | "ask">,
+  chat: Pick<KinChatService["Service"], "closeReplaced" | "ask" | "notice">,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const [agent] = yield* sql<{ owner: string; threadId: string | null; retiredAt: string | null }>`
@@ -761,8 +764,27 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
   if (defaultLabel !== row.defaultLabel)
     yield* sql`UPDATE kin_questions SET default_label = ${defaultLabel}
       WHERE org_id = ${orgId} AND question_id = ${row.questionId}`;
-  // Too few left for a card: the first card stays open, each tap on it checked as it runs.
-  if (offered.length < 2) return true;
+  // Too few left for a card: the first card stays open, each tap on it checked as it runs. A
+  // default left off is said once, so it is raised only once its person has heard.
+  if (offered.length < 2) {
+    if (row.defaultLabel !== null && defaultLabel === null) {
+      const option = row.options.find((one) => one.label === row.defaultLabel);
+      const plan = option === undefined ? undefined : sealed.get(option.optionId);
+      yield* tellDeclined(
+        {
+          orgId,
+          questionId: row.questionId,
+          agentId: row.agentId,
+          personId: row.personId,
+          chatId: row.chatId,
+          label: row.defaultLabel,
+          recordId: plan !== undefined && "recordId" in plan ? plan.recordId : undefined,
+        },
+        chat,
+      );
+    }
+    return true;
+  }
   const clock = yield* personClock(orgId, row.personId);
   const asked = {
     question: oneLine(`${STILL_OPEN}${row.question}`, 240),

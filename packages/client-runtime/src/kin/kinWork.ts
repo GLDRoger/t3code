@@ -23,6 +23,7 @@ import {
   type KinWorkListInput,
   type KinWorkPrincipal,
   type KinWorkSummary,
+  KIN_TAKEN_DEFAULT_FIELD,
   kinWhenFormat,
   kinWhenParts,
 } from "@t3tools/contracts";
@@ -1186,7 +1187,7 @@ export function kinWorkChangeText(
   else if (kind === "client") clauses.push("marked them a client");
   const said = clauses.length === 0 ? "updated it" : clauses.join(", ");
   // A change Kin made by taking the default of a question nobody answered.
-  return field("default") === undefined
+  return field(KIN_TAKEN_DEFAULT_FIELD) === undefined
     ? `${who} ${said}`
     : `${who} went with the default: ${said} (nobody answered)`;
 }

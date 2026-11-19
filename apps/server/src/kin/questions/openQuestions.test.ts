@@ -295,16 +295,30 @@ it.effect("a question is asked once, and its default is taken once at its day", 
           widgetId: KinWidgetId.make(asked.value.widgetId as string),
         }),
       );
+      // More of paused Finance's due than a pass takes, between two of the Chief of staff's.
+      const crowd = (id: string, agent: string, kind: "card" | "text", actAt: number) =>
+        sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id, kind,
+            question, default_label, safe, asked_at, due_at, act_at, state)
+          VALUES (${id}, ${orgId}, ${agent}, ${owner.personId}, ${chatOf(agent)}, ${kind},
+            ${`Invented question ${id}?`}, ${kind === "card" ? "Yes" : null},
+            ${kind === "card" ? 1 : 0}, 0, ${actAt}, ${actAt}, 'open')`;
+      yield* crowd("q-chief-first", "chief", "text", -1);
+      for (let index = 0; index < 50; index += 1)
+        yield* crowd(`q-paused-${index}`, "finance", "card", 0);
+      yield* crowd("q-chief-last", "chief", "text", 1);
       yield* sql`INSERT INTO kin_org_state (org_id, paused, paused_at, paused_by, reason)
         VALUES (${orgId}, 1, ${TUE_1930}, ${owner.personId}, 'Invented pause')
         ON CONFLICT (org_id) DO UPDATE SET paused = 1, paused_at = ${TUE_1930},
           paused_by = ${owner.personId}, reason = 'Invented pause'`;
       assert.strictEqual(yield* settle(orgId, TUE_1930), 0);
+      assert.strictEqual((yield* questionRow(sql, "q-chief-first")).state, "open");
       yield* sql`UPDATE kin_org_state SET paused = 0, paused_at = NULL, paused_by = NULL,
           reason = NULL
         WHERE org_id = ${orgId}`;
       yield* sql`UPDATE kin_agents SET paused_at = ${at} WHERE agent_id = 'finance'`;
-      assert.strictEqual(yield* settle(orgId, TUE_1930), 0);
+      assert.strictEqual(yield* settle(orgId, TUE_1930), 2);
+      assert.strictEqual((yield* questionRow(sql, "q-chief-last")).state, "withdrawn");
+      yield* sql`DELETE FROM kin_questions WHERE question_id LIKE 'q-paused-%'`;
       assert.strictEqual((yield* questionRow(sql, questionId)).state, "open");
       assert.lengthOf(yield* dueEvents(sql, orgId), 0);
       assert.strictEqual(
