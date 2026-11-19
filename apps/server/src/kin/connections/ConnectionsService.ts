@@ -161,6 +161,11 @@ export const ASKED =
 /** A call that became a Confirm card because the turn had read outside text. */
 export const DRAFTED =
   "Nothing was sent: this exact action waits on a Confirm card, marked as drafted after outside text, and runs only if the owner or a co-owner taps Confirm there. Tell them once in one short line that it is waiting, and don't ask for it again in words.";
+/** Added to a new card's result when it replaced older cards for the same mail. */
+export const REPLACED = (cards: number) =>
+  cards === 1
+    ? "This card replaced the earlier card for the same mail: that one can't be confirmed now."
+    : `This card replaced ${cards} earlier cards for the same mail: those can't be confirmed now.`;
 /** Added to a new card's result when cards it replaces held people's saved words. */
 export const EDITED_OVER = (names: string, cards = 1) =>
   `${names} had saved their own words on ${cards === 1 ? "the card" : "the cards"} this one replaces: they are quoted below, and your new card doesn't have them. If their changes should stand, draft again starting from their words.`;
@@ -2689,7 +2694,9 @@ const make = Effect.gen(function* () {
           ),
       );
     yield* record(turn, { ...entry, status: "awaiting_approval" });
-    const note = outside === undefined ? ASKED : DRAFTED;
+    const asked = outside === undefined ? ASKED : DRAFTED;
+    const older = new Set(replaced).size;
+    const note = older === 0 ? asked : `${asked} ${REPLACED(older)}`;
     const names = [...new Set(savedOver.map((one) => one.name))].join(" and ");
     return savedOver.length === 0
       ? { note }

@@ -49,6 +49,7 @@ import {
   type EditCards,
   KinConnections,
   NOT_CHECKED,
+  REPLACED,
   type SaveCards,
   SHARED_CONNECTIONS,
 } from "./ConnectionsService.ts";
@@ -679,7 +680,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           threadId: inbound.threadId,
           body: "Friday works. I'll confirm 11:00 tomorrow.",
         });
-        assert.strictEqual(redrafted.note, `${ASKED} ${EDITED_OVER("Arjun")}`);
+        assert.strictEqual(redrafted.note, `${ASKED} ${REPLACED(1)} ${EDITED_OVER("Arjun")}`);
         assert.include(redrafted.quoted ?? "", theirs);
         const corrected = cards.at(-2)!;
         // The first card is replaced by the time the correction shows, so no tap lands between.
@@ -937,13 +938,19 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             to: [to],
             subject,
             body: "Can both clinics join a dry run?",
-          }).pipe(Effect.map(() => cards.findLast((one) => !one.widgetId.startsWith("closed:"))!));
+          }).pipe(
+            Effect.map((result) => ({
+              ...cards.findLast((one) => !one.widgetId.startsWith("closed:"))!,
+              note: result.note,
+            })),
+          );
 
         yield* wake({
           person: owner,
           says: "Draft a short mail to Ravi about W-1, for my approval.",
         });
         const first = yield* draft("Pilot check");
+        assert.strictEqual(first.note, ASKED);
         yield* stored(first);
         assert.strictEqual(yield* entry, "rec_w1");
         assert.strictEqual(yield* row, first.widgetId);
@@ -951,6 +958,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         // The redraft about the same task replaces it, there and in the chat.
         yield* wake({ person: owner, says: "Redraft the W-1 mail as one short sentence." });
         const second = yield* draft("Pilot check, short");
+        assert.strictEqual(second.note, `${ASKED} ${REPLACED(1)}`);
         yield* stored(second);
         assert.include(
           cards.map((one) => one.widgetId),
@@ -962,6 +970,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         yield* TestClock.adjust("1 minute");
         yield* wake({ person: owner, says: "Also mail Asha about W-1." });
         const other = yield* draft("Pilot check", "asha@lumen.example");
+        assert.strictEqual(other.note, ASKED);
         yield* stored(other);
         assert.notInclude(
           cards.map((one) => one.widgetId),
@@ -1362,7 +1371,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           yield* sql`DROP TABLE crowd`;
           yield* wake({ person: owner }, finance);
           assert.deepStrictEqual(yield* reply("Friday works, from Finance.", financeScope), {
-            note: ASKED,
+            note: `${ASKED} ${REPLACED(1)}`,
           });
           const fromFinance = cards.findLast((one) => !one.widgetId.startsWith("closed:"))!;
           assert.strictEqual(fromFinance.chatId, "fin-owner");
@@ -1379,7 +1388,9 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           const ours = "Thanks Ravi, Friday works. Arjun will bring the samples.";
           const again = yield* savedReply(ours);
           yield* wake({ person: coOwner });
-          assert.deepStrictEqual(yield* reply("Friday works, Asha here."), { note: ASKED });
+          assert.deepStrictEqual(yield* reply("Friday works, Asha here."), {
+            note: `${ASKED} ${REPLACED(1)}`,
+          });
           const fromAsha = cards.findLast((one) => !one.widgetId.startsWith("closed:"))!;
           assert.strictEqual(fromAsha.chatId, `cos-${coOwner}`);
           assert.deepStrictEqual(yield* tap(fromAsha.widgetId, coOwner), {
@@ -1400,7 +1411,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           yield* saveEdited(twin, owner, 1, { ...draft, body: "See you Monday at 10." });
           yield* callTool("mail", "mail_search", { query: "from:ravi@lumen.example" });
           const marked = yield* callTool(ACCOUNTS, "mail_send", draft);
-          assert.strictEqual(marked.note, `${DRAFTED} ${EDITED_OVER("Arjun")}`);
+          assert.strictEqual(marked.note, `${DRAFTED} ${REPLACED(1)} ${EDITED_OVER("Arjun")}`);
           assert.include(marked.quoted ?? "", "See you Monday at 10.");
           assert.strictEqual(yield* stateOf(twin), "stale");
           assert.isTrue(closed(twin));
@@ -1427,7 +1438,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             body: "Friday it is. The invoice is attached.",
             attachments: ["INV-1"],
           });
-          assert.strictEqual(both.note, `${ASKED} ${EDITED_OVER("Arjun", 2)}`);
+          assert.strictEqual(both.note, `${ASKED} ${REPLACED(2)} ${EDITED_OVER("Arjun", 2)}`);
           assert.include(both.quoted ?? "", "The November invoice.");
           assert.include(both.quoted ?? "", "Friday it is, at the studio.");
           assert.deepStrictEqual(
@@ -1725,7 +1736,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             { threadId: inbound.threadId, body: "Yes, and the PDF is attached. Finance" },
             financeScope,
           ),
-          { note: ASKED },
+          { note: `${ASKED} ${REPLACED(1)}` },
         );
         const redraft = cards.findLast((one) => !one.widgetId.startsWith("closed:"))!;
         assert.strictEqual(redraft.chatId, "fin-owner");
