@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
+import { kinNow, kinNowMs } from "./kinNow.ts";
 import {
   EnvironmentAuthorizationError,
   kinIsPeopleChat,
@@ -94,7 +95,7 @@ const kinClockFormat = kinWhenFormat("time");
 const kinDayFormat = kinWhenFormat("date");
 
 /** "9:41" for a time today (by `now`'s local day), "7 Nov" for any other day. */
-export function formatKinTime(date: Date, now: Date = new Date()): string {
+export function formatKinTime(date: Date, now: Date = kinNow()): string {
   return date.toDateString() === now.toDateString()
     ? kinClockFormat.format(date)
     : kinDayFormat.format(date);
@@ -348,7 +349,7 @@ export function kinChatMuted(
 export function kinChatRowView(
   row: KinInboxRow,
   directory: KinDirectory,
-  now = Date.now(),
+  now = kinNowMs(),
 ): KinChatRowView {
   const { chat } = row;
   const others = chat.members.filter(

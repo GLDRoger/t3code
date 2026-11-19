@@ -1,3 +1,4 @@
+import { kinNow } from "@t3tools/client-runtime/kin/kinNow";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_CURRENCY,
@@ -106,7 +107,7 @@ export function KinSetRateButton(
 
 const pad = (value: number) => String(value).padStart(2, "0");
 const todayDay = () => {
-  const now = new Date();
+  const now = kinNow();
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 };
 

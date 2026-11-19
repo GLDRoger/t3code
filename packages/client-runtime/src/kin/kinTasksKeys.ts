@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
+import { kinNow } from "./kinNow.ts";
 import {
   KIN_TASKS_KEY_LIMIT,
   KIN_TASKS_KEY_PATH,
@@ -77,7 +78,7 @@ function expiresText(expiresAt: Date, now: Date): string {
 /** "Made 11 Nov · Expires 11 Dec, in 30 days · Never used". */
 export function kinTasksKeyRows(
   keys: readonly KinTasksKey[],
-  now: Date = new Date(),
+  now: Date = kinNow(),
 ): readonly KinTasksKeyRow[] {
   return keys.map((key) => ({
     sessionId: key.sessionId,

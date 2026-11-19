@@ -58,6 +58,7 @@ import { FetchHttpClient } from "effect/http";
 import * as Connections from "./connections/ConnectionsService.ts";
 import * as ConnectionSecrets from "./connections/ConnectionSecrets.ts";
 import * as DevFakeMail from "./connections/DevFakeMail.ts";
+import * as DevClock from "./DevClock.ts";
 import * as McpGateway from "./connections/McpGateway.ts";
 import * as DevFakeSocial from "./social/DevFakeSocial.ts";
 
@@ -195,6 +196,8 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           ),
       ),
     ),
+    // Everything Kin builds above reads the time from here: a play-test's moved clock in dev.
+    Layer.provide(DevClock.layer),
     // Inside `enabled`: built only with Kin on, and a secret store failure disables Kin, not the server.
     Layer.provide(seal),
     // The server's own instance: layers are shared by reference.
