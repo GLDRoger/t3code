@@ -731,7 +731,10 @@ it.effect("only the asker takes an answer from the person's own words, and she c
         WHERE org_id = ${orgId} AND agent_id = 'finance'
           AND dedupe_key LIKE 'question-answer-undone:%'`;
       const [undoneEvent] = yield* told;
-      assert.deepInclude(JSON.parse(undoneEvent!.json).subject, { undone: true, words: true });
+      const subject = JSON.parse(undoneEvent!.json).subject;
+      assert.deepInclude(subject, { undone: true, words: true });
+      const toldFinance = Questions.undoneTurnText(KinOrgId.make(orgId), subject);
+      assert.match(String(yield* toldFinance), /open again on its card, waiting for their answer/);
       // The words it was taken from, retried in the turn they woke, no longer answer it.
       yield* refused("finance", /own message/);
       assert.strictEqual(yield* settle(orgId, TUE_1930), 0);
@@ -740,9 +743,9 @@ it.effect("only the asker takes an answer from the person's own words, and she c
       // Her new words do. Told of the Undo after that, Finance reads it was undone all the same.
       yield* wake("finance", yield* say(chatOf("finance"), "Draft it after all."));
       assert.isTrue((yield* answer("finance")).ok);
-      assert.match(
-        String(yield* Questions.undoneTurnText(KinOrgId.make(orgId), { questionId, words: true })),
-        /undid the answer you took from their words/,
+      assert.strictEqual(
+        yield* toldFinance,
+        "Your question to Rhea Rao, “Shall I draft VIOM's payment reminder for INV-8?”: Rhea Rao undid the answer you took from their words. It has since been answered: “Draft it”; go by that, not the undone answer, and don't ask again.",
       );
       // Finance retired since: her Undo keeps the answer, says why, and leaves nothing waiting.
       const [second] = yield* repo.listOpenWaiting({ orgId, personId: owner.personId });

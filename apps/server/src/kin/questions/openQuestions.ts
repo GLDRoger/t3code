@@ -1116,7 +1116,13 @@ export const undoneTurnText = Effect.fn("KinQuestions.undoneTurnText")(function*
   // Which was undone is the event's, never read off the row: it may have moved on since.
   if (subject.words === true) {
     const who = yield* personName(orgId, row.personId);
-    return `Your question to ${who}, “${row.question}”: ${who} undid the answer you took from their words, so it is open again on its card. Don't act on that answer or ask again; wait for theirs.`;
+    const now =
+      row.state === "open"
+        ? "It is open again on its card, waiting for their answer with no default. Don't act on that answer or ask again; wait for theirs."
+        : row.state === "answered"
+          ? `It has since been answered${row.answer === null ? "" : `: “${row.answer}”`}; go by that, not the undone answer, and don't ask again.`
+          : "It has since been closed, so don't act on the undone answer or ask again.";
+    return `Your question to ${who}, “${row.question}”: ${who} undid the answer you took from their words. ${now}`;
   }
   if (row.state !== "default_taken" || row.defaultLabel === null) return undefined;
   return `Your question to ${yield* personName(orgId, row.personId)}, “${row.question}”, got no answer, so Kin took your default “${row.defaultLabel}”. It has now been undone: what it changed is back as it was. Don't do it again or ask the same again; ask anew only if it still needs deciding.`;
