@@ -28,6 +28,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { PreparedJson } from "../connections/Sending.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
+import { CODING_AGENT_NAME } from "./recordRows.ts";
 import { teamVisible } from "./teamView.ts";
 
 /** Who writes a comment: a person from their own screen, or an agent in a turn for `askedBy`. */
@@ -49,11 +50,14 @@ type CommentRow = {
   readonly removedAt: number | null;
   readonly removedByKind: "person" | "agent" | null;
   readonly removedById: string | null;
+  readonly codingAgent: string | null;
 };
+// Read unaliased, and in RETURNING: the key's name is looked up by the table's own name.
 const COLUMNS = `comment_id AS "commentId", record_id AS "recordId", seq,
   author_kind AS "authorKind", author_id AS "authorId", asked_by_person_id AS "askedBy", body,
   files_json AS "filesJson", request_hash AS "requestHash", created_at AS "createdAt",
-  removed_at AS "removedAt", removed_by_kind AS "removedByKind", removed_by_id AS "removedById"`;
+  removed_at AS "removedAt", removed_by_kind AS "removedByKind", removed_by_id AS "removedById",
+  ${CODING_AGENT_NAME("kin_record_comments")} AS "codingAgent"`;
 
 const FilesJson = Schema.fromJsonString(Schema.Array(KinAttachment));
 const decodeFiles = Schema.decodeUnknownOption(FilesJson);
@@ -95,6 +99,7 @@ const toComment = (row: CommentRow): KinRecordComment => {
     at: iso(row.createdAt),
     by: principalOf(row.authorKind, row.authorId),
     ...(row.askedBy === null ? {} : { askedBy: KinPersonId.make(row.askedBy) }),
+    ...(row.codingAgent === null ? {} : { codingAgent: row.codingAgent }),
     // A removed comment keeps its place, never its words or files.
     body: removed ? "" : row.body,
     files: removed ? [] : Option.getOrElse(decodeFiles(row.filesJson), () => []),
@@ -266,10 +271,10 @@ export const removeComment = Effect.fn("KinRecordComments.remove")(function* (in
   readonly now: number;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<CommentRow>`SELECT ${sql.literal(COLUMNS)} FROM kin_record_comments c
-    WHERE c.org_id = ${input.orgId} AND c.comment_id = ${input.commentId}
-      AND c.record_id = (SELECT record_id FROM kin_records
-        WHERE org_id = ${input.orgId} AND key = ${input.key})`;
+  const [row] = yield* sql<CommentRow>`SELECT ${sql.literal(COLUMNS)} FROM kin_record_comments
+    WHERE org_id = ${input.orgId} AND comment_id = ${input.commentId}
+      AND record_id = (SELECT r.record_id FROM kin_records r
+        WHERE r.org_id = ${input.orgId} AND r.key = ${input.key})`;
   if (row === undefined || !(yield* personSeesRecord(input.orgId, input.by, row.recordId)))
     return yield* new KinChatError({ reason: "not_found", message: "No such comment here." });
   const files = Option.getOrElse(decodeFiles(row.filesJson), () => []);

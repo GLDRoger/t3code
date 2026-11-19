@@ -493,6 +493,14 @@ describe("kinTaskActivity", () => {
             at: "2026-11-10T14:00:00.000Z",
             fields: [{ field: "default", from: null, to: "q-2" }],
           }),
+          // Zoya's coding agent started it and left a note, through her key.
+          change({
+            seq: 5,
+            by: zoya,
+            codingAgent: "Work laptop",
+            at: "2026-11-10T15:00:00.000Z",
+            fields: [{ field: "state", from: "open", to: "doing" }],
+          }),
         ],
         comments: [
           comment({ seq: 1, by: zoya, at: "2026-11-10T09:00:00.000Z", body: "On it." }),
@@ -501,6 +509,13 @@ describe("kinTaskActivity", () => {
             at: "2026-11-10T11:00:00.000Z",
             body: "",
             removed: { at: "2026-11-10T12:00:00.000Z", by: rhea },
+          }),
+          comment({
+            seq: 3,
+            by: zoya,
+            codingAgent: "Work laptop",
+            at: "2026-11-10T15:00:00.000Z",
+            body: "Logo draft checked.",
           }),
         ],
       }),
@@ -514,6 +529,8 @@ describe("kinTaskActivity", () => {
       ["comment", "You", "removed this note", null],
       ["state", "Chief of staff", "went with the default: finished it (nobody answered)", null],
       ["change", "Chief of staff", "updated it", null],
+      ["state", "Zoya", "started on it", "Work laptop"],
+      ["comment", "Zoya", "", "Work laptop"],
     ]);
     expect(lines[1]?.comment).toMatchObject({ body: "On it.", removed: false });
   });

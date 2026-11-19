@@ -92,8 +92,17 @@ it.effect("a person makes keys only for themself, three at most, even two at onc
       "not_found",
     );
     assert.lengthOf((yield* TasksKeys.list(rhea.app, { orgId, personId: zoya.personId })).keys, 3);
-    // A use is shown in the list.
-    yield* admitted(first.secret);
+    // A use is shown in the list, and an open list hears of it, once a minute at most.
+    const touched: Array<string> = [];
+    const observed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      effect.pipe(
+        Effect.provideService(RefreshHub.KinRefreshObserver, {
+          touch: (_org, topic) => Effect.sync(() => void touched.push(topic)),
+        }),
+      );
+    yield* observed(admitted(first.secret));
+    yield* observed(admitted(first.secret));
+    assert.deepStrictEqual(touched, ["people"]);
     const used = (yield* TasksKeys.list(zoya.app, { orgId })).keys.find(
       (one) => one.sessionId === first.key.sessionId,
     );
@@ -234,6 +243,19 @@ it.effect("a key reaches only tasks its person holds, narrowly and as them, even
       FROM kin_record_changes WHERE record_id = ${hers.recordId} ORDER BY seq DESC LIMIT 1`;
     assert.deepInclude(change, { kind: "person", actor: zoya.personId, viaKey: zoyaKey.sessionId });
     assert.include(change?.fields, '"to":"doing"');
+    // N3: every reader's Activity names the key it came through, by its name.
+    yield* sql`UPDATE kin_tasks_keys SET label = 'Invented laptop'
+      WHERE session_id = ${zoyaKey.sessionId}`;
+    const shown = yield* records.detail((yield* records.get(orgId, hers.key))!, 5);
+    assert.deepInclude(shown.changes[0], {
+      by: writer(zoya.personId).actor,
+      codingAgent: "Invented laptop",
+    });
+    assert.notProperty(shown.changes.at(-1), "codingAgent");
+    assert.deepInclude(shown.comments?.[0], {
+      by: writer(zoya.personId).actor,
+      codingAgent: "Invented laptop",
+    });
     // Notes taken back never hide one still standing, however many there are.
     for (let n = 0; n <= KIN_RECORD_COMMENTS_PAGE; n++)
       yield* commentMine(zoyaKey, { key: hers.key, text: `Invented: draft ${n}` });

@@ -488,7 +488,7 @@ export interface KinActivityLine {
   readonly when: string;
   readonly before: string | null;
   readonly after: string | null;
-  /** An agent that did it for `who`: "via Chief of staff". */
+  /** An agent that did it for `who`, or their coding-agent key: "via Chief of staff". */
   readonly via: string | null;
   /** A note's own words and files; null on a change. */
   readonly comment: {
@@ -549,7 +549,12 @@ function changeLine(change: KinRecordChange, names: KinWorkNames, now: Date): Ki
     text: named ? full.slice(actor.length + 1) : full,
     when: formatKinTime(new Date(change.at), now),
     ...beforeAfter(change, names, now),
-    via: asker === undefined ? null : actor,
+    via:
+      asker !== undefined
+        ? actor
+        : named && change.by._tag === "person"
+          ? (change.codingAgent ?? null)
+          : null,
     comment: null,
   };
 }
@@ -564,7 +569,7 @@ function commentLine(comment: KinRecordComment, names: KinWorkNames, now: Date):
     when: formatKinTime(new Date(comment.at), now),
     before: null,
     after: null,
-    via: null,
+    via: comment.by._tag === "person" ? (comment.codingAgent ?? null) : null,
     comment: {
       commentId: comment.commentId,
       body: comment.body,
