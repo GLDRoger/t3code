@@ -269,3 +269,21 @@ export const promptLine = Effect.fn("KinConnectionRows.promptLine")(function* (o
   );
   return `Connected services, reached with kin_connection_tools and kin_connection_call: ${parts.join("; ")}.`;
 });
+
+/**
+ * In the caller's transaction: every ask still waiting on its Confirm whose entry is this record
+ * goes stale with `reason`. The ids of their cards, for the caller to close.
+ */
+export const staleAsksAbout = Effect.fn("KinConnectionRows.staleAsksAbout")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+  reason: string,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ widgetId: string | null }>`UPDATE kin_connection_asks
+    SET state = 'stale', reason = ${reason}, decided_at = ${now}
+    WHERE org_id = ${orgId} AND entry_record_id = ${recordId} AND state = 'open'
+    RETURNING widget_id AS "widgetId"`;
+  return rows.flatMap((row) => (row.widgetId === null ? [] : [row.widgetId])).toSorted();
+});
