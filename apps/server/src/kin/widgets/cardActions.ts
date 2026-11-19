@@ -557,7 +557,7 @@ export const run = Effect.fn("KinCardActions.run")(function* (
 export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
   orgId: KinOrgId,
   plan: CardPlan,
-  question: Pick<QuestionRow, "questionId" | "agentId" | "chatId">,
+  question: Pick<QuestionRow, "questionId" | "agentId" | "chatId" | "widgetId" | "raiseWidgetId">,
   records: KinRecords["Service"],
 ) {
   if ((plan.kind !== "done" && plan.kind !== "drop") || plan.draw.agentId !== question.agentId)
@@ -569,7 +569,13 @@ export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
   if (!(yield* teamMay(orgId, plan.draw, row, state))) return false;
   yield* records.update(
     orgId,
-    { actor: { _tag: "agent", agentId: question.agentId }, via: "lead", chatId: question.chatId },
+    {
+      actor: { _tag: "agent", agentId: question.agentId },
+      via: "lead",
+      chatId: question.chatId,
+      // Its own cards say what Kin went with, not that the task closed under them.
+      answering: [question.widgetId, question.raiseWidgetId].filter((id) => id !== null),
+    },
     row.key,
     { state },
     plan.rev,
