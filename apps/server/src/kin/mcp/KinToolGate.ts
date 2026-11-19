@@ -11,7 +11,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { SHARED_REFUSAL } from "../lead/Audience.ts";
 import { OUTSIDE_REFUSAL, outsideToolAllowed } from "../lead/OutsideContent.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
-import { TURN_EVENT_TOOLS } from "../lead/eventIds.ts";
+import { TURN_EVENT_TOOLS, TURN_ONLY_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 
 type Check = (
@@ -66,7 +66,7 @@ const gate = (name: string, check: Check) =>
 /**
  * The event a call acts on, from the lead's running turn: a left-out one is the turn's latest
  * message or tap, else its first event; a message id becomes its event. Anything else stays, and
- * the tool refuses it as before. The call's arguments are filled in before they are decoded.
+ * the tool refuses it as before, except where the event only names the turn (`TURN_ONLY_EVENT_TOOLS`). The call's arguments are filled in before they are decoded.
  */
 const turnEvents = McpHttpServer.toolCallPrepare(
   Effect.fn("KinToolGate.turnEvents")(
@@ -91,7 +91,7 @@ const turnEvents = McpHttpServer.toolCallPrepare(
       const named = events.find((event) => event.messageId !== null && event.messageId === given);
       const chosen =
         named ??
-        (given === undefined
+        (given === undefined || TURN_ONLY_EVENT_TOOLS.has(name)
           ? (events.findLast((event) => event.asked === 1) ?? events[0])
           : undefined);
       if (chosen !== undefined) args.sourceEventId = chosen.eventId;

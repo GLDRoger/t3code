@@ -89,7 +89,9 @@ const kinServices = Layer.unwrap(
       Layer.mock(LeadMemory)({
         defer: (_scope, input) =>
           Effect.succeed({ itemId: KinMemoryItemId.make(`def-${input.what}`) }),
-        cancel: (_scope, input) => Effect.succeed({ itemId: input.itemId }),
+        // Says which event reached it, so a test sees what the tool gate filled in.
+        cancel: (_scope, input) =>
+          Effect.succeed({ itemId: input.itemId, title: input.sourceEventId }),
       }),
     ).pipe(Layer.provideMerge(Layer.succeedContext(services)));
   }),
@@ -753,6 +755,12 @@ it.effect("a teammate sets a reminder for themselves, in their own chat, and not
         (yield* call("kin_cancel", { itemId: "def-Send the Lumen mockups", sourceEventId: asked }))
           .ok,
       );
+      // An event from an earlier turn, such as the message that set it up, names this turn.
+      const earlier = yield* call("kin_cancel", {
+        itemId: "def-Send the Lumen mockups",
+        sourceEventId: "event:an-earlier-turn",
+      });
+      assert.strictEqual(earlier.value.title, asked);
     }).pipe(Effect.provide(layer)),
   ),
 );

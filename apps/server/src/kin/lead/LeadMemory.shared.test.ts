@@ -618,6 +618,7 @@ it.effect("a teammate's turn sets their own reminder, in their own chat, and not
       reminder("def-someone-elses", { said_by: "fixture-other" }),
       reminder("def-elsewhere", { chat: KinChatId.make("group-chat") }),
       reminder("def-starts", { on_due: "start" }),
+      reminder("def-cancelled", { status: "cancelled" }),
     ];
     const cancel = (itemId: string) =>
       service.cancel(scopeOf(leads.a), {
@@ -625,7 +626,20 @@ it.effect("a teammate's turn sets their own reminder, in their own chat, and not
         sourceEventId: "member-said",
       });
     assert.isString((yield* defer({ what: "Invented: moved", replaces: "def-hers" })).itemId);
-    assert.deepStrictEqual(yield* cancel("def-hers-too"), { itemId: "def-hers-too" });
+    const cancelled = {
+      title: "Invented def-hers-too",
+      due: "2026-11-19T10:00:00+00:00",
+    };
+    assert.deepStrictEqual(yield* cancel("def-hers-too"), {
+      itemId: KinMemoryItemId.make("def-hers-too"),
+      ...cancelled,
+    });
+    // One she cancelled before: cancelling it again says what it was and stages nothing.
+    assert.deepStrictEqual(yield* cancel("def-cancelled"), {
+      itemId: KinMemoryItemId.make("def-cancelled"),
+      title: "Invented def-cancelled",
+      due: cancelled.due,
+    });
     for (const other of ["def-owners", "def-someone-elses", "def-elsewhere", "def-starts"]) {
       const moved = yield* defer({ what: `Invented ${other}`, replaces: other }).pipe(Effect.flip);
       assert.strictEqual(moved.message, SHARED_REFUSAL, other);

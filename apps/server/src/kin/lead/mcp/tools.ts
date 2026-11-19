@@ -239,7 +239,7 @@ export const KinLeadToolkit = Toolkit.make(
     description:
       "Cancel a reminder, follow-up or scheduled task you set up, by itemId; it never fires. To move one, use kin_defer with replaces.",
     parameters: Lead.CancelInput,
-    success: Lead.ItemResult,
+    success: Lead.CancelResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_journal", {
     ...shared,
