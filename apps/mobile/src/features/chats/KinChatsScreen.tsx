@@ -6,7 +6,7 @@ import { useNavigation } from "@react-navigation/native";
 import { EnvironmentId, type KinOrgId, type KinWaitingItem } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { useEffect, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -41,7 +41,6 @@ import {
   type KinInboxScreenState,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import { kinClient } from "./state/kinClient";
-import { rememberKinListAtom } from "./state/kinLastList";
 import { kinJoinedNameAtom } from "./state/kinJoin";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinOpenWaiting } from "./state/useKinOpen";
@@ -52,13 +51,6 @@ const NO_ENVIRONMENT = EnvironmentId.make("kin:none");
 /** The Kin list as a page over coding threads: opening and leaving it is the switch between them. */
 export function KinChatsScreen() {
   const navigation = useNavigation();
-  const rememberList = useAtomSet(rememberKinListAtom);
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- records in device storage which list is open, so the next launch opens to it
-  useEffect(() => {
-    rememberList("kin");
-    // Leaving the list, by Back or the swipe, is the switch back to coding threads.
-    return navigation.addListener("beforeRemove", () => rememberList("threads"));
-  }, [navigation, rememberList]);
   return <KinChatsList onBack={() => navigation.goBack()} />;
 }
 

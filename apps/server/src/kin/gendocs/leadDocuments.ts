@@ -99,7 +99,7 @@ export const DocumentResult = Schema.Struct({
   entry: Schema.optional(Schema.String),
   /** writeRecipe: the folder holding the recipe to edit, until Kin keeps it. */
   folder: Schema.optional(Schema.String),
-  /** writeRecipe: what to do next. */
+  /** writeRecipe: what to do next; a made file: what to call it. */
   next: Schema.optional(Schema.String),
 });
 
@@ -233,9 +233,13 @@ export const make = leadTool("KinDocuments.make", (lead, input: DocumentInput) =
       })),
       ...(made.sensitive ? { sensitive: true as const } : {}),
       ...(quoted === undefined ? {} : { entry: quoted.entry }),
+      ...(made.documents.length === 0 ? {} : { next: filedLine(made.documents) }),
     };
   }),
 );
+
+const filedLine = (documents: ReadonlyArray<{ readonly title: string }>) =>
+  `Filed, with its card in the chat. Call it ${documents.map((doc) => JSON.stringify(doc.title)).join(" and ")} in your reply, never by its key.`;
 
 /**
  * An invoice draft from a quote, with the quote's own inputs the invoice recipe takes: its lines and
@@ -377,7 +381,13 @@ export const UndoResult = Schema.Struct({
   commit: Schema.String,
   /** True when the change undone made the recipe: it is gone until undone again. */
   removed: Schema.Boolean,
+  next: Schema.String,
 });
+
+const undoneLine = (recipe: string, removed: boolean) =>
+  removed
+    ? `Undone: the ${recipe} recipe's last change was making it, so the recipe is gone now. Undo again to bring it back.`
+    : `Undone: the ${recipe} recipe is back as it was before its last change, and files made from now on use it. Undo again to redo the change.`;
 
 export const undoRecipe = leadTool(
   "KinDocuments.undoRecipe",
@@ -394,7 +404,12 @@ export const undoRecipe = leadTool(
           reason: "invalid_state",
           message: `Nothing changed: ${undone.reason}.`,
         });
-      return { recipe: input.recipe, commit: undone.commit, removed: undone.removed };
+      return {
+        recipe: input.recipe,
+        commit: undone.commit,
+        removed: undone.removed,
+        next: undoneLine(input.recipe, undone.removed),
+      };
     }),
 );
 
