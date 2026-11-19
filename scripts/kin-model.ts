@@ -478,6 +478,9 @@ const runTlc = async (
         // TLC unpacks Naturals.tla and friends into java.io.tmpdir; a shared one races between runs.
         `-Djava.io.tmpdir=${work}`,
         "-XX:+UseParallelGC",
+        // The default MSBDiskFPSet can report a duplicate fingerprint and crash dividing by zero
+        // in reportSuccess after a clean search (seen on macOS, JBR 21); this set does not.
+        "-Dtlc2.tool.fp.FPSet.impl=tlc2.tool.fp.OffHeapDiskFPSet",
         "-cp",
         jar,
         "tlc2.TLC",
