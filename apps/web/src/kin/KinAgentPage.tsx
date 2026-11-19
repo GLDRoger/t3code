@@ -690,6 +690,7 @@ function AgentInHand(props: {
 }) {
   const { lead, environmentId, orgId } = props;
   const retired = lead.retired !== undefined;
+  const names = useKinWorkDirectory({ environmentId, orgId }, true).names;
   return (
     <KinAgentSection title={retired ? "On hold" : KIN_AGENT_PAGE.activity}>
       {lead.tracking.length === 0 ? (
@@ -702,7 +703,9 @@ function AgentInHand(props: {
             // Titles can repeat and items carry no id; the host's order is stable.
             // oxlint-disable-next-line react/no-array-index-key
             <li key={index} className="flex flex-col gap-0.5">
-              <span className="text-xs text-muted-foreground">{kinLeadTrackingDetail(item)}</span>
+              <span className="text-xs text-muted-foreground">
+                {kinLeadTrackingDetail(item, undefined, undefined, names)}
+              </span>
               {item.key === undefined ? (
                 <span className="text-sm text-foreground">{item.title}</span>
               ) : (
