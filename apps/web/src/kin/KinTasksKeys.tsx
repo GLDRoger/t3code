@@ -130,7 +130,7 @@ export function KinTasksKeysSection(
                 <span className="truncate text-sm font-medium text-foreground">{row.label}</span>
                 <span className="text-xs text-muted-foreground">{row.line}</span>
               </span>
-              {canRemove ? (
+              {canRemove && row.canRemove ? (
                 <Button
                   size="sm"
                   variant="destructive-outline"
@@ -294,6 +294,7 @@ function KinTasksKeyOnce(props: {
       : kinTasksKeyMade({
           key: props.made.key,
           secret: props.made.secret,
+          origin: props.made.origin,
           httpBaseUrl: connection.httpBaseUrl,
           device: "browser",
         });

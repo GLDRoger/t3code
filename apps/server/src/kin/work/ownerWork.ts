@@ -1018,34 +1018,51 @@ const webAddress = (text: string) => {
 };
 
 /**
- * Changes an entry's `url` links in one transaction with the check that this viewer may edit it,
- * then answers with its sheet. One they can't see is unknown.
+ * Who a write is for and whose it is: each person it is done for passes the check their own screen
+ * makes, and the change is recorded as the writer's. A person on their own screen is both.
+ */
+export type ActingBy = { readonly viewers: ReadonlyArray<Viewer>; readonly writer: Writer };
+export const actingAs = Effect.fn("KinWork.actingAs")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  orgId: KinOrgId,
+) {
+  const viewer = yield* viewerOf(people, orgId);
+  return { viewers: [viewer], writer: writerOf(viewer) } satisfies ActingBy;
+});
+
+/**
+ * Changes an entry's `url` links in one transaction with the check that each viewer may edit it,
+ * then answers with its sheet as the first sees it. One they can't see is unknown.
  */
 const linkWrite = Effect.fn("KinWork.linkWrite")(function* (
-  viewer: Viewer,
+  by: ActingBy,
   orgId: KinOrgId,
   key: string,
   write: (recordId: string) => Effect.Effect<boolean, KinChatError, KinRecords>,
 ) {
   const records = yield* KinRecords;
   const sql = yield* SqlClient.SqlClient;
+  const [first] = by.viewers;
+  if (first === undefined) return yield* ownerOnly;
   return yield* Effect.gen(function* () {
     const row = yield* found(orgId, { key });
-    if (!(yield* personSeesRecord(orgId, viewer.person.personId, row.recordId)))
-      return yield* notFound(key);
     const now = yield* Clock.currentTimeMillis;
-    const can = (yield* cansOf(viewer, orgId, [
-      { ...toRecord(row, now), registerId: row.registerId },
-    ]))(row.recordId);
-    if (can.links !== true)
-      return yield* new KinChatError({
-        reason: "not_allowed",
-        message: "Only someone who may edit this can change its links.",
-      });
+    for (const viewer of by.viewers) {
+      if (!(yield* personSeesRecord(orgId, viewer.person.personId, row.recordId)))
+        return yield* notFound(key);
+      const can = (yield* cansOf(viewer, orgId, [
+        { ...toRecord(row, now), registerId: row.registerId },
+      ]))(row.recordId);
+      if (can.links !== true)
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: "Only someone who may edit this can change its links.",
+        });
+    }
     yield* write(row.recordId);
     const after = yield* found(orgId, { key });
     return yield* shownTo(
-      viewer,
+      first,
       yield* records.detail(after, KIN_RECORD_CHANGES_CAP),
       after,
       after,
@@ -1054,11 +1071,10 @@ const linkWrite = Effect.fn("KinWork.linkWrite")(function* (
 });
 
 /** "Add a link": a web page that relates to the entry, by whoever may edit it. */
-export const addLink = Effect.fn("KinWork.addLink")(function* (
-  people: ReadonlyArray<PersonIdentity>,
+export const addLinkBy = Effect.fn("KinWork.addLink")(function* (
+  by: ActingBy,
   input: KinWorkLinkAddInput,
 ) {
-  const viewer = yield* viewerOf(people, input.orgId);
   const target = webAddress(input.url);
   if (target === undefined)
     return yield* new KinChatError({
@@ -1067,8 +1083,8 @@ export const addLink = Effect.fn("KinWork.addLink")(function* (
     });
   const name = input.name?.trim() ?? "";
   const records = yield* KinRecords;
-  return yield* linkWrite(viewer, input.orgId, input.key, (recordId) =>
-    records.link(input.orgId, writerOf(viewer), recordId, {
+  return yield* linkWrite(by, input.orgId, input.key, (recordId) =>
+    records.link(input.orgId, by.writer, recordId, {
       kind: "url",
       relation: "relates",
       target,
@@ -1076,23 +1092,25 @@ export const addLink = Effect.fn("KinWork.addLink")(function* (
     }),
   );
 });
+export const addLink = (people: ReadonlyArray<PersonIdentity>, input: KinWorkLinkAddInput) =>
+  actingAs(people, input.orgId).pipe(Effect.flatMap((by) => addLinkBy(by, input)));
 
 /** Takes a web page's link off an entry, by whoever may edit it; one already gone is fine. */
-export const removeLink = Effect.fn("KinWork.removeLink")(function* (
-  people: ReadonlyArray<PersonIdentity>,
+export const removeLinkBy = Effect.fn("KinWork.removeLink")(function* (
+  by: ActingBy,
   input: KinWorkLinkRemoveInput,
 ) {
-  const viewer = yield* viewerOf(people, input.orgId);
   const records = yield* KinRecords;
   const sql = yield* SqlClient.SqlClient;
-  return yield* linkWrite(viewer, input.orgId, input.key, (recordId) =>
+  return yield* linkWrite(by, input.orgId, input.key, (recordId) =>
     Effect.gen(function* () {
       const [made] = yield* sql<{ shown: string; at: number }>`SELECT
           COALESCE(label, target) AS shown, created_at AS at FROM kin_record_links
         WHERE org_id = ${input.orgId} AND record_id = ${recordId} AND kind = 'url'
-          AND target = ${input.url}`.pipe(workFailure);
+          AND target IN (${input.url}, ${webAddress(input.url) ?? input.url})
+        ORDER BY created_at LIMIT 1`.pipe(workFailure);
       if (made === undefined) return false;
-      return yield* records.unlink(input.orgId, writerOf(viewer), recordId, {
+      return yield* records.unlink(input.orgId, by.writer, recordId, {
         kind: "url",
         shown: made.shown,
         at: made.at,
@@ -1100,6 +1118,8 @@ export const removeLink = Effect.fn("KinWork.removeLink")(function* (
     }),
   );
 });
+export const removeLink = (people: ReadonlyArray<PersonIdentity>, input: KinWorkLinkRemoveInput) =>
+  actingAs(people, input.orgId).pipe(Effect.flatMap((by) => removeLinkBy(by, input)));
 
 /**
  * The files an owner's edit adds are ones the owner can read: each on a message, not deleted, in

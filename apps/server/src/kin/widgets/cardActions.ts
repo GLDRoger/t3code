@@ -509,7 +509,9 @@ export const run = Effect.fn("KinCardActions.run")(function* (
   if (why !== undefined) return nothingDone(why);
   // Both draws must still hold: the card that asked, and this one that takes its default.
   const done =
-    plan.final === null ? undefined : yield* runOne(tap, plan.final, deps.records, [plan.draw]);
+    plan.final === null
+      ? undefined
+      : yield* runOne(tap, plan.final, deps.records, [plan.draw], [plan.widgetId]);
   if (done?.title === NOTHING_DONE) return done;
   yield* answerCard({
     orgId: tap.orgId,
@@ -541,6 +543,7 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
   plan: RunPlan,
   records: KinRecords["Service"],
   also: ReadonlyArray<CardDraw>,
+  alsoAnswering: ReadonlyArray<string> = [],
 ) {
   const { orgId, personId } = tap;
   const draws = [plan.draw, ...also];
@@ -565,6 +568,7 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
           via: "owner",
           askedBy: personId,
           chatId: tap.widget.chatId,
+          answering: [tap.widget.widgetId, ...alsoAnswering],
           ...(owner ? {} : { teammate: true }),
         },
         row.key,

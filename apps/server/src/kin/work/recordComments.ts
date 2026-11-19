@@ -350,7 +350,9 @@ export const projectNoteOf = Effect.fn("KinRecordComments.projectNote")(function
 export const writeProjectNote = Effect.fn("KinRecordComments.writeProjectNote")(function* (input: {
   readonly orgId: KinOrgId;
   readonly projectId: string;
-  readonly by: KinPersonId;
+  readonly by:
+    | { readonly _tag: "person"; readonly personId: KinPersonId }
+    | { readonly _tag: "agent"; readonly agentId: KinAgentId };
   readonly requestId: string;
   readonly body: string;
   readonly now: number;
@@ -358,7 +360,8 @@ export const writeProjectNote = Effect.fn("KinRecordComments.writeProjectNote")(
   const sql = yield* SqlClient.SqlClient;
   const body = input.body.trim();
   const requestHash = requestHashOf(body, []);
-  const commentId = `${NOTE_ID}${hash([input.orgId, input.projectId, input.by, input.requestId]).slice(0, 24)}`;
+  const by = input.by._tag === "person" ? input.by.personId : input.by.agentId;
+  const commentId = `${NOTE_ID}${hash([input.orgId, input.projectId, by, input.requestId]).slice(0, 24)}`;
   const [stored] = yield* sql<{ requestHash: string }>`SELECT request_hash AS "requestHash"
     FROM kin_record_comments WHERE org_id = ${input.orgId} AND comment_id = ${commentId}`;
   if (stored !== undefined) {
@@ -369,7 +372,7 @@ export const writeProjectNote = Effect.fn("KinRecordComments.writeProjectNote")(
     });
   }
   yield* sql`UPDATE kin_record_comments
-    SET removed_at = ${input.now}, removed_by_kind = 'person', removed_by_id = ${input.by}
+    SET removed_at = ${input.now}, removed_by_kind = ${input.by._tag}, removed_by_id = ${by}
     WHERE org_id = ${input.orgId} AND record_id = ${input.projectId} AND removed_at IS NULL
       AND substr(comment_id, 1, ${NOTE_ID.length}) = ${NOTE_ID}`;
   if (body === "") return;
@@ -378,7 +381,7 @@ export const writeProjectNote = Effect.fn("KinRecordComments.writeProjectNote")(
     VALUES (${input.orgId}, ${commentId}, ${input.projectId},
       (SELECT COALESCE(MAX(seq), 0) + 1 FROM kin_record_comments
         WHERE org_id = ${input.orgId} AND record_id = ${input.projectId}),
-      'person', ${input.by}, ${body}, '[]', ${requestHash}, ${input.now})
+      ${input.by._tag}, ${by}, ${body}, '[]', ${requestHash}, ${input.now})
     ON CONFLICT DO NOTHING`;
 });
 

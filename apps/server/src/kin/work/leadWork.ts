@@ -16,6 +16,7 @@ import {
   KinRepoName,
   type KinMoney,
   type KinOrgId,
+  type KinRecordDetail,
   type KinWorkPrincipal,
   KIN_TEXT_LOCALE,
   calendarTimeMillis,
@@ -77,7 +78,7 @@ import {
   largestIn,
   parseAmount,
 } from "./money.ts";
-import { latestComments } from "./recordComments.ts";
+import { latestComments, projectNoteOf } from "./recordComments.ts";
 import {
   endOfDay,
   iso,
@@ -187,7 +188,7 @@ export const QueryInput = Schema.Struct({
     ]),
   ).annotate({
     description:
-      "Also count the matches per group, with exact totals per currency where they have amounts. month and financialYear (April to March) go by each entry's date.",
+      "Also count the matches per group, with exact totals per currency where they have amounts. month and financialYear (the company's own year) go by each entry's date.",
   }),
   dateFrom: Schema.optional(KinDay).annotate({ description: "Its own date on or after this day." }),
   dateTo: Schema.optional(KinDay).annotate({ description: "Its own date on or before this day." }),
@@ -277,7 +278,13 @@ export const GetResult = Schema.Struct({
   notes: Schema.String,
   assignedBy: Schema.optional(Schema.String),
   links: Schema.Array(
-    Schema.Struct({ kind: Schema.String, relation: Schema.String, target: Schema.String }),
+    Schema.Struct({
+      kind: Schema.String,
+      relation: Schema.String,
+      target: Schema.String,
+      /** A web link's name; its target is the address. */
+      name: Schema.optional(Schema.String),
+    }),
   ),
   history: Schema.Array(
     Schema.Struct({
@@ -355,6 +362,8 @@ export const GetResult = Schema.Struct({
     ),
   ),
   olderComments: Schema.optional(Schema.Number),
+  /** The note its project leaves on every task: the project's words, not this entry's. */
+  projectNote: Schema.optional(Schema.Struct({ from: Schema.String, text: Schema.String })),
 });
 const CreateRow = Schema.Struct({
   list: Schema.optional(List),
@@ -413,6 +422,8 @@ const Named = Schema.Struct({
 const Near = Schema.Struct({ ...Named.fields, differs: Schema.String });
 /** The people Kin told, in their own chat, what this call gave them or took from them. */
 const Told = Schema.optional(Schema.Array(Schema.String));
+/** Holds the notice to whoever this call gives a task to; they are told when it is given again. */
+const Tell = Schema.optional(Schema.Literal(false));
 export const CreateResult = Schema.Struct({
   told: Told,
   records: Schema.Array(
@@ -469,6 +480,7 @@ export const UpdateInput = Schema.Struct({
   sensitive: Schema.optional(Schema.Literal(true)),
   confirmed: Schema.optional(Schema.Boolean),
   expectedRev: Schema.optional(Schema.Int),
+  tell: Tell,
   ...SpineInputs,
   ...GoalInputs,
 });
@@ -484,6 +496,8 @@ const Updated = Schema.Struct({
 /** One entry's change at the top level; with keys, each entry's in entries. */
 export const UpdateResult = Schema.Struct({
   told: Told,
+  /** Who was given a task and not told, as tell false asked. */
+  held: Told,
   key: Schema.optional(Updated.fields.key),
   rev: Schema.optional(Updated.fields.rev),
   state: Schema.optional(Updated.fields.state),
@@ -502,9 +516,11 @@ export const AssignInput = Schema.Struct({
   tasks: Schema.Array(
     Schema.Struct({ key: KinRecordKey, to: Who, reason: Why, due: Schema.optional(Due) }),
   ).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
+  tell: Tell,
 });
 export const AssignResult = Schema.Struct({
   told: Told,
+  held: UpdateResult.fields.held,
   tasks: Schema.Array(
     Schema.Struct({
       key: Schema.String,
@@ -1535,6 +1551,16 @@ const mailedFor = Effect.fnUntraced(function* (
   });
 });
 const COMMENTS_SHOWN = 10;
+/** A web link reads as its address, so it can be taken off by it; others by what they show. */
+const linkShown = (link: KinRecordDetail["links"][number]) =>
+  link.kind === "url"
+    ? {
+        kind: link.kind,
+        relation: link.relation,
+        target: link.target,
+        ...(link.label == null ? {} : { name: link.label }),
+      }
+    : { kind: link.kind, relation: link.relation, target: link.label ?? link.target };
 const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.Type) {
   const records = yield* KinRecords;
   const team = yield* viewOf(lead);
@@ -1564,6 +1590,19 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
         }),
     ...(said.older === 0 ? {} : { olderComments: said.older }),
   };
+  const noteFrom =
+    row.registerId === "projects" ? row.recordId : row.registerId === "work" ? row.projectId : null;
+  const note =
+    noteFrom === null ||
+    (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, noteFrom)))
+      ? undefined
+      : yield* projectNoteOf(lead.orgId, noteFrom);
+  const fromProject =
+    note === undefined
+      ? {}
+      : {
+          projectNote: { from: `${note.project.key} ${note.project.title}`, text: note.body },
+        };
   const whole = team !== undefined && (yield* viewWhole(lead, team, row));
   if (team !== undefined && !whole) {
     const shown: typeof GetResult.Type = {
@@ -1571,9 +1610,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
       notes: detail.notes,
       ...(assignedBy === undefined ? {} : { assignedBy }),
       links: detail.links.flatMap((link) =>
-        link.kind === "pull_request" || link.kind === "url"
-          ? [{ kind: link.kind, relation: link.relation, target: link.label ?? link.target }]
-          : [],
+        link.kind === "pull_request" || link.kind === "url" ? [linkShown(link)] : [],
       ),
       history: teamChanges(detail.changes).map((change) => ({
         at: change.at,
@@ -1584,6 +1621,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
             : change.fields.map((field) => `${field.field}: ${field.to ?? "cleared"}`).join("; "),
       })),
       ...comments,
+      ...fromProject,
     };
     return shown;
   }
@@ -1657,11 +1695,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
             link.kind === "url" ||
             (link.kind === "record" && !hiddenLinks.has(link.target)),
         )
-    ).map((link) => ({
-      kind: link.kind,
-      relation: link.relation,
-      target: link.label ?? link.target,
-    })),
+    ).map(linkShown),
     history: (team === undefined
       ? detail.changes
       : detail.changes.filter((change) => change.kind !== "linked")
@@ -1678,6 +1712,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
         : {}),
     })),
     ...comments,
+    ...fromProject,
   };
 });
 export const get = leadTool("KinWorkTools.get", runGet);
@@ -2065,7 +2100,11 @@ const emailShared = Effect.fn("KinWorkTools.emailShared")(function* (
 });
 
 /** Sends this call's notices; the write already committed, so a failed message fails nothing. */
-const tell = Effect.fnUntraced(function* (lead: Lead, notices: ReadonlyArray<AssignNotice>) {
+const tell = Effect.fnUntraced(function* (
+  lead: Lead,
+  notices: ReadonlyArray<AssignNotice>,
+  held: ReadonlyArray<KinPersonId> = [],
+) {
   const told = yield* tellPeople(lead, notices).pipe(
     Effect.catchCause((cause) =>
       Effect.logWarning("Kin couldn't tell people about their tasks", cause).pipe(
@@ -2073,12 +2112,15 @@ const tell = Effect.fnUntraced(function* (lead: Lead, notices: ReadonlyArray<Ass
       ),
     ),
   );
-  if (told.size === 0) return {};
+  if (told.size === 0 && held.length === 0) return {};
   const name = yield* namer(lead);
-  return {
-    told: [...told].map(
+  const named = (ids: Iterable<string>) =>
+    [...new Set(ids)].map(
       (id) => name({ _tag: "person", personId: KinPersonId.make(id) }) ?? "a person",
-    ),
+    );
+  return {
+    ...(told.size === 0 ? {} : { told: named(told) }),
+    ...(held.length === 0 ? {} : { held: named(held) }),
   };
 });
 
@@ -2230,8 +2272,8 @@ const runUpdate = Effect.fnUntraced(function* (
   input: Change & { readonly key: string },
 ) {
   const { key, ...change } = input;
-  const { result, notices } = yield* updateCore(lead, key, change);
-  return { ...(yield* tell(lead, notices)), ...result };
+  const { result, notices, held } = yield* updateCore(lead, key, change);
+  return { ...(yield* tell(lead, notices, held)), ...result };
 });
 /** The same change to several entries, all or none. */
 const runUpdateMany = Effect.fnUntraced(function* (lead: Lead, input: typeof UpdateInput.Type) {
@@ -2249,6 +2291,7 @@ const runUpdateMany = Effect.fnUntraced(function* (lead: Lead, input: typeof Upd
     ...(yield* tell(
       lead,
       done.flatMap((one) => one.notices),
+      done.flatMap((one) => one.held),
     )),
     entries: done.map((one) => one.result),
   };
@@ -2290,6 +2333,15 @@ const updateCore = Effect.fnUntraced(function* (
     ...(input.sensitive === undefined ? {} : { sensitive: true }),
   };
   if (patch.owner !== undefined) yield* notBouncedBack(lead, before, patch.owner);
+  // tell false holds the new holder's notice on the task; giving it to them again tells them.
+  const heldFor = parseFields(before.fieldsJson).untold;
+  const giving =
+    before.registerId === "work" && patch.owner?._tag === "person" ? patch.owner : undefined;
+  const moves =
+    giving !== undefined && !(before.ownerKind === "person" && before.ownerId === giving.personId);
+  const holds = input.tell === false && moves;
+  const releases =
+    giving !== undefined && input.tell !== false && heldFor === `person:${giving.personId}`;
   const partyId = yield* refOrNull(lead, input.client, "clients");
   const projectId = yield* refOrNull(lead, input.project, "projects");
   const spine = yield* spineOf(
@@ -2302,6 +2354,7 @@ const updateCore = Effect.fnUntraced(function* (
     ...fieldsFrom(input),
     ...spine.fields,
     ...(yield* goalFields(lead.orgId, input, parseFields(before.fieldsJson))),
+    ...(holds ? { untold: `person:${giving.personId}` } : releases ? { untold: null } : {}),
   };
   const money = yield* moneyPatch(lead, def, input, before.currency);
   if (input.confirmed !== true)
@@ -2358,7 +2411,13 @@ const updateCore = Effect.fnUntraced(function* (
       ...(hiddenFrom.length === 0 ? {} : { noLongerSeenBy: hiddenFrom }),
       ...(sameEmail === undefined ? {} : { sameEmail }),
     },
-    notices: movedNotices(before, after),
+    // A holder never told it was theirs is not told it was taken either.
+    notices: releases
+      ? movedNotices(undefined, after)
+      : movedNotices(before, after).filter((notice) =>
+          notice.kind === "given" ? !holds : heldFor !== `person:${notice.personId}`,
+        ),
+    held: holds ? [giving.personId] : [],
   };
 });
 export const update = leadTool("KinWorkTools.update", runUpdate);
@@ -2374,7 +2433,7 @@ const runAssign = Effect.fnUntraced(function* (lead: Lead, input: typeof AssignI
     (task) => task.key,
     (task) =>
       Effect.gen(function* () {
-        const { notices } = yield* updateCore(
+        const { notices, held } = yield* updateCore(
           lead,
           task.key,
           {
@@ -2382,12 +2441,14 @@ const runAssign = Effect.fnUntraced(function* (lead: Lead, input: typeof AssignI
             owner: task.to,
             reason: task.reason,
             ...(task.due === undefined ? {} : { due: task.due }),
+            ...(input.tell === undefined ? {} : { tell: input.tell }),
           },
           "assign",
         );
         const after = yield* records.get(lead.orgId, task.key);
         return {
           notices,
+          held,
           task: {
             key: task.key,
             ...(after === undefined ? {} : { to: name(toRecord(after, 0).owner) ?? "someone" }),
@@ -2399,6 +2460,7 @@ const runAssign = Effect.fnUntraced(function* (lead: Lead, input: typeof AssignI
     ...(yield* tell(
       lead,
       given.flatMap((one) => one.notices),
+      given.flatMap((one) => one.held),
     )),
     tasks: given.map((one) => one.task),
   };

@@ -1010,14 +1010,15 @@ it.effect(
         service.accessMe(session, { orgId }).pipe(Effect.map((me) => me.access));
       assert.equal(yield* kind(raviSession), "member");
       assert.equal(yield* kind(ownerSession), "owner");
-      // A member's forms need the company's currency, though the profile and its rates aren't theirs.
+      // A member's forms need the company's currency and year, though the profile and its rates aren't theirs.
       const { rev: _rev, updatedAt: _at, ...profile } = yield* readProfile(orgId);
       yield* (yield* SqlClient.SqlClient)`INSERT INTO kin_company_profile (org_id, profile_json,
           rev, updated_at, updated_by_kind, updated_by_id)
-        VALUES (${orgId}, ${JSON.stringify({ ...profile, homeCurrency: "GBP" })}, 1, 0, 'person',
+        VALUES (${orgId}, ${JSON.stringify({ ...profile, homeCurrency: "GBP", financialYearStartMonth: 7 })}, 1, 0, 'person',
           'owner')`;
       const raviMe = yield* service.accessMe(raviSession, { orgId });
       assert.equal(raviMe.homeCurrency, "GBP");
+      assert.equal(raviMe.financialYearStartMonth, 7);
       assert.notProperty(raviMe, "rates");
       // A new teammate starts with client names and shared docs; money stays off until switched.
       const placesOf = (session: Parameters<typeof service.accessMe>[0]) =>

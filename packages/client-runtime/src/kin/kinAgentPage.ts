@@ -252,7 +252,7 @@ const FIELD_WORDS: Readonly<Record<string, string>> = {
   repo: "repo",
   side: "side",
 };
-const HIDDEN_FIELDS = new Set(["reason", "handedBack"]);
+const HIDDEN_FIELDS = new Set(["reason", "handedBack", "untold"]);
 const VALUE_MAX = 40;
 /** Links whose shown end is words, such as "PR #12"; other kinds name an id. */
 const SHOWN_LINKS = new Set(["url", "pull_request"]);

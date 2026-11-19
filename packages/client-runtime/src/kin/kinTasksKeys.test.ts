@@ -44,8 +44,16 @@ describe("kinTasksKeyRows", () => {
     ],
   ] as const)("%# reads its line", (held, line) => {
     expect(kinTasksKeyRows([held], now)).toEqual([
-      { sessionId: held.sessionId, label: "Work laptop", line },
+      { sessionId: held.sessionId, label: "Work laptop", line, canRemove: true },
     ]);
+  });
+
+  it("offers Remove unless the host says this reader may not", () => {
+    expect(
+      kinTasksKeyRows([key({ canRevoke: false }), key({ canRevoke: true }), key()], now).map(
+        (row) => row.canRemove,
+      ),
+    ).toEqual([false, true, true]);
   });
 });
 
@@ -81,8 +89,8 @@ describe("kinTasksKeyRemoveCopy", () => {
 });
 
 describe("kinTasksKeyMade", () => {
-  const made = (httpBaseUrl: string, device: "browser" | "phone" = "browser") =>
-    kinTasksKeyMade({ key: key(), secret: "sekret-123", httpBaseUrl, device });
+  const made = (httpBaseUrl: string, device: "browser" | "phone" = "browser", origin?: string) =>
+    kinTasksKeyMade({ key: key(), secret: "sekret-123", origin, httpBaseUrl, device });
 
   it("puts the key at the address this client reaches its host by, with each setup", () => {
     const panel = made("https://kin.ambermill.example/");
@@ -127,5 +135,17 @@ describe("kinTasksKeyMade", () => {
     expect(made("https://kin.ambermill.example", "phone").addressNote).toBe(
       "This is the address this phone reaches Kin by. If your coding agent's computer reaches Kin another way, use that address with the same ending.",
     );
+  });
+
+  it("uses the host's public address over this client's own, with no note", () => {
+    for (const [base, device] of [
+      ["http://127.0.0.1:3773", "browser"],
+      ["http://192.168.1.20:3773", "phone"],
+    ] as const) {
+      const panel = made(base, device, "https://ambermill.relay.example");
+      expect(panel.address).toBe("https://ambermill.relay.example/kin/you/mcp");
+      expect(panel.addressNote).toBeNull();
+      expect(panel.setups[0]?.text).toContain(" https://ambermill.relay.example/kin/you/mcp ");
+    }
   });
 });

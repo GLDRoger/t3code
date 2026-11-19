@@ -390,6 +390,28 @@ export const closeQuestion = Effect.fn("KinQuestions.close")(function* (
   return { questionId: row.questionId, state: input.outcome, changed: true } as const;
 });
 
+const withdraw = Effect.fn("KinQuestions.withdraw")(function* (
+  orgId: KinOrgId,
+  rows: ReadonlyArray<QuestionRow>,
+  reason: (row: QuestionRow) => string,
+  closedAt: number,
+  chat: Pick<KinChatService["Service"], "closeReplaced">,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  for (const row of rows) {
+    const moved = yield* sql`UPDATE kin_questions SET state = 'withdrawn', closed_at = ${closedAt}
+      WHERE org_id = ${orgId} AND question_id = ${row.questionId} AND state = 'open'
+      RETURNING question_id`;
+    if (moved.length === 0) continue;
+    for (const widgetId of cardIds(row))
+      yield* chat.closeReplaced({
+        orgId,
+        widgetId: KinWidgetId.make(widgetId),
+        outcome: { title: "Closed", text: reason(row) },
+      });
+  }
+});
+
 /** What a retired agent's question card says when it closes. */
 export const retiredQuestionText = (agentName: string) =>
   `${agentName} was retired; nothing will happen on this.`;
@@ -418,19 +440,38 @@ export const closeHeldQuestions = Effect.fn("KinQuestions.closeHeld")(function* 
         : sql`q.agent_id = ${holder.agentId}`
     }
     ORDER BY q.asked_at, q.question_id`).map(toRow);
-  for (const row of rows) {
-    const moved = yield* sql`UPDATE kin_questions SET state = 'withdrawn',
-        closed_at = ${input.closedAt}
-      WHERE org_id = ${orgId} AND question_id = ${row.questionId} AND state = 'open'
-      RETURNING question_id`;
-    if (moved.length === 0) continue;
-    for (const widgetId of cardIds(row))
-      yield* chat.closeReplaced({
-        orgId,
-        widgetId: KinWidgetId.make(widgetId),
-        outcome: { title: "Closed", text: input.reason(row) },
-      });
-  }
+  yield* withdraw(orgId, rows, input.reason, input.closedAt, chat);
+  return rows.length;
+});
+
+/**
+ * Closes every open question about a record that just closed (`about` names its key), or asked
+ * on one of `cards`, in the caller's transaction. One on a card in `sparing` is left to the tap
+ * that settles it.
+ */
+export const closeQuestionsAbout = Effect.fn("KinQuestions.closeAbout")(function* (
+  input: {
+    readonly orgId: KinOrgId;
+    readonly key: string;
+    readonly cards: ReadonlyArray<string>;
+    readonly sparing: ReadonlyArray<string>;
+    readonly text: string;
+    readonly closedAt: number;
+  },
+  chat: Pick<KinChatService["Service"], "closeReplaced">,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const onCards =
+    input.cards.length === 0
+      ? sql`0`
+      : sql`(q.widget_id IN ${sql.in(input.cards)} OR q.raise_widget_id IN ${sql.in(input.cards)})`;
+  const rows = (yield* sql<Raw>`SELECT ${sql.literal(COLUMNS)} ${sql.literal(FROM)}
+    WHERE q.org_id = ${input.orgId} AND q.state = 'open'
+      AND ((' ' || q.about || ' ') LIKE ${`% ${input.key} %`} OR ${onCards})
+    ORDER BY q.asked_at, q.question_id`)
+    .map(toRow)
+    .filter((row) => !input.sparing.some((id) => id === row.widgetId || id === row.raiseWidgetId));
+  yield* withdraw(input.orgId, rows, () => input.text, input.closedAt, chat);
   return rows.length;
 });
 

@@ -30,11 +30,13 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import type * as Statement from "effect/sql/Statement";
 import * as PubSub from "effect/PubSub";
+import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import type { ClosedSubject } from "../open/closeSubject.ts";
 import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
@@ -135,6 +137,8 @@ export type Writer = {
     readonly people: ReadonlyArray<KinPersonId>;
     readonly askers: ReadonlyArray<KinPersonId>;
   };
+  /** The cards a person's tap settles itself: closing the entry leaves them to the tap. */
+  readonly answering?: ReadonlyArray<string>;
 };
 /** A Work task this writer, a person, holds now and nobody dropped. */
 const heldBy = (
@@ -151,6 +155,9 @@ const heldBy = (
   row.ownerKind === "person" &&
   writer.actor._tag === "person" &&
   row.ownerId === writer.actor.personId;
+
+/** What closes the open things about an entry that closed, in its move's transaction. */
+export type Closing = (subject: ClosedSubject) => Effect.Effect<void, { readonly _tag: string }>;
 /** Whose words a write's text is: the person writing, else the human a lead wrote it for. */
 const textBy = (writer: Writer) =>
   writer.actor._tag === "person" ? writer.actor.personId : (writer.askedBy ?? null);
@@ -575,6 +582,8 @@ export class KinRecords extends Context.Service<
     readonly changes: (orgId: KinOrgId) => Stream.Stream<Tick, KinChatError>;
     /** Tells `changes` an org's entries moved with no change logged here: an undo, another process. */
     readonly announce: (orgId: KinOrgId) => Effect.Effect<void, KinChatError>;
+    /** Kin's layer attaches `closeSubject`, which sits above chat, for as long as its scope. */
+    readonly attachClosing: (closing: Closing) => Effect.Effect<void, never, Scope.Scope>;
     /**
      * In the caller's transaction: these people's level or places changed, so what they may see
      * may have. Moves their own change numbers and tells `changes` once it commits.
@@ -592,6 +601,7 @@ const make = Effect.gen(function* () {
   const dailyTurns = yield* LeadAccess.dailyTurns;
   const ticks = yield* PubSub.unbounded<Tick & { readonly orgId: KinOrgId }>();
   const refreshes = yield* KinRefreshObserver;
+  let closing: Closing | undefined;
   /** The clients and projects a task or project can be put under (`workChoices`) changed. */
   const choicesMoved = (orgId: KinOrgId, list: string) =>
     list === "clients" || list === "projects" ? refreshes.touch(orgId, "workChoices") : Effect.void;
@@ -660,6 +670,25 @@ const make = Effect.gen(function* () {
       FROM kin_records r LEFT JOIN kin_records p ON p.org_id = r.org_id
         AND p.record_id = r.project_id
       WHERE r.org_id = ${orgId} AND r.record_id = ${row.recordId}`;
+    // Every move into a closed state passes here: what was open about the entry closes with it.
+    const closed = fields.find((one) => one.field === "state");
+    if (
+      closing !== undefined &&
+      stored !== undefined &&
+      kind === "updated" &&
+      closed?.to != null &&
+      closed.to !== closed.from &&
+      (CLOSED as ReadonlyArray<string>).includes(closed.to)
+    )
+      yield* closing({
+        orgId,
+        recordId: row.recordId,
+        key: row.key,
+        registerId: stored.registerId,
+        state: closed.to,
+        sparing: writer.answering ?? [],
+        now,
+      });
     const holders =
       kind === "created" || fields.some((one) => one.field === "owner" || one.field === "project");
     const shifted = fields.find((one) => one.field === "project");
@@ -1396,6 +1425,17 @@ const make = Effect.gen(function* () {
         if (movedOn && merged.reason !== undefined) {
           changes.push({ field: "reason", from: shownField(merged.reason), to: null });
           delete merged.reason;
+          fieldsChanged = true;
+        }
+        // A notice held for one holder means nothing once it moves to another.
+        if (
+          patch.owner !== undefined &&
+          !samePrincipal(patch.owner, before.owner) &&
+          patch.fields?.untold === undefined &&
+          merged.untold !== undefined
+        ) {
+          changes.push({ field: "untold", from: shownField(merged.untold), to: null });
+          delete merged.untold;
           fieldsChanged = true;
         }
         if (fieldsChanged) set("fields_json", yield* encodeFieldValues(merged));
@@ -2423,6 +2463,17 @@ const make = Effect.gen(function* () {
           );
         }),
       ),
+    attachClosing: Effect.fn("KinRecords.attachClosing")(function* (handler) {
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          closing = handler;
+        }),
+        () =>
+          Effect.sync(() => {
+            if (closing === handler) closing = undefined;
+          }),
+      );
+    }),
     announce: Effect.fn("KinRecords.announce")(function* (orgId) {
       // A number no change will take, past every one a client heard: an undo's entries took their
       // changes with them, and clients read again only past what they already hold.

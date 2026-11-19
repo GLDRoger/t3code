@@ -1253,7 +1253,11 @@ export const make = Effect.gen(function* () {
         : { clients: places.clients, docs: places.docs, money: places.money },
       leads: places.leads,
       ...(yield* companyMoney(input.orgId).pipe(
-        Effect.map(({ homeCurrency, country }) => ({ homeCurrency, country })),
+        Effect.map(({ homeCurrency, country, financialYearStartMonth }) => ({
+          homeCurrency,
+          country,
+          financialYearStartMonth,
+        })),
         Effect.provideService(SqlClient.SqlClient, sql),
       )),
     };

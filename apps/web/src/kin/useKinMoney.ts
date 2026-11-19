@@ -132,6 +132,7 @@ export function useKinListContext(
   const held = Option.getOrNull(
     AsyncResult.value(useAtomValue(enabled ? kinWorkChoicesAtom(target) : noChoicesAtom)),
   );
+  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, target.environmentId));
   return {
     names: directory.names,
     // A link field stores the record's id, which the pickers' rows carry beside the name.
@@ -142,6 +143,9 @@ export function useKinListContext(
       ]),
     ),
     now,
+    ...(me?.financialYearStartMonth === undefined
+      ? {}
+      : { yearStartMonth: me.financialYearStartMonth }),
   };
 }
 

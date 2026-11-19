@@ -17,6 +17,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Numbers from "../gendocs/numbering.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { readProfile } from "./companyProfile.ts";
 import { removeChunk } from "./importUndo.ts";
 import { insertComment } from "./recordComments.ts";
 import * as KinImport from "./KinImport.ts";
@@ -143,6 +144,15 @@ const rows = [
     },
   },
 ];
+/** The company's profile as it would be saved in `country`, keeping `currency` and its year. */
+const companyIn = (country: string, homeCurrency: string, financialYearStartMonth: number) =>
+  Effect.gen(function* () {
+    const { rev: _rev, updatedAt: _at, ...profile } = yield* readProfile(orgId);
+    const json = JSON.stringify({ ...profile, country, homeCurrency, financialYearStartMonth });
+    yield* (yield* SqlClient.SqlClient)`INSERT INTO kin_company_profile (org_id, profile_json,
+        rev, updated_at, updated_by_kind, updated_by_id)
+      VALUES (${orgId}, ${json}, 1, ${NOW}, 'person', ${ownerId})`;
+  });
 const linesOf = (first: unknown, rest: ReadonlyArray<unknown>, extra: ReadonlyArray<string> = []) =>
   Stream.fromIterable([JSON.stringify(first), ...rest.map((one) => JSON.stringify(one)), ...extra]);
 const books = () => linesOf(header, rows);
@@ -694,6 +704,98 @@ describe("KinImport", () => {
           ],
         ],
       );
+      assert.strictEqual(plan.taxIdLabel, "GSTIN");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("imports for a UK company with no GSTIN, naming its tax id as the UK does", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* companyIn("GB", "GBP", 4);
+      const imports = yield* KinImport.KinImport;
+      const records = yield* KinRecords.KinRecords;
+      const { row: acme } = yield* records.create(orgId, owner, {
+        list: "clients",
+        originKey: "owner:acme",
+        title: "Invented Acme",
+        owner: me,
+        fields: { gstin: "GB123456789" },
+      });
+      const applied = yield* imports.apply(
+        orgId,
+        ownerId,
+        linesOf({ ...header, lists: [header.lists[0]] }, [
+          { client: { source: "c1", name: "Invented Acme", gstin: "GB987654321" } },
+          { client: { source: "c2", name: "Invented Beta", terms: "30 days" } },
+          {
+            entry: {
+              source: "i1",
+              list: "invoices",
+              title: "May retainer",
+              state: "waiting",
+              client: "c2",
+              date: "2026-05-31",
+              amount: "1200",
+              number: "OBK/26-27/002",
+            },
+          },
+        ]),
+      );
+      assert.deepStrictEqual(
+        [applied.problems, applied.clients.create, applied.entries.create, applied.taxIdLabel],
+        [[], 2, 1, "VAT number"],
+      );
+      assert.deepStrictEqual(applied.clientMatches, [
+        { source: "c1", name: "Invented Acme", key: acme.key, made: "C-2" },
+      ]);
+      assert.deepStrictEqual(applied.money[0]?.total, { minor: 120000, currency: "GBP" });
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("continues a calendar-year company's imported numbers in their year's series", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* companyIn("US", "USD", 1);
+      const imports = yield* KinImport.KinImport;
+      const applied = yield* imports.apply(
+        orgId,
+        ownerId,
+        linesOf(
+          {
+            ...header,
+            lists: [
+              {
+                list: "invoices",
+                template: "invoices",
+                numbering: { prefix: "INV", series: "financial_year", width: 3 },
+              },
+            ],
+          },
+          [
+            {
+              entry: {
+                source: "i1",
+                list: "invoices",
+                title: "October retainer",
+                state: "waiting",
+                date: "2026-10-31",
+                amount: "900",
+                number: "INV/2026/004",
+              },
+            },
+          ],
+        ),
+      );
+      assert.deepStrictEqual(applied.problems, []);
+      const { row: draft } = yield* (yield* KinRecords.KinRecords).create(orgId, owner, {
+        list: "invoices",
+        originKey: "owner:draft",
+        title: "November retainer",
+        owner: me,
+        state: "open",
+        amount: { minor: 100, currency: "USD" },
+      });
+      assert.strictEqual((yield* Numbers.issue(orgId, owner, draft.key)).number, "INV/2026/005");
     }).pipe(Effect.provide(layer)),
   );
 
@@ -768,14 +870,19 @@ describe("KinImport", () => {
   );
 
   it.each([
-    ["OBK/2026-27/013", { series: "OBK|26-27", seq: 13 }],
-    ["OBK/26-27/013", { series: "OBK|26-27", seq: 13 }],
-    ["OBK-2026-27-007", { series: "OBK|26-27", seq: 7 }],
-    ["OBK/2026-28/001", { series: "imported|OBK/2026-28/001", seq: 1 }],
-    ["OBK-RN/2026-27/001", { series: "imported|OBK-RN/2026-27/001", seq: 1 }],
-  ] as const)("places %s in its series", (number, expected) => {
+    ["OBK/2026-27/013", 4, { series: "OBK|26-27", seq: 13 }],
+    ["OBK/26-27/013", 4, { series: "OBK|26-27", seq: 13 }],
+    ["OBK-2026-27-007", 4, { series: "OBK|26-27", seq: 7 }],
+    ["OBK/2026-28/001", 4, { series: "imported|OBK/2026-28/001", seq: 1 }],
+    ["OBK-RN/2026-27/001", 4, { series: "imported|OBK-RN/2026-27/001", seq: 1 }],
+    // A calendar year's number is in its year's series only for a company whose year is one.
+    ["OBK/2026/004", 1, { series: "OBK|2026", seq: 4 }],
+    ["OBK-2026-004", 1, { series: "OBK|2026", seq: 4 }],
+    ["OBK/2026/004", 4, { series: "imported|OBK/2026/004", seq: 1 }],
+    ["OBK/26-27/013", 1, { series: "OBK|26-27", seq: 13 }],
+  ] as const)("places %s in its series for a year from month %i", (number, month, expected) => {
     assert.deepStrictEqual(
-      Numbers.seriesOf({ prefix: "OBK", series: "financial_year", width: 3 }, number),
+      Numbers.seriesOf({ prefix: "OBK", series: "financial_year", width: 3 }, number, month),
       expected,
     );
   });

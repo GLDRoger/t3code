@@ -569,11 +569,12 @@ it.effect(
         "record_assign",
         "record_hand_back",
         "record_comment",
+        "record_link",
         "money_summary",
         "dates_query",
         "touch_log",
       ]);
-      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 16);
+      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 18);
       for (const tool of Object.keys(KinWorkToolkit.tools))
         assert.strictEqual(yield* sharedToolAllowed(shared, tool, {}), view.has(tool), tool);
       // G06: tasks made for the people there, whoever holds them, are shared with the team.
@@ -2787,6 +2788,50 @@ it.effect(
           "Lead lead gave W-1 Invented: draft the onboarding copy to Mate: Invented: on leave.",
         ],
       );
+      // K016: tell false gives it to her without a word; given to her again, she is told once.
+      const quiet = (yield* notices).length;
+      const untold = (key: string) =>
+        OwnerWork.get([owner], { orgId, key }).pipe(
+          Effect.map((sheet) => sheet.changes[0]?.fields.find((one) => one.field === "untold")),
+        );
+      const holding = yield* LeadWork.assign(scope, {
+        sourceEventId: "ask-event",
+        tasks: [{ key: "W-1", to: "Mate", reason: "Invented: after the launch" }],
+        tell: false,
+      });
+      assert.deepStrictEqual([holding.told, holding.held], [undefined, ["Mate"]]);
+      assert.lengthOf((yield* notices).slice(quiet), 0);
+      assert.include(keysOf(yield* OwnerWork.list([mate], { orgId })), "W-1");
+      assert.deepInclude(yield* untold("W-1"), { from: null, to: `person:${mateId}` });
+      const telling = () =>
+        LeadWork.assign(scope, {
+          sourceEventId: "ask-event",
+          tasks: [{ key: "W-1", to: "Mate", reason: "Invented: after the launch" }],
+        });
+      assert.deepStrictEqual((yield* telling()).told, ["Mate"]);
+      assert.deepInclude(yield* untold("W-1"), { from: `person:${mateId}`, to: null });
+      assert.isUndefined((yield* telling()).told);
+      assert.deepStrictEqual(
+        (yield* notices).slice(quiet).map((row) => row.body),
+        [
+          "Lead lead gave you W-1 Invented: draft the onboarding copy. Why: Invented: after the launch.",
+        ],
+      );
+      // Held, then moved on: the one never told hears nothing of it, and the mark goes.
+      yield* LeadWork.update(scope, {
+        sourceEventId: "ask-event",
+        key: "W-3",
+        owner: "Mate",
+        tell: false,
+      });
+      const moved = yield* LeadWork.update(scope, {
+        sourceEventId: "ask-event",
+        key: "W-3",
+        owner: "you",
+      });
+      assert.isUndefined(moved.told);
+      assert.deepInclude(yield* untold("W-3"), { from: `person:${mateId}`, to: null });
+      assert.lengthOf((yield* notices).slice(quiet), 1);
       // Run 4: a meeting already held is recorded, one to come is attended: neither is a task.
       const meetings = [];
       for (const at of ["2026-11-15T17:00+05:30", "2026-11-19T15:00+05:30"])
