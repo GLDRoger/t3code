@@ -487,7 +487,8 @@ export function makeKinClient<R, ER>(
       return yield* readLeads(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: kinRefreshOn("leads"),
+    // A lead's In hand line reads its tracked tasks, which move with Work, not with `leads`.
+    refreshTrigger: kinWorkRefreshOn(["work"], kinRefreshOn("leads")),
   });
 
   /** The same list with the owner's retired agents after the live ones. Only the owner asks. */
@@ -581,7 +582,7 @@ export function makeKinClient<R, ER>(
         return yield* readAgentPage(input);
       }),
       staleTimeMs: 30_000,
-      refreshTrigger: kinRefreshOn("leads"),
+      refreshTrigger: kinWorkRefreshOn(["work"], kinRefreshOn("leads")),
     }),
     agentDefaults: createKinQueryAtomFamily(runtime, {
       label: "kin:agent-defaults",
