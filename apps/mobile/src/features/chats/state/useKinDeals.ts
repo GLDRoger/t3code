@@ -1,4 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
+import { kinAccessKnownAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinDealsStartFilter, type KinDealsFilter } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinListSend, type KinListOutcome } from "@t3tools/client-runtime/kin/kinLists";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type {
@@ -10,8 +12,14 @@ import type {
   KinDealStagesSetInput,
   KinDealStepInput,
   KinDealsInput,
+  KinDealsResult,
+  KinDealUpdateInput,
+  EnvironmentId,
   KinRecordKey,
 } from "@t3tools/contracts";
+import { AsyncResult, Atom } from "effect/reactivity";
+
+import { connectionAtomRuntime } from "../../../connection/runtime";
 
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { useAtomCommand } from "../../../state/use-atom-command";
@@ -29,13 +37,27 @@ const stagesAtom = (target: KinWorkTarget) =>
     input: { orgId: target.orgId },
   });
 
-/** Deals under the filters; the host's stream reads them again when one moves. */
-export function useKinDeals(target: KinWorkTarget, input: KinDealsInput) {
-  const atom = dealsAtom(target, input);
+const notYet = Atom.make(AsyncResult.initial<KinDealsResult>());
+
+/**
+ * Deals under the filters; the host's stream reads them again when one moves. Null input reads
+ * nothing yet and stays loading.
+ */
+export function useKinDeals(target: KinWorkTarget, input: KinDealsInput | null) {
+  const atom = input === null ? null : dealsAtom(target, input);
   return {
-    state: kinWorkReadState(useAtomValue(atom)),
-    refresh: () => appAtomRegistry.refresh(atom),
+    state: kinWorkReadState(useAtomValue(atom ?? notYet)),
+    refresh: () => {
+      if (atom !== null) appAtomRegistry.refresh(atom);
+    },
   };
+}
+
+/** Where the Deals tab starts; null until the host says whether the viewer is owner level. */
+export function useKinDealsStart(environmentId: EnvironmentId): KinDealsFilter | null {
+  return kinDealsStartFilter(
+    useAtomValue(kinAccessKnownAtom(connectionAtomRuntime, environmentId)),
+  );
 }
 
 export function useKinDealPage(target: KinWorkTarget, key: KinRecordKey) {
@@ -58,6 +80,7 @@ export function useKinDealStages(target: KinWorkTarget) {
 export function useKinDealSend(target: KinWorkTarget) {
   const { environmentId, orgId } = target;
   const move = useAtomCommand(kinClient.workDealMove, { reportFailure: false });
+  const update = useAtomCommand(kinClient.workDealUpdate, { reportFailure: false });
   const create = useAtomCommand(kinClient.workDealCreate, { reportFailure: false });
   const step = useAtomCommand(kinClient.workDealStep, { reportFailure: false });
   const online = () => kinHostConnected(environmentId);
@@ -71,6 +94,13 @@ export function useKinDealSend(target: KinWorkTarget) {
         await kinListSend({
           online,
           send: () => move({ environmentId, input: { orgId, key: deal.key, rev: deal.rev, to } }),
+        }),
+      ),
+    update: async (input: Omit<KinDealUpdateInput, "orgId">) =>
+      after(
+        await kinListSend({
+          online,
+          send: () => update({ environmentId, input: { ...input, orgId } }),
         }),
       ),
     create: async (input: Omit<KinDealCreateInput, "orgId">) =>

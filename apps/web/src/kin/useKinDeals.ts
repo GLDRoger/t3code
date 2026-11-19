@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { kinListSend, type KinListOutcome } from "@t3tools/client-runtime/kin/kinLists";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type {
@@ -10,6 +11,7 @@ import type {
   KinDealStagesSetInput,
   KinDealStepInput,
   KinDealsInput,
+  KinDealsResult,
   KinDealUpdateInput,
   KinRecordKey,
 } from "@t3tools/contracts";
@@ -30,12 +32,19 @@ const stagesAtom = (target: KinWorkTarget) =>
     input: { orgId: target.orgId },
   });
 
-/** Deals under the filters; the host's stream reads them again when one moves. */
-export function useKinDeals(target: KinWorkTarget, input: KinDealsInput) {
-  const atom = dealsAtom(target, input);
+const notYet = Atom.make(AsyncResult.initial<KinDealsResult>());
+
+/**
+ * Deals under the filters; the host's stream reads them again when one moves. Null input reads
+ * nothing yet and stays loading.
+ */
+export function useKinDeals(target: KinWorkTarget, input: KinDealsInput | null) {
+  const atom = input === null ? null : dealsAtom(target, input);
   return {
-    state: kinWorkReadState(useAtomValue(atom)),
-    refresh: () => appAtomRegistry.refresh(atom),
+    state: kinWorkReadState(useAtomValue(atom ?? notYet)),
+    refresh: () => {
+      if (atom !== null) appAtomRegistry.refresh(atom);
+    },
   };
 }
 

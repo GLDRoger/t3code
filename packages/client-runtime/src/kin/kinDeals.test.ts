@@ -17,8 +17,12 @@ import {
   kinDealNext,
   kinDealNextStage,
   kinDealsByStage,
+  kinDealEditDraft,
+  kinDealEditRequest,
+  kinDealQuoteChoices,
   kinDealsHeader,
-  kinDealsInput,
+  kinDealsQuery,
+  kinDealsStartFilter,
   kinDealStageBeside,
   kinDealStagesProblem,
   kinDealWhen,
@@ -196,14 +200,140 @@ describe("kinDealsHeader", () => {
   });
 });
 
-describe("kinDealsInput", () => {
+describe("kinDealsQuery", () => {
   const orgId = KinOrgId.make("org-ambermill");
   it.each([
     [{ _tag: "everyone" } as const, undefined],
     [{ _tag: "me" } as const, { _tag: "person", personId: rhea }],
     [{ _tag: "person", personId: zoya } as const, { _tag: "person", personId: zoya }],
   ])("%j asks for %j", (who, owner) => {
-    expect(kinDealsInput(orgId, { who, state: "open" }, rhea).owner).toEqual(owner);
+    expect(kinDealsQuery(orgId, { who, state: "open" }, null, rhea)?.input.owner).toEqual(owner);
+  });
+
+  it("starts an owner known late on Everyone without ever asking for Mine, and a teammate on theirs", () => {
+    // Each render's answer while the host is asked who the viewer is, then answers.
+    const asked = (
+      renders: ReadonlyArray<[Parameters<typeof kinDealsStartFilter>[0], KinPersonId | null]>,
+    ) => renders.map(([access, me]) => kinDealsQuery(orgId, null, kinDealsStartFilter(access), me));
+    const owner = asked([
+      [undefined, null],
+      [undefined, rhea],
+      ["owner", rhea],
+    ]);
+    expect(owner.slice(0, 2)).toEqual([null, null]);
+    expect(owner.at(-1)).toEqual({
+      filter: { who: { _tag: "everyone" }, state: "open" },
+      input: { orgId, state: "open" },
+    });
+    expect(asked([["co_owner", null]])[0]?.input.owner).toBeUndefined();
+    expect(owner.every((read) => read?.input.owner === undefined)).toBe(true);
+    const teammate = asked([
+      [undefined, null],
+      ["member", null],
+      ["member", zoya],
+    ]);
+    expect(teammate.slice(0, 2)).toEqual([null, null]);
+    expect(teammate[2]?.input.owner).toEqual({ _tag: "person", personId: zoya });
+    // A choice of their own wins over where it started.
+    const everyone = { who: { _tag: "everyone" }, state: "won" } as const;
+    expect(kinDealsQuery(orgId, everyone, kinDealsStartFilter("member"), zoya)?.input).toEqual({
+      orgId,
+      state: "won",
+    });
+  });
+});
+
+describe("kinDealEditRequest", () => {
+  const held = deal(7, {
+    title: "Clinic scheduling pilot",
+    value: { minor: 1_800_000, currency: "NOK" },
+    expectedAt: "2027-01-15T18:29:59.999Z",
+    expectedAllDay: true,
+    source: "Trade fair",
+  });
+
+  it("sends only what changed, clears what was emptied, and keeps the deal's own currency", () => {
+    const draft = kinDealEditDraft(held, names);
+    expect(draft).toMatchObject({ title: "Clinic scheduling pilot", expected: "2027-01-15" });
+    expect(kinDealEditRequest(held, draft, names, "EUR")).toEqual({
+      ok: true,
+      input: { key: held.key, rev: 1 },
+    });
+    expect(
+      kinDealEditRequest(
+        held,
+        { ...draft, title: " Pilot ", value: "20000", expected: null, source: "", quote: null },
+        names,
+        "EUR",
+      ),
+    ).toEqual({
+      ok: true,
+      input: {
+        key: held.key,
+        rev: 1,
+        title: "Pilot",
+        value: { minor: 2_000_000, currency: "NOK" },
+        expectedOn: null,
+        source: null,
+      },
+    });
+    expect(kinDealEditRequest(held, { ...draft, value: "" }, names, "EUR")).toMatchObject({
+      input: { value: null },
+    });
+    const linked = kinDealEditRequest(
+      held,
+      { ...draft, quote: KinRecordKey.make("QT-3") },
+      names,
+      "EUR",
+    );
+    expect(linked).toMatchObject({ input: { quote: "QT-3" } });
+  });
+
+  it("refuses an empty title and an amount it can't read", () => {
+    const draft = kinDealEditDraft(held, names);
+    expect(kinDealEditRequest(held, { ...draft, title: " " }, names, "EUR")).toEqual({
+      ok: false,
+      problem: null,
+    });
+    expect(kinDealEditRequest(held, { ...draft, value: "soon" }, names, "EUR")).toEqual({
+      ok: false,
+      problem: "That isn't an amount.",
+    });
+  });
+});
+
+describe("kinDealQuoteChoices", () => {
+  const quote = (n: number, accepted = false) => ({
+    recordId: KinRecordId.make(`rec-q${n}`),
+    key: KinRecordKey.make(`QT-${n}`),
+    title: `Quote ${n}`,
+    accepted,
+  });
+
+  it("offers None, then the client's quotes, with the linked one checked", () => {
+    const linked = deal(1, { quote: quote(2, true) });
+    expect(
+      kinDealQuoteChoices({ deal: linked, quotes: [quote(3), quote(2, true)] }).choices,
+    ).toEqual([
+      { key: null, label: "None", current: false },
+      { key: "QT-3", label: "Quote 3", current: false },
+      { key: "QT-2", label: "Quote 2 · accepted", current: true },
+    ]);
+    // A draft's own pick is what's checked.
+    expect(
+      kinDealQuoteChoices({ deal: linked, quotes: [quote(2, true)] }, null).choices[0]?.current,
+    ).toBe(true);
+  });
+
+  it("says there is nothing to link, and offers nothing, when the client has no quotes", () => {
+    expect(kinDealQuoteChoices({ deal: deal(1), quotes: [] })).toEqual({
+      choices: [],
+      empty: "No quotes for Brightwater Clinics to link.",
+    });
+    // A host older than the list sends none at all; a linked quote can still be taken off.
+    expect(
+      kinDealQuoteChoices({ deal: deal(1, { quote: quote(4) }) }).choices.map((one) => one.key),
+    ).toEqual([null, "QT-4"]);
   });
 });
 

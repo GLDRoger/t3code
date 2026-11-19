@@ -2,23 +2,28 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_DEALS,
   kinDealChangeText,
+  kinDealEditDraft,
+  kinDealEditRequest,
   kinDealNext,
   kinDealNextStage,
   kinDealPill,
+  kinDealQuoteChoices,
   kinDealStageName,
   kinDealStrip,
   kinDealWhen,
 } from "@t3tools/client-runtime/kin/kinDeals";
-import { kinMoneyText, kinParseMoney } from "@t3tools/client-runtime/kin/kinLists";
-import { kinWorkAllDay, kinWorkDueText, kinWorkName } from "@t3tools/client-runtime/kin/kinWork";
+import { kinMoneyText } from "@t3tools/client-runtime/kin/kinLists";
+import { kinWorkAssignees, kinWorkDueText, kinWorkName } from "@t3tools/client-runtime/kin/kinWork";
 import type {
   KinDealMove,
   KinDealPage as KinDealPageValue,
   KinDealRow,
+  KinDealUpdateInput,
   KinRecordKey,
 } from "@t3tools/contracts";
 import {
   ArrowRightIcon,
+  ChevronDownIcon,
   PencilIcon,
   PlusIcon,
   RotateCcwIcon,
@@ -31,10 +36,19 @@ import { Alert, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../components/ui/menu";
+import {
+  Select,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select";
 import { randomUUID } from "../lib/utils";
 import { kinClient } from "./kinClient";
 import { KinDealLostDialog, KinDealMoveMenu, KinDealNextLine } from "./KinDeals";
 import { Field, FormShell } from "./KinWorkForms";
+import { GiveItems } from "./KinWorkItemSheet";
 import {
   KinLoadFailed,
   KinWorkNotice,
@@ -133,10 +147,19 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
     if (outcome.value.becameClient === true) setBecameClient(true);
     setLosing(false);
   };
+  const change = async (input: Omit<KinDealUpdateInput, "orgId">) => {
+    setBusy(true);
+    setProblem(null);
+    const outcome = await send.update(input);
+    setBusy(false);
+    if (!outcome.ok) setProblem(outcome.problem);
+  };
   const nextStage = kinDealNextStage(deal, stages);
   const when = kinDealWhen(deal, names, now);
   const next = kinDealNext(deal, names, now);
   const lastStage = kinDealStageName(stages, deal.stage);
+  const quotes = kinDealQuoteChoices(page);
+  const { orgId } = props;
 
   return (
     <div className="flex flex-col gap-5 p-4 pe-12">
@@ -236,7 +259,7 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
           {!deal.can.edit ? null : (
             <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
               <PencilIcon />
-              Edit
+              {KIN_DEALS.edit}
             </Button>
           )}
         </div>
@@ -374,7 +397,35 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
             </button>
           </dd>
           <dt className="text-muted-foreground">{KIN_DEALS.lookedAfterBy}</dt>
-          <dd>{kinWorkName(deal.owner, names)}</dd>
+          <dd className="flex flex-wrap items-center gap-2">
+            {kinWorkName(deal.owner, names)}
+            {!deal.can.give ? null : (
+              <Menu>
+                <MenuTrigger
+                  render={
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      disabled={busy}
+                      aria-label={KIN_DEALS.changeOwner}
+                    />
+                  }
+                >
+                  {KIN_DEALS.change}
+                  <ChevronDownIcon />
+                </MenuTrigger>
+                <MenuPopup align="start">
+                  <GiveItems
+                    assignees={kinWorkAssignees({ ...directory, orgId, current: deal.owner })}
+                    leadsHint={null}
+                    onGive={(to) =>
+                      void change({ key: deal.key, rev: deal.rev, owner: to.principal })
+                    }
+                  />
+                </MenuPopup>
+              </Menu>
+            )}
+          </dd>
           {deal.state === "open" && next !== null ? (
             <>
               <dt className="text-muted-foreground">{KIN_DEALS.nextStep}</dt>
@@ -387,19 +438,63 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
               <dd>{deal.source}</dd>
             </>
           )}
-          {deal.quote === undefined ? null : (
+          {deal.quote === undefined && !deal.can.edit ? null : (
             <>
               <dt className="text-muted-foreground">{KIN_DEALS.quote}</dt>
-              <dd>
-                <button
-                  type="button"
-                  className="text-start text-sm text-foreground underline-offset-2 outline-none hover:underline focus-visible:underline"
-                  onClick={() => deal.quote !== undefined && props.onOpenTask(deal.quote.key)}
-                >
-                  {deal.quote.accepted
-                    ? KIN_DEALS.quoteAccepted(deal.quote.title)
-                    : deal.quote.title}
-                </button>
+              <dd className="flex flex-wrap items-center gap-2">
+                {deal.quote === undefined ? (
+                  <span className="text-muted-foreground">{quotes.empty ?? KIN_DEALS.none}</span>
+                ) : (
+                  <button
+                    type="button"
+                    className="text-start text-sm text-foreground underline-offset-2 outline-none hover:underline focus-visible:underline"
+                    onClick={() => deal.quote !== undefined && props.onOpenTask(deal.quote.key)}
+                  >
+                    {deal.quote.accepted
+                      ? KIN_DEALS.quoteAccepted(deal.quote.title)
+                      : deal.quote.title}
+                  </button>
+                )}
+                {!deal.can.edit || quotes.choices.length === 0 ? null : (
+                  <Menu>
+                    <MenuTrigger
+                      render={
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          disabled={busy}
+                          aria-label={KIN_DEALS.changeQuote}
+                        />
+                      }
+                    >
+                      {KIN_DEALS.change}
+                      <ChevronDownIcon />
+                    </MenuTrigger>
+                    <MenuPopup align="start">
+                      <MenuRadioGroup
+                        value={deal.quote?.key ?? NO_QUOTE}
+                        onValueChange={(value: string) => {
+                          if (value === (deal.quote?.key ?? NO_QUOTE)) return;
+                          void change({
+                            key: deal.key,
+                            rev: deal.rev,
+                            quote: value === NO_QUOTE ? null : (value as KinRecordKey),
+                          });
+                        }}
+                      >
+                        {quotes.choices.map((choice) => (
+                          <MenuRadioItem
+                            key={choice.key ?? NO_QUOTE}
+                            value={choice.key ?? NO_QUOTE}
+                            closeOnClick
+                          >
+                            {choice.label}
+                          </MenuRadioItem>
+                        ))}
+                      </MenuRadioGroup>
+                    </MenuPopup>
+                  </Menu>
+                )}
               </dd>
             </>
           )}
@@ -444,7 +539,7 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
           }}
         />
       )}
-      {!editing ? null : <DealEdit {...props} deal={deal} onClose={() => setEditing(false)} />}
+      {!editing ? null : <DealEdit {...props} page={page} onClose={() => setEditing(false)} />}
     </div>
   );
 }
@@ -523,70 +618,64 @@ function AddStep(
   );
 }
 
-/** Title, value, expected day, came from and the quote's key. */
+const NO_QUOTE = "none";
+
+/** Title, value, expected day, came from and the quote, as the phone's Edit sends them. */
 function DealEdit(
   props: KinWorkTarget & {
-    readonly deal: KinDealRow;
+    readonly page: KinDealPageValue;
     readonly directory: KinWorkDirectory;
     readonly onClose: () => void;
   },
 ) {
-  const { deal } = props;
+  const { deal } = props.page;
+  const { names } = props.directory;
   const send = useKinDealSend(props);
-  const home = useKinHomeCurrency(props) ?? deal.value?.currency ?? "USD";
-  const [title, setTitle] = useState(deal.title);
-  const [value, setValue] = useState(deal.value === undefined ? "" : kinMoneyText(deal.value));
-  const [expected, setExpected] = useState(
-    kinWorkAllDay(deal.expectedAt, deal.expectedAllDay, props.directory.names) ?? "",
-  );
-  const [source, setSource] = useState(deal.source ?? "");
-  const [quote, setQuote] = useState<string>(deal.quote?.key ?? "");
+  const home = useKinHomeCurrency(props);
+  const [draft, setDraft] = useState(() => kinDealEditDraft(deal, names));
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const ids = {
+    party: useId(),
     title: useId(),
     value: useId(),
     expected: useId(),
     source: useId(),
     quote: useId(),
   };
-  const money = value.trim() === "" ? null : kinParseMoney(value, home);
-  const moneyBad = value.trim() !== "" && money === null;
+  const request = kinDealEditRequest(deal, draft, names, home ?? null);
+  const moneyBad = !request.ok && request.problem !== null;
+  const quotes = kinDealQuoteChoices(props.page, draft.quote);
+  const set = (change: Partial<typeof draft>) => setDraft((held) => ({ ...held, ...change }));
   const save = async () => {
+    if (!request.ok) return;
     setBusy(true);
     setProblem(null);
-    const outcome = await send.update({
-      key: deal.key,
-      rev: deal.rev,
-      ...(title.trim() === deal.title ? {} : { title: title.trim() }),
-      value: money,
-      expectedOn: expected === "" ? null : expected,
-      source: source.trim() === "" ? null : source.trim(),
-      ...(quote.trim() === (deal.quote?.key ?? "")
-        ? {}
-        : { quote: quote.trim() === "" ? null : (quote.trim() as KinRecordKey) }),
-    });
+    const outcome = await send.update(request.input);
     setBusy(false);
     if (!outcome.ok) return setProblem(outcome.problem);
     props.onClose();
   };
   return (
     <FormShell
-      title={`Edit ${deal.key}`}
-      submit="Save"
+      title={KIN_DEALS.editTitle(deal.key)}
+      submit={KIN_DEALS.save}
       saving={busy}
-      canSave={title.trim() !== "" && !moneyBad}
+      canSave={request.ok}
       problem={problem === null ? null : { kind: "invalid", text: problem }}
       onOpenExisting={() => {}}
       onSave={() => void save()}
       onClose={props.onClose}
     >
+      <Field id={ids.party} label={KIN_DEALS.clientField} hint={KIN_DEALS.clientStays}>
+        <Input id={ids.party} value={deal.party.title} readOnly />
+      </Field>
       <Field id={ids.title} label={KIN_DEALS.what}>
         <Input
           id={ids.title}
           maxLength={280}
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
+          value={draft.title}
+          onChange={(event) => set({ title: event.target.value })}
         />
       </Field>
       <div className="grid grid-cols-2 gap-3">
@@ -598,16 +687,18 @@ function DealEdit(
           <Input
             id={ids.value}
             inputMode="decimal"
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
+            value={draft.value}
+            onChange={(event) => set({ value: event.target.value })}
           />
         </Field>
         <Field id={ids.expected} label={KIN_DEALS.expected}>
           <Input
             id={ids.expected}
             type="date"
-            value={expected}
-            onChange={(event) => setExpected(event.target.value)}
+            value={draft.expected ?? ""}
+            onChange={(event) =>
+              set({ expected: event.target.value === "" ? null : event.target.value })
+            }
           />
         </Field>
       </div>
@@ -615,16 +706,34 @@ function DealEdit(
         <Input
           id={ids.source}
           maxLength={120}
-          value={source}
-          onChange={(event) => setSource(event.target.value)}
+          value={draft.source}
+          onChange={(event) => set({ source: event.target.value })}
         />
       </Field>
       <Field
         id={ids.quote}
         label={KIN_DEALS.quote}
-        hint="The quote's number, like QT-17. It must be for the same client."
+        {...(quotes.empty === null ? {} : { hint: quotes.empty })}
       >
-        <Input id={ids.quote} value={quote} onChange={(event) => setQuote(event.target.value)} />
+        {quotes.choices.length === 0 ? null : (
+          <Select
+            value={draft.quote ?? NO_QUOTE}
+            onValueChange={(next) =>
+              set({ quote: next === NO_QUOTE || next === null ? null : (next as KinRecordKey) })
+            }
+          >
+            <SelectTrigger id={ids.quote} className="w-full min-w-0">
+              <SelectValue>{quotes.choices.find((choice) => choice.current)?.label}</SelectValue>
+            </SelectTrigger>
+            <SelectPopup alignItemWithTrigger={false}>
+              {quotes.choices.map((choice) => (
+                <SelectItem key={choice.key ?? NO_QUOTE} value={choice.key ?? NO_QUOTE}>
+                  {choice.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        )}
       </Field>
     </FormShell>
   );

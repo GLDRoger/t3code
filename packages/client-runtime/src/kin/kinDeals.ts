@@ -1,21 +1,26 @@
-import type {
-  KinDealMove,
-  KinDealRow,
-  KinDealStage,
-  KinDealState,
-  KinDealsInput,
-  KinDealsResult,
-  KinMoney,
-  KinOrgId,
-  KinPersonId,
-  KinRecordChange,
-  KinRecordKey,
+import {
+  kinOwnerLevel,
+  type KinDealMove,
+  type KinDealPage,
+  type KinDealRow,
+  type KinDealStage,
+  type KinDealState,
+  type KinDealsInput,
+  type KinDealsResult,
+  type KinDealUpdateInput,
+  type KinMoney,
+  type KinOrgId,
+  type KinPersonAccess,
+  type KinPersonId,
+  type KinRecordChange,
+  type KinRecordKey,
 } from "@t3tools/contracts";
 
 import { kinTotalsEstimate, type KinRates } from "./kinCurrency.ts";
-import { kinMoneyText } from "./kinLists.ts";
+import { kinMoneyText, kinParseMoney } from "./kinLists.ts";
 import {
   kinWorkActorName,
+  kinWorkAllDay,
   kinWorkChangeText,
   kinWorkDueText,
   kinWorkName,
@@ -87,6 +92,16 @@ export const KIN_DEALS = {
   lostWhy: (reason: string) => `Why: ${reason}`,
   quoteAccepted: (quote: string) => `${quote} · accepted`,
   quoteAcceptedHint: (quote: string) => `${quote} was accepted. Mark the deal won?`,
+  edit: "Edit",
+  editTitle: (key: string) => `Edit ${key}`,
+  save: "Save",
+  change: "Change",
+  changeOwner: "Change who looks after it",
+  changeQuote: "Change quote",
+  none: "None",
+  noQuotes: (party: string) => `No quotes for ${party} to link.`,
+  openQuote: (quote: string) => `Open ${quote}`,
+  clientStays: "A deal stays with its client. For another, add a new deal.",
 } as const;
 
 /** Settings → Deals. */
@@ -142,23 +157,42 @@ export interface KinDealsFilter {
   readonly state: KinDealState;
 }
 
-/** The owner level starts on everyone's deals; a teammate on their own ("Mine"). */
-export const kinDealsDefaultFilter = (ownerLevel: boolean): KinDealsFilter => ({
-  who: ownerLevel ? { _tag: "everyone" } : { _tag: "me" },
-  state: "open",
-});
+/**
+ * Where the tab starts: the owner level on everyone's deals, a teammate on their own ("Mine").
+ * Null while the host hasn't said which the viewer is (`undefined`), so nothing is read on a guess.
+ */
+export function kinDealsStartFilter(
+  access: KinPersonAccess | null | undefined,
+): KinDealsFilter | null {
+  if (access === undefined) return null;
+  return {
+    who: kinOwnerLevel(access ?? undefined) ? { _tag: "everyone" } : { _tag: "me" },
+    state: "open",
+  };
+}
 
-export function kinDealsInput(
+/**
+ * What the tab reads: the person's own choice once they make one, else where it starts. Null
+ * while either is unknown: who the viewer is, or (for "Mine") their own id.
+ */
+export function kinDealsQuery(
   orgId: KinOrgId,
-  filter: KinDealsFilter,
+  chosen: KinDealsFilter | null,
+  start: KinDealsFilter | null,
   me: KinPersonId | null,
-): KinDealsInput {
+): { readonly filter: KinDealsFilter; readonly input: KinDealsInput } | null {
+  const filter = chosen ?? start;
+  if (filter === null) return null;
   const personId =
     filter.who._tag === "person" ? filter.who.personId : filter.who._tag === "me" ? me : null;
+  if (filter.who._tag === "me" && personId === null) return null;
   return {
-    orgId,
-    state: filter.state,
-    ...(personId === null ? {} : { owner: { _tag: "person", personId } }),
+    filter,
+    input: {
+      orgId,
+      state: filter.state,
+      ...(personId === null ? {} : { owner: { _tag: "person", personId } }),
+    },
   };
 }
 
@@ -501,4 +535,107 @@ export function kinDealChangeText(change: KinRecordChange, names: KinWorkNames, 
       ? `${who} put it in ${stage.to}`
       : `${who} moved it ${stage.from} → ${stage.to}`;
   return kinWorkChangeText(change, names, now);
+}
+
+// Editing a deal
+
+/** What the Edit form holds, as typed. The client stays: a deal never moves to another. */
+export interface KinDealEditDraft {
+  readonly title: string;
+  readonly value: string;
+  /** A `YYYY-MM-DD` day, or null for none. */
+  readonly expected: string | null;
+  readonly source: string;
+  readonly quote: KinRecordKey | null;
+}
+
+export function kinDealEditDraft(
+  deal: Pick<KinDealRow, "title" | "value" | "expectedAt" | "expectedAllDay" | "source" | "quote">,
+  names: KinWorkNames,
+): KinDealEditDraft {
+  return {
+    title: deal.title,
+    value: deal.value === undefined ? "" : kinMoneyText(deal.value),
+    expected: kinWorkAllDay(deal.expectedAt, deal.expectedAllDay, names),
+    source: deal.source ?? "",
+    quote: deal.quote?.key ?? null,
+  };
+}
+
+export type KinDealEditRequest =
+  | { readonly ok: true; readonly input: Omit<KinDealUpdateInput, "orgId"> }
+  | { readonly ok: false; readonly problem: string | null };
+
+/**
+ * The update both clients send for a draft: only what changed, an emptied field cleared. A value
+ * typed without a currency takes the deal's own, else the company's.
+ */
+export function kinDealEditRequest(
+  deal: Pick<
+    KinDealRow,
+    "key" | "rev" | "title" | "value" | "expectedAt" | "expectedAllDay" | "source" | "quote"
+  >,
+  draft: KinDealEditDraft,
+  names: KinWorkNames,
+  home: string | null,
+): KinDealEditRequest {
+  const was = kinDealEditDraft(deal, names);
+  const title = draft.title.trim();
+  if (title === "") return { ok: false, problem: null };
+  const typed = draft.value.trim();
+  const currency = deal.value?.currency ?? home ?? "USD";
+  const value = typed === "" ? null : kinParseMoney(typed, currency);
+  if (typed !== "" && value === null) return { ok: false, problem: KIN_DEALS.notAmount };
+  const source = draft.source.trim();
+  const sameValue =
+    value === null
+      ? deal.value === undefined
+      : deal.value !== undefined &&
+        value.minor === deal.value.minor &&
+        value.currency === deal.value.currency;
+  return {
+    ok: true,
+    input: {
+      key: deal.key as KinRecordKey,
+      rev: deal.rev,
+      ...(title === deal.title ? {} : { title }),
+      ...(sameValue ? {} : { value }),
+      ...(draft.expected === was.expected ? {} : { expectedOn: draft.expected }),
+      ...(source === was.source ? {} : { source: source === "" ? null : source }),
+      ...(draft.quote === was.quote ? {} : { quote: draft.quote }),
+    },
+  };
+}
+
+export interface KinDealQuoteChoice {
+  /** Null unlinks. */
+  readonly key: KinRecordKey | null;
+  readonly label: string;
+  readonly current: boolean;
+}
+
+/**
+ * The quotes a deal may link: None, then its client's quotes the viewer sees, newest first. With
+ * none to offer and none linked, `empty` says so and there is nothing to pick.
+ */
+export function kinDealQuoteChoices(
+  page: Pick<KinDealPage, "deal" | "quotes">,
+  linked: KinRecordKey | null = page.deal.quote?.key ?? null,
+): { readonly choices: ReadonlyArray<KinDealQuoteChoice>; readonly empty: string | null } {
+  const offered = [...(page.quotes ?? [])];
+  const held = page.deal.quote;
+  if (held !== undefined && !offered.some((quote) => quote.key === held.key)) offered.push(held);
+  if (offered.length === 0 && linked === null)
+    return { choices: [], empty: KIN_DEALS.noQuotes(page.deal.party.title) };
+  return {
+    choices: [
+      { key: null, label: KIN_DEALS.none, current: linked === null },
+      ...offered.map((quote) => ({
+        key: quote.key,
+        label: quote.accepted ? KIN_DEALS.quoteAccepted(quote.title) : quote.title,
+        current: quote.key === linked,
+      })),
+    ],
+    empty: null,
+  };
 }

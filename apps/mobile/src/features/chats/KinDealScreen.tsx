@@ -7,6 +7,7 @@ import {
   kinDealNext,
   kinDealNextStage,
   kinDealPill,
+  kinDealQuoteChoices,
   kinDealStageName,
   kinDealStrip,
   kinDealWhen,
@@ -14,6 +15,7 @@ import {
 import { kinMoneyText } from "@t3tools/client-runtime/kin/kinLists";
 import {
   KIN_WORK_NEW_COPY,
+  kinWorkAssignees,
   kinWorkDueText,
   kinWorkName,
 } from "@t3tools/client-runtime/kin/kinWork";
@@ -24,6 +26,7 @@ import {
   type KinDealMove,
   type KinDealPage,
   type KinDealRow,
+  type KinDealUpdateInput,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -44,6 +47,7 @@ import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
 import { KinDayField } from "./components/KinDayField";
+import { KinDealOwnerRow, KinDealQuoteRow } from "./components/KinDealPicks";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import {
   KinWorkFrame,
@@ -160,6 +164,14 @@ function KinDealBody(
         void move({ _tag: "lost", reason });
       },
     });
+  const change = async (input: Omit<KinDealUpdateInput, "orgId">) => {
+    if (busy) return;
+    setBusy(true);
+    setProblem(null);
+    const outcome = await send.update(input);
+    setBusy(false);
+    if (!outcome.ok) setProblem(outcome.problem);
+  };
   const openTask = (task: KinRecordKey) =>
     openRecord("KinWorkItem", { environmentId, orgId, task });
   const nextStage = kinDealNextStage(deal, stages);
@@ -264,6 +276,18 @@ function KinDealBody(
               label={KIN_DEALS.reopen}
               disabled={busy}
               onPress={() => void move({ _tag: "reopen" })}
+            />
+          )}
+          {!deal.can.edit ? null : (
+            <Button
+              size="compact"
+              tone="outline"
+              icon="pencil"
+              label={KIN_DEALS.edit}
+              disabled={busy}
+              onPress={() =>
+                navigation.navigate("KinDealEdit", { environmentId, orgId, deal: deal.key })
+              }
             />
           )}
         </View>
@@ -393,7 +417,16 @@ function KinDealBody(
           detail={deal.party.title}
           onPress={() => openRecord("KinClient", { environmentId, orgId, party: deal.party.key })}
         />
-        <ListRowLayout label={KIN_DEALS.lookedAfterBy} detail={kinWorkName(deal.owner, names)} />
+        {deal.can.give ? (
+          <KinDealOwnerRow
+            name={kinWorkName(deal.owner, names)}
+            assignees={kinWorkAssignees({ ...props.directory, orgId, current: deal.owner })}
+            disabled={busy}
+            onGive={(to) => void change({ key: deal.key, rev: deal.rev, owner: to })}
+          />
+        ) : (
+          <ListRowLayout label={KIN_DEALS.lookedAfterBy} detail={kinWorkName(deal.owner, names)} />
+        )}
         {deal.state !== "open" ? null : deal.next === null ? (
           <ListRowLayout label={KIN_DEALS.nextStep} detail={KIN_DEALS.noNextStep} />
         ) : (
@@ -408,7 +441,18 @@ function KinDealBody(
         {deal.source === undefined ? null : (
           <ListRowLayout label={KIN_DEALS.cameFrom} detail={deal.source} />
         )}
-        {deal.quote === undefined ? null : (
+        {deal.can.edit ? (
+          <KinDealQuoteRow
+            quotes={kinDealQuoteChoices(page)}
+            disabled={busy}
+            onPick={(quote) => void change({ key: deal.key, rev: deal.rev, quote })}
+            onOpen={
+              deal.quote === undefined
+                ? undefined
+                : { title: deal.quote.title, open: () => deal.quote && openTask(deal.quote.key) }
+            }
+          />
+        ) : deal.quote === undefined ? null : (
           <ListRow
             label={KIN_DEALS.quote}
             detail={

@@ -1534,9 +1534,11 @@ function DueMenu(props: {
 }
 
 /** Who the task can go to: agents first, then people; giving to an agent starts it at once. */
-function GiveItems(props: {
+export function GiveItems(props: {
   readonly assignees: ReturnType<typeof kinWorkAssignees>;
   readonly onGive: (to: KinWorkAssignee) => void;
+  /** Under the agents; a task's says giving one starts it. */
+  readonly leadsHint?: string | null;
 }) {
   const { assignees } = props;
   const group = (title: string, rows: ReadonlyArray<KinWorkAssignee>) =>
@@ -1563,9 +1565,9 @@ function GiveItems(props: {
   return (
     <>
       {group(KIN_WORK_ASSIGN.leads, assignees.leads)}
-      {assignees.leads.length === 0 ? null : (
+      {assignees.leads.length === 0 || props.leadsHint === null ? null : (
         <p className="max-w-64 px-2 pb-1.5 text-xs text-muted-foreground">
-          {KIN_WORK_ASSIGN.leadsHint}
+          {props.leadsHint ?? KIN_WORK_ASSIGN.leadsHint}
         </p>
       )}
       {group(KIN_WORK_ASSIGN.people, assignees.people)}

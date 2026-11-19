@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  KinAgentId,
   KinOrgId,
   KinPersonId,
   KinRecordId,
@@ -17,6 +18,7 @@ const state = vi.hoisted(() => ({
   page: null as unknown,
   stages: null as unknown,
   move: null as unknown as (...args: Array<unknown>) => unknown,
+  update: null as unknown as (...args: Array<unknown>) => unknown,
   setStages: null as unknown as (...args: Array<unknown>) => unknown,
 }));
 
@@ -35,7 +37,10 @@ vi.mock(import("./useKinDeals"), () => {
         state.move(deal, to);
         return done(deal);
       },
-      update: async () => done(null),
+      update: async (input: unknown) => {
+        state.update(input);
+        return done(null);
+      },
       create: async () => done(null),
       step: async () => done(null),
     })) as never,
@@ -117,8 +122,9 @@ function setup(input: {
   state.page = input.page ?? null;
   state.stages = input.stages ?? null;
   state.move = vi.fn();
+  state.update = vi.fn();
   state.setStages = vi.fn();
-  return { move: state.move, setStages: state.setStages };
+  return { move: state.move, update: state.update, setStages: state.setStages };
 }
 
 const board = () => (
@@ -206,22 +212,58 @@ const dealPage = (row: KinDealRow): KinDealPageValue => ({
   seq: 1,
 });
 
+const rhea = KinPersonId.make("person-rhea");
+const chief = KinAgentId.make("agent-chief");
+const quote = (n: number, title: string, accepted = false) => ({
+  recordId: KinRecordId.make(`rec-q${n}`),
+  key: KinRecordKey.make(`QT-${n}`),
+  title,
+  accepted,
+});
+/** Rhea, the owner, looking at Ambermill with Zoya and the Chief of staff. */
+const company = {
+  orgs: {
+    orgs: [
+      {
+        orgId: target.orgId,
+        agents: [{ agentId: chief, displayName: "Chief of staff", retired: false }],
+      },
+    ],
+    me: [{ orgId: target.orgId, personId: rhea }],
+  },
+  people: [
+    { personId: rhea, orgId: target.orgId, displayName: "Rhea" },
+    { personId: zoya, orgId: target.orgId, displayName: "Zoya" },
+  ],
+  joined: null,
+  invited: null,
+  names: {
+    people: new Map([
+      [rhea, "Rhea"],
+      [zoya, "Zoya"],
+    ]),
+    agents: new Map([[chief, "Chief of staff"]]),
+    me: rhea,
+    zone: null,
+  },
+} as never;
+
 describe("one deal's page", () => {
-  const renderPage = () =>
-    render(
-      <AppAtomRegistryProvider>
-        <KinDealPage
-          {...target}
-          dealKey={KinRecordKey.make("DL-7")}
-          frame="page"
-          directory={directory}
-          onOpenTask={() => {}}
-          onOpenClient={() => {}}
-          onStartProject={null}
-          onClose={() => {}}
-        />
-      </AppAtomRegistryProvider>,
-    );
+  const pageElement = (held: typeof directory = directory) => (
+    <AppAtomRegistryProvider>
+      <KinDealPage
+        {...target}
+        dealKey={KinRecordKey.make("DL-7")}
+        frame="page"
+        directory={held}
+        onOpenTask={() => {}}
+        onOpenClient={() => {}}
+        onStartProject={null}
+        onClose={() => {}}
+      />
+    </AppAtomRegistryProvider>
+  );
+  const renderPage = (held: typeof directory = directory) => render(pageElement(held));
 
   it("moves to the next stage, wins, and loses with a reason", async () => {
     const pilot = deal(7, "Clinic scheduling pilot", { stage: "in-talks" });
@@ -250,6 +292,80 @@ describe("one deal's page", () => {
     expect(page.getByRole("button", { name: "Won", exact: true }).elements()).toHaveLength(0);
     await userEvent.click(page.getByRole("button", { name: "Reopen" }));
     expect(move).toHaveBeenLastCalledWith(lost, { _tag: "reopen" });
+  });
+
+  it("hands the deal to someone else from Looked after by, and back", async () => {
+    const pilot = deal(7, "Clinic scheduling pilot");
+    const { update } = setup({ page: dealPage(pilot) });
+    await using _screen = await renderPage(company);
+    await userEvent.click(page.getByRole("button", { name: "Change who looks after it" }));
+    await expect
+      .element(page.getByRole("menuitem", { name: /Zoya/ }))
+      .toHaveAttribute("aria-disabled", "true");
+    await expect.element(page.getByRole("menuitem", { name: "Chief of staff" })).toBeVisible();
+    await userEvent.click(page.getByRole("menuitem", { name: "You" }));
+    expect(update).toHaveBeenLastCalledWith({
+      key: pilot.key,
+      rev: pilot.rev,
+      owner: { _tag: "person", personId: rhea },
+    });
+  });
+
+  it("offers no hand-over to whoever may not give the deal away", async () => {
+    setup({
+      page: dealPage(
+        deal(7, "Clinic scheduling pilot", {
+          can: { edit: false, move: false, give: false, mark: false },
+        }),
+      ),
+    });
+    await using _screen = await renderPage(company);
+    await expect.element(page.getByText("Zoya")).toBeVisible();
+    expect(page.getByRole("button", { name: "Change who looks after it" }).elements()).toHaveLength(
+      0,
+    );
+  });
+
+  it("links one of the client's quotes from Details, and None unlinks it", async () => {
+    const quotes = [quote(3, "Phase two quote"), quote(17, "Pilot quote", true)];
+    const open = deal(7, "Clinic scheduling pilot");
+    const { update } = setup({ page: { ...dealPage(open), quotes } });
+    await using screen = await renderPage();
+    await userEvent.click(page.getByRole("button", { name: "Change quote" }));
+    await expect.element(page.getByRole("menuitemradio", { name: "None" })).toBeChecked();
+    await userEvent.click(page.getByRole("menuitemradio", { name: "Pilot quote · accepted" }));
+    expect(update).toHaveBeenLastCalledWith({ key: open.key, rev: open.rev, quote: "QT-17" });
+    await expect.element(page.getByRole("menu")).not.toBeInTheDocument();
+
+    const linked = deal(7, "Clinic scheduling pilot", { quote: quotes[1], rev: 4 });
+    state.page = { ...dealPage(linked), quotes };
+    await screen.rerender(pageElement());
+    await expect.element(page.getByRole("button", { name: "Mark won" })).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Change quote" }));
+    await userEvent.click(page.getByRole("menuitemradio", { name: "None" }));
+    expect(update).toHaveBeenLastCalledWith({ key: linked.key, rev: 4, quote: null });
+  });
+
+  it("says when the client has no quotes, with nothing to type, and Edit sends what changed", async () => {
+    const open = deal(7, "Clinic scheduling pilot");
+    const { update } = setup({ page: { ...dealPage(open), quotes: [] } });
+    await using _screen = await renderPage();
+    await expect
+      .element(page.getByText("No quotes for Brightwater Clinics to link."))
+      .toBeVisible();
+    expect(page.getByRole("button", { name: "Change quote" }).elements()).toHaveLength(0);
+    await userEvent.click(page.getByRole("button", { name: "Edit", exact: true }));
+    const form = page.getByRole("dialog");
+    const what = form.getByRole("textbox", { name: "What" });
+    await userEvent.clear(what);
+    await userEvent.type(what, "Clinic scheduling, phase one");
+    expect(form.getByRole("combobox", { name: "Quote" }).elements()).toHaveLength(0);
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    expect(update).toHaveBeenLastCalledWith({
+      key: open.key,
+      rev: open.rev,
+      title: "Clinic scheduling, phase one",
+    });
   });
 
   it("offers Mark won once its quote is accepted", async () => {

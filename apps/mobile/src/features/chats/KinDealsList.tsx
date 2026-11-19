@@ -5,9 +5,8 @@ import {
   KIN_DEALS_STATES,
   kinDealRow,
   kinDealsByStage,
-  kinDealsDefaultFilter,
   kinDealsHeader,
-  kinDealsInput,
+  kinDealsQuery,
   kinDealsNothing,
   kinDealsSection,
   type KinDealNextView,
@@ -39,7 +38,7 @@ import { KinLoadFailed } from "./components/KinLoadFailed";
 import { KinWorkLoading, KinWorkPrivateMark, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 import { useKinWorkLink } from "./state/kinWorkLink";
-import { useKinDeals } from "./state/useKinDeals";
+import { useKinDeals, useKinDealsStart } from "./state/useKinDeals";
 import { useKinRates } from "./state/useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./state/useKinWork";
 
@@ -202,6 +201,8 @@ function dealsMenu(
 }
 
 /** The Deals tab on the phone: open deals under each stage, won and lost under Show. */
+const WAITING: KinDealsFilter = { who: { _tag: "everyone" }, state: "open" };
+
 export function KinDealsView(
   props: KinWorkTarget & {
     readonly directory: KinWorkDirectory;
@@ -216,9 +217,13 @@ export function KinDealsView(
   const { environmentId, orgId } = props;
   const { names } = props.directory;
   const ownerLevel = useKinIsOwnerLevel(environmentId);
-  const [filter, setFilter] = useState<KinDealsFilter>(() => kinDealsDefaultFilter(ownerLevel));
+  const start = useKinDealsStart(environmentId);
+  const [chosen, setFilter] = useState<KinDealsFilter | null>(null);
+  const query = kinDealsQuery(orgId, chosen, start, names.me);
+  // Until the host says who this is nothing is read, and nothing says "Mine" on a guess.
+  const filter = query?.filter ?? WAITING;
   const [text, setText] = useState("");
-  const { state, refresh } = useKinDeals(props, kinDealsInput(orgId, filter, names.me));
+  const { state, refresh } = useKinDeals(props, query?.input ?? null);
   const rates = useKinRates(props, ownerLevel);
   const now = new Date(useNowMinuteMs());
   const result = state._tag === "ready" ? state.value : null;

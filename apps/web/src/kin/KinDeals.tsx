@@ -5,10 +5,9 @@ import {
   kinDealMoves,
   kinDealRow,
   kinDealsByStage,
-  kinDealsDefaultFilter,
   kinDealsHeader,
-  kinDealsInput,
   kinDealsNothing,
+  kinDealsQuery,
   kinDealsSection,
   kinDealStageBeside,
   type KinDealNextView,
@@ -74,7 +73,7 @@ import {
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinDeals, useKinDealSend, useKinDealStages } from "./useKinDeals";
 import { useKinHomeCurrency, useKinRates } from "./useKinMoney";
-import { useKinOwnerLevel } from "./useKinOwnerLevel";
+import { useKinDealsStart, useKinOwnerLevel } from "./useKinOwnerLevel";
 import type { KinWorkChoices, KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 
 const TONE: Record<KinDealNextView["tone"], string> = {
@@ -349,9 +348,11 @@ export function KinDealsTab(
   },
 ) {
   const ownerLevel = useKinOwnerLevel(props.environmentId);
-  const [filter, setFilter] = useState<KinDealsFilter>(() => kinDealsDefaultFilter(ownerLevel));
-  const input = kinDealsInput(props.orgId, filter, props.directory.names.me);
-  const { state, refresh } = useKinDeals(props, input);
+  const start = useKinDealsStart(props.environmentId);
+  const [chosen, setFilter] = useState<KinDealsFilter | null>(null);
+  const query = kinDealsQuery(props.orgId, chosen, start, props.directory.names.me);
+  const filter = query?.filter ?? null;
+  const { state, refresh } = useKinDeals(props, query?.input ?? null);
   const rates = useKinRates(props, ownerLevel);
   const wide = useMediaQuery("md");
   const now = new Date(useNowMinuteMs());
@@ -374,7 +375,7 @@ export function KinDealsTab(
     if (to._tag === "lost") setLosing(null);
   };
 
-  if (state._tag === "loading")
+  if (state._tag === "loading" || filter === null)
     return (
       <div
         className="mx-auto w-full max-w-3xl p-4"

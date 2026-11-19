@@ -1,9 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   kinAccessAtom,
+  kinAccessKnownAtom,
   kinAccessMeAtom,
   kinOwnerLevelAtom,
 } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinDealsStartFilter, type KinDealsFilter } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinPlaceReach, type KinPlaceReach } from "@t3tools/client-runtime/kin/kinJoin";
 import {
   KIN_CLIENTS_DEFAULT_FILTER,
@@ -65,4 +67,10 @@ export function useKinSeesClients(environmentId: EnvironmentId): boolean {
 export function useKinClientsStart(environmentId: EnvironmentId): KinClientsFilter {
   const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
   return isChatOnlySession() ? kinClientsStartFilter(me) : KIN_CLIENTS_DEFAULT_FILTER;
+}
+
+/** Where the Deals tab starts; null while a chat-only session waits for the host to say who. */
+export function useKinDealsStart(environmentId: EnvironmentId): KinDealsFilter | null {
+  const known = useAtomValue(kinAccessKnownAtom(connectionAtomRuntime, environmentId));
+  return kinDealsStartFilter(isChatOnlySession() ? known : "owner");
 }

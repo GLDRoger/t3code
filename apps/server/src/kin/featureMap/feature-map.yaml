@@ -725,7 +725,9 @@ features:
     roles: { owner: both, co_owner: both, lead: both, member: both }
     note: >-
       Moves through the stages, wins (a prospect becomes a client) or loses with a reason, and
-      reopens. Whoever looks after it moves it; only the owner level marks it private.
+      reopens. Whoever looks after it moves it and hands it from Looked after by to someone who
+      still sees it; a quote of its client is linked from a picker. Only the owner level marks it
+      private.
     proof:
       - apps/server/src/kin/work/deals.test.ts
       - apps/web/src/kin/KinDeals.browser.test.tsx
@@ -739,6 +741,21 @@ features:
     roles: { owner: both, co_owner: both, lead: both, member: both }
     note: A new deal names its first next step, or says there is none yet.
     proof: [apps/server/src/kin/work/deals.test.ts]
+
+  - id: deal-edit
+    name: Edit a deal
+    tab: clients
+    web: [clients, button:Deals, "?task", dialog:Edit]
+    phone: [tab:clients, KinDeal, KinDealEdit]
+    form: true
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      Title, value, expected day, came from and the quote, from a picker of its client's quotes;
+      the client stays. Web and phone send the same change.
+    proof:
+      - apps/server/src/kin/work/deals.test.ts
+      - packages/client-runtime/src/kin/kinDeals.test.ts
+      - apps/web/src/kin/KinDeals.browser.test.tsx
 
   - id: deal-stages
     name: The company's deal stages
