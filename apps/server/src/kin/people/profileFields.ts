@@ -8,6 +8,8 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { wholeDay } from "../triggers/quietHours.ts";
+
 const encodeRoleTags = Schema.encodeEffect(Schema.fromJsonString(KinRoleTags));
 const encodeWorkHours = Schema.encodeEffect(Schema.fromJsonString(KinWorkHours));
 const encodeQuietHours = Schema.encodeEffect(Schema.fromJsonString(KinPersonQuietHours));
@@ -36,9 +38,11 @@ export const profileSets = Effect.fn("KinPeople.profileSets")(function* (
       ? undefined
       : yield* encodeRoleTags([...new Set(fields.roleTags)]).pipe(Effect.orDie);
   const workHours =
-    fields.workHours == null
-      ? fields.workHours
-      : yield* encodeWorkHours(fields.workHours).pipe(Effect.orDie);
+    fields.workHours === undefined
+      ? undefined
+      : fields.workHours === null || wholeDay(fields.workHours)
+        ? null
+        : yield* encodeWorkHours(fields.workHours).pipe(Effect.orDie);
   const quietHours =
     fields.quietHours == null
       ? fields.quietHours

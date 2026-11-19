@@ -22,6 +22,12 @@ export const stillAway = (day: string | null | undefined, zone: string, now: num
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 
+/** Hours covering every minute of every day say nothing about when someone works: no hours. */
+export const wholeDay = (hours: KinWorkHours) =>
+  DAYS.every((_, day) => hours.days.includes(day)) &&
+  hours.start === "00:00" &&
+  hours.end >= "23:59";
+
 /** Whether `now` falls inside the hours, in their time zone. */
 export const workingAt = (hours: KinWorkHours, timeZone: string, now: number) => {
   const parts = kinWhenParts(now, timeZone);
