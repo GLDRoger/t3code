@@ -889,6 +889,55 @@ describe("lists through the tools", () => {
   );
 });
 
+describe("goals through the tools", () => {
+  it.effect("asks for a fresh target when a goal's measure changes between money and a count", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const asked = yield* turn(1, "Set a goal of 12 tasks done by December");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          {
+            list: "goals",
+            title: "Invented: twelve tasks",
+            measure: "tasks_done",
+            target: "12",
+            due: "2026-12-31",
+          },
+        ],
+      });
+      const changed = yield* turn(2, "Make that goal about revenue received instead");
+      const measureOnly = LeadWork.update(scope, {
+        sourceEventId: changed,
+        key: "G-1",
+        measure: "revenue_received",
+      });
+      assert.strictEqual(
+        (yield* Effect.flip(measureOnly)).message,
+        `A revenue received goal's target is an amount: send the target with the measure, such as target "50,000".`,
+      );
+      const sql = yield* SqlClient.SqlClient;
+      assert.deepStrictEqual(
+        yield* sql`SELECT json_extract(fields_json, '$.measure') AS measure,
+            json_extract(fields_json, '$.target') AS target
+          FROM kin_records WHERE register_id = 'goals'`,
+        [{ measure: "tasks_done", target: "12" }],
+      );
+      yield* LeadWork.update(scope, {
+        sourceEventId: changed,
+        key: "G-1",
+        measure: "revenue_received",
+        target: "50,000",
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT json_extract(fields_json, '$.target.minor') AS minor
+          FROM kin_records WHERE register_id = 'goals'`,
+        [{ minor: 5_000_000 }],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+});
+
 describe("a list proposed again", () => {
   it.effect("after the owner's yes is the same proposal and card; after a no it is a new one", () =>
     Effect.gen(function* () {

@@ -84,9 +84,23 @@ export const goalFields = Effect.fn("KinGoals.fields")(function* (
   },
   before?: Readonly<Record<string, FieldValue>>,
 ) {
-  const measure = row.measure ?? (before === undefined ? undefined : fieldText(before, "measure"));
+  const was = before === undefined ? null : fieldText(before, "measure");
+  const measure = row.measure ?? was ?? undefined;
   if (row.measure !== undefined && !isMeasure(row.measure))
     return yield* invalid(`A goal measures ${KIN_GOAL_MEASURES.join(", ")}.`);
+  // A target kept across a change of measure would be read the other way, money as a count.
+  const next = row.measure ?? null;
+  if (
+    before !== undefined &&
+    row.target === undefined &&
+    isMeasure(next) &&
+    isMoneyMeasure(next) !== (isMeasure(was) && isMoneyMeasure(was))
+  )
+    return yield* invalid(
+      isMoneyMeasure(next)
+        ? `A revenue received goal's target is an amount: send the target with the measure, such as target "50,000".`
+        : `A ${next.replaceAll("_", " ")} goal's target is a number: send the target with the measure, such as target "12".`,
+    );
   if (row.target !== undefined && (measure === undefined || measure === null))
     return yield* invalid("Say what the goal measures with its target.");
   const fields: Record<string, FieldValue | null> = {};
