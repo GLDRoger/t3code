@@ -32,7 +32,11 @@ const state = vi.hoisted(() => ({
   /** Each tap on a card's option, as posted. */
   acted: [] as Array<KinWidgetsActInput>,
   /** How each send is answered, in order: a refusal in the host's words, or null for done. */
-  answers: [] as Array<{ reason: "invalid_state" | "widget_changed"; message: string } | null>,
+  answers: [] as Array<{
+    reason: "invalid_state" | "widget_changed" | "conflict";
+    message: string;
+    mayHaveGone?: { tryId: string; at: string };
+  } | null>,
   /** How each save is answered, in the same way. */
   saveAnswers: [] as Array<{ reason: "widget_changed"; message: string } | null>,
   /** What the open list says waits on the reader. */
@@ -183,6 +187,11 @@ describe("a mail card's Edit", () => {
         reason: "invalid_state",
         message: "anita at orbit in To isn't a plain address such as ana@example.com.",
       },
+      {
+        reason: "conflict",
+        message: "An earlier try at this mail may already have gone, so nothing was sent.",
+        mayHaveGone: { tryId: "ask-a", at: "2026-11-19T08:30:00.000Z" },
+      },
       null,
     );
     await using screen = await render(view());
@@ -213,10 +222,21 @@ describe("a mail card's Edit", () => {
       "Hi Anita,\nThe invoice is attached.\nRhea\nPS: GST is on page 2.",
     );
     await userEvent.click(page.getByRole("button", { name: "Send edited mail" }));
+    // An earlier try reached those people: the refusal brings the tick, for that try, here.
+    await expect
+      .element(screen.getByRole("status").filter({ hasText: /may already have gone/ }))
+      .toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Send edited mail" })).toBeDisabled();
+    await userEvent.click(page.getByRole("checkbox", { name: "I've checked the sent mail" }));
+    await userEvent.click(page.getByRole("button", { name: "Send edited mail" }));
 
     await expect.element(page.getByLabelText("To")).not.toBeInTheDocument();
-    expect(state.sent).toHaveLength(2);
-    expect(state.sent[1]).toMatchObject({
+    expect(state.sent).toHaveLength(3);
+    expect(state.sent[1]).not.toHaveProperty("checkedSent");
+    expect(state.sent[2]).toMatchObject({
+      checkedSent: { tryId: "ask-a", at: "2026-11-19T08:30:00.000Z" },
+    });
+    expect(state.sent[2]).toMatchObject({
       orgId: "org-1",
       widgetId: "choice:m1",
       revision: 2,
@@ -227,6 +247,7 @@ describe("a mail card's Edit", () => {
     });
     // Each press is its own; a retry of one would carry its id.
     expect(state.sent[1]!.clientActionId).not.toBe(state.sent[0]!.clientActionId);
+    expect(state.sent[2]!.clientActionId).not.toBe(state.sent[1]!.clientActionId);
   });
 
   it("saves or discards edits without sending, and isn't offered to one who can't send", async () => {
@@ -318,7 +339,7 @@ describe("a mail card's Edit", () => {
   it("holds Confirm and Send edited for the tick while an earlier try may have gone, then carries it", async () => {
     setup();
     await using screen = await render(
-      view(mail({ send: { mayHaveGone: { at: "2026-11-19T08:30:00.000Z" } } })),
+      view(mail({ send: { mayHaveGone: { tryId: "ask-a", at: "2026-11-19T08:30:00.000Z" } } })),
     );
     await expect.element(screen.getByText(/may already have gone/)).toBeVisible();
     await expect.element(page.getByRole("button", { name: "Confirm" })).toBeDisabled();
@@ -328,7 +349,9 @@ describe("a mail card's Edit", () => {
     await expect.element(page.getByRole("button", { name: "Confirm" })).toBeEnabled();
     // A later try becomes the reason: the tick was for the earlier one, so it clears.
     const later = "2026-11-19T08:45:00.000Z";
-    await screen.rerender(view(mail({ revision: 3, send: { mayHaveGone: { at: later } } })));
+    await screen.rerender(
+      view(mail({ revision: 3, send: { mayHaveGone: { tryId: "ask-b", at: later } } })),
+    );
     await expect.element(tick).not.toBeChecked();
     await expect.element(page.getByRole("button", { name: "Confirm" })).toBeDisabled();
     await userEvent.click(page.getByRole("button", { name: "Edit" }));
@@ -338,11 +361,17 @@ describe("a mail card's Edit", () => {
     await userEvent.fill(page.getByLabelText("Message"), "Hi Anita,\nResending the invoice.\nRhea");
     await userEvent.click(page.getByRole("button", { name: "Send edited mail" }));
     await expect.element(page.getByLabelText("To")).not.toBeInTheDocument();
-    expect(state.sent[0]).toMatchObject({ widgetId: "choice:m1", checkedSent: later });
+    expect(state.sent[0]).toMatchObject({
+      widgetId: "choice:m1",
+      checkedSent: { tryId: "ask-b", at: later },
+    });
     // The plain Confirm carries the same tick.
     await userEvent.click(page.getByRole("button", { name: "Confirm" }));
     await vi.waitFor(() => expect(state.acted).toHaveLength(1));
-    expect(state.acted[0]).toMatchObject({ value: "option-1", checkedSent: later });
+    expect(state.acted[0]).toMatchObject({
+      value: "option-1",
+      checkedSent: { tryId: "ask-b", at: later },
+    });
   });
 
   it("shows a reply's From and the quote that goes with it, and Enter in a field sends nothing", async () => {

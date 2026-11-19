@@ -33,8 +33,10 @@ import {
   kinSendEditShown,
   kinSendEditStart,
   kinSendEditUnsaved,
+  kinSendEditWarned,
   kinSendCheckPending,
   kinSendTicked,
+  kinSendTry,
   KIN_SEND_CHECKED,
   KIN_SEND_EDIT_COPY,
   type KinSendEditBusy,
@@ -67,7 +69,7 @@ import {
 import { kinDocCardLine, KIN_DOCS, type KinDocCardView } from "@t3tools/client-runtime/kin/kinDocs";
 import { kinChoiceDefaultLine } from "@t3tools/client-runtime/kin/kinWaitingAsk";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, KinPersonId, KinWidget } from "@t3tools/contracts";
+import type { EnvironmentId, KinPersonId, KinSendTry, KinWidget } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { FileTextIcon, SmartphoneIcon } from "lucide-react";
@@ -414,13 +416,12 @@ function KinChoiceCard(props: {
   >(null);
   // The try the person ticked they checked the sent mail for; the press reads it when it posts.
   // It counts only while the card's warning names that try (`kinSendTicked`).
-  const [ticked, setTicked] = useState<string | null>(null);
-  const tickedNow = useRef<string | null>(null);
+  const [ticked, setTicked] = useState<KinSendTry | null>(null);
+  const tickedNow = useRef<KinSendTry | null>(null);
   const check = (next: boolean) => {
-    tickedNow.current = next ? (choice.send?.mayHaveGone?.at ?? null) : null;
+    tickedNow.current = next ? kinSendTry(warnedView) : null;
     setTicked(tickedNow.current);
   };
-  const checked = kinSendTicked(choice, ticked) !== null;
   const status = visibleKinCardStatus(lastStatus, choice.revision);
   const phase = kinChoicePhase(choice, nowMs);
   const sentOption =
@@ -484,6 +485,9 @@ function KinChoiceCard(props: {
   const undone = kinChoiceUndoneLine(choice, props.viewerPersonId, new Date(nowMs));
 
   const editBound = shownEdit === null ? null : kinSendEditBound(shownEdit, choice);
+  // The tick answers the press on screen: the editor's for the words typed, else the card's.
+  const warnedView = kinSendEditWarned(choice, shownEdit, new Date(nowMs));
+  const checked = kinSendTicked(warnedView, ticked) !== null;
 
   /** The editor after the host answered: words it refused stay on this device until let go. */
   const settle = (next: KinSendEditing | null, kept: KinSendEditing | null = next) => {
@@ -495,7 +499,7 @@ function KinChoiceCard(props: {
     setEditBusy("sending");
     const result = await sendEdited({
       environmentId,
-      input: kinSendEditInput(choice, shownEdit, randomUUID(), kinSendTicked(choice, ticked)),
+      input: kinSendEditInput(choice, shownEdit, randomUUID(), kinSendTicked(warnedView, ticked)),
     });
     setEditBusy(null);
     settle(
@@ -575,7 +579,7 @@ function KinChoiceCard(props: {
             choice,
             editBusy,
             editable,
-            kinSendCheckPending(choice, ticked),
+            kinSendCheckPending(warnedView, ticked),
           )}
           onChange={(draft) => setEditing({ ...shownEdit, draft })}
           onSave={() => void saveEdit()}
@@ -598,9 +602,9 @@ function KinChoiceCard(props: {
       {choice.image === null ? null : (
         <KinChoiceImage environmentId={environmentId} image={choice.image} />
       )}
-      {choice.send?.mayHaveGone == null || answered !== null || phase !== "open" ? null : (
+      {warnedView.send?.mayHaveGone == null || answered !== null || phase !== "open" ? null : (
         <KinSendMayHaveGone
-          line={choice.send.mayHaveGone.line}
+          line={warnedView.send.mayHaveGone.line}
           checked={checked}
           disabled={!canAct || pending !== null || editBusy !== null}
           onChange={check}

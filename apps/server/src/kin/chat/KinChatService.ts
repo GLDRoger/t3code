@@ -31,6 +31,7 @@ import {
   KinChoiceCardState,
   type KinChoiceOutcome,
   type KinSendCard,
+  type KinSendTry,
   KinAgentIntent,
   type KinAuthor,
   type KinAgentId,
@@ -169,7 +170,7 @@ export type ChoiceAnswerHandler = (input: {
   readonly via: "tap" | "reaction";
   readonly now: number;
   /** The try the person's sent-mail tick acknowledges (`KinWidgetsActInput.checkedSent`). */
-  readonly checkedSent?: string;
+  readonly checkedSent?: KinSendTry;
 }) => Effect.Effect<
   KinChoiceOutcome | undefined,
   KinChatError | Repository.RepositoryError | SqlError.SqlError | Schema.SchemaError

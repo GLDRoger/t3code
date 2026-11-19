@@ -41,6 +41,8 @@ import {
   kinMayHaveGoneLine,
   kinSendCheckPending,
   kinSendTicked,
+  kinSendTry,
+  kinSendEditWarned,
   kinThreadDate,
 } from "./kinChoicePresentation.ts";
 import { formatKinTime } from "./kinScreenState.ts";
@@ -773,6 +775,7 @@ describe("choice cards", () => {
   it("warns while an earlier try at the mail may have gone, and holds Confirm and Send edited for the tick", () => {
     const at = "2026-11-08T09:05:00.000Z";
     const tried = new Date(at);
+    const tick = { tryId: "ask-a", at };
     const send = {
       service: "Gmail",
       action: "reply",
@@ -783,11 +786,12 @@ describe("choice cards", () => {
       body: "Attached.",
       attachments: [],
       outcome: null,
-      mayHaveGone: { at },
+      mayHaveGone: tick,
     };
     const open = choice({ state: { ...choiceState(null), send } });
     const line = kinMayHaveGoneLine(at);
-    expect(open.send?.mayHaveGone).toEqual({ line, at, confirmId: "option-1" });
+    expect(open.send?.mayHaveGone).toEqual({ line, ...tick, confirmId: "option-1" });
+    expect(kinSendTry(open)).toEqual(tick);
     expect(kinMayHaveGoneLine(at, tried)).toBe(
       `An earlier try at this mail at ${formatKinWhen(tried, "time")} may already have gone. Check the account's sent mail before you confirm.`,
     );
@@ -799,24 +803,26 @@ describe("choice cards", () => {
     expect(kinSendCheckPending(open, null, "option-1")).toBe(true);
     expect(kinSendCheckPending(open, null, "option-2")).toBe(false);
     expect(kinSendCheckPending(open, null)).toBe(true);
-    expect(kinSendCheckPending(open, at, "option-1")).toBe(false);
-    // A tick is for one try: once the warning names a later one, it no longer counts.
-    const later = "2026-11-08T09:40:00.000Z";
+    expect(kinSendCheckPending(open, tick, "option-1")).toBe(false);
+    // A tick is for one try: once the warning names a later one, it no longer counts, nor does a
+    // tick for another try that ended at the same time.
+    const later = { tryId: "ask-b", at: "2026-11-08T09:40:00.000Z" };
     const moved = choice({
-      state: { ...choiceState(null), send: { ...send, mayHaveGone: { at: later } } },
+      state: { ...choiceState(null), send: { ...send, mayHaveGone: later } },
     });
-    expect(kinSendTicked(open, at)).toBe(at);
-    expect(kinSendTicked(moved, at)).toBeNull();
-    expect(kinSendCheckPending(moved, at, "option-1")).toBe(true);
-    expect(kinSendCheckPending(moved, at)).toBe(true);
+    expect(kinSendTicked(open, tick)).toBe(tick);
+    expect(kinSendTicked(open, { tryId: "ask-b", at })).toBeNull();
+    expect(kinSendTicked(moved, tick)).toBeNull();
+    expect(kinSendCheckPending(moved, tick, "option-1")).toBe(true);
+    expect(kinSendCheckPending(moved, tick)).toBe(true);
     expect(kinSendCheckPending(moved, later, "option-1")).toBe(false);
     const editing = kinSendEditStart(open)!;
     expect(kinSendEditControls(editing, open, null, true, true).send.disabled).toBe(true);
     expect(kinSendEditControls(editing, open, null, true, false).send.disabled).toBe(false);
     // Ticked, both presses carry the try it is for; unticked, they carry nothing new.
-    expect(kinChoiceActInput(open, "option-1", "tap-1", at)).toMatchObject({ checkedSent: at });
+    expect(kinChoiceActInput(open, "option-1", "tap-1", tick)).toMatchObject({ checkedSent: tick });
     expect(kinChoiceActInput(open, "option-1", "tap-1")).not.toHaveProperty("checkedSent");
-    expect(kinSendEditInput(open, editing, "press-1", at)).toMatchObject({ checkedSent: at });
+    expect(kinSendEditInput(open, editing, "press-1", tick)).toMatchObject({ checkedSent: tick });
     expect(kinSendEditInput(open, editing, "press-1")).not.toHaveProperty("checkedSent");
     // Once that card's own try is on its way, the outcome line takes over.
     const sending = choice({
@@ -830,7 +836,29 @@ describe("choice cards", () => {
     const plain = choice({ state: { ...choiceState(null), send: settled } });
     expect(plain.send?.mayHaveGone).toBeNull();
     expect(kinSendCheckPending(plain, null)).toBe(false);
-    expect(kinSendTicked(plain, at)).toBeNull();
+    expect(kinSendTicked(plain, tick)).toBeNull();
+    // Send edited refused for words an earlier try reached: the refusal names that try, the
+    // editor's tick is for it, and the shared card keeps its own (no) warning.
+    const typing = kinSendEditStart(plain)!;
+    expect(kinSendEditWarned(plain, typing)).toBe(plain);
+    const refused = kinSendEditRefused(
+      typing,
+      plain,
+      new KinChatError({ reason: "conflict", message: "Tick first.", mayHaveGone: later }),
+    );
+    expect(refused).toEqual({ ...typing, problem: "Tick first.", mayHaveGone: later });
+    const warned = kinSendEditWarned(plain, refused, tried);
+    expect(warned.send?.mayHaveGone).toEqual({
+      line: kinMayHaveGoneLine(later.at, tried),
+      ...later,
+      confirmId: null,
+    });
+    expect(kinSendCheckPending(warned, null)).toBe(true);
+    expect(kinSendCheckPending(warned, later)).toBe(false);
+    expect(kinSendEditInput(plain, refused, "press-2", kinSendTicked(warned, later))).toMatchObject(
+      { revision: refused.revision, checkedSent: later },
+    );
+    expect(kinSendCheckPending(plain, null, "option-1")).toBe(false);
   });
 
   it("says a refused answer in the host's words when its figures changed", () => {

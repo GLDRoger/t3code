@@ -2,8 +2,8 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
-import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { KinChatError, KinOrgId } from "./kinChat.ts";
+import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { KinChatError, KinOrgId, KinSendTry } from "./kinChat.ts";
 
 /**
  * Connections: an owner's sign-in to an outside service, reached by Kin's server as an MCP client.
@@ -422,8 +422,8 @@ export const KinConnectionSendEditedInput = Schema.Struct({
   cc: Schema.Array(Schema.String.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
   subject: Schema.String.check(Schema.isMaxLength(400)),
   body: Schema.String.check(Schema.isMaxLength(24_000)),
-  /** The `send.mayHaveGone.at` of the try the person checked the sent mail for. */
-  checkedSent: Schema.optional(IsoDateTime),
+  /** The try the person checked the sent mail for: the card's or the refusal's `mayHaveGone`. */
+  checkedSent: Schema.optional(KinSendTry),
 });
 export type KinConnectionSendEditedInput = typeof KinConnectionSendEditedInput.Type;
 /** The card that now carries the mail and its outcome. */

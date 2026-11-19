@@ -432,7 +432,7 @@ export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (input:
   } satisfies Prepared;
 });
 
-type Email = Extract<Prepared, { readonly _tag: "email" }>;
+export type Email = Extract<Prepared, { readonly _tag: "email" }>;
 /** Addresses a person typed, as stored: trimmed, without empty entries. */
 const typed = (values: ReadonlyArray<string>) =>
   values.map((one) => one.trim()).filter((one) => one !== "");

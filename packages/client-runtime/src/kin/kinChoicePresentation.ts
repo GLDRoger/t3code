@@ -8,6 +8,7 @@ import {
   KinChoiceCardState,
   type KinPersonId,
   type KinSendCard,
+  type KinSendTry,
   type KinWidget,
   type KinWidgetsActInput,
   formatKinWhen,
@@ -91,6 +92,7 @@ export interface KinSendView {
   readonly mayHaveGone: {
     readonly line: string;
     /** The try it is about; a tick acknowledges this one only. */
+    readonly tryId: string;
     readonly at: string;
     readonly confirmId: string | null;
   } | null;
@@ -150,6 +152,8 @@ export interface KinSendEditing {
   readonly stale?: true;
   /** The host acknowledged a save at `revision`: the card holds these words, whatever it shows yet. */
   readonly saved?: true;
+  /** The try the host refused these typed words for, until it is ticked; the card's is its own. */
+  readonly mayHaveGone?: KinSendTry;
 }
 
 export interface KinSendFromChoice {
@@ -286,6 +290,7 @@ function kinSendView(send: KinSendCard, now: Date, confirmId: string | null): Ki
         ? null
         : {
             line: kinMayHaveGoneLine(send.mayHaveGone.at, now),
+            tryId: send.mayHaveGone.tryId,
             at: send.mayHaveGone.at,
             confirmId,
           },
@@ -530,7 +535,7 @@ export function kinChoiceActInput(
   view: Pick<KinChoiceCardView, "widgetId" | "revision">,
   optionId: string,
   clientActionId: string,
-  checkedSent: string | null = null,
+  checkedSent: KinSendTry | null = null,
 ): KinWidgetsActInput {
   return {
     widgetId: view.widgetId,
@@ -543,15 +548,46 @@ export function kinChoiceActInput(
 }
 
 /**
- * The try a person's tick (the `at` they ticked for) acknowledges on this card now: null once
- * the warning names another try, so a tick never carries over to a later one.
+ * The try a person's tick acknowledges on this card now: null once the warning names another try,
+ * so a tick never carries over to a later one.
  */
 export function kinSendTicked(
   view: Pick<KinChoiceCardView, "send">,
-  ticked: string | null,
-): string | null {
+  ticked: KinSendTry | null,
+): KinSendTry | null {
   const gone = view.send?.mayHaveGone ?? null;
-  return gone !== null && gone.at === ticked ? ticked : null;
+  return gone !== null && gone.tryId === ticked?.tryId && gone.at === ticked.at ? ticked : null;
+}
+
+/** The try a card's warning names, to tick for. */
+export function kinSendTry(view: Pick<KinChoiceCardView, "send">): KinSendTry | null {
+  const gone = view.send?.mayHaveGone ?? null;
+  return gone === null ? null : { tryId: gone.tryId, at: gone.at };
+}
+
+/**
+ * The card as the tick beside an open editor reads it: the try the host refused the typed words
+ * for, where it named one. The card's own warning stays about its saved words.
+ */
+export function kinSendEditWarned<V extends Pick<KinChoiceCardView, "send">>(
+  view: V,
+  editing: KinSendEditing | null,
+  now: Date = new Date(),
+): V {
+  const gone = editing?.mayHaveGone;
+  if (gone === undefined || view.send === null) return view;
+  return {
+    ...view,
+    send: {
+      ...view.send,
+      mayHaveGone: {
+        line: kinMayHaveGoneLine(gone.at, now),
+        tryId: gone.tryId,
+        at: gone.at,
+        confirmId: view.send.mayHaveGone?.confirmId ?? null,
+      },
+    },
+  };
 }
 
 /**
@@ -560,7 +596,7 @@ export function kinSendTicked(
  */
 export function kinSendCheckPending(
   view: Pick<KinChoiceCardView, "send">,
-  ticked: string | null,
+  ticked: KinSendTry | null,
   optionId?: string,
 ): boolean {
   const gone = view.send?.mayHaveGone ?? null;
@@ -740,7 +776,7 @@ export function kinSendEditInput(
   view: Pick<KinChoiceCardView, "orgId" | "widgetId" | "revision">,
   editing: KinSendEditing,
   clientActionId: string,
-  checkedSent: string | null = null,
+  checkedSent: KinSendTry | null = null,
 ): KinConnectionSendEditedInput {
   return {
     orgId: view.orgId,
@@ -837,12 +873,10 @@ export function kinSendEditRefused(
   cause: unknown,
 ): KinSendEditing {
   const problem = kinSendEditFailure(cause);
+  const gone = isKinChatError(cause) ? cause.mayHaveGone : undefined;
+  const next =
+    gone === undefined ? { ...editing, problem } : { ...editing, problem, mayHaveGone: gone };
   return isKinChatError(cause) && cause.reason === "widget_changed"
-    ? {
-        ...editing,
-        problem,
-        revision: kinSendEditBound(editing, view).revision,
-        stale: true,
-      }
-    : { ...editing, problem };
+    ? { ...next, revision: kinSendEditBound(editing, view).revision, stale: true }
+    : next;
 }

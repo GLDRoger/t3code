@@ -421,6 +421,12 @@ export const KIN_CHOICE_CARD_TTL_MS = 24 * 60 * 60 * 1000;
  * What an "Ask me" call to a connection would send, in full, as the owner's Confirm will send
  * it. `outcome` is set by the server after the tap: sending, then sent or failed with a reason.
  */
+/** One try at a mail: the ask that sent it, and when it ended. */
+export const KinSendTry = Schema.Struct({
+  tryId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  at: IsoDateTime,
+});
+export type KinSendTry = typeof KinSendTry.Type;
 export const KinSendCard = Schema.Struct({
   service: KinTrimmedText.check(Schema.isMaxLength(80)),
   action: Schema.Literals(["email", "reply", "event", "call"]),
@@ -475,9 +481,10 @@ export const KinSendCard = Schema.Struct({
   ),
   /**
    * Set on an unanswered mail card while an earlier try at the same mail may already have gone
-   * (when it ended). Its Confirm then carries `checkedSent`; the host refuses one without.
+   * (which try, and when it ended). Its Confirm then carries that try as `checkedSent`; the host
+   * refuses one without.
    */
-  mayHaveGone: Schema.optionalKey(Schema.Struct({ at: IsoDateTime })),
+  mayHaveGone: Schema.optionalKey(KinSendTry),
   /** Set while the words shown are a person's saved edit, not the agent's draft: who, by name. */
   edited: Schema.optionalKey(
     Schema.Struct({
@@ -917,10 +924,10 @@ export const KinWidgetsActInput = Schema.Struct({
   value: Schema.optional(Schema.Unknown),
   clientActionId: TrimmedNonEmptyString,
   /**
-   * The person checked the account's sent mail for the try a card's `send.mayHaveGone` names:
-   * its `at`. A tick for another try does not count.
+   * The person checked the account's sent mail for the try a card's `send.mayHaveGone` names.
+   * A tick for another try does not count.
    */
-  checkedSent: Schema.optional(IsoDateTime),
+  checkedSent: Schema.optional(KinSendTry),
 });
 export type KinWidgetsActInput = typeof KinWidgetsActInput.Type;
 /** Adds (`on: true`) or withdraws the caller's reaction. A lead reacts only through `kin_react`. */
@@ -956,6 +963,8 @@ export class KinChatError extends Schema.TaggedError<KinChatError>()("KinChatErr
     "no_models",
   ]),
   message: Schema.String,
+  /** On a send refused for its sent-mail tick: the try, for the words that were refused. */
+  mayHaveGone: Schema.optionalKey(KinSendTry),
 }) {}
 
 export const KIN_CHAT_WS_METHODS = {

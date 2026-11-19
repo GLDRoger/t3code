@@ -249,7 +249,7 @@ describe("kinTaskStep", () => {
       {
         key: "M",
         group: "needsYou",
-        card: card({ mayHaveGone: { at: "2026-11-18T07:00:00.000Z" } }),
+        card: card({ mayHaveGone: { tryId: "ask-1", at: "2026-11-18T07:00:00.000Z" } }),
       },
       {
         kind: "send",
