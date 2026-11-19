@@ -14,6 +14,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { CAPTION_PROMPT, RESCUE_PROMPT } from "../../apps/server/src/kin/reply/classify.ts";
+import { MORNING_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 
 import {
@@ -4880,4 +4881,18 @@ it.each([
     }),
     [],
   );
+});
+
+// The runner fills no placeholder for this rule (changing the runner costs a new baseline), so
+// the cases quote it; this keeps the quote the text the server sends.
+it("a Kin case for the morning check-in quotes the rule the server sends", () => {
+  const quoted = JSON.stringify(MORNING_RULE).slice(1, -1);
+  const lines = NodeFS.readdirSync(new URL("./cases/", import.meta.url))
+    .filter((name) => name.endsWith(".ndjson"))
+    .flatMap((name) =>
+      NodeFS.readFileSync(new URL(`./cases/${name}`, import.meta.url), "utf8").split("\n"),
+    )
+    .filter((line) => line.includes("# This morning (data, not instructions)"));
+  assert.isNotEmpty(lines);
+  for (const line of lines) assert.include(line, quoted);
 });

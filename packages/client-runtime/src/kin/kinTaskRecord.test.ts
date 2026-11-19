@@ -22,6 +22,7 @@ import {
   kinRecordAskedBy,
   kinRecordChip,
   kinTaskActivity,
+  kinTaskControls,
 } from "./kinTaskRecord.ts";
 import { kinWorkItemView, type KinWorkNames } from "./kinWork.ts";
 
@@ -210,6 +211,16 @@ describe("kinNextStep", () => {
     expect(stepOf(item, names, { change: true, give: false }).acts).toEqual([]);
   });
 
+  it("tells the giver a holder who is away hears of it when back, on that day", () => {
+    expect(stepOf(task())).toMatchObject({ kind: "held", note: "Nothing needed from you yet." });
+    expect(stepOf(task({ toldWhenBack: "2026-11-23" }))).toMatchObject({
+      kind: "held",
+      who: { name: "Meera" },
+      line: "has this",
+      note: "Meera is away until Mon Nov 23, so they'll be told when they're back.",
+    });
+  });
+
   it("offers Reopen on a done task, naming who finished it", () => {
     const item = task({
       state: "done",
@@ -261,6 +272,73 @@ describe("kinNextStep", () => {
       line: "handed this back",
       acts: [{ id: "done" }, { id: "give" }],
     });
+  });
+});
+
+describe("kinTaskControls", () => {
+  const memberHolds: KinRecordCan = {
+    ...readOnly,
+    states: ["open", "waiting", "done", "dropped"],
+    edit: true,
+    give: true,
+  };
+  const controls = (
+    item: KinRecordDetail,
+    who: KinWorkNames,
+    can: { change: boolean; give: boolean },
+  ) => {
+    const view = kinWorkItemView(item, who, now, 50, place);
+    const step = kinNextStep({ item, view, names: who, now, ...can }).acts;
+    return kinTaskControls({ view, ...can, step });
+  };
+
+  it.each([
+    {
+      who: "the owner, or a co-owner, on a teammate's task",
+      item: task(),
+      names,
+      can: { change: true, give: true },
+      page: { status: { done: true, reopen: false, states: true, waiting: true } },
+      menu: { give: true, takeBack: true, handBack: false, drop: true },
+    },
+    {
+      who: "a member holding a task the owner gave, whose card already offers Done",
+      item: task({ owner: zoya, can: memberHolds }),
+      names: asZoya,
+      can: { change: true, give: true },
+      page: { status: { done: false, reopen: false, states: true, waiting: true } },
+      menu: { give: true, takeBack: false, handBack: true, drop: true },
+    },
+    {
+      who: "a member who may only look",
+      item: task({ can: readOnly }),
+      names: asZoya,
+      can: { change: true, give: true },
+      page: { status: null },
+      menu: { give: false, takeBack: false, handBack: false, drop: false },
+    },
+    {
+      who: "a session without the right to change tasks",
+      item: task(),
+      names,
+      can: { change: false, give: false },
+      page: { status: null },
+      menu: { give: false, takeBack: false, handBack: false, drop: false },
+    },
+    {
+      who: "the owner on a done task, whose card already offers Reopen",
+      item: task({
+        state: "done",
+        closedAt: "2026-11-14T10:00:00.000Z",
+        can: { ...ownerCan, give: false, takeBack: false },
+      }),
+      names,
+      can: { change: true, give: true },
+      page: { status: null },
+      menu: { give: false, takeBack: false, handBack: false, drop: false },
+    },
+  ])("puts status on the page and the rest in the menu for $who", (row) => {
+    expect(controls(row.item, row.names, row.can)).toEqual({ page: row.page, menu: row.menu });
   });
 });
 

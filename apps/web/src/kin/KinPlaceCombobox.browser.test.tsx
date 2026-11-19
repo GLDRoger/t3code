@@ -110,6 +110,7 @@ import { render } from "../../test/render";
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { KinBudgetDialog } from "./KinMoneyAnswers";
 import { KinProjectDialog } from "./KinWorkForms";
+import { KinTaskPlaceMenu } from "./KinWorkItemSheet";
 import { KinWorkListPage } from "./KinWorkLists";
 
 // Ambermill, invented: owner Rhea.
@@ -203,6 +204,10 @@ describe("A picker past the first page", () => {
     await userEvent.click(page.getByRole("option", { name: "No client" }));
     await expect.element(client).toHaveValue("No client");
     expect(host.filters.at(-1)).toMatchObject({ party: null, noParty: true });
+    // Every client again is a row of its own, not only the clear button.
+    await userEvent.click(client);
+    await userEvent.click(page.getByRole("option", { name: "Any client" }));
+    expect(host.filters.at(-1)).toMatchObject({ party: null, noParty: false });
   });
 
   it("sets a budget on a project only the host's search finds", async () => {
@@ -225,5 +230,50 @@ describe("A picker past the first page", () => {
     await userEvent.click(page.getByRole("option", { name: "Zephyr kitchen audit" }));
     expect(host.searched).toEqual(["zephyr"]);
     await expect.element(project).toHaveValue("Zephyr kitchen audit");
+    await userEvent.click(project);
+    await userEvent.click(page.getByRole("option", { name: "Every project" }));
+    await expect.element(project).toHaveValue("");
+  });
+
+  it("moves an existing task to a client found by typing, from the keyboard", async () => {
+    setup();
+    const picked: Array<unknown> = [];
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <KinTaskPlaceMenu
+          target={target}
+          noun="client"
+          label="Client"
+          value={{ key: KinRecordKey.make("C-1"), title: "Orbit Dental" }}
+          choices={[{ key: KinRecordKey.make("C-1"), title: "Orbit Dental" }]}
+          saving={false}
+          onPick={(value) => picked.push(value)}
+          onOpen={null}
+        />
+      </AppAtomRegistryProvider>,
+    );
+    const menu = page.getByRole("button", { name: "Client: Orbit Dental. Change" });
+    await userEvent.click(menu);
+    const find = page.getByRole("textbox", { name: "Find a client" });
+    await expect.element(find).toHaveFocus();
+    await userEvent.keyboard("zzzwombat");
+    await expect.element(page.getByText("No client named “zzzwombat”")).toBeVisible();
+    await userEvent.clear(find);
+    await userEvent.keyboard("zephyr");
+    await expect.element(page.getByRole("menuitem", { name: "Zephyr Kitchens" })).toBeVisible();
+    await userEvent.keyboard("{Enter}");
+    expect(picked).toEqual([{ key: "C-120", title: "Zephyr Kitchens" }]);
+    await expect.element(find).not.toBeInTheDocument();
+
+    await userEvent.click(menu);
+    await userEvent.keyboard("zephyr");
+    await expect.element(page.getByRole("menuitem", { name: "Zephyr Kitchens" })).toBeVisible();
+    await userEvent.keyboard("{ArrowDown}{Enter}");
+    expect(picked).toHaveLength(2);
+    await userEvent.click(menu);
+    await userEvent.keyboard("{Escape}");
+    await expect
+      .element(page.getByRole("textbox", { name: "Find a client" }))
+      .not.toBeInTheDocument();
   });
 });

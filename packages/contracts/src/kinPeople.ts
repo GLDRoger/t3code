@@ -130,6 +130,8 @@ export const KinPersonDevice = Schema.Struct({
   linkId: Schema.optional(Schema.NullOr(KinInviteId)),
   /** Whether the device asking may remove this one. Absent from older hosts. */
   removable: Schema.optional(Schema.Boolean),
+  /** Live coding-agent keys made on this device; removing it ends them. Absent from older hosts. */
+  keysMade: Schema.optional(NonNegativeInt),
 });
 export type KinPersonDevice = typeof KinPersonDevice.Type;
 
@@ -166,7 +168,7 @@ export type KinPeopleLinkDeviceResult = typeof KinPeopleLinkDeviceResult.Type;
 export const KIN_DEVICE_LINK_TTL_MINUTES = 10;
 /** One wording wherever Kin says a device was linked: never the device's own, chosen name. */
 export const KIN_DEVICE_LINKED_NOTICE =
-  "A new device was just linked to your Kin. If it wasn't you, remove it in Linked devices.";
+  "A new device was just linked to your Kin. If it wasn't you, remove it in Your devices.";
 /** Devices one person may have signed in at once. */
 export const KIN_DEVICE_LIMIT = 10;
 

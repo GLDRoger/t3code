@@ -1,6 +1,6 @@
 // Against the ref a branch merges into: merged PRs' lines kept unless superseded, Kin migrations
-// numbered on with no gap, the instructions version moved exactly when their text did, no
-// sentence typed into both Kin clients, and no upstream identity the Kin build's branding rejects.
+// numbered on with no gap, the instructions version moved exactly when their text did, no sentence
+// typed into both Kin clients, no identity Kin's branding rejects, and a `People-change:` line.
 //   node scripts/kin-branch-checks.ts <ref> [--days 14] [--root <checkout>]
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import { Argument, Command, Flag } from "effect/cli";
 
 import { git, gitLines } from "./check-changed.ts";
@@ -92,7 +93,7 @@ export const checkInstructions = (input: {
 };
 
 /** Distinct added lines long enough to be someone's work, per file, from a `-U0` diff. */
-export const addedLines = (diff: string) => {
+export const addedLines = (diff: string, min = MIN_LINE) => {
   const files = new Map<string, Set<string>>();
   let current: Set<string> | undefined;
   for (const line of diff.split("\n")) {
@@ -102,7 +103,7 @@ export const addedLines = (diff: string) => {
       if (current !== undefined) files.set(path, current);
     } else if (current !== undefined && line.startsWith("+") && !line.startsWith("+++")) {
       const text = line.slice(1).trim();
-      if (text.length >= MIN_LINE) current.add(text);
+      if (text.length >= min) current.add(text);
     }
   }
   return files;
@@ -221,7 +222,180 @@ export const checkSharedCopy = (
     );
 };
 
-/** All four checks for the branch at `root` against `ref`; problems, or none. */
+const PEOPLE_READ = [
+  "apps/web/src/kin/",
+  "apps/web/src/components/sidebar/",
+  "apps/mobile/src/",
+  "packages/client-runtime/src/kin/",
+  "apps/server/src/kin/",
+  "branding/",
+];
+const TEST_FILE = /(?:\.test\.|\/test\/|\/__tests__\/)/;
+
+/** A file whose result a person or an agent reads: its change says what they will notice. */
+export const readByPeople = (file: string) =>
+  !TEST_FILE.test(file) &&
+  !file.startsWith("apps/server/src/kin/persistence/migrations/") &&
+  (PEOPLE_READ.some((dir) => file.startsWith(dir)) ||
+    /^evals\/mcp-tool-use\/cases\/kin[^/]*\.ndjson$/.test(file));
+
+export const APPROVED_GUARDS = "scripts/kin-approved-guards.json";
+/** Something the owner approved; see `checkPeopleChange`. */
+const ApprovedGuard = Schema.Struct({
+  name: Schema.String,
+  approved: Schema.String,
+  /** Any change to these files. */
+  files: Schema.optional(Schema.Array(Schema.String)),
+  /** An added line containing this text, in a file under `under` (or anywhere). */
+  added: Schema.optional(Schema.String),
+  under: Schema.optional(Schema.Array(Schema.String)),
+  /** Any change to these top-level declarations, by file. */
+  declarations: Schema.optional(Schema.Record(Schema.String, Schema.Array(Schema.String))),
+});
+export type ApprovedGuard = typeof ApprovedGuard.Type;
+export const ApprovedGuards = Schema.fromJsonString(Schema.Array(ApprovedGuard));
+const decodeGuards = Schema.decodeEffect(ApprovedGuards);
+
+/** `export const|function <name>` up to the next line that starts a new top-level statement. */
+export const declarationOf = (source: string | undefined, name: string) => {
+  const lines = (source ?? "").split("\n");
+  const start = lines.findIndex((line) =>
+    new RegExp(`^export (?:const|function) ${name}\\b`).test(line),
+  );
+  if (start === -1) return undefined;
+  const end = lines.findIndex((line, index) => index > start && /^[^\s})\]]/.test(line));
+  return lines
+    .slice(start, end === -1 ? undefined : end)
+    .join("\n")
+    .trimEnd();
+};
+
+export type BranchCommit = {
+  readonly sha: string;
+  readonly message: string;
+  readonly files: ReadonlyArray<string>;
+};
+
+/**
+ * A branch that changes what a person or an agent reads says so in a `People-change:` line; one
+ * that changes something the owner approved says `People-change: approved-item <name>: …`.
+ * `added` is the branch's added lines per changed file; `before`/`after` read a file at its ends.
+ */
+export const checkPeopleChange = (input: {
+  readonly commits: ReadonlyArray<BranchCommit>;
+  readonly guards: ReadonlyArray<ApprovedGuard>;
+  readonly added: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly before: (file: string) => string | undefined;
+  readonly after: (file: string) => string | undefined;
+}) => {
+  const said = input.commits.flatMap((commit) =>
+    [...commit.message.matchAll(/^People-change:[ \t]*(\S.*)$/gm)].map((match) => ({
+      sha: commit.sha,
+      text: match[1]!.trim(),
+    })),
+  );
+  const changed = [...new Set(input.commits.flatMap((commit) => commit.files))].filter(
+    (file) => !TEST_FILE.test(file),
+  );
+  const problems: Array<string> = [];
+  const read = changed.filter(readByPeople);
+  if (read.length > 0 && said.length === 0)
+    problems.push(
+      `People-change: this branch changes what a person or an agent reads (${read[0]}${read.length > 1 ? ` and ${read.length - 1} more` : ""}), and no commit says what they will notice.\n` +
+        "Add a line to the last commit message: `People-change: <what a person already had that now looks, reads or works differently, or is gone>`, or `People-change: none`.",
+    );
+  const approvedItems = new Set(
+    said.flatMap(({ text }) => /^approved-item\s+(\S+?):\s*\S/.exec(text)?.[1] ?? []),
+  );
+  for (const guard of input.guards) {
+    if (approvedItems.has(guard.name)) continue;
+    const touched = [
+      ...changed.filter((file) => guard.files?.includes(file)),
+      ...changed.filter((file) => {
+        const text = guard.added;
+        if (text === undefined) return false;
+        if (guard.under !== undefined && !guard.under.some((dir) => file.startsWith(dir)))
+          return false;
+        return [...(input.added.get(file) ?? [])].some((line) => line.includes(text));
+      }),
+      ...Object.entries(guard.declarations ?? {}).flatMap(([file, names]) =>
+        changed.includes(file)
+          ? names
+              .filter(
+                (name) =>
+                  declarationOf(input.before(file), name) !==
+                  declarationOf(input.after(file), name),
+              )
+              .map((name) => `${name} in ${file}`)
+          : [],
+      ),
+    ];
+    if (touched.length > 0)
+      problems.push(
+        `People-change: this branch changes ${[...new Set(touched)].join(", ")}, which the owner approved as it is: ${guard.approved}\n` +
+          `Change it only with his yes on the before and after, then add to the last commit message: \`People-change: approved-item ${guard.name}: <what changes>\`.`,
+      );
+  }
+  const notes =
+    said.length === 0 ? [] : ["People-change:", ...said.map(({ sha, text }) => `  ${sha} ${text}`)];
+  return { problems, notes };
+};
+
+/** The branch's own commits since `from`, merges left out: a merge says nothing of its own. */
+export const branchCommits = Effect.fn("kinBranchChecks.commits")(function* (
+  root: string,
+  from: string,
+) {
+  const log = (yield* git(root, [
+    "log",
+    "--no-merges",
+    "--no-renames",
+    "--name-only",
+    "--format=%x1e%h%x1f%B%x1f",
+    `${from}..HEAD`,
+  ])).toString();
+  return log
+    .split("\x1e")
+    .slice(1)
+    .map((record) => {
+      const [sha = "", message = "", files = ""] = record.split("\x1f");
+      return { sha, message, files: files.split("\n").filter((file) => file !== "") };
+    });
+});
+
+/** Kin's own screens and messages: the web and phone clients', the server's and client-runtime's. */
+const KIN_NAME_DIRS = [
+  KIN_COPY_DIRS.web,
+  "apps/mobile/src/features/chats",
+  "apps/server/src/kin",
+  "packages/client-runtime/src/kin",
+];
+// isTestPath in scripts/lib/kinBrandEngine.ts; that module loads a native parser this script avoids.
+const TEST_PATH =
+  /(^|\/)(test|tests|__tests__|testkit|fixtures)\/|\.(test|spec|testkit|fixture)\.[^/]+$/;
+const LITERAL_OR_COMMENT =
+  /("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
+
+/** The product is Kin; "T3 Kin" is not its name anywhere a person reads it. Comments don't count. */
+export const checkProductName = (files: ReadonlyMap<string, string>) =>
+  [...files]
+    .filter(([file]) => !TEST_PATH.test(file))
+    .flatMap(([file, source]) =>
+      source
+        // A comment goes, keeping its line breaks so line numbers stay right.
+        .replace(
+          LITERAL_OR_COMMENT,
+          (match, literal: string | undefined) => literal ?? match.replace(/[^\n]/g, ""),
+        )
+        .split("\n")
+        .flatMap((line, index) =>
+          /\bT3 Kin\b/.test(line)
+            ? [`kin name: ${file}:${index + 1} says "T3 Kin"; the product is called Kin.`]
+            : [],
+        ),
+    );
+
+/** All checks for the branch at `root` against `ref`: problems, or none, and notes to print. */
 export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
   root: string,
   ref: string,
@@ -289,6 +463,9 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
   problems.push(
     ...checkSharedCopy(yield* copyFiles(KIN_COPY_DIRS.web), yield* copyFiles(KIN_COPY_DIRS.phone)),
   );
+  const named = new Map<string, string>();
+  for (const dir of KIN_NAME_DIRS) for (const entry of yield* copyFiles(dir)) named.set(...entry);
+  problems.push(...checkProductName(named));
 
   // The iOS build brands a copy and fails on any upstream identity left; catch that here.
   if (yield* fs.exists(path.join(root, "branding/rules.yaml"))) {
@@ -308,6 +485,37 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
     if (branding !== undefined)
       problems.push(`Kin branding (node scripts/kin-brand.ts --scan): ${branding}`);
   }
+
+  const guardsText = yield* onDisk(APPROVED_GUARDS);
+  const guards = Option.isNone(guardsText)
+    ? []
+    : yield* decodeGuards(guardsText.value).pipe(
+        Effect.catch((error) =>
+          Effect.sync(() => {
+            problems.push(`${APPROVED_GUARDS}: ${error.message}`);
+            return [];
+          }),
+        ),
+      );
+  const commits = yield* branchCommits(root, mergeBase);
+  const declared = new Set(guards.flatMap((guard) => Object.keys(guard.declarations ?? {})));
+  const before = new Map<string, string | undefined>();
+  const after = new Map<string, string | undefined>();
+  for (const file of declared) {
+    before.set(file, Option.getOrUndefined(yield* show(mergeBase, file)));
+    after.set(file, Option.getOrUndefined(yield* show("HEAD", file)));
+  }
+  const people = checkPeopleChange({
+    commits,
+    guards,
+    added: addedLines(
+      (yield* git(root, ["diff", "-U0", "--no-renames", mergeBase, "HEAD"])).toString(),
+      1,
+    ),
+    before: (file) => before.get(file),
+    after: (file) => after.get(file),
+  });
+  problems.push(...people.problems);
 
   if (changed.length > 0) {
     const merges = yield* gitLines(root, [
@@ -350,7 +558,7 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
       }),
     );
   }
-  return problems;
+  return { problems, notes: people.notes };
 });
 
 export const kinBranchChecksCommand = Command.make(
@@ -372,7 +580,8 @@ export const kinBranchChecksCommand = Command.make(
       const root = Option.isSome(input.root)
         ? input.root.value
         : yield* path.fromFileUrl(new URL("..", import.meta.url));
-      const problems = yield* kinBranchChecks(root, input.ref, input.days);
+      const { problems, notes } = yield* kinBranchChecks(root, input.ref, input.days);
+      for (const note of notes) yield* Console.log(note);
       if (problems.length === 0) return yield* Console.log("kin branch checks: clean");
       for (const problem of problems) yield* Console.error(problem);
       yield* Effect.sync(() => {
@@ -391,7 +600,7 @@ export const kinBranchChecksCommand = Command.make(
     ),
 ).pipe(
   Command.withDescription(
-    "Kin's merge-survival, migration, instructions, shared-copy and branding checks.",
+    "Kin's merge-survival, migration, instructions, shared-copy, branding and People-change checks.",
   ),
 );
 

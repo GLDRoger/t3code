@@ -77,6 +77,7 @@ import { reholdAfter, validZone } from "../triggers/quietHold.ts";
 import { companyMoney, countryNeeded } from "../work/companyProfile.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { closeHeldQuestions } from "../questions/openQuestions.ts";
+import { live as liveKey } from "../tasksKey/TasksKeys.ts";
 import { staleAsksStranded } from "../connections/strandedAsks.ts";
 
 const isKinError = Schema.is(KinChatError);
@@ -97,7 +98,7 @@ const hash = (secret: string) => NodeCrypto.createHash("sha256").update(secret).
 const SESSION_TTL = Duration.days(30);
 const deviceLimit = new KinChatError({
   reason: "limit",
-  message: `You have ${KIN_DEVICE_LIMIT} devices linked. Remove one in Linked devices first.`,
+  message: `You have ${KIN_DEVICE_LIMIT} devices linked. Remove one in Your devices first.`,
 });
 const decodePersonRow = Schema.decodeUnknownSync(KinPerson);
 const decodePerson = (row: Record<string, unknown>) => decodePersonRow(row);
@@ -377,7 +378,7 @@ export const make = Effect.gen(function* () {
           if (input.personId === caller.personId)
             return yield* new KinChatError({
               reason: "not_allowed",
-              message: "Link your own devices from Linked devices.",
+              message: "Link your own devices from Your devices.",
             });
           if (input.personId !== undefined) yield* mayActOn(caller, input.orgId, input.personId);
           if (input.personId) yield* person(input.orgId, input.personId);
@@ -813,6 +814,7 @@ export const make = Effect.gen(function* () {
     orgId: KinOrgId,
     personId: KinPersonId,
   ) {
+    const now = (yield* DateTime.now).epochMilliseconds;
     return yield* sql<{
       session_id: AuthSessionId;
       parent_session_id: AuthSessionId | null;
@@ -824,9 +826,12 @@ export const make = Effect.gen(function* () {
       client_device_type: string | null;
       expires_at: string | null;
       last_connected_at: string | null;
+      keys_made: number;
     }>`SELECT b.session_id, b.parent_session_id, b.link_id, b.bound_at, b.revoked_at,
         a.revoked_at AS session_revoked_at, a.client_label, a.client_device_type, a.expires_at,
-        a.last_connected_at FROM kin_session_bindings b
+        a.last_connected_at, (SELECT COUNT(*) FROM kin_tasks_keys k WHERE k.org_id = b.org_id
+          AND k.person_id = b.person_id AND k.made_by_session_id = b.session_id
+          AND ${liveKey(sql, now)}) AS keys_made FROM kin_session_bindings b
         LEFT JOIN auth_sessions a ON a.session_id = b.session_id
         WHERE b.org_id = ${orgId} AND b.person_id = ${personId} ORDER BY b.bound_at, b.session_id`.pipe(
       Effect.mapError(toPersistenceSqlError("KinPeople.listDevices")),
@@ -864,6 +869,7 @@ export const make = Effect.gen(function* () {
           linkedFrom: r.parent_session_id,
           linkId: r.link_id,
           removable: removable(r.session_id),
+          keysMade: r.keys_made,
         };
       }),
     };
@@ -897,7 +903,7 @@ export const make = Effect.gen(function* () {
           if (!mayRemove(input.sessionId))
             return yield* new KinChatError({
               reason: "not_allowed",
-              message: "Remove this device from the phone you joined with, or ask the owner.",
+              message: "Remove this device from the device you joined with, or ask the owner.",
             });
           const bound = yield* sql`UPDATE kin_session_bindings SET revoked_at = ${now}
             WHERE org_id = ${input.orgId} AND person_id = ${input.personId}
@@ -925,7 +931,7 @@ export const make = Effect.gen(function* () {
     if (isOwnerHimself(identity.owner, caller.personId))
       return yield* new KinChatError({
         reason: "not_allowed",
-        message: "The owner links devices from T3 Code's Sharing & access settings.",
+        message: "The owner links devices from Settings, Sharing & access.",
       });
     const secret = NodeCrypto.randomBytes(32).toString("base64url");
     const inviteId = KinInviteId.make(NodeCrypto.randomUUID());

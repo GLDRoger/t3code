@@ -11,6 +11,8 @@ dock at the bottom of a narrow window. `⌘1` to `⌘5` (`Ctrl` on Windows and L
 the phone and in a narrow window. It opens over whatever you're looking at; close it to carry on
 where you were. What you see in each depends on your place in the team; see
 [Who sees and does what](#who-sees-and-does-what).
+For the owner, **Coding** beside the gear on the web and the desktop app opens T3 Code's coding
+threads and pull requests; Kin's places at the top of the sidebar there bring you back.
 
 Settings has **You** (your profile, notifications and appearance) for everyone, and for the owner and co-owners
 **Company** (Team, Agents, Check-ins, Connections, Memory, Company details, Approvals). On the
@@ -27,22 +29,23 @@ places the owner turned on for you.
 
 A join link works once and lasts a week. If yours has expired or was used, ask for a new one.
 
-### Linked devices
+### Your devices
 
-Once you're in, you add your other devices yourself. Open **Linked devices** (under your name on the
+Once you're in, you add your other devices yourself. Open **Your devices** (under your name on the
 web, in **Settings** on the phone) and choose **Link a device**. Kin shows a link and a QR code that
 work once, for 10 minutes. Scan the QR code with the new phone, or open the link in the new
 browser. Each time a device is linked, Kin tells you in your chat with the Team agent; without a
 Team agent, in your direct chats. Your iPhones with notifications on also get an alert, when phone
 alerts are set up for your company's Kin. Android phones don't get this alert yet. If no notice
-reaches you, check **Linked devices** for any you didn't add.
+reaches you, check **Your devices** for any you didn't add.
 
 A linked device stays signed in for 30 days, then you link it again the same way. You can have 10
 devices at a time. Remove a device from the same list to sign it out at once, along with every
-device linked from it. Signing a device out from **Sharing & access** does the same. **Leave this
-team** on a phone only forgets the team on that phone: the device stays in your list until you
-remove it. A device you linked can remove itself and the devices linked from it, but not the
-phone you joined with. The owner can see and remove a teammate's devices on the **Team** page.
+device linked from it and the coding agent keys made on them. Signing a device out from **Sharing &
+access** does the same. **Leave this team** on a phone only forgets the team on that phone: the
+device stays in your list until you remove it. A device you linked can remove itself and the
+devices linked from it, but not the device you joined with. The owner can see and remove a
+teammate's devices on the **Team** page.
 
 ### Your profile
 
@@ -270,7 +273,8 @@ Kin at a different address than the app you made the key in, use that address wi
 
 Choose **Remove** beside a key to stop it; the coding agent loses access on its next call. The owner
 and co-owners can see and remove a teammate's keys on their profile, and removing someone's access
-ends all of their keys.
+ends all of their keys. Removing the device a key was made on ends that key too. A key made before
+this update isn't tied to a device, so remove it here yourself.
 
 ## Clients and projects
 

@@ -42,6 +42,12 @@ export interface KinChoiceCardView {
   } | null;
   /** What the answer did, in the owner's words, on a card Kin asked itself. */
   readonly outcome: { readonly title: string; readonly text: string } | null;
+  /** Who undid what a default Kin took, by name then, and when; null on any other card. */
+  readonly undone: {
+    readonly personId: KinPersonId;
+    readonly name: string;
+    readonly atMs: number;
+  } | null;
   /** What a send card would send, in full: shown instead of `detail`. */
   readonly send: KinSendView | null;
   /** When an unanswered card stops taking taps; the host refuses later ones. */
@@ -299,6 +305,14 @@ export function kinChoiceCardView(
       card.answer === null || card.outcome === undefined
         ? null
         : { title: line(card.outcome.title), text: card.outcome.text.trim() },
+    undone:
+      card.outcome?.undone === undefined
+        ? null
+        : {
+            personId: card.outcome.undone.personId,
+            name: card.outcome.undone.name,
+            atMs: Date.parse(card.outcome.undone.at),
+          },
     detail: own === null || own.trim() === "" ? null : own.trim(),
     options,
     image: card.image === undefined ? null : card.image,
@@ -318,7 +332,7 @@ export function kinChoiceCardView(
         ? Number.POSITIVE_INFINITY
         : Date.parse(widget.updatedAt) + KIN_CHOICE_CARD_TTL_MS,
     closed: widget.closedAt !== null,
-    // A question closed unanswered says what became of it ("No answer by Tuesday, so…").
+    // A question closed unanswered says what became of it ("Went with “Draft it”.").
     closedText:
       card.replaced === true
         ? KIN_CHOICE_REPLACED_TEXT
@@ -410,6 +424,23 @@ export function kinChoiceAnswered(
           : null;
   if (text === null) return null;
   return { text: view.send?.outcome == null ? text : null };
+}
+
+/** "Undone by you at 9:52 AM.", or by name on another day: under a taken default's note. */
+export function kinChoiceUndoneLine(
+  view: Pick<KinChoiceCardView, "undone">,
+  viewerPersonId: KinPersonId | null,
+  now: Date = new Date(),
+): string | null {
+  const { undone } = view;
+  if (undone === null) return null;
+  const at = new Date(undone.atMs);
+  const who = undone.personId === viewerPersonId ? "you" : undone.name;
+  const when =
+    at.toDateString() === now.toDateString()
+      ? `at ${formatKinWhen(at, "time")}`
+      : `on ${formatKinWhen(at, "dayTime")}`;
+  return `Undone by ${who} ${when}.`;
 }
 
 export function kinChoiceAccessibilityLabel(view: KinChoiceCardView, status: string | null) {

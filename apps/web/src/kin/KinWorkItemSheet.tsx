@@ -38,6 +38,7 @@ import {
   kinRecordAskedBy,
   kinRecordChip,
   kinRecordWho,
+  kinTaskControls,
   type KinNextStepAct,
   type KinRecordWho,
 } from "@t3tools/client-runtime/kin/kinTaskRecord";
@@ -554,9 +555,14 @@ function KinWorkItem(
     if (id === "done") return change({ type: "state", state: "done" });
     if (id === "reopen") return change({ type: "state", state: "open" });
   };
-  const status = change !== null && (offer.reopen || (!view.closed && (offer.done || offer.menu)));
-  const giving = give !== null && view.assignLabel !== null;
-  const more = (reword !== null && edit === null) || status || giving || view.handBackTo !== null;
+  const controls = kinTaskControls({
+    view,
+    change: change !== null,
+    give: give !== null,
+    step: step.acts,
+  });
+  const status = change === null ? null : controls.page.status;
+  const more = Object.values(controls.menu).some(Boolean);
   return (
     <>
       <Frame.Header>
@@ -594,40 +600,8 @@ function KinWorkItem(
                     <EllipsisIcon />
                   </MenuTrigger>
                   <MenuPopup align="end">
-                    {reword === null || edit !== null ? null : (
-                      <MenuItem onClick={props.onStartEdit}>
-                        <PencilIcon />
-                        {KIN_TASK_RECORD.editAll}
-                      </MenuItem>
-                    )}
-                    {!status || change === null ? null : (
-                      <MenuGroup>
-                        <MenuGroupLabel>{KIN_WORK_COPY.status}</MenuGroupLabel>
-                        {offer.done && !view.closed ? (
-                          <MenuItem onClick={() => change({ type: "state", state: "done" })}>
-                            <CheckIcon />
-                            {KIN_WORK_COPY.done}
-                          </MenuItem>
-                        ) : null}
-                        {offer.reopen ? (
-                          <MenuItem onClick={() => change({ type: "state", state: "open" })}>
-                            <RotateCcwIcon />
-                            {KIN_WORK_COPY.reopen}
-                          </MenuItem>
-                        ) : null}
-                        {offer.menu && !view.closed ? (
-                          <StatusItems
-                            view={view}
-                            offer={offer}
-                            waitingOn={waitingOn}
-                            onAct={change}
-                          />
-                        ) : null}
-                      </MenuGroup>
-                    )}
-                    {!giving || give === null || view.assignLabel === null ? null : (
+                    {!controls.menu.give || give === null || view.assignLabel === null ? null : (
                       <>
-                        <MenuSeparator />
                         <MenuSub>
                           <MenuSubTrigger>{view.assignLabel}</MenuSubTrigger>
                           <MenuSubPopup>
@@ -637,18 +611,32 @@ function KinWorkItem(
                             />
                           </MenuSubPopup>
                         </MenuSub>
-                        {!view.takeBack ? null : (
-                          <MenuItem onClick={() => give({ type: "takeBack" })}>
-                            {KIN_WORK_COPY.takeBack}
-                          </MenuItem>
-                        )}
                       </>
                     )}
-                    {view.handBackTo === null || change === null ? null : (
+                    {!controls.menu.takeBack || give === null ? null : (
+                      <MenuItem onClick={() => give({ type: "takeBack" })}>
+                        {KIN_WORK_COPY.takeBack}
+                      </MenuItem>
+                    )}
+                    {!controls.menu.handBack ? null : (
                       <MenuItem onClick={() => setHandingBack(true)}>
                         <Undo2Icon />
                         {KIN_WORK_HAND_BACK.button}
                       </MenuItem>
+                    )}
+                    {!controls.menu.drop || change === null ? null : (
+                      <>
+                        {controls.menu.give || controls.menu.takeBack || controls.menu.handBack ? (
+                          <MenuSeparator />
+                        ) : null}
+                        <MenuItem
+                          variant="destructive"
+                          onClick={() => change({ type: "state", state: "dropped" })}
+                        >
+                          <KinWorkStateIcon state="dropped" />
+                          {KIN_WORK_COPY.drop}
+                        </MenuItem>
+                      </>
                     )}
                   </MenuPopup>
                 </Menu>
@@ -813,6 +801,33 @@ function KinWorkItem(
               </div>
             )}
           </KinNextStepCard>
+          {status === null || change === null ? null : (
+            <div className="flex flex-wrap items-center gap-2">
+              <Menu>
+                <MenuTrigger render={<Button size="sm" variant="outline" disabled={saving} />}>
+                  {KIN_WORK_COPY.status}
+                  <ChevronDownIcon />
+                </MenuTrigger>
+                <MenuPopup align="start">
+                  {status.done ? (
+                    <MenuItem onClick={() => change({ type: "state", state: "done" })}>
+                      <CheckIcon />
+                      {KIN_WORK_COPY.done}
+                    </MenuItem>
+                  ) : null}
+                  {status.reopen ? (
+                    <MenuItem onClick={() => change({ type: "state", state: "open" })}>
+                      <RotateCcwIcon />
+                      {KIN_WORK_COPY.reopen}
+                    </MenuItem>
+                  ) : null}
+                  {status.states || status.waiting ? (
+                    <StatusItems view={view} offer={offer} waitingOn={waitingOn} onAct={change} />
+                  ) : null}
+                </MenuPopup>
+              </Menu>
+            </div>
+          )}
           {props.notice === null || edit !== null ? null : (
             <KinWorkNoticeLine notice={props.notice} saving={saving} onUndo={props.onUndo} />
           )}
@@ -868,7 +883,7 @@ function KinWorkItem(
               <>
                 <dt className="text-muted-foreground">{KIN_WORK_NEW_COPY.projectLabel}</dt>
                 <dd className="flex min-w-0 items-center gap-2 text-foreground">
-                  <PlaceMenu
+                  <KinTaskPlaceMenu
                     target={{ environmentId, orgId }}
                     noun="project"
                     label={KIN_WORK_NEW_COPY.projectLabel}
@@ -893,7 +908,7 @@ function KinWorkItem(
               <>
                 <dt className="text-muted-foreground">{KIN_WORK_NEW_COPY.clientLabel}</dt>
                 <dd className="flex min-w-0 flex-wrap items-center gap-2 text-foreground">
-                  <PlaceMenu
+                  <KinTaskPlaceMenu
                     target={{ environmentId, orgId }}
                     noun="client"
                     label={KIN_WORK_NEW_COPY.clientLabel}
@@ -1193,11 +1208,12 @@ export function KinLinkedGroups(props: {
 }
 
 const PLACE_ROW = "flex min-w-0 flex-1 truncate";
-// A short list is quicker scanned than searched.
-const PLACE_SEARCH_FROM = 8;
 
-/** The client or project a task is under: pick another, take it off, or open the one it has. */
-function PlaceMenu(props: {
+/**
+ * The client or project a task is under: pick another, found by typing as the new-task form
+ * does, take it off, or open the one it has.
+ */
+export function KinTaskPlaceMenu(props: {
   readonly target: KinWorkTarget;
   readonly noun: "client" | "project";
   readonly label: string;
@@ -1232,7 +1248,10 @@ function PlaceMenu(props: {
     held: value,
   });
   const groups = kinTaskProjectMenu({ projects: view.open, doneProjects: view.done });
-  const searchable = props.choices.length + (props.done?.length ?? 0) > PLACE_SEARCH_FROM;
+  const first = groups
+    .flatMap((group) => group.choices)
+    .find((choice) => choice.key !== value?.key);
+  const [open, setOpen] = useState(false);
   if (onPick === null) {
     if (value === null) return null;
     const { onOpen } = props;
@@ -1246,8 +1265,10 @@ function PlaceMenu(props: {
   }
   return (
     <Menu
-      onOpenChange={(open) => {
-        if (!open) search.type("");
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) search.type("");
       }}
     >
       <MenuTrigger
@@ -1264,16 +1285,21 @@ function PlaceMenu(props: {
         <ChevronDownIcon />
       </MenuTrigger>
       <MenuPopup align="start" className="max-w-80">
-        {!searchable ? null : (
-          <MenuSearchInput
-            autoFocus
-            busy={view.loading}
-            value={query}
-            onChange={(event) => search.type(event.currentTarget.value)}
-            placeholder={`Find a ${props.noun}`}
-            aria-label={`Find a ${props.noun}`}
-          />
-        )}
+        <MenuSearchInput
+          autoFocus
+          busy={view.loading}
+          value={query}
+          onChange={(event) => search.type(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" || query.trim() === "" || first === undefined) return;
+            event.preventDefault();
+            setOpen(false);
+            search.type("");
+            onPick(first);
+          }}
+          placeholder={`Find a ${props.noun}`}
+          aria-label={`Find a ${props.noun}`}
+        />
         {value === null || props.onOpen === null ? null : (
           <>
             <MenuItem onClick={props.onOpen}>
@@ -1387,15 +1413,6 @@ function StatusItems(props: {
             </MenuItem>
           </MenuSubPopup>
         </MenuSub>
-      )}
-      {!offer.drop ? null : (
-        <MenuItem
-          variant="destructive"
-          onClick={() => props.onAct({ type: "state", state: "dropped" })}
-        >
-          <KinWorkStateIcon state="dropped" />
-          {KIN_WORK_COPY.drop}
-        </MenuItem>
       )}
     </>
   );

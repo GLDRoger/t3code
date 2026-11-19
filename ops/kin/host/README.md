@@ -190,9 +190,17 @@ Files an agent asks for (`kin_document`: invoices, the accountant's pack, report
 
 ## Update
 
-In a kin shell: `~/t3code/ops/kin/host/update.sh`. It fetches `kin` and builds it in a fresh worktree, `~/kin-builds/<sha>`: `vp i`, then `(cd apps/server && vp test run kin-contract)`, then `vp run build:desktop`. The running build is never touched. A failed step deletes the half-built worktree and the server keeps running the old build.
+In a kin shell: `~/t3code/ops/kin/host/update.sh`. It fetches `kin` and builds it in a fresh worktree, `~/kin-builds/<sha>`: `vp i`, then `(cd apps/server && vp test run kin-contract)`, then `node scripts/kin-brand.ts --scope web --in-place` (the web app it serves is named Kin, with Kin's icons; the server itself stays unbranded), then `vp run build:desktop`, then `node scripts/kin-served-brand.ts apps/server/dist/client` (the packaged web app the server serves has Kin's title, manifest names and icons). The running build is never touched. A failed step deletes the half-built worktree and the server keeps running the old build.
 
 Only after every step passes does it stop `kin-server`, back the database up into `~/kin-update-backups` (or `$KIN_UPDATE_BACKUPS`; the 10 newest are kept), refresh the units and the Node version, switch `~/kin-current` and start the server. It then checks that the service stays up with no restarts, answers on its port (`T3CODE_PORT` from `~/.t3/service.env`, else 3773), and that the database reached the build's highest T3 and Kin migrations. If not, it switches `~/kin-current` and the Node version back to the previous build, restores the backup when the failed build had migrated the database (keeping that copy as `statev2.sqlite.failed-<sha>`), restarts it and exits non-zero. On a first install there is nothing to go back to, so it leaves `kin-server` stopped and removes `~/kin-current`; the next run rebuilds. A failed build stays in `~/kin-builds` for inspection until the next good update. It keeps the 3 newest builds. Unit files are not rolled back; if a failed build changed one, re-run `sudo /root/kin-ops/ops/kin/host/setup.sh` after the rollback (refresh `/root/kin-ops` to the build you rolled back to first).
+
+`update.sh` builds with the steps of the copy you run, and it hands over to the fetched copy only when the copy you run already knows how. An older copy builds the new commit its own way, without Kin's name and without the check. So before the first update that brings the Kin name and its check:
+
+1. Fast-forward the clone the script lives in: `git -C ~/t3code fetch origin +refs/heads/kin:refs/remotes/origin/kin && git -C ~/t3code merge --ff-only origin/kin` (if `~/.config/kin/kin-server.env` sets `KIN_REPO`, do steps 1 to 3 in that clone instead).
+2. Confirm the script now has the hand-over: `grep -n 'hand_over' ~/t3code/ops/kin/host/update.sh` shows it.
+3. Then run `~/t3code/ops/kin/host/update.sh`.
+
+If a host already runs the right commit built without the name (the tab says T3 Code, and `update.sh` says `already running <sha>`), running it again does not repair that build. Deploy a newer commit of `kin`. Don't delete files inside the running build to force a rebuild: the server runs from that directory.
 
 Before deploying, run the release check on this Mac: [Releasing Kin](../../../docs/operations/kin-release.md).
 
