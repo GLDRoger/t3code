@@ -44,7 +44,7 @@ import {
 } from "./KinRecords.ts";
 import { fieldList, LISTS, type ListName, parseFields } from "./lists.ts";
 import { milestoneLinks } from "./projectSpine.ts";
-import { personSeesRecord, sheetExtras } from "./recordComments.ts";
+import { keyNamedFor, personSeesRecord, sheetExtras } from "./recordComments.ts";
 import { movePage, nudge as nudgeHolder } from "./workMoves.ts";
 import { isBuiltIn, listDef, unknownList } from "./registers.ts";
 import { type AssignNotice, movedNotices, tellPeople, toldWhenBack } from "./assignNotices.ts";
@@ -608,8 +608,10 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
           !(yield* placesOf(detail.orgId, personId).pipe(workFailure)).clients
         ? named()
         : detail;
+  const sheet = yield* teamDetail(shown, personId, number, whole).pipe(workFailure);
   return {
-    ...(yield* teamDetail(shown, personId, number, whole).pipe(workFailure)),
+    ...sheet,
+    changes: sheet.changes.map((change) => keyNamedFor(viewer, change)),
     ...extras,
     can,
   };

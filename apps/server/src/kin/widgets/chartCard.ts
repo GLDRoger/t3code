@@ -39,8 +39,8 @@ export const ChartInput = Schema.Struct({
 });
 export type ChartInput = typeof ChartInput.Type;
 export const ChartResult = Schema.Union([
-  Schema.Struct({ widgetId: KinTrimmedText, messageId: KinTrimmedText }),
-  Schema.Struct({ figure: KinTrimmedText }),
+  Schema.Struct({ widgetId: KinTrimmedText, messageId: KinTrimmedText, next: Schema.String }),
+  Schema.Struct({ figure: KinTrimmedText, next: Schema.String }),
 ]);
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });

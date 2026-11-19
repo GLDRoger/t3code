@@ -33,6 +33,7 @@ import {
   kinRetireOffer,
 } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
+import type { KinWorkNames } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_CLEAR_CHAT_ACTION,
   KIN_CLEAR_CHAT_DONE,
@@ -69,6 +70,7 @@ import { KinAvatar } from "./components/KinAvatar";
 import { KinAgentSections } from "./KinAgentSections";
 import { kinClient } from "./state/kinClient";
 import { useKinWorkingAgents } from "./state/useKinInbox";
+import { useKinWorkDirectory } from "./state/useKinWork";
 import { kinRetiredWhenNow, useKinAgentRetire } from "./state/useKinAgentRetire";
 import { useKinHostAt } from "./state/useKinHost";
 
@@ -133,6 +135,7 @@ function KinLeadBody(props: {
   const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
   const canRetire = useAtomValue(kinClient.leadRetire.permissionAtom(environmentId));
   const working = useKinWorkingAgents(environmentId);
+  const names = useKinWorkDirectory({ environmentId, orgId }, true).names;
   const atom = canRestore
     ? kinClient.agents({ environmentId, orgId })
     : kinClient.leads({ environmentId, input: { orgId } });
@@ -181,6 +184,7 @@ function KinLeadBody(props: {
               <KinLeadProfileView
                 lead={lead}
                 working={working.has(lead.agentId)}
+                names={names}
                 access={
                   isRetired ? (
                     canRestore ? (
@@ -565,11 +569,14 @@ function KinLeadContactView({ contact }: { readonly contact: KinLeadContact }) {
 export function KinLeadProfileView({
   lead,
   working = false,
+  names = null,
   access,
 }: {
   readonly lead: KinLeadProfile;
   /** On a live run now, from the chat list (`kinWorkingAgents`). */
   readonly working?: boolean;
+  /** Who a waiting task waits on is named from these, as Tasks names them. */
+  readonly names?: KinWorkNames | null;
   /** The owner's "Who can message" section, placed under what the lead is for. */
   readonly access?: ReactNode;
 }) {
@@ -630,7 +637,10 @@ export function KinLeadProfileView({
             // Titles can repeat and items carry no id; the host's order is stable.
             // oxlint-disable-next-line react/no-array-index-key
             <View key={index} className={index === 0 ? undefined : "border-t border-border-subtle"}>
-              <ListRowLayout label={item.title} description={kinLeadTrackingDetail(item)} />
+              <ListRowLayout
+                label={item.title}
+                description={kinLeadTrackingDetail(item, undefined, undefined, names)}
+              />
             </View>
           ))
         )}

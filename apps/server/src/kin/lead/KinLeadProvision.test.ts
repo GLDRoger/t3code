@@ -723,11 +723,27 @@ describe("KinLeadProvision", () => {
           );
         yield* native("sch-on", 1);
         yield* native("sch-off", 0);
+        // N3: a task it holds that waits on the owner says so, not that it is under way.
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+            created_at) VALUES (${orgId}, 'work', 'Work', 'W', 1, 0) ON CONFLICT DO NOTHING`;
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+            owner_kind, owner_id, waiting_on_kind, waiting_on_id, created_by_kind, origin_key,
+            created_at, updated_at)
+          VALUES (${orgId}, 'held', 'work', 'W-7', 'Invented: review the checklist', 'waiting',
+            'agent', ${tech.agentId}, 'person', ${tech.ownerPersonId}, 'person', 'held', 0, 0)`;
         const chatId = tech.ownerChatId;
         const [ada, other] = yield* Provision.profiles(person);
         assert.deepInclude(ada, {
           working: true,
           tracking: [
+            {
+              kind: "work",
+              title: "Invented: review the checklist",
+              chatId: null,
+              key: "W-7",
+              state: "waiting",
+              waitingOn: { _tag: "person", personId: tech.ownerPersonId },
+            },
             { kind: "reminder", title: "Title of soon", dueAt: "2026-11-12T09:00:00.000Z", chatId },
             {
               kind: "follow_up",

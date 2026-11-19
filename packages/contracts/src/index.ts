@@ -81,6 +81,7 @@ export * from "./kinVisual.ts";
 export * from "./kinRefresh.ts";
 export * from "./kinLead.ts";
 export * from "./kinProviders.ts";
+export * from "./kinHost.ts";
 export * from "./kinTriggers.ts";
 export * from "./kinApprovals.ts";
 export * from "./kinLevels.ts";
