@@ -40,7 +40,8 @@ export function KinAskRecord(
     return (
       <Button size="sm" variant="outline" disabled={props.disabled} onClick={() => ask(only)}>
         <MessageSquareIcon />
-        {KIN_ASK_RECORD.ask(only.name)}
+        {/* Agent names run to 80 characters; a long one must not push the header off the screen. */}
+        <span className="max-w-40 truncate">{KIN_ASK_RECORD.ask(only.name)}</span>
       </Button>
     );
   return (

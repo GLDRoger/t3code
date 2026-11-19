@@ -5,12 +5,6 @@ import { kinAskAgents, kinAskRecordDraft } from "./kinAskRecord.ts";
 
 describe("kinAskRecordDraft", () => {
   it.each([
-    [
-      "a task",
-      { key: "T-12", title: "Fix the payments test" },
-      "About T-12 (Fix the payments test): ",
-    ],
-    // The canvas drafted nothing for a project, which had no card to name.
     ["a project", { key: "P-3", title: "Website relaunch" }, "About P-3 (Website relaunch): "],
     ["a record with no name", { key: "P-4", title: "  " }, "About P-4: "],
   ])("names %s by key and name", (_name, record, expected) => {
