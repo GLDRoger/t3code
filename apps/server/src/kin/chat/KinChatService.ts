@@ -295,6 +295,8 @@ export class KinChatService extends Context.Service<
       readonly orgId: KinOrgId;
       readonly widgetId: KinWidgetId;
       readonly outcome: NonNullable<KinSendCard["outcome"]>;
+      /** "chat" when the chat turned shared since the Confirm: the caller passes no reason. */
+      readonly audience?: "owner" | "chat";
     }) => Effect.Effect<KinWidget, ServiceError>;
     /**
      * Server-only: the owner switched an unanswered send card's From. Bound to the revision he
@@ -2531,7 +2533,7 @@ const make = Effect.gen(function* () {
       const updatedAt = yield* now;
       const widget = yield* repo.updateWidget({
         ...existing,
-        audience: "owner",
+        audience: input.audience ?? "owner",
         state: { ...card, send: { ...card.send, outcome: input.outcome } },
         expectedRevision: existing.revision,
         updatedAt,

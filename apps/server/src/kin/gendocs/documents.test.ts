@@ -1532,6 +1532,14 @@ describe("receipts", () => {
         assert.notStrictEqual(more.proposal, advance.proposal);
         const waiting = yield* Effect.flip(call({ proposal: advance.proposal }));
         assert.match(waiting.message, /hasn't tapped Confirm/);
+        // A card that closed unanswered (its invoice was voided) is not reported as waiting.
+        const shut = yield* proposed({ ...ask, advance: { ...ask.advance, amount: "7" } });
+        yield* sql`UPDATE kin_widgets SET closed_at = 1
+          WHERE widget_id = ${`choice:card-kin-receipt:${shut.proposal}`}`;
+        assert.match(
+          (yield* Effect.flip(call({ proposal: shut.proposal }))).message,
+          /closed before the owner answered/,
+        );
         // Cancel ends a proposal.
         yield* answerCard(`kin-receipt:${more.proposal}`, "no");
         assert.match((yield* Effect.flip(call({ proposal: more.proposal }))).message, /said no/);

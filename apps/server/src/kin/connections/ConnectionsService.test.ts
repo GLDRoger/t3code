@@ -69,6 +69,7 @@ import { KinConnectionsToolkit } from "./mcp.ts";
 import { GOOGLE_SCOPES } from "./Google.ts";
 import { challengeOf } from "./OAuth.ts";
 import { promptLine } from "./ConnectionRows.ts";
+import { staleAsksStranded } from "./strandedAsks.ts";
 
 // Invented org, people and services only; no request leaves the process.
 const orgId = KinOrgId.make("org");
@@ -2834,6 +2835,15 @@ describe("KinConnections sending", () => {
           WHERE org_id = ${orgId} AND record_id = 'rec_inv'`;
         yield* sendCall("mail_send", { ...mail, body: "Attached, as promised." });
         const voided = cards.at(-1)!.widgetId;
+        // Money set against it waits on a card too; one set against another invoice stays open.
+        for (const [id, against] of [
+          ["rp-voided", "INV-1"],
+          ["rp-other", "INV-9"],
+        ] as const)
+          yield* sql`INSERT INTO kin_receipt_proposals (org_id, proposal_id, agent_id, wakeup_id,
+              chat_id, request_json, snapshot_json, widget_id, proposed_at)
+            VALUES (${orgId}, ${id}, ${lead}, 'wake', 'lead-chat',
+              ${JSON.stringify({ paymentId: "pay-1", against })}, '{}', ${`w-${id}`}, 1)`;
         const closed: Array<{ readonly widgetId: string; readonly text: string | undefined }> = [];
         yield* sql.withTransaction(
           Effect.andThen(
@@ -2858,7 +2868,10 @@ describe("KinConnections sending", () => {
             ),
           ),
         );
-        assert.deepStrictEqual(closed, [{ widgetId: voided, text: "Closed: INV-1 is void now." }]);
+        assert.deepStrictEqual(closed, [
+          { widgetId: voided, text: "Closed: INV-1 is void now." },
+          { widgetId: "w-rp-voided", text: "Closed: INV-1 is void now." },
+        ]);
         assert.deepStrictEqual(
           yield* sql`SELECT state, reason FROM kin_connection_asks WHERE widget_id = ${voided}`,
           [{ state: "stale", reason: "INV-1 is void now, so nothing was sent." }],
@@ -2896,6 +2909,61 @@ describe("KinConnections sending", () => {
           reason: "Invoice INV-1 is void now, so nothing was sent.",
         });
         assert.lengthOf(vendor.vendor.sent, 1);
+      }),
+    ),
+  );
+
+  it.effect("a co-owner made a member strands no card in a chat that is no longer owner-only", () =>
+    withGoogle((vendor, cards) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        const sql = yield* SqlClient.SqlClient;
+        yield* connectGoogle(vendor);
+        yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${mateId}`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, role, joined_at)
+          VALUES ('lead-chat-mate', ${orgId}, 'lead-chat', 'person', ${mateId}, 'member', ${at})`;
+        const mail = (body: string) => ({ to: ["ana@client.example"], subject: "Invoice", body });
+        yield* sendCall("mail_send", mail("Waiting on Confirm."));
+        yield* sendCall("mail_send", mail("Already confirmed."));
+        const [waiting, confirmed] = cards.map((card) => card.widgetId);
+        const going = yield* answer(confirmed!, ownerId, true);
+        assert.strictEqual(going?._tag, "send");
+        const why = "Mate is no longer a co-owner here, so this needs asking again.";
+        const strand = (personId: string) =>
+          sql.withTransaction(staleAsksStranded(orgId, personId, why, 2));
+
+        // Still a co-owner, or someone who was never in it: the chat is owner-only, nothing closes.
+        assert.deepStrictEqual(yield* strand(mateId), []);
+        yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = ${mateId}`;
+        assert.deepStrictEqual(yield* strand("someone-else"), []);
+
+        // Made a member, still in the chat: the waiting ask goes stale; the one sending goes on.
+        assert.deepStrictEqual(yield* strand(mateId), [waiting]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT widget_id AS "widgetId", state, reason FROM kin_connection_asks
+            ORDER BY widget_id`,
+          [
+            { widgetId: waiting, state: "stale", reason: why },
+            { widgetId: confirmed, state: "sending", reason: null },
+          ],
+        );
+        assert.include(yield* answer(waiting!, ownerId, true).pipe(Effect.flip), {
+          reason: "widget_changed",
+        });
+        assert.deepStrictEqual(yield* connections.sendAsk(orgId, going!.askId), {
+          state: "sent",
+          reason: null,
+        });
+        assert.lengthOf(vendor.vendor.sent, 1);
+        assert.include(sentBody(vendor.vendor.sent[0]!.json).text, "Already confirmed.");
+
+        // Owner-only again once they leave: the same call is told why its card closed.
+        yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'lead-chat-mate'`;
+        assert.deepInclude(yield* sendCall("mail_send", mail("Waiting on Confirm.")), {
+          note: `The card for this exact action was closed: ${why} Nothing was sent.`,
+        });
+        assert.lengthOf(cards, 2);
       }),
     ),
   );
