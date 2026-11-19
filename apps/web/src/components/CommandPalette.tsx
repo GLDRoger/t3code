@@ -61,6 +61,7 @@ import {
   ArrowLeftIcon,
   BugIcon,
   ChartNoAxesColumnIcon,
+  CodeIcon,
   FileTextIcon,
   MessagesSquareIcon,
   BrainIcon,
@@ -128,6 +129,8 @@ import { useKinListSwitch } from "../kin/useKinListSwitch";
 import { kinDestinationLink, kinListShownAt, kinShownDestinationsAtom } from "../kin/kinListSwitch";
 import { openKinSettings } from "../kin/kinSettingsAddress";
 import { KIN_DESTINATION_NAMES } from "@t3tools/client-runtime/kin/kinNavigation";
+import { isChatOnlySession } from "../environments/primary";
+import { KIN_CODING_ENTRY, kinCodingEntryShown } from "@t3tools/client-runtime/kin/kinListSwitch";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { copyThreadReference } from "../lib/copyThreadReference";
 import {
@@ -1798,7 +1801,23 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
-  // Only the way back into Kin: Kin itself doesn't offer the coding threads.
+  if (
+    kinListSwitch !== null &&
+    kinCodingEntryShown({ current: kinListSwitch.current, chatOnly: isChatOnlySession() })
+  ) {
+    actionItems.push({
+      kind: "action",
+      value: "action:kin-coding",
+      searchTerms: ["coding", "code", "threads", "pull", "requests", "go", "open"],
+      title: `Go to ${KIN_CODING_ENTRY}`,
+      icon: <CodeIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({ href: kinListSwitchHref("kin") });
+      },
+    });
+  }
+
+  // The way back into Kin from the coding threads.
   if (kinListSwitch !== null && kinListSwitch.current === "threads") {
     actionItems.push({
       kind: "action",

@@ -38,6 +38,7 @@ import {
   kinRecordAskedBy,
   kinRecordChip,
   kinRecordWho,
+  kinTaskControls,
   type KinNextStepAct,
   type KinRecordWho,
 } from "@t3tools/client-runtime/kin/kinTaskRecord";
@@ -554,9 +555,14 @@ function KinWorkItem(
     if (id === "done") return change({ type: "state", state: "done" });
     if (id === "reopen") return change({ type: "state", state: "open" });
   };
-  const status = change !== null && (offer.reopen || (!view.closed && (offer.done || offer.menu)));
-  const giving = give !== null && view.assignLabel !== null;
-  const more = (reword !== null && edit === null) || status || giving || view.handBackTo !== null;
+  const controls = kinTaskControls({
+    view,
+    change: change !== null,
+    give: give !== null,
+    step: step.acts,
+  });
+  const status = change === null ? null : controls.page.status;
+  const more = Object.values(controls.menu).some(Boolean);
   return (
     <>
       <Frame.Header>
@@ -594,40 +600,8 @@ function KinWorkItem(
                     <EllipsisIcon />
                   </MenuTrigger>
                   <MenuPopup align="end">
-                    {reword === null || edit !== null ? null : (
-                      <MenuItem onClick={props.onStartEdit}>
-                        <PencilIcon />
-                        {KIN_TASK_RECORD.editAll}
-                      </MenuItem>
-                    )}
-                    {!status || change === null ? null : (
-                      <MenuGroup>
-                        <MenuGroupLabel>{KIN_WORK_COPY.status}</MenuGroupLabel>
-                        {offer.done && !view.closed ? (
-                          <MenuItem onClick={() => change({ type: "state", state: "done" })}>
-                            <CheckIcon />
-                            {KIN_WORK_COPY.done}
-                          </MenuItem>
-                        ) : null}
-                        {offer.reopen ? (
-                          <MenuItem onClick={() => change({ type: "state", state: "open" })}>
-                            <RotateCcwIcon />
-                            {KIN_WORK_COPY.reopen}
-                          </MenuItem>
-                        ) : null}
-                        {offer.menu && !view.closed ? (
-                          <StatusItems
-                            view={view}
-                            offer={offer}
-                            waitingOn={waitingOn}
-                            onAct={change}
-                          />
-                        ) : null}
-                      </MenuGroup>
-                    )}
-                    {!giving || give === null || view.assignLabel === null ? null : (
+                    {!controls.menu.give || give === null || view.assignLabel === null ? null : (
                       <>
-                        <MenuSeparator />
                         <MenuSub>
                           <MenuSubTrigger>{view.assignLabel}</MenuSubTrigger>
                           <MenuSubPopup>
@@ -637,18 +611,32 @@ function KinWorkItem(
                             />
                           </MenuSubPopup>
                         </MenuSub>
-                        {!view.takeBack ? null : (
-                          <MenuItem onClick={() => give({ type: "takeBack" })}>
-                            {KIN_WORK_COPY.takeBack}
-                          </MenuItem>
-                        )}
                       </>
                     )}
-                    {view.handBackTo === null || change === null ? null : (
+                    {!controls.menu.takeBack || give === null ? null : (
+                      <MenuItem onClick={() => give({ type: "takeBack" })}>
+                        {KIN_WORK_COPY.takeBack}
+                      </MenuItem>
+                    )}
+                    {!controls.menu.handBack ? null : (
                       <MenuItem onClick={() => setHandingBack(true)}>
                         <Undo2Icon />
                         {KIN_WORK_HAND_BACK.button}
                       </MenuItem>
+                    )}
+                    {!controls.menu.drop || change === null ? null : (
+                      <>
+                        {controls.menu.give || controls.menu.takeBack || controls.menu.handBack ? (
+                          <MenuSeparator />
+                        ) : null}
+                        <MenuItem
+                          variant="destructive"
+                          onClick={() => change({ type: "state", state: "dropped" })}
+                        >
+                          <KinWorkStateIcon state="dropped" />
+                          {KIN_WORK_COPY.drop}
+                        </MenuItem>
+                      </>
                     )}
                   </MenuPopup>
                 </Menu>
@@ -813,6 +801,33 @@ function KinWorkItem(
               </div>
             )}
           </KinNextStepCard>
+          {status === null || change === null ? null : (
+            <div className="flex flex-wrap items-center gap-2">
+              <Menu>
+                <MenuTrigger render={<Button size="sm" variant="outline" disabled={saving} />}>
+                  {KIN_WORK_COPY.status}
+                  <ChevronDownIcon />
+                </MenuTrigger>
+                <MenuPopup align="start">
+                  {status.done ? (
+                    <MenuItem onClick={() => change({ type: "state", state: "done" })}>
+                      <CheckIcon />
+                      {KIN_WORK_COPY.done}
+                    </MenuItem>
+                  ) : null}
+                  {status.reopen ? (
+                    <MenuItem onClick={() => change({ type: "state", state: "open" })}>
+                      <RotateCcwIcon />
+                      {KIN_WORK_COPY.reopen}
+                    </MenuItem>
+                  ) : null}
+                  {status.states || status.waiting ? (
+                    <StatusItems view={view} offer={offer} waitingOn={waitingOn} onAct={change} />
+                  ) : null}
+                </MenuPopup>
+              </Menu>
+            </div>
+          )}
           {props.notice === null || edit !== null ? null : (
             <KinWorkNoticeLine notice={props.notice} saving={saving} onUndo={props.onUndo} />
           )}
@@ -1398,15 +1413,6 @@ function StatusItems(props: {
             </MenuItem>
           </MenuSubPopup>
         </MenuSub>
-      )}
-      {!offer.drop ? null : (
-        <MenuItem
-          variant="destructive"
-          onClick={() => props.onAct({ type: "state", state: "dropped" })}
-        >
-          <KinWorkStateIcon state="dropped" />
-          {KIN_WORK_COPY.drop}
-        </MenuItem>
       )}
     </>
   );

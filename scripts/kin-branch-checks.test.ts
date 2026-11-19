@@ -16,6 +16,7 @@ import {
   branchCommits,
   checkInstructions,
   checkPeopleChange,
+  checkProductName,
   checkSharedCopy,
   checkMigrations,
   checkSurvival,
@@ -343,5 +344,27 @@ describe("kin branch checks", () => {
       Effect.provide(NodeServices.layer),
       Effect.ensuring(Effect.sync(() => NodeFS.rmSync(root, { recursive: true, force: true }))),
     );
+  });
+
+  it("refuses a Kin file that calls the product T3 Kin, but not in a comment or fixture", () => {
+    const problems = checkProductName(
+      new Map([
+        [
+          "kin/Welcome.tsx",
+          'const title = "Welcome to Kin";\nconst body = "Open T3 Kin to start.";',
+        ],
+        ["kin/Host.ts", 'const note = "Runs on a T3 server, as T3 Kinds do.";'],
+        [
+          "kin/Label.tsx",
+          '// Do not call this T3 Kin.\n/* Nor T3 Kin\n   here. */ const url = "https://kin.invalid"; // T3 Kin\nconst label = <b>T3 Kin</b>;',
+        ],
+        ["kin/fixtures/names.ts", 'export const old = "T3 Kin";'],
+        ["kin/Names.spec.ts", 'const old = "T3 Kin";'],
+      ]),
+    );
+    assert.deepStrictEqual(problems, [
+      'kin name: kin/Welcome.tsx:2 says "T3 Kin"; the product is called Kin.',
+      'kin name: kin/Label.tsx:4 says "T3 Kin"; the product is called Kin.',
+    ]);
   });
 });

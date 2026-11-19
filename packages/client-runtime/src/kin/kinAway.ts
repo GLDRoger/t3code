@@ -40,7 +40,7 @@ const kinDayIn = (now: Date, zone: string | null) => {
 };
 
 /** "Thu 19 Nov", or with its year when not this one. */
-const kinAwayDay = (day: string, now: Date = new Date()) => {
+export const kinAwayDay = (day: string, now: Date = new Date()) => {
   const [year, month, date] = day.split("-").map(Number);
   const at = new Date(Date.UTC(year ?? 1970, (month ?? 1) - 1, date ?? 1, 12));
   return formatKinWhen(at, year === now.getFullYear() ? "day" : "dayYear", { zone: "UTC" }).replace(

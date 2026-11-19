@@ -1937,7 +1937,7 @@ it.effect.each([
 );
 
 it.effect(
-  "gives the lane and only the conversation the turn is in: no system rows, stale talk or the events' own messages",
+  "gives the lane and only the conversation the turn is in: no system rows but what came of a passed-on request, stale talk or the events' own messages",
   () =>
     Effect.gen(function* () {
       const repo = yield* seed;
@@ -1968,10 +1968,16 @@ it.effect(
         ["stale", "Yesterday's topic.", "2026-11-07T10:00:00.000Z"],
         ["older", "Did the release go out?", timestamp],
         ["system", "Deferred to Mon 9 Nov, 16:09. I'll remind you then.", timestamp],
+        // What came of a request it passed on: no tool result tells it that afterwards.
+        [
+          "kin-forward-declined-a",
+          "The owner didn't pass this request on this time.",
+          "2026-11-08T00:01:00.000Z",
+        ],
         ["newer", "Also check the docs.", "2026-11-08T00:02:00.000Z"],
         ["now", "Current question", "2026-11-08T00:03:00.000Z"],
       ] as const) {
-        if (id === "system") {
+        if (id === "system" || id.startsWith("kin-forward")) {
           yield* sql`UPDATE kin_chats SET last_seq = last_seq + 1 WHERE org_id = ${orgId} AND chat_id = ${chatId}`;
           yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_role,
               kind, body, mentions_json, status, created_at)
@@ -2070,6 +2076,7 @@ it.effect(
         [
           "> BEGIN QUOTE: recent chat",
           '> owner "Fixture" Sun 8 Nov 00:00: "Did the release go out?"',
+          '> Kin Sun 8 Nov 00:01: "The owner didn\'t pass this request on this time."',
           '> owner "Fixture" Sun 8 Nov 00:02: "Also check the docs."',
           "> END QUOTE",
         ].join("\n"),

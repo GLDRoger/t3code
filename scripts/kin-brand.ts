@@ -197,6 +197,7 @@ const copyAssets = Effect.fn("kinBrand.copyAssets")(function* (
   assetsRoot: string,
   target: string,
   write = true,
+  inScope: (file: string) => boolean = () => true,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -210,6 +211,7 @@ const copyAssets = Effect.fn("kinBrand.copyAssets")(function* (
     const source = path.join(assetsRoot, asset);
     if ((yield* fs.stat(source)).type !== "File") continue;
     const file = asset.split(path.sep).join("/");
+    if (!inScope(file)) continue;
     const destination = path.join(target, file);
     yield* assertNoSymlink(target, file);
     if (!(yield* fs.exists(destination))) {
@@ -236,7 +238,7 @@ const copyAssets = Effect.fn("kinBrand.copyAssets")(function* (
     copied.push(file);
   }
   const assetFiles = new Set(entries.map((entry) => entry.split(path.sep).join("/")));
-  for (const file of Object.keys(hashes).filter((file) => !assetFiles.has(file))) {
+  for (const file of Object.keys(hashes).filter((file) => inScope(file) && !assetFiles.has(file))) {
     problems.push(`sourceAssets names ${file}, but branding/assets has no such file`);
   }
   return { copied, problems };
@@ -304,6 +306,87 @@ const emptyResult = (source: string, leaks: FileResult["leaks"]): FileResult => 
   leaks,
 });
 
+const JS_LITERAL_OR_COMMENT =
+  /("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
+/** The last group `pattern` captures in a script with its comments taken out. */
+const scriptValue = (pattern: RegExp) => (source: string) =>
+  pattern
+    .exec(
+      source.replace(JS_LITERAL_OR_COMMENT, (_match, literal: string | undefined) => literal ?? ""),
+    )
+    ?.at(-1);
+const decodeManifestNames = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      name: Schema.optional(Schema.Unknown),
+      short_name: Schema.optional(Schema.Unknown),
+    }),
+  ),
+);
+const manifestValue = (key: "name" | "short_name") => (source: string) => {
+  const value = Option.getOrUndefined(decodeManifestNames(source))?.[key];
+  return typeof value === "string" ? value : undefined;
+};
+
+/** The name a Kin web build shows before any script runs: tab title, installed app, its stage. */
+const NAME_CHECKS: ReadonlyArray<{
+  readonly file: string;
+  readonly what: string;
+  readonly read: (source: string) => string | undefined;
+  readonly want: string;
+}> = [
+  {
+    file: "apps/web/index.html",
+    what: "<title>",
+    read: (source) =>
+      /<title[^>]*>([^<]*)<\/title>/i.exec(source.replace(/<!--[\s\S]*?-->/g, ""))?.[1]?.trim(),
+    want: "Kin",
+  },
+  {
+    file: "apps/web/vite.config.ts",
+    what: "the title the build stamps",
+    read: scriptValue(/formatAppDisplayName\(\s*\{[^}]*?\bbaseName:\s*(["'`])([^"'`]*)\1/),
+    want: "Kin",
+  },
+  {
+    file: "apps/web/src/branding.ts",
+    what: "APP_BASE_NAME",
+    read: scriptValue(/\bAPP_BASE_NAME\s*=[^;]*?\?\?\s*(["'`])([^"'`]*)\1/),
+    want: "Kin",
+  },
+  {
+    file: "apps/web/src/branding.logic.ts",
+    what: "a production build's stage label",
+    read: scriptValue(/\bdevelopment\s*\?\s*(["'`])Dev\1\s*:\s*(["'`])([^"'`]*)\2/),
+    want: "Latest",
+  },
+  {
+    file: "apps/web/public/manifest.webmanifest",
+    what: "name",
+    read: manifestValue("name"),
+    want: "Kin",
+  },
+  {
+    file: "apps/web/public/manifest.webmanifest",
+    what: "short_name",
+    read: manifestValue("short_name"),
+    want: "Kin",
+  },
+];
+
+const ONBOARDING_DIR = "apps/web/src/components/onboarding/";
+/** Onboarding files a moved or renamed copy would otherwise let go unchecked. */
+const ONBOARDING_FILES = [`${ONBOARDING_DIR}WelcomePage.tsx`, `${ONBOARDING_DIR}FirstRunGate.tsx`];
+/** Onboarding text that names T3 Code's own products, not the app a person is setting up. */
+const ONBOARDING_T3_NAMES: ReadonlyMap<string, string> = new Map([
+  ["Use T3 Code on your phone", "the Phone row installs T3 Code's own phone app"],
+  ["T3 Code app for iPhone and Android", "the Phone row's QR code opens T3 Code's own phone app"],
+  [
+    "T3 Code collects anonymous usage data to improve the app.",
+    "the server's usage data goes to T3 Code under T3's privacy policy, which the line links",
+  ],
+]);
+
 export const kinBrand = Effect.fn("kinBrand")(function* (options: {
   readonly target: Option.Option<string>;
   readonly rules: Option.Option<string>;
@@ -311,12 +394,15 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
   readonly updateDriftBaseline: boolean;
   /** Brand in memory and report problems only: no copy, no writes, no drift, no install. */
   readonly scan?: boolean;
+  /** Brand only the files of this `scopes` entry in the rules. */
+  readonly scope?: Option.Option<string>;
+  /** Write into the checkout itself, which must be clean so git can undo it; needs `scope`. */
+  readonly inPlace?: boolean;
   /** Tests point this at a temp repo and skip the install and typecheck. */
   readonly repoRoot?: string;
   readonly skipTypecheck?: boolean;
   readonly guards?: ReadonlyArray<Guard>;
 }) {
-  const guards = options.guards ?? GUARDS;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const repoRoot = path.resolve(
@@ -326,24 +412,66 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
     Option.getOrElse(options.rules, () => path.join(repoRoot, "branding/rules.yaml")),
   );
   const brandingDir = path.dirname(rulesPath);
-  const rules = yield* parseBrandRules(yield* fs.readFileString(rulesPath));
-  const target = path.resolve(
-    Option.getOrElse(options.target, () =>
-      path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}-kin`),
-    ),
-  );
-
+  const allRules = yield* parseBrandRules(yield* fs.readFileString(rulesPath));
   const scan = options.scan === true;
+  const inPlace = options.inPlace === true;
+  const scopeName = Option.getOrUndefined(options.scope ?? Option.none());
+  const scope = scopeName === undefined ? undefined : allRules.scopes?.[scopeName];
+  if (scopeName !== undefined && scope === undefined) {
+    return yield* fail(`rules.yaml has no scope "${scopeName}"`);
+  }
+  if (scope && (options.check || options.updateDriftBaseline)) {
+    return yield* fail("--check and --update-drift-baseline cover the whole copy; drop --scope");
+  }
+  if (inPlace && (scan || !scope)) {
+    // Every rule at once would move a checkout's data home and app identity under it.
+    return yield* fail("--in-place brands one --scope and can't be combined with --scan");
+  }
+  if (inPlace) {
+    const dirty = yield* run(
+      "git",
+      ["status", "--porcelain", "--untracked-files=no"],
+      repoRoot,
+      true,
+    );
+    if (dirty.trim() !== "") {
+      return yield* fail(
+        `--in-place needs ${repoRoot} without uncommitted changes, so git can undo it`,
+      );
+    }
+  }
+  const target = inPlace
+    ? repoRoot
+    : path.resolve(
+        Option.getOrElse(options.target, () =>
+          path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}-kin`),
+        ),
+      );
+  const inScope = (file: string) => scope === undefined || matchesAny(file, scope.files);
+
   const assetsDir = path.join(brandingDir, "assets");
   // A scan reads the checkout in place, and an asset's own file where one replaces a path.
   const root = scan ? repoRoot : target;
-  if (!scan) yield* Console.log(`kin-brand: copying ${repoRoot} to ${target}`);
-  const copiedFiles = scan
-    ? (yield* listCheckoutFiles(repoRoot)).files
-    : yield* copyCheckout(repoRoot, target);
+  if (inPlace) yield* Console.log(`kin-brand: branding ${scopeName} in ${repoRoot}`);
+  else if (!scan) yield* Console.log(`kin-brand: copying ${repoRoot} to ${target}`);
+  const checkoutFiles =
+    scan || inPlace
+      ? (yield* listCheckoutFiles(repoRoot)).files
+      : yield* copyCheckout(repoRoot, target);
+  const copiedFiles = checkoutFiles.filter(inScope);
+  const hitsScope = (globs: ReadonlyArray<string>) =>
+    copiedFiles.some((file) => matchesAny(file, globs));
+  const rules: BrandRules = scope
+    ? {
+        ...allRules,
+        text: allRules.text.filter((rule) => hitsScope(rule.files)),
+        remove: allRules.remove?.filter((entry) => hitsScope(entry.files)),
+      }
+    : allRules;
+  const guards = (options.guards ?? GUARDS).filter((guard) => inScope(guard.file));
   const removal = yield* removeFiles(rules, copiedFiles, root, !scan);
   const files = copiedFiles.filter((file) => !removal.removed.has(file));
-  const assets = yield* copyAssets(rules, assetsDir, root, !scan);
+  const assets = yield* copyAssets(rules, assetsDir, root, !scan, inScope);
   const replaced = new Set(assets.copied);
 
   const matches = new Map<number, number>();
@@ -353,7 +481,10 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
   const unscanned: Array<string> = [];
   const problems: Array<string> = [...removal.problems, ...assets.problems];
   const guarded = new Set<string>();
+  const nameFiles = new Map<string, string>();
   const record = (file: string, result: FileResult) => {
+    if (NAME_CHECKS.some((check) => check.file === file) || file.startsWith(ONBOARDING_DIR))
+      nameFiles.set(file, result.output);
     for (const entry of result.uncovered) drift.push(`${file}\t${excerpt(entry.text)}`);
     for (const entry of result.leaks) {
       if (isAllowedLeak(rules, file, entry.leak, entry.text)) continue;
@@ -425,6 +556,41 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
     }),
     { concurrency: 16, discard: true },
   );
+
+  // Once the copy has a web app every name file must be there: a moved one would go unchecked.
+  if (files.some((file) => file.startsWith("apps/web/"))) {
+    for (const check of NAME_CHECKS.filter((check) => inScope(check.file))) {
+      if (!files.includes(check.file)) {
+        problems.push(
+          `${check.file} is missing; it holds ${check.what}, which must be "${check.want}"`,
+        );
+        continue;
+      }
+      const source =
+        nameFiles.get(check.file) ?? (yield* fs.readFileString(path.join(root, check.file)));
+      const found = check.read(source);
+      if (found !== check.want) {
+        problems.push(
+          `${check.file}: ${check.what} is ${found === undefined ? "missing" : `"${found}"`}, not "${check.want}"`,
+        );
+      }
+    }
+
+    // The web app's own onboarding, branded or not, may name T3 Code only as T3's own products.
+    for (const file of ONBOARDING_FILES.filter((file) => !checkoutFiles.includes(file)))
+      problems.push(`${file} is missing; its visible text must not call the app T3 Code`);
+    const onboarding = checkoutFiles.filter(
+      (file) => file.startsWith(ONBOARDING_DIR) && !isTestPath(file) && !removal.removed.has(file),
+    );
+    for (const file of onboarding.filter((file) => sourceKind(file) !== undefined)) {
+      const source = nameFiles.get(file) ?? (yield* fs.readFileString(path.join(root, file)));
+      for (const literal of brandSource({ ...rules, text: [] }, file, source).uncovered) {
+        const text = literal.text.replace(/\s+/g, " ");
+        if (text.includes("T3 Code") && !ONBOARDING_T3_NAMES.has(text))
+          problems.push(`${file}:${literal.line} says ${excerpt(text)}; the web app is Kin`);
+      }
+    }
+  }
 
   if (!scan) {
     yield* Console.log(
@@ -539,6 +705,16 @@ export const kinBrandCommand = Command.make(
     ),
     updateDriftBaseline: Flag.Boolean("update-drift-baseline").pipe(
       Flag.withDescription("Rewrite the drift baseline with the copy's current upstream text."),
+      Flag.withDefault(false),
+    ),
+    scope: Flag.String("scope").pipe(
+      Flag.withDescription("Brand only the files of this scope in the rules (see scopes:)."),
+      Flag.optional,
+    ),
+    inPlace: Flag.Boolean("in-place").pipe(
+      Flag.withDescription(
+        "Brand the checkout itself instead of a copy; needs --scope and no uncommitted changes.",
+      ),
       Flag.withDefault(false),
     ),
     scan: Flag.Boolean("scan").pipe(
