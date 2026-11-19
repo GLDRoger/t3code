@@ -1,6 +1,6 @@
 // Against the ref a branch merges into: merged PRs' lines kept unless superseded, Kin migrations
 // numbered on with no gap, the instructions version moved exactly when their text did, no sentence
-// typed into both Kin clients, no identity Kin's branding rejects, and a `People-change:` line.
+// typed into both Kin clients, no identity Kin's branding rejects, a `People-change:` line, hooks only in T3's files.
 //   node scripts/kin-branch-checks.ts <ref> [--days 14] [--root <checkout>]
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -395,6 +395,65 @@ export const checkProductName = (files: ReadonlyMap<string, string>) =>
         ),
     );
 
+export const FOOTPRINT = "scripts/kin-t3-footprint.json";
+/** Kin's own paths, as globs (`*` within a folder, `**` across folders); every other file is T3's. */
+export const KinT3Footprint = Schema.fromJsonString(
+  Schema.Struct({ kinOwned: Schema.Array(Schema.String) }),
+);
+const decodeFootprint = Schema.decodeEffect(KinT3Footprint);
+const MAX_T3_LINES = 10;
+const FOOTPRINT_SKIP = /(?:\.test\.tsx?$|(?:^|\/)routeTree\.gen\.ts$|(?:^|\/)pnpm-lock\.yaml$)/;
+
+export const globPattern = (glob: string) =>
+  new RegExp(
+    `^${glob
+      .split(/(\*\*\/|\*\*|\*)/)
+      .map((part) =>
+        part === "**/"
+          ? "(?:.*/)?"
+          : part === "**"
+            ? ".*"
+            : part === "*"
+              ? "[^/]*"
+              : part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"),
+      )
+      .join("")}$`,
+  );
+
+/** Files a `T3-file: <file>: <why>` commit line lets grow. */
+export const explainedT3Files = (messages: string) =>
+  new Set([...messages.matchAll(/^T3-file:[ \t]*(\S+?):[ \t]*\S/gm)].map((match) => match[1]!));
+
+/** An upstream sync's merge says `Sync-upstream:`; only what the branch adds after it counts. */
+export const lastSyncMerge = (merges: ReadonlyArray<{ sha: string; message: string }>) =>
+  merges.find(({ message }) => /^Sync-upstream:/m.test(message))?.sha;
+
+/** Inside a file T3 owns, Kin adds a hook (an import, one list entry, one call), not its code. */
+export const checkT3Footprint = (input: {
+  readonly changes: ReadonlyArray<{
+    readonly file: string;
+    readonly added: number;
+    readonly isNew: boolean;
+  }>;
+  readonly kinOwned: ReadonlyArray<string>;
+  readonly explained: ReadonlySet<string>;
+}) => {
+  const owned = input.kinOwned.map(globPattern);
+  return input.changes
+    .filter(
+      ({ file, added, isNew }) =>
+        !isNew &&
+        added > MAX_T3_LINES &&
+        !FOOTPRINT_SKIP.test(file) &&
+        !input.explained.has(file) &&
+        !owned.some((pattern) => pattern.test(file)),
+    )
+    .map(
+      ({ file, added }) =>
+        `Kin adds ${added} lines to T3's ${file}. Put the code in a Kin file and reach it through a hook (an import, one list entry, one call). If it truly belongs here, say why in the commit: "T3-file: ${file}: <why>".`,
+    );
+};
+
 /** All checks for the branch at `root` against `ref`: problems, or none, and notes to print. */
 export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
   root: string,
@@ -517,6 +576,49 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
   });
   problems.push(...people.problems);
 
+  const footprintText = yield* onDisk(FOOTPRINT);
+  const footprint = Option.isNone(footprintText)
+    ? undefined
+    : yield* decodeFootprint(footprintText.value).pipe(
+        Effect.catch((error) =>
+          Effect.sync(() => {
+            problems.push(`${FOOTPRINT}: ${error.message}`);
+            return undefined;
+          }),
+        ),
+      );
+  if (footprint !== undefined) {
+    const merges = (yield* git(root, [
+      "log",
+      "--merges",
+      "--format=%x1e%H%x1f%B",
+      `${mergeBase}..HEAD`,
+    ]))
+      .toString()
+      .split("\x1e")
+      .slice(1)
+      .map((record) => {
+        const [sha = "", message = ""] = record.split("\x1f");
+        return { sha, message };
+      });
+    const from = lastSyncMerge(merges) ?? mergeBase;
+    const created = new Set(
+      yield* gitLines(root, ["diff", "--name-only", "--no-renames", "--diff-filter=A", from]),
+    );
+    const changes = (yield* gitLines(root, ["diff", "--numstat", "--no-renames", from]))
+      .map((line) => line.split("\t"))
+      .flatMap(([added = "", , file]) =>
+        file === undefined ? [] : [{ file, added: Number(added) || 0, isNew: created.has(file) }],
+      );
+    problems.push(
+      ...checkT3Footprint({
+        changes,
+        kinOwned: footprint.kinOwned,
+        explained: explainedT3Files(commits.map(({ message }) => message).join("\n")),
+      }),
+    );
+  }
+
   if (changed.length > 0) {
     const merges = yield* gitLines(root, [
       "log",
@@ -600,7 +702,7 @@ export const kinBranchChecksCommand = Command.make(
     ),
 ).pipe(
   Command.withDescription(
-    "Kin's merge-survival, migration, instructions, shared-copy, branding and People-change checks.",
+    "Kin's merge-survival, migration, instructions, shared-copy, branding, People-change and T3-footprint checks.",
   ),
 );
 

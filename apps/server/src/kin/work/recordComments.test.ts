@@ -29,7 +29,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
-import { commentMine } from "../tasksKey/tasks.ts";
+import { commentMine, setStateMine } from "../tasksKey/tasks.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadWork from "./leadWork.ts";
 import * as OwnerClients from "./ownerClients.ts";
@@ -668,6 +668,33 @@ it.effect("a person's comment tells who holds the task and who asked for it, onc
         body: `Dev commented on ${made.key} Invented: print the menus: Invented: proofs are in.`,
       },
     ]);
+    // The key's name is Dev's and the owner's to read, revoked too; anyone else reads a generic.
+    yield* setStateMine(devKey, { key: made.key, state: "doing" }).pipe(Effect.provide(hub));
+    const dev = person(devId);
+    const [keyed] = (yield* Comments.page([dev], {
+      orgId,
+      key: made.key,
+      beforeSeq: 99,
+    })).comments.filter((one) => one.codingAgent !== undefined);
+    yield* Comments.removeOne([dev], { orgId, key: made.key, commentId: keyed!.commentId });
+    yield* sql`UPDATE kin_tasks_keys SET revoked_at = 1 WHERE session_id = 'dev-key'`;
+    for (const [reader, name] of [
+      [rhea, "Invented laptop"],
+      [dev, "Invented laptop"],
+      [zoya, "a coding agent"],
+    ] as const) {
+      const sheet = yield* OwnerWork.get([reader], { orgId, key: made.key });
+      const page = yield* Comments.page([reader], { orgId, key: made.key, beforeSeq: 99 });
+      assert.deepStrictEqual(
+        [
+          sheet.changes.find((one) => one.codingAgent !== undefined)?.codingAgent,
+          ...[sheet.comments, page.comments].map(
+            (comments) => comments?.find((one) => one.commentId === keyed!.commentId)?.codingAgent,
+          ),
+        ],
+        [name, name, name],
+      );
+    }
     // Someone removed from the company is told nothing; the asker still is.
     yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = ${devId}`;
     yield* say(meera, made.key, "Invented: and the gold ink", "second").pipe(Effect.provide(hub));

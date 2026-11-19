@@ -6,6 +6,7 @@ import {
   kinParseRoleTags,
   kinProfileChanges,
   kinProfileDraft,
+  kinProfileShowsTasks,
   kinTimeZoneChoices,
 } from "./kinProfiles.ts";
 
@@ -70,6 +71,12 @@ describe("kinProfiles", () => {
     expect(kinProfileChanges(profile, { ...own, quietFrom: "10pm" }, mine).ok).toBe(false);
     // The owner's switch starts off.
     expect(kinProfileDraft(profile, { isOwner: true }).holdOutside).toBe(false);
+  });
+
+  it("lists a person's tasks once: not on your own, not over a screen that lists them", () => {
+    expect(kinProfileShowsTasks({ mine: false, overTheirTasks: false })).toBe(true);
+    expect(kinProfileShowsTasks({ mine: true, overTheirTasks: false })).toBe(false);
+    expect(kinProfileShowsTasks({ mine: false, overTheirTasks: true })).toBe(false);
   });
 });
 

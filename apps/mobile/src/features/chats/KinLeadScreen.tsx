@@ -33,6 +33,7 @@ import {
   kinRetireOffer,
 } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
+import type { KinWorkNames } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_CLEAR_CHAT_ACTION,
   KIN_CLEAR_CHAT_DONE,
@@ -69,6 +70,7 @@ import { KinAvatar } from "./components/KinAvatar";
 import { KinAgentSections } from "./KinAgentSections";
 import { kinClient } from "./state/kinClient";
 import { useKinWorkingAgents } from "./state/useKinInbox";
+import { useKinWorkDirectory } from "./state/useKinWork";
 import { kinRetiredWhenNow, useKinAgentRetire } from "./state/useKinAgentRetire";
 import { useKinHostAt } from "./state/useKinHost";
 
@@ -82,6 +84,7 @@ const kinSentenceParts = (parts: ReadonlyArray<string | null>) =>
   parts.filter((part) => part !== null).join(" · ") || null;
 
 type AccessResult = AsyncResult.AsyncResult<KinLeadAccessResult, unknown>;
+type AccessPerson = KinLeadAccessResult["people"][number];
 type PeopleResult = AsyncResult.AsyncResult<KinPeopleListResult, unknown>;
 // Read only by a session that may change who messages a lead; others ask the host nothing.
 const noAccessAtom: Atom.Atom<AccessResult> = Atom.make(AsyncResult.initial());
@@ -132,6 +135,7 @@ function KinLeadBody(props: {
   const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
   const canRetire = useAtomValue(kinClient.leadRetire.permissionAtom(environmentId));
   const working = useKinWorkingAgents(environmentId);
+  const names = useKinWorkDirectory({ environmentId, orgId }, true).names;
   const atom = canRestore
     ? kinClient.agents({ environmentId, orgId })
     : kinClient.leads({ environmentId, input: { orgId } });
@@ -180,6 +184,7 @@ function KinLeadBody(props: {
               <KinLeadProfileView
                 lead={lead}
                 working={working.has(lead.agentId)}
+                names={names}
                 access={
                   isRetired ? (
                     canRestore ? (
@@ -434,7 +439,11 @@ function KinLeadAccess(props: {
   );
 
   const change = async (
-    person: { readonly personId: KinPersonId; readonly displayName: string },
+    person: {
+      readonly personId: KinPersonId;
+      readonly displayName: string;
+      readonly ownerLevel?: boolean | undefined;
+    },
     on: boolean,
   ) => {
     if (busy !== null) return;
@@ -445,7 +454,10 @@ function KinLeadAccess(props: {
     setBusy(null);
     if (AsyncResult.isSuccess(result)) {
       appAtomRegistry.refresh(accessAtom);
-      setNote({ text: kinLeadAccessChanged(person.displayName, lead.name, on), failed: false });
+      setNote({
+        text: kinLeadAccessChanged(person.displayName, lead.name, on, person.ownerLevel),
+        failed: false,
+      });
       return;
     }
     setNote({
@@ -465,10 +477,10 @@ function KinLeadAccess(props: {
       { text: "Cancel", style: "cancel" as const },
     ]);
 
-  const askRemove = (person: { readonly personId: KinPersonId; readonly displayName: string }) =>
+  const askRemove = (person: AccessPerson) =>
     Dialog.confirm({
       title: `Remove ${person.displayName}?`,
-      message: KIN_AGENTS_COPY.removeAccess(person.displayName, lead.name),
+      message: KIN_AGENTS_COPY.removeAccess(person.displayName, lead.name, person.ownerLevel),
       confirmText: "Remove",
       destructive: true,
       onConfirm: () => void change(person, false),
@@ -494,7 +506,7 @@ function KinLeadAccess(props: {
       ) : everyone || allowed.length === 0 ? (
         <View className="px-4 py-3">
           <Text textRole="body" className="text-foreground-muted">
-            {everyone ? KIN_LEAD_EVERYONE : "Only you."}
+            {everyone ? KIN_LEAD_EVERYONE : KIN_AGENTS_COPY.onlyOwners}
           </Text>
         </View>
       ) : (
@@ -557,11 +569,14 @@ function KinLeadContactView({ contact }: { readonly contact: KinLeadContact }) {
 export function KinLeadProfileView({
   lead,
   working = false,
+  names = null,
   access,
 }: {
   readonly lead: KinLeadProfile;
   /** On a live run now, from the chat list (`kinWorkingAgents`). */
   readonly working?: boolean;
+  /** Who a waiting task waits on is named from these, as Tasks names them. */
+  readonly names?: KinWorkNames | null;
   /** The owner's "Who can message" section, placed under what the lead is for. */
   readonly access?: ReactNode;
 }) {
@@ -622,7 +637,10 @@ export function KinLeadProfileView({
             // Titles can repeat and items carry no id; the host's order is stable.
             // oxlint-disable-next-line react/no-array-index-key
             <View key={index} className={index === 0 ? undefined : "border-t border-border-subtle"}>
-              <ListRowLayout label={item.title} description={kinLeadTrackingDetail(item)} />
+              <ListRowLayout
+                label={item.title}
+                description={kinLeadTrackingDetail(item, undefined, undefined, names)}
+              />
             </View>
           ))
         )}

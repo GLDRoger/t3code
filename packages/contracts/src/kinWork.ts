@@ -289,6 +289,8 @@ export const KinRecordChange = Schema.Struct({
   ),
   /** An agent's change: the person it acted for, so it reads "Arjun, via Chief of staff". */
   askedBy: Schema.optional(KinPersonId),
+  /** A person's change through one of their coding-agent keys: that key's name. */
+  codingAgent: Schema.optional(Schema.String),
 });
 export type KinRecordChange = typeof KinRecordChange.Type;
 /** The field a change carries when Kin took a question's default: no list field's key has a colon. */
@@ -310,6 +312,8 @@ export const KinRecordComment = Schema.Struct({
   by: KinWorkPrincipal,
   /** An agent's comment: the person whose turn it wrote it in. */
   askedBy: Schema.optional(KinPersonId),
+  /** A person's comment through one of their coding-agent keys: that key's name. */
+  codingAgent: Schema.optional(Schema.String),
   body: KinText,
   files: Schema.Array(KinAttachment),
   removed: Schema.optional(Schema.Struct({ at: IsoDateTime, by: KinWorkPrincipal })),

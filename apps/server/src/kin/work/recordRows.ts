@@ -500,6 +500,11 @@ export type FieldChange = {
   readonly to: string | null;
 };
 
+/** SQL for the name of the coding-agent key a `table` row came through; NULL when none did. */
+export const CODING_AGENT_NAME = (table: "kin_record_changes" | "kin_record_comments") =>
+  `CASE WHEN ${table}.coding_agent_key IS NULL THEN NULL
+    ELSE COALESCE((SELECT k.label FROM kin_tasks_keys k WHERE k.org_id = ${table}.org_id
+      AND k.session_id = ${table}.coding_agent_key), 'Coding agent') END`;
 export const parseChanges = (json: string): ReadonlyArray<FieldChange> => {
   try {
     const parsed: unknown = JSON.parse(json);

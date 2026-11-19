@@ -818,6 +818,8 @@ export const markQuotesSent = Effect.fn("KinSending.markQuotesSent")(function* (
   sent: {
     readonly orgId: KinOrgId;
     readonly personId: string;
+    /** The turn whose ask was confirmed: not a person's own edit to `keptForPerson`. */
+    readonly wakeupId: string;
     readonly entryRecordIds: ReadonlyArray<string>;
   },
 ) {
@@ -830,7 +832,11 @@ export const markQuotesSent = Effect.fn("KinSending.markQuotesSent")(function* (
   for (const { key } of drafts)
     yield* records.update(
       sent.orgId,
-      { actor: { _tag: "person", personId: KinPersonId.make(sent.personId) }, via: "owner" },
+      {
+        actor: { _tag: "person", personId: KinPersonId.make(sent.personId) },
+        via: "owner",
+        wakeupId: sent.wakeupId,
+      },
       key,
       { state: "waiting" },
     );
