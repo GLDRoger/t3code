@@ -454,7 +454,16 @@ export const layer = Layer.effectDiscard(
               Effect.logWarning("Kin recommendation failed", { orgId, cause }),
             ),
           );
-          if (result?._tag === "skipped" && result.why === "turn_running") last.delete(orgId);
+          if (result?._tag === "skipped" && result.why === "turn_running") {
+            last.delete(orgId);
+            continue;
+          }
+          // Hourly per org: why no suggestion came is otherwise invisible to whoever runs the host.
+          if (result !== undefined)
+            yield* Effect.logInfo("Kin recommendation pass", {
+              orgId,
+              result: result._tag === "posted" ? "posted" : result.why,
+            });
         }
       }).pipe(
         Effect.catch((cause) => Effect.logWarning("Kin recommendation scan failed", { cause })),
