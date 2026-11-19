@@ -3,7 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { chromium, type Locator, type Page } from "playwright-core";
+import { chromium, type CDPSession, type Locator, type Page } from "playwright-core";
 
 import {
   type Instance,
@@ -131,13 +131,20 @@ export interface WebSession {
   readonly base: string;
   /** Where `view --zone` keeps this person's clock zone. */
   readonly zoneFile: string;
+  /** Where `view` keeps this person's window size. */
+  readonly viewFile: string;
   readonly instance: Instance;
 }
+
+// Chrome refuses a second zone override while another session's stands: one session per page.
+const zoneSessions = new WeakMap<Page, Promise<CDPSession>>();
 
 // Chrome drops a zone override when the connection that set it closes, so each one sets it again.
 async function applyZone(page: Page, zoneFile: string) {
   if (!NodeFS.existsSync(zoneFile)) return;
-  const cdp = await page.context().newCDPSession(page);
+  const session = zoneSessions.get(page) ?? page.context().newCDPSession(page);
+  zoneSessions.set(page, session);
+  const cdp = await session;
   // An override already set on this connection must be cleared before another is set.
   await cdp.send("Emulation.setTimezoneOverride", { timezoneId: "" });
   await cdp.send("Emulation.setTimezoneOverride", {
@@ -149,6 +156,17 @@ async function applyZone(page: Page, zoneFile: string) {
  * The dev web reads `kv clock`'s offset from local storage when it loads (`useKinClock.ts`), so
  * a page that holds another one loads again.
  */
+const DEFAULT_VIEW = { width: 1280, height: 900 };
+
+/** The size `view` last set for this person; Chrome drops it with the connection that set it. */
+function storedView(viewFile: string) {
+  return readJson<{ width: number; height: number }>(viewFile) ?? DEFAULT_VIEW;
+}
+
+async function applyView(page: Page, viewFile: string) {
+  if (NodeFS.existsSync(viewFile)) await page.setViewportSize(storedView(viewFile));
+}
+
 async function applyClock(page: Page, instance: Instance, web: string) {
   if (!page.url().startsWith(web)) return;
   const offset = String(
@@ -209,9 +227,11 @@ export async function openWeb(
     NodeFS.writeFileSync(signedIn, state.web);
   }
   const zoneFile = NodePath.join(profileOf(instance, person), "kin-verify-zone");
+  const viewFile = NodePath.join(profileOf(instance, person), "kin-verify-view.json");
   await applyZone(page, zoneFile);
+  await applyView(page, viewFile);
   await applyClock(page, instance, state.web);
-  return { page, web: state.web, base, zoneFile, instance };
+  return { page, web: state.web, base, zoneFile, viewFile, instance };
 }
 
 export function routeUrl(session: WebSession, route: string): string {
@@ -428,18 +448,27 @@ export async function waitFor(
   );
 }
 
-/** The window's size and light or dark, as a phone-width or wide screen would show the page. */
+/**
+ * The window's size and light or dark, as a phone-width or wide screen would show the page. A size
+ * stays for this person's later commands until another is set; without one the last stays.
+ */
 export async function view(
   session: WebSession,
   options: {
-    readonly width: number;
-    readonly height: number;
+    readonly width?: number | undefined;
+    readonly height?: number | undefined;
     readonly colorScheme: "dark" | "light" | null;
     /** The browser's own clock zone, as a person elsewhere has it; the page reloads to read it. */
     readonly zone?: string;
   },
 ) {
-  await session.page.setViewportSize({ width: options.width, height: options.height });
+  const size = {
+    ...storedView(session.viewFile),
+    ...(options.width === undefined ? {} : { width: options.width }),
+    ...(options.height === undefined ? {} : { height: options.height }),
+  };
+  NodeFS.writeFileSync(session.viewFile, JSON.stringify(size));
+  await session.page.setViewportSize(size);
   if (options.zone !== undefined) {
     NodeFS.writeFileSync(session.zoneFile, options.zone);
     await applyZone(session.page, session.zoneFile);
@@ -458,6 +487,7 @@ export async function view(
     await session.page.reload();
   }
   await settle(session.page);
+  return size;
 }
 
 /** Screenshots only to an explicit path, never into the live install's tree. */
