@@ -29,10 +29,7 @@ const CALL_ISSUE = (repo: string, trigger: KinGithubTrigger) => [
 
 const CALL_PULL = (repo: string, trigger: KinGithubTrigger) => [
   `${trigger.author} asked you on PR ${ref(repo, trigger)}${trigger.path === undefined ? "" : ` (${trigger.path}${trigger.line === undefined ? "" : `:${trigger.line}`})`}: do what they asked.`,
-  `For a change: check out the PR's branch ${trigger.pull?.headRef ?? ""}, make it, commit and push to that branch, then reply in the thread with what changed and the commit.`,
-  trigger.pull?.fork === true
-    ? "The branch is in a fork, so you may not be able to push there: if the push is refused, say so in the thread and offer a PR against that branch instead."
-    : "If the push is refused, say so in the thread and offer a PR against that branch instead.",
+  `For a change, hand it to a delegated task (delegate_task, isolation worktree, the repo's project; clone it first if Kin has no project for it) with the PR's branch ${trigger.pull?.headRef ?? ""} and their request quoted: it commits and pushes to that branch, or, if the push is refused, opens a PR against it.${trigger.pull?.fork === true ? " The branch is in a fork, so the push may well be refused." : ""} Then reply in the thread in one or two lines saying what will change (gh pr comment ${trigger.number} --repo ${repo}).`,
   "If they asked a question, answer it in the thread instead of changing code.",
 ];
 
@@ -59,7 +56,7 @@ export const githubTriggerText = (repo: string, trigger: KinGithubTrigger, silen
     "If you find a separate real problem on the way, open an issue for it (gh issue create) and mention it.",
     "Stop and ask the owner in chat instead when the work would delete data or history, force-push, touch secrets, billing or repo settings, or post outside the company's repos.",
     `Don't repeat yourself: if you already answered this in the thread and nothing changed, post nothing on GitHub.`,
-    `Your reply goes to the owner's chat as one line: one sentence, under 200 characters, saying what you did and ending with the link (${trigger.url}). The details are on GitHub; don't repeat them. No card, and no question unless you stopped to ask him. If there is nothing new to tell him, write exactly ${silent}.`,
+    `Your reply goes to the owner's chat as one line: one sentence, under 200 characters, saying what you did and ending with the link (${trigger.url}). The details are on GitHub; don't repeat them. No card, and no question unless you stopped to ask him. A task you started is news to him; only when you did nothing new, write exactly ${silent}.`,
   ]
     .filter((line) => line !== "")
     .join("\n");
