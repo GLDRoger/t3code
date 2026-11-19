@@ -1,4 +1,4 @@
-import type { KinBrief, KinBriefSaveInput, KinCheckIn } from "@t3tools/contracts";
+import type { KinBrief, KinBriefSaveInput, KinCheckIn, KinCoveringBrief } from "@t3tools/contracts";
 
 import { kinZoneName } from "./kinTimeZone.ts";
 
@@ -56,6 +56,14 @@ export function kinCheckInDays(days: ReadonlyArray<number>): string {
 export function kinCheckInLine(checkIn: KinCheckIn): string {
   return `${checkIn.around === true ? "Around " : ""}${checkIn.at} · ${kinCheckInDays(checkIn.days)} · ${checkIn.agentName}`;
 }
+
+const COVERED: Record<KinCoveringBrief, string> = {
+  weekly: "The weekly brief covers it today.",
+  morning: "The morning brief covers it today.",
+};
+/** Why a morning or weekly brief isn't sent today, the company's day; null when nothing stopped it. */
+export const kinCoveredLine = (row: { readonly coveredToday?: KinCoveringBrief | undefined }) =>
+  row.coveredToday === undefined ? null : COVERED[row.coveredToday];
 
 export interface KinCheckInDraft {
   readonly scheduleId: KinCheckIn["scheduleId"] | undefined;

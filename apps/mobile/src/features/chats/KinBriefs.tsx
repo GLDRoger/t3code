@@ -6,6 +6,7 @@ import {
   KIN_WEEKDAYS,
   kinBriefHasDays,
   kinBriefLine,
+  kinCoveredLine,
   kinBriefProblem,
   kinBriefSave,
 } from "@t3tools/client-runtime/kin/kinCheckIns";
@@ -67,7 +68,9 @@ export function KinBriefsSection(props: Target) {
             icon={brief.on ? "clock" : "moon"}
             label={KIN_BRIEFS.titles[brief.kind]}
             valuePosition="below"
-            value={kinBriefLine(brief)}
+            value={[kinBriefLine(brief), kinCoveredLine(brief)]
+              .filter((line) => line !== null)
+              .join("\n")}
             onPress={() =>
               navigation.navigate("KinBriefForm", {
                 environmentId: props.environmentId,
@@ -146,7 +149,11 @@ function BriefForm(
       problem={problem === null ? null : { kind: "failed", text: problem }}
       onSave={() => void send()}
     >
-      <ListSection footer={KIN_CHECK_INS.zone(props.zone)}>
+      <ListSection
+        footer={[KIN_CHECK_INS.zone(props.zone), kinCoveredLine(draft)]
+          .filter((line) => line !== null)
+          .join(" ")}
+      >
         {kinBriefHasDays(draft.kind) ? null : (
           <ListToggleRow
             label={KIN_BRIEFS.on}

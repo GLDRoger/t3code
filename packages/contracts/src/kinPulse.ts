@@ -305,6 +305,10 @@ const KinWeekdays = Schema.Array(
   Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(6)),
 ).check(Schema.isMinLength(1), Schema.isMaxLength(7));
 
+/** The morning and weekly briefs: on the weekly brief's day, the first one sent covers the other. */
+export const KinCoveringBrief = Schema.Literals(["morning", "weekly"]);
+export type KinCoveringBrief = typeof KinCoveringBrief.Type;
+
 export const KinCheckIn = Schema.Struct({
   scheduleId: KinMemoryItemId,
   title: Schema.String,
@@ -319,6 +323,8 @@ export const KinCheckIn = Schema.Struct({
   on: Schema.Boolean,
   /** A Run now that hasn't started yet. */
   runNowPending: Schema.Boolean,
+  /** Not sent today, the company's day, because this brief came instead. */
+  coveredToday: Schema.optional(KinCoveringBrief),
 });
 export type KinCheckIn = typeof KinCheckIn.Type;
 
@@ -364,6 +370,8 @@ export const KinBrief = Schema.Struct({
   /** Fires somewhere around `at`, not on the minute. */
   around: Schema.Boolean,
   on: Schema.Boolean,
+  /** Not sent today, the company's day, because this brief came instead. */
+  coveredToday: Schema.optional(KinCoveringBrief),
 });
 export type KinBrief = typeof KinBrief.Type;
 

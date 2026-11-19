@@ -7,6 +7,7 @@ import {
   KinPersonId,
   type KinPulseOutsideLine,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
@@ -15,7 +16,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
-import { looseOffsetMs, queueCheckIn } from "./checkIn.ts";
+import { coveredToday, looseOffsetMs, queueCheckIn } from "./checkIn.ts";
 import { missedSlot } from "./checkInCatchUp.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { followOwnerZone, onHostClock } from "./checkInSeeds.ts";
@@ -374,6 +375,42 @@ describe("pulse check-ins", () => {
         _tag: "folded",
         into: "checkin-weekly",
       });
+      // Settings says why: from the skipped slot until the company's day ends, and not before.
+      const covered = (
+        scheduleId: string,
+        days: ReadonlyArray<number>,
+        now: number,
+        next: number,
+      ) =>
+        coveredToday({
+          orgId,
+          scheduleId,
+          days,
+          on: true,
+          nextRunAt: DateTime.formatIso(DateTime.makeUnsafe(next)),
+          zone: "UTC",
+          now,
+        });
+      const everyDay = [0, 1, 2, 3, 4, 5, 6];
+      const morningAt = MONDAY + 9 * HOUR + 30 * MINUTE;
+      assert.isUndefined(yield* covered("checkin-morning", everyDay, morningAt - HOUR, morningAt));
+      assert.strictEqual(
+        yield* covered("checkin-morning", everyDay, morningAt + MINUTE, morningAt + DAY),
+        "weekly",
+      );
+      assert.strictEqual(
+        yield* covered("checkin-morning", everyDay, MONDAY + DAY - MINUTE, morningAt + DAY),
+        "weekly",
+      );
+      assert.isUndefined(
+        yield* covered("checkin-morning", everyDay, MONDAY + DAY, morningAt + DAY),
+      );
+      assert.isUndefined(
+        yield* covered("checkin-weekly", [1], morningAt + MINUTE, MONDAY + 7 * DAY + 9 * HOUR),
+      );
+      assert.isUndefined(
+        yield* covered("checkin-morning", [2, 3], morningAt + MINUTE, morningAt + DAY),
+      );
       // Tuesday has no weekly brief: the morning brief runs, with no figures.
       assert.strictEqual((yield* run("checkin-morning", MONDAY + DAY + 9 * HOUR))._tag, "queued");
       // The next Monday the morning brief comes first: it carries them, and the weekly is folded.
@@ -383,6 +420,10 @@ describe("pulse check-ins", () => {
         _tag: "folded",
         into: "checkin-morning",
       });
+      assert.strictEqual(
+        yield* covered("checkin-weekly", [1], next + 9 * HOUR + MINUTE, next + 7 * DAY + 9 * HOUR),
+        "morning",
+      );
       // The weekly brief switched off: that Monday's morning brief is a morning like any other.
       yield* sql`UPDATE kin_schedules SET pending_enabled = 0 WHERE schedule_id = 'checkin-weekly'`;
       assert.strictEqual((yield* run("checkin-morning", next + 7 * DAY + 8 * HOUR))._tag, "queued");

@@ -17,6 +17,7 @@ import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { theOwner, viewerOf } from "../work/ownerWork.ts";
 import { ownerZone } from "../work/recordRows.ts";
+import { coveredToday } from "./checkIn.ts";
 import { BRIEF_SLUGS, onHostClock } from "./checkInSeeds.ts";
 
 /**
@@ -54,6 +55,16 @@ const read = Effect.fn("KinCheckIns.read")(function* (orgId: KinOrgId) {
     const every = task === undefined ? undefined : KinSchedules.everyOf(task, row.looseAt);
     if (task === undefined || every === undefined) continue;
     const own = onHostClock(every.at, every.days, host, zone, now);
+    const on = (row.pendingEnabled ?? task.enabled) === 1;
+    const covered = yield* coveredToday({
+      orgId,
+      scheduleId: row.scheduleId,
+      days: own.days,
+      on,
+      nextRunAt: task.nextRunAt,
+      zone,
+      now,
+    });
     checkIns.push({
       scheduleId: row.scheduleId,
       title: task.title,
@@ -63,8 +74,9 @@ const read = Effect.fn("KinCheckIns.read")(function* (orgId: KinOrgId) {
       at: own.at,
       days: own.days,
       around: KinSchedules.isAround(task, row.looseAt),
-      on: (row.pendingEnabled ?? task.enabled) === 1,
+      on,
       runNowPending: row.runNowAt !== null,
+      ...(covered === undefined ? {} : { coveredToday: covered }),
     });
   }
   return {
@@ -174,12 +186,22 @@ const briefsOf = Effect.fn("KinBriefs.read")(function* (orgId: KinOrgId, personI
     const every = task === undefined ? undefined : KinSchedules.everyOf(task, row.looseAt);
     if (task === undefined || every === undefined) continue;
     const own = onHostClock(every.at, every.days, host, zone, now);
+    const on = (row.pendingEnabled ?? task.enabled) === 1;
     briefs.push({
       kind,
       at: own.at,
       days: own.days,
       around: KinSchedules.isAround(task, row.looseAt),
-      on: (row.pendingEnabled ?? task.enabled) === 1,
+      on,
+      coveredToday: yield* coveredToday({
+        orgId,
+        scheduleId: row.scheduleId,
+        days: own.days,
+        on,
+        nextRunAt: task.nextRunAt,
+        zone,
+        now,
+      }),
       row,
       task,
     });
@@ -188,7 +210,14 @@ const briefsOf = Effect.fn("KinBriefs.read")(function* (orgId: KinOrgId, personI
 });
 const shown = (read: Effect.Success<ReturnType<typeof briefsOf>>) => ({
   zone: read.zone,
-  briefs: read.briefs.map(({ kind, at, days, around, on }) => ({ kind, at, days, around, on })),
+  briefs: read.briefs.map(({ kind, at, days, around, on, coveredToday }) => ({
+    kind,
+    at,
+    days,
+    around,
+    on,
+    ...(coveredToday === undefined ? {} : { coveredToday }),
+  })),
 });
 
 export const briefs = Effect.fn("KinBriefs.list")(function* (

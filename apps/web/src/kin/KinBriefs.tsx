@@ -5,6 +5,7 @@ import {
   KIN_WEEKDAYS,
   kinBriefHasDays,
   kinBriefLine,
+  kinCoveredLine,
   kinBriefProblem,
   kinBriefSave,
 } from "@t3tools/client-runtime/kin/kinCheckIns";
@@ -75,7 +76,14 @@ export function KinBriefsSetting(props: {
           <SettingsRow
             key={brief.kind}
             title={KIN_BRIEFS.titles[brief.kind]}
-            description={kinBriefLine(brief)}
+            description={
+              <>
+                {kinBriefLine(brief)}
+                {kinCoveredLine(brief) === null ? null : (
+                  <span className="block">{kinCoveredLine(brief)}</span>
+                )}
+              </>
+            }
             control={
               <div className="flex items-center gap-2">
                 <Button
@@ -148,7 +156,11 @@ function BriefDialog(props: {
         >
           <Parts.Header>
             <Parts.Title>{KIN_BRIEFS.titles[draft.kind]}</Parts.Title>
-            <Parts.Description>{KIN_CHECK_INS.zone(props.zone)}</Parts.Description>
+            <Parts.Description>
+              {[KIN_CHECK_INS.zone(props.zone), kinCoveredLine(draft)]
+                .filter((line) => line !== null)
+                .join(" ")}
+            </Parts.Description>
           </Parts.Header>
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pb-6">
             <div className="flex flex-col gap-1.5">

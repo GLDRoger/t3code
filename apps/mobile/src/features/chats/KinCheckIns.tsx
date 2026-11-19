@@ -5,6 +5,7 @@ import {
   KIN_WEEKDAYS,
   kinCheckInDraft,
   kinCheckInLine,
+  kinCoveredLine,
   kinCheckInProblem,
   type KinCheckInDraft,
 } from "@t3tools/client-runtime/kin/kinCheckIns";
@@ -75,11 +76,14 @@ export function KinCheckInsSection(props: Target) {
               icon={checkIn.on ? "clock" : "moon"}
               label={checkIn.title}
               valuePosition="below"
-              value={
+              value={[
                 checkIn.on
                   ? kinCheckInLine(checkIn)
-                  : `${KIN_CHECK_INS.off} · ${kinCheckInLine(checkIn)}`
-              }
+                  : `${KIN_CHECK_INS.off} · ${kinCheckInLine(checkIn)}`,
+                kinCoveredLine(checkIn),
+              ]
+                .filter((line) => line !== null)
+                .join("\n")}
               onPress={() =>
                 navigation.navigate("KinCheckInForm", {
                   environmentId: props.environmentId,
@@ -209,7 +213,11 @@ function CheckInForm(
       problem={problem === null ? null : { kind: "failed", text: problem }}
       onSave={send}
     >
-      <ListSection footer={KIN_CHECK_INS.zone(result.zone)}>
+      <ListSection
+        footer={[KIN_CHECK_INS.zone(result.zone), checkIn === null ? null : kinCoveredLine(checkIn)]
+          .filter((line) => line !== null)
+          .join(" ")}
+      >
         <KinWorkTextField
           label={KIN_CHECK_INS.name}
           value={draft.title}

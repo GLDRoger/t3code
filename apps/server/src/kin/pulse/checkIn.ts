@@ -80,6 +80,49 @@ const weeklyDue = Effect.fn("KinPulse.weeklyDue")(function* (
   });
 });
 
+/** A pulse event of this check-in on the company's day `day`, as the fold reads one. */
+const briefOn = (sql: SqlClient.SqlClient, orgId: KinOrgId, scheduleId: string, day: string) =>
+  sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
+    AND json_extract(json, '$.checkIn.scheduleId') = ${scheduleId} AND state != 'failed'
+    AND json_extract(json, '$.checkIn.day') = ${day}
+    AND (${scheduleId} = ${WEEKLY} OR json_extract(json, '$.checkIn.figures') = 1)
+    ORDER BY event_id LIMIT 1`;
+
+/**
+ * Which brief covers this morning or weekly brief today in the company's zone: set for today, its
+ * slot passed, it sent nothing of its own and the other one came (the fold in `queueCheckIn`).
+ */
+export const coveredToday = Effect.fn("KinPulse.coveredToday")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly scheduleId: string;
+  /** Its days on the company's clock. */
+  readonly days: ReadonlyArray<number>;
+  readonly on: boolean;
+  readonly nextRunAt: string | null;
+  readonly zone: string;
+  readonly now: number;
+}) {
+  const { orgId, zone, now } = input;
+  if (!input.on || (input.scheduleId !== MORNING && input.scheduleId !== WEEKLY)) return undefined;
+  const day = dayIn(now, zone);
+  const weekDay = DateTime.toParts(DateTime.makeZonedUnsafe(now, { timeZone: zone })).weekDay;
+  const next = input.nextRunAt === null ? Number.NaN : Date.parse(input.nextRunAt);
+  if (!input.days.includes(weekDay) || !(next > now) || dayIn(next, zone) <= day) return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  // Its own event: with or without figures, a brief it sent today.
+  const [own] = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
+    AND json_extract(json, '$.checkIn.scheduleId') = ${input.scheduleId} AND state != 'failed'
+    AND json_extract(json, '$.checkIn.day') = ${day} ORDER BY event_id LIMIT 1`;
+  if (own !== undefined) return undefined;
+  const other = input.scheduleId === MORNING ? WEEKLY : MORNING;
+  const [first] = yield* briefOn(sql, orgId, other, day);
+  return first === undefined
+    ? undefined
+    : other === WEEKLY
+      ? ("weekly" as const)
+      : ("morning" as const);
+});
+
 /**
  * One check-in at the slot's minute: what the owner hasn't been told and what is new outside.
  * With nothing untold no model runs, except for a brief; Run now tells every open fact. `slot`,
