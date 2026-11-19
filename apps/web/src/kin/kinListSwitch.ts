@@ -151,10 +151,20 @@ export function registerKinListCommands(
         const shown = [...document.querySelectorAll<HTMLElement>("[data-kin-destination]")].filter(
           (element) => element.offsetParent !== null,
         );
-        const link = shown[Number(event.code.slice(5)) - 1];
-        if (link === undefined) return false;
+        const index = Number(event.code.slice(5)) - 1;
+        const link = shown[index];
+        // A narrow window's sidebar sheet hides its links while closed, so go by what it published.
+        const published = link === undefined ? registry.get(kinShownDestinationsAtom) : null;
+        const destination = published?.destinations[index];
+        const go =
+          link !== undefined
+            ? () => link.click()
+            : published !== null && destination !== undefined
+              ? () => void router.navigate(kinDestinationLink(destination, published.target, true))
+              : null;
+        if (go === null) return false;
         event.preventDefault();
-        if (!event.repeat) link.click();
+        if (!event.repeat) go();
       },
     },
   );
@@ -228,7 +238,7 @@ export const noAttentionAtom = Atom.make(NO_KIN_LIST_ATTENTION).pipe(
   Atom.withLabel("kin:no-attention"),
 );
 
-/** Where a destination opens; the nav, the dock and the command palette all go through it. */
+/** Where a destination opens; the nav and the command palette both go through it. */
 export function kinDestinationLink(
   destination: KinDestination,
   target: KinWorkTarget,
