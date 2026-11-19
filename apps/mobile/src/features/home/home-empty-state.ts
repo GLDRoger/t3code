@@ -1,3 +1,6 @@
+import { msg } from "gt-react-native";
+
+import { m, type MessageResolver } from "../../i18n/messages";
 import { isWorkspaceCatalogPending, type WorkspaceState } from "../../state/workspaceModel";
 
 export interface HomeEmptyState {
@@ -10,8 +13,9 @@ export interface HomeEmptyState {
 export function deriveHomeEmptyState(
   catalogState: WorkspaceState,
   projectCount: number,
+  resolve: MessageResolver = m,
 ): HomeEmptyState {
-  const emptyState = deriveEmptyState(catalogState, projectCount);
+  const emptyState = deriveEmptyState(catalogState, projectCount, resolve);
   return {
     ...emptyState,
     showsAddEnvironment: !emptyState.loading && !catalogState.hasReadyEnvironment,
@@ -21,19 +25,22 @@ export function deriveHomeEmptyState(
 function deriveEmptyState(
   catalogState: WorkspaceState,
   projectCount: number,
+  resolve: MessageResolver,
 ): Omit<HomeEmptyState, "showsAddEnvironment"> {
   if (catalogState.isLoadingConnections) {
     return {
-      title: "Loading environments",
-      detail: "Checking saved environments on this device.",
+      title: resolve(msg("Loading environments")),
+      detail: resolve(msg("Checking saved environments on this device.")),
       loading: true,
     };
   }
 
   if (!catalogState.hasConnections) {
     return {
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
       title: "Get started",
       detail:
+        // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
         "Joining a team? Use the link they sent you. Running your own Kin? Connect the computer it runs on.",
       loading: false,
     };
@@ -49,34 +56,42 @@ function deriveEmptyState(
     return {
       title:
         catalogState.connectionState === "unsupported"
-          ? "Client not supported"
-          : "Environment unavailable",
+          ? resolve(msg("Client not supported"))
+          : resolve(msg("Environment unavailable")),
       detail:
         catalogState.connectionError ??
-        "The saved environment is offline. Check the URL or start the environment, then retry.",
+        resolve(
+          msg(
+            "The saved environment is offline. Check the URL or start the environment, then retry.",
+          ),
+        ),
       loading: false,
     };
   }
 
   if (isWorkspaceCatalogPending(catalogState)) {
     return {
-      title: catalogState.hasReadyEnvironment ? "Loading threads" : "Connecting to environment",
-      detail: "Loading projects and threads from the saved environment.",
+      title: catalogState.hasReadyEnvironment
+        ? resolve(msg("Loading threads"))
+        : resolve(msg("Connecting to environment")),
+      detail: resolve(msg("Loading projects and threads from the saved environment.")),
       loading: true,
     };
   }
 
   if (projectCount === 0 && catalogState.hasLoadedShellSnapshot) {
     return {
-      title: "No projects found",
-      detail: "The connected environment did not report any projects.",
+      title: resolve(msg("No projects found")),
+      detail: resolve(msg("The connected environment did not report any projects.")),
       loading: false,
     };
   }
 
   return {
-    title: "No threads yet",
-    detail: "Create a task to start a new coding runtime in one of your connected projects.",
+    title: resolve(msg("No threads yet")),
+    detail: resolve(
+      msg("Create a task to start a new coding runtime in one of your connected projects."),
+    ),
     loading: false,
   };
 }

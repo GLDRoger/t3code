@@ -31,7 +31,7 @@ import {
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
-import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
+import { namedClipboardTarget, useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { usePreparedConnection } from "../state/session";
 
 /** What the dialog is showing: the name form, or a link the host just made. */
@@ -209,7 +209,9 @@ function InviteLink(props: {
 }) {
   const { invite } = props;
   const connection = Option.getOrNull(usePreparedConnection(props.environmentId));
-  const { copyToClipboard, isCopied } = useCopyToClipboard({ target: "invite link" });
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    target: namedClipboardTarget("invite link"),
+  });
   const linkId = useId();
   const copy = kinInviteLinkCopy(invite);
   // The connection can drop while the dialog is up; the link was made, so say how to get another.

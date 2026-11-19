@@ -38,7 +38,7 @@ import { useState } from "react";
 import { AppRouteModal, AppRouteModalClose } from "../components/AppRouteModal";
 import { ApprovalsSettings } from "../components/settings/ApprovalsSettings";
 import { SettingsPageContainer, SettingsSection } from "../components/settings/settingsLayout";
-import { searchableSetting } from "../components/settings/settingsSearch";
+import { useSearchableSetting } from "../components/settings/settingsSearch";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
@@ -330,6 +330,7 @@ function KinSettingsPageBody(props: {
   readonly page: KinSettingsPage;
   readonly target: KinSettingsTarget;
 }) {
+  const searchableSetting = useSearchableSetting();
   const { target } = props;
   switch (props.page) {
     case "profile":
