@@ -288,7 +288,7 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
 });
 
 const UNTAKEN_WHY: Record<Exclude<Untaken, "none">, string> = {
-  money: "the card mentions money or is about a money record",
+  money: "the card mentions an amount or a percentage, or is about a money record",
   leaves: "the wording suggests sending something out or moving money",
   action: "only a tap runs that option's action",
   repeats: "its task repeats",

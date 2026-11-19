@@ -620,7 +620,7 @@ it.live(
         assert.strictEqual(first.scheduled, "due_card");
         assert.strictEqual(
           first.note,
-          "No question was posted. Set for its due time: a card in its chat asking to start, move or cancel it.",
+          "No question was posted. Planned for its due time: a card asking to start, move or cancel it; Kin checks then who and what still stand.",
         );
         for (const [onDue, ask, scheduled, asks] of [
           ["remind", undefined, "reminder", undefined],
@@ -635,7 +635,7 @@ it.live(
             ...(ask === undefined ? {} : { ask }),
           });
           assert.strictEqual(set.scheduled, scheduled, `${onDue} ${ask}`);
-          assert.match(set.note ?? "", /^No question was posted\. Set for its due time: a /);
+          assert.match(set.note ?? "", /^No question was posted\. Planned for its due time: a /);
           assert.deepStrictEqual(set.asks, asks, `${onDue} ${ask}`);
         }
         // Who to ask is named as people are found here, and kept as the item's person.
@@ -648,7 +648,7 @@ it.live(
         assert.strictEqual(asked.scheduled, "ask_follow_up");
         assert.strictEqual(
           asked.note,
-          "No question was posted. Set for its due time: a follow-up to ask Member, handed to an agent.",
+          "No question was posted. Planned for its due time: a follow-up to ask Member; Kin checks then who and what still stand.",
         );
         yield* sql`UPDATE kin_people SET away_until = '2026-11-16'
           WHERE org_id = ${orgId} AND person_id = 'fixture-member'`;
@@ -910,7 +910,7 @@ it.live(
           itemId: scheduled.itemId,
           outcome: "stopped",
           title: "Summarise the open PRs",
-          note: "Stopped: it doesn't run.",
+          note: "Stopped: no further runs. A run already started isn't recalled.",
         } as const;
         assert.deepStrictEqual(
           yield* service.cancel(scope, {

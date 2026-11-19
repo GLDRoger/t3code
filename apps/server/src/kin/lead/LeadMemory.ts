@@ -237,6 +237,8 @@ const TEAM_FILTERS = "From a chat other people read, search memory only by kind 
 export const AWAITING_OWNER =
   "Not shared yet: these wait for your yes in Memory, then the team can know them.";
 const STOPPED = "Stopped: it doesn't run.";
+// A repeating one has no single run to stop: one already started is not recalled.
+const REPEAT_STOPPED = "Stopped: no further runs. A run already started isn't recalled.";
 const SHARE_NEEDS_OWNER =
   "Only the owner's own message, in a chat only they read, lets the team know something. Ask the owner first.";
 // What a teammate's messages can cause shared turns to save, per person per day.
@@ -1311,15 +1313,15 @@ const make = Effect.gen(function* () {
           const to = person === undefined ? "" : ` ${person.name}`;
           const set = {
             reminder: "a reminder",
-            start: "a start, handed to an agent",
-            ask_follow_up: `a follow-up to ask${to}, handed to an agent`,
-            due_card: "a card in its chat asking to start, move or cancel it",
+            start: "a start",
+            ask_follow_up: `a follow-up to ask${to}`,
+            due_card: "a card asking to start, move or cancel it",
             chase_ping: `a ping${to === "" ? "" : ` to${to}`}`,
           }[scheduled];
           return {
             itemId: id,
             scheduled,
-            note: `No question was posted. Set for its due time: ${set}.${
+            note: `No question was posted. Planned for its due time: ${set}; Kin checks then who and what still stand.${
               back === undefined ? "" : ` Recorded return date: ${back}.`
             }`,
             ...(person === undefined
@@ -1477,7 +1479,7 @@ const make = Effect.gen(function* () {
             itemId: input.itemId,
             outcome: "stopped" as const,
             ...(task === undefined ? {} : { title: task.title }),
-            note: STOPPED,
+            note: REPEAT_STOPPED,
           };
         }),
       );
