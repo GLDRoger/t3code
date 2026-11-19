@@ -135,7 +135,7 @@ export const countryNeeded = Effect.fn("KinCompanyProfile.countryNeeded")(functi
 
 const COUNTRY_FIRST = "Nothing was created: ";
 export const countryFirstMessage = (owner: string) =>
-  `${COUNTRY_FIRST}choose the company's country first, so amounts, tax and dates read right. ${owner} chooses it in Settings, Company details.`;
+  `${COUNTRY_FIRST}this company's country isn't chosen yet, so Kin can't tell its currency or tax. Ask ${owner} to choose it in Settings, Company details.`;
 /** A refusal no fix to the call itself answers: the company's country comes first. */
 export const isCountryFirst = (error: { readonly message: string }) =>
   error.message.startsWith(COUNTRY_FIRST);
