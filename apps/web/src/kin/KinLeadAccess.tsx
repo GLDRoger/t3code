@@ -7,11 +7,12 @@ import {
   KIN_AGENTS_COPY,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type {
-  EnvironmentId,
-  KinLeadAccessResult,
-  KinLeadProfile,
-  KinPersonId,
+import {
+  kinOwnerLevel,
+  type EnvironmentId,
+  type KinLeadAccessResult,
+  type KinLeadProfile,
+  type KinPersonId,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -74,11 +75,10 @@ export function KinLeadAccess(props: {
   const allowed = read?.people ?? null;
   // The team agent is everyone's: no one is added or removed there.
   const everyone = read?.everyone === true;
-  const candidates = kinLeadAccessCandidates(
-    everyone ? [] : (Option.getOrNull(AsyncResult.value(people))?.people ?? []),
-    allowed ?? [],
-    props.personId,
-  );
+  const org = Option.getOrNull(AsyncResult.value(people))?.people ?? [];
+  const candidates = kinLeadAccessCandidates(everyone ? [] : org, allowed ?? [], props.personId);
+  const coOwner = (personId: string | undefined) =>
+    kinOwnerLevel(org.find((one) => one.personId === personId)?.access);
 
   const change = async (
     person: { readonly personId: KinPersonId; readonly displayName: string },
@@ -92,7 +92,10 @@ export function KinLeadAccess(props: {
     setBusy(false);
     if (AsyncResult.isSuccess(result)) {
       appAtomRegistry.refresh(accessAtom);
-      setNote({ text: kinLeadAccessChanged(person.displayName, lead.name, on), failed: false });
+      setNote({
+        text: kinLeadAccessChanged(person.displayName, lead.name, on, coOwner(person.personId)),
+        failed: false,
+      });
       return;
     }
     setNote({
@@ -177,7 +180,11 @@ export function KinLeadAccess(props: {
           <AlertDialogHeader>
             <AlertDialogTitle>Remove {removing?.displayName}?</AlertDialogTitle>
             <AlertDialogDescription>
-              {KIN_AGENTS_COPY.removeAccess(removing?.displayName ?? "", lead.name)}
+              {KIN_AGENTS_COPY.removeAccess(
+                removing?.displayName ?? "",
+                lead.name,
+                coOwner(removing?.personId),
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

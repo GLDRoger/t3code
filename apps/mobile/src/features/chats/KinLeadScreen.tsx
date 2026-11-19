@@ -5,6 +5,7 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import {
   EnvironmentId,
   KinOrgId,
+  kinOwnerLevel,
   type KinChatId,
   type KinChatSummary,
   type KinLeadAccessResult,
@@ -427,11 +428,9 @@ function KinLeadAccess(props: {
   const allowed = read?.people ?? null;
   // The team agent is everyone's: no one is added or removed there.
   const everyone = read?.everyone === true;
-  const candidates = kinLeadAccessCandidates(
-    everyone ? [] : (Option.getOrNull(AsyncResult.value(people))?.people ?? []),
-    allowed ?? [],
-    personId,
-  );
+  const org = Option.getOrNull(AsyncResult.value(people))?.people ?? [];
+  const candidates = kinLeadAccessCandidates(everyone ? [] : org, allowed ?? [], personId);
+  const coOwner = (id: string) => kinOwnerLevel(org.find((one) => one.personId === id)?.access);
 
   const change = async (
     person: { readonly personId: KinPersonId; readonly displayName: string },
@@ -445,7 +444,10 @@ function KinLeadAccess(props: {
     setBusy(null);
     if (AsyncResult.isSuccess(result)) {
       appAtomRegistry.refresh(accessAtom);
-      setNote({ text: kinLeadAccessChanged(person.displayName, lead.name, on), failed: false });
+      setNote({
+        text: kinLeadAccessChanged(person.displayName, lead.name, on, coOwner(person.personId)),
+        failed: false,
+      });
       return;
     }
     setNote({
@@ -468,7 +470,11 @@ function KinLeadAccess(props: {
   const askRemove = (person: { readonly personId: KinPersonId; readonly displayName: string }) =>
     Dialog.confirm({
       title: `Remove ${person.displayName}?`,
-      message: KIN_AGENTS_COPY.removeAccess(person.displayName, lead.name),
+      message: KIN_AGENTS_COPY.removeAccess(
+        person.displayName,
+        lead.name,
+        coOwner(person.personId),
+      ),
       confirmText: "Remove",
       destructive: true,
       onConfirm: () => void change(person, false),

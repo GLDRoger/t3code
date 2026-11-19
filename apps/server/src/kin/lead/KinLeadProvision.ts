@@ -964,7 +964,8 @@ export const allow = Effect.fn("KinLeadProvision.allow")(function* (
 /**
  * The owner stops a person messaging one of their leads. Nothing they send wakes it from here
  * on and what was still waiting is dropped; a reply already under way still lands. Their chat
- * stays theirs to read but not to write in, and one they never wrote in leaves their list.
+ * stays theirs to read but not to write in, and one they never wrote in leaves their list. Only
+ * the row goes when their role still lets them message it.
  */
 export const disallow = Effect.fn("KinLeadProvision.disallow")(function* (
   input: Parameters<typeof ownedLead>[0] & { readonly personId: KinPersonId },
@@ -985,11 +986,12 @@ export const disallow = Effect.fn("KinLeadProvision.disallow")(function* (
         );
       if (ended.length === 0) return yield* accessRows(lead);
       yield* leadsChanged(lead.orgId);
-      // Everyone may message the team agent, with a row or without.
+      // Everyone may message the team agent, and owner-level people every agent, row or not.
       const team = yield* LeadAccess.teamAgent(lead.orgId).pipe(
         Effect.mapError(toPersistenceSqlError("KinLeadProvision.disallow")),
       );
-      if (team !== lead.agentId) yield* closeDirect(lead, input.personId, null);
+      const covered = team === lead.agentId || (yield* ownerLevel(lead.orgId, input.personId));
+      if (!covered) yield* closeDirect(lead, input.personId, null);
       return yield* accessRows(lead);
     }),
   );

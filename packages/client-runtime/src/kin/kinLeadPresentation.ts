@@ -294,10 +294,16 @@ export function kinLeadOwnerSeesLine(ownerName: string | undefined): string {
     : `${ownerName} runs this workspace and can see chats with agents.`;
 }
 
-/** Said once after the owner changes who can message a lead. */
-export function kinLeadAccessChanged(person: string, lead: string, allowed: boolean): string {
-  return allowed
-    ? `${person} can now message ${lead}.`
+/** Said once after the owner changes who can message a lead. A co-owner messages every lead. */
+export function kinLeadAccessChanged(
+  person: string,
+  lead: string,
+  allowed: boolean,
+  coOwner = false,
+): string {
+  if (allowed) return `${person} can now message ${lead}.`;
+  return coOwner
+    ? `${person} can still message ${lead} as a co-owner.`
     : `${person} can no longer message ${lead}.`;
 }
 
@@ -344,8 +350,10 @@ export const KIN_AGENTS_COPY = {
   seesIntro: (intro: string) => `They see its name and this: ${intro}`,
   charterExample: "Handles billing questions and invoices.",
   charterLabel: "What it's responsible for",
-  removeAccess: (person: string, agent: string) =>
-    `${person} keeps their chat with ${agent} to read, but can't send it anything more. You can add them back any time.`,
+  removeAccess: (person: string, agent: string, coOwner = false) =>
+    coOwner
+      ? `${person} is a co-owner, so they can still message ${agent}. This matters only if they stop being one.`
+      : `${person} keeps their chat with ${agent} to read, but can't send it anything more. You can add them back any time.`,
   nameOnly: "They see its name only. Add what teammates see when you edit this agent.",
   none: "You have no agents yet.",
   explain:
