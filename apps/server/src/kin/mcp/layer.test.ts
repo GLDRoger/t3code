@@ -69,6 +69,7 @@ import { ServerSecretStore } from "../../auth/ServerSecretStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { DeviceService } from "../../device/DeviceService.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
+import { GitManager } from "../../git/GitManager.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
@@ -163,6 +164,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ProjectSetupScriptRunner)({}),
   Layer.mock(ProcessRunner)({}),
   FetchHttpClient.layer,
+  Layer.mock(GitManager)({}),
   Layer.mock(ProviderAdapterRegistryV2)({}),
   Layer.mock(ProviderInstanceRegistry)({}),
   Layer.mock(ProviderRegistry)({}),

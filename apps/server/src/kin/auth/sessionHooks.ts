@@ -27,6 +27,10 @@ export class SessionHooks extends Context.Reference<{
     sessionId: AuthSessionId,
     grant: { readonly method: string; readonly pairingLinkId?: string },
   ) => Effect.Effect<void, PersistenceSqlError>;
+  /** Whether revoking a keyed client for this caller ends only that session, not the device. */
+  readonly revokesSessionOnly: (
+    callerSessionId: AuthSessionId | undefined,
+  ) => Effect.Effect<boolean, PersistenceSqlError>;
 }>("kin/auth/SessionHooks", {
   defaultValue: () => ({
     recordRepair: () =>
@@ -39,5 +43,6 @@ export class SessionHooks extends Context.Reference<{
     wrap: () => (store) => store,
     checkExchange: () => Effect.succeed(true),
     recordPairedSession: () => Effect.void,
+    revokesSessionOnly: () => Effect.succeed(false),
   }),
 }) {}
