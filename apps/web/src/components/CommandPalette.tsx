@@ -501,7 +501,10 @@ function OpenCommandPaletteDialog(props: {
   const deferredQuery = useDeferredValue(query);
   const isActionsOnly = deferredQuery.startsWith(">");
   const kinAgents = useKinPaletteAgents(kinNewLead, canCreateKinLead);
-  const kinChatRows = useKinChatRows(!isActionsOnly && deferredQuery.trim() !== "");
+  const kinChatRows = useKinChatRows(
+    kinNewLead?.environmentId ?? null,
+    !isActionsOnly && deferredQuery.trim() !== "",
+  );
   const openKinAgentPage = useOpenKinAgentPage();
   const kinHits = useKinPaletteHits(
     canOpenKinWork ? kinNewLead : null,

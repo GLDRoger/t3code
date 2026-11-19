@@ -27,8 +27,7 @@ vi.mock(import("./kinAgentPageLink"), async (importOriginal) => ({
       },
     ] as never,
 }));
-vi.mock(import("./useKinHost"), async (importOriginal) => {
-  const actual = await importOriginal();
+const fixture = vi.hoisted(() => {
   const chat = (chatId: string, kind: "direct" | "group", title: string | null) => ({
     chatId,
     orgId: "org-ambermill",
@@ -47,45 +46,36 @@ vi.mock(import("./useKinHost"), async (importOriginal) => {
     lastMessage: null,
     unread: 0,
   });
-  const host = {
-    _tag: "host",
-    environmentId: "env-ambermill",
-    connected: true,
-    probe: {
-      _tag: "ready",
-      orgs: {
-        orgs: [
-          {
-            orgId: "org-ambermill",
-            agents: [{ agentId: "agent-chief", displayName: "Chief of staff", retired: false }],
-          },
-        ],
-        me: [{ orgId: "org-ambermill", personId: "rhea" }],
+  return {
+    host: {
+      _tag: "host",
+      environmentId: "env-ambermill",
+      connected: true,
+      probe: {
+        _tag: "ready",
+        orgs: {
+          orgs: [
+            {
+              orgId: "org-ambermill",
+              agents: [{ agentId: "agent-chief", displayName: "Chief of staff", retired: false }],
+            },
+          ],
+          me: [{ orgId: "org-ambermill", personId: "rhea" }],
+        },
       },
     },
+    chats: [chat("chat-chief", "direct", null), chat("chat-team-room", "group", "Team room")],
   };
-  return {
-    ...actual,
-    useKinInbox: () =>
-      ({
-        host,
-        state: {
-          _tag: "ready",
-          environmentId: "env-ambermill",
-          offline: false,
-          inbox: {
-            value: {
-              chats: [
-                chat("chat-chief", "direct", null),
-                chat("chat-team-room", "group", "Team room"),
-              ],
-              waiting: [],
-            },
-          },
-        },
-        retry: () => undefined,
-      }) as never,
-  };
+});
+vi.mock(import("./useKinHost"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  useKinHost: () => fixture.host as never,
+}));
+vi.mock(import("./kinClient"), async (importOriginal) => {
+  const actual = await importOriginal();
+  const { AsyncResult, Atom } = await import("effect/reactivity");
+  const inbox = Atom.make(AsyncResult.success({ value: { chats: fixture.chats, waiting: [] } }));
+  return { ...actual, kinClient: { ...actual.kinClient, inbox: () => inbox } as never };
 });
 vi.mock(import("../components/CommandPalette.logic"), async (importOriginal) => {
   const actual = await importOriginal();

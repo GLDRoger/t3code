@@ -1,10 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
 import { kinChatListRows } from "@t3tools/client-runtime/kin/kinChatListRows";
-import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
+import { type KinInboxState, selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import type { KinDestination } from "@t3tools/client-runtime/kin/kinNavigation";
 import { kinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
+import type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 import { isMacPlatform } from "@t3tools/shared/keybindings";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
+import { AsyncResult, Atom } from "effect/reactivity";
 import {
   CalendarDaysIcon,
   ContactRoundIcon,
@@ -21,7 +24,8 @@ import { type CommandPaletteActionItem, ITEM_ICON_CLASS } from "../components/Co
 import { KinAvatar } from "./KinAvatar";
 import { kinDestinationLink, kinShownDestinationsAtom } from "./kinListSwitch";
 import { KIN_PLACE_PATH } from "./kinPlaces";
-import { useKinInbox } from "./useKinHost";
+import { kinClient } from "./kinClient";
+import { useKinHost } from "./useKinHost";
 
 const PLACE: Record<
   KinDestination,
@@ -61,8 +65,9 @@ const PLACE: Record<
 export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
   const navigate = useNavigate();
   const shown = useAtomValue(kinShownDestinationsAtom);
-  if (shown === null) return [];
-  const { target, destinations } = shown;
+  const destinations = shown?.destinations ?? [];
+  if (shown === null || destinations.length === 0) return [];
+  const { target } = shown;
   const row = (
     value: string,
     title: string,
@@ -134,12 +139,24 @@ export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
   ];
 }
 
-/** This person's own chats, by the names their Chats list shows, while they search. */
-export function useKinChatRows(searching: boolean): ReadonlyArray<CommandPaletteActionItem> {
+const noInboxAtom = Atom.make(AsyncResult.initial<KinSynced<KinInboxState>, unknown>()).pipe(
+  Atom.withLabel("kin:palette-no-inbox"),
+);
+
+/** This person's own chats, by the names their Chats list shows, read only while they search. */
+export function useKinChatRows(
+  environmentId: EnvironmentId | null,
+  searching: boolean,
+): ReadonlyArray<CommandPaletteActionItem> {
   const navigate = useNavigate();
-  const { host, state } = useKinInbox();
-  if (!searching || state._tag !== "ready") return [];
-  const rows = kinChatListRows(selectKinInboxView(state.inbox.value), kinDirectory(host));
+  const host = useKinHost();
+  const inbox = useAtomValue(
+    environmentId === null || !searching
+      ? noInboxAtom
+      : kinClient.inbox({ environmentId, input: {} }),
+  );
+  if (environmentId === null || inbox._tag !== "Success") return [];
+  const rows = kinChatListRows(selectKinInboxView(inbox.value.value), kinDirectory(host));
   return rows.flatMap(({ chat, view }) =>
     view.title === null
       ? []
@@ -155,7 +172,7 @@ export function useKinChatRows(searching: boolean): ReadonlyArray<CommandPalette
               await navigate({
                 to: "/kin/$environmentId/$orgId/$chatId",
                 params: {
-                  environmentId: state.environmentId,
+                  environmentId,
                   orgId: chat.orgId,
                   chatId: chat.chatId,
                 },
