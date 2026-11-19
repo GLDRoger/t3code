@@ -463,12 +463,15 @@ it.effect("removing a device ends the keys made on it and down its chain, and no
     // Remove says which keys go with a device: only the live ones it made.
     const made = Effect.fn("test.made")(function* (by: AuthenticatedSession) {
       const { devices } = yield* people.listDevices(by, { orgId, personId: zoya.personId });
-      return devices.map((one) => [one.sessionId, one.keysMade]);
+      return new Map(devices.map((one) => [one.sessionId, one.keysMade]));
     });
-    assert.deepStrictEqual(yield* made(rhea.app), [
-      [zoya.app.sessionId, 1],
-      [laptop.sessionId, 1],
-    ]);
+    assert.deepStrictEqual(
+      yield* made(rhea.app),
+      new Map([
+        [zoya.app.sessionId, 1],
+        [laptop.sessionId, 1],
+      ]),
+    );
 
     // The phone removes the laptop: the laptop's key ends, the phone's stays.
     yield* remove(zoya.app, laptop);
