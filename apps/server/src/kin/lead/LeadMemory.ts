@@ -174,6 +174,7 @@ export const ItemResult = Schema.Struct({ itemId: KinMemoryItemId });
  */
 export const DeferResult = Schema.Struct({
   itemId: KinMemoryItemId,
+  note: Schema.optional(Schema.String),
   asks: Schema.optional(
     Schema.Struct({ name: Schema.String, back: Schema.optional(Schema.String) }),
   ),
@@ -1235,6 +1236,11 @@ const make = Effect.gen(function* () {
           const away = stillAway(person.back, zone, Date.parse(input.due));
           return {
             itemId: id,
+            note: `Nothing is asked yet: at its due time Kin wakes you to ask ${person.name} yourself, and no question is open until you do.${
+              away && person.back !== null
+                ? ` ${person.name} is away and back on ${person.back}.`
+                : ""
+            }`,
             asks: {
               name: person.name,
               ...(away && person.back !== null ? { back: person.back } : {}),

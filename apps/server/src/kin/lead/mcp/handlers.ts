@@ -115,6 +115,11 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
   ),
   kin_ask: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.ask")(function* (input) {
+      if (input.options.length < 2)
+        return yield* new KinChatError({
+          reason: "invalid_state",
+          message: ChoiceCard.FEWER_THAN_TWO,
+        });
       const lead = yield* resolveLead(yield* McpInvocationContext);
       const wakeupId = KinWakeupId.make(lead.wakeupId);
       const lane = yield* laneFor({ orgId: lead.orgId, agentId: lead.agentId, wakeupId });
@@ -232,6 +237,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
             messageId: result.messageId,
             question: plan.questionId,
             by: DateTime.formatIso(DateTime.makeUnsafe(plan.dueAt)),
+            ...(plan.note === undefined ? {} : { note: plan.note }),
           };
     }, Effect.mapError(failure)),
   ),

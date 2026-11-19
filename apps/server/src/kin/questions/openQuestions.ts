@@ -201,6 +201,8 @@ export type AskPlan = {
   readonly actAt: number;
   /** Why Kin won't take the default on its own, when it won't. */
   readonly untaken?: Untaken | undefined;
+  /** What the asker is told when Kin won't take the default on its own. */
+  readonly note?: string | undefined;
   /** An identical call already recorded it: the retry answers with the same card. */
   readonly retry: boolean;
 };
@@ -256,6 +258,7 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
       ? input.held
       : "action");
   const safe = untaken === undefined;
+  const actAt = safe ? dueAt : raiseAt(dueAt, clock.zone, clock.days);
   const intent = normaliseIntent(input.intent);
   if (seen === undefined)
     for (const open of yield* openFor(input.orgId, personId))
@@ -275,10 +278,28 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
     intent,
     askedAt: input.now,
     dueAt,
-    actAt: safe ? dueAt : raiseAt(dueAt, clock.zone, clock.days),
+    actAt,
+    ...(untaken === undefined
+      ? {}
+      : { note: untakenNote(label, untaken, dayWord(actAt, input.now, clock.zone)) }),
     retry: seen !== undefined,
   } satisfies AskPlan;
 });
+
+const UNTAKEN_WHY: Record<Exclude<Untaken, "none">, string> = {
+  money: "it concerns money",
+  leaves: "it would send something out of the company or move money",
+  action: "only a tap runs that option's action",
+  repeats: "closing a repeating task makes its next one, which Undo can't take back",
+  handed_back: "closing a handed-back task clears that, which Undo can't take back",
+};
+/** What the asker hears when Kin won't take the default, so its words match the card's. */
+const untakenNote = (label: string | null, why: Untaken, raised: string) =>
+  `${
+    why === "none" || label === null
+      ? "With no default,"
+      : `Kin won't take “${label}” on its own: ${UNTAKEN_WHY[why]}, so`
+  } nothing happens until they answer; Kin raises it with them once more ${raised}.`;
 
 /** Stores a planned question with the card that asks it; a retry stores nothing more. */
 export const recordAsk = Effect.fn("KinQuestions.recordAsk")(function* (
