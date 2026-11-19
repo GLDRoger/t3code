@@ -25,6 +25,7 @@ import {
   type KinWorkItemView,
   type KinWorkNames,
 } from "./kinWork.ts";
+import { kinWorkStatusOffer } from "./kinWorkChanges.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -304,6 +305,44 @@ export function kinNextStep(input: NextStepInput): KinNextStepView {
           ],
   };
 }
+
+/**
+ * Where a task page's own controls sit for this viewer: status and edit on the page, the rest in
+ * the ••• / More menu. Each is present only where the host takes that move from this viewer.
+ */
+export function kinTaskControls(input: {
+  readonly view: Pick<
+    KinWorkItemView,
+    "state" | "closed" | "can" | "assignLabel" | "handBackTo" | "takeBack"
+  >;
+  /** This viewer may change the task, and give it to someone. */
+  readonly change: boolean;
+  readonly give: boolean;
+  /** The title and brief are open for editing already. */
+  readonly editing: boolean;
+}) {
+  const { view, change, give } = input;
+  const offer = kinWorkStatusOffer(view);
+  const states =
+    change && !view.closed && offer.states.some((c) => view.can.states.includes(c.state));
+  const waiting = change && !view.closed && offer.waiting;
+  const done = change && offer.done;
+  const reopen = change && offer.reopen;
+  return {
+    page: {
+      status: done || reopen || states || waiting ? { done, reopen, states, waiting } : null,
+      edit: change && view.can.edit && !input.editing,
+    },
+    menu: {
+      give: give && view.assignLabel !== null,
+      takeBack: give && view.takeBack,
+      handBack: change && view.handBackTo !== null,
+      drop: change && !view.closed && offer.drop,
+    },
+  };
+}
+
+export type KinTaskPageStatus = NonNullable<ReturnType<typeof kinTaskControls>["page"]["status"]>;
 
 function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
   const { item, view, names, now } = input;
