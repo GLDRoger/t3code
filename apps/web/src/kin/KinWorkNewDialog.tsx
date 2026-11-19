@@ -19,7 +19,9 @@ import {
 } from "@t3tools/client-runtime/kin/kinWork";
 import { useAtomValue } from "@effect/atom-react";
 import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinNewTaskChoices } from "@t3tools/client-runtime/kin/kinWorkClients";
+import { KIN_PICKER_COPY, kinPickerSearchView } from "@t3tools/client-runtime/kin/kinWorkList";
 import type { KinRecordKey } from "@t3tools/contracts";
 import { useId, useState } from "react";
 
@@ -32,6 +34,7 @@ import {
   ComboboxItem,
   ComboboxList,
   ComboboxPopup,
+  ComboboxStatus,
 } from "../components/ui/combobox";
 import {
   Dialog,
@@ -58,33 +61,61 @@ import { randomUUID } from "../lib/utils";
 import { connectionAtomRuntime } from "../connection/runtime";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
-import type { KinWorkChoices, KinWorkDirectory, KinWorkTarget } from "./useKinWork";
+import {
+  useKinPickerSearch,
+  type KinWorkChoices,
+  type KinWorkDirectory,
+  type KinWorkTarget,
+} from "./useKinWork";
 
 const NONE = "none";
 
-/** A client or a project to put the task under, or neither, found by typing part of its name. */
+/**
+ * A client or a project to put the task under, or neither, found by typing part of its name: the
+ * first page shows at once, and typing asks the host about every one the person may see.
+ */
 function PlaceCombobox(props: {
+  readonly target: KinWorkTarget;
+  readonly noun: "client" | "project";
   readonly label: string;
   readonly value: KinWorkRef | null;
   readonly choices: ReadonlyArray<KinWorkRef>;
   readonly onChange: (value: KinWorkRef | null) => void;
 }) {
   const id = useId();
-  // What the form opened about stays pickable whatever the list of choices holds.
-  const choices =
-    props.value === null || props.choices.some((choice) => choice.key === props.value?.key)
-      ? props.choices
-      : [props.value, ...props.choices];
+  const search = useKinPickerSearch(
+    props.target,
+    props.noun === "client" ? "clients" : "projects",
+    false,
+  );
+  const view = kinPickerSearchView({
+    noun: props.noun,
+    search: search.state,
+    loaded: { open: props.choices, done: [] },
+    held: props.value,
+  });
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
       <Label htmlFor={id}>{props.label}</Label>
       <Combobox
-        items={choices}
+        items={view.open}
+        filteredItems={view.open}
+        filter={null}
         value={props.value}
         autoHighlight
         itemToStringLabel={(choice: KinWorkRef) => choice.title}
         isItemEqualToValue={(a: KinWorkRef, b: KinWorkRef) => a.key === b.key}
-        onValueChange={(choice: KinWorkRef | null) => props.onChange(choice)}
+        onInputValueChange={(text, details) => {
+          if (details.reason === "input-change" || details.reason === "input-clear")
+            search.type(text);
+        }}
+        onOpenChange={(open) => {
+          if (!open) search.type("");
+        }}
+        onValueChange={(choice: KinWorkRef | null) => {
+          search.type("");
+          props.onChange(choice);
+        }}
       >
         <ComboboxInput
           id={id}
@@ -93,7 +124,13 @@ function PlaceCombobox(props: {
           showClear={props.value !== null}
         />
         <ComboboxPopup>
-          <ComboboxEmpty>{KIN_WORK_NEW_COPY.noMatch}</ComboboxEmpty>
+          <ComboboxEmpty>
+            {view.failure !== null
+              ? null
+              : view.loading
+                ? KIN_PICKER_COPY.searching
+                : (view.note ?? KIN_WORK_NEW_COPY.noMatch)}
+          </ComboboxEmpty>
           <ComboboxList>
             {(choice: KinWorkRef) => (
               <ComboboxItem key={choice.key} value={choice} title={choice.title}>
@@ -101,6 +138,20 @@ function PlaceCombobox(props: {
               </ComboboxItem>
             )}
           </ComboboxList>
+          {view.failure !== null ? (
+            <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+              {view.failure.text}
+              {!view.failure.retry ? null : (
+                <Button size="xs" variant="outline" onClick={() => void search.retry()}>
+                  {KIN_RETRY}
+                </Button>
+              )}
+            </div>
+          ) : (
+            <ComboboxStatus>
+              {view.open.length === 0 ? null : view.loading ? KIN_PICKER_COPY.searching : view.note}
+            </ComboboxStatus>
+          )}
         </ComboboxPopup>
       </Combobox>
     </div>
@@ -322,6 +373,8 @@ export function KinWorkNewDialog(
                 <div className="grid gap-4 sm:grid-cols-2">
                   {choices.clients.length === 0 && draft.party === null ? null : (
                     <PlaceCombobox
+                      target={{ environmentId, orgId }}
+                      noun="client"
                       label={KIN_WORK_NEW_COPY.clientLabel}
                       value={draft.party}
                       choices={choices.clients}
@@ -330,6 +383,8 @@ export function KinWorkNewDialog(
                   )}
                   {choices.projects.length === 0 && draft.project === null ? null : (
                     <PlaceCombobox
+                      target={{ environmentId, orgId }}
+                      noun="project"
                       label={KIN_WORK_NEW_COPY.projectLabel}
                       value={draft.project}
                       choices={choices.projects}

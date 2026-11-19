@@ -17,7 +17,6 @@ import {
   kinWorkDueChoices,
   kinWorkItemState,
   kinWorkItemView,
-  kinWorkRefsMatching,
   kinWorkTitleCount,
   kinWorkTitleTooLong,
   type KinWorkAssignee,
@@ -57,6 +56,7 @@ import {
   type KinRecordKey,
 } from "@t3tools/contracts";
 import { kinTaskProjectMenu } from "@t3tools/client-runtime/kin/kinWorkForms";
+import { KIN_PICKER_COPY, kinPickerSearchView } from "@t3tools/client-runtime/kin/kinWorkList";
 import { Link, useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -137,6 +137,7 @@ import { kinClient } from "./kinClient";
 import { openDestination } from "./KinNotifications";
 import { useNowMinuteMs } from "./useKinClock";
 import {
+  useKinPickerSearch,
   useKinWorkItemWatch,
   useKinWorkPlace,
   type KinWorkChangesHandle,
@@ -868,6 +869,8 @@ function KinWorkItem(
                 <dt className="text-muted-foreground">{KIN_WORK_NEW_COPY.projectLabel}</dt>
                 <dd className="flex min-w-0 items-center gap-2 text-foreground">
                   <PlaceMenu
+                    target={{ environmentId, orgId }}
+                    noun="project"
                     label={KIN_WORK_NEW_COPY.projectLabel}
                     value={view.project}
                     choices={choices.projects}
@@ -891,6 +894,8 @@ function KinWorkItem(
                 <dt className="text-muted-foreground">{KIN_WORK_NEW_COPY.clientLabel}</dt>
                 <dd className="flex min-w-0 flex-wrap items-center gap-2 text-foreground">
                   <PlaceMenu
+                    target={{ environmentId, orgId }}
+                    noun="client"
                     label={KIN_WORK_NEW_COPY.clientLabel}
                     value={view.party}
                     choices={choices.clients}
@@ -1193,6 +1198,8 @@ const PLACE_SEARCH_FROM = 8;
 
 /** The client or project a task is under: pick another, take it off, or open the one it has. */
 function PlaceMenu(props: {
+  readonly target: KinWorkTarget;
+  readonly noun: "client" | "project";
   readonly label: string;
   readonly value: KinWorkRef | null;
   readonly choices: ReadonlyArray<KinWorkRef>;
@@ -1212,11 +1219,19 @@ function PlaceMenu(props: {
   };
 }) {
   const { value, onPick, side } = props;
-  const [query, setQuery] = useState("");
-  const groups = kinTaskProjectMenu({
-    projects: kinWorkRefsMatching(props.choices, query),
-    doneProjects: kinWorkRefsMatching(props.done ?? [], query),
+  const search = useKinPickerSearch(
+    props.target,
+    props.noun === "client" ? "clients" : "projects",
+    props.done !== undefined,
+  );
+  const query = search.state.text;
+  const view = kinPickerSearchView({
+    noun: props.noun,
+    search: search.state,
+    loaded: { open: props.choices, done: props.done ?? [] },
+    held: value,
   });
+  const groups = kinTaskProjectMenu({ projects: view.open, doneProjects: view.done });
   const searchable = props.choices.length + (props.done?.length ?? 0) > PLACE_SEARCH_FROM;
   if (onPick === null) {
     if (value === null) return null;
@@ -1232,7 +1247,7 @@ function PlaceMenu(props: {
   return (
     <Menu
       onOpenChange={(open) => {
-        if (!open) setQuery("");
+        if (!open) search.type("");
       }}
     >
       <MenuTrigger
@@ -1252,10 +1267,11 @@ function PlaceMenu(props: {
         {!searchable ? null : (
           <MenuSearchInput
             autoFocus
+            busy={view.loading}
             value={query}
-            onChange={(event) => setQuery(event.currentTarget.value)}
-            placeholder={`Find a ${props.label.toLowerCase()}`}
-            aria-label={`Find a ${props.label.toLowerCase()}`}
+            onChange={(event) => search.type(event.currentTarget.value)}
+            placeholder={`Find a ${props.noun}`}
+            aria-label={`Find a ${props.noun}`}
           />
         )}
         {value === null || props.onOpen === null ? null : (
@@ -1282,6 +1298,19 @@ function PlaceMenu(props: {
             ))}
           </MenuGroup>
         ))}
+        {view.loading && groups.length === 0 ? (
+          <MenuItem disabled>{KIN_PICKER_COPY.searching}</MenuItem>
+        ) : view.failure !== null ? (
+          <MenuItem
+            closeOnClick={false}
+            disabled={!view.failure.retry}
+            onClick={() => void search.retry()}
+          >
+            {view.failure.text}
+          </MenuItem>
+        ) : view.note !== null ? (
+          <MenuItem disabled>{view.note}</MenuItem>
+        ) : null}
         {value === null || props.clearable === false ? null : (
           <>
             {groups.length === 0 ? null : <MenuSeparator />}
@@ -1298,10 +1327,8 @@ function PlaceMenu(props: {
             </MenuItem>
           </>
         )}
-        {value === null && props.choices.length === 0 ? (
+        {value === null && props.choices.length === 0 && query.trim() === "" ? (
           <MenuItem disabled>Nothing to pick yet</MenuItem>
-        ) : groups.length === 0 && query.trim() !== "" ? (
-          <MenuItem disabled>{KIN_WORK_NEW_COPY.noMatch}</MenuItem>
         ) : null}
       </MenuPopup>
     </Menu>

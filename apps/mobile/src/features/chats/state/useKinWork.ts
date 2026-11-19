@@ -32,7 +32,9 @@ import {
   type KinWorkFormState,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
 import {
+  KIN_PICKER_SEARCH_IDLE,
   createKinPagedList,
+  createKinPickerSearch,
   kinPagedListInitial,
   mapPage,
   type KinPagedListState,
@@ -452,6 +454,30 @@ export function useKinWorkChoices(target: KinWorkTarget, enabled: boolean) {
 }
 
 export type KinWorkChoices = ReturnType<typeof useKinWorkChoices>;
+
+/** A client or project picker's search over every one the person may see, read as they type. */
+export function useKinPickerSearch(
+  { environmentId, orgId }: KinWorkTarget,
+  kind: "clients" | "projects",
+  done: boolean,
+) {
+  const [state, setState] = useState(KIN_PICKER_SEARCH_IDLE);
+  const [search] = useState(() =>
+    createKinPickerSearch({
+      orgId,
+      kind,
+      done,
+      readClients: (input) => kinClient.workClients.run(appAtomRegistry, { environmentId, input }),
+      readProjects: (input) =>
+        kinClient.workProjects.run(appAtomRegistry, { environmentId, input }),
+      onChange: setState,
+      schedule: kinSchedule,
+    }),
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- abandons a pending or in-flight search when the picker leaves
+  useEffect(() => search.dispose, [search]);
+  return { state, type: search.type, retry: search.retry };
+}
 
 /** A client, contact or project form: what is typed, and why a save didn't go through. */
 export function useKinWorkForm<D extends object, A>(
