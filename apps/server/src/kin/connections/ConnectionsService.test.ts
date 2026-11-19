@@ -2834,6 +2834,15 @@ describe("KinConnections sending", () => {
           WHERE org_id = ${orgId} AND record_id = 'rec_inv'`;
         yield* sendCall("mail_send", { ...mail, body: "Attached, as promised." });
         const voided = cards.at(-1)!.widgetId;
+        // Money set against it waits on a card too; one set against another invoice stays open.
+        for (const [id, against] of [
+          ["rp-voided", "INV-1"],
+          ["rp-other", "INV-9"],
+        ] as const)
+          yield* sql`INSERT INTO kin_receipt_proposals (org_id, proposal_id, agent_id, wakeup_id,
+              chat_id, request_json, snapshot_json, widget_id, proposed_at)
+            VALUES (${orgId}, ${id}, ${lead}, 'wake', 'lead-chat',
+              ${JSON.stringify({ paymentId: "pay-1", against })}, '{}', ${`w-${id}`}, 1)`;
         const closed: Array<{ readonly widgetId: string; readonly text: string | undefined }> = [];
         yield* sql.withTransaction(
           Effect.andThen(
@@ -2858,7 +2867,10 @@ describe("KinConnections sending", () => {
             ),
           ),
         );
-        assert.deepStrictEqual(closed, [{ widgetId: voided, text: "Closed: INV-1 is void now." }]);
+        assert.deepStrictEqual(closed, [
+          { widgetId: voided, text: "Closed: INV-1 is void now." },
+          { widgetId: "w-rp-voided", text: "Closed: INV-1 is void now." },
+        ]);
         assert.deepStrictEqual(
           yield* sql`SELECT state, reason FROM kin_connection_asks WHERE widget_id = ${voided}`,
           [{ state: "stale", reason: "INV-1 is void now, so nothing was sent." }],
