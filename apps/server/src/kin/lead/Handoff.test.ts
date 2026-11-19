@@ -1253,6 +1253,7 @@ it.effect(
         // The owner is already asked about her and the Tech lead: no second card.
         const second = yield* mate.pass("Tech lead", "meera-second");
         assert.isFalse(second.passed);
+        assert.include("note" in second ? second.note : "", "already been asked");
         const [first, ...none] = yield* ownerCard(ctx);
         assert.lengthOf(none, 0);
 
@@ -1386,7 +1387,10 @@ it.effect("a teammate at today's limit has nothing passed on", () =>
               ${JSON.stringify({ provenance: { _tag: "human", personId: "meera" } })}, 0, 0, 'done')`;
       yield* mate.ask("meera-event", "Why did the staging deploy fail last night?");
       const capped = yield* mate.pass("Tech lead");
-      assert.isFalse(capped.passed);
+      assert.deepStrictEqual(capped, {
+        passed: false,
+        note: "Meera has reached today's limit, so nothing was passed on. Tell them they can ask again later.",
+      });
       assert.deepStrictEqual(yield* mate.reached, { copies: [], events: [] });
     }),
   ),

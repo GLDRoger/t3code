@@ -451,9 +451,16 @@ const make = Effect.gen(function* () {
         personId: ask.personId,
         now,
       }).pipe(access);
-      if (used.turns >= dailyTurns) return { passed: false as const, note: NOTHING };
+      if (used.turns >= dailyTurns)
+        return {
+          passed: false as const,
+          note: `${ask.personName} has reached today's limit, so nothing was passed on. Tell them they can ask again later.`,
+        };
     } else if (yield* askPending(ctx, ask.personId, dest.agentId, now))
-      return waitsOnOwner(ask.personName);
+      return {
+        passed: false as const,
+        note: `The owner has already been asked about an earlier request of ${ask.personName}'s for that agent, so nothing more was sent. Tell ${ask.personName} so, and promise nothing more.`,
+      };
     const claimed = yield* sql`INSERT INTO kin_handoffs
         (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at, route_state)
       VALUES (${ctx.orgId}, ${messageId}, ${ctx.agentId}, ${dest.agentId},
