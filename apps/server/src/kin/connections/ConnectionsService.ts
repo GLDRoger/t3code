@@ -2841,7 +2841,7 @@ const make = Effect.gen(function* () {
       if (connection?.state === "needs_sign_in")
         return yield* fail(
           "unavailable",
-          `${connection.accountLabel ?? connection.label} needs signing in again in Settings › Connections. Nothing was sent; tap Confirm again once it's back.`,
+          `${connection.accountLabel ?? connection.label} needs signing in again in Settings › Connections. Nothing was sent; send it again once it's back.`,
         );
       // A refused Confirm keeps the agent's draft; its card's saved words follow onto a fresh one.
       const reason = yield* askBlocked(input.orgId, row, drafted, connection);
