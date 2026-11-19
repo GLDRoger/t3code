@@ -75,6 +75,7 @@ import {
   KinWorkProblemNotice,
   KinWorkTextField,
 } from "./components/KinWorkPieces";
+import { KinCountryFirstField } from "./components/KinCountryFirst";
 import { useKinCompanyCountry, useKinHomeCurrency } from "./state/useKinMoney.ts";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinProjectPeoplePicker } from "./KinProjectPeopleScreen";
@@ -900,16 +901,18 @@ function ProjectForm(
         ))}
       </ListSection>
       <ListSection>
-        <KinWorkTextField
-          label={COPY.project.value}
-          value={draft.value}
-          keyboard="numbers"
-          disabled={state.saving}
-          maxLength={40}
-          placeholder={COPY.project.valuePlaceholder}
-          moved={moved.value}
-          onChangeText={(value) => form.edit({ value })}
-        />
+        <KinCountryFirstField target={props} label={COPY.project.value}>
+          <KinWorkTextField
+            label={COPY.project.value}
+            value={draft.value}
+            keyboard="numbers"
+            disabled={state.saving}
+            maxLength={40}
+            placeholder={COPY.project.valuePlaceholder}
+            moved={moved.value}
+            onChangeText={(value) => form.edit({ value })}
+          />
+        </KinCountryFirstField>
         <KinWorkTextField
           label={COPY.project.startsOn}
           value={draft.startsOn ?? ""}

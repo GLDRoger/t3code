@@ -53,6 +53,7 @@ import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import { readPeople } from "../lead/peopleRead.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { importWork } from "./importWork.ts";
+import { newCompanyProfileJson } from "./companyProfile.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadDocs from "./leadDocs.ts";
 import * as LeadMoney from "./leadMoney.ts";
@@ -687,6 +688,33 @@ it.effect(
       });
       assert.lengthOf(made.records, 3);
       assert.lengthOf((yield* OwnerWork.list([mate], { orgId })).records, 3);
+      // For a company created now with no country, an amount here says whose choice that is,
+      // with nothing more promised; a batch with one says nothing in it was saved.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+          updated_by_kind, updated_by_id)
+        VALUES (${orgId}, ${yield* newCompanyProfileJson}, 1, 0, 'person', ${ownerId})`;
+      const priced = (
+        records: ReadonlyArray<{ readonly title: string; readonly amount?: string }>,
+      ) =>
+        LeadWork.create(scopeOf(lead), { sourceEventId: "ask-event", records }).pipe(
+          Effect.flip,
+          Effect.map((error) => error.message),
+        );
+      assert.deepStrictEqual(
+        [
+          yield* priced([{ title: "Invented printing", amount: "90" }]),
+          yield* priced([
+            { title: "Invented proofs" },
+            { title: "Invented printing", amount: "90" },
+          ]),
+        ],
+        [
+          "Nothing was created: this company's country isn't chosen yet, and Kin records no money until an owner chooses it in Settings, Company details.",
+          "Nothing was saved: this company's country isn't chosen yet, and Kin records no money until an owner chooses it in Settings, Company details.",
+        ],
+      );
+      yield* sql`DELETE FROM kin_company_profile WHERE org_id = ${orgId}`;
       // The services check again, so a turn that became shared since the gate is refused too.
       const refused = [
         yield* Effect.flip(

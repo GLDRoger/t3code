@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -17,7 +18,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Numbers from "../gendocs/numbering.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
-import { readProfile } from "./companyProfile.ts";
+import { newCompanyProfileJson, readProfile } from "./companyProfile.ts";
 import { removeChunk } from "./importUndo.ts";
 import { insertComment } from "./recordComments.ts";
 import * as KinImport from "./KinImport.ts";
@@ -838,6 +839,89 @@ describe("KinImport", () => {
       const again = yield* imports.apply(orgId, ownerId, many());
       assert.deepStrictEqual([again.entries.create, again.entries.unchanged], [0, count]);
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("reads the company's country once for a file of money, not once a row", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const imports = yield* KinImport.KinImport;
+      const count = 1_000;
+      const money = Stream.concat(
+        Stream.make(JSON.stringify({ ...header, lists: [header.lists[1]] })),
+        Stream.range(1, count).pipe(
+          Stream.map((index) =>
+            JSON.stringify({
+              entry: {
+                source: `m${index}`,
+                list: "expenses",
+                title: `Generated expense ${index}`,
+                state: "done",
+                date: "2026-05-14",
+                amount: "12.50",
+                category: "software",
+              },
+            }),
+          ),
+        ),
+      );
+      let reads = 0;
+      const applied = yield* imports.apply(orgId, ownerId, money).pipe(
+        Effect.provideService(Statement.CurrentTransformer, (statement) => {
+          if (statement.compile()[0].includes("kin_company_profile")) reads += 1;
+          return Effect.succeed(statement);
+        }),
+      );
+      assert.deepStrictEqual([applied.entries.create, applied.problems.length], [count, 0]);
+      assert.isAtMost(reads, 2);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "imports a new company's rows without money while its country waits, and no other",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+          updated_by_kind, updated_by_id)
+        VALUES (${orgId}, ${yield* newCompanyProfileJson}, 1, 0, 'person', ${ownerId})`;
+        const imports = yield* KinImport.KinImport;
+        const fonts = { source: "f1", list: "expenses", title: "Invented fonts", state: "open" };
+        const first = yield* imports.apply(
+          orgId,
+          ownerId,
+          linesOf({ ...header, lists: [header.lists[1]] }, [
+            rows[0],
+            rows[2],
+            { entry: fonts },
+            rows[4],
+            {
+              entry: { ...fonts, source: "f2", fields: { tax: { amount: "5", currency: "GBP" } } },
+            },
+          ]),
+        );
+        const waits =
+          "This row has money, and Kin records none until the company's country is chosen in Settings, Company details. Import the file again once it is.";
+        assert.deepStrictEqual(
+          first.problems.map((one) => [one.source, one.reason]),
+          [
+            ["e1", waits],
+            ["f2", waits],
+          ],
+        );
+        assert.deepStrictEqual([first.entries.create, first.money], [2, []]);
+        // The fee-free row again, now with an amount, waits the same way.
+        const again = yield* imports.apply(
+          orgId,
+          ownerId,
+          linesOf({ ...header, lists: [header.lists[1]] }, [{ entry: { ...fonts, amount: "40" } }]),
+        );
+        assert.deepStrictEqual(
+          again.problems.map((one) => [one.source, one.reason]),
+          [["f1", waits]],
+        );
+        assert.deepStrictEqual(again.money, []);
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("an apply cut off part way leaves whole chunks, and a rerun completes it", () =>
