@@ -5,7 +5,7 @@ import { render } from "../../test/render";
 import { KinAvatar } from "./KinAvatar";
 
 describe("KinAvatar", () => {
-  it("draws an agent as a tile and a person round, named only by the row", async () => {
+  it("marks an agent and a person apart, each named only by the row", async () => {
     await using screen = await render(
       <ul>
         <li aria-label="Finance">

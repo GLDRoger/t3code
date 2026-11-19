@@ -207,13 +207,15 @@ function SidebarBrandMark({
   onBackdrop: boolean;
   product?: string;
 }) {
+  // Kin is its own name: no T3 mark before it, and it takes the brand's own colour.
+  const ownName = product === "Kin";
   return (
     <span className="inline-flex min-w-0 items-baseline gap-1 text-sm font-medium tracking-tight">
-      <T3Wordmark aria-label="T3" className="h-[1cap] w-auto shrink-0" />
+      {ownName ? null : <T3Wordmark aria-label="T3" className="h-[1cap] w-auto shrink-0" />}
       <span
         className={cn(
           "truncate [text-box:trim-both_cap_alphabetic] supports-[text-box:trim-both_cap_alphabetic]:py-1",
-          onBackdrop ? "text-white/70" : "text-muted-foreground",
+          ownName ? undefined : onBackdrop ? "text-white/70" : "text-muted-foreground",
         )}
       >
         {product}
