@@ -72,9 +72,12 @@ const toKey = (row: KeyRow, canRevoke: boolean): KinTasksKey => ({
   canRevoke,
 });
 
-/** Live: not revoked here or as a T3 session, not expired, and its person not removed. */
+/**
+ * Live: made on a recorded device (so removing it ends the key), not revoked here or as a T3
+ * session, not expired, and its person not removed.
+ */
 export const live = (sql: SqlClient.SqlClient, now: number) =>
-  sql`k.revoked_at IS NULL AND k.expires_at > ${now}
+  sql`k.revoked_at IS NULL AND k.expires_at > ${now} AND k.made_by_session_id IS NOT NULL
     AND EXISTS (SELECT 1 FROM auth_sessions a WHERE a.session_id = k.session_id AND a.revoked_at IS NULL)
     AND EXISTS (SELECT 1 FROM kin_people p WHERE p.org_id = k.org_id AND p.person_id = k.person_id
       AND p.removed_at IS NULL)`;

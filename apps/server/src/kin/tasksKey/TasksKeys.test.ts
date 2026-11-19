@@ -39,6 +39,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import * as People from "../people/KinPeople.ts";
 import * as Records from "../work/KinRecords.ts";
+import * as Work from "../work/ownerWork.ts";
 import { TasksKeyAudience } from "./audience.ts";
 import { commentMine, getMine, listMine, setStateMine } from "./tasks.ts";
 import { admitted, layer, layerAt, team } from "./tasksKey.testkit.ts";
@@ -267,6 +268,177 @@ it.effect("a key reaches only tasks its person holds, narrowly and as them, even
       "not_found",
     );
   }).pipe(Effect.provide(layer)),
+);
+
+const writerFor = (personId: KinPersonId) => ({
+  actor: { _tag: "person" as const, personId },
+  via: "owner" as const,
+  askedBy: personId,
+});
+
+it.effect(
+  "nothing labelled sensitive reaches a key, whoever holds it, nor its project's name",
+  () =>
+    Effect.gen(function* () {
+      const { orgId, rhea, zoya } = yield* team;
+      const records = yield* Records.KinRecords;
+      const people = yield* People.KinPeople;
+      const sql = yield* SqlClient.SqlClient;
+      yield* people.setAccess(rhea.app, { orgId, personId: zoya.personId, access: "co_owner" });
+      const make = (originKey: string, fields: Partial<Records.CreateInput> = {}) =>
+        records
+          .create(orgId, writerFor(rhea.personId), {
+            originKey,
+            title: `Invented: ${originKey}`,
+            owner: { _tag: "person", personId: zoya.personId },
+            ...fields,
+          })
+          .pipe(Effect.map(({ row }) => row));
+      const hidden = yield* make("quiet audit", { list: "projects", sensitive: true });
+      const secret = yield* make("salary review", { sensitive: true });
+      const plain = yield* make("file the audit", { projectId: hidden.recordId });
+      const key = yield* admitted((yield* TasksKeys.issue(zoya.app, { orgId })).secret);
+
+      // Her screen shows both, labels and all; her key only the unlabelled one, its project unnamed.
+      assert.deepStrictEqual(yield* listMine(key), {
+        tasks: [
+          {
+            key: plain.key,
+            title: "Invented: file the audit",
+            state: "open",
+            due: null,
+            project: null,
+          },
+        ],
+        more: false,
+      });
+      assert.isNull((yield* getMine(key, plain.key)).project);
+      assert.strictEqual(yield* reason(getMine(key, secret.key)), "not_found");
+      assert.strictEqual(
+        yield* reason(setStateMine(key, { key: secret.key, state: "done" })),
+        "not_found",
+      );
+      assert.strictEqual(
+        yield* reason(commentMine(key, { key: secret.key, text: "Invented: done" })),
+        "not_found",
+      );
+      assert.strictEqual((yield* records.get(orgId, secret.key))?.state, "open");
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_record_comments WHERE record_id = ${secret.recordId}`,
+        0,
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a key's list is soonest due first and counts only what it may show", () =>
+  Effect.gen(function* () {
+    const { orgId, rhea, zoya } = yield* team;
+    const records = yield* Records.KinRecords;
+    const day = (n: number) => Date.parse("2026-12-01T10:00:00.000Z") + n * 86_400_000;
+    const make = (n: number, fields: Partial<Records.CreateInput> = {}) =>
+      records
+        .create(orgId, writerFor(rhea.personId), {
+          originKey: `task ${n}`,
+          title: `Invented: task ${n}`,
+          owner: { _tag: "person", personId: zoya.personId },
+          dueAt: day(n),
+          ...fields,
+        })
+        .pipe(Effect.map(({ row }) => row));
+    // Soonest of all, but labelled: it takes no place in the hundred and makes no `more`.
+    yield* make(0, { sensitive: true });
+    const open: Array<string> = [];
+    for (let n = 1; n <= 100; n++) open.push((yield* make(n)).key);
+    // Under way, but due last: due date orders the list, not state.
+    yield* records.update(orgId, writerFor(rhea.personId), open[99]!, { state: "doing" });
+    const key = yield* admitted((yield* TasksKeys.issue(zoya.app, { orgId })).secret);
+    const listed = yield* listMine(key);
+    assert.strictEqual(listed.more, false);
+    assert.deepStrictEqual(
+      listed.tasks.map((one) => one.key),
+      open,
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a key acts only while its person has a screen to act from, as that screen reads now",
+  () =>
+    Effect.gen(function* () {
+      const { orgId, rhea, zoya, arjun } = yield* team;
+      const records = yield* Records.KinRecords;
+      const people = yield* People.KinPeople;
+      const sql = yield* SqlClient.SqlClient;
+      const project = (yield* records.create(orgId, writerFor(rhea.personId), {
+        originKey: "launch",
+        title: "Invented: launch",
+        list: "projects",
+        owner: writerFor(rhea.personId).actor,
+      })).row;
+      const make = (
+        originKey: string,
+        owner: KinPersonId,
+        fields: Partial<Records.CreateInput> = {},
+      ) =>
+        records
+          .create(orgId, writerFor(rhea.personId), {
+            originKey,
+            title: `Invented: ${originKey}`,
+            owner: { _tag: "person", personId: owner },
+            ...fields,
+          })
+          .pipe(Effect.map(({ row }) => row));
+      const hall = yield* make("book the hall", zoya.personId, { projectId: project.recordId });
+      const weekly = yield* make("weekly report", zoya.personId, {
+        dueAt: Date.parse("2026-12-01T10:00:00.000Z"),
+        repeat: { every: "days", days: 7 },
+      });
+      yield* people.setAccess(rhea.app, { orgId, personId: zoya.personId, access: "co_owner" });
+      const key = yield* admitted((yield* TasksKeys.issue(zoya.app, { orgId })).secret);
+      // A co-owner sees every project; made a member, the next call names only one she is on.
+      assert.strictEqual((yield* getMine(key, hall.key)).project, "Invented: launch");
+      yield* people.setAccess(rhea.app, { orgId, personId: zoya.personId, access: "member" });
+      assert.isNull((yield* getMine(key, hall.key)).project);
+      // A member's list is what her own Work screen gives her, held and open.
+      const screen = yield* Work.list([{ _tag: "person", orgId, personId: zoya.personId }], {
+        orgId,
+        owner: { _tag: "person", personId: zoya.personId },
+        open: true,
+      });
+      assert.deepStrictEqual(
+        (yield* listMine(key)).tasks.map((one) => one.key).toSorted(),
+        screen.records.map((one) => one.key).toSorted(),
+      );
+      // Finishing a repeating task makes its next one, as on her screen.
+      yield* setStateMine(key, { key: weekly.key, state: "done" });
+      assert.lengthOf(
+        (yield* listMine(key)).tasks.filter((one) => one.title === "Invented: weekly report"),
+        1,
+      );
+      assert.notInclude(
+        (yield* listMine(key)).tasks.map((one) => one.key),
+        weekly.key,
+      );
+
+      // Every device she was let in on revoked, the key's maker kept: no screen, so no key.
+      yield* sql`UPDATE kin_session_bindings SET revoked_at = 1 WHERE person_id = ${zoya.personId}`;
+      assert.strictEqual(
+        yield* reason(setStateMine(key, { key: hall.key, state: "doing" })),
+        "not_allowed",
+      );
+      assert.strictEqual(yield* reason(getMine(key, hall.key)), "not_allowed");
+      assert.strictEqual(yield* reason(listMine(key)), "not_allowed");
+      assert.strictEqual(
+        yield* reason(commentMine(key, { key: hall.key, text: "Invented: started" })),
+        "not_allowed",
+      );
+      assert.strictEqual((yield* records.get(orgId, hall.key))?.state, "open");
+
+      // Removed, a call admitted before it reaches nothing.
+      const arjunKey = yield* admitted((yield* TasksKeys.issue(arjun.app, { orgId })).secret);
+      yield* people.removeAccess(rhea.app, { orgId, personId: arjun.personId });
+      assert.strictEqual(yield* reason(listMine(arjunKey)), "not_allowed");
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect(
@@ -505,14 +677,16 @@ it.effect("removing a device ends the keys made on it and down its chain, and no
       ]),
     );
 
+    // A key with no recorded maker is no key: no device's removal could end it.
+    assert.isFalse(yield* works(unrecorded));
     // The phone removes the laptop: the laptop's key ends, the phone's stays.
     yield* remove(zoya.app, laptop);
     assert.deepStrictEqual(yield* Effect.forEach([onPhone, onLaptop, unrecorded], works), [
       true,
       false,
-      true,
+      false,
     ]);
-    assert.lengthOf((yield* TasksKeys.list(zoya.app, { orgId })).keys, 2);
+    assert.lengthOf((yield* TasksKeys.list(zoya.app, { orgId })).keys, 1);
 
     // A device that merely lapses ends none of its keys.
     const strap = yield* linkFrom(yield* linkFrom(zoya.app));
@@ -532,14 +706,17 @@ it.effect("removing a device ends the keys made on it and down its chain, and no
     assert.isTrue(yield* works(onWatch));
 
     // The owner removes her first phone: every key made down its chain ends, two links down,
-    // lapsed or already signed out too; the key with no maker stays.
+    // lapsed or already signed out too.
     yield* remove(rhea.app, zoya.app);
     assert.deepStrictEqual(yield* Effect.forEach([onStrap, onWatch, unrecorded], works), [
       false,
       false,
-      true,
+      false,
     ]);
-    assert.lengthOf((yield* TasksKeys.list(rhea.app, { orgId, personId: zoya.personId })).keys, 1);
+    assert.deepStrictEqual(
+      (yield* TasksKeys.list(rhea.app, { orgId, personId: zoya.personId })).keys,
+      [],
+    );
   }).pipe(Effect.provide(layer)),
 );
 
