@@ -132,6 +132,7 @@ import { KinWorkAudienceRow } from "./KinWorkShareRow";
 import { KinWorkRow } from "./KinWorkTasks";
 import { KinWorkSection as Section } from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
+import { KinAskRecord } from "./KinAskRecord";
 import { kinClient } from "./kinClient";
 import { openDestination } from "./KinNotifications";
 import { useNowMinuteMs } from "./useKinClock";
@@ -569,8 +570,15 @@ function KinWorkItem(
                 {KIN_WORK_COPY.saving}
               </span>
             ) : null}
-            {!more ? null : (
-              <div className="ms-auto">
+            <div className="ms-auto flex items-center gap-1">
+              <KinAskRecord
+                environmentId={environmentId}
+                orgId={orgId}
+                record={{ key: view.key, title: view.title }}
+                disabled={saving}
+                onOpen={props.onClose}
+              />
+              {!more ? null : (
                 <Menu>
                   <MenuTrigger
                     render={
@@ -643,8 +651,8 @@ function KinWorkItem(
                     )}
                   </MenuPopup>
                 </Menu>
-              </div>
-            )}
+              )}
+            </div>
           </div>
           {edit !== null ? null : <Frame.Title>{view.title}</Frame.Title>}
           {view.remarks.map((remark) => (
