@@ -19,7 +19,7 @@ import * as KinPulse from "./KinPulse.ts";
 import { DAY_MS } from "./thresholds.ts";
 
 export const WEEKLY_RULE =
-  "This is the weekly brief, the owner's one post this morning. Below are the week's figures from these rows: goals, money still to come and overdue, open quotes, renewals this month, cold clients and meetings. Nothing posts them: pick only what matters, in a few short lines: what matters most this week and why, and each decision as what you did or will do and how to stop it. A meeting that already happened is not coming up; a follow-up you set is not a meeting. Each overdue line says what mail went and what waits on a Confirm, as recorded now: never call something sent a draft.";
+  "This is the weekly brief, the owner's one post this morning. Below are the week's figures from these rows: goals, money still to come and overdue, open quotes, renewals this month, cold clients and meetings. Kin adds them to your post as its last section, so don't restate a figure; give your judgement in a few short lines: what matters most this week and why, and each decision as what you did or will do and how to stop it. A meeting that already happened is not coming up; a follow-up you set is not a meeting. Each overdue line says what mail went and what waits on a Confirm, as recorded now: never call something sent a draft.";
 /** The seeded weekly check-in's schedule (`checkin-<slug>`), which arrives as a pulse event. */
 const WEEKLY_CHECK_IN = "checkin-weekly";
 export const wantsWeekly = (events: ReadonlyArray<KinEvent>) =>

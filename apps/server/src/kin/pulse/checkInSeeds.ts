@@ -45,7 +45,7 @@ const CHECK_IN_SEEDS = [
     title: "Evening summary",
     at: "18:30",
     days: WEEKDAYS,
-    what: "Evening summary.",
+    what: "Evening summary: tell the owner what got done today, what moved and what is still open and carries to tomorrow.",
   },
 ] as const;
 
