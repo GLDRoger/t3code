@@ -135,6 +135,8 @@ type SendInput = KinMessagesSendInput & {
   readonly relay?: KinMessageRelay;
   /** A person's words Kin posts again for them (`kin_hand_off`): no reply of theirs here. */
   readonly passedOn?: KinMessageOrigin;
+  /** Their words from a group Kin posts again here (`kin_take_private`): no reply of theirs. */
+  readonly replies?: false;
 };
 type WidgetUpsertInput = {
   readonly chatId: KinChatId;
@@ -1395,6 +1397,7 @@ const make = Effect.gen(function* () {
       placeReplyFigures: input.placeReplyFigures,
       relay: toPerson ? input.relay : undefined,
       passedOn: input.passedOn,
+      ...(input.replies === false ? { replies: false as const } : {}),
     });
     // A reply someone waits on doesn't use up the hourly room for unprompted notices.
     if (

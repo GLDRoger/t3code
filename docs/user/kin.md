@@ -126,7 +126,8 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   morning and then waits for you. Another agent won't ask you the same thing while it is open.
   To change the answer before the day, tap another one. You can also answer in words in the chat
   it asked in: only that agent takes it from what you wrote, the card says so, and Undo beside it
-  opens the question again.
+  opens the question again. It then waits for your answer with no default, and anything already
+  done from the first answer stands.
 - **It remembers.** Ask it to remember something and it keeps it. "Keep this between us" keeps it
   for the owner alone.
 - **It comes back later.** "Remind me Friday at 10" or "check on this in two hours" sets a reminder.

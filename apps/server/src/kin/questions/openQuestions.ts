@@ -19,6 +19,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 
+import { storedClientId } from "../chat/KinChatRepository.ts";
 import type { KinChatService } from "../chat/KinChatService.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
@@ -359,9 +360,10 @@ const cardIds = (row: QuestionRow) =>
   [row.raiseWidgetId ?? row.widgetId].filter((id): id is string => id !== null);
 
 /**
- * Whether this wake-up woke on the person's own message in the question's chat, written after it
- * was asked: the only words its asker may take an answer from. A copy passed on from elsewhere,
- * another chat, another person, a schedule or another agent never counts.
+ * Whether this wake-up woke on the person's own message in the question's chat, written after its
+ * card and after its last Undo, in the chat's order: the only words its asker may take an answer
+ * from. A copy passed on from elsewhere, another chat, another person, a schedule or another agent
+ * never counts.
  */
 const wokenByTheirWords = Effect.fn("KinQuestions.wokenByTheirWords")(function* (
   orgId: KinOrgId,
@@ -370,6 +372,20 @@ const wokenByTheirWords = Effect.fn("KinQuestions.wokenByTheirWords")(function* 
   row: QuestionRow,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const [card] =
+    row.widgetId === null
+      ? []
+      : yield* sql<{ seq: number }>`SELECT m.seq FROM kin_widgets w
+          JOIN kin_messages m ON m.org_id = w.org_id AND m.message_id = w.message_id
+          WHERE w.org_id = ${orgId} AND w.widget_id = ${row.widgetId}
+            AND m.chat_id = ${row.chatId}`;
+  // Each Undo of an answer taken from words is its tap's message in this chat (`markRan`).
+  const [undone] = yield* sql<{ seq: number | null }>`SELECT MAX(t.seq) AS seq
+    FROM kin_card_plans p JOIN kin_messages t ON t.org_id = p.org_id
+      AND t.message_id = p.ran_message_id AND t.chat_id = p.chat_id
+    WHERE p.org_id = ${orgId} AND p.chat_id = ${row.chatId}
+      AND json_extract(p.plan_json, '$.kind') = 'undo_answer'
+      AND json_extract(p.plan_json, '$.questionId') = ${row.questionId}`;
   const rows = yield* sql`SELECT 1 FROM kin_events e
     JOIN kin_messages m ON m.org_id = e.org_id
       AND m.message_id = json_extract(e.json, '$.messageId')
@@ -377,7 +393,12 @@ const wokenByTheirWords = Effect.fn("KinQuestions.wokenByTheirWords")(function* 
       AND e.tag = 'chat.message' AND json_extract(e.json, '$.origin') IS NULL
       AND m.chat_id = ${row.chatId} AND m.author_kind = 'human'
       AND m.author_person_id = ${row.personId} AND m.origin_json IS NULL
-      AND m.status = 'posted' AND m.created_at > ${iso(row.askedAt)}
+      AND m.status = 'posted'
+      AND ${card === undefined ? sql`m.created_at > ${iso(row.askedAt)}` : sql`m.seq > ${card.seq}`}
+      AND m.seq > ${undone?.seq ?? -1}
+      -- A copy kin_take_private posted before copies were marked: its claim's key is its client id.
+      AND NOT EXISTS (SELECT 1 FROM kin_handoffs h WHERE h.org_id = m.org_id
+        AND m.client_message_id = ${storedClientId("send", "")} || h.message_id)
     LIMIT 1`;
   return rows.length > 0;
 });
@@ -522,7 +543,7 @@ const tellAnswerUndone = Effect.fn("KinQuestions.tellAnswerUndone")(function* (
     receivedAt: iso(now),
     provenance: { _tag: "system" },
     dedupeKey: `question-answer-undone:${row.questionId}:${closedAt}`,
-    subject: { type: "question", questionId: row.questionId, undone: true },
+    subject: { type: "question", questionId: row.questionId, undone: true, words: true },
     lateByMs: 0,
     ...(lead === undefined || lead.ownerChatId === row.chatId
       ? {}
@@ -545,9 +566,8 @@ const undoNotNow = new KinChatError({
 
 /**
  * A tap on the note of an answer taken from someone's words: Keep leaves it; Undo, only by the
- * person it was asked of and only while that answer stands, opens the question again with its
- * cards, its default and day as they were. A day that passed meanwhile starts afresh from now,
- * as a restored agent's questions do, so no default is taken the moment it reopens.
+ * person it was asked of, only while that answer stands and its asker is still here, opens the
+ * question again on its cards, waiting for that person with no default.
  */
 export const runAnswered = Effect.fn("KinQuestions.runAnswered")(function* (
   tap: { readonly orgId: KinOrgId; readonly personId: KinPersonId; readonly now: number },
@@ -582,12 +602,18 @@ export const runAnswered = Effect.fn("KinQuestions.runAnswered")(function* (
       title: "Kept",
       text: plan.answer === null ? "Your answer stands." : `“${plan.answer}” stands.`,
     } satisfies KinChoiceOutcome;
-  const clock = yield* personClock(orgId, row.personId);
-  const passed = row.dueAt <= tap.now;
-  const dueAt = passed ? defaultDue(tap.now, clock.zone, clock.days) : row.dueAt;
-  const actAt = !passed ? row.actAt : row.safe ? dueAt : raiseAt(dueAt, clock.zone, clock.days);
+  const [asker] = yield* sql`SELECT 1 FROM kin_agents a
+    JOIN kin_leads l ON l.org_id = a.org_id AND l.agent_id = a.agent_id
+    WHERE a.org_id = ${orgId} AND a.agent_id = ${row.agentId} AND a.retired_at IS NULL`;
+  if (asker === undefined)
+    return {
+      title: "Nothing was undone",
+      text: `${row.agentName} is no longer here, so the question stays closed and its answer stands as taken. You can raise it with another agent.`,
+    } satisfies KinChoiceOutcome;
+  // Open again with no default and nothing due (`raised_at`): it waits for its person, so
+  // nothing at its day repeats what the first answer did.
   yield* sql`UPDATE kin_questions SET state = 'open', answer = NULL, closed_at = NULL,
-      due_at = ${dueAt}, act_at = ${actAt}
+      default_label = NULL, safe = 0, raised_at = COALESCE(raised_at, ${tap.now})
     WHERE org_id = ${orgId} AND question_id = ${row.questionId} AND state = 'answered'
       AND closed_at = ${plan.closedAt}`;
   for (const widgetId of cardIds(row))
@@ -597,14 +623,12 @@ export const runAnswered = Effect.fn("KinQuestions.runAnswered")(function* (
       awaiting: [row.personId],
     });
   yield* tellAnswerUndone(orgId, row, plan.closedAt, tap.now);
-  const when = dayWord(dueAt, tap.now, clock.zone);
-  const next =
-    row.defaultLabel === null || !row.safe
-      ? "it waits for your answer"
-      : `${passed ? "its day had passed, so " : ""}${row.agentName} goes with “${row.defaultLabel}” ${when} unless you answer`;
   return {
     title: "Undone",
-    text: oneLine(`“${row.question}” is open again: ${next}.`, 600),
+    text: oneLine(
+      `“${row.question}” is open again, and ${row.agentName} waits for your answer. What was already done from the first answer stands.`,
+      600,
+    ),
     undone: {
       personId: tap.personId,
       name: yield* personName(orgId, tap.personId),
@@ -1079,19 +1103,22 @@ export const dueTurnText = Effect.fn("KinQuestions.dueTurnText")(function* (
   };
 });
 
-/** What the asker's turn is told when a default Kin took was undone; undefined when it wasn't. */
+/**
+ * What the asker's turn is told when its person undid what was taken: a default Kin took, or
+ * (`words`) the answer the asker took from their words. Undefined when there is nothing to say.
+ */
 export const undoneTurnText = Effect.fn("KinQuestions.undoneTurnText")(function* (
   orgId: KinOrgId,
-  questionId: string,
+  subject: { readonly questionId: string; readonly words?: true | undefined },
 ) {
-  const row = yield* readQuestion(orgId, questionId);
-  // Open again: its person undid the answer its asker took from their words (`runAnswered`).
-  if (row?.state === "open") {
+  const row = yield* readQuestion(orgId, subject.questionId);
+  if (row === undefined) return undefined;
+  // Which was undone is the event's, never read off the row: it may have moved on since.
+  if (subject.words === true) {
     const who = yield* personName(orgId, row.personId);
     return `Your question to ${who}, “${row.question}”: ${who} undid the answer you took from their words, so it is open again on its card. Don't act on that answer or ask again; wait for theirs.`;
   }
-  if (row === undefined || row.state !== "default_taken" || row.defaultLabel === null)
-    return undefined;
+  if (row.state !== "default_taken" || row.defaultLabel === null) return undefined;
   return `Your question to ${yield* personName(orgId, row.personId)}, “${row.question}”, got no answer, so Kin took your default “${row.defaultLabel}”. It has now been undone: what it changed is back as it was. Don't do it again or ask the same again; ask anew only if it still needs deciding.`;
 });
 
