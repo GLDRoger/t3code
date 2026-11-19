@@ -25,6 +25,7 @@ import {
   kinTeamEntrySummary,
   kinTeamView,
   kinTeammateActions,
+  kinTeammateKind,
   kinTeammateKindEditable,
   type KinTeamEdits,
   type KinTeamList,
@@ -89,6 +90,16 @@ describe("kinTeamView", () => {
     });
     // An unopened link is still a way in, so it can be taken away.
     expect(kinTeammateActions(noAccess!)).toMatchObject({ remove: true });
+    // Already removed, the link out is ended by cancelling it, never by removing them again.
+    const [, , , removed] = kinTeamView(
+      { ...list, removed: [{ personId: tomas, access: "member" }] },
+      KIN_TEAM_NO_EDITS,
+      owner,
+    );
+    expect(kinTeammateActions(removed!)).toMatchObject({
+      cancel: { label: "Cancel unopened link" },
+      remove: false,
+    });
   });
 
   it("shows the owner and co-owners, and lets only the owner act on a co-owner or change a kind", () => {
@@ -114,6 +125,22 @@ describe("kinTeamView", () => {
     expect(kinTeammateActions(coOwner!, "owner").remove).toBe(true);
     expect(kinTeammateKindEditable(coOwner!, "owner")).toBe(true);
     expect(kinTeammateKindEditable(coOwner!, "co_owner")).toBe(false);
+    // Removed, the owner's picker holds the level a new link brings them back at, not the
+    // member's level the host holds meanwhile; a host that doesn't say keeps today's.
+    const away = (back?: "co_owner" | "member") =>
+      kinTeamView(
+        {
+          ...kinds,
+          people: [{ ...person(owner, "Olu"), access: "owner" }, person(mira, "Mira")],
+          removed: [{ personId: mira, ...(back === undefined ? {} : { access: back }) }],
+        },
+        KIN_TEAM_NO_EDITS,
+        owner,
+      )[1]!;
+    expect(kinTeammateKind(away("co_owner"))).toBe("co_owner");
+    expect(kinTeammateKind(away("member"))).toBe("member");
+    expect(kinTeammateKind(away())).toBe("member");
+    expect(kinTeammateKindEditable(away("co_owner"), "owner")).toBe(true);
   });
 
   it("carries a member's places and says which projects they lead", () => {

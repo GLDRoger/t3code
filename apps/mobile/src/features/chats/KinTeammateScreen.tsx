@@ -12,6 +12,7 @@ import {
   kinTeamView,
   kinTeammateActions,
   kinTeammateAgentsLine,
+  kinTeammateKind,
   kinTeammateKindEditable,
   kinTeammateLeadLine,
   type KinMadeInvite,
@@ -229,8 +230,8 @@ function KinTeammateDetails(props: {
 
   const askKind = (access: (typeof KIN_ACCESS_CHOICES)[number]["access"]) => {
     const { personId } = teammate;
-    if (personId === null || access === teammate.access) return;
-    const copy = kinAccessChangeCopy(teammate.name, access);
+    if (personId === null || access === kinTeammateKind(teammate)) return;
+    const copy = kinAccessChangeCopy(teammate.name, access, teammate.backAs !== null);
     Dialog.confirm({
       title: copy.title,
       message: copy.detail,
@@ -312,13 +313,15 @@ function KinTeammateDetails(props: {
         </KinPersonTasks>
       )}
       {kinTeammateKindEditable(teammate, props.viewer) ? (
-        <ListSection title={KIN_TEAM_COPY.canDo}>
+        <ListSection
+          title={teammate.backAs === null ? KIN_TEAM_COPY.canDo : KIN_TEAM_COPY.canDoBack}
+        >
           {KIN_ACCESS_CHOICES.map((choice, index) => (
             <ListChoiceRow
               key={choice.access}
               label={choice.label}
               description={choice.detail}
-              selected={teammate.access === choice.access}
+              selected={kinTeammateKind(teammate) === choice.access}
               separated={index > 0}
               disabled={busy}
               onPress={() => askKind(choice.access)}

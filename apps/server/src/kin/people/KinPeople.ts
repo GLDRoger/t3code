@@ -23,6 +23,7 @@ import {
   type KinInviteAcceptRequest,
   type KinInviteAcceptResult,
   type KinPeopleListInvitesResult,
+  type KinPeopleListResult,
   type KinPeopleRevokeInviteInput,
   type KinPeopleListDevicesInput,
   type KinPeopleListDevicesResult,
@@ -162,6 +163,7 @@ export class KinPeople extends Context.Service<
         joined: ReadonlyArray<KinPersonId>;
         /** Owner level only: a member reads names. */
         places?: ReadonlyArray<KinPersonPlaces>;
+        removed?: KinPeopleListResult["removed"];
       },
       Failure
     >;
@@ -721,7 +723,20 @@ export const make = Effect.gen(function* () {
         joined: reachable,
       };
     const places = yield* Effect.forEach(people, (one) => placesFor(orgId, one.personId));
-    return { people, joined: reachable, places };
+    const kept = yield* sql<{
+      personId: KinPersonId;
+      access: string | null;
+    }>`SELECT person_id AS "personId", json_extract(removed_access_json, '$.access') AS access
+      FROM kin_people WHERE org_id = ${orgId} AND removed_at IS NOT NULL ORDER BY person_id`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinPeople.listRemoved")),
+    );
+    // Only the owner changes levels, so only the owner reads the one they come back at.
+    const ownerHimself = isOwnerHimself(identity.owner, caller.personId);
+    const removed = kept.map(({ personId, access }) => ({
+      personId,
+      ...(ownerHimself && (access === "co_owner" || access === "member") ? { access } : {}),
+    }));
+    return { people, joined: reachable, places, removed };
   });
   const placesFor = Effect.fn("KinPeople.placesFor")(function* (
     orgId: KinOrgId,
@@ -1001,20 +1016,31 @@ export const make = Effect.gen(function* () {
           const caller = yield* owner(session, input.orgId);
           yield* mayActOn(caller, input.orgId, input.personId);
           const now = (yield* DateTime.now).epochMilliseconds;
-          const leftAt = DateTime.formatIso(DateTime.makeUnsafe(now));
           const gone = yield* person(input.orgId, input.personId);
-          // Removed, they hold no level anywhere; what they had is kept for a new link to restore.
-          yield* sql`UPDATE kin_people SET removed_access_json = json_object('access', access,
-              'clients', sees_clients, 'docs', sees_docs, 'money', sees_money),
-              access = 'member', sees_clients = 1, sees_docs = 1, sees_money = 0,
-              removed_at = ${now}
+          const [earlier] = yield* sql<{ removedAt: number | null }>`SELECT
+              removed_at AS "removedAt" FROM kin_people
             WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
-            Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessReset")),
+            Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessEarlier")),
           );
-          yield* viewMoved(input.orgId, input.personId);
-          if (gone.access === "co_owner") yield* closeStranded(input.orgId, gone);
-          if (Option.isSome(records))
-            yield* noteTasks(records.value, caller.personId, input, "accessRemoved");
+          // Already removed: what was kept and its instant stay, so `bringBack` still finds all
+          // it closed; what has opened since closes at that same instant.
+          const before = earlier?.removedAt ?? null;
+          const removedAt = before ?? now;
+          const leftAt = DateTime.formatIso(DateTime.makeUnsafe(removedAt));
+          if (before === null) {
+            // Removed, they hold no level anywhere; what they had is kept for a new link to restore.
+            yield* sql`UPDATE kin_people SET removed_access_json = json_object('access', access,
+                'clients', sees_clients, 'docs', sees_docs, 'money', sees_money),
+                access = 'member', sees_clients = 1, sees_docs = 1, sees_money = 0,
+                removed_at = ${now}
+              WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
+              Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessReset")),
+            );
+            yield* viewMoved(input.orgId, input.personId);
+            if (gone.access === "co_owner") yield* closeStranded(input.orgId, gone);
+            if (Option.isSome(records))
+              yield* noteTasks(records.value, caller.personId, input, "accessRemoved");
+          }
           // An unused link would let them straight back in.
           yield* sql`UPDATE kin_people_invites SET revoked_at = ${now}
         WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND consumed_at IS NULL
@@ -1044,7 +1070,7 @@ export const make = Effect.gen(function* () {
         WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessPush")),
           );
-          yield* sql`UPDATE kin_lead_access SET revoked_at = ${now}
+          yield* sql`UPDATE kin_lead_access SET revoked_at = ${removedAt}
         WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND revoked_at IS NULL`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessLeads")),
           );

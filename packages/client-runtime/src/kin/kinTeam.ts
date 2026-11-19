@@ -63,6 +63,8 @@ export interface KinTeamList {
   readonly profiles?: ReadonlyArray<KinPersonProfile> | undefined;
   /** What each person sees beyond Tasks, from a host that has places. */
   readonly places?: ReadonlyArray<KinPersonPlaces> | undefined;
+  /** Whose access was removed, from a host that says. */
+  readonly removed?: KinPeopleListResult["removed"] | undefined;
 }
 
 /** What the owner did that the host hasn't confirmed yet, and the last refusal. */
@@ -100,6 +102,10 @@ export interface KinTeammate {
   readonly load: string;
   /** Their places and the projects they lead; null for the owner-level and invites. */
   readonly places: KinPersonPlaces | null;
+  /** Their access was removed; a new link lets them back in. */
+  readonly removed: boolean;
+  /** Removed, the level a new link brings them back at, as only the owner reads it. */
+  readonly backAs: KinPeopleSetAccessInput["access"] | null;
 }
 
 /** "3 open, 1 late", "2 open" or "Nothing open". */
@@ -190,16 +196,18 @@ export function kinTeamView(
     const you = person.personId === ownerPersonId;
     const access = person.access ?? "member";
     // Removing access also cancels the person's unused links.
-    const removed = edits.removed.has(person.personId);
-    const invite = removed ? undefined : invites.find((held) => held.personId === person.personId);
+    const removing = edits.removed.has(person.personId);
+    const invite = removing ? undefined : invites.find((held) => held.personId === person.personId);
     const state: KinTeammateState = you
       ? "you"
       : access === "owner"
         ? "owner"
-        : joined.has(person.personId) && !removed
+        : joined.has(person.personId) && !removing
           ? "joined"
           : "no_access";
     const until = invite === undefined ? "" : formatKinInviteDay(invite.expiresAt);
+    const gone = list.removed?.find((held) => held.personId === person.personId);
+    const backAs = gone?.access ?? null;
     const places =
       access === "member"
         ? (list.places?.find((held) => held.personId === person.personId) ?? null)
@@ -216,6 +224,8 @@ export function kinTeamView(
       roles: roles.get(person.personId) ?? "",
       load: loads.get(person.personId) ?? "",
       places,
+      removed: gone !== undefined,
+      backAs,
       detail: `${namesake === null ? "" : `${namesake} · `}${
         state === "you"
           ? "You"
@@ -246,6 +256,8 @@ export function kinTeamView(
       roles: "",
       load: "",
       places: null,
+      removed: false,
+      backAs: null,
       detail: `Hasn't joined yet. The link works until ${formatKinInviteDay(invite.expiresAt)}.`,
     });
   }
@@ -448,7 +460,9 @@ export function kinTeammateActions(
               : "Lets them back in as the same person, with their chats.",
           },
     cancel: replaces ? kinCancelInviteCopy(teammate) : null,
-    remove: teammate.personId !== null && (teammate.state === "joined" || replaces),
+    // Already removed, an unopened link is ended by cancelling it.
+    remove:
+      teammate.personId !== null && !teammate.removed && (teammate.state === "joined" || replaces),
   };
 }
 
@@ -470,11 +484,28 @@ export const KIN_ACCESS_CHOICES = [
   readonly detail: string;
 }>;
 
-/** What the owner is asked before changing someone's kind. */
+/** The kind the owner's picker shows as chosen: for someone removed, the one they come back at. */
+export const kinTeammateKind = (teammate: KinTeammate): KinPersonAccess =>
+  teammate.backAs ?? teammate.access;
+
+/** What the owner is asked before changing someone's kind; `back` for someone removed. */
 export function kinAccessChangeCopy(
   name: string,
   access: KinPeopleSetAccessInput["access"],
+  back = false,
 ): { readonly title: string; readonly detail: string; readonly confirm: string } {
+  if (back)
+    return access === "co_owner"
+      ? {
+          title: `Make ${name} a co-owner?`,
+          detail: `A new link brings ${name} back as a co-owner.`,
+          confirm: "Make co-owner",
+        }
+      : {
+          title: `Make ${name} a member?`,
+          detail: `A new link brings ${name} back as a member.`,
+          confirm: "Make member",
+        };
   return access === "co_owner"
     ? {
         title: `Make ${name} a co-owner?`,
@@ -651,6 +682,7 @@ export type KinTeamActions = ReturnType<typeof createKinTeamActions>;
 /** A teammate's page. */
 export const KIN_TEAM_COPY = {
   canDo: "What they can do",
+  canDoBack: "What they can do when they're back",
   canSee: "What they can see",
   openAgentToChange: (name: string) => `Open an agent to change whether ${name} can message it.`,
   sharedAlways: "Tasks shared with the team, always.",
