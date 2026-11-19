@@ -1,10 +1,11 @@
 import { assert, describe, it } from "@effect/vitest";
-import { KinOrgId, KinPersonId, KinTrigger } from "@t3tools/contracts";
+import { CommandId, KinOrgId, KinPersonId, KinTrigger, RunId, ThreadId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -21,6 +22,7 @@ import { personHoldNow } from "./triggers/quietHold.ts";
 import * as KinTriggerInbox from "./triggers/KinTriggerInbox.ts";
 import * as KinTriggerScheduler from "./triggers/KinTriggerScheduler.ts";
 import * as KinTriggerStore from "./triggers/KinTriggerStore.ts";
+import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 
@@ -171,6 +173,36 @@ describe("Kin's dev clock", () => {
           ),
           config(true),
         ),
+      ),
+    ),
+  );
+
+  it.effect("a turn Kin starts on the moved clock is one T3's worker can take at once", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(EVENING);
+      yield* writeOffset(7 * HOUR);
+      yield* Effect.gen(function* () {
+        assert.strictEqual(yield* Clock.currentTimeMillis, EVENING + 7 * HOUR);
+        yield* (yield* EffectOutbox.EffectOutboxV2).enqueue([
+          {
+            id: "effect:kin-wakeup",
+            commandId: CommandId.make("kin-wakeup:w1"),
+            threadId: ThreadId.make("kin:lead"),
+            request: { type: "provider-turn.start", runId: RunId.make("run:kin:1") },
+          },
+        ]);
+      }).pipe(
+        Effect.provide(
+          DevClock.realClockFor(EffectOutbox.EffectOutboxV2).pipe(
+            Layer.provideMerge(DevClock.layer),
+          ),
+        ),
+      );
+      const claimed = yield* (yield* EffectOutbox.EffectOutboxV2).claimNext({ workerId: "t3" });
+      assert.strictEqual(Option.getOrUndefined(claimed)?.id, "effect:kin-wakeup");
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(EffectOutbox.layer.pipe(Layer.provide(Sqlite.layerMemory)), config(true)),
       ),
     ),
   );
