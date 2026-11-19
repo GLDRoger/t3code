@@ -244,7 +244,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
           "device",
         );
       } else if (action === "expired-revocation") {
-        yield* TestClock.adjust(Duration.minutes(61));
+        // A pairing link's session renews, so it lapses only once its renewal window has passed.
+        yield* TestClock.adjust(Duration.sum(Duration.days(30), Duration.minutes(1)));
         yield* sessions.revoke(original.sessionId);
         yield* exchange();
       } else if (

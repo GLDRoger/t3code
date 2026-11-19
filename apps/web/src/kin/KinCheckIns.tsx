@@ -14,7 +14,7 @@ import { AsyncResult } from "effect/reactivity";
 import { useId, useState } from "react";
 
 import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
-import { searchableSetting } from "../components/settings/settingsSearch";
+import { useSearchableSetting } from "../components/settings/settingsSearch";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
@@ -45,6 +45,7 @@ export function KinCheckInsSetting(props: { readonly inDialog?: boolean }) {
 }
 
 function CheckIns(props: KinWorkTarget & { readonly inDialog: boolean }) {
+  const searchableSetting = useSearchableSetting();
   const query = { environmentId: props.environmentId, input: { orgId: props.orgId } };
   const atom = kinClient.checkIns(query);
   const result = useAtomValue(atom);

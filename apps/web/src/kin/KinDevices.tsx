@@ -51,7 +51,7 @@ import {
   DialogTitle,
 } from "../components/ui/dialog";
 import { QRCodeSvg } from "../components/ui/qr-code";
-import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
+import { namedClipboardTarget, useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { usePreparedConnection } from "../state/session";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -265,7 +265,9 @@ function CopyButton(props: {
   readonly label: string;
   readonly what: string;
 }) {
-  const { copyToClipboard, isCopied } = useCopyToClipboard({ target: props.what });
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    target: namedClipboardTarget(props.what),
+  });
   return (
     <Button size="sm" variant="outline" onClick={() => copyToClipboard(props.text)}>
       {isCopied ? <CheckIcon /> : <CopyIcon />}

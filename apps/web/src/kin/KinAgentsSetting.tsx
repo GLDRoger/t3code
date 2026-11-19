@@ -14,7 +14,7 @@ import { ChevronRightIcon } from "lucide-react";
 import { useState } from "react";
 
 import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
-import { searchableSetting } from "../components/settings/settingsSearch";
+import { useSearchableSetting } from "../components/settings/settingsSearch";
 import { Switch } from "../components/ui/switch";
 import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../hooks/useSettings";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -35,6 +35,7 @@ export function KinAgentsSetting() {
 }
 
 function OwnerLevelAgents(props: KinWorkTarget) {
+  const searchableSetting = useSearchableSetting();
   if (!useKinOwnerLevel(props.environmentId)) return null;
   return (
     <SettingsSection {...searchableSetting("kin-agents")}>
@@ -47,6 +48,7 @@ function OwnerLevelAgents(props: KinWorkTarget) {
 
 /** The model new agents start on; the owner and co-owners change it. */
 export function KinAgentDefaultsSetting(props: KinWorkTarget) {
+  const searchableSetting = useSearchableSetting();
   if (!useKinOwnerLevel(props.environmentId)) return null;
   return (
     <SettingsSection {...searchableSetting("kin-agents")}>
