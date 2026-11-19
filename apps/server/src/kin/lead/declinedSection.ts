@@ -1,4 +1,9 @@
-import { KIN_CHOICE_CARD_TTL_MS, type KinAgentId, type KinOrgId } from "@t3tools/contracts";
+import {
+  KIN_CHOICE_CARD_TTL_MS,
+  type KinAgentId,
+  type KinOrgId,
+  type KinWidgetId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -7,6 +12,9 @@ import * as SqlClient from "effect/sql/SqlClient";
  * owner answered not this time, read from Kin's rows when the turn is built: the agent's own
  * earlier words in the chat said they waited, and only this says they no longer do.
  */
+
+export const DECLINED_RULE =
+  "Requests of this person's that you passed on and Kin put to the owner on a card, which the owner answered not this time. This is Kin's record now and outranks anything said in the chat, your own words included: nothing about these waits on the owner or anyone. When one comes up again, say it was declined; never say it waits or that the owner has been asked. Pass a new message of theirs on only if it asks for something new, which puts it to the owner again.";
 
 /** A "not this time" is about this time: by a working weekend later, a new ask is a new one. */
 export const DECLINED_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
@@ -28,7 +36,7 @@ export const declinedRequests = Effect.fn("KinLeadPrompt.declined")(function* (i
     agentName: string;
     personName: string;
     askedAt: string;
-    widgetId: string | null;
+    widgetId: KinWidgetId | null;
     by: string | null;
     tappedAt: string | null;
   }>`SELECT h.message_id AS "messageId", m.body, h.to_agent_id AS "toAgentId",

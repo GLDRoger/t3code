@@ -88,6 +88,7 @@ import {
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { WEEKLY_RULE } from "../../apps/server/src/kin/pulse/weekly.ts";
 import { STARTED_RULE } from "../../apps/server/src/kin/lead/startedSection.ts";
+import { DECLINED_RULE } from "../../apps/server/src/kin/lead/declinedSection.ts";
 import { UNDO_RULE } from "../../apps/server/src/kin/lead/undoSection.ts";
 import { defaultCharacterFor } from "../../apps/server/src/kin/lead/characterDefaults.ts";
 import { characterForTurn, colleagueLine } from "../../apps/server/src/kin/lead/characters.ts";
@@ -1303,6 +1304,7 @@ const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["world"]) 
     .replaceAll("{{REPLY_SHAPE}}", REPLY_SHAPE)
     .replaceAll("{{HANDED_BACK_WORK}}", HANDED_BACK_WORK)
     .replaceAll("{{STARTED_RULE}}", STARTED_RULE)
+    .replaceAll("{{DECLINED_RULE}}", DECLINED_RULE)
     .replaceAll("{{SHARED_TURN}}", SHARED_TURN_LINE)
     .replaceAll("{{WITHDRAWN_WORK}}", WITHDRAWN_WORK);
 

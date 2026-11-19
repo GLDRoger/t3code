@@ -1410,7 +1410,12 @@ it.effect(
 
         // "This time": her new request is put to the owner on a card of its own.
         yield* mate.ask("meera-third", "Can I get the staging logs now?");
-        yield* mate.pass("Tech lead", "meera-third");
+        const anew = {
+          passed: false as const,
+          note: `${then} an earlier request of Meera's for Tech lead. This message is a new request: Meera may not message Tech lead, so ${me} has been asked about it on a new card and hasn't answered yet; nothing has gone to Tech lead. The card asks ${me} to let this request reach Tech lead and to let Meera message Tech lead from then on. Anything that would leave the company, such as a mail or a payment, still needs ${me}'s own Confirm. When a yes or a not this time takes effect, Kin posts it in this chat. Tell Meera the earlier request was declined and this new one is with ${me}, and promise nothing more.`,
+        };
+        assert.deepStrictEqual(yield* mate.pass("Tech lead", "meera-third"), anew);
+        assert.deepStrictEqual(yield* mate.pass("Tech lead", "meera-third"), anew);
         const cards = yield* ownerCard(ctx);
         assert.lengthOf(cards, 2);
         yield* sql`UPDATE kin_people SET removed_at = 1 WHERE org_id = ${orgId} AND person_id = 'meera'`;
