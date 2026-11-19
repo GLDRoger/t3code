@@ -99,7 +99,7 @@ export const DocumentResult = Schema.Struct({
   entry: Schema.optional(Schema.String),
   /** writeRecipe: the folder holding the recipe to edit, until Kin keeps it. */
   folder: Schema.optional(Schema.String),
-  /** writeRecipe: what to do next. */
+  /** writeRecipe: what to do next; a made file: what to call it. */
   next: Schema.optional(Schema.String),
 });
 
@@ -233,9 +233,13 @@ export const make = leadTool("KinDocuments.make", (lead, input: DocumentInput) =
       })),
       ...(made.sensitive ? { sensitive: true as const } : {}),
       ...(quoted === undefined ? {} : { entry: quoted.entry }),
+      ...(made.documents.length === 0 ? {} : { next: filedLine(made.documents) }),
     };
   }),
 );
+
+const filedLine = (documents: ReadonlyArray<{ readonly title: string }>) =>
+  `Filed, with its card in the chat. Call it ${documents.map((doc) => JSON.stringify(doc.title)).join(" and ")} in your reply, never by its key.`;
 
 /**
  * An invoice draft from a quote, with the quote's own inputs the invoice recipe takes: its lines and

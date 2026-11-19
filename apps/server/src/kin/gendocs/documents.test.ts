@@ -415,6 +415,7 @@ describe("recipe documents", () => {
         draft: true,
         documents: [{ key: "D-1", title: "Invoice INV-1", version: 1 }],
         sensitive: true,
+        next: 'Filed, with its card in the chat. Call it "Invoice INV-1" in your reply, never by its key.',
       });
       assert.deepStrictEqual(shownCards, ["D-1"], "its doc card is in the chat");
       const { request, data } = rendered.at(-1)!;
