@@ -19,8 +19,7 @@ import { uuidv4 } from "../../../lib/uuid";
 import { useAssetUrl, useRefreshAssetUrl } from "../../../state/assets";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
-import { useKinOpen } from "../state/useKinOpen";
-import { kinOpenWaiting } from "@t3tools/client-runtime/kin/kinOpenView";
+import { useKinOpenWaitingFor } from "../state/useKinOpen";
 import { kinChoiceDefaultLine } from "@t3tools/client-runtime/kin/kinWaitingAsk";
 import { kinConnectionChange } from "@t3tools/client-runtime/kin/kinConnections";
 import {
@@ -504,10 +503,10 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
     answered === null && pending === null && kinSendEditOffered(choice, phase, canAct && canEdit);
   const shownEdit = kinSendEditShown(editing, editable) ? editing : null;
   const editBound = shownEdit === null ? null : kinSendEditBound(shownEdit, choice);
-  const open = useKinOpen({ environmentId, orgId: choice.orgId });
+  const waiting = useKinOpenWaitingFor({ environmentId, orgId: choice.orgId });
   const takes =
-    answered === null && phase === "open" && open.read !== null
-      ? kinChoiceDefaultLine(choice.widgetId, kinOpenWaiting(open.read), nowMs)
+    answered === null && phase === "open"
+      ? kinChoiceDefaultLine(choice.widgetId, waiting, nowMs)
       : null;
   const undone = kinChoiceUndoneLine(choice, props.viewerPersonId, new Date(nowMs));
 

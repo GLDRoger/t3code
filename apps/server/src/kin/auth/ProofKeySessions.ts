@@ -4,11 +4,12 @@ import * as Layer from "effect/Layer";
 import type * as Context from "effect/Context";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
-import type { AuthSessionId } from "@t3tools/contracts";
+import type { AuthSessionId, KinOrgId } from "@t3tools/contracts";
 import * as SessionStore from "../../auth/SessionStore.ts";
 import * as Ref from "effect/Ref";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as KinEnabled from "../KinEnabled.ts";
+import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { revokeLinkedDevices } from "./linkedDevices.ts";
 import { SessionHooks } from "./sessionHooks.ts";
@@ -70,6 +71,30 @@ const enabled = (options: { readonly recordsPairings: boolean }) =>
     SessionHooks,
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
+      const refresh = yield* RefreshHub.KinRefreshObserver;
+      // Open device and key lists read People; each moves once the write commits, as Remove does.
+      const ended = (orgs: ReadonlyArray<KinOrgId>) =>
+        Effect.forEach(orgs, (orgId) => refresh.touch(orgId, "people"), { discard: true });
+      // Every session a device's proof key ever had, lapsed and revoked ones too.
+      const sessionsOf = (thumbprints: Statement.Fragment) =>
+        sql<{
+          session_id: AuthSessionId;
+        }>`SELECT session_id FROM kin_auth_session_keys WHERE proof_key_thumbprint IN (${thumbprints})`;
+      const keyOrgs = Effect.fn("ProofKeySessions.keyOrgs")(function* (
+        sessionIds: ReadonlyArray<AuthSessionId>,
+      ) {
+        if (sessionIds.length === 0) return [];
+        // The CLI can revoke before Kin's migrations have added the keys.
+        const tables =
+          yield* sql`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'kin_tasks_keys'`;
+        if (tables.length === 0) return [];
+        // No org filter: the companies are what this asks. A key Kin ended itself was told there.
+        const rows = yield* sql<{
+          org_id: KinOrgId;
+        }>`SELECT DISTINCT org_id FROM kin_tasks_keys
+          WHERE session_id IN ${sql.in(sessionIds)} AND revoked_at IS NULL ORDER BY org_id`;
+        return rows.map((row) => row.org_id);
+      });
       const blocked = Effect.fn("ProofKeySessions.blocked")(
         function* (thumbprint: string) {
           const [row] = yield* sql<{
@@ -222,16 +247,25 @@ const enabled = (options: { readonly recordsPairings: boolean }) =>
                   // A repair link issued before this block must not lift it.
                   yield* sql`UPDATE kin_auth_key_repairs SET consumed_at = ${now.epochMilliseconds}
               WHERE consumed_at IS NULL AND thumbprint IN (${blockedKeys})`;
+                  // A device whose key this blocks is removed whole: its earlier sessions' keys end.
+                  const blockedDevices = bulk ? [] : yield* sessionsOf(blockedKeys);
                   const signedOut = yield* sql<{
                     session_id: AuthSessionId;
                   }>`UPDATE auth_sessions SET revoked_at = ${DateTime.formatIso(now)} WHERE session_id IN (${selected}) AND revoked_at IS NULL RETURNING session_id`;
                   // From the session named too: one already ended another way still takes its own.
                   const linked = yield* revokeLinkedDevices(
                     sql,
-                    [...(bulk ? [] : [sessionId]), ...signedOut.map((row) => row.session_id)],
+                    [
+                      ...(bulk ? [] : [sessionId]),
+                      ...signedOut.map((row) => row.session_id),
+                      ...blockedDevices.map((row) => row.session_id),
+                    ],
                     caller,
                   );
-                  const ids = [...signedOut.map((row) => row.session_id), ...linked];
+                  // A coding-agent key signed out by its own session has no device to walk.
+                  const keyed = yield* keyOrgs(signedOut.map((row) => row.session_id));
+                  yield* ended([...new Set([...linked.orgs, ...keyed])]);
+                  const ids = [...signedOut.map((row) => row.session_id), ...linked.signedOut];
                   // Told once the outermost write commits, so a rollback takes nothing back.
                   yield* sql.afterCommit(
                     Effect.forEach(ids, (id) => removed(id as AuthSessionId), { discard: true }),
@@ -251,8 +285,9 @@ const enabled = (options: { readonly recordsPairings: boolean }) =>
                     // devices linked from it go with it, as with any other sign-out.
                     if (input?.replaceSessionId !== undefined) {
                       const linked = yield* revokeLinkedDevices(sql, [input.replaceSessionId]);
+                      yield* ended(linked.orgs);
                       yield* sql.afterCommit(
-                        Effect.forEach(linked, (id) => removed(id as AuthSessionId), {
+                        Effect.forEach(linked.signedOut, (id) => removed(id as AuthSessionId), {
                           discard: true,
                         }),
                       );
@@ -324,19 +359,18 @@ const enabled = (options: { readonly recordsPairings: boolean }) =>
                     yield* sql`UPDATE kin_auth_key_repairs SET consumed_at = ${now.epochMilliseconds}
               WHERE consumed_at IS NULL AND thumbprint = ${thumbprint}`;
                     const count = yield* store.revokeByProofKey(thumbprint);
-                    const keyed = yield* sql<{
-                      session_id: AuthSessionId;
-                    }>`SELECT session_id FROM kin_auth_session_keys WHERE proof_key_thumbprint = ${thumbprint}`;
+                    const keyed = yield* sessionsOf(sql`${thumbprint}`);
                     const linked = yield* revokeLinkedDevices(
                       sql,
                       keyed.map((row) => row.session_id),
                     );
+                    yield* ended(linked.orgs);
                     yield* sql.afterCommit(
-                      Effect.forEach(linked, (id) => removed(id as AuthSessionId), {
+                      Effect.forEach(linked.signedOut, (id) => removed(id as AuthSessionId), {
                         discard: true,
                       }),
                     );
-                    return count + linked.length;
+                    return count + linked.signedOut.length;
                   }),
                 )
                 .pipe(
@@ -363,7 +397,11 @@ export const layer = Layer.unwrap(
     const config = yield* KinEnabled.KinEnabled;
     // A failed enabled store must fail layer construction, never select the no-op reference.
     return config.enabled
-      ? enabled({ recordsPairings: true }).pipe(Layer.provide(KinPersistence.layer))
+      ? enabled({ recordsPairings: true }).pipe(
+          // The same hub Kin's screens hear: layers built once per server share one instance.
+          Layer.provide(RefreshHub.layer),
+          Layer.provide(KinPersistence.layer),
+        )
       : Layer.empty;
   }),
 ).pipe(Layer.provide(KinEnabled.layer));

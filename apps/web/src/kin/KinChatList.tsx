@@ -70,7 +70,7 @@ const STATE_COPY: Record<
   },
   noHost: {
     title: "Kin isn't set up here",
-    detail: "Connect to a T3 server that runs Kin to see your chats.",
+    detail: "Connect to a server that runs Kin to see your chats.",
   },
   unauthorized: {
     title: KIN_DEVICE_COPY.cantReadChats("browser"),

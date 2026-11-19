@@ -25,6 +25,7 @@ import {
   type KinWorkItemView,
   type KinWorkNames,
 } from "./kinWork.ts";
+import { kinWorkStatusOffer } from "./kinWorkChanges.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -48,7 +49,6 @@ export const KIN_TASK_RECORD = {
   openQuestion: "Open the question",
   waitingSend: "A draft is waiting for your OK",
   waitingQuestion: "A question is waiting",
-  editAll: "Edit title and brief",
   briefMoved: "The brief now says:",
   removeDetail: "It stays in Activity as removed, without its words or files.",
   noteTooLong: (max: number) => `Keep a note under ${max.toLocaleString()} characters.`,
@@ -304,6 +304,45 @@ export function kinNextStep(input: NextStepInput): KinNextStepView {
           ],
   };
 }
+
+/**
+ * Where a task page's own controls sit for this viewer: status on the page, the rest in the ••• /
+ * More menu; the Brief section carries the page's edit. Each is present only where the host takes
+ * that move from this viewer, and Done or Reopen only where the next-step card doesn't offer it.
+ */
+export function kinTaskControls(input: {
+  readonly view: Pick<
+    KinWorkItemView,
+    "state" | "closed" | "can" | "assignLabel" | "handBackTo" | "takeBack"
+  >;
+  /** This viewer may change the task, and give it to someone. */
+  readonly change: boolean;
+  readonly give: boolean;
+  /** What the next-step card offers (`kinNextStep(...).acts`). */
+  readonly step: ReadonlyArray<{ readonly id: KinNextStepAct }>;
+}) {
+  const { view, change, give } = input;
+  const onCard = (id: KinNextStepAct) => input.step.some((act) => act.id === id);
+  const offer = kinWorkStatusOffer(view);
+  const states =
+    change && !view.closed && offer.states.some((c) => view.can.states.includes(c.state));
+  const waiting = change && !view.closed && offer.waiting;
+  const done = change && offer.done && !onCard("done");
+  const reopen = change && offer.reopen && !onCard("reopen");
+  return {
+    page: {
+      status: done || reopen || states || waiting ? { done, reopen, states, waiting } : null,
+    },
+    menu: {
+      give: give && view.assignLabel !== null,
+      takeBack: give && view.takeBack,
+      handBack: change && view.handBackTo !== null,
+      drop: change && !view.closed && offer.drop,
+    },
+  };
+}
+
+export type KinTaskPageStatus = NonNullable<ReturnType<typeof kinTaskControls>["page"]["status"]>;
 
 function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
   const { item, view, names, now } = input;

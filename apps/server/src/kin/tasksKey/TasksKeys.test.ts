@@ -20,6 +20,7 @@ import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
@@ -30,7 +31,10 @@ import * as AuthHttp from "../../auth/http.ts";
 import { ServerSecretStore } from "../../auth/ServerSecretStore.ts";
 import { SessionStore } from "../../auth/SessionStore.ts";
 import { CloudLink } from "../../cloud/CloudLink.ts";
-import { layerAuthTest } from "../auth/ProofKeySessions.testkit.ts";
+import * as CliAuth from "../auth/EnvironmentAuthRuntime.ts";
+import { layerAuthTest, pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { cliCommits } from "../cli/announce.ts";
+import * as ServerConfig from "../../config.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import * as People from "../people/KinPeople.ts";
@@ -372,7 +376,7 @@ it.effect(
   "making or removing a key moves people once it commits, and a refusal moves nothing",
   () =>
     Effect.gen(function* () {
-      const { orgId, zoya } = yield* team;
+      const { orgId, rhea, zoya, arjun } = yield* team;
       const hub = yield* RefreshHub.KinRefreshHub;
       const heard = yield* Stream.toQueue(hub.changes(orgId), { capacity: "unbounded" });
       const start = (yield* Queue.take(heard)).people;
@@ -390,6 +394,34 @@ it.effect(
       assert.strictEqual(yield* reason(TasksKeys.issue(zoya.app, { orgId })), "limit");
       yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
       assert.strictEqual(yield* Queue.size(heard), 0);
+      // A sign-out outside Kin that ends her phone and its keys moves people once it commits.
+      const sessions = yield* SessionStore;
+      const signOut = sessions.revoke(zoya.app.sessionId);
+      const rolledBack = yield* (yield* SqlClient.SqlClient)
+        .withTransaction(signOut.pipe(Effect.andThen(Effect.fail("invented rollback"))))
+        .pipe(Effect.flip);
+      assert.strictEqual(rolledBack, "invented rollback");
+      yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+      assert.strictEqual(yield* Queue.size(heard), 0);
+      assert.isTrue(yield* signOut);
+      assert.strictEqual(yield* moved, start + 6);
+      // Sharing & access signs out a key's own session, or every session but the owner's app.
+      yield* sessions.revoke(arjun.app.sessionId);
+      assert.strictEqual(yield* moved, start + 7);
+      const rheas = yield* TasksKeys.issue(rhea.app, { orgId });
+      yield* TasksKeys.issue(rhea.app, { orgId });
+      assert.strictEqual(yield* moved, start + 9);
+      const single = sessions.revoke(rheas.key.sessionId, rhea.app.sessionId);
+      yield* (yield* SqlClient.SqlClient)
+        .withTransaction(single.pipe(Effect.andThen(Effect.fail("invented rollback"))))
+        .pipe(Effect.flip);
+      yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+      assert.strictEqual(yield* Queue.size(heard), 0);
+      assert.isTrue(yield* single);
+      assert.strictEqual(yield* moved, start + 10);
+      assert.strictEqual(yield* sessions.revokeAllExcept(rhea.app.sessionId), 1);
+      assert.strictEqual(yield* moved, start + 11);
+      assert.deepStrictEqual((yield* TasksKeys.list(rhea.app, { orgId })).keys, []);
     }).pipe(Effect.scoped, Effect.provide(RefreshHub.layer.pipe(Layer.provideMerge(layer)))),
 );
 
@@ -433,6 +465,168 @@ it.effect("Remove is offered exactly where revoke would take it", () =>
       );
     }
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect("removing a device ends the keys made on it and down its chain, and nothing else", () =>
+  Effect.gen(function* () {
+    const { orgId, rhea, zoya } = yield* team;
+    const people = yield* People.KinPeople;
+    const sessions = yield* SessionStore;
+    const sql = yield* SqlClient.SqlClient;
+    const linkFrom = Effect.fn("test.linkFrom")(function* (from: AuthenticatedSession) {
+      const link = yield* people.linkDevice(from, { orgId });
+      const joined = yield* people.accept({ secret: link.secret });
+      return yield* sessions.verify(joined.accessToken);
+    });
+    const keyOn = Effect.fn("test.keyOn")(function* (device: AuthenticatedSession) {
+      return (yield* TasksKeys.issue(device, { orgId })).secret;
+    });
+    const works = (secret: string) => TasksKeys.admit(secret).pipe(Effect.map(Option.isSome));
+    const remove = (by: AuthenticatedSession, device: AuthenticatedSession) =>
+      people.revokeDevice(by, { orgId, personId: zoya.personId, sessionId: device.sessionId });
+
+    const laptop = yield* linkFrom(zoya.app);
+    const onPhone = yield* keyOn(zoya.app);
+    const onLaptop = yield* keyOn(laptop);
+    // A key made before keys recorded their maker.
+    const unrecorded = yield* keyOn(laptop);
+    const { sessionId: unrecordedId } = yield* admitted(unrecorded);
+    yield* sql`UPDATE kin_tasks_keys SET made_by_session_id = NULL WHERE session_id = ${unrecordedId}`;
+    // Remove says which keys go with a device: only the live ones it made.
+    const made = Effect.fn("test.made")(function* (by: AuthenticatedSession) {
+      const { devices } = yield* people.listDevices(by, { orgId, personId: zoya.personId });
+      return new Map(devices.map((one) => [one.sessionId, one.keysMade]));
+    });
+    assert.deepStrictEqual(
+      yield* made(rhea.app),
+      new Map([
+        [zoya.app.sessionId, 1],
+        [laptop.sessionId, 1],
+      ]),
+    );
+
+    // The phone removes the laptop: the laptop's key ends, the phone's stays.
+    yield* remove(zoya.app, laptop);
+    assert.deepStrictEqual(yield* Effect.forEach([onPhone, onLaptop, unrecorded], works), [
+      true,
+      false,
+      true,
+    ]);
+    assert.lengthOf((yield* TasksKeys.list(zoya.app, { orgId })).keys, 2);
+
+    // A device that merely lapses ends none of its keys.
+    const strap = yield* linkFrom(yield* linkFrom(zoya.app));
+    const onStrap = yield* keyOn(strap);
+    // The test clock starts at the epoch, so only a time before it has passed.
+    yield* sql`UPDATE auth_sessions SET expires_at = '1969-12-31T00:00:00.000Z'
+      WHERE session_id = ${strap.sessionId}`;
+    assert.isTrue(yield* works(onStrap));
+
+    // Nor does one signed out some other way, leaving its key working. (Three keys at most, so
+    // the phone's goes first: the laptop already showed a device's own key ending.)
+    yield* TasksKeys.revoke(zoya.app, { orgId, sessionId: (yield* admitted(onPhone)).sessionId });
+    const watch = yield* linkFrom(zoya.app);
+    const onWatch = yield* keyOn(watch);
+    yield* sql`UPDATE auth_sessions SET revoked_at = '2026-01-01T00:00:00.000Z'
+      WHERE session_id = ${watch.sessionId}`;
+    assert.isTrue(yield* works(onWatch));
+
+    // The owner removes her first phone: every key made down its chain ends, two links down,
+    // lapsed or already signed out too; the key with no maker stays.
+    yield* remove(rhea.app, zoya.app);
+    assert.deepStrictEqual(yield* Effect.forEach([onStrap, onWatch, unrecorded], works), [
+      false,
+      false,
+      true,
+    ]);
+    assert.lengthOf((yield* TasksKeys.list(rhea.app, { orgId, personId: zoya.personId })).keys, 1);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "blocking a device's proof key ends the keys its earlier sessions made, and only that",
+  () =>
+    Effect.gen(function* () {
+      const { orgId } = yield* team;
+      const sessions = yield* SessionStore;
+      const sql = yield* SqlClient.SqlClient;
+      const works = (secret: string) => TasksKeys.admit(secret).pipe(Effect.map(Option.isSome));
+      // Rhea's phone renews into a new session for the same proof key; the one before lapses.
+      const renew = Effect.fn("test.renew")(function* () {
+        const issued = yield* sessions.issue({
+          subject: "browser",
+          proofKeyThumbprint: "invented-phone",
+        });
+        yield* pairSession(issued.sessionId);
+        const app = yield* sessions.verify(issued.token);
+        return { app, key: (yield* TasksKeys.issue(app, { orgId })).secret };
+      });
+      // The test clock starts at the epoch: a second on, a session that ran out then has lapsed.
+      yield* TestClock.adjust("1 second");
+      const lapse = (app: AuthenticatedSession) =>
+        sql`UPDATE auth_sessions SET expires_at = '1970-01-01T00:00:00.000Z'
+        WHERE session_id = ${app.sessionId}`;
+      const first = yield* renew();
+      yield* lapse(first.app);
+      const second = yield* renew();
+      yield* lapse(second.app);
+      // Signing out a lapsed session blocks no key, so it reaches no other session's keys.
+      yield* sessions.revoke(first.app.sessionId);
+      assert.deepStrictEqual(yield* Effect.forEach([first.key, second.key], works), [false, true]);
+      // The managed policy or the host CLI signs out the active one, which blocks the phone's key.
+      const current = yield* renew();
+      yield* sessions.revoke(current.app.sessionId);
+      assert.deepStrictEqual(yield* Effect.forEach([second.key, current.key], works), [
+        false,
+        false,
+      ]);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a host CLI revoke tells open lists once it commits, and a rollback tells nobody", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const dir = yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: "kin-tasks-cli-" }));
+    const { orgId, zoya } = yield* Effect.gen(function* () {
+      const made = yield* team;
+      const sessions = yield* SessionStore;
+      yield* TasksKeys.issue(made.zoya.app, { orgId: made.orgId });
+      // Rhea's phone, holding a proof key, as `auth connect-device revoke` ends one.
+      const phone = yield* sessions.issue({ subject: "browser", proofKeyThumbprint: "invented" });
+      yield* pairSession(phone.sessionId);
+      yield* TasksKeys.issue(yield* sessions.verify(phone.token), { orgId: made.orgId });
+      return made;
+    }).pipe(Effect.provide(layerAt(dir)));
+    const told = <A, E>(revoke: Effect.Effect<A, E, SessionStore | SqlClient.SqlClient>) =>
+      Effect.gen(function* () {
+        const changes = cliCommits();
+        yield* Effect.result(revoke).pipe(
+          Effect.provide(
+            CliAuth.layerRuntimeWith(changes.layer).pipe(
+              Layer.provide(
+                Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ env: {} })),
+              ),
+              Layer.provide(ServerConfig.layerTest(process.cwd(), dir)),
+              Layer.provide(NodeCrypto.layer),
+            ),
+          ),
+        );
+        return changes.all();
+      });
+    const people = [{ orgId, topics: ["people"], records: false }];
+    const signOut = Effect.flatMap(SessionStore, (sessions) => sessions.revoke(zoya.app.sessionId));
+    const rolledBack = Effect.flatMap(SqlClient.SqlClient, (sql) =>
+      sql.withTransaction(signOut.pipe(Effect.andThen(Effect.fail("invented rollback")))),
+    );
+    assert.deepStrictEqual(yield* told(rolledBack), []);
+    assert.deepStrictEqual(yield* told(signOut), people);
+    assert.deepStrictEqual(
+      yield* told(
+        Effect.flatMap(SessionStore, (sessions) => sessions.revokeByProofKey("invented")),
+      ),
+      people,
+    );
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.effect("names T3 Connect's tunnel as the address, and nothing while none serves this host", () =>

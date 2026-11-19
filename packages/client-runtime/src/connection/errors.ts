@@ -277,7 +277,7 @@ export const KIN_JOIN_LINK_SPENT =
   "This link has already been used or has expired. Ask your team for a new one.";
 
 export const KIN_JOIN_DEVICE_LIMIT =
-  "You already have 10 devices signed in. Remove one in Linked devices, then ask for a new link.";
+  "You already have 10 devices signed in. Remove one in Your devices, then ask for a new link.";
 
 /** The host answers 400 for a used, expired or revoked invite alike, so one sentence covers them. */
 export function mapKinInviteError(error: RemoteEnvironmentAuthError): ConnectionAttemptError {

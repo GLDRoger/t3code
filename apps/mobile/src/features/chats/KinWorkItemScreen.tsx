@@ -20,6 +20,7 @@ import {
   kinRecordAskedBy,
   kinRecordChip,
   kinRecordWho,
+  kinTaskControls,
   kinTaskActivity,
   type KinActivityLine,
   type KinNextStepAct,
@@ -100,7 +101,7 @@ import { KinAvatar } from "./components/KinAvatar";
 import { KinAttachments } from "./components/KinMessageBubble";
 import { KinTaskNoteComposer } from "./components/KinTaskNoteComposer";
 import { KinNextStep } from "./components/KinNextStep";
-import { KinWorkDueRow } from "./components/KinWorkTaskMenus";
+import { KinWorkDueRow, KinWorkStatusRow } from "./components/KinWorkTaskMenus";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinListEntryBody } from "./KinListEntry";
 import { KinMakeDocumentStep, type KinMakeStep } from "./KinInvoice";
@@ -195,7 +196,6 @@ const CHIP: Record<
   },
 };
 
-const MENU_WAITING = "waiting:";
 const MENU_REPEAT = "repeat:";
 
 /** One task as a full page: where it stands, the next step, details, brief, activity, links. */
@@ -467,72 +467,12 @@ function KinWorkItemBody(props: ItemTarget) {
   const heldBy = kinRecordWho(item.owner, names);
   const briefBy = kinBriefBy(shown, names, now);
   const chip = kinRecordChip(shown, view, names, now);
-  const status: ReadonlyArray<AppBarMenuItem> =
-    act === null
-      ? []
-      : [
-          ...(offer.done
-            ? [
-                {
-                  id: "done",
-                  title: KIN_WORK_COPY.done,
-                  ...(view.leadNote === null ? {} : { subtitle: view.leadNote }),
-                  onPress: () => act({ type: "state", state: "done" }),
-                },
-              ]
-            : []),
-          ...(offer.reopen
-            ? [
-                {
-                  id: "reopen",
-                  title: KIN_WORK_COPY.reopen,
-                  ...(view.leadNote === null ? {} : { subtitle: view.leadNote }),
-                  onPress: () => act({ type: "state", state: "open" }),
-                },
-              ]
-            : []),
-          ...(!offer.menu
-            ? []
-            : offer.states.map((choice) => ({
-                id: choice.state,
-                title: choice.label,
-                selected: view.state === choice.state,
-                onPress: () => act({ type: "state", state: choice.state }),
-              }))),
-          ...(!offer.menu || !offer.waiting
-            ? []
-            : [
-                {
-                  id: "waiting-on",
-                  title: KIN_WORK_COPY.waitingOn,
-                  items: [
-                    ...[...waitingOn.people, ...waitingOn.leads].map((to) => ({
-                      id: `${MENU_WAITING}${to.key}`,
-                      title: to.name,
-                      selected: to.current,
-                      disabled: to.invited === true,
-                      onPress: () =>
-                        act({ type: "state", state: "waiting", waitingOn: to.principal }),
-                    })),
-                    {
-                      id: MENU_WAITING,
-                      title: KIN_WORK_COPY.waitingOnNobody,
-                      onPress: () => act({ type: "state", state: "waiting", waitingOn: null }),
-                    },
-                  ],
-                },
-              ]),
-          ...(!offer.menu || !offer.drop
-            ? []
-            : [
-                {
-                  id: "dropped",
-                  title: KIN_WORK_COPY.drop,
-                  destructive: true,
-                  onPress: () => act({ type: "state", state: "dropped" }),
-                },
-              ]),
-        ];
+  const controls = kinTaskControls({
+    view,
+    change: act !== null,
+    give: canGive,
+    step: step.acts,
+  });
   const repeatShown = view.repeat?.text ?? KIN_WORK_REPEAT.never;
   const dated = view.due !== null;
   const repeats = act !== null && view.can.repeat === true && !view.closed;
@@ -574,25 +514,29 @@ function KinWorkItemBody(props: ItemTarget) {
       ];
   // The less-used moves; each is here only where the host takes it from this viewer.
   const moreItems: ReadonlyArray<AppBarMenuItem> = [
-    ...(reword === null || edit !== null
-      ? []
-      : [{ id: "edit", title: "Edit title and brief", onPress: () => changes.startEdit(item) }]),
-    ...(status.length === 0
-      ? []
-      : [{ id: "status", title: KIN_WORK_COPY.status, inline: true, items: status }]),
-    ...(canGive && view.assignLabel !== null
+    ...(controls.menu.give && view.assignLabel !== null
       ? [{ id: "give", title: view.assignLabel, onPress: giveTo }]
       : []),
     ...repeatMenu,
-    ...(act !== null && view.handBackTo !== null
+    ...(controls.menu.handBack
       ? [{ id: "hand-back", title: KIN_WORK_HAND_BACK.button, onPress: handBack }]
       : []),
-    ...(canGive && view.takeBack
+    ...(controls.menu.takeBack
       ? [
           {
             id: "take-back",
             title: KIN_WORK_COPY.takeBack,
             onPress: () => void changes.run(item, { type: "takeBack" }, names),
+          },
+        ]
+      : []),
+    ...(controls.menu.drop && act !== null
+      ? [
+          {
+            id: "dropped",
+            title: KIN_WORK_COPY.drop,
+            destructive: true,
+            onPress: () => act({ type: "state", state: "dropped" }),
           },
         ]
       : []),
@@ -799,6 +743,16 @@ function KinWorkItemBody(props: ItemTarget) {
             onOpen={openChat}
           />
         ) : null}
+        {act === null || controls.page.status === null ? null : (
+          <KinWorkStatusRow
+            view={view}
+            offer={offer}
+            status={controls.page.status}
+            people={[...waitingOn.people, ...waitingOn.leads]}
+            disabled={saving}
+            onAct={act}
+          />
+        )}
         {reword !== null && !view.closed ? (
           <KinWorkDueRow view={view} now={now} disabled={saving} onAct={reword} late={view.late} />
         ) : view.due === null ? null : (
