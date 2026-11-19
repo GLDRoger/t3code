@@ -1,6 +1,7 @@
-import { kinWhenParts } from "@t3tools/contracts";
-import type { KinWorkHours } from "@t3tools/contracts";
+import { kinWhenParts, KinWorkHours } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 export type KinQuietHours = { readonly from: string; readonly to: string };
 
@@ -27,6 +28,14 @@ export const wholeDay = (hours: KinWorkHours) =>
   DAYS.every((_, day) => hours.days.includes(day)) &&
   hours.start === "00:00" &&
   hours.end >= "23:59";
+
+const decodeHours = Schema.decodeUnknownOption(Schema.fromJsonString(KinWorkHours));
+
+/** A person's `work_hours_json` as hours, or undefined when unset, unreadable or whole-day. */
+export const storedWorkHours = (json: string | null | undefined) =>
+  json == null
+    ? undefined
+    : Option.getOrUndefined(Option.filter(decodeHours(json), (hours) => !wholeDay(hours)));
 
 /** Whether `now` falls inside the hours, in their time zone. */
 export const workingAt = (hours: KinWorkHours, timeZone: string, now: number) => {

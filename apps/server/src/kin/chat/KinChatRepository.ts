@@ -401,6 +401,8 @@ export class KinChatRepository extends Context.Service<
       readonly ownerHandle: string;
       readonly ownerDisplayName: string;
       readonly createdAt: IsoDateTime;
+      /** The company profile a company created by this call starts with; none when absent. */
+      readonly companyProfileJson?: string | undefined;
     }) => Effect.Effect<KinPerson, RepositoryError | KinIdentityBootstrapError>;
     readonly hasRunningWakeup: (
       input: Scope & {
@@ -1222,6 +1224,11 @@ const make = Effect.gen(function* () {
           yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, github_login, created_at, access)
  VALUES (${personId}, ${orgId}, ${input.ownerHandle}, ${input.ownerDisplayName}, NULL, ${input.createdAt}, 'owner')
  ON CONFLICT (person_id) DO NOTHING RETURNING person_id`;
+          if (input.companyProfileJson !== undefined)
+            yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+   updated_by_kind, updated_by_id)
+ VALUES (${orgId}, ${input.companyProfileJson}, 1, 0, 'person', ${personId})
+ ON CONFLICT (org_id) DO NOTHING`;
         }
         // Never infer ownership from a handle or whichever person happens to sort first.
         const org = yield* orgOne({ orgId });

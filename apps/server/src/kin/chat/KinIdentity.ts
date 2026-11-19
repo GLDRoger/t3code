@@ -21,6 +21,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import type { McpThreadCaller, McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import { newCompanyProfileJson } from "../work/companyProfile.ts";
 import * as KinChatRepository from "./KinChatRepository.ts";
 
 export class KinIdentityConfig extends Context.Service<
@@ -44,6 +45,12 @@ export class KinIdentityConfig extends Context.Service<
     }),
   );
 }
+
+/** Whether a company created now starts with its country not chosen. The running server's does. */
+export const KinNewCompanyCountryUnset = Context.Reference<boolean>(
+  "t3/kin/chat/KinIdentity/KinNewCompanyCountryUnset",
+  { defaultValue: () => false },
+);
 
 type IdentityError = KinChatRepository.RepositoryError;
 
@@ -125,6 +132,9 @@ export class KinIdentity extends Context.Service<
       const owner = yield* repository.bootstrapIdentity({
         ...config,
         createdAt: DateTime.formatIso(yield* DateTime.now),
+        ...((yield* KinNewCompanyCountryUnset)
+          ? { companyProfileJson: yield* newCompanyProfileJson.pipe(Effect.orDie) }
+          : {}),
       });
       const rows = yield* repository.listActiveAgentThreads();
       const active = new Set(rows.map((row) => row.threadId));

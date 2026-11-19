@@ -5,7 +5,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { validZone } from "../triggers/quietHold.ts";
-import { stillAway, workingAt } from "../triggers/quietHours.ts";
+import { stillAway, storedWorkHours, workingAt } from "../triggers/quietHours.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { playbookThreshold } from "../work/playbooks.ts";
 import { effectiveAudience } from "./Audience.ts";
@@ -13,7 +13,6 @@ import { quote } from "./LeadPrompt.ts";
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 const decodeTags = Schema.decodeUnknownEffect(Schema.fromJsonString(KinRoleTags));
-const decodeHours = Schema.decodeUnknownEffect(Schema.fromJsonString(KinWorkHours));
 
 export const PeopleReadResult = Schema.Struct({ quoted: Schema.String });
 
@@ -112,7 +111,7 @@ export const readPeople = Effect.fn("KinPeopleRead.read")(function* (turn: {
   const company = yield* ownerZone(orgId);
   const people = yield* Effect.forEach(rows, (row) =>
     Effect.gen(function* () {
-      const hours = row.workHours === null ? null : yield* decodeHours(row.workHours);
+      const hours = storedWorkHours(row.workHours) ?? null;
       const away = stillAway(row.away, validZone(row.timeZone) ?? company, now);
       return {
         name: row.name,
