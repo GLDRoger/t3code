@@ -45,6 +45,8 @@ import * as Team from "../team/KinTeam.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { presetDefinition } from "../work/registers.ts";
+import * as Provision from "../lead/KinLeadProvision.ts";
+import { encodeLeadModel } from "../lead/leadModels.ts";
 import * as Questions from "./openQuestions.ts";
 
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -556,6 +558,75 @@ it.effect("a question of a retired agent can close", () =>
         outcome: { title: "Closed", text: "Finance was retired; nothing will happen on this." },
       });
       assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: owner.personId }), 0);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// Finance is retired with one question already raised and one not yet; restored, each is raised
+// on its fresh day as a card Rhea can tap, once.
+it.effect("a restored agent's questions are raised again as open cards, once", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const { sql, chats, owner, orgId, services, chatOf, wake } = yield* ambermill;
+      const repo = Context.get(services, KinChatRepository);
+      const ask = Effect.fn("test.ask")(function* (n: number, ref: string) {
+        yield* wake(
+          "finance",
+          yield* chats.send(owner, {
+            chatId: chatOf("finance"),
+            body: `${ref} is late again.`,
+            clientMessageId: `late-${n}`,
+          }),
+        );
+        const asked = yield* callAs("finance", "kin_ask", {
+          question: `Send the reminder mail I drafted for ${ref}?`,
+          options: [{ label: "Send it" }, { label: "Hold it" }],
+          default: "Send it",
+          about: [ref],
+          intent: "send payment reminder",
+        });
+        assert.isTrue(asked.ok, JSON.stringify(asked.value));
+        return asked.value.question as string;
+      });
+      const before = yield* ask(1, "INV-8");
+      const wednesday = Date.UTC(2026, 10, 18, 5);
+      assert.strictEqual(yield* settle(orgId, wednesday), 1);
+      const firstRaise = (yield* questionRow(sql, before)).raiseWidget;
+      assert.isNotNull(firstRaise);
+      const never = yield* ask(2, "INV-9");
+
+      // Retired and restored as the owner does it, so its lead row needs a model.
+      yield* sql`UPDATE kin_leads SET models_json = ${encodeLeadModel({ instanceId: providerInstanceId, model: "gpt-5.5" })}`;
+      const provision = Effect.provideContext(services);
+      yield* Provision.retireOnHost(KinAgentId.make("finance")).pipe(provision);
+      assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: owner.personId }), 0);
+      yield* TestClock.adjust("1 day");
+      yield* Provision.restoreOnHost(KinAgentId.make("finance")).pipe(provision);
+
+      const later = wednesday + 7 * 86_400_000;
+      assert.strictEqual(yield* settle(orgId, later), 2);
+      const cards = yield* repo.listOpenWaiting({ orgId, personId: owner.personId });
+      const rows = [yield* questionRow(sql, before), yield* questionRow(sql, never)];
+      assert.notStrictEqual(rows[0]!.raiseWidget, firstRaise);
+      assert.sameMembers(
+        cards.map((item) => item.widgetId),
+        rows.map((row) => row.raiseWidget),
+      );
+      for (const row of rows) {
+        const card = Option.getOrThrow(
+          yield* repo.getWidget({ orgId, widgetId: KinWidgetId.make(row.raiseWidget!) }),
+        );
+        assert.isNull(card.closedAt);
+      }
+      // The day's worker again draws nothing more.
+      const drawn = yield* sql`SELECT widget_id FROM kin_widgets WHERE org_id = ${orgId}`;
+      assert.strictEqual(yield* settle(orgId, later), 0);
+      assert.lengthOf(
+        yield* sql`SELECT widget_id FROM kin_widgets WHERE org_id = ${orgId}`,
+        drawn.length,
+      );
+      assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: owner.personId }), 2);
     }).pipe(Effect.provide(layer)),
   ),
 );

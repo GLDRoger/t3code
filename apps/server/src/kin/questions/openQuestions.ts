@@ -831,7 +831,12 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
       threadId: ThreadId.make(agent.threadId),
       hostPosted: true,
     },
-    { ...asked, chatId: row.chatId, clientMessageId: `kin-question-raise:${row.questionId}` },
+    {
+      ...asked,
+      chatId: row.chatId,
+      // Keyed on the card it replaces: a reopened question's raise draws anew, a retry finds its own.
+      clientMessageId: `kin-question-raise:${row.questionId}${row.raiseWidgetId === null ? "" : `:${row.raiseWidgetId}`}`,
+    },
   );
   const options = choiceCardState(asked).options.map(({ optionId, label }) => ({
     optionId,
