@@ -1234,13 +1234,20 @@ export const admitted = Effect.fn("KinWorkTools.admitted")(function* (
 /**
  * `Writer.since` from the wake-up's stored events: its newest message or tap from a person, steered
  * in or not; with none, its earliest trigger (a fire, a hand-off or assignment sent, a question's
- * asking for its default). `woke`: the record changes that woke it, which are not after it.
+ * asking for its default). Only that trigger's own record changes are not after it (`woke`).
  */
 const addressedAt = Effect.fn("KinWorkTools.addressedAt")(function* (lead: Lead) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ said: number | null; at: number; woke: number | null }>`
+  const rows = yield* sql<{
+    said: number | null;
+    tap: number;
+    by: string | null;
+    at: number;
+    woke: number | null;
+  }>`
     SELECT (e.tag IN ('chat.message', 'widget.action') AND m.author_kind = 'human'
         AND json_extract(e.json, '$.origin') IS NULL) AS said,
+      e.tag = 'widget.action' AS tap, m.author_person_id AS by,
       COALESCE(q.asked_at, e.received_at) AS at,
       CASE WHEN e.tag = 'record.changed' AND json_extract(e.json, '$.reason') <> 'commented'
         THEN json_extract(e.json, '$.seq') END AS woke
@@ -1254,15 +1261,24 @@ const addressedAt = Effect.fn("KinWorkTools.addressedAt")(function* (lead: Lead)
       AND q.question_id = json_extract(e.json, '$.subject.questionId')
     WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId} AND e.wakeup_id = ${lead.wakeupId}
     ORDER BY e.received_at, e.event_id`;
-  const said = rows.filter((row) => row.said === 1).map((row) => row.at);
+  const newest = rows
+    .filter((row) => row.said === 1)
+    .reduce<(typeof rows)[number] | undefined>(
+      (had, row) => (had === undefined || row.at >= had.at ? row : had),
+      undefined,
+    );
+  // Set by a person's word or tap, the cutoff excuses no record change made at or after it.
+  if (newest !== undefined)
+    return {
+      at: newest.at,
+      woke: [],
+      ...(newest.tap === 1 && newest.by !== null ? { tappedBy: KinPersonId.make(newest.by) } : {}),
+    };
+  if (rows.length === 0) return { at: lead.startedAt, woke: [] };
+  const at = Math.min(...rows.map((row) => row.at));
   return {
-    at:
-      said.length > 0
-        ? Math.max(...said)
-        : rows.length > 0
-          ? Math.min(...rows.map((row) => row.at))
-          : lead.startedAt,
-    woke: rows.flatMap((row) => (row.woke === null ? [] : [row.woke])),
+    at,
+    woke: rows.flatMap((row) => (row.woke === null || row.at !== at ? [] : [row.woke])),
   };
 });
 

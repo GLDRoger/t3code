@@ -42,6 +42,7 @@ import * as Kin from "../layer.ts";
 import * as KinToolGate from "../mcp/KinToolGate.ts";
 import * as Handoff from "../lead/Handoff.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { wakeEvent } from "../lead/ChatWake.ts";
 import { agentChanges, ownerLevelUndoAgentChange } from "../lead/agentChanges.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
 import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
@@ -58,6 +59,7 @@ import {
 import { KinRecords } from "../work/KinRecords.ts";
 import { handlers as workHandlers } from "../work/mcp/handlers.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
+import { handlers as documentHandlers, KinDocumentToolkit } from "../gendocs/mcp.ts";
 import { presetDefinition, propose } from "../work/registers.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import * as CardActions from "./cardActions.ts";
@@ -103,6 +105,7 @@ const kinServices = Layer.unwrap(
 const layer = Layer.mergeAll(
   McpHttpServer.toolkitRegistration(KinLeadToolkit, leadHandlers),
   McpHttpServer.toolkitRegistration(KinWorkToolkit, workHandlers),
+  McpHttpServer.toolkitRegistration(KinDocumentToolkit, documentHandlers),
   KinToolGate.layer,
 ).pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
@@ -2117,6 +2120,89 @@ it.effect("a default undone before its person is told reaches them once, as put 
           widgetId: null,
         },
       ]);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// The owner's Confirm records the money as them; the agent the tap wakes sets that advance
+// against an invoice with no further word. A co-owner's change in the tap's moment still stands.
+it.effect("a receipt Confirm's own writes are the tap's, not newer than it", () =>
+  Effect.andThen(
+    TestClock.setTime(MON),
+    Effect.gen(function* () {
+      const kin = yield* ambermill;
+      const { owner, orgId, sql, records } = kin;
+      const chatId = kin.chatOf("finance");
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json)
+        VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(presetDefinition("invoices", "INR"))})`;
+      const ownerWrites = {
+        actor: { _tag: "person" as const, personId: owner.personId },
+        via: "owner" as const,
+        askedBy: owner.personId,
+      };
+      const client = yield* records.create(orgId, ownerWrites, {
+        list: "clients",
+        title: "Invented Acme",
+        owner: { _tag: "person", personId: owner.personId },
+        originKey: "acme",
+      });
+      const invoice = yield* records.create(orgId, ownerWrites, {
+        list: "invoices",
+        title: "Invented website redesign",
+        owner: { _tag: "person", personId: owner.personId },
+        partyId: client.row.recordId,
+        amount: { minor: 2_000_00, currency: "INR" },
+        originKey: "redesign",
+      });
+      const meera = KinPersonId.make("meera");
+      /** Rhea's advance, confirmed on its card; with `meeraToo`, Meera changes it in that moment. */
+      const confirmed = Effect.fn("test.confirmed")(function* (n: number, meeraToo = false) {
+        yield* kin.turn("finance", chatId, `Acme sent an advance of 500 (${n})`);
+        const proposed = yield* callAs("finance", "kin_receipt", {
+          advance: { client: client.row.key, amount: "500", receivedOn: "2026-11-15" },
+        });
+        assert.strictEqual(proposed.value.status, "proposed", JSON.stringify(proposed.value));
+        const [card] = yield* sql<{ widgetId: string }>`SELECT widget_id AS "widgetId"
+          FROM kin_receipt_proposals WHERE org_id = ${orgId}
+            AND proposal_id = ${String(proposed.value.proposal)}`;
+        const tapped = yield* kin.tap(owner, card!.widgetId, "option-1", `confirm-${n}`);
+        const [made] = yield* sql<{ key: string }>`SELECT receipt_key AS key
+          FROM kin_receipt_proposals WHERE org_id = ${orgId}
+            AND proposal_id = ${String(proposed.value.proposal)}`;
+        if (meeraToo)
+          yield* records.update(
+            orgId,
+            { actor: { _tag: "person", personId: meera }, via: "owner", askedBy: meera },
+            made!.key,
+            {},
+            undefined,
+            [{ field: "payment", from: null, to: "Invented: cheque 0042" }],
+          );
+        const woke = wakeEvent(tapped, KinAgentId.make("finance"), "choose");
+        yield* startAgentWakeup({
+          orgId,
+          agentId: KinAgentId.make("finance"),
+          threadId: ThreadId.make("finance-thread"),
+          event: () => woke,
+        });
+        return yield* callAs("finance", "kin_receipt", {
+          sourceEventId: woke.eventId,
+          entry: made!.key,
+          against: invoice.row.key,
+        });
+      });
+      const set = yield* confirmed(1);
+      assert.isTrue(set.ok, JSON.stringify(set.value));
+      assert.strictEqual((yield* records.get(orgId, invoice.row.key))!.paid, 500_00);
+
+      const refused = yield* confirmed(2, true);
+      assert.isFalse(refused.ok);
+      assert.match(
+        String(refused.value.message ?? JSON.stringify(refused.value)),
+        /^Nothing changed on [A-Z]+-\d+: Meera Shah changed its payment/,
+      );
+      assert.strictEqual((yield* records.get(orgId, invoice.row.key))!.paid, 500_00);
     }).pipe(Effect.provide(layer)),
   ),
 );

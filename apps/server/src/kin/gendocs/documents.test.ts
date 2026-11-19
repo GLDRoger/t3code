@@ -239,17 +239,22 @@ const git = (cwd: string, ...args: ReadonlyArray<string>) =>
     });
   });
 
-/** The owner's message `n` in the lead's direct chat, as an event of `wakeupId` stored at `receivedAt`. */
-const said = (n: number, body: string, wakeupId: string, receivedAt: number) =>
+/**
+ * The owner's message `n` in the lead's direct chat, as an event of `wakeupId` stored at
+ * `receivedAt`; with `tap`, their tap on a card instead.
+ */
+const said = (n: number, body: string, wakeupId: string, receivedAt: number, tap = false) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const tag = tap ? "widget.action" : "chat.message";
     yield* sql`UPDATE kin_chats SET last_seq = ${n} WHERE chat_id = 'lead-chat'`;
     yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
         author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
       VALUES (${`msg-${n}`}, ${orgId}, 'lead-chat', ${n}, 'human', ${ownerId}, 'lead-chat-owner',
-        'owner', 'text', ${body}, '[]', 'posted', ${at})`;
+        'owner', ${tap ? "widget_action" : "text"}, ${body}, '[]', 'posted', ${at})`;
     const event = {
-      _tag: "chat.message",
+      _tag: tag,
+      ...(tap ? { actionId: "choose" } : {}),
       orgId,
       agentId: lead,
       eventId: `event-${n}`,
@@ -261,7 +266,7 @@ const said = (n: number, body: string, wakeupId: string, receivedAt: number) =>
     };
     yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
         received_at, queued_at, state, wakeup_id)
-      VALUES (${`event-${n}`}, ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)},
+      VALUES (${`event-${n}`}, ${orgId}, ${lead}, ${tag}, 'P0', ${JSON.stringify(event)},
         ${receivedAt}, 0, 'claimed', ${wakeupId})`;
     return `event-${n}`;
   });
@@ -278,16 +283,17 @@ const turn = (n: number, body: string) =>
     return yield* said(n, body, `wake-${n}`, 0);
   });
 
-/** The owner says more in the running turn after acting on the screen, so the agent may change it. */
-const askedAgain = (body: string) =>
+/** The owner's next word in the running turn, at this moment: a message, or with `tap` a tap. */
+const inRunningTurn = (body: string, tap = false) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* TestClock.adjust(1_000);
     const [running] = yield* sql<{ wakeupId: string; n: number }>`SELECT w.wakeup_id AS "wakeupId",
         (SELECT last_seq + 1 FROM kin_chats WHERE chat_id = 'lead-chat') AS n
       FROM kin_wakeups w WHERE w.status = 'running'`;
-    return yield* said(running!.n, body, running!.wakeupId, yield* Clock.currentTimeMillis);
+    return yield* said(running!.n, body, running!.wakeupId, yield* Clock.currentTimeMillis, tap);
   });
+/** The owner says more in the running turn after acting on the screen, so the agent may change it. */
+const askedAgain = (body: string) => Effect.andThen(TestClock.adjust(1_000), inRunningTurn(body));
 
 /** The owner's lead in India's zone, an invoices list, a client in another state, one invoice. */
 const seed = Effect.gen(function* () {
@@ -1293,8 +1299,8 @@ const agentReceipt = (asked: string, input: ReceiptAsk) =>
     const first = yield* LeadDocuments.receipt(scope, { sourceEventId: asked, ...input });
     if (first.status === "made") return first;
     yield* answerCard(`kin-receipt:${first.proposal}`, "yes");
-    // Their tap is their later word to the agent, which then reads what it made.
-    yield* askedAgain("Confirmed");
+    // The tap wakes the agent, as `KinChatService.act` posts it once its writes are made.
+    yield* inRunningTurn("Confirm", true);
     const made = yield* LeadDocuments.receipt(scope, {
       sourceEventId: asked,
       proposal: first.proposal,

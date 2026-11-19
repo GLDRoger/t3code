@@ -149,9 +149,14 @@ export type Writer = {
   readonly undoing?: { readonly asker: string };
   /**
    * An agent's write: the last moment a person addressed its turn (`addressedAt`). It changes no
-   * field a person changed at or after then, bar the changes that woke the turn (`woke`, by seq).
+   * field a person changed at or after then, bar the trigger's own changes (`woke`, by seq) and,
+   * when a tap set it, what that tap wrote as `tappedBy` in its own moment.
    */
-  readonly since?: { readonly at: number; readonly woke: ReadonlyArray<number> };
+  readonly since?: {
+    readonly at: number;
+    readonly woke: ReadonlyArray<number>;
+    readonly tappedBy?: KinPersonId;
+  };
 };
 /** A Work task this writer, a person, holds now and nobody dropped. */
 const heldBy = (
@@ -935,6 +940,8 @@ const make = Effect.gen(function* () {
     >();
     for (const change of rows) {
       if (since.woke.includes(change.seq)) continue;
+      // A tap's own writes land as the tapper no later than the tap's message (`KinChatService.act`).
+      if (change.actorId === since.tappedBy && change.at <= since.at) continue;
       for (const field of parseChanges(change.fieldsJson)) {
         const name = asSet(field.field);
         const had = newest.get(name);

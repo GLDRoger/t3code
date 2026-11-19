@@ -533,6 +533,57 @@ const keptForPerson = [
     ),
   ),
   row(
+    "a change that wakes the agent after an older ask is kept; an untouched field is written",
+    Effect.gen(function* () {
+      const scene = yield* asked({ _tag: "agent", agentId: lead });
+      yield* scene.wake();
+      const ask = yield* scene.say("Start on W-1");
+      yield* scene.later;
+      yield* scene.records.update(orgId, scene.ownerWrites, "W-1", { state: "done" });
+      yield* scene.wake();
+      const claimed = yield* scene.sql<{ tag: string }>`SELECT e.tag FROM kin_events e
+        JOIN kin_wakeups w ON w.wakeup_id = e.wakeup_id AND w.status = 'running'
+        WHERE e.org_id = ${orgId} ORDER BY e.received_at`;
+      assert.deepStrictEqual(
+        claimed.map((one) => one.tag),
+        ["chat.message", "record.changed"],
+      );
+      refusedAs(
+        yield* Effect.flip(scene.write(ask, { state: "doing", expectedRev: yield* scene.rev })),
+        /^Nothing changed on W-1: Owner changed its state to /,
+      );
+      yield* scene.write(ask, { notes: "Invented: pricing tiers" });
+      assert.include(yield* scene.records.get(orgId, "W-1"), {
+        state: "done",
+        notes: "Invented: pricing tiers",
+      });
+    }),
+  ),
+  row(
+    "a task a person gives the agent: the wake-up it gets sets its state and other fields",
+    Effect.gen(function* () {
+      const scene = yield* asked();
+      yield* scene.later;
+      yield* scene.records.update(orgId, scene.ownerWrites, "W-1", {
+        owner: { _tag: "agent", agentId: lead },
+      });
+      yield* scene.wake();
+      const [given] = yield* scene.sql<{ eventId: string }>`SELECT event_id AS "eventId"
+        FROM kin_events WHERE org_id = ${orgId} AND tag = 'record.changed'`;
+      yield* scene.write(given!.eventId, {
+        state: "doing",
+        title: "Invented pricing tiers",
+        due: "2026-11-20",
+        expectedRev: yield* scene.rev,
+      });
+      assert.include(yield* scene.records.get(orgId, "W-1"), {
+        state: "doing",
+        title: "Invented pricing tiers",
+        ownerKind: "agent",
+      });
+    }),
+  ),
+  row(
     "a state that would clear the waiter a person just set is refused",
     Effect.gen(function* () {
       const scene = yield* asked();
