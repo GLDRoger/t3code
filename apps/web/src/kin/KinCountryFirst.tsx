@@ -30,24 +30,38 @@ function ChooseCountry(props: { readonly inForm?: boolean }) {
 export function KinCountryFirst(props: {
   readonly environmentId: EnvironmentId;
   readonly children: React.ReactNode;
+  /** What stays reachable below the step while the country waits: nothing that records money. */
+  readonly waiting?: React.ReactNode;
 }) {
   const needed = useKinCountryNeeded(props);
   const ownerLevel = useKinOwnerLevel(props.environmentId);
   const reach = useKinPlaceReach(props.environmentId);
   if (!needed || (!ownerLevel && reach?.money !== true)) return props.children;
-  if (!ownerLevel) return <KinWorkNotice {...KIN_MONEY.countryFirstMember} />;
-  return <KinWorkNotice {...KIN_MONEY.countryFirst} action={<ChooseCountry />} />;
+  const notice = ownerLevel ? (
+    <KinWorkNotice {...KIN_MONEY.countryFirst} action={<ChooseCountry />} />
+  ) : (
+    <KinWorkNotice {...KIN_MONEY.countryFirstMember} />
+  );
+  if (props.waiting === undefined) return notice;
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-8 scrollbar-gutter-both">
+      {notice}
+      {props.waiting}
+    </div>
+  );
 }
 
 /** An amount's field in a form, or the same step in its place while the country isn't chosen. */
 export function KinCountryFirstField(props: {
   readonly environmentId: EnvironmentId;
   readonly label: string;
+  /** False while the field takes no amount, such as a count goal's target. */
+  readonly money?: boolean;
   readonly children: React.ReactNode;
 }) {
   const needed = useKinCountryNeeded(props);
   const ownerLevel = useKinOwnerLevel(props.environmentId);
-  if (!needed) return props.children;
+  if (!needed || props.money === false) return props.children;
   return (
     <div className="flex flex-col items-start gap-1.5">
       <Label>{props.label}</Label>

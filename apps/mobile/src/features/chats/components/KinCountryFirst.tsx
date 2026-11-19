@@ -33,11 +33,13 @@ export function KinChooseCountry(props: {
 export function KinCountryFirstField(props: {
   readonly target: KinWorkTarget;
   readonly label: string;
+  /** False while the field takes no amount, such as a count goal's target. */
+  readonly money?: boolean;
   readonly children: React.ReactNode;
 }) {
   const needed = useKinCountryNeeded(props.target);
   const ownerLevel = useKinIsOwnerLevel(props.target.environmentId);
-  if (!needed) return props.children;
+  if (!needed || props.money === false) return props.children;
   return (
     <View className="items-start gap-2 px-4 py-3">
       <Text className="text-sm text-foreground-muted">{props.label}</Text>

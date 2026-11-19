@@ -182,9 +182,50 @@ type MoneyProps = KinWorkTarget & {
  */
 export function KinWorkMoney(props: MoneyProps) {
   return (
-    <KinCountryFirst environmentId={props.environmentId}>
+    <KinCountryFirst environmentId={props.environmentId} waiting={<WaitingMoney {...props} />}>
       <MoneyScreen {...props} />
     </KinCountryFirst>
+  );
+}
+
+/** Money while the country waits: no figures and nothing that records money; Dates and Goals stay. */
+function WaitingMoney(props: MoneyProps) {
+  const { state } = useKinMoneySummary(props, { enabled: true, use: "screen" });
+  const goals = useKinGoals(props, { enabled: true, money: true });
+  const [adding, setAdding] = useState(false);
+  const upcoming = state._tag === "ready" ? state.value.upcomingTotal : 0;
+  const none = goals.state._tag === "ready" && goals.state.value.goals.length === 0;
+  return (
+    <>
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-1 px-4">
+        {upcoming === 0 ? null : (
+          <KinWorkSection
+            title={KIN_MONEY.upcoming}
+            fold={{ summary: KIN_MONEY.upcomingCount(upcoming), onOpen: props.onDates }}
+          >
+            {null}
+          </KinWorkSection>
+        )}
+        <KinGoals {...props} goals={goals} />
+        {/* With goals, their section has its own Add. */}
+        {none && goals.canSave ? (
+          <div>
+            <Button size="sm" variant="ghost" onClick={() => setAdding(true)}>
+              <PlusIcon />
+              {KIN_GOALS.add}
+            </Button>
+          </div>
+        ) : null}
+      </div>
+      {adding ? (
+        <KinGoalSheet
+          environmentId={props.environmentId}
+          goal={null}
+          goals={goals}
+          onClose={() => setAdding(false)}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -264,7 +305,12 @@ function MoneyScreen(props: MoneyProps) {
   const dialogs = (
     <>
       {adding === "goal" ? (
-        <KinGoalSheet goal={null} goals={goals} onClose={() => setAdding(null)} />
+        <KinGoalSheet
+          environmentId={props.environmentId}
+          goal={null}
+          goals={goals}
+          onClose={() => setAdding(null)}
+        />
       ) : adding === "budget" ? (
         <KinBudgetDialog
           {...props}
