@@ -35,13 +35,14 @@ const same = (a: KinRefreshes, b: KinRefreshes) =>
   a.budget === b.budget &&
   a.connections === b.connections &&
   a.workLists === b.workLists &&
+  a.recommendations === b.recommendations &&
   a.boot === b.boot;
 
 /**
  * The revisions this viewer may see, by their kind at each change. Owner-level people read every
- * topic. A member reads the time zone, profiles, Needs attention, their lead list and work lists
- * (moved only when what those show them changed) and, while a new company waits on its country,
- * the company topic, moved when it is chosen.
+ * topic but the owner's own recommendations. A member reads the time zone, profiles, Needs
+ * attention, their lead list and work lists (moved only when what those show them changed) and,
+ * while a new company waits on its country, the company topic, moved when it is chosen.
  */
 export const subscribeRefreshes = (
   people: ReadonlyArray<PersonIdentity>,
@@ -83,9 +84,16 @@ export const subscribeRefreshes = (
       return changes.pipe(
         Stream.mapEffect((now) =>
           Effect.gen(function* () {
-            if (kinOwnerLevel(yield* kind)) {
+            const access = yield* kind;
+            if (kinOwnerLevel(access)) {
               heard = undefined;
-              return { ...now, boot: hub.boot, streams: KIN_STREAMS } satisfies KinRefreshes;
+              // What Kin suggested is the owner's alone (`kin.recommendations.*`).
+              const { recommendations: _ownerOnly, ...shared } = now;
+              return {
+                ...(access === "owner" ? now : shared),
+                boot: hub.boot,
+                streams: KIN_STREAMS,
+              } satisfies KinRefreshes;
             }
             if (heard === undefined || heard.leads !== now.leads || heard.people !== now.people)
               leads = hub.counted(counter("leads"), yield* view);

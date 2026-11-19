@@ -1490,7 +1490,25 @@ describe("KinActionExecutor", () => {
       "kin/lead/agentUpdate.ts",
       "kin/lead/routeCard.ts",
       "kin/people/rpcHandlers.ts",
+      "kin/recommend/card.ts",
     ]);
+    // Closing a person's chat with a lead only takes writing away. It runs inside an owner-checked
+    // revoke or team-agent switch, the owner's own co-owner-to-member change, and only the
+    // return of someone removed as a co-owner and made a member while away.
+    assert.deepStrictEqual(importers("kin/lead/directClose.ts"), [
+      "kin/lead/KinLeadProvision.ts",
+      "kin/people/KinPeople.ts",
+    ]);
+    const people = source("kin/people/KinPeople.ts");
+    assert.lengthOf(people.match(/yield\* closeUngranted\(/g) ?? [], 2);
+    assert.match(
+      people,
+      /if \(!isOwnerHimself\(identity\.owner, caller\.personId\)\) return yield\* ownerOnly;[\s\S]*if \(before === "co_owner" && input\.access === "member"\)\s*yield\* closeUngranted\(/,
+    );
+    assert.match(
+      people,
+      /const bringBack = Effect\.fn\("KinPeople\.bringBack"\)[\s\S]*KinPeople\.backChats[\s\S]*if \(gone\?\.was === "co_owner" && gone\.kept === "member"\)\s*yield\* closeUngranted\([\s\S]*const deviceLive =/,
+    );
     // A route card grants only on a tap, as the owner-level person who tapped. `kin_hand_off`
     // imports this file to draw the card and cannot reach the grant.
     const routeCard = source("kin/lead/routeCard.ts");
@@ -1500,6 +1518,15 @@ describe("KinActionExecutor", () => {
       /if \(!\(yield\* ownerLevel\(orgId, tap\.personId\)\)\)[\s\S]*LeadProvision\.allow\(\{\s*editor: \{ _tag: "person", personId: tap\.personId \}/,
     );
     assert.notMatch(source("kin/lead/Handoff.ts"), /\brunRoute\b/);
+    // A suggestion grants only on its own sealed Let, after the exact-owner check, as the owner
+    // who tapped. The hourly pass that draws the card reaches neither the module nor the tap.
+    const recommendCard = source("kin/recommend/card.ts");
+    assert.strictEqual(recommendCard.match(/\bLeadProvision\.\w+/g)?.join(), "LeadProvision.allow");
+    assert.match(
+      recommendCard,
+      /yield\* onlyOwner\(orgId, tap\.personId\);[\s\S]*if \(plan\.answer === "not_now"\) \{[\s\S]*\}\s*const \{ change \} = plan;\s*yield\* LeadProvision\.allow\(\{\s*editor: \{ _tag: "person", personId: tap\.personId \}/,
+    );
+    assert.notMatch(source("kin/recommend/KinRecommend.ts"), /KinLeadProvision|\brunRecommend\b/);
     // An agent's page reads and retires as its checked owner; a turn's model change is the
     // owner's or a co-owner's own words, saved with them as the editor (`updateAgent`).
     assert.match(

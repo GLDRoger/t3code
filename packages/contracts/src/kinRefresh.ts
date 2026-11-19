@@ -28,6 +28,7 @@ export const KIN_REFRESH_TOPICS = [
   "pulse",
   "budget",
   "workLists",
+  "recommendations",
 ] as const;
 export const KinRefreshTopic = Schema.Literals(KIN_REFRESH_TOPICS);
 export type KinRefreshTopic = typeof KinRefreshTopic.Type;
@@ -52,6 +53,8 @@ export const KinRefreshes = Schema.Struct({
   budget: Schema.optional(NonNegativeInt),
   /** A list's definition: made, renamed, archived, its fields or numbering. Absent from older hosts. */
   workLists: Schema.optional(NonNegativeInt),
+  /** What Kin suggested to the owner and what came of each. Absent from older hosts. */
+  recommendations: Schema.optional(NonNegativeInt),
   /**
    * The host run these revisions count in. Unchanged across a reconnect, an unchanged revision
    * means nothing moved; a new one means anything may have. Absent from older hosts.

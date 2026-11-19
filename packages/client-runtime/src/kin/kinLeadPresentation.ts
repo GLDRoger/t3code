@@ -294,10 +294,20 @@ export function kinLeadOwnerSeesLine(ownerName: string | undefined): string {
     : `${ownerName} runs this workspace and can see chats with agents.`;
 }
 
-/** Said once after the owner changes who can message a lead. */
-export function kinLeadAccessChanged(person: string, lead: string, allowed: boolean): string {
-  return allowed
-    ? `${person} can now message ${lead}.`
+/**
+ * Said once after the owner changes who can message a lead. `ownerLevel` is the server's word on
+ * the person removed (a co-owner messages every lead); without it, nothing is claimed either way.
+ */
+export function kinLeadAccessChanged(
+  person: string,
+  lead: string,
+  allowed: boolean,
+  ownerLevel?: boolean,
+): string {
+  if (allowed) return `${person} can now message ${lead}.`;
+  if (ownerLevel === undefined) return `Removed ${person}'s own access to ${lead}.`;
+  return ownerLevel
+    ? `${person} can still message ${lead} as a co-owner.`
     : `${person} can no longer message ${lead}.`;
 }
 
@@ -344,8 +354,14 @@ export const KIN_AGENTS_COPY = {
   seesIntro: (intro: string) => `They see its name and this: ${intro}`,
   charterExample: "Handles billing questions and invoices.",
   charterLabel: "What it's responsible for",
-  removeAccess: (person: string, agent: string) =>
-    `${person} keeps their chat with ${agent} to read, but can't send it anything more. You can add them back any time.`,
+  removeAccess: (person: string, agent: string, ownerLevel?: boolean) =>
+    ownerLevel === undefined
+      ? `This removes ${person}'s own access to ${agent}. You can add them back any time.`
+      : ownerLevel
+        ? `${person} is a co-owner, so they can still message ${agent}. This matters only if they stop being one.`
+        : `${person} keeps their chat with ${agent} to read, but can't send it anything more. You can add them back any time.`,
+  /** Under "Who can message" with nobody added: owner-level people message every agent. */
+  onlyOwners: "Only the owner and co-owners.",
   nameOnly: "They see its name only. Add what teammates see when you edit this agent.",
   none: "You have no agents yet.",
   explain:

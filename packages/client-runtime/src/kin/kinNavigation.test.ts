@@ -96,7 +96,7 @@ describe("kinPlaceInPlace", () => {
 
 describe("kinSettingsGroups", () => {
   const groups = (role: keyof typeof ROLES, notifications = false) =>
-    kinSettingsGroups({ ...ROLES[role], notifications });
+    kinSettingsGroups({ ...ROLES[role], notifications, recommendations: role === "owner" });
 
   it("gives everyone You, the owner level Company, and This computer only where it opens", () => {
     expect(groups("owner").map((group) => group.id)).toEqual(["you", "company", "computer"]);
@@ -114,11 +114,15 @@ describe("kinSettingsGroups", () => {
       "company",
       "approvals",
     ]);
+    // What Kin suggested is the owner's alone: a co-owner's Company has no Recommendations.
+    expect(groups("owner")[1]?.pages.at(-1)).toBe("recommendations");
   });
 
   it("opens a Company address only for the owner level; anything else lands on the profile", () => {
     expect(kinSettingsPageOf("connections", groups("coOwner"))).toBe("connections");
     expect(kinSettingsPageOf("connections", groups("member"))).toBe("profile");
+    expect(kinSettingsPageOf("recommendations", groups("owner"))).toBe("recommendations");
+    expect(kinSettingsPageOf("recommendations", groups("coOwner"))).toBe("profile");
     expect(kinSettingsPageOf("team", groups("lead"))).toBe("profile");
     expect(kinSettingsPageOf("appearance", groups("member"))).toBe("appearance");
     expect(kinSettingsPageOf("nonsense", groups("owner"))).toBe("profile");
