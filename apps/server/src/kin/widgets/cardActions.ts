@@ -596,7 +596,10 @@ export const untakenAtDay = Effect.fn("KinCardActions.untakenAtDay")(function* (
 export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
   orgId: KinOrgId,
   plan: CardPlan,
-  question: Pick<QuestionRow, "questionId" | "agentId" | "chatId" | "widgetId" | "raiseWidgetId">,
+  question: Pick<
+    QuestionRow,
+    "questionId" | "agentId" | "chatId" | "widgetId" | "raiseWidgetId" | "askedAt"
+  >,
   records: KinRecords["Service"],
 ) {
   if (!takesAsDefault(plan) || plan.draw.agentId !== question.agentId) return false;
@@ -626,21 +629,30 @@ export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
   }
   if ((yield* drawHolds(orgId, plan.draw)) !== undefined) return false;
   if (!(yield* teamMay(orgId, plan.draw, row, state))) return false;
-  yield* records.update(
-    orgId,
-    {
-      actor: { _tag: "agent", agentId: question.agentId },
-      via: "lead",
-      chatId: question.chatId,
-      // Its own cards say what Kin went with, not that the task closed under them.
-      answering: [question.widgetId, question.raiseWidgetId].filter((id) => id !== null),
-    },
-    row.key,
-    { state },
-    plan.rev,
-    takenFor(question.questionId),
-  );
-  return true;
+  // A person's change since it was asked, or since it was offered, waits for its person.
+  return yield* records
+    .update(
+      orgId,
+      {
+        actor: { _tag: "agent", agentId: question.agentId },
+        via: "lead",
+        chatId: question.chatId,
+        // Its own cards say what Kin went with, not that the task closed under them.
+        answering: [question.widgetId, question.raiseWidgetId].filter((id) => id !== null),
+        since: { at: question.askedAt, woke: [] },
+      },
+      row.key,
+      { state },
+      plan.rev,
+      takenFor(question.questionId),
+    )
+    .pipe(
+      Effect.as(true),
+      Effect.catchIf(
+        (error) => error.reason === "conflict",
+        () => Effect.succeed(false),
+      ),
+    );
 });
 
 /** A start the queue refused after its run moved: the whole tap rolls back, and says so. */
