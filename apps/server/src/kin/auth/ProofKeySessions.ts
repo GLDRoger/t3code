@@ -80,6 +80,21 @@ const enabled = (options: { readonly recordsPairings: boolean }) =>
         sql<{
           session_id: AuthSessionId;
         }>`SELECT session_id FROM kin_auth_session_keys WHERE proof_key_thumbprint IN (${thumbprints})`;
+      const keyOrgs = Effect.fn("ProofKeySessions.keyOrgs")(function* (
+        sessionIds: ReadonlyArray<AuthSessionId>,
+      ) {
+        if (sessionIds.length === 0) return [];
+        // The CLI can revoke before Kin's migrations have added the keys.
+        const tables =
+          yield* sql`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'kin_tasks_keys'`;
+        if (tables.length === 0) return [];
+        // No org filter: the companies are what this asks. A key Kin ended itself was told there.
+        const rows = yield* sql<{
+          org_id: KinOrgId;
+        }>`SELECT DISTINCT org_id FROM kin_tasks_keys
+          WHERE session_id IN ${sql.in(sessionIds)} AND revoked_at IS NULL ORDER BY org_id`;
+        return rows.map((row) => row.org_id);
+      });
       const blocked = Effect.fn("ProofKeySessions.blocked")(
         function* (thumbprint: string) {
           const [row] = yield* sql<{
@@ -247,7 +262,9 @@ const enabled = (options: { readonly recordsPairings: boolean }) =>
                     ],
                     caller,
                   );
-                  yield* ended(linked.orgs);
+                  // A coding-agent key signed out by its own session has no device to walk.
+                  const keyed = yield* keyOrgs(signedOut.map((row) => row.session_id));
+                  yield* ended([...new Set([...linked.orgs, ...keyed])]);
                   const ids = [...signedOut.map((row) => row.session_id), ...linked.signedOut];
                   // Told once the outermost write commits, so a rollback takes nothing back.
                   yield* sql.afterCommit(

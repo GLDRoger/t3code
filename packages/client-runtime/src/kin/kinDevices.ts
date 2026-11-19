@@ -115,7 +115,8 @@ export function kinRemoveDeviceCopy(
   nowMs: number,
 ): { readonly title: string; readonly detail: string } {
   const active = new Set(kinActiveDevices(devices, nowMs).map((held) => held.sessionId));
-  const below = kinDevicesLinkedFrom(device, devices).filter((held) => active.has(held.sessionId));
+  const linked = kinDevicesLinkedFrom(device, devices);
+  const below = linked.filter((held) => active.has(held.sessionId));
   const names = below.map(kinDeviceLabel);
   const also =
     names.length === 0
@@ -124,11 +125,20 @@ export function kinRemoveDeviceCopy(
         ? ` ${names[0]}, linked from it, is signed out too.`
         : ` So are the devices linked from it: ${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}.`;
   const own = device.keysMade ?? 0;
-  const keys = below.reduce((sum, held) => sum + (held.keysMade ?? 0), own);
+  const made = (from: ReadonlyArray<KinPersonDevice>) =>
+    from.reduce((sum, held) => sum + (held.keysMade ?? 0), own);
+  // Keys end on every device below, signed out already or not; only signed-in ones are named.
+  const keys = made(linked);
+  const where =
+    keys === own
+      ? "it"
+      : keys === made(below)
+        ? "these devices"
+        : "it or on devices linked from it";
   const ends =
     keys === 0
       ? ""
-      : ` This also ends the coding-agent ${keys === 1 ? "key" : "keys"} made on ${keys === own ? "it" : "these devices"}.`;
+      : ` This also ends the coding-agent ${keys === 1 ? "key" : "keys"} made on ${where}.`;
   return {
     title: `Remove ${kinDeviceLabel(device)}?`,
     detail:
