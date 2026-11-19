@@ -2379,6 +2379,49 @@ describe("the company profile", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("gives a new company the currency of whichever country it chooses first", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+          updated_by_kind, updated_by_id)
+        VALUES (${orgId}, ${yield* newCompanyProfileJson}, 1, 0, 'person', ${ownerId})`;
+      yield* defined(2, { template: "dates" });
+      // A code that names no country is refused, and the company still waits.
+      const unknown = OwnerMoney.setCompanyProfile(people, { orgId, rev: 0, country: "XX" });
+      assert.strictEqual(
+        (yield* Effect.flip(unknown)).message,
+        "Country: XX isn't a country Kin knows. Write its two-letter code, like GB, US or IN.",
+      );
+      assert.isTrue(yield* countryNeeded(orgId));
+      // Japan has no row of its own in Kin's regions: its yen, a calendar year and no tax.
+      yield* OwnerMoney.setCompanyProfile(people, { orgId, rev: 0, country: "JP" });
+      assert.deepInclude(yield* readProfile(orgId), {
+        country: "JP",
+        homeCurrency: "JPY",
+        financialYearStartMonth: 1,
+        tax: null,
+      });
+      const renewals = yield* turn(4, "Track the domain renewal");
+      yield* LeadWork.create(scope, {
+        sourceEventId: renewals,
+        records: [
+          { list: "dates", title: "Invented licence renewal", due: "2026-12-31", amount: "9000" },
+        ],
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT amount_minor AS minor, currency FROM kin_records
+          WHERE amount_minor IS NOT NULL`,
+        [{ minor: 9_000, currency: "JPY" }],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT json_extract(definition_json, '$.currency') AS currency
+          FROM kin_registers WHERE register_id = 'dates'`,
+        [{ currency: "JPY" }],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "reads a profile stored before countries by its currency, and a new country as its own",
     () =>

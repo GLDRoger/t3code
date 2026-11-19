@@ -307,8 +307,8 @@ Money shows what you're owed, what's overdue, who owes you, the next 30 days, ca
 each month. **Needs attention** at the top lists overdue invoices and renewals coming up.
 
 A new company chooses its country first: the owner or a co-owner sets it in **Settings → Company
-details**, and its currency, financial year and tax name follow. Until then Kin records no money,
-and agents say so.
+details**, and its currency follows, with its financial year and tax name where Kin knows them.
+Until then Kin records no money, and agents say so.
 
 Most of the bookkeeping happens by telling an agent: "Acme paid ₹48,250 today", "we spent $120 on
 hosting", "the GST filing is due on the 20th". It records the entry and answers in a line.

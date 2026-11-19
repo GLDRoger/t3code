@@ -18,6 +18,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { accessSql, ownerLevel } from "../people/KinAccess.ts";
+import { countryCurrency } from "./countryCurrency.ts";
 import { iso } from "./recordRows.ts";
 import { localeOf, regionOf } from "./region.ts";
 
@@ -273,13 +274,17 @@ export const textLocale = Effect.fn("KinCompanyProfile.textLocale")(function* (o
 
 /**
  * A change of country brings that country's currency, year and tax for whichever of them the
- * same change doesn't give; a country with no row keeps the currency and has no tax.
+ * same change doesn't give; a country with no row keeps the currency and has no tax, unless it is
+ * the first a new company chooses: that takes its country's currency (`countryCurrency.ts`).
  */
-const followCountry = (data: KinCompanyProfileData, patch: ProfilePatch) => {
+const followCountry = (data: KinCompanyProfileData, patch: ProfilePatch, pending: boolean) => {
   if (patch.country === undefined || patch.country === moneyOf(data).country) return {};
   const region = regionOf(patch.country);
+  const currency =
+    region?.currency ??
+    (pending && patch.country !== null ? countryCurrency(patch.country) : undefined);
   return {
-    ...(region === undefined ? {} : { homeCurrency: region.currency }),
+    ...(currency === undefined ? {} : { homeCurrency: currency }),
     financialYearStartMonth: region?.financialYearStartMonth ?? 1,
     tax:
       region === undefined || patch.country === "IN"
@@ -299,12 +304,17 @@ export const setProfile = Effect.fn("KinCompanyProfile.set")(function* (
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const { data, pending, rev: storedRev } = yield* storedProfile(orgId);
+      if (pending && patch.country != null && countryCurrency(patch.country) === undefined)
+        return yield* new KinChatError({
+          reason: "invalid_state",
+          message: `Country: ${patch.country} isn't a country Kin knows. Write its two-letter code, like GB, US or IN.`,
+        });
       const { bank, brand, ...rest } = patch;
       const given = <A extends object>(value: A | undefined) =>
         Object.fromEntries(Object.entries(value ?? {}).filter(([, one]) => one !== undefined));
       const next: KinCompanyProfileData = {
         ...data,
-        ...followCountry(data, patch),
+        ...followCountry(data, patch, pending),
         ...given(rest),
         bank: { ...data.bank, ...given(bank) },
         brand: { ...data.brand, ...given(brand) },
