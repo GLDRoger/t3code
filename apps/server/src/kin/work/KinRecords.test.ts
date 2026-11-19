@@ -490,19 +490,21 @@ it.effect(
         ["project", orbitCare.key, null],
       );
       assert.strictEqual(yield* clientOf(underOld.key), grove.recordId);
-      yield* LeadWork.update(scopeOf(lead), {
+      const left = yield* LeadWork.update(scopeOf(lead), {
         key: ownClient.key,
         sourceEventId: "ask-event",
         client: grove.key,
       });
       assert.isNull(yield* projectOf(ownClient.key));
+      assert.include(left.projectLeft, `${orbitCare.key} is another client's project`);
       // Its project's own client, a project with no client, or both given at once: the project stays.
-      yield* LeadWork.update(scopeOf(lead), {
+      const stayed = yield* LeadWork.update(scopeOf(lead), {
         key: noClient.key,
         sourceEventId: "ask-event",
         client: orbit.key,
       });
       assert.strictEqual(yield* projectOf(noClient.key), orbitCare.recordId);
+      assert.notProperty(stayed, "projectLeft");
       const onPlain = yield* ownerTask("on a plain project", { projectId: plain.recordId });
       yield* records.update(orgId, ownerWrites, onPlain.key, { partyId: kept.recordId });
       assert.strictEqual(yield* projectOf(onPlain.key), plain.recordId);
