@@ -46,7 +46,7 @@ import { messageBodyLimit } from "./LeadPrompt.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import { directKey } from "./LeadAccess.ts";
 import { outsideStamp, stampEvent } from "./OutsideContent.ts";
-import { type TeammateAsk, forward, forwardEventId, hashOf, routeShown } from "./routeCard.ts";
+import { type TeammateAsk, forward, forwardEventId, routeShown } from "./routeCard.ts";
 import { type CardDraw, type RoutePlan, sealPlans } from "../widgets/cardPlans.ts";
 import { choiceExpired } from "../widgets/choiceCard.ts";
 import { isHeld, type KinLevelGate } from "./LevelGate.ts";
@@ -517,15 +517,6 @@ const make = Effect.gen(function* () {
         Effect.provideService(KinChatRepository, repo),
         access,
       );
-      // Who asked which agent, and nothing of the request or its answer.
-      yield* chat.notice({
-        orgId: ctx.orgId,
-        chatId: self.ownerChatId,
-        audience: "owner",
-        messageId: KinMessageId.make(`kin-forward-told-${hashOf(`forward:${messageId}`)}`),
-        body: `${ask.personName} asked for something ${target.name} handles; it went to ${target.name}.`,
-        silent: true,
-      });
       return { to: target.name, passed: true as const };
     }
     const [thread] = yield* sql<{ threadId: ThreadId }>`SELECT thread_id AS "threadId"

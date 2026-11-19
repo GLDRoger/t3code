@@ -930,7 +930,7 @@ const runTeammate = <A, E>(
 // The host's chats, 18 Nov 2026: a teammate asked the Chief of staff for something the Tech
 // lead owns; it promised to pass it on and no tool could, until the owner typed it himself.
 it.effect(
-  "a teammate's own request reaches the agent that owns it once, at their access, and the owner hears who asked whom",
+  "a teammate's own request reaches the agent that owns it once, at their access, said once in each chat and not to the owner",
   () =>
     runTeammate(({ ctx, handoff, mate }) =>
       Effect.gen(function* () {
@@ -967,20 +967,14 @@ it.effect(
           copies.map((copy) => copy.body),
           ["Why did the staging deploy fail last night?"],
         );
+        // One row in each chat: her words where they went, and Kin's line where she asked.
         const routed = copies[0]!.chatId as KinChatId;
-        assert.deepStrictEqual(yield* systemRows(sql, orgId, routed), [
-          { body: "Passed on from your chat with Chief of staff. Tech lead answers you here." },
-        ]);
+        assert.lengthOf(yield* systemRows(sql, orgId, routed), 0);
         assert.deepStrictEqual(yield* systemRows(sql, orgId, mate.direct), [
           { body: "Passed on to Tech lead, who answers you in your chat with it." },
         ]);
-        // The owner reads who asked whom, quietly, and nothing of the request.
-        const told = yield* sql<{ body: string; silent: number }>`SELECT body, silent
-          FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${ctx.chiefChat}
-            AND author_kind = 'system' ORDER BY seq`;
-        assert.deepStrictEqual(told, [
-          { body: "Meera asked for something Tech lead handles; it went to Tech lead.", silent: 1 },
-        ]);
+        // She needed no go-ahead, so the owner's own chats hear nothing of it.
+        assert.lengthOf(yield* systemRows(sql, orgId, ctx.chiefChat), 0);
         assert.lengthOf(yield* systemRows(sql, orgId, ctx.techChat), 0);
 
         // One wake-up, marked as passed on from her chat with the Chief of staff, for her.
