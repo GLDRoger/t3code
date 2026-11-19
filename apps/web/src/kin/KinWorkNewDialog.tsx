@@ -2,7 +2,6 @@ import {
   KIN_WORK_ASSIGN,
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
-  KIN_WORK_TITLE_MAX,
   createKinWorkActions,
   KIN_WORK_REPEAT,
   kinRepeatText,
@@ -13,6 +12,8 @@ import {
   kinWorkDraftHint,
   kinWorkDraftWords,
   kinWorkPrincipalKey,
+  kinWorkTitleCount,
+  kinWorkTitleTooLong,
   type KinWorkDraft,
   type KinWorkRef,
 } from "@t3tools/client-runtime/kin/kinWork";
@@ -24,6 +25,14 @@ import { useId, useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
+import {
+  Combobox,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+  ComboboxPopup,
+} from "../components/ui/combobox";
 import {
   Dialog,
   DialogFooter,
@@ -53,39 +62,47 @@ import type { KinWorkChoices, KinWorkDirectory, KinWorkTarget } from "./useKinWo
 
 const NONE = "none";
 
-/** A client or a project to put the task under, or neither. */
-function PlaceSelect(props: {
+/** A client or a project to put the task under, or neither, found by typing part of its name. */
+function PlaceCombobox(props: {
   readonly label: string;
   readonly value: KinWorkRef | null;
   readonly choices: ReadonlyArray<KinWorkRef>;
   readonly onChange: (value: KinWorkRef | null) => void;
 }) {
+  const id = useId();
   // What the form opened about stays pickable whatever the list of choices holds.
   const choices =
     props.value === null || props.choices.some((choice) => choice.key === props.value?.key)
       ? props.choices
       : [props.value, ...props.choices];
   return (
-    <div className="flex flex-col gap-1.5">
-      <Label>{props.label}</Label>
-      <Select
-        value={props.value?.key ?? NONE}
-        onValueChange={(value) =>
-          props.onChange(choices.find((choice) => choice.key === value) ?? null)
-        }
+    <div className="flex min-w-0 flex-col gap-1.5">
+      <Label htmlFor={id}>{props.label}</Label>
+      <Combobox
+        items={choices}
+        value={props.value}
+        autoHighlight
+        itemToStringLabel={(choice: KinWorkRef) => choice.title}
+        isItemEqualToValue={(a: KinWorkRef, b: KinWorkRef) => a.key === b.key}
+        onValueChange={(choice: KinWorkRef | null) => props.onChange(choice)}
       >
-        <SelectTrigger className="w-full min-w-0" aria-label={props.label}>
-          <SelectValue>{props.value?.title ?? KIN_WORK_NEW_COPY.none}</SelectValue>
-        </SelectTrigger>
-        <SelectPopup alignItemWithTrigger={false}>
-          <SelectItem value={NONE}>{KIN_WORK_NEW_COPY.none}</SelectItem>
-          {choices.map((choice) => (
-            <SelectItem key={choice.key} value={choice.key}>
-              {choice.title}
-            </SelectItem>
-          ))}
-        </SelectPopup>
-      </Select>
+        <ComboboxInput
+          id={id}
+          aria-label={props.label}
+          placeholder={KIN_WORK_NEW_COPY.none}
+          showClear={props.value !== null}
+        />
+        <ComboboxPopup>
+          <ComboboxEmpty>{KIN_WORK_NEW_COPY.noMatch}</ComboboxEmpty>
+          <ComboboxList>
+            {(choice: KinWorkRef) => (
+              <ComboboxItem key={choice.key} value={choice} title={choice.title}>
+                <span className="min-w-0 flex-1 truncate">{choice.title}</span>
+              </ComboboxItem>
+            )}
+          </ComboboxList>
+        </ComboboxPopup>
+      </Combobox>
     </div>
   );
 }
@@ -121,6 +138,7 @@ export function KinWorkNewDialog(
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const titleId = useId();
+  const titleCountId = useId();
   const dueId = useId();
   const notesId = useId();
   const assignees = kinWorkAssignees({
@@ -138,6 +156,7 @@ export function KinWorkNewDialog(
   const checked = kinWorkDraftCheck(draft);
   const hint = kinWorkDraftHint(draft, names);
   const words = kinWorkDraftWords(draft);
+  const titleCount = kinWorkTitleCount(draft.title);
   const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
   const choices = props.choices === null ? null : kinNewTaskChoices(props.choices, me);
 
@@ -177,12 +196,25 @@ export function KinWorkNewDialog(
                 <Input
                   id={titleId}
                   value={draft.title}
-                  maxLength={KIN_WORK_TITLE_MAX}
                   placeholder={words.titlePlaceholder}
                   autoComplete="off"
                   autoFocus
+                  aria-describedby={titleCount === null ? undefined : titleCountId}
+                  aria-invalid={kinWorkTitleTooLong(draft.title) || undefined}
                   onChange={(event) => setDraft({ ...draft, title: event.target.value })}
                 />
+                {titleCount === null ? null : (
+                  <p
+                    id={titleCountId}
+                    className={
+                      kinWorkTitleTooLong(draft.title)
+                        ? "text-xs text-destructive-foreground tabular-nums"
+                        : "text-xs text-muted-foreground tabular-nums"
+                    }
+                  >
+                    {titleCount}
+                  </p>
+                )}
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="flex flex-col gap-1.5">
@@ -289,7 +321,7 @@ export function KinWorkNewDialog(
               {choices === null ? null : (
                 <div className="grid gap-4 sm:grid-cols-2">
                   {choices.clients.length === 0 && draft.party === null ? null : (
-                    <PlaceSelect
+                    <PlaceCombobox
                       label={KIN_WORK_NEW_COPY.clientLabel}
                       value={draft.party}
                       choices={choices.clients}
@@ -297,7 +329,7 @@ export function KinWorkNewDialog(
                     />
                   )}
                   {choices.projects.length === 0 && draft.project === null ? null : (
-                    <PlaceSelect
+                    <PlaceCombobox
                       label={KIN_WORK_NEW_COPY.projectLabel}
                       value={draft.project}
                       choices={choices.projects}
@@ -311,10 +343,14 @@ export function KinWorkNewDialog(
                   <Label>{KIN_WORK_NEW_COPY.sideLabel}</Label>
                   <ToggleGroup
                     aria-label={KIN_WORK_NEW_COPY.sideLabel}
-                    value={[draft.side]}
+                    value={draft.side === null ? [] : [draft.side]}
                     onValueChange={(value) => {
-                      if (value[0] === "ours" || value[0] === "theirs")
-                        setDraft({ ...draft, side: value[0] });
+                      // Neither pressed is a plain task about the client, not an obligation.
+                      const side = value[0];
+                      setDraft({
+                        ...draft,
+                        side: side === "ours" || side === "theirs" ? side : null,
+                      });
                     }}
                   >
                     <Toggle value="ours">{KIN_WORK_NEW_COPY.sideOurs}</Toggle>

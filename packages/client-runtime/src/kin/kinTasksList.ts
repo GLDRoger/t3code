@@ -16,11 +16,13 @@ import {
 import { kinLateWords } from "./kinTaskRecord.ts";
 import {
   kinWorkClosed,
+  kinWorkDueDays,
   kinWorkDueText,
   kinWorkName,
   kinWorkPrincipalKey,
   type KinTaskGroupBy,
   type KinWorkNames,
+  type KinWorkRef,
 } from "./kinWork.ts";
 
 /** What the phone's Tasks says, in the drawing's words. */
@@ -84,10 +86,6 @@ export const kinNeedsYouCount = (input: {
 }): number | null =>
   input.open !== null ? input.open.counts.needsYou : (input.counts?.needsYou ?? null);
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-const dayStart = (date: Date) =>
-  new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-
 /**
  * A row's line after who has it: one coloured word first when there is one (late in red, due
  * today in amber, an agent working in blue), then when it is due and its client or project.
@@ -108,11 +106,7 @@ export function kinTaskLine(
   const closed = kinWorkClosed(record.state);
   const working = record.working || (record.owner._tag === "agent" && record.state === "doing");
   const day = closed ? null : kinWorkDueText(record, names, now);
-  const today =
-    record.dueAt !== null &&
-    !closed &&
-    dayStart(new Date(record.dueAt)) === dayStart(now) &&
-    !record.late;
+  const today = !closed && !record.late && kinWorkDueDays(record, names, now) === 0;
   const lead =
     record.late && record.dueAt !== null
       ? { text: kinLateWords(record.dueAt, now), tone: "late" as const }
@@ -241,6 +235,44 @@ const lateOf = (record: KinRecord) => ({
   key: record.key,
 });
 const byOrder = (a: KinRecord, b: KinRecord) => kinWorkMoveOrder(lateOf(a), lateOf(b));
+
+/** The most urgent open tasks first, in the order Tasks lists them inside a group. */
+export const kinTasksMostUrgent = <R extends KinRecord>(
+  records: ReadonlyArray<R>,
+  limit: number,
+): ReadonlyArray<R> =>
+  records
+    .filter((record) => !kinWorkClosed(record.state))
+    .sort(byOrder)
+    .slice(0, limit);
+
+/** A person's page: how many open tasks they hold that the reader sees, and the top few. */
+export const KIN_PERSON_TASKS = {
+  title: "Tasks",
+  shown: 5,
+  count: (count: number) => (count === 1 ? "1 open task" : `${count} open tasks`),
+  none: "No open tasks you can see.",
+  seeAll: "See all in Tasks",
+  failed: "Couldn't load their tasks.",
+} as const;
+
+/**
+ * The projects the Filter narrows to: the reader's own choices, then any other project a task in
+ * view is in, so a teammate can narrow to a project they see tasks of without being on it.
+ */
+export function kinTaskFilterProjects(
+  choices: ReadonlyArray<KinWorkRef>,
+  records: ReadonlyArray<KinRecord>,
+): ReadonlyArray<KinWorkRef> {
+  const held = new Set(choices.map((choice) => choice.key));
+  const more = new Map<string, KinWorkRef>();
+  for (const { project } of records)
+    if (project !== undefined && !held.has(project.key) && !more.has(project.key))
+      more.set(project.key, { key: project.key, title: project.title });
+  return more.size === 0
+    ? choices
+    : [...choices, ...[...more.values()].sort((a, b) => a.title.localeCompare(b.title))];
+}
 
 /** Whose move a row is, from the row alone, on a host that doesn't answer `byMove`. */
 const moveOfRow = (record: KinRecord, names: KinWorkNames, ownerLevel: boolean) =>
@@ -391,17 +423,8 @@ export function kinTasksGroupedBy<R extends KinRecord>(input: {
         };
       }
       case "due": {
-        const due = record.dueAt === null ? null : Date.parse(record.dueAt);
-        const index =
-          due === null
-            ? 4
-            : record.late
-              ? 0
-              : due < dayStart(now) + DAY_MS
-                ? 1
-                : due < dayStart(now) + 7 * DAY_MS
-                  ? 2
-                  : 3;
+        const days = kinWorkDueDays(record, names, now);
+        const index = days === null ? 4 : record.late ? 0 : days < 1 ? 1 : days < 7 ? 2 : 3;
         return {
           key: DUE_BUCKETS[index]!,
           title: DUE_BUCKETS[index]!,

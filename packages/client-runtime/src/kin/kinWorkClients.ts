@@ -1133,3 +1133,9 @@ export const kinWorkRefOf = (row: {
   readonly key: KinRecordKey;
   readonly name: string;
 }): KinWorkRef => ({ key: row.key, title: row.name });
+
+/** Each project's client by project key, for "Client stays" on a moved task (`kinWorkClientStays`). */
+export const kinProjectClients = (
+  rows: ReadonlyArray<Pick<KinProjectRow, "key" | "party">>,
+): ReadonlyMap<string, string | null> =>
+  new Map(rows.map((row) => [row.key, row.party?.key ?? null]));

@@ -432,6 +432,57 @@ export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (input:
   } satisfies Prepared;
 });
 
+type Email = Extract<Prepared, { readonly _tag: "email" }>;
+/** Addresses a person typed, as stored: trimmed, without empty entries. */
+const typed = (values: ReadonlyArray<string>) =>
+  values.map((one) => one.trim()).filter((one) => one !== "");
+/** A typed address list passes what the agent's had to, sparing what the mail already held. */
+const checkTyped = (values: ReadonlyArray<string>, held: ReadonlyArray<string>, what: string) => {
+  const max = Math.max(MAX_RECIPIENTS, held.length);
+  if (values.length > max) return `At most ${max} addresses in ${what}.`;
+  return checkAddresses(
+    values.filter((one) => !held.includes(one)),
+    what,
+    max,
+  )?.message;
+};
+
+/**
+ * A person's own To, Cc, Subject and Body on a drawn mail, checked as the agent's draft was;
+ * the rest (From, thread, files) stays as the card showed it. A string is why it can't go.
+ */
+export const editedMail = (
+  mail: Email,
+  edit: {
+    readonly to: ReadonlyArray<string>;
+    readonly cc: ReadonlyArray<string>;
+    readonly subject: string;
+    readonly body: string;
+  },
+): Email | string => {
+  const to = typed(edit.to);
+  const cc = typed(edit.cc);
+  const subject = edit.subject.trim();
+  if (to.length === 0) return "Add at least one address in To.";
+  const bad = checkTyped(to, mail.to, "To") ?? checkTyped(cc, mail.cc, "Cc");
+  if (bad !== undefined) return bad;
+  if (subject === "") return "Add a subject.";
+  if (subject !== mail.subject && (LINE_BREAK.test(subject) || subject.length > 300))
+    return "The subject is one line of at most 300 characters.";
+  if (edit.body.trim() === "") return "Write the message before sending it.";
+  if (edit.body.length > MAX_BODY)
+    return `The message is at most ${MAX_BODY.toLocaleString("en-US")} characters.`;
+  return { ...mail, to, cc, subject, body: edit.body };
+};
+/** Whether an edit left the words exactly as drawn. */
+export const sameWords = (one: Email, other: Email) =>
+  one.subject === other.subject &&
+  one.body === other.body &&
+  one.to.length === other.to.length &&
+  one.to.every((address, index) => other.to[index] === address) &&
+  one.cc.length === other.cc.length &&
+  one.cc.every((address, index) => other.cc[index] === address);
+
 const OFFSET = /(?:z|[+-]\d{2}:?\d{2})$/i;
 /**
  * An event's times as a person reads them: in `zone` when the agent gave an offset; a wall-clock

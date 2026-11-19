@@ -330,9 +330,10 @@ export function KinFilter(props: {
   const radio = (group: KinFilterGroup) => (
     <MenuRadioGroup value={group.value} onValueChange={(value) => group.onChange(String(value))}>
       {group.options.map((option) => (
-        <MenuRadioItem key={option.value} value={option.value}>
+        // A pick is the whole job: the menu closes on it, over the rows it just narrowed.
+        <MenuRadioItem key={option.value} value={option.value} closeOnClick title={option.label}>
           <span className="flex min-w-0 items-center justify-between gap-4">
-            <span className="truncate">{option.label}</span>
+            <span className="max-w-72 truncate">{option.label}</span>
             {option.detail == null ? null : (
               <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
                 {option.detail}

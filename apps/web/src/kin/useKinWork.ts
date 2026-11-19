@@ -19,6 +19,7 @@ import {
   kinProjectPageKeys,
   kinProjectsQuery,
   kinProjectsSameFilter,
+  kinProjectClients,
   kinWorkRefOf,
   type KinClientsFilter,
   type KinProjectsFilter,
@@ -396,6 +397,7 @@ export function useKinWorkChoices(target: KinWorkTarget, enabled: boolean) {
     clients: (held?.clients ?? []).map(kinWorkRefOf),
     projects: (held?.projects ?? []).map(kinWorkRefOf),
     doneProjects: (held?.doneProjects ?? []).map(kinWorkRefOf),
+    projectClients: kinProjectClients([...(held?.projects ?? []), ...(held?.doneProjects ?? [])]),
   };
 }
 
