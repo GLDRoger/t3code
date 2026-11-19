@@ -17,6 +17,8 @@ export const KinDocCard = memo(function KinDocCard(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: string;
   readonly agentNames?: ReadonlyMap<string, string>;
+  /** The message's own long press: the card takes presses across its face, so it passes this on. */
+  readonly onLongPress?: () => void;
 }) {
   const { doc } = props;
   const navigation = useNavigation();
@@ -49,6 +51,7 @@ export const KinDocCard = memo(function KinDocCard(props: {
         else open();
       }}
       onPress={open}
+      {...(props.onLongPress === undefined ? {} : { onLongPress: props.onLongPress })}
       className="gap-2 rounded-[20px] border border-border bg-card-alt p-4 active:opacity-70"
     >
       <Text textRole="caption" className="font-t3-medium text-foreground-muted">

@@ -26,8 +26,7 @@ const KEYBOARD_LIST_MAX_HEIGHT = 192;
 /**
  * A client or project, found by typing part of its name: the row opens a search field over the
  * choices, as the time zone picker does, typing asks the host about every one the person may see,
- * and a pick closes it. Opening the held one and who owes it come after the choices, so a tap
- * just under the row always lands in the search.
+ * and a pick closes it.
  */
 export function KinWorkPlacePicker(props: {
   readonly target: KinWorkTarget;
@@ -104,6 +103,19 @@ export function KinWorkPlacePicker(props: {
     props.onPick(ref);
     close();
   };
+  // Beside who owes it (a client on a task) it follows the choices, so a tap under the row lands in the search.
+  const openHeld =
+    held === null || props.onOpen === undefined ? null : (
+      <ListChoiceRow
+        label={`Open ${held.title}`}
+        selected={false}
+        separated
+        onPress={() => {
+          close();
+          props.onOpen?.();
+        }}
+      />
+    );
   return (
     <>
       <ListRow
@@ -118,6 +130,7 @@ export function KinWorkPlacePicker(props: {
       />
       {!open ? null : (
         <>
+          {side === undefined ? openHeld : null}
           <View ref={found} collapsable={false}>
             <View className="flex-row px-4 py-2">
               <SearchField
@@ -169,17 +182,7 @@ export function KinWorkPlacePicker(props: {
               {view.loading ? KIN_PICKER_COPY.searching : (view.note ?? KIN_WORK_NEW_COPY.noMatch)}
             </Text>
           ) : null}
-          {held === null || props.onOpen === undefined ? null : (
-            <ListChoiceRow
-              label={`Open ${held.title}`}
-              selected={false}
-              separated
-              onPress={() => {
-                close();
-                props.onOpen?.();
-              }}
-            />
-          )}
+          {side === undefined ? null : openHeld}
           {held === null || side === undefined ? null : (
             <ListChoiceRow
               label={
