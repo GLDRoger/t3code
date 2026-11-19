@@ -164,6 +164,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           });
       }
       const at = named[0];
+      const defaultPlan = at === undefined ? undefined : drawn[at]?.plan;
       // A refused repeat posts nothing; an allowed one is stored in its card's own transaction.
       const plan = yield* Questions.planAsk({
         orgId: lead.orgId,
@@ -177,7 +178,11 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         about,
         intent,
         now,
-        acts: at === undefined ? undefined : drawn[at]?.plan.kind,
+        acts: defaultPlan?.kind,
+        held:
+          defaultPlan === undefined
+            ? undefined
+            : yield* CardActions.untakenAtDay(lead.orgId, defaultPlan),
       });
       // Drawn again inside the card's transaction: what was checked is what is stored.
       const recheck = drawAll.pipe(

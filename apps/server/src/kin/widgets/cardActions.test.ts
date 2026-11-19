@@ -1683,6 +1683,14 @@ it.effect("a default Kin couldn't undo, or on a task changed since, waits for it
         yield* askToClose(kin, cover, chatId),
         yield* askToClose(kin, proofs, chatId),
       ];
+      // Known when asked: closing the repeating or handed-back one does more than Undo puts back.
+      const whenAsked = yield* Effect.forEach(asked, (one) =>
+        Questions.readQuestion(orgId, one.question),
+      );
+      assert.deepStrictEqual(
+        whenAsked.map((one) => one!.safe),
+        [false, false, true, true],
+      );
       yield* kin.records.update(orgId, byRhea, cover.key, { title: "Send the Lumen cover note" });
       // Retired, the Chief of staff can't be waited on again, so Undo couldn't put proofs back.
       yield* sql`UPDATE kin_agents SET retired_at = ${at} WHERE org_id = ${orgId} AND agent_id = 'chief'`;
@@ -1693,7 +1701,7 @@ it.effect("a default Kin couldn't undo, or on a task changed since, waits for it
         ["open", "open", "open", "waiting"],
       );
 
-      assert.strictEqual(yield* settleAt(kin, Math.max(...asked.map((one) => one.due))), 4);
+      assert.strictEqual(yield* settleAt(kin, Math.max(...asked.map((one) => one.due))), 2);
       assert.deepStrictEqual(yield* Effect.forEach(keys, kin.stateOf), before);
       const marked = yield* sql`SELECT 1 FROM kin_record_changes c WHERE c.org_id = ${orgId}
         AND EXISTS (SELECT 1 FROM json_each(c.fields_json) f
