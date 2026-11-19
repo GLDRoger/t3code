@@ -577,9 +577,10 @@ const make = Effect.gen(function* () {
       seq: number;
       message_id: KinMessageId;
       body: string;
+      silent: number;
       author_name: string | null;
     }>`SELECT w.chat_id, w.type, w.revision, json_extract(w.state_json, '$.phase') AS phase,
-        w.state_json, w.awaiting_json, m.seq, m.message_id, m.body,
+        w.state_json, w.awaiting_json, m.seq, m.message_id, m.body, m.silent,
         COALESCE(
           (SELECT display_name FROM kin_agents a
             WHERE a.org_id = m.org_id AND a.agent_id = m.author_agent_id),
@@ -622,7 +623,7 @@ const make = Effect.gen(function* () {
       const held = row.phase === "heads_up" ? undefined : yield* holdNow(orgId, person.personId);
       recipients.push({
         personId: person.personId,
-        silent: person.muted || held !== undefined,
+        silent: person.muted || held !== undefined || row.silent === 1,
         subject: { _tag: "message", messageId: row.message_id },
       });
     }

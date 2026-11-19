@@ -484,6 +484,25 @@ export type Facts = (
  * else from `facts`. Anything the recipe doesn't declare as the agent's is refused, so an agent
  * can't supply a figure Kin stores.
  */
+/** Whether the requester gives an amount: a money input, or a money cell with a value in a row. */
+export const givesMoney = (recipe: Recipe, given: Readonly<Record<string, unknown>>) =>
+  recipe.inputs.some((input) => {
+    const value = given[input.name];
+    if (input.from !== "agent" || value === undefined || value === null) return false;
+    if (input.type === "money") return true;
+    if (input.type !== "table" || !Array.isArray(value)) return false;
+    const money = Object.keys(input.columns).filter((column) => input.columns[column] === "money");
+    return value.some(
+      (row: unknown) =>
+        typeof row === "object" &&
+        row !== null &&
+        money.some((column) => {
+          const cell: unknown = Reflect.get(row, column);
+          return cell !== undefined && cell !== null;
+        }),
+    );
+  });
+
 export const assembleInputs = (
   recipe: Recipe,
   given: Readonly<Record<string, unknown>>,

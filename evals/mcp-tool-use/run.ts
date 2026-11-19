@@ -88,6 +88,7 @@ import {
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { WEEKLY_RULE } from "../../apps/server/src/kin/pulse/weekly.ts";
 import { STARTED_RULE } from "../../apps/server/src/kin/lead/startedSection.ts";
+import { DECLINED_RULE } from "../../apps/server/src/kin/lead/declinedSection.ts";
 import { UNDO_RULE } from "../../apps/server/src/kin/lead/undoSection.ts";
 import { defaultCharacterFor } from "../../apps/server/src/kin/lead/characterDefaults.ts";
 import { characterForTurn, colleagueLine } from "../../apps/server/src/kin/lead/characters.ts";
@@ -399,10 +400,9 @@ export const McpToolUseCase = Schema.Struct({
     ),
     world: Schema.optional(McpToolUseWorld),
     /**
-     * Canned tool results by bare name, T3 or native. `"default"` uses the runner's result. For a
-     * device tool, a T3 `DeviceError` (`{"_tag": ..., "cause": null}`) fails it inside T3; for a
-     * preview tool, a `PreviewAutomationError` fails it with that error's message. A
-     * `{"$sequence": [...]}` mock answers its nth call with the nth result, then repeats the last.
+     * Canned tool results by bare name. `"default"` uses the runner's result. A device `DeviceError`
+     * or preview `PreviewAutomationError` fails inside T3; `{"$error": value}` fails with value, as a
+     * declared tool failure does; `{"$sequence": [...]}` answers call n with entry n, then the last.
      */
     mocks: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
     /** Regexes on one part of a shell command. A match wins over the shell simulator. */
@@ -1303,6 +1303,7 @@ const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["world"]) 
     .replaceAll("{{REPLY_SHAPE}}", REPLY_SHAPE)
     .replaceAll("{{HANDED_BACK_WORK}}", HANDED_BACK_WORK)
     .replaceAll("{{STARTED_RULE}}", STARTED_RULE)
+    .replaceAll("{{DECLINED_RULE}}", DECLINED_RULE)
     .replaceAll("{{SHARED_TURN}}", SHARED_TURN_LINE)
     .replaceAll("{{WITHDRAWN_WORK}}", WITHDRAWN_WORK);
 
@@ -1956,6 +1957,26 @@ const ANSWERS_IN_CHAT = new Set([
 const SHOWS_ONLY = new Set(["kin_chart", "kin_visual", "kin_document", "kin_issue", "kin_receipt"]);
 const DOC_TOOLS = new Set(["doc_create", "doc_edit", "doc_rewrite"]);
 /**
+ * Every teammate message of the turn passed on by kin_hand_off (its mocked results, in call
+ * order): Kin's own line in the chat answers each, so the turn owes no words (`answered`).
+ */
+const passedOnEach = (
+  testCase: Sample["testCase"],
+  used: ReadonlyArray<{ readonly tool: string }>,
+) => {
+  if (!testCase.prompt.includes("your direct chat with a teammate")) return false;
+  const asked = testCase.prompt.match(/BEGIN QUOTE: member human message/g)?.length ?? 0;
+  const mock = testCase.setup.mocks?.kin_hand_off;
+  const results = isRecord(mock) && Array.isArray(mock.$sequence) ? mock.$sequence : [mock];
+  const passed = used
+    .filter((one) => one.tool === "kin_hand_off")
+    .filter((_, n) => {
+      const result: unknown = results[Math.min(n, results.length - 1)];
+      return isRecord(result) && result.passed === true;
+    });
+  return asked > 0 && passed.length >= asked;
+};
+/**
  * What Kin asks a lead whose finished turn left a person's message without words
  * (KinReplyBridge `complete`): the rescue prompt, the caption prompt when its only answer was a
  * chart, visual or file, or undefined when the turn answered.
@@ -1974,6 +1995,7 @@ export const rescuePrompt = (sample: Pick<Sample, "testCase" | "responses">) => 
       tool: normalizeToolName(block.name),
       card: isRecord(block.input) && block.input.card === true,
     }));
+  if (passedOnEach(sample.testCase, used)) return undefined;
   const shows = ({ tool, card }: (typeof used)[number]) =>
     SHOWS_ONLY.has(tool) || (DOC_TOOLS.has(tool) && card);
   if (used.some((one) => ANSWERS_IN_CHAT.has(one.tool) && !DOC_TOOLS.has(one.tool) && !shows(one)))
@@ -2022,6 +2044,7 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
     return failed(`${input.path} is not a readable HTML document. Pass an absolute path.`);
   }
   const mock = nextMock(sample, name, testCase.setup.mocks?.[name]);
+  if (isRecord(mock) && mock.$error !== undefined) return failed(valueText(mock.$error));
   if (isT3Name(call.name) && PREVIEW_TOOLS.has(name)) {
     if (testCase.setup.world?.browserAgentAccess === false)
       return failed(

@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_COMPANY,
+  kinCompanyCountrySuggestion,
   kinCompanyEditSections,
   kinCompanyDraftOf,
   kinDeviceRegion,
@@ -21,7 +22,7 @@ import { EnvironmentId, KinOrgId, type KinCompanyProfile } from "@t3tools/contra
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import * as Schema from "effect/Schema";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -44,7 +45,7 @@ import { KinBrandForm, KinBrandRows } from "./KinBrand";
 import { KinTemplateRows } from "./KinTemplates";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
-import { useKinCompanyProfile } from "./state/useKinMoney";
+import { useKinCompanyProfile, useKinCountryNeeded } from "./state/useKinMoney";
 import type { KinWorkTarget } from "./state/useKinWork";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { useKinGate } from "./state/useKinHost";
@@ -124,6 +125,8 @@ function Profile(
   const [saved, setSaved] = useState(false);
   const [brandSaved, setBrandSaved] = useState(false);
   const [editingBrand, setEditingBrand] = useState(false);
+  const waiting = useKinCountryNeeded(props);
+  const region = kinDeviceRegion();
   const save = async (typed: KinCompanyDraft) => {
     const checked = kinCompanyInput(orgId, profile, typed);
     setProblem(null);
@@ -181,7 +184,7 @@ function Profile(
                   icon: "pencil" as const,
                   onPress: () => {
                     setSaved(false);
-                    setDraft(kinCompanyDraftOf(profile, kinDeviceRegion()));
+                    setDraft(kinCompanyDraftOf(profile, region, waiting));
                   },
                 },
               ],
@@ -201,7 +204,7 @@ function Profile(
                     <Button
                       tone="primary"
                       label={KIN_COMPANY.edit}
-                      onPress={() => setDraft(kinCompanyDraftOf(profile, kinDeviceRegion()))}
+                      onPress={() => setDraft(kinCompanyDraftOf(profile, region, waiting))}
                     />
                   ),
                 }
@@ -262,19 +265,32 @@ function Profile(
       {problem === null ? null : <Notice message={problem} tone="danger" />}
       {kinCompanyEditSections(profile, draft).map((section) => (
         <ListSection key={section.title} title={section.title}>
-          {section.fields.map((field) => (
-            <KinWorkTextField
-              key={field.id}
-              label={field.label}
-              value={draft[field.id]}
-              placeholder={field.placeholder}
-              disabled={saving}
-              {...(field.code ? { keyboard: "plain" as const } : {})}
-              {...(field.multiline ? { multiline: true } : {})}
-              {...(problems[field.id] === undefined ? {} : { hint: problems[field.id] })}
-              onChangeText={(text) => setDraft({ ...draft, [field.id]: text })}
-            />
-          ))}
+          {section.fields.map((field) => {
+            const offer =
+              field.id === "country" ? kinCompanyCountrySuggestion(draft, region, waiting) : null;
+            return (
+              <Fragment key={field.id}>
+                <KinWorkTextField
+                  label={field.label}
+                  value={draft[field.id]}
+                  placeholder={field.placeholder}
+                  disabled={saving}
+                  {...(field.code ? { keyboard: "plain" as const } : {})}
+                  {...(field.multiline ? { multiline: true } : {})}
+                  {...(problems[field.id] === undefined ? {} : { hint: problems[field.id] })}
+                  onChangeText={(text) => setDraft({ ...draft, [field.id]: text })}
+                />
+                {offer === null ? null : (
+                  <ListActionRow
+                    icon="globe"
+                    label={offer.label}
+                    disabled={saving}
+                    onPress={() => setDraft(offer.accept())}
+                  />
+                )}
+              </Fragment>
+            );
+          })}
         </ListSection>
       ))}
     </KinWorkFrame>

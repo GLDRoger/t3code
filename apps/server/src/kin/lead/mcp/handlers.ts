@@ -257,7 +257,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         row === undefined || Option.isNone(lane)
           ? undefined
           : yield* Questions.personOfChat(lead.orgId, lane.value.chatId);
-      // Only its asker, or a turn in a chat with the person it was put to, closes a question.
+      // Its asker, or a turn in a chat with its person, finds it; only its asker closes it.
       if (row === undefined || (row.agentId !== lead.agentId && asked !== row.personId))
         return yield* new KinChatError({
           reason: "not_found",
@@ -269,6 +269,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           {
             orgId: lead.orgId,
             agentId: lead.agentId,
+            wakeupId,
             questionId: row.questionId,
             outcome: input.outcome,
             answer: input.answer,
