@@ -3,10 +3,9 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 /**
- * Signs out the devices given and every device linked from them, down the line, and cancels the
- * links any of them left open. The walk starts from the devices given whatever state their own
- * sessions are in, and each step stays with the same person in the same company. Plain expiry
- * doesn't cascade: a laptop in daily use stays when the phone that linked it sits idle.
+ * Signs out the devices given and every device linked from them, down the line, and ends the links
+ * and coding-agent keys any of them made. The walk ignores their own sessions' state and stays with
+ * one person in one company. Expiry doesn't cascade: an idle phone never ends the laptop it linked.
  */
 export const revokeLinkedDevices = Effect.fn("KinLinkedDevices.revoke")(function* (
   sql: SqlClient.SqlClient,
@@ -15,10 +14,14 @@ export const revokeLinkedDevices = Effect.fn("KinLinkedDevices.revoke")(function
   keep: string | null = null,
 ) {
   if (from.length === 0) return [];
-  // The CLI can revoke before Kin's migrations have added the device tree.
-  const tree =
-    yield* sql`SELECT 1 FROM pragma_table_info('kin_session_bindings') WHERE name = 'parent_session_id'`;
-  if (tree.length === 0) return [];
+  // The CLI can revoke before Kin's migrations have added the device tree or the keys' makers.
+  const added = new Set(
+    (yield* sql<{ name: string }>`SELECT name FROM pragma_table_info('kin_session_bindings')
+        WHERE name = 'parent_session_id'
+      UNION ALL SELECT name FROM pragma_table_info('kin_tasks_keys')
+        WHERE name = 'made_by_session_id'`).map((column) => column.name),
+  );
+  if (!added.has("parent_session_id")) return [];
   const now = yield* DateTime.now;
   const gone = (columns: ReturnType<typeof sql.literal>) =>
     sql`WITH RECURSIVE gone(session_id, org_id, person_id) AS (
@@ -34,9 +37,21 @@ export const revokeLinkedDevices = Effect.fn("KinLinkedDevices.revoke")(function
   yield* sql`UPDATE kin_session_bindings SET revoked_at = ${now.epochMilliseconds}
     WHERE revoked_at IS NULL AND session_id IS NOT ${keep}
     AND (session_id, org_id) IN (${gone(sql.literal("session_id, org_id"))})`;
+  // No org filter: a session is one person's in one company, and a key's maker is its own session.
+  const keys = added.has("made_by_session_id")
+    ? yield* sql<{
+        session_id: string;
+      }>`UPDATE kin_tasks_keys SET revoked_at = ${now.epochMilliseconds}
+      WHERE revoked_at IS NULL AND made_by_session_id IS NOT ${keep}
+      AND (made_by_session_id IN ${sql.in(from)}
+        OR made_by_session_id IN (${gone(sql.literal("session_id"))}))
+      RETURNING session_id`
+    : [];
   const signedOut = yield* sql<{ session_id: string }>`UPDATE auth_sessions
     SET revoked_at = ${DateTime.formatIso(now)}
     WHERE revoked_at IS NULL AND session_id IS NOT ${keep}
-    AND session_id IN (${gone(sql.literal("session_id"))}) RETURNING session_id`;
+    AND (session_id IN (${gone(sql.literal("session_id"))})
+      OR session_id IN ${sql.in(keys.map((key) => key.session_id))})
+    RETURNING session_id`;
   return signedOut.map((row) => row.session_id);
 });

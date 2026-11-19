@@ -11,7 +11,7 @@ import { kinFailureText } from "./kinAnswers.ts";
 import { formatKinTime } from "./kinScreenState.ts";
 
 export const KIN_DEVICES_COPY = {
-  title: "Linked devices",
+  title: "Your devices",
   rowDetail: "Phones and browsers signed in as you",
   footer:
     "Each device stays signed in for 30 days from when it was linked. Then link it again here.",
@@ -124,14 +124,17 @@ export function kinRemoveDeviceCopy(
       : names.length === 1
         ? ` ${names[0]}, linked from it, is signed out too.`
         : ` So are the devices linked from it: ${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}.`;
+  const keys = device.keysMade ?? 0;
+  const ends =
+    keys === 0 ? "" : ` This also ends the coding-agent ${keys === 1 ? "key" : "keys"} made on it.`;
   return {
     title: `Remove ${kinDeviceLabel(device)}?`,
     detail:
       device.current === true
-        ? `It's signed out right away.${also} This is the device you're using, so you'll be signed out here and need a new link to come back.`
+        ? `It's signed out right away.${also}${ends} This is the device you're using, so you'll be signed out here and need a new link to come back.`
         : mine
-          ? `It's signed out right away.${also} Linking it again needs a new link.`
-          : `It's signed out right away.${also} Their other devices stay signed in.`,
+          ? `It's signed out right away.${also}${ends} Linking it again needs a new link.`
+          : `It's signed out right away.${also}${ends} Their other devices stay signed in.`,
   };
 }
 
@@ -165,7 +168,7 @@ export function kinDeviceLinkProblem(error: unknown): string {
 
 export function kinRemoveDeviceProblem(error: unknown): string {
   return kinFailureText(error, "Couldn't remove that device.", {
-    refused: "Remove this device from the phone you joined with, or ask the owner.",
+    refused: "Remove this device from the device you joined with, or ask the owner.",
     gone: "That device was already signed out.",
   });
 }
