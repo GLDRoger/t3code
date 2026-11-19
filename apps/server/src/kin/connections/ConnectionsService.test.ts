@@ -143,6 +143,8 @@ const SEARCH: FakeTool = {
   annotations: { readOnlyHint: true, openWorldHint: true },
   result: () => text("found"),
 };
+/** A tool claiming it is safe to run unasked. */
+const SAFE_HINTS = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 const BASE: Spec = { instructions: "Use query for analytics.", tools: [QUERY, DELETE, SEARCH] };
 
 const serve = <A, E>(app: Layer.Layer<A, E, HttpRouter.HttpRouter>) =>
@@ -704,6 +706,35 @@ describe("KinConnections", () => {
           instructionsDigest: told.connection.instructionsDigest!,
         });
         assert.strictEqual(back.connection.state, "active");
+      }),
+    ),
+  );
+
+  it.effect("waits on the owner's card for a tool marked Ask me, whatever hints it sends", () =>
+    withAsks({ tools: [{ name: "archive_note", annotations: SAFE_HINTS }] }, (fake, cards) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        const added = yield* connections.add(owner, {
+          orgId,
+          service: "custom",
+          label: "Notes",
+          url: "https://mcp.example.com/mcp",
+        });
+        const connectionId = added.connection.connectionId;
+        yield* connections.setToolModes(owner, {
+          orgId,
+          connectionId,
+          modes: [
+            {
+              tool: "archive_note",
+              mode: "ask",
+              digest: toolOf(added, "archive_note")!.pinDigest,
+            },
+          ],
+        });
+        assert.strictEqual((yield* call(connectionId, "archive_note")).note, ASKED);
+        assert.lengthOf(cards, 1);
+        assert.deepStrictEqual(yield* toolCalls(fake), []);
       }),
     ),
   );
@@ -2480,6 +2511,12 @@ describe("KinConnections sending", () => {
           })
           .pipe(Effect.flip);
         assert.strictEqual(read.message, ALWAYS_ASK);
+        const sql = yield* SqlClient.SqlClient;
+        // Whatever its stored definition claims, a send still waits on the owner's Confirm.
+        yield* sql`UPDATE kin_connection_tools
+          SET definition_json = json_set(definition_json, '$.annotations', json(${JSON.stringify(SAFE_HINTS)})),
+            accepted_json = json_set(accepted_json, '$.annotations', json(${JSON.stringify(SAFE_HINTS)}))
+          WHERE tool_name = 'mail_send'`;
 
         const body = "Hi Ana,\n\nThe invoice for November is attached.\n\nThanks,\nOwner";
         const asked = yield* sendCall("mail_send", {
@@ -2512,7 +2549,6 @@ describe("KinConnections sending", () => {
           ],
           outcome: null,
         });
-        const sql = yield* SqlClient.SqlClient;
         const logged = yield* sql<{ status: string }>`SELECT status FROM kin_connection_calls
           WHERE tool_name = 'mail_send'`;
         assert.deepStrictEqual(logged, [{ status: "awaiting_approval" }]);
