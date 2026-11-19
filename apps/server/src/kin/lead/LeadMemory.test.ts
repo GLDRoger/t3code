@@ -1197,7 +1197,7 @@ it.live(
             itemId: scheduled.itemId,
             sourceEventId: "fixture-event",
           }),
-          scheduleCancelled,
+          { ...scheduleCancelled, note: "Stopped: it doesn't run." },
         );
         // A due run that already handed its work on isn't stopped, and the cancel says what went.
         for (const [itemId, runState, onDue, handedOff] of [
