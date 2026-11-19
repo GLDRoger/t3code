@@ -49,6 +49,8 @@ export const AuthRelayReadScope = "relay:read" as const;
 export const AuthRelayWriteScope = "relay:write" as const;
 /** Kin chat only: a member's session can use Kin chat methods and nothing else. */
 export const AuthKinChatScope = "kin:chat" as const;
+/** A person's coding-agent key: accepted only by Kin's tasks endpoint, never granted by pairing. */
+export const AuthKinTasksScope = "kin:tasks" as const;
 export const AuthEnvironmentScope = Schema.Literals([
   AuthOrchestrationReadScope,
   AuthOrchestrationOperateScope,
@@ -68,13 +70,16 @@ export const AuthEnvironmentScope = Schema.Literals([
   AuthRelayReadScope,
   AuthRelayWriteScope,
   AuthKinChatScope,
+  AuthKinTasksScope,
 ]);
 export type AuthEnvironmentScope = typeof AuthEnvironmentScope.Type;
 export const AuthEnvironmentScopes = Schema.Array(AuthEnvironmentScope);
 export type AuthEnvironmentScopes = typeof AuthEnvironmentScopes.Type;
 
 export const AuthGrantScope = Schema.Literals(
-  AuthEnvironmentScope.literals.filter((scope) => scope !== AuthReviewWriteScope),
+  AuthEnvironmentScope.literals.filter(
+    (scope) => scope !== AuthReviewWriteScope && scope !== AuthKinTasksScope,
+  ),
 );
 export type AuthGrantScope = typeof AuthGrantScope.Type;
 export const AuthGrantScopes = Schema.Array(AuthGrantScope);
@@ -117,7 +122,7 @@ const legacyParents: Partial<Record<AuthEnvironmentScope, AuthEnvironmentScope>>
 export function authScopeRequiredResponse(requiredPermission: AuthEnvironmentScope) {
   return {
     requiredScope:
-      requiredPermission === AuthKinChatScope
+      requiredPermission === AuthKinChatScope || requiredPermission === AuthKinTasksScope
         ? AuthOrchestrationReadScope
         : (legacyParents[requiredPermission] ?? requiredPermission),
     requiredPermission,

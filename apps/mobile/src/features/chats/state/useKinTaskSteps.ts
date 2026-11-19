@@ -63,7 +63,8 @@ export function useKinTaskSteps(target: KinWorkTarget) {
       const label = step.card.options.find((option) => option.optionId === optionId)?.label;
       mark(key, {
         kind: "done",
-        text: step.kind === "send" ? KIN_TASKS.sent(step.to) : `Answered: ${label ?? optionId}`,
+        text:
+          step.kind === "send" ? KIN_TASKS.sent(step.to) : KIN_TASKS.answered(label ?? optionId),
       });
     },
     nudge: async (key: string) => {
@@ -78,7 +79,7 @@ export function useKinTaskSteps(target: KinWorkTarget) {
       }
       mark(key, {
         kind: "failed",
-        text: kinFailureText(squashAtomCommandFailure(result), "Couldn't send the nudge."),
+        text: kinFailureText(squashAtomCommandFailure(result), KIN_TASKS.nudgeFailed),
       });
     },
   };

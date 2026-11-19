@@ -122,6 +122,11 @@ export type Writer = {
   readonly askedBy?: KinPersonId | null;
   /** A teammate from their own app: `teamGuard` decides the write inside its transaction. */
   readonly teammate?: boolean;
+  /**
+   * The person's own coding agent, with this key: the write reaches only a Work task that person
+   * holds now, whatever their level, and its history names the key.
+   */
+  readonly codingAgentKey?: string;
   /** Shared with the team when made; a turn others read shares its tasks too (`ROOM_LISTS`). */
   readonly teamShared?: boolean;
   /** A lead's turn others read: `viewGuard` decides the write inside its transaction. */
@@ -131,6 +136,21 @@ export type Writer = {
     readonly askers: ReadonlyArray<KinPersonId>;
   };
 };
+/** A Work task this writer, a person, holds now and nobody dropped. */
+const heldBy = (
+  row: {
+    readonly registerId: string;
+    readonly ownerKind: string;
+    readonly ownerId: string;
+    readonly state: KinRecordState;
+  },
+  writer: Writer,
+) =>
+  row.registerId === "work" &&
+  row.state !== "dropped" &&
+  row.ownerKind === "person" &&
+  writer.actor._tag === "person" &&
+  row.ownerId === writer.actor.personId;
 /** Whose words a write's text is: the person writing, else the human a lead wrote it for. */
 const textBy = (writer: Writer) =>
   writer.actor._tag === "person" ? writer.actor.personId : (writer.askedBy ?? null);
@@ -627,10 +647,11 @@ const make = Effect.gen(function* () {
           : null;
     const [change] = yield* sql<{ seq: number }>`INSERT INTO kin_record_changes (org_id, record_id,
         rev, at, actor_kind, actor_id, via, kind, fields_json, wakeup_id, chat_id,
-        asked_by_person_id)
+        asked_by_person_id, coding_agent_key)
       VALUES (${orgId}, ${row.recordId}, ${row.rev}, ${now}, ${writer.actor._tag}, ${actorId},
         ${writer.via}, ${kind}, ${yield* encodeFields(fields)}, ${writer.wakeupId ?? null},
-        ${writer.chatId ?? null}, ${writer.actor._tag === "agent" ? (writer.askedBy ?? null) : null})
+        ${writer.chatId ?? null}, ${writer.actor._tag === "agent" ? (writer.askedBy ?? null) : null},
+        ${writer.codingAgentKey ?? null})
       RETURNING seq`;
     const seq = change?.seq ?? 0;
     // Who sees it as this change leaves it, and what else of theirs it showed or hid (`personSees`).
@@ -1249,6 +1270,8 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const row = yield* byKey(orgId, key).pipe(provideSql);
         if (row === undefined) return yield* notFound(key);
+        if (writer.codingAgentKey !== undefined && !heldBy(row, writer))
+          return yield* notFound(key);
         if (writer.teammate === true && writer.actor._tag === "person")
           yield* teamGuard(orgId, writer.actor.personId, {
             row,

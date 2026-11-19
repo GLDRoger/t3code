@@ -200,6 +200,8 @@ export const insertComment = Effect.fn("KinRecordComments.insert")(function* <E>
   readonly files: ReadonlyArray<KinAttachment>;
   readonly now: number;
   readonly sees: (recordId: string) => Effect.Effect<boolean, E, SqlClient.SqlClient>;
+  /** The person's own coding agent wrote it, with this key. */
+  readonly codingAgentKey?: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const [record] = yield* sql<{ recordId: string }>`SELECT record_id AS "recordId"
@@ -230,13 +232,14 @@ export const insertComment = Effect.fn("KinRecordComments.insert")(function* <E>
     });
   const [inserted] = yield* sql<CommentRow>`INSERT INTO kin_record_comments (org_id, comment_id,
       record_id, seq, author_kind, author_id, asked_by_person_id, body, files_json, request_hash,
-      created_at)
+      created_at, coding_agent_key)
     VALUES (${input.orgId}, ${commentId}, ${record.recordId},
       (SELECT COALESCE(MAX(seq), 0) + 1 FROM kin_record_comments
         WHERE org_id = ${input.orgId} AND record_id = ${record.recordId}),
       ${input.author._tag}, ${authorId(input.author)},
       ${input.author._tag === "agent" ? input.author.askedBy : null}, ${input.body},
-      ${yield* encodeFiles(input.files)}, ${input.requestHash}, ${input.now})
+      ${yield* encodeFiles(input.files)}, ${input.requestHash}, ${input.now},
+      ${input.codingAgentKey ?? null})
     ON CONFLICT DO NOTHING
     RETURNING ${sql.literal(COLUMNS)}`;
   if (inserted === undefined)
