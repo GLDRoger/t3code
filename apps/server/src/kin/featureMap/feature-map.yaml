@@ -711,6 +711,7 @@ features:
       A member reaches Deals only with the Clients place on, and sees every deal but those marked
       private and those under a private client. The web shows a board with Won and Lost at its
       end; at phone width and on the phone, a list by stage. Totals stay per currency.
+    tools: [deal_stages]
     proof:
       - apps/server/src/kin/work/deals.test.ts
       - packages/client-runtime/src/kin/kinDeals.test.ts

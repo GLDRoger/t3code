@@ -93,7 +93,9 @@ const VENDOR = invalid("A deal is with a client or prospect, never a vendor.");
 const closedParty = (key: string) =>
   invalid(`${key} is closed. Reopen it before adding a deal to it.`);
 const unknownStage = (id: string, stages: ReadonlyArray<KinDealStage>) =>
-  invalid(`No stage ${id.slice(0, 40)}. The stages are ${stages.map((s) => s.name).join(", ")}.`);
+  invalid(
+    `No stage ${id.slice(0, 40)}. The stages are ${stages.map((s) => `${s.name} (${s.id})`).join(", ")}.`,
+  );
 const notADeal = (key: string) =>
   new KinChatError({ reason: "not_found", message: `No deal ${key.slice(0, 40)}.` });
 

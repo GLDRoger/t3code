@@ -152,6 +152,8 @@ export const SHARED_TOOLS = {
   payment_record: "refused",
   // Figures and dates of the money lines every person behind the turn sees, such as their
   // project's; the bank, budgets and the company's own figures stay the owner's.
+  // The company's stage names: no deal, figure or client in them.
+  deal_stages: "view",
   money_summary: "view",
   money_query: "refused",
   budget_set: "refused",

@@ -932,6 +932,8 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
         true,
       ],
       dates_query: [LeadMoney.datesQuery(scope, { from: "1970-01-01", to: "2030-12-31" }), true],
+      // Stage names only: nothing of a deal.
+      deal_stages: [LeadWork.dealStages(scope, {}), false],
       company_profile: [LeadMoney.profile(scope, {}), true],
       // Its record part is record_get's; contact and memory show no entry of their own.
       client_read: [LeadClients.contact(scope, { key: "C-1" }), false],
@@ -2105,6 +2107,11 @@ it.effect(
         kind: "vendor",
         clientRequestId: "supplies",
       });
+      // The stages an agent may name, in the company's order.
+      assert.strictEqual(
+        (yield* LeadWork.dealStages(scope, {})).answer,
+        "4 stages: New, In talks, Proposal, Deciding.",
+      );
       const refused = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect<A, E, R>) =>
         effect.pipe(
           Effect.flip,

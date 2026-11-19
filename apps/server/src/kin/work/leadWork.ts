@@ -3,6 +3,7 @@ import * as NodeCrypto from "node:crypto";
 import {
   KinAgentId,
   KinChatError,
+  KinDealStage,
   KinChatId,
   KinMessageId,
   KinPersonId,
@@ -60,6 +61,7 @@ import {
 } from "./goals.ts";
 import { FieldInputs, turnFiles, typedFields } from "./leadFields.ts";
 import * as Deals from "./deals.ts";
+import { stagesOf } from "./dealStages.ts";
 import {
   OWNERS_SPINE,
   ProjectRead,
@@ -2670,3 +2672,16 @@ const runHandBack = Effect.fnUntraced(function* (lead: Lead, input: typeof HandB
   };
 });
 export const handBack = leadTool("KinWorkTools.handBack", runHandBack);
+
+export const DealStagesResult = Schema.Struct({
+  stages: Schema.Array(KinDealStage),
+  answer: Schema.String,
+});
+const runDealStages = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
+  const { stages } = yield* stagesOf(lead.orgId);
+  return {
+    stages,
+    answer: `${stages.length} ${stages.length === 1 ? "stage" : "stages"}: ${stages.map((stage) => stage.name).join(", ")}.`,
+  };
+});
+export const dealStages = leadTool("KinWorkTools.dealStages", runDealStages);
