@@ -25,6 +25,7 @@ import {
   holdRule,
   KIN_DEFAULT_QUIET_HOURS,
   type KinHoldRule,
+  wholeDay,
 } from "./quietHours.ts";
 
 const MINUTE = 60_000;
@@ -77,7 +78,9 @@ const personRule = Effect.fn("KinQuiet.rule")(function* (orgId: KinOrgId, person
     () => KIN_DEFAULT_QUIET_HOURS,
   );
   const holds = person?.hold === null || person?.hold === undefined ? !owner : person.hold === 1;
-  const hours = holds && person?.hours != null ? decodeHours(person.hours) : Option.none();
+  const hours = (holds && person?.hours != null ? decodeHours(person.hours) : Option.none()).pipe(
+    Option.filter((set) => !wholeDay(set)),
+  );
   const rule = holdRule(zone, quiet, Option.getOrUndefined(hours));
   // Away ends when their profile stops showing it: on their own clock, the owner's too.
   return person?.away == null ? rule : { ...rule, awayUntil: startOfDay(person.away, own) };

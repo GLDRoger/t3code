@@ -41,6 +41,7 @@ import {
 } from "../lead/Audience.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
 import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
+import { heldUntil } from "../triggers/quietHold.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { sentMail, SentMailView } from "../connections/Sending.ts";
 import { homeCurrency } from "./companyProfile.ts";
@@ -116,7 +117,7 @@ import {
   viewSees,
   viewVisible,
 } from "./teamView.ts";
-import { type AssignNotice, movedNotices, tellPeople } from "./assignNotices.ts";
+import { type AssignNotice, movedNotices, tellHolding } from "./assignNotices.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 
@@ -422,10 +423,13 @@ const Named = Schema.Struct({
 const Near = Schema.Struct({ ...Named.fields, differs: Schema.String });
 /** The people Kin told, in their own chat, what this call gave them or took from them. */
 const Told = Schema.optional(Schema.Array(Schema.String));
+/** For each person whose notice waits for them: who, until when, and that they are told then. */
+const ToldLater = Told;
 /** Holds the notice to whoever this call gives a task to; they are told when it is given again. */
 const Tell = Schema.optional(Schema.Literal(false));
 export const CreateResult = Schema.Struct({
   told: Told,
+  toldLater: ToldLater,
   records: Schema.Array(
     Schema.Struct({
       key: Schema.String,
@@ -496,6 +500,7 @@ const Updated = Schema.Struct({
 /** One entry's change at the top level; with keys, each entry's in entries. */
 export const UpdateResult = Schema.Struct({
   told: Told,
+  toldLater: ToldLater,
   /** Who was given a task and not told, as tell false asked. */
   held: Told,
   key: Schema.optional(Updated.fields.key),
@@ -520,6 +525,7 @@ export const AssignInput = Schema.Struct({
 });
 export const AssignResult = Schema.Struct({
   told: Told,
+  toldLater: ToldLater,
   held: UpdateResult.fields.held,
   tasks: Schema.Array(
     Schema.Struct({
@@ -538,6 +544,7 @@ export const HandBackInput = Schema.Struct({
 });
 export const HandBackResult = Schema.Struct({
   told: Told,
+  toldLater: ToldLater,
   key: Schema.String,
   to: Schema.String,
   state: KinRecordState,
@@ -2103,21 +2110,29 @@ const tell = Effect.fnUntraced(function* (
   notices: ReadonlyArray<AssignNotice>,
   held: ReadonlyArray<KinPersonId> = [],
 ) {
-  const told = yield* tellPeople(lead, notices).pipe(
+  const { told, waits } = yield* tellHolding(lead, notices).pipe(
     Effect.catchCause((cause) =>
       Effect.logWarning("Kin couldn't tell people about their tasks", cause).pipe(
-        Effect.as(new Set<string>()),
+        Effect.as({ told: new Set<string>(), waits: new Map<string, never>() }),
       ),
     ),
   );
   if (told.size === 0 && held.length === 0) return {};
   const name = yield* namer(lead);
-  const named = (ids: Iterable<string>) =>
-    [...new Set(ids)].map(
-      (id) => name({ _tag: "person", personId: KinPersonId.make(id) }) ?? "a person",
-    );
+  const nameOf = (id: string) =>
+    name({ _tag: "person", personId: KinPersonId.make(id) }) ?? "a person";
+  const named = (ids: Iterable<string>) => [...new Set(ids)].map(nameOf);
+  const now = [...told].filter((id) => !waits.has(id));
+  const clock = { zone: yield* ownerZone(lead.orgId), locale: KIN_TEXT_LOCALE };
+  // An away date is a day on the owner's calendar; quiet and working hours are the holder's clock.
+  const later = [...waits].map(([id, wait]) =>
+    wait.why === "away"
+      ? `${nameOf(id)} is away until ${formatKinWhen(wait.at, "day", clock).replace(/,/g, "")}, so they'll be told when they're back.`
+      : `${heldUntil(nameOf(id), wait)}, so they'll be told then.`,
+  );
   return {
-    ...(told.size === 0 ? {} : { told: named(told) }),
+    ...(now.length === 0 ? {} : { told: named(now) }),
+    ...(later.length === 0 ? {} : { toldLater: later }),
     ...(held.length === 0 ? {} : { held: named(held) }),
   };
 });

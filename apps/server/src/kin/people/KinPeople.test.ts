@@ -1604,6 +1604,31 @@ it.effect(
       assert.deepStrictEqual(yield* ownerAway, { shown: undefined, held: undefined });
       yield* sql`DELETE FROM kin_agents WHERE org_id = ${orgId} AND agent_id = 'chief-of-staff'`;
       yield* TestClock.setTime(Date.parse("2026-11-16T12:00:00.000Z"));
+      // Every minute of every day is no hours: saved as not set, read as not set if stored, and
+      // it holds nothing; real hours still hold outside them. Monday 12:00 on Ravi's clock.
+      const allWeek = { days: [0, 1, 2, 3, 4, 5, 6], start: "00:00", end: "23:59" };
+      const saved = (yield* service.updateProfile(ravi.session, {
+        orgId,
+        personId: ravi.person.personId,
+        timeZone: "UTC",
+        workHours: allWeek,
+      })).workHours;
+      const [stored] = yield* sql<{ hours: string | null }>`SELECT work_hours_json AS hours
+        FROM kin_people WHERE person_id = ${ravi.person.personId}`;
+      assert.deepStrictEqual({ saved, stored: stored?.hours }, { saved: null, stored: null });
+      yield* service.updateProfile(ravi.session, {
+        orgId,
+        personId: ravi.person.personId,
+        workHours: { days: [2], start: "09:00", end: "10:00" },
+      });
+      assert.strictEqual(yield* personHoldNow(orgId, ravi.person.personId), "off");
+      yield* sql`UPDATE kin_people SET work_hours_json = ${JSON.stringify(allWeek)}
+        WHERE person_id = ${ravi.person.personId}`;
+      assert.isUndefined(yield* personHoldNow(orgId, ravi.person.personId));
+      const storedWhole = (yield* service.profiles(ravi.session, orgId)).profiles.find(
+        (profile) => profile.personId === ravi.person.personId,
+      );
+      assert.isNull(storedWhole?.workHours);
       // Everyone in the org reads everyone's.
       const seen = yield* service.profiles(ravi.session, orgId);
       assert.strictEqual(seen.ownerPersonId, owner.personId);
