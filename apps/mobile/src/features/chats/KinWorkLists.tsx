@@ -323,7 +323,7 @@ function showMenu(
         ? [
             {
               id: "active",
-              title: "Active",
+              title: KIN_CLIENTS.active,
               selected: !showing.closed,
               onPress: () => onShow({ ...showing, closed: false }),
             },

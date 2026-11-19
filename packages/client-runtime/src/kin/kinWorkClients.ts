@@ -185,6 +185,7 @@ export const KIN_CLIENTS = {
   edit: "Edit",
   close: "Close client",
   reopen: "Reopen",
+  active: "Active",
   closed: "Closed",
   privateLabel: "Keep private",
   privateOn: "Private. Only you see this client, its projects and what's owed.",
