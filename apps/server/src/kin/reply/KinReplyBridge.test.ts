@@ -391,6 +391,44 @@ it.effect("posts the lead run's plain text to the chat it answers, as one agent 
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect.each([
+  ["checkin-morning", "One client has gone quiet. A reminder is drafted.", true],
+  ["checkin-morning", "## Needs you\nOne card waits.", false],
+  ["checkin-afternoon", "One client has gone quiet. A reminder is drafted.", false],
+] as const)(
+  "the morning check-in's reply opens under a heading when written with none (%s, %s)",
+  ([scheduleId, written, headed]) =>
+    Effect.gen(function* () {
+      const { fake, runId, complete, sql, chatId } = yield* setup({
+        event: () =>
+          Effect.succeed((base) => ({
+            ...base,
+            _tag: "pulse",
+            provenance: { _tag: "system" },
+            factKeys: [],
+            checkIn: {
+              scheduleId: KinMemoryItemId.make(scheduleId),
+              title: "Check-in",
+              what: "Look.",
+              slot: "s",
+            },
+          })),
+      });
+      fake.items = [text("a", 1, written, runId), text("b", 2, "Nothing else today.", runId)];
+      yield* complete;
+      assert.deepStrictEqual(
+        yield* sql`SELECT body, form FROM kin_messages
+          WHERE chat_id = ${chatId} AND author_kind = 'agent' ORDER BY seq`,
+        [
+          {
+            body: `${headed ? "## Today\n\n" : ""}${written}\n\nNothing else today.`,
+            form: "brief",
+          },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect.each(["choice", "intervening item", "doc"] as const)(
   "joins its own last card only (%s)",
   (scenario) =>
