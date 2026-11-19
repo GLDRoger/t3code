@@ -474,6 +474,11 @@ export const editedMail = (
     return `The message is at most ${MAX_BODY.toLocaleString("en-US")} characters.`;
   return { ...mail, to, cc, subject, body: edit.body };
 };
+/** The mail a card shows: a person's saved words over the agent's draft, where they saved some. */
+export const shownMail = (mail: Email, send: KinSendCard | undefined): Email =>
+  send?.edited === undefined
+    ? mail
+    : { ...mail, to: send.to, cc: send.cc, subject: send.subject, body: send.body };
 /** Whether an edit left the words exactly as drawn. */
 export const sameWords = (one: Email, other: Email) =>
   one.subject === other.subject &&

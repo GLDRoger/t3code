@@ -2,6 +2,7 @@
 import {
   formatKinWhen,
   KinChatError,
+  KinPersonId,
   type EnvironmentId,
   type KinWidget,
 } from "@t3tools/contracts";
@@ -24,9 +25,16 @@ import {
   kinAddressPieces,
   kinSendEditFailure,
   kinSendEditBound,
+  kinSendEditControls,
+  kinSendEditDiscardInput,
+  kinSendEditedLine,
   kinSendEditInput,
+  kinSendEditKept,
+  kinSendEditLeaveSaves,
   kinSendEditOffered,
   kinSendEditRefused,
+  kinSendEditSaveInput,
+  kinSendEditShown,
   kinSendEditStart,
   kinThreadDate,
 } from "./kinChoicePresentation.ts";
@@ -524,7 +532,12 @@ describe("choice cards", () => {
     expect(mail({ action: "call" }).send?.edit).toBeNull();
 
     const started = kinSendEditStart(open)!;
-    expect(started).toEqual({ revision: 1, draft: open.send?.edit, problem: null });
+    expect(started).toEqual({
+      revision: 1,
+      opened: open.send?.edit,
+      draft: open.send?.edit,
+      problem: null,
+    });
     const typed = {
       ...started,
       draft: {
@@ -603,6 +616,114 @@ describe("choice cards", () => {
       "On Mon, Anita wrote:\n> Could you resend it?",
     ]);
     expect(mail({ action: "event" }).send?.from).toEqual([]);
+  });
+
+  it("keeps a person's unsent words on the card, and offers Save, Send and Discard by state", () => {
+    const send = {
+      service: "Gmail",
+      action: "email",
+      from: "rhea@ambermill.example",
+      to: ["anita@orbitdental.example"],
+      cc: [],
+      subject: "Invoice",
+      body: "Hi Anita,\n\nAttached.",
+      attachments: [],
+      outcome: null,
+    };
+    const drafted = choice({ state: { ...choiceState(null), send } });
+    expect(drafted.send?.edited).toBeNull();
+    expect(kinSendEditedLine(drafted, KinPersonId.make("rhea"))).toBeNull();
+    expect(kinSendEditDiscardInput(drafted, true)).toBeNull();
+
+    const started = kinSendEditStart(drafted)!;
+    // Nothing typed: leaving keeps nothing, and a closed card takes the editor with it.
+    expect(kinSendEditLeaveSaves(started, null, true)).toBe(false);
+    expect(kinSendEditShown(started, false)).toBe(false);
+    const typed = {
+      ...started,
+      draft: { ...started.draft, body: "Hi Anita,\n\nAttached, with GST." },
+    };
+    expect(kinSendEditSaveInput(drafted, typed)).toEqual({
+      orgId: "org",
+      widgetId: "w1",
+      revision: 1,
+      edit: {
+        to: ["anita@orbitdental.example"],
+        cc: [],
+        subject: "Invoice",
+        body: "Hi Anita,\n\nAttached, with GST.",
+      },
+    });
+    expect(kinSendEditLeaveSaves(typed, null, true)).toBe(true);
+    // Not while a press is on its way, nor once the card stopped taking edits.
+    expect(kinSendEditLeaveSaves(typed, "sending", true)).toBe(false);
+    expect(kinSendEditLeaveSaves(typed, null, false)).toBe(false);
+    // Saved on leaving, the editor stays over the saved card, with nothing left unsaved.
+    const kept = kinSendEditKept(typed, 2);
+    expect(kept).toEqual({ revision: 2, opened: typed.draft, draft: typed.draft, problem: null });
+    expect(kinSendEditLeaveSaves(kept, null, true)).toBe(false);
+
+    const label = (controls: ReturnType<typeof kinSendEditControls>) => ({
+      save: [controls.save.label, controls.save.disabled],
+      send: [controls.send.label, controls.send.disabled],
+      discard: [controls.discard.label, controls.discard.disabled],
+      notice: controls.notice,
+    });
+    expect(label(kinSendEditControls(typed, drafted, null, true))).toEqual({
+      save: ["Save", false],
+      send: ["Send edited mail", false],
+      discard: ["Discard edits", false],
+      notice: null,
+    });
+    expect(label(kinSendEditControls(typed, drafted, "saving", true))).toEqual({
+      save: ["Saving…", true],
+      send: ["Send edited mail", true],
+      discard: ["Discard edits", true],
+      notice: null,
+    });
+    expect(label(kinSendEditControls(typed, drafted, "discarding", true)).discard).toEqual([
+      "Discarding…",
+      true,
+    ]);
+    // The host said the card changed: Save and Send wait for the newer card, then carry it.
+    const changed = new KinChatError({
+      reason: "widget_changed",
+      message: "This card changed or was answered. Look at it again.",
+    });
+    const stale = kinSendEditRefused(typed, drafted, changed);
+    expect(label(kinSendEditControls(stale, drafted, null, true)).save).toEqual(["Save", true]);
+    expect(kinSendEditSaveInput({ ...drafted, revision: 2 }, stale).revision).toBe(2);
+    // Leaving never puts the words over a card the host said changed: the person chooses.
+    expect(kinSendEditLeaveSaves(stale, null, true)).toBe(false);
+    // The agent's newer card closed this one: the words stay, with only Discard.
+    expect(kinSendEditShown(typed, false)).toBe(true);
+    expect(label(kinSendEditControls(typed, drafted, null, false))).toEqual({
+      save: ["Save", true],
+      send: ["Send edited mail", true],
+      discard: ["Discard edits", false],
+      notice:
+        "This card closed while you were editing, so your words weren't saved. They stay here until you discard them.",
+    });
+
+    // Saved, the card shows the person's words as theirs, and Discard puts the draft back.
+    const saved = choice({
+      revision: 2,
+      state: {
+        ...choiceState(null),
+        send: { ...send, body: typed.draft.body, edited: { personId: "rhea", name: "Rhea" } },
+      },
+    });
+    expect(saved.send?.body).toBe(typed.draft.body);
+    expect(kinSendEditStart(saved)?.draft.body).toBe(typed.draft.body);
+    expect(kinSendEditedLine(saved, KinPersonId.make("rhea"))).toBe("Edited by you");
+    expect(kinSendEditedLine(saved, KinPersonId.make("meera"))).toBe("Edited by Rhea");
+    expect(kinSendEditDiscardInput(saved, true)).toEqual({
+      orgId: "org",
+      widgetId: "w1",
+      revision: 2,
+      edit: null,
+    });
+    expect(kinSendEditDiscardInput(saved, false)).toBeNull();
   });
 
   it("says a refused answer in the host's words when its figures changed", () => {

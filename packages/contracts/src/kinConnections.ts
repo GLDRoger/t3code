@@ -431,6 +431,28 @@ export const KinConnectionSendEdited = Schema.Struct({
 export type KinConnectionSendEdited = typeof KinConnectionSendEdited.Type;
 
 /**
+ * A person's own words kept on an unanswered mail card without sending: the card shows them and
+ * its Confirm sends them. `edit: null` puts the agent's draft back.
+ */
+export const KinConnectionSaveEditedInput = Schema.Struct({
+  orgId: KinOrgId,
+  widgetId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  /** The card revision the person edited; a card that changed since is refused. */
+  revision: NonNegativeInt,
+  edit: Schema.NullOr(
+    Schema.Struct({
+      to: Schema.Array(Schema.String.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
+      cc: Schema.Array(Schema.String.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
+      subject: Schema.String.check(Schema.isMaxLength(400)),
+      body: Schema.String.check(Schema.isMaxLength(24_000)),
+    }),
+  ),
+});
+export type KinConnectionSaveEditedInput = typeof KinConnectionSaveEditedInput.Type;
+export const KinConnectionSaveEdited = Schema.Struct({ revision: NonNegativeInt });
+export type KinConnectionSaveEdited = typeof KinConnectionSaveEdited.Type;
+
+/**
  * GitHub as the owner's own login on the host: `gh` and git act as him, and T3 uses the same
  * token. One account at a time; another account means Disconnect, then Connect.
  */
@@ -756,6 +778,11 @@ export const KinConnectionRpcs = [
     success: KinConnectionSendEdited,
     error: KinError,
   }),
+  Rpc.make("kin.connections.saveEdited", {
+    payload: KinConnectionSaveEditedInput,
+    success: KinConnectionSaveEdited,
+    error: KinError,
+  }),
   Rpc.make("kin.github.connect.status", {
     payload: KinGitHubInput,
     success: KinGitHubStatus,
@@ -826,6 +853,7 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.connections.setSignInClient": AuthKinChatScope,
   "kin.connections.setSendFrom": AuthKinChatScope,
   "kin.connections.sendEdited": AuthKinChatScope,
+  "kin.connections.saveEdited": AuthKinChatScope,
   "kin.github.connect.status": AuthKinChatScope,
   "kin.github.connect.start": AuthKinChatScope,
   "kin.github.connect.cancel": AuthKinChatScope,

@@ -2,6 +2,7 @@
 import {
   KIN_CHOICE_CARD_ACTION,
   KinChatError,
+  type KinConnectionSaveEditedInput,
   type KinConnectionSendEditedInput,
   KIN_CHOICE_CARD_TTL_MS,
   KinChoiceCardState,
@@ -81,6 +82,8 @@ export interface KinSendView {
   readonly outcome: { readonly tone: "pending" | "ok" | "error"; readonly text: string } | null;
   /** A mail's words as stored, which a person may change before it goes; null on other cards. */
   readonly edit: KinSendEditDraft | null;
+  /** Who saved the words shown over the agent's draft; null while they are the agent's. */
+  readonly edited: { readonly personId: KinPersonId; readonly name: string } | null;
 }
 
 /** A mail card's editable words, as its form holds them: addresses comma-separated. */
@@ -94,9 +97,14 @@ export interface KinSendEditDraft {
 export const KIN_SEND_EDIT_COPY = {
   edit: "Edit",
   editHint: "Change the mail's words before it goes",
+  save: "Save",
+  saving: "Saving…",
   send: "Send edited mail",
   sending: "Sending…",
   discard: "Discard edits",
+  discarding: "Discarding…",
+  closed:
+    "This card closed while you were editing, so your words weren't saved. They stay here until you discard them.",
   to: "To",
   cc: "Cc",
   subject: "Subject",
@@ -110,6 +118,8 @@ export const KIN_SEND_EDIT_COPY = {
 /** An open editor: the words as typed, bound to the card revision it was opened on. */
 export interface KinSendEditing {
   readonly revision: number;
+  /** The card's words when the editor opened: leaving with these unchanged keeps nothing. */
+  readonly opened: KinSendEditDraft;
   readonly draft: KinSendEditDraft;
   /** The host's last refusal, shown under the fields. */
   readonly problem: string | null;
@@ -245,6 +255,7 @@ function kinSendView(send: KinSendCard, now: Date): KinSendView {
             body: send.body,
           }
         : null,
+    edited: send.edited ?? null,
   };
 }
 
@@ -443,10 +454,15 @@ export function kinChoiceUndoneLine(
   return `Undone by ${who} ${when}.`;
 }
 
-export function kinChoiceAccessibilityLabel(view: KinChoiceCardView, status: string | null) {
+export function kinChoiceAccessibilityLabel(
+  view: KinChoiceCardView,
+  status: string | null,
+  edited: string | null = null,
+) {
   if (view.send !== null)
     return kinSentences([
       view.question,
+      edited,
       ...view.send.lines.map((line) => `${line.label}: ${line.value}`),
       ...view.send.attachments.map((file) => `Attached: ${file.name}`),
       view.send.outcome?.text ?? null,
@@ -504,7 +520,91 @@ export function kinSendEditOffered(
 export function kinSendEditStart(view: KinChoiceCardView): KinSendEditing | null {
   return view.send?.edit == null
     ? null
-    : { revision: view.revision, draft: view.send.edit, problem: null };
+    : { revision: view.revision, opened: view.send.edit, draft: view.send.edit, problem: null };
+}
+
+/** "Edited by you", or by name on another's card: shown on a mail card while it holds a saved edit. */
+export function kinSendEditedLine(
+  view: Pick<KinChoiceCardView, "send">,
+  viewerPersonId: KinPersonId | null,
+): string | null {
+  const edited = view.send?.edited ?? null;
+  if (edited === null) return null;
+  return `Edited by ${edited.personId === viewerPersonId ? "you" : edited.name}`;
+}
+
+/** Whether the words differ from what the editor opened with. */
+export function kinSendEditUnsaved(editing: KinSendEditing): boolean {
+  const { opened, draft } = editing;
+  return (
+    opened.to !== draft.to ||
+    opened.cc !== draft.cc ||
+    opened.subject !== draft.subject ||
+    opened.body !== draft.body
+  );
+}
+
+/** What the editor is doing: nothing, or waiting on the host for one of its three buttons. */
+export type KinSendEditBusy = "saving" | "sending" | "discarding" | null;
+export interface KinSendEditButton {
+  readonly label: string;
+  readonly disabled: boolean;
+}
+
+/**
+ * The editor's buttons, Save, Send edited mail and Discard edits, and the line above them. A card
+ * that no longer takes edits (`open` false) keeps unsaved words on screen, with only Discard.
+ */
+export function kinSendEditControls(
+  editing: KinSendEditing,
+  view: Pick<KinChoiceCardView, "revision">,
+  busy: KinSendEditBusy,
+  open: boolean,
+): {
+  readonly save: KinSendEditButton;
+  readonly send: KinSendEditButton;
+  readonly discard: KinSendEditButton;
+  readonly notice: string | null;
+} {
+  const takes = busy === null && open && kinSendEditBound(editing, view).ready;
+  return {
+    save: {
+      label: busy === "saving" ? KIN_SEND_EDIT_COPY.saving : KIN_SEND_EDIT_COPY.save,
+      disabled: !takes,
+    },
+    send: {
+      label: busy === "sending" ? KIN_SEND_EDIT_COPY.sending : KIN_SEND_EDIT_COPY.send,
+      disabled: !takes,
+    },
+    discard: {
+      label: busy === "discarding" ? KIN_SEND_EDIT_COPY.discarding : KIN_SEND_EDIT_COPY.discard,
+      disabled: busy !== null,
+    },
+    notice: open ? null : KIN_SEND_EDIT_COPY.closed,
+  };
+}
+
+/** Whether the editor stays on screen: while the card takes edits, or it holds unsaved words. */
+export function kinSendEditShown(editing: KinSendEditing | null, open: boolean): boolean {
+  return editing !== null && (open || kinSendEditUnsaved(editing));
+}
+
+/**
+ * Leaving the chat or the app with unsaved words saves them, bound as Save is: a card that
+ * changed since refuses, and one the host already said changed is left for the person to choose.
+ */
+export function kinSendEditLeaveSaves(
+  editing: KinSendEditing | null,
+  busy: KinSendEditBusy,
+  open: boolean,
+): editing is KinSendEditing {
+  return (
+    editing !== null &&
+    busy === null &&
+    open &&
+    editing.stale !== true &&
+    kinSendEditUnsaved(editing)
+  );
 }
 
 const addresses = (typed: string) => typed.split(/[,;\s]+/u).filter((one) => one !== "");
@@ -541,6 +641,42 @@ export function kinSendEditInput(
   };
 }
 
+/** Saved on leaving: the editor stays as it was, bound to the card that now holds the words. */
+export function kinSendEditKept(editing: KinSendEditing, revision: number): KinSendEditing {
+  return { revision, opened: editing.draft, draft: editing.draft, problem: null };
+}
+
+/** The words kept on the card without sending, for the card Save is bound to. */
+export function kinSendEditSaveInput(
+  view: Pick<KinChoiceCardView, "orgId" | "widgetId" | "revision">,
+  editing: KinSendEditing,
+): KinConnectionSaveEditedInput {
+  return {
+    orgId: view.orgId,
+    widgetId: view.widgetId,
+    revision: kinSendEditBound(editing, view).revision,
+    edit: {
+      to: addresses(editing.draft.to),
+      cc: addresses(editing.draft.cc),
+      subject: editing.draft.subject,
+      body: editing.draft.body,
+    },
+  };
+}
+
+/**
+ * Discard edits on an open card holding a saved edit puts the agent's draft back on it; otherwise
+ * it only closes the editor.
+ */
+export function kinSendEditDiscardInput(
+  view: Pick<KinChoiceCardView, "orgId" | "widgetId" | "revision" | "send">,
+  open: boolean,
+): KinConnectionSaveEditedInput | null {
+  return !open || view.send?.edited == null
+    ? null
+    : { orgId: view.orgId, widgetId: view.widgetId, revision: view.revision, edit: null };
+}
+
 const isKinChatError = Schema.is(KinChatError);
 /** Why the edited mail didn't go: the host's own sentence where it gave one. */
 export function kinSendEditFailure(cause: unknown): string {
@@ -561,7 +697,7 @@ export function kinSendEditRefused(
   const problem = kinSendEditFailure(cause);
   return isKinChatError(cause) && cause.reason === "widget_changed"
     ? {
-        draft: editing.draft,
+        ...editing,
         problem,
         revision: kinSendEditBound(editing, view).revision,
         stale: true,

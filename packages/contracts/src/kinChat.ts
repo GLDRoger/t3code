@@ -473,6 +473,13 @@ export const KinSendCard = Schema.Struct({
       at: IsoDateTime,
     }),
   ),
+  /** Set while the words shown are a person's saved edit, not the agent's draft: who, by name. */
+  edited: Schema.optionalKey(
+    Schema.Struct({
+      personId: KinPersonId,
+      name: KinTrimmedText.check(Schema.isMaxLength(200)),
+    }),
+  ),
 });
 export type KinSendCard = typeof KinSendCard.Type;
 export const KinChoiceCardState = Schema.Struct({

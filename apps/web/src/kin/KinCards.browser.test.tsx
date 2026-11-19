@@ -3,6 +3,7 @@ import {
   KinChatError,
   KinOrgId,
   KinPersonId,
+  type KinConnectionSaveEditedInput,
   type KinConnectionSendEditedInput,
   type KinWaitingItem,
   type KinWidget,
@@ -21,6 +22,7 @@ const state = vi.hoisted(() => ({
   /** Whether this session may send an edited mail; the card reads it as it would a grant. */
   canEdit: null as Atom.Writable<boolean> | null,
   sent: [] as Array<KinConnectionSendEditedInput>,
+  saved: [] as Array<KinConnectionSaveEditedInput>,
   /** How each send is answered, in order: a refusal in the host's words, or null for done. */
   answers: [] as Array<{ reason: "invalid_state" | "widget_changed"; message: string } | null>,
   /** What the open list says waits on the reader. */
@@ -32,7 +34,13 @@ vi.mock(import("~/state/use-atom-command"), async () => {
   const { AsyncResult } = await import("effect/reactivity");
   return {
     useAtomCommand: ((command: { readonly label: string }) =>
-      async (value: { readonly input: KinConnectionSendEditedInput }) => {
+      async (value: {
+        readonly input: KinConnectionSendEditedInput | KinConnectionSaveEditedInput;
+      }) => {
+        if ("edit" in value.input) {
+          state.saved.push(value.input);
+          return AsyncResult.success({ revision: 3 });
+        }
         if (command.label !== "kin:connection:sendEdited")
           return AsyncResult.failure(Cause.fail("unused"));
         state.sent.push(value.input);
@@ -53,6 +61,7 @@ vi.mock(import("./kinClient"), async () => {
       widgetAction: { label: "kin:widget:act", permissionAtom: () => allowed },
       connectionSetSendFrom: { label: "kin:connection:setSendFrom", permissionAtom: () => allowed },
       connectionSendEdited: { label: "kin:connection:sendEdited", permissionAtom: () => canEdit },
+      connectionSaveEdited: { label: "kin:connection:saveEdited", permissionAtom: () => canEdit },
     },
     // Imported by the pages a card can open; no test here reaches them.
     refreshKinAgents: () => {},
@@ -73,6 +82,7 @@ vi.mock(import("./useKinClock"), () => ({ useNowMinuteMs: () => POSTED + 60_000 
 function setup() {
   appAtomRegistry.set(state.canEdit!, true);
   state.sent.length = 0;
+  state.saved.length = 0;
   state.answers.length = 0;
   state.waiting = null;
 }
@@ -189,7 +199,7 @@ describe("a mail card's Edit", () => {
     expect(state.sent[1]!.clientActionId).not.toBe(state.sent[0]!.clientActionId);
   });
 
-  it("discards edits back to the card, and isn't offered to one who can't send", async () => {
+  it("saves or discards edits without sending, and isn't offered to one who can't send", async () => {
     setup();
     await using screen = await render(view());
     await userEvent.click(page.getByRole("button", { name: "Edit" }));
@@ -198,6 +208,43 @@ describe("a mail card's Edit", () => {
     await expect.element(page.getByRole("button", { name: "Confirm" })).toBeVisible();
     await expect.element(screen.getByText("Invoice", { exact: true })).toBeVisible();
     expect(state.sent).toHaveLength(0);
+    expect(state.saved).toHaveLength(0);
+
+    // Save keeps the words on the card for its Confirm; nothing is sent.
+    await userEvent.click(page.getByRole("button", { name: "Edit" }));
+    await userEvent.type(page.getByLabelText("Subject"), " for November");
+    await userEvent.click(page.getByRole("button", { name: "Save", exact: true }));
+    await expect.element(page.getByLabelText("Subject")).not.toBeInTheDocument();
+    expect(state.saved).toEqual([
+      {
+        orgId: "org-1",
+        widgetId: "choice:m1",
+        revision: 2,
+        edit: {
+          to: ["anita@orbitdental.example"],
+          cc: [],
+          subject: "Invoice for November",
+          body: "Hi Anita,\nThe invoice is attached.\nRhea",
+        },
+      },
+    ]);
+    expect(state.sent).toHaveLength(0);
+    // The saved card shows the person's words as theirs; Discard edits puts the draft back.
+    const edited = { personId: "rhea", name: "Rhea" };
+    await screen.rerender(
+      view(mail({ revision: 3, send: { subject: "Invoice for November", edited } })),
+    );
+    await expect.element(screen.getByText("Edited by you")).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Edit" }));
+    await expect.element(page.getByLabelText("Subject")).toHaveValue("Invoice for November");
+    await userEvent.click(page.getByRole("button", { name: "Discard edits" }));
+    await expect.element(page.getByLabelText("Subject")).not.toBeInTheDocument();
+    expect(state.saved[1]).toEqual({
+      orgId: "org-1",
+      widgetId: "choice:m1",
+      revision: 3,
+      edit: null,
+    });
 
     // The grant goes, as a session's scopes change, and the open card follows.
     appAtomRegistry.set(state.canEdit!, false);
