@@ -1956,6 +1956,26 @@ const ANSWERS_IN_CHAT = new Set([
 const SHOWS_ONLY = new Set(["kin_chart", "kin_visual", "kin_document", "kin_issue", "kin_receipt"]);
 const DOC_TOOLS = new Set(["doc_create", "doc_edit", "doc_rewrite"]);
 /**
+ * Every teammate message of the turn passed on by kin_hand_off (its mocked results, in call
+ * order): Kin's own line in the chat answers each, so the turn owes no words (`answered`).
+ */
+const passedOnEach = (
+  testCase: Sample["testCase"],
+  used: ReadonlyArray<{ readonly tool: string }>,
+) => {
+  if (!testCase.prompt.includes("your direct chat with a teammate")) return false;
+  const asked = testCase.prompt.match(/BEGIN QUOTE: member human message/g)?.length ?? 0;
+  const mock = testCase.setup.mocks?.kin_hand_off;
+  const results = isRecord(mock) && Array.isArray(mock.$sequence) ? mock.$sequence : [mock];
+  const passed = used
+    .filter((one) => one.tool === "kin_hand_off")
+    .filter((_, n) => {
+      const result: unknown = results[Math.min(n, results.length - 1)];
+      return isRecord(result) && result.passed === true;
+    });
+  return asked > 0 && passed.length >= asked;
+};
+/**
  * What Kin asks a lead whose finished turn left a person's message without words
  * (KinReplyBridge `complete`): the rescue prompt, the caption prompt when its only answer was a
  * chart, visual or file, or undefined when the turn answered.
@@ -1974,6 +1994,7 @@ export const rescuePrompt = (sample: Pick<Sample, "testCase" | "responses">) => 
       tool: normalizeToolName(block.name),
       card: isRecord(block.input) && block.input.card === true,
     }));
+  if (passedOnEach(sample.testCase, used)) return undefined;
   const shows = ({ tool, card }: (typeof used)[number]) =>
     SHOWS_ONLY.has(tool) || (DOC_TOOLS.has(tool) && card);
   if (used.some((one) => ANSWERS_IN_CHAT.has(one.tool) && !DOC_TOOLS.has(one.tool) && !shows(one)))
