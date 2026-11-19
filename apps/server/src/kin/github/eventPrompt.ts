@@ -29,7 +29,7 @@ const CALL_ISSUE = (repo: string, trigger: KinGithubTrigger) => [
 
 const CALL_PULL = (repo: string, trigger: KinGithubTrigger) => [
   `${trigger.author} asked you on PR ${ref(repo, trigger)}${trigger.path === undefined ? "" : ` (${trigger.path}${trigger.line === undefined ? "" : `:${trigger.line}`})`}: do what they asked.`,
-  `For a change, hand it to a delegated task (delegate_task, isolation worktree, the repo's project; clone it first if Kin has no project for it) with the PR's branch ${trigger.pull?.headRef ?? ""} and their request quoted: it commits and pushes to that branch, or, if the push is refused, opens a PR against it.${trigger.pull?.fork === true ? " The branch is in a fork, so the push may well be refused." : ""} Then reply in the thread in one or two lines saying what will change (gh pr comment ${trigger.number} --repo ${repo}).`,
+  `For a change, hand it to a delegated task (delegate_task, isolation worktree, the repo's project; clone it first if Kin has no project for it) that commits and pushes to the PR's branch ${trigger.pull?.headRef ?? ""}, or opens a PR against it if the push is refused, with their request quoted.${trigger.pull?.fork === true ? " The branch is in a fork, so the push may well be refused." : ""} Then reply in the thread in one or two lines saying what will change (gh pr comment ${trigger.number} --repo ${repo}).`,
   "If they asked a question, answer it in the thread instead of changing code.",
 ];
 
