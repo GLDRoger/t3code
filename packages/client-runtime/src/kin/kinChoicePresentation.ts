@@ -56,6 +56,8 @@ export interface KinSendView {
   readonly heading: string;
   /** Labelled lines, in order: From, Account, To, Cc, Subject; or Event, Calendar, Invites. */
   readonly lines: ReadonlyArray<{ readonly label: string; readonly value: string }>;
+  /** The From and Account lines of `lines`, which an editor shows as the card does. */
+  readonly from: ReadonlyArray<{ readonly label: string; readonly value: string }>;
   /** A reply's thread as it stands, so the owner sees it is the right one. */
   readonly thread: {
     readonly subject: string;
@@ -95,7 +97,17 @@ export const KIN_SEND_EDIT_COPY = {
   body: "Message",
   addresses: "Separate addresses with commas.",
   attachments: "Attached files go as they are.",
+  quotedLabel: "Quoted message",
+  quoted: "The quoted message goes below yours as it is.",
 } as const;
+
+/** An open editor: the words as typed, bound to the card revision it was opened on. */
+export interface KinSendEditing {
+  readonly revision: number;
+  readonly draft: KinSendEditDraft;
+  /** The host's last refusal, shown under the fields. */
+  readonly problem: string | null;
+}
 
 export interface KinSendFromChoice {
   readonly id: string;
@@ -188,6 +200,7 @@ function kinSendView(send: KinSendCard, now: Date): KinSendView {
   return {
     heading,
     lines,
+    from: send.action === "email" || send.action === "reply" ? fromLines : [],
     thread:
       send.thread === undefined || send.thread === null
         ? null
@@ -454,23 +467,30 @@ export function kinSendEditOffered(
   );
 }
 
+/** Edit pressed: the stored words, bound to the card as it is now. */
+export function kinSendEditStart(view: KinChoiceCardView): KinSendEditing | null {
+  return view.send?.edit == null
+    ? null
+    : { revision: view.revision, draft: view.send.edit, problem: null };
+}
+
 const addresses = (typed: string) => typed.split(/[,;\s]+/u).filter((one) => one !== "");
 
-/** The edited mail as the host takes it; the host checks every field. */
+/** The edited mail as the host takes it, for the card the editor opened on; the host checks it. */
 export function kinSendEditInput(
-  view: Pick<KinChoiceCardView, "orgId" | "widgetId" | "revision">,
-  draft: KinSendEditDraft,
+  view: Pick<KinChoiceCardView, "orgId" | "widgetId">,
+  editing: KinSendEditing,
   clientActionId: string,
 ): KinConnectionSendEditedInput {
   return {
     orgId: view.orgId,
     widgetId: view.widgetId,
-    revision: view.revision,
+    revision: editing.revision,
     clientActionId,
-    to: addresses(draft.to),
-    cc: addresses(draft.cc),
-    subject: draft.subject,
-    body: draft.body,
+    to: addresses(editing.draft.to),
+    cc: addresses(editing.draft.cc),
+    subject: editing.draft.subject,
+    body: editing.draft.body,
   };
 }
 
@@ -480,4 +500,21 @@ export function kinSendEditFailure(cause: unknown): string {
   return isKinChatError(cause) && cause.reason !== "disabled" && cause.message.trim() !== ""
     ? cause.message.trim()
     : kinActionFailureNotice(cause).text;
+}
+
+/**
+ * A refused send keeps every typed word. Only the host's "this card changed" moves the editor to
+ * the card as it stands now, once that refusal is on screen beside the card's new From.
+ */
+export function kinSendEditRefused(
+  editing: KinSendEditing,
+  view: Pick<KinChoiceCardView, "revision">,
+  cause: unknown,
+): KinSendEditing {
+  return {
+    draft: editing.draft,
+    problem: kinSendEditFailure(cause),
+    revision:
+      isKinChatError(cause) && cause.reason === "widget_changed" ? view.revision : editing.revision,
+  };
 }

@@ -19,6 +19,8 @@ import {
   kinSendEditFailure,
   kinSendEditInput,
   kinSendEditOffered,
+  kinSendEditRefused,
+  kinSendEditStart,
   kinThreadDate,
 } from "./kinChoicePresentation.ts";
 import { formatKinTime } from "./kinScreenState.ts";
@@ -492,18 +494,24 @@ describe("choice cards", () => {
     expect(mail({ action: "event" }).send?.edit).toBeNull();
     expect(mail({ action: "call" }).send?.edit).toBeNull();
 
-    expect(
-      kinSendEditInput(
-        open,
-        {
-          to: " anita@orbitdental.example,dev@orbitdental.example; ",
-          cc: "rhea@ambermill.example",
-          subject: "Invoice for November",
-          body: "Hi Anita,\n\nAttached, with the GST line.\n",
-        },
-        "press-1",
-      ),
-    ).toEqual({
+    const started = kinSendEditStart(open)!;
+    expect(started).toEqual({ revision: 1, draft: open.send?.edit, problem: null });
+    const typed = {
+      ...started,
+      draft: {
+        to: " anita@orbitdental.example,dev@orbitdental.example; ",
+        cc: "rhea@ambermill.example",
+        subject: "Invoice for November",
+        body: "Hi Anita,\n\nAttached, with the GST line.\n",
+      },
+    };
+    // Someone changed From on another device: the editor still sends the card it opened on.
+    const moved = mail({
+      account: "billing@ambermill.example",
+      from: "billing@ambermill.example",
+    });
+    const sent = { ...moved, revision: 2 };
+    expect(kinSendEditInput(sent, typed, "press-1")).toEqual({
       orgId: "org",
       widgetId: "w1",
       revision: 1,
@@ -513,12 +521,41 @@ describe("choice cards", () => {
       subject: "Invoice for November",
       body: "Hi Anita,\n\nAttached, with the GST line.\n",
     });
-    // The host's refusal is the line under the form, in its own words.
+    // The host's refusal is the line under the fields, in its own words, and the words stay.
     const said = "anita at orbit in To isn't a plain address such as ana@example.com.";
     expect(kinSendEditFailure(new KinChatError({ reason: "invalid_state", message: said }))).toBe(
       said,
     );
     expect(kinSendEditFailure(new Error("socket closed"))).not.toBe("");
+    const invalid = new KinChatError({ reason: "invalid_state", message: said });
+    expect(kinSendEditRefused(typed, sent, invalid)).toEqual({ ...typed, problem: said });
+    // Only "this card changed", once shown, moves the editor to the card as it stands.
+    const changed = "This card changed or was answered. Look at it again.";
+    expect(
+      kinSendEditRefused(
+        typed,
+        sent,
+        new KinChatError({ reason: "widget_changed", message: changed }),
+      ),
+    ).toEqual({ ...typed, revision: 2, problem: changed });
+
+    // What the editor shows besides the fields: who it goes from, and the quote that goes too.
+    expect(sent.send?.from).toEqual([{ label: "From", value: "billing@ambermill.example" }]);
+    const reply = mail({
+      action: "reply",
+      account: "rhea@ambermill.example",
+      from: "billing@ambermill.example",
+      fromName: "Ambermill Billing",
+      quoted: "On Mon, Anita wrote:\n> Could you resend it?",
+    });
+    expect([reply.send?.from, reply.send?.quoted]).toEqual([
+      [
+        { label: "From", value: "Ambermill Billing <billing@ambermill.example>" },
+        { label: "Account", value: "rhea@ambermill.example" },
+      ],
+      "On Mon, Anita wrote:\n> Could you resend it?",
+    ]);
+    expect(mail({ action: "event" }).send?.from).toEqual([]);
   });
 
   it("says a refused answer in the host's words when its figures changed", () => {
