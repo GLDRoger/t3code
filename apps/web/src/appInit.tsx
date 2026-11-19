@@ -136,17 +136,42 @@ function readOpenThreadRef(router: AppRouter): ScopedThreadRef | null {
   return resolveActiveThreadRouteRef(target, draft);
 }
 
+const KIN_TAB_TITLE = "Kin";
+const KIN_TAB_ICON = "/kin-icon.png";
+
+/** Points the tab's icon links at Kin's mark while in Kin, and back at their own outside it. */
+function syncTabIcon(inKin: boolean): void {
+  const links = document.querySelectorAll<HTMLLinkElement>(
+    'link[rel="icon"], link[rel="apple-touch-icon"]',
+  );
+  for (const link of links) {
+    // The unread badge draws its own icon link; it stays as drawn.
+    if (link.getAttribute("href")?.startsWith("data:")) continue;
+    const own = (link.dataset.ownHref ??= link.getAttribute("href") ?? "");
+    const href = inKin ? KIN_TAB_ICON : own;
+    if (link.getAttribute("href") !== href) link.setAttribute("href", href);
+  }
+}
+
 /**
  * Names the open thread and its project in the window title, or the app when none is open.
  * Screen readers read it on Alt+Tab, so it can lead with the thread and what it's doing.
  */
 function startDocumentTitle(router: AppRouter): void {
   const readOnGuestPage = () => router.state.matches.some((match) => match.routeId === "/guest");
+  // In Kin a browser tab carries Kin's name and mark; the desktop window keeps its own.
+  const readInKin = () => !isElectron && router.state.location.pathname.startsWith("/kin/");
   let openThreadRef = readOpenThreadRef(router);
   let onGuestPage = readOnGuestPage();
+  let inKin = readInKin();
   const write = () => {
     // GuestPage titles the tab after the shared thread.
     if (onGuestPage) return;
+    syncTabIcon(inKin);
+    if (inKin) {
+      if (document.title !== KIN_TAB_TITLE) document.title = KIN_TAB_TITLE;
+      return;
+    }
     const thread =
       openThreadRef === null
         ? null
@@ -195,14 +220,17 @@ function startDocumentTitle(router: AppRouter): void {
   const updateOpenThread = () => {
     const next = readOpenThreadRef(router);
     const nextOnGuestPage = readOnGuestPage();
+    const nextInKin = readInKin();
     if (
       nextOnGuestPage === onGuestPage &&
+      nextInKin === inKin &&
       (next && scopedThreadKey(next)) === (openThreadRef && scopedThreadKey(openThreadRef))
     ) {
       return;
     }
     openThreadRef = next;
     onGuestPage = nextOnGuestPage;
+    inKin = nextInKin;
     watchOpenThread();
     write();
   };
