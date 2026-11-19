@@ -5,6 +5,8 @@
 //   node scripts/kin-fake-mail.ts <stateDir>/kin-fake-mail.json sent
 //   node scripts/kin-fake-mail.ts <stateDir>/kin-fake-mail.json expire hello@invented-co.example [--back]
 //   node scripts/kin-fake-mail.ts <stateDir>/kin-fake-mail.json approve <authorizationUrl> hello@invented-co.example
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
 
 import { fileStore, makeFakeMail } from "../src/kin/connections/FakeMail.ts";
@@ -20,6 +22,16 @@ if (
   process.exit(2);
 }
 const fake = makeFakeMail(fileStore(path));
+/** A dev server's moved clock (`DevClock.ts`, beside the mailbox): mail arrives at Kin's now. */
+const kinNow = () => {
+  try {
+    const file = NodePath.join(NodePath.dirname(path), "kin-dev-clock.json");
+    const { offsetMs } = JSON.parse(NodeFS.readFileSync(file, "utf8")) as { offsetMs?: unknown };
+    return Date.now() + (typeof offsetMs === "number" && Number.isFinite(offsetMs) ? offsetMs : 0);
+  } catch {
+    return Date.now();
+  }
+};
 if (command === "sent") {
   console.log(JSON.stringify(fake.sent(), null, 2));
 } else if (command === "expire") {
@@ -65,7 +77,7 @@ if (command === "sent") {
     from: values.from,
     subject: values.subject,
     body: values.body,
-    at: Date.now(),
+    at: kinNow(),
     ...(values.thread === undefined ? {} : { threadId: values.thread }),
   });
   console.log(JSON.stringify({ threadId: message.threadId, messageId: message.messageId }));

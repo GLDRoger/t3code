@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
 import { ServerConfig } from "../config.ts";
 
@@ -18,11 +19,47 @@ const decodeFile = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ offsetMs: Schema.Finite })),
 );
 
-/** Reads the file now rather than on the next second; does nothing where the clock is real. */
 export class KinDevClock extends Context.Service<
   KinDevClock,
-  { readonly reload: Effect.Effect<void> }
+  {
+    /** Reads the file now rather than on the next second; does nothing where the clock is real. */
+    readonly reload: Effect.Effect<void>;
+    /** The service with each of its effects and streams on the real clock. */
+    readonly onRealClock: <S extends object>(service: S) => S;
+  }
 >()("t3/kin/DevClock/KinDevClock") {}
+
+const onClock = (clock: Clock.Clock) => {
+  const keep = (value: unknown): unknown =>
+    Effect.isEffect(value)
+      ? // @effect-diagnostics-next-line anyUnknownInErrorContext:off - wraps any method of the service
+        Effect.provideService(value, Clock.Clock, clock)
+      : Stream.isStream(value)
+        ? Stream.provideService(value, Clock.Clock, clock)
+        : value;
+  return <S extends object>(service: S): S =>
+    Object.fromEntries(
+      Object.entries(service).map(([key, value]) => [
+        key,
+        typeof value === "function" && !Effect.isEffect(value) && !Stream.isStream(value)
+          ? (...args: Array<unknown>) => keep(Reflect.apply(value, service, args))
+          : keep(value),
+      ]),
+    ) as S;
+};
+
+/**
+ * T3's own service as Kin is handed it. Effect code reads `Clock` from the calling fiber, so T3
+ * code that Kin's loops call would otherwise stamp the moved time (an outbox row's `available_at`,
+ * say) that T3's real-clock worker then waits out.
+ */
+export const realClockFor = <I, S extends object>(tag: Context.Service<I, S>) =>
+  Layer.effect(
+    tag,
+    Effect.gen(function* () {
+      return (yield* KinDevClock).onRealClock(yield* tag);
+    }),
+  );
 
 /** `base` moved forward by an offset that only grows; sleeps end early when the offset jumps. */
 const shifted = Effect.fn("KinDevClock.shifted")(function* (base: Clock.Clock) {
@@ -67,7 +104,7 @@ const shifted = Effect.fn("KinDevClock.shifted")(function* (base: Clock.Clock) {
  * offset in `<stateDir>/kin-dev-clock.json`, which `kv clock` only moves forward. Elsewhere,
  * including any built server, Kin keeps the clock it was given.
  */
-export const layer = Layer.unwrap(
+export const layer: Layer.Layer<KinDevClock, Config.ConfigError> = Layer.unwrap(
   Effect.gen(function* () {
     // Optional, so the tests of layers that carry this one need no server around them.
     const config = Option.getOrUndefined(yield* Effect.serviceOption(ServerConfig));
@@ -75,7 +112,7 @@ export const layer = Layer.unwrap(
     const path = Option.getOrUndefined(yield* Effect.serviceOption(Path.Path));
     const on = yield* Config.Boolean("KIN_DEV_CLOCK").pipe(Config.withDefault(false));
     if (!on || config?.devUrl === undefined || fs === undefined || path === undefined)
-      return Layer.succeed(KinDevClock, { reload: Effect.void });
+      return Layer.succeed(KinDevClock, { reload: Effect.void, onRealClock: (service) => service });
     const file = path.join(config.stateDir, DEV_CLOCK_FILE);
     const base = yield* Clock.Clock;
     const { clock, moveTo } = yield* shifted(base);
@@ -88,7 +125,7 @@ export const layer = Layer.unwrap(
     yield* Effect.logWarning(`Kin's clock follows ${file}`);
     return Layer.mergeAll(
       Layer.succeed(Clock.Clock, clock),
-      Layer.succeed(KinDevClock, { reload }),
+      Layer.succeed(KinDevClock, { reload, onRealClock: onClock(base) }),
       Layer.effectDiscard(
         base
           .sleep(Duration.seconds(1))

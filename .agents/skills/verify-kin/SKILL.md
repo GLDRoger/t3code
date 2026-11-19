@@ -53,7 +53,7 @@ kv as owner web click --name "Add task"    # exact name first; --role option, --
 kv as owner web type --name "What needs doing" "Check the logo files" --enter
 kv as zoya web wait "Check the logo files" # or --gone; 20 s by default
 kv as owner web screenshot /tmp/proof/new-task.png   # refuses any path under ~/.t3
-kv as owner web view --width 390 --dark       # phone width or wide, light or dark, for captures
+kv as owner web view --width 390 --dark       # phone width or wide, light or dark; the size stays until changed
 kv as dev rpc kin.work.list '{"project":"P-1"}'      # orgId is filled in
 kv as meera wire kin.work.create '{"clientRequestId":"x","title":"Plan"}' --watch owner,zoya --find Plan  # what each open page got
 kv tool finance money_summary '{}'                   # one real agent turn, no model
@@ -82,6 +82,8 @@ kv db "select key, state from kin_records where register_id = 'invoices'"
   scripted agent posts it once and deletes it, to show a brief.
 - `clock set|advance|show` move the instance's now forward only (`DevClock.ts`: Kin's clock and
   T3's scheduled tasks, on a dev server with `KIN_DEV_CLOCK`); a due slot runs on the next tick.
+  T3's orchestration, which Kin's turns run through, keeps the real clock its worker reads, so a
+  turn starts at once after a move. `mail deliver` stamps mail at the moved now.
   Kin's screens in kv's browsers follow on their next `web` command. `clock age 3d` is the old
   move: it stops the server, moves stored times back and starts it again.
 - `db` opens the database read-only. Write through RPCs or tools, never SQL.

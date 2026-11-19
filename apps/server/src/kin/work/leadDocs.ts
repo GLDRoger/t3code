@@ -21,11 +21,12 @@ import * as Schema from "effect/Schema";
 import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { effectiveAudience } from "../lead/Audience.ts";
+import { effectiveAudience, turnPeople } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import { DOC_BODY_MAX, outlineOf, sectionsOf, WHOLE_DOC } from "./docBody.ts";
 import * as Docs from "./docs.ts";
+import { startOfferings } from "./offerings.ts";
 import {
   admitted,
   Client,
@@ -103,6 +104,7 @@ export const CreateInput = Schema.Struct({
     description:
       "The doc shows in this chat as a card the owner can open. Pass false only for a doc nobody asked for in this chat.",
   }),
+  whatWeSell: Schema.optional(Schema.Literal(true)),
 });
 export const WriteResult = Schema.Struct({
   key: Schema.String,
@@ -113,6 +115,7 @@ export const WriteResult = Schema.Struct({
   outline: Schema.Array(OutlineEntry),
   ...Filed,
   ...Marks,
+  note: Schema.optional(Schema.String),
 });
 
 export const ReadInput = Schema.Struct({
@@ -474,7 +477,45 @@ const projectFor = Effect.fn("KinDocTools.projectFor")(function* (
     : only(projects.filter((row) => row.partyId === partyId));
 });
 
+const OFFERINGS_OWNERS =
+  "Only the owner or a co-owner starts What we sell, in a chat only they are in. Nothing was written.";
+
+/** What we sell, as the Docs card starts it: only in a turn no teammate is behind. */
+const runStartOfferings = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
+  yield* admitted(lead, "doc_create", input);
+  const behind = yield* turnPeople(lead);
+  if (behind === undefined || behind.people.length > 0)
+    return yield* new KinChatError({ reason: "not_allowed", message: OFFERINGS_OWNERS });
+  const answered = yield* answering(lead, input.sourceEventId);
+  const started = yield* startOfferings(lead.orgId, yield* writerFor(lead), behind.owner, {
+    body: input.body,
+    ...(input.summary === undefined ? {} : { summary: input.summary }),
+    provenance: {
+      audience: yield* effectiveAudience(lead),
+      ...(answered === undefined
+        ? {}
+        : { answered: { messageId: answered.messageId, author: answered.author } }),
+    },
+  });
+  const version = yield* Docs.versionOf(lead.orgId, started.row.recordId);
+  if (version === undefined) return yield* Docs.docNotFound(started.row.key);
+  const written = { row: started.row, version };
+  if (started.made) yield* shown(lead, { ...written, created: true }, input.card ?? "answer");
+  const key = started.row.key;
+  return {
+    ...writeResult(written, started.made),
+    ...(started.made
+      ? {}
+      : {
+          note: started.restored
+            ? `What we sell is ${key}. It was archived; this call brought it back as it was and wrote nothing else. Change it with doc_edit.`
+            : `What we sell is already ${key}; this call wrote nothing. Change it with doc_edit.`,
+        }),
+  };
+});
+
 const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
+  if (input.whatWeSell === true) return yield* runStartOfferings(lead, input);
   const context = yield* writeContext(lead, "doc_create", input);
   const owner = yield* resolveWho(lead, input.owner ?? "you");
   const partyId = yield* refOrNull(lead, input.client, "clients");
