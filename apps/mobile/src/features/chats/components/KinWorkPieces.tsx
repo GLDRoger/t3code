@@ -19,7 +19,7 @@ import {
   type KinWorkFormProblem,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
-import { type ComponentRef, useEffect, useRef, useState } from "react";
+import { type ComponentRef, createContext, useEffect, useRef, useState } from "react";
 import { Platform, Pressable, TextInput, View } from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 
@@ -46,6 +46,14 @@ import { KinWorkStateSymbol } from "./KinWorkStateSymbol";
 
 type Bar = React.ComponentProps<typeof AppBar>;
 
+/**
+ * Scrolls the screen so a node sits above the keyboard and anything pinned over it; null where
+ * the screen can't. UIKit only keeps the focused field itself in view.
+ */
+export const KinWorkAboveKeyboard = createContext<
+  ((node: ComponentRef<typeof View>) => void) | null
+>(null);
+
 /** A Work screen that isn't a list: everything sits in the scroll view that clears the bar. */
 export function KinWorkFrame(
   props: Pick<
@@ -68,6 +76,15 @@ export function KinWorkFrame(
   const { form, showTop, footer, children, ...bar } = props;
   const [footerHeight, setFooterHeight] = useState(0);
   const scroll = useRef<ComponentRef<typeof ScreenScrollView>>(null);
+  const footerSpace = useRef(0);
+  const [aboveKeyboard] = useState(
+    () => (node: ComponentRef<typeof View>) =>
+      scroll.current?.scrollResponderScrollNativeHandleToKeyboard(
+        node,
+        footerSpace.current + 8,
+        true,
+      ),
+  );
   const barOverlap = useBarOverlap();
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- moves the native scroll view so a save's problem, drawn at the top, isn't left under the header
   useEffect(() => {
@@ -97,14 +114,19 @@ export function KinWorkFrame(
             gap: 20,
           }}
         >
-          {children}
+          <KinWorkAboveKeyboard value={aboveKeyboard}>{children}</KinWorkAboveKeyboard>
         </ScreenScrollView>
         {footer === undefined ? null : (
           <KeyboardStickyView
             style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}
             offset={{ closed: 0, opened: footer.bottomInset }}
           >
-            <View onLayout={(event) => setFooterHeight(event.nativeEvent.layout.height)}>
+            <View
+              onLayout={(event) => {
+                footerSpace.current = event.nativeEvent.layout.height;
+                setFooterHeight(event.nativeEvent.layout.height);
+              }}
+            >
               {footer.node}
             </View>
           </KeyboardStickyView>

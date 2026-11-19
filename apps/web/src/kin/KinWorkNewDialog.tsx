@@ -48,6 +48,7 @@ import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { randomUUID } from "../lib/utils";
 import { connectionAtomRuntime } from "../connection/runtime";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
 import { KinPlaceCombobox } from "./KinPlaceCombobox";
 import { type KinWorkChoices, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
@@ -100,6 +101,7 @@ export function KinWorkNewDialog(
   const everyone = [...assignees.people, ...assignees.leads];
   const mine = assignees.people[0]?.key ?? "";
   const ownerKey = draft.owner === null ? mine : kinWorkPrincipalKey(draft.owner);
+  const holder = everyone.find((row) => row.key === ownerKey);
   const checked = kinWorkDraftCheck(draft);
   const hint = kinWorkDraftHint(draft, names);
   const words = kinWorkDraftWords(draft);
@@ -182,7 +184,14 @@ export function KinWorkNewDialog(
                       aria-label={KIN_WORK_NEW_COPY.ownerLabel}
                     >
                       <SelectValue>
-                        {everyone.find((row) => row.key === ownerKey)?.name ?? "You"}
+                        {holder === undefined ? (
+                          "You"
+                        ) : (
+                          <span className="inline-flex min-w-0 items-center gap-1.5">
+                            <KinAvatar avatar={holder.avatar} size="xs" />
+                            <span className="truncate">{holder.name}</span>
+                          </span>
+                        )}
                       </SelectValue>
                     </SelectTrigger>
                     <SelectPopup alignItemWithTrigger={false}>
@@ -191,7 +200,10 @@ export function KinWorkNewDialog(
                           <SelectGroupLabel>{KIN_WORK_ASSIGN.people}</SelectGroupLabel>
                           {assignees.people.map((row) => (
                             <SelectItem key={row.key} value={row.key} disabled={row.invited}>
-                              {row.invited ? `${row.name}, invited` : row.name}
+                              <span className="inline-flex min-w-0 items-center gap-1.5">
+                                <KinAvatar avatar={row.avatar} size="xs" />
+                                {row.invited ? `${row.name}, invited` : row.name}
+                              </span>
                             </SelectItem>
                           ))}
                         </SelectGroup>
@@ -201,7 +213,10 @@ export function KinWorkNewDialog(
                           <SelectGroupLabel>{KIN_WORK_ASSIGN.leads}</SelectGroupLabel>
                           {assignees.leads.map((row) => (
                             <SelectItem key={row.key} value={row.key}>
-                              {row.name}
+                              <span className="inline-flex min-w-0 items-center gap-1.5">
+                                <KinAvatar avatar={row.avatar} size="xs" />
+                                {row.name}
+                              </span>
                             </SelectItem>
                           ))}
                         </SelectGroup>
