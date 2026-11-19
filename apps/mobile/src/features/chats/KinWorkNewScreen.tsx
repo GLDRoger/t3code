@@ -26,7 +26,7 @@ import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { useState } from "react";
+import { type ComponentRef, useRef, useState } from "react";
 import { TextInput, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -49,7 +49,7 @@ import {
   useKinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
-import { KinGateView } from "./components/KinWorkPieces";
+import { KinGateView, KinWorkAboveKeyboard } from "./components/KinWorkPieces";
 import { useKinGate } from "./state/useKinHost";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
@@ -108,6 +108,11 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
   const allowed = gate === null;
   const { orgs, people, joined, invited, names } = useKinWorkDirectory(target, allowed);
   const create = useAtomCommand(kinClient.workCreate, { reportFailure: false });
+  const scroll = useRef<ComponentRef<typeof ScreenScrollView>>(null);
+  const [aboveKeyboard] = useState(
+    () => (node: ComponentRef<typeof View>) =>
+      scroll.current?.scrollResponderScrollNativeHandleToKeyboard(node, 8, true),
+  );
   const assign = useAtomCommand(kinClient.workAssign, { reportFailure: false });
   const [actions] = useState(() =>
     createKinWorkActions({
@@ -181,9 +186,11 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
       />
       <ScreenContent surface="screen">
         <ScreenScrollView
+          ref={scroll}
           className="flex-1"
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="interactive"
+          automaticallyAdjustKeyboardInsets
           contentInsetAdjustmentBehavior="automatic"
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
         >
@@ -296,39 +303,41 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                 </View>
               )}
               {!hostClients || (!offersClient && !offersProject) ? null : (
-                <ListSection>
-                  {!offersClient ? null : (
-                    <KinWorkPlacePicker
-                      target={target}
-                      noun="client"
-                      icon="person.2"
-                      label={KIN_WORK_NEW_COPY.clientLabel}
-                      held={draft.party}
-                      choices={choices.clients}
-                      disabled={saving}
-                      onPick={(party) => setDraft({ ...draft, party })}
-                    />
-                  )}
-                  {draft.party === null ? null : (
-                    <KinWorkSideRow
-                      side={draft.side}
-                      disabled={saving}
-                      onPick={(side) => setDraft({ ...draft, side })}
-                    />
-                  )}
-                  {!offersProject ? null : (
-                    <KinWorkPlacePicker
-                      target={target}
-                      noun="project"
-                      icon="folder"
-                      label={KIN_WORK_NEW_COPY.projectLabel}
-                      held={draft.project}
-                      choices={choices.projects}
-                      disabled={saving}
-                      onPick={(project) => setDraft({ ...draft, project })}
-                    />
-                  )}
-                </ListSection>
+                <KinWorkAboveKeyboard value={aboveKeyboard}>
+                  <ListSection>
+                    {!offersClient ? null : (
+                      <KinWorkPlacePicker
+                        target={target}
+                        noun="client"
+                        icon="person.2"
+                        label={KIN_WORK_NEW_COPY.clientLabel}
+                        held={draft.party}
+                        choices={choices.clients}
+                        disabled={saving}
+                        onPick={(party) => setDraft({ ...draft, party })}
+                      />
+                    )}
+                    {draft.party === null ? null : (
+                      <KinWorkSideRow
+                        side={draft.side}
+                        disabled={saving}
+                        onPick={(side) => setDraft({ ...draft, side })}
+                      />
+                    )}
+                    {!offersProject ? null : (
+                      <KinWorkPlacePicker
+                        target={target}
+                        noun="project"
+                        icon="folder"
+                        label={KIN_WORK_NEW_COPY.projectLabel}
+                        held={draft.project}
+                        choices={choices.projects}
+                        disabled={saving}
+                        onPick={(project) => setDraft({ ...draft, project })}
+                      />
+                    )}
+                  </ListSection>
+                </KinWorkAboveKeyboard>
               )}
               <ListSection>
                 <View className="gap-2 px-4 py-3">
