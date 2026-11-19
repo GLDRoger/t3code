@@ -4,7 +4,8 @@ import {
   kinRecommendationProblem,
 } from "@t3tools/client-runtime/kin/kinRecommendations";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { KinRecommendationRow } from "@t3tools/contracts";
+import type { KinRecommendationAction, KinRecommendationRow } from "@t3tools/contracts";
+import { Link } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
@@ -18,30 +19,29 @@ import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader } from "../components/ui/empty";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
+import { withKinAgentPage } from "./kinPlaces";
 import type { KinWorkTarget } from "./useKinWork";
 
 /**
  * Settings → Company → Recommendations: what Kin suggested to the owner and what came of each,
- * newest first, with Undo on a change still in effect and Ask again on a quieted one.
+ * newest first, with the agent's page on a change still in effect and Ask again on a quieted one.
  */
 export function KinRecommendationsSettings(props: KinWorkTarget) {
   const query = { environmentId: props.environmentId, input: { orgId: props.orgId } };
   const listAtom = kinClient.recommendations(query);
   const result = useAtomValue(listAtom);
   const refresh = useAtomRefresh(listAtom);
-  const undo = useAtomCommand(kinClient.recommendationUndo, { reportFailure: false });
   const askAgain = useAtomCommand(kinClient.recommendationAskAgain, { reportFailure: false });
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const rows = Option.getOrNull(AsyncResult.value(result))?.rows ?? null;
-  const act = (row: KinRecommendationRow, action: NonNullable<KinRecommendationRow["action"]>) => {
+  const ask = (row: KinRecommendationRow) => {
     setBusy(row.recId);
     setProblem(null);
-    const run = action.kind === "undo" ? undo : askAgain;
-    void run({ ...query, input: { orgId: props.orgId, recId: row.recId } }).then((outcome) => {
+    void askAgain({ ...query, input: { orgId: props.orgId, recId: row.recId } }).then((outcome) => {
       setBusy(null);
       if (!AsyncResult.isSuccess(outcome))
-        setProblem(kinRecommendationProblem(squashAtomCommandFailure(outcome), action.kind));
+        setProblem(kinRecommendationProblem(squashAtomCommandFailure(outcome)));
       refresh();
     });
   };
@@ -66,14 +66,11 @@ export function KinRecommendationsSettings(props: KinWorkTarget) {
               description={row.outcome}
               control={
                 row.action === null ? null : (
-                  <Button
-                    size="xs"
-                    variant="outline"
+                  <RowAction
+                    action={row.action}
                     disabled={busy !== null}
-                    onClick={() => row.action !== null && act(row, row.action)}
-                  >
-                    {row.action.label}
-                  </Button>
+                    onAskAgain={() => ask(row)}
+                  />
                 )
               }
             />
@@ -87,5 +84,31 @@ export function KinRecommendationsSettings(props: KinWorkTarget) {
       )}
       <p className="text-xs text-muted-foreground">{KIN_RECOMMENDATIONS_COPY.footer}</p>
     </SettingsPageContainer>
+  );
+}
+
+/** A done row opens the agent's page, over the Kin page under Settings as Agents does. */
+function RowAction(props: {
+  readonly action: KinRecommendationAction;
+  readonly disabled: boolean;
+  readonly onAskAgain: () => void;
+}) {
+  const { action } = props;
+  if (action.kind === "open_agent") {
+    const { agentId } = action;
+    return (
+      <Button
+        size="xs"
+        variant="outline"
+        render={<Link to="." search={(prev) => withKinAgentPage(prev, agentId)} />}
+      >
+        {action.label}
+      </Button>
+    );
+  }
+  return (
+    <Button size="xs" variant="outline" disabled={props.disabled} onClick={props.onAskAgain}>
+      {action.label}
+    </Button>
   );
 }

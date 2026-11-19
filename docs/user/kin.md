@@ -518,7 +518,8 @@ to let them message that agent directly. Nothing changes until you tap the chang
 quiet hours, never while Needs you is full, and not in a company's first two weeks.
 
 **Settings → Recommendations**, under Company (the owner only), lists every suggestion and what came of it, with
-**Undo** for a change still in effect and **Ask again** for one you put off.
+**Ask again** for one you put off. A change you made from a suggestion is changed back where it lives: a done row
+opens that agent's page, where you choose who can message it.
 
 ## Memory
 

@@ -873,20 +873,26 @@ export function makeKinClient<R, ER>(
       staleTimeMs: 30_000,
       refreshTrigger: kinRefreshOn("people"),
     }),
-    /** What Kin suggested to the owner and what came of each: his alone. Read on open. */
+    /**
+     * What Kin suggested to the owner and what came of each: his alone. Read again when a
+     * suggestion moves, or an agent's access does (a done row reads the live grant).
+     */
     recommendations: createKinQueryAtomFamily(runtime, {
       label: "kin:recommendations",
       execute: Effect.fn("KinClient.recommendations")(function* (input: KinRecommendationsInput) {
         return yield* readRecommendations(input);
       }),
       staleTimeMs: 30_000,
+      refreshTrigger: (target: {
+        readonly environmentId: EnvironmentId;
+        readonly input: KinRecommendationsInput;
+      }) =>
+        Atom.make(
+          (get) =>
+            `${get(kinRefreshOn("recommendations")(target))}|${get(kinRefreshOn("leads")(target))}`,
+        ),
     }),
     /** Its `permissionAtom` is whether Settings shows Recommendations at all. */
-    recommendationUndo: createKinRpcCommand(runtime, {
-      label: "kin:recommendation:undo",
-      tag: "kin.recommendations.undo",
-      concurrency: { mode: "singleFlight", key: ({ input }) => input.recId },
-    }),
     recommendationAskAgain: createKinRpcCommand(runtime, {
       label: "kin:recommendation:ask-again",
       tag: "kin.recommendations.askAgain",

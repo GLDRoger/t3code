@@ -60,19 +60,9 @@ const ROUTE_REVOKED_MS = 90 * DAY_MS;
 
 const routeSubject = (personId: string, agentId: string) => `person:${personId}|agent:${agentId}`;
 
-const WORDS = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
-const word = (count: number) => WORDS[count] ?? `${count}`;
-const times = (count: number, one: string, many: string) =>
-  `${word(count)} ${count === 1 ? one : many}`;
-const sentence = (parts: ReadonlyArray<string>) =>
-  parts.length === 0
-    ? ""
-    : `${parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")}, and ${parts.at(-1)}`}.`;
-
 type AskRow = {
   readonly personId: string;
   readonly agentId: string;
-  readonly fromId: string;
   /** When the person's own message was sent. */
   readonly sentAt: string;
   /** When the hand-off was recorded: for a waited row, when it found its card open. */
@@ -107,7 +97,7 @@ export const routeAccess = Effect.fn("KinRecommendRules.routeAccess")(function* 
   const { orgId, at } = ctx;
   // A hand-off is recorded after its message, so the first bound only narrows the scan.
   const rows = yield* sql<AskRow>`SELECT m.author_person_id AS "personId",
-      h.to_agent_id AS "agentId", h.from_agent_id AS "fromId", m.created_at AS "sentAt",
+      h.to_agent_id AS "agentId", m.created_at AS "sentAt",
       h.created_at AS at, h.route_state AS state, w.updated_at AS "cardAt",
       w.closed_at AS "closedAt"
     FROM kin_handoffs h
@@ -170,42 +160,29 @@ const routeVerdict = Effect.fn("KinRecommendRules.routeVerdict")(function* (
   // Owner-level people message every lead already (`KinChatService.createDirect`).
   if (person.ownerLevel === 1 || (yield* LeadAccess.allowed({ orgId, agentId, personId })))
     return silent(`${personName} can already message ${agentName}`);
-  // The owner's last answer for this pair, at any time, by when it was given: Not this time is
-  // judgement, not time. A card cleared since keeps its route state and its request's time.
-  const answers = yield* sql<{
-    state: string;
-    at: number;
-    plan: string | null;
-    tappedAt: string | null;
-  }>`SELECT h.route_state AS state, h.created_at AS at,
-      json_extract(c.plan_json, '$.answer') AS plan, t.created_at AS "tappedAt"
+  // The owner's last answer for this pair, at any time, by when the tap that settled it came:
+  // Not this time is judgement, not time. A tap that changed nothing settled no answer, and one
+  // whose card was cleared since has no time to place it by.
+  const [answer] = yield* sql<{ declined: number }>`SELECT
+      (h.route_state = 'declined') AS declined
     FROM kin_handoffs h
     JOIN kin_messages m ON m.org_id = h.org_id AND m.message_id = h.message_id
       AND m.author_kind = 'human' AND m.author_person_id = ${pair.personId}
-    LEFT JOIN kin_card_plans c ON c.org_id = h.org_id AND c.widget_id = h.route_widget_id
+    JOIN kin_card_plans c ON c.org_id = h.org_id AND c.widget_id = h.route_widget_id
       AND c.ran_message_id IS NOT NULL
-    LEFT JOIN kin_messages t ON t.org_id = c.org_id AND t.message_id = c.ran_message_id
+    JOIN kin_messages t ON t.org_id = c.org_id AND t.message_id = c.ran_message_id
     WHERE h.org_id = ${orgId} AND h.to_agent_id = ${pair.agentId}
-      AND h.route_widget_id IS NOT NULL AND h.route_state IN ('declined', 'passed', 'stale')
-    ORDER BY h.message_id`;
-  const [answer] = answers
-    .flatMap((one) => {
-      const declined = one.plan === null ? one.state === "declined" : one.plan === "decline";
-      const said = one.plan === null ? one.state !== "stale" : true;
-      return said
-        ? [{ declined, at: one.tappedAt === null ? one.at : Date.parse(one.tappedAt) }]
-        : [];
-    })
-    .toSorted((a, b) => b.at - a.at);
-  if (answer?.declined === true)
+      AND h.route_state IN ('declined', 'passed')
+    ORDER BY t.created_at DESC, h.message_id DESC LIMIT 1`;
+  if (answer?.declined === 1)
     return silent(`you said Not this time to ${personName}'s last request for ${agentName}`);
   const [revoked] = yield* sql`SELECT 1 FROM kin_lead_access
     WHERE org_id = ${orgId} AND agent_id = ${pair.agentId} AND person_id = ${pair.personId}
       AND revoked_at IS NOT NULL AND revoked_at > ${at - ROUTE_REVOKED_MS}`;
   if (revoked !== undefined) return silent(`you stopped ${personName} messaging ${agentName}`);
-  const pending = asks.filter((one) => one.state === "pending").map((one) => cardOf(one, at));
-  const ranOut = pending.filter((card) => card === "ran_out").length;
-  const open = pending.filter((card) => card === "open").length;
+  const ranOut = asks.filter(
+    (one) => one.state === "pending" && cardOf(one, at) === "ran_out",
+  ).length;
   // It waited on a card that was still taking taps when it was recorded.
   const waited = asks.filter((one) => {
     if (one.state !== "waited") return false;
@@ -214,26 +191,12 @@ const routeVerdict = Effect.fn("KinRecommendRules.routeVerdict")(function* (
   }).length;
   if (asks.length < ROUTE_ASKS || ranOut + waited < ROUTE_UNANSWERED)
     return silent(`${personName} hasn't been waiting on you for ${agentName} that often lately`);
-  const fromIds = [...new Set(asks.map((one) => one.fromId))];
-  const [from] =
-    fromIds.length === 1
-      ? yield* sql<{ name: string }>`SELECT name FROM kin_leads
-          WHERE org_id = ${orgId} AND agent_id = ${fromIds[0]!}`
-      : [];
   const since = formatKinWhen(Date.parse(asks[0]!.sentAt), "date", {
     zone: ctx.zone,
     locale: ctx.locale,
   });
-  const facts = sentence([
-    ...(ranOut > 0 ? [`${word(ranOut)} of your cards on it ran out before you answered`] : []),
-    ...(waited > 0
-      ? [`${times(waited, "request", "requests")} waited on a card you hadn't answered yet`]
-      : []),
-    ...(open > 0
-      ? [`${times(open, "card", "cards")} on it ${open === 1 ? "is" : "are"} waiting now`]
-      : []),
-  ]);
-  const noticed = `${personName} asked ${from?.name ?? "your agents"} for ${agentName}'s work ${asks.length} times since ${since}. ${facts.charAt(0).toUpperCase()}${facts.slice(1)}`;
+  // Only the requests that needed the owner's yes are counted, so it never says "all of them".
+  const noticed = `Since ${since}, ${asks.length} of ${personName}'s requests for ${agentName} had to wait for your yes, and ${ranOut + waited} ran out or waited behind another.`;
   return {
     _tag: "fires",
     candidate: {
@@ -254,36 +217,22 @@ const routeVerdict = Effect.fn("KinRecommendRules.routeVerdict")(function* (
   } satisfies Verdict;
 });
 
-/**
- * What stands now of the grant a done row's Let made (`grantedAt`, as `kin_lead_access` stored
- * it): still that grant, or ended (taken back, or replaced by a later one made by hand), or its
- * agent gone. `other` is how the person reaches the agent besides that grant, if they do.
- */
+/** Whether the person's own access to the agent stands now, or it ended, or the agent is gone. */
 export const grantNow = Effect.fn("KinRecommendRules.grantNow")(function* (
   orgId: KinOrgId,
   change: RecommendChange,
-  grantedAt: number | null,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const pair = {
-    orgId,
-    agentId: KinAgentId.make(change.agentId),
-    personId: KinPersonId.make(change.personId),
-  };
   const [agent] = yield* sql<{ live: number }>`SELECT
       (role = 'lead' AND retired_at IS NULL) AS live
     FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${change.agentId}`;
-  if (agent?.live !== 1) return { _tag: "gone" as const };
-  const [grant] =
-    grantedAt === null
-      ? []
-      : yield* sql`SELECT 1 FROM kin_lead_access WHERE org_id = ${orgId}
-          AND agent_id = ${change.agentId} AND person_id = ${change.personId}
-          AND revoked_at IS NULL AND granted_at = ${grantedAt}`;
-  return {
-    _tag: grant === undefined ? ("ended" as const) : ("live" as const),
-    other: yield* LeadAccess.otherWay(pair),
-  };
+  if (agent?.live !== 1) return "gone" as const;
+  const own = yield* LeadAccess.granted({
+    orgId,
+    agentId: KinAgentId.make(change.agentId),
+    personId: KinPersonId.make(change.personId),
+  });
+  return own ? ("live" as const) : ("ended" as const);
 });
 
 /** Rules in rank order: the first that fires speaks. */

@@ -18,15 +18,13 @@ import { DAY_MS, type RuleContext } from "./rules.ts";
 
 /*
  * The stored side of recommendations (`kin_recommendations`): what Kin asked and offered, what
- * the owner answered, the grant a Let made, and until when a rule stays quiet. Never the chat.
+ * the owner answered, and until when a rule stays quiet. Never the chat.
  */
 
 /** Not now: 30 days, then 90, then for good. */
 export const DECLINE_QUIET_MS = [30 * DAY_MS, 90 * DAY_MS] as const;
 /** A card that ran out unanswered is neither a yes nor a no: a week's quiet. */
 const RAN_OUT_QUIET_MS = 7 * DAY_MS;
-/** A done change undone from Settings is not suggested back for this long. */
-export const UNDONE_QUIET_MS = 90 * DAY_MS;
 
 type Row = {
   readonly recId: string;
@@ -39,7 +37,6 @@ type Row = {
   readonly postedAt: number;
   readonly endedAt: number | null;
   readonly decidedAt: number | null;
-  readonly grantedAt: number | null;
   readonly quietUntil: number | null;
 };
 export type StoredRow = Omit<Row, "changeJson"> & {
@@ -53,8 +50,7 @@ export const encodeChange = Schema.encodeEffect(ChangeJson);
 
 const columns = `r.rec_id AS "recId", r.rule, r.subject, r.widget_id AS "widgetId",
   r.change_json AS "changeJson", r.noticed, r.state, r.posted_at AS "postedAt",
-  r.ended_at AS "endedAt", r.decided_at AS "decidedAt", r.granted_at AS "grantedAt",
-  r.quiet_until AS "quietUntil"`;
+  r.ended_at AS "endedAt", r.decided_at AS "decidedAt", r.quiet_until AS "quietUntil"`;
 
 export const storedRows = Effect.fn("KinRecommendLedger.rows")(function* (
   orgId: KinOrgId,
@@ -87,7 +83,7 @@ export const ranOutAt = (row: StoredRow, at: number) => {
 
 /**
  * Until when this rule and subject stay quiet after `row`, its latest: an open card, for as long
- * as it waits; after Not now, Undo or a card that ran out, its stored or default quiet. `null`
+ * as it waits; after Not now or a card that ran out, its stored or default quiet. `null`
  * is for good; `undefined` is not quiet.
  */
 export const quietAfter = (row: StoredRow | undefined, at: number): number | null | undefined => {
@@ -100,9 +96,7 @@ export const quietAfter = (row: StoredRow | undefined, at: number): number | nul
         : (row.quietUntil ?? ran + RAN_OUT_QUIET_MS)
       : row.state === "declined"
         ? row.quietUntil
-        : row.state === "done"
-          ? (row.quietUntil ?? undefined)
-          : undefined;
+        : undefined;
   if (until === undefined) return undefined;
   if (until === null) return null;
   return until > at ? until : undefined;

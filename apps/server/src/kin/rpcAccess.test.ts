@@ -145,7 +145,6 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
             // What Kin suggested to the owner, and his answers: his alone.
             "kin.recommendations.askAgain",
             "kin.recommendations.list",
-            "kin.recommendations.undo",
             "kin.refreshes.announce",
             // Download everything is the owner's alone.
             "kin.work.exportLink",

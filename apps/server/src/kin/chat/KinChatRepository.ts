@@ -610,6 +610,8 @@ export class KinChatRepository extends Context.Service<
         readonly abortedWakeupIds: ReadonlyArray<KinWakeupId>;
         /** Leads whose queued events were dropped. */
         readonly agentIds: ReadonlyArray<KinAgentId>;
+        /** A suggestion of Kin's waiting here ended unanswered (`kin_recommendations`). */
+        readonly endedSuggestion: boolean;
       },
       RepositoryError
     >;
@@ -2306,9 +2308,10 @@ const make = Effect.gen(function* () {
           WHERE org_id = ${input.orgId} AND state = 'open'
             AND (widget_id IN (${cards}) OR raise_widget_id IN (${cards}))`;
         // A suggestion whose card goes now ended unanswered here: Settings reads its own row.
-        yield* sql`UPDATE kin_recommendations SET ended_at = ${input.clearedAtMs}
+        const ended = yield* sql`UPDATE kin_recommendations SET ended_at = ${input.clearedAtMs}
           WHERE org_id = ${input.orgId} AND state = 'open' AND ended_at IS NULL
-            AND widget_id IN (${cards})`;
+            AND widget_id IN (${cards})
+          RETURNING rec_id`;
         yield* sql`DELETE FROM kin_card_plans WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
         yield* sql`DELETE FROM kin_widgets WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
         yield* sql`DELETE FROM kin_turn_figures WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
@@ -2331,6 +2334,7 @@ const make = Effect.gen(function* () {
           taskCards,
           abortedWakeupIds: aborted.map((row) => KinWakeupId.make(row.wakeupId)),
           agentIds: [...new Set(dropped.map((row) => KinAgentId.make(row.agentId)))],
+          endedSuggestion: ended.length > 0,
         };
       },
       (effect) => sql.withTransaction(effect),

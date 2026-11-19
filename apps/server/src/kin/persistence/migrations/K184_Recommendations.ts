@@ -4,8 +4,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 /**
  * A change Kin suggested to the owner on a card (`recommend/KinRecommend.ts`). Counts and whether
  * it still holds are read live; this keeps what can't be: that Kin asked and in which words, what
- * it offered, what the owner answered, the grant its Let made, and until when that rule stays
- * quiet. Settings reads this and the live grant only, never the chat, which can be cleared.
+ * it offered, what the owner answered, and until when that rule stays quiet. Settings reads this
+ * and the live grant only, never the chat, which can be cleared.
  */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -31,8 +31,6 @@ export default Effect.gen(function* () {
       -- when and whose tap it was: the owner, checked in the tap's transaction
       decided_at INTEGER,
       decided_by TEXT,
-      -- on 'done', the kin_lead_access.granted_at its Let made: Undo takes back that grant only
-      granted_at INTEGER,
       -- no new card for this rule and subject before then; NULL on 'declined' is for good
       quiet_until INTEGER,
       PRIMARY KEY (org_id, rec_id)

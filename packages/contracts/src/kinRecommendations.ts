@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { IsoDateTime, KinTrimmedText } from "./baseSchemas.ts";
-import { KinChatError, KinOrgId } from "./kinChat.ts";
+import { KinAgentId, KinChatError, KinOrgId } from "./kinChat.ts";
 
 /**
  * Settings → Company → Recommendations: each change Kin suggested to the owner, with what came of
@@ -12,11 +12,14 @@ import { KinChatError, KinOrgId } from "./kinChat.ts";
 export const KinRecommendationsInput = Schema.Struct({ orgId: KinOrgId });
 export type KinRecommendationsInput = typeof KinRecommendationsInput.Type;
 
-/** The one button a row offers: undo a change still in effect, or let Kin suggest it again. */
-export const KinRecommendationAction = Schema.Struct({
-  kind: Schema.Literals(["undo", "ask_again"]),
-  label: KinTrimmedText,
-});
+/**
+ * The one button a row offers: let Kin suggest it again, or open the agent's page, where who can
+ * message it is changed.
+ */
+export const KinRecommendationAction = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("ask_again"), label: KinTrimmedText }),
+  Schema.Struct({ kind: Schema.Literal("open_agent"), label: KinTrimmedText, agentId: KinAgentId }),
+]);
 export type KinRecommendationAction = typeof KinRecommendationAction.Type;
 
 export const KinRecommendationRow = Schema.Struct({
@@ -46,21 +49,15 @@ export type KinRecommendationActInput = typeof KinRecommendationActInput.Type;
 
 const KIN_RECOMMENDATION_WS_METHODS = {
   list: "kin.recommendations.list",
-  undo: "kin.recommendations.undo",
   askAgain: "kin.recommendations.askAgain",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 
-/** Undo and Ask again answer with the list as it stands after them. */
+/** Ask again answers with the list as it stands after it. */
 export const KinRecommendationRpcs = [
   Rpc.make(KIN_RECOMMENDATION_WS_METHODS.list, {
     payload: KinRecommendationsInput,
-    success: KinRecommendationsResult,
-    error,
-  }),
-  Rpc.make(KIN_RECOMMENDATION_WS_METHODS.undo, {
-    payload: KinRecommendationActInput,
     success: KinRecommendationsResult,
     error,
   }),
@@ -73,6 +70,5 @@ export const KinRecommendationRpcs = [
 
 export const KIN_RECOMMENDATION_RPC_SCOPES = {
   [KIN_RECOMMENDATION_WS_METHODS.list]: AuthKinChatScope,
-  [KIN_RECOMMENDATION_WS_METHODS.undo]: AuthKinChatScope,
   [KIN_RECOMMENDATION_WS_METHODS.askAgain]: AuthKinChatScope,
 } as const;

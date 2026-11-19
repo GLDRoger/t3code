@@ -152,7 +152,7 @@ export function KinSettings(props: {
   // The owner alone, as the host gates `kin.recommendations.*`: a co-owner sees none of it.
   const recommendations = useAtomValue(
     host._tag === "host"
-      ? kinClient.recommendationUndo.permissionAtom(host.environmentId)
+      ? kinClient.recommendationAskAgain.permissionAtom(host.environmentId)
       : noPermissionAtom,
   );
   const groups = kinSettingsGroups({

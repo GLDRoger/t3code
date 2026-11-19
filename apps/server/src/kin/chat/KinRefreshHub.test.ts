@@ -287,6 +287,12 @@ describe("KinRefreshHub", () => {
       kin_money_budgets: ["work/budgets.ts"],
       // A key's last use, written as the key is admitted, shows at the next read.
       kin_tasks_keys: ["tasksKey/TasksKeys.ts", "people/KinPeople.ts", "auth/linkedDevices.ts"],
+      // A clear stamps open suggestions in the repository; `KinChatService.clear` tells the hub.
+      kin_recommendations: [
+        "chat/KinChatRepository.ts",
+        "recommend/KinRecommend.ts",
+        "recommend/card.ts",
+      ],
     };
     const write = new RegExp(
       `(?:INSERT INTO|UPDATE|DELETE FROM)\\s+(${Object.keys(writers).join("|")})\\b`,

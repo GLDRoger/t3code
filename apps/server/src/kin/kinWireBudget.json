@@ -149,7 +149,7 @@
   "reconnect.member.refreshBytes": 105,
   "reconnect.member.topicsMoved": 0,
   "reconnect.owner.pulseBytes": 42,
-  "reconnect.owner.refreshBytes": 237,
+  "reconnect.owner.refreshBytes": 257,
   "reconnect.owner.topicsMoved": 0,
   "rows.coOwner.assign.bytes": 861,
   "rows.coOwner.assign.items": 2,

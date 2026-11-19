@@ -5,7 +5,12 @@ import {
   kinRecommendationProblem,
 } from "@t3tools/client-runtime/kin/kinRecommendations";
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { EnvironmentId, KinOrgId, type KinRecommendationRow } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  KinOrgId,
+  type KinRecommendationAction,
+  type KinRecommendationRow,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
@@ -73,18 +78,28 @@ function KinRecommendationList(props: {
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const rows = Option.getOrNull(AsyncResult.value(result))?.rows ?? null;
-  const act = (row: KinRecommendationRow, action: NonNullable<KinRecommendationRow["action"]>) => {
+  const navigation = useNavigation();
+  const act = (row: KinRecommendationRow, action: KinRecommendationAction) => {
+    // Who can message an agent is changed on its screen: a done row only goes there.
+    if (action.kind === "open_agent") {
+      navigation.navigate("KinLead", {
+        environmentId: props.environmentId,
+        orgId: props.orgId,
+        agentId: action.agentId,
+      });
+      return;
+    }
     setBusy(row.recId);
     setProblem(null);
     void runAtomCommand(
       appAtomRegistry,
-      action.kind === "undo" ? kinClient.recommendationUndo : kinClient.recommendationAskAgain,
+      kinClient.recommendationAskAgain,
       { ...query, input: { orgId: props.orgId, recId: row.recId } },
       { reportFailure: false, reportDefect: true },
     ).then((outcome) => {
       setBusy(null);
       if (AsyncResult.isFailure(outcome))
-        setProblem(kinRecommendationProblem(squashAtomCommandFailure(outcome), action.kind));
+        setProblem(kinRecommendationProblem(squashAtomCommandFailure(outcome)));
       refresh();
     });
   };

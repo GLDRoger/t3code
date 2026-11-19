@@ -113,7 +113,7 @@ const TakenPlan = Schema.Struct({
   hidden: Schema.optional(Schema.Literal(true)),
 });
 export type TakenPlan = typeof TakenPlan.Type;
-/** The one setting a recommendation's Do it changes, and Undo puts back, as Settings would. */
+/** The one setting a recommendation's Do it changes, as the setting's own place would. */
 export const RecommendChange = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("lead_access"),

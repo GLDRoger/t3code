@@ -1,5 +1,3 @@
-import type { KinRecommendationAction } from "@t3tools/contracts";
-
 import { kinFailureText } from "./kinAnswers.ts";
 
 /** Settings → Company → Recommendations, the same words on web and phone. */
@@ -11,12 +9,9 @@ export const KIN_RECOMMENDATIONS_COPY = {
   loadFailed: "Couldn't load what Kin suggested.",
 } as const;
 
-/** What went wrong with a row's Undo or Ask again, in the host's words where it gave them. */
-export function kinRecommendationProblem(
-  cause: unknown,
-  kind: KinRecommendationAction["kind"],
-): string {
-  return kinFailureText(cause, kind === "undo" ? "Couldn't undo it." : "Couldn't ask again.", {
+/** What went wrong with a row's Ask again, in the host's words where it gave them. */
+export function kinRecommendationProblem(cause: unknown): string {
+  return kinFailureText(cause, "Couldn't ask again.", {
     gone: "That suggestion isn't there any more.",
   });
 }

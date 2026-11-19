@@ -138,7 +138,9 @@ interface KinSettingsTarget {
 function useKinSettingsGroups(environmentId: EnvironmentId): ReadonlyArray<KinSettingsGroup> {
   const ownerLevel = useKinOwnerLevel(environmentId);
   // The owner alone, as the host gates `kin.recommendations.*`: a co-owner sees none of it.
-  const recommendations = useAtomValue(kinClient.recommendationUndo.permissionAtom(environmentId));
+  const recommendations = useAtomValue(
+    kinClient.recommendationAskAgain.permissionAtom(environmentId),
+  );
   return kinSettingsGroups({
     ownerLevel,
     computer: !isChatOnlySession(),

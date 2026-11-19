@@ -37,8 +37,6 @@ export const makeKinRecommendHandlers = Effect.fn("makeKinRecommendHandlers")(fu
   return group.of({
     "kin.recommendations.list": (input) =>
       run(input.orgId, (person) => KinRecommend.list(input.orgId, person.personId)),
-    "kin.recommendations.undo": (input) =>
-      run(input.orgId, (person) => KinRecommend.undo(input.orgId, person.personId, input.recId)),
     "kin.recommendations.askAgain": (input) =>
       run(input.orgId, (person) =>
         KinRecommend.askAgain(input.orgId, person.personId, input.recId),

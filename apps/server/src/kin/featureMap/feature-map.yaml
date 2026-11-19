@@ -865,7 +865,8 @@ features:
     note: >-
       When the same hold-up keeps happening and a setting would end it, Kin puts one silent card in
       the owner's chat with Chief of staff (so it waits in Needs you); Do it makes the same change
-      the setting's own control makes. Settings lists each suggestion with Undo or Ask again.
+      the setting's own control makes. Settings lists each suggestion and what came of it; a done one
+      opens the agent's page, where access is changed, and a put-off one can Ask again.
     proof:
       - apps/server/src/kin/recommend/KinRecommend.test.ts
       - apps/web/src/kin/KinRecommendations.browser.test.tsx

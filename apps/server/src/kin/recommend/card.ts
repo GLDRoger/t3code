@@ -3,7 +3,9 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as LeadProvision from "../lead/KinLeadProvision.ts";
+import { accessSql } from "../people/KinAccess.ts";
 import type { RecommendPlan } from "../widgets/cardPlans.ts";
 import { DECLINE_QUIET_MS, dayOf, onlyOwner, ruleContext, storedRows } from "./ledger.ts";
 import { ROUTE_ACCESS, type RecommendChange, routeAccess } from "./rules.ts";
@@ -18,20 +20,10 @@ const doLabel = (change: RecommendChange) => {
     ? label
     : `Let them message ${change.agentName}`.slice(0, LABEL_MAX);
 };
-/**
- * Settings' Undo, from the stored names. With another way in (the team agent, a shared group)
- * it removes only their own access, so it never says they stop messaging the agent.
- */
-export const undoLabel = (change: RecommendChange, otherWay: boolean) => {
-  const label = otherWay
-    ? `Remove ${change.personName}'s own access to ${change.agentName}`
-    : `Stop ${change.personName} messaging ${change.agentName}`;
-  if (label.length <= LABEL_MAX) return label;
-  return (
-    otherWay
-      ? `Remove their own access to ${change.agentName}`
-      : `Stop them messaging ${change.agentName}`
-  ).slice(0, LABEL_MAX);
+/** A done row's way to the agent's page, where who can message it is changed. */
+export const agentPageLabel = (change: RecommendChange) => {
+  const label = `Open ${change.agentName}'s page`;
+  return label.length <= LABEL_MAX ? label : "Open the agent's page";
 };
 
 /** A card that reached its time limit unanswered: what it says once it closes. */
@@ -53,6 +45,27 @@ const isChatError = Schema.is(KinChatError);
 const unavailable = () =>
   new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
 
+/**
+ * What a tap may no longer mean, either answer: the person became owner-level, or the names the
+ * owner read no longer name who and what it is about.
+ */
+const subjectMoved = Effect.fn("KinRecommendCard.subjectMoved")(function* (
+  orgId: KinOrgId,
+  change: RecommendChange,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [person] = yield* sql<{ name: string; ownerLevel: number }>`SELECT
+      p.display_name AS name, ${sql.literal(accessSql("p"))} IN ('owner', 'co_owner') AS "ownerLevel"
+    FROM kin_people p WHERE p.org_id = ${orgId} AND p.person_id = ${change.personId}`;
+  const [agent] = yield* sql<{ name: string }>`SELECT name FROM kin_leads
+    WHERE org_id = ${orgId} AND agent_id = ${change.agentId}`;
+  if (person?.ownerLevel === 1)
+    return `${person.name} can already message ${agent?.name ?? change.agentName}`;
+  return person?.name === change.personName && agent?.name === change.agentName
+    ? null
+    : "the names on this card have changed since Kin drew it";
+});
+
 /** Whether the suggestion still holds for its subject now, or what is already true instead. */
 const stillHolds = Effect.fn("KinRecommendCard.stillHolds")(function* (
   orgId: KinOrgId,
@@ -67,18 +80,14 @@ const stillHolds = Effect.fn("KinRecommendCard.stillHolds")(function* (
     one._tag === "fires" ? one.candidate.subject === plan.subject : one.subject === plan.subject,
   );
   if (verdict === undefined) return "it changed";
-  if (verdict._tag === "silent") return verdict.reason;
-  // The words the owner agreed to must still name who and what the write changes.
-  const now = verdict.candidate.change;
-  return now.personName === plan.change.personName && now.agentName === plan.change.agentName
-    ? null
-    : "the names on this card have changed since Kin drew it";
+  return verdict._tag === "silent" ? verdict.reason : null;
 });
 
 /**
  * The owner's tap on a suggestion, in the tap's transaction (`cardActions.ts` `run`). Only the
- * owner alone answers it. Do it asks the rule again for its subject and, if it still holds,
- * makes the same change the Settings control makes, as the owner; otherwise nothing changes.
+ * owner alone answers it, and only while it still means what it said. Do it asks the rule again
+ * for its subject and, if it still holds, makes the same change the agent's page makes, as the
+ * owner; otherwise nothing changes and no Not now is counted.
  */
 export const runRecommend = Effect.fn("KinRecommendCard.run")(function* (
   tap: {
@@ -101,23 +110,32 @@ export const runRecommend = Effect.fn("KinRecommendCard.run")(function* (
   )
     return { title: "Nothing changed", text: "This suggestion is no longer here." };
   if (row.state !== "open") return { title: "Nothing changed", text: "This was already answered." };
-  const settle = (
+  const settle = Effect.fn("KinRecommendCard.settle")(function* (
     state: "done" | "declined" | "stale",
     quietUntil: number | null,
-    grantedAt: number | null = null,
-  ) =>
-    sql`UPDATE kin_recommendations SET state = ${state}, decided_at = ${now},
-        decided_by = ${tap.personId}, quiet_until = ${quietUntil}, granted_at = ${grantedAt}
+  ) {
+    const settled = yield* sql`UPDATE kin_recommendations SET state = ${state},
+        decided_at = ${now}, decided_by = ${tap.personId}, quiet_until = ${quietUntil}
       WHERE org_id = ${orgId} AND rec_id = ${row.recId} AND state = 'open'
       RETURNING rec_id`;
+    if (settled.length === 0) return yield* unavailable();
+    yield* (yield* KinRefreshObserver).touch(orgId, "recommendations");
+  });
   const ctx = yield* ruleContext(orgId, tap.personId, now);
+  const reason =
+    (yield* subjectMoved(orgId, plan.change)) ??
+    (plan.answer === "do" ? yield* stillHolds(orgId, tap.personId, now, plan) : null);
+  if (reason !== null) {
+    yield* settle("stale", null);
+    return { title: "Nothing changed", text: `Nothing changed: ${reason}.` };
+  }
   if (plan.answer === "not_now") {
     const [declined] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
       FROM kin_recommendations WHERE org_id = ${orgId} AND rule = ${row.rule}
         AND subject = ${row.subject} AND state = 'declined'`;
     const times = declined?.count ?? 0;
     const until = times < DECLINE_QUIET_MS.length ? now + DECLINE_QUIET_MS[times]! : null;
-    if ((yield* settle("declined", until)).length === 0) return yield* unavailable();
+    yield* settle("declined", until);
     return {
       title: NOT_NOW,
       text:
@@ -125,11 +143,6 @@ export const runRecommend = Effect.fn("KinRecommendCard.run")(function* (
           ? "Kin won't suggest this again. Settings, under Recommendations, can ask again."
           : `Kin won't suggest this before ${dayOf(ctx, until)}.`,
     };
-  }
-  const reason = yield* stillHolds(orgId, tap.personId, now, plan);
-  if (reason !== null) {
-    if ((yield* settle("stale", null)).length === 0) return yield* unavailable();
-    return { title: "Nothing changed", text: `Nothing changed: ${reason}.` };
   }
   const { change } = plan;
   yield* LeadProvision.allow({
@@ -144,14 +157,9 @@ export const runRecommend = Effect.fn("KinRecommendCard.run")(function* (
         : new KinChatError({ reason: "not_allowed", message: error.message }),
     ),
   );
-  // The grant this Let made, as stored: Undo takes back this one and no later one.
-  const [grant] = yield* sql<{ grantedAt: number }>`SELECT granted_at AS "grantedAt"
-    FROM kin_lead_access WHERE org_id = ${orgId} AND agent_id = ${change.agentId}
-      AND person_id = ${change.personId} AND revoked_at IS NULL`;
-  if (grant === undefined) return yield* unavailable();
-  if ((yield* settle("done", null, grant.grantedAt)).length === 0) return yield* unavailable();
+  yield* settle("done", null);
   return {
     title: "Done",
-    text: `${change.personName} may message ${change.agentName} from now on. Settings, under Recommendations, can undo it.`,
+    text: `${change.personName} can message ${change.agentName} from now on. ${change.agentName}'s page is where you change that.`,
   };
 });

@@ -1806,6 +1806,7 @@ const make = Effect.gen(function* () {
       });
       for (const item of cleared.waiting)
         yield* hub.publish({ type: "waiting.updated", orgId: chat.orgId, item });
+      if (cleared.endedSuggestion) yield* refresh.touch(chat.orgId, "recommendations");
       yield* hub.publish({
         type: "chat.cleared",
         orgId: chat.orgId,
