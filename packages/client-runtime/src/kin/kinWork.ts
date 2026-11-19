@@ -534,10 +534,16 @@ const kinSentences = (parts: ReadonlyArray<string>): string =>
     "",
   );
 
-const statusText = (record: KinRecord, names: KinWorkNames): string =>
-  record.state === "waiting" && record.waitingOn !== null
+/** A task's state as the Tasks list says it: "Waiting on Priya"; "Waiting" with no names to hand. */
+export const kinWorkStatusText = (
+  record: Pick<KinRecord, "state" | "waitingOn">,
+  names: KinWorkNames | null,
+): string =>
+  record.state === "waiting" && record.waitingOn !== null && names !== null
     ? `Waiting on ${kinWorkName(record.waitingOn, names, "you")}`
     : STATE_LABEL[record.state];
+const statusText = (record: KinRecord, names: KinWorkNames): string =>
+  kinWorkStatusText(record, names);
 
 export interface KinWorkRowView {
   readonly key: KinRecordKey;

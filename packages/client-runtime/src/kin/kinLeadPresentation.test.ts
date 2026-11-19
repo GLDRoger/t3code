@@ -124,6 +124,29 @@ describe("what a lead has in hand", () => {
       "Working on it now, due Fri, Nov 27",
     );
   });
+
+  it("says a task's state as the Tasks list does, never that a waiting one is under way", () => {
+    const names = {
+      people: new Map([["ambermill-rhea", "Rhea"]]),
+      agents: new Map(),
+      me: KinPersonId.make("ambermill-rhea"),
+      zone: "UTC",
+    };
+    const waiting = {
+      kind: "work",
+      dueAt: "2026-11-19T23:59:59.999Z",
+      dueAllDay: true,
+      state: "waiting",
+      waitingOn: { _tag: "person", personId: KinPersonId.make("ambermill-rhea") },
+    } as const;
+    const now = new Date("2026-11-18T09:00:00.000Z");
+    expect(kinLeadTrackingDetail(waiting, "UTC", now, names)).toBe("Waiting on you, due tomorrow");
+    expect(kinLeadTrackingDetail(waiting, "UTC", now)).toBe("Waiting, due tomorrow");
+    expect(kinLeadTrackingDetail({ ...waiting, state: "doing" }, "UTC", now, names)).toBe(
+      "In progress, due tomorrow",
+    );
+    expect(kinLeadTrackingDetail({ kind: "work", state: "open" })).toBe("Not started");
+  });
 });
 
 describe("lead model", () => {
