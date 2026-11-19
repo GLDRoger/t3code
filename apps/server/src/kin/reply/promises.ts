@@ -19,8 +19,8 @@ const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 /**
  * Who a reply said it would tell, ask or pass something to, when nothing in the turn did: no relay,
- * nudge, reminder, question with a default (its day wakes the agent), hand-off, assignment notice
- * or post elsewhere. Someone in the chat reads it already. Else an agent said to act, not handed it.
+ * nudge, reminder, open question to them with a safe default, hand-off, assignment notice or post
+ * elsewhere. Someone in the chat reads it already. Else an agent said to act, not handed it.
  */
 export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wake: {
   readonly orgId: KinOrgId;
@@ -38,8 +38,8 @@ export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wak
       AND created_at >= ${since}
     ORDER BY seq`;
   const spans = said.flatMap((row) => [...row.body.matchAll(PROMISE)].map((hit) => hit[0]));
-  const people = yield* sql<{ name: string; here: number; owner: number }>`SELECT
-      p.display_name AS name,
+  const people = yield* sql<{ personId: string; name: string; here: number; owner: number }>`SELECT
+      p.person_id AS "personId", p.display_name AS name,
       EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = p.org_id
         AND m.chat_id = ${wake.chatId} AND m.person_id = p.person_id AND m.left_at IS NULL) AS here,
       EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = p.org_id AND a.agent_id = ${wake.agentId}
@@ -47,7 +47,7 @@ export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wak
     FROM kin_people p WHERE p.org_id = ${wake.orgId} ORDER BY p.person_id LIMIT 200`;
   const first = (name: string) => name.trim().split(/\s+/)[0] ?? name;
   const owner = people.find((person) => person.owner === 1);
-  let named: string | undefined;
+  let named: { readonly personId: string; readonly first: string } | undefined;
   for (const span of spans) {
     const person = people.find(
       (one) =>
@@ -56,11 +56,11 @@ export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wak
         new RegExp(`\\b${escaped(first(one.name))}\\b`, "i").test(span),
     );
     if (person !== undefined) {
-      named = first(person.name);
+      named = { personId: person.personId, first: first(person.name) };
       break;
     }
     if (PRONOUN.test(span) && owner !== undefined && owner.here === 0) {
-      named = first(owner.name);
+      named = { personId: owner.personId, first: first(owner.name) };
       break;
     }
   }
@@ -93,13 +93,14 @@ export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wak
     UNION ALL SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${wake.orgId}
       AND wakeup_id = ${wake.wakeupId} AND substr(call_key, 1, 9) = 'item:def-'
     UNION ALL SELECT 1 FROM kin_questions WHERE org_id = ${wake.orgId}
-      AND agent_id = ${wake.agentId} AND asked_at >= ${wake.startedAt}
+      AND agent_id = ${wake.agentId} AND person_id = ${named.personId}
+      AND asked_at >= ${wake.startedAt} AND state = 'open' AND safe = 1
       AND default_label IS NOT NULL
     UNION ALL SELECT 1 FROM kin_handoffs WHERE org_id = ${wake.orgId}
       AND from_agent_id = ${wake.agentId} AND created_at >= ${wake.startedAt}
       AND (route_state IS NULL OR route_state = 'passed')
     LIMIT 1`;
-  return kept.length > 0 ? undefined : named;
+  return kept.length > 0 ? undefined : named.first;
 });
 
 const CARD = /\b(?:card|tap confirm)\b/i;
