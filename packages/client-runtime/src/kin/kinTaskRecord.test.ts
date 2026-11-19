@@ -210,6 +210,16 @@ describe("kinNextStep", () => {
     expect(stepOf(item, names, { change: true, give: false }).acts).toEqual([]);
   });
 
+  it("tells the giver a holder who is away hears of it when back, on that day", () => {
+    expect(stepOf(task())).toMatchObject({ kind: "held", note: "Nothing needed from you yet." });
+    expect(stepOf(task({ toldWhenBack: "2026-11-23" }))).toMatchObject({
+      kind: "held",
+      who: { name: "Meera" },
+      line: "has this",
+      note: "Meera is away until Mon Nov 23, so they'll be told when they're back.",
+    });
+  });
+
   it("offers Reopen on a done task, naming who finished it", () => {
     const item = task({
       state: "done",
