@@ -72,6 +72,7 @@ import * as ChatHub from "../chat/KinChatHub.ts";
 import { agentChanges, ownerLevelUndoAgentChange } from "../lead/agentChanges.ts";
 import { turnChanges } from "../lead/turnChanges.ts";
 import { buildWorkSection } from "./workPrompt.ts";
+import { markQuotesSent } from "../connections/Sending.ts";
 
 // Invented org, people and work only; nothing here reads a real database or memory.
 const orgId = KinOrgId.make("org");
@@ -795,6 +796,51 @@ const keptForPerson = [
         /^Nothing changed on W-1: Owner changed its project \(value not shown\) on Wed 11 Nov, 10:01\. /,
       );
       assert.include(yield* scene.records.get(orgId, "W-1"), { projectId: hidden });
+    }),
+  ),
+  row(
+    "a confirmed send marking a quote Sent is Kin's, not a person's; their own later change is",
+    Effect.gen(function* () {
+      const scene = yield* asked();
+      yield* scene.sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json)
+        VALUES (${orgId}, 'quotes', 'Quotes', 'QT', 0, 0, ${JSON.stringify(presetDefinition("quotes", "INR"))})`;
+      const { row: quote } = yield* scene.records.create(orgId, scene.ownerWrites, {
+        list: "quotes",
+        originKey: "quote",
+        title: "Invented Acme design work",
+        owner: { _tag: "person", personId: ownerId },
+      });
+      const ask = yield* scene.say("Mail QT-1 to Invented Acme and mark it accepted once sent");
+      yield* scene.wake();
+      yield* scene.later;
+      yield* markQuotesSent(scene.records, {
+        orgId,
+        personId: ownerId,
+        wakeupId: "wake-1",
+        entryRecordIds: [quote.recordId],
+      });
+      const state = Effect.map(scene.records.get(orgId, "QT-1"), (row) => row!.state);
+      assert.strictEqual(yield* state, "waiting");
+      const accept = Effect.suspend(() =>
+        LeadWork.update(scopeOf(lead), { key: "QT-1", sourceEventId: ask, state: "done" }),
+      );
+      yield* accept;
+      assert.strictEqual(yield* state, "done");
+      for (const [writes, name, to] of [
+        [scene.mateWrites, "Mate", "open"],
+        [scene.ownerWrites, "Owner", "waiting"],
+      ] as const) {
+        yield* scene.later;
+        yield* scene.records.update(orgId, writes, "QT-1", { state: to });
+        refusedAs(
+          yield* Effect.flip(accept),
+          new RegExp(
+            `^Nothing changed on QT-1: ${name} changed its state \\(value not shown\\) on `,
+          ),
+        );
+        assert.strictEqual(yield* state, to);
+      }
     }),
   ),
 ];

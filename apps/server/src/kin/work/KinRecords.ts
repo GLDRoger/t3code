@@ -124,6 +124,7 @@ export type Writer = {
     | { readonly _tag: "person"; readonly personId: KinPersonId }
     | { readonly _tag: "system" };
   readonly via: KinRecordChangeVia;
+  /** An agent's own turn; on a person's write, the turn whose confirmed ask Kin carries out. */
   readonly wakeupId?: string;
   readonly chatId?: KinChatId;
   /** The human who asked for this, from stored rows: becomes the assigner of work given away. */
@@ -940,10 +941,12 @@ const make = Effect.gen(function* () {
     writes: ReadonlySet<string>,
     view: Writer["view"],
   ) {
+    // A person's row with a turn is Kin carrying out that turn's confirmed ask (`markQuotesSent`).
     const rows = yield* sql<{ seq: number; at: number; actorId: string; fieldsJson: string }>`
       SELECT seq, at, actor_id AS "actorId", fields_json AS "fieldsJson" FROM kin_record_changes
       WHERE org_id = ${orgId} AND record_id = ${row.recordId} AND actor_kind = 'person'
         AND actor_id IS NOT NULL AND kind = 'updated' AND at >= ${since.at}
+        AND wakeup_id IS NULL
       ORDER BY seq DESC`;
     const newest = new Map<
       string,
