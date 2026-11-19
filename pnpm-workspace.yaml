@@ -308,6 +308,8 @@ peerDependencyRules:
 # pnpm 12 links agent skills that dependencies ship into .claude/skills once
 # approved. We curate our own skills, so deny these to keep installs quiet.
 permissions:
+  "@tanstack/react-router":
+    skills: false
   "@tanstack/router-plugin":
     skills: false
   drizzle-kit:
