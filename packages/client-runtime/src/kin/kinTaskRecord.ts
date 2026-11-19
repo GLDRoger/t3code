@@ -355,6 +355,10 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
     item.toldWhenBack === undefined
       ? null
       : KIN_TASK_RECORD.toldWhenBack(holder.name, kinAwayDay(item.toldWhenBack, now));
+  // A task waiting on this viewer never tells them nothing is needed: it says what it waits on.
+  const waitsOnMe =
+    item.state === "waiting" && item.waitingOn !== null && isMe(item.waitingOn, names);
+  const nothingNeeded = waitsOnMe ? `${view.status}.` : KIN_TASK_RECORD.nothingNeeded;
   if (view.suggestion !== null) {
     const acts =
       input.change && view.can.confirm
@@ -370,7 +374,7 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
         item.createdBy._tag === "system" ? "An agent suggested this task" : "suggested this task",
       when: formatKinTime(new Date(item.createdAt), now),
       words: null,
-      note: acts.length === 0 ? KIN_TASK_RECORD.nothingNeeded : null,
+      note: acts.length === 0 ? nothingNeeded : null,
       acts,
     };
   }
@@ -425,7 +429,7 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
       line: due === null ? "has this." : `has this. It was due ${due}.`,
       when: null,
       words: null,
-      note: toldLater ?? (giveAct.length === 0 ? KIN_TASK_RECORD.nothingNeeded : null),
+      note: toldLater ?? (giveAct.length === 0 || waitsOnMe ? nothingNeeded : null),
       acts: giveAct,
     };
   }
@@ -450,17 +454,21 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
       line: item.working ? "is working on it now" : "is on it",
       when: latest === undefined ? null : `updated ${formatKinTime(new Date(latest.at), now)}`,
       words: null,
-      note: KIN_TASK_RECORD.nothingNeeded,
+      note: nothingNeeded,
       acts: [],
     };
   }
+  const waiting =
+    item.state === "waiting" &&
+    !(item.waitingOn !== null && samePrincipal(item.waitingOn, item.owner));
   return {
     kind: "held",
     who: holder,
-    line: item.state === "waiting" ? view.status.replace(/^Waiting/, "is waiting") : "has this",
+    line: waiting ? view.status.replace(/^Waiting/, "is waiting") : "has this",
     when: due === null ? null : `due ${due}`,
     words: null,
-    note: toldLater ?? KIN_TASK_RECORD.nothingNeeded,
+    // The line already says it waits on this viewer.
+    note: toldLater ?? (waitsOnMe ? null : KIN_TASK_RECORD.nothingNeeded),
     acts: [],
   };
 }

@@ -221,6 +221,64 @@ describe("kinNextStep", () => {
     });
   });
 
+  it.each([
+    {
+      who: "the person it waits on, who holds it",
+      item: task({ owner: zoya, state: "waiting", waitingOn: zoya }),
+      names: asZoya,
+      chip: "Waiting on you",
+      step: { kind: "yours", line: "have this", note: null },
+    },
+    {
+      who: "the person it waits on, who doesn't hold it",
+      item: task({ state: "waiting", waitingOn: zoya, can: readOnly }),
+      names: asZoya,
+      chip: "Waiting on you",
+      step: { kind: "held", line: "is waiting on you", note: null },
+    },
+    {
+      who: "the person an agent's task waits on",
+      item: task({ owner: chief, state: "waiting", waitingOn: zoya, can: readOnly }),
+      names: asZoya,
+      chip: "Waiting on you",
+      step: { kind: "agent", line: "is on it", note: "Waiting on you." },
+    },
+    {
+      who: "the person a late task waits on",
+      item: task({
+        state: "waiting",
+        waitingOn: zoya,
+        can: readOnly,
+        late: true,
+        dueAt: "2026-11-15T23:59:59.000Z",
+        dueAllDay: true,
+      }),
+      names: asZoya,
+      chip: "2 days late",
+      step: { kind: "late", note: "Waiting on you." },
+    },
+    {
+      who: "a third person, on a task waiting on its own holder",
+      item: task({ owner: zoya, state: "waiting", waitingOn: zoya }),
+      names,
+      chip: "Waiting on Zoya",
+      step: { kind: "held", line: "has this", note: "Nothing needed from you yet." },
+    },
+    {
+      who: "a third person, on a task waiting on someone else",
+      item: task({ state: "waiting", waitingOn: zoya }),
+      names,
+      chip: "Waiting on Zoya",
+      step: { kind: "held", line: "is waiting on Zoya", note: "Nothing needed from you yet." },
+    },
+  ])("on a waiting task, tells $who what it waits on, once", ({ item, names: who, chip, step }) => {
+    const view = kinWorkItemView(item, who, now, 50, place);
+    expect(kinRecordChip(item, view, who, now).label).toBe(chip);
+    expect(
+      stepOf(item, who, { change: item.can?.edit === true, give: item.can?.give === true }),
+    ).toMatchObject(step);
+  });
+
   it("offers Reopen on a done task, naming who finished it", () => {
     const item = task({
       state: "done",
