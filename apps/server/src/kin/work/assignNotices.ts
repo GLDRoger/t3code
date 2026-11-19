@@ -19,10 +19,10 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { turnChat } from "../lead/Audience.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
-import { holdFor, holdLine } from "../triggers/quietHold.ts";
+import { heldUntil, holdFor, holdLine } from "../triggers/quietHold.ts";
 import { textLocale, type TextClock } from "./companyProfile.ts";
 import { parseFields } from "./lists.ts";
-import { ownerZone, type RecordRow } from "./recordRows.ts";
+import { byId, isClosed, ownerZone, type RecordRow } from "./recordRows.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 
 /**
@@ -198,34 +198,109 @@ const bodyFor = (
   ].join("\n");
 };
 
+/** A held "gave you" line: the task, its rev and who gave it, so a retried call holds nothing more. */
+const GIVEN_HELD = "kin-assign-given:";
+export const isGivenHeld = (kind: string) => kind.startsWith(GIVEN_HELD);
+const givenHeld = (row: RecordRow, by: string) => `${GIVEN_HELD}${row.recordId}:${row.rev}:${by}`;
+const heldTask = (kind: string) => {
+  const [recordId = "", , ...by] = kind.slice(GIVEN_HELD.length).split(":");
+  return { recordId, by: by.join(":") };
+};
+
+/**
+ * The held "gave you" lines for `personId` as one message, worded from each task as it stands
+ * when it posts; a task no longer theirs, or closed, is left out. Undefined when none is left.
+ */
+export const heldGivenBody = Effect.fn("KinAssignNotices.heldGiven")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  kinds: ReadonlyArray<string>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const byGiver = new Map<string, Array<AssignNotice>>();
+  const seen = new Set<string>();
+  for (const kind of kinds) {
+    const { recordId, by } = heldTask(kind);
+    if (seen.has(recordId)) continue;
+    seen.add(recordId);
+    const row = yield* byId(orgId, recordId);
+    if (row === undefined || row.ownerKind !== "person" || row.ownerId !== personId) continue;
+    if (isClosed(row.state)) continue;
+    byGiver.set(by, [
+      ...(byGiver.get(by) ?? []),
+      { personId, kind: "given", row, why: reasonOf(row) },
+    ]);
+  }
+  if (byGiver.size === 0) return undefined;
+  const [profile] = yield* sql<{ zone: string | null }>`SELECT time_zone AS zone FROM kin_people
+    WHERE org_id = ${orgId} AND person_id = ${personId}`;
+  const clock = {
+    zone: profile?.zone ?? (yield* ownerZone(orgId)),
+    locale: yield* textLocale(orgId),
+  };
+  const now = yield* Clock.currentTimeMillis;
+  return [...byGiver]
+    .map(([by, notices]) => bodyFor(by, notices, clock, now, () => null))
+    .join("\n\n");
+});
+
+/**
+ * A task that leaves someone before their held "gave you" line posts was never theirs to hear
+ * of: the line is dropped, and so is the notice that it was taken. Returns the notices left.
+ */
+const dropUnheard = Effect.fn("KinAssignNotices.dropUnheard")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  notices: ReadonlyArray<AssignNotice>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const left: Array<AssignNotice> = [];
+  for (const notice of notices) {
+    if (notice.kind !== "taken") {
+      left.push(notice);
+      continue;
+    }
+    const prefix = `${GIVEN_HELD}${notice.row.recordId}:`;
+    const dropped = yield* sql`DELETE FROM kin_held_posts
+      WHERE org_id = ${orgId} AND person_id = ${personId} AND delivered_at IS NULL
+        AND substr(kind, 1, ${prefix.length}) = ${prefix}
+      RETURNING hold_id`;
+    if (dropped.length === 0) left.push(notice);
+  }
+  return left;
+});
+
 /**
  * Tells each person what this call did to their tasks, in one message: in their direct chat with
  * the agent, else with the team agent, opened if needed. Someone in the turn's own chat already
- * reads the reply, so is not told twice. Returns who was told.
+ * reads the reply, so is not told twice. Returns who was told, and until when it waits for whom.
  */
-export const tellPeople = Effect.fn("KinAssignNotices.tell")(function* (
+export const tellHolding = Effect.fn("KinAssignNotices.tell")(function* (
   turn: Turn,
   notices: ReadonlyArray<AssignNotice>,
 ) {
   const told = new Set<string>();
-  if (notices.length === 0) return told;
+  const waits = new Map<string, Parameters<typeof heldUntil>[1]>();
+  if (notices.length === 0) return { told, waits };
   const sql = yield* SqlClient.SqlClient;
   const repo = yield* Effect.serviceOption(KinChatRepository);
-  if (Option.isNone(repo)) return told;
+  if (Option.isNone(repo)) return { told, waits };
   const chats = yield* Effect.serviceOption(KinChatService);
   const hub = yield* Effect.serviceOption(KinChatHub);
   const here = turn.by === undefined ? yield* turnChat(turn) : undefined;
   const [agent] = yield* sql<{ name: string; owner: string }>`SELECT display_name AS name,
       owner_person_id AS owner FROM kin_agents
     WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId}`;
-  if (agent === undefined) return told;
+  if (agent === undefined) return { told, waits };
   const teamAgent = yield* LeadAccess.teamAgent(turn.orgId);
   const fallbackZone = yield* ownerZone(turn.orgId);
   const byPerson = new Map<string, Array<AssignNotice>>();
   for (const notice of notices)
     byPerson.set(notice.personId, [...(byPerson.get(notice.personId) ?? []), notice]);
-  for (const [personId, theirs] of byPerson) {
+  for (const [personId, all] of byPerson) {
     const person = KinPersonId.make(personId);
+    const theirs = yield* dropUnheard(turn.orgId, person, all);
+    if (theirs.length === 0) continue;
     if (here !== undefined) {
       const reading = yield* sql`SELECT 1 FROM kin_chat_members WHERE org_id = ${turn.orgId}
         AND chat_id = ${here.chatId} AND principal_kind = 'person' AND person_id = ${person}
@@ -280,13 +355,11 @@ export const tellPeople = Effect.fn("KinAssignNotices.tell")(function* (
               WHERE org_id = ${turn.orgId} AND agent_id = ${to.id}`;
       if (holder !== undefined) names.set(notice, holder.name);
     }
-    const body = bodyFor(
-      turn.by ?? agent.name,
-      theirs,
-      { zone: profile?.zone ?? fallbackZone, locale: yield* textLocale(turn.orgId) },
-      yield* Clock.currentTimeMillis,
-      (notice) => names.get(notice) ?? null,
-    );
+    const giver = turn.by ?? agent.name;
+    const clock = { zone: profile?.zone ?? fallbackZone, locale: yield* textLocale(turn.orgId) };
+    const now = yield* Clock.currentTimeMillis;
+    const gaveTo = (notice: AssignNotice) => names.get(notice) ?? null;
+    const body = bodyFor(giver, theirs, clock, now, gaveTo);
     // The same lines from the same turn are one message, so a retried call posts nothing more.
     const messageId =
       turn.messageId ??
@@ -300,19 +373,30 @@ export const tellPeople = Effect.fn("KinAssignNotices.tell")(function* (
       told.add(person);
       continue;
     }
-    // In their quiet hours it waits for their end; they are told all the same.
+    // In their quiet hours or while away it waits; tasks given meanwhile post as one (`heldGivenBody`).
     const held = yield* holdFor({ orgId: turn.orgId, personId: person, chatId });
     if (held !== undefined) {
-      yield* holdLine({
-        orgId: turn.orgId,
-        chatId,
-        personId: person,
-        key: messageId,
-        body,
-        audience: "chat",
-        at: held.at,
-      });
+      const hold = (key: string, lines: string) =>
+        holdLine({
+          orgId: turn.orgId,
+          chatId,
+          personId: person,
+          key,
+          body: lines,
+          audience: "chat",
+          at: held.at,
+        });
+      const rest = theirs.filter((notice) => notice.kind !== "given");
+      for (const notice of theirs)
+        if (notice.kind === "given")
+          yield* hold(givenHeld(notice.row, giver), bodyFor(giver, [notice], clock, now, gaveTo));
+      if (rest.length > 0)
+        yield* hold(
+          messageId,
+          rest.length === theirs.length ? body : bodyFor(giver, rest, clock, now, gaveTo),
+        );
       told.add(person);
+      waits.set(person, held);
       continue;
     }
     const message = yield* repo.value.insertMessage({
@@ -339,5 +423,7 @@ export const tellPeople = Effect.fn("KinAssignNotices.tell")(function* (
       yield* hub.value.publish({ type: "message.posted", orgId: turn.orgId, message });
     told.add(person);
   }
-  return told;
+  return { told, waits };
 });
+export const tellPeople = (turn: Turn, notices: ReadonlyArray<AssignNotice>) =>
+  tellHolding(turn, notices).pipe(Effect.map((result) => result.told));

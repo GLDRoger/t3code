@@ -70,7 +70,7 @@ import { KinPushSender } from "../push/KinPushSender.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { placesOf } from "../work/teamView.ts";
 import { accessOf, accessSql, isOwnerHimself, mayActAsOwner, ownerLevel } from "./KinAccess.ts";
-import { KIN_DEFAULT_QUIET_HOURS, stillAway } from "../triggers/quietHours.ts";
+import { KIN_DEFAULT_QUIET_HOURS, stillAway, wholeDay } from "../triggers/quietHours.ts";
 import { profileSets } from "./profileFields.ts";
 import { reholdAfter, validZone } from "../triggers/quietHold.ts";
 import { companyMoney } from "../work/companyProfile.ts";
@@ -120,6 +120,7 @@ const decodeProfile = (
 ) => {
   // An unset field stays off the wire, so the Team list's answer doesn't grow for nothing.
   const { talkStyle, quietHours, hold, away, ...rest } = row;
+  const workHours = row.workHours === null ? null : JSON.parse(row.workHours);
   return decodeProfileRow({
     ...rest,
     ...(away !== null && awayNow(away, row.timeZone) ? { awayUntil: away } : {}),
@@ -127,7 +128,7 @@ const decodeProfile = (
     ...(quietHours === null ? {} : { quietHours: JSON.parse(quietHours) }),
     ...(hold === null ? {} : { holdOutsideHours: hold === 1 }),
     roleTags: JSON.parse(row.roleTags),
-    workHours: row.workHours === null ? null : JSON.parse(row.workHours),
+    workHours: workHours !== null && wholeDay(workHours) ? null : workHours,
   });
 };
 
