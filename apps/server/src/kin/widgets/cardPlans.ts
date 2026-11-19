@@ -134,6 +134,18 @@ const RecommendPlan = Schema.Struct({
 });
 export type RecommendPlan = typeof RecommendPlan.Type;
 export type RecommendChange = typeof RecommendChange.Type;
+/**
+ * On Kin's note that the asker took a question's answer from its person's words: Undo opens the
+ * question again, Keep leaves it. Bound to that one answer by when it closed. Never drawn.
+ */
+const AnsweredPlan = Schema.Struct({
+  kind: Schema.Literals(["undo_answer", "keep_answer"]),
+  questionId: Schema.String,
+  agentId: Schema.String,
+  answer: Schema.NullOr(Schema.String),
+  closedAt: Schema.Number,
+});
+export type AnsweredPlan = typeof AnsweredPlan.Type;
 export const CardPlan = Schema.Union([
   RecordPlan,
   StartPlan,
@@ -142,6 +154,7 @@ export const CardPlan = Schema.Union([
   RoutePlan,
   TakenPlan,
   RecommendPlan,
+  AnsweredPlan,
 ]);
 export type CardPlan = typeof CardPlan.Type;
 const PlanJson = Schema.fromJsonString(CardPlan);
@@ -150,6 +163,8 @@ const decodePlan = Schema.decodeUnknownOption(PlanJson);
 
 export const isTaken = (plan: CardPlan): plan is TakenPlan =>
   plan.kind === "undo_default" || plan.kind === "keep_default";
+export const isAnswered = (plan: CardPlan): plan is AnsweredPlan =>
+  plan.kind === "undo_answer" || plan.kind === "keep_answer";
 
 /** Whether Kin may take this action as a question's default at its day: a task's done or drop. */
 export const takesAsDefault = <P extends { readonly kind: CardPlan["kind"] }>(

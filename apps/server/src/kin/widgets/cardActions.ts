@@ -26,7 +26,13 @@ import { toolAdmitted } from "../lead/SharedTools.ts";
 import * as Memory from "../memory/Memory.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { runTaken, takenFor, undoLine } from "../questions/defaultTaken.ts";
-import { type QuestionRow, answerCard, readQuestion } from "../questions/openQuestions.ts";
+import {
+  type QuestionRow,
+  UNDO_ANSWER_LINE,
+  answerCard,
+  readQuestion,
+  runAnswered,
+} from "../questions/openQuestions.ts";
 import {
   KinDeferralStopSwitch,
   deferralLead,
@@ -43,6 +49,7 @@ import {
   type CardDraw,
   type CardPlan,
   type RunPlan,
+  isAnswered,
   isTaken,
   plansOf,
   takesAsDefault,
@@ -94,7 +101,10 @@ const labelOf = (plan: CardPlan): string => {
     case "undo_default":
       return "Undo";
     case "keep_default":
+    case "keep_answer":
       return "Keep it";
+    case "undo_answer":
+      return "Undo";
   }
 };
 
@@ -121,6 +131,10 @@ const lineOf = (plan: CardPlan): string => {
       return undoLine(plan);
     case "keep_default":
       return `Keep ${quoted(plan.label, 40)}`;
+    case "undo_answer":
+      return UNDO_ANSWER_LINE;
+    case "keep_answer":
+      return plan.answer === null ? "Keep it" : `Keep ${quoted(plan.answer, 40)}`;
   }
 };
 
@@ -412,7 +426,10 @@ const defaultSource = Effect.fn("KinCardActions.defaultSource")(function* (
   )
     return undefined;
   const final = (yield* plansOf(orgId, shown)).get(optionId);
-  return { widgetId: shown, final: final === undefined || isTaken(final) ? undefined : final };
+  return {
+    widgetId: shown,
+    final: final === undefined || isTaken(final) || isAnswered(final) ? undefined : final,
+  };
 });
 
 /**
@@ -430,7 +447,12 @@ export const redraw = Effect.fn("KinCardActions.redraw")(function* (
   chatId: KinChatId,
   sealed: CardPlan,
 ) {
-  if (sealed.kind === "let_talk" || sealed.kind === "recommend" || isTaken(sealed))
+  if (
+    sealed.kind === "let_talk" ||
+    sealed.kind === "recommend" ||
+    isTaken(sealed) ||
+    isAnswered(sealed)
+  )
     return undefined;
   const lead = {
     orgId,
@@ -516,11 +538,12 @@ export const run = Effect.fn("KinCardActions.run")(function* (
   plan: CardPlan,
   deps: {
     readonly records: KinRecords["Service"];
-    readonly chat: Pick<KinChatService["Service"], "closeReplaced">;
+    readonly chat: Pick<KinChatService["Service"], "closeReplaced" | "reopenClosed">;
   },
 ) {
   if (plan.kind === "let_talk") return yield* runRoute(tap, plan);
   if (plan.kind === "recommend") return yield* runRecommend(tap, plan);
+  if (isAnswered(plan)) return yield* runAnswered(tap, plan, deps.chat);
   if (isTaken(plan))
     return yield* runTaken(
       {

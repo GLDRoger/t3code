@@ -3,6 +3,7 @@ import {
   AuthKinChatScope,
   AuthKinTasksScope,
   AuthSessionId,
+  KinChatError,
   KinOrgId,
   KinPersonId,
   KinRpcs,
@@ -19,7 +20,8 @@ import { authorizeRpc } from "../auth/RpcAuthorization.ts";
 import { layerKinAuthTest } from "./auth/ProofKeySessions.testkit.ts";
 import { KinIdentity } from "./chat/KinIdentity.ts";
 import type { Services } from "./KinServer.ts";
-import { admits } from "./rpcHandlers.ts";
+import { admits, forPerson } from "./rpcHandlers.ts";
+import { countryFirstMessage } from "./work/companyProfile.ts";
 
 const orgId = KinOrgId.make("kin-default");
 const owner = { _tag: "person" as const, orgId, personId: KinPersonId.make("kin-default-owner") };
@@ -170,6 +172,34 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
         // Team memory is the owner's call: a co-owner (now Meera) may set it, a member never.
         assert.isTrue(yield* allowed("meera", "kin.memory.setTeamMemory"));
         assert.isFalse(yield* allowed("ravi", "kin.memory.setTeamMemory"));
+
+        // The country refusal reaches a person with no name in it (an older phone hides names),
+        // worded for who may choose the country now; any other refusal is as it was.
+        const said = (person: string, message: string) =>
+          forPerson(
+            session(person),
+            services,
+          )(new KinChatError({ reason: "invalid_state", message })).pipe(
+            Effect.flip,
+            Effect.map((error) => error.message),
+          );
+        const named = countryFirstMessage("Jamie McKay");
+        assert.deepStrictEqual(
+          [
+            yield* said("kin-default-owner", named),
+            yield* said("meera", named),
+            yield* said("ravi", named),
+          ],
+          [
+            "Nothing was saved: choose your company's country first, in Settings, Company details.",
+            "Nothing was saved: choose your company's country first, in Settings, Company details.",
+            "Nothing was saved: an owner needs to choose the company's country first.",
+          ],
+        );
+        assert.strictEqual(
+          yield* said("ravi", "No entry INV-9 in Work."),
+          "No entry INV-9 in Work.",
+        );
       }),
   );
 });

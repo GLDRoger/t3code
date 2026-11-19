@@ -13,6 +13,7 @@ import * as LeadProvision from "../lead/KinLeadProvision.ts";
 import { accessOf } from "../people/KinAccess.ts";
 import { KinIdentity, type PersonIdentity } from "./KinIdentity.ts";
 import { KinRecords } from "../work/KinRecords.ts";
+import { countryNeeded } from "../work/companyProfile.ts";
 import * as Money from "../work/ownerMoney.ts";
 import { theOwner } from "../work/ownerWork.ts";
 import { KinRefreshHub, KinRefreshObserver, type KinRevisions } from "./KinRefreshHub.ts";
@@ -39,9 +40,9 @@ const same = (a: KinRefreshes, b: KinRefreshes) =>
 
 /**
  * The revisions this viewer may see, by their kind at each change. Owner-level people read every
- * topic but the owner's own recommendations. A member reads the time zone, profiles and Needs attention, and their own lead list and
- * work lists, which move only when what those show them (or their kind) changed, so a change they
- * can't read never reaches them.
+ * topic but the owner's own recommendations. A member reads the time zone, profiles, Needs
+ * attention, their lead list and work lists (moved only when what those show them changed) and,
+ * while a new company waits on its country, the company topic, moved when it is chosen.
  */
 export const subscribeRefreshes = (
   people: ReadonlyArray<PersonIdentity>,
@@ -72,11 +73,14 @@ export const subscribeRefreshes = (
         Effect.map((shown) => JSON.stringify(shown)),
         Effect.orElseSucceed(() => null),
       );
+      const waiting = countryNeeded(input.orgId).pipe(Effect.orElseSucceed(() => false));
       // Counted per person for the run, so a reconnect with nothing moved reads the same numbers.
       const counter = (name: string) => `${input.orgId}:${person.personId}:${name}`;
       let heard: KinRevisions | undefined;
       let leads = 0;
       let lists = 0;
+      let company = 0;
+      let waited = false;
       return changes.pipe(
         Stream.mapEffect((now) =>
           Effect.gen(function* () {
@@ -96,6 +100,11 @@ export const subscribeRefreshes = (
             if (heard === undefined || heard.workLists !== now.workLists)
               // A refusal that stands is no change.
               lists = hub.counted(counter("workLists"), (yield* listsView) ?? "refused");
+            if (heard === undefined || heard.company !== now.company) {
+              const still = yield* waiting;
+              waited ||= still;
+              company = hub.counted(counter("company"), String(still));
+            }
             heard = now;
             // Everyone's profile is readable by the whole org. Pulse moves only say "read your
             // Needs attention again"; the read shows them only what they may see.
@@ -105,6 +114,8 @@ export const subscribeRefreshes = (
               leads,
               pulse: now.pulse,
               workLists: lists,
+              // Only a company that waited on its country: no other gains a byte.
+              ...(waited ? { company } : {}),
               boot: hub.boot,
               streams: KIN_STREAMS,
             } satisfies KinRefreshes;

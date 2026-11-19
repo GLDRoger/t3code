@@ -124,7 +124,10 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   by then, it goes with that answer and tells you in one line; say "undo it" to reverse. Something
   that would send, post or move money has no such default: it is raised once more the next working
   morning and then waits for you. Another agent won't ask you the same thing while it is open.
-  To change the answer before the day, tap another one.
+  To change the answer before the day, tap another one. You can also answer in words in the chat
+  it asked in: only that agent takes it from what you wrote, the card says so, and Undo beside it
+  opens the question again. It then waits for your answer with no default, and anything already
+  done from the first answer stands.
 - **It remembers.** Ask it to remember something and it keeps it. "Keep this between us" keeps it
   for the owner alone.
 - **It comes back later.** "Remind me Friday at 10" or "check on this in two hours" sets a reminder.
@@ -305,6 +308,10 @@ clients.
 
 Money shows what you're owed, what's overdue, who owes you, the next 30 days, cash in the bank and
 each month. **Needs attention** at the top lists overdue invoices and renewals coming up.
+
+A new company chooses its country first: the owner or a co-owner sets it in **Settings → Company
+details**, and its currency follows, with its financial year and tax name where Kin knows them.
+Until then Kin records no money, and agents say so.
 
 Most of the bookkeeping happens by telling an agent: "Acme paid ₹48,250 today", "we spent $120 on
 hosting", "the GST filing is due on the 20th". It records the entry and answers in a line.

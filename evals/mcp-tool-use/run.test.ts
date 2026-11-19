@@ -1228,6 +1228,20 @@ it.effect("fails preview calls with T3's errors when browser access is off or a 
     const status = yield* answer(unsupported, "preview_status");
     assert.isUndefined(status.is_error);
     assert.include(String(status.content), '"available":false');
+    // An `$error` mock fails the call with its value, as Kin's refusals reach the agent.
+    const refusing = browserCase(unsupported);
+    const mocks = { record_create: { $error: { _tag: "No" } } };
+    const kin = makeSample({ ...refusing, setup: { ...refusing.setup, mocks } }, base);
+    kin.tools.push({ name: "mcp__t3-code__record_create" });
+    assert.deepInclude(
+      yield* answerToolCall(kin, config, {
+        type: "tool_use",
+        id: "create",
+        name: "mcp__t3-code__record_create",
+        input: {},
+      }),
+      { is_error: true, content: '{"_tag":"No"}' },
+    );
     // A sequence mock answers each call with its next result, then repeats the last.
     const flow = makeSample(browserCase("br-flow-qa-missing-cli"), base);
     flow.tools.push({ name: "mcp__t3-code__preview_snapshot" });
@@ -1325,6 +1339,33 @@ it.effect("seeds T3's error for a prior background wait whose IDs match nothing"
     }
   }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
+
+it("passes a new company's refused invoice on what the reply tells the owner, not on its words", () => {
+  const testCase = NodeFS.readFileSync(new URL("./cases/kin.ndjson", import.meta.url), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => decodeDeviceCase(line))
+    .find((c) => c.id === "kin-lead-money-waits-for-country")!;
+  const refused = { step: 0, tool: "record_create", input: {}, failed: true };
+  const passes = (text: string) =>
+    gradeSample(testCase.expect, {
+      calls: [refused],
+      text,
+      finalText: text,
+      stopReason: "end_turn",
+    }).every((check) => check.pass);
+  for (const right of [
+    "No invoice was created. Choose your company's country in Settings, Company details.",
+    "I didn't assume INR. Choose the country in Settings, Company details.",
+  ])
+    assert.isTrue(passes(right), right);
+  for (const wrong of [
+    "The country is optional in Company details. I created Kestrel's invoice; look for it in Drafts.",
+    "Country noted in Company details. I logged Rs. 1,200 for Kestrel.",
+    "You don't need to pick a country in Company details. The invoice was recorded.",
+  ])
+    assert.isFalse(passes(wrong), wrong);
+});
 
 const secretCases = () =>
   NodeFS.readFileSync(new URL("./cases/secrets.ndjson", import.meta.url), "utf8")
