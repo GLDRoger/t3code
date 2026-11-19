@@ -242,8 +242,8 @@ package() {
   touch apps/server/dist/bin.mjs apps/server/dist/visual-lib/{echarts,mermaid,d3}.js
   cp "${repoRoot}"/branding/assets/apps/web/public/* "$client"
   cp "$FAVICON" "$client/favicon.ico"
-  printf '<title>%s</title><link rel="icon" href="/favicon.ico"><link rel="manifest" href="/manifest.webmanifest">' "$TITLE" >"$client/index.html"
-  printf '{ "name": "Kin", "short_name": "%s", "icons": [{ "src": "icon-192x192.png" }] }' "$SHORT_NAME" >"$client/manifest.webmanifest"
+  printf '<!doctype html><html><head><title>%s</title><link rel="icon" href="/favicon.ico"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="manifest" href="/manifest.webmanifest"></head></html>' "$TITLE" >"$client/index.html"
+  printf '{ "name": "Kin", "short_name": "%s", "icons": [{ "src": "/icon-192x192.png" }] }' "$SHORT_NAME" >"$client/manifest.webmanifest"
 }
 ${packaged}
 (main); echo "status $?"
