@@ -663,6 +663,10 @@
       "types": "./src/kin/kinAnswers.ts",
       "default": "./src/kin/kinAnswers.ts"
     },
+    "./kin/kinAskRecord": {
+      "types": "./src/kin/kinAskRecord.ts",
+      "default": "./src/kin/kinAskRecord.ts"
+    },
     "./kin/kinAttention": {
       "types": "./src/kin/kinAttention.ts",
       "default": "./src/kin/kinAttention.ts"
