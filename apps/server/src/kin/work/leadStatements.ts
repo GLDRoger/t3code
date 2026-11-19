@@ -355,7 +355,7 @@ const ownerSaid = Effect.fn("KinStatements.ownerSaid")(function* (lead: Lead, ev
       AND m.chat_id = json_extract(e.json, '$.chatId')
     WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId} AND e.wakeup_id = ${lead.wakeupId}
       AND e.event_id = ${eventId} AND e.tag = 'chat.message' AND m.author_kind = 'human'
-      AND m.author_person_id = a.owner_person_id`;
+      AND m.author_person_id = a.owner_person_id AND m.origin_json IS NULL`;
   return row !== undefined;
 });
 
@@ -374,7 +374,7 @@ const ownerWrote = Effect.fn("KinStatements.ownerWrote")(function* (
     JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = ${lead.agentId}
     WHERE m.org_id = ${lead.orgId} AND m.chat_id = ${chatId} AND m.kind = 'text'
       AND m.status <> 'deleted' AND m.author_kind = 'human'
-      AND m.author_person_id = a.owner_person_id
+      AND m.author_person_id = a.owner_person_id AND m.origin_json IS NULL
       AND m.seq >= COALESCE((SELECT MIN(f.seq) FROM kin_messages f,
           json_each(COALESCE(f.attachments_json, '[]')) one
         WHERE f.org_id = m.org_id AND f.chat_id = m.chat_id

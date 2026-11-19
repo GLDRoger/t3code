@@ -2179,6 +2179,7 @@ const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function* (
       AND m.chat_id = json_extract(e.json, '$.chatId')
     WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId}
       AND e.wakeup_id = ${lead.wakeupId} AND e.tag = 'chat.message' AND m.author_kind = 'human'
+      AND m.origin_json IS NULL
       AND m.author_person_id IN ${sql.in(owners.length === 0 ? [""] : owners)}
     LIMIT 1`;
   if (said.length > 0) return;

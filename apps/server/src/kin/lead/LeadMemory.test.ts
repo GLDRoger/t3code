@@ -827,6 +827,20 @@ it.live(
           yield* sql`SELECT item_id FROM kin_memory_labels WHERE org_id = ${orgId} AND held_at IS NOT NULL`,
           [{ item_id: "team-item" }],
         );
+        // A copy Kin passed on (`origin`), as a teammate's routed request is after they are made
+        // a co-owner, is no word of theirs here: it sets nothing up until they say it here.
+        const copied = (origin: string | null) =>
+          sql`UPDATE kin_messages SET origin_json = ${origin} WHERE org_id = ${orgId}
+            AND message_id = (SELECT json_extract(json, '$.messageId') FROM kin_events
+              WHERE org_id = ${orgId} AND event_id = 'fixture-event')`;
+        yield* copied(
+          JSON.stringify({ agentId: "chief", chatId: "first-chat", messageId: "first" }),
+        );
+        assert.include(
+          (yield* Effect.flip(service.schedule(scope, scheduleInput))).message,
+          "Only the owner's own message can set up a scheduled task",
+        );
+        yield* copied(null);
         const scheduled = yield* service.schedule(scope, scheduleInput);
         // kin_cancel removes a native schedule through the same owner-only gate.
         yield* service.cancel(scope, { itemId: scheduled.itemId, sourceEventId: "fixture-event" });

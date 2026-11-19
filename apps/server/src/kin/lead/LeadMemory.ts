@@ -336,15 +336,17 @@ export const authority = Layer.effect(
               return yield* new Writer.MemoryWriteRejected({ reason: "Unknown source person" });
             const [said] =
               event._tag === "chat.message"
-                ? yield* sql<{ body: string }>`SELECT body FROM kin_messages
+                ? yield* sql<{ body: string; copied: number }>`SELECT body,
+                      origin_json IS NOT NULL AS copied FROM kin_messages
                     WHERE org_id = ${orgId} AND chat_id = ${event.chatId}
                       AND message_id = ${event.messageId} AND status = 'posted'`
                 : [];
             sources.set(event.eventId, {
               ...(said === undefined ? {} : { text: said.body }),
               saidBy: person?.handle ?? (who._tag === "agent" ? who.agentId : "external"),
+              // A copy Kin passed on (`origin`) is their request, never the owner side's own word.
               trust: person
-                ? person.role === "owner" || person.level === 1
+                ? (person.role === "owner" || person.level === 1) && said?.copied !== 1
                   ? "owner"
                   : "member"
                 : who._tag === "agent"
@@ -529,7 +531,7 @@ const make = Effect.gen(function* () {
       FROM kin_events e
       JOIN kin_messages m ON m.org_id = e.org_id AND m.author_kind = 'human'
         AND m.message_id = json_extract(e.json, '$.messageId')
-        AND m.chat_id = json_extract(e.json, '$.chatId')
+        AND m.chat_id = json_extract(e.json, '$.chatId') AND m.origin_json IS NULL
       JOIN kin_people p ON p.org_id = m.org_id AND p.person_id = m.author_person_id
       JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
       WHERE e.org_id = ${ctx.orgId} AND e.agent_id = ${ctx.agentId}
@@ -553,7 +555,7 @@ const make = Effect.gen(function* () {
       JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
       JOIN kin_messages m ON m.org_id = e.org_id AND m.author_kind = 'human'
         AND m.message_id = json_extract(e.json, '$.messageId')
-        AND m.chat_id = json_extract(e.json, '$.chatId')
+        AND m.chat_id = json_extract(e.json, '$.chatId') AND m.origin_json IS NULL
         AND (m.author_person_id = a.owner_person_id
           OR ${sql.literal(ownerLevelSql("m.org_id", "m.author_person_id"))})
       WHERE e.org_id = ${ctx.orgId} AND e.agent_id = ${ctx.agentId}

@@ -240,6 +240,62 @@ export class KinEventQueue extends Context.Service<
 const FIRST_RETRY_MS = 15_000;
 const LATER_RETRY_MS = 60_000;
 
+/**
+ * Every passed route to this agent whose wake-up expired, for any reason, settles as stale, and
+ * the teammate is told once in the chat they asked it in. Claim and revoke both call it in their
+ * own transaction, and the notice id is the event's, so together they still tell once.
+ */
+export const tellStaleRoutes = Effect.fn("KinEventQueue.tellStaleRoutes")(function* (
+  deps: {
+    readonly repo: Option.Option<KinChatRepository["Service"]>;
+    readonly hub: Option.Option<KinChatHub["Service"]>;
+  },
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const told = yield* sql<{ eventId: string; messageId: string }>`UPDATE kin_handoffs
+    SET route_state = 'stale'
+    WHERE org_id = ${orgId} AND to_agent_id = ${agentId} AND route_state = 'passed'
+      AND EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = kin_handoffs.org_id
+        AND e.event_id = kin_handoffs.event_id AND e.state = 'expired')
+    RETURNING event_id AS "eventId", message_id AS "messageId"`;
+  if (Option.isNone(deps.repo)) return;
+  for (const row of told.toSorted((a, b) => (a.eventId < b.eventId ? -1 : 1))) {
+    const [where] = yield* sql<{ chatId: string; name: string | null }>`SELECT
+        m.chat_id AS "chatId", l.name FROM kin_messages m
+      LEFT JOIN kin_leads l ON l.org_id = m.org_id AND l.agent_id = ${agentId}
+      WHERE m.org_id = ${orgId} AND m.message_id = ${row.messageId}`;
+    if (where === undefined) continue;
+    const notice = yield* deps.repo.value
+      .insertMessage({
+        orgId,
+        chatId: KinChatId.make(where.chatId),
+        // Fixed words about their own request, said where they asked it.
+        audience: "chat",
+        messageId: KinMessageId.make(`kin-forward-stale:${row.eventId}`),
+        author: { _tag: "system" },
+        kind: "system",
+        body: `This wasn't passed on to ${where.name ?? "that agent"} after all.`,
+        intent: null,
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        clientMessageId: null,
+        createdAt: DateTime.formatIso(yield* DateTime.now),
+        editedAt: null,
+      })
+      .pipe(Effect.option);
+    if (Option.isSome(notice) && Option.isSome(deps.hub))
+      yield* sql.afterCommit(
+        deps.hub.value.publish({ type: "message.posted", orgId, message: notice.value }),
+      );
+  }
+});
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const repo = yield* Effect.serviceOption(KinChatRepository);
@@ -487,46 +543,9 @@ const make = Effect.gen(function* () {
         yield* sql`UPDATE kin_events SET state = 'expired'
           WHERE org_id = ${orgId} AND event_id = ${row.eventId} AND state = 'queued'`;
     }
-    const told = yield* sql<{ eventId: string; messageId: string }>`UPDATE kin_handoffs
-      SET route_state = 'stale'
-      WHERE org_id = ${orgId} AND to_agent_id = ${agentId} AND route_state = 'passed'
-        AND EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = kin_handoffs.org_id
-          AND e.event_id = kin_handoffs.event_id AND e.state = 'expired')
-      RETURNING event_id AS "eventId", message_id AS "messageId"`;
-    if (Option.isNone(repo)) return;
-    for (const row of told.toSorted((a, b) => (a.eventId < b.eventId ? -1 : 1))) {
-      const [where] = yield* sql<{ chatId: string; name: string | null }>`SELECT
-          m.chat_id AS "chatId", l.name FROM kin_messages m
-        LEFT JOIN kin_leads l ON l.org_id = m.org_id AND l.agent_id = ${agentId}
-        WHERE m.org_id = ${orgId} AND m.message_id = ${row.messageId}`;
-      if (where === undefined) continue;
-      const notice = yield* repo.value
-        .insertMessage({
-          orgId,
-          chatId: KinChatId.make(where.chatId),
-          // Fixed words about their own request, said where they asked it.
-          audience: "chat",
-          messageId: KinMessageId.make(`kin-forward-stale:${row.eventId}`),
-          author: { _tag: "system" },
-          kind: "system",
-          body: `This wasn't passed on to ${where.name ?? "that agent"} after all.`,
-          intent: null,
-          mentions: [],
-          replyTo: null,
-          widgetId: null,
-          floorRunId: null,
-          status: "posted",
-          sentBy: null,
-          clientMessageId: null,
-          createdAt: DateTime.formatIso(yield* DateTime.now),
-          editedAt: null,
-        })
-        .pipe(Effect.option);
-      if (Option.isSome(notice) && Option.isSome(hub))
-        yield* sql.afterCommit(
-          hub.value.publish({ type: "message.posted", orgId, message: notice.value }),
-        );
-    }
+    yield* tellStaleRoutes({ repo, hub }, orgId, agentId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
   });
 
   const claim = Effect.fn("KinEventQueue.claim")(

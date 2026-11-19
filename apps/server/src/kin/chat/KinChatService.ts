@@ -792,6 +792,8 @@ const make = Effect.gen(function* () {
       readonly forChat?: boolean;
       readonly relay?: KinMessageRelay | undefined;
       readonly passedOn?: KinMessageOrigin | undefined;
+      /** False for a tap whose fixed action the server ran: it answers nothing else here. */
+      readonly replies?: false;
     },
   ) {
     // A reply the caller names must be one it may read; a hidden one reads as missing.
@@ -856,7 +858,7 @@ const make = Effect.gen(function* () {
         });
       }
     }
-    if (identity._tag === "person" && message.origin === undefined) {
+    if (identity._tag === "person" && message.origin === undefined && input.replies !== false) {
       // Their words answer an agent's question asked in text here before them.
       yield* answerByReply({
         orgId: identity.orgId,
@@ -1103,6 +1105,7 @@ const make = Effect.gen(function* () {
       replyTo: widget.messageId,
       widgetId: widget.widgetId,
       clientId: { kind: "act", id: request.clientActionId },
+      ...(runs ? { replies: false as const } : {}),
     });
     if (sealed !== undefined && choice !== null)
       yield* CardPlans.markRan({

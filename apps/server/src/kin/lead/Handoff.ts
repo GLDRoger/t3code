@@ -427,23 +427,63 @@ const make = Effect.gen(function* () {
         message: `${reached.length > 1 ? "Several agents answer to that" : `No agent ${ask.personName} may message answers to that`}. ${reachable.length === 0 ? `${ask.personName} may message no other agent.` : `The ones they may: ${reachable.map((entry) => entry.name).join(", ")}.`} ${NOTHING}`,
       });
     const { messageId } = ask.message;
-    /** Where this message already went: there again is what came of it, elsewhere refused. */
+    const now = yield* Clock.currentTimeMillis;
+    const alreadyAsked = {
+      passed: false as const,
+      note: `The owner has already been asked about an earlier request of ${ask.personName}'s for that agent, so nothing more was sent. Tell ${ask.personName} so, and promise nothing more.`,
+    };
+    /**
+     * Where this message already went: there again is what came of it as it stands now, from
+     * the card it was asked on or waited on, elsewhere refused.
+     */
     const recorded = Effect.fnUntraced(function* () {
-      const [record] = yield* sql<{ toAgentId: KinAgentId; state: string | null }>`SELECT
-          to_agent_id AS "toAgentId", route_state AS state
+      const [record] = yield* sql<{
+        toAgentId: KinAgentId;
+        state: string | null;
+        widgetId: KinWidgetId | null;
+      }>`SELECT to_agent_id AS "toAgentId", route_state AS state, route_widget_id AS "widgetId"
         FROM kin_handoffs WHERE org_id = ${ctx.orgId} AND message_id = ${messageId}
         ORDER BY message_id`;
       if (record === undefined) return undefined;
       if (record.toAgentId !== dest.agentId)
         return yield* refuse("This was already passed on, and a request goes to one agent only.");
-      if (record.state === "pending") return waitsOnOwner(ask.personName);
-      return record.state === "passed"
-        ? { to: dest.name, passed: true as const }
+      if (record.state === "passed") return { to: dest.name, passed: true as const };
+      const [card] =
+        record.widgetId === null || (record.state !== "pending" && record.state !== "waited")
+          ? []
+          : yield* sql<{ state: string }>`SELECT route_state AS state FROM kin_handoffs
+              WHERE org_id = ${ctx.orgId} AND route_widget_id = ${record.widgetId}
+                AND route_state <> 'waited'
+              ORDER BY message_id LIMIT 1`;
+      const state = card?.state ?? record.state;
+      if (state === "pending" && record.widgetId !== null) {
+        const widget = yield* repo.getWidget({ orgId: ctx.orgId, widgetId: record.widgetId });
+        if (
+          Option.isSome(widget) &&
+          widget.value.closedAt === null &&
+          !choiceExpired(widget.value, now)
+        )
+          return record.state === "pending" ? waitsOnOwner(ask.personName) : alreadyAsked;
+        return { passed: false as const, note: NOTHING };
+      }
+      return state === "declined"
+        ? { passed: false as const, note: NOTHING }
         : { passed: false as const, note: NOTHING };
     });
     const before = yield* recorded();
     if (before !== undefined) return before;
-    const now = yield* Clock.currentTimeMillis;
+    const waitedOn =
+      target === undefined ? yield* askPending(ctx, ask.personId, dest.agentId, now) : undefined;
+    if (waitedOn !== undefined) {
+      // Kept, so a retry of this message answers from that card and never asks again.
+      const kept = yield* sql`INSERT INTO kin_handoffs
+          (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at, route_state,
+            route_widget_id)
+        VALUES (${ctx.orgId}, ${messageId}, ${ctx.agentId}, ${dest.agentId},
+          ${forwardEventId(messageId)}, ${now}, 'waited', ${waitedOn})
+        ON CONFLICT (org_id, message_id) DO NOTHING RETURNING message_id`;
+      return kept.length === 0 ? ((yield* recorded()) ?? (yield* unavailable())) : alreadyAsked;
+    }
     if (target !== undefined) {
       // Their turns count as ChatWake counts them: one past today's would not be admitted.
       const used = yield* LeadAccess.recentTurns({
@@ -456,11 +496,7 @@ const make = Effect.gen(function* () {
           passed: false as const,
           note: `${ask.personName} has reached today's limit, so nothing was passed on. Tell them they can ask again later.`,
         };
-    } else if (yield* askPending(ctx, ask.personId, dest.agentId, now))
-      return {
-        passed: false as const,
-        note: `The owner has already been asked about an earlier request of ${ask.personName}'s for that agent, so nothing more was sent. Tell ${ask.personName} so, and promise nothing more.`,
-      };
+    }
     const claimed = yield* sql`INSERT INTO kin_handoffs
         (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at, route_state)
       VALUES (${ctx.orgId}, ${messageId}, ${ctx.agentId}, ${dest.agentId},
@@ -547,7 +583,7 @@ const make = Effect.gen(function* () {
     return waitsOnOwner(ask.personName);
   });
 
-  /** Whether the owner's card on this teammate and agent still waits for a tap. */
+  /** The owner's card on this teammate and agent that still waits for a tap, if there is one. */
   const askPending = Effect.fn("KinHandoff.askPending")(function* (
     ctx: Lead,
     personId: KinPersonId,
@@ -563,30 +599,44 @@ const make = Effect.gen(function* () {
     for (const row of rows) {
       const card = yield* repo.getWidget({ orgId: ctx.orgId, widgetId: row.widgetId });
       if (Option.isSome(card) && card.value.closedAt === null && !choiceExpired(card.value, now))
-        return true;
+        return row.widgetId;
     }
-    return false;
+    return undefined;
   });
 
   /**
    * The teammate's message a routed request started from, when this event is that message or
    * its passed-on copy: the owner side is asked about it once, by whichever agent asks first.
+   * A copy (`origin`) whose original or hand-off is gone is "cleared": nothing is left to quote.
    */
   const routedFrom = Effect.fn("KinHandoff.routedFrom")(function* (
     ctx: Lead,
     sourceEventId: string,
   ) {
-    const [row] = yield* sql<{ messageId: string; body: string | null }>`SELECT
-        h.message_id AS "messageId", o.body
-      FROM kin_events e JOIN kin_handoffs h ON h.org_id = e.org_id AND h.route_state = 'passed'
-        AND (h.event_id = e.event_id OR h.message_id = json_extract(e.json, '$.messageId'))
-      LEFT JOIN kin_messages o ON o.org_id = h.org_id AND o.message_id = h.message_id
-        AND o.status = 'posted'
+    const [source] = yield* sql<{ asked: string | null; copied: number }>`SELECT
+        COALESCE(json_extract(c.origin_json, '$.messageId'), json_extract(e.json, '$.messageId'))
+          AS asked,
+        (c.origin_json IS NOT NULL OR json_extract(e.json, '$.origin.personId') IS NOT NULL)
+          AS copied
+      FROM kin_events e LEFT JOIN kin_messages c ON c.org_id = e.org_id
+        AND c.message_id = json_extract(e.json, '$.messageId')
       WHERE e.org_id = ${ctx.orgId} AND e.agent_id = ${ctx.agentId}
         AND e.wakeup_id = ${ctx.wakeupId} AND e.event_id = ${sourceEventId}
         AND e.tag = 'chat.message'
-      ORDER BY h.message_id LIMIT 1`;
-    return row;
+      ORDER BY e.event_id LIMIT 1`;
+    if (source === undefined) return undefined;
+    const [row] =
+      source.asked === null
+        ? []
+        : yield* sql<{ messageId: string; body: string | null }>`SELECT
+              h.message_id AS "messageId", o.body
+            FROM kin_handoffs h LEFT JOIN kin_messages o ON o.org_id = h.org_id
+              AND o.message_id = h.message_id AND o.status = 'posted'
+            WHERE h.org_id = ${ctx.orgId} AND h.message_id = ${source.asked}
+              AND h.route_state = 'passed'
+            ORDER BY h.message_id`;
+    if (row?.body != null) return { messageId: row.messageId, body: row.body };
+    return source.copied === 1 ? ("cleared" as const) : undefined;
   });
 
   /** The live leads in a chat now, who joined first first. */
@@ -853,13 +903,17 @@ const make = Effect.gen(function* () {
       return yield* refuse(
         `${to.name} doesn't decide for others. Pass it to the owner, a co-owner or the project's lead.`,
       );
-    if (!toOwnerSide) {
-      const why = yield* unreadableBy(ctx.orgId, to.personId, input.text, asker).pipe(access);
-      if (why !== undefined)
-        return yield* refuse(
-          `Not for ${to.name}: ${why}. Send it without that, or ask the owner to share it with ${to.name}.`,
-        );
-    }
+    const original = yield* routedFrom(ctx, input.sourceEventId);
+    if (original === "cleared") return yield* missing();
+    // A routed relay quotes her stored words too, so they are held to the same reader.
+    if (!toOwnerSide)
+      for (const text of original === undefined ? [input.text] : [input.text, original.body]) {
+        const why = yield* unreadableBy(ctx.orgId, to.personId, text, asker).pipe(access);
+        if (why !== undefined)
+          return yield* refuse(
+            `Not for ${to.name}: ${why}. Send it without that, or ask the owner to share it with ${to.name}.`,
+          );
+      }
     const [who] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
       WHERE org_id = ${ctx.orgId} AND person_id = ${asker} ORDER BY person_id`;
     const chatId =
@@ -869,12 +923,11 @@ const make = Effect.gen(function* () {
             { _tag: "person", orgId: ctx.orgId, personId: to.personId },
             { orgId: ctx.orgId, agentId: ctx.agentId },
           )).chatId;
-    const original = yield* routedFrom(ctx, input.sourceEventId);
     const quoted = (text: string) => `"${text.replace(/\s+/g, " ").replace(/"/g, "'")}"`;
     // Their words, quoted and named as theirs: a request to decide, never the owner's instruction.
     // A routed request quotes what they stored, and the agent's own words are named as its.
     const body =
-      original?.body == null
+      original === undefined
         ? `${who?.name ?? "A teammate"} asked ${self.name}:\n${quoted(input.text)}`
         : `${who?.name ?? "A teammate"} asked:\n${quoted(original.body)}\n${self.name} suggests: ${input.text.replace(/\s+/g, " ")}`;
     const where = { orgId: ctx.orgId, personId: to.personId, chatId };
