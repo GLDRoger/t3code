@@ -355,10 +355,10 @@ const undone = (why: string): KinChoiceOutcome => ({
   title: "Nothing was undone",
   text: `${why}, so nothing was undone.`,
 });
-const undoneOutcome = (plan: TakenPlan): KinChoiceOutcome => ({
-  title: "Undone",
-  text: `${undoLine(plan)}.`,
-});
+const undoneOutcome = (
+  plan: TakenPlan,
+  undone: NonNullable<KinChoiceOutcome["undone"]>,
+): KinChoiceOutcome => ({ title: "Undone", text: `${undoLine(plan)}.`, undone });
 
 /**
  * Puts back what a default Kin took wrote, the one way its note and the agent's page both do: a
@@ -405,6 +405,13 @@ export const undoTaken = Effect.fn("KinDefaultTaken.undo")(function* (
         by: input.by,
         row,
       });
+      const [person] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+        WHERE org_id = ${orgId} AND person_id = ${input.by}`;
+      const undid = {
+        personId: input.by,
+        name: person?.name ?? "Someone",
+        at: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+      };
       const notes = yield* sql<{ widgetId: string }>`SELECT DISTINCT widget_id AS "widgetId"
         FROM kin_card_plans WHERE org_id = ${orgId}
           AND json_extract(plan_json, '$.kind') = 'undo_default'
@@ -417,9 +424,10 @@ export const undoTaken = Effect.fn("KinDefaultTaken.undo")(function* (
           yield* deps.chat.closeReplaced({
             orgId,
             widgetId: KinWidgetId.make(widgetId),
-            outcome: undoneOutcome(plan),
+            outcome: undoneOutcome(plan, undid),
           });
       }
+      return undid;
     }),
   );
 });
@@ -534,7 +542,7 @@ export const runTaken = Effect.fn("KinDefaultTaken.run")(function* (
         askedBy: personId,
         chatId: tap.chatId,
       };
-  yield* undoTaken(
+  const undid = yield* undoTaken(
     {
       orgId,
       questionId: plan.questionId,
@@ -549,5 +557,5 @@ export const runTaken = Effect.fn("KinDefaultTaken.run")(function* (
     },
     { records },
   );
-  return undoneOutcome(plan);
+  return undoneOutcome(plan, undid);
 });

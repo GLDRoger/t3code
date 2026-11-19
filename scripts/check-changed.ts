@@ -522,13 +522,17 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const command = (name: string, args: ReadonlyArray<string>) => ({ name, run: vp(args) });
   const compilerFiles = compilerApps.reduce((count, app) => count + app.names.length, 0);
 
-  // Kin's merge-survival, migration-number, instructions-version, shared-copy and branding checks.
+  // Kin's merge-survival, migration-number, instructions-version, shared-copy, branding and
+  // People-change checks.
   const kinBranch = (yield* fs.exists(inRoot(MIGRATIONS)))
     ? [
         {
           name: "kin branch",
           run: kinBranchChecks(root, ref, 14).pipe(
-            Effect.map((problems) => ({ ok: problems.length === 0, output: problems.join("\n") })),
+            Effect.map(({ problems, notes }) => ({
+              ok: problems.length === 0,
+              output: [...notes, ...problems].join("\n"),
+            })),
             Effect.provideService(FileSystem.FileSystem, fs),
             Effect.provideService(Path.Path, path),
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),

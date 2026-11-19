@@ -70,6 +70,9 @@ import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { slug } from "../work/docBody.ts";
 import { turnSensitive } from "../work/sensitiveReads.ts";
 import { TurnEvent } from "./eventIds.ts";
+import { validZone } from "../triggers/quietHold.ts";
+import { stillAway } from "../triggers/quietHours.ts";
+import { ownerZone } from "../work/recordRows.ts";
 
 const text = Schema.String.check(Schema.isMaxLength(100_000));
 const date = Schema.String.check(
@@ -165,6 +168,32 @@ export const JournalInput = Schema.Struct({
   skipped: Schema.optional(Schema.Array(text).check(Schema.isMaxLength(100))),
 });
 export const ItemResult = Schema.Struct({ itemId: KinMemoryItemId });
+/**
+ * A follow-up posts nothing now. `scheduled` is what its due run does (`deferralFlow`): a reminder;
+ * a start or an ask of someone else handed to a lead; a card asking whoever set it; a chase's
+ * ping. `asks` is who an ask or chase is for, with their stored return date when away then.
+ */
+export const DeferResult = Schema.Struct({
+  itemId: KinMemoryItemId,
+  scheduled: Schema.Literals(["reminder", "start", "ask_follow_up", "due_card", "chase_ping"]),
+  note: Schema.optional(Schema.String),
+  asks: Schema.optional(
+    Schema.Struct({ name: Schema.String, back: Schema.optional(Schema.String) }),
+  ),
+});
+/**
+ * What a cancel did, by the item's own title and due time. `stopped`: it can't run, now or before
+ * this call; `not_armed`: nothing was armed to stop; `handed_off`: its due run already handed on
+ * what `handedOff` names, which this did not stop.
+ */
+export const CancelResult = Schema.Struct({
+  itemId: KinMemoryItemId,
+  outcome: Schema.Literals(["stopped", "not_armed", "handed_off"]),
+  handedOff: Schema.optional(Schema.Literals(["start", "ask", "ping", "reminder"])),
+  title: Schema.optional(Schema.String),
+  due: Schema.optional(Schema.String),
+  note: Schema.optional(Schema.String),
+});
 export const LabelResult = Schema.Struct({
   itemIds: Schema.Array(KinMemoryItemId),
   note: Schema.optional(Schema.String),
@@ -207,6 +236,9 @@ const TEAM_FILTERS = "From a chat other people read, search memory only by kind 
 /** What `memory_label` with sensitive false returns, for the lead to pass on as it is. */
 export const AWAITING_OWNER =
   "Not shared yet: these wait for your yes in Memory, then the team can know them.";
+const STOPPED = "Stopped: it doesn't run.";
+// A repeating one has no single run to stop: one already started is not recalled.
+const REPEAT_STOPPED = "Stopped: no further runs. A run already started isn't recalled.";
 const SHARE_NEEDS_OWNER =
   "Only the owner's own message, in a chat only they read, lets the team know something. Ask the owner first.";
 // What a teammate's messages can cause shared turns to save, per person per day.
@@ -274,7 +306,7 @@ export class LeadMemory extends Context.Service<
     readonly defer: (
       scope: McpInvocationScope,
       input: typeof DeferInput.Type,
-    ) => Effect.Effect<typeof ItemResult.Type, KinChatError>;
+    ) => Effect.Effect<typeof DeferResult.Type, KinChatError>;
     /** A recurring task, only from an owner's message in this batch; the server keeps their words. */
     readonly schedule: (
       scope: McpInvocationScope,
@@ -284,7 +316,7 @@ export class LeadMemory extends Context.Service<
     readonly cancel: (
       scope: McpInvocationScope,
       input: typeof CancelInput.Type,
-    ) => Effect.Effect<typeof ItemResult.Type, KinChatError>;
+    ) => Effect.Effect<typeof CancelResult.Type, KinChatError>;
     /**
      * Marks an item as for the owner alone, or lets the team know it. The second is the owner's
      * decision: only their own stored message, in a turn only they read, allows it.
@@ -610,6 +642,30 @@ const make = Effect.gen(function* () {
     }>`SELECT request_hash FROM kin_lead_tool_calls WHERE org_id = ${ctx.orgId} AND wakeup_id = ${ctx.wakeupId} AND call_key = ${key}`;
     return prior?.request_hash === digest;
   });
+  /** What a due run that can no longer be stopped handed on, by its state (`deferralFlow`). */
+  const handedOffBy = (run: { readonly state: string; readonly onDue: string }) =>
+    run.state === "chased"
+      ? ("ping" as const)
+      : run.state === "started"
+        ? run.onDue === "ask"
+          ? ("ask" as const)
+          : ("start" as const)
+        : ("reminder" as const);
+  const HANDED_OFF = {
+    start: "the work to an agent",
+    ask: "the ask to an agent",
+    ping: "its ping",
+    reminder: "its reminder",
+  } as const;
+  const cancelNote = (done: {
+    readonly outcome: "stopped" | "not_armed" | "handed_off";
+    readonly handedOff?: keyof typeof HANDED_OFF;
+  }) =>
+    done.outcome === "stopped"
+      ? STOPPED
+      : done.outcome === "not_armed"
+        ? "Cancelled: nothing had been armed yet."
+        : `Not stopped: its due run already handed off ${HANDED_OFF[done.handedOff ?? "start"]}.`;
   /**
    * Only the lead that set an item up cancels it, asked from the chat it was set up in or that
    * lead's owner chat. The run stops in the same transaction as the checks; memory follows at commit.
@@ -618,6 +674,8 @@ const make = Effect.gen(function* () {
     ctx: Effect.Success<ReturnType<typeof resolve>>,
     itemId: KinMemoryItemId,
     sourceEventId: string,
+    /** `replaces` takes only an open item: one already cancelled is refused, as before. */
+    replacing = false,
   ) {
     yield* checkSource(ctx, sourceEventId);
     // A turn someone else reads learns nothing of an item that isn't its asker's own reminder.
@@ -631,7 +689,13 @@ const make = Effect.gen(function* () {
     if (sharedTurn && !askers) return yield* invalid(SHARED_REFUSAL);
     if (head.kind !== "deferral")
       return yield* invalid(`${itemId} is not a deferral or scheduled task.`);
-    if (head.status !== "open" || head.invalid_at !== null || head.superseded_by !== null)
+    // Cancelled already, by this lead or the owner's card: a repeat cancel changes nothing.
+    const already = head.status === "cancelled" && !replacing;
+    if (
+      (head.status !== "open" && !already) ||
+      head.invalid_at !== null ||
+      head.superseded_by !== null
+    )
       return yield* invalid(
         `${itemId} is already ${head.status === "open" ? "closed" : head.status}.`,
       );
@@ -660,15 +724,23 @@ const make = Effect.gen(function* () {
         );
         if (asked !== undefined && asked.chatId !== head.chat) return false;
         const now = yield* Clock.currentTimeMillis;
-        if (head.every === undefined)
-          yield* cancelDeferralRun({ orgId: ctx.orgId, itemId, now }).pipe(
-            Effect.provideService(SqlClient.SqlClient, sql),
-          );
-        else
+        if (head.every !== undefined) {
           yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
             updated_at = max(updated_at, ${now})
             WHERE org_id = ${ctx.orgId} AND trigger_id = ${scheduledTaskTriggerId(itemId)}`;
-        return true;
+          return { outcome: "stopped" as const };
+        }
+        const stopped = yield* cancelDeferralRun({ orgId: ctx.orgId, itemId, now }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        if (stopped) return { outcome: "stopped" as const };
+        const [run] = yield* sql<{ state: string; onDue: string }>`SELECT state, on_due AS "onDue"
+          FROM kin_deferral_runs WHERE org_id = ${ctx.orgId} AND item_id = ${itemId}`;
+        if (run === undefined || run.state === "disarmed")
+          return { outcome: already ? ("stopped" as const) : ("not_armed" as const) };
+        return run.state === "undone"
+          ? { outcome: "stopped" as const }
+          : { outcome: "handed_off" as const, handedOff: handedOffBy(run) };
       }),
     );
     if (allowed === "shared") return yield* invalid(SHARED_REFUSAL);
@@ -676,6 +748,14 @@ const make = Effect.gen(function* () {
       return yield* invalid(
         "Only the agent that set it up can cancel or replace it, from the chat it was set up in or the owner's direct chat.",
       );
+    const cancelled = {
+      ...allowed,
+      title: head.title,
+      ...(head.due === null ? {} : { due: head.due }),
+      note: cancelNote(allowed),
+    };
+    // Already cancelled, or past stopping: a cancel that stopped nothing changes nothing.
+    if (already || allowed.outcome === "handed_off") return cancelled;
     const { orgId: _org, path, ...frontMatter } = head;
     yield* receipt(
       ctx,
@@ -687,15 +767,18 @@ const make = Effect.gen(function* () {
         sourceEventId,
       }),
     );
+    return cancelled;
   });
   /** cancelOwn's rule for a native schedule: its own lead, asked from its chat or the owner chat. */
   const ownSchedule = Effect.fn("LeadMemory.ownSchedule")(function* (
     ctx: Effect.Success<ReturnType<typeof resolve>>,
     schedule: KinSchedules.KinSchedule,
     sourceEventId: string,
+    /** A cancel of one already cancelled changes nothing, so it isn't refused. */
+    cancelling = false,
   ) {
     yield* checkSource(ctx, sourceEventId);
-    if (schedule.deletedAt !== null)
+    if (schedule.deletedAt !== null && !cancelling)
       return yield* invalid(`${schedule.scheduleId} is already cancelled.`);
     // Checked again here: a join may have aborted the turn since `notes`.
     if ((yield* effectiveAudience(ctx).pipe(provideSql)) !== "owner_only")
@@ -1157,7 +1240,7 @@ const make = Effect.gen(function* () {
           // A native schedule is cancelled only once its replacement is staged.
           if (replaced === undefined) {
             if (input.replaces !== undefined && !retried)
-              yield* cancelOwn(ctx, input.replaces, input.sourceEventId);
+              yield* cancelOwn(ctx, input.replaces, input.sourceEventId, true);
           } else if (replaced.deletedAt === null)
             yield* ownSchedule(ctx, replaced, input.sourceEventId);
           const recorded = DateTime.formatIso(DateTime.makeUnsafe(ctx.startedAt));
@@ -1195,7 +1278,56 @@ const make = Effect.gen(function* () {
           );
           if (replaced !== undefined && replaced.deletedAt === null)
             yield* schedules.cancel(ctx.orgId, replaced.scheduleId);
-          return { itemId: id };
+          const other = asked !== undefined && asked !== source.saidBy;
+          const scheduled =
+            input.onDue === "remind"
+              ? ("reminder" as const)
+              : input.onDue === "start"
+                ? ("start" as const)
+                : input.onDue === "chase"
+                  ? ("chase_ping" as const)
+                  : other
+                    ? ("ask_follow_up" as const)
+                    : ("due_card" as const);
+          // Who the due run asks or pings: a chase with no one named pings whoever set it.
+          const target =
+            scheduled === "chase_ping" ? (asked ?? source.saidBy) : other ? asked : undefined;
+          const [person] =
+            target === undefined
+              ? []
+              : yield* sql<{ name: string; zone: string | null; back: string | null }>`
+                  SELECT display_name AS name, time_zone AS zone, away_until AS back FROM kin_people
+                  WHERE org_id = ${ctx.orgId} AND handle = ${target} AND removed_at IS NULL
+                  ORDER BY person_id LIMIT 1`;
+          const zone =
+            person === undefined
+              ? undefined
+              : (validZone(person.zone) ?? (yield* ownerZone(ctx.orgId).pipe(provideSql)));
+          const back =
+            person !== undefined &&
+            zone !== undefined &&
+            person.back !== null &&
+            stillAway(person.back, zone, Date.parse(input.due))
+              ? person.back
+              : undefined;
+          const to = person === undefined ? "" : ` ${person.name}`;
+          const set = {
+            reminder: "a reminder",
+            start: "a start",
+            ask_follow_up: `a follow-up to ask${to}`,
+            due_card: "a card asking to start, move or cancel it",
+            chase_ping: `a ping${to === "" ? "" : ` to${to}`}`,
+          }[scheduled];
+          return {
+            itemId: id,
+            scheduled,
+            note: `No question was posted. Planned for its due time: ${set}; Kin checks then who and what still stand.${
+              back === undefined ? "" : ` Recorded return date: ${back}.`
+            }`,
+            ...(person === undefined
+              ? {}
+              : { asks: { name: person.name, ...(back === undefined ? {} : { back }) } }),
+          };
         }),
       );
     }, Effect.mapError(failure)),
@@ -1283,7 +1415,7 @@ const make = Effect.gen(function* () {
             return { itemId: replaced.scheduleId };
           }
           if (input.replaces !== undefined)
-            yield* cancelOwn(ctx, input.replaces, input.sourceEventId);
+            yield* cancelOwn(ctx, input.replaces, input.sourceEventId, true);
           yield* receipt(ctx, `schedule:${id}`, { ...input, itemId: id }, save(id, false));
           return { itemId: id };
         }),
@@ -1298,12 +1430,57 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const { ctx } = yield* turn(scope);
           const schedule = yield* KinSchedules.readSchedule(sql, ctx.orgId, input.itemId);
-          if (schedule === undefined) yield* cancelOwn(ctx, input.itemId, input.sourceEventId);
-          else {
-            yield* ownSchedule(ctx, schedule, input.sourceEventId);
-            yield* schedules.cancel(ctx.orgId, schedule.scheduleId);
+          if (schedule === undefined)
+            return {
+              itemId: input.itemId,
+              ...(yield* cancelOwn(ctx, input.itemId, input.sourceEventId)),
+            };
+          yield* ownSchedule(ctx, schedule, input.sourceEventId, true);
+          // Read first: the cancel deletes the native task, and Kin's tick then its row.
+          const task = yield* KinSchedules.readNativeTask(sql, schedule.taskId);
+          if (schedule.deletedAt === null) yield* schedules.cancel(ctx.orgId, schedule.scheduleId);
+          const source = (yield* writerAuthority.resolve(ctx.orgId, ctx.wakeupId)).sources.get(
+            input.sourceEventId,
+          );
+          // Its receipt: a cancelled item this lead set, in its chat, so a cancel after the row is
+          // gone is still `cancelOwn`'s idempotent success, and only for this lead.
+          if (task !== undefined && source !== undefined) {
+            const recorded = DateTime.formatIso(DateTime.makeUnsafe(ctx.startedAt));
+            const fields = {
+              id: schedule.scheduleId,
+              kind: "deferral" as const,
+              title: task.title,
+              status: "cancelled" as const,
+              due: null,
+              recorded_at: recorded,
+              valid_from: recorded,
+              invalid_at: null,
+              superseded_by: null,
+              source: source.source,
+              said_by: source.saidBy,
+              trust: source.trust,
+              links: [],
+              chat: schedule.chatId,
+              source_event: input.sourceEventId,
+              sensitive: true,
+            };
+            yield* receipt(
+              ctx,
+              `item:${schedule.scheduleId}`,
+              { cancel: schedule.scheduleId, sourceEventId: input.sourceEventId },
+              writer.stage(ctx.orgId, ctx.wakeupId, {
+                path: `deferrals/${schedule.scheduleId}.md`,
+                content: `---\n${stringify(fields)}---\n${task.title}\n`,
+                sourceEventId: input.sourceEventId,
+              }),
+            );
           }
-          return { itemId: input.itemId };
+          return {
+            itemId: input.itemId,
+            outcome: "stopped" as const,
+            ...(task === undefined ? {} : { title: task.title }),
+            note: REPEAT_STOPPED,
+          };
         }),
       );
     }, Effect.mapError(failure)),

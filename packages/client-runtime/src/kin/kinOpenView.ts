@@ -6,6 +6,7 @@ import type {
   KinWaitingItem,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import { Atom } from "effect/reactivity";
 
 import {
   kinAttention,
@@ -48,6 +49,23 @@ export function kinOpenShown(read: KinOpenRead, answered: ReadonlySet<string>): 
 /** What waits on the viewer in chats, oldest first, for Waiting on you (`selectKinInboxView`). */
 export const kinOpenWaiting = (read: KinOpenRead): ReadonlyArray<KinWaitingItem> =>
   read.rows.flatMap((row) => (row.item._tag === "waiting" ? [row.item.waiting] : []));
+
+const sameItems = (
+  a: ReadonlyArray<KinWaitingItem> | null,
+  b: ReadonlyArray<KinWaitingItem> | null,
+) =>
+  a === b ||
+  (a !== null && b !== null && a.length === b.length && a.every((item, i) => item === b[i]));
+
+/**
+ * `kinOpenWaiting` of `read`, null where it isn't read. Held rows keep their objects across a
+ * change, so a change elsewhere in the list leaves this value the same reference.
+ */
+export const kinOpenWaitingAtom = (read: Atom.Atom<KinOpenRead | null | undefined>) =>
+  Atom.make((get): ReadonlyArray<KinWaitingItem> | null => {
+    const open = get(read);
+    return open == null ? null : kinOpenWaiting(open);
+  }).pipe(Atom.withEquality(sameItems), Atom.withLabel("kin:open:waiting"));
 
 /**
  * Needs you's rows from the open list, in its order, shaped as `kinTasksBlock` takes them: facts

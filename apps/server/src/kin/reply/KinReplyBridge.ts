@@ -3,6 +3,7 @@ import {
   KIN_DOC_CARD,
   KIN_MESSAGE_BODY_MAX_LENGTH,
   KinChatId,
+  kinPageSections,
   kinPageShape,
   KIN_FIGURE_SCHEME,
   KinMessageId,
@@ -81,6 +82,8 @@ const STALL_MS = 120_000;
 const DRAFT_AFTER_MS = 1_000;
 const RESCUE_TIMEOUT_MS = 120_000;
 const OVERFLOW_SUFFIX = "\n\n…more in the agent's thread";
+// Room left for the heading and for entry keys Kin replaces with longer names when it stores.
+const MORNING_HEADROOM = 200;
 
 // Which wake-ups owe words: a message, card tap or reaction asked in its chat (`reply`); an entry
 // someone gave the lead and finished work wait on it too (`owedNotice`). Reminders, briefs and
@@ -490,6 +493,27 @@ const make = Effect.gen(function* () {
         AND agent_id = ${wake.agentId} AND chat_id = ${wake.lane.chatId} AND message_id IS NULL LIMIT 1`;
     return rows.length > 0;
   });
+  // The morning check-in reads as a page with sections however it was written: its reply gets a
+  // heading when it opens with none. Only the bridge's own reply; a tool post stays as written.
+  // The id is the seeded morning check-in's (`pulse/checkIn.ts`).
+  const underMorningHeading = Effect.fn("KinReplyBridge.underMorningHeading")(function* (
+    wake: Wake,
+    text: string,
+  ) {
+    if (
+      wake.posted > 0 ||
+      text.length > KIN_MESSAGE_BODY_MAX_LENGTH - MORNING_HEADROOM ||
+      kinPageSections(text).some(({ title }) => title !== null)
+    )
+      return text;
+    const morning = yield* sql`SELECT 1 FROM kin_events e WHERE e.org_id = ${wake.orgId}
+      AND e.wakeup_id = ${wake.wakeupId} AND e.tag = 'pulse'
+      AND json_extract(e.json, '$.checkIn.scheduleId') = 'checkin-morning'
+      AND NOT EXISTS (SELECT 1 FROM kin_events m WHERE m.org_id = e.org_id
+        AND m.wakeup_id = e.wakeup_id AND m.tag = 'chat.message')
+      LIMIT 1`;
+    return morning.length > 0 ? `## Today\n\n${text}` : text;
+  });
   const post = Effect.fn("KinReplyBridge.post")(function* (wake: Wake, segment: Segment) {
     const end = (messageId: KinMessageId | null) =>
       segment.drafting
@@ -557,19 +581,23 @@ const make = Effect.gen(function* () {
       lead === undefined
         ? null
         : yield* chat.replyCard(lead, wake.lane.chatId).pipe(Effect.orElseSucceed(() => null));
+    const opening =
+      slot === undefined
+        ? yield* underMorningHeading(wake, text).pipe(Effect.orElseSucceed(() => text))
+        : text;
     const result = yield* slot !== undefined
       ? extend(wake, slot, text, segment.ordinal)
       : cardId === null
-        ? deliver(wake, `reply:${segment.id}`, text, segment.ordinal)
+        ? deliver(wake, `reply:${segment.id}`, opening, segment.ordinal)
         : Effect.gen(function* () {
             const joined = yield* extend(
               wake,
               { messageId: cardId, body: "" },
-              text,
+              opening,
               segment.ordinal,
             );
             if (joined._tag === "withheld" && joined.reason === "not_found")
-              return yield* deliver(wake, `reply:${segment.id}`, text, segment.ordinal);
+              return yield* deliver(wake, `reply:${segment.id}`, opening, segment.ordinal);
             return joined;
           });
     switch (result._tag) {
@@ -851,9 +879,10 @@ const make = Effect.gen(function* () {
     }
   });
 
-  // Replies given another way. A lead's reaction (kin_react) counts only when everything the
-  // wake-up owed was the owner's text without a "?", and it reacted to one of those messages:
-  // "thanks, that's all" can take a 👍; a question, a card tap or a reaction still needs words.
+  // Replies given another way. A lead's reaction counts only when all the wake-up owed was the
+  // owner's text without a "?" and it reacted to one of those: a question or a tap needs words.
+  // Kin's line answers a teammate's request passed on when every message the wake-up held went;
+  // one cancelled since counts by Kin's line saying so, which a tap that sent nothing lacks.
   const answered = Effect.fn("KinReplyBridge.answered")(function* (wake: Wake) {
     if (wake.answered || !wake.lane.owed) return true;
     if (
@@ -895,6 +924,18 @@ const make = Effect.gen(function* () {
           AND NOT EXISTS (SELECT 1 FROM (${owed}) o
             WHERE o.tag != 'chat.message' OR o.priority != 'P0' OR o.body IS NULL
               OR instr(o.body, '?') > 0)
+      UNION ALL SELECT 1 FROM kin_events e
+        WHERE e.org_id = ${wake.orgId} AND e.wakeup_id = ${wake.wakeupId}
+          AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
+          AND NOT EXISTS (SELECT 1 FROM kin_events o
+            WHERE o.org_id = e.org_id AND o.wakeup_id = e.wakeup_id
+              AND o.tag IN ('chat.message', 'widget.action', 'chat.reaction')
+              AND NOT (o.tag = 'chat.message' AND EXISTS (SELECT 1 FROM kin_handoffs h
+                WHERE h.org_id = o.org_id AND h.message_id = json_extract(o.json, '$.messageId')
+                  AND h.from_agent_id = ${wake.agentId} AND (h.route_state = 'passed'
+                    OR (h.route_state = 'stale' AND EXISTS (SELECT 1 FROM kin_messages n
+                      WHERE n.org_id = h.org_id
+                        AND n.message_id = 'kin-forward-stale:' || h.event_id))))))
       ORDER BY 1 LIMIT 1`;
     return rows.length > 0;
   });

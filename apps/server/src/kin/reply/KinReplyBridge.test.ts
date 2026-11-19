@@ -391,6 +391,44 @@ it.effect("posts the lead run's plain text to the chat it answers, as one agent 
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect.each([
+  ["checkin-morning", "One client has gone quiet. A reminder is drafted.", true],
+  ["checkin-morning", "## Needs you\nOne card waits.", false],
+  ["checkin-afternoon", "One client has gone quiet. A reminder is drafted.", false],
+] as const)(
+  "the morning check-in's reply opens under a heading when written with none (%s, %s)",
+  ([scheduleId, written, headed]) =>
+    Effect.gen(function* () {
+      const { fake, runId, complete, sql, chatId } = yield* setup({
+        event: () =>
+          Effect.succeed((base) => ({
+            ...base,
+            _tag: "pulse",
+            provenance: { _tag: "system" },
+            factKeys: [],
+            checkIn: {
+              scheduleId: KinMemoryItemId.make(scheduleId),
+              title: "Check-in",
+              what: "Look.",
+              slot: "s",
+            },
+          })),
+      });
+      fake.items = [text("a", 1, written, runId), text("b", 2, "Nothing else today.", runId)];
+      yield* complete;
+      assert.deepStrictEqual(
+        yield* sql`SELECT body, form FROM kin_messages
+          WHERE chat_id = ${chatId} AND author_kind = 'agent' ORDER BY seq`,
+        [
+          {
+            body: `${headed ? "## Today\n\n" : ""}${written}\n\nNothing else today.`,
+            form: "brief",
+          },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect.each(["choice", "intervening item", "doc"] as const)(
   "joins its own last card only (%s)",
   (scenario) =>
@@ -1432,6 +1470,67 @@ it.effect.each([
       // NO_REPLY can't answer an owner's message.
       fake.items = [text("a", 1, "NO_REPLY", runId)];
       fake.rescueItems = rescue.map((body, n) => text(`r${n}`, 10 + n, body, rescueRunId));
+      yield* complete;
+      assert.strictEqual(fake.rescues, rescues);
+      assert.deepStrictEqual(
+        (yield* posted).map((row) => `${row.authorKind}:${row.body}`),
+        expected,
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+// Walk of 19 Nov: Kin's own "Passed on to Finance" line already answered the teammate.
+it.effect.each([
+  {
+    items: ["I'll pass this to Finance.", "kin_hand_off"],
+    rescues: 0,
+    expected: [],
+  },
+  { items: ["kin_hand_off", "NO_REPLY"], rescues: 0, expected: [] },
+  {
+    items: ["kin_hand_off", "Finance keeps the March figures."],
+    rescues: 0,
+    expected: ["agent:Finance keeps the March figures."],
+  },
+  // A second message in the same wake-up went nowhere: it is still owed words.
+  { items: ["kin_hand_off"], another: true, rescues: 1, expected: ["system:Ada didn't reply."] },
+  // Cancelled before the other agent started: Kin's two lines are the answer.
+  {
+    items: ["kin_hand_off", "NO_REPLY"],
+    route: "told",
+    rescues: 0,
+    expected: ["system:Cancelled."],
+  },
+  // A stale route Kin said nothing about answers nobody.
+  { items: ["kin_hand_off"], route: "stale", rescues: 1, expected: ["system:Ada didn't reply."] },
+])(
+  "a request passed on is answered by Kin's line, and only that request (%#)",
+  ({ items, another, route, rescues, expected }) =>
+    Effect.gen(function* () {
+      const { fake, runId, complete, posted, message, owner, wakeupId, sql, direct } = yield* setup(
+        {
+          ask: "What did we spend on travel in March?",
+        },
+      );
+      yield* sql`INSERT INTO kin_handoffs (org_id, message_id, from_agent_id, to_agent_id, event_id,
+          created_at, route_state)
+        VALUES (${owner.orgId}, ${message!.messageId}, ${agentId}, 'finance', 'forward-travel', 0,
+          ${route === undefined ? "passed" : "stale"})`;
+      if (route === "told")
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            author_role, kind, body, mentions_json, status, created_at)
+          VALUES ('kin-forward-stale:forward-travel', ${owner.orgId}, ${direct.chatId}, 1000,
+            'system', 'member', 'text', 'Cancelled.', '[]', 'posted', '1970-01-01T00:00:00.000Z')`;
+      if (another === true)
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+            received_at, queued_at, state, wakeup_id)
+          VALUES ('hotels', ${owner.orgId}, ${agentId}, 'chat.message', 'P1', '{}', 0, 0, 'claimed',
+            ${wakeupId})`;
+      fake.items = items.map((item, n) =>
+        item === "kin_hand_off"
+          ? tool(`t${n}`, n + 1, "mcp__kin__kin_hand_off", runId)
+          : text(`a${n}`, n + 1, item, runId),
+      );
       yield* complete;
       assert.strictEqual(fake.rescues, rescues);
       assert.deepStrictEqual(

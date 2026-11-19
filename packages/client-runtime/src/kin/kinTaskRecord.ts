@@ -12,6 +12,7 @@ import {
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
 
+import { kinAwayDay } from "./kinAway.ts";
 import { kinSafeWebUrl } from "./kinLinks.ts";
 import { formatKinTime, type KinAvatarView } from "./kinScreenState.ts";
 import {
@@ -24,6 +25,7 @@ import {
   type KinWorkItemView,
   type KinWorkNames,
 } from "./kinWork.ts";
+import { kinWorkStatusOffer } from "./kinWorkChanges.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -47,11 +49,12 @@ export const KIN_TASK_RECORD = {
   openQuestion: "Open the question",
   waitingSend: "A draft is waiting for your OK",
   waitingQuestion: "A question is waiting",
-  editAll: "Edit title and brief",
   briefMoved: "The brief now says:",
   removeDetail: "It stays in Activity as removed, without its words or files.",
   noteTooLong: (max: number) => `Keep a note under ${max.toLocaleString()} characters.`,
   fromProject: "From the project",
+  toldWhenBack: (name: string, day: string) =>
+    `${name} is away until ${day}, so they'll be told when they're back.`,
 } as const;
 
 /** A task's note box and its notes, on web and phone. */
@@ -302,6 +305,45 @@ export function kinNextStep(input: NextStepInput): KinNextStepView {
   };
 }
 
+/**
+ * Where a task page's own controls sit for this viewer: status on the page, the rest in the ••• /
+ * More menu; the Brief section carries the page's edit. Each is present only where the host takes
+ * that move from this viewer, and Done or Reopen only where the next-step card doesn't offer it.
+ */
+export function kinTaskControls(input: {
+  readonly view: Pick<
+    KinWorkItemView,
+    "state" | "closed" | "can" | "assignLabel" | "handBackTo" | "takeBack"
+  >;
+  /** This viewer may change the task, and give it to someone. */
+  readonly change: boolean;
+  readonly give: boolean;
+  /** What the next-step card offers (`kinNextStep(...).acts`). */
+  readonly step: ReadonlyArray<{ readonly id: KinNextStepAct }>;
+}) {
+  const { view, change, give } = input;
+  const onCard = (id: KinNextStepAct) => input.step.some((act) => act.id === id);
+  const offer = kinWorkStatusOffer(view);
+  const states =
+    change && !view.closed && offer.states.some((c) => view.can.states.includes(c.state));
+  const waiting = change && !view.closed && offer.waiting;
+  const done = change && offer.done && !onCard("done");
+  const reopen = change && offer.reopen && !onCard("reopen");
+  return {
+    page: {
+      status: done || reopen || states || waiting ? { done, reopen, states, waiting } : null,
+    },
+    menu: {
+      give: give && view.assignLabel !== null,
+      takeBack: give && view.takeBack,
+      handBack: change && view.handBackTo !== null,
+      drop: change && !view.closed && offer.drop,
+    },
+  };
+}
+
+export type KinTaskPageStatus = NonNullable<ReturnType<typeof kinTaskControls>["page"]["status"]>;
+
 function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
   const { item, view, names, now } = input;
   const to = (state: KinRecordDetail["state"]) => input.change && view.can.states.includes(state);
@@ -309,6 +351,10 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
     input.give && view.can.give ? [{ id: "give" as const, label: view.assignLabel ?? "" }] : [];
   const holder = kinRecordWho(item.owner, names);
   const due = kinWorkDueText(item, names, now);
+  const toldLater =
+    item.toldWhenBack === undefined
+      ? null
+      : KIN_TASK_RECORD.toldWhenBack(holder.name, kinAwayDay(item.toldWhenBack, now));
   if (view.suggestion !== null) {
     const acts =
       input.change && view.can.confirm
@@ -379,7 +425,7 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
       line: due === null ? "has this." : `has this. It was due ${due}.`,
       when: null,
       words: null,
-      note: giveAct.length === 0 ? KIN_TASK_RECORD.nothingNeeded : null,
+      note: toldLater ?? (giveAct.length === 0 ? KIN_TASK_RECORD.nothingNeeded : null),
       acts: giveAct,
     };
   }
@@ -414,7 +460,7 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
     line: item.state === "waiting" ? view.status.replace(/^Waiting/, "is waiting") : "has this",
     when: due === null ? null : `due ${due}`,
     words: null,
-    note: KIN_TASK_RECORD.nothingNeeded,
+    note: toldLater ?? KIN_TASK_RECORD.nothingNeeded,
     acts: [],
   };
 }

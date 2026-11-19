@@ -411,6 +411,11 @@ export const KinRecordDetail = Schema.Struct({
   waiting: Schema.optional(KinRecordWaiting),
   /** Its project's note for every task, for a viewer who sees the project; absent with none. */
   projectNote: Schema.optional(KinProjectNote),
+  /**
+   * The day its holder is back, on their calendar, while the line telling them it is theirs
+   * waits for that; absent otherwise, and from older hosts.
+   */
+  toldWhenBack: Schema.optional(KinDay),
 });
 export type KinRecordDetail = typeof KinRecordDetail.Type;
 export const KIN_RECORD_CHANGES_CAP = 50;

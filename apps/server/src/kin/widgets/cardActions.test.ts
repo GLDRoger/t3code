@@ -7,6 +7,7 @@ import {
   EnvironmentId,
   KinAgentId,
   type KinChatId,
+  type KinChoiceOutcome,
   KinEvent,
   KinMemberId,
   KinMemoryItemId,
@@ -16,6 +17,7 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -59,7 +61,8 @@ import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { presetDefinition, propose } from "../work/registers.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import * as CardActions from "./cardActions.ts";
-import { plansOf } from "./cardPlans.ts";
+import { plansOf, takesAsDefault } from "./cardPlans.ts";
+import { FEWER_THAN_TWO, NOTHING_TIMED } from "./choiceCard.ts";
 
 const providerInstanceId = ProviderInstanceId.make("codex");
 const at = "2026-10-01T00:00:00.000Z";
@@ -282,7 +285,7 @@ type CardState = {
     readonly action?: { readonly line: string };
   }>;
   readonly answer: unknown;
-  readonly outcome?: { readonly title: string; readonly text: string };
+  readonly outcome?: KinChoiceOutcome;
 };
 const card = (widget: { readonly state: unknown }) => widget.state as CardState;
 const decodeEvent = Schema.decodeEffect(KinEvent);
@@ -310,13 +313,20 @@ it.effect("a tap on an action option runs it once, as the server wrote it", () =
         ],
       });
       assert.isTrue(asked.ok, JSON.stringify(asked.value));
-      // The agent learns the card, never its plan.
+      // The agent learns the card, never its plan, and that with no default nothing happens.
       assert.deepStrictEqual(Object.keys(asked.value).toSorted(), [
         "by",
         "messageId",
+        "note",
         "question",
+        "untaken",
         "widgetId",
       ]);
+      assert.strictEqual(asked.value.untaken, "none");
+      assert.strictEqual(
+        asked.value.note,
+        "Kin won't take any answer on its own: no default was set.",
+      );
       const drawn = yield* kin.widget(asked.value.widgetId);
       const line = `Mark ${row.key} “Set up the appointments API” done`;
       // The button says what it does, in the server's words; the agent's label isn't shown.
@@ -778,6 +788,10 @@ it.effect("in a shared chat only an awaited person who may do it runs it", () =>
       assert.isFalse(listProposal.ok);
       const asked = yield* callAs("finance", "kin_ask", closeIt(devs.key));
       assert.isTrue(asked.ok, JSON.stringify(asked.value));
+      // Not one person's chat: a card, but no question, default or day is kept, and it says so.
+      assert.strictEqual(asked.value.untaken, "group");
+      assert.strictEqual(asked.value.note, NOTHING_TIMED);
+      assert.isUndefined(asked.value.by);
 
       yield* sql`UPDATE kin_session_bindings SET revoked_at = 1 WHERE person_id = 'dev'`;
       const refused = yield* kin
@@ -1404,6 +1418,11 @@ it.effect("a default that closes a task is taken at its day, told once, and undo
       assert.deepStrictEqual(card(yield* kin.widget(note.widgetId)).outcome, {
         title: "Undone",
         text: `Put ${row.key} “Review the Apex deck” back as it was.`,
+        undone: {
+          personId: owner.personId,
+          name: "Rhea Rao",
+          at: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+        },
       });
       const [undone] = yield* sql<{ actor: string; fields: string }>`SELECT
           actor_kind || ':' || actor_id AS actor, fields_json AS fields
@@ -1492,6 +1511,8 @@ const askToClose = Effect.fn("test.askToClose")(function* (
     question: asked.value.question as string,
     widgetId: asked.value.widgetId as string,
     due: Date.parse(asked.value.by as string),
+    untaken: asked.value.untaken,
+    note: asked.value.note,
   };
 });
 const settleAt = Effect.fn("test.settleAt")(function* (
@@ -1683,6 +1704,54 @@ it.effect("a default Kin couldn't undo, or on a task changed since, waits for it
         yield* askToClose(kin, cover, chatId),
         yield* askToClose(kin, proofs, chatId),
       ];
+      // Known when asked: closing the repeating or handed-back one does more than Undo puts back.
+      const whenAsked = yield* Effect.forEach(asked, (one) =>
+        Questions.readQuestion(orgId, one.question),
+      );
+      assert.deepStrictEqual(
+        whenAsked.map((one) => one!.safe),
+        [false, false, true, true],
+      );
+      // And Finance is told so when it asks, in the words the card will say.
+      assert.deepStrictEqual(
+        asked.map((one) => one.untaken),
+        ["repeats", "handed_back", undefined, undefined],
+      );
+      assert.deepStrictEqual(
+        asked.map((one) => one.note),
+        [
+          "Kin won't take “Mark W-1 done” on its own: its task repeats.",
+          "Kin won't take “Mark W-2 done” on its own: its task was handed back.",
+          undefined,
+          undefined,
+        ],
+      );
+      // One rule, read when asked and at the day: only a task's done or drop is taken.
+      assert.deepStrictEqual(
+        (
+          [
+            "done",
+            "drop",
+            "start",
+            "create_list",
+            "take_default",
+            "let_talk",
+            "undo_default",
+            "keep_default",
+          ] as const
+        ).filter((kind) => takesAsDefault({ kind })),
+        ["done", "drop"],
+      );
+      // An open question with no answers to tap gets no card, and is told what to do instead.
+      const open = yield* callAs("finance", "kin_ask", {
+        question: "What should we tell the pilot clinics?",
+        options: [{ label: "Tell me" }],
+        default: "none",
+      });
+      assert.deepStrictEqual(open, {
+        ok: false,
+        value: { _tag: "KinChatError", reason: "invalid_state", message: FEWER_THAN_TWO },
+      });
       yield* kin.records.update(orgId, byRhea, cover.key, { title: "Send the Lumen cover note" });
       // Retired, the Chief of staff can't be waited on again, so Undo couldn't put proofs back.
       yield* sql`UPDATE kin_agents SET retired_at = ${at} WHERE org_id = ${orgId} AND agent_id = 'chief'`;
@@ -1693,7 +1762,7 @@ it.effect("a default Kin couldn't undo, or on a task changed since, waits for it
         ["open", "open", "open", "waiting"],
       );
 
-      assert.strictEqual(yield* settleAt(kin, Math.max(...asked.map((one) => one.due))), 4);
+      assert.strictEqual(yield* settleAt(kin, Math.max(...asked.map((one) => one.due))), 2);
       assert.deepStrictEqual(yield* Effect.forEach(keys, kin.stateOf), before);
       const marked = yield* sql`SELECT 1 FROM kin_record_changes c WHERE c.org_id = ${orgId}
         AND EXISTS (SELECT 1 FROM json_each(c.fields_json) f
@@ -1809,6 +1878,11 @@ it.effect("Undo puts back only what a default changed, from its note or the agen
       assert.deepStrictEqual(card(closed).outcome, {
         title: "Undone",
         text: `Put ${receipts.key} “File the Apex receipts” back as it was.`,
+        undone: {
+          personId: owner.personId,
+          name: "Rhea Rao",
+          at: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+        },
       });
       yield* kin.tap(owner, pageNote!.widgetId, "option-1", "undo-receipts").pipe(Effect.flip);
       assert.deepStrictEqual(yield* kin.stateOf(receipts.key), reopened);

@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { kinOpenShown, kinOpenWaiting } from "@t3tools/client-runtime/kin/kinOpenView";
+import { kinOpenShown, kinOpenWaitingAtom } from "@t3tools/client-runtime/kin/kinOpenView";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { EnvironmentId, KinOpenRead, KinOrgId, KinWaitingItem } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
@@ -23,20 +23,7 @@ const openAtom = Atom.family((key: string) => {
   }).pipe(Atom.withLabel(`kin:open:read:${environmentId}`));
 });
 
-const sameItems = (
-  a: ReadonlyArray<KinWaitingItem> | null,
-  b: ReadonlyArray<KinWaitingItem> | null,
-) =>
-  a === b ||
-  (a !== null && b !== null && a.length === b.length && a.every((item, i) => item === b[i]));
-
-// Held rows keep their objects across a change, so a task's change leaves this value as it was.
-const waitingAtom = Atom.family((key: string) =>
-  Atom.make((get): ReadonlyArray<KinWaitingItem> | null => {
-    const read = get(openAtom(key));
-    return read == null ? null : kinOpenWaiting(read);
-  }).pipe(Atom.withEquality(sameItems), Atom.withLabel("kin:open:waiting")),
-);
+const waitingAtom = Atom.family((key: string) => kinOpenWaitingAtom(openAtom(key)));
 
 const keyOf = ({ environmentId, orgId }: KinWorkTarget) => JSON.stringify([environmentId, orgId]);
 

@@ -18,6 +18,8 @@ import { uuidv4 } from "../../../lib/uuid";
 import { useAssetUrl, useRefreshAssetUrl } from "../../../state/assets";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
+import { useKinOpenWaitingFor } from "../state/useKinOpen";
+import { kinChoiceDefaultLine } from "@t3tools/client-runtime/kin/kinWaitingAsk";
 import { kinConnectionChange } from "@t3tools/client-runtime/kin/kinConnections";
 import {
   kinAddressPieces,
@@ -26,6 +28,7 @@ import {
   kinChoiceAnswered,
   kinChoiceFailureNotice,
   kinChoicePhase,
+  kinChoiceUndoneLine,
   kinSendEditBound,
   kinSendEditInput,
   kinSendEditOffered,
@@ -458,6 +461,12 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
     answered === null && pending === null && kinSendEditOffered(choice, phase, canAct && canEdit);
   const shownEdit = editable ? editing : null;
   const editBound = shownEdit === null ? null : kinSendEditBound(shownEdit, choice);
+  const waiting = useKinOpenWaitingFor({ environmentId, orgId: choice.orgId });
+  const takes =
+    answered === null && phase === "open"
+      ? kinChoiceDefaultLine(choice.widgetId, waiting, nowMs)
+      : null;
+  const undone = kinChoiceUndoneLine(choice, props.viewerPersonId, new Date(nowMs));
 
   const sendEdit = async () => {
     if (shownEdit === null || editBusy || editBound?.ready !== true) return;
@@ -488,12 +497,17 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       <View
         // Grouped for VoiceOver, except while Change or the editor sits inside: a group hides them.
         accessible={fromPicker === null && shownEdit === null}
-        accessibilityLabel={kinChoiceAccessibilityLabel(choice, answered?.text ?? null)}
+        accessibilityLabel={kinChoiceAccessibilityLabel(choice, answered?.text ?? takes)}
         className="gap-1.5"
       >
         <Text textRole="headline" className="font-t3-bold text-foreground">
           {choice.question}
         </Text>
+        {takes === null ? null : (
+          <Text textRole="footnote" className="text-foreground-secondary">
+            {takes}
+          </Text>
+        )}
         {choice.send !== null && shownEdit !== null ? (
           <SendEditor
             send={choice.send}
@@ -586,6 +600,11 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
             ) : null}
           </View>
         </>
+      )}
+      {undone === null ? null : (
+        <Text textRole="footnote" className="text-foreground-muted">
+          {undone}
+        </Text>
       )}
     </View>
   );

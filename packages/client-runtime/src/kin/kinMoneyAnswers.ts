@@ -396,9 +396,8 @@ function kinBudgetLabel(
   const project =
     budget.project === null
       ? null
-      : budget.project.key === null
-        ? KIN_BUDGETS.removedProject
-        : (budget.project.title ?? budget.project.key);
+      : // The host names a project only while it is there, as the Projects list does.
+        ((budget.project.key === null ? null : budget.project.title) ?? KIN_BUDGETS.removedProject);
   const category = budget.category === null ? null : kinCategoryLabel(budget.category, expenses);
   return [category, project].filter((part) => part !== null).join(" in ");
 }
@@ -454,9 +453,10 @@ export interface KinBudgetDraft {
 
 export const kinBudgetDraftOf = (budget: KinMoneyBudget | null): KinBudgetDraft => ({
   category: budget?.category ?? null,
-  project: !budget?.project?.key
-    ? null
-    : { key: budget.project.key, title: budget.project.title ?? budget.project.key },
+  project:
+    !budget?.project?.key || budget.project.title === null
+      ? null
+      : { key: budget.project.key, title: budget.project.title },
   limit: budget === null ? "" : kinMoneyText(budget.limit),
 });
 

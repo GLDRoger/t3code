@@ -2,6 +2,7 @@ import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { kinSecretsTest } from "./layer.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import {
+  AuthKinChatScope,
   AuthSessionId,
   AuthStandardClientScopes,
   EnvironmentId,
@@ -51,6 +52,8 @@ import { KinLeadToolkit } from "./mcp/tools.ts";
 import { deliverHeld } from "../triggers/heldDelivery.ts";
 import * as OwnerWork from "../work/ownerWork.ts";
 import { reholdAfter } from "../triggers/quietHold.ts";
+import * as People from "../people/KinPeople.ts";
+import { SessionStore } from "../../auth/SessionStore.ts";
 import { SHARED_REFUSAL } from "./Audience.ts";
 import { listedOnSharedThread } from "./SharedTools.ts";
 
@@ -88,8 +91,17 @@ const kinServices = Layer.unwrap(
       Team.layer,
       Layer.mock(LeadMemory)({
         defer: (_scope, input) =>
-          Effect.succeed({ itemId: KinMemoryItemId.make(`def-${input.what}`) }),
-        cancel: (_scope, input) => Effect.succeed({ itemId: input.itemId }),
+          Effect.succeed({
+            itemId: KinMemoryItemId.make(`def-${input.what}`),
+            scheduled: "reminder" as const,
+          }),
+        // Says which event reached it, so a test sees what the tool gate filled in.
+        cancel: (_scope, input) =>
+          Effect.succeed({
+            itemId: input.itemId,
+            outcome: "stopped" as const,
+            title: input.sourceEventId,
+          }),
       }),
     ).pipe(Layer.provideMerge(Layer.succeedContext(services)));
   }),
@@ -753,6 +765,12 @@ it.effect("a teammate sets a reminder for themselves, in their own chat, and not
         (yield* call("kin_cancel", { itemId: "def-Send the Lumen mockups", sourceEventId: asked }))
           .ok,
       );
+      // An event from an earlier turn, such as the message that set it up, names this turn.
+      const earlier = yield* call("kin_cancel", {
+        itemId: "def-Send the Lumen mockups",
+        sourceEventId: "event:an-earlier-turn",
+      });
+      assert.strictEqual(earlier.value.title, asked);
     }).pipe(Effect.provide(layer)),
   ),
 );
@@ -1136,4 +1154,202 @@ it.effect(
         assert.isUndefined(yield* awayUntil);
       }).pipe(Effect.provide(layer)),
     ),
+);
+
+/**
+ * Arjun writes in his chat that he is off and sets it on his Profile; minutes later the owner and a
+ * co-owner give him tasks on their screens and Chief of staff gives two more. Then he is back: by
+ * his date, by "I'm back", or across a restart after the walk's clock tool moved stored times.
+ */
+const awayThenBack = (how: "date" | "early" | "restart") =>
+  Effect.andThen(
+    // Thursday 19 Nov, 09:38 in India.
+    TestClock.setTime(Date.UTC(2026, 10, 19, 4, 8)),
+    Effect.gen(function* () {
+      const services = Option.getOrThrow((yield* Kin.KinServer).services);
+      const identity = Context.get(services, KinIdentity);
+      const chats = Context.get(services, KinChatService);
+      // Profile's own service, as `kin.people.updateProfile` calls it.
+      const people = yield* People.KinPeople.pipe(
+        Effect.provide(
+          People.layer.pipe(
+            Layer.provide(
+              Layer.mock(SessionStore)({ cookieName: "kin", legacyCookieName: undefined }),
+            ),
+            Layer.provide(Layer.succeedContext(services)),
+          ),
+        ),
+      );
+      const work = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(Effect.provide(Layer.succeedContext(services)));
+      const sql = yield* SqlClient.SqlClient;
+      const sessionOf = (id: string) =>
+        ({
+          sessionId: AuthSessionId.make(id),
+          subject: "browser",
+          method: "browser-session-cookie",
+          scopes: id === "owner" ? AuthStandardClientScopes : [AuthKinChatScope],
+        }) as const;
+      yield* pairSession(AuthSessionId.make("owner"));
+      const owner = (yield* identity.resolve(sessionOf("owner")))[0]!;
+      const { orgId } = owner;
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Kolkata', '08:30',
+          '18:30', '03:00', 0, 1, '09:00', '{"from":"22:00","to":"07:00"}')
+        ON CONFLICT (org_id) DO UPDATE SET time_zone = 'Asia/Kolkata'`;
+      yield* sql`UPDATE kin_people SET display_name = 'Rhea Kapoor' WHERE person_id = ${owner.personId}`;
+      for (const [id, name, access] of [
+        ["arjun", "Arjun Rao", "member"],
+        ["zoya", "Zoya Sheikh", "member"],
+        ["meera", "Meera Iyer", "co_owner"],
+      ] as const) {
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+            access, time_zone)
+          VALUES (${id}, ${orgId}, ${id}, ${name}, ${at}, ${access}, 'Asia/Kolkata')`;
+        yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+          VALUES (${`${id}-session`}, ${orgId}, ${id}, 0)`;
+      }
+      const arjunId = KinPersonId.make("arjun");
+      const arjun = { _tag: "person" as const, orgId, personId: arjunId };
+      const meera = (yield* identity.resolve(sessionOf("meera-session")))[0]!;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES (${chief}, ${orgId}, 'Chief of staff', 'lead', ${owner.personId}, ${at})`;
+      yield* identity.registerAgentThread({ orgId, agentId: chief, threadId });
+      const ownerChat = (yield* chats.createDirect(owner, { orgId, agentId: chief })).chatId;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
+          worker_projects_json, owner_chat_id, domain)
+        VALUES (${chief}, ${orgId}, 'Chief of staff', 0, ${threadId}, '{}', '[]', ${ownerChat},
+          'chief-of-staff')`;
+      yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+        VALUES (${orgId}, ${chief}, ${owner.personId}, 0)`;
+      const arjunsChat = (yield* chats.createDirect(arjun, { orgId, agentId: chief })).chatId;
+      const says = Effect.fn("test.says")(function* (body: string) {
+        const message = yield* chats.send(owner, {
+          chatId: ownerChat,
+          body,
+          clientMessageId: body,
+        });
+        return `event:${yield* startAgentWakeup({ orgId, agentId: chief, threadId, message })}`;
+      });
+      const created = yield* call("record_create", {
+        sourceEventId: yield* says("Set up the reminder work."),
+        records: [
+          { title: "Invented reminder wording", owner: "Rhea Kapoor" },
+          { title: "Invented clinic list", owner: "Rhea Kapoor" },
+          { title: "Invented opt-out link", owner: "Rhea Kapoor" },
+          { title: "Invented phone number screen", owner: "Rhea Kapoor" },
+        ],
+      });
+      assert.isTrue(created.ok, JSON.stringify(created.value));
+      const [wording, clinics, optOut, phone] = (
+        created.value.records as ReadonlyArray<{ key: string }>
+      ).map((record) => record.key);
+      const keys = [wording!, clinics!, optOut!, phone!];
+
+      // His own words in his chat, and the date on his Profile, as he sets it there.
+      yield* chats.send(arjun, {
+        chatId: arjunsChat,
+        body: "I'm off till Monday 23 Nov.",
+        clientMessageId: "off",
+      });
+      const set = yield* people.updateProfile(sessionOf("arjun-session"), {
+        orgId,
+        personId: arjunId,
+        awayUntil: "2026-11-23",
+      });
+      assert.propertyVal(set, "awayUntil", "2026-11-23");
+
+      // Minutes later: the owner and a co-owner on the Tasks screen, then Chief of staff.
+      yield* TestClock.adjust("1 minute");
+      const toArjun = { _tag: "person", personId: arjunId } as const;
+      yield* work(OwnerWork.assign([owner], { orgId, key: wording!, to: toArjun }));
+      yield* work(OwnerWork.assign([meera], { orgId, key: clinics!, to: toArjun }));
+      const arjunReads = sql<{ body: string }>`SELECT m.body FROM kin_messages m
+        JOIN kin_chat_members c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+          AND c.principal_kind = 'person' AND c.person_id = ${arjunId}
+        WHERE m.org_id = ${orgId} ORDER BY m.created_at, m.seq`.pipe(
+        Effect.map((rows) => rows.filter((row) => keys.some((key) => row.body.includes(key)))),
+      );
+      const toldOn = (who: typeof owner, key: string) =>
+        work(OwnerWork.get([who], { orgId, key })).pipe(Effect.map((one) => one.toldWhenBack));
+      // Nothing reaches him meanwhile (no line, so nothing rings); each giver reads the day.
+      assert.deepStrictEqual(yield* arjunReads, []);
+      assert.strictEqual(yield* toldOn(owner, wording!), "2026-11-23");
+      assert.strictEqual(yield* toldOn(meera, clinics!), "2026-11-23");
+      const given = yield* call("record_assign", {
+        sourceEventId: yield* says("Give Arjun the opt-out link and the phone number screen."),
+        tasks: [
+          { key: optOut, to: "Arjun Rao", reason: "He built the reminders" },
+          { key: phone, to: "Arjun Rao", reason: "He built the reminders" },
+        ],
+      });
+      assert.deepStrictEqual(given.value, {
+        toldLater: ["Arjun Rao is away until Mon 23 Nov, so they'll be told when they're back."],
+        tasks: [
+          { key: optOut, to: "Arjun Rao" },
+          { key: phone, to: "Arjun Rao" },
+        ],
+      });
+      assert.deepStrictEqual(yield* arjunReads, []);
+      assert.strictEqual(yield* toldOn(owner, phone!), "2026-11-23");
+
+      // One moved on to Zoya before he is back is never his to hear of.
+      yield* work(
+        OwnerWork.assign([owner], {
+          orgId,
+          key: optOut!,
+          to: { _tag: "person", personId: KinPersonId.make("zoya") },
+        }),
+      );
+      assert.isUndefined(yield* toldOn(owner, optOut!));
+      assert.deepStrictEqual(yield* arjunReads, []);
+
+      // Monday 07:00 his time: his quiet hours end on the day he is back.
+      const back = Date.UTC(2026, 10, 23, 1, 30);
+      if (how === "date") {
+        yield* TestClock.setTime(back - 60_000);
+        assert.strictEqual(yield* deliverHeld(orgId, chats), 0);
+        yield* TestClock.setTime(back);
+      } else if (how === "early") {
+        // Saturday noon his time, "I'm back" on his Profile.
+        yield* TestClock.setTime(Date.UTC(2026, 10, 21, 6, 30));
+        assert.strictEqual(yield* deliverHeld(orgId, chats), 0);
+        yield* people.updateProfile(sessionOf("arjun-session"), {
+          orgId,
+          personId: arjunId,
+          awayUntil: null,
+        });
+      } else {
+        // As `kv clock advance 6d` does with the server stopped: stored times move 144h back.
+        const shift = 144 * 3_600_000;
+        yield* sql`UPDATE kin_held_posts SET deliver_at = deliver_at - ${shift},
+          held_at = held_at - ${shift} WHERE org_id = ${orgId}`;
+        yield* sql`UPDATE kin_people SET away_until = date(away_until, '-6 days')
+          WHERE org_id = ${orgId} AND away_until IS NOT NULL`;
+      }
+      // The first run (at start, then every tick) posts it once; later runs post nothing.
+      assert.strictEqual(yield* deliverHeld(orgId, chats), 1);
+      assert.strictEqual(yield* deliverHeld(orgId, chats), 0);
+      assert.deepStrictEqual(yield* arjunReads, [
+        {
+          body: [
+            `Rhea Kapoor gave you ${wording} Invented reminder wording.`,
+            "",
+            `Meera Iyer gave you ${clinics} Invented clinic list.`,
+            "",
+            `Chief of staff gave you ${phone} Invented phone number screen. Why: He built the reminders.`,
+          ].join("\n"),
+        },
+      ]);
+      assert.isUndefined(yield* toldOn(owner, wording!));
+    }).pipe(Effect.provide(layer)),
+  );
+
+it.effect("a task given to someone away waits for their date, as one message", () =>
+  awayThenBack("date"),
+);
+it.effect("a task given to someone away reaches them once when they end it early", () =>
+  awayThenBack("early"),
+);
+it.effect("a task given to someone away reaches them once after a restart past their date", () =>
+  awayThenBack("restart"),
 );

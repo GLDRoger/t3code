@@ -115,6 +115,11 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
   ),
   kin_ask: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.ask")(function* (input) {
+      if (input.options.length < 2)
+        return yield* new KinChatError({
+          reason: "invalid_state",
+          message: ChoiceCard.FEWER_THAN_TWO,
+        });
       const lead = yield* resolveLead(yield* McpInvocationContext);
       const wakeupId = KinWakeupId.make(lead.wakeupId);
       const lane = yield* laneFor({ orgId: lead.orgId, agentId: lead.agentId, wakeupId });
@@ -164,6 +169,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           });
       }
       const at = named[0];
+      const defaultPlan = at === undefined ? undefined : drawn[at]?.plan;
       // A refused repeat posts nothing; an allowed one is stored in its card's own transaction.
       const plan = yield* Questions.planAsk({
         orgId: lead.orgId,
@@ -177,7 +183,11 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         about,
         intent,
         now,
-        acts: at === undefined ? undefined : drawn[at]?.plan.kind,
+        acts: defaultPlan,
+        held:
+          defaultPlan === undefined
+            ? undefined
+            : yield* CardActions.untakenAtDay(lead.orgId, defaultPlan),
       });
       // Drawn again inside the card's transaction: what was checked is what is stored.
       const recheck = drawAll.pipe(
@@ -221,12 +231,19 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
               }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       );
       return plan === undefined
-        ? { widgetId: result.widgetId, messageId: result.messageId }
+        ? {
+            widgetId: result.widgetId,
+            messageId: result.messageId,
+            untaken: "group" as const,
+            note: ChoiceCard.NOTHING_TIMED,
+          }
         : {
             widgetId: result.widgetId,
             messageId: result.messageId,
             question: plan.questionId,
             by: DateTime.formatIso(DateTime.makeUnsafe(plan.dueAt)),
+            ...(plan.untaken === undefined ? {} : { untaken: plan.untaken }),
+            ...(plan.note === undefined ? {} : { note: plan.note }),
           };
     }, Effect.mapError(failure)),
   ),

@@ -236,6 +236,14 @@ const samples = {
         answeredAt: at,
       },
     },
+    {
+      ...choice,
+      outcome: {
+        title: "Undone",
+        text: "Put W-3 back as it was.",
+        undone: { personId: "person-1", name: "Rhea", at },
+      },
+    },
   ],
   KinPresenceState: Kin.KinPresenceState.literals,
   KinPresence: [presence, { ...presence, wakeupId: null, state: "seen", label: null }],

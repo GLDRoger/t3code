@@ -13,12 +13,20 @@ import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 
-export const layerRuntime = EnvironmentAuth.layer.pipe(
-  Layer.provideMerge(ProofKeySessions.layerCli),
-  Layer.provideMerge(ManagedPolicy.layer),
-  Layer.provideMerge(Layer.mergeAll(ServerSecretStore.layer, SqlitePersistence.layerConfig)),
-  Layer.provideMerge(ServerEnvironment.layerIdentity),
-);
+/** The host CLI's auth, telling a `KinRefreshObserver` what Kin lists its writes move. */
+export const layerRuntimeWith = (
+  // A reference's layer provides no tracked service, hence `never`.
+  observer: Layer.Layer<never, never, SqlClient.SqlClient> = Layer.empty,
+) =>
+  EnvironmentAuth.layer.pipe(
+    Layer.provideMerge(ProofKeySessions.layerCli),
+    Layer.provideMerge(observer),
+    Layer.provideMerge(ManagedPolicy.layer),
+    Layer.provideMerge(Layer.mergeAll(ServerSecretStore.layer, SqlitePersistence.layerConfig)),
+    Layer.provideMerge(ServerEnvironment.layerIdentity),
+  );
+
+export const layerRuntime = layerRuntimeWith();
 
 /**
  * The running server's own database, for a host CLI that only asks it for a credential: opened
@@ -31,7 +39,7 @@ const layerServersDatabase = Layer.unwrap(
     if (!(yield* (yield* FileSystem.FileSystem).exists(dbPath)))
       return yield* new KinChatError({
         reason: "unavailable",
-        message: `No T3 Code database at ${dbPath}. Start the Kin server, then retry.`,
+        message: `No server database at ${dbPath}. Start the Kin server, then retry.`,
       });
     return Layer.provideMerge(
       // The server writes from another process; wait for it rather than fail with SQLITE_BUSY.

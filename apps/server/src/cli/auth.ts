@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
 
 import * as EnvironmentAuth from "../kin/auth/EnvironmentAuthRuntime.ts";
+import { announceToServer, cliCommits } from "../kin/cli/announce.ts";
 
 import {
   formatConnectDeviceList,
@@ -35,17 +36,21 @@ const runWithEnvironmentAuth = Effect.fn("auth.runWithEnvironmentAuth")(function
   const logLevel = yield* GlobalFlag.LogLevel;
   const config = yield* resolveCliAuthConfig(flags, logLevel, options);
   const minimumLogLevel = options?.quietLogs ? "Error" : config.logLevel;
-  return yield* Effect.gen(function* () {
+  // A revoke that ends Kin devices or keys commits here; open Kin lists hear it afterwards.
+  const changes = cliCommits();
+  const result = yield* Effect.gen(function* () {
     const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
     return yield* run(environmentAuth);
   }).pipe(
     Effect.provide(
-      Layer.mergeAll(EnvironmentAuth.layerRuntime).pipe(
+      EnvironmentAuth.layerRuntimeWith(changes.layer).pipe(
         Layer.provide(ServerConfig.layer(config)),
         Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
       ),
     ),
   );
+  yield* announceToServer(config, changes.all());
+  return result;
 });
 
 const ttlFlag = Flag.String("ttl").pipe(

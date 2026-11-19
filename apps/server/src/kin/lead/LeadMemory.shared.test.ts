@@ -618,20 +618,72 @@ it.effect("a teammate's turn sets their own reminder, in their own chat, and not
       reminder("def-someone-elses", { said_by: "fixture-other" }),
       reminder("def-elsewhere", { chat: KinChatId.make("group-chat") }),
       reminder("def-starts", { on_due: "start" }),
+      reminder("def-cancelled", { status: "cancelled" }),
+      reminder("def-unarmed"),
+      reminder("def-reminded"),
     ];
+    // A due run's state says what a cancel can still stop: armed, or already reminded.
+    const run = (itemId: string, runState: string) =>
+      sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due, snapshot_json, updated_at)
+        VALUES (${orgId}, ${itemId}, ${runState}, ${Date.parse("2026-11-19T10:00:00Z")}, 'remind', '{}', 0)`;
+    yield* run("def-hers-too", "armed");
+    yield* run("def-reminded", "reminded");
     const cancel = (itemId: string) =>
       service.cancel(scopeOf(leads.a), {
         itemId: KinMemoryItemId.make(itemId),
         sourceEventId: "member-said",
       });
     assert.isString((yield* defer({ what: "Invented: moved", replaces: "def-hers" })).itemId);
-    assert.deepStrictEqual(yield* cancel("def-hers-too"), { itemId: "def-hers-too" });
+    const cancelled = {
+      title: "Invented def-hers-too",
+      due: "2026-11-19T10:00:00+00:00",
+    };
+    assert.deepStrictEqual(yield* cancel("def-hers-too"), {
+      itemId: KinMemoryItemId.make("def-hers-too"),
+      outcome: "stopped",
+      ...cancelled,
+      note: "Stopped: it doesn't run.",
+    });
+    const stoppedRun = yield* sql<{ state: string }>`SELECT state FROM kin_deferral_runs
+      WHERE org_id = ${orgId} AND item_id = 'def-hers-too'`;
+    assert.deepStrictEqual(stoppedRun, [{ state: "undone" }]);
+    // One she cancelled before: cancelling it again says what it was and stages nothing.
+    assert.deepStrictEqual(yield* cancel("def-cancelled"), {
+      itemId: KinMemoryItemId.make("def-cancelled"),
+      outcome: "stopped",
+      title: "Invented def-cancelled",
+      due: cancelled.due,
+      note: "Stopped: it doesn't run.",
+    });
+    // Not armed yet: cancelled before anything could run.
+    assert.deepStrictEqual(yield* cancel("def-unarmed"), {
+      itemId: KinMemoryItemId.make("def-unarmed"),
+      outcome: "not_armed",
+      title: "Invented def-unarmed",
+      due: cancelled.due,
+      note: "Cancelled: nothing had been armed yet.",
+    });
+    // Its reminder already went out: not stopped, said so, and nothing staged.
+    assert.deepStrictEqual(yield* cancel("def-reminded"), {
+      itemId: KinMemoryItemId.make("def-reminded"),
+      outcome: "handed_off",
+      handedOff: "reminder",
+      title: "Invented def-reminded",
+      due: cancelled.due,
+      note: "Not stopped: its due run already handed off its reminder.",
+    });
+    // Replacing takes only an open one: an already cancelled one is refused, and stages nothing.
+    assert.strictEqual(
+      (yield* defer({ what: "Invented: moved again", replaces: "def-cancelled" }).pipe(Effect.flip))
+        .message,
+      "def-cancelled is already cancelled.",
+    );
     for (const other of ["def-owners", "def-someone-elses", "def-elsewhere", "def-starts"]) {
       const moved = yield* defer({ what: `Invented ${other}`, replaces: other }).pipe(Effect.flip);
       assert.strictEqual(moved.message, SHARED_REFUSAL, other);
       assert.strictEqual((yield* Effect.flip(cancel(other))).message, SHARED_REFUSAL, other);
     }
-    // Her replacement and her cancel, nothing for anyone else.
-    assert.lengthOf(staged, 4);
+    // Her replacement and her two cancels, nothing for anyone else.
+    assert.lengthOf(staged, 5);
   }).pipe(Effect.provide(layer)),
 );

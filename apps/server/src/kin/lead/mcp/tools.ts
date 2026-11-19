@@ -209,7 +209,7 @@ export const KinLeadToolkit = Toolkit.make(
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("memory_write", {
     ...shared,
-    description: `Stage a memory create, update, supersession or invalidation, saved when the turn ends. A create needs no id: the result carries the one it was given. ${MEMORY_RULE} For what someone said, quote their exact words from that message (at most 400 characters); what you inferred takes trust agent and no quote. Set sensitive on every item: true for anything only the owner should know: access (credentials, where kept, who holds them), money and commercial terms (rates, pay, discounts, margins, bank and billing details), arrangements with a client or partner the team isn't meant to know, and anything the owner says to keep between you; false for ordinary company knowledge. When unsure, true. Never save a password, key or token: save where it is kept. In a chat others read, save only what someone there said, as a claim with sensitive false. Never delete or write rules. Retry only with exactly the same payload. Not for reminders or scheduled tasks: kin_defer, kin_schedule, kin_cancel.`,
+    description: `Stage a memory create, update, supersession or invalidation, saved when the turn ends. A create needs no id: the result carries the one it was given. ${MEMORY_RULE} For what someone said, quote their exact words from that message (at most 400 characters); what you inferred takes trust agent and no quote. Asked to remember something, save what was said, as theirs, with no rule, advice or consequence of your own added: say what you think follows in your reply, as your suggestion, and save it only if they agree. Set sensitive on every item: true for anything only the owner should know: access (credentials, where kept, who holds them), money and commercial terms (rates, pay, discounts, margins, bank and billing details), arrangements with a client or partner the team isn't meant to know, and anything the owner says to keep between you; false for ordinary company knowledge. When unsure, true. Never save a password, key or token: save where it is kept. In a chat others read, save only what someone there said, as a claim with sensitive false. Never delete or write rules. Retry only with exactly the same payload. Not for reminders or scheduled tasks: kin_defer, kin_schedule, kin_cancel.`,
     parameters: Lead.WriteInput,
     success: Lead.ItemResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -225,7 +225,7 @@ export const KinLeadToolkit = Toolkit.make(
     description:
       'Set a reminder or one-time follow-up: what, due as a timestamp with offset (from the Owner time line), onDue and chatId. A bare number with sleep, wait or pause is seconds ("sleep for 60" is due 60 s after the message). If a duration is ambiguous in a way that matters, ask in one short line. When the owner corrects a time, pass the old item as replaces so only the new one fires. Returns itemId.',
     parameters: Lead.DeferInput,
-    success: Lead.ItemResult,
+    success: Lead.DeferResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_schedule", {
     ...shared,
@@ -239,7 +239,7 @@ export const KinLeadToolkit = Toolkit.make(
     description:
       "Cancel a reminder, follow-up or scheduled task you set up, by itemId; it never fires. To move one, use kin_defer with replaces.",
     parameters: Lead.CancelInput,
-    success: Lead.ItemResult,
+    success: Lead.CancelResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_journal", {
     ...shared,
