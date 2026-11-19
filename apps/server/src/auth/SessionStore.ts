@@ -1,4 +1,5 @@
 import { SessionHooks } from "../kin/auth/sessionHooks.ts";
+import { isTasksKey, TasksKeyAudience } from "../kin/tasksKey/audience.ts";
 import {
   AuthSessionId,
   AuthStandardClientScopes,
@@ -627,7 +628,11 @@ const make = Effect.gen(function* () {
     Effect.all([loadActiveSession(sessionId), DateTime.now]).pipe(
       Effect.map(([found, now]) =>
         found.pipe(
-          Option.filter((active) => active.expiresAt.epochMilliseconds > now.epochMilliseconds),
+          Option.filter(
+            (active) =>
+              active.expiresAt.epochMilliseconds > now.epochMilliseconds &&
+              !isTasksKey(active.scopes),
+          ),
           Option.map((active): ActiveSession => ({
             sessionId: active.sessionId,
             subject: active.subject,
@@ -892,6 +897,10 @@ const make = Effect.gen(function* () {
           revokedAt: row.value.revokedAt,
         });
       }
+      // A Kin coding-agent key is a session to its own endpoint only, whether Kin is on or off.
+      if (isTasksKey(row.value.scopes) && !(yield* TasksKeyAudience)) {
+        return yield* new UnknownSessionTokenError({ sessionId: claims.sid });
+      }
 
       return {
         sessionId: claims.sid,
@@ -1003,6 +1012,9 @@ const make = Effect.gen(function* () {
         sessionId: claims.sid,
         revokedAt: row.value.revokedAt,
       });
+    }
+    if (isTasksKey(row.value.scopes)) {
+      return yield* new UnknownWebSocketSessionError({ sessionId: claims.sid });
     }
 
     return {

@@ -37,6 +37,7 @@ import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as KinMcp from "./mcp/layer.ts";
+import * as KinTasksKeyMcp from "./tasksKey/mcp.ts";
 import * as Render from "./gendocs/render.ts";
 import * as Toolchain from "./gendocs/toolchain.ts";
 import * as GhTool from "./connections/ghTool.ts";
@@ -259,7 +260,7 @@ const taskCardUpdater = Layer.unwrap(
 );
 
 export const mcpLayer = (base: Parameters<typeof KinMcp.transport>[0]) =>
-  Layer.mergeAll(KinMcp.transport(base), taskCardUpdater);
+  Layer.mergeAll(KinMcp.transport(base), KinTasksKeyMcp.layer, taskCardUpdater);
 
 export const mcpRegistryLayer = <E, R>(
   base: Layer.Layer<McpSessionRegistry.McpSessionRegistry, E, R>,

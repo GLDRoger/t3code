@@ -492,7 +492,7 @@ function KinTaskStepButtons(props: {
               tone="secondary"
               size="compact"
               label={option.label}
-              accessibilityHint="Sends this as your reply"
+              accessibilityHint={KIN_TASKS.replyHint}
               loading={busyId === option.optionId}
               disabled={busy}
               onPress={() => onChoose(option.optionId)}

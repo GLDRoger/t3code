@@ -152,6 +152,23 @@ describe("kinProjectsByClient", () => {
     expect(without).toMatchObject({ line: "Meera · 6 open", health: { label: "On track" } });
   });
 
+  // The host sends each viewer only the projects they may see; the tab draws no empty heading.
+  it.each([
+    ["the owner", null, ["P-1", "P-2", "P-3"], "Meera", ["Pinecrest", "Not for a client"]],
+    ["its lead", meera, ["P-1", "P-2", "P-3"], "You", ["Pinecrest", "Not for a client"]],
+    ["a member on one project", KinPersonId.make("zoya"), ["P-2"], "Meera", ["Pinecrest"]],
+  ])("for %s, a heading only over projects there are", (_who, me, shown, lead, headings) => {
+    const all = [project("P-1", null), project("P-2", "Pinecrest"), project("P-3", null)];
+    const groups = kinProjectsByClient(
+      all.filter((row) => shown.includes(row.key)),
+      { ...names, me },
+      now,
+    );
+    expect(groups.map((group) => group.title)).toEqual(headings);
+    expect(groups.every((group) => group.rows.length > 0)).toBe(true);
+    expect(groups[0]?.rows[0]?.line).toBe(`${lead} · 6 open`);
+  });
+
   it("is no groups for no projects", () => {
     expect(kinProjectsByClient([], names, now)).toEqual([]);
   });

@@ -8,13 +8,7 @@ import { useNowMinuteMs } from "../../../lib/clock";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { kinClient } from "./kinClient";
 import { useKinDocsLive } from "./useKinDocs";
-import { kinWorkChoicesAtom, type KinWorkTarget } from "./useKinWork";
-
-/** The active clients and open projects, kept current by Work's changes. */
-export function useKinChoicesLive(target: KinWorkTarget, enabled: boolean) {
-  const result = useAtomValue(enabled ? kinWorkChoicesAtom(target) : noChoicesAtom);
-  return Option.getOrNull(AsyncResult.value(result));
-}
+import type { KinWorkTarget } from "./useKinWork";
 
 const noCountsAtom: ReturnType<typeof kinClient.workCounts> = Atom.make(AsyncResult.initial());
 
@@ -26,7 +20,6 @@ export function useKinClientCounts({ environmentId, orgId }: KinWorkTarget, enab
   return Option.getOrNull(AsyncResult.value(result));
 }
 
-const noChoicesAtom: ReturnType<typeof kinWorkChoicesAtom> = Atom.make(AsyncResult.initial());
 const noDocsAtom: Atom.Atom<
   AsyncResult.AsyncResult<
     { readonly total: number; readonly changed: number; readonly seq: number },

@@ -41,6 +41,7 @@ import { personHoldNow } from "../triggers/quietHold.ts";
 import { readProfile } from "../work/companyProfile.ts";
 import * as Records from "../work/KinRecords.ts";
 import { KinPushSender, type KinPushNotification } from "../push/KinPushSender.ts";
+import * as TasksKeys from "../tasksKey/TasksKeys.ts";
 import * as People from "./KinPeople.ts";
 
 const database = layerKinAuthTest("kin-people-");
@@ -908,6 +909,9 @@ it.effect(
       );
 
       const member = yield* sessions.verify(first.accessToken);
+      // Her coding agent's key goes with her access.
+      const codingKey = yield* TasksKeys.issue(member, { orgId });
+      assert.isTrue(Option.isSome(yield* TasksKeys.admit(codingKey.secret)));
       assert.propertyVal(
         yield* service.removeAccess(member, { orgId, personId }).pipe(Effect.flip),
         "reason",
@@ -957,6 +961,7 @@ it.effect(
           "Failure",
         );
       assert.deepEqual(yield* identity.resolve(member), []);
+      assert.isTrue(Option.isNone(yield* TasksKeys.admit(codingKey.secret)));
       assert.propertyVal(
         yield* service.accept({ secret: unused.secret }).pipe(Effect.flip),
         "reason",
@@ -971,6 +976,8 @@ it.effect(
       // The way back: a new link from the owner returns the same person, as she was.
       const returned = yield* service.accept({ secret: (yield* link()).secret });
       assert.equal(returned.person.personId, personId);
+      // Back on the team, her old coding agent key stays ended: she makes a new one.
+      assert.isTrue(Option.isNone(yield* TasksKeys.admit(codingKey.secret)));
       assert.equal(returned.person.access, "co_owner");
       assert.deepEqual(
         (yield* service.list(ownerSession, orgId)).places?.find(
