@@ -7,6 +7,8 @@ import {
   EnvironmentId,
   KinAgentId,
   type KinChatId,
+  KinMemoryItemId,
+  type KinMessageId,
   KinOrgId,
   KinPersonId,
   KinWidgetId,
@@ -16,8 +18,10 @@ import {
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -30,6 +34,7 @@ import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
+import { KinGroups } from "../chat/KinGroups.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
@@ -560,13 +565,16 @@ it.effect("a question of a retired agent can close", () =>
   ),
 );
 
-// A plain-text question stays open for every agent until the person writes back, and an
-// agent closes a carded one the person answered in words.
-it.effect("questions close on the person's words, and only the asker withdraws one", () =>
+// A plain-text question stays open for every agent until the person writes back. A carded one
+// is answered in words only by its asker, in a turn woken by its person's own message in its chat
+// since its card and its last Undo, never by Kin's copy; the note that says so lets her, and only
+// her, undo it while its asker is here, and it then waits for her with no default.
+it.effect("only the asker takes an answer from the person's own words, and she can undo it", () =>
   Effect.andThen(
     TestClock.setTime(IST_MON_1130),
     Effect.gen(function* () {
-      const { sql, chats, owner, orgId, chatOf, wake } = yield* ambermill;
+      const { sql, chats, owner, orgId, services, chatOf, wake } = yield* ambermill;
+      const repo = Context.get(services, KinChatRepository);
       const text = yield* Questions.recordTextQuestion({
         orgId: KinOrgId.make(orgId),
         agentId: KinAgentId.make("chief"),
@@ -583,39 +591,175 @@ it.effect("questions close on the person's words, and only the asker withdraws o
       });
       assert.strictEqual((yield* questionRow(sql, text!)).state, "answered");
 
-      yield* wake(
-        "finance",
-        yield* chats.send(owner, {
-          chatId: chatOf("finance"),
-          body: "VIOM?",
-          clientMessageId: "m4",
-        }),
-      );
+      const say = (chatId: KinChatId, body: string, who = owner) =>
+        chats.send(who, { chatId, body, clientMessageId: body });
+      const answer = (agent: string) =>
+        callAs(agent, "kin_ask_close", {
+          question: questionId,
+          outcome: "answered",
+          answer: "Draft it",
+        });
+      const refused = Effect.fn("test.refused")(function* (agent: string, why: RegExp) {
+        const result = yield* answer(agent);
+        assert.isFalse(result.ok);
+        assert.match(String(result.value.message), why);
+        assert.strictEqual((yield* questionRow(sql, questionId)).state, "open");
+      });
+      yield* wake("finance", yield* say(chatOf("finance"), "VIOM?"));
       const asked = yield* callAs("finance", "kin_ask", reminderAsk);
       const questionId = asked.value.question as string;
-      // The Chief of staff, in a chat with Rhea too, may mark it answered but not withdraw it.
-      yield* wake(
-        "chief",
-        yield* chats.send(owner, {
-          chatId: chatOf("chief"),
-          body: "Tell Finance: draft it.",
-          clientMessageId: "m5",
-        }),
-      );
+      // The words that woke the turn that asked were written before it.
+      yield* refused("finance", /own message/);
+      // The Chief of staff, in a chat with Rhea too, may neither withdraw it nor answer it.
+      yield* wake("chief", yield* say(chatOf("chief"), "Tell Finance: draft it."));
       const withdraw = yield* callAs("chief", "kin_ask_close", {
         question: questionId,
         outcome: "withdrawn",
       });
       assert.isFalse(withdraw.ok);
-      const answered = yield* callAs("chief", "kin_ask_close", {
-        question: questionId,
-        outcome: "answered",
-        answer: "Draft it",
+      yield* refused("chief", /only Finance records/);
+      // Finance woken by Kin's own event, by Rhea's words in another chat, or by Meera.
+      yield* startAgentWakeup({
+        orgId,
+        agentId: KinAgentId.make("finance"),
+        threadId: ThreadId.make("finance-thread"),
+        event: (base) => ({
+          ...base,
+          _tag: "pulse",
+          provenance: { _tag: "system" },
+          factKeys: [],
+          checkIn: {
+            scheduleId: KinMemoryItemId.make("check-in"),
+            title: "Check-in",
+            what: "Check-in.",
+            slot: "d",
+          },
+        }),
       });
+      yield* refused("finance", /own message/);
+      const meera = { _tag: "person" as const, orgId, personId: KinPersonId.make("meera") };
+      const group = (yield* Context.get(services, KinGroups).create([owner], {
+        orgId,
+        title: "Collections",
+        agentIds: [KinAgentId.make("finance")],
+        personIds: [meera.personId],
+      })).chatId;
+      const textThere = yield* Questions.recordTextQuestion({
+        orgId: KinOrgId.make(orgId),
+        agentId: KinAgentId.make("finance"),
+        chatId: chatOf("finance"),
+        wakeupId: "w-text-finance",
+        question: "Which month is INV-8 for?",
+        now: yield* Clock.currentTimeMillis,
+      });
+      const inGroup = yield* wake("finance", yield* say(group, "Finance, draft the VIOM one."));
+      yield* refused("finance", /own message/);
+      // Taken private, her group words are Kin's copy in her chat with Finance, known by its
+      // claim's key: they answer neither the text question waiting there nor the card in the turn
+      // they wake there.
+      const taken = yield* callAs("finance", "kin_take_private", {
+        sourceEventId: `event:${inGroup}`,
+      });
+      assert.isTrue(taken.ok, JSON.stringify(taken.value));
+      assert.strictEqual((yield* questionRow(sql, textThere!)).state, "open");
+      const [copy] = yield* sql<{ messageId: KinMessageId }>`SELECT message_id AS "messageId"
+        FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${chatOf("finance")}
+          AND body = 'Finance, draft the VIOM one.'`;
+      yield* wake(
+        "finance",
+        Option.getOrThrow(yield* repo.getMessage({ orgId, messageId: copy!.messageId })),
+      );
+      yield* refused("finance", /own message/);
+      yield* wake("finance", yield* say(group, "Draft it.", meera));
+      yield* refused("finance", /own message/);
+
+      yield* wake("finance", yield* say(chatOf("finance"), "Yes, draft it."));
+      const answered = yield* answer("finance");
       assert.isTrue(answered.ok, JSON.stringify(answered.value));
-      assert.strictEqual((yield* questionRow(sql, questionId)).state, "answered");
-      assert.strictEqual(yield* settle(orgId, TUE_1930), 0);
+      const closed = yield* questionRow(sql, questionId);
+      assert.strictEqual(closed.state, "answered");
       assert.lengthOf(yield* dueEvents(sql, orgId), 0);
+      const [card] = yield* sql<{ widgetId: string }>`SELECT widget_id AS "widgetId"
+        FROM kin_questions WHERE question_id = ${questionId}`;
+      const widget = (id: string) =>
+        repo
+          .getWidget({ orgId, widgetId: KinWidgetId.make(id) })
+          .pipe(Effect.map(Option.getOrThrow));
+      assert.deepInclude((yield* widget(card!.widgetId)).state, {
+        outcome: { title: "Answered", text: "Finance took this from what you wrote: Draft it" },
+      });
+      const [note] = yield* repo.listOpenWaiting({ orgId, personId: owner.personId });
+      assert.match(String(note!.question), /^I took “Draft it” from what you wrote/);
+      const tap = (who: typeof owner, widgetId: string, option: string) =>
+        widget(widgetId).pipe(
+          Effect.flatMap((shown) =>
+            chats.act(who, {
+              widgetId: shown.widgetId,
+              revision: shown.revision,
+              actionId: "choose",
+              value: option,
+              clientActionId: `${who.personId}-${widgetId}-${option}`,
+            }),
+          ),
+        );
+      assert.isTrue(
+        Exit.isFailure(yield* Effect.exit(tap(meera as typeof owner, note!.widgetId!, "option-1"))),
+      );
+      assert.strictEqual((yield* questionRow(sql, questionId)).state, "answered");
+
+      // Her Undo opens it again on its card, waiting for her: no default, nothing at its day.
+      yield* tap(owner, note!.widgetId!, "option-1");
+      assert.deepInclude(yield* questionRow(sql, questionId), { state: "open", answer: null });
+      const reopened = yield* widget(card!.widgetId);
+      assert.isNull(reopened.closedAt);
+      assert.notProperty(reopened.state, "outcome");
+      assert.deepInclude((yield* widget(note!.widgetId!)).state, {
+        outcome: {
+          title: "Undone",
+          text: "“Shall I draft VIOM's payment reminder for INV-8?” is open again, and Finance waits for your answer. What was already done from the first answer stands.",
+          undone: {
+            personId: owner.personId,
+            name: "Rhea Rao",
+            at: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+          },
+        },
+      });
+      const [waiting] = yield* repo.listOpenWaiting({ orgId, personId: owner.personId });
+      assert.strictEqual(waiting!.widgetId, card!.widgetId);
+      assert.deepInclude(waiting!.ask!, { agent: "Finance", default: null });
+      const told = sql<{ json: string }>`SELECT json FROM kin_events
+        WHERE org_id = ${orgId} AND agent_id = 'finance'
+          AND dedupe_key LIKE 'question-answer-undone:%'`;
+      const [undoneEvent] = yield* told;
+      const subject = JSON.parse(undoneEvent!.json).subject;
+      assert.deepInclude(subject, { undone: true, words: true });
+      const toldFinance = Questions.undoneTurnText(KinOrgId.make(orgId), subject);
+      assert.match(String(yield* toldFinance), /open again on its card, waiting for their answer/);
+      // The words it was taken from, retried in the turn they woke, no longer answer it.
+      yield* refused("finance", /own message/);
+      assert.strictEqual(yield* settle(orgId, TUE_1930), 0);
+      assert.strictEqual((yield* questionRow(sql, questionId)).state, "open");
+
+      // Her new words do. Told of the Undo after that, Finance reads it was undone all the same.
+      yield* wake("finance", yield* say(chatOf("finance"), "Draft it after all."));
+      assert.isTrue((yield* answer("finance")).ok);
+      assert.strictEqual(
+        yield* toldFinance,
+        "Your question to Rhea Rao, “Shall I draft VIOM's payment reminder for INV-8?”: Rhea Rao undid the answer you took from their words. It has since been answered: “Draft it”; go by that, not the undone answer, and don't ask again.",
+      );
+      // Finance retired since: her Undo keeps the answer, says why, and leaves nothing waiting.
+      const [second] = yield* repo.listOpenWaiting({ orgId, personId: owner.personId });
+      yield* sql`UPDATE kin_agents SET retired_at = ${TUE_1930_ISO} WHERE agent_id = 'finance'`;
+      yield* tap(owner, second!.widgetId!, "option-1");
+      assert.strictEqual((yield* questionRow(sql, questionId)).state, "answered");
+      assert.deepInclude((yield* widget(second!.widgetId!)).state, {
+        outcome: {
+          title: "Nothing was undone",
+          text: "Finance is no longer here, so the question stays closed and its answer stands as taken. You can raise it with another agent.",
+        },
+      });
+      assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: owner.personId }), 0);
+      assert.lengthOf(yield* told, 1);
     }).pipe(Effect.provide(layer)),
   ),
 );
