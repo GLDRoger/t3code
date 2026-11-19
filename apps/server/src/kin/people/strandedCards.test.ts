@@ -160,11 +160,12 @@ it.effect(
       yield* service.setAccess(ownerSession, { orgId, personId: dev, access: "member" });
       assert.deepStrictEqual(yield* now, untouched);
 
-      // Meera made a member, still in Launch: its waiting mail closes, saying why.
+      // Meera made a member, still in Launch: its waiting mail goes stale and its card says why;
+      // the one already sending, the owner's own chat and Books stay as they were.
       yield* service.setAccess(ownerSession, { orgId, personId: meera, access: "member" });
       const why = "Meera is no longer a co-owner here, so this needs asking again.";
       assert.deepStrictEqual(yield* now, [
-        { ...untouched[0]!, closed: 1, said: `Closed: ${why}` },
+        { ...untouched[0]!, state: "stale", reason: why, closed: 1, said: `Closed: ${why}` },
         ...untouched.slice(1),
       ]);
       // A Confirm from the card as it was does nothing.
@@ -187,9 +188,12 @@ it.effect(
 
       // Removed while a co-owner, Zoya's Books mail closes the same way.
       yield* service.removeAccess(ownerSession, { orgId, personId: zoya });
+      const gone = "Zoya is no longer a co-owner here, so this needs asking again.";
       assert.deepInclude((yield* now).at(-1), {
+        state: "stale",
+        reason: gone,
         closed: 1,
-        said: "Closed: Zoya is no longer a co-owner here, so this needs asking again.",
+        said: `Closed: ${gone}`,
       });
     }).pipe(Effect.provide(layer)),
 );

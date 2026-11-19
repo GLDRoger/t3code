@@ -77,7 +77,7 @@ import { reholdAfter, validZone } from "../triggers/quietHold.ts";
 import { companyMoney } from "../work/companyProfile.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { closeHeldQuestions } from "../questions/openQuestions.ts";
-import { strandedAskCards } from "../connections/strandedAsks.ts";
+import { staleAsksStranded } from "../connections/strandedAsks.ts";
 
 const isKinError = Schema.is(KinChatError);
 const isSqlError = Schema.is(PersistenceSqlError);
@@ -1127,13 +1127,14 @@ export const make = Effect.gen(function* () {
         { field, from: `person:${input.personId}`, to: null },
       ]);
   });
-  /** In the change that took their owner-level: the send cards it left unconfirmable close. */
+  /** In the change that took their owner-level: the mail asks it left unconfirmable close. */
   const closeStranded = Effect.fn("KinPeople.closeStranded")(function* (
     orgId: KinOrgId,
     gone: Pick<KinPerson, "personId" | "displayName">,
   ) {
     const why = `${gone.displayName} is no longer a co-owner here, so this needs asking again.`;
-    const cards = yield* strandedAskCards(orgId, gone.personId).pipe(
+    const now = yield* Clock.currentTimeMillis;
+    const cards = yield* staleAsksStranded(orgId, gone.personId, why, now).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
       Effect.mapError(toPersistenceSqlError("KinPeople.strandedAsks")),
     );
