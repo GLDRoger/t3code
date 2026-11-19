@@ -347,7 +347,7 @@ export const restore = Effect.fn("KinDocs.restore")(
 export const startWhatWeSell = Effect.fn("KinDocs.startWhatWeSell")(
   function* (people: ReadonlyArray<PersonIdentity>, input: KinDocStartWhatWeSellInput) {
     const person = yield* theOwner(people, input.orgId);
-    const row = yield* startOfferings(input.orgId, ownerWriter(person), person.personId);
+    const { row } = yield* startOfferings(input.orgId, ownerWriter(person), person.personId);
     return yield* detailOf(input.orgId, { recordId: row.recordId }, KIN_OWNER_LEVEL);
   },
   Effect.catchTags({ SqlError: () => unavailable }),

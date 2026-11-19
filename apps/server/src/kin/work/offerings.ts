@@ -92,34 +92,47 @@ const keeper = Effect.fn("KinOfferings.keeper")(function* (orgId: KinOrgId, owne
 });
 
 /**
- * Starts What we sell: Kin's outline, once per company, kept by the sales agent; an archived one
- * comes back as it was left. Owner level only: the caller checks.
+ * Starts What we sell: the body given (else Kin's outline), once per company, kept by the sales
+ * agent; one there already is is returned unwritten, an archived one brought back as it was left.
+ * Owner level only: the caller checks.
  */
 export const startOfferings = Effect.fn("KinOfferings.start")(function* (
   orgId: KinOrgId,
   writer: Writer,
   owner: KinPersonId,
+  start: {
+    readonly body?: string;
+    readonly summary?: string;
+    readonly provenance?: Docs.Provenance;
+  } = {},
 ) {
-  const held = yield* findOfferings(orgId);
-  const row =
-    held === undefined
-      ? (yield* Docs.create(
-          orgId,
-          writer,
-          {},
-          {
-            title: OFFERINGS_TITLE,
-            body: OFFERINGS_OUTLINE,
-            owner: yield* keeper(orgId, owner),
-            summary: "Kin's outline",
-            kind: "other",
-            company: true,
-            originKey: OFFERINGS_ORIGIN,
-          },
-        )).row
-      : yield* Docs.docRow(orgId, { recordId: held.recordId }, KIN_OWNER_LEVEL);
-  if (row.state !== "dropped") return row;
-  return (yield* Docs.move(orgId, writer, { key: row.key }, { archived: false })).row;
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const held = yield* findOfferings(orgId);
+      const body = start.body?.trim() === "" ? undefined : start.body;
+      const written =
+        held === undefined
+          ? yield* Docs.create(orgId, writer, start.provenance ?? {}, {
+              title: OFFERINGS_TITLE,
+              body: body ?? OFFERINGS_OUTLINE,
+              owner: yield* keeper(orgId, owner),
+              summary: body === undefined ? "Kin's outline" : (start.summary ?? "Created"),
+              kind: "other",
+              company: true,
+              originKey: OFFERINGS_ORIGIN,
+            })
+          : { row: yield* Docs.docRow(orgId, { recordId: held.recordId }, KIN_OWNER_LEVEL) };
+      const row = written.row;
+      const made = "created" in written && written.created;
+      if (row.state !== "dropped") return { row, made, restored: false };
+      return {
+        row: (yield* Docs.move(orgId, writer, { key: row.key }, { archived: false })).row,
+        made,
+        restored: true,
+      };
+    }),
+  );
 });
 
 /** The line every agent's prompt carries when the company has no live What we sell. */

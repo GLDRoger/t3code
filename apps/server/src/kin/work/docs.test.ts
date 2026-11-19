@@ -33,7 +33,12 @@ import { sectionsOf } from "./docBody.ts";
 import * as Docs from "./docs.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadDocs from "./leadDocs.ts";
-import { findOfferings, OFFERINGS_ORIGIN, offeringsIndex } from "./offerings.ts";
+import {
+  findOfferings,
+  OFFERINGS_ORIGIN,
+  offeringsIndex,
+  offeringsPromptIndex,
+} from "./offerings.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
 import { playbookIndex, playbookThreshold } from "./playbooks.ts";
 import { PLAYBOOK_SEEDS, seedPlaybooks } from "./playbookSeeds.ts";
@@ -1462,6 +1467,98 @@ it.effect(
       assert.isFalse(again.archived);
       assert.strictEqual(again.latest.version, 1);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "an agent's doc_create with whatWeSell starts the one What we sell, then gives its key; a teammate's turn can't",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* turn();
+      // An ordinary doc titled like it is left as it is; the flagged call makes the real one.
+      const plain = yield* LeadDocs.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        title: "What we sell",
+        body: "## Old list\nLedgerline.",
+        company: true,
+      });
+      const body =
+        "# What we sell\n\n## Who is a good customer for us\nInvented warehouses.\n\n## Ledgerline stock counts\nCounts stock for 380 a warehouse.\n";
+      const start = (text: string) =>
+        LeadDocs.create(scopeOf(lead), {
+          sourceEventId: "ask-event",
+          title: "Our offerings",
+          body: text,
+          sensitive: true,
+          whatWeSell: true,
+        });
+      const made = yield* start(body);
+      assert.notStrictEqual(made.key, plain.key);
+      assert.deepInclude(made, {
+        title: "What we sell",
+        version: 1,
+        changed: true,
+        kind: "other",
+        company: true,
+      });
+      assert.isUndefined(made.sensitive);
+      assert.notProperty(made, "note");
+      assert.strictEqual((yield* findOfferings(orgId))?.key, made.key);
+      const pinned = () => OwnerDocs.list([owner], { orgId, whatWeSell: true });
+      assert.deepStrictEqual(
+        (yield* pinned()).docs.map((doc) => [doc.key, doc.whatWeSell]),
+        [[made.key, { offerings: 1 }]],
+      );
+      const index = yield* offeringsPromptIndex(orgId, KIN_OWNER_LEVEL);
+      assert.deepStrictEqual(index._tag === "index" ? index.index.sections : index._tag, [
+        "Who is a good customer for us",
+        "Ledgerline stock counts",
+      ]);
+      assert.strictEqual(
+        (yield* Docs.docRow(orgId, { key: plain.key }, KIN_OWNER_LEVEL)).title,
+        "What we sell",
+      );
+
+      // Called again, it writes nothing and names the one there is.
+      const again = yield* start("## Something else");
+      assert.deepInclude(again, { key: made.key, version: 1, changed: false });
+      assert.include("note" in again ? again.note : "", made.key);
+      const [versions] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
+        FROM kin_doc_versions v JOIN kin_records r ON r.org_id = v.org_id AND r.record_id = v.record_id
+        WHERE r.org_id = ${orgId} AND r.origin_key = ${OFFERINGS_ORIGIN}`;
+      assert.strictEqual(versions!.count, 1);
+
+      // Archived, it comes back as the card's start brings it back.
+      yield* Docs.move(orgId, agentWriter(lead), { key: made.key }, { archived: true });
+      const back = yield* start(body);
+      assert.deepInclude(back, { key: made.key, version: 1 });
+      assert.notStrictEqual((yield* findOfferings(orgId))?.state, "dropped");
+      assert.lengthOf((yield* pinned()).docs, 1);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a teammate's shared turn can't start What we sell, and nothing is written", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_people SET sees_docs = 1 WHERE person_id = ${mateId}`;
+    yield* turn("mate", "shared");
+    const refused = yield* Effect.flip(
+      LeadDocs.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        title: "What we sell",
+        body: "## Ledgerline\nInvented.",
+        whatWeSell: true,
+      }),
+    );
+    assert.strictEqual(reasonOf(refused), "not_allowed");
+    assert.strictEqual(
+      "message" in refused ? refused.message : "",
+      "Only the owner or a co-owner starts What we sell, in a chat only they are in. Nothing was written.",
+    );
+    assert.isUndefined(yield* findOfferings(orgId));
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("a teammate with Docs reads What we sell, and their turn's agent can't change it", () =>
