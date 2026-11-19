@@ -12,6 +12,7 @@ import {
   KinChatId,
   KinMessageId,
   KinWidgetId,
+  KIN_TAKEN_DEFAULT_FIELD,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -395,6 +396,25 @@ describe("kinTaskActivity", () => {
             ],
           }),
           change({ seq: 1, kind: "created", at: "2026-11-10T08:00:00.000Z" }),
+          // Kin took the default of a question nobody answered.
+          change({
+            seq: 3,
+            by: chief,
+            via: "lead",
+            at: "2026-11-10T13:00:00.000Z",
+            fields: [
+              { field: "state", from: "open", to: "done" },
+              { field: KIN_TAKEN_DEFAULT_FIELD, from: null, to: "q-1" },
+            ],
+          }),
+          // A list's own field called "default" is an ordinary edit.
+          change({
+            seq: 4,
+            by: chief,
+            via: "lead",
+            at: "2026-11-10T14:00:00.000Z",
+            fields: [{ field: "default", from: null, to: "q-2" }],
+          }),
         ],
         comments: [
           comment({ seq: 1, by: zoya, at: "2026-11-10T09:00:00.000Z", body: "On it." }),
@@ -414,6 +434,8 @@ describe("kinTaskActivity", () => {
       ["comment", "Zoya", "", null],
       ["gave", "Meera", "gave it to Zoya", "Chief of staff"],
       ["comment", "You", "removed this note", null],
+      ["state", "Chief of staff", "went with the default: finished it (nobody answered)", null],
+      ["change", "Chief of staff", "updated it", null],
     ]);
     expect(lines[1]?.comment).toMatchObject({ body: "On it.", removed: false });
   });

@@ -94,7 +94,7 @@ export const KinWorkToolkit = Toolkit.make(
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("record_update", {
     ...shared,
-    description: `Change named fields of one Work entry by key, or of several the same way by keys (up to 100, all or none); fields you leave out stay as they are, and the entry's history keeps every change. Move state as you work it: doing, waiting with waitingOn ("owner" or an agent's agentId), done, or dropped. owner gives it to someone; giving it to another agent asks that agent to do it. With owner, tell: false holds their notice as record_assign's does. client and project set what it belongs to; due, client, project and contact details take null to clear. A defined list's entry also takes amount (as said; "That was 4,200, not 2,400" changes only amount), date, category, repeat and fields; amount, date and repeat take null to clear. Closing a repeating entry makes its next one. A task's milestone, size, reason and from change the same way, as do a goal's target, due and a manual goal's current; giving from again after its section changed re-anchors it. Clients, contacts and projects change the same way; state dropped closes one. Pass expectedRev to refuse the change if it moved since you read it. Returns the new rev and the fields that changed. Don't narrate the change in your reply.`,
+    description: `Change named fields of one Work entry by key, or of several the same way by keys (up to 100, all or none); fields you leave out stay as they are, and the entry's history keeps every change. Move state as you work it: doing, waiting with waitingOn ("owner" or an agent's agentId), done, or dropped. owner gives it to someone; giving it to another agent asks that agent to do it. With owner, tell: false holds their notice as record_assign's does. client and project set what it belongs to; due, client, project and contact details take null to clear. A defined list's entry also takes amount (as said; "That was 4,200, not 2,400" changes only amount), date, category, repeat and fields; amount, date and repeat take null to clear. Closing a repeating entry makes its next one. A task's milestone, size, reason and from change the same way, as do a goal's target, due and a manual goal's current; giving from again after its section changed re-anchors it. Clients, contacts and projects change the same way; state dropped closes one. Pass expectedRev to refuse the change if it moved since you read it. If a person changed the entry after your turn began the update is refused: read it again and pass expectedRev. Returns the new rev and the fields that changed. Don't narrate the change in your reply.`,
     parameters: Work.UpdateInput,
     success: Work.UpdateResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -117,7 +117,7 @@ export const KinWorkToolkit = Toolkit.make(
   Tool.make("record_comment", {
     ...shared,
     description:
-      "Say something on a Work entry without changing it, such as progress, a finding or a question; whoever holds it is told. Not for changing its brief, state, owner or due: record_update does that.",
+      "Say something on a Work entry without changing it, such as progress, a finding or a question; whoever holds it is told. Not for changing its brief, state, owner or due: record_update does that. A web link goes on the entry with record_link, not in a comment.",
     parameters: Comments.CommentInput,
     success: Comments.CommentResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

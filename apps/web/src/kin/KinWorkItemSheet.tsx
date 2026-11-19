@@ -10,13 +10,16 @@ import {
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
   KIN_WORK_REPEAT,
-  KIN_WORK_TITLE_MAX,
   kinSameRepeat,
   kinWorkAssignees,
+  kinWorkClientStays,
   kinWorkDayOf,
   kinWorkDueChoices,
   kinWorkItemState,
   kinWorkItemView,
+  kinWorkRefsMatching,
+  kinWorkTitleCount,
+  kinWorkTitleTooLong,
   type KinWorkAssignee,
   type KinWorkItemView,
   type KinWorkLinkView,
@@ -96,6 +99,7 @@ import {
   MenuGroupLabel,
   MenuItem,
   MenuPopup,
+  MenuSearchInput,
   MenuSeparator,
   MenuSub,
   MenuSubPopup,
@@ -128,6 +132,7 @@ import { KinWorkAudienceRow } from "./KinWorkShareRow";
 import { KinWorkRow } from "./KinWorkTasks";
 import { KinWorkSection as Section } from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
+import { KinAskRecord } from "./KinAskRecord";
 import { kinClient } from "./kinClient";
 import { openDestination } from "./KinNotifications";
 import { useNowMinuteMs } from "./useKinClock";
@@ -525,8 +530,11 @@ function KinWorkItem(
   });
   const moved = edit === null ? null : kinWorkEditMoved(edit, props.item);
   const titleId = useId();
+  const titleCountId = useId();
   const notesId = useId();
   const { choices } = props;
+  const titleCount = edit === null ? null : kinWorkTitleCount(edit.title);
+  const clientStays = choices === null ? null : kinWorkClientStays(shown, choices.projectClients);
   const step = kinNextStep({
     item: shown,
     view,
@@ -562,8 +570,15 @@ function KinWorkItem(
                 {KIN_WORK_COPY.saving}
               </span>
             ) : null}
-            {!more ? null : (
-              <div className="ms-auto">
+            <div className="ms-auto flex items-center gap-1">
+              <KinAskRecord
+                environmentId={environmentId}
+                orgId={orgId}
+                record={{ key: view.key, title: view.title }}
+                disabled={saving}
+                onOpen={props.onClose}
+              />
+              {!more ? null : (
                 <Menu>
                   <MenuTrigger
                     render={
@@ -636,8 +651,8 @@ function KinWorkItem(
                     )}
                   </MenuPopup>
                 </Menu>
-              </div>
-            )}
+              )}
+            </div>
           </div>
           {edit !== null ? null : <Frame.Title>{view.title}</Frame.Title>}
           {view.remarks.map((remark) => (
@@ -661,11 +676,24 @@ function KinWorkItem(
               <Input
                 id={titleId}
                 value={edit.title}
-                maxLength={KIN_WORK_TITLE_MAX}
                 autoComplete="off"
                 autoFocus
+                aria-describedby={titleCount === null ? undefined : titleCountId}
+                aria-invalid={kinWorkTitleTooLong(edit.title) || undefined}
                 onChange={(event) => props.onEdit({ title: event.target.value })}
               />
+              {titleCount === null ? null : (
+                <p
+                  id={titleCountId}
+                  className={
+                    kinWorkTitleTooLong(edit.title)
+                      ? "text-xs text-destructive-foreground tabular-nums"
+                      : "text-xs text-muted-foreground tabular-nums"
+                  }
+                >
+                  {titleCount}
+                </p>
+              )}
               {moved?.title == null ? null : (
                 <p className="text-xs text-muted-foreground">It now says: {moved.title}</p>
               )}
@@ -894,6 +922,9 @@ function KinWorkItem(
                     </span>
                   )}
                 </dd>
+                {clientStays === null ? null : (
+                  <dd className="col-start-2 -mt-1 text-xs text-muted-foreground">{clientStays}</dd>
+                )}
               </>
             )}
             {view.milestone === null ? null : (
@@ -1157,6 +1188,8 @@ export function KinLinkedGroups(props: {
 }
 
 const PLACE_ROW = "flex min-w-0 flex-1 truncate";
+// A short list is quicker scanned than searched.
+const PLACE_SEARCH_FROM = 8;
 
 /** The client or project a task is under: pick another, take it off, or open the one it has. */
 function PlaceMenu(props: {
@@ -1179,7 +1212,12 @@ function PlaceMenu(props: {
   };
 }) {
   const { value, onPick, side } = props;
-  const groups = kinTaskProjectMenu({ projects: props.choices, doneProjects: props.done ?? [] });
+  const [query, setQuery] = useState("");
+  const groups = kinTaskProjectMenu({
+    projects: kinWorkRefsMatching(props.choices, query),
+    doneProjects: kinWorkRefsMatching(props.done ?? [], query),
+  });
+  const searchable = props.choices.length + (props.done?.length ?? 0) > PLACE_SEARCH_FROM;
   if (onPick === null) {
     if (value === null) return null;
     const { onOpen } = props;
@@ -1192,7 +1230,11 @@ function PlaceMenu(props: {
     );
   }
   return (
-    <Menu>
+    <Menu
+      onOpenChange={(open) => {
+        if (!open) setQuery("");
+      }}
+    >
       <MenuTrigger
         render={
           <Button
@@ -1206,10 +1248,21 @@ function PlaceMenu(props: {
         <span className="max-w-40 truncate">{value?.title ?? KIN_WORK_NEW_COPY.none}</span>
         <ChevronDownIcon />
       </MenuTrigger>
-      <MenuPopup align="start">
+      <MenuPopup align="start" className="max-w-80">
+        {!searchable ? null : (
+          <MenuSearchInput
+            autoFocus
+            value={query}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+            placeholder={`Find a ${props.label.toLowerCase()}`}
+            aria-label={`Find a ${props.label.toLowerCase()}`}
+          />
+        )}
         {value === null || props.onOpen === null ? null : (
           <>
-            <MenuItem onClick={props.onOpen}>Open {value.title}</MenuItem>
+            <MenuItem onClick={props.onOpen}>
+              <span className={PLACE_ROW}>Open {value.title}</span>
+            </MenuItem>
             <MenuSeparator />
           </>
         )}
@@ -1221,6 +1274,7 @@ function PlaceMenu(props: {
               <MenuItem
                 key={choice.key}
                 disabled={choice.key === value?.key}
+                title={choice.title}
                 onClick={() => onPick(choice)}
               >
                 <span className={PLACE_ROW}>{choice.title}</span>
@@ -1246,6 +1300,8 @@ function PlaceMenu(props: {
         )}
         {value === null && props.choices.length === 0 ? (
           <MenuItem disabled>Nothing to pick yet</MenuItem>
+        ) : groups.length === 0 && query.trim() !== "" ? (
+          <MenuItem disabled>{KIN_WORK_NEW_COPY.noMatch}</MenuItem>
         ) : null}
       </MenuPopup>
     </Menu>

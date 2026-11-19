@@ -1134,5 +1134,6 @@ unlisted:
   "web:settings/kin-connections": The app's old address; opens Kin's Settings → Connections.
   "web:?v": Picks the version of the open doc; not a screen.
   "web:?tab": Switches the Clients place between its Clients and Projects lists; not a screen.
+  "web:?person": Starts Tasks narrowed to what one person holds, from their page's See all in Tasks; not a screen.
   "web:?section": Scrolls the open doc to a section; not a screen.
   "web:?from": The base version of the compare view (`?changes`); not a screen.

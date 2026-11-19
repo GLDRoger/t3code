@@ -6,6 +6,7 @@ import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_SEARCH } from "@t3tools/client-runtime/kin/kinDocs";
 import {
   KIN_TASK_GROUP_BY,
+  kinTaskFilterProjects,
   KIN_TASKS,
   kinNeedsYouCount,
   kinTaskGroupedChip,
@@ -262,6 +263,7 @@ export function KinTasksList(
     everyone: within === undefined,
     groups: within === undefined,
     choices: within === undefined ? props.choices : null,
+    records,
     onChange: (next) => list.setFilter(next),
   });
   return (
@@ -270,16 +272,14 @@ export function KinTasksList(
         title={props.title}
         refresh={{ accessibilityLabel: "Refresh", onPress: refresh }}
         actions={[
-          ...(agent === null
+          // Inside a project, the project's own bar asks about the project instead.
+          ...(agent === null || within !== undefined
             ? []
             : [
                 {
                   accessibilityLabel: `Ask ${agent.name}`,
                   icon: "bubble.left" as const,
-                  onPress: () =>
-                    agent.ask(
-                      kinWorkAskDraft("tasks", within === undefined ? narrowed : props.title),
-                    ),
+                  onPress: () => agent.ask(kinWorkAskDraft("tasks", narrowed)),
                 },
               ]),
           ...(add === null
@@ -665,6 +665,8 @@ function kinWorkFilterMenu(props: {
   /** Whether Group by is offered, which a project's own list leaves out. */
   readonly groups: boolean;
   readonly choices: KinWorkChoices | null;
+  /** The rows in view, whose projects the Filter offers too. */
+  readonly records: ReadonlyArray<KinRecord>;
   readonly onChange: (filter: KinWorkFilter) => void;
 }) {
   const { overview, filter, choices, onChange } = props;
@@ -755,7 +757,7 @@ function kinWorkFilterMenu(props: {
               KIN_WORK_HOME.byProject,
               KIN_WORK_HOME.allProjects,
               filter.project,
-              choices.projects,
+              kinTaskFilterProjects(choices.projects, props.records),
               (project) => ({ ...filter, project }),
             ),
           ]),

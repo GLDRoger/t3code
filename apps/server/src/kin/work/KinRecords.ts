@@ -139,6 +139,11 @@ export type Writer = {
   };
   /** The cards a person's tap settles itself: closing the entry leaves them to the tap. */
   readonly answering?: ReadonlyArray<string>;
+  /**
+   * Putting back a default `asker` took (`defaultTaken.ts`): reopened, a task is given to nobody
+   * anew, and an agent holding it other than `asker` hears it is open again.
+   */
+  readonly undoing?: { readonly asker: string };
 };
 /** A Work task this writer, a person, holds now and nobody dropped. */
 const heldBy = (
@@ -472,6 +477,12 @@ export class KinRecords extends Context.Service<
       /** Logged with the change even when no column changes: a doc's new version. */
       also?: ReadonlyArray<FieldChange>,
     ) => Effect.Effect<RecordRow, KinChatError>;
+    /** Fails as `update` does when `who` can't hold an entry or be waited on: unknown, or retired. */
+    readonly principalExists: (
+      orgId: KinOrgId,
+      who: KinWorkPrincipal,
+      role?: string,
+    ) => Effect.Effect<void, KinChatError>;
     /**
      * The holder gives an open task back to whoever gave it to them: the agent that did, else the
      * person, else the owner. It reopens, and an agent it goes back to is woken with their words.
@@ -1368,10 +1379,18 @@ const make = Effect.gen(function* () {
           patch.projectId === undefined || patch.projectId === null
             ? undefined
             : yield* target(orgId, patch.projectId, "projects");
+        // Moved to another project, a task under the old project's client (or none) takes the new one's.
+        const moved = project !== undefined && projectId !== row.projectId;
+        const [was] =
+          !moved || row.projectId === null || row.partyId === null
+            ? []
+            : yield* sql<{ partyId: string | null }>`SELECT party_id AS "partyId" FROM kin_records
+                WHERE org_id = ${orgId} AND record_id = ${row.projectId}`;
         const partyId =
           patch.partyId !== undefined
             ? patch.partyId
-            : row.partyId === null && project !== undefined
+            : project !== undefined &&
+                (row.partyId === null || (was !== undefined && was.partyId === row.partyId))
               ? project.partyId
               : row.partyId;
         const invalidRefs = checkRefs(def, partyId, projectId);
@@ -1601,9 +1620,17 @@ const make = Effect.gen(function* () {
         }
         // Reopened by a person, a lead's entry is given to it again, with that person's authority.
         const reopened =
+          writer.undoing === undefined &&
           reassigned === undefined &&
           before.owner._tag === "agent" &&
           writer.actor._tag === "person" &&
+          isClosed(row.state) &&
+          !isClosed(state);
+        const undoneFor =
+          writer.undoing !== undefined &&
+          reassigned === undefined &&
+          before.owner._tag === "agent" &&
+          before.owner.agentId !== writer.undoing.asker &&
           isClosed(row.state) &&
           !isClosed(state);
         if (reopened) {
@@ -1799,7 +1826,7 @@ const make = Effect.gen(function* () {
           );
         else if (reassigned !== undefined)
           yield* wakeLead(orgId, writer, row, reassigned, writer.askedBy ?? null, seq, now);
-        if (reopened)
+        if (reopened || undoneFor)
           yield* wakeLead(orgId, writer, row, before.owner, writer.askedBy ?? null, seq, now);
         // A lead never keeps working an open entry a person closed or took from it.
         const withdrawnFrom: Principal | undefined =
@@ -2373,6 +2400,9 @@ const make = Effect.gen(function* () {
   return KinRecords.of({
     create,
     update,
+    principalExists: Effect.fn("KinRecords.principalExists")(function* (orgId, who, role) {
+      return yield* failed(ownerExists(orgId, who, role));
+    }),
     handBack,
     link,
     unlink,

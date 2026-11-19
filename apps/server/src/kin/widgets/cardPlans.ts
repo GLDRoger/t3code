@@ -95,11 +95,39 @@ const RoutePlan = Schema.Struct({
   draw: CardDraw,
 });
 export type RoutePlan = typeof RoutePlan.Type;
-export const CardPlan = Schema.Union([RecordPlan, StartPlan, ListPlan, DefaultPlan, RoutePlan]);
+/**
+ * On Kin's note that a question's default was taken at its day: Undo puts back the one change it
+ * made (`seq`, which left the entry at `rev`), Keep leaves it. Sealed by the server, never drawn.
+ */
+const TakenPlan = Schema.Struct({
+  kind: Schema.Literals(["undo_default", "keep_default"]),
+  questionId: Schema.String,
+  agentId: Schema.String,
+  recordId: Schema.String,
+  key: Schema.String,
+  title: Schema.String,
+  label: Schema.String,
+  seq: Schema.Number,
+  rev: Schema.Number,
+  /** Its person couldn't see the entry when told: its words never name it (`key`, `title`). */
+  hidden: Schema.optional(Schema.Literal(true)),
+});
+export type TakenPlan = typeof TakenPlan.Type;
+export const CardPlan = Schema.Union([
+  RecordPlan,
+  StartPlan,
+  ListPlan,
+  DefaultPlan,
+  RoutePlan,
+  TakenPlan,
+]);
 export type CardPlan = typeof CardPlan.Type;
 const PlanJson = Schema.fromJsonString(CardPlan);
 const encodePlan = Schema.encodeEffect(PlanJson);
 const decodePlan = Schema.decodeUnknownOption(PlanJson);
+
+export const isTaken = (plan: CardPlan): plan is TakenPlan =>
+  plan.kind === "undo_default" || plan.kind === "keep_default";
 
 /** Whether a tap on this plan is finished by the server, so it wakes no lead. */
 export const runsItself = (plan: CardPlan) => plan.kind !== "take_default" || plan.final !== null;

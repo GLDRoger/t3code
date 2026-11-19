@@ -65,6 +65,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinAwaySection, KinHandOverRow } from "./components/KinAway";
+import { KinPersonTasks } from "./components/KinPersonTasks";
 import { KinDeviceList } from "./KinDevicesScreen";
 import { KinInviteLink } from "./components/KinInviteLink";
 import { KinTasksKeysSection } from "./components/KinTasksKeys";
@@ -291,20 +292,24 @@ function KinTeammateDetails(props: {
           mayEdit={profile.canEdit === true}
         />
       )}
-      {profile === null || openTasks === 0 ? null : (
-        <ListSection
-          title="Tasks"
-          {...(offered.remove
+      {teammate.personId === null ? null : (
+        <KinPersonTasks
+          environmentId={props.target.environmentId}
+          orgId={props.target.orgId}
+          personId={teammate.personId}
+          {...(offered.remove && openTasks > 0
             ? { footer: KIN_HAND_OVER.removeOffer(openTasks, teammate.name) }
             : {})}
         >
-          <KinHandOverRow
-            environmentId={props.target.environmentId}
-            orgId={props.target.orgId}
-            from={{ _tag: "person", personId: profile.personId }}
-            fromName={profile.displayName}
-          />
-        </ListSection>
+          {profile === null || openTasks === 0 ? null : (
+            <KinHandOverRow
+              environmentId={props.target.environmentId}
+              orgId={props.target.orgId}
+              from={{ _tag: "person", personId: profile.personId }}
+              fromName={profile.displayName}
+            />
+          )}
+        </KinPersonTasks>
       )}
       {kinTeammateKindEditable(teammate, props.viewer) ? (
         <ListSection title={KIN_TEAM_COPY.canDo}>

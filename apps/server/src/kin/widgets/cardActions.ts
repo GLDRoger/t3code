@@ -24,6 +24,7 @@ import { routeShown, runRoute } from "../lead/routeCard.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import * as Memory from "../memory/Memory.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
+import { runTaken, takenFor, undoLine } from "../questions/defaultTaken.ts";
 import { type QuestionRow, answerCard, readQuestion } from "../questions/openQuestions.ts";
 import {
   KinDeferralStopSwitch,
@@ -33,6 +34,7 @@ import {
 } from "../triggers/deferrals.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { viewOf } from "../work/leadWork.ts";
+import { repeatOf } from "../work/recordRows.ts";
 import { defineProposed, proposalToCreate } from "../work/registers.ts";
 import { teamGuard, viewVisible } from "../work/teamView.ts";
 import {
@@ -40,6 +42,7 @@ import {
   type CardDraw,
   type CardPlan,
   type RunPlan,
+  isTaken,
   plansOf,
 } from "./cardPlans.ts";
 
@@ -84,6 +87,10 @@ const labelOf = (plan: CardPlan): string => {
     }
     case "let_talk":
       return routeShown(plan).label;
+    case "undo_default":
+      return "Undo";
+    case "keep_default":
+      return "Keep it";
   }
 };
 
@@ -104,6 +111,10 @@ const lineOf = (plan: CardPlan): string => {
     }
     case "let_talk":
       return routeShown(plan).line;
+    case "undo_default":
+      return undoLine(plan);
+    case "keep_default":
+      return `Keep ${quoted(plan.label, 40)}`;
   }
 };
 
@@ -393,7 +404,8 @@ const defaultSource = Effect.fn("KinCardActions.defaultSource")(function* (
     !state.options.some((one) => one.optionId === optionId && one.label === row.defaultLabel)
   )
     return undefined;
-  return { widgetId: shown, final: (yield* plansOf(orgId, shown)).get(optionId) };
+  const final = (yield* plansOf(orgId, shown)).get(optionId);
+  return { widgetId: shown, final: final === undefined || isTaken(final) ? undefined : final };
 });
 
 /**
@@ -411,7 +423,7 @@ export const redraw = Effect.fn("KinCardActions.redraw")(function* (
   chatId: KinChatId,
   sealed: CardPlan,
 ) {
-  if (sealed.kind === "let_talk") return undefined;
+  if (sealed.kind === "let_talk" || isTaken(sealed)) return undefined;
   const lead = {
     orgId,
     agentId: KinAgentId.make(sealed.draw.agentId),
@@ -500,6 +512,17 @@ export const run = Effect.fn("KinCardActions.run")(function* (
   },
 ) {
   if (plan.kind === "let_talk") return yield* runRoute(tap, plan);
+  if (isTaken(plan))
+    return yield* runTaken(
+      {
+        orgId: tap.orgId,
+        personId: tap.personId,
+        chatId: tap.widget.chatId,
+        widgetId: tap.widget.widgetId,
+      },
+      plan,
+      deps.records,
+    );
   if (plan.kind !== "take_default") return yield* runOne(tap, plan, deps.records, []);
   const row = yield* readQuestion(tap.orgId, plan.questionId);
   if (row !== undefined && row.personId !== tap.personId)
@@ -537,6 +560,64 @@ export const run = Effect.fn("KinCardActions.run")(function* (
         outcome: went,
       });
   return done ?? { title: went.title, text: `Answered ${quoted(plan.question)} with its default.` };
+});
+
+/**
+ * A question's sealed done or drop, taken at its day as the asker, marked as its default
+ * (`takenFor`), while the task is as offered and its drawer still could. False otherwise, or when
+ * closing does more than Undo puts back: a repeating task's next (`KinRecords.spawnNext`), a
+ * handed-back one's mark; or when putting it back would be refused.
+ */
+export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
+  orgId: KinOrgId,
+  plan: CardPlan,
+  question: Pick<QuestionRow, "questionId" | "agentId" | "chatId" | "widgetId" | "raiseWidgetId">,
+  records: KinRecords["Service"],
+) {
+  if ((plan.kind !== "done" && plan.kind !== "drop") || plan.draw.agentId !== question.agentId)
+    return false;
+  const state = plan.kind === "done" ? "done" : "dropped";
+  const row = yield* recordRow(orgId, { recordId: plan.recordId });
+  if (row === undefined || row.rev !== plan.rev) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const [more] = yield* sql<{
+    repeat: string | null;
+    handedBack: number | null;
+    waitingKind: string | null;
+    waitingId: string | null;
+  }>`SELECT repeat_json AS repeat, handed_back_at AS "handedBack",
+      waiting_on_kind AS "waitingKind", waiting_on_id AS "waitingId" FROM kin_records
+    WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
+  if (more === undefined || repeatOf(more.repeat) !== undefined || more.handedBack !== null)
+    return false;
+  // Undo writes back who it waited on, which `update` checks is still here to wait on.
+  if (more.waitingKind !== null && more.waitingId !== null) {
+    const waits =
+      more.waitingKind === "agent"
+        ? { _tag: "agent" as const, agentId: KinAgentId.make(more.waitingId) }
+        : { _tag: "person" as const, personId: KinPersonId.make(more.waitingId) };
+    const back = yield* records
+      .principalExists(orgId, waits, "to wait on")
+      .pipe(Effect.as(true), Effect.catchTags({ KinChatError: () => Effect.succeed(false) }));
+    if (!back) return false;
+  }
+  if ((yield* drawHolds(orgId, plan.draw)) !== undefined) return false;
+  if (!(yield* teamMay(orgId, plan.draw, row, state))) return false;
+  yield* records.update(
+    orgId,
+    {
+      actor: { _tag: "agent", agentId: question.agentId },
+      via: "lead",
+      chatId: question.chatId,
+      // Its own cards say what Kin went with, not that the task closed under them.
+      answering: [question.widgetId, question.raiseWidgetId].filter((id) => id !== null),
+    },
+    row.key,
+    { state },
+    plan.rev,
+    takenFor(question.questionId),
+  );
+  return true;
 });
 
 /** A start the queue refused after its run moved: the whole tap rolls back, and says so. */

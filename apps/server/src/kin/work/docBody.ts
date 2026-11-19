@@ -47,7 +47,7 @@ export const normalize = (body: string) => {
 const hashOf = (text: string) =>
   NodeCrypto.createHash("sha256").update(text).digest("hex").slice(0, 12);
 
-const slug = (title: string) =>
+export const slug = (title: string, empty = "section") =>
   title
     .normalize("NFKD")
     .replace(/[̀-ͯ]/g, "")
@@ -55,7 +55,7 @@ const slug = (title: string) =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 48)
-    .replace(/-+$/, "") || "section";
+    .replace(/-+$/, "") || empty;
 
 /** Every section in order, `top` included even when empty, so it can be named in an edit. */
 export const sectionsOf = (body: string): ReadonlyArray<Section> => {

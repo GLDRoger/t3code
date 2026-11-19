@@ -8,6 +8,7 @@ import {
   KinRecordSide,
   KinRecordState,
   type KinWorkPrincipal,
+  KIN_TAKEN_DEFAULT_FIELD,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -47,8 +48,11 @@ export const millisOf = (shown: string | null) => {
   return Number.isFinite(at) ? at : undefined;
 };
 
-/** Words that ride along with a move and go when it is put back; nothing to restore of their own. */
-export const ALONG = new Set(["reason", "handedBack", "untold"]);
+/**
+ * Words that ride along with a move and go when it is put back; nothing to restore of their own.
+ * `KIN_TAKEN_DEFAULT_FIELD` names the question whose default made the change (`defaultTaken.ts`).
+ */
+export const ALONG = new Set(["reason", "handedBack", "untold", KIN_TAKEN_DEFAULT_FIELD]);
 
 /**
  * What putting back one change's old values writes, or undefined when Kin can't do it on its own:
@@ -153,7 +157,7 @@ export type Row = {
 };
 
 /** Whether `next` put back exactly what `change` replaced, as an Undo of it writes. */
-const putBack = (
+export const putBack = (
   change: { readonly kind: string; readonly fields: ReadonlyArray<FieldChange> },
   next: ReadonlyArray<FieldChange>,
 ) => {

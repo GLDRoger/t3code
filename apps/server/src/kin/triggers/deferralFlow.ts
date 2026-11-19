@@ -20,6 +20,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
@@ -28,6 +29,7 @@ import { PersistenceDecodeError, toPersistenceSqlError } from "../../persistence
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Chat from "../chat/KinChatService.ts";
 import { textLocale, type TextClock } from "../work/companyProfile.ts";
+import { KinRecords } from "../work/KinRecords.ts";
 import * as KinBudget from "../lead/KinBudget.ts";
 import type * as KinLevels from "../lead/KinLevels.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
@@ -150,6 +152,8 @@ const make = Effect.gen(function* () {
   const budget = yield* KinBudget.KinBudget;
   const deliveries = yield* LeadDelivery.KinLeadDelivery;
   const queue = yield* KinEventQueue.KinEventQueue;
+  // A question's default that runs its own action writes through it (`settleDue`).
+  const records = yield* Effect.serviceOption(KinRecords);
 
   /**
    * Hands a due reminder to its lead, who writes it in its own voice; the server attaches the
@@ -561,7 +565,7 @@ const make = Effect.gen(function* () {
           ),
           // Open questions whose day came: a default taken, or raised once more, once each.
           Effect.andThen(
-            settleDue(orgId, now, { chat, queue }).pipe(
+            settleDue(orgId, now, { chat, queue, records: Option.getOrUndefined(records) }).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
               Effect.catch((cause) =>
                 Effect.logWarning("Kin open questions not settled", { orgId, cause }),

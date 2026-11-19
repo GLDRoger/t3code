@@ -290,6 +290,8 @@ export const KinRecordChange = Schema.Struct({
   askedBy: Schema.optional(KinPersonId),
 });
 export type KinRecordChange = typeof KinRecordChange.Type;
+/** The field a change carries when Kin took a question's default: no list field's key has a colon. */
+export const KIN_TAKEN_DEFAULT_FIELD = "kin:default";
 
 export const KIN_RECORD_COMMENT_MAX = 4_000;
 export const KIN_RECORD_COMMENT_FILES_MAX = 8;
