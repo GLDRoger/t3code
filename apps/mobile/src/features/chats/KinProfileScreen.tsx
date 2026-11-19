@@ -11,6 +11,7 @@ import {
   KIN_PROFILE_TALK_MAX,
   kinHoursLine,
   kinMayEditProfile,
+  kinProfileShowsTasks,
   kinPersonSeed,
   kinProfileChanges,
   kinProfileDraft,
@@ -51,6 +52,7 @@ import { pickKinPicture } from "./state/kinPicture";
 import { useKinHostAt } from "./state/useKinHost";
 import { useKinProfiles } from "./state/useKinProfiles";
 import { KinAwaySection } from "./components/KinAway";
+import { KinPersonTasks } from "./components/KinPersonTasks";
 import { KinTasksKeysSection } from "./components/KinTasksKeys";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -59,6 +61,8 @@ export type KinProfileParams = {
   readonly environmentId: string;
   readonly orgId: string;
   readonly personId: string;
+  /** Opened from their teammate page, which already lists their tasks. */
+  readonly over?: "teammate";
 };
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
@@ -255,6 +259,16 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
         mine={target.mine}
         mayEdit={target.mayEdit}
       />
+      {kinProfileShowsTasks({
+        mine: target.mine,
+        overTheirTasks: route.params.over === "teammate",
+      }) ? (
+        <KinPersonTasks
+          environmentId={target.environmentId}
+          orgId={target.orgId}
+          personId={profile.personId}
+        />
+      ) : null}
       <ListSection title={KIN_PROFILE_COPY.quietLabel}>
         <View className="px-4 py-3">
           <Text textRole="body" className="text-foreground">

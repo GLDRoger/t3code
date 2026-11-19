@@ -108,6 +108,18 @@ describe("whose move a task is (kinRecordMove, the rule Tasks and the record sha
       "needsYou",
     ],
     [
+      "you hold it and it waits on you",
+      detail({ state: "waiting", waitingOn: rhea }),
+      true,
+      "needsYou",
+    ],
+    [
+      "someone holds it and it waits on them",
+      detail({ owner: meera, createdBy: meera, state: "waiting", waitingOn: meera }),
+      true,
+      "rest",
+    ],
+    [
       "you hold it and it waits on someone",
       detail({ state: "waiting", waitingOn: meera }),
       true,

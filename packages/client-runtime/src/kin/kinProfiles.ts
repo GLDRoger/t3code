@@ -111,6 +111,12 @@ export function kinMayEditProfile(input: {
   );
 }
 
+/** A profile lists the person's open tasks, unless it is yours or opened over a screen that does. */
+export const kinProfileShowsTasks = (input: {
+  readonly mine: boolean;
+  readonly overTheirTasks: boolean;
+}): boolean => !input.mine && !input.overTheirTasks;
+
 export interface KinProfileDraft {
   readonly displayName: string;
   readonly tags: string;

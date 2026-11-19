@@ -72,6 +72,7 @@ import * as ChatHub from "../chat/KinChatHub.ts";
 import { agentChanges, ownerLevelUndoAgentChange } from "../lead/agentChanges.ts";
 import { turnChanges } from "../lead/turnChanges.ts";
 import { buildWorkSection } from "./workPrompt.ts";
+import { markQuotesSent } from "../connections/Sending.ts";
 
 // Invented org, people and work only; nothing here reads a real database or memory.
 const orgId = KinOrgId.make("org");
@@ -316,23 +317,13 @@ it.effect("record_update changes only named fields, logs each change, and both o
       state: "doing",
     });
     assert.deepStrictEqual(moved, { key: "W-2", rev: 2, state: "doing", changed: ["state"] });
-    // K014: a teammate retitles it during the turn; the lead's blind write is refused, a read one lands.
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
-        dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
-      VALUES (${orgId}, 'America/New_York', '08:00', '18:00', '02:00', 0, 1, '09:00', '[]')`;
+    // A teammate retitles it during the turn; the lead's change to another field lands with it.
     yield* TestClock.setTime(Date.parse("2026-11-11T17:50:00Z"));
     const mateWrites = { actor: mate, via: "owner" as const, askedBy: mateId };
     yield* records.update(orgId, mateWrites, "W-2", {
       title: "Draft the invented pricing page v2",
     });
-    const blind = { key: "W-2", sourceEventId: "ask-event", due: null };
-    assert.deepInclude(yield* Effect.flip(LeadWork.update(scopeOf(lead), blind)), {
-      reason: "conflict",
-      message:
-        "W-2 changed since your turn began (Mate renamed it at 12:50). Read it again with record_get and pass expectedRev.",
-    });
-    yield* LeadWork.update(scopeOf(lead), { ...blind, expectedRev: 3 });
+    yield* LeadWork.update(scopeOf(lead), { key: "W-2", sourceEventId: "ask-event", due: null });
     const got = yield* LeadWork.get(scopeOf(lead), { key: "W-2" });
     assert.include(got, { title: "Draft the invented pricing page v2", state: "doing", rev: 4 });
     assert.notProperty(got, "due");
@@ -365,21 +356,7 @@ it.effect("record_update changes only named fields, logs each change, and both o
       ),
       { reason: "conflict" },
     );
-    // One entry a person changed this turn refuses a keys call whole, by name; one changed before
-    // the turn began does not.
     yield* records.update(orgId, mateWrites, "W-3", { notes: "Invented: mate's note" });
-    const tripped = yield* Effect.flip(
-      LeadWork.updateMany(scopeOf(lead), {
-        keys: ["W-1", "W-3"],
-        sourceEventId: "ask-event",
-        state: "doing",
-      }),
-    );
-    assert.match(tripped.message, /^W-3 changed since your turn began \(Mate changed its notes/);
-    assert.include(tripped.message, "Nothing in this call was saved");
-    assert.include(yield* LeadWork.get(scopeOf(lead), { key: "W-1" }), { rev: 1, state: "open" });
-    yield* sql`UPDATE kin_wakeups SET started_at = ${Date.parse("2026-11-11T18:00:00Z")}
-      WHERE wakeup_id = 'wake'`;
     // V24: keys changes several entries the same way, all or none.
     const both = yield* LeadWork.updateMany(scopeOf(lead), {
       keys: ["W-1", "W-3"],
@@ -415,6 +392,459 @@ it.effect("record_update changes only named fields, logs each change, and both o
     );
   }).pipe(Effect.provide(layer)),
 );
+
+const isoAt = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+const decodeKinEvent = Schema.decodeUnknownEffect(KinEvent);
+/**
+ * An agent's turn, through the real queue: Owner's messages wake `lead` in its chat, at 10:00
+ * in New York; W-1 is the owner's task unless `held` gives it to someone.
+ */
+const asked = Effect.fn("KinRecordsTest.asked")(function* (
+  held: KinWorkPrincipal = { _tag: "person", personId: ownerId },
+  sensitive = false,
+) {
+  yield* seed;
+  const sql = yield* SqlClient.SqlClient;
+  const records = yield* KinRecords.KinRecords;
+  const queue = yield* KinEventQueue.KinEventQueue;
+  yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+      dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+    VALUES (${orgId}, 'America/New_York', '08:00', '18:00', '02:00', 0, 1, '09:00', '[]')`;
+  yield* TestClock.setTime(Date.parse("2026-11-11T15:00:00Z"));
+  const ownerWrites = { actor: owner, via: "owner" as const, askedBy: ownerId };
+  const mateWrites = { actor: mate, via: "owner" as const, askedBy: mateId };
+  yield* records.create(orgId, ownerWrites, {
+    originKey: "owner:pricing",
+    title: "Draft the invented pricing page",
+    owner: held,
+    ...(sensitive ? { sensitive: true } : {}),
+  });
+  let sent = 10;
+  let woken = 0;
+  let wakeupId = KinWakeupId.make("none");
+  const enqueue = Effect.fn("KinRecordsTest.enqueue")(function* (event: object) {
+    const at = isoAt(yield* Clock.currentTimeMillis);
+    const decoded = yield* decodeKinEvent({
+      orgId,
+      agentId: lead,
+      receivedAt: at,
+      dedupeKey: null,
+      provenance: { _tag: "system" },
+      ...event,
+    });
+    return (yield* queue.enqueue(decoded)).event.eventId;
+  });
+  const say = Effect.fn("KinRecordsTest.say")(function* (body: string) {
+    const messageId = `say-${++sent}`;
+    yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+        author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+      VALUES (${messageId}, ${orgId}, 'lead-chat', ${sent}, 'human', ${ownerId}, 'lead-chat-owner',
+        'owner', 'text', ${body}, '[]', 'posted', ${isoAt(yield* Clock.currentTimeMillis)})`;
+    return yield* enqueue({
+      _tag: "chat.message",
+      eventId: `${messageId}-event`,
+      provenance: { _tag: "human", personId: ownerId, memberId: "lead-chat-owner" },
+      chatId: "lead-chat",
+      messageId,
+    });
+  });
+  /** The running wake-up ends and the next claims what is queued, as the runner does. */
+  const wake = Effect.fn("KinRecordsTest.wake")(function* () {
+    yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+    wakeupId = KinWakeupId.make(`wake-${++woken}`);
+    yield* TestClock.adjust(20_000);
+    yield* Effect.scoped(queue.claim({ orgId, agentId: lead, wakeupId, model: "test" }));
+    yield* sql`UPDATE kin_wakeups SET thread_id = 'lead-thread', run_id = 'run',
+        audience = 'owner_only' WHERE wakeup_id = ${wakeupId}`;
+  });
+  const steer = Effect.suspend(() => queue.steer({ orgId, agentId: lead, wakeupId }));
+  const later = TestClock.adjust(60_000);
+  const rev = Effect.map(records.get(orgId, "W-1"), (row) => row!.rev);
+  const write = (sourceEventId: string, change: object) =>
+    LeadWork.update(scopeOf(lead), { key: "W-1", sourceEventId, ...change });
+  const agentChanges = Effect.map(
+    LeadWork.get(scopeOf(lead), { key: "W-1" }),
+    (got) => got.history.filter((line) => line.by === "Lead lead (you)").length,
+  );
+  return {
+    sql,
+    records,
+    enqueue,
+    say,
+    wake,
+    steer,
+    later,
+    rev,
+    write,
+    agentChanges,
+    ownerWrites,
+    mateWrites,
+  };
+});
+type Scene = Effect.Success<ReturnType<typeof asked>>;
+/** The owner asks for a new title; Mate retitles W-1 while the turn runs; the agent's write is refused. */
+const retitled = Effect.fn("KinRecordsTest.retitled")(function* () {
+  const scene = yield* asked();
+  const ask = yield* scene.say("Rename W-1 to Invented pricing, final");
+  yield* scene.wake();
+  yield* scene.later;
+  yield* scene.records.update(orgId, scene.mateWrites, "W-1", { title: "Invented pricing v2" });
+  const refused = yield* Effect.flip(
+    scene.write(ask, { title: "Invented pricing, final", expectedRev: yield* scene.rev }),
+  );
+  return { scene, ask, refused };
+});
+const refusedAs = (error: { readonly message: string }, message: RegExp) => {
+  assert.propertyVal(error, "reason", "conflict");
+  assert.match(error.message, message);
+};
+const titleOf = (scene: Scene) => Effect.map(scene.records.get(orgId, "W-1"), (row) => row!.title);
+
+// An agent's write never changes a field a person changed since a person last
+// addressed its turn, whatever revision it passes; a person's next word to it lets it through.
+const row = <E>(name: string, run: Effect.Effect<void, E, Layer.Success<typeof layer>>) => ({
+  name,
+  run: Effect.provide(run, layer).pipe(Effect.orDie),
+});
+const keptForPerson = [
+  row(
+    "a teammate's retitle after the ask is kept, and the refusal says who and what",
+    Effect.gen(function* () {
+      const { scene, refused } = yield* retitled();
+      assert.deepInclude(refused, {
+        reason: "conflict",
+        message:
+          'Nothing changed on W-1: Mate changed its title to "Invented pricing v2" on Wed 11 Nov, 10:01. Tell whoever asked, and change it only if they say so.',
+      });
+      assert.strictEqual(yield* titleOf(scene), "Invented pricing v2");
+      assert.strictEqual(yield* scene.agentChanges, 0);
+    }),
+  ),
+  ...(["a new wake-up", "the running wake-up, steered"] as const).map((how) =>
+    row(
+      `the owner's "use mine anyway" in ${how} lets it through`,
+      Effect.gen(function* () {
+        const { scene } = yield* retitled();
+        yield* scene.later;
+        const yes = yield* scene.say("Yes, use Invented pricing, final anyway");
+        if (how === "a new wake-up") yield* scene.wake();
+        else assert.lengthOf(yield* scene.steer, 1);
+        yield* scene.write(yes, { title: "Invented pricing, final" });
+        assert.strictEqual(yield* titleOf(scene), "Invented pricing, final");
+      }),
+    ),
+  ),
+  row(
+    "a change that wakes the agent after an older ask is kept; an untouched field is written",
+    Effect.gen(function* () {
+      const scene = yield* asked({ _tag: "agent", agentId: lead });
+      yield* scene.wake();
+      const ask = yield* scene.say("Start on W-1");
+      yield* scene.later;
+      yield* scene.records.update(orgId, scene.ownerWrites, "W-1", { state: "done" });
+      yield* scene.wake();
+      const claimed = yield* scene.sql<{ tag: string }>`SELECT e.tag FROM kin_events e
+        JOIN kin_wakeups w ON w.wakeup_id = e.wakeup_id AND w.status = 'running'
+        WHERE e.org_id = ${orgId} ORDER BY e.received_at`;
+      assert.deepStrictEqual(
+        claimed.map((one) => one.tag),
+        ["chat.message", "record.changed"],
+      );
+      refusedAs(
+        yield* Effect.flip(scene.write(ask, { state: "doing", expectedRev: yield* scene.rev })),
+        /^Nothing changed on W-1: Owner changed its state to /,
+      );
+      yield* scene.write(ask, { notes: "Invented: pricing tiers" });
+      assert.include(yield* scene.records.get(orgId, "W-1"), {
+        state: "done",
+        notes: "Invented: pricing tiers",
+      });
+    }),
+  ),
+  row(
+    "a task a person gives the agent: the wake-up it gets sets its state and other fields",
+    Effect.gen(function* () {
+      const scene = yield* asked();
+      yield* scene.later;
+      yield* scene.records.update(orgId, scene.ownerWrites, "W-1", {
+        owner: { _tag: "agent", agentId: lead },
+      });
+      yield* scene.wake();
+      const [given] = yield* scene.sql<{ eventId: string }>`SELECT event_id AS "eventId"
+        FROM kin_events WHERE org_id = ${orgId} AND tag = 'record.changed'`;
+      yield* scene.write(given!.eventId, {
+        state: "doing",
+        title: "Invented pricing tiers",
+        due: "2026-11-20",
+        expectedRev: yield* scene.rev,
+      });
+      assert.include(yield* scene.records.get(orgId, "W-1"), {
+        state: "doing",
+        title: "Invented pricing tiers",
+        ownerKind: "agent",
+      });
+    }),
+  ),
+  row(
+    "a state that would clear the waiter a person just set is refused",
+    Effect.gen(function* () {
+      const scene = yield* asked();
+      yield* scene.records.update(orgId, scene.ownerWrites, "W-1", {
+        state: "waiting",
+        waitingOn: { _tag: "person", personId: ownerId },
+      });
+      yield* scene.later;
+      const ask = yield* scene.say("Start on W-1");
+      yield* scene.wake();
+      yield* scene.later;
+      yield* scene.records.update(orgId, scene.mateWrites, "W-1", {
+        waitingOn: { _tag: "person", personId: mateId },
+      });
+      refusedAs(
+        yield* Effect.flip(scene.write(ask, { state: "doing", expectedRev: yield* scene.rev })),
+        /^Nothing changed on W-1: Mate changed who it waits on to Mate on /,
+      );
+      assert.strictEqual(yield* scene.agentChanges, 0);
+    }),
+  ),
+  row(
+    "a hand-back after a person's later state change is refused",
+    Effect.gen(function* () {
+      const scene = yield* asked({ _tag: "agent", agentId: lead });
+      const ask = yield* scene.say("How is W-1 going?");
+      yield* scene.wake();
+      yield* scene.later;
+      yield* scene.records.update(orgId, scene.ownerWrites, "W-1", { state: "doing" });
+      refusedAs(
+        yield* Effect.flip(
+          LeadWork.handBack(scopeOf(lead), {
+            key: "W-1",
+            sourceEventId: ask,
+            note: "Invented: needs the price list",
+          }),
+        ),
+        /^Nothing changed on W-1: Owner changed its state to /,
+      );
+      const row = yield* scene.records.get(orgId, "W-1");
+      assert.include(row, { ownerKind: "agent", state: "doing" });
+    }),
+  ),
+  row(
+    "a field no person touched is written, with expectedRev and without",
+    Effect.gen(function* () {
+      const { scene, ask } = yield* retitled();
+      yield* scene.write(ask, { due: "2026-11-20" });
+      yield* scene.write(ask, { notes: "Invented: pricing tiers", expectedRev: yield* scene.rev });
+      const row = yield* scene.records.get(orgId, "W-1");
+      assert.include(row, { title: "Invented pricing v2", notes: "Invented: pricing tiers" });
+      assert.isNotNull(row!.dueAt);
+    }),
+  ),
+  row(
+    "a check-in keeps a change made during it, not one made before it fired",
+    Effect.gen(function* () {
+      const scene = yield* asked();
+      yield* scene.later;
+      yield* scene.records.update(orgId, scene.mateWrites, "W-1", { title: "Invented pricing v2" });
+      yield* scene.later;
+      const checkIn = yield* scene.enqueue({
+        _tag: "pulse",
+        eventId: "check-in-1",
+        factKeys: ["check-in:afternoon"],
+        checkIn: {
+          scheduleId: "schedule-1",
+          title: "Afternoon check-in",
+          what: "Look over the invented launch",
+          slot: "15:00",
+        },
+      });
+      yield* scene.wake();
+      yield* scene.write(checkIn, { title: "Invented pricing v3" });
+      yield* scene.later;
+      yield* scene.records.update(orgId, scene.mateWrites, "W-1", { title: "Invented pricing v4" });
+      refusedAs(
+        yield* Effect.flip(
+          scene.write(checkIn, { title: "Invented pricing v5", expectedRev: yield* scene.rev }),
+        ),
+        /^Nothing changed on W-1: Mate changed its title to "Invented pricing v4" on /,
+      );
+    }),
+  ),
+  row(
+    "a default taken after a person changed the field since the question is refused",
+    Effect.gen(function* () {
+      const scene = yield* asked();
+      yield* scene.say("Should W-1 get a shorter name?");
+      yield* scene.wake();
+      yield* scene.sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id,
+          kind, question, default_label, safe, asked_at, due_at, act_at, state)
+        VALUES ('q-1', ${orgId}, ${lead}, ${ownerId}, 'lead-chat', 'card', 'Rename W-1 to Pricing?',
+          'Rename it', 1, ${yield* Clock.currentTimeMillis}, 0, 0, 'default_taken')`;
+      yield* scene.later;
+      yield* scene.records.update(orgId, scene.mateWrites, "W-1", { title: "Invented pricing v2" });
+      yield* scene.later;
+      const taken = yield* scene.enqueue({
+        _tag: "deferral.due",
+        eventId: "question-q-1",
+        subject: { type: "question", questionId: "q-1" },
+        lateByMs: 0,
+      });
+      yield* scene.wake();
+      refusedAs(
+        yield* Effect.flip(scene.write(taken, { title: "Pricing", expectedRev: yield* scene.rev })),
+        /^Nothing changed on W-1: Mate changed its title/,
+      );
+    }),
+  ),
+  row(
+    "a person's own write and their coding agent's are never refused, and the key's counts as theirs",
+    Effect.gen(function* () {
+      const scene = yield* asked({ _tag: "person", personId: mateId });
+      const ask = yield* scene.say("Move W-1 along");
+      yield* scene.wake();
+      yield* scene.later;
+      yield* scene.records.update(orgId, scene.ownerWrites, "W-1", {
+        title: "Invented pricing v2",
+      });
+      yield* scene.records.update(orgId, scene.mateWrites, "W-1", { title: "Invented pricing v3" });
+      yield* scene.records.update(
+        orgId,
+        { actor: mate, via: "owner", codingAgentKey: "key-1" },
+        "W-1",
+        { state: "doing" },
+      );
+      assert.include(yield* scene.records.get(orgId, "W-1"), {
+        title: "Invented pricing v3",
+        state: "doing",
+      });
+      refusedAs(
+        yield* Effect.flip(scene.write(ask, { state: "done", expectedRev: yield* scene.rev })),
+        /^Nothing changed on W-1: Mate changed its state to /,
+      );
+    }),
+  ),
+  row(
+    "a sensitive entry's new value is not quoted",
+    Effect.gen(function* () {
+      const scene = yield* asked({ _tag: "person", personId: ownerId }, true);
+      const ask = yield* scene.say("Rename W-1 to Invented supplier terms");
+      yield* scene.wake();
+      yield* scene.later;
+      yield* scene.records.update(orgId, scene.mateWrites, "W-1", {
+        title: "Invented: the quiet supplier",
+      });
+      const refused = yield* Effect.flip(
+        scene.write(ask, { title: "Invented supplier terms", expectedRev: yield* scene.rev }),
+      );
+      refusedAs(refused, /^Nothing changed on W-1: Mate changed its title \(value not shown\) on /);
+      assert.notInclude(refused.message, "quiet supplier");
+    }),
+  ),
+  row(
+    "the check is the write's: a person's write after the agent read it is caught",
+    Effect.gen(function* () {
+      const scene = yield* asked();
+      yield* scene.say("Rename W-1");
+      yield* scene.wake();
+      const since = { at: yield* Clock.currentTimeMillis, woke: [] };
+      const read = yield* scene.records.get(orgId, "W-1");
+      yield* scene.records.update(orgId, scene.mateWrites, "W-1", { title: "Invented pricing v2" });
+      const agent = { actor: { _tag: "agent" as const, agentId: lead }, via: "lead" as const };
+      refusedAs(
+        yield* Effect.flip(
+          scene.records.update(orgId, { ...agent, since }, read!.key, { title: "Pricing" }),
+        ),
+        /^Nothing changed on W-1: Mate changed its title/,
+      );
+      assert.strictEqual(yield* titleOf(scene), "Invented pricing v2");
+    }),
+  ),
+  row(
+    "a teammate's turn isn't told what its view of the history withholds; the owner's turn is",
+    Effect.gen(function* () {
+      const scene = yield* asked();
+      const project = (title: string, lead: KinWorkPrincipal) =>
+        Effect.map(
+          scene.records.create(orgId, scene.ownerWrites, {
+            list: "projects",
+            title,
+            owner: lead,
+            originKey: title,
+          }),
+          (made) => made.row.recordId,
+        );
+      const shown = yield* project("Invented launch", { _tag: "person", personId: mateId });
+      const hidden = yield* project("Invented acquisition", { _tag: "person", personId: ownerId });
+      yield* scene.records.update(orgId, scene.ownerWrites, "W-1", { team: true });
+      const since = { at: yield* Clock.currentTimeMillis, woke: [] };
+      yield* scene.later;
+      yield* scene.records.update(orgId, scene.ownerWrites, "W-1", { projectId: hidden });
+      const agent = {
+        actor: { _tag: "agent" as const, agentId: lead },
+        via: "lead" as const,
+        since,
+      };
+      const move = (writer: KinRecords.Writer) =>
+        Effect.flip(scene.records.update(orgId, writer, "W-1", { projectId: shown }));
+      assert.deepInclude(yield* move({ ...agent, view: { people: [mateId], askers: [mateId] } }), {
+        reason: "conflict",
+        message:
+          "Nothing changed on W-1: someone changed it since you were asked. Tell whoever asked, and change it only if they say so.",
+      });
+      refusedAs(
+        yield* move(agent),
+        /^Nothing changed on W-1: Owner changed its project \(value not shown\) on Wed 11 Nov, 10:01\. /,
+      );
+      assert.include(yield* scene.records.get(orgId, "W-1"), { projectId: hidden });
+    }),
+  ),
+  row(
+    "a confirmed send marking a quote Sent is Kin's, not a person's; their own later change is",
+    Effect.gen(function* () {
+      const scene = yield* asked();
+      yield* scene.sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json)
+        VALUES (${orgId}, 'quotes', 'Quotes', 'QT', 0, 0, ${JSON.stringify(presetDefinition("quotes", "INR"))})`;
+      const { row: quote } = yield* scene.records.create(orgId, scene.ownerWrites, {
+        list: "quotes",
+        originKey: "quote",
+        title: "Invented Acme design work",
+        owner: { _tag: "person", personId: ownerId },
+      });
+      const ask = yield* scene.say("Mail QT-1 to Invented Acme and mark it accepted once sent");
+      yield* scene.wake();
+      yield* scene.later;
+      yield* markQuotesSent(scene.records, {
+        orgId,
+        personId: ownerId,
+        wakeupId: "wake-1",
+        entryRecordIds: [quote.recordId],
+      });
+      const state = Effect.map(scene.records.get(orgId, "QT-1"), (row) => row!.state);
+      assert.strictEqual(yield* state, "waiting");
+      const accept = Effect.suspend(() =>
+        LeadWork.update(scopeOf(lead), { key: "QT-1", sourceEventId: ask, state: "done" }),
+      );
+      yield* accept;
+      assert.strictEqual(yield* state, "done");
+      for (const [writes, name, to] of [
+        [scene.mateWrites, "Mate", "open"],
+        [scene.ownerWrites, "Owner", "waiting"],
+      ] as const) {
+        yield* scene.later;
+        yield* scene.records.update(orgId, writes, "QT-1", { state: to });
+        refusedAs(
+          yield* Effect.flip(accept),
+          new RegExp(
+            `^Nothing changed on QT-1: ${name} changed its state \\(value not shown\\) on `,
+          ),
+        );
+        assert.strictEqual(yield* state, to);
+      }
+    }),
+  ),
+];
+it.effect.each(keptForPerson)("an agent keeps a person's newer change: $name", ({ run }) => run);
 
 it.effect(
   "a task moved to another project takes its client, and another client takes it off the old one's project",
@@ -2945,6 +3375,13 @@ it.effect(
       yield* OwnerWork.assign([owner], { orgId, key: "W-1", to: mateHolds });
       yield* OwnerWork.assign([owner], { orgId, key: "W-1", to: mateTwoHolds });
       yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = 'wake'`;
+      // The owner asks after moving it on the screen, so the agent's moves don't write over his.
+      yield* TestClock.adjust(1_000);
+      const askedAt = yield* Clock.currentTimeMillis;
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+          queued_at, state, wakeup_id)
+        SELECT 'ask-again', org_id, agent_id, tag, priority, json, ${askedAt}, ${askedAt}, state,
+          wakeup_id FROM kin_events WHERE event_id = 'ask-event'`;
       yield* LeadWork.assign(scope, {
         sourceEventId: "ask-event",
         tasks: [{ key: "W-1", to: "Mate", reason: "Invented: on leave" }],

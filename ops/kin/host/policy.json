@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "organization": "Kin",
+  "settings": {
+    "linkedEnvironmentsEnabled": {
+      "value": false,
+      "locked": true
+    },
+    "guestSharingEnabled": {
+      "value": false,
+      "locked": true
+    }
+  },
+  "limits": {
+    "telemetry": false,
+    "browserCookieImport": false,
+    "updates": {
+      "mode": "off"
+    }
+  }
+}

@@ -86,7 +86,6 @@ import {
   notFound,
   owedInvoices,
   ownerZone,
-  parseChanges,
   principalId,
   type RecordRow,
   sensitiveNow,
@@ -109,11 +108,11 @@ import {
 } from "./sensitiveReads.ts";
 import {
   KIN_OWNER_LEVEL,
-  ledProjects,
   TEAM_REFUSED,
   teamChanges,
   teamPairs,
   viewerOfPeople,
+  viewReadsWhole,
   viewSees,
   viewVisible,
 } from "./teamView.ts";
@@ -1198,28 +1197,13 @@ export const viewWriter = (writer: Writer, view: View): Writer => ({
   view: { people: view.people, askers: view.askers },
 });
 
-/** Whether every person behind a shared turn leads this project: it then runs at their level. */
-const viewLeads = Effect.fn("KinWorkTools.viewLeads")(function* (
-  lead: Lead,
-  view: View,
-  projectId: string | null | undefined,
-) {
-  if (projectId === null || projectId === undefined || view.people.length === 0) return false;
-  for (const person of view.people) {
-    const led = yield* ledProjects(lead.orgId, person);
-    if (!led.some((project) => project.recordId === projectId)) return false;
-  }
-  return true;
-});
-/** A row read whole in a shared turn: a doc or list entry they all see, or their led project's. */
+/** A row read whole in a shared turn (`viewReadsWhole`). */
 const viewWhole = Effect.fn("KinWorkTools.viewWhole")(function* (
   lead: Lead,
   view: View,
   row: RecordRow,
 ) {
-  if (row.registerId === "clients" || row.registerId === "contacts") return false;
-  if (row.registerId !== "work") return true;
-  return yield* viewLeads(lead, view, row.projectId);
+  return yield* viewReadsWhole(lead.orgId, view.people, row);
 });
 
 /** Refused, as the gate does, if the turn became one others read since the call was admitted. */
@@ -1232,6 +1216,57 @@ export const admitted = Effect.fn("KinWorkTools.admitted")(function* (
     return yield* new KinChatError({ reason: "not_allowed", message: SHARED_REFUSAL });
 });
 
+/**
+ * `Writer.since` from the wake-up's stored events: its newest message or tap from a person, steered
+ * in or not; with none, its earliest trigger (a fire, a hand-off or assignment sent, a question's
+ * asking for its default). Only that trigger's own record changes are not after it (`woke`).
+ */
+const addressedAt = Effect.fn("KinWorkTools.addressedAt")(function* (lead: Lead) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    said: number | null;
+    tap: number;
+    by: string | null;
+    at: number;
+    woke: number | null;
+  }>`
+    SELECT (e.tag IN ('chat.message', 'widget.action') AND m.author_kind = 'human'
+        AND json_extract(e.json, '$.origin') IS NULL) AS said,
+      e.tag = 'widget.action' AS tap, m.author_person_id AS by,
+      COALESCE(q.asked_at, e.received_at) AS at,
+      CASE WHEN e.tag = 'record.changed' AND json_extract(e.json, '$.reason') <> 'commented'
+        THEN json_extract(e.json, '$.seq') END AS woke
+    FROM kin_events e
+    LEFT JOIN kin_messages m ON m.org_id = e.org_id AND e.tag IN ('chat.message', 'widget.action')
+      AND m.chat_id = json_extract(e.json, '$.chatId')
+      AND m.message_id = json_extract(e.json, '$.messageId')
+    LEFT JOIN kin_questions q ON q.org_id = e.org_id AND e.tag = 'deferral.due'
+      AND json_extract(e.json, '$.subject.type') = 'question'
+      AND json_extract(e.json, '$.subject.undone') IS NULL
+      AND q.question_id = json_extract(e.json, '$.subject.questionId')
+    WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId} AND e.wakeup_id = ${lead.wakeupId}
+    ORDER BY e.received_at, e.event_id`;
+  const newest = rows
+    .filter((row) => row.said === 1)
+    .reduce<(typeof rows)[number] | undefined>(
+      (had, row) => (had === undefined || row.at >= had.at ? row : had),
+      undefined,
+    );
+  // Set by a person's word or tap, the cutoff excuses no record change made at or after it.
+  if (newest !== undefined)
+    return {
+      at: newest.at,
+      woke: [],
+      ...(newest.tap === 1 && newest.by !== null ? { tappedBy: KinPersonId.make(newest.by) } : {}),
+    };
+  if (rows.length === 0) return { at: lead.startedAt, woke: [] };
+  const at = Math.min(...rows.map((row) => row.at));
+  return {
+    at,
+    woke: rows.flatMap((row) => (row.woke === null || row.at !== at ? [] : [row.woke])),
+  };
+});
+
 export const writerFor = Effect.fn("KinWorkTools.writer")(function* (lead: Lead) {
   const chat = yield* turnChat(lead);
   return {
@@ -1240,6 +1275,7 @@ export const writerFor = Effect.fn("KinWorkTools.writer")(function* (lead: Lead)
     wakeupId: lead.wakeupId,
     ...(chat === undefined ? {} : { chatId: KinChatId.make(chat.chatId) }),
     askedBy: yield* askedBy(lead),
+    since: yield* addressedAt(lead),
   } satisfies Writer;
 });
 
@@ -2227,81 +2263,6 @@ const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function* (
   });
 });
 
-/** A person's change in the History's words (client-runtime `kinWorkChangeText`), for a refusal. */
-const personDid = (
-  list: string,
-  kind: string,
-  fieldsJson: string,
-  holder: (text: string | null) => string | undefined,
-) => {
-  const fields = parseChanges(fieldsJson);
-  const state = fields.find((field) => field.field === "state");
-  const closes = list === "clients" || list === "contacts";
-  if (kind === "created") return "added it";
-  if (state?.from === "done" || state?.from === "dropped")
-    if (state.to !== "done" && state.to !== "dropped") return "reopened it";
-  if (state?.to === "doing") return "started on it";
-  if (state?.to === "done")
-    return closes ? "closed it" : list === "invoices" ? "marked it paid" : "finished it";
-  if (state?.to === "dropped")
-    return closes
-      ? "closed it"
-      : list === "invoices" || list === "receipts"
-        ? "voided it"
-        : "dropped it";
-  if (state?.to === "open") return "put it back to not started";
-  if (state?.to === "waiting") return "marked it waiting";
-  const owner = fields.find((field) => field.field === "owner");
-  if (owner !== undefined) return `gave it to ${holder(owner.to) ?? "someone"}`;
-  if (fields.length === 1 && fields[0]?.field === "title") return "renamed it";
-  return fields.length === 0
-    ? "updated it"
-    : `changed its ${fields.map((field) => field.field).join(", ")}`;
-};
-/** K014: with no expectedRev, a person's change since the turn began is not written over blind. */
-const unseenPersonChange = Effect.fn("KinWorkTools.unseenPersonChange")(function* (
-  lead: Lead,
-  before: RecordRow,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  // Kin's own follow-up to a person's change (a label kept on) doesn't hide it.
-  const [last] = yield* sql<{
-    at: number;
-    actorKind: string;
-    actorId: string | null;
-    kind: string;
-    fieldsJson: string;
-  }>`SELECT at, actor_kind AS "actorKind", actor_id AS "actorId", kind,
-      fields_json AS "fieldsJson"
-    FROM kin_record_changes WHERE org_id = ${lead.orgId} AND record_id = ${before.recordId}
-      AND actor_kind <> 'system'
-    ORDER BY seq DESC LIMIT 1`;
-  if (last === undefined || last.actorKind !== "person" || last.actorId === null) return;
-  // The change that woke the turn was made before its claim, so it is not after it.
-  if (last.at <= lead.startedAt) return;
-  const named = yield* namer(lead);
-  const shown = (who: string | undefined) => (who === "owner" ? "the owner" : who);
-  const holder = (text: string | null) => {
-    const [kind, ...rest] = (text ?? "").split(":");
-    const id = rest.join(":");
-    if (text === `person:${last.actorId}`) return "themselves";
-    return kind === "agent"
-      ? named({ _tag: "agent", agentId: KinAgentId.make(id) })
-      : kind === "person"
-        ? shown(named({ _tag: "person", personId: KinPersonId.make(id) }))
-        : undefined;
-  };
-  const name = shown(named({ _tag: "person", personId: KinPersonId.make(last.actorId) }));
-  const at = formatKinWhen(last.at, "time", {
-    zone: yield* ownerZone(lead.orgId),
-    locale: KIN_TEXT_LOCALE,
-  });
-  return yield* new KinChatError({
-    reason: "conflict",
-    message: `${before.key} changed since your turn began (${name ?? "a person"} ${personDid(listOf(before.registerId), last.kind, last.fieldsJson, holder)} at ${at}). Read it again with record_get and pass expectedRev.`,
-  });
-});
-
 type Change = Omit<typeof UpdateInput.Type, "key" | "keys">;
 const runUpdate = Effect.fnUntraced(function* (
   lead: Lead,
@@ -2332,13 +2293,7 @@ const runUpdateMany = Effect.fnUntraced(function* (lead: Lead, input: typeof Upd
     entries: done.map((one) => one.result),
   };
 });
-/** `assign` takes no expectedRev, so a person's newer change can't refuse it to a dead end. */
-const updateCore = Effect.fnUntraced(function* (
-  lead: Lead,
-  key: string,
-  input: Change,
-  via: "update" | "assign" = "update",
-) {
+const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: Change) {
   yield* admitted(lead, "record_update", { ...input, key });
   const records = yield* KinRecords;
   const team = yield* viewOf(lead);
@@ -2409,7 +2364,6 @@ const updateCore = Effect.fnUntraced(function* (
     ...money,
     ...spine.at,
   };
-  if (via === "update" && input.expectedRev === undefined) yield* unseenPersonChange(lead, before);
   const seenBefore = yield* teamPairs(lead.orgId, [before.recordId]);
   const after = yield* records.update(lead.orgId, writer, key, written, input.expectedRev);
   const seenAfter = new Set(
@@ -2481,18 +2435,13 @@ const runAssign = Effect.fnUntraced(function* (lead: Lead, input: typeof AssignI
     (task) => task.key,
     (task) =>
       Effect.gen(function* () {
-        const { notices, held } = yield* updateCore(
-          lead,
-          task.key,
-          {
-            sourceEventId: input.sourceEventId,
-            owner: task.to,
-            reason: task.reason,
-            ...(task.due === undefined ? {} : { due: task.due }),
-            ...(input.tell === undefined ? {} : { tell: input.tell }),
-          },
-          "assign",
-        );
+        const { notices, held } = yield* updateCore(lead, task.key, {
+          sourceEventId: input.sourceEventId,
+          owner: task.to,
+          reason: task.reason,
+          ...(task.due === undefined ? {} : { due: task.due }),
+          ...(input.tell === undefined ? {} : { tell: input.tell }),
+        });
         const after = yield* records.get(lead.orgId, task.key);
         return {
           notices,
