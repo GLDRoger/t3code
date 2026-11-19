@@ -32,9 +32,10 @@ A join link works once and lasts a week. If yours has expired or was used, ask f
 Once you're in, you add your other devices yourself. Open **Linked devices** (under your name on the
 web, in **Settings** on the phone) and choose **Link a device**. Kin shows a link and a QR code that
 work once, for 10 minutes. Scan the QR code with the new phone, or open the link in the new
-browser. Each time a device is linked, Kin tells you on your phones that have notifications on,
-and in your chat with the Team agent. Without a Team agent, the notice goes to your direct chats.
-If you only use a browser and have no direct chats, check **Linked devices** for any you didn't add.
+browser. Each time a device is linked, Kin tells you in your chat with the Team agent; without a
+Team agent, in your direct chats. Your iPhones with notifications on also get an alert, when phone
+alerts are set up for your company's Kin. Android phones don't get this alert yet. If no notice
+reaches you, check **Linked devices** for any you didn't add.
 
 A linked device stays signed in for 30 days, then you link it again the same way. You can have 10
 devices at a time. Remove a device from the same list to sign it out at once, along with every
