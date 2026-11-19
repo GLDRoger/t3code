@@ -177,7 +177,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         about,
         intent,
         now,
-        acts: at !== undefined && drawn[at] !== undefined,
+        acts: at === undefined ? undefined : drawn[at]?.plan.kind,
       });
       // Drawn again inside the card's transaction: what was checked is what is stored.
       const recheck = drawAll.pipe(

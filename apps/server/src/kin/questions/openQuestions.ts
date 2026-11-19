@@ -21,9 +21,12 @@ import * as NodeCrypto from "node:crypto";
 
 import type { KinChatService } from "../chat/KinChatService.ts";
 import type * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { isOrgPaused } from "../lead/orgState.ts";
+import { holdFor } from "../triggers/quietHold.ts";
 import type * as CardActions from "../widgets/cardActions.ts";
 import { type CardPlan, plansOf, sealPlans, sealedOptions } from "../widgets/cardPlans.ts";
 import { choiceCardState } from "../widgets/choiceCard.ts";
+import type { KinRecords } from "../work/KinRecords.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { allLists } from "../work/registers.ts";
 import {
@@ -37,6 +40,7 @@ import {
   repeats,
   safeDefault,
 } from "./rules.ts";
+import { TAKEN_KEY, tellDeclined, tellTaken } from "./defaultTaken.ts";
 
 export type QuestionState = "open" | "answered" | "default_taken" | "withdrawn";
 export type QuestionRow = {
@@ -216,8 +220,8 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
   readonly about?: ReadonlyArray<string> | undefined;
   readonly intent?: string | undefined;
   readonly now: number;
-  /** The default runs a fixed action: only a tap runs it, so it is never taken at its day. */
-  readonly acts?: boolean;
+  /** The default's fixed action: a task's done or drop may be taken at its day, any other only by a tap. */
+  readonly acts?: CardPlan["kind"] | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const wanted = input.default.trim().toLowerCase();
@@ -240,7 +244,7 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
   const dueAt = named?.at ?? defaultDue(input.now, clock.zone, clock.days);
   const about = normaliseAbout(input.about);
   const safe =
-    input.acts !== true &&
+    (input.acts === undefined || input.acts === "done" || input.acts === "drop") &&
     safeDefault(label, input.question, {
       labels: input.labels,
       aboutMoney: yield* aboutMoney(input.orgId, about),
@@ -507,25 +511,32 @@ export const reopenRetiredQuestions = Effect.fn("KinQuestions.reopenRetired")(fu
 const takeEventId = (orgId: string, questionId: string) =>
   KinEventId.make(`question_${hash(`${orgId}\0${questionId}`).slice(0, 32)}`);
 
+type SettleDeps = {
+  readonly chat: Pick<KinChatService["Service"], "closeReplaced" | "ask" | "notice">;
+  readonly queue: Pick<KinEventQueue.KinEventQueue["Service"], "enqueue">;
+  /** Runs a default's own action; without it such a default waits for its person. */
+  readonly records?: KinRecords["Service"] | undefined;
+};
+
 /**
- * Settles every question whose day came, once each: a safe default is taken (the asker's turn is
- * queued in the same transaction that marks it, and its card closes saying so), a question with
- * no safe default is raised once more as a fresh card on the next working morning, and a text
- * question lapses quietly. The conditional updates make a second pass, or a restart, do nothing.
+ * Settles each question whose day came, once: a safe default is taken (its own action run, else
+ * the asker's turn queued, as it is marked), one with none is raised once more on the next working
+ * morning, a text question lapses. Conditional updates make a rerun do nothing. Then each person
+ * a default was taken for is told, once.
  */
 export const settleDue = Effect.fn("KinQuestions.settleDue")(function* (
   orgId: KinOrgId,
   now: number,
-  deps: {
-    readonly chat: Pick<KinChatService["Service"], "closeReplaced" | "ask">;
-    readonly queue: Pick<KinEventQueue.KinEventQueue["Service"], "enqueue">;
-  },
+  deps: SettleDeps,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const due = (yield* sql<Raw>`SELECT ${sql.literal(COLUMNS)} ${sql.literal(FROM)}
-    WHERE q.org_id = ${orgId} AND q.state = 'open' AND q.act_at <= ${now}
-      AND (q.safe = 1 OR q.raised_at IS NULL)
-    ORDER BY q.act_at, q.question_id LIMIT 50`).map(toRow);
+  // Paused, Kin or its asker, a question waits for resume and fills no pass's batch.
+  const due = (yield* isOrgPaused(orgId))
+    ? []
+    : (yield* sql<Raw>`SELECT ${sql.literal(COLUMNS)} ${sql.literal(FROM)}
+        WHERE q.org_id = ${orgId} AND q.state = 'open' AND q.act_at <= ${now}
+          AND (q.safe = 1 OR q.raised_at IS NULL) AND a.paused_at IS NULL
+        ORDER BY q.act_at, q.question_id LIMIT 50`).map(toRow);
   let settled = 0;
   for (const row of due) {
     const done = yield* sql
@@ -547,7 +558,66 @@ export const settleDue = Effect.fn("KinQuestions.settleDue")(function* (
       );
     if (done) settled += 1;
   }
+  yield* tellDue(orgId, now, deps.chat);
   return settled;
+});
+
+/** Notices told in one pass; ones held for someone away or in quiet hours don't count. */
+const TELL_PER_PASS = 50;
+
+/**
+ * Each default taken since this was built (`raised_at` marks it owed) whose person, still in its
+ * chat, hasn't been told: told now, unless their quiet hours or an away day hold it, when a later
+ * pass tells them. Owed until told, however long they are away.
+ */
+const tellDue = Effect.fn("KinQuestions.tellDue")(function* (
+  orgId: KinOrgId,
+  now: number,
+  chat: SettleDeps["chat"],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const owed = (yield* sql<Raw>`SELECT ${sql.literal(COLUMNS)} ${sql.literal(FROM)}
+    WHERE q.org_id = ${orgId} AND q.state = 'default_taken'
+      AND q.raised_at IS NOT NULL AND q.default_label IS NOT NULL AND NOT EXISTS (SELECT 1 FROM kin_pulse_told t
+        WHERE t.org_id = q.org_id AND t.person_id = q.person_id
+          AND t.fact_key = ${TAKEN_KEY} || q.question_id)
+      AND EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = q.org_id
+        AND m.chat_id = q.chat_id AND m.principal_kind = 'person' AND m.person_id = q.person_id
+        AND m.left_at IS NULL)
+    ORDER BY q.raised_at, q.question_id`).map(toRow);
+  let tried = 0;
+  for (const row of owed) {
+    if (tried >= TELL_PER_PASS) break;
+    if ((yield* holdFor({ orgId, personId: row.personId, chatId: row.chatId })) !== undefined)
+      continue;
+    tried += 1;
+    yield* sql
+      .withTransaction(
+        tellTaken(
+          {
+            orgId,
+            questionId: row.questionId,
+            agentId: row.agentId,
+            personId: row.personId,
+            chatId: row.chatId,
+            label: row.defaultLabel!,
+            question: row.question,
+            about: row.about,
+            now,
+          },
+          chat,
+        ),
+      )
+      .pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Kin couldn't say a default was taken", {
+            orgId,
+            questionId: row.questionId,
+            cause,
+          }),
+        ),
+      );
+  }
 });
 
 const lapse = Effect.fn("KinQuestions.lapse")(function* (
@@ -562,47 +632,79 @@ const lapse = Effect.fn("KinQuestions.lapse")(function* (
   return moved.length > 0;
 });
 
+/** The pauses the runner keeps to: the company's (`isOrgPaused`) and the agent's own. */
+const pausedFor = Effect.fn("KinQuestions.pausedFor")(function* (orgId: KinOrgId, agentId: string) {
+  if (yield* isOrgPaused(orgId)) return true;
+  const sql = yield* SqlClient.SqlClient;
+  const paused = yield* sql`SELECT 1 FROM kin_agents
+    WHERE org_id = ${orgId} AND agent_id = ${agentId} AND paused_at IS NOT NULL`;
+  return paused.length > 0;
+});
+
 const takeDefault = Effect.fn("KinQuestions.takeDefault")(function* (
   orgId: KinOrgId,
   row: QuestionRow,
   now: number,
-  deps: {
-    readonly chat: Pick<KinChatService["Service"], "closeReplaced">;
-    readonly queue: Pick<KinEventQueue.KinEventQueue["Service"], "enqueue">;
-  },
+  deps: SettleDeps,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  // Never before its day, and at most once: only an open row past its day moves.
-  const moved = yield* sql`UPDATE kin_questions SET state = 'default_taken', closed_at = ${now}
+  // Paused, Kin or its asker, it stays due: the first pass after resume takes it.
+  if (yield* pausedFor(orgId, row.agentId)) return false;
+  // Never before its day, and at most once: only an open row past its day moves. `raised_at`
+  // marks its person as owed the news (`tellDue`).
+  const moved = yield* sql`UPDATE kin_questions SET state = 'default_taken', closed_at = ${now},
+      raised_at = ${now}
     WHERE org_id = ${orgId} AND question_id = ${row.questionId} AND state = 'open'
       AND safe = 1 AND due_at <= ${now}
     RETURNING question_id`;
   if (moved.length === 0) return false;
-  const [lead] = yield* sql<{ ownerChatId: string }>`SELECT owner_chat_id AS "ownerChatId"
-    FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${row.agentId}`;
-  const event = yield* decodeEvent({
-    _tag: "deferral.due",
-    eventId: takeEventId(orgId, row.questionId),
-    orgId,
-    agentId: row.agentId,
-    receivedAt: iso(now),
-    provenance: { _tag: "system" },
-    dedupeKey: `question:${row.questionId}`,
-    subject: { type: "question", questionId: row.questionId },
-    lateByMs: Math.max(0, now - row.dueAt),
-    ...(lead?.ownerChatId === row.chatId
-      ? {}
-      : { origin: { agentId: row.agentId, chatId: row.chatId, personId: row.personId } }),
-  });
-  yield* deps.queue.enqueue(event);
+  const option = row.options.find((one) => one.label === row.defaultLabel);
+  const acts =
+    row.widgetId !== null &&
+    option !== undefined &&
+    (yield* sealedOptions(orgId, row.widgetId)).has(option.optionId);
   const clock = yield* personClock(orgId, row.personId);
+  if (acts) {
+    // Its own action runs here, as the asker; one that no longer holds waits for its person.
+    const plan = (yield* plansOf(orgId, row.widgetId!)).get(option!.optionId);
+    const { takeAtDay } = yield* Effect.promise(() => import("../widgets/cardActions.ts"));
+    const ran =
+      plan !== undefined &&
+      deps.records !== undefined &&
+      (yield* takeAtDay(orgId, plan, row, deps.records));
+    if (!ran) {
+      yield* sql`UPDATE kin_questions SET state = 'open', closed_at = NULL, raised_at = NULL,
+          safe = 0, act_at = ${raiseAt(row.dueAt, clock.zone, clock.days)}
+        WHERE org_id = ${orgId} AND question_id = ${row.questionId}`;
+      return true;
+    }
+  } else {
+    const [lead] = yield* sql<{ ownerChatId: string }>`SELECT owner_chat_id AS "ownerChatId"
+      FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${row.agentId}`;
+    const event = yield* decodeEvent({
+      _tag: "deferral.due",
+      eventId: takeEventId(orgId, row.questionId),
+      orgId,
+      agentId: row.agentId,
+      receivedAt: iso(now),
+      provenance: { _tag: "system" },
+      dedupeKey: `question:${row.questionId}`,
+      subject: { type: "question", questionId: row.questionId },
+      lateByMs: Math.max(0, now - row.dueAt),
+      ...(lead?.ownerChatId === row.chatId
+        ? {}
+        : { origin: { agentId: row.agentId, chatId: row.chatId, personId: row.personId } }),
+    });
+    yield* deps.queue.enqueue(event);
+  }
+  const went = `No answer by ${dayWord(row.dueAt, now, clock.zone).replace(/^on /, "")}, so ${row.agentName} went with “${row.defaultLabel ?? ""}”.`;
   for (const widgetId of cardIds(row))
     yield* deps.chat.closeReplaced({
       orgId,
       widgetId: KinWidgetId.make(widgetId),
       outcome: {
         title: `Went with “${row.defaultLabel ?? ""}”`,
-        text: `No answer by ${dayWord(row.dueAt, now, clock.zone).replace(/^on /, "")}, so ${row.agentName} went with “${row.defaultLabel ?? ""}”. Say "undo it" in the chat to reverse.`,
+        text: acts ? went : `${went} Say "undo it" in the chat to reverse.`,
       },
     });
   return true;
@@ -612,7 +714,7 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
   orgId: KinOrgId,
   row: QuestionRow,
   now: number,
-  chat: Pick<KinChatService["Service"], "closeReplaced" | "ask">,
+  chat: Pick<KinChatService["Service"], "closeReplaced" | "ask" | "notice">,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const [agent] = yield* sql<{ owner: string; threadId: string | null; retiredAt: string | null }>`
@@ -662,8 +764,27 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
   if (defaultLabel !== row.defaultLabel)
     yield* sql`UPDATE kin_questions SET default_label = ${defaultLabel}
       WHERE org_id = ${orgId} AND question_id = ${row.questionId}`;
-  // Too few left for a card: the first card stays open, each tap on it checked as it runs.
-  if (offered.length < 2) return true;
+  // Too few left for a card: the first card stays open, each tap on it checked as it runs. A
+  // default left off is said once, so it is raised only once its person has heard.
+  if (offered.length < 2) {
+    if (row.defaultLabel !== null && defaultLabel === null) {
+      const option = row.options.find((one) => one.label === row.defaultLabel);
+      const plan = option === undefined ? undefined : sealed.get(option.optionId);
+      yield* tellDeclined(
+        {
+          orgId,
+          questionId: row.questionId,
+          agentId: row.agentId,
+          personId: row.personId,
+          chatId: row.chatId,
+          label: row.defaultLabel,
+          recordId: plan !== undefined && "recordId" in plan ? plan.recordId : undefined,
+        },
+        chat,
+      );
+    }
+    return true;
+  }
   const clock = yield* personClock(orgId, row.personId);
   const asked = {
     question: oneLine(`${STILL_OPEN}${row.question}`, 240),
@@ -728,7 +849,7 @@ export const dueTurnText = Effect.fn("KinQuestions.dueTurnText")(function* (
   const clock = yield* personClock(orgId, row.personId);
   const who = yield* personName(orgId, row.personId);
   return {
-    text: `Your question to ${who}, asked ${dayWord(row.askedAt, now, clock.zone)}, got no answer by its day, and its card now says you went with your default. Do “${row.defaultLabel}” now with your tools, inside the company only: anything that would send, post or move money stays on its Confirm card. Then say so in one line, such as: Went with “${row.defaultLabel}”; say "undo it" to reverse. Don't ask it again.`,
+    text: `Your question to ${who}, asked ${dayWord(row.askedAt, now, clock.zone)}, got no answer by its day, and its card now says you went with your default. Do “${row.defaultLabel}” now with your tools, inside the company only: anything that would send, post or move money stays on its Confirm card. Kin tells ${who} it went with “${row.defaultLabel}”, so don't say that again. Don't ask it again.`,
     data: {
       question: row.question,
       options: row.options.map((option) => option.label),
@@ -736,6 +857,17 @@ export const dueTurnText = Effect.fn("KinQuestions.dueTurnText")(function* (
       ...(row.about.length === 0 ? {} : { about: row.about }),
     },
   };
+});
+
+/** What the asker's turn is told when a default Kin took was undone; undefined when it wasn't. */
+export const undoneTurnText = Effect.fn("KinQuestions.undoneTurnText")(function* (
+  orgId: KinOrgId,
+  questionId: string,
+) {
+  const row = yield* readQuestion(orgId, questionId);
+  if (row === undefined || row.state !== "default_taken" || row.defaultLabel === null)
+    return undefined;
+  return `Your question to ${yield* personName(orgId, row.personId)}, “${row.question}”, got no answer, so Kin took your default “${row.defaultLabel}”. It has now been undone: what it changed is back as it was. Don't do it again or ask the same again; ask anew only if it still needs deciding.`;
 });
 
 /**

@@ -118,6 +118,38 @@ export const tellHolder = Effect.fn("KinPulse.tellHolder")(function* (input: {
     return due === undefined ? [] : [holderLine(ctx, fact, due)];
   });
   if (lines.length + input.unnamed.length === 0) return undefined;
+  // One pass's facts for one person are one message, so a retried pass posts nothing more; a fact
+  // open again after it cleared is told in a later pass, so it is a new message.
+  const keys = [...input.facts, ...input.unnamed].map((fact) => fact.key);
+  return yield* noticeHolder({
+    orgId,
+    personId,
+    agentId: input.agentId,
+    body: holderBody(lines, input.unnamed),
+    key: NodeCrypto.createHash("sha256")
+      .update(`${orgId}\0${personId}\0${ctx.at}\0${keys.join("\0")}`)
+      .digest("hex")
+      .slice(0, 32),
+  });
+});
+
+/**
+ * Posts `body` as Kin's notice to a holder, in their direct chat with `agentId` (else the team
+ * agent, as assignment notices pick), opened if needed; in their quiet hours or while away it is
+ * held until they are back. `key` names it, so a retry posts nothing more. Returns its message
+ * id, or undefined when no chat may hold it.
+ */
+export const noticeHolder = Effect.fn("KinPulse.noticeHolder")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly personId: KinPersonId;
+  readonly agentId: KinAgentId;
+  readonly body: string;
+  readonly key: string;
+}) {
+  const { orgId, personId, body } = input;
+  const chats = yield* Effect.serviceOption(KinChatService);
+  if (Option.isNone(chats)) return undefined;
+  const sql = yield* SqlClient.SqlClient;
   // As `createDirect` lets them: a co-owner messages every lead, anyone else while its owner allows.
   const reaches =
     (yield* ownerLevel(orgId, personId)) ||
@@ -140,16 +172,7 @@ export const tellHolder = Effect.fn("KinPulse.tellHolder")(function* (input: {
             Effect.orElseSucceed(() => undefined),
           );
   if (chatId === undefined) return undefined;
-  const body = holderBody(lines, input.unnamed);
-  // One pass's facts for one person are one message, so a retried pass posts nothing more; a fact
-  // open again after it cleared is told in a later pass, so it is a new message.
-  const keys = [...input.facts, ...input.unnamed].map((fact) => fact.key);
-  const messageId = KinMessageId.make(
-    `${HOLDER_ID}${NodeCrypto.createHash("sha256")
-      .update(`${orgId}\0${personId}\0${ctx.at}\0${keys.join("\0")}`)
-      .digest("hex")
-      .slice(0, 32)}`,
-  );
+  const messageId = KinMessageId.make(`${HOLDER_ID}${input.key}`);
   const held = yield* holdFor({ orgId, personId, chatId });
   if (held !== undefined) {
     yield* holdLine({

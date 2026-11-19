@@ -8,12 +8,14 @@ import {
   KinAgentId,
   type KinChatId,
   KinOrgId,
+  KinPersonId,
   KinWidgetId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -41,6 +43,7 @@ import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import * as Team from "../team/KinTeam.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { KinRecords } from "../work/KinRecords.ts";
 import { presetDefinition } from "../work/registers.ts";
 import * as Questions from "./openQuestions.ts";
 
@@ -208,6 +211,7 @@ const settle = Effect.fn("test.settle")(function* (orgId: string, at: number) {
   return yield* Questions.settleDue(KinOrgId.make(orgId), at, {
     chat: Context.get(services, KinChatService),
     queue: Context.get(services, KinEventQueue.KinEventQueue),
+    records: Context.get(services, KinRecords),
   });
 });
 
@@ -275,14 +279,70 @@ it.effect("a question is asked once, and its default is taken once at its day", 
       assert.include(section!.body, `${questionId}, Finance, today:`);
       assert.include(section!.body, "default “Draft it” tomorrow");
 
-      // Never before its day; once at it; never twice.
+      // Never before its day; once at it; never twice. Her quiet hours hold the news of it.
+      yield* sql`UPDATE kin_people SET quiet_hours_json = '{"from":"19:00","to":"21:00"}'
+        WHERE person_id = ${owner.personId}`;
+      const told = sql<{ author: string; body: string; widget: string | null }>`SELECT
+          m.author_agent_id AS author, m.body, m.widget_id AS widget
+        FROM kin_pulse_told t JOIN kin_messages m ON m.org_id = t.org_id AND m.message_id = t.event_id
+        WHERE t.org_id = ${orgId} AND t.fact_key = ${`default_taken:${questionId}`}`;
       assert.strictEqual(yield* settle(orgId, TUE_1930 - 60_000), 0);
       assert.strictEqual((yield* questionRow(sql, questionId)).state, "open");
+      // Paused, the company or Finance alone, its turn isn't started and the card stays open.
+      const asking = Option.getOrThrow(
+        yield* repo.getWidget({
+          orgId,
+          widgetId: KinWidgetId.make(asked.value.widgetId as string),
+        }),
+      );
+      // More of paused Finance's due than a pass takes, between two of the Chief of staff's.
+      const crowd = (id: string, agent: string, kind: "card" | "text", actAt: number) =>
+        sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id, kind,
+            question, default_label, safe, asked_at, due_at, act_at, state)
+          VALUES (${id}, ${orgId}, ${agent}, ${owner.personId}, ${chatOf(agent)}, ${kind},
+            ${`Invented question ${id}?`}, ${kind === "card" ? "Yes" : null},
+            ${kind === "card" ? 1 : 0}, 0, ${actAt}, ${actAt}, 'open')`;
+      yield* crowd("q-chief-first", "chief", "text", -1);
+      for (let index = 0; index < 50; index += 1)
+        yield* crowd(`q-paused-${index}`, "finance", "card", 0);
+      yield* crowd("q-chief-last", "chief", "text", 1);
+      yield* sql`INSERT INTO kin_org_state (org_id, paused, paused_at, paused_by, reason)
+        VALUES (${orgId}, 1, ${TUE_1930}, ${owner.personId}, 'Invented pause')
+        ON CONFLICT (org_id) DO UPDATE SET paused = 1, paused_at = ${TUE_1930},
+          paused_by = ${owner.personId}, reason = 'Invented pause'`;
+      assert.strictEqual(yield* settle(orgId, TUE_1930), 0);
+      assert.strictEqual((yield* questionRow(sql, "q-chief-first")).state, "open");
+      yield* sql`UPDATE kin_org_state SET paused = 0, paused_at = NULL, paused_by = NULL,
+          reason = NULL
+        WHERE org_id = ${orgId}`;
+      yield* sql`UPDATE kin_agents SET paused_at = ${at} WHERE agent_id = 'finance'`;
+      assert.strictEqual(yield* settle(orgId, TUE_1930), 2);
+      assert.strictEqual((yield* questionRow(sql, "q-chief-last")).state, "withdrawn");
+      yield* sql`DELETE FROM kin_questions WHERE question_id LIKE 'q-paused-%'`;
+      assert.strictEqual((yield* questionRow(sql, questionId)).state, "open");
+      assert.lengthOf(yield* dueEvents(sql, orgId), 0);
+      assert.strictEqual(
+        Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId: asking.widgetId })).revision,
+        asking.revision,
+      );
+      yield* sql`UPDATE kin_agents SET paused_at = NULL WHERE agent_id = 'finance'`;
       assert.strictEqual(yield* settle(orgId, TUE_1930), 1);
       assert.strictEqual(yield* settle(orgId, TUE_1930 + 60_000), 0);
       assert.strictEqual((yield* questionRow(sql, questionId)).state, "default_taken");
       assert.deepStrictEqual(yield* dueEvents(sql, orgId), [
         { agent: "finance", key: `question:${questionId}` },
+      ]);
+      assert.lengthOf(yield* told, 0);
+      // At 21:00 her time she is told once, from Finance, as a line: Finance's turn does the
+      // default, so there is nothing for Kin to put back.
+      yield* settle(orgId, TUE_1930 + 90 * 60_000);
+      yield* settle(orgId, TUE_1930 + 91 * 60_000);
+      assert.deepStrictEqual(yield* told, [
+        {
+          author: "finance",
+          body: "Nobody answered, so I went with “Draft it” on “Shall I draft VIOM's payment reminder for INV-8?”.",
+          widget: null,
+        },
       ]);
       const card = Option.getOrThrow(
         yield* repo.getWidget({
@@ -306,9 +366,12 @@ it.effect("a question is asked once, and its default is taken once at its day", 
         .pipe(Effect.flip);
       assert.include(late, { reason: "invalid_state" });
       assert.strictEqual((yield* questionRow(sql, questionId)).state, "default_taken");
-      // The turn Kin starts tells Finance to do it and say so in one line, with undo.
+      // The turn Kin starts tells Finance to do it, and that Kin tells Rhea.
       const due = yield* Questions.dueTurnText(KinOrgId.make(orgId), questionId, TUE_1930);
-      assert.include(due!.text, 'Went with “Draft it”; say "undo it" to reverse.');
+      assert.include(
+        due!.text,
+        "Kin tells Rhea Rao it went with “Draft it”, so don't say that again.",
+      );
       assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: owner.personId }), 0);
 
       // Once INV-8 is a real invoice, any default about it waits for Rhea.
@@ -525,6 +588,67 @@ it.effect("questions close on the person's words, and only the asker withdraws o
       assert.strictEqual((yield* questionRow(sql, questionId)).state, "answered");
       assert.strictEqual(yield* settle(orgId, TUE_1930), 0);
       assert.lengthOf(yield* dueEvents(sql, orgId), 0);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// Rhea is away six weeks and Finance's default is taken in the first: she is told once she is
+// back, counted in her chat itself. Later, Meera, still away, has more held notices than one pass
+// tells: Rhea, who is back, is told of her next one in that same pass.
+it.effect("a taken default is owed until told, and held ones don't crowd out people back", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const { sql, chats, owner, orgId, chatOf, wake } = yield* ambermill;
+      const chatId = chatOf("finance");
+      const ask = Effect.fn("test.ask")(function* (body: string, input: typeof reminderAsk) {
+        yield* wake("finance", yield* chats.send(owner, { chatId, body, clientMessageId: body }));
+        const asked = yield* callAs("finance", "kin_ask", input);
+        assert.isTrue(asked.ok, JSON.stringify(asked.value));
+        return { id: asked.value.question as string, due: Date.parse(asked.value.by as string) };
+      });
+      const told = (questionId: string) =>
+        sql`SELECT 1 FROM kin_pulse_told
+          WHERE org_id = ${orgId} AND fact_key = ${`default_taken:${questionId}`}`;
+      const posted = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_messages
+        WHERE org_id = ${orgId} AND chat_id = ${chatId}`.pipe(Effect.map((rows) => rows[0]!.n));
+      const day = 86_400_000;
+
+      const first = yield* ask("What about VIOM?", reminderAsk);
+      const back = DateTime.formatIsoDate(DateTime.makeUnsafe(first.due + 42 * day));
+      yield* sql`UPDATE kin_people SET away_until = ${back} WHERE person_id = ${owner.personId}`;
+      assert.strictEqual(yield* settle(orgId, first.due), 1);
+      yield* settle(orgId, first.due + 31 * day);
+      assert.lengthOf(yield* told(first.id), 0);
+      const away = yield* posted;
+      const home = Date.parse(`${back}T06:00:00.000Z`);
+      yield* settle(orgId, home);
+      yield* settle(orgId, home + 60_000);
+      assert.lengthOf(yield* told(first.id), 1);
+      assert.strictEqual(yield* posted, away + 1);
+
+      const meera = { _tag: "person" as const, orgId, personId: KinPersonId.make("meera") };
+      const meeraChat = (yield* chats.createDirect(meera, {
+        orgId,
+        agentId: KinAgentId.make("finance"),
+      })).chatId;
+      yield* sql`UPDATE kin_people SET away_until = '2027-12-31' WHERE person_id = 'meera'`;
+      for (let index = 0; index < 51; index += 1)
+        yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id,
+            kind, question, default_label, safe, asked_at, due_at, act_at, state, raised_at,
+            closed_at)
+          VALUES (${`q-held-${index}`}, ${orgId}, 'finance', 'meera', ${meeraChat}, 'card',
+            ${`Invented held question ${index}?`}, 'Yes', 1, 0, 0, 0, 'default_taken',
+            ${index + 1}, ${index + 1})`;
+      const second = yield* ask("And the Apex receipts?", {
+        question: "Shall I file the Apex receipts under October?",
+        options: [{ label: "File them" }, { label: "Leave them" }],
+        default: "File them",
+        about: [],
+        intent: "file the Apex receipts",
+      });
+      assert.strictEqual(yield* settle(orgId, second.due), 1);
+      assert.lengthOf(yield* told(second.id), 1);
     }).pipe(Effect.provide(layer)),
   ),
 );

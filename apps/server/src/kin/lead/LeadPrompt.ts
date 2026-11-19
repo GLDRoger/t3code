@@ -65,7 +65,7 @@ import { groupRules, teamRules } from "./instructions.ts";
 import { socialRules } from "../social/instructions.ts";
 import { isSocialDomain } from "../social/seat.ts";
 import { buildSeat } from "./seat.ts";
-import { dueTurnText, openQuestionsSection } from "../questions/openQuestions.ts";
+import { dueTurnText, openQuestionsSection, undoneTurnText } from "../questions/openQuestions.ts";
 import { asksUndo, recentChanges, UNDO_RULE } from "./undoSection.ts";
 
 export class KinLeadPromptError extends Schema.TaggedError<KinLeadPromptError>()(
@@ -426,6 +426,25 @@ export class KinLeadPrompt extends Context.Service<
                     Option.getOrUndefined(words),
                     true,
                   )}`,
+            );
+            continue;
+          }
+          if (
+            event._tag === "deferral.due" &&
+            event.subject.type === "question" &&
+            event.subject.undone === true
+          ) {
+            fromOwner = false;
+            const undone = yield* undoneTurnText(orgId, event.subject.questionId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.catch((cause) =>
+                Effect.logWarning("Kin open question unreadable", cause).pipe(Effect.as(undefined)),
+              ),
+            );
+            events.push(
+              `${quote("event data", { event: event.eventId })}\n\n${
+                undone ?? "Kin couldn't read that question just now."
+              } If nothing else needs saying, write exactly ${SILENT_REPLY}.`,
             );
             continue;
           }

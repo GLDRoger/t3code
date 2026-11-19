@@ -13,6 +13,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
+import { takenBy, undoTaken } from "../questions/defaultTaken.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { tellMoved } from "../work/ownerWork.ts";
 import { parseChanges } from "../work/recordRows.ts";
@@ -78,7 +80,8 @@ const rereadReplies = Effect.fn("KinAgentChanges.rereadReplies")(
 
 /**
  * Puts back what one of the agent's changes replaced, as `by`'s own change, recorded on the entry
- * like any edit; whoever holds a task it moves is told. Refused once the entry changed since.
+ * like any edit; whoever holds a task it moves is told. Refused once the entry changed since. A
+ * default Kin took is put back as its note's Undo does (`undoTaken`).
  */
 export const ownerLevelUndoAgentChange = Effect.fn("KinAgentChanges.undo")(function* (input: {
   readonly orgId: KinOrgId;
@@ -111,12 +114,31 @@ export const ownerLevelUndoAgentChange = Effect.fn("KinAgentChanges.undo")(funct
       message: `That link on ${row.key} is already gone.`,
     });
   }
-  const patch = reversal({ ...row, fields: parseChanges(row.fieldsJson) });
+  const fields = parseChanges(row.fieldsJson);
+  const patch = reversal({ ...row, fields });
   if (patch === undefined)
     return yield* new KinChatError({
       reason: "invalid_state",
       message: `Kin can't put this change to ${row.key} back on its own. Open it to change it yourself.`,
     });
+  const questionId = takenBy(fields);
+  if (questionId !== undefined)
+    return yield* undoTaken(
+      {
+        orgId: input.orgId,
+        questionId,
+        agentId: input.agentId,
+        writer,
+        by: input.by,
+        key: row.key,
+        patch,
+        name: row.key,
+      },
+      {
+        records,
+        chat: Option.getOrUndefined(yield* Effect.serviceOption(KinChatService)),
+      },
+    );
   const before = yield* records.get(input.orgId, row.key);
   yield* records.update(input.orgId, writer, row.key, patch);
   yield* tellMoved(
