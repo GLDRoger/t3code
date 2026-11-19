@@ -53,6 +53,7 @@ import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import { readPeople } from "../lead/peopleRead.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { importWork } from "./importWork.ts";
+import { newCompanyProfileJson } from "./companyProfile.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadDocs from "./leadDocs.ts";
 import * as LeadMoney from "./leadMoney.ts";
@@ -415,64 +416,107 @@ it.effect("record_update changes only named fields, logs each change, and both o
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("a task moved to another project takes its client, unless it had its own", () =>
-  Effect.gen(function* () {
-    yield* seed;
-    yield* turn();
-    const records = yield* KinRecords.KinRecords;
-    const made = (list: "clients" | "projects", title: string, partyId?: string) =>
-      records
-        .create(orgId, ownerWrites, {
-          list,
-          originKey: title,
-          title,
-          owner: { _tag: "person", personId: ownerId },
-          ...(partyId === undefined ? {} : { partyId }),
-        })
-        .pipe(Effect.map(({ row }) => row));
-    const grove = yield* made("clients", "Invented Grove");
-    const orbit = yield* made("clients", "Invented Orbit");
-    const kept = yield* made("clients", "Invented Kept");
-    const groveApp = yield* made("projects", "Invented Grove app", grove.recordId);
-    const orbitCare = yield* made("projects", "Invented Orbit care", orbit.recordId);
-    const plain = yield* made("projects", "Invented plain project");
-    const underOld = yield* ownerTask("under the old client", {
-      projectId: groveApp.recordId,
-      partyId: grove.recordId,
-    });
-    const noClient = yield* ownerTask("with no client", { projectId: plain.recordId });
-    const ownClient = yield* ownerTask("with its own client", {
-      projectId: groveApp.recordId,
-      partyId: kept.recordId,
-    });
-    const clientOf = (key: string) =>
-      records.get(orgId, key).pipe(Effect.map((row) => row?.partyId ?? null));
-    // A person's move: the old project's client follows to the new project's, logged in the write.
-    yield* records.update(orgId, ownerWrites, underOld.key, { projectId: orbitCare.recordId });
-    assert.strictEqual(yield* clientOf(underOld.key), orbit.recordId);
-    const history = (yield* OwnerWork.get([owner], { orgId, key: underOld.key })).changes;
-    assert.deepInclude(
-      history.map((change) => change.fields.map((field) => [field.field, field.from, field.to])),
-      [
-        ["party", grove.key, orbit.key],
-        ["project", groveApp.key, orbitCare.key],
-      ],
-    );
-    // An agent's record_update goes the same way: none becomes the new project's client.
-    yield* LeadWork.update(scopeOf(lead), {
-      key: noClient.key,
-      sourceEventId: "ask-event",
-      project: orbitCare.key,
-    });
-    assert.strictEqual(yield* clientOf(noClient.key), orbit.recordId);
-    // A client of its own, neither project's, stays put for both.
-    yield* LeadWork.update(scopeOf(lead), {
-      key: ownClient.key,
-      sourceEventId: "ask-event",
-      project: orbitCare.key,
-    });
-    assert.strictEqual(yield* clientOf(ownClient.key), kept.recordId);
-  }).pipe(Effect.provide(layer)),
+it.effect(
+  "a task moved to another project takes its client, and another client takes it off the old one's project",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* turn();
+      const records = yield* KinRecords.KinRecords;
+      const made = (list: "clients" | "projects", title: string, partyId?: string) =>
+        records
+          .create(orgId, ownerWrites, {
+            list,
+            originKey: title,
+            title,
+            owner: { _tag: "person", personId: ownerId },
+            ...(partyId === undefined ? {} : { partyId }),
+          })
+          .pipe(Effect.map(({ row }) => row));
+      const grove = yield* made("clients", "Invented Grove");
+      const orbit = yield* made("clients", "Invented Orbit");
+      const kept = yield* made("clients", "Invented Kept");
+      const groveApp = yield* made("projects", "Invented Grove app", grove.recordId);
+      const orbitCare = yield* made("projects", "Invented Orbit care", orbit.recordId);
+      const plain = yield* made("projects", "Invented plain project");
+      const underOld = yield* ownerTask("under the old client", {
+        projectId: groveApp.recordId,
+        partyId: grove.recordId,
+      });
+      const noClient = yield* ownerTask("with no client", { projectId: plain.recordId });
+      const ownClient = yield* ownerTask("with its own client", {
+        projectId: groveApp.recordId,
+        partyId: kept.recordId,
+      });
+      const clientOf = (key: string) =>
+        records.get(orgId, key).pipe(Effect.map((row) => row?.partyId ?? null));
+      // A person's move: the old project's client follows to the new project's, logged in the write.
+      yield* records.update(orgId, ownerWrites, underOld.key, { projectId: orbitCare.recordId });
+      assert.strictEqual(yield* clientOf(underOld.key), orbit.recordId);
+      const history = (yield* OwnerWork.get([owner], { orgId, key: underOld.key })).changes;
+      assert.deepInclude(
+        history.map((change) => change.fields.map((field) => [field.field, field.from, field.to])),
+        [
+          ["party", grove.key, orbit.key],
+          ["project", groveApp.key, orbitCare.key],
+        ],
+      );
+      // An agent's record_update goes the same way: none becomes the new project's client.
+      yield* LeadWork.update(scopeOf(lead), {
+        key: noClient.key,
+        sourceEventId: "ask-event",
+        project: orbitCare.key,
+      });
+      assert.strictEqual(yield* clientOf(noClient.key), orbit.recordId);
+      // A client of its own, neither project's, stays put for both.
+      yield* LeadWork.update(scopeOf(lead), {
+        key: ownClient.key,
+        sourceEventId: "ask-event",
+        project: orbitCare.key,
+      });
+      assert.strictEqual(yield* clientOf(ownClient.key), kept.recordId);
+      // Given another client, a task leaves a project of a different client in the same write.
+      const projectOf = (key: string) =>
+        records.get(orgId, key).pipe(Effect.map((row) => row?.projectId ?? null));
+      const moving = yield* OwnerWork.get([owner], { orgId, key: underOld.key });
+      const moved = yield* OwnerWork.update([owner], {
+        orgId,
+        key: underOld.key,
+        rev: moving.rev,
+        party: grove.key,
+      });
+      assert.isUndefined(moved.project);
+      assert.deepInclude(
+        moved.changes[0]?.fields.map((field) => [field.field, field.from, field.to]) ?? [],
+        ["project", orbitCare.key, null],
+      );
+      assert.strictEqual(yield* clientOf(underOld.key), grove.recordId);
+      const left = yield* LeadWork.update(scopeOf(lead), {
+        key: ownClient.key,
+        sourceEventId: "ask-event",
+        client: grove.key,
+      });
+      assert.isNull(yield* projectOf(ownClient.key));
+      assert.include(left.projectLeft, `${orbitCare.key} is another client's project`);
+      // Its project's own client, a project with no client, or both given at once: the project stays.
+      const stayed = yield* LeadWork.update(scopeOf(lead), {
+        key: noClient.key,
+        sourceEventId: "ask-event",
+        client: orbit.key,
+      });
+      assert.strictEqual(yield* projectOf(noClient.key), orbitCare.recordId);
+      assert.notProperty(stayed, "projectLeft");
+      const onPlain = yield* ownerTask("on a plain project", { projectId: plain.recordId });
+      yield* records.update(orgId, ownerWrites, onPlain.key, { partyId: kept.recordId });
+      assert.strictEqual(yield* projectOf(onPlain.key), plain.recordId);
+      yield* LeadWork.update(scopeOf(lead), {
+        key: noClient.key,
+        sourceEventId: "ask-event",
+        client: grove.key,
+        project: orbitCare.key,
+      });
+      assert.strictEqual(yield* projectOf(noClient.key), orbitCare.recordId);
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect(
@@ -644,6 +688,33 @@ it.effect(
       });
       assert.lengthOf(made.records, 3);
       assert.lengthOf((yield* OwnerWork.list([mate], { orgId })).records, 3);
+      // For a company created now with no country, an amount here says whose choice that is,
+      // with nothing more promised; a batch with one says nothing in it was saved.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+          updated_by_kind, updated_by_id)
+        VALUES (${orgId}, ${yield* newCompanyProfileJson}, 1, 0, 'person', ${ownerId})`;
+      const priced = (
+        records: ReadonlyArray<{ readonly title: string; readonly amount?: string }>,
+      ) =>
+        LeadWork.create(scopeOf(lead), { sourceEventId: "ask-event", records }).pipe(
+          Effect.flip,
+          Effect.map((error) => error.message),
+        );
+      assert.deepStrictEqual(
+        [
+          yield* priced([{ title: "Invented printing", amount: "90" }]),
+          yield* priced([
+            { title: "Invented proofs" },
+            { title: "Invented printing", amount: "90" },
+          ]),
+        ],
+        [
+          "Nothing was created: this company's country isn't chosen yet, and Kin records no money until an owner chooses it in Settings, Company details.",
+          "Nothing was saved: this company's country isn't chosen yet, and Kin records no money until an owner chooses it in Settings, Company details.",
+        ],
+      );
+      yield* sql`DELETE FROM kin_company_profile WHERE org_id = ${orgId}`;
       // The services check again, so a turn that became shared since the gate is refused too.
       const refused = [
         yield* Effect.flip(

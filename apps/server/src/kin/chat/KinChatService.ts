@@ -347,6 +347,8 @@ export class KinChatService extends Context.Service<
         readonly clientMessageId: string;
         /** For the one person whose chat it is, its words already checked for them (`askTo`). */
         readonly forChat?: true;
+        /** Kin's own unprompted card: it waits in Needs you but never rings. */
+        readonly silent?: true;
       },
     ) => Effect.Effect<KinWidget, ServiceError>;
     /** A card Kin fills from stored rows, such as a doc card; no tap answers it. */
@@ -825,6 +827,7 @@ const make = Effect.gen(function* () {
       readonly passedOn?: KinMessageOrigin | undefined;
       /** False for a tap whose fixed action the server ran: it answers nothing else here. */
       readonly replies?: false;
+      readonly silent?: true | undefined;
     },
   ) {
     // A reply the caller names must be one it may read; a hidden one reads as missing.
@@ -862,6 +865,7 @@ const make = Effect.gen(function* () {
       ...(identity._tag === "person" && input.passedOn !== undefined
         ? { origin: input.passedOn }
         : {}),
+      ...(input.silent === true ? { silent: true as const } : {}),
       status: "posted",
       sentBy: null,
       clientMessageId: input.clientId,
@@ -1430,6 +1434,7 @@ const make = Effect.gen(function* () {
       /** A stored file the card draws; read under the same rule as the message. */
       readonly file?: string;
       readonly forChat?: true;
+      readonly silent?: true | undefined;
     },
   ) {
     const member = yield* memberFor(identity, input.chatId);
@@ -1479,6 +1484,7 @@ const make = Effect.gen(function* () {
       clientId: { kind: "send", id: input.clientMessageId },
       publish: false,
       ...(input.forChat === true ? { forChat: true } : {}),
+      silent: input.silent,
     });
     if (authorization.runId === null && authorization.owed !== true)
       yield* floor.recordNotice(identity, message);
@@ -1826,6 +1832,7 @@ const make = Effect.gen(function* () {
       });
       for (const item of cleared.waiting)
         yield* hub.publish({ type: "waiting.updated", orgId: chat.orgId, item });
+      if (cleared.endedSuggestion) yield* refresh.touch(chat.orgId, "recommendations");
       yield* hub.publish({
         type: "chat.cleared",
         orgId: chat.orgId,
@@ -2996,6 +3003,7 @@ const make = Effect.gen(function* () {
             intent: "question",
             state: validateState("choice", ChoiceCard.choiceCardState(input)),
             ...(input.forChat === true ? { forChat: true as const } : {}),
+            silent: input.silent,
           }),
         ),
       transaction,

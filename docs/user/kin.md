@@ -309,6 +309,10 @@ clients.
 Money shows what you're owed, what's overdue, who owes you, the next 30 days, cash in the bank and
 each month. **Needs attention** at the top lists overdue invoices and renewals coming up.
 
+A new company chooses its country first: the owner or a co-owner sets it in **Settings → Company
+details**, and its currency follows, with its financial year and tax name where Kin knows them.
+Until then Kin records no money, and agents say so.
+
 Most of the bookkeeping happens by telling an agent: "Acme paid ₹48,250 today", "we spent $120 on
 hosting", "the GST filing is due on the 20th". It records the entry and answers in a line.
 
@@ -510,6 +514,19 @@ now**. Or say it in a chat: "check in at 11 instead".
 
 **Settings → Company details → Daily limit** caps how much work your agents do each day. Once
 they reach it, only your urgent messages run, on the agent's usual model, until midnight.
+
+## Recommendations
+
+When the same hold-up keeps happening and a setting would end it, Kin suggests the change once, as a
+card in your chat with the Chief of staff, so it waits in Needs you without ringing. Today that's a
+teammate who keeps asking for another agent's work while your cards on it run out: the card offers
+to let them message that agent directly. Nothing changes until you tap the change itself;
+**Not now** keeps it quiet for 30 days, then 90, then for good. Kin suggests at most one thing a day, never in your
+quiet hours, never while Needs you is full, and not in a company's first two weeks.
+
+**Settings → Recommendations**, under Company (the owner only), lists every suggestion and what came of it, with
+**Ask again** for one you put off. A change you made from a suggestion is changed back where it lives: a done row
+opens that agent's page, where you choose who can message it.
 
 ## Memory
 

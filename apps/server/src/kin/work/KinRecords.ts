@@ -42,7 +42,7 @@ import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
-import { companyMoney, homeCurrency } from "./companyProfile.ts";
+import { companyMoney, countryFirst, homeCurrency } from "./companyProfile.ts";
 import { commentsPage } from "./recordComments.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal } from "./sensitiveReads.ts";
@@ -51,6 +51,7 @@ import {
   checkFor,
   encodeFieldValues,
   type FieldValue,
+  isMoney,
   LISTS,
   type ListName,
   parseFields,
@@ -377,6 +378,13 @@ const shownRepeat = (rule: KinRepeatRule | null | undefined) =>
       ? `every ${rule.days} days`
       : `every ${rule.every}`;
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+/** Whether an entry's amount or fields put money on it. */
+const recordsMoney = (
+  amount: KinMoney | null | undefined,
+  fields: Readonly<Record<string, FieldValue | null>> | undefined,
+) =>
+  (amount !== undefined && amount !== null) ||
+  Object.values(fields ?? {}).some((value) => value !== null && isMoney(value));
 const NUMBERS_ARE_ISSUED =
   "Kin gives this list's entries their numbers when they are issued, so nothing else sets one. Issue the entry instead; an invoice numbered elsewhere keeps that number in its notes.";
 /** A receipt's payment, invoice and number are Kin's own (`gendocs/receipts.ts` writes them). */
@@ -1066,6 +1074,9 @@ const make = Effect.gen(function* () {
         });
       return { row: existing, created: false };
     }
+    // Before the list is read: an amount for a list not made yet waits on the country too.
+    // A list that may hold money takes entries without any, such as a deadline with no fee.
+    if (recordsMoney(input.amount, input.fields)) yield* countryFirst(orgId).pipe(provideSql);
     const def = yield* resolveList(orgId, input.list ?? "work");
     if (def.archivedAt !== null)
       return yield* invalid(`${def.name} is archived; the owner can restore it.`);
@@ -1336,6 +1347,8 @@ const make = Effect.gen(function* () {
           repeat: patch.repeat,
         });
         if (invalidFor !== undefined) return yield* invalidFor;
+        if (recordsMoney(patch.amount, patch.fields))
+          yield* countryFirst(orgId, { saved: true }).pipe(provideSql);
         const zero = zeroOwed(def, patch.amount, patch.category ?? row.category);
         if (zero !== undefined) return yield* zero;
         if (list === "receipts") {
@@ -1374,7 +1387,24 @@ const make = Effect.gen(function* () {
         const sets: Array<Statement.Fragment> = [];
         const set = (column: string, value: string | number | null) =>
           sets.push(sql`${sql(column)} = ${value}`);
-        const projectId = patch.projectId === undefined ? row.projectId : patch.projectId;
+        // A task given another client leaves a project of a different client; one with none stays.
+        const [heldIn] =
+          row.registerId !== "work" ||
+          patch.projectId !== undefined ||
+          row.projectId === null ||
+          patch.partyId === undefined ||
+          patch.partyId === null ||
+          patch.partyId === row.partyId
+            ? []
+            : yield* sql<{ partyId: string | null }>`SELECT party_id AS "partyId" FROM kin_records
+                WHERE org_id = ${orgId} AND record_id = ${row.projectId}`;
+        const offProject =
+          heldIn !== undefined && heldIn.partyId !== null && heldIn.partyId !== patch.partyId;
+        const projectId = offProject
+          ? null
+          : patch.projectId === undefined
+            ? row.projectId
+            : patch.projectId;
         const project =
           patch.projectId === undefined || patch.projectId === null
             ? undefined

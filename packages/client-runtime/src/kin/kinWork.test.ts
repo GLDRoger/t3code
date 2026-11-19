@@ -31,6 +31,8 @@ import {
   kinWorkAudience,
   kinWorkAudienceMove,
   kinWorkHostEdits,
+  kinWorkClientStays,
+  kinWorkItemState,
   kinWorkItemView,
   kinWorkListFooter,
   kinWorkListQuery,
@@ -707,6 +709,84 @@ describe("links to other tasks and to a lead's work", () => {
       ["url", { environmentId: hostEnvironment, threadId: "invented-thread" }],
       ["url", null],
     ]);
+  });
+});
+
+describe("kinWorkItemState", () => {
+  const webLink = {
+    kind: "url",
+    relation: "relates",
+    target: "https://ambermill.example/logos",
+    chatId: null,
+    label: null,
+    createdAt: now.toISOString(),
+  } as const;
+  const projectNote = {
+    body: "Invented: brand blue is #1a4f8b",
+    at: now.toISOString(),
+    by: me,
+    project: { recordId: KinRecordId.make("rec-p"), key: "P-1", title: "Invented site" },
+  };
+  const shown = (read: KinRecordDetail, given: KinRecordDetail | null) => {
+    const state = kinWorkItemState(AsyncResult.success(read), given);
+    return state._tag === "ready" ? state.item : null;
+  };
+
+  it("shows a link or a project's note read after the last change's answer, at the same rev", () => {
+    const answer = detail({ rev: 4, seq: 7 });
+    const linked = detail({ rev: 4, seq: 8, links: [webLink] });
+    expect(shown(linked, answer)).toBe(linked);
+    const noted = detail({ rev: 4, seq: 7, projectNote });
+    expect(shown(noted, answer)).toBe(noted);
+    // A read from before the change still gives way to its answer.
+    expect(shown(detail({ rev: 3, seq: 6 }), answer)).toBe(answer);
+    expect(shown(detail({ rev: 4, seq: 6 }), answer)).toBe(answer);
+  });
+});
+
+describe("kinWorkClientStays", () => {
+  const ref = (key: string, title: string) => ({ recordId: KinRecordId.make(key), key, title });
+  const grove = ref("C-1", "Invented Grove");
+  const clientOf = new Map<string, string | null>([
+    ["P-1", "C-2"],
+    ["P-2", null],
+  ]);
+  const changed = (fields: ReadonlyArray<readonly [string, string | null, string | null]>) =>
+    detail({
+      party: grove,
+      changes: [
+        {
+          seq: 4,
+          at: now.toISOString(),
+          by: me,
+          via: "owner",
+          kind: "updated",
+          fields: fields.map(([field, from, to]) => ({ field, from, to })),
+        },
+      ],
+    });
+
+  it("says a new client took the task off another client's project, and only then", () => {
+    expect(
+      kinWorkClientStays(
+        changed([
+          ["party", "C-2", "C-1"],
+          ["project", "P-1", null],
+        ]),
+        clientOf,
+      ),
+    ).toBe("No longer on P-1: that project is another client's");
+    // A project with no client, or only the project cleared, is the person's own doing.
+    expect(
+      kinWorkClientStays(
+        changed([
+          ["party", null, "C-1"],
+          ["project", "P-2", null],
+        ]),
+        clientOf,
+      ),
+    ).toBeNull();
+    expect(kinWorkClientStays(changed([["project", "P-1", null]]), clientOf)).toBeNull();
   });
 });
 

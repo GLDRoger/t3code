@@ -2,26 +2,30 @@ import { useNavigation } from "@react-navigation/native";
 import { KIN_DOCS, kinDocCardLine, type KinDocCardView } from "@t3tools/client-runtime/kin/kinDocs";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { memo } from "react";
-import { View } from "react-native";
+import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Chip } from "../../../components/ui/Chip";
 import { useNowMinuteMs } from "../../../lib/clock";
+import { useKinWorkLink } from "../state/kinWorkLink";
 
 const NO_NAMES: ReadonlyMap<string, string> = new Map();
 
-/** A doc an agent wrote or changed: what it is, what changed, and the way to read either. */
+/** A doc an agent wrote or changed: what it is, what changed, and the way to read either; a tap opens it. */
 export const KinDocCard = memo(function KinDocCard(props: {
   readonly doc: KinDocCardView;
   readonly environmentId: EnvironmentId;
   readonly orgId: string;
   readonly agentNames?: ReadonlyMap<string, string>;
+  /** The message's own long press: the card takes presses across its face, so it passes this on. */
+  readonly onLongPress?: () => void;
 }) {
   const { doc } = props;
   const navigation = useNavigation();
+  const openRecord = useKinWorkLink();
   const line = kinDocCardLine(doc, props.agentNames ?? NO_NAMES, new Date(useNowMinuteMs()));
   const where = { environmentId: props.environmentId, orgId: props.orgId, doc: doc.key };
-  const open = () => navigation.navigate("KinDoc", where);
+  const open = () => openRecord("KinDoc", where);
   const { previousVersion } = doc;
   const changes =
     previousVersion === null
@@ -33,7 +37,7 @@ export const KinDocCard = memo(function KinDocCard(props: {
             from: String(previousVersion),
           });
   return (
-    <View
+    <Pressable
       accessible
       accessibilityRole="button"
       accessibilityLabel={`Doc: ${doc.title}. ${line.text}`}
@@ -46,7 +50,9 @@ export const KinDocCard = memo(function KinDocCard(props: {
         if (event.nativeEvent.actionName === "changes") changes?.();
         else open();
       }}
-      className="gap-2 rounded-[20px] border border-border bg-card-alt p-4"
+      onPress={open}
+      {...(props.onLongPress === undefined ? {} : { onLongPress: props.onLongPress })}
+      className="gap-2 rounded-[20px] border border-border bg-card-alt p-4 active:opacity-70"
     >
       <Text textRole="caption" className="font-t3-medium text-foreground-muted">
         Doc
@@ -61,6 +67,6 @@ export const KinDocCard = memo(function KinDocCard(props: {
         <Chip size="small" label="Open" onPress={open} />
         {changes === null ? null : <Chip size="small" label={KIN_DOCS.changes} onPress={changes} />}
       </View>
-    </View>
+    </Pressable>
   );
 });

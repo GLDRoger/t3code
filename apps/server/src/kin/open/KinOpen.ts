@@ -1,4 +1,5 @@
 import {
+  KIN_CHOICE_CARD_TTL_MS,
   KIN_PULSE_URGENT,
   type KinOpenRead,
   type KinOpenRow,
@@ -117,6 +118,11 @@ const settledWaiting = Effect.fn("KinOpen.settledWaiting")(function* (
               AND (q.widget_id = w.widget_id OR q.raise_widget_id = w.widget_id))
             AND NOT EXISTS (SELECT 1 FROM kin_questions q WHERE q.org_id = w.org_id
               AND q.state = 'open' AND (q.widget_id = w.widget_id OR q.raise_widget_id = w.widget_id))
+            THEN 'question_settled'
+          -- Kin's suggestion ran out at its time limit, before the sweep closes its card.
+          WHEN EXISTS (SELECT 1 FROM kin_recommendations r WHERE r.org_id = w.org_id
+              AND r.widget_id = w.widget_id AND r.state = 'open'
+              AND r.posted_at <= ${at - KIN_CHOICE_CARD_TTL_MS})
             THEN 'question_settled'
         END AS reason
       FROM kin_waiting w

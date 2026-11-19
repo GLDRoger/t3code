@@ -28,8 +28,8 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   scope: Scope.Scope,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  // Kin's own route card answers nothing else, and is no decision to remember.
-  if (input.plan?.kind === "let_talk")
+  // Kin's own route and recommendation cards answer nothing else, and are no decision to remember.
+  if (input.plan?.kind === "let_talk" || input.plan?.kind === "recommend")
     return yield* CardActions.run(input, input.plan, {
       records: yield* KinRecords,
       chat: yield* KinChatService,
