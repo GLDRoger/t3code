@@ -69,7 +69,7 @@ export const KinWorkToolkit = Toolkit.make(
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("record_get", {
     ...shared,
-    description: `Open one entry by key: fields, notes, links (source message, delegated tasks, pull requests), last changes and newest comments. A client (C-3) adds what each side owes, contacts and projects. A project (P-2) adds health and plan: milestones with progress (late, atRisk), task counts, open tasks, people, docs, meetings, tasks whose spec section changed (specChanged), money (quoted, invoiced, received, unpaid), or noPlan; one call answers where it stands. An invoice adds payments and balance. Invoices, quotes, receipts and clients list mailed: mail Kin sent, when, from which account, who confirmed, and the threadId a mail_reply continues. Read-only. ${data} ${marked}`,
+    description: `Open one entry by key: fields, notes, links (source message, delegated tasks, pull requests), last changes and newest comments. A task adds its project's note for every task as projectNote, in the project's words. A client (C-3) adds what each side owes, contacts and projects. A project (P-2) adds health and plan: milestones with progress (late, atRisk), task counts, open tasks, people, docs, meetings, tasks whose spec section changed (specChanged), money (quoted, invoiced, received, unpaid), or noPlan; one call answers where it stands. An invoice adds payments and balance. Invoices, quotes, receipts and clients list mailed: mail Kin sent, when, from which account, who confirmed, and the threadId a mail_reply continues. Read-only. ${data} ${marked}`,
     parameters: Work.GetInput,
     success: Work.GetResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -94,14 +94,14 @@ export const KinWorkToolkit = Toolkit.make(
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("record_update", {
     ...shared,
-    description: `Change named fields of one Work entry by key, or of several the same way by keys (up to 100, all or none); fields you leave out stay as they are, and the entry's history keeps every change. Move state as you work it: doing, waiting with waitingOn ("owner" or an agent's agentId), done, or dropped. owner gives it to someone; giving it to another agent asks that agent to do it. client and project set what it belongs to; due, client, project and contact details take null to clear. A defined list's entry also takes amount (as said; "That was 4,200, not 2,400" changes only amount), date, category, repeat and fields; amount, date and repeat take null to clear. Closing a repeating entry makes its next one. A task's milestone, size, reason and from change the same way, as do a goal's target, due and a manual goal's current; giving from again after its section changed re-anchors it. Clients, contacts and projects change the same way; state dropped closes one. Pass expectedRev to refuse the change if it moved since you read it. Returns the new rev and the fields that changed. Don't narrate the change in your reply.`,
+    description: `Change named fields of one Work entry by key, or of several the same way by keys (up to 100, all or none); fields you leave out stay as they are, and the entry's history keeps every change. Move state as you work it: doing, waiting with waitingOn ("owner" or an agent's agentId), done, or dropped. owner gives it to someone; giving it to another agent asks that agent to do it. With owner, tell: false holds their notice as record_assign's does. client and project set what it belongs to; due, client, project and contact details take null to clear. A defined list's entry also takes amount (as said; "That was 4,200, not 2,400" changes only amount), date, category, repeat and fields; amount, date and repeat take null to clear. Closing a repeating entry makes its next one. A task's milestone, size, reason and from change the same way, as do a goal's target, due and a manual goal's current; giving from again after its section changed re-anchors it. Clients, contacts and projects change the same way; state dropped closes one. Pass expectedRev to refuse the change if it moved since you read it. Returns the new rev and the fields that changed. Don't narrate the change in your reply.`,
     parameters: Work.UpdateInput,
     success: Work.UpdateResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("record_assign", {
     ...shared,
     description:
-      'Give open tasks to people or agents, a whole plan in one call (up to 50): key, to ("you", "me" for whoever asked, an agentId, or a person as people_read names them), reason (one line on why them), optional due. Taking over a late task is giving it to "you" or another agent. Kin shows the reason and tells each person once in their own chat, so don\'t message them again (told names who heard). Giving a task to a person shares it with them. A handed-back task goes to them again only after it changed or the owner says so. All tasks are given or none: a refused task is named with what to fix.',
+      'Give open tasks to people or agents, a whole plan in one call (up to 50): key, to ("you", "me" for whoever asked, an agentId, or a person as people_read names them), reason (one line on why them), optional due. Taking over a late task is giving it to "you" or another agent. Kin shows the reason and tells each person once in their own chat, so don\'t message them again (told names who heard). tell: false when the person said not to tell them yet; the result lists who is held, and assigning again tells them. Giving a task to a person shares it with them. A handed-back task goes to them again only after it changed or the owner says so. All tasks are given or none: a refused task is named with what to fix.',
     parameters: Work.AssignInput,
     success: Work.AssignResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -121,6 +121,24 @@ export const KinWorkToolkit = Toolkit.make(
     parameters: Comments.CommentInput,
     success: Comments.CommentResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("record_link", {
+    ...shared,
+    description:
+      "Put a web link on an entry (W-12): url and an optional name; remove true takes it off. Only an http or https address, on an entry the people you act for may edit.",
+    parameters: Comments.LinkInput,
+    success: Comments.LinkResult,
+  })
+    .annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(Tool.Meta, deferredMeta),
+  Tool.make("project_note", {
+    ...shared,
+    description:
+      "Set a project's one note for every task (P-2), shown on each of its tasks as from the project; note null clears it. Only for the owner or a co-owner.",
+    parameters: Comments.NoteInput,
+    success: Comments.NoteResult,
+  })
+    .annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(Tool.Meta, deferredMeta),
   Tool.make("list_define", {
     ...shared,
     description: `Start tracking something new as a list with typed fields, such as "start tracking expenses" or "track leave": a template (expenses, invoices, dates, receipts) or a name and fields (text, choice with choices, date, person, link to clients or projects, money, file), plus categories, the states it uses and what it calls them, and whether entries carry an amount. To add fields, choices or categories to a list you defined, pass list. The first call only proposes: it returns a proposal, creates nothing, and shows the owner its fields on a card to tap. Ask in one short line; once they tap yes or say yes in a later turn, call again with just proposal to create exactly that. A no on the card ends that proposal. Never create a list the owner hasn't agreed to. Only the owner retires a field or archives a list.`,
