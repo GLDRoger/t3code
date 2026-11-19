@@ -437,7 +437,7 @@ export class KinLeadPrompt extends Context.Service<
             event.subject.undone === true
           ) {
             fromOwner = false;
-            const undone = yield* undoneTurnText(orgId, event.subject.questionId).pipe(
+            const undone = yield* undoneTurnText(orgId, event.subject).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
               Effect.catch((cause) =>
                 Effect.logWarning("Kin open question unreadable", cause).pipe(Effect.as(undefined)),

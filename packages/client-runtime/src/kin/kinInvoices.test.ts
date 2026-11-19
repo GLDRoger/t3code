@@ -20,7 +20,9 @@ import {
   kinInvoiceTitle,
   kinInvoiceMissingClient,
   kinInvoiceView,
+  kinReceiptModes,
   kinReceiptNotice,
+  kinReceiptReferencePlaceholder,
   kinReceiptView,
 } from "./kinInvoices.ts";
 import { kinListSend } from "./kinLists.ts";
@@ -233,6 +235,20 @@ describe("kinInvoiceActions", () => {
 });
 
 describe("receipts", () => {
+  it("offers India's UPI and UTR to a company in India or with no country, as before countries", () => {
+    const form = (country: string | null | undefined) => [
+      kinReceiptModes(country).some((mode) => mode.value === "upi"),
+      kinReceiptReferencePlaceholder(country),
+    ];
+    const india = [true, "UTR or cheque number"];
+    expect([form("IN"), form(null), form(undefined), form("GB")]).toEqual([
+      india,
+      india,
+      india,
+      [false, "Reference"],
+    ]);
+  });
+
   const receipt = (patch: Partial<KinReceipt>): KinReceipt =>
     ({
       key: "RCT-3",
