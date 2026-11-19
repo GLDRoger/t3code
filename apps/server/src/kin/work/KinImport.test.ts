@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -837,6 +838,41 @@ describe("KinImport", () => {
       assert.strictEqual(yield* countOf("kin_records"), count);
       const again = yield* imports.apply(orgId, ownerId, many());
       assert.deepStrictEqual([again.entries.create, again.entries.unchanged], [0, count]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("reads the company's country once for a file of money, not once a row", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const imports = yield* KinImport.KinImport;
+      const count = 1_000;
+      const money = Stream.concat(
+        Stream.make(JSON.stringify({ ...header, lists: [header.lists[1]] })),
+        Stream.range(1, count).pipe(
+          Stream.map((index) =>
+            JSON.stringify({
+              entry: {
+                source: `m${index}`,
+                list: "expenses",
+                title: `Generated expense ${index}`,
+                state: "done",
+                date: "2026-05-14",
+                amount: "12.50",
+                category: "software",
+              },
+            }),
+          ),
+        ),
+      );
+      let reads = 0;
+      const applied = yield* imports.apply(orgId, ownerId, money).pipe(
+        Effect.provideService(Statement.CurrentTransformer, (statement) => {
+          if (statement.compile()[0].includes("kin_company_profile")) reads += 1;
+          return Effect.succeed(statement);
+        }),
+      );
+      assert.deepStrictEqual([applied.entries.create, applied.problems.length], [count, 0]);
+      assert.isAtMost(reads, 2);
     }).pipe(Effect.provide(layer)),
   );
 

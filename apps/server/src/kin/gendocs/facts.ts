@@ -3,7 +3,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { type CompanyMoney, readProfile } from "../work/companyProfile.ts";
+import { type CompanyMoney, readProfile, recordingCurrency } from "../work/companyProfile.ts";
 import { GST_REGIME, type TaxRegime } from "./compute.ts";
 import { logoFile, logoPath } from "./brand.ts";
 import { KinRecords } from "../work/KinRecords.ts";
@@ -24,6 +24,7 @@ import { findBankList } from "../work/statements/bankList.ts";
 import { issuedNumber } from "./numbering.ts";
 import {
   type Facts,
+  givesMoney,
   type InputDecl,
   MAX_ROWS,
   type Money,
@@ -133,7 +134,9 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       ? null
       : ((yield* issuedNumber(orgId, entry.recordId)) ??
         (recipe.numbered ? null : (cellOf(fields, "number") as string | null)));
-  const currency = entry?.currency ?? def?.currency ?? profile.homeCurrency;
+  // An amount the requester gives is read in the company's currency, which waits on its country.
+  const home = givesMoney(recipe, given) ? yield* recordingCurrency(orgId) : profile.homeCurrency;
+  const currency = entry?.currency ?? def?.currency ?? home;
   const day = (ms: number | null) => (ms === null ? null : dayIn(ms, zone));
   const clientDef = client === undefined ? undefined : yield* listDef(orgId, client.registerId);
   const entryLabelled = entry !== undefined && entrySensitive(entry, def);

@@ -29,9 +29,8 @@ import {
 } from "./lists.ts";
 import {
   type CompanyMoney,
-  companyMoney,
+  companyMoneyState,
   countryBefore,
-  countryFirst,
   homeCurrency,
 } from "./companyProfile.ts";
 import { regionOf } from "./region.ts";
@@ -70,6 +69,8 @@ export const StoredDefinition = Schema.Struct({
   sensitive: Schema.Boolean,
   amount: Schema.Boolean,
   currency: KinCurrency,
+  /** Made while the company's country wasn't chosen: takes the company's currency once it is. */
+  currencyPending: Schema.optional(Schema.Literal(true)),
   dueLabel: Schema.optional(Label),
   dateLabel: Schema.optional(Label),
   categoryLabels: Schema.optional(Schema.Record(Schema.String, Label)),
@@ -839,7 +840,7 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
     input.id ?? input.template ?? (input.name === undefined ? undefined : idFor(input.name));
   if (named === undefined)
     return yield* invalid("Name the list, start from a template, or say which list to add to.");
-  const money = yield* companyMoney(orgId);
+  const { pending, ...money } = yield* companyMoneyState(orgId);
   const home = money.homeCurrency;
   const preset = (PRESET_IDS as ReadonlyArray<string>).includes(named)
     ? presetFor(named as PresetId, money)
@@ -878,6 +879,7 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
     sensitive: input.sensitive ?? preset?.sensitive ?? amount,
     amount,
     currency: input.currency ?? home,
+    ...(pending && input.currency === undefined ? { currencyPending: true as const } : {}),
     ...((input.dueLabel ?? preset?.dueLabel)
       ? { dueLabel: (input.dueLabel ?? preset?.dueLabel)! }
       : {}),
@@ -954,9 +956,11 @@ export const attachCard = Effect.fn("KinRegisters.attachCard")(function* (input:
     WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId} AND widget_id IS NULL`;
 });
 
-/** A list that holds money keeps the currency it is made in. */
-const holdsMoney = (definition: StoredDefinition) =>
-  definition.amount || definition.fields.some((one) => one.type === "money");
+/** The currency a list made now keeps; while the country isn't chosen, the company's once it is. */
+export const listCurrency = Effect.fn("KinRegisters.listCurrency")(function* (orgId: KinOrgId) {
+  const { pending, homeCurrency: currency } = yield* companyMoneyState(orgId);
+  return pending ? { currency, currencyPending: true as const } : { currency };
+});
 
 /** Creates or extends the list `proposal` describes, now, in the caller's transaction. */
 export const defineList = Effect.fn("KinRegisters.defineList")(function* (
@@ -966,10 +970,18 @@ export const defineList = Effect.fn("KinRegisters.defineList")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   if (proposal._tag === "new") {
-    const draft = { ...proposal };
+    const { currencyPending, ...made } = proposal.definition;
+    // A proposal from before the country was chosen, said yes to after, takes today's currency.
+    const today = currencyPending === true ? yield* listCurrency(orgId) : undefined;
+    const draft = {
+      ...proposal,
+      definition:
+        today === undefined || today.currencyPending === true
+          ? proposal.definition
+          : { ...made, ...today },
+    };
     const refused = checkDraft(draft);
     if (refused !== undefined) return yield* refused;
-    if (holdsMoney(draft.definition)) yield* countryFirst(orgId);
     const taken = yield* sql<{ id: string; prefix: string }>`SELECT register_id AS id,
         key_prefix AS prefix FROM kin_registers WHERE org_id = ${orgId}
         AND (register_id = ${draft.id} OR key_prefix = ${draft.prefix}) ORDER BY register_id`;
@@ -990,7 +1002,6 @@ export const defineList = Effect.fn("KinRegisters.defineList")(function* (
     if (def === undefined || def.builtIn !== null) return yield* unknownList(proposal.id);
     const next = extended(def, proposal);
     if (isChatError(next)) return yield* next;
-    if (holdsMoney(next)) yield* countryFirst(orgId);
     yield* sql`UPDATE kin_registers SET definition_json = ${yield* encodeDefinition(next)},
         rev = rev + 1
       WHERE org_id = ${orgId} AND register_id = ${proposal.id}`;

@@ -1075,6 +1075,7 @@ const make = Effect.gen(function* () {
       return { row: existing, created: false };
     }
     // Before the list is read: an amount for a list not made yet waits on the country too.
+    // A list that may hold money takes entries without any, such as a deadline with no fee.
     if (recordsMoney(input.amount, input.fields)) yield* countryFirst(orgId).pipe(provideSql);
     const def = yield* resolveList(orgId, input.list ?? "work");
     if (def.archivedAt !== null)
@@ -1095,7 +1096,6 @@ const make = Effect.gen(function* () {
       repeat: input.repeat,
     });
     if (invalidFor !== undefined) return yield* invalidFor;
-    if (def.amount) yield* countryFirst(orgId).pipe(provideSql);
     const zero = zeroOwed(def, input.amount, input.category);
     if (zero !== undefined) return yield* zero;
     if (list === "receipts" && RECEIPT_TIES.some((field) => field in fields))

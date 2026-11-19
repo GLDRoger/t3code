@@ -26,7 +26,7 @@ import * as RetiredActions from "../approvals/retiredActions.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as Provision from "../lead/KinLeadProvision.ts";
 import * as KinRecords from "../work/KinRecords.ts";
-import { setProfile } from "../work/companyProfile.ts";
+import { newCompanyProfileJson, setProfile } from "../work/companyProfile.ts";
 import { KinIdentity } from "./KinIdentity.ts";
 import * as RefreshHub from "./KinRefreshHub.ts";
 import { announceRefreshes, subscribeRefreshes } from "./refreshes.ts";
@@ -112,6 +112,10 @@ describe("KinRefreshHub", () => {
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
           VALUES ('priya', ${me.orgId}, 'priya', 'Priya', '2026-11-09T00:00:00.000Z')`;
         const priya = { ...me, personId: KinPersonId.make("priya") };
+        // A company created now, its country not chosen yet.
+        yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+            updated_by_kind, updated_by_id)
+          VALUES (${me.orgId}, ${yield* newCompanyProfileJson}, 1, 0, 'person', ${me.personId})`;
         const { boot } = yield* RefreshHub.KinRefreshHub;
         const ownerSees = yield* Stream.toQueue(subscribeRefreshes([me], { orgId: me.orgId }), {
           capacity: "unbounded",
@@ -126,6 +130,7 @@ describe("KinRefreshHub", () => {
           leads: 0,
           pulse: 0,
           workLists: 0,
+          company: 0,
           boot,
           streams: KIN_STREAMS,
         });
@@ -173,6 +178,7 @@ describe("KinRefreshHub", () => {
           leads: 1,
           pulse: 0,
           workLists: 0,
+          company: 0,
           boot,
           streams: KIN_STREAMS,
         };
@@ -183,6 +189,15 @@ describe("KinRefreshHub", () => {
           capacity: "unbounded",
         });
         assert.deepStrictEqual(yield* Queue.take(again), moved);
+        // The country chosen, her company topic moves once, so her Money step clears.
+        yield* setProfile(
+          me.orgId,
+          { _tag: "person", personId: me.personId },
+          { country: "GB" },
+          undefined,
+        );
+        yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+        assert.deepStrictEqual(yield* Queue.take(priyaSees), { ...moved, company: 1 });
       }).pipe(Effect.scoped, Effect.provide(paired)),
   );
 

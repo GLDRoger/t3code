@@ -313,7 +313,7 @@ describe("KinIdentity", () => {
           financialYearStartMonth: 4,
           tax: null,
         });
-        assert.isUndefined(yield* countryNeeded(owner.orgId));
+        assert.isFalse(yield* countryNeeded(owner.orgId));
         for (const missing of AuthStandardClientScopes) {
           assert.deepStrictEqual(
             yield* restarted.resolve({
@@ -343,12 +343,10 @@ describe("KinIdentity", () => {
         yield* created;
         assert.deepInclude(yield* readProfile(owner.orgId), { ...notChosen, rev: 0 });
         // Nothing that records money is made until the owner chooses it.
-        assert.deepStrictEqual(yield* countryNeeded(owner.orgId), {
-          owner: config.ownerDisplayName,
-        });
+        assert.isTrue(yield* countryNeeded(owner.orgId));
         const writer = { _tag: "person" as const, personId: owner.personId };
         yield* setProfile(owner.orgId, writer, { country: "GB" }, 0);
-        assert.isUndefined(yield* countryNeeded(owner.orgId));
+        assert.isFalse(yield* countryNeeded(owner.orgId));
         assert.deepStrictEqual(yield* companyMoney(owner.orgId), {
           homeCurrency: "GBP",
           country: "GB",

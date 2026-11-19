@@ -1286,11 +1286,11 @@ export const make = Effect.gen(function* () {
         Effect.provideService(SqlClient.SqlClient, sql),
       )),
       ...((yield* countryNeeded(input.orgId).pipe(
-        Effect.orElseSucceed(() => undefined),
+        Effect.orElseSucceed(() => false),
         Effect.provideService(SqlClient.SqlClient, sql),
-      )) === undefined
-        ? {}
-        : { countryNeeded: true }),
+      ))
+        ? { countryNeeded: true }
+        : {}),
     };
   });
   const setPlaces = Effect.fn("KinPeople.setPlaces")(function* (

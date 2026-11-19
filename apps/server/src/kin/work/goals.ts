@@ -18,7 +18,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRecords, requestHashOf } from "./KinRecords.ts";
 import { fieldText, isMoney, parseFields, type FieldValue } from "./lists.ts";
-import { homeCurrency } from "./companyProfile.ts";
+import { homeCurrency, recordingCurrency } from "./companyProfile.ts";
 import { dayIn, formatMoneyPlain, parseAmount, roundToWhole } from "./money.ts";
 import { inList, ownerWriter, theOwner } from "./ownerWork.ts";
 import { playbookThreshold } from "./playbooks.ts";
@@ -53,17 +53,25 @@ export const isMoneyMeasure = (measure: KinGoalMeasure) => measure === "revenue_
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 
-/** A target as said: money for revenue, else a whole count. */
-const goalTarget = (measure: KinGoalMeasure, text: string, home: string) => {
+/** A target as said: money for revenue, in the company's currency, else a whole count. */
+const goalTarget = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  measure: KinGoalMeasure,
+  text: string,
+) {
   if (isMoneyMeasure(measure)) {
+    const home = yield* recordingCurrency(orgId).pipe(
+      Effect.catchTags({ SqlError: unavailableOn }),
+    );
     const parsed = parseAmount(text, home);
-    return "error" in parsed ? Effect.fail(parsed.error) : Effect.succeed<FieldValue>(parsed.money);
+    if ("error" in parsed) return yield* parsed.error;
+    return parsed.money;
   }
   const count = Number(text.replace(/[\s,]/g, ""));
-  return Number.isFinite(count) && count > 0
-    ? Effect.succeed<FieldValue>(String(count))
-    : Effect.fail(invalid(`A ${measure.replaceAll("_", " ")} goal's target is a number.`));
-};
+  if (!Number.isFinite(count) || count <= 0)
+    return yield* invalid(`A ${measure.replaceAll("_", " ")} goal's target is a number.`);
+  return String(count);
+});
 
 /** The goal fields an agent row or update names, checked; `undefined` leaves one as it is. */
 export const goalFields = Effect.fn("KinGoals.fields")(function* (
@@ -84,11 +92,7 @@ export const goalFields = Effect.fn("KinGoals.fields")(function* (
   const fields: Record<string, FieldValue | null> = {};
   if (row.measure !== undefined) fields.measure = row.measure;
   if (row.target !== undefined && isMeasure(measure ?? null))
-    fields.target = yield* goalTarget(
-      measure as KinGoalMeasure,
-      row.target,
-      yield* homeCurrency(orgId),
-    );
+    fields.target = yield* goalTarget(orgId, measure as KinGoalMeasure, row.target);
   if (row.current !== undefined) fields.current = row.current === null ? null : String(row.current);
   if (row.unit !== undefined) fields.unit = row.unit;
   return fields;

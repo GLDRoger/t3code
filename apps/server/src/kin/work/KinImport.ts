@@ -29,7 +29,7 @@ import {
 import { type CreateInput, KinRecords, type Writer } from "./KinRecords.ts";
 import { type FieldValue } from "./lists.ts";
 import { dayIn, farAbove, issuedAfterDue, largestIn, parseAmount } from "./money.ts";
-import { companyMoney } from "./companyProfile.ts";
+import { companyMoneyState } from "./companyProfile.ts";
 import { endOfDay, ownerZone, startOfDay, workFailure } from "./recordRows.ts";
 import { regionOf } from "./region.ts";
 import {
@@ -231,7 +231,8 @@ const make = Effect.gen(function* () {
       DAY.test(value) ? (end ? endOfDay(value, zone) : startOfDay(value, zone)) : Date.parse(value);
     const dayOf = (value: string | undefined) =>
       value === undefined ? undefined : DAY.test(value) ? value : dayIn(Date.parse(value), zone);
-    const company = yield* companyMoney(orgId);
+    // One read for the file: it also spares each money row its own country check.
+    const company = yield* companyMoneyState(orgId);
     const home = company.homeCurrency;
     // Each list's largest amount per currency, read once and raised as the file goes.
     const largest = new Map<string, bigint>();
