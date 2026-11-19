@@ -562,6 +562,30 @@ export const run = Effect.fn("KinCardActions.run")(function* (
   return done ?? { title: went.title, text: `Answered ${quoted(plan.question)} with its default.` };
 });
 
+/** Why closing this task does more than Undo puts back: its next comes, or its hand-back clears. */
+const outgrowsUndo = (row: {
+  readonly repeat: string | null;
+  readonly handedBack: number | null;
+}) =>
+  repeatOf(row.repeat) !== undefined
+    ? ("repeats" as const)
+    : row.handedBack !== null
+      ? ("handed_back" as const)
+      : undefined;
+
+/** Why Kin won't take a done or drop as a question's default at its day, known when it is asked. */
+export const untakenAtDay = Effect.fn("KinCardActions.untakenAtDay")(function* (
+  orgId: KinOrgId,
+  plan: CardPlan,
+) {
+  if (plan.kind !== "done" && plan.kind !== "drop") return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ repeat: string | null; handedBack: number | null }>`SELECT
+      repeat_json AS repeat, handed_back_at AS "handedBack" FROM kin_records
+    WHERE org_id = ${orgId} AND record_id = ${plan.recordId}`;
+  return row === undefined ? undefined : outgrowsUndo(row);
+});
+
 /**
  * A question's sealed done or drop, taken at its day as the asker, marked as its default
  * (`takenFor`), while the task is as offered and its drawer still could. False otherwise, or when
@@ -588,8 +612,7 @@ export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
   }>`SELECT repeat_json AS repeat, handed_back_at AS "handedBack",
       waiting_on_kind AS "waitingKind", waiting_on_id AS "waitingId" FROM kin_records
     WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
-  if (more === undefined || repeatOf(more.repeat) !== undefined || more.handedBack !== null)
-    return false;
+  if (more === undefined || outgrowsUndo(more) !== undefined) return false;
   // Undo writes back who it waited on, which `update` checks is still here to wait on.
   if (more.waitingKind !== null && more.waitingId !== null) {
     const waits =

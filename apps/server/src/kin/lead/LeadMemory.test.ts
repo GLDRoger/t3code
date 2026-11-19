@@ -620,6 +620,20 @@ it.live(
         const askMember = { ...deferred, what: "Invented ask", ask: "Memb" };
         const asked = yield* service.defer(scope, askMember);
         assert.deepStrictEqual(yield* service.defer(scope, askMember), asked);
+        // Nothing is asked yet: the result names who Kin wakes the lead to ask, and their day
+        // back when they are away at that time.
+        assert.deepStrictEqual(asked.asks, { name: "Member" });
+        assert.strictEqual(
+          asked.note,
+          "Nothing is asked yet: at its due time Kin wakes you to ask Member yourself, and no question is open until you do.",
+        );
+        yield* sql`UPDATE kin_people SET away_until = '2026-11-16'
+          WHERE org_id = ${orgId} AND person_id = 'fixture-member'`;
+        const whileAway = yield* service.defer(scope, { ...askMember, what: "Invented ask, away" });
+        assert.deepStrictEqual(whileAway.asks, { name: "Member", back: "2026-11-16" });
+        assert.include(whileAway.note, "Member is away and back on 2026-11-16.");
+        yield* sql`UPDATE kin_people SET away_until = NULL
+          WHERE org_id = ${orgId} AND person_id = 'fixture-member'`;
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
           VALUES ('other-meera', ${other}, 'meera', 'Meera', '2026-11-08T00:00:00.000Z')`;
         for (const [ask, onDue, refusal] of [

@@ -70,6 +70,9 @@ import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { slug } from "../work/docBody.ts";
 import { turnSensitive } from "../work/sensitiveReads.ts";
 import { TurnEvent } from "./eventIds.ts";
+import { validZone } from "../triggers/quietHold.ts";
+import { stillAway } from "../triggers/quietHours.ts";
+import { ownerZone } from "../work/recordRows.ts";
 
 const text = Schema.String.check(Schema.isMaxLength(100_000));
 const date = Schema.String.check(
@@ -165,6 +168,23 @@ export const JournalInput = Schema.Struct({
   skipped: Schema.optional(Schema.Array(text).check(Schema.isMaxLength(100))),
 });
 export const ItemResult = Schema.Struct({ itemId: KinMemoryItemId });
+/**
+ * A follow-up that asks or chases someone else asks nothing yet: at its due time Kin wakes the
+ * lead to do it. `back` is their day back when they are away then.
+ */
+export const DeferResult = Schema.Struct({
+  itemId: KinMemoryItemId,
+  note: Schema.optional(Schema.String),
+  asks: Schema.optional(
+    Schema.Struct({ name: Schema.String, back: Schema.optional(Schema.String) }),
+  ),
+});
+/** What a cancel stopped, by its own title and due time, so the lead can say which. */
+export const CancelResult = Schema.Struct({
+  itemId: KinMemoryItemId,
+  title: Schema.optional(Schema.String),
+  due: Schema.optional(Schema.String),
+});
 export const LabelResult = Schema.Struct({
   itemIds: Schema.Array(KinMemoryItemId),
   note: Schema.optional(Schema.String),
@@ -274,7 +294,7 @@ export class LeadMemory extends Context.Service<
     readonly defer: (
       scope: McpInvocationScope,
       input: typeof DeferInput.Type,
-    ) => Effect.Effect<typeof ItemResult.Type, KinChatError>;
+    ) => Effect.Effect<typeof DeferResult.Type, KinChatError>;
     /** A recurring task, only from an owner's message in this batch; the server keeps their words. */
     readonly schedule: (
       scope: McpInvocationScope,
@@ -284,7 +304,7 @@ export class LeadMemory extends Context.Service<
     readonly cancel: (
       scope: McpInvocationScope,
       input: typeof CancelInput.Type,
-    ) => Effect.Effect<typeof ItemResult.Type, KinChatError>;
+    ) => Effect.Effect<typeof CancelResult.Type, KinChatError>;
     /**
      * Marks an item as for the owner alone, or lets the team know it. The second is the owner's
      * decision: only their own stored message, in a turn only they read, allows it.
@@ -631,7 +651,13 @@ const make = Effect.gen(function* () {
     if (sharedTurn && !askers) return yield* invalid(SHARED_REFUSAL);
     if (head.kind !== "deferral")
       return yield* invalid(`${itemId} is not a deferral or scheduled task.`);
-    if (head.status !== "open" || head.invalid_at !== null || head.superseded_by !== null)
+    // Cancelled already, by this lead or the owner's card: a repeat cancel changes nothing.
+    const already = head.status === "cancelled";
+    if (
+      (head.status !== "open" && !already) ||
+      head.invalid_at !== null ||
+      head.superseded_by !== null
+    )
       return yield* invalid(
         `${itemId} is already ${head.status === "open" ? "closed" : head.status}.`,
       );
@@ -676,6 +702,8 @@ const make = Effect.gen(function* () {
       return yield* invalid(
         "Only the agent that set it up can cancel or replace it, from the chat it was set up in or the owner's direct chat.",
       );
+    const cancelled = { title: head.title, ...(head.due === null ? {} : { due: head.due }) };
+    if (already) return cancelled;
     const { orgId: _org, path, ...frontMatter } = head;
     yield* receipt(
       ctx,
@@ -687,15 +715,18 @@ const make = Effect.gen(function* () {
         sourceEventId,
       }),
     );
+    return cancelled;
   });
   /** cancelOwn's rule for a native schedule: its own lead, asked from its chat or the owner chat. */
   const ownSchedule = Effect.fn("LeadMemory.ownSchedule")(function* (
     ctx: Effect.Success<ReturnType<typeof resolve>>,
     schedule: KinSchedules.KinSchedule,
     sourceEventId: string,
+    /** A cancel of one already cancelled changes nothing, so it isn't refused. */
+    cancelling = false,
   ) {
     yield* checkSource(ctx, sourceEventId);
-    if (schedule.deletedAt !== null)
+    if (schedule.deletedAt !== null && !cancelling)
       return yield* invalid(`${schedule.scheduleId} is already cancelled.`);
     // Checked again here: a join may have aborted the turn since `notes`.
     if ((yield* effectiveAudience(ctx).pipe(provideSql)) !== "owner_only")
@@ -1195,7 +1226,26 @@ const make = Effect.gen(function* () {
           );
           if (replaced !== undefined && replaced.deletedAt === null)
             yield* schedules.cancel(ctx.orgId, replaced.scheduleId);
-          return { itemId: id };
+          if (asked === undefined || asked === source.saidBy) return { itemId: id };
+          const [person] = yield* sql<{ name: string; zone: string | null; back: string | null }>`
+            SELECT display_name AS name, time_zone AS zone, away_until AS back FROM kin_people
+            WHERE org_id = ${ctx.orgId} AND handle = ${asked} AND removed_at IS NULL
+            ORDER BY person_id LIMIT 1`;
+          if (person === undefined) return { itemId: id };
+          const zone = validZone(person.zone) ?? (yield* ownerZone(ctx.orgId).pipe(provideSql));
+          const away = stillAway(person.back, zone, Date.parse(input.due));
+          return {
+            itemId: id,
+            note: `Nothing is asked yet: at its due time Kin wakes you to ask ${person.name} yourself, and no question is open until you do.${
+              away && person.back !== null
+                ? ` ${person.name} is away and back on ${person.back}.`
+                : ""
+            }`,
+            asks: {
+              name: person.name,
+              ...(away && person.back !== null ? { back: person.back } : {}),
+            },
+          };
         }),
       );
     }, Effect.mapError(failure)),
@@ -1298,12 +1348,15 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const { ctx } = yield* turn(scope);
           const schedule = yield* KinSchedules.readSchedule(sql, ctx.orgId, input.itemId);
-          if (schedule === undefined) yield* cancelOwn(ctx, input.itemId, input.sourceEventId);
-          else {
-            yield* ownSchedule(ctx, schedule, input.sourceEventId);
-            yield* schedules.cancel(ctx.orgId, schedule.scheduleId);
-          }
-          return { itemId: input.itemId };
+          if (schedule === undefined)
+            return {
+              itemId: input.itemId,
+              ...(yield* cancelOwn(ctx, input.itemId, input.sourceEventId)),
+            };
+          yield* ownSchedule(ctx, schedule, input.sourceEventId, true);
+          if (schedule.deletedAt === null) yield* schedules.cancel(ctx.orgId, schedule.scheduleId);
+          const task = yield* KinSchedules.readNativeTask(sql, schedule.taskId);
+          return { itemId: input.itemId, ...(task === undefined ? {} : { title: task.title }) };
         }),
       );
     }, Effect.mapError(failure)),
