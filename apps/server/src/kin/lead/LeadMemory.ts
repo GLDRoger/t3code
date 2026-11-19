@@ -70,6 +70,9 @@ import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { slug } from "../work/docBody.ts";
 import { turnSensitive } from "../work/sensitiveReads.ts";
 import { TurnEvent } from "./eventIds.ts";
+import { validZone } from "../triggers/quietHold.ts";
+import { stillAway } from "../triggers/quietHours.ts";
+import { ownerZone } from "../work/recordRows.ts";
 
 const text = Schema.String.check(Schema.isMaxLength(100_000));
 const date = Schema.String.check(
@@ -165,6 +168,16 @@ export const JournalInput = Schema.Struct({
   skipped: Schema.optional(Schema.Array(text).check(Schema.isMaxLength(100))),
 });
 export const ItemResult = Schema.Struct({ itemId: KinMemoryItemId });
+/**
+ * A follow-up that asks or chases someone else asks nothing yet: at its due time Kin wakes the
+ * lead to do it. `back` is their day back when they are away then.
+ */
+export const DeferResult = Schema.Struct({
+  itemId: KinMemoryItemId,
+  asks: Schema.optional(
+    Schema.Struct({ name: Schema.String, back: Schema.optional(Schema.String) }),
+  ),
+});
 /** What a cancel stopped, by its own title and due time, so the lead can say which. */
 export const CancelResult = Schema.Struct({
   itemId: KinMemoryItemId,
@@ -280,7 +293,7 @@ export class LeadMemory extends Context.Service<
     readonly defer: (
       scope: McpInvocationScope,
       input: typeof DeferInput.Type,
-    ) => Effect.Effect<typeof ItemResult.Type, KinChatError>;
+    ) => Effect.Effect<typeof DeferResult.Type, KinChatError>;
     /** A recurring task, only from an owner's message in this batch; the server keeps their words. */
     readonly schedule: (
       scope: McpInvocationScope,
@@ -1212,7 +1225,21 @@ const make = Effect.gen(function* () {
           );
           if (replaced !== undefined && replaced.deletedAt === null)
             yield* schedules.cancel(ctx.orgId, replaced.scheduleId);
-          return { itemId: id };
+          if (asked === undefined || asked === source.saidBy) return { itemId: id };
+          const [person] = yield* sql<{ name: string; zone: string | null; back: string | null }>`
+            SELECT display_name AS name, time_zone AS zone, away_until AS back FROM kin_people
+            WHERE org_id = ${ctx.orgId} AND handle = ${asked} AND removed_at IS NULL
+            ORDER BY person_id LIMIT 1`;
+          if (person === undefined) return { itemId: id };
+          const zone = validZone(person.zone) ?? (yield* ownerZone(ctx.orgId).pipe(provideSql));
+          const away = stillAway(person.back, zone, Date.parse(input.due));
+          return {
+            itemId: id,
+            asks: {
+              name: person.name,
+              ...(away && person.back !== null ? { back: person.back } : {}),
+            },
+          };
         }),
       );
     }, Effect.mapError(failure)),

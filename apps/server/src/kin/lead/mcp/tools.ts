@@ -225,7 +225,7 @@ export const KinLeadToolkit = Toolkit.make(
     description:
       'Set a reminder or one-time follow-up: what, due as a timestamp with offset (from the Owner time line), onDue and chatId. A bare number with sleep, wait or pause is seconds ("sleep for 60" is due 60 s after the message). If a duration is ambiguous in a way that matters, ask in one short line. When the owner corrects a time, pass the old item as replaces so only the new one fires. Returns itemId.',
     parameters: Lead.DeferInput,
-    success: Lead.ItemResult,
+    success: Lead.DeferResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_schedule", {
     ...shared,
