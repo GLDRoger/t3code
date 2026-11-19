@@ -125,7 +125,7 @@ describe("what a lead has in hand", () => {
     );
   });
 
-  it("says a task's state as the Tasks list does, never that a waiting one is under way", () => {
+  it("says a waiting task is waiting, as the Tasks list does, never that it is under way", () => {
     const names = {
       people: new Map([["ambermill-rhea", "Rhea"]]),
       agents: new Map(),
@@ -143,9 +143,9 @@ describe("what a lead has in hand", () => {
     expect(kinLeadTrackingDetail(waiting, "UTC", now, names)).toBe("Waiting on you, due tomorrow");
     expect(kinLeadTrackingDetail(waiting, "UTC", now)).toBe("Waiting, due tomorrow");
     expect(kinLeadTrackingDetail({ ...waiting, state: "doing" }, "UTC", now, names)).toBe(
-      "In progress, due tomorrow",
+      "Working on it now, due tomorrow",
     );
-    expect(kinLeadTrackingDetail({ kind: "work", state: "open" })).toBe("Not started");
+    expect(kinLeadTrackingDetail({ kind: "work", state: "open" })).toBe("Working on it now");
   });
 });
 

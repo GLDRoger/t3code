@@ -138,8 +138,8 @@ const TRACKING_KINDS: Record<KinLeadTracking["kind"], string> = {
 };
 
 /**
- * The second line under something a lead has in hand: "Reminder, Fri 13 Nov, 9:00". A task says
- * its state as the Tasks list does ("Waiting on you, due tomorrow").
+ * The second line under something a lead has in hand: "Reminder, Fri 13 Nov, 9:00". A waiting task
+ * says so as the Tasks list does ("Waiting on you, due tomorrow").
  */
 export function kinLeadTrackingDetail(
   item: Pick<KinLeadTracking, "kind" | "dueAt" | "dueAllDay" | "state" | "waitingOn">,
@@ -148,7 +148,7 @@ export function kinLeadTrackingDetail(
   names: KinWorkNames | null = null,
 ): string {
   const kind =
-    item.kind === "work" && item.state !== undefined
+    item.kind === "work" && item.state === "waiting"
       ? kinWorkStatusText({ state: item.state, waitingOn: item.waitingOn ?? null }, names)
       : TRACKING_KINDS[item.kind];
   const due = item.dueAt === undefined ? Number.NaN : Date.parse(item.dueAt);
