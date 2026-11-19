@@ -20,6 +20,7 @@ import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
 
@@ -530,6 +531,7 @@ const make = Effect.gen(function* () {
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironmentIdentity;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const authSessions = yield* AuthSessions.AuthSessionRepository;
+  const sql = yield* SqlClient.SqlClient;
   const signer = yield* PayloadSigner.fromSecret(
     yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32),
   );
@@ -774,31 +776,36 @@ const make = Effect.gen(function* () {
             })
           : authSessions.create(sessionRecord).pipe(Effect.as([] as ReadonlyArray<AuthSessionId>))
       ).pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ sessionId, cause })));
-      if (claims.jkt) latestSessionByProofKey.set(claims.jkt, sessionId);
-      if (replacedSessionIds.length > 0) {
-        yield* Ref.update(connectedSessionsRef, (current) => {
-          const next = new Map(current);
-          for (const replacedSessionId of replacedSessionIds) {
-            next.delete(replacedSessionId);
+      // Kin issues inside its own transaction; a rollback must leave nothing announced.
+      yield* sql.afterCommit(
+        Effect.gen(function* () {
+          if (claims.jkt) latestSessionByProofKey.set(claims.jkt, sessionId);
+          if (replacedSessionIds.length > 0) {
+            yield* Ref.update(connectedSessionsRef, (current) => {
+              const next = new Map(current);
+              for (const replacedSessionId of replacedSessionIds) {
+                next.delete(replacedSessionId);
+              }
+              return next;
+            });
+            yield* Effect.forEach(replacedSessionIds, emitRemoved, {
+              concurrency: "unbounded",
+              discard: true,
+            });
           }
-          return next;
-        });
-        yield* Effect.forEach(replacedSessionIds, emitRemoved, {
-          concurrency: "unbounded",
-          discard: true,
-        });
-      }
-      yield* emitUpsert(
-        toAuthClientSession({
-          sessionId,
-          subject: claims.sub,
-          scopes: claims.scopes,
-          method: claims.method,
-          client,
-          issuedAt,
-          expiresAt,
-          lastConnectedAt: null,
-          connected: false,
+          yield* emitUpsert(
+            toAuthClientSession({
+              sessionId,
+              subject: claims.sub,
+              scopes: claims.scopes,
+              method: claims.method,
+              client,
+              issuedAt,
+              expiresAt,
+              lastConnectedAt: null,
+              connected: false,
+            }),
+          );
         }),
       );
 
@@ -1089,12 +1096,13 @@ const make = Effect.gen(function* () {
     const revokedSessionIds = yield* authSessions
       .revokeByProofKey({ proofKeyThumbprint, revokedAt })
       .pipe(Effect.mapError((cause) => new ProofKeySessionsError({ operation: "revoke", cause })));
-    yield* Ref.update(connectedSessionsRef, (current) => {
-      const next = new Map(current);
-      for (const revokedSessionId of revokedSessionIds) next.delete(revokedSessionId);
-      return next;
-    });
-    yield* Effect.forEach(revokedSessionIds, emitRemoved, { discard: true });
+    yield* sql.afterCommit(
+      Ref.update(connectedSessionsRef, (current) => {
+        const next = new Map(current);
+        for (const revokedSessionId of revokedSessionIds) next.delete(revokedSessionId);
+        return next;
+      }).pipe(Effect.andThen(Effect.forEach(revokedSessionIds, emitRemoved, { discard: true }))),
+    );
     return revokedSessionIds.length;
   });
 

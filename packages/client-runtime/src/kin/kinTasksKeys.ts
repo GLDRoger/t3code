@@ -60,6 +60,8 @@ export interface KinTasksKeyRow {
   readonly sessionId: KinTasksKey["sessionId"];
   readonly label: string;
   readonly line: string;
+  /** Offer Remove: false only when the host says this reader may not; an older host doesn't say. */
+  readonly canRemove: boolean;
 }
 
 const DAY_MS = 86_400_000;
@@ -87,6 +89,7 @@ export function kinTasksKeyRows(
         ? "Never used"
         : `Last used ${formatKinTime(new Date(key.lastUsedAt), now)}`,
     ].join(" · "),
+    canRemove: key.canRevoke !== false,
   }));
 }
 
@@ -119,9 +122,9 @@ export function kinTasksKeyRemoveCopy(label: string, holder: string | null) {
   };
 }
 
-/** Where a coding agent reaches the tasks: the origin this client uses for its host, plus the path. */
-function kinTasksKeyAddress(httpBaseUrl: string): string {
-  return new URL(KIN_TASKS_KEY_PATH, httpBaseUrl).toString();
+/** Where a coding agent reaches the tasks: the host's public origin, else this client's, plus the path. */
+function kinTasksKeyAddress(origin: string): string {
+  return new URL(KIN_TASKS_KEY_PATH, origin).toString();
 }
 
 /** One way to set up a common coding agent: a command to run, or a file to add to. */
@@ -172,11 +175,13 @@ function kinTasksKeySetups(address: string, secret: string): readonly KinTasksKe
 export function kinTasksKeyMade(made: {
   readonly key: KinTasksKey;
   readonly secret: string;
+  /** The address the host says anyone reaches it by; absent when it knows none. */
+  readonly origin?: string | undefined;
   readonly httpBaseUrl: string;
   readonly device: KinDevice;
 }) {
-  const address = kinTasksKeyAddress(made.httpBaseUrl);
-  const host = new URL(made.httpBaseUrl).hostname;
+  const address = kinTasksKeyAddress(made.origin ?? made.httpBaseUrl);
+  const host = new URL(address).hostname;
   return {
     title: KIN_TASKS_KEYS_COPY.madeTitle(made.key.label),
     lines: [
@@ -189,7 +194,7 @@ export function kinTasksKeyMade(made: {
     address,
     addressNote: kinIsLocalOnlyHost(host)
       ? KIN_TASKS_KEYS_COPY.localOnly
-      : made.device === "phone"
+      : made.device === "phone" && made.origin === undefined
         ? KIN_TASKS_KEYS_COPY.phoneAddress
         : null,
     setups: kinTasksKeySetups(address, made.secret),
