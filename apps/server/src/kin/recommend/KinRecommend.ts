@@ -9,6 +9,8 @@ import {
   type KinWidgetId,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
+import * as NodeCrypto from "node:crypto";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -21,7 +23,6 @@ import { KinChatService } from "../chat/KinChatService.ts";
 import * as LeadProvision from "../lead/KinLeadProvision.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
-import { hashOf } from "../lead/routeCard.ts";
 import * as KinOpen from "../open/KinOpen.ts";
 import { personQuietUntil } from "../triggers/quietHold.ts";
 import { type RecommendPlan, plansOf, sealPlans } from "../widgets/cardPlans.ts";
@@ -141,7 +142,7 @@ export const tick = Effect.fn("KinRecommend.tick")(function* (orgId: KinOrgId, a
     FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${lead.agentId}
       AND thread_id IS NOT NULL`;
   if (thread === undefined) return skipped("no_owner");
-  const recId = `rec-${hashOf(`${best.rule}\0${best.subject}\0${day}`)}`;
+  const recId = `rec-${NodeCrypto.createHash("sha256").update(`${best.rule}\0${best.subject}\0${day}`).digest("hex").slice(0, 32)}`;
   const plans = (["do", "not_now"] as const).map(
     (answer) =>
       ({

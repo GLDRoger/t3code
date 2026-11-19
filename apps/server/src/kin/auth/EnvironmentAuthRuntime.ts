@@ -31,7 +31,7 @@ const layerServersDatabase = Layer.unwrap(
     if (!(yield* (yield* FileSystem.FileSystem).exists(dbPath)))
       return yield* new KinChatError({
         reason: "unavailable",
-        message: `No T3 Code database at ${dbPath}. Start the Kin server, then retry.`,
+        message: `No server database at ${dbPath}. Start the Kin server, then retry.`,
       });
     return Layer.provideMerge(
       // The server writes from another process; wait for it rather than fail with SQLITE_BUSY.

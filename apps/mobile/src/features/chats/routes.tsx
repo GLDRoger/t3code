@@ -278,7 +278,7 @@ export const KIN_SCREENS = {
   KinDevices: createNativeStackScreen({
     screen: KinDevicesScreen,
     linking: "kin/:environmentId/:orgId/people/:personId/devices",
-    options: pageRoute({ title: "Linked devices" }),
+    options: pageRoute({ title: "Your devices" }),
   }),
   // A full sheet, so the keyboard never covers the field being typed in.
   KinProfileEdit: createNativeStackScreen({

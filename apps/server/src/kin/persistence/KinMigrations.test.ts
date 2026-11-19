@@ -420,6 +420,7 @@ describe("Kin migrations", () => {
           { migration_id: 180, name: "CardPlans" },
           { migration_id: 181, name: "TasksKeys" },
           { migration_id: 182, name: "HandoffRoutes" },
+          { migration_id: 183, name: "TasksKeyMakers" },
           { migration_id: 184, name: "Recommendations" },
         ]);
         assert.deepStrictEqual(
@@ -622,6 +623,7 @@ describe("Kin migrations", () => {
           { migration_id: 180, name: "CardPlans" },
           { migration_id: 181, name: "TasksKeys" },
           { migration_id: 182, name: "HandoffRoutes" },
+          { migration_id: 183, name: "TasksKeyMakers" },
           { migration_id: 184, name: "Recommendations" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
@@ -876,6 +878,7 @@ describe("Kin migrations", () => {
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       const before = yield* kinSchema;
@@ -905,6 +908,7 @@ describe("Kin migrations", () => {
       yield* sql`DROP INDEX idx_kin_messages_changes`;
       yield* sql`DROP INDEX kin_message_wakeup_cards`;
       yield* sql`DROP INDEX idx_kin_record_changes_wakeup`;
+      yield* sql`ALTER TABLE kin_tasks_keys DROP COLUMN made_by_session_id`;
       yield* sql`ALTER TABLE kin_handoffs DROP COLUMN asked_message_id`;
       yield* sql`ALTER TABLE kin_handoffs DROP COLUMN route_widget_id`;
       yield* sql`ALTER TABLE kin_handoffs DROP COLUMN route_state`;
@@ -1137,6 +1141,7 @@ describe("Kin migrations", () => {
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       assert.deepStrictEqual(
@@ -1303,6 +1308,7 @@ describe("Kin migrations", () => {
         { migration_id: 180, name: "CardPlans" },
         { migration_id: 181, name: "TasksKeys" },
         { migration_id: 182, name: "HandoffRoutes" },
+        { migration_id: 183, name: "TasksKeyMakers" },
         { migration_id: 184, name: "Recommendations" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
@@ -1479,6 +1485,7 @@ describe("Kin migrations", () => {
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       assert.deepStrictEqual(
@@ -1625,6 +1632,7 @@ describe("Kin migrations", () => {
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       const columns = yield* sql<{ name: string }>`
@@ -1780,9 +1788,10 @@ describe("Kin migrations", () => {
           [180, "CardPlans"],
           [181, "TasksKeys"],
           [182, "HandoffRoutes"],
+          [183, "TasksKeyMakers"],
           [184, "Recommendations"],
         ]);
-        assert.deepStrictEqual((yield* kinHistory).slice(-110), [
+        assert.deepStrictEqual((yield* kinHistory).slice(-111), [
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },
@@ -1892,6 +1901,7 @@ describe("Kin migrations", () => {
           { migration_id: 180, name: "CardPlans" },
           { migration_id: 181, name: "TasksKeys" },
           { migration_id: 182, name: "HandoffRoutes" },
+          { migration_id: 183, name: "TasksKeyMakers" },
           { migration_id: 184, name: "Recommendations" },
         ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_lead_deliveries`, [delivery]);
@@ -2055,6 +2065,7 @@ describe("Kin migrations", () => {
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT message_id, status FROM kin_messages ORDER BY seq`, [
@@ -2241,6 +2252,7 @@ describe("Kin migrations", () => {
           [180, "CardPlans"],
           [181, "TasksKeys"],
           [182, "HandoffRoutes"],
+          [183, "TasksKeyMakers"],
           [184, "Recommendations"],
         ]);
         assert.deepStrictEqual(
@@ -2403,6 +2415,7 @@ describe("Kin migrations", () => {
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       assert.deepStrictEqual(
@@ -2540,6 +2553,7 @@ describe("Kin migrations", () => {
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       assert.deepStrictEqual(
@@ -2690,6 +2704,7 @@ describe("Kin migrations", () => {
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       assert.deepStrictEqual(
@@ -2831,6 +2846,7 @@ describe("Kin migrations", () => {
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT * FROM kin_memory_labels`, []);
@@ -2979,6 +2995,7 @@ describe("Kin migrations", () => {
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       assert.deepStrictEqual(
@@ -3036,6 +3053,7 @@ describe("Kin migrations", () => {
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       const one = JSON.parse(strong);
@@ -3081,6 +3099,7 @@ describe("Kin migrations", () => {
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       assert.deepStrictEqual(
@@ -3126,6 +3145,7 @@ describe("Kin migrations", () => {
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       assert.deepStrictEqual(
@@ -3144,6 +3164,7 @@ describe("Kin migrations", () => {
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
     }).pipe(Effect.provide(layer)),
@@ -3803,6 +3824,7 @@ it.effect("K058 adds Work to a database at K057, keeps its rows, and reruns with
       [180, "CardPlans"],
       [181, "TasksKeys"],
       [182, "HandoffRoutes"],
+      [183, "TasksKeyMakers"],
       [184, "Recommendations"],
     ]);
     assert.deepStrictEqual(yield* sql`SELECT org_id FROM kin_orgs`, [{ org_id: "org" }]);
@@ -3922,6 +3944,7 @@ it.effect(
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       assert.lengthOf(
@@ -4044,6 +4067,7 @@ it.effect("K061 turns the withdrawals K059 stored into stops of those attempts",
       [180, "CardPlans"],
       [181, "TasksKeys"],
       [182, "HandoffRoutes"],
+      [183, "TasksKeyMakers"],
       [184, "Recommendations"],
     ]);
     assert.deepStrictEqual(
@@ -4196,6 +4220,7 @@ it.effect(
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT key, repo FROM kin_records`, [
@@ -4320,6 +4345,7 @@ it.effect("K062 upgrades a database at K061, keeps its attempts, and reruns clea
       [180, "CardPlans"],
       [181, "TasksKeys"],
       [182, "HandoffRoutes"],
+      [183, "TasksKeyMakers"],
       [184, "Recommendations"],
     ]);
     assert.deepStrictEqual(
@@ -4437,6 +4463,7 @@ it.effect("K164 keeps a worker's PR on the Work entry it belongs to, and reruns 
       [180, "CardPlans"],
       [181, "TasksKeys"],
       [182, "HandoffRoutes"],
+      [183, "TasksKeyMakers"],
       [184, "Recommendations"],
     ]);
     const links = sql`SELECT kind, target, relation, label FROM kin_record_links ORDER BY kind, target`;
@@ -4505,6 +4532,7 @@ it.effect("K166 declines a review still waiting on its Post card and clears the 
       [180, "CardPlans"],
       [181, "TasksKeys"],
       [182, "HandoffRoutes"],
+      [183, "TasksKeyMakers"],
       [184, "Recommendations"],
     ]);
     const shown = sql`SELECT p.post_id AS post, p.state, m.status,
@@ -4636,6 +4664,7 @@ it.effect(
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       assert.deepStrictEqual(yield* shape, fresh);
@@ -4758,6 +4787,7 @@ it.effect(
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       assert.deepStrictEqual(yield* column, fresh);
@@ -4876,6 +4906,7 @@ it.effect(
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       assert.deepStrictEqual(yield* index, fresh);
@@ -4986,6 +5017,7 @@ it.effect(
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       const indexed = yield* found;
@@ -5094,6 +5126,7 @@ it.effect("K068 adds money to a database at K067, keeps its entries, and reruns 
       [180, "CardPlans"],
       [181, "TasksKeys"],
       [182, "HandoffRoutes"],
+      [183, "TasksKeyMakers"],
       [184, "Recommendations"],
     ]);
     assert.deepStrictEqual(
@@ -5217,6 +5250,7 @@ it.effect(
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       yield* K069WorkerNetwork;
@@ -5316,6 +5350,7 @@ it.effect("K071 adds a proposal's card and one profile change per card, and reru
       [180, "CardPlans"],
       [181, "TasksKeys"],
       [182, "HandoffRoutes"],
+      [183, "TasksKeyMakers"],
       [184, "Recommendations"],
     ]);
     yield* K071OwnerAnswerCards;
@@ -5418,6 +5453,7 @@ it.effect("K072 issues each number once per series and entry, and reruns cleanly
       [180, "CardPlans"],
       [181, "TasksKeys"],
       [182, "HandoffRoutes"],
+      [183, "TasksKeyMakers"],
       [184, "Recommendations"],
     ]);
     yield* K072GeneratedDocuments;
@@ -5512,6 +5548,7 @@ it.effect("K073 owes one push per key change, each notice's once, and reruns cle
       [180, "CardPlans"],
       [181, "TasksKeys"],
       [182, "HandoffRoutes"],
+      [183, "TasksKeyMakers"],
       [184, "Recommendations"],
     ]);
     yield* K073KeyPushes;
@@ -5603,6 +5640,7 @@ it.effect("K074 owes every document job's worktree until it is removed, and reru
       [180, "CardPlans"],
       [181, "TasksKeys"],
       [182, "HandoffRoutes"],
+      [183, "TasksKeyMakers"],
       [184, "Recommendations"],
     ]);
     yield* K074DocJobCleanup;
@@ -5691,6 +5729,7 @@ it.effect("K075 keeps what a rendered document was asked with, and reruns cleanl
       [180, "CardPlans"],
       [181, "TasksKeys"],
       [182, "HandoffRoutes"],
+      [183, "TasksKeyMakers"],
       [184, "Recommendations"],
     ]);
     yield* K075ServerRenderedDocuments;
@@ -5783,6 +5822,7 @@ it.effect("K077 adds recipe labels and request fingerprints, and reruns cleanly"
       [180, "CardPlans"],
       [181, "TasksKeys"],
       [182, "HandoffRoutes"],
+      [183, "TasksKeyMakers"],
       [184, "Recommendations"],
     ]);
     yield* K077DocumentLabels;
@@ -5873,6 +5913,7 @@ it.effect("K078 keeps one baseline per workspace, and reruns cleanly", () =>
       [180, "CardPlans"],
       [181, "TasksKeys"],
       [182, "HandoffRoutes"],
+      [183, "TasksKeyMakers"],
       [184, "Recommendations"],
     ]);
     assert.deepStrictEqual(
@@ -5941,6 +5982,7 @@ it.effect(
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       assert.deepStrictEqual(
@@ -6034,6 +6076,7 @@ it.effect("K088 lets a Dates list take an amount, keeps rendered figures, and re
       [180, "CardPlans"],
       [181, "TasksKeys"],
       [182, "HandoffRoutes"],
+      [183, "TasksKeyMakers"],
       [184, "Recommendations"],
     ]);
     yield* K088MoneyRecords;
@@ -6139,6 +6182,7 @@ it.effect(
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       yield* K107Connections;
@@ -6225,6 +6269,7 @@ it.effect("K131 carries each statement's wrong passwords into its budget, and re
       [180, "CardPlans"],
       [181, "TasksKeys"],
       [182, "HandoffRoutes"],
+      [183, "TasksKeyMakers"],
       [184, "Recommendations"],
     ]);
     const budget = sql`SELECT budget_key AS key, remaining, refill_at IS NOT NULL AS "refills"
@@ -6290,6 +6335,7 @@ it.effect("K131 carries each statement's wrong passwords into its budget, and re
       [180, "CardPlans"],
       [181, "TasksKeys"],
       [182, "HandoffRoutes"],
+      [183, "TasksKeyMakers"],
       [184, "Recommendations"],
     ]);
     assert.deepStrictEqual(yield* budget, carried);
@@ -6373,6 +6419,7 @@ it.effect(
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       assert.deepStrictEqual(yield* schemaOf(), widened);
@@ -6416,6 +6463,7 @@ it.effect("K175 leaves existing K174 hand-offs with a null answer preference", (
       [180, "CardPlans"],
       [181, "TasksKeys"],
       [182, "HandoffRoutes"],
+      [183, "TasksKeyMakers"],
       [184, "Recommendations"],
     ]);
     assert.deepStrictEqual(yield* sql`SELECT wants_answer FROM kin_handoffs`, [
@@ -6455,6 +6503,7 @@ it.effect(
         [180, "CardPlans"],
         [181, "TasksKeys"],
         [182, "HandoffRoutes"],
+        [183, "TasksKeyMakers"],
         [184, "Recommendations"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT asked_by_person_id FROM kin_records`, [
@@ -6515,6 +6564,7 @@ it.effect("K178 counts a send under way at the upgrade as started, and nothing e
       [180, "CardPlans"],
       [181, "TasksKeys"],
       [182, "HandoffRoutes"],
+      [183, "TasksKeyMakers"],
       [184, "Recommendations"],
     ]);
     const rows = yield* sql<{

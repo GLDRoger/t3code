@@ -77,13 +77,17 @@ describe("kinAttention", () => {
     expect(project.handled.map((row) => row.handled)).toEqual([
       expect.stringMatching(/^Arjun has it until /),
     ]);
-    // A client's page keeps its own matters; Tasks has its late and due tasks.
-    const client = kinAttention(read([...facts, fact("client_cold", "C-1")]), {
-      scope: { type: "client", key: "C-1" },
-      names,
-      now,
-    });
-    expect(client.open.map((row) => row.factKey)).toEqual(["client_cold:C-1"]);
+    // A client's page keeps its own matters and lists its late and due tasks, no other task facts.
+    const client = kinAttention(
+      read([...facts, fact("client_cold", "C-1"), fact("task_stalled", "W-4")]),
+      { scope: { type: "client", key: "C-1" }, names, now },
+    );
+    expect(client.open.map((row) => row.factKey)).toEqual([
+      "task_late:W-2",
+      "task_due_soon:W-1",
+      "client_cold:C-1",
+    ]);
+    expect(client.open[0]!.open).toEqual({ type: "record", key: "W-2" });
     const money = kinAttention(read(facts), { scope: { type: "money" }, names, now });
     expect(money.open).toHaveLength(0);
     expect(money.handled).toHaveLength(1);

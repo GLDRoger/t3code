@@ -1,8 +1,12 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
 import type { KinInboxState } from "@t3tools/client-runtime/kin/kinInboxModel";
-import { kinOpenShown, kinOpenWaiting } from "@t3tools/client-runtime/kin/kinOpenView";
-import type { KinOpenRead, KinWaitingItem } from "@t3tools/contracts";
+import {
+  kinOpenShown,
+  kinOpenWaiting,
+  kinOpenWaitingAtom,
+} from "@t3tools/client-runtime/kin/kinOpenView";
+import type { EnvironmentId, KinOpenRead, KinOrgId, KinWaitingItem } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 
@@ -31,6 +35,22 @@ export function useKinOpen(target: KinWorkTarget | null, enabled = true) {
   const answered = useAtomValue(target === null ? noAnsweredAtom : kinReads.answered(target));
   const read = Option.getOrNull(AsyncResult.value(result));
   return { on, read: read === null ? null : kinOpenShown(read, new Set(answered)) };
+}
+
+const waitingAtom = Atom.family((key: string) => {
+  const [environmentId, orgId] = JSON.parse(key) as [EnvironmentId, KinOrgId];
+  const at = { environmentId, input: { orgId } };
+  const read = Atom.make((get): KinOpenRead | null =>
+    get(kinClient.openStreamed(at)) === true
+      ? Option.getOrNull(AsyncResult.value(get(kinClient.openLive(at))))
+      : null,
+  );
+  return kinOpenWaitingAtom(read);
+});
+
+/** What waits on you in this org's chats, from the open list; null where it isn't read. */
+export function useKinOpenWaitingFor({ environmentId, orgId }: KinWorkTarget) {
+  return useAtomValue(waitingAtom(JSON.stringify([environmentId, orgId])));
 }
 
 /**

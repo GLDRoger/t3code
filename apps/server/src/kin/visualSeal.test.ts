@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeURL from "node:url";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeDgram from "node:dgram";
 import * as NodeFS from "node:fs";
@@ -415,7 +416,12 @@ const webkitRunner = (() => {
           const binary = NodePath.join(directory, "runner");
           NodeChildProcess.execFile(
             "swiftc",
-            ["-O", new URL("./visualSeal.webkit.swift", import.meta.url).pathname, "-o", binary],
+            [
+              "-O",
+              NodeURL.fileURLToPath(new URL("./visualSeal.webkit.swift", import.meta.url)),
+              "-o",
+              binary,
+            ],
             (error) => resolve(error ? undefined : binary),
           );
         });
