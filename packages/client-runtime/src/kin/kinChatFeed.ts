@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
+import { kinNow } from "./kinNow.ts";
 import { kinMessageText } from "./kinMessagePage.ts";
 import {
   EnvironmentAuthorizationError,
@@ -444,7 +445,7 @@ export function buildKinFeedRows(
   messages: ReadonlyArray<KinMessage>,
   viewer: KinFeedViewer,
   expandedRuns: ReadonlySet<string>,
-  now: Date = new Date(),
+  now: Date = kinNow(),
   drafts: ReadonlyArray<KinHeldDraft> = [],
   /**
    * The Team room, where discussions are the point: each opens by default under its line, and
@@ -652,7 +653,7 @@ const kinWeekdayFormat = kinWhenFormat("day");
 const kinFullDateFormat = kinWhenFormat("dateYear");
 
 /** A day separator: "Today", "Yesterday", "Mon, 3 Nov", or with the year once it differs. */
-export function kinDayLabel(iso: string, now: Date = new Date()): string {
+export function kinDayLabel(iso: string, now: Date = kinNow()): string {
   const day = kinLocalDayKey(iso);
   if (day === kinLocalDayKey(now.toISOString())) return "Today";
   const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
@@ -666,7 +667,7 @@ export function kinDayLabel(iso: string, now: Date = new Date()): string {
 const kinDividerTimeFormat = kinWhenFormat("time");
 
 /** A time divider: "Today 12:55 PM", "Yesterday 9:10 AM", "Mon, 3 Nov 8:02 AM". */
-function kinTimeDividerLabel(iso: string, now: Date = new Date()): string {
+function kinTimeDividerLabel(iso: string, now: Date = kinNow()): string {
   return `${kinDayLabel(iso, now)} ${kinDividerTimeFormat.format(new Date(iso))}`;
 }
 

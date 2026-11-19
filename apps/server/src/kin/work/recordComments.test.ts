@@ -440,6 +440,36 @@ it.effect("a mail waiting to be confirmed about an entry shows on the sheet of w
     } as never);
     const hers = yield* OwnerWork.list([zoya], { orgId, byMove: true });
     assert.deepStrictEqual(hers.moves, [{ key: made.key, group: "needsYou" }] as never);
+    // Words a person saved on the card are what its Confirm sends, so the row names those.
+    const edited = {
+      question: "Send this email?",
+      detail: null,
+      options: [
+        { optionId: "yes", label: "Confirm", kind: "yes" },
+        { optionId: "no", label: "Don't send", kind: "no" },
+      ],
+      send: {
+        service: "Mail",
+        action: "email",
+        from: null,
+        to: ["billing@client.invalid"],
+        cc: [],
+        subject: "October invoice, corrected",
+        body: "Invented edit",
+        attachments: [],
+        outcome: null,
+        edited: { personId: rheaId, name: "Rhea" },
+      },
+      answer: null,
+    };
+    yield* sql`UPDATE kin_widgets SET revision = 2, state_json = ${JSON.stringify(edited)}
+      WHERE widget_id = 'card'`;
+    const saved = (yield* OwnerWork.list([rhea], { orgId, byMove: true })).moves?.[0]?.card;
+    assert.deepInclude(saved, {
+      preview: "To billing@client.invalid: October invoice, corrected",
+      revision: 2,
+    } as never);
+    assert.lengthOf(saved?.options ?? [], 2);
     // Once decided, nothing waits.
     yield* sql`UPDATE kin_connection_asks SET state = 'sent'`;
     assert.notProperty(yield* OwnerWork.get([rhea], { orgId, key: made.key }), "waiting");
@@ -625,8 +655,13 @@ it.effect("a person's comment tells who holds the task and who asked for it, onc
     yield* sql`INSERT INTO auth_sessions (session_id, subject, method, scopes, issued_at, expires_at)
       VALUES ('dev-key', 'kin-coding-agent', 'bearer-access-token', '["kin:tasks"]', ${at},
         '2026-12-11T00:00:00.000Z')`;
-    yield* sql`INSERT INTO kin_tasks_keys (session_id, org_id, person_id, label, created_at, expires_at)
-      VALUES ('dev-key', ${orgId}, ${devId}, 'Invented laptop', 0, ${Date.parse("2026-12-11T00:00:00.000Z")})`;
+    // Made on his bound laptop: a key with no recorded device, or a person with none, acts as no one.
+    yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES ('dev-laptop', ${orgId}, ${devId}, 0)`;
+    yield* sql`INSERT INTO kin_tasks_keys (session_id, org_id, person_id, label, created_at, expires_at,
+        made_by_session_id)
+      VALUES ('dev-key', ${orgId}, ${devId}, 'Invented laptop', 0, ${Date.parse("2026-12-11T00:00:00.000Z")},
+        'dev-laptop')`;
     const devKey = { orgId, personId: devId, sessionId: AuthSessionId.make("dev-key") };
     for (const _ of [1, 2])
       yield* commentMine(devKey, { key: made.key, text: "Invented: proofs are in" }).pipe(

@@ -2,6 +2,7 @@
 import {
   formatKinWhen,
   KinChatError,
+  KinPersonId,
   type EnvironmentId,
   type KinWidget,
 } from "@t3tools/contracts";
@@ -15,6 +16,8 @@ import {
   kinScheduledTaskCardView,
 } from "./kinCardPresentation.ts";
 import {
+  kinChoiceAccessibilityLabel,
+  kinChoiceActInput,
   kinChoiceOutcomeSentence,
   kinChoiceAnswered,
   kinChoiceFailureNotice,
@@ -24,10 +27,22 @@ import {
   kinAddressPieces,
   kinSendEditFailure,
   kinSendEditBound,
+  kinSendEditControls,
+  kinSendEditDiscardInput,
+  kinSendEditedLine,
   kinSendEditInput,
+  kinSendEditKept,
+  kinSendEditLeaveSaves,
   kinSendEditOffered,
   kinSendEditRefused,
+  kinSendEditSaveInput,
+  kinSendEditShown,
   kinSendEditStart,
+  kinMayHaveGoneLine,
+  kinSendCheckPending,
+  kinSendTicked,
+  kinSendTry,
+  kinSendEditWarned,
   kinThreadDate,
 } from "./kinChoicePresentation.ts";
 import { formatKinTime } from "./kinScreenState.ts";
@@ -524,7 +539,12 @@ describe("choice cards", () => {
     expect(mail({ action: "call" }).send?.edit).toBeNull();
 
     const started = kinSendEditStart(open)!;
-    expect(started).toEqual({ revision: 1, draft: open.send?.edit, problem: null });
+    expect(started).toEqual({
+      revision: 1,
+      opened: open.send?.edit,
+      draft: open.send?.edit,
+      problem: null,
+    });
     const typed = {
       ...started,
       draft: {
@@ -602,16 +622,264 @@ describe("choice cards", () => {
       ],
       "On Mon, Anita wrote:\n> Could you resend it?",
     ]);
+    // The phone's card is one spoken group: it says the words that go, and the quote under them.
+    const spoken = kinChoiceAccessibilityLabel(reply, null, null, { message: true });
+    expect(spoken).toContain(
+      "Subject: Invoice. Message: Hi Anita,\n\nAttached. On Mon, Anita wrote:",
+    );
+    expect(spoken).toContain("> Could you resend it?");
+    expect(kinChoiceAccessibilityLabel(reply, null)).not.toContain("Message:");
     expect(mail({ action: "event" }).send?.from).toEqual([]);
   });
 
+  it("keeps a person's unsent words on the card, and offers Save, Send and Discard by state", () => {
+    const send = {
+      service: "Gmail",
+      action: "email",
+      from: "rhea@ambermill.example",
+      to: ["anita@orbitdental.example"],
+      cc: [],
+      subject: "Invoice",
+      body: "Hi Anita,\n\nAttached.",
+      attachments: [],
+      outcome: null,
+    };
+    const drafted = choice({ state: { ...choiceState(null), send } });
+    expect(drafted.send?.edited).toBeNull();
+    expect(kinSendEditedLine(drafted, KinPersonId.make("rhea"))).toBeNull();
+    const started = kinSendEditStart(drafted)!;
+    expect(kinSendEditDiscardInput(drafted, started, true)).toBeNull();
+    // Nothing typed: leaving keeps nothing, and a closed card takes the editor with it.
+    expect(kinSendEditLeaveSaves(started, null, true)).toBe(false);
+    expect(kinSendEditShown(started, false)).toBe(false);
+    const typed = {
+      ...started,
+      draft: { ...started.draft, body: "Hi Anita,\n\nAttached, with GST." },
+    };
+    expect(kinSendEditSaveInput(drafted, typed)).toEqual({
+      orgId: "org",
+      widgetId: "w1",
+      revision: 1,
+      edit: {
+        to: ["anita@orbitdental.example"],
+        cc: [],
+        subject: "Invoice",
+        body: "Hi Anita,\n\nAttached, with GST.",
+      },
+    });
+    expect(kinSendEditLeaveSaves(typed, null, true)).toBe(true);
+    // Not while a press is on its way, nor once the card stopped taking edits.
+    expect(kinSendEditLeaveSaves(typed, "sending", true)).toBe(false);
+    expect(kinSendEditLeaveSaves(typed, null, false)).toBe(false);
+    // Saved on leaving, the editor stays over the saved card, with nothing left unsaved.
+    const kept = kinSendEditKept(typed, 2);
+    expect(kept).toEqual({
+      revision: 2,
+      opened: typed.draft,
+      draft: typed.draft,
+      problem: null,
+      saved: true,
+    });
+    expect(kinSendEditLeaveSaves(kept, null, true)).toBe(false);
+    // The save's answer came before the card's update: Discard still puts the draft back, bound
+    // to the revision the host acknowledged, never only closing the editor.
+    expect(kinSendEditDiscardInput(drafted, kept, true)).toEqual({
+      orgId: "org",
+      widgetId: "w1",
+      revision: 2,
+      edit: null,
+    });
+    // Save closed the editor and the card's update is late: Edit opens over the saved words, and
+    // its Discard is the reset bound to the revision the host acknowledged.
+    const acked = { revision: 2, saved: typed.draft };
+    const late = kinSendEditStart(drafted, acked)!;
+    expect(late).toEqual(kept);
+    expect(kinSendEditDiscardInput(drafted, late, true)).toEqual({
+      orgId: "org",
+      widgetId: "w1",
+      revision: 2,
+      edit: null,
+    });
+
+    const label = (controls: ReturnType<typeof kinSendEditControls>) => ({
+      save: [controls.save.label, controls.save.disabled],
+      send: [controls.send.label, controls.send.disabled],
+      discard: [controls.discard.label, controls.discard.disabled],
+      notice: controls.notice,
+    });
+    expect(label(kinSendEditControls(typed, drafted, null, true))).toEqual({
+      save: ["Save", false],
+      send: ["Send edited mail", false],
+      discard: ["Discard edits", false],
+      notice: null,
+    });
+    expect(label(kinSendEditControls(typed, drafted, "saving", true))).toEqual({
+      save: ["Saving…", true],
+      send: ["Send edited mail", true],
+      discard: ["Discard edits", true],
+      notice: null,
+    });
+    expect(label(kinSendEditControls(typed, drafted, "discarding", true)).discard).toEqual([
+      "Discarding…",
+      true,
+    ]);
+    // The host said the card changed: Save and Send wait for the newer card, then carry it.
+    const changed = new KinChatError({
+      reason: "widget_changed",
+      message: "This card changed or was answered. Look at it again.",
+    });
+    const stale = kinSendEditRefused(typed, drafted, changed);
+    expect(label(kinSendEditControls(stale, drafted, null, true)).save).toEqual(["Save", true]);
+    expect(kinSendEditSaveInput({ ...drafted, revision: 2 }, stale).revision).toBe(2);
+    // Leaving never puts the words over a card the host said changed: the person chooses.
+    expect(kinSendEditLeaveSaves(stale, null, true)).toBe(false);
+    // The agent's newer card closed this one: the words stay, with only Discard.
+    expect(kinSendEditShown(typed, false)).toBe(true);
+    expect(label(kinSendEditControls(typed, drafted, null, false))).toEqual({
+      save: ["Save", true],
+      send: ["Send edited mail", true],
+      discard: ["Discard edits", false],
+      notice:
+        "This card closed while you were editing, so your words weren't saved. They stay here until you discard them.",
+    });
+
+    // Saved, the card shows the person's words as theirs, and Discard puts the draft back.
+    const saved = choice({
+      revision: 2,
+      state: {
+        ...choiceState(null),
+        send: { ...send, body: typed.draft.body, edited: { personId: "rhea", name: "Rhea" } },
+      },
+    });
+    expect(saved.send?.body).toBe(typed.draft.body);
+    expect(kinSendEditStart(saved)?.draft.body).toBe(typed.draft.body);
+    expect(kinSendEditedLine(saved, KinPersonId.make("rhea"))).toBe("Edited by you");
+    expect(kinSendEditedLine(saved, KinPersonId.make("meera"))).toBe("Edited by Rhea");
+    const reopened = kinSendEditStart(saved)!;
+    expect(kinSendEditDiscardInput(saved, reopened, true)).toEqual({
+      orgId: "org",
+      widgetId: "w1",
+      revision: 2,
+      edit: null,
+    });
+    expect(kinSendEditDiscardInput(saved, reopened, false)).toBeNull();
+    // That Discard was taken and the update is late: Edit binds to the reset card, whose Discard
+    // only closes the editor, though the card on screen still shows the saved words.
+    const reset = kinSendEditStart(saved, { revision: 3, saved: null })!;
+    expect(reset.revision).toBe(3);
+    expect(kinSendEditDiscardInput(saved, reset, true)).toBeNull();
+    // Once the card has caught up, or moved past, the card itself is what Edit opens.
+    expect(kinSendEditStart(saved, { revision: 2, saved: null })).toEqual(reopened);
+  });
+
+  it("warns while an earlier try at the mail may have gone, and holds Confirm and Send edited for the tick", () => {
+    const at = "2026-11-08T09:05:00.000Z";
+    const tried = new Date(at);
+    const tick = { tryId: "ask-a", at };
+    const send = {
+      service: "Gmail",
+      action: "reply",
+      from: "rhea@ambermill.example",
+      to: ["anita@orbitdental.example"],
+      cc: [],
+      subject: "Re: Invoice",
+      body: "Attached.",
+      attachments: [],
+      outcome: null,
+      mayHaveGone: tick,
+    };
+    const open = choice({ state: { ...choiceState(null), send } });
+    const line = kinMayHaveGoneLine(at);
+    expect(open.send?.mayHaveGone).toEqual({ line, ...tick, confirmId: "option-1" });
+    expect(kinSendTry(open)).toEqual(tick);
+    expect(kinMayHaveGoneLine(at, tried)).toBe(
+      `An earlier try at this mail at ${formatKinWhen(tried, "time")} may already have gone. Check the account's sent mail before you confirm.`,
+    );
+    expect(kinMayHaveGoneLine(at, new Date(tried.getTime() + 3 * 86_400_000))).toContain(
+      `on ${formatKinWhen(tried, "dayTime")}`,
+    );
+    expect(kinChoiceAccessibilityLabel(open, null)).toContain("may already have gone");
+    // Confirm and Send edited wait for the tick; Cancel never does.
+    expect(kinSendCheckPending(open, null, "option-1")).toBe(true);
+    expect(kinSendCheckPending(open, null, "option-2")).toBe(false);
+    expect(kinSendCheckPending(open, null)).toBe(true);
+    expect(kinSendCheckPending(open, tick, "option-1")).toBe(false);
+    // A tick is for one try: once the warning names a later one, it no longer counts, nor does a
+    // tick for another try that ended at the same time.
+    const later = { tryId: "ask-b", at: "2026-11-08T09:40:00.000Z" };
+    const moved = choice({
+      state: { ...choiceState(null), send: { ...send, mayHaveGone: later } },
+    });
+    expect(kinSendTicked(open, tick)).toBe(tick);
+    expect(kinSendTicked(open, { tryId: "ask-b", at })).toBeNull();
+    expect(kinSendTicked(moved, tick)).toBeNull();
+    expect(kinSendCheckPending(moved, tick, "option-1")).toBe(true);
+    expect(kinSendCheckPending(moved, tick)).toBe(true);
+    expect(kinSendCheckPending(moved, later, "option-1")).toBe(false);
+    const editing = kinSendEditStart(open)!;
+    expect(kinSendEditControls(editing, open, null, true, true).send.disabled).toBe(true);
+    expect(kinSendEditControls(editing, open, null, true, false).send.disabled).toBe(false);
+    // Ticked, both presses carry the try it is for; unticked, they carry nothing new.
+    expect(kinChoiceActInput(open, "option-1", "tap-1", tick)).toMatchObject({ checkedSent: tick });
+    expect(kinChoiceActInput(open, "option-1", "tap-1")).not.toHaveProperty("checkedSent");
+    expect(kinSendEditInput(open, editing, "press-1", tick)).toMatchObject({ checkedSent: tick });
+    expect(kinSendEditInput(open, editing, "press-1")).not.toHaveProperty("checkedSent");
+    // Once that card's own try is on its way, the outcome line takes over.
+    const sending = choice({
+      state: {
+        ...choiceState(null),
+        send: { ...send, outcome: { state: "sending", reason: null, at } },
+      },
+    });
+    expect(sending.send?.mayHaveGone).toBeNull();
+    const { mayHaveGone: _gone, ...settled } = send;
+    const plain = choice({ state: { ...choiceState(null), send: settled } });
+    expect(plain.send?.mayHaveGone).toBeNull();
+    expect(kinSendCheckPending(plain, null)).toBe(false);
+    expect(kinSendTicked(plain, tick)).toBeNull();
+    // Send edited refused for words an earlier try reached: the refusal names that try, the
+    // editor's tick is for it, and the shared card keeps its own (no) warning.
+    const typing = kinSendEditStart(plain)!;
+    expect(kinSendEditWarned(plain, typing)).toBe(plain);
+    const refused = kinSendEditRefused(
+      typing,
+      plain,
+      new KinChatError({ reason: "conflict", message: "Tick first.", mayHaveGone: later }),
+    );
+    expect(refused).toEqual({ ...typing, problem: "Tick first.", mayHaveGone: later });
+    const warned = kinSendEditWarned(plain, refused, tried);
+    expect(warned.send?.mayHaveGone).toEqual({
+      line: kinMayHaveGoneLine(later.at, tried),
+      ...later,
+      confirmId: null,
+    });
+    expect(kinSendCheckPending(warned, null)).toBe(true);
+    expect(kinSendCheckPending(warned, later)).toBe(false);
+    expect(kinSendEditInput(plain, refused, "press-2", kinSendTicked(warned, later))).toMatchObject(
+      { revision: refused.revision, checkedSent: later },
+    );
+    expect(kinSendCheckPending(plain, null, "option-1")).toBe(false);
+  });
+
   it("says a refused answer in the host's words when its figures changed", () => {
-    const refusal = (reason: "conflict" | "widget_changed" | "not_allowed", message: string) =>
-      kinChoiceFailureNotice(new KinChatError({ reason, message }));
+    const refusal = (
+      reason: "conflict" | "widget_changed" | "not_allowed" | "unavailable",
+      message: string,
+    ) => kinChoiceFailureNotice(new KinChatError({ reason, message }));
     expect(refusal("conflict", "The figures changed since this card was made.")).toEqual({
       kind: "error",
       text: "The figures changed since this card was made.",
     });
+    // A mail whose account needs signing in: which one, that nothing went, where to sign in.
+    const signedOut =
+      "hello@ambermill.example needs signing in again in Settings › Connections. Nothing was sent; tap Confirm again once it's back.";
+    expect(refusal("unavailable", signedOut)).toEqual({ kind: "error", text: signedOut });
+    expect(
+      kinSendEditFailure(new KinChatError({ reason: "unavailable", message: signedOut })),
+    ).toBe(signedOut);
+    expect(refusal("unavailable", "Kin couldn't read mail_send's definition.").text).not.toContain(
+      "mail_send",
+    );
     expect(refusal("widget_changed", "This receipt was already answered.").kind).toBe("stale");
     expect(refusal("not_allowed", "Chat operation not allowed.").text).not.toContain("Chat");
   });

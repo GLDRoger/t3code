@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
+import { kinNow } from "./kinNow.ts";
 import { kinFailureText } from "./kinAnswers.ts";
 import {
   KIN_MEMORY_CONFIRM_MAX,
@@ -364,7 +365,7 @@ export function kinMemoryView(
   edits: KinMemoryEdits,
   search: string,
   names: KinMemoryNames = NO_NAMES,
-  now: Date = new Date(),
+  now: Date = kinNow(),
 ): KinMemoryView {
   const words = search.toLowerCase().split(/\s+/).filter(Boolean);
   const lookup: NameLookup = {

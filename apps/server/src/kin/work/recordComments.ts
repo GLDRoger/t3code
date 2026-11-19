@@ -27,7 +27,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { PreparedJson } from "../connections/Sending.ts";
+import { PreparedJson, shownMail } from "../connections/Sending.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { CODING_AGENT_NAME } from "./recordRows.ts";
 import { teamVisible } from "./teamView.ts";
@@ -471,15 +471,21 @@ export const waitingCards = Effect.fn("KinRecordComments.waitingCards")(function
     if (found.has(ask.recordId)) continue;
     const prepared = Option.getOrUndefined(decodePrepared(ask.payload));
     if (prepared === undefined) continue;
+    // The row offers Confirm, so it names what Confirm sends: a person's saved edit, when one is on the card.
+    const send = Option.getOrUndefined(decodeChoice(ask.state))?.send;
+    const mail = prepared._tag === "email" ? shownMail(prepared, send) : undefined;
     found.set(
       ask.recordId,
-      prepared._tag === "email"
-        ? card(
-            "send",
-            ask,
-            `To ${prepared.to.join(", ")}: ${prepared.subject}`,
-            prepared.attachments.map((file) => ({ name: file.name, mimeType: file.mimeType })),
-          )
+      prepared._tag === "email" && mail !== undefined
+        ? {
+            ...card(
+              "send",
+              ask,
+              `To ${mail.to.join(", ")}: ${mail.subject}`,
+              prepared.attachments.map((file) => ({ name: file.name, mimeType: file.mimeType })),
+            ),
+            ...(send?.mayHaveGone === undefined ? {} : { mayHaveGone: send.mayHaveGone }),
+          }
         : card(
             "send",
             ask,
@@ -505,7 +511,7 @@ const waitingFor = Effect.fn("KinRecordComments.waiting")(function* (
 ) {
   const found = (yield* waitingCards(orgId, personId, [record])).get(record.recordId);
   if (found === undefined) return undefined;
-  const { revision: _revision, options: _options, ...waiting } = found;
+  const { revision: _revision, options: _options, mayHaveGone: _gone, ...waiting } = found;
   return waiting satisfies KinRecordWaiting;
 });
 
