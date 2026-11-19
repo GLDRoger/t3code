@@ -404,9 +404,13 @@ features:
     depth_reason: >-
       The owner chose a full page for the task record (K125) so the next step, details, brief and
       activity all fit; its controls are menus and an inline edit on that page, not a form page.
+    note: >-
+      Status and Edit title and brief sit on the page itself; give, hand back, take back and drop
+      are in More (web) and ••• (phone). Each shows only where the host takes it from that person.
     proof:
       - apps/server/src/kin/work/KinRecords.test.ts
       - packages/client-runtime/src/kin/kinWork.test.ts
+      - packages/client-runtime/src/kin/kinTaskRecord.test.ts
 
   - id: task-assign
     name: Give a task to someone, or take it back
@@ -641,9 +645,12 @@ features:
     web: [clients, "?client"]
     phone: [tab:clients, KinClient]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    note: Amounts, contacts and history are owner-level. Someone who can't open it is told so.
+    note: >-
+      Amounts, contacts and history are owner-level. Someone who can't open it is told so. Its
+      Needs attention section, unfolded at the top, lists the client's late and due tasks.
     proof:
       - apps/server/src/kin/work/crm.test.ts
+      - packages/client-runtime/src/kin/kinAttention.test.ts
       - .agents/skills/verify-kin/scripts/member-no-money.sh
       - .agents/skills/verify-kin/scripts/member-refused-client.sh
 

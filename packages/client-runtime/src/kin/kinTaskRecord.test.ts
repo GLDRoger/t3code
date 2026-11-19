@@ -22,6 +22,7 @@ import {
   kinRecordAskedBy,
   kinRecordChip,
   kinTaskActivity,
+  kinTaskControls,
 } from "./kinTaskRecord.ts";
 import { kinWorkItemView, type KinWorkNames } from "./kinWork.ts";
 
@@ -261,6 +262,74 @@ describe("kinNextStep", () => {
       line: "handed this back",
       acts: [{ id: "done" }, { id: "give" }],
     });
+  });
+});
+
+describe("kinTaskControls", () => {
+  const memberHolds: KinRecordCan = {
+    ...readOnly,
+    states: ["open", "waiting", "done", "dropped"],
+    edit: true,
+    give: true,
+  };
+  const controls = (
+    item: KinRecordDetail,
+    who: KinWorkNames,
+    can: { change: boolean; give: boolean },
+    editing = false,
+  ) => kinTaskControls({ view: kinWorkItemView(item, who, now, 50, place), ...can, editing });
+
+  it.each([
+    {
+      who: "the owner, or a co-owner, on a teammate's task",
+      item: task(),
+      names,
+      can: { change: true, give: true },
+      page: { status: { done: true, reopen: false, states: true, waiting: true }, edit: true },
+      menu: { give: true, takeBack: true, handBack: false, drop: true },
+    },
+    {
+      who: "a member holding a task the owner gave",
+      item: task({ owner: zoya, can: memberHolds }),
+      names: asZoya,
+      can: { change: true, give: true },
+      page: { status: { done: true, reopen: false, states: true, waiting: true }, edit: true },
+      menu: { give: true, takeBack: false, handBack: true, drop: true },
+    },
+    {
+      who: "a member who may only look",
+      item: task({ can: readOnly }),
+      names: asZoya,
+      can: { change: true, give: true },
+      page: { status: null, edit: false },
+      menu: { give: false, takeBack: false, handBack: false, drop: false },
+    },
+    {
+      who: "a session without the right to change tasks",
+      item: task(),
+      names,
+      can: { change: false, give: false },
+      page: { status: null, edit: false },
+      menu: { give: false, takeBack: false, handBack: false, drop: false },
+    },
+    {
+      who: "the owner on a done task",
+      item: task({
+        state: "done",
+        closedAt: "2026-11-14T10:00:00.000Z",
+        can: { ...ownerCan, give: false, takeBack: false },
+      }),
+      names,
+      can: { change: true, give: true },
+      page: { status: { done: false, reopen: true, states: false, waiting: false }, edit: true },
+      menu: { give: false, takeBack: false, handBack: false, drop: false },
+    },
+  ])("puts status and edit on the page and the rest in the menu for $who", (row) => {
+    expect(controls(row.item, row.names, row.can)).toEqual({ page: row.page, menu: row.menu });
+  });
+
+  it("hides the page's edit while the title and brief are open", () => {
+    expect(controls(task(), names, { change: true, give: true }, true).page.edit).toBe(false);
   });
 });
 
