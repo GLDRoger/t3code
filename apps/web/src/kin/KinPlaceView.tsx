@@ -54,6 +54,10 @@ import { KinDocsList } from "./KinDocsList";
 import { KinSubscriptionsPage } from "./KinSubscriptions";
 import { KinSearchDialog } from "./KinSearchDialog";
 import { KinWorkClientPage, KinWorkClientsList, KinWorkProjectsTab } from "./KinWorkClients";
+import { KinDealNewDialog, KinDealsTab } from "./KinDeals";
+import { KinDealPage } from "./KinDealPage";
+import { KIN_DEALS, kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
+import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { KinWorkDates } from "./KinWorkDates";
 import {
   KIN_WORK_FORM_COPY,
@@ -119,9 +123,8 @@ export function KinPlacesRoute() {
   const record = kinRecordOf(search);
   const params = { environmentId, orgId };
   // The Clients place's tab stays in the address while records and dialogs open over it.
-  const tab: KinClientsTab =
-    place === "clients" && search.tab === "projects" ? "projects" : "clients";
-  const kept = tab === "projects" ? { tab } : {};
+  const tab: KinClientsTab = (place === "clients" ? search.tab : undefined) ?? "clients";
+  const kept = tab === "clients" ? {} : { tab };
   // Pushes count only over the list, and task pushes only over what has no task open, so going
   // back that many always lands there; an address reached any other way closes by navigating.
   const depth = location.state.kinDepth ?? 0;
@@ -219,7 +222,7 @@ export function KinPlacesRoute() {
         void navigate({
           to: KIN_PLACE_PATH.clients,
           params,
-          search: { ...kinSearchOf(record), ...(next === "projects" ? { tab: next } : {}) },
+          search: { ...kinSearchOf(record), ...(next === "clients" ? {} : { tab: next }) },
           replace: true,
           state: location.state,
         })
@@ -262,7 +265,8 @@ export function KinPlacesRoute() {
 type Adding =
   | { readonly type: "task"; readonly draft: KinWorkDraft }
   | { readonly type: "client"; readonly start: KinClientDraftKind }
-  | { readonly type: "project" }
+  | { readonly type: "project"; readonly party?: KinWorkRef }
+  | { readonly type: "deal"; readonly party: KinWorkRef | null }
   | null;
 
 /**
@@ -361,7 +365,9 @@ export function KinPlaceView({
   const taskPage =
     openKey !== null &&
     ready &&
-    (opened === "task" || (opened === "unknown" && place !== "money" && place !== "docs"));
+    (kinIsDealKey(openKey) ||
+      opened === "task" ||
+      (opened === "unknown" && place !== "money" && place !== "docs"));
   const shownTask = useRef<{ readonly key: KinRecordKey; readonly under: string } | null>(null);
   const under = JSON.stringify(record);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- focus lives in the DOM: a closed task hands it back to its row
@@ -386,6 +392,11 @@ export function KinPlaceView({
   const addProject =
     ready && hostClients && canAddProject ? () => setAdding({ type: "project" }) : null;
   const title = KIN_WORK_HOME.places[place];
+  // The host takes a deal from the owner level and a teammate with Clients on, as a prospect.
+  const addDeal =
+    ready && hostClients && canAddClient
+      ? (party: KinWorkRef | null) => setAdding({ type: "deal", party })
+      : null;
 
   const header = (
     <WorkspacePageHeader electron={isElectron}>
@@ -446,6 +457,13 @@ export function KinPlaceView({
               <PlusIcon />
               {KIN_WORK_NEW}
             </Button>
+          ) : place === "clients" && tab === "deals" ? (
+            addDeal === null ? null : (
+              <Button size="sm" onClick={() => addDeal(null)}>
+                <PlusIcon />
+                {KIN_DEALS.newDeal}
+              </Button>
+            )
           ) : place === "clients" && addClient !== null && addProject !== null ? (
             <Menu>
               <MenuTrigger render={<Button size="sm" />}>
@@ -529,6 +547,14 @@ export function KinPlaceView({
               Open tasks
             </Button>
           }
+        />
+      ) : tab === "deals" ? (
+        <KinDealsTab
+          {...props}
+          directory={directory}
+          selected={openKey}
+          onOpen={setOpenKey}
+          onNew={addDeal === null ? null : () => addDeal(null)}
         />
       ) : tab === "projects" ? (
         <KinWorkProjectsTab
@@ -649,6 +675,7 @@ export function KinPlaceView({
           }}
           onAddTask={addTask}
           onOpenList={fromRecord.list}
+          onNewDeal={addDeal}
         />
       );
     return (
@@ -676,23 +703,40 @@ export function KinPlaceView({
     key: KinRecordKey,
     frame: "sheet" | "pane" | "page",
     go: ReturnType<typeof opens>,
-  ) => (
-    <KinWorkItemSheet
-      // A fresh panel per task, so one task's hand-over never shows on another.
-      key={key}
-      {...props}
-      itemKey={key}
-      frame={frame}
-      directory={directory}
-      changes={changes}
-      choices={hostClients ? choices : null}
-      onOpenKey={go.task}
-      onOpenClient={go.party}
-      onOpenProject={go.project}
-      onOpenDoc={(doc) => go.doc(doc)}
-      onClose={() => setOpenKey(null)}
-    />
-  );
+  ) =>
+    kinIsDealKey(key) ? (
+      <KinDealPage
+        key={key}
+        {...props}
+        dealKey={key}
+        frame={frame}
+        directory={directory}
+        onOpenTask={go.task}
+        onOpenClient={go.party}
+        onStartProject={
+          addProject === null || !ownerLevel
+            ? null
+            : (party) => setAdding({ type: "project", party })
+        }
+        onClose={() => setOpenKey(null)}
+      />
+    ) : (
+      <KinWorkItemSheet
+        // A fresh panel per task, so one task's hand-over never shows on another.
+        key={key}
+        {...props}
+        itemKey={key}
+        frame={frame}
+        directory={directory}
+        changes={changes}
+        choices={hostClients ? choices : null}
+        onOpenKey={go.task}
+        onOpenClient={go.party}
+        onOpenProject={go.project}
+        onOpenDoc={(doc) => go.doc(doc)}
+        onClose={() => setOpenKey(null)}
+      />
+    );
   const opening = record !== null || taskPage;
 
   // A doc on a narrow window is the whole page, under its own header with its own way back.
@@ -804,11 +848,23 @@ export function KinPlaceView({
           }}
           onClose={() => setAdding(null)}
         />
+      ) : adding?.type === "deal" ? (
+        <KinDealNewDialog
+          {...props}
+          party={adding.party}
+          choices={choices}
+          directory={directory}
+          onAdded={(key) => {
+            setAdding(null);
+            setOpenKey(key);
+          }}
+          onClose={() => setAdding(null)}
+        />
       ) : adding?.type === "project" ? (
         <KinProjectDialog
           {...props}
           editing={null}
-          party={null}
+          party={adding.party ?? null}
           choices={choices}
           directory={directory}
           onSaved={(key) => {

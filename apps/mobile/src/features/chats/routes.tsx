@@ -7,6 +7,9 @@ import { KinChatScreen } from "./KinChatScreen";
 import { KinChatsScreen } from "./KinChatsScreen";
 import { KinClientScreen } from "./KinClientScreen";
 import { KinCompanyScreen } from "./KinCompanyScreen";
+import { KinDealNewScreen } from "./KinDealNewScreen";
+import { KinDealScreen } from "./KinDealScreen";
+import { KinDealStagesScreen } from "./KinDealsSettings";
 import { KinRecommendationsScreen } from "./KinRecommendationsScreen";
 import {
   KinConnectionAddScreen,
@@ -199,6 +202,20 @@ export const KIN_SCREENS = {
     screen: KinProjectScreen,
     linking: "kin/:environmentId/:orgId/projects/:project",
     options: pageRoute({ title: "Project" }),
+  }),
+  KinDeal: createNativeStackScreen({
+    screen: KinDealScreen,
+    linking: "kin/:environmentId/:orgId/deals/:deal",
+    options: pageRoute({ title: "Deal" }),
+  }),
+  KinDealNew: createNativeStackScreen({
+    screen: KinDealNewScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinDealStages: createNativeStackScreen({
+    screen: KinDealStagesScreen,
+    linking: "kin/:environmentId/:orgId/settings/deals",
+    options: pageRoute({ title: "Deals" }),
   }),
   KinDoc: createNativeStackScreen({
     screen: KinDocScreen,

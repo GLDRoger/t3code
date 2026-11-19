@@ -55,6 +55,7 @@ import {
   type KinWorkTarget,
 } from "./state/useKinWork";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { KinDealsView } from "./KinDealsList";
 
 const HEALTH_TONE: Record<KinHealthView["tone"], string> = {
   good: "text-foreground-muted",
@@ -470,6 +471,17 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
       />
     ),
   };
+  if (tab === "deals")
+    return (
+      <KinDealsView
+        environmentId={props.environmentId}
+        orgId={props.orgId}
+        directory={props.directory}
+        stale={props.stale}
+        header={view.header}
+        ask={ask}
+      />
+    );
   return tab === "clients" ? (
     <ClientsView
       key={`clients:${showing.clients.show}:${

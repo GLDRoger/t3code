@@ -27,6 +27,7 @@ import {
   SlidersHorizontalIcon,
   PaletteIcon,
   PlugIcon,
+  TrendingUpIcon,
   BrainIcon,
   SettingsIcon,
   BotIcon,
@@ -96,7 +97,8 @@ import {
 import { rememberKinTeammate } from "./kinTeammateMark";
 import { KinTeamView } from "./KinTeamView";
 import { useKinHost, useKinWorkingAgents } from "./useKinHost";
-import { useKinOwnerLevel, useKinPlaceReach } from "./useKinOwnerLevel";
+import { useKinOwnerLevel, useKinPlaceReach, useKinSeesClients } from "./useKinOwnerLevel";
+import { KinDealsSetting } from "./KinDealsSetting";
 
 const KIN_SETTINGS_TITLE = "Settings";
 
@@ -108,6 +110,7 @@ const PAGE_ICON: Record<KinSettingsPage, LucideIcon> = {
   agents: BotIcon,
   "check-ins": CalendarCheckIcon,
   connections: PlugIcon,
+  deals: TrendingUpIcon,
   memory: BrainIcon,
   company: Building2Icon,
   approvals: FingerprintIcon,
@@ -137,6 +140,7 @@ interface KinSettingsTarget {
 
 function useKinSettingsGroups(environmentId: EnvironmentId): ReadonlyArray<KinSettingsGroup> {
   const ownerLevel = useKinOwnerLevel(environmentId);
+  const deals = useKinSeesClients(environmentId);
   // The owner alone, as the host gates `kin.recommendations.*`: a co-owner sees none of it.
   const recommendations = useAtomValue(
     kinClient.recommendationAskAgain.permissionAtom(environmentId),
@@ -146,6 +150,7 @@ function useKinSettingsGroups(environmentId: EnvironmentId): ReadonlyArray<KinSe
     computer: !isChatOnlySession(),
     notifications: true,
     recommendations,
+    deals,
   });
 }
 
@@ -351,6 +356,12 @@ function KinSettingsPageBody(props: {
       return (
         <SettingsPageContainer>
           <KinConnectionsSettings />
+        </SettingsPageContainer>
+      );
+    case "deals":
+      return (
+        <SettingsPageContainer>
+          <KinDealsSetting />
         </SettingsPageContainer>
       );
     case "memory":

@@ -1,3 +1,4 @@
+import { kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
 import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_PEOPLE_CHAT, kinPeopleChatWith } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { kinAwayLine } from "@t3tools/client-runtime/kin/kinAway";
@@ -1387,6 +1388,8 @@ function KinChatFeed(props: {
               const target = { environmentId: props.environmentId, orgId: props.orgId };
               if (open.kind === "project")
                 navigation.navigate("KinProject", { ...target, project: open.key });
+              else if (kinIsDealKey(open.key))
+                navigation.navigate("KinDeal", { ...target, deal: open.key });
               else navigation.navigate("KinWorkItem", { ...target, task: open.key });
             }}
           />

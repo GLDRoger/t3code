@@ -948,14 +948,15 @@ export function kinProjectsNothing(
   };
 }
 
-/** The two views of the Clients place: who the company works with, and the work itself. */
-export type KinClientsTab = "clients" | "projects";
+/** The Clients place's views: who the company works with, what it hopes to win, and the work. */
+export type KinClientsTab = "clients" | "deals" | "projects";
 
 export const KIN_CLIENTS_TABS: ReadonlyArray<{
   readonly id: KinClientsTab;
   readonly label: string;
 }> = [
   { id: "clients", label: KIN_CLIENTS.title },
+  { id: "deals", label: "Deals" },
   { id: "projects", label: KIN_PROJECTS.title },
 ];
 

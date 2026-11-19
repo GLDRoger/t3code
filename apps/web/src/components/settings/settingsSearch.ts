@@ -39,6 +39,7 @@ export type SettingsPath =
   | "/settings/secrets"
   | "/settings/company"
   | "/settings/check-ins"
+  | "/settings/deals"
   | "/settings/kin-connections"
   | "/settings/maintenance"
   | "/settings/labs"
@@ -120,6 +121,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/secrets": msg("Secrets"),
   "/settings/company": msg("Company details"),
   "/settings/check-ins": msg("Check-ins"),
+  "/settings/deals": msg("Deals"),
   "/settings/kin-connections": msg("Connections"),
   "/settings/maintenance": msg("Maintenance"),
   "/settings/labs": msg("Labs"),
@@ -132,6 +134,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
 export const KIN_ONLY_SETTINGS_PATHS: ReadonlySet<SettingsPath> = new Set([
   "/settings/approvals",
   "/settings/check-ins",
+  "/settings/deals",
   "/settings/kin-connections",
 ]);
 
@@ -140,6 +143,7 @@ export const KIN_MOVED_SETTINGS_PATHS: ReadonlySet<SettingsPath> = new Set([
   "/settings/approvals",
   "/settings/check-ins",
   "/settings/company",
+  "/settings/deals",
   "/settings/kin-connections",
 ]);
 
@@ -187,7 +191,12 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
   },
   {
     heading: msg("Kin"),
-    paths: ["/settings/company", "/settings/check-ins", "/settings/kin-connections"],
+    paths: [
+      "/settings/company",
+      "/settings/check-ins",
+      "/settings/deals",
+      "/settings/kin-connections",
+    ],
   },
   {
     heading: msg("More"),
@@ -1338,6 +1347,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["kin schedule morning afternoon weekly brief routine time run now"],
   },
   {
+    id: "kin-deals",
+    title: "Deal stages",
+    to: "/settings/deals",
+    searchTerms: ["kin deals stages pipeline won lost sales prospect"],
+  },
+  {
     id: "network-access",
     title: "Network access",
     to: "/settings/access",
@@ -1491,6 +1506,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/secrets": null,
   "/settings/company": null,
   "/settings/check-ins": null,
+  "/settings/deals": null,
   "/settings/kin-connections": null,
   "/settings/scheduled-tasks": null,
   "/settings/maintenance": null,

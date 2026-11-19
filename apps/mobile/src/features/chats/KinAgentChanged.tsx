@@ -1,3 +1,4 @@
+import { kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
 import { formatKinWhen } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
@@ -48,6 +49,8 @@ export function KinAgentChanged(props: {
       navigation.navigate("KinClient", { ...base, party: change.key });
     else if (change.registerId === "projects")
       navigation.navigate("KinProject", { ...base, project: change.key });
+    else if (kinIsDealKey(change.key))
+      navigation.navigate("KinDeal", { ...base, deal: change.key });
     else navigation.navigate("KinWorkItem", { ...base, task: change.key });
   };
   const run = async (seq: number, done: string) => {

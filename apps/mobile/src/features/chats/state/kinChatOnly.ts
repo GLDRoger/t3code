@@ -172,6 +172,7 @@ export function installKinChatOnlyMemory(): () => void {
 }
 
 const noAccessAtom = Atom.make<KinPersonAccess | null>(null);
+const noMeAtom = Atom.make(null);
 
 /** Whether the viewer is the owner or a co-owner on this host: their own kind, from the host. */
 export function useKinOwnerLevel(
@@ -209,8 +210,10 @@ export function useKinIsOwnerLevel(environmentId: EnvironmentId): boolean {
  * Whether the viewer sees every client and may add a prospect: owner level, or Clients on. Null
  * until the host says who they are.
  */
-export function useKinSeesClients(environmentId: EnvironmentId): boolean | null {
-  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
+export function useKinSeesClients(environmentId: EnvironmentId | null): boolean | null {
+  const me = useAtomValue(
+    environmentId === null ? noMeAtom : kinAccessMeAtom(connectionAtomRuntime, environmentId),
+  );
   return me == null ? null : kinSeesClients(me);
 }
 

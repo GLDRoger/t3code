@@ -110,12 +110,26 @@ describe("kinSettingsGroups", () => {
       "agents",
       "check-ins",
       "connections",
+      "deals",
       "memory",
       "company",
       "approvals",
     ]);
     // What Kin suggested is the owner's alone: a co-owner's Company has no Recommendations.
     expect(groups("owner")[1]?.pages.at(-1)).toBe("recommendations");
+    // A teammate with Clients on reads the deal stages, and nothing else of the company's.
+    const member = kinSettingsGroups({
+      ...ROLES.member,
+      notifications: false,
+      recommendations: false,
+      deals: true,
+    });
+    expect(member.map((group) => [group.id, group.pages])).toEqual([
+      ["you", ["profile", "appearance"]],
+      ["company", ["deals"]],
+    ]);
+    expect(kinSettingsPageOf("deals", member)).toBe("deals");
+    expect(kinSettingsPageOf("deals", groups("member"))).toBe("profile");
   });
 
   it("opens a Company address only for the owner level; anything else lands on the profile", () => {
