@@ -3,7 +3,6 @@ import {
   kinInboxAttention,
   kinSwitcherDot,
   kinSwitcherLabel,
-  NO_KIN_LIST_ATTENTION,
 } from "@t3tools/client-runtime/kin/kinListSwitch";
 import { Atom } from "effect/reactivity";
 import type { ReactNode } from "react";
@@ -30,12 +29,10 @@ export function KinListSwitch(props: {
     hosted ? kinClient.inbox({ environmentId: host.environmentId, input: {} }) : noInboxAtom,
   );
   if (!hosted) return props.children(null);
-  const dot = kinSwitcherDot({
-    current: "threads",
-    kin: kinInboxAttention(inbox?._tag === "Success" ? inbox.value.value : null),
-    threads: NO_KIN_LIST_ATTENTION,
-  });
-  const label = kinSwitcherLabel({ current: "threads", dot });
+  const dot = kinSwitcherDot(
+    kinInboxAttention(inbox?._tag === "Success" ? inbox.value.value : null),
+  );
+  const label = kinSwitcherLabel(dot);
   return (
     <Pressable
       accessibilityRole="button"

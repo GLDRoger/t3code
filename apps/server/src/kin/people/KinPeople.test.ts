@@ -1857,6 +1857,238 @@ it.effect(
     }).pipe(Effect.provide(teamLayer)),
 );
 
+it.effect(
+  "a co-owner made a member, now or while removed, writes only to the agents a member was let message, and promoting again reopens the rest",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* People.KinPeople;
+      const groups = yield* Groups.KinGroups;
+      const identity = yield* KinIdentity;
+      const sql = yield* SqlClient.SqlClient;
+      const repo = yield* Repository.KinChatRepository;
+      const chats = yield* Service.KinChatService;
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const hub = yield* Hub.KinChatHub;
+      const stop = yield* Stop.KinStop;
+      const { owner } = identity;
+      const { orgId } = owner;
+      yield* pairSession(ownerSession.sessionId);
+      const stopped: Array<string> = [];
+      yield* stop.attach({
+        pause: () => Effect.void,
+        resume: () => Effect.void,
+        abort: (_org, wakeupId) => Effect.sync(() => void stopped.push(wakeupId)),
+      });
+      const lead = Effect.fn("test.lead")(function* (id: string, name: string) {
+        const agentId = KinAgentId.make(id);
+        yield* repo.insertAgent({
+          orgId,
+          agentId,
+          ownerPersonId: owner.personId,
+          displayName: name,
+          role: "lead",
+          createdAt: at,
+        });
+        const chat = yield* chats.createDirect(owner, { orgId, agentId });
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json,
+            worker_projects_json, owner_chat_id)
+          VALUES (${agentId}, ${orgId}, ${name}, 0, '{"instanceId":"codex","model":"s"}', '[]',
+            ${chat.chatId})`;
+        return agentId;
+      });
+      const finance = yield* lead("finance", "Finance");
+      const chief = yield* lead("chief", "Chief of staff");
+      const editor = { _tag: "session" as const, session: ownerSession };
+      yield* LeadProvision.setTeamAgent({ editor, orgId, agentId: chief });
+      const join = Effect.fn("test.join")(function* (displayName: string) {
+        const accepted = yield* service.accept({
+          secret: (yield* service.createInvite(ownerSession, { orgId, displayName })).secret,
+        });
+        return { _tag: "person" as const, orgId, personId: accepted.person.personId };
+      });
+      const access = (person: { readonly personId: KinPersonId }, to: "co_owner" | "member") =>
+        service.setAccess(ownerSession, { orgId, personId: person.personId, access: to });
+      const grant = { editor, orgId, agentId: finance };
+      const chatWith = (person: { readonly personId: KinPersonId }, agentId: KinAgentId) =>
+        sql<{
+          chatId: KinChatId;
+          role: string;
+          leftAt: string | null;
+        }>`SELECT c.chat_id AS "chatId",
+            m.role, m.left_at AS "leftAt"
+          FROM kin_chats c JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+            AND m.principal_kind = 'person' AND m.person_id = ${person.personId}
+          WHERE c.org_id = ${orgId} AND c.direct_key = ${`${person.personId}:${agentId}`}`.pipe(
+          Effect.map(([row]) => row!),
+        );
+
+      const seen = yield* Queue.unbounded<string>();
+      yield* Layer.build(
+        ChatWake.layer.pipe(
+          Layer.provide(
+            Layer.succeed(Hub.KinChatHub, {
+              ...hub,
+              subscribeAll: hub.subscribeAll.pipe(
+                Effect.map(
+                  Stream.tap((event) =>
+                    event.type === "message.posted"
+                      ? Queue.offer(seen, event.message.messageId)
+                      : Effect.void,
+                  ),
+                ),
+              ),
+            }),
+          ),
+        ),
+      );
+      let sends = 0;
+      const send = (who: typeof owner, chatId: KinChatId) =>
+        chats.send(who, {
+          chatId,
+          body: `Invented-${++sends}`,
+          mentions: [],
+          clientMessageId: `send-${sends}`,
+        });
+      const say = Effect.fn("test.say")(function* (who: typeof owner, chatId: KinChatId) {
+        const message = yield* send(who, chatId);
+        const marker = KinMessageId.make(`marker-${sends}`);
+        yield* hub.publish({
+          type: "message.posted",
+          orgId,
+          message: { ...message, messageId: marker, author: { _tag: "system" }, kind: "system" },
+        });
+        while ((yield* Queue.take(seen)) !== marker);
+        return message.messageId;
+      });
+      const state = (messageId: KinMessageId) =>
+        sql<{ state: string }>`SELECT state FROM kin_events
+          WHERE json_extract(json, '$.messageId') = ${messageId}`.pipe(
+          Effect.map((rows) => rows.map((row) => row.state)),
+        );
+      let wakeups = 0;
+      const wake = Effect.fn("test.wake")(function* () {
+        const wakeupId = KinWakeupId.make(`wakeup-${++wakeups}`);
+        yield* TestClock.adjust(20_000);
+        yield* Effect.scoped(queue.claim({ orgId, agentId: finance, wakeupId, model: "test" }));
+        return wakeupId;
+      });
+
+      // Granted, made co-owner, the grant removed, then made a member again; and never granted.
+      const meera = yield* join("Meera");
+      yield* LeadProvision.allow({ ...grant, personId: meera.personId });
+      yield* access(meera, "co_owner");
+      yield* LeadProvision.disallow({ ...grant, personId: meera.personId });
+      const dev = yield* join("Dev");
+      yield* access(dev, "co_owner");
+      for (const person of [meera, dev]) {
+        const { chatId } = yield* chatWith(person, finance);
+        const asked = yield* say(person, chatId);
+        const running = yield* wake();
+        const waiting = yield* say(person, chatId);
+        assert.deepStrictEqual(yield* state(asked), ["claimed"]);
+        assert.deepStrictEqual(yield* state(waiting), ["queued"]);
+
+        yield* access(person, "member");
+        assert.include(yield* chatWith(person, finance), { role: "guest", leftAt: null });
+        assert.propertyVal(yield* send(person, chatId).pipe(Effect.flip), "reason", "not_allowed");
+        assert.include(stopped, running);
+        yield* queue.finish({ orgId, wakeupId: running, status: "completed" });
+        assert.deepStrictEqual(yield* state(asked), ["expired"]);
+        assert.deepStrictEqual(yield* state(waiting), ["expired"]);
+        // The team agent is everyone's.
+        assert.include(yield* chatWith(person, chief), { role: "member", leftAt: null });
+
+        // Made a co-owner again: the same chat, open again.
+        yield* access(person, "co_owner");
+        assert.deepStrictEqual(yield* chatWith(person, finance), {
+          chatId,
+          role: "member",
+          leftAt: null,
+        });
+        yield* access(person, "member");
+      }
+      // Granted again: open again.
+      yield* LeadProvision.allow({ ...grant, personId: meera.personId });
+      assert.include(yield* chatWith(meera, finance), { role: "member", leftAt: null });
+
+      // A live grant of their own keeps it open.
+      const zoya = yield* join("Zoya");
+      yield* LeadProvision.allow({ ...grant, personId: zoya.personId });
+      yield* access(zoya, "co_owner");
+      yield* access(zoya, "member");
+      const kept = yield* chatWith(zoya, finance);
+      assert.include(kept, { role: "member", leftAt: null });
+      yield* say(zoya, kept.chatId);
+
+      // Removed, the level edited while away, then let back in by a new link.
+      const ops = yield* lead("ops", "Operations");
+      const away = Effect.fn("test.away")(function* (
+        person: { readonly personId: KinPersonId },
+        displayName: string,
+        levels: ReadonlyArray<"co_owner" | "member">,
+      ) {
+        yield* service.removeAccess(ownerSession, { orgId, personId: person.personId });
+        for (const level of levels) yield* access(person, level);
+        yield* service.accept({
+          secret: (yield* service.createInvite(ownerSession, {
+            orgId,
+            displayName,
+            personId: person.personId,
+          })).secret,
+        });
+      });
+      const writable = Effect.fn("test.writable")(function* (
+        person: typeof owner,
+        agentId: KinAgentId,
+      ) {
+        const chat = yield* chatWith(person, agentId);
+        assert.include(chat, { role: "member", leftAt: null });
+        yield* send(person, chat.chatId);
+      });
+      // A co-owner with no grant for Finance comes back a member, as a member.
+      const arjun = yield* join("Arjun");
+      yield* LeadProvision.allow({ editor, orgId, agentId: ops, personId: arjun.personId });
+      yield* access(arjun, "co_owner");
+      const arjunFinance = (yield* chatWith(arjun, finance)).chatId;
+      yield* send(arjun, arjunFinance);
+      yield* away(arjun, "Arjun", ["member"]);
+      assert.include(yield* chatWith(arjun, finance), { role: "guest", leftAt: null });
+      assert.propertyVal(
+        yield* send(arjun, arjunFinance).pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
+      yield* writable(arjun, chief);
+      yield* writable(arjun, ops);
+      yield* access(arjun, "co_owner");
+      yield* writable(arjun, finance);
+      // Back unchanged, a co-owner has everything back.
+      yield* away(arjun, "Arjun", []);
+      for (const agentId of [finance, chief, ops]) yield* writable(arjun, agentId);
+      // Edited to member and back to co-owner while away: back a co-owner.
+      const ravi = yield* join("Ravi");
+      yield* access(ravi, "co_owner");
+      yield* send(ravi, (yield* chatWith(ravi, finance)).chatId);
+      yield* away(ravi, "Ravi", ["member", "co_owner"]);
+      for (const agentId of [finance, chief, ops]) yield* writable(ravi, agentId);
+      // A member's chat held through a shared group comes back as it was, however the level
+      // was edited while away: the level they were removed at is the one that counts.
+      const mira = yield* join("Mira");
+      yield* groups.create([owner], {
+        orgId,
+        title: "Invented close",
+        agentIds: [finance],
+        personIds: [mira.personId],
+      });
+      yield* chats.createDirect(mira, { orgId, agentId: finance });
+      yield* send(mira, (yield* chatWith(mira, finance)).chatId);
+      yield* away(mira, "Mira", []);
+      yield* writable(mira, finance);
+      yield* away(mira, "Mira", ["co_owner", "member"]);
+      yield* writable(mira, finance);
+    }).pipe(Effect.provide(teamLayer)),
+);
+
 const withRecords = People.layer.pipe(
   Layer.provideMerge(Records.layer),
   Layer.provideMerge(Service.layer),

@@ -57,9 +57,29 @@ it.effect("a promise to tell someone stands only when the turn told them", () =>
     assert.strictEqual(yield* unkeptPromise(wake), "Ishaan");
     yield* say(3, "I'll ask Ishaan whether 1 February works.");
     assert.strictEqual(yield* unkeptPromise(wake), "Ishaan");
-    // The relay that carried it keeps the promise, held through his quiet hours or posted.
+    // A question with a default to someone else, safe or not, leaves the promise to Ishaan unkept.
     yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
       VALUES ('owner-chat', ${orgId}, 'direct', 'ishaan:chief', 0, ${at})`;
+    const ask = (person: string, chat: string) =>
+      sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id, kind,
+          question, default_label, safe, asked_at, due_at, act_at, state)
+        VALUES (${`q-${person}`}, ${orgId}, ${chief}, ${person}, ${chat}, 'card',
+          'Invented: which name stands?', 'Yours', 0, ${Date.parse(at)},
+          ${Date.parse(at) + 86_400_000}, ${Date.parse(at) + 86_400_000}, 'open')`;
+    yield* ask("zoya", "zoya-chat");
+    assert.strictEqual(yield* unkeptPromise(wake), "Ishaan");
+    yield* sql`UPDATE kin_questions SET safe = 1`;
+    assert.strictEqual(yield* unkeptPromise(wake), "Ishaan");
+    // His own question keeps it only while it is open with a default Kin will take.
+    yield* ask("ishaan", "owner-chat");
+    yield* sql`UPDATE kin_questions SET safe = 0 WHERE person_id = 'ishaan'`;
+    assert.strictEqual(yield* unkeptPromise(wake), "Ishaan");
+    yield* sql`UPDATE kin_questions SET safe = 1 WHERE person_id = 'ishaan'`;
+    assert.isUndefined(yield* unkeptPromise(wake));
+    yield* sql`UPDATE kin_questions SET state = 'answered' WHERE person_id = 'ishaan'`;
+    assert.strictEqual(yield* unkeptPromise(wake), "Ishaan");
+    yield* sql`DELETE FROM kin_questions`;
+    // The relay that carried it keeps the promise, held through his quiet hours or posted.
     yield* sql`INSERT INTO kin_held_posts (hold_id, org_id, chat_id, person_id, kind, body,
         audience, held_at, deliver_at, waits)
       VALUES ('held', ${orgId}, 'owner-chat', 'ishaan', ${`${relayPrefix("wake")}ishaan`},

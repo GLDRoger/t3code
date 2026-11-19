@@ -5,6 +5,8 @@ import * as TaskCardUpdater from "./chat/TaskCardUpdater.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as KinEnabled from "./KinEnabled.ts";
+import * as HostPolicy from "./hostPolicy.ts";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -70,6 +72,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
         closeSubject(subject, chat).pipe(Effect.provide(services)),
       );
       const { owner } = yield* KinIdentity;
+      yield* HostPolicy.check();
       // A failed seed leaves Kin running; the next start tries the missing ones again.
       yield* seedPlaybooks(owner.orgId, owner.personId).pipe(
         Effect.provide(services),
@@ -194,6 +197,8 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
     ),
     // Inside `enabled`: built only with Kin on, and a secret store failure disables Kin, not the server.
     Layer.provide(seal),
+    // The server's own instance: layers are shared by reference.
+    Layer.provide(ManagedPolicy.layer),
   );
 const disabled = Layer.succeed(KinServer, {
   taskCardUpdater: Layer.empty,

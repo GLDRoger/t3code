@@ -264,7 +264,7 @@ export const tellDeclined = Effect.fn("KinDefaultTaken.tellDeclined")(function* 
   chat: Pick<KinChatService["Service"], "notice">,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const { orgId, personId, chatId } = input;
+  const { orgId, personId } = input;
   const sees = yield* seesFor(orgId, personId);
   const [shown] =
     input.recordId === undefined
@@ -272,7 +272,47 @@ export const tellDeclined = Effect.fn("KinDefaultTaken.tellDeclined")(function* 
       : yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
           WHERE r.org_id = ${orgId} AND r.record_id = ${input.recordId} AND ${sees}`;
   const body = `I didn't go with ${quoted(input.label, 60)}: ${shown?.key ?? "it"} changed since I asked. Tell me what you'd like.`;
-  const messageId = KinMessageId.make(`kin-default-declined:${input.questionId}`);
+  yield* askerSays(
+    { ...input, messageId: KinMessageId.make(`kin-default-declined:${input.questionId}`), body },
+    chat,
+  );
+});
+
+/**
+ * A question raised again with too few choices still holding and no card left open: it closes,
+ * and its person hears once, from the asker in their chat, why.
+ */
+export const tellWithdrawn = Effect.fn("KinDefaultTaken.tellWithdrawn")(function* (
+  input: {
+    readonly orgId: KinOrgId;
+    readonly questionId: string;
+    readonly agentId: KinAgentId;
+    readonly personId: KinPersonId;
+    readonly chatId: KinChatId;
+    readonly question: string;
+  },
+  chat: Pick<KinChatService["Service"], "notice">,
+) {
+  const body = `I've closed my question ${quoted(input.question, 80)}: its choices changed since I asked. Tell me what you'd like.`;
+  yield* askerSays(
+    { ...input, messageId: KinMessageId.make(`kin-question-withdrawn:${input.questionId}`), body },
+    chat,
+  );
+});
+
+/** One line from the asker in the person's chat, held through quiet hours and away. */
+const askerSays = Effect.fn("KinDefaultTaken.askerSays")(function* (
+  input: {
+    readonly orgId: KinOrgId;
+    readonly agentId: KinAgentId;
+    readonly personId: KinPersonId;
+    readonly chatId: KinChatId;
+    readonly messageId: KinMessageId;
+    readonly body: string;
+  },
+  chat: Pick<KinChatService["Service"], "notice">,
+) {
+  const { orgId, personId, chatId, messageId, body } = input;
   const held = yield* holdFor({ orgId, personId, chatId });
   if (held !== undefined)
     return yield* holdLine({

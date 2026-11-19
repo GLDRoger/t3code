@@ -53,7 +53,7 @@ import {
   repeats,
   unsafeDefault,
 } from "./rules.ts";
-import { TAKEN_KEY, tellDeclined, tellTaken } from "./defaultTaken.ts";
+import { TAKEN_KEY, tellDeclined, tellTaken, tellWithdrawn } from "./defaultTaken.ts";
 
 export type QuestionState = "open" | "answered" | "default_taken" | "withdrawn";
 export type QuestionRow = {
@@ -1302,11 +1302,11 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
   if (moved.length === 0 || row.options.length < 2) return moved.length > 0;
   if (agent === undefined || agent.threadId === null) return true;
   // An option that runs an action is drawn again, as a new card's; one that no longer holds is
-  // left off, and a default left off leaves the raised card with none.
-  const sealed =
-    row.widgetId === null ? new Map<string, CardPlan>() : yield* plansOf(orgId, row.widgetId);
-  const acting =
-    row.widgetId === null ? new Set<string>() : yield* sealedOptions(orgId, row.widgetId);
+  // left off, and a default left off leaves the raised card with none. The stored options are
+  // the last card's, so their seals are too.
+  const last = row.raiseWidgetId ?? row.widgetId;
+  const sealed = last === null ? new Map<string, CardPlan>() : yield* plansOf(orgId, last);
+  const acting = last === null ? new Set<string>() : yield* sealedOptions(orgId, last);
   const offered: Array<{
     readonly label: string;
     readonly drawn?: Effect.Success<ReturnType<typeof CardActions.redraw>>;
@@ -1325,9 +1325,31 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
   if (defaultLabel !== row.defaultLabel)
     yield* sql`UPDATE kin_questions SET default_label = ${defaultLabel}
       WHERE org_id = ${orgId} AND question_id = ${row.questionId}`;
-  // Too few left for a card: the first card stays open, each tap on it checked as it runs. A
-  // default left off is said once, so it is raised only once its person has heard.
+  // Too few left for a card: the last card stays open, each tap on it checked as it runs. A
+  // default left off is said once, so it is raised only once its person has heard. With no card
+  // open (a retirement closed it), nothing is left to tap: the question closes, saying why.
   if (offered.length < 2) {
+    const [open] =
+      last === null
+        ? []
+        : yield* sql`SELECT 1 FROM kin_widgets
+            WHERE org_id = ${orgId} AND widget_id = ${last} AND closed_at IS NULL`;
+    if (open === undefined) {
+      yield* sql`UPDATE kin_questions SET state = 'withdrawn', closed_at = ${now}
+        WHERE org_id = ${orgId} AND question_id = ${row.questionId} AND state = 'open'`;
+      yield* tellWithdrawn(
+        {
+          orgId,
+          questionId: row.questionId,
+          agentId: row.agentId,
+          personId: row.personId,
+          chatId: row.chatId,
+          question: row.question,
+        },
+        chat,
+      );
+      return true;
+    }
     if (row.defaultLabel !== null && defaultLabel === null) {
       const option = row.options.find((one) => one.label === row.defaultLabel);
       const plan = option === undefined ? undefined : sealed.get(option.optionId);
@@ -1371,7 +1393,8 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
     {
       ...asked,
       chatId: row.chatId,
-      clientMessageId: `kin-question-raise:${row.questionId}`,
+      // Keyed on the card it replaces: a reopened question's raise draws anew, a retry finds its own.
+      clientMessageId: `kin-question-raise:${row.questionId}${row.raiseWidgetId === null ? "" : `:${row.raiseWidgetId}`}`,
       ...(row.forChatId === null ? {} : { forChat: true as const }),
     },
   );
