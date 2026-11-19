@@ -18,10 +18,9 @@ const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 /**
- * Who a wake-up's reply said it would tell, ask or pass something to, when nothing in the turn
- * did: no relay, nudge, reminder, hand-off, assignment notice or post in another chat. Someone
- * in the chat itself is the reader, so a promise to them is no hand-over. Else another agent it
- * said would act, with no hand-off to that agent this turn.
+ * Who a reply said it would tell, ask or pass something to, when nothing in the turn did: no relay,
+ * nudge, reminder, question with a default (its day wakes the agent), hand-off, assignment notice
+ * or post elsewhere. Someone in the chat reads it already. Else an agent said to act, not handed it.
  */
 export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wake: {
   readonly orgId: KinOrgId;
@@ -93,6 +92,9 @@ export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wak
       AND agent_id = ${wake.agentId} AND sent_at >= ${wake.startedAt}
     UNION ALL SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${wake.orgId}
       AND wakeup_id = ${wake.wakeupId} AND substr(call_key, 1, 9) = 'item:def-'
+    UNION ALL SELECT 1 FROM kin_questions WHERE org_id = ${wake.orgId}
+      AND agent_id = ${wake.agentId} AND asked_at >= ${wake.startedAt}
+      AND default_label IS NOT NULL
     UNION ALL SELECT 1 FROM kin_handoffs WHERE org_id = ${wake.orgId}
       AND from_agent_id = ${wake.agentId} AND created_at >= ${wake.startedAt}
       AND (route_state IS NULL OR route_state = 'passed')

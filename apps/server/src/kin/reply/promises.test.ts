@@ -57,6 +57,16 @@ it.effect("a promise to tell someone stands only when the turn told them", () =>
     assert.strictEqual(yield* unkeptPromise(wake), "Ishaan");
     yield* say(3, "I'll ask Ishaan whether 1 February works.");
     assert.strictEqual(yield* unkeptPromise(wake), "Ishaan");
+    // N3: a promise riding on a question's default is kept on its day, when the default wakes it.
+    yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id, kind,
+        question, default_label, safe, asked_at, due_at, act_at, state)
+      VALUES ('q', ${orgId}, ${chief}, 'zoya', 'zoya-chat', 'card', 'Invented: which name stands?',
+        NULL, 0, ${Date.parse(at)}, ${Date.parse(at) + 86_400_000}, ${Date.parse(at) + 86_400_000},
+        'open')`;
+    assert.strictEqual(yield* unkeptPromise(wake), "Ishaan");
+    yield* sql`UPDATE kin_questions SET default_label = 'Yours'`;
+    assert.isUndefined(yield* unkeptPromise(wake));
+    yield* sql`DELETE FROM kin_questions`;
     // The relay that carried it keeps the promise, held through his quiet hours or posted.
     yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
       VALUES ('owner-chat', ${orgId}, 'direct', 'ishaan:chief', 0, ${at})`;
