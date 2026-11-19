@@ -4,7 +4,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Types from "effect/Types";
 import * as Option from "effect/Option";
-import * as SqlClient from "effect/sql/SqlClient";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { parseBearerToken } from "../../auth/EnvironmentAuth.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
@@ -14,7 +13,7 @@ import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as AgentSession from "../lead/AgentSession.ts";
 import * as KinLead from "../lead/layer.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
-import { KinServer, type Services } from "../KinServer.ts";
+import { KinServer } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
 import * as KinConnectionsMcp from "../connections/mcp.ts";
@@ -86,17 +85,7 @@ export const endpoint = <A, E, R>(registrations: Layer.Layer<A, E, R>) =>
     Layer.provide(auth),
   );
 
-/** T3's own `/mcp` on a Kin server: T3's, with a lead's delegated tasks held to the lead's tools. */
-const t3Endpoint = (services: Context.Context<Services>) =>
-  McpHttpServer.layerMcpTransport(
-    Layer.mergeAll(
-      McpHttpServer.layerTools,
-      AgentSession.workerListing(Context.get(services, SqlClient.SqlClient)),
-      KinToolGate.workers(services),
-    ),
-  );
-
-/** With Kin off, `/mcp` is `base`, T3's own. */
+/** `/mcp` is always `base`, T3's own; with Kin on, under Kin's policy for a lead's delegated tasks. */
 export const transport = (base: typeof McpHttpServer.layer) =>
   Layer.unwrap(
     Effect.gen(function* () {
@@ -105,7 +94,14 @@ export const transport = (base: typeof McpHttpServer.layer) =>
       // T3's own tools are served here too, shown to a lead only as `AgentSession` allows:
       // never scheduling or thread-launch tools, which would start work outside Kin's chats.
       return Layer.merge(
-        t3Endpoint(kin.services.value),
+        base.pipe(
+          Layer.provide(
+            Layer.succeed(
+              McpHttpServer.McpToolPolicy,
+              KinToolGate.workerPolicy(kin.services.value),
+            ),
+          ),
+        ),
         endpoint(
           Layer.mergeAll(
             McpHttpServer.layerTools,

@@ -21,10 +21,10 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
-import { McpServer } from "effect/ai";
+import { McpServer, Tool, Toolkit } from "effect/ai";
 import { KinAgentSessions } from "./layer.ts";
 import * as KinIssuedTokens from "./KinIssuedTokens.ts";
-import { TASK_LIMIT_REFUSAL, WORKER_REFUSAL } from "./KinToolGate.ts";
+import { REMOTE_REFUSAL, TASK_LIMIT_REFUSAL, WORKER_REFUSAL } from "./KinToolGate.ts";
 import { OUTSIDE_REFUSAL, OUTSIDE_TOOLS } from "../lead/OutsideContent.ts";
 import { SHARED_REFUSAL } from "../lead/Audience.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
@@ -54,6 +54,8 @@ import {
 } from "effect/http";
 import * as NetAddress from "effect/net/NetAddress";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
+import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
+import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as McpSessions from "../../mcp/McpSessionRegistry.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
@@ -116,6 +118,25 @@ const OUTSIDE_THE_WORK = [
 /** Listed only with linked environments on, which this server has off. */
 const OUTSIDE_THE_WORK_UNLISTED = ["t3_environment_link"];
 const SCHEDULED_TASKS_REACHED = "Invented: the scheduled-task service was reached";
+/** What reached another machine: a forwarded call, or a task sent there. */
+const forwarded: Array<string> = [];
+const forwardedTo = (what: string) =>
+  Effect.sync(() => forwarded.push(what)).pipe(Effect.andThen(Effect.die(`forwarded ${what}`)));
+/** A tool T3 adds to its own composition after Kin's policy was written. */
+const LaterToolkit = Toolkit.make(
+  Tool.make("t3_added_later", {
+    description: "Invented: a tool T3 adds later.",
+    success: Schema.Struct({ ran: Schema.String }),
+    failure: OrchestratorMcpFailure,
+    failureMode: "return",
+  }),
+);
+const t3Composition = McpHttpServer.toolkitRegistration(
+  LaterToolkit,
+  McpToolAccess.toLayer(LaterToolkit, {
+    t3_added_later: McpToolAccess.reads(() => Effect.succeed({ ran: "ran" })),
+  }),
+).pipe(Layer.provideMerge(McpHttpServer.layer));
 const serverConfig = ServerConfig.layerTest(process.cwd(), { prefix: "t3-agent-context-budget-" });
 const toolHandlerServices = Layer.mergeAll(
   VcsProcess.layer,
@@ -127,7 +148,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ManagedProjectFolders)({ namedProjectsRoot: "" }),
   Layer.mock(McpProviderSessions)({}),
   Layer.mock(OrchestrationEventStore)({}),
-  Layer.mock(PeerForwarding)({}),
+  Layer.mock(PeerForwarding)({ call: () => forwardedTo("call") }),
   Layer.mock(EnvironmentThemeService)({}),
   Layer.mock(IssueService)({}),
   Layer.mock(ThreadIssueService)({}),
@@ -147,7 +168,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ProviderRegistry)({}),
   Layer.mock(PullRequestReviewGuideService)({}),
   Layer.mock(PullRequestService)({}),
-  Layer.mock(RemoteDelegation)({}),
+  Layer.mock(RemoteDelegation)({ delegate: () => forwardedTo("delegate") }),
   Layer.mock(RepositoryIdentityResolver)({}),
   Layer.mock(ScheduledTaskService)({
     list: () => Effect.die(SCHEDULED_TASKS_REACHED),
@@ -193,7 +214,7 @@ it.effect.each([true, false])(
             >
           >();
         const routes = Layer.merge(
-          Kin.mcpLayer(McpHttpServer.layer),
+          Kin.mcpLayer(t3Composition),
           Layer.effectDiscard(
             Effect.context<
               | Kin.KinServer
@@ -255,11 +276,12 @@ it.effect.each([true, false])(
           params: unknown,
           session?: string,
           extra: Record<string, string> = {},
+          server = http,
         ) =>
           Effect.gen(function* () {
             const sent = yield* Deferred.make<HttpServerResponse.HttpServerResponse>();
             // A streamed answer (`tool_search`'s SSE) is read while its request is still open.
-            yield* HttpEffect.toHandled(http, (_request, response) =>
+            yield* HttpEffect.toHandled(server, (_request, response) =>
               (response.body._tag === "Stream"
                 ? Effect.promise(() => HttpServerResponse.toWeb(response).text()).pipe(
                     Effect.map((body) =>
@@ -305,18 +327,32 @@ it.effect.each([true, false])(
           path: string,
           token: string,
           extra: Record<string, string> = {},
+          server = http,
         ) {
-          const session = (yield* request(path, token, "initialize", initialize, undefined, extra))
-            .headers["mcp-session-id"];
+          const session = (yield* request(
+            path,
+            token,
+            "initialize",
+            initialize,
+            undefined,
+            extra,
+            server,
+          )).headers["mcp-session-id"];
           return {
-            list: request(path, token, "tools/list", {}, session, extra).pipe(
+            list: request(path, token, "tools/list", {}, session, extra, server).pipe(
               Effect.flatMap(bodyOf),
               Effect.map((body) => decodeToolList(body).result.tools.map((tool) => tool.name)),
             ),
             call: (name: string, args: unknown) =>
-              request(path, token, "tools/call", { name, arguments: args }, session, extra).pipe(
-                Effect.flatMap(bodyOf),
-              ),
+              request(
+                path,
+                token,
+                "tools/call",
+                { name, arguments: args },
+                session,
+                extra,
+                server,
+              ).pipe(Effect.flatMap(bodyOf)),
           };
         });
         if (Option.isNone(kin.services)) {
@@ -340,9 +376,9 @@ it.effect.each([true, false])(
               .status,
             200,
           );
-          // Without Kin, `/mcp` is T3's own.
+          // Without Kin, `/mcp` is T3's own, with whatever T3 adds to it.
           const plain = yield* open("/mcp", issued.config.authorizationHeader);
-          assert.includeMembers(yield* plain.list, OUTSIDE_THE_WORK);
+          assert.includeMembers(yield* plain.list, [...OUTSIDE_THE_WORK, "t3_added_later"]);
           assert.notInclude(yield* plain.call("list_scheduled_tasks", {}), WORKER_REFUSAL);
           return;
         }
@@ -408,6 +444,27 @@ it.effect.each([true, false])(
         assert.includeMembers(toolNames, ["kin_chat_read", "delegate_task"]);
         for (const name of ["schedule_task", "t3_thread_launch", "create_threads"])
           assert.notInclude(toolNames, name);
+        // Nothing a lead asks for goes to another machine, where Kin's checks don't follow it.
+        const leadCall = (name: string, args: unknown) =>
+          request(
+            "/kin/mcp",
+            issued.config.authorizationHeader,
+            "tools/call",
+            { name, arguments: args },
+            initialized.headers["mcp-session-id"],
+          ).pipe(Effect.flatMap(bodyOf));
+        const elsewhere = [
+          ["delegate_task", { task: "Invented: tidy the docs", target: { environmentId: "vps" } }],
+          ["t3_thread_send", { environmentId: "vps", threadId: "remote-thread", message: "Go" }],
+        ] as const;
+        const before = forwarded.length;
+        for (const [name, args] of elsewhere)
+          assert.include(yield* leadCall(name, args), REMOTE_REFUSAL, name);
+        assert.strictEqual(forwarded.length, before);
+        assert.notInclude(
+          yield* leadCall("t3_thread_read", { environmentId: "environment", threadId }),
+          REMOTE_REFUSAL,
+        );
         // Without the owner's GitHub login, its GitHub tools could only say it isn't connected.
         const kinGitHub = Object.keys(KinLeadToolkit.tools).filter((name) =>
           name.startsWith("kin_github_"),
@@ -519,8 +576,61 @@ it.effect.each([true, false])(
         const workerIssued = yield* issueFor("worker-thread");
         assert.strictEqual(workerIssued.config.endpoint, "http://127.0.0.1:43123/mcp");
         const plain = yield* open("/mcp", ordinary.config.authorizationHeader);
-        assert.includeMembers(yield* plain.list, OUTSIDE_THE_WORK);
+        // A thread no lead's tree holds gets T3's endpoint exactly, with what T3 adds later: the
+        // same list, calls and search as with Kin off.
+        const kinOff = yield* HttpRouter.toHttpEffect(
+          t3Composition.pipe(
+            Layer.provide(
+              Layer.succeed(McpSessions.McpSessionRegistry, registry).pipe(
+                Layer.merge(Layer.succeed(OrchestratorV2, Context.get(services, OrchestratorV2))),
+                Layer.merge(
+                  Layer.succeed(SqlClient.SqlClient, Context.get(services, SqlClient.SqlClient)),
+                ),
+              ),
+            ),
+            Layer.provide(toolHandlerServices),
+            Layer.provide(
+              Layer.mock(HttpServer.HttpServer)({
+                address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43123),
+              }),
+            ),
+          ),
+        );
+        const plainOff = yield* open("/mcp", ordinary.config.authorizationHeader, {}, kinOff);
+        // Registration order differs between two builds, never the tools.
+        assert.sameMembers(yield* plain.list, yield* plainOff.list);
+        assert.includeMembers(yield* plain.list, [...OUTSIDE_THE_WORK, "t3_added_later"]);
+        assert.include(yield* plain.call("t3_added_later", {}), '"ran":"ran"');
+        assert.deepStrictEqual(
+          yield* plain.call("t3_added_later", {}),
+          yield* plainOff.call("t3_added_later", {}),
+        );
         assert.notInclude(yield* plain.call("list_scheduled_tasks", {}), WORKER_REFUSAL);
+        const deferred = { "t3-tool-exposure": "deferred" };
+        const query = { query: "schedule_task request_secret create_threads t3_added_later" };
+        const plainFound = yield* (yield* open(
+          "/mcp",
+          ordinary.config.authorizationHeader,
+          deferred,
+        )).call("tool_search", query);
+        assert.include(plainFound, "t3_added_later");
+        assert.strictEqual(
+          plainFound,
+          yield* (yield* open("/mcp", ordinary.config.authorizationHeader, deferred, kinOff)).call(
+            "tool_search",
+            query,
+          ),
+        );
+        // And it still sends work to a linked machine as T3 does.
+        const sent = forwarded.length;
+        assert.notInclude(
+          yield* plain.call("delegate_task", {
+            task: "Invented: tidy the docs",
+            target: { environmentId: "vps" },
+          }),
+          REMOTE_REFUSAL,
+        );
+        assert.deepStrictEqual(forwarded.slice(sent), ["delegate"]);
         for (const issuedTo of [workerIssued, yield* issueFor("nested-thread")]) {
           const names = yield* (yield* open("/mcp", issuedTo.config.authorizationHeader)).list;
           assert.includeMembers(names, [
@@ -531,7 +641,7 @@ it.effect.each([true, false])(
             "link_pull_request",
             "watch_pull_request",
           ]);
-          for (const name of [...OUTSIDE_THE_WORK, ...OUTSIDE_THE_WORK_UNLISTED])
+          for (const name of [...OUTSIDE_THE_WORK, ...OUTSIDE_THE_WORK_UNLISTED, "t3_added_later"])
             assert.notInclude(names, name);
           assert.includeMembers([...LEAD_T3_TOOLS], names);
         }
@@ -541,6 +651,7 @@ it.effect.each([true, false])(
           ["list_scheduled_tasks", {}],
           ["request_secret", { label: "Invented key", reason: "Invented" }],
           ["t3_thread_launch", { message: "Invented" }],
+          ["t3_added_later", {}],
         ] as const) {
           const answer = yield* worker.call(name, args);
           assert.include(answer, WORKER_REFUSAL, name);
@@ -550,15 +661,25 @@ it.effect.each([true, false])(
           yield* worker.call("t3_thread_read", { threadId: "lead-thread" }),
           WORKER_REFUSAL,
         );
+        // Nor does anything a worker asks for.
+        const workerBefore = forwarded.length;
+        for (const [name, args] of elsewhere)
+          assert.include(yield* worker.call(name, args), REMOTE_REFUSAL, name);
+        assert.strictEqual(forwarded.length, workerBefore);
+        assert.notInclude(
+          yield* worker.call("t3_thread_read", { environmentId: "environment", threadId }),
+          REMOTE_REFUSAL,
+        );
         // Its search finds only what it may call, and a deferring session then lists that.
         const deferring = yield* open("/mcp", workerIssued.config.authorizationHeader, {
           "t3-tool-exposure": "deferred",
         });
         const found = yield* deferring.call("tool_search", {
-          query: "t3_thread_read schedule_task request_secret create_threads",
+          query: "t3_thread_read schedule_task request_secret create_threads t3_added_later",
         });
         assert.include(found, "t3_thread_read");
-        for (const name of OUTSIDE_THE_WORK) assert.notInclude(found, `"${name}"`);
+        for (const name of [...OUTSIDE_THE_WORK, "t3_added_later"])
+          assert.notInclude(found, `"${name}"`);
         assert.include(yield* deferring.list, "t3_thread_read");
         // Its own tasks count against the owner's daily limit, as the lead's do.
         const budget = Context.get(kin.services.value, KinBudget);

@@ -2,10 +2,11 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
-import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
+import { McpInvocationContext, type McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import { KinServer, type Services } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { SHARED_REFUSAL } from "../lead/Audience.ts";
@@ -26,6 +27,22 @@ export const TASK_LIMIT_REFUSAL =
 
 /** What a task delegated from a lead reads when it calls a T3 tool its lead doesn't get. */
 export const WORKER_REFUSAL = "That tool isn't part of this work.";
+
+/** What a lead, or a task it delegated, reads when a call names another machine. */
+export const REMOTE_REFUSAL =
+  "Kin's work stays on this server, so this call can't go to another machine; leave out environmentId to delegate or do it here.";
+
+/** Whether a call names another machine: its `environmentId`, or `delegate_task`'s `target.environmentId`. */
+const namesOtherMachine = Effect.fnUntraced(function* (args: unknown) {
+  const here = Option.getOrUndefined(
+    yield* Effect.serviceOption(McpInvocationContext),
+  )?.environmentId;
+  const target = Predicate.hasProperty(args, "target") ? args.target : undefined;
+  return [
+    Predicate.hasProperty(args, "environmentId") ? args.environmentId : undefined,
+    Predicate.hasProperty(target, "environmentId") ? target.environmentId : undefined,
+  ].some((environmentId) => environmentId !== undefined && environmentId !== here);
+});
 
 export const taskAdmitted: Check = Effect.fn("KinToolGate.taskAdmitted")(
   function* (turn, tool) {
@@ -106,55 +123,71 @@ const turnEvents = McpHttpServer.toolCallPrepare(
   ),
 );
 
+const kinChecks = [
+  [toolAdmitted, SHARED_REFUSAL],
+  [outsideToolAllowed, OUTSIDE_REFUSAL],
+  [taskAdmitted, TASK_LIMIT_REFUSAL],
+] as const;
+
 /**
- * The calls on T3's own endpoint from a task delegated, at any depth, from a lead: only its lead's
- * T3 tools, each through the checks a call from the turn that asked for it passes
- * (`delegatedTurn`, as its shell follows). Every other thread's calls pass untouched.
+ * Kin's policy for T3's own endpoint. A task delegated, at any depth, from a lead (or one whose
+ * lineage can't be read) lists, finds and may call only its lead's T3 tools, never on another
+ * machine, each through the checks a call from the turn that asked for it passes
+ * (`delegatedTurn`, as its shell follows). Every other thread's list and calls are T3's.
  */
-export const workers = (services: Context.Context<Services>) => {
+export const workerPolicy = (services: Context.Context<Services>) => {
   const sql = Context.get(services, SqlClient.SqlClient);
-  const lineage = Effect.gen(function* () {
-    const thread = Option.getOrUndefined(yield* Effect.serviceOption(McpInvocationContext))?.thread;
-    if (thread === undefined) return { delegated: false, turn: undefined };
-    return yield* delegatedTurn(thread.threadId).pipe(
-      Effect.provideService(SqlClient.SqlClient, sql),
-    );
+  // Per token: a thread's lineage is written before its session's token is issued.
+  const known = new WeakMap<object, boolean>();
+  const lineage = (thread: McpThreadCaller | undefined) =>
+    thread === undefined
+      ? Effect.succeed({ lineage: "ordinary", delegated: false, turn: undefined } as const)
+      : delegatedTurn(thread.threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+  const caller = Effect.map(Effect.serviceOption(McpInvocationContext), Option.getOrUndefined);
+  const isWorker = Effect.gen(function* () {
+    const scope = yield* caller;
+    const cached = scope === undefined ? undefined : known.get(scope);
+    if (cached !== undefined) return cached;
+    const found = yield* lineage(scope?.thread);
+    // A lookup that failed may succeed next time.
+    if (scope !== undefined && found.lineage !== "unresolved") known.set(scope, found.delegated);
+    return found.delegated;
   });
-  const refusing = Effect.catchCause((cause) =>
-    Effect.logWarning("Kin worker tool gate failed; refusing", { cause }).pipe(Effect.as(false)),
-  );
-  const gate = (name: string, check: Check) =>
-    Effect.fn(name)(function* (tool: string, args: unknown) {
-      const { delegated, turn } = yield* lineage;
-      if (!delegated) return true;
-      if (turn === undefined) return false;
-      return yield* check(turn, tool, args).pipe(Effect.provideContext(services));
-    }, refusing);
-  const reach = Effect.fn("KinToolGate.workerReach")(function* (tool: string) {
-    return !(yield* lineage).delegated || workerMayReach(tool);
-  }, refusing);
-  return Layer.mergeAll(
-    McpHttpServer.toolCallGate(reach, WORKER_REFUSAL),
-    McpHttpServer.toolCallGate(gate("KinToolGate.workerAdmitted", toolAdmitted), SHARED_REFUSAL),
-    McpHttpServer.toolCallGate(
-      gate("KinToolGate.workerOutside", outsideToolAllowed),
-      OUTSIDE_REFUSAL,
+  return {
+    visible: (name: string) =>
+      workerMayReach(name) ? Effect.succeed(true) : Effect.map(isWorker, (worker) => !worker),
+    refusal: Effect.fn("KinToolGate.workerRefusal")(
+      function* (tool: string, args: unknown) {
+        const { delegated, turn } = yield* lineage((yield* caller)?.thread);
+        if (!delegated) return undefined;
+        if (!workerMayReach(tool)) return WORKER_REFUSAL;
+        if (yield* namesOtherMachine(args)) return REMOTE_REFUSAL;
+        if (turn === undefined) return SHARED_REFUSAL;
+        for (const [check, refusal] of kinChecks)
+          if (!(yield* check(turn, tool, args).pipe(Effect.provideContext(services))))
+            return refusal;
+        return undefined;
+      },
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Kin worker tool gate failed; refusing", { cause }).pipe(
+          Effect.as<string | undefined>(SHARED_REFUSAL),
+        ),
+      ),
     ),
-    McpHttpServer.toolCallGate(
-      gate("KinToolGate.workerTaskLimit", taskAdmitted),
-      TASK_LIMIT_REFUSAL,
-    ),
-  );
+  };
 };
 
 /**
- * Every tool call on the Kin MCP endpoint passes here before its handler, whichever toolkit
- * registered it: nothing reaches the owner's context in a turn someone else can read
- * (`SharedTools`), nothing outside text could steer runs once the turn has read some
- * (`OutsideContent`), and no task starts past the owner's daily limit. Each refuses with its own line.
+ * Every Kin MCP call passes here first, whatever registered it: nothing to another machine, where
+ * none of these checks follow; nothing reaches the owner's context in a turn others read
+ * (`SharedTools`); no run outside text could steer (`OutsideContent`); no task past the limit.
  */
 export const layer = Layer.mergeAll(
   turnEvents,
+  McpHttpServer.toolCallGate(
+    (_tool, args) => Effect.map(namesOtherMachine(args), (other) => !other),
+    REMOTE_REFUSAL,
+  ),
   McpHttpServer.toolCallGate(gate("KinToolGate.admitted", toolAdmitted), SHARED_REFUSAL),
   McpHttpServer.toolCallGate(gate("KinToolGate.outside", outsideToolAllowed), OUTSIDE_REFUSAL),
   McpHttpServer.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
