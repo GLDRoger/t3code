@@ -879,9 +879,10 @@ const make = Effect.gen(function* () {
     }
   });
 
-  // Replies given another way. A lead's reaction (kin_react) counts only when everything the
-  // wake-up owed was the owner's text without a "?", and it reacted to one of those messages:
-  // "thanks, that's all" can take a 👍; a question, a card tap or a reaction still needs words.
+  // Replies given another way. A lead's reaction counts only when all the wake-up owed was the
+  // owner's text without a "?" and it reacted to one of those: a question or a tap needs words.
+  // Kin's line answers a teammate's request passed on when every message the wake-up held went;
+  // one cancelled since counts by Kin's line saying so, which a tap that sent nothing lacks.
   const answered = Effect.fn("KinReplyBridge.answered")(function* (wake: Wake) {
     if (wake.answered || !wake.lane.owed) return true;
     if (
@@ -923,6 +924,18 @@ const make = Effect.gen(function* () {
           AND NOT EXISTS (SELECT 1 FROM (${owed}) o
             WHERE o.tag != 'chat.message' OR o.priority != 'P0' OR o.body IS NULL
               OR instr(o.body, '?') > 0)
+      UNION ALL SELECT 1 FROM kin_events e
+        WHERE e.org_id = ${wake.orgId} AND e.wakeup_id = ${wake.wakeupId}
+          AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
+          AND NOT EXISTS (SELECT 1 FROM kin_events o
+            WHERE o.org_id = e.org_id AND o.wakeup_id = e.wakeup_id
+              AND o.tag IN ('chat.message', 'widget.action', 'chat.reaction')
+              AND NOT (o.tag = 'chat.message' AND EXISTS (SELECT 1 FROM kin_handoffs h
+                WHERE h.org_id = o.org_id AND h.message_id = json_extract(o.json, '$.messageId')
+                  AND h.from_agent_id = ${wake.agentId} AND (h.route_state = 'passed'
+                    OR (h.route_state = 'stale' AND EXISTS (SELECT 1 FROM kin_messages n
+                      WHERE n.org_id = h.org_id
+                        AND n.message_id = 'kin-forward-stale:' || h.event_id))))))
       ORDER BY 1 LIMIT 1`;
     return rows.length > 0;
   });

@@ -276,7 +276,7 @@ export const tellStaleRoutes = Effect.fn("KinEventQueue.tellStaleRoutes")(functi
         messageId: KinMessageId.make(`kin-forward-stale:${row.eventId}`),
         author: { _tag: "system" },
         kind: "system",
-        body: `This wasn't passed on to ${where.name ?? "that agent"} after all.`,
+        body: `The request passed on to ${where.name ?? "that agent"} was cancelled, so ${where.name ?? "that agent"} won't answer it.`,
         intent: null,
         mentions: [],
         replyTo: null,
