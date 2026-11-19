@@ -363,7 +363,9 @@ once. Only the owner or a co-owner can confirm. To fix a mail's words yourself, 
 change To, Cc, Subject or the message, then **Send edited mail** sends it as you left it, with
 no new draft from the agent. **Save** keeps your words on the card without sending, marked as
 edited by you, and its **Confirm** then sends them; leaving the chat or the app with changes saves
-them too. **Discard edits** puts the agent's draft back. Attached files go as they were.
+them too. If the card changed meanwhile, your words stay on that device and show again on the card
+for you to check and save. **Discard edits** puts the agent's draft back. Attached files go as they
+were.
 
 ### GitHub
 
