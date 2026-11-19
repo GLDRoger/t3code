@@ -82,7 +82,9 @@ export function KinRecommendationsSettings(props: KinWorkTarget) {
           {problem}
         </p>
       )}
-      <p className="text-xs text-muted-foreground">{KIN_RECOMMENDATIONS_COPY.footer}</p>
+      {rows === null || rows.length === 0 ? null : (
+        <p className="text-xs text-muted-foreground">{KIN_RECOMMENDATIONS_COPY.footer}</p>
+      )}
     </SettingsPageContainer>
   );
 }

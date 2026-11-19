@@ -106,7 +106,9 @@ function KinRecommendationList(props: {
   return (
     <>
       {problem === null ? null : <ErrorBanner message={problem} />}
-      <ListSection footer={KIN_RECOMMENDATIONS_COPY.footer}>
+      <ListSection
+        {...(rows === null || rows.length === 0 ? {} : { footer: KIN_RECOMMENDATIONS_COPY.footer })}
+      >
         {rows === null ? (
           AsyncResult.isFailure(result) ? (
             <KinLoadFailedRow

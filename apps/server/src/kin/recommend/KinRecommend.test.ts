@@ -358,7 +358,7 @@ it.effect(
             noticed: NOTICED,
             ask: "Let Meera message Tech lead directly?",
             gives:
-              "Meera could then ask Tech lead without waiting for you. Tech lead talks and drafts for Meera, and starting work stays yours to ask for.",
+              "Meera could then ask Tech lead without waiting for you. Tech lead talks and drafts for Meera within what Meera is allowed to see, and starting work stays yours to ask for.",
             change: {
               kind: "lead_access",
               personId: "meera",
@@ -521,7 +521,7 @@ it.effect(
         assert.include(card!.state.detail, "starting work stays yours to ask for.");
         assert.deepStrictEqual(
           card!.state.options.map((option) => option.label),
-          ["Let Meera message Tech lead", "Not now"],
+          ["Give Meera direct access to Tech lead", "Not now"],
         );
         assert.deepStrictEqual(
           yield* sql`SELECT option_id AS "optionId", json_extract(plan_json, '$.kind') AS kind,
@@ -599,7 +599,7 @@ it.effect(
         );
         assert.deepStrictEqual((yield* cards(ctx))[0]!.state.outcome, {
           title: "Done",
-          text: "Meera can message Tech lead from now on. Tech lead's page is where you change that.",
+          text: "You gave Meera direct access to Tech lead. Tech lead's page is where you change that.",
         });
         assert.deepStrictEqual(
           yield* sql`SELECT state, decided_by AS "decidedBy" FROM kin_recommendations
@@ -695,7 +695,7 @@ it.effect(
         });
         assert.deepStrictEqual(yield* notNow, {
           title: "Not now",
-          text: "Kin won't suggest this before 2 Feb.",
+          text: "You left it as it is. Settings, under Recommendations, can ask again.",
         });
         assert.isFalse(yield* meeraMayMessageTech(ctx));
         assert.deepStrictEqual((yield* list(ctx))[0], {
@@ -710,14 +710,14 @@ it.effect(
         yield* days(1);
         assert.deepStrictEqual(yield* notNow, {
           title: "Not now",
-          text: "Kin won't suggest this before 5 Apr.",
+          text: "You left it as it is. Settings, under Recommendations, can ask again.",
         });
         yield* days(89);
         assert.deepStrictEqual(yield* tick(ctx), { _tag: "skipped", why: "nothing" });
         yield* days(1);
         assert.deepStrictEqual(yield* notNow, {
           title: "Not now",
-          text: "Kin won't suggest this again. Settings, under Recommendations, can ask again.",
+          text: "You left it as it is. Settings, under Recommendations, can ask again.",
         });
         yield* days(365);
         assert.deepStrictEqual(yield* tick(ctx), { _tag: "skipped", why: "nothing" });

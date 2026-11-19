@@ -205,7 +205,7 @@ const routeVerdict = Effect.fn("KinRecommendRules.routeVerdict")(function* (
       weight: asks.length,
       noticed,
       ask: `Let ${personName} message ${agentName} directly?`,
-      gives: `${personName} could then ask ${agentName} without waiting for you. ${agentName} talks and drafts for ${personName}, and starting work stays yours to ask for.`,
+      gives: `${personName} could then ask ${agentName} without waiting for you. ${agentName} talks and drafts for ${personName} within what ${personName} is allowed to see, and starting work stays yours to ask for.`,
       change: {
         kind: "lead_access",
         personId: pair.personId,

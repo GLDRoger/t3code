@@ -7,18 +7,19 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as LeadProvision from "../lead/KinLeadProvision.ts";
 import { accessSql } from "../people/KinAccess.ts";
 import type { RecommendPlan } from "../widgets/cardPlans.ts";
-import { DECLINE_QUIET_MS, dayOf, onlyOwner, ruleContext, storedRows } from "./ledger.ts";
+import { DECLINE_QUIET_MS, onlyOwner, ruleContext, storedRows } from "./ledger.ts";
 import { ROUTE_ACCESS, type RecommendChange, routeAccess } from "./rules.ts";
 
 const LABEL_MAX = 80;
 const NOT_NOW = "Not now";
+const LEFT_AS_IS = "You left it as it is. Settings, under Recommendations, can ask again.";
 
 /** The verb on Do it, from the stored names. */
 const doLabel = (change: RecommendChange) => {
-  const label = `Let ${change.personName} message ${change.agentName}`;
+  const label = `Give ${change.personName} direct access to ${change.agentName}`;
   return label.length <= LABEL_MAX
     ? label
-    : `Let them message ${change.agentName}`.slice(0, LABEL_MAX);
+    : `Give them direct access to ${change.agentName}`.slice(0, LABEL_MAX);
 };
 /** A done row's way to the agent's page, where who can message it is changed. */
 export const agentPageLabel = (change: RecommendChange) => {
@@ -38,7 +39,7 @@ export const recommendShown = (plan: Pick<RecommendPlan, "answer" | "change">) =
     ? { label: NOT_NOW, line: "Leave it as it is" }
     : {
         label: doLabel(plan.change),
-        line: `Let ${plan.change.personName} message ${plan.change.agentName} from now on`,
+        line: `${plan.change.personName} can message ${plan.change.agentName} from now on; nothing is passed on now`,
       };
 
 const isChatError = Schema.is(KinChatError);
@@ -121,7 +122,6 @@ export const runRecommend = Effect.fn("KinRecommendCard.run")(function* (
     if (settled.length === 0) return yield* unavailable();
     yield* (yield* KinRefreshObserver).touch(orgId, "recommendations");
   });
-  const ctx = yield* ruleContext(orgId, tap.personId, now);
   const reason =
     (yield* subjectMoved(orgId, plan.change)) ??
     (plan.answer === "do" ? yield* stillHolds(orgId, tap.personId, now, plan) : null);
@@ -136,13 +136,8 @@ export const runRecommend = Effect.fn("KinRecommendCard.run")(function* (
     const times = declined?.count ?? 0;
     const until = times < DECLINE_QUIET_MS.length ? now + DECLINE_QUIET_MS[times]! : null;
     yield* settle("declined", until);
-    return {
-      title: NOT_NOW,
-      text:
-        until === null
-          ? "Kin won't suggest this again. Settings, under Recommendations, can ask again."
-          : `Kin won't suggest this before ${dayOf(ctx, until)}.`,
-    };
+    // The card stays in the chat as history: it says what the tap did, not what holds now.
+    return { title: NOT_NOW, text: LEFT_AS_IS };
   }
   const { change } = plan;
   yield* LeadProvision.allow({
@@ -160,6 +155,6 @@ export const runRecommend = Effect.fn("KinRecommendCard.run")(function* (
   yield* settle("done", null);
   return {
     title: "Done",
-    text: `${change.personName} can message ${change.agentName} from now on. ${change.agentName}'s page is where you change that.`,
+    text: `You gave ${change.personName} direct access to ${change.agentName}. ${change.agentName}'s page is where you change that.`,
   };
 });
