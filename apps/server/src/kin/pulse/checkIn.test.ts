@@ -574,6 +574,9 @@ describe("pulse check-ins", () => {
     };
     assert.isTrue(inHoursAt(dev, "Asia/Kolkata", late));
     assert.isFalse(inHoursAt({ timeZone: null, workHours: null }, "Asia/Kolkata", late));
+    // A whole-day row stored before it meant "not set" reads as no hours, not as always working.
+    const wholeDay = '{"days":[0,1,2,3,4,5,6],"start":"00:00","end":"23:59"}';
+    assert.isFalse(inHoursAt({ timeZone: null, workHours: wholeDay }, "Asia/Kolkata", late));
     assert.isFalse(
       inHoursAt({ ...dev, timeZone: "Europe/London" }, "Asia/Kolkata", late - 9 * HOUR),
     );

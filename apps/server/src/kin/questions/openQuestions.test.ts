@@ -335,6 +335,32 @@ it.effect("a question is asked once, and its default is taken once at its day", 
       assert.isTrue(money.ok, JSON.stringify(money.value));
       const [unsafe] = yield* repo.listOpenWaiting({ orgId, personId: owner.personId });
       assert.isNull(unsafe!.ask!.default);
+
+      // A whole-day row stored before it meant "not set" names no working days: a question asked
+      // on a Saturday is due on Monday, as with no hours, not on Sunday.
+      yield* sql`UPDATE kin_people SET work_hours_json = '{"days":[0,1,2,3,4,5,6],"start":"00:00","end":"23:59"}'
+        WHERE person_id = ${owner.personId}`;
+      yield* TestClock.setTime(Date.UTC(2026, 10, 21, 6));
+      yield* wake(
+        "chief",
+        yield* chats.send(owner, {
+          chatId: chatOf("chief"),
+          body: "Is the studio free on Monday?",
+          clientMessageId: "m4",
+        }),
+      );
+      const weekend = yield* callAs("chief", "kin_ask", {
+        question: "Shall I book the studio for Monday's shoot?",
+        options: [{ label: "Book it" }, { label: "Leave it" }],
+        default: "Book it",
+        about: ["W-3"],
+        intent: "book the studio",
+      });
+      assert.strictEqual(
+        weekend.value.by,
+        "2026-11-23T14:00:00.000Z",
+        JSON.stringify(weekend.value),
+      );
     }).pipe(Effect.provide(layer)),
   ),
 );

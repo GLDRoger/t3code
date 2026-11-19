@@ -5,7 +5,6 @@ import {
   type KinOrgId,
   type KinPersonId,
   KinPersonQuietHours,
-  KinWorkHours,
   formatKinWhen,
   KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
@@ -25,14 +24,13 @@ import {
   holdRule,
   KIN_DEFAULT_QUIET_HOURS,
   type KinHoldRule,
-  wholeDay,
+  storedWorkHours,
 } from "./quietHours.ts";
 
 const MINUTE = 60_000;
 /** A message they sent this recently is one a line to them answers, whatever the hour. */
 const ANSWERS_WITHIN_MS = 10 * MINUTE;
 const decodeJsonQuiet = Schema.decodeUnknownOption(Schema.fromJsonString(KinPersonQuietHours));
-const decodeHours = Schema.decodeUnknownOption(Schema.fromJsonString(KinWorkHours));
 const encodeRelay = Schema.encodeEffect(Schema.fromJsonString(KinMessageRelay));
 
 export const validZone = (zone: string | null | undefined) => {
@@ -78,10 +76,7 @@ const personRule = Effect.fn("KinQuiet.rule")(function* (orgId: KinOrgId, person
     () => KIN_DEFAULT_QUIET_HOURS,
   );
   const holds = person?.hold === null || person?.hold === undefined ? !owner : person.hold === 1;
-  const hours = (holds && person?.hours != null ? decodeHours(person.hours) : Option.none()).pipe(
-    Option.filter((set) => !wholeDay(set)),
-  );
-  const rule = holdRule(zone, quiet, Option.getOrUndefined(hours));
+  const rule = holdRule(zone, quiet, holds ? storedWorkHours(person?.hours) : undefined);
   // Away ends when their profile stops showing it: on their own clock, the owner's too.
   return person?.away == null ? rule : { ...rule, awayUntil: startOfDay(person.away, own) };
 });

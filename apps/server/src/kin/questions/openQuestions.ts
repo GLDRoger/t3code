@@ -7,7 +7,6 @@ import {
   type KinOrgId,
   KinPersonId,
   KinWidgetId,
-  KinWorkHours,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -21,6 +20,7 @@ import * as NodeCrypto from "node:crypto";
 
 import type { KinChatService } from "../chat/KinChatService.ts";
 import type * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { storedWorkHours } from "../triggers/quietHours.ts";
 import type * as CardActions from "../widgets/cardActions.ts";
 import { type CardPlan, plansOf, sealPlans, sealedOptions } from "../widgets/cardPlans.ts";
 import { choiceCardState } from "../widgets/choiceCard.ts";
@@ -64,7 +64,6 @@ export type QuestionRow = {
 
 /** How a question raised again opens its card, so what answers it can read past it. */
 export const STILL_OPEN = "Still open: ";
-const decodeHours = Schema.decodeUnknownOption(Schema.fromJsonString(KinWorkHours));
 const OptionsJson = Schema.fromJsonString(
   Schema.Array(Schema.Struct({ optionId: Schema.String, label: Schema.String })),
 );
@@ -124,8 +123,7 @@ const personClock = Effect.fn("KinQuestions.personClock")(function* (
   const company = yield* ownerZone(orgId);
   const own = person?.owner === 1 || person?.zone == null ? undefined : person.zone;
   const zone = own !== undefined && validZone(own) ? own : company;
-  const hours = person?.hours == null ? undefined : decodeHours(person.hours);
-  return { zone, days: hours?._tag === "Some" ? hours.value.days : undefined };
+  return { zone, days: storedWorkHours(person?.hours)?.days };
 });
 
 /** The one person in a direct chat; questions are stored only where one person is asked. */

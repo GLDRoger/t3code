@@ -31,6 +31,7 @@ import { destination, turnAudience, turnPeople } from "../lead/Audience.ts";
 import * as LeadProvision from "../lead/KinLeadProvision.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import { readPeople } from "../lead/peopleRead.ts";
+import { buildSeat } from "../lead/seat.ts";
 import * as ChatWake from "../lead/ChatWake.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as Stop from "../lead/KinStop.ts";
@@ -1629,6 +1630,12 @@ it.effect(
         (profile) => profile.personId === ravi.person.personId,
       );
       assert.isNull(storedWhole?.workHours);
+      // What an agent reads of them shows no hours either; someone's real hours still show.
+      const agentRead = { orgId, agentId: KinAgentId.make("none"), wakeupId: "none" };
+      assert.notInclude((yield* readPeople(agentRead)).quoted, "00:00–23:59");
+      const { team } = yield* buildSeat({ ...agentRead, ownerOnly: false, now: 0, memory: [] });
+      assert.notInclude(team.join("\n"), "00:00–23:59");
+      assert.include(team.join("\n"), "Mon–Fri 10:00–19:00");
       // Everyone in the org reads everyone's.
       const seen = yield* service.profiles(ravi.session, orgId);
       assert.strictEqual(seen.ownerPersonId, owner.personId);

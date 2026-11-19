@@ -1,7 +1,6 @@
 import {
   type KinAgentId,
   KinRoleTags,
-  KinWorkHours,
   type KinOrgId,
   type MemoryItemHead,
 } from "@t3tools/contracts";
@@ -11,12 +10,11 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { characterForTurn, characters, colleagueLine } from "./characters.ts";
 import { validZone } from "../triggers/quietHold.ts";
-import { stillAway, workingAt } from "../triggers/quietHours.ts";
+import { stillAway, storedWorkHours, workingAt } from "../triggers/quietHours.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { describeHours, loads } from "./peopleRead.ts";
 
 const decodeTags = Schema.decodeUnknownOption(Schema.fromJsonString(KinRoleTags));
-const decodeHours = Schema.decodeUnknownOption(Schema.fromJsonString(KinWorkHours));
 const ACCESS_WORDS: Record<string, string> = {
   owner: "owner",
   co_owner: "co-owner",
@@ -120,7 +118,7 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
   const team = people.map((person) => {
     const away = stillAway(person.away, validZone(person.timeZone) ?? company, now);
     const tags = decodeTags(person.roleTags);
-    const hours = person.workHours === null ? undefined : decodeHours(person.workHours);
+    const hours = storedWorkHours(person.workHours);
     const held = load?.("person", person.id);
     const leads = led.filter((row) => row.id === person.id).map((row) => row.title);
     const parts = [
@@ -130,12 +128,12 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
         ...(leads.length === 0 ? [] : [`leads ${leads.slice(0, 2).join(", ")}`]),
       ].join(", "),
       away ? `away until ${person.away}` : undefined,
-      hours === undefined || hours._tag === "None"
+      hours === undefined
         ? undefined
-        : `${describeHours(hours.value)}${person.timeZone === null ? "" : ` ${person.timeZone}`}${
+        : `${describeHours(hours)}${person.timeZone === null ? "" : ` ${person.timeZone}`}${
             person.timeZone === null || away
               ? ""
-              : workingAt(hours.value, person.timeZone, now)
+              : workingAt(hours, person.timeZone, now)
                 ? ", working now"
                 : ", off now"
           }`,
