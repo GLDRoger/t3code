@@ -1842,10 +1842,11 @@ it.effect(
 );
 
 it.effect(
-  "a co-owner made a member writes only to the agents a member was let message, and promoting again reopens the rest",
+  "a co-owner made a member, now or while removed, writes only to the agents a member was let message, and promoting again reopens the rest",
   () =>
     Effect.gen(function* () {
       const service = yield* People.KinPeople;
+      const groups = yield* Groups.KinGroups;
       const identity = yield* KinIdentity;
       const sql = yield* SqlClient.SqlClient;
       const repo = yield* Repository.KinChatRepository;
@@ -2002,6 +2003,73 @@ it.effect(
       const kept = yield* chatWith(zoya, finance);
       assert.include(kept, { role: "member", leftAt: null });
       yield* say(zoya, kept.chatId);
+
+      // Removed, the level edited while away, then let back in by a new link.
+      const ops = yield* lead("ops", "Operations");
+      const away = Effect.fn("test.away")(function* (
+        person: { readonly personId: KinPersonId },
+        displayName: string,
+        levels: ReadonlyArray<"co_owner" | "member">,
+      ) {
+        yield* service.removeAccess(ownerSession, { orgId, personId: person.personId });
+        for (const level of levels) yield* access(person, level);
+        yield* service.accept({
+          secret: (yield* service.createInvite(ownerSession, {
+            orgId,
+            displayName,
+            personId: person.personId,
+          })).secret,
+        });
+      });
+      const writable = Effect.fn("test.writable")(function* (
+        person: typeof owner,
+        agentId: KinAgentId,
+      ) {
+        const chat = yield* chatWith(person, agentId);
+        assert.include(chat, { role: "member", leftAt: null });
+        yield* send(person, chat.chatId);
+      });
+      // A co-owner with no grant for Finance comes back a member, as a member.
+      const arjun = yield* join("Arjun");
+      yield* LeadProvision.allow({ editor, orgId, agentId: ops, personId: arjun.personId });
+      yield* access(arjun, "co_owner");
+      const arjunFinance = (yield* chatWith(arjun, finance)).chatId;
+      yield* send(arjun, arjunFinance);
+      yield* away(arjun, "Arjun", ["member"]);
+      assert.include(yield* chatWith(arjun, finance), { role: "guest", leftAt: null });
+      assert.propertyVal(
+        yield* send(arjun, arjunFinance).pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
+      yield* writable(arjun, chief);
+      yield* writable(arjun, ops);
+      yield* access(arjun, "co_owner");
+      yield* writable(arjun, finance);
+      // Back unchanged, a co-owner has everything back.
+      yield* away(arjun, "Arjun", []);
+      for (const agentId of [finance, chief, ops]) yield* writable(arjun, agentId);
+      // Edited to member and back to co-owner while away: back a co-owner.
+      const ravi = yield* join("Ravi");
+      yield* access(ravi, "co_owner");
+      yield* send(ravi, (yield* chatWith(ravi, finance)).chatId);
+      yield* away(ravi, "Ravi", ["member", "co_owner"]);
+      for (const agentId of [finance, chief, ops]) yield* writable(ravi, agentId);
+      // A member's chat held through a shared group comes back as it was, however the level
+      // was edited while away: the level they were removed at is the one that counts.
+      const mira = yield* join("Mira");
+      yield* groups.create([owner], {
+        orgId,
+        title: "Invented close",
+        agentIds: [finance],
+        personIds: [mira.personId],
+      });
+      yield* chats.createDirect(mira, { orgId, agentId: finance });
+      yield* send(mira, (yield* chatWith(mira, finance)).chatId);
+      yield* away(mira, "Mira", []);
+      yield* writable(mira, finance);
+      yield* away(mira, "Mira", ["co_owner", "member"]);
+      yield* writable(mira, finance);
     }).pipe(Effect.provide(teamLayer)),
 );
 
