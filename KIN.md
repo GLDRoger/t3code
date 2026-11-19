@@ -47,7 +47,7 @@ Sync often; a few days of upstream merges in minutes.
 git switch kin
 git fetch upstream
 git branch -f main upstream/main
-git merge upstream/main
+git merge upstream/main -m "Merge upstream/main into kin" -m "Sync-upstream: $(git rev-parse --short upstream/main)"
 sed -i.bak -E 's/runs-on: blacksmith-[0-9]+vcpu-ubuntu-2404/runs-on: ubuntu-24.04/; s/runs-on: blacksmith-[0-9]+vcpu-macos-26/runs-on: macos-26/' .github/workflows/ci.yml .github/workflows/mobile-fingerprint-check.yml && rm .github/workflows/*.bak
 vp i
 vp run check:changed upstream/main

@@ -283,10 +283,15 @@ export const admit = Effect.fn("KinTasksKeys.admit")(function* (token: string) {
   if (Option.isNone(holder)) return holder;
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
+  const refresh = yield* KinRefreshObserver;
   // Bookkeeping only: a failed write never refuses a key that was verified and is live.
   yield* sql`UPDATE kin_tasks_keys SET last_used_at = ${now}
     WHERE org_id = ${holder.value.orgId} AND session_id = ${session.sessionId}
-      AND (last_used_at IS NULL OR last_used_at <= ${now - LAST_USE_STEP_MS})`.pipe(
+      AND (last_used_at IS NULL OR last_used_at <= ${now - LAST_USE_STEP_MS})
+    RETURNING session_id`.pipe(
+    Effect.flatMap((used) =>
+      used.length === 0 ? Effect.void : refresh.touch(holder.value.orgId, "people"),
+    ),
     Effect.catch((error) =>
       Effect.logWarning("Kin couldn't record a coding agent key's use", error),
     ),
