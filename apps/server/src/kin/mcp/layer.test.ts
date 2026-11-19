@@ -24,7 +24,10 @@ import {
 import { McpServer } from "effect/ai";
 import { KinAgentSessions } from "./layer.ts";
 import * as KinIssuedTokens from "./KinIssuedTokens.ts";
+import { TASK_LIMIT_REFUSAL, WORKER_REFUSAL } from "./KinToolGate.ts";
 import { OUTSIDE_REFUSAL, OUTSIDE_TOOLS } from "../lead/OutsideContent.ts";
+import { SHARED_REFUSAL } from "../lead/Audience.ts";
+import { KinBudget } from "../lead/KinBudget.ts";
 import { SHARED_TOOLS, sharedToolAllowed } from "../lead/SharedTools.ts";
 import { isSocialTool } from "../social/mcp.ts";
 import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
@@ -102,6 +105,17 @@ const decodeToolList = Schema.decodeUnknownSync(
     }),
   ),
 );
+/** What a task a lead delegated may not reach: it starts or changes work outside Kin's chats. */
+const OUTSIDE_THE_WORK = [
+  "schedule_task",
+  "list_scheduled_tasks",
+  "create_threads",
+  "t3_thread_launch",
+  "request_secret",
+];
+/** Listed only with linked environments on, which this server has off. */
+const OUTSIDE_THE_WORK_UNLISTED = ["t3_environment_link"];
+const SCHEDULED_TASKS_REACHED = "Invented: the scheduled-task service was reached";
 const serverConfig = ServerConfig.layerTest(process.cwd(), { prefix: "t3-agent-context-budget-" });
 const toolHandlerServices = Layer.mergeAll(
   VcsProcess.layer,
@@ -135,7 +149,10 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(PullRequestService)({}),
   Layer.mock(RemoteDelegation)({}),
   Layer.mock(RepositoryIdentityResolver)({}),
-  Layer.mock(ScheduledTaskService)({}),
+  Layer.mock(ScheduledTaskService)({
+    list: () => Effect.die(SCHEDULED_TASKS_REACHED),
+    upsert: () => Effect.die(SCHEDULED_TASKS_REACHED),
+  }),
   Layer.mock(SecretRequests)({}),
   serverConfig,
   Layer.mock(ServerEnvironment)({
@@ -237,11 +254,23 @@ it.effect.each([true, false])(
           method: string,
           params: unknown,
           session?: string,
+          extra: Record<string, string> = {},
         ) =>
           Effect.gen(function* () {
             const sent = yield* Deferred.make<HttpServerResponse.HttpServerResponse>();
+            // A streamed answer (`tool_search`'s SSE) is read while its request is still open.
             yield* HttpEffect.toHandled(http, (_request, response) =>
-              Deferred.succeed(sent, response),
+              (response.body._tag === "Stream"
+                ? Effect.promise(() => HttpServerResponse.toWeb(response).text()).pipe(
+                    Effect.map((body) =>
+                      HttpServerResponse.text(
+                        body.split("\n").find((line) => line.includes('"id":1')) ?? body,
+                        { status: response.status, headers: response.headers },
+                      ),
+                    ),
+                  )
+                : Effect.succeed(response)
+              ).pipe(Effect.flatMap((answer) => Deferred.succeed(sent, answer))),
             ).pipe(
               Effect.provideService(
                 HttpServerRequest.HttpServerRequest,
@@ -253,6 +282,7 @@ it.effect.each([true, false])(
                       "content-type": "application/json",
                       accept: "application/json, text/event-stream",
                       ...(session ? { "mcp-session-id": session } : {}),
+                      ...extra,
                     },
                     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
                   }),
@@ -267,6 +297,28 @@ it.effect.each([true, false])(
           capabilities: {},
           clientInfo: { name: "test", version: "1" },
         };
+        const bodyOf = (response: HttpServerResponse.HttpServerResponse) =>
+          Effect.promise(() => HttpServerResponse.toWeb(response).text()).pipe(
+            Effect.map((body) => body.replace(/^data: /u, "")),
+          );
+        const open = Effect.fn(function* (
+          path: string,
+          token: string,
+          extra: Record<string, string> = {},
+        ) {
+          const session = (yield* request(path, token, "initialize", initialize, undefined, extra))
+            .headers["mcp-session-id"];
+          return {
+            list: request(path, token, "tools/list", {}, session, extra).pipe(
+              Effect.flatMap(bodyOf),
+              Effect.map((body) => decodeToolList(body).result.tools.map((tool) => tool.name)),
+            ),
+            call: (name: string, args: unknown) =>
+              request(path, token, "tools/call", { name, arguments: args }, session, extra).pipe(
+                Effect.flatMap(bodyOf),
+              ),
+          };
+        });
         if (Option.isNone(kin.services)) {
           assert.isFalse(enabled);
           const issued = yield* registry.issue({
@@ -288,6 +340,10 @@ it.effect.each([true, false])(
               .status,
             200,
           );
+          // Without Kin, `/mcp` is T3's own.
+          const plain = yield* open("/mcp", issued.config.authorizationHeader);
+          assert.includeMembers(yield* plain.list, OUTSIDE_THE_WORK);
+          assert.notInclude(yield* plain.call("list_scheduled_tasks", {}), WORKER_REFUSAL);
           return;
         }
         assert.isTrue(enabled);
@@ -444,6 +500,89 @@ it.effect.each([true, false])(
           )).status,
           401,
         );
+        // A task the lead's turn delegated, and a task that one delegated: on `/mcp` each lists and
+        // may call only the lead's own T3 tools, and only while the asking turn would.
+        const [asking] = yield* sql<{ runId: string }>`SELECT run_id AS "runId" FROM kin_wakeups
+          WHERE agent_id = ${agentId} AND status = 'running' ORDER BY wakeup_id`;
+        const delegated = (task: string, parent: string, child: string) =>
+          sql`INSERT INTO orchestration_v2_projection_subagents (subagent_id, thread_id, run_id,
+              parent_node_id, provider, child_thread_id, origin, status, updated_at, payload_json)
+            VALUES (${task}, ${parent}, ${asking!.runId}, 'invented-node', 'codex', ${child},
+              'app_owned', 'running', '1970-01-01T00:00:00.000Z', '{}')`;
+        yield* delegated("worker-task", threadId, "worker-thread");
+        yield* delegated("nested-task", "worker-thread", "nested-thread");
+        const issueFor = (thread: string) =>
+          registry.issue({
+            threadId: ThreadId.make(thread),
+            providerInstanceId: ProviderInstanceId.make("codex"),
+          });
+        const workerIssued = yield* issueFor("worker-thread");
+        assert.strictEqual(workerIssued.config.endpoint, "http://127.0.0.1:43123/mcp");
+        const plain = yield* open("/mcp", ordinary.config.authorizationHeader);
+        assert.includeMembers(yield* plain.list, OUTSIDE_THE_WORK);
+        assert.notInclude(yield* plain.call("list_scheduled_tasks", {}), WORKER_REFUSAL);
+        for (const issuedTo of [workerIssued, yield* issueFor("nested-thread")]) {
+          const names = yield* (yield* open("/mcp", issuedTo.config.authorizationHeader)).list;
+          assert.includeMembers(names, [
+            "delegate_task",
+            "t3_thread_read",
+            "t3_worktree_handoff",
+            "t3_worktree_status",
+            "link_pull_request",
+            "watch_pull_request",
+          ]);
+          for (const name of [...OUTSIDE_THE_WORK, ...OUTSIDE_THE_WORK_UNLISTED])
+            assert.notInclude(names, name);
+          assert.includeMembers([...LEAD_T3_TOOLS], names);
+        }
+        const worker = yield* open("/mcp", workerIssued.config.authorizationHeader);
+        for (const [name, args] of [
+          ["schedule_task", { title: "Invented nightly check", prompt: "Check the build." }],
+          ["list_scheduled_tasks", {}],
+          ["request_secret", { label: "Invented key", reason: "Invented" }],
+          ["t3_thread_launch", { message: "Invented" }],
+        ] as const) {
+          const answer = yield* worker.call(name, args);
+          assert.include(answer, WORKER_REFUSAL, name);
+          assert.notInclude(answer, SCHEDULED_TASKS_REACHED, name);
+        }
+        assert.notInclude(
+          yield* worker.call("t3_thread_read", { threadId: "lead-thread" }),
+          WORKER_REFUSAL,
+        );
+        // Its search finds only what it may call, and a deferring session then lists that.
+        const deferring = yield* open("/mcp", workerIssued.config.authorizationHeader, {
+          "t3-tool-exposure": "deferred",
+        });
+        const found = yield* deferring.call("tool_search", {
+          query: "t3_thread_read schedule_task request_secret create_threads",
+        });
+        assert.include(found, "t3_thread_read");
+        for (const name of OUTSIDE_THE_WORK) assert.notInclude(found, `"${name}"`);
+        assert.include(yield* deferring.list, "t3_thread_read");
+        // Its own tasks count against the owner's daily limit, as the lead's do.
+        const budget = Context.get(kin.services.value, KinBudget);
+        yield* budget.set([person], {
+          orgId: person.orgId,
+          limits: { leadUnits: null, workerUnits: 0, teammateUnits: null },
+        });
+        assert.include(
+          yield* worker.call("delegate_task", { task: "Invented: add a dark mode toggle" }),
+          TASK_LIMIT_REFUSAL,
+        );
+        yield* budget.set([person], {
+          orgId: person.orgId,
+          limits: { leadUnits: null, workerUnits: null, teammateUnits: null },
+        });
+        // Once the asking turn stopped, its tasks are refused what it would be.
+        yield* sql`UPDATE kin_wakeups SET aborted_at = 0 WHERE agent_id = ${agentId}
+          AND status = 'running'`;
+        assert.include(
+          yield* worker.call("t3_thread_read", { threadId: "lead-thread" }),
+          SHARED_REFUSAL,
+        );
+        yield* sql`UPDATE kin_wakeups SET aborted_at = NULL, shared_since = NULL
+          WHERE agent_id = ${agentId} AND status = 'running'`;
         const dream = yield* registry.issue({
           threadId: ThreadId.make("kin-dream:dream_20260101_abc:extract"),
           providerInstanceId: ProviderInstanceId.make("codex"),

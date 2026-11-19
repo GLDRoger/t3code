@@ -13,6 +13,7 @@ import { OUTSIDE_REFUSAL, outsideToolAllowed } from "../lead/OutsideContent.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { TURN_EVENT_TOOLS, TURN_ONLY_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
+import { delegatedTurn, workerMayReach } from "../lead/AgentSession.ts";
 
 type Check = (
   turn: Parameters<typeof toolAdmitted>[0],
@@ -20,8 +21,11 @@ type Check = (
   args: unknown,
 ) => Effect.Effect<boolean, never, Services>;
 
-const TASK_LIMIT_REFUSAL =
+export const TASK_LIMIT_REFUSAL =
   "Today's limit for delegated tasks is reached, so no task starts until it resets at midnight; don't try again. Tell the owner, who can also raise it in Settings.";
+
+/** What a task delegated from a lead reads when it calls a T3 tool its lead doesn't get. */
+export const WORKER_REFUSAL = "That tool isn't part of this work.";
 
 export const taskAdmitted: Check = Effect.fn("KinToolGate.taskAdmitted")(
   function* (turn, tool) {
@@ -101,6 +105,47 @@ const turnEvents = McpHttpServer.toolCallPrepare(
     ),
   ),
 );
+
+/**
+ * The calls on T3's own endpoint from a task delegated, at any depth, from a lead: only its lead's
+ * T3 tools, each through the checks a call from the turn that asked for it passes
+ * (`delegatedTurn`, as its shell follows). Every other thread's calls pass untouched.
+ */
+export const workers = (services: Context.Context<Services>) => {
+  const sql = Context.get(services, SqlClient.SqlClient);
+  const lineage = Effect.gen(function* () {
+    const thread = Option.getOrUndefined(yield* Effect.serviceOption(McpInvocationContext))?.thread;
+    if (thread === undefined) return { delegated: false, turn: undefined };
+    return yield* delegatedTurn(thread.threadId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+  });
+  const refusing = Effect.catchCause((cause) =>
+    Effect.logWarning("Kin worker tool gate failed; refusing", { cause }).pipe(Effect.as(false)),
+  );
+  const gate = (name: string, check: Check) =>
+    Effect.fn(name)(function* (tool: string, args: unknown) {
+      const { delegated, turn } = yield* lineage;
+      if (!delegated) return true;
+      if (turn === undefined) return false;
+      return yield* check(turn, tool, args).pipe(Effect.provideContext(services));
+    }, refusing);
+  const reach = Effect.fn("KinToolGate.workerReach")(function* (tool: string) {
+    return !(yield* lineage).delegated || workerMayReach(tool);
+  }, refusing);
+  return Layer.mergeAll(
+    McpHttpServer.toolCallGate(reach, WORKER_REFUSAL),
+    McpHttpServer.toolCallGate(gate("KinToolGate.workerAdmitted", toolAdmitted), SHARED_REFUSAL),
+    McpHttpServer.toolCallGate(
+      gate("KinToolGate.workerOutside", outsideToolAllowed),
+      OUTSIDE_REFUSAL,
+    ),
+    McpHttpServer.toolCallGate(
+      gate("KinToolGate.workerTaskLimit", taskAdmitted),
+      TASK_LIMIT_REFUSAL,
+    ),
+  );
+};
 
 /**
  * Every tool call on the Kin MCP endpoint passes here before its handler, whichever toolkit

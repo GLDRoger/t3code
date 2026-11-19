@@ -7,6 +7,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
+import * as McpToolExposure from "../../mcp/McpToolExposure.ts";
 import { OrchestratorToolkit } from "../../mcp/toolkits/orchestrator/tools.ts";
 import { ProjectToolkit } from "../../mcp/toolkits/project/tools.ts";
 import { PullRequestsToolkit } from "../../mcp/toolkits/pullRequests/tools.ts";
@@ -118,17 +119,27 @@ export const fullSessionRefusal = Effect.fn("KinAgentSession.fullSessionRefusal"
   ),
 );
 
-/** Whether a thread is a task delegated, at any depth, from a Kin lead's thread. */
-export const delegatedFromLead = Effect.fn("KinAgentSession.delegatedFromLead")(
-  function* (threadId: ThreadId) {
-    const { delegated } = yield* governingTurn(threadId);
-    return delegated;
-  },
+/** Whether a thread is a task delegated, at any depth, from a lead, and the turn it follows. */
+export const delegatedTurn = Effect.fn("KinAgentSession.delegatedTurn")(
+  (threadId: ThreadId) => governingTurn(threadId),
   // Unknown lineage still gets Kin's hook, which then admits nothing it can't prove.
   Effect.catchCause((cause) =>
-    Effect.logWarning("Kin delegation lineage failed; confining", { cause }).pipe(Effect.as(true)),
+    Effect.logWarning("Kin delegation lineage failed; confining", { cause }).pipe(
+      Effect.as({ turn: undefined, delegated: true }),
+    ),
   ),
 );
+
+/** Whether a thread is a task delegated, at any depth, from a Kin lead's thread. */
+export const delegatedFromLead = Effect.fn("KinAgentSession.delegatedFromLead")(function* (
+  threadId: ThreadId,
+) {
+  return (yield* delegatedTurn(threadId)).delegated;
+});
+
+/** What a task delegated from a lead may reach on T3's own endpoint: its lead's T3 tools. */
+export const workerMayReach = (name: string) =>
+  leadT3Tools.has(name) || name === McpToolExposure.TOOL_SEARCH;
 
 /** Social's tools show only in the own thread of the lead whose remit is social media. */
 const onSocialSeat = Effect.fn("KinAgentSession.onSocialSeat")(
@@ -201,6 +212,51 @@ export const endpointVisibility = McpHttpServer.toolVisibility((name) =>
     return yield* visibleOnKinEndpoint(name, scope.value.thread.threadId);
   }),
 );
+
+/**
+ * T3's tool search, and what T3's own endpoint lists, on a Kin server: a task delegated from a lead
+ * lists only `workerMayReach` and its search finds no other; every other thread's are T3's.
+ * `KinToolGate.workers` checks the calls.
+ */
+export const workerListing = (sql: SqlClient.SqlClient) => {
+  // Per token: a thread's lineage is written before its session's token is issued.
+  const known = new WeakMap<object, boolean>();
+  const isWorker = Effect.fnUntraced(function* () {
+    const scope = Option.getOrUndefined(yield* Effect.serviceOption(McpInvocationContext));
+    if (scope?.thread === undefined) return false;
+    const cached = known.get(scope);
+    if (cached !== undefined) return cached;
+    return yield* governingTurn(scope.thread.threadId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.map(({ delegated }) => delegated),
+      Effect.tap((delegated) => Effect.sync(() => known.set(scope, delegated))),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Kin delegation lineage failed; confining", { cause }).pipe(
+          Effect.as(true),
+        ),
+      ),
+    );
+  });
+  const exposure = Layer.effect(
+    McpToolExposure.McpToolExposure,
+    Effect.gen(function* () {
+      const exposure = yield* McpToolExposure.McpToolExposure;
+      return McpToolExposure.McpToolExposure.of({
+        ...exposure,
+        search: Effect.fn("KinAgentSession.workerSearch")(function* (session, query) {
+          const found = yield* exposure.search(session, query);
+          return (yield* isWorker()) ? found.filter((tool) => leadT3Tools.has(tool.name)) : found;
+        }),
+      });
+    }),
+  ).pipe(Layer.provide(McpHttpServer.layerToolExposure));
+  return Layer.merge(
+    McpHttpServer.toolVisibility((name) =>
+      workerMayReach(name) ? Effect.succeed(true) : Effect.map(isWorker(), (worker) => !worker),
+    ),
+    McpHttpServer.layerToolSearchRegistrations.pipe(Layer.provide(exposure)),
+  );
+};
 
 export const sessionPolicyLayer = Layer.effect(
   KinAgentSessionPolicy,

@@ -1430,7 +1430,7 @@ export const layerTools = Layer.mergeAll(
   layerMessageToolkit,
 );
 
-const layerToolExposure = Layer.effect(
+export const layerToolExposure = Layer.effect(
   McpToolExposure.McpToolExposure,
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
@@ -1464,10 +1464,13 @@ const layerDeferredListing = McpServer.visibility(
   { global: true },
 );
 
-/** Outside layerTools: the clients its budget measures never list `tool_search`. */
-export const layerToolSearch = Layer.mergeAll(
+/** `layerToolSearch` before its `McpToolExposure`, for a host that wraps `layerToolExposure`. */
+export const layerToolSearchRegistrations = Layer.mergeAll(
   toolkitRegistration(ToolSearchToolkit, ToolSearchHandlers.layer),
   layerDeferredListing,
-).pipe(Layer.provide(layerToolExposure));
+);
+
+/** Outside layerTools: the clients its budget measures never list `tool_search`. */
+export const layerToolSearch = layerToolSearchRegistrations.pipe(Layer.provide(layerToolExposure));
 
 export const layer = layerMcpTransport(Layer.mergeAll(layerTools, layerToolSearch));
