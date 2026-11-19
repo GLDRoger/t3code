@@ -84,6 +84,7 @@ const kinSentenceParts = (parts: ReadonlyArray<string | null>) =>
   parts.filter((part) => part !== null).join(" · ") || null;
 
 type AccessResult = AsyncResult.AsyncResult<KinLeadAccessResult, unknown>;
+type AccessPerson = KinLeadAccessResult["people"][number];
 type PeopleResult = AsyncResult.AsyncResult<KinPeopleListResult, unknown>;
 // Read only by a session that may change who messages a lead; others ask the host nothing.
 const noAccessAtom: Atom.Atom<AccessResult> = Atom.make(AsyncResult.initial());
@@ -438,7 +439,11 @@ function KinLeadAccess(props: {
   );
 
   const change = async (
-    person: { readonly personId: KinPersonId; readonly displayName: string },
+    person: {
+      readonly personId: KinPersonId;
+      readonly displayName: string;
+      readonly ownerLevel?: boolean | undefined;
+    },
     on: boolean,
   ) => {
     if (busy !== null) return;
@@ -449,7 +454,10 @@ function KinLeadAccess(props: {
     setBusy(null);
     if (AsyncResult.isSuccess(result)) {
       appAtomRegistry.refresh(accessAtom);
-      setNote({ text: kinLeadAccessChanged(person.displayName, lead.name, on), failed: false });
+      setNote({
+        text: kinLeadAccessChanged(person.displayName, lead.name, on, person.ownerLevel),
+        failed: false,
+      });
       return;
     }
     setNote({
@@ -469,10 +477,10 @@ function KinLeadAccess(props: {
       { text: "Cancel", style: "cancel" as const },
     ]);
 
-  const askRemove = (person: { readonly personId: KinPersonId; readonly displayName: string }) =>
+  const askRemove = (person: AccessPerson) =>
     Dialog.confirm({
       title: `Remove ${person.displayName}?`,
-      message: KIN_AGENTS_COPY.removeAccess(person.displayName, lead.name),
+      message: KIN_AGENTS_COPY.removeAccess(person.displayName, lead.name, person.ownerLevel),
       confirmText: "Remove",
       destructive: true,
       onConfirm: () => void change(person, false),
@@ -498,7 +506,7 @@ function KinLeadAccess(props: {
       ) : everyone || allowed.length === 0 ? (
         <View className="px-4 py-3">
           <Text textRole="body" className="text-foreground-muted">
-            {everyone ? KIN_LEAD_EVERYONE : "Only you."}
+            {everyone ? KIN_LEAD_EVERYONE : KIN_AGENTS_COPY.onlyOwners}
           </Text>
         </View>
       ) : (

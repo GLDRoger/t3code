@@ -1102,6 +1102,38 @@ describe("KinLeadProvision", () => {
         yield* Provision.allow(her);
         assert.include(yield* member(contact.chatId), { role: "member", leftAt: null });
         yield* say("three");
+
+        // Her role or the team agent still lets her message it: only the row goes.
+        const queue = (id: string) =>
+          sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, dedupe_key, received_at, queued_at)
+            VALUES (${id}, ${finance.orgId}, ${finance.agentId}, 'chat.message', 'P1',
+              ${JSON.stringify({ chatId: contact.chatId })}, ${id}, 0, 0)`;
+        for (const [coOwner, covered] of [
+          [true, sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${priyaId}`],
+          [
+            false,
+            sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+              VALUES (${finance.orgId}, ${finance.agentId}, ${finance.ownerPersonId}, 0)`,
+          ],
+        ] as const) {
+          yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = ${priyaId}`;
+          yield* Provision.allow(her);
+          yield* covered;
+          // Each row says whether its person messages every agent anyway.
+          assert.deepStrictEqual(
+            (yield* Provision.access(on)).people.map((row) => row.ownerLevel),
+            [coOwner],
+          );
+          const waiting = `still-${(yield* sql`SELECT 1 FROM kin_events`).length}`;
+          yield* queue(waiting);
+          assert.deepStrictEqual((yield* Provision.disallow(her)).people, []);
+          assert.include(yield* member(contact.chatId), { role: "member", leftAt: null });
+          assert.deepStrictEqual(
+            yield* sql`SELECT state FROM kin_events WHERE event_id = ${waiting}`,
+            [{ state: "queued" }],
+          );
+          yield* say(`after-${waiting}`);
+        }
       }).pipe(Effect.provide(paired)),
   );
 

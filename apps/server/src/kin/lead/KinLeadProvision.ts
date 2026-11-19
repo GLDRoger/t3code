@@ -12,7 +12,6 @@ import {
   type KinLeadProfile,
   KIN_LEAD_TRACKING_CAP,
   KinLeadTracking,
-  KinMessageId,
   KinOrgId,
   KinPersonId,
   KinRoleTags,
@@ -46,7 +45,8 @@ import {
   ownerLevelSql,
   ownsAgent,
 } from "../people/KinAccess.ts";
-import { KinEventQueue, tellStaleRoutes } from "./KinEventQueue.ts";
+import { closeDirect } from "./directClose.ts";
+import { KinEventQueue } from "./KinEventQueue.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { KinStop } from "./KinStop.ts";
 import * as Retirement from "./Retirement.ts";
@@ -905,8 +905,14 @@ const ownedLead = Effect.fn("KinLeadProvision.ownedLead")(function* (input: {
 
 const accessRows = Effect.fn("KinLeadProvision.accessRows")(function* (lead: LeadSummary) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ personId: KinPersonId; displayName: string; since: number }>`
-    SELECT x.person_id AS "personId", p.display_name AS "displayName", x.granted_at AS since
+  const rows = yield* sql<{
+    personId: KinPersonId;
+    displayName: string;
+    since: number;
+    ownerLevel: number;
+  }>`
+    SELECT x.person_id AS "personId", p.display_name AS "displayName", x.granted_at AS since,
+      ${sql.literal(ownerLevelSql("x.org_id", "x.person_id"))} AS "ownerLevel"
     FROM kin_lead_access x
     JOIN kin_people p ON p.org_id = x.org_id AND p.person_id = x.person_id
     WHERE x.org_id = ${lead.orgId} AND x.agent_id = ${lead.agentId} AND x.revoked_at IS NULL
@@ -922,6 +928,7 @@ const accessRows = Effect.fn("KinLeadProvision.accessRows")(function* (lead: Lea
       personId: row.personId,
       displayName: row.displayName as KinLeadAccessResult["people"][number]["displayName"],
       since: DateTime.formatIso(DateTime.makeUnsafe(row.since)),
+      ownerLevel: row.ownerLevel === 1,
     })),
   } satisfies KinLeadAccessResult;
 });
@@ -977,7 +984,8 @@ export const allow = Effect.fn("KinLeadProvision.allow")(function* (
 /**
  * The owner stops a person messaging one of their leads. Nothing they send wakes it from here
  * on and what was still waiting is dropped; a reply already under way still lands. Their chat
- * stays theirs to read but not to write in, and one they never wrote in leaves their list.
+ * stays theirs to read but not to write in, and one they never wrote in leaves their list. Only
+ * the row goes when their role still lets them message it.
  */
 export const disallow = Effect.fn("KinLeadProvision.disallow")(function* (
   input: Parameters<typeof ownedLead>[0] & { readonly personId: KinPersonId },
@@ -998,103 +1006,24 @@ export const disallow = Effect.fn("KinLeadProvision.disallow")(function* (
         );
       if (ended.length === 0) return yield* accessRows(lead);
       yield* leadsChanged(lead.orgId);
-      // Everyone may message the team agent, with a row or without.
+      // Everyone may message the team agent, and owner-level people every agent, row or not.
       const team = yield* LeadAccess.teamAgent(lead.orgId).pipe(
         Effect.mapError(toPersistenceSqlError("KinLeadProvision.disallow")),
       );
-      if (team !== lead.agentId) yield* closeDirect(lead, input.personId, null);
+      const covered = team === lead.agentId || (yield* ownerLevel(lead.orgId, input.personId));
+      if (!covered) yield* closeDirect(yield* closeDeps, lead, input.personId, null);
       return yield* accessRows(lead);
     }),
   );
 });
 
-/**
- * Ends a person's writing in their direct chat with a lead, inside the caller's transaction:
- * nothing they send wakes it and what was waiting is dropped; a reply under way still lands.
- * The chat stays theirs to read, and one they never wrote in leaves their list. `notice` is
- * one fixed line said there first.
- */
-const closeDirect = Effect.fn("KinLeadProvision.closeDirect")(function* (
-  lead: Pick<LeadSummary, "orgId" | "agentId">,
-  personId: KinPersonId,
-  notice: string | null,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const repo = yield* Repository.KinChatRepository;
-  const hub = yield* Hub.KinChatHub;
-  const presence = yield* Effect.serviceOption(KinPresence);
-  const now = yield* DateTime.now;
-  const [chat] = yield* sql<{ chatId: KinChatId; lastSeq: number }>`
-    SELECT chat_id AS "chatId", last_seq AS "lastSeq" FROM kin_chats
-    WHERE org_id = ${lead.orgId} AND kind = 'direct'
-      AND direct_key = ${LeadAccess.directKey(personId, lead.agentId)}
-    ORDER BY chat_id`.pipe(Effect.mapError(toPersistenceSqlError("KinLeadProvision.closeDirect")));
-  if (chat === undefined) return;
-  const dropped = yield* LeadAccess.dropQueued(lead, chat.chatId).pipe(
-    Effect.mapError(toPersistenceSqlError("KinLeadProvision.closeDirect")),
-  );
-  // A routed request of theirs that will now never start: they hear so now, whoever runs next.
-  yield* tellStaleRoutes(
-    { repo: Option.some(repo), hub: Option.some(hub) },
-    lead.orgId,
-    lead.agentId,
-  ).pipe(Effect.mapError(toPersistenceSqlError("KinLeadProvision.closeDirect")));
-  if (dropped > 0 && Option.isSome(presence))
-    yield* sql.afterCommit(
-      syncQueued(presence.value, lead.orgId, lead.agentId).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-      ),
-    );
-  const member = yield* repo.activeMember({
-    orgId: lead.orgId,
-    chatId: chat.chatId,
-    principal: { _tag: "person", personId },
-  });
-  if (Option.isNone(member) || member.value.role === "guest") return;
-  if (chat.lastSeq === 0) {
-    for (const item of yield* repo.leaveChat({
-      ...member.value,
-      leftAt: DateTime.formatIso(now),
-    }))
-      yield* hub.publish({ type: "waiting.updated", orgId: lead.orgId, item });
-    const gone = yield* repo.getMember(member.value);
-    if (Option.isSome(gone))
-      yield* hub.publish({ type: "member.removed", orgId: lead.orgId, member: gone.value });
-    return;
-  }
-  if (notice !== null) {
-    const line = yield* repo.insertMessage({
-      orgId: lead.orgId,
-      chatId: chat.chatId,
-      // Fixed words naming only agents, in the person's own chat.
-      audience: "chat",
-      // One line per chat state: the chat's sequence moves with every message.
-      messageId: KinMessageId.make(`kin-team-agent:${chat.chatId}:${chat.lastSeq}`),
-      author: { _tag: "system" },
-      kind: "system",
-      body: notice,
-      intent: null,
-      mentions: [],
-      replyTo: null,
-      widgetId: null,
-      floorRunId: null,
-      status: "posted",
-      sentBy: null,
-      clientMessageId: null,
-      createdAt: DateTime.formatIso(now),
-      editedAt: null,
-    });
-    yield* hub.publish({ type: "message.posted", orgId: lead.orgId, message: line });
-  }
-  // Guests read and never write: the chat service refuses their sends, taps and reactions.
-  const guest = yield* repo.setRole({ ...member.value, role: "guest" });
-  if (Option.isSome(guest))
-    yield* hub.publish({
-      type: "member.updated",
-      orgId: lead.orgId,
-      chatId: chat.chatId,
-      member: guest.value,
-    });
+/** What closing a direct chat needs, read from the caller's services. */
+const closeDeps = Effect.gen(function* () {
+  return {
+    repo: yield* Repository.KinChatRepository,
+    hub: yield* Hub.KinChatHub,
+    presence: yield* Effect.serviceOption(KinPresence),
+  };
 });
 
 /** The members with a device that still opens Kin: who the team agent is for. */
@@ -1173,10 +1102,12 @@ const switchTeamAgent = Effect.fn("KinLeadProvision.switchTeamAgent")(function* 
   ).pipe(Effect.mapError(sqlError));
   const people = yield* teammates(orgId);
   const old = live.find((lead) => lead.agentId === previous);
+  const deps = yield* closeDeps;
   if (old !== undefined)
     for (const personId of people) {
       if (yield* LeadAccess.granted({ ...old, personId }).pipe(Effect.mapError(sqlError))) continue;
       yield* closeDirect(
+        deps,
         old,
         personId,
         next === null
