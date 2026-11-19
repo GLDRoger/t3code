@@ -125,6 +125,17 @@ it.effect(
               { label: "Confirm", kind: "yes" },
               { label: "Cancel", kind: "no" },
             ],
+            send: {
+              service: "Gmail",
+              action: "email",
+              from: "owner@invented.example",
+              to: ["client@invented.example"],
+              cc: [],
+              subject: "Invented subject",
+              body: "Invented body.",
+              attachments: [],
+              outcome: null,
+            },
           },
         );
         yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
@@ -184,6 +195,25 @@ it.effect(
           .pipe(Effect.flip),
         "reason",
         "widget_changed",
+      );
+
+      // The mail already sending still reports there: the owner-only write is refused as such,
+      // and its status lands as a plain one.
+      const outcome = (state: "sent" | "failed", reason: string | null) => ({
+        orgId,
+        widgetId: KinWidgetId.make(sending),
+        outcome: { state, reason, at },
+      });
+      assert.isTrue(
+        Repository.isPrivateWriteRefused(
+          yield* chats.setSendOutcome(outcome("failed", "Invented reason.")).pipe(Effect.flip),
+        ),
+      );
+      yield* chats.setSendOutcome({ ...outcome("sent", null), audience: "chat" });
+      assert.deepStrictEqual(
+        yield* sql`SELECT json_extract(state_json, '$.send.outcome.state') AS state
+          FROM kin_widgets WHERE widget_id = ${sending}`,
+        [{ state: "sent" }],
       );
 
       // Removed while a co-owner, Zoya's Books mail closes the same way.

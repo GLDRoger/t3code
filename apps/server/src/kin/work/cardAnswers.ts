@@ -6,6 +6,7 @@ import * as Option from "effect/Option";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { isPrivateWriteRefused } from "../chat/KinChatRepository.ts";
 import { type ChoiceAnswerHandler, KinChatService } from "../chat/KinChatService.ts";
 import { KinConnections, type StaleAsk } from "../connections/ConnectionsService.ts";
 import { cardDecision } from "../memory/decisions.ts";
@@ -137,15 +138,22 @@ const showOutcome = Effect.fn("KinCardAnswers.outcome")(function* (
 ) {
   const chat = yield* KinChatService;
   const connections = yield* KinConnections;
-  yield* chat.setSendOutcome({
-    orgId,
-    widgetId: KinWidgetId.make(widgetId),
-    outcome: { state, reason, at: at(yield* Clock.currentTimeMillis) },
-  });
-  if (fresh === undefined) return;
+  const card = { orgId, widgetId: KinWidgetId.make(widgetId) };
+  const outcome = { state, reason, at: at(yield* Clock.currentTimeMillis) };
+  // A chat that turned shared since the Confirm refuses the owner-only write: the status still
+  // lands, without its reason, and the mail is not drawn there again.
+  const told = yield* chat.setSendOutcome({ ...card, outcome }).pipe(
+    Effect.as(true),
+    Effect.catchIf(isPrivateWriteRefused, () =>
+      chat
+        .setSendOutcome({ ...card, outcome: { ...outcome, reason: null }, audience: "chat" })
+        .pipe(Effect.as(false)),
+    ),
+  );
+  if (!told || fresh === undefined) return;
   const again = yield* connections.freshAsk(orgId, fresh, now);
   if (again === undefined) return;
-  const card = yield* chat.ask(again.agent, {
+  const drawn = yield* chat.ask(again.agent, {
     chatId: again.chatId,
     clientMessageId: `kin-connection-ask:${again.askId}`,
     question: again.card.question,
@@ -156,7 +164,7 @@ const showOutcome = Effect.fn("KinCardAnswers.outcome")(function* (
     ],
     send: again.card.send,
   });
-  yield* again.bind(card.widgetId);
+  yield* again.bind(drawn.widgetId);
 });
 
 /**
