@@ -60,6 +60,7 @@ import {
   OFFERED,
   SHARED_CONNECTIONS,
 } from "./ConnectionsService.ts";
+import { closeSubject } from "../open/closeSubject.ts";
 import * as Connections from "./ConnectionsService.ts";
 import { guarded } from "./EgressGuard.ts";
 import { CONNECTION_LIMITS } from "./limits.ts";
@@ -2827,18 +2828,58 @@ describe("KinConnections sending", () => {
         assert.lengthOf(yield* connections.interruptedSends(orgId, 10), 0);
         assert.lengthOf(vendor.vendor.sent, 0);
 
+        // Voided through its state move: the ask goes stale and its card closes saying why, in
+        // the move's transaction, and a Confirm afterwards sends nothing.
+        yield* sql`UPDATE kin_records SET state = 'open'
+          WHERE org_id = ${orgId} AND record_id = 'rec_inv'`;
+        yield* sendCall("mail_send", { ...mail, body: "Attached, as promised." });
+        const voided = cards.at(-1)!.widgetId;
+        const closed: Array<{ readonly widgetId: string; readonly text: string | undefined }> = [];
+        yield* sql.withTransaction(
+          Effect.andThen(
+            sql`UPDATE kin_records SET state = 'dropped'
+              WHERE org_id = ${orgId} AND record_id = 'rec_inv'`,
+            closeSubject(
+              {
+                orgId,
+                recordId: "rec_inv",
+                key: "INV-1",
+                registerId: "invoices",
+                state: "dropped",
+                sparing: [],
+                now: 2,
+              },
+              {
+                closeReplaced: (input) =>
+                  Effect.sync(
+                    () => void closed.push({ widgetId: input.widgetId, text: input.outcome?.text }),
+                  ),
+              },
+            ),
+          ),
+        );
+        assert.deepStrictEqual(closed, [{ widgetId: voided, text: "Closed: INV-1 is void now." }]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT state, reason FROM kin_connection_asks WHERE widget_id = ${voided}`,
+          [{ state: "stale", reason: "INV-1 is void now, so nothing was sent." }],
+        );
+        assert.include(yield* answer(voided, ownerId, true).pipe(Effect.flip), {
+          reason: "widget_changed",
+        });
+        assert.lengthOf(vendor.vendor.sent, 0);
+
         // Paid is not closed for sending: a copy of a paid invoice still goes.
         yield* sql`UPDATE kin_records SET state = 'done'
           WHERE org_id = ${orgId} AND record_id = 'rec_inv'`;
         yield* sendCall("mail_send", { ...mail, body: "A copy, for your records." });
-        const paid = yield* answer(cards[1]!.widgetId, ownerId, true);
+        const paid = yield* answer(cards.at(-1)!.widgetId, ownerId, true);
         assert.strictEqual(paid?._tag, "send");
         yield* connections.sendAsk(orgId, paid!.askId);
         assert.lengthOf(vendor.vendor.sent, 1);
 
         // Voided between the Confirm and the send: the send checks again and nothing goes.
         yield* sendCall("mail_send", { ...mail, body: "Once more." });
-        const late = yield* answer(cards[2]!.widgetId, ownerId, true);
+        const late = yield* answer(cards.at(-1)!.widgetId, ownerId, true);
         yield* sql`UPDATE kin_records SET state = 'dropped'
           WHERE org_id = ${orgId} AND record_id = 'rec_inv'`;
         assert.deepStrictEqual(yield* connections.sendAsk(orgId, late!.askId), {

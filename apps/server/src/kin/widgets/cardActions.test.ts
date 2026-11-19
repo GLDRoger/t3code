@@ -42,6 +42,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
 import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
+import * as KinOpen from "../open/KinOpen.ts";
 import * as Questions from "../questions/openQuestions.ts";
 import * as Team from "../team/KinTeam.ts";
 import {
@@ -50,6 +51,8 @@ import {
   makeDeferralCards,
 } from "../triggers/deferrals.ts";
 import { KinRecords } from "../work/KinRecords.ts";
+import { handlers as workHandlers } from "../work/mcp/handlers.ts";
+import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { presetDefinition, propose } from "../work/registers.ts";
 
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -90,6 +93,7 @@ const kinServices = Layer.unwrap(
 );
 const layer = Layer.mergeAll(
   McpHttpServer.toolkitRegistration(KinLeadToolkit, leadHandlers),
+  McpHttpServer.toolkitRegistration(KinWorkToolkit, workHandlers),
   KinToolGate.layer,
 ).pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
@@ -561,7 +565,7 @@ it.effect("a stale card, a reaction, a passed day or a foreign key runs nothing"
       assert.lengthOf(taken, 0);
 
       // Raised on its next morning, the card's action is drawn again: a tap on the raised card
-      // runs it once. One whose task closed before the raise is left off, and so is the default.
+      // runs it once. One whose task closed before the raise closed with it, and isn't raised.
       const shut = yield* kin.task("Return the sample tiles");
       yield* kin.turn("finance", kin.chatOf("finance"), "And the tiles?");
       const gone = yield* callAs("finance", "kin_ask", {
@@ -616,11 +620,12 @@ it.effect("a stale card, a reaction, a passed day or a foreign key runs nothing"
       assert.strictEqual(again.messageId, ran.messageId);
       assert.strictEqual((yield* kin.stateOf(timed.key)).rev, timed.rev + 1);
       const without = (yield* question(gone.value.question))!;
-      assert.isNull(without.defaultLabel);
-      assert.deepStrictEqual(card(yield* kin.widget(without.raiseWidgetId)).options, [
-        { optionId: "option-1", label: "Not yet" },
-        { optionId: "option-2", label: "Ask me Friday" },
-      ]);
+      assert.strictEqual(without.state, "withdrawn");
+      assert.isNull(without.raiseWidgetId);
+      assert.deepStrictEqual(card(yield* kin.widget(gone.value.widgetId)).outcome, {
+        title: "Closed",
+        text: `Closed: ${shut.key} is done now.`,
+      });
       assert.deepStrictEqual(
         card(yield* kin.widget((yield* question(reworded.value.question))!.raiseWidgetId)).options,
         [
@@ -628,8 +633,10 @@ it.effect("a stale card, a reaction, a passed day or a foreign key runs nothing"
           { optionId: "option-2", label: "Ask me Friday" },
         ],
       );
-      const plain = JSON.stringify((yield* kin.widget(without.raiseWidgetId)).state);
-      assert.notInclude(plain, `Mark ${shut.key}`);
+      const plain = JSON.stringify(
+        (yield* kin.widget((yield* question(reworded.value.question))!.raiseWidgetId)).state,
+      );
+      assert.notInclude(plain, `Mark ${edited.key}`);
       assert.notInclude(plain, '"action"');
 
       // The lead that drew it retired: the owner's tap can't commit its plan.
@@ -1151,6 +1158,144 @@ it.effect("a tap that fails after its write leaves nothing behind", () =>
         [{ agent_id: "chief" }],
       );
       assert.strictEqual(card(yield* kin.widget(widgetId)).outcome?.title, "Started");
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// A task closed by a tap or by an agent closes the questions and cards about it, in the move's
+// own transaction; a card with a live action elsewhere keeps it; reopening brings nothing back.
+it.effect("closing a task closes what hangs off it, and reopening brings none back", () =>
+  Effect.andThen(
+    TestClock.setTime(MON),
+    Effect.gen(function* () {
+      const kin = yield* ambermill;
+      const { owner, orgId, sql } = kin;
+      const chatId = kin.chatOf("finance");
+      const form = yield* kin.task("Send the W-8 form");
+      const other = yield* kin.task("File the October return");
+      yield* kin.turn("finance", chatId, "Where is the form?");
+      const asked = yield* callAs("finance", "kin_ask", {
+        question: "Did the bank get the form?",
+        options: [{ label: "Yes" }, { label: "Not yet" }],
+        default: "none",
+        about: [form.key],
+      });
+      assert.isTrue(asked.ok, JSON.stringify(asked.value));
+      const closer = yield* callAs("finance", "kin_ask", closeIt(form.key));
+      const mixed = yield* callAs("finance", "kin_ask", {
+        question: "Which first?",
+        options: [
+          { label: "Close the form", action: { kind: "done", target: form.key } },
+          { label: "Close the return", action: { kind: "done", target: other.key } },
+        ],
+        default: "none",
+      });
+      assert.isTrue(mixed.ok, JSON.stringify(mixed.value));
+      const waitingOn = Effect.fn("test.waitingOn")(function* (widgetId: unknown) {
+        const read = yield* KinOpen.compute({
+          orgId,
+          viewer: { personId: owner.personId, ownerLevel: true },
+          at: MON,
+        });
+        return read.rows.some(
+          (row) => row.item._tag === "waiting" && row.item.waiting.widgetId === widgetId,
+        );
+      });
+      assert.isTrue(yield* waitingOn(asked.value.widgetId));
+
+      // The owner's tap on one card closes the task: that card says what it did, the rest close.
+      yield* kin.tap(owner, closer.value.widgetId, "option-1", "close-form");
+      assert.strictEqual((yield* kin.stateOf(form.key)).state, "done");
+      assert.deepStrictEqual(card(yield* kin.widget(closer.value.widgetId)).outcome, {
+        title: "Done",
+        text: `Marked ${form.key} “Send the W-8 form” done.`,
+      });
+      const about = yield* kin.widget(asked.value.widgetId);
+      assert.isNotNull(about.closedAt);
+      assert.deepStrictEqual(card(about).outcome, {
+        title: "Closed",
+        text: `Closed: ${form.key} is done now.`,
+      });
+      const states = (id: unknown) =>
+        Questions.readQuestion(orgId, id as string).pipe(Effect.map((row) => row?.state));
+      assert.strictEqual(yield* states(asked.value.question), "withdrawn");
+      assert.strictEqual(yield* states(closer.value.question), "answered");
+      assert.isFalse(yield* waitingOn(asked.value.widgetId));
+      // The card with another live action keeps it; its dead one says what changed.
+      assert.isNull((yield* kin.widget(mixed.value.widgetId)).closedAt);
+      assert.strictEqual(yield* states(mixed.value.question), "open");
+
+      // An agent's tool call closes another: its "Mark … done" card closes, and a tap on it
+      // afterwards runs nothing.
+      const signage = yield* kin.task("Order the signage");
+      yield* kin.turn("finance", chatId, "And the signage?");
+      const later = yield* callAs("finance", "kin_ask", {
+        ...closeIt(signage.key),
+        about: [signage.key],
+      });
+      const done = yield* callAs("finance", "record_update", { key: signage.key, state: "done" });
+      assert.isTrue(done.ok, JSON.stringify(done.value));
+      const shut = yield* kin.widget(later.value.widgetId);
+      assert.deepStrictEqual(card(shut).outcome, {
+        title: "Closed",
+        text: `Closed: ${signage.key} is done now.`,
+      });
+      assert.strictEqual(yield* states(later.value.question), "withdrawn");
+      assert.isFalse(yield* waitingOn(later.value.widgetId));
+      const closedRev = (yield* kin.stateOf(signage.key)).rev;
+      const refused = yield* kin.chats
+        .act(owner, {
+          widgetId: shut.widgetId,
+          revision: shut.revision,
+          actionId: "choose",
+          value: "option-1",
+          clientActionId: "late-tap",
+        })
+        .pipe(Effect.flip);
+      assert.include(refused, { _tag: "KinChatError" });
+      assert.deepStrictEqual(yield* kin.stateOf(signage.key), { state: "done", rev: closedRev });
+
+      // Reopened: nothing comes back, and nothing fails.
+      yield* kin.records.update(
+        orgId,
+        { actor: { _tag: "person", personId: owner.personId }, via: "owner" },
+        signage.key,
+        { state: "open" },
+      );
+      assert.strictEqual((yield* kin.stateOf(signage.key)).state, "open");
+      assert.deepStrictEqual(card(yield* kin.widget(later.value.widgetId)).outcome, {
+        title: "Closed",
+        text: `Closed: ${signage.key} is done now.`,
+      });
+      assert.strictEqual(yield* states(later.value.question), "withdrawn");
+
+      // A move whose transaction fails takes its cascade back with it.
+      yield* kin.turn("finance", chatId, "And the return?");
+      const kept = yield* callAs("finance", "kin_ask", {
+        question: "Is the return filed?",
+        options: [{ label: "Yes" }, { label: "No" }],
+        default: "none",
+        about: [other.key],
+      });
+      const rolled = yield* sql
+        .withTransaction(
+          Effect.andThen(
+            kin.records.update(
+              orgId,
+              { actor: { _tag: "person", personId: owner.personId }, via: "owner" },
+              other.key,
+              { state: "dropped" },
+            ),
+            Effect.fail("after the move" as const),
+          ),
+        )
+        .pipe(Effect.flip);
+      assert.strictEqual(rolled, "after the move");
+      assert.strictEqual((yield* kin.stateOf(other.key)).state, "open");
+      assert.isNull((yield* kin.widget(kept.value.widgetId)).closedAt);
+      assert.isNull((yield* kin.widget(mixed.value.widgetId)).closedAt);
+      assert.strictEqual(yield* states(kept.value.question), "open");
+      assert.isTrue(yield* waitingOn(kept.value.widgetId));
     }).pipe(Effect.provide(layer)),
   ),
 );

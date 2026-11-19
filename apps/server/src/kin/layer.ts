@@ -30,6 +30,7 @@ import { requireRefreshObserver } from "./chat/KinRefreshHub.ts";
 import { KinIdentity } from "./chat/KinIdentity.ts";
 import { seedPlaybooks } from "./work/playbookSeeds.ts";
 import { seedCharacters } from "./lead/characters.ts";
+import { closeSubject } from "./open/closeSubject.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
 export { KinServer } from "./KinServer.ts";
@@ -64,6 +65,10 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
     Effect.gen(function* () {
       const services = yield* Effect.context<Services>();
       yield* requireRefreshObserver(services);
+      const chat = yield* KinChatService;
+      yield* (yield* KinRecords.KinRecords).attachClosing((subject) =>
+        closeSubject(subject, chat).pipe(Effect.provide(services)),
+      );
       const { owner } = yield* KinIdentity;
       // A failed seed leaves Kin running; the next start tries the missing ones again.
       yield* seedPlaybooks(owner.orgId, owner.personId).pipe(
@@ -83,7 +88,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
       const scope = yield* Effect.scope;
       const files = yield* Effect.context<FileSystem.FileSystem | ServerConfig>();
       // Receipt and statement cards' answers carry out their work here, in the tap's transaction.
-      yield* (yield* KinChatService).attachChoiceAnswers((input) =>
+      yield* chat.attachChoiceAnswers((input) =>
         answerChoice(input, scope).pipe(Effect.provide(services), Effect.provide(files)),
       );
       yield* resumeInterruptedSends(owner.orgId, yield* Clock.currentTimeMillis).pipe(
