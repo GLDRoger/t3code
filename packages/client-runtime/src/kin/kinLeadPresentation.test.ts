@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Fixtures build times relative to a fixed clock.
 import { KinAgentId, KinPersonId, ProviderInstanceId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -117,6 +118,11 @@ describe("what a lead has in hand", () => {
     expect(
       kinLeadTrackingDetail({ kind: "reminder", dueAt: "2026-11-13T09:00:00.000Z" }, "UTC"),
     ).toBe("Reminder, Fri, Nov 13, 9:00 AM");
+    // K227: a due day is the day alone, never its end-of-day time.
+    const day = { kind: "work", dueAt: "2026-11-27T23:59:59.999Z", dueAllDay: true } as const;
+    expect(kinLeadTrackingDetail(day, "UTC", new Date("2026-11-18T09:00:00.000Z"))).toBe(
+      "Working on it now, due Fri, Nov 27",
+    );
   });
 });
 

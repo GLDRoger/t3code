@@ -99,6 +99,16 @@ export const KIN_WORK_ITEM_FAILED = {
   detail: KIN_CHECK_CONNECTION,
 };
 export const KIN_WORK_TITLE_MAX = 280;
+/** Where a title's counter shows: nothing typed is ever cut, so the limit is said before Save. */
+const KIN_WORK_TITLE_COUNT_FROM = 240;
+export const KIN_WORK_TITLE_TOO_LONG = `Keep the title under ${KIN_WORK_TITLE_MAX} characters.`;
+
+/** "254 of 280" once a title nears the limit; null before then. */
+export const kinWorkTitleCount = (title: string): string | null => {
+  const length = title.trim().length;
+  return length < KIN_WORK_TITLE_COUNT_FROM ? null : `${length} of ${KIN_WORK_TITLE_MAX}`;
+};
+export const kinWorkTitleTooLong = (title: string) => title.trim().length > KIN_WORK_TITLE_MAX;
 export const KIN_WORK_NOTES_MAX = 4_000;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -490,16 +500,39 @@ function dayInZone(date: Date, zone: string | null): Date {
 
 export const kinWorkDueText = (
   record: Pick<KinRecord, "dueAt" | "dueAllDay">,
-  names: KinWorkNames,
+  names: Pick<KinWorkNames, "zone">,
   now: Date,
 ): string | null => {
   if (record.dueAt === null) return null;
   const due = new Date(record.dueAt);
   if (Number.isNaN(due.getTime())) return null;
-  // An all-day date is a day where the owner is; a viewer elsewhere must not see the day after.
-  if (record.dueAllDay) return kinWorkDay(dayInZone(due, names.zone), now);
+  // An all-day date is a day where the owner is, and so is the today it is counted from.
+  if (record.dueAllDay) return kinWorkDay(dayInZone(due, names.zone), dayInZone(now, names.zone));
   return `${kinWorkDay(due, now)}, ${clockFormat.format(due)}`;
 };
+
+/** Days from today to the due day (0 today, negative past), counted as `kinWorkDueText` says it. */
+export const kinWorkDueDays = (
+  record: Pick<KinRecord, "dueAt" | "dueAllDay">,
+  names: Pick<KinWorkNames, "zone">,
+  now: Date,
+): number | null => {
+  if (record.dueAt === null) return null;
+  const due = new Date(record.dueAt);
+  if (Number.isNaN(due.getTime())) return null;
+  const [day, today] = record.dueAllDay
+    ? [dayInZone(due, names.zone), dayInZone(now, names.zone)]
+    : [due, now];
+  return Math.round((startOfDay(day) - startOfDay(today)) / DAY_MS);
+};
+
+/** Sentences joined for a label, never doubling the stop a title already ends with. */
+const kinSentences = (parts: ReadonlyArray<string>): string =>
+  parts.reduce(
+    (said, part) =>
+      said === "" ? part : `${said}${/[.!?…]["”’)]?$/.test(said) ? "" : "."} ${part}`,
+    "",
+  );
 
 const statusText = (record: KinRecord, names: KinWorkNames): string =>
   record.state === "waiting" && record.waitingOn !== null
@@ -682,9 +715,9 @@ export function kinWorkRow(
     holder,
     detail: detail.join(" · "),
     line: parts.join(" · "),
-    accessibilityLabel: [record.title, ...parts, record.late ? "Late" : handedBack]
-      .filter((part) => part !== null)
-      .join(". "),
+    accessibilityLabel: kinSentences(
+      [record.title, ...parts, record.late ? "Late" : handedBack].filter((part) => part !== null),
+    ),
     mark: record.late ? "late" : handedBack === null ? null : "handed_back",
     markText: record.late ? KIN_WORK_MARKS.late : handedBackMark,
   };
@@ -1286,6 +1319,48 @@ function linkView(
   }
 }
 
+/**
+ * "Client stays Kestrel" when the task's last change moved it to another project and its client,
+ * being neither project's, stayed (the host moves one that was the old project's). `clientOf` is
+ * each project's client key by project key, from the pickers' rows; an unknown project says nothing.
+ */
+/** The clients or projects whose name holds every word typed, in the order given. */
+export function kinWorkRefsMatching<R extends KinWorkRef>(
+  refs: ReadonlyArray<R>,
+  query: string,
+): ReadonlyArray<R> {
+  const words = query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((word) => word !== "");
+  if (words.length === 0) return refs;
+  return refs.filter((ref) => {
+    const title = ref.title.toLowerCase();
+    return words.every((word) => title.includes(word));
+  });
+}
+
+export function kinWorkClientStays(
+  item: Pick<KinRecordDetail, "party" | "project" | "changes">,
+  clientOf: ReadonlyMap<string, string | null>,
+): string | null {
+  const { party, project } = item;
+  const last = item.changes.reduce<KinRecordDetail["changes"][number] | null>(
+    (newest, change) => (newest === null || change.seq > newest.seq ? change : newest),
+    null,
+  );
+  const moved = last?.fields.find((field) => field.field === "project");
+  if (party === undefined || project === undefined || last === null || moved === undefined)
+    return null;
+  if (moved.to !== project.key || last.fields.some((field) => field.field === "party")) return null;
+  const now = clientOf.get(project.key);
+  const before = moved.from === null ? null : clientOf.get(moved.from);
+  if (now === undefined || before === undefined) return null;
+  return now === party.key || before === party.key
+    ? null
+    : KIN_WORK_NEW_COPY.clientStays(party.title);
+}
+
 export function kinWorkItemView(
   item: KinRecordDetail,
   names: KinWorkNames,
@@ -1586,8 +1661,8 @@ export interface KinWorkDraft {
   readonly notes: string;
   readonly party: KinWorkRef | null;
   readonly project: KinWorkRef | null;
-  /** `theirs` when the client owes it and the owner is whoever chases. */
-  readonly side: KinRecordSide;
+  /** Who owes it, which makes it an obligation; null for a plain task about the client. */
+  readonly side: KinRecordSide | null;
   /** How it comes back once closed; null when it doesn't. */
   readonly repeat: KinRepeatRule | null;
 }
@@ -1599,7 +1674,7 @@ export const KIN_WORK_NO_DRAFT: KinWorkDraft = {
   notes: "",
   party: null,
   project: null,
-  side: "ours",
+  side: null,
   repeat: null,
 };
 
@@ -1614,7 +1689,7 @@ export function kinWorkDraftWords(draft: Pick<KinWorkDraft, "party" | "side">): 
   readonly titleLabel: string;
   readonly titlePlaceholder: string;
 } {
-  if (draft.party === null)
+  if (draft.party === null || draft.side === null)
     return {
       title: KIN_WORK_NEW,
       titleLabel: KIN_WORK_NEW_COPY.titleLabel,
@@ -1649,6 +1724,11 @@ export const KIN_WORK_NEW_COPY = {
   sideLabel: "Who owes it",
   sideOurs: "We owe it",
   sideTheirs: "They owe it",
+  /** Neither side: a plain task about the client, not something owed. */
+  sideNone: "Nobody, it's a task",
+  noMatch: "Nothing by that name.",
+  /** A task moved to another project keeps a client that is neither project's. */
+  clientStays: (name: string) => `Client stays ${name}`,
 };
 
 /** What happens next, said before the owner commits to it. */
@@ -1699,8 +1779,7 @@ export type KinWorkDraftCheck =
 export function kinWorkDraftCheck(draft: KinWorkDraft): KinWorkDraftCheck {
   const title = draft.title.trim();
   if (title === "") return { ok: false, problem: "Say what needs doing." };
-  if (title.length > KIN_WORK_TITLE_MAX)
-    return { ok: false, problem: `Keep it under ${KIN_WORK_TITLE_MAX} characters.` };
+  if (title.length > KIN_WORK_TITLE_MAX) return { ok: false, problem: KIN_WORK_TITLE_TOO_LONG };
   const notes = draft.notes.trim();
   if (notes.length > KIN_WORK_NOTES_MAX)
     return { ok: false, problem: "Those notes are too long. Say the rest in chat." };
@@ -1717,8 +1796,13 @@ export function kinWorkDraftCheck(draft: KinWorkDraft): KinWorkDraftCheck {
       ...(notes === "" ? {} : { notes }),
       ...(draft.party === null ? {} : { party: draft.party.key }),
       ...(draft.project === null ? {} : { project: draft.project.key }),
-      // Whose move it is only means something between us and a client.
-      ...(draft.side === "theirs" && draft.party !== null ? { side: "theirs" as const } : {}),
+      // Who owes it only means something between us and a client.
+      ...(draft.side === null || draft.party === null
+        ? {}
+        : {
+            category: "obligation" as const,
+            ...(draft.side === "theirs" ? { side: "theirs" as const } : {}),
+          }),
       ...(draft.repeat === null ? {} : { repeat: draft.repeat }),
     },
   };

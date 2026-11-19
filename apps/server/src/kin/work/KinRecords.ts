@@ -1379,10 +1379,18 @@ const make = Effect.gen(function* () {
           patch.projectId === undefined || patch.projectId === null
             ? undefined
             : yield* target(orgId, patch.projectId, "projects");
+        // Moved to another project, a task under the old project's client (or none) takes the new one's.
+        const moved = project !== undefined && projectId !== row.projectId;
+        const [was] =
+          !moved || row.projectId === null || row.partyId === null
+            ? []
+            : yield* sql<{ partyId: string | null }>`SELECT party_id AS "partyId" FROM kin_records
+                WHERE org_id = ${orgId} AND record_id = ${row.projectId}`;
         const partyId =
           patch.partyId !== undefined
             ? patch.partyId
-            : row.partyId === null && project !== undefined
+            : project !== undefined &&
+                (row.partyId === null || (was !== undefined && was.partyId === row.partyId))
               ? project.partyId
               : row.partyId;
         const invalidRefs = checkRefs(def, partyId, projectId);

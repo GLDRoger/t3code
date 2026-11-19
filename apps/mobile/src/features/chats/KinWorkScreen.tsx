@@ -19,7 +19,7 @@ import {
   type KinWorkPlace,
 } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import { EnvironmentId, KinOrgId, KinRecordKey } from "@t3tools/contracts";
+import { EnvironmentId, KinOrgId, KinPersonId, KinRecordKey } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { View } from "react-native";
@@ -63,11 +63,14 @@ export type KinWorkParams = {
   readonly projectName?: string;
   /** `theirs` when a new task is something the client owes. */
   readonly side?: string;
+  /** Tasks starts narrowed to what this person holds, from their page's "See all in Tasks". */
+  readonly person?: string;
 };
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
 const decodeKey = Schema.decodeUnknownOption(KinRecordKey);
+const decodePerson = Schema.decodeUnknownOption(KinPersonId);
 
 /** A client or project named in a link: its handle, and the name to show until it is read. */
 export function kinWorkRefParam(key: string | undefined, title: string | undefined) {
@@ -190,6 +193,7 @@ export function KinWorkScreen({ route }: StaticScreenProps<KinWorkParams>) {
       place={kinWorkPlaceParam(route.params.show)}
       party={kinWorkRefParam(route.params.party, route.params.partyName)}
       project={kinWorkRefParam(route.params.project, route.params.projectName)}
+      person={Option.getOrNull(decodePerson(route.params.person))}
     />
   );
 }
@@ -224,6 +228,8 @@ export function KinPlace(
     readonly place: ReturnType<typeof kinWorkPlaceParam>;
     readonly party: KinWorkRef | null;
     readonly project: KinWorkRef | null;
+    /** Narrows Tasks to what this person holds. */
+    readonly person?: KinPersonId | null;
   },
 ) {
   const target = { environmentId: props.environmentId, orgId: props.orgId };
@@ -256,6 +262,7 @@ export function KinPlace(
           ...KIN_WORK_DEFAULT_FILTER,
           party: props.party,
           project: props.project,
+          ...(props.person == null ? {} : { owner: { _tag: "person", personId: props.person } }),
           groupBy: "me",
         }}
       />

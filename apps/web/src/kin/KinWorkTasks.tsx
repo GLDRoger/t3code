@@ -3,6 +3,7 @@ import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_TASK_GROUP_BY,
+  kinTaskFilterProjects,
   KIN_TASKS,
   kinNeedsYouCount,
   kinTaskGroupedChip,
@@ -289,6 +290,7 @@ export function KinWorkTaskList(
               filter={filter}
               names={names}
               choices={within === undefined ? props.choices : null}
+              records={records}
               everyone={within === undefined}
               grouped={grouped}
               onChange={setFilter}
@@ -770,6 +772,8 @@ function KinWorkFilters(props: {
   readonly filter: KinWorkFilter;
   readonly names: KinWorkNames;
   readonly choices: KinWorkChoices | null;
+  /** The rows in view, whose projects the Filter offers too. */
+  readonly records: ReadonlyArray<KinRecord>;
   /** Whether to narrow by who has what across all of Work, which a project's own list doesn't. */
   readonly everyone: boolean;
   /** The chip saying the list is grouped some other way than Me first; null when it isn't. */
@@ -781,7 +785,10 @@ function KinWorkFilters(props: {
   const withHeld = (held: ReadonlyArray<KinWorkRef>, value: KinWorkRef | null) =>
     value === null || held.some((choice) => choice.key === value.key) ? held : [value, ...held];
   const clients = choices === null ? [] : withHeld(choices.clients, filter.party);
-  const projects = choices === null ? [] : withHeld(choices.projects, filter.project);
+  const projects =
+    choices === null
+      ? []
+      : withHeld(kinTaskFilterProjects(choices.projects, props.records), filter.project);
   const owners = props.everyone ? overview.owners : [];
   const scope = (
     label: string,
