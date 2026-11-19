@@ -14,6 +14,8 @@ import {
   type KinConnectionDetail,
   type KinConnectionPreset,
   type KinConnectionRef,
+  type KinConnectionSendEdited,
+  type KinConnectionSendEditedInput,
   type KinConnectionSetKeyInput,
   type KinConnectionSetSignInClientInput,
   type KinConnectionSignInFinishInput,
@@ -30,8 +32,13 @@ import {
   type KinConnectionToolMode,
   type KinOrgId,
   type KinSendCard,
+  type KinWidget,
+  type KinWidgetsActInput,
+  KIN_CHOICE_CARD_ACTION,
+  KinChoiceCardState,
   KinPersonId,
   KinWakeupId,
+  KinWidgetId,
   ThreadId,
 } from "@t3tools/contracts";
 import { McpSchema } from "effect/ai";
@@ -58,6 +65,7 @@ import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { type AgentIdentity, KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { chatShared } from "../chat/sharing.ts";
 import { effectiveAudience, turnChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
@@ -112,6 +120,7 @@ import {
   attachmentOf,
   attachmentsCurrent,
   choiceId,
+  editedMail,
   type FromChoice,
   fromOf,
   MAX_CARD_ARGS,
@@ -119,6 +128,7 @@ import {
   type Prepared,
   PreparedJson,
   sendCard,
+  sameWords,
   sendMail,
   markQuotesSent,
   sentMail,
@@ -126,6 +136,7 @@ import {
   sentToClient,
   subjectClosed,
 } from "./Sending.ts";
+import { choiceExpired } from "../widgets/choiceCard.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { KinGitHubLogin } from "./GitHubLogin.ts";
 import { textLocale } from "../work/companyProfile.ts";
@@ -150,6 +161,8 @@ export const ASK_CLOSED = {
   declined: "This exact action was already cancelled on its card, so nothing was sent.",
   expired: "The card for this exact action was closed without an answer, so nothing was sent.",
   replaced: "A newer card replaced the one for this exact action, so nothing was sent from it.",
+  edited: (name: string) =>
+    `This exact action was sent, edited by ${name} on its card: what went is quoted below, not your draft. Nothing was sent again.`,
 } as const;
 export const OFFERED = "The owner will see a card to connect it.";
 const SEVERAL_ACCOUNTS =
@@ -203,6 +216,10 @@ const toJson = Schema.encodeSync(Json);
 const encodePrepared = Schema.encodeSync(PreparedJson);
 const decodePrepared = Schema.decodeOption(PreparedJson);
 const fromJson = Schema.decodeOption(Json);
+/** On an ask a person's edit replaced: the ask that went in its place. */
+const decodeEdited = Schema.decodeOption(
+  Schema.fromJsonString(Schema.Struct({ editedAs: Schema.String })),
+);
 /** A stored definition: Kin wrote it, so it parses; a bad row reads as empty. */
 const stored = (json: string): unknown => Option.getOrUndefined(fromJson(json));
 
@@ -452,6 +469,28 @@ export type AskOutcome = {
   readonly fresh?: StaleAsk;
 };
 
+/** The chat side of an edited send, run in its transaction: the transport binds the chat. */
+export type EditCards = {
+  readonly close: (widgetId: string) => Effect.Effect<void, KinChatError>;
+  readonly post: (
+    agent: AgentIdentity,
+    card: {
+      readonly chatId: KinChatId;
+      readonly clientMessageId: string;
+      readonly question: string;
+      readonly detail: string;
+      readonly send: KinSendCard;
+    },
+  ) => Effect.Effect<KinWidget, KinChatError>;
+  /** Refuses as `act` would if this person tapped the card now: membership, writing, reading. */
+  readonly canTap: (person: PersonIdentity, widgetId: string) => Effect.Effect<void, KinChatError>;
+  /** The person's own tap, as `kin.widgets.act` takes it. */
+  readonly act: (
+    person: PersonIdentity,
+    input: KinWidgetsActInput,
+  ) => Effect.Effect<unknown, KinChatError>;
+};
+
 type Owner<I, A> = (people: People, input: I) => Effect.Effect<A, KinChatError>;
 type Lead<I, A> = (scope: McpInvocationScope, input: I) => Effect.Effect<A, KinChatError>;
 
@@ -519,6 +558,16 @@ export class KinConnections extends Context.Service<
       stale: StaleAsk,
       now: number,
     ) => Effect.Effect<FreshAsk | undefined, KinChatError>;
+    /**
+     * A person's own To, Cc, Subject and Body on an unanswered mail card, sent in one step: one
+     * transaction replaces its ask by an exact ask holding the edit, and its card by one showing
+     * it that takes their ordinary Confirm. An unchanged mail is an ordinary Confirm.
+     */
+    readonly sendEdited: (
+      people: People,
+      input: KinConnectionSendEditedInput,
+      cards: EditCards,
+    ) => Effect.Effect<KinConnectionSendEdited, KinChatError>;
     /** After the tap commits: sends a confirmed ask, once. */
     readonly sendAsk: (orgId: KinOrgId, askId: string) => Effect.Effect<AskOutcome, KinChatError>;
     /**
@@ -2257,14 +2306,59 @@ const make = Effect.gen(function* () {
     // After outside text the same action is its own marked ask, and an open unmarked twin goes.
     const twinId = idOf(key);
     const persisted = (id: string) =>
-      sql<{ state: string; decidedBy: string | null; closed: number; widgetId: string | null }>`
+      sql<{
+        state: string;
+        decidedBy: string | null;
+        closed: number;
+        widgetId: string | null;
+        result: string | null;
+      }>`
         SELECT k.state, k.decided_by AS "decidedBy", (w.closed_at IS NOT NULL) AS closed,
-          k.widget_id AS "widgetId"
+          k.widget_id AS "widgetId", k.result_json AS result
         FROM kin_connection_asks k
         LEFT JOIN kin_widgets w ON w.org_id = k.org_id AND w.widget_id = k.widget_id
         WHERE k.org_id = ${turn.orgId} AND k.ask_id = ${id}`.pipe(Effect.map(([ask]) => ask));
-    const answered = (note: string) =>
-      record(turn, { ...entry, status: "refused", refusedReason: note }).pipe(Effect.as({ note }));
+    const noted = (note: string | undefined) => (note === undefined ? undefined : { note });
+    // An ask a person's edit replaced answers as the edited one went, and with what went.
+    const toldFor = Effect.fnUntraced(function* (ask: {
+      readonly state: string;
+      readonly decidedBy: string | null;
+      readonly closed: number;
+      readonly result: string | null;
+    }) {
+      const edited =
+        ask.state === "stale" && ask.result !== null
+          ? Option.getOrUndefined(decodeEdited(ask.result))
+          : undefined;
+      if (edited === undefined) return noted(askClosed(ask));
+      const went = yield* persisted(edited.editedAs);
+      if (went?.state !== "sent")
+        return noted(went === undefined ? ASK_CLOSED.replaced : askClosed(went));
+      const [sent] = yield* sql<{ payload: string; name: string | null }>`SELECT
+          k.payload_json AS payload, p.display_name AS name
+        FROM kin_connection_asks k
+        LEFT JOIN kin_people p ON p.org_id = k.org_id AND p.person_id = k.decided_by
+        WHERE k.org_id = ${turn.orgId} AND k.ask_id = ${edited.editedAs}`;
+      const mail =
+        sent === undefined ? undefined : Option.getOrUndefined(decodePrepared(sent.payload));
+      return {
+        note: ASK_CLOSED.edited(sent?.name ?? "the owner"),
+        ...(mail?._tag === "email"
+          ? {
+              quoted: quote("The mail as it was sent", {
+                to: mail.to,
+                cc: mail.cc,
+                subject: mail.subject,
+                body: mail.body,
+              }),
+            }
+          : {}),
+      };
+    });
+    const answered = (closed: { readonly note: string; readonly quoted?: string }) =>
+      record(turn, { ...entry, status: "refused", refusedReason: closed.note }).pipe(
+        Effect.as(closed),
+      );
     const entryRecordId =
       prepared._tag === "email"
         ? (prepared.attachments.find((one) => one.entryRecordId !== null)?.entryRecordId ?? null)
@@ -2278,10 +2372,14 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const outside = yield* outsideStamp(turn).pipe(provideSql);
         const askId = outside === undefined ? twinId : idOf([...key, "outside"]);
-        const done = (told: string | undefined) => ({ outside, askId, closed: told });
+        const done = (closed: { readonly note: string; readonly quoted?: string } | undefined) => ({
+          outside,
+          askId,
+          closed,
+        });
         if (askId !== twinId && (yield* persisted(askId)) === undefined) {
           const twin = yield* persisted(twinId);
-          const told = twin === undefined ? undefined : askClosed(twin);
+          const told = twin === undefined ? undefined : yield* toldFor(twin);
           if (told !== undefined) return done(told);
           if (twin !== undefined) {
             yield* sql`UPDATE kin_connection_asks SET state = 'stale',
@@ -2298,7 +2396,7 @@ const make = Effect.gen(function* () {
             ${row.accountLabel}, ${row.signInGen}, ${outside ?? null})
           ON CONFLICT (org_id, ask_id) DO NOTHING`;
         const own = yield* persisted(askId);
-        return done(own === undefined ? undefined : askClosed(own));
+        return done(own === undefined ? undefined : yield* toldFor(own));
       }),
     );
     if (closed !== undefined) return yield* answered(closed);
@@ -2472,7 +2570,7 @@ const make = Effect.gen(function* () {
       k.entry_record_id AS "entryRecordId", a.owner_person_id AS owner, l.thread_id AS "threadId",
       k.widget_id AS "widgetId", k.reason, k.account, k.sign_in_gen AS "signInGen",
       k.outside_from AS "outsideFrom", k.decided_by AS "decidedBy",
-      k.dispatched_at AS "dispatchedAt"
+      k.dispatched_at AS "dispatchedAt", k.result_json AS result
     FROM kin_connection_asks k
     JOIN kin_agents a ON a.org_id = k.org_id AND a.agent_id = k.agent_id
     JOIN kin_leads l ON l.org_id = k.org_id AND l.agent_id = k.agent_id
@@ -2546,6 +2644,169 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError((error) => (isChatError(error) ? error : unavailable)),
   );
+
+  const decodeChoice = Schema.decodeUnknownOption(KinChoiceCardState);
+  const decodeAwaiting = Schema.decodeOption(Schema.fromJsonString(Schema.Array(Schema.String)));
+  /** The Confirm a send card offers. */
+  const confirmOf = (card: Option.Option<KinChoiceCardState>) =>
+    Option.getOrUndefined(card)?.options.find((option) => option.kind === "yes")?.optionId;
+  const cardChanged = (message: string) => new KinChatError({ reason: "widget_changed", message });
+  const ALREADY = "This was already answered.";
+
+  const sendEdited = Effect.fn("KinConnections.sendEdited")(function* (
+    people: People,
+    input: KinConnectionSendEditedInput,
+    cards: EditCards,
+  ) {
+    const person = people.find((one) => one.orgId === input.orgId);
+    if (person === undefined) return yield* fail("not_found", "Kin couldn't find that card.");
+    return yield* sql.withTransaction(
+      Effect.gen(function* () {
+        // The tapper's own standing now; the Confirm below checks it again, as every Confirm does.
+        if (!(yield* ownerLevel(input.orgId, person.personId).pipe(provideSql)))
+          return yield* fail(
+            "not_allowed",
+            "Only the owner or a co-owner confirms what Kin sends.",
+          );
+        const [row] = yield* sql<AskRow & { readonly result: string | null }>`${askRow(
+          sql,
+          input.orgId,
+        )} AND k.widget_id = ${input.widgetId}`;
+        if (row === undefined) return yield* fail("not_found", "Kin couldn't find that card.");
+        const prepared = Option.getOrUndefined(decodePrepared(row.payload));
+        if (prepared?._tag !== "email")
+          return yield* fail("invalid_state", "Only a mail's words can be changed on its card.");
+        const edited = editedMail(prepared, input);
+        if (typeof edited === "string") return yield* fail("invalid_state", edited);
+        const payload = encodePrepared(edited);
+        const askId = `ask_${NodeCrypto.createHash("sha256")
+          .update([input.orgId, row.askId, "edited", payload].join("\n"))
+          .digest("hex")
+          .slice(0, 24)}`;
+        const editedAs = toJson({ editedAs: askId });
+        // A retry of a press that went through answers as it did.
+        if (row.state === "stale" && row.result === editedAs && row.decidedBy === person.personId) {
+          const [done] = yield* sql<{ widgetId: string | null }>`SELECT widget_id AS "widgetId"
+            FROM kin_connection_asks WHERE org_id = ${input.orgId} AND ask_id = ${askId}`;
+          if (done?.widgetId != null) return { widgetId: done.widgetId };
+        }
+        if (row.state !== "open") return yield* cardChanged(ALREADY);
+        const [widget] = yield* sql<{
+          revision: number;
+          closedAt: string | null;
+          updatedAt: string;
+          state: string;
+          awaiting: string;
+        }>`SELECT revision, closed_at AS "closedAt", updated_at AS "updatedAt",
+            state_json AS state, awaiting_json AS awaiting
+          FROM kin_widgets WHERE org_id = ${input.orgId} AND widget_id = ${input.widgetId}`;
+        if (widget === undefined) return yield* fail("not_found", "Kin couldn't find that card.");
+        if (widget.revision !== input.revision)
+          return yield* cardChanged("This card changed or was answered. Look at it again.");
+        // What the Confirm below refuses, refused before any card moves.
+        if (
+          !Option.exists(decodeAwaiting(widget.awaiting), (awaiting) =>
+            awaiting.includes(person.personId),
+          )
+        )
+          return yield* fail("not_allowed", "This card isn't waiting on you, so nothing was sent.");
+        const card = decodeChoice(fromJson(widget.state).pipe(Option.getOrUndefined));
+        const confirm = confirmOf(card);
+        const now = yield* Clock.currentTimeMillis;
+        if (
+          Option.isNone(card) ||
+          confirm === undefined ||
+          widget.closedAt !== null ||
+          choiceExpired({ updatedAt: widget.updatedAt, state: card.value }, now)
+        )
+          return yield* fail("invalid_state", "This question expired.");
+        const signedOut = yield* connectionById(input.orgId, row.connectionId).pipe(provideSql);
+        if (signedOut?.state === "needs_sign_in")
+          return yield* fail(
+            "unavailable",
+            `${signedOut.accountLabel ?? signedOut.label} needs signing in again in Settings › Connections. Nothing was sent; send it again once it's back.`,
+          );
+        yield* cards.canTap(person, input.widgetId);
+        // The outcome write's own test: a mail's card only goes where no one below owner level reads.
+        if (yield* chatShared(sql, { orgId: input.orgId, chatId: row.chatId }))
+          return yield* fail(
+            "not_allowed",
+            "This chat now includes someone who can't confirm mail, so nothing was sent. Ask for a new draft in your own chat.",
+          );
+        const tap = (widgetId: string, revision: number, optionId: string) =>
+          cards.act(person, {
+            widgetId: KinWidgetId.make(widgetId),
+            revision,
+            actionId: KIN_CHOICE_CARD_ACTION,
+            value: optionId,
+            clientActionId: input.clientActionId,
+          });
+        if (sameWords(prepared, edited)) {
+          yield* tap(input.widgetId, input.revision, confirm);
+          return { widgetId: input.widgetId };
+        }
+        // The new ask is the old one with the person's words: the same connection, tool, account
+        // and sign-in as its card showed, and the same outside mark.
+        const [made] = yield* sql<{ askId: string }>`INSERT INTO kin_connection_asks (org_id,
+            ask_id, connection_id, tool_name, pin_digest, payload_json, agent_id, wakeup_id,
+            chat_id, entry_record_id, proposed_at, account, sign_in_gen, outside_from)
+          SELECT org_id, ${askId}, connection_id, tool_name, pin_digest, ${payload}, agent_id,
+            wakeup_id, chat_id, entry_record_id, ${now}, account, sign_in_gen, outside_from
+          FROM kin_connection_asks WHERE org_id = ${input.orgId} AND ask_id = ${row.askId}
+          ON CONFLICT (org_id, ask_id) DO NOTHING RETURNING ask_id AS "askId"`;
+        const [replaced] = yield* sql<{ askId: string }>`UPDATE kin_connection_asks
+            SET state = 'stale', reason = 'Replaced by an edited copy.', decided_at = ${now},
+              decided_by = ${person.personId}, result_json = ${editedAs}
+          WHERE org_id = ${input.orgId} AND ask_id = ${row.askId} AND state = 'open'
+          RETURNING ask_id AS "askId"`;
+        if (made === undefined || replaced === undefined) return yield* cardChanged(ALREADY);
+        yield* cards.close(input.widgetId);
+        const connection = yield* connectionEverById(input.orgId, row.connectionId).pipe(
+          provideSql,
+        );
+        const mail = connection === undefined ? undefined : mailProviderOf(connection);
+        const shown = sendCard({
+          clock: {
+            zone: yield* ownerZone(input.orgId).pipe(provideSql),
+            locale: yield* textLocale(input.orgId).pipe(provideSql),
+          },
+          service: connection?.label ?? row.toolName,
+          ...(mail === undefined ? {} : { mail }),
+          account: row.account,
+          tool: row.toolName,
+          prepared: edited,
+          ...(row.outsideFrom === null
+            ? {}
+            : { outside: yield* outsideLabel(input.orgId, row.outsideFrom).pipe(provideSql) }),
+        });
+        const posted = yield* cards.post(
+          {
+            _tag: "agent",
+            // The person's tap, not a turn, draws it: the agent's turn may have ended.
+            hostPosted: true,
+            orgId: input.orgId,
+            agentId: KinAgentId.make(row.agentId),
+            ownerPersonId: KinPersonId.make(row.owner),
+            threadId: ThreadId.make(row.threadId),
+          },
+          {
+            chatId: KinChatId.make(row.chatId),
+            clientMessageId: `kin-connection-ask:${askId}`,
+            question: shown.question,
+            detail: shown.detail,
+            send: shown.send,
+          },
+        );
+        yield* sql`UPDATE kin_connection_asks SET widget_id = ${posted.widgetId}
+          WHERE org_id = ${input.orgId} AND ask_id = ${askId} AND widget_id IS NULL`;
+        const posts = confirmOf(decodeChoice(posted.state));
+        if (posts === undefined) return yield* unavailable;
+        yield* tap(posted.widgetId, posted.revision, posts);
+        yield* touched(input.orgId);
+        return { widgetId: posted.widgetId };
+      }),
+    );
+  }, settle);
 
   /** A failed ask whose mail now stands on a card again owes none. */
   const settled = (orgId: KinOrgId, askId: string) =>
@@ -3182,6 +3443,7 @@ const make = Effect.gen(function* () {
     offer,
     note,
     answerAsk,
+    sendEdited,
     freshAsk,
     sendAsk,
     interruptedSends,

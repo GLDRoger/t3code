@@ -1,0 +1,265 @@
+import {
+  EnvironmentId,
+  KinChatError,
+  KinOrgId,
+  KinPersonId,
+  type KinConnectionSendEditedInput,
+  type KinWidget,
+} from "@t3tools/contracts";
+import type { Atom } from "effect/reactivity";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
+import "~/index.css";
+
+import { render } from "../../test/render";
+import { AppAtomRegistryProvider, appAtomRegistry } from "../rpc/atomRegistry";
+import { KinCard } from "./KinCards";
+
+const POSTED = Date.parse("2026-11-19T09:00:00.000Z");
+const state = vi.hoisted(() => ({
+  /** Whether this session may send an edited mail; the card reads it as it would a grant. */
+  canEdit: null as Atom.Writable<boolean> | null,
+  sent: [] as Array<KinConnectionSendEditedInput>,
+  /** How each send is answered, in order: a refusal in the host's words, or null for done. */
+  answers: [] as Array<{ reason: "invalid_state" | "widget_changed"; message: string } | null>,
+}));
+
+vi.mock(import("~/state/use-atom-command"), async () => {
+  const { Cause } = await import("effect");
+  const { AsyncResult } = await import("effect/reactivity");
+  return {
+    useAtomCommand: ((command: { readonly label: string }) =>
+      async (value: { readonly input: KinConnectionSendEditedInput }) => {
+        if (command.label !== "kin:connection:sendEdited")
+          return AsyncResult.failure(Cause.fail("unused"));
+        state.sent.push(value.input);
+        const refusal = state.answers.shift() ?? null;
+        return refusal === null
+          ? AsyncResult.success({ widgetId: "choice:m2" })
+          : AsyncResult.failure(Cause.fail(new KinChatError(refusal)));
+      }) as never,
+  };
+});
+vi.mock(import("./kinClient"), async () => {
+  const { Atom } = await import("effect/reactivity");
+  const allowed = Atom.make(true);
+  state.canEdit = Atom.make(true).pipe(Atom.keepAlive);
+  const canEdit = state.canEdit;
+  return {
+    kinClient: {
+      widgetAction: { label: "kin:widget:act", permissionAtom: () => allowed },
+      connectionSetSendFrom: { label: "kin:connection:setSendFrom", permissionAtom: () => allowed },
+      connectionSendEdited: { label: "kin:connection:sendEdited", permissionAtom: () => canEdit },
+    },
+    // Imported by the pages a card can open; no test here reaches them.
+    refreshKinAgents: () => {},
+    retryKinAccess: () => {},
+    kinReads: {},
+  } as never;
+});
+vi.mock(import("../connection/catalog"), async () => {
+  const { Atom } = await import("effect/reactivity");
+  return {
+    environmentCatalog: { catalogValueAtom: Atom.make({ isReady: false, entries: new Map() }) },
+  } as never;
+});
+vi.mock(import("./useKinOwnerLevel"), () => ({ useKinOwnerLevelKnown: () => true }) as never);
+vi.mock(import("./useKinClock"), () => ({ useNowMinuteMs: () => POSTED + 60_000 }) as never);
+
+function setup() {
+  appAtomRegistry.set(state.canEdit!, true);
+  state.sent.length = 0;
+  state.answers.length = 0;
+}
+
+const RHEA = "rhea@ambermill.example";
+const BILLING = "billing@ambermill.example";
+
+// Ambermill's Chief of staff drafted this mail to an invented client.
+const mail = (change: { revision?: number; send?: Record<string, unknown> } = {}): KinWidget =>
+  ({
+    orgId: KinOrgId.make("org-1"),
+    chatId: "cos-rhea",
+    widgetId: "choice:m1",
+    messageId: "m1",
+    widgetClass: "native",
+    type: "choice",
+    revision: change.revision ?? 2,
+    state: {
+      question: "Send this email from Gmail?",
+      detail: null,
+      options: [
+        { optionId: "option-1", label: "Confirm", kind: "yes" },
+        { optionId: "option-2", label: "Cancel", kind: "no" },
+      ],
+      send: {
+        service: "Gmail",
+        action: "email",
+        from: RHEA,
+        account: RHEA,
+        to: ["anita@orbitdental.example"],
+        cc: [],
+        subject: "Invoice",
+        body: "Hi Anita,\nThe invoice is attached.\nRhea",
+        attachments: [{ name: "INV-26-27-004.pdf", label: null, bytes: 20_480 }],
+        outcome: null,
+        ...change.send,
+      },
+      answer: null,
+    },
+    source: null,
+    feed: null,
+    awaiting: [KinPersonId.make("rhea")],
+    pinnedAt: null,
+    closedAt: null,
+    updatedAt: "2026-11-19T09:00:00.000Z",
+  }) as never;
+
+const view = (widget: KinWidget = mail()) => (
+  <AppAtomRegistryProvider>
+    <KinCard
+      widget={widget}
+      environmentId={EnvironmentId.make("env-1")}
+      orgId="org-1"
+      viewerPersonId={KinPersonId.make("rhea")}
+      heldFor={null}
+    />
+  </AppAtomRegistryProvider>
+);
+
+/** The From line, as the card's term and its value. */
+const fromLine = () => page.getByRole("definition").filter({ hasText: "ambermill.example" });
+
+describe("a mail card's Edit", () => {
+  it("edits the mail in place, says what the host refused, and sends the edited mail", async () => {
+    setup();
+    state.answers.push(
+      {
+        reason: "invalid_state",
+        message: "anita at orbit in To isn't a plain address such as ana@example.com.",
+      },
+      null,
+    );
+    await using screen = await render(view());
+    await userEvent.click(page.getByRole("button", { name: "Edit" }));
+
+    const to = page.getByLabelText("To");
+    await expect.element(to).toHaveValue("anita@orbitdental.example");
+    await expect
+      .element(page.getByLabelText("Message"))
+      .toHaveValue("Hi Anita,\nThe invoice is attached.\nRhea");
+    // The account it goes from and the file are shown, not editable.
+    await expect.element(fromLine()).toHaveTextContent(RHEA);
+    await expect.element(screen.getByText("INV-26-27-004.pdf")).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+
+    await userEvent.clear(to);
+    await userEvent.type(to, "anita at orbit");
+    await userEvent.click(page.getByRole("button", { name: "Send edited mail" }));
+    await expect
+      .element(page.getByRole("alert"))
+      .toHaveTextContent("anita at orbit in To isn't a plain address such as ana@example.com.");
+    await expect.element(to).toHaveValue("anita at orbit");
+
+    await userEvent.clear(to);
+    await userEvent.type(to, "anita@orbitdental.example, dev@orbitdental.example");
+    await userEvent.fill(
+      page.getByLabelText("Message"),
+      "Hi Anita,\nThe invoice is attached.\nRhea\nPS: GST is on page 2.",
+    );
+    await userEvent.click(page.getByRole("button", { name: "Send edited mail" }));
+
+    await expect.element(page.getByLabelText("To")).not.toBeInTheDocument();
+    expect(state.sent).toHaveLength(2);
+    expect(state.sent[1]).toMatchObject({
+      orgId: "org-1",
+      widgetId: "choice:m1",
+      revision: 2,
+      to: ["anita@orbitdental.example", "dev@orbitdental.example"],
+      cc: [],
+      subject: "Invoice",
+      body: "Hi Anita,\nThe invoice is attached.\nRhea\nPS: GST is on page 2.",
+    });
+    // Each press is its own; a retry of one would carry its id.
+    expect(state.sent[1]!.clientActionId).not.toBe(state.sent[0]!.clientActionId);
+  });
+
+  it("discards edits back to the card, and isn't offered to one who can't send", async () => {
+    setup();
+    await using screen = await render(view());
+    await userEvent.click(page.getByRole("button", { name: "Edit" }));
+    await userEvent.type(page.getByLabelText("Subject"), " for November");
+    await userEvent.click(page.getByRole("button", { name: "Discard edits" }));
+    await expect.element(page.getByRole("button", { name: "Confirm" })).toBeVisible();
+    await expect.element(screen.getByText("Invoice", { exact: true })).toBeVisible();
+    expect(state.sent).toHaveLength(0);
+
+    // The grant goes, as a session's scopes change, and the open card follows.
+    appAtomRegistry.set(state.canEdit!, false);
+    await expect.element(page.getByRole("button", { name: "Confirm" })).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+  });
+
+  it("shows a reply's From and the quote that goes with it, and Enter in a field sends nothing", async () => {
+    setup();
+    const quoted = "On Mon, Anita wrote:\n> Could you resend the invoice?";
+    await using screen = await render(
+      view(
+        mail({ send: { action: "reply", from: BILLING, fromName: "Ambermill Billing", quoted } }),
+      ),
+    );
+    await userEvent.click(page.getByRole("button", { name: "Edit" }));
+    await expect.element(fromLine().first()).toHaveTextContent(`Ambermill Billing <${BILLING}>`);
+    await expect.element(screen.getByText("Account", { exact: true })).toBeVisible();
+    await expect
+      .element(page.getByLabelText("Quoted message"))
+      .toHaveTextContent("On Mon, Anita wrote: > Could you resend the invoice?");
+
+    const subject = page.getByLabelText("Subject");
+    await userEvent.fill(subject, "Invoice for November");
+    await userEvent.type(subject, "{Enter}");
+    expect(state.sent).toHaveLength(0);
+    await userEvent.type(page.getByLabelText("To"), "{Enter}");
+    expect(state.sent).toHaveLength(0);
+    await expect.element(subject).toHaveValue("Invoice for November");
+  });
+
+  it("keeps the words when the card changed underneath, shows its new From, and sends that card", async () => {
+    setup();
+    state.answers.push(
+      {
+        reason: "widget_changed",
+        message: "This card changed or was answered. Look at it again.",
+      },
+      null,
+    );
+    await using screen = await render(view());
+    await userEvent.click(page.getByRole("button", { name: "Edit" }));
+    await userEvent.fill(
+      page.getByLabelText("Message"),
+      "Hi Anita,\nThe invoice is attached.\nRhea\nPS: GST is on page 2.",
+    );
+
+    // From changed on another device. The host knows first: its refusal lands before the card's
+    // update does, so there is no newer card to send yet.
+    const send = page.getByRole("button", { name: "Send edited mail" });
+    await userEvent.click(send);
+    await expect
+      .element(page.getByRole("alert"))
+      .toHaveTextContent("This card changed or was answered. Look at it again.");
+    const words = "Hi Anita,\nThe invoice is attached.\nRhea\nPS: GST is on page 2.";
+    await expect.element(page.getByLabelText("Message")).toHaveValue(words);
+    expect(state.sent[0]).toMatchObject({ revision: 2, body: words });
+    await expect.element(send).toBeDisabled();
+
+    // The card arrives: who it goes from now is beside Send, and Send carries that card.
+    await screen.rerender(view(mail({ revision: 3, send: { from: BILLING, account: BILLING } })));
+    await expect.element(fromLine().last()).toHaveTextContent(BILLING);
+    expect(fromLine().elements()).toHaveLength(2);
+    await expect.element(send).toBeEnabled();
+    await userEvent.click(send);
+    await expect.element(page.getByLabelText("Subject")).not.toBeInTheDocument();
+    expect(state.sent).toHaveLength(2);
+    expect(state.sent[1]).toMatchObject({ revision: 3, body: words });
+  });
+});
