@@ -345,26 +345,26 @@ async function web(instance: Instance, person: string, args: Args) {
           : null;
       if (width !== undefined || height !== undefined || colorScheme !== null)
         await Web.view(session, {
-          width: Number(width ?? 1280),
-          height: Number(height ?? 900),
+          width: width === undefined ? undefined : Number(width),
+          height: height === undefined ? undefined : Number(height),
           colorScheme,
         });
       console.log(`saved ${await Web.screenshot(session, path, args.flags.has("full"))}`);
       return;
     }
     case "view": {
-      const width = Number(flag(args, "width") ?? "1280");
-      const height = Number(flag(args, "height") ?? "900");
+      const width = flag(args, "width");
+      const height = flag(args, "height");
       const scheme = args.flags.has("dark") ? "dark" : args.flags.has("light") ? "light" : null;
       const zone = flag(args, "zone");
-      await Web.view(session, {
-        width,
-        height,
+      const size = await Web.view(session, {
+        width: width === undefined ? undefined : Number(width),
+        height: height === undefined ? undefined : Number(height),
         colorScheme: scheme,
         ...(zone === undefined ? {} : { zone }),
       });
       console.log(
-        `view ${width}×${height}${scheme === null ? "" : ` ${scheme}`}${zone === undefined ? "" : ` ${zone}`}`,
+        `view ${size.width}×${size.height}${scheme === null ? "" : ` ${scheme}`}${zone === undefined ? "" : ` ${zone}`}`,
       );
       return;
     }
