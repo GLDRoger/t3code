@@ -496,7 +496,8 @@ it.effect("removing a device ends the keys made on it and down its chain, and no
     // A device that merely lapses ends none of its keys.
     const strap = yield* linkFrom(yield* linkFrom(zoya.app));
     const onStrap = yield* keyOn(strap);
-    yield* sql`UPDATE auth_sessions SET expires_at = '2000-01-01T00:00:00.000Z'
+    // The test clock starts at the epoch, so only a time before it has passed.
+    yield* sql`UPDATE auth_sessions SET expires_at = '1969-12-31T00:00:00.000Z'
       WHERE session_id = ${strap.sessionId}`;
     assert.isTrue(yield* works(onStrap));
 
