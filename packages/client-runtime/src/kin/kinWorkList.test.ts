@@ -6,6 +6,10 @@ import {
   KinOrgId,
   KinPersonId,
   KinRecordId,
+  KinRecordKey,
+  type KinPartiesInput,
+  type KinPartiesResult,
+  type KinProjectsInput,
   type KinRecord,
   type KinWorkListInput,
   type KinWorkListResult,
@@ -15,9 +19,14 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 
+import type { AtomCommandResult } from "../state/runtime.ts";
 import { KIN_WORK_DEFAULT_FILTER } from "./kinWork.ts";
 import {
+  KIN_PICKER_COPY,
+  KIN_PICKER_SEARCH_CAP,
   KIN_WORK_PAGE,
+  createKinPickerSearch,
+  kinPickerSearchView,
   createKinListEntries,
   createKinListKeeper,
   createKinWorkList,
@@ -347,5 +356,126 @@ describe("createKinListEntries", () => {
     );
     entries.changed(10);
     expect(asked).toHaveLength(2);
+  });
+});
+
+describe("createKinPickerSearch", () => {
+  // Only names and keys reach a picker; the rest of a row is the host's.
+  const named = (names: ReadonlyArray<string>, more = false) =>
+    AsyncResult.success({
+      parties: names.map((name, index) => ({ key: KinRecordKey.make(`C-${index + 101}`), name })),
+      total: names.length,
+      nextCursor: more ? `o:${names.length}` : null,
+      seq: 1,
+      asOf: "2026-11-11T08:00:00.000Z",
+    } as unknown as KinPartiesResult);
+  function harness(
+    answer: (input: KinPartiesInput) => AtomCommandResult<KinPartiesResult, unknown>,
+  ) {
+    const asked: Array<KinPartiesInput> = [];
+    const timers: Array<() => void> = [];
+    const settled: Array<() => void> = [];
+    const search = createKinPickerSearch({
+      orgId,
+      kind: "clients",
+      done: false,
+      readClients: async (input) => {
+        asked.push(input);
+        return answer(input);
+      },
+      readProjects: (_input: KinProjectsInput) => {
+        throw new Error("A client picker never reads projects.");
+      },
+      onChange: (state) => {
+        if (!state.loading) settled.splice(0).forEach((resolve) => resolve());
+      },
+      schedule: (run) => {
+        timers.push(run);
+        return () => timers.splice(timers.indexOf(run), 1);
+      },
+    });
+    // The host's answer has landed once the search stops loading.
+    const pause = () => {
+      const answered = new Promise<void>((resolve) => settled.push(resolve));
+      timers.shift()?.();
+      return answered;
+    };
+    return { search, asked, timers, pause };
+  }
+  const loaded = {
+    open: [{ key: KinRecordKey.make("C-1"), title: "Invented Orbit Dental" }],
+    done: [],
+  };
+  const view = (
+    state: ReturnType<typeof harness>["search"],
+    held: { key: KinRecordKey; title: string } | null,
+  ) => kinPickerSearchView({ noun: "client", search: state.getState(), loaded, held });
+
+  it("asks the host once typing pauses, with the words, and never with nothing typed", async () => {
+    const h = harness(() => named(["Invented Kestrel Freight"]));
+    expect(view(h.search, null).open).toEqual(loaded.open);
+    h.search.type("k");
+    h.search.type("ke");
+    h.search.type("kestrel ");
+    expect(h.asked).toEqual([]);
+    expect(h.timers).toHaveLength(1);
+    expect(h.search.getState().loading).toBe(true);
+    await h.pause();
+    expect(h.asked).toEqual([{ orgId, limit: KIN_PICKER_SEARCH_CAP, text: "kestrel" }]);
+    expect(view(h.search, null)).toMatchObject({
+      open: [{ key: "C-101", title: "Invented Kestrel Freight" }],
+      loading: false,
+      note: null,
+    });
+    h.search.type("");
+    expect(h.timers).toHaveLength(0);
+    expect(view(h.search, null).open).toEqual(loaded.open);
+  });
+
+  it("keeps the current value listed while its name matches, and says when nothing does", async () => {
+    const held = { key: KinRecordKey.make("C-140"), title: "Invented Zephyr Kitchens" };
+    const h = harness((input) =>
+      named(input.text === "zephyr" ? [] : ["Invented Kestrel Freight"]),
+    );
+    expect(view(h.search, held).open.map((ref) => ref.key)).toEqual(["C-140", "C-1"]);
+    h.search.type("zephyr");
+    await h.pause();
+    expect(view(h.search, held)).toMatchObject({ open: [held], note: null });
+    h.search.type("nobody");
+    await h.pause();
+    expect(view(h.search, held)).toMatchObject({ open: [{ key: "C-101" }] });
+    const empty = harness(() => named([]));
+    empty.search.type("Nobody ");
+    await empty.pause();
+    expect(view(empty.search, held)).toMatchObject({
+      open: [],
+      note: KIN_PICKER_COPY.nothing("client", "Nobody"),
+    });
+    expect(KIN_PICKER_COPY.nothing("client", "Nobody")).toBe("No client named “Nobody”");
+  });
+
+  it("asks for more letters at the cap, and tries again after a failure", async () => {
+    let fail = true;
+    const h = harness(() =>
+      fail
+        ? AsyncResult.failure(
+            Cause.fail(new KinChatError({ reason: "unavailable", message: "Down." })),
+          )
+        : named(
+            Array.from({ length: KIN_PICKER_SEARCH_CAP }, (_, index) => `Invented ${index}`),
+            true,
+          ),
+    );
+    h.search.type("invented");
+    await h.pause();
+    expect(view(h.search, null)).toMatchObject({
+      failure: { kind: "busy", retry: true },
+      loading: false,
+      note: null,
+    });
+    fail = false;
+    await h.search.retry();
+    expect(h.asked).toHaveLength(2);
+    expect(view(h.search, null).note).toBe(KIN_PICKER_COPY.narrow);
   });
 });

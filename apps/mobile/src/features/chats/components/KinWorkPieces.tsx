@@ -81,13 +81,11 @@ export function KinWorkFrame(
         <ScreenScrollView
           ref={scroll}
           className="flex-1"
-          {...(form
-            ? {
-                keyboardShouldPersistTaps: "handled",
-                keyboardDismissMode: "interactive",
-                automaticallyAdjustKeyboardInsets: true,
-              }
-            : {})}
+          // Every frame, not only a form: a task page's pickers have a search field too, and
+          // without these a tap on a found row only closes the keyboard.
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="interactive"
+          automaticallyAdjustKeyboardInsets
           // A form insets itself under the bar: React Native clamps a scroll above offset 0, so
           // with UIKit's automatic inset a problem drawn at the top could never be scrolled to.
           contentInsetAdjustmentBehavior={form ? "never" : "automatic"}

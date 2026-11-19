@@ -8,8 +8,8 @@ import {
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
-// What `kin.work.create` was sent.
-const host = vi.hoisted(() => ({ created: [] as Array<unknown> }));
+// What `kin.work.create` was sent, and what the host's client search was asked.
+const host = vi.hoisted(() => ({ created: [] as Array<unknown>, searched: [] as Array<string> }));
 
 vi.mock(import("./kinClient"), async (importOriginal) => {
   const real = await importOriginal();
@@ -29,6 +29,16 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
         return AsyncResult.success({ key: "W-1" });
       }),
       workAssign: command(() => AsyncResult.success({})),
+      // The host's clients by name, past the first page the form holds.
+      workClients: command((input) => {
+        const text = (input as { readonly text: string }).text;
+        host.searched.push(text);
+        const parties = [
+          ...clients.map((client) => ({ key: client.key, name: client.title })),
+          { key: "C-120", name: "Zephyr Kitchens" },
+        ].filter((party) => party.name.toLowerCase().includes(text.toLowerCase()));
+        return AsyncResult.success({ parties, total: parties.length, nextCursor: null, seq: 1 });
+      }),
     } as never,
   };
 });
@@ -57,6 +67,7 @@ const clients = [
 
 function setup() {
   host.created = [];
+  host.searched = [];
 }
 
 function NewTask() {
@@ -122,5 +133,30 @@ describe("New task on the web", () => {
     );
     expect(host.created[0]).not.toHaveProperty("category");
     expect((host.created[0] as KinWorkCreateInput).side).toBeUndefined();
+  });
+
+  it("finds a client past the first page by asking the host, and the task gets it", async () => {
+    setup();
+    await using _screen = await render(<NewTask />);
+    await userEvent.fill(page.getByLabelText("What needs doing"), "Book the kitchen audit");
+    await userEvent.click(page.getByRole("combobox", { name: "Client" }));
+    await userEvent.keyboard("zephyr");
+    await userEvent.click(page.getByRole("option", { name: "Zephyr Kitchens" }));
+    // One question for the whole word, not one per letter.
+    expect(host.searched).toEqual(["zephyr"]);
+    await userEvent.click(page.getByRole("button", { name: "Add task" }));
+    await vi.waitFor(() =>
+      expect(host.created).toEqual([
+        expect.objectContaining({ title: "Book the kitchen audit", party: "C-120" }),
+      ]),
+    );
+  });
+
+  it("says plainly when the host knows no client by that name", async () => {
+    setup();
+    await using _screen = await render(<NewTask />);
+    await userEvent.click(page.getByRole("combobox", { name: "Client" }));
+    await userEvent.keyboard("nobody");
+    await expect.element(page.getByText("No client named “nobody”")).toBeVisible();
   });
 });

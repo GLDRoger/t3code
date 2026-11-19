@@ -2490,6 +2490,45 @@ it.effect("a record lists what links to it, of what the reader sees, newest firs
 );
 
 it.effect(
+  "a picker finds any client by name past the first page, and none the person can't see",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const records = yield* KinRecords.KinRecords;
+      // 140 clients, every seventh labelled sensitive: the teammate may see 120 of them.
+      const name = (n: number) =>
+        n === 118
+          ? "Invented Quillfeather Studio"
+          : n === 133
+            ? "Invented Hollowbrook Mills"
+            : `Invented Client ${n}`;
+      for (let n = 1; n <= 140; n += 1)
+        yield* records.create(orgId, ownerWrites, {
+          list: "clients",
+          originKey: `client ${n}`,
+          title: name(n),
+          owner: { _tag: "person", personId: ownerId },
+          ...(n % 7 === 0 ? { sensitive: true } : {}),
+        });
+      yield* places(1, 0, 0);
+      const first = yield* OwnerClients.parties([mate], { orgId, limit: 100 });
+      assert.strictEqual(first.total, 120);
+      assert.notInclude(
+        first.parties.map((party) => party.name),
+        "Invented Quillfeather Studio",
+      );
+      const found = (text: string, people = [mate]) =>
+        OwnerClients.parties(people, { orgId, text, limit: 30 }).pipe(
+          Effect.map((result) => result.parties.map((party) => party.name)),
+        );
+      assert.deepStrictEqual(yield* found("quillf"), ["Invented Quillfeather Studio"]);
+      assert.deepStrictEqual(yield* found("  STUDIO "), ["Invented Quillfeather Studio"]);
+      assert.deepStrictEqual(yield* found("hollowbrook"), []);
+      assert.deepStrictEqual(yield* found("hollowbrook", [owner]), ["Invented Hollowbrook Mills"]);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
   "a member finds the projects they are on: in the list, its count and the client page",
   () =>
     Effect.gen(function* () {
@@ -2516,6 +2555,15 @@ it.effect(
       yield* places(1, 0, 0);
       const listed = yield* OwnerClients.projects([mate], { orgId });
       assert.deepStrictEqual([listed.projects.map((one) => one.key), listed.total], [[on.key], 1]);
+      // A picker's search by name keeps to the same rule: theirs found, the others not at all.
+      const found = (text: string, people = [mate]) =>
+        OwnerClients.projects(people, { orgId, text }).pipe(
+          Effect.map((result) => result.projects.map((one) => one.name)),
+        );
+      assert.deepStrictEqual(yield* found("APP"), ["Invented app"]);
+      assert.deepStrictEqual(yield* found("api"), []);
+      assert.deepStrictEqual(yield* found("pricing"), []);
+      assert.deepStrictEqual(yield* found("api", [owner]), ["Invented api"]);
       const page = yield* OwnerClients.party([mate], { orgId, key: client.key });
       assert.deepStrictEqual(
         page.projects.map((one) => one.key),
