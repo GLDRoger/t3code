@@ -20,7 +20,7 @@ Set by the owner on 10 Nov 2026. Read this before planning, appraising, or cutti
 ## Surfaces
 
 - **Mobile:** the Kin app is Kin and nothing else. It opens on Chats, the list of every lead, DM, and group, with Work and Settings beside it. Coding sessions live in the T3 Code app.
-- **Desktop:** the brand mark in the top left switches between the T3 coding-session thread list and the Kin chat list, plus a setting for which list it opens to.
+- **Desktop:** Kin, and nothing that leads to T3's coding threads; it opens on Kin. Coding happens in each person's own T3 Code, connected to Kin through its MCP endpoint.
 - **Web:** the same as desktop, wherever it's reasonable.
 
 ## Standing choices
