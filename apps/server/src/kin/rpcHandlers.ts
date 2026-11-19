@@ -23,6 +23,7 @@ import { makeKinMemoryHandlers } from "./memory/rpcHandlers.ts";
 import { KinServer, type Services } from "./KinServer.ts";
 import { accessOf } from "./people/KinAccess.ts";
 import { makeKinPushHandlers } from "./push/rpcHandlers.ts";
+import { makeKinRecommendHandlers } from "./recommend/rpcHandlers.ts";
 import { makeKinWorkHandlers } from "./work/rpcHandlers.ts";
 import { makeKinTasksKeyHandlers } from "./tasksKey/rpcHandlers.ts";
 
@@ -73,6 +74,7 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
     ...(yield* makeKinPushHandlers(session)),
     ...(yield* makeKinConnectionHandlers(session)),
     ...(yield* makeKinSocialHandlers(session)),
+    ...(yield* makeKinRecommendHandlers(session)),
   });
   const guarded: Record<string, unknown> = {};
   for (const [tag, handler] of Object.entries(handlers)) {

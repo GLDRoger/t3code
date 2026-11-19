@@ -24,6 +24,7 @@ import {
   ChevronRightIcon,
   CircleUserIcon,
   FingerprintIcon,
+  SlidersHorizontalIcon,
   PaletteIcon,
   PlugIcon,
   BrainIcon,
@@ -85,6 +86,7 @@ import { KinMemoryView } from "./KinMemoryView";
 import { KinSettingsNotifications } from "./KinNotifications";
 import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
 import { KinProfileBody, useKinMe } from "./KinProfileSheet";
+import { KinRecommendationsSettings } from "./KinRecommendations";
 import {
   closeKinSettings,
   kinSettingsFindIn,
@@ -109,6 +111,7 @@ const PAGE_ICON: Record<KinSettingsPage, LucideIcon> = {
   memory: BrainIcon,
   company: Building2Icon,
   approvals: FingerprintIcon,
+  recommendations: SlidersHorizontalIcon,
 };
 
 /**
@@ -134,7 +137,14 @@ interface KinSettingsTarget {
 
 function useKinSettingsGroups(environmentId: EnvironmentId): ReadonlyArray<KinSettingsGroup> {
   const ownerLevel = useKinOwnerLevel(environmentId);
-  return kinSettingsGroups({ ownerLevel, computer: !isChatOnlySession(), notifications: true });
+  // The owner alone, as the host gates `kin.recommendations.*`: a co-owner sees none of it.
+  const recommendations = useAtomValue(kinClient.recommendationUndo.permissionAtom(environmentId));
+  return kinSettingsGroups({
+    ownerLevel,
+    computer: !isChatOnlySession(),
+    notifications: true,
+    recommendations,
+  });
 }
 
 /** The gear on Chats on a narrow window, where there is no sidebar corner for it. */
@@ -355,6 +365,8 @@ function KinSettingsPageBody(props: {
       );
     case "approvals":
       return <ApprovalsSettings />;
+    case "recommendations":
+      return <KinRecommendationsSettings key={target.orgId} {...target} />;
   }
 }
 

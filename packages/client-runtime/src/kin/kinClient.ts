@@ -43,6 +43,7 @@ import {
   type KinConnectionRef,
   type KinConnectionsInput,
   type KinTasksKeysListInput,
+  type KinRecommendationsInput,
   type KinSocialInput,
   type KinGitHubInput,
   type KinProjectPageInput,
@@ -253,6 +254,11 @@ export function makeKinClient<R, ER>(
     tag: "kin.tasksKeys.list",
   });
   const readTasksKeys = kinGuardedRead(tasksKeysRead);
+  const recommendationsRead = createKinRpcCommand(runtime, {
+    label: "kin:recommendations:read",
+    tag: "kin.recommendations.list",
+  });
+  const readRecommendations = kinGuardedRead(recommendationsRead);
 
   const memoryRead = createKinRpcCommand(runtime, {
     label: "kin:memory:read",
@@ -866,6 +872,25 @@ export function makeKinClient<R, ER>(
       }),
       staleTimeMs: 30_000,
       refreshTrigger: kinRefreshOn("people"),
+    }),
+    /** What Kin suggested to the owner and what came of each: his alone. Read on open. */
+    recommendations: createKinQueryAtomFamily(runtime, {
+      label: "kin:recommendations",
+      execute: Effect.fn("KinClient.recommendations")(function* (input: KinRecommendationsInput) {
+        return yield* readRecommendations(input);
+      }),
+      staleTimeMs: 30_000,
+    }),
+    /** Its `permissionAtom` is whether Settings shows Recommendations at all. */
+    recommendationUndo: createKinRpcCommand(runtime, {
+      label: "kin:recommendation:undo",
+      tag: "kin.recommendations.undo",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.recId },
+    }),
+    recommendationAskAgain: createKinRpcCommand(runtime, {
+      label: "kin:recommendation:ask-again",
+      tag: "kin.recommendations.askAgain",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.recId },
     }),
     /** Makes a key for the caller. The answer carries the secret once; nothing here keeps it. */
     tasksKeyIssue: createKinRpcCommand(runtime, {

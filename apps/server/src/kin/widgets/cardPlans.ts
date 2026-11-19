@@ -113,6 +113,26 @@ const TakenPlan = Schema.Struct({
   hidden: Schema.optional(Schema.Literal(true)),
 });
 export type TakenPlan = typeof TakenPlan.Type;
+/** The one setting a recommendation's Do it changes, and Undo puts back, as Settings would. */
+const RecommendChange = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("lead_access"),
+    personId: Schema.String,
+    personName: Schema.String,
+    agentId: Schema.String,
+    agentName: Schema.String,
+  }),
+]);
+/** Kin's own suggestion to the owner (`recommend/KinRecommend.ts`): Do it, or Not now. */
+const RecommendPlan = Schema.Struct({
+  kind: Schema.Literal("recommend"),
+  answer: Schema.Literals(["do", "not_now"]),
+  recId: Schema.String,
+  rule: Schema.String,
+  subject: Schema.String,
+  change: RecommendChange,
+});
+export type RecommendPlan = typeof RecommendPlan.Type;
 export const CardPlan = Schema.Union([
   RecordPlan,
   StartPlan,
@@ -120,6 +140,7 @@ export const CardPlan = Schema.Union([
   DefaultPlan,
   RoutePlan,
   TakenPlan,
+  RecommendPlan,
 ]);
 export type CardPlan = typeof CardPlan.Type;
 const PlanJson = Schema.fromJsonString(CardPlan);
