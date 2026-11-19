@@ -229,6 +229,15 @@ export function retryKinAccess<R, ER>(
   kinAccessAtoms(runtime).retryKind(registry, environmentId);
 }
 
+/** Reads `kin.access.me` again: a link about to be shown must carry the host's current address. */
+export function refreshKinAccessMe<R, ER>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+  registry: AtomRegistry.AtomRegistry,
+  environmentId: EnvironmentId,
+) {
+  kinAccessAtoms(runtime).retryKind(registry, environmentId);
+}
+
 /**
  * `createEnvironmentRpcCommand` for a Kin method: its `permissionAtom` also needs the viewer's
  * kind to allow the method, so a member never sees an owner-level control. The host decides.
