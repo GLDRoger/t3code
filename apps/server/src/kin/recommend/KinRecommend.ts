@@ -1,4 +1,5 @@
 import {
+  KIN_CHOICE_CARD_TTL_MS,
   KinAgentId,
   KinChatError,
   KinOrgId,
@@ -6,7 +7,7 @@ import {
   type KinRecommendationRow,
   type KinRecommendationsResult,
   ThreadId,
-  type KinWidgetId,
+  KinWidgetId,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
@@ -25,13 +26,14 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import * as KinOpen from "../open/KinOpen.ts";
 import { personQuietUntil } from "../triggers/quietHold.ts";
-import { type RecommendPlan, plansOf, sealPlans } from "../widgets/cardPlans.ts";
+import { type RecommendPlan, sealPlans } from "../widgets/cardPlans.ts";
 import { dayIn } from "../work/money.ts";
-import { recommendShown, undoLabel } from "./card.ts";
+import { RAN_OUT, recommendShown, undoLabel } from "./card.ts";
 import {
   type StoredRow,
   UNDONE_QUIET_MS,
   dayOf,
+  encodeChange,
   isOwner,
   onlyOwner,
   quietAfter,
@@ -39,7 +41,7 @@ import {
   ruleContext,
   storedRows,
 } from "./ledger.ts";
-import { type Candidate, DAY_MS, RULES, type RuleContext, inEffect } from "./rules.ts";
+import { type Candidate, DAY_MS, RULES, type RuleContext, grantNow } from "./rules.ts";
 
 /*
  * Kin's suggestions to the owner: the rules (`rules.ts`) over its own rows, at most one card a
@@ -101,7 +103,8 @@ export type TickResult =
         | "card_open"
         | "posted_today"
         | "nothing"
-        | "busy";
+        | "busy"
+        | "turn_running";
     };
 
 const skipped = (why: Extract<TickResult, { _tag: "skipped" }>["why"]): TickResult => ({
@@ -158,6 +161,11 @@ export const tick = Effect.fn("KinRecommend.tick")(function* (orgId: KinOrgId, a
   const chat = yield* KinChatService;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
+      // A running wake-up's posts in this chat are counted against its own allowance.
+      const [running] = yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${orgId}
+        AND agent_id = ${lead.agentId} AND thread_id = ${thread.threadId} AND status = 'running'
+        LIMIT 1`;
+      if (running !== undefined) return skipped("turn_running");
       const card = yield* chat.ask(
         {
           _tag: "agent",
@@ -185,9 +193,9 @@ export const tick = Effect.fn("KinRecommend.tick")(function* (orgId: KinOrgId, a
         now: at,
       });
       const stored = yield* sql`INSERT INTO kin_recommendations (org_id, rec_id, rule, subject,
-          widget_id, noticed, state, posted_at)
+          widget_id, change_json, noticed, state, posted_at)
         VALUES (${orgId}, ${recId}, ${best.rule}, ${best.subject}, ${card.widgetId},
-          ${best.noticed}, 'open', ${at})
+          ${yield* encodeChange(best.change)}, ${best.noticed}, 'open', ${at})
         ON CONFLICT (org_id, rec_id) DO NOTHING RETURNING rec_id`;
       // A retried pass the same day found its card and row already there: nothing new.
       return stored.length === 0
@@ -195,14 +203,6 @@ export const tick = Effect.fn("KinRecommend.tick")(function* (orgId: KinOrgId, a
         : ({ _tag: "posted", recId, widgetId: card.widgetId } satisfies TickResult);
     }),
   );
-});
-
-/** The change a row's Do it makes, from its card's sealed plan. */
-const changeOf = Effect.fn("KinRecommend.changeOf")(function* (orgId: KinOrgId, row: StoredRow) {
-  for (const plan of (yield* plansOf(orgId, row.widgetId)).values())
-    if (plan.kind === "recommend" && plan.answer === "do" && plan.recId === row.recId)
-      return plan.change;
-  return undefined;
 });
 
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
@@ -216,7 +216,7 @@ const rowOf = Effect.fn("KinRecommend.rowOf")(function* (ctx: RuleContext, row: 
     ({
       recId: row.recId,
       rule: row.rule,
-      noticed: row.noticed,
+      noticed: `Noticed ${dayOf(ctx, row.postedAt)}: ${row.noticed}`,
       outcome,
       postedAt: iso(row.postedAt),
       decidedAt: row.decidedAt === null ? null : iso(row.decidedAt),
@@ -242,13 +242,27 @@ const rowOf = Effect.fn("KinRecommend.rowOf")(function* (ctx: RuleContext, row: 
     case "stale":
       return shown(`Nothing changed on ${decided}: it no longer applied when you tapped.`);
     case "done": {
-      const change = yield* changeOf(ctx.orgId, row);
-      if (change === undefined || !(yield* inEffect(ctx.orgId, change)))
-        return shown(`Done ${decided}. Undone since.`);
-      return shown(`Done ${decided}. ${change.personName} may message ${change.agentName}.`, {
-        kind: "undo",
-        label: undoLabel(change),
-      });
+      const { change } = row;
+      if (change === undefined) return shown(`Done ${decided}.`);
+      const grant = yield* grantNow(ctx.orgId, change, row.grantedAt);
+      if (grant._tag === "gone")
+        return shown(`Done ${decided}. ${change.agentName} is no longer there.`);
+      const { personName: person, agentName: agent } = change;
+      if (grant._tag === "live")
+        return shown(`Done ${decided}. ${person} may message ${agent}.`, {
+          kind: "undo",
+          label: undoLabel(change, grant.other !== null),
+        });
+      // Its own grant ended; a way in it never gave may still stand.
+      return shown(
+        grant.other === null
+          ? `Done ${decided}. Undone since.`
+          : `Done ${decided}. ${person}'s own access was removed since. ${
+              grant.other === "team"
+                ? `${agent} is the team agent, so ${person} can still message it.`
+                : `${person} and ${agent} share a group, so ${person} can still message it there.`
+            }`,
+      );
     }
   }
 });
@@ -282,8 +296,13 @@ export const undo = Effect.fn("KinRecommend.undo")(function* (
       yield* onlyOwner(orgId, personId);
       const [row] = yield* storedRows(orgId, { recId }, 1);
       if (row === undefined) return yield* notFound();
-      const change = row.state === "done" ? yield* changeOf(orgId, row) : undefined;
-      if (change === undefined || !(yield* inEffect(orgId, change)))
+      const { change } = row;
+      // Only the grant its Let made, still live: a later one made by hand isn't its to undo.
+      if (
+        row.state !== "done" ||
+        change === undefined ||
+        (yield* grantNow(orgId, change, row.grantedAt))._tag !== "live"
+      )
         return yield* new KinChatError({
           reason: "invalid_state",
           message: "That change isn't in effect any more, so there's nothing to undo.",
@@ -335,6 +354,29 @@ export const askAgain = Effect.fn("KinRecommend.askAgain")(function* (
   return yield* list(orgId, personId);
 });
 
+/**
+ * Every sweep: an unanswered card past its time limit closes saying so, which settles its row in
+ * Needs you then, not at the next hourly pass.
+ */
+export const closeRanOut = Effect.fn("KinRecommend.closeRanOut")(function* (now: number) {
+  const sql = yield* SqlClient.SqlClient;
+  const chat = yield* KinChatService;
+  // Every org's open cards at once: at most one per org is open, by the tick's own gate.
+  const due = yield* sql<{ orgId: string; widgetId: string }>`SELECT r.org_id AS "orgId",
+      r.widget_id AS "widgetId" FROM kin_recommendations r
+    WHERE r.state = 'open' AND r.ended_at IS NULL
+      AND r.posted_at <= ${now - KIN_CHOICE_CARD_TTL_MS}
+      AND EXISTS (SELECT 1 FROM kin_widgets w WHERE w.org_id = r.org_id
+        AND w.widget_id = r.widget_id AND w.closed_at IS NULL)
+    ORDER BY r.posted_at, r.org_id, r.rec_id`.pipe(NodeSqliteClient.readOnly);
+  for (const one of due)
+    yield* chat.closeReplaced({
+      orgId: KinOrgId.make(one.orgId),
+      widgetId: KinWidgetId.make(one.widgetId),
+      outcome: RAN_OUT,
+    });
+});
+
 /** Hourly per org, on the shared scheduler beside the pulse. */
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -347,6 +389,12 @@ export const layer = Layer.effectDiscard(
       "kin-recommend",
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
+        yield* closeRanOut(now).pipe(
+          Effect.provideService(KinChatService, chats.value),
+          Effect.catch((cause) =>
+            Effect.logWarning("Kin recommendation time-out failed", { cause }),
+          ),
+        );
         // Scheduler maintenance scans organizations; each pass below is org-scoped.
         const orgs = yield* sql<{ orgId: string }>`SELECT org_id AS "orgId" FROM kin_orgs
           ORDER BY org_id`.pipe(NodeSqliteClient.readOnly);

@@ -114,7 +114,7 @@ const TakenPlan = Schema.Struct({
 });
 export type TakenPlan = typeof TakenPlan.Type;
 /** The one setting a recommendation's Do it changes, and Undo puts back, as Settings would. */
-const RecommendChange = Schema.Union([
+export const RecommendChange = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("lead_access"),
     personId: Schema.String,
@@ -133,6 +133,7 @@ const RecommendPlan = Schema.Struct({
   change: RecommendChange,
 });
 export type RecommendPlan = typeof RecommendPlan.Type;
+export type RecommendChange = typeof RecommendChange.Type;
 export const CardPlan = Schema.Union([
   RecordPlan,
   StartPlan,

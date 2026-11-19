@@ -2,6 +2,7 @@ import type { KinAgentId, KinChatId, KinOrgId, KinPersonId } from "@t3tools/cont
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 
 /**
  * Who besides its owner may message a lead (`kin_lead_access`). The owner allows a person per
@@ -30,6 +31,21 @@ export const teamAgent = Effect.fn("KinLeadAccess.teamAgent")(function* (orgId: 
   return row?.agentId ?? null;
 });
 
+/** The owner put them in a group together, so an answer taken private can go on there. */
+const sharesGroupSql = (
+  sql: SqlClient.SqlClient,
+  org: Statement.Fragment | KinOrgId,
+  agent: Statement.Fragment | KinAgentId,
+  personId: KinPersonId,
+) => sql`EXISTS (SELECT 1 FROM kin_chat_members ma
+    JOIN kin_chats c ON c.org_id = ma.org_id AND c.chat_id = ma.chat_id
+      AND c.kind <> 'direct' AND c.archived_at IS NULL
+    JOIN kin_chat_members mp ON mp.org_id = ma.org_id AND mp.chat_id = ma.chat_id
+      AND mp.principal_kind = 'person' AND mp.person_id = ${personId}
+      AND mp.left_at IS NULL
+    WHERE ma.org_id = ${org} AND ma.principal_kind = 'agent' AND ma.agent_id = ${agent}
+      AND ma.left_at IS NULL)`;
+
 /**
  * Whether this person may message the lead now: its owner let them, it is the team agent, or
  * they are both in a group.
@@ -43,17 +59,18 @@ export const allowed = Effect.fn("KinLeadAccess.allowed")(function* (pair: Pair)
       AND (a.agent_id = ${teamAgentSql(sql, pair.orgId)} OR EXISTS (
         SELECT 1 FROM kin_lead_access x WHERE x.org_id = a.org_id AND x.agent_id = a.agent_id
           AND x.person_id = ${pair.personId} AND x.revoked_at IS NULL)
-        -- The owner put them in a group together, so an answer taken private can go on there.
-        OR EXISTS (SELECT 1 FROM kin_chat_members ma
-          JOIN kin_chats c ON c.org_id = ma.org_id AND c.chat_id = ma.chat_id
-            AND c.kind <> 'direct' AND c.archived_at IS NULL
-          JOIN kin_chat_members mp ON mp.org_id = ma.org_id AND mp.chat_id = ma.chat_id
-            AND mp.principal_kind = 'person' AND mp.person_id = ${pair.personId}
-            AND mp.left_at IS NULL
-          WHERE ma.org_id = a.org_id AND ma.principal_kind = 'agent' AND ma.agent_id = a.agent_id
-            AND ma.left_at IS NULL))
+        OR ${sharesGroupSql(sql, sql.literal("a.org_id"), sql.literal("a.agent_id"), pair.personId)})
     LIMIT 1`;
   return rows.length > 0;
+});
+
+/** How the person reaches the lead besides their own row, if they do. */
+export const otherWay = Effect.fn("KinLeadAccess.otherWay")(function* (pair: Pair) {
+  const sql = yield* SqlClient.SqlClient;
+  if ((yield* teamAgent(pair.orgId)) === pair.agentId) return "team" as const;
+  const [row] = yield* sql<{ shared: number }>`SELECT
+    ${sharesGroupSql(sql, pair.orgId, pair.agentId, pair.personId)} AS shared`;
+  return row?.shared === 1 ? ("group" as const) : null;
 });
 
 /** Whether the person's own row lets them message the lead, whatever the team agent is. */

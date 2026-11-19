@@ -2,10 +2,10 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 /**
- * A change Kin suggested to the owner on a card (`recommend/KinRecommend.ts`). Counts, whether it
- * still holds, whether the card ran out and whether a change is still in effect are read live;
- * this keeps only what can't be: that Kin asked and in which words, what the owner answered, and until
- * when that rule stays quiet. What Undo reverses is the card's sealed plan (`kin_card_plans`).
+ * A change Kin suggested to the owner on a card (`recommend/KinRecommend.ts`). Counts and whether
+ * it still holds are read live; this keeps what can't be: that Kin asked and in which words, what
+ * it offered, what the owner answered, the grant its Let made, and until when that rule stays
+ * quiet. Settings reads this and the live grant only, never the chat, which can be cleared.
  */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -17,16 +17,22 @@ export default Effect.gen(function* () {
       -- the rule's name and its own key ('person:<id>|agent:<id>'): the quiet ledger's subject
       rule TEXT NOT NULL,
       subject TEXT NOT NULL,
-      -- its card, whose sealed plans say what Do it changes and Undo puts back
+      -- its card, which takes the owner's tap
       widget_id TEXT NOT NULL,
+      -- what Do it changes, ids and names as the card said them (JSON)
+      change_json TEXT NOT NULL,
       -- the sentence as shown, numbers included: the window moves, so it can't be recomputed
       noticed TEXT NOT NULL,
-      -- the owner's answer; 'open' until tapped, ran out is read from the card
+      -- the owner's answer; 'open' until tapped; ran out at posted_at plus the card's time limit
       state TEXT NOT NULL CHECK (state IN ('open', 'done', 'declined', 'stale')),
       posted_at INTEGER NOT NULL,
+      -- an open card's chat was cleared then: it ended unanswered before its time ran out
+      ended_at INTEGER,
       -- when and whose tap it was: the owner, checked in the tap's transaction
       decided_at INTEGER,
       decided_by TEXT,
+      -- on 'done', the kin_lead_access.granted_at its Let made: Undo takes back that grant only
+      granted_at INTEGER,
       -- no new card for this rule and subject before then; NULL on 'declined' is for good
       quiet_until INTEGER,
       PRIMARY KEY (org_id, rec_id)
@@ -36,4 +42,6 @@ export default Effect.gen(function* () {
     ON kin_recommendations (org_id, rule, subject, posted_at)`;
   yield* sql`CREATE INDEX IF NOT EXISTS kin_recommendations_posted
     ON kin_recommendations (org_id, posted_at)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS kin_recommendations_open
+    ON kin_recommendations (posted_at) WHERE state = 'open'`;
 });

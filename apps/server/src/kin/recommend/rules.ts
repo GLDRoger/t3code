@@ -5,10 +5,12 @@ import {
   KinPersonId,
   formatKinWhen,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import { accessSql } from "../people/KinAccess.ts";
 import type { RecommendPlan } from "../widgets/cardPlans.ts";
 
 /*
@@ -71,16 +73,31 @@ type AskRow = {
   readonly personId: string;
   readonly agentId: string;
   readonly fromId: string;
+  /** When the person's own message was sent. */
+  readonly sentAt: string;
+  /** When the hand-off was recorded: for a waited row, when it found its card open. */
   readonly at: number;
   readonly state: string;
   readonly cardAt: string | null;
   readonly closedAt: string | null;
 };
 
+const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+
+/** How a request's card stands, from the stored card: only what its rows show. */
+const cardOf = (one: AskRow, at: number) => {
+  if (one.cardAt === null) return "gone" as const;
+  const expires = Date.parse(one.cardAt) + KIN_CHOICE_CARD_TTL_MS;
+  const closed = one.closedAt === null ? undefined : Date.parse(one.closedAt);
+  if (closed !== undefined && closed < expires) return { closed } as const;
+  return expires <= at ? ("ran_out" as const) : ("open" as const);
+};
+
 /**
  * Rule 1: a teammate keeps asking an agent for another agent's work (`KinHandoff.passOn`) and
  * the owner's card on it ran out, waited, or was declined. One standing yes ends the wait: the
  * same `KinLeadProvision.allow` the agent's page calls. `only` asks for one pair, as the tap does.
+ * A request counts by when the person sent it; one passed on and later cancelled doesn't count.
  */
 export const routeAccess = Effect.fn("KinRecommendRules.routeAccess")(function* (
   ctx: RuleContext,
@@ -88,18 +105,20 @@ export const routeAccess = Effect.fn("KinRecommendRules.routeAccess")(function* 
 ) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, at } = ctx;
+  // A hand-off is recorded after its message, so the first bound only narrows the scan.
   const rows = yield* sql<AskRow>`SELECT m.author_person_id AS "personId",
-      h.to_agent_id AS "agentId", h.from_agent_id AS "fromId", h.created_at AS at,
-      h.route_state AS state, w.updated_at AS "cardAt", w.closed_at AS "closedAt"
+      h.to_agent_id AS "agentId", h.from_agent_id AS "fromId", m.created_at AS "sentAt",
+      h.created_at AS at, h.route_state AS state, w.updated_at AS "cardAt",
+      w.closed_at AS "closedAt"
     FROM kin_handoffs h
     JOIN kin_messages m ON m.org_id = h.org_id AND m.message_id = h.message_id
       AND m.author_kind = 'human'
     LEFT JOIN kin_widgets w ON w.org_id = h.org_id AND w.widget_id = h.route_widget_id
     WHERE h.org_id = ${orgId} AND h.created_at > ${at - ROUTE_WINDOW_MS}
-      AND h.created_at <= ${at}
-      AND h.route_state IN ('pending', 'waited', 'declined', 'stale')
+      AND m.created_at > ${iso(at - ROUTE_WINDOW_MS)} AND m.created_at <= ${iso(at)}
+      AND h.route_state IN ('pending', 'waited', 'declined')
       ${only === undefined ? sql`` : sql`AND m.author_person_id = ${only.personId} AND h.to_agent_id = ${only.agentId}`}
-    ORDER BY m.author_person_id, h.to_agent_id, h.created_at, h.message_id`;
+    ORDER BY m.author_person_id, h.to_agent_id, m.created_at, h.message_id`;
   const groups = new Map<
     string,
     { readonly personId: string; readonly agentId: string; readonly asks: Array<AskRow> }
@@ -131,9 +150,10 @@ const routeVerdict = Effect.fn("KinRecommendRules.routeVerdict")(function* (
   const { orgId, at } = ctx;
   const { subject, asks } = pair;
   const silent = (reason: string): Verdict => ({ _tag: "silent", subject, reason });
-  const [person] = yield* sql<{ name: string; removedAt: number | null }>`SELECT
-      display_name AS name, removed_at AS "removedAt" FROM kin_people
-    WHERE org_id = ${orgId} AND person_id = ${pair.personId}`;
+  const [person] = yield* sql<{ name: string; removedAt: number | null; ownerLevel: number }>`SELECT
+      p.display_name AS name, p.removed_at AS "removedAt",
+      ${sql.literal(accessSql("p"))} IN ('owner', 'co_owner') AS "ownerLevel"
+    FROM kin_people p WHERE p.org_id = ${orgId} AND p.person_id = ${pair.personId}`;
   const [agent] = yield* sql<{ name: string; live: number }>`SELECT l.name,
       (a.role = 'lead' AND a.retired_at IS NULL AND a.owner_person_id = ${ctx.ownerId}) AS live
     FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
@@ -147,30 +167,51 @@ const routeVerdict = Effect.fn("KinRecommendRules.routeVerdict")(function* (
   if (pair.personId === ctx.ownerId) return silent(`you already message ${agentName}`);
   const personId = KinPersonId.make(pair.personId);
   const agentId = KinAgentId.make(pair.agentId);
-  if (yield* LeadAccess.allowed({ orgId, agentId, personId }))
+  // Owner-level people message every lead already (`KinChatService.createDirect`).
+  if (person.ownerLevel === 1 || (yield* LeadAccess.allowed({ orgId, agentId, personId })))
     return silent(`${personName} can already message ${agentName}`);
-  // The owner's last answer for this pair, at any time: Not this time is judgement, not time.
-  const [answer] = yield* sql<{ state: string }>`SELECT h.route_state AS state FROM kin_handoffs h
+  // The owner's last answer for this pair, at any time, by when it was given: Not this time is
+  // judgement, not time. A card cleared since keeps its route state and its request's time.
+  const answers = yield* sql<{
+    state: string;
+    at: number;
+    plan: string | null;
+    tappedAt: string | null;
+  }>`SELECT h.route_state AS state, h.created_at AS at,
+      json_extract(c.plan_json, '$.answer') AS plan, t.created_at AS "tappedAt"
+    FROM kin_handoffs h
     JOIN kin_messages m ON m.org_id = h.org_id AND m.message_id = h.message_id
       AND m.author_kind = 'human' AND m.author_person_id = ${pair.personId}
+    LEFT JOIN kin_card_plans c ON c.org_id = h.org_id AND c.widget_id = h.route_widget_id
+      AND c.ran_message_id IS NOT NULL
+    LEFT JOIN kin_messages t ON t.org_id = c.org_id AND t.message_id = c.ran_message_id
     WHERE h.org_id = ${orgId} AND h.to_agent_id = ${pair.agentId}
-      AND (h.route_state = 'declined' OR (h.route_state = 'passed' AND h.route_widget_id IS NOT NULL))
-    ORDER BY h.created_at DESC, h.message_id DESC LIMIT 1`;
-  if (answer?.state === "declined")
+      AND h.route_widget_id IS NOT NULL AND h.route_state IN ('declined', 'passed', 'stale')
+    ORDER BY h.message_id`;
+  const [answer] = answers
+    .flatMap((one) => {
+      const declined = one.plan === null ? one.state === "declined" : one.plan === "decline";
+      const said = one.plan === null ? one.state !== "stale" : true;
+      return said
+        ? [{ declined, at: one.tappedAt === null ? one.at : Date.parse(one.tappedAt) }]
+        : [];
+    })
+    .toSorted((a, b) => b.at - a.at);
+  if (answer?.declined === true)
     return silent(`you said Not this time to ${personName}'s last request for ${agentName}`);
   const [revoked] = yield* sql`SELECT 1 FROM kin_lead_access
     WHERE org_id = ${orgId} AND agent_id = ${pair.agentId} AND person_id = ${pair.personId}
       AND revoked_at IS NOT NULL AND revoked_at > ${at - ROUTE_REVOKED_MS}`;
   if (revoked !== undefined) return silent(`you stopped ${personName} messaging ${agentName}`);
-  const ranOut = asks.filter(
-    (one) =>
-      one.state === "pending" &&
-      (one.closedAt !== null ||
-        one.cardAt === null ||
-        at - Date.parse(one.cardAt) >= KIN_CHOICE_CARD_TTL_MS),
-  ).length;
-  const waited = asks.filter((one) => one.state === "waited").length;
-  const open = asks.filter((one) => one.state === "pending").length - ranOut;
+  const pending = asks.filter((one) => one.state === "pending").map((one) => cardOf(one, at));
+  const ranOut = pending.filter((card) => card === "ran_out").length;
+  const open = pending.filter((card) => card === "open").length;
+  // It waited on a card that was still taking taps when it was recorded.
+  const waited = asks.filter((one) => {
+    if (one.state !== "waited") return false;
+    const card = cardOf(one, one.at);
+    return card === "open" || (typeof card === "object" && card.closed > one.at);
+  }).length;
   if (asks.length < ROUTE_ASKS || ranOut + waited < ROUTE_UNANSWERED)
     return silent(`${personName} hasn't been waiting on you for ${agentName} that often lately`);
   const fromIds = [...new Set(asks.map((one) => one.fromId))];
@@ -179,7 +220,10 @@ const routeVerdict = Effect.fn("KinRecommendRules.routeVerdict")(function* (
       ? yield* sql<{ name: string }>`SELECT name FROM kin_leads
           WHERE org_id = ${orgId} AND agent_id = ${fromIds[0]!}`
       : [];
-  const since = formatKinWhen(asks[0]!.at, "date", { zone: ctx.zone, locale: ctx.locale });
+  const since = formatKinWhen(Date.parse(asks[0]!.sentAt), "date", {
+    zone: ctx.zone,
+    locale: ctx.locale,
+  });
   const facts = sentence([
     ...(ranOut > 0 ? [`${word(ranOut)} of your cards on it ran out before you answered`] : []),
     ...(waited > 0
@@ -210,16 +254,36 @@ const routeVerdict = Effect.fn("KinRecommendRules.routeVerdict")(function* (
   } satisfies Verdict;
 });
 
-/** Whether a done change still stands as Do it left it: the person's own grant is live. */
-export const inEffect = Effect.fn("KinRecommendRules.inEffect")(function* (
+/**
+ * What stands now of the grant a done row's Let made (`grantedAt`, as `kin_lead_access` stored
+ * it): still that grant, or ended (taken back, or replaced by a later one made by hand), or its
+ * agent gone. `other` is how the person reaches the agent besides that grant, if they do.
+ */
+export const grantNow = Effect.fn("KinRecommendRules.grantNow")(function* (
   orgId: KinOrgId,
   change: RecommendChange,
+  grantedAt: number | null,
 ) {
-  return yield* LeadAccess.granted({
+  const sql = yield* SqlClient.SqlClient;
+  const pair = {
     orgId,
     agentId: KinAgentId.make(change.agentId),
     personId: KinPersonId.make(change.personId),
-  });
+  };
+  const [agent] = yield* sql<{ live: number }>`SELECT
+      (role = 'lead' AND retired_at IS NULL) AS live
+    FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${change.agentId}`;
+  if (agent?.live !== 1) return { _tag: "gone" as const };
+  const [grant] =
+    grantedAt === null
+      ? []
+      : yield* sql`SELECT 1 FROM kin_lead_access WHERE org_id = ${orgId}
+          AND agent_id = ${change.agentId} AND person_id = ${change.personId}
+          AND revoked_at IS NULL AND granted_at = ${grantedAt}`;
+  return {
+    _tag: grant === undefined ? ("ended" as const) : ("live" as const),
+    other: yield* LeadAccess.otherWay(pair),
+  };
 });
 
 /** Rules in rank order: the first that fires speaks. */

@@ -6,16 +6,19 @@ import {
   formatKinWhen,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { accessOf, accessSql } from "../people/KinAccess.ts";
 import { textLocale } from "../work/companyProfile.ts";
+import { RecommendChange } from "../widgets/cardPlans.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { DAY_MS, type RuleContext } from "./rules.ts";
 
 /*
- * The stored side of recommendations (`kin_recommendations`): what Kin asked, what the owner
- * answered, and until when a rule stays quiet. Everything else is read live from the card.
+ * The stored side of recommendations (`kin_recommendations`): what Kin asked and offered, what
+ * the owner answered, the grant a Let made, and until when a rule stays quiet. Never the chat.
  */
 
 /** Not now: 30 days, then 90, then for good. */
@@ -25,23 +28,33 @@ const RAN_OUT_QUIET_MS = 7 * DAY_MS;
 /** A done change undone from Settings is not suggested back for this long. */
 export const UNDONE_QUIET_MS = 90 * DAY_MS;
 
-export type StoredRow = {
+type Row = {
   readonly recId: string;
   readonly rule: string;
   readonly subject: string;
   readonly widgetId: string;
+  readonly changeJson: string;
   readonly noticed: string;
   readonly state: "open" | "done" | "declined" | "stale";
   readonly postedAt: number;
+  readonly endedAt: number | null;
   readonly decidedAt: number | null;
+  readonly grantedAt: number | null;
   readonly quietUntil: number | null;
-  readonly cardAt: string | null;
-  readonly closedAt: string | null;
+};
+export type StoredRow = Omit<Row, "changeJson"> & {
+  /** What Do it changes; undefined only on a row this build can't read. */
+  readonly change: RecommendChange | undefined;
 };
 
-const columns = `r.rec_id AS "recId", r.rule, r.subject, r.widget_id AS "widgetId", r.noticed,
-  r.state, r.posted_at AS "postedAt", r.decided_at AS "decidedAt", r.quiet_until AS "quietUntil",
-  w.updated_at AS "cardAt", w.closed_at AS "closedAt"`;
+const ChangeJson = Schema.fromJsonString(RecommendChange);
+const decodeChange = Schema.decodeUnknownOption(ChangeJson);
+export const encodeChange = Schema.encodeEffect(ChangeJson);
+
+const columns = `r.rec_id AS "recId", r.rule, r.subject, r.widget_id AS "widgetId",
+  r.change_json AS "changeJson", r.noticed, r.state, r.posted_at AS "postedAt",
+  r.ended_at AS "endedAt", r.decided_at AS "decidedAt", r.granted_at AS "grantedAt",
+  r.quiet_until AS "quietUntil"`;
 
 export const storedRows = Effect.fn("KinRecommendLedger.rows")(function* (
   orgId: KinOrgId,
@@ -49,21 +62,26 @@ export const storedRows = Effect.fn("KinRecommendLedger.rows")(function* (
   limit: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql<StoredRow>`SELECT ${sql.literal(columns)} FROM kin_recommendations r
-    LEFT JOIN kin_widgets w ON w.org_id = r.org_id AND w.widget_id = r.widget_id
+  const rows = yield* sql<Row>`SELECT ${sql.literal(columns)} FROM kin_recommendations r
     WHERE r.org_id = ${orgId}
       ${where.recId === undefined ? sql`` : sql`AND r.rec_id = ${where.recId}`}
       ${where.rule === undefined ? sql`` : sql`AND r.rule = ${where.rule}`}
       ${where.subject === undefined ? sql`` : sql`AND r.subject = ${where.subject}`}
     ORDER BY r.posted_at DESC, r.rec_id DESC LIMIT ${limit}`;
+  return rows.map(({ changeJson, ...row }): StoredRow => ({
+    ...row,
+    change: Option.getOrUndefined(decodeChange(changeJson)),
+  }));
 });
 
-/** When an open row's card stopped taking taps, or undefined while it still waits on the owner. */
+/**
+ * When an open row's card stopped taking taps unanswered: its chat cleared, or its time limit
+ * (the card is never redrawn, so it ran from posting). Undefined while it still waits.
+ */
 export const ranOutAt = (row: StoredRow, at: number) => {
   if (row.state !== "open") return undefined;
-  const expires =
-    row.cardAt === null ? row.postedAt : Date.parse(row.cardAt) + KIN_CHOICE_CARD_TTL_MS;
-  if (row.closedAt !== null) return Math.min(Date.parse(row.closedAt), expires);
+  const expires = row.postedAt + KIN_CHOICE_CARD_TTL_MS;
+  if (row.endedAt !== null) return Math.min(row.endedAt, expires);
   return expires <= at ? expires : undefined;
 };
 
