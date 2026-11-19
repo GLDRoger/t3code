@@ -16,11 +16,11 @@ import { projectPage } from "./crm.ts";
 import { sectionsOf } from "./docBody.ts";
 import { versionOf } from "./docs.ts";
 import { type FieldValue, fieldList, fieldText, isMoney, parseFields } from "./lists.ts";
-import { formatMoney, parseAmount } from "./money.ts";
+import { dayIn, formatMoney, parseAmount } from "./money.ts";
 import { principalOfText, principalText, specChangesOf } from "./projectSpine.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 import { matchName } from "./nameMatch.ts";
-import { type RecordRow, selectRecords, toRecord } from "./recordRows.ts";
+import { ownerZone, type RecordRow, selectRecords, toRecord } from "./recordRows.ts";
 
 /**
  * The project spine's agent inputs and reads: milestones, sizes, reasons, the spec section a task
@@ -345,8 +345,10 @@ export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
       r.title, r.category AS kind FROM kin_records r
     WHERE r.org_id = ${row.orgId} AND r.register_id = 'docs' AND r.project_id = ${row.recordId}
       AND r.state = 'open' AND ${seenBy(sql, viewer)} ORDER BY r.category, r.key LIMIT 50`;
+  // An all-day due is stored as the end of the company's day: its day is read in that zone.
+  const zone = yield* ownerZone(row.orgId as KinOrgId);
   const day = (at: string | null, allDay: boolean) =>
-    at === null ? undefined : allDay ? at.slice(0, 10) : at;
+    at === null ? undefined : allDay ? dayIn(Date.parse(at), zone) : at;
   const line = (task: RecordRow) => {
     const record = toRecord(task, now);
     const fields = parseFields(task.fieldsJson);

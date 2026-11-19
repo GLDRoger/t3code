@@ -343,6 +343,41 @@ it.effect("a timed due is told on the company's day and clock, whatever the serv
   }).pipe(Effect.provide(layer)),
 );
 
+// An all-day due is stored as the last millisecond of the company's day, its UTC day the next one
+// west of UTC: the plan names the day the person picked, wherever the company is.
+it.effect.each(["America/Los_Angeles", "Pacific/Auckland"])(
+  "a project's plan names an all-day due on the day picked (%s)",
+  (zone) =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, ${zone}, '08:30', '18:30',
+        '03:00', 0, 1, '09:00', '[]')`;
+      yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          { list: "projects", title: "Invented booking app" },
+          {
+            list: "milestones",
+            title: "Invented booking flow ready",
+            project: "Invented booking app",
+            due: "2026-12-04",
+          },
+          { title: "Invented booking screens", milestone: "M-1", due: "2026-12-01" },
+        ],
+      });
+      const plan = (yield* LeadWork.get(scope, { key: "P-1" })).plan!;
+      assert.deepStrictEqual(
+        plan.milestones.map((one) => [one.key, one.due]),
+        [["M-1", "2026-12-04"]],
+      );
+      assert.deepStrictEqual(
+        plan.openTasks.map((one) => [one.key, one.due]),
+        [["W-1", "2026-12-01"]],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("the client page shows both directions, its contacts, projects and one history", () =>
   Effect.gen(function* () {
     yield* seed;
