@@ -853,9 +853,7 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     state: record.state,
     owner: name(record.owner) ?? "someone",
     ...(waitingOn === undefined ? {} : { waitingOn }),
-    ...(record.dueAt === null
-      ? {}
-      : { due: record.dueAllDay ? record.dueAt.slice(0, 10) : record.dueAt }),
+    ...(record.dueAt === null ? {} : { due: dayOrTime(record.dueAt, record.dueAllDay, view.zone) }),
     ...(record.late ? { late: true as const } : {}),
     ...(record.confirmed ? {} : { suggested: true as const }),
     ...(record.working ? { working: true as const } : {}),
