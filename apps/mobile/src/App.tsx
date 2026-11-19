@@ -34,6 +34,7 @@ import {
   startIncomingShareInbox,
 } from "./features/sharing/IncomingShareProvider";
 import { installKin } from "./features/chats/installKin";
+import { whenKinIsHomeKnown } from "./features/chats/state/kinHome";
 import {
   installAgentNotificationNavigation,
   setAgentNotificationPathname,
@@ -161,8 +162,13 @@ const appLinking = {
   ],
   config: { initialRouteName: "Home" },
   filter: (url: string) => shouldHandleAppLink(url, hasCloudPublicConfig()),
-  getInitialURL: async () =>
-    (await Linking.getInitialURL()) ?? (KIN_ONLY ? null : await launchWorkspaceURL()),
+  getInitialURL: async () => {
+    const link = await Linking.getInitialURL();
+    if (link !== null || KIN_ONLY) return link;
+    const restored = await launchWorkspaceURL();
+    // Where a host runs Kin, a launch opens Kin, never the last coding thread.
+    return restored !== null && (await whenKinIsHomeKnown()) ? null : restored;
+  },
   getActionFromState: (
     state: Parameters<typeof getActionFromState>[0],
     options: Parameters<typeof getActionFromState>[1],
