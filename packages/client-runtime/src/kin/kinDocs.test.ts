@@ -30,6 +30,9 @@ import {
   kinDocRefLabel,
   kinDocRestoreOutcome,
   kinDocSections,
+  kinDocRow,
+  kinWhatWeSellAgent,
+  kinWhatWeSellShown,
   type KinSearchState,
 } from "./kinDocs.ts";
 import type { KinWorkNames } from "./kinWork.ts";
@@ -173,6 +176,63 @@ describe("kinDocLibrary", () => {
       "D-11",
       "D-10",
     ]);
+  });
+
+  it("pins What we sell first in Company, from its own read or the page, once, saying its offerings", () => {
+    const at = (day: number) => new Date(2026, 10, day).toISOString();
+    const sells = row("D-9", {
+      title: "What we sell",
+      company: true,
+      updatedAt: at(1),
+      whatWeSell: { offerings: 4 },
+    });
+    const page = [
+      row("D-7", { company: true, updatedAt: at(8) }),
+      row("D-8", { company: true, updatedAt: at(9) }),
+    ];
+    const company = (library: ReturnType<typeof kinDocLibrary>) =>
+      library.homes.find((home) => home.kind === "company")?.rows.map((held) => held.key);
+    // Read on its own, as the page may not hold it; and the page's own copy shows once.
+    expect(company(kinDocLibrary(page, sells))).toEqual(["D-9", "D-8", "D-7"]);
+    expect(company(kinDocLibrary([...page, sells], sells))).toEqual(["D-9", "D-8", "D-7"]);
+    expect(company(kinDocLibrary([...page, sells]))).toEqual(["D-9", "D-8", "D-7"]);
+    const view = kinDocRow(
+      { ...sells, latest: version({ summary: "Added the single-site start" }) },
+      names,
+      now,
+    );
+    expect(view.pinned).toBe(true);
+    expect(view.line).toMatch(/^Updated today .* by Growth · 4 offerings$/);
+    expect(view.accessibilityLabel).toMatch(/^What we sell\. Pinned\. /);
+    expect(kinDocRow(page[0]!, names, now).pinned).toBe(false);
+    // Pinned, or offered when missing, only where the company's current docs show.
+    expect(kinWhatWeSellShown(KIN_DOCS_DEFAULT_FILTER)).toBe(true);
+    expect(kinWhatWeSellShown({ ...KIN_DOCS_DEFAULT_FILTER, show: { _tag: "company" } })).toBe(
+      true,
+    );
+    expect(kinWhatWeSellShown({ ...KIN_DOCS_DEFAULT_FILTER, archived: true })).toBe(false);
+    expect(kinWhatWeSellShown({ ...KIN_DOCS_DEFAULT_FILTER, text: "price" })).toBe(false);
+    expect(
+      kinWhatWeSellShown({ ...KIN_DOCS_DEFAULT_FILTER, show: { _tag: "kind", kind: "playbook" } }),
+    ).toBe(false);
+  });
+
+  it("opens What we sell's ways in with the agent the host makes its keeper", () => {
+    const lead = (agentId: string, domain: string, retired?: true) => ({
+      agentId,
+      domain,
+      name: agentId,
+      ...(retired ? { retired } : {}),
+    });
+    expect(
+      kinWhatWeSellAgent([lead("b", "chief-of-staff"), lead("c", "growth"), lead("a", "finance")])
+        ?.agentId,
+    ).toBe("c");
+    expect(
+      kinWhatWeSellAgent([lead("c", "growth", true), lead("b", "chief-of-staff")])?.agentId,
+    ).toBe("b");
+    expect(kinWhatWeSellAgent([lead("z", "finance"), lead("y", "social")])?.agentId).toBe("y");
+    expect(kinWhatWeSellAgent([])).toBeNull();
   });
 
   it("asks the host for one shelf at a time and leaves made files out unless asked", () => {

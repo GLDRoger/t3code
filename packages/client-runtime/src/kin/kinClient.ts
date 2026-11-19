@@ -1487,6 +1487,12 @@ export function makeKinClient<R, ER>(
       tag: "kin.docs.restore",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
     }),
+    /** Starts What we sell, or brings an archived one back; the same doc however often it is tapped. */
+    docStartWhatWeSell: createKinRpcCommand(runtime, {
+      label: "kin:docs:startWhatWeSell",
+      tag: "kin.docs.startWhatWeSell",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+    }),
     /** One search over tasks, clients, contacts, projects and docs. */
     search: createKinRpcCommand(runtime, {
       label: "kin:search",
