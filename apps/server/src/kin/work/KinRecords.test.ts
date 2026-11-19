@@ -757,6 +757,45 @@ const keptForPerson = [
       assert.strictEqual(yield* titleOf(scene), "Invented pricing v2");
     }),
   ),
+  row(
+    "a teammate's turn isn't told what its view of the history withholds; the owner's turn is",
+    Effect.gen(function* () {
+      const scene = yield* asked();
+      const project = (title: string, lead: KinWorkPrincipal) =>
+        Effect.map(
+          scene.records.create(orgId, scene.ownerWrites, {
+            list: "projects",
+            title,
+            owner: lead,
+            originKey: title,
+          }),
+          (made) => made.row.recordId,
+        );
+      const shown = yield* project("Invented launch", { _tag: "person", personId: mateId });
+      const hidden = yield* project("Invented acquisition", { _tag: "person", personId: ownerId });
+      yield* scene.records.update(orgId, scene.ownerWrites, "W-1", { team: true });
+      const since = { at: yield* Clock.currentTimeMillis, woke: [] };
+      yield* scene.later;
+      yield* scene.records.update(orgId, scene.ownerWrites, "W-1", { projectId: hidden });
+      const agent = {
+        actor: { _tag: "agent" as const, agentId: lead },
+        via: "lead" as const,
+        since,
+      };
+      const move = (writer: KinRecords.Writer) =>
+        Effect.flip(scene.records.update(orgId, writer, "W-1", { projectId: shown }));
+      assert.deepInclude(yield* move({ ...agent, view: { people: [mateId], askers: [mateId] } }), {
+        reason: "conflict",
+        message:
+          "Nothing changed on W-1: someone changed it since you were asked. Tell whoever asked, and change it only if they say so.",
+      });
+      refusedAs(
+        yield* move(agent),
+        /^Nothing changed on W-1: Owner changed its project \(value not shown\) on Wed 11 Nov, 10:01\. /,
+      );
+      assert.include(yield* scene.records.get(orgId, "W-1"), { projectId: hidden });
+    }),
+  ),
 ];
 it.effect.each(keptForPerson)("an agent keeps a person's newer change: $name", ({ run }) => run);
 

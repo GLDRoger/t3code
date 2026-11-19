@@ -109,8 +109,10 @@ import {
   teamPairs,
   personSees,
   ROOM_LISTS,
+  teamSeesField,
   teamSeq,
   viewGuard,
+  viewReadsWhole,
   viewSees,
 } from "./teamView.ts";
 
@@ -928,6 +930,7 @@ const make = Effect.gen(function* () {
     row: RecordRow,
     def: ListDef,
     writes: ReadonlySet<string>,
+    view: Writer["view"],
   ) {
     const rows = yield* sql<{ seq: number; at: number; actorId: string; fieldsJson: string }>`
       SELECT seq, at, actor_id AS "actorId", fields_json AS "fieldsJson" FROM kin_record_changes
@@ -936,7 +939,14 @@ const make = Effect.gen(function* () {
       ORDER BY seq DESC`;
     const newest = new Map<
       string,
-      { seq: number; at: number; actorId: string; to: string | null; exact: boolean }
+      {
+        seq: number;
+        at: number;
+        actorId: string;
+        field: string;
+        to: string | null;
+        exact: boolean;
+      }
     >();
     for (const change of rows) {
       if (since.woke.includes(change.seq)) continue;
@@ -947,10 +957,25 @@ const make = Effect.gen(function* () {
         const had = newest.get(name);
         if (!writes.has(name) || (had !== undefined && (had.seq !== change.seq || had.exact)))
           continue;
-        newest.set(name, { ...change, to: field.to, exact: field.field === name });
+        newest.set(name, {
+          ...change,
+          field: field.field,
+          to: field.to,
+          exact: field.field === name,
+        });
       }
     }
     if (newest.size === 0) return;
+    // A shared turn reads this history as its people's own record_get does (`teamChanges`).
+    if (
+      view !== undefined &&
+      [...newest.values()].some((change) => !teamSeesField(change.field)) &&
+      !(yield* viewReadsWhole(orgId, view.people, row).pipe(provideSql))
+    )
+      return yield* new KinChatError({
+        reason: "conflict",
+        message: `Nothing changed on ${row.key}: someone changed it since you were asked. Tell whoever asked, and change it only if they say so.`,
+      });
     const zone = yield* ownerZone(orgId).pipe(provideSql);
     const nameOf = Effect.fn("KinRecords.nameOf")(function* (who: Principal | null) {
       const [named] =
@@ -1874,7 +1899,7 @@ const make = Effect.gen(function* () {
           );
           if (patch.dateAllDay !== undefined && (patch.dateAllDay ? 1 : 0) !== row.dateAllDay)
             writes.add("date");
-          yield* keptForPerson(orgId, writer.since, row, def, writes);
+          yield* keptForPerson(orgId, writer.since, row, def, writes, writer.view);
         }
         if (expectedRev !== undefined && expectedRev !== row.rev)
           return yield* conflict(row.key, row.rev);

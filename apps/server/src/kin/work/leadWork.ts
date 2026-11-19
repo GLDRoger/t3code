@@ -108,11 +108,11 @@ import {
 } from "./sensitiveReads.ts";
 import {
   KIN_OWNER_LEVEL,
-  ledProjects,
   TEAM_REFUSED,
   teamChanges,
   teamPairs,
   viewerOfPeople,
+  viewReadsWhole,
   viewSees,
   viewVisible,
 } from "./teamView.ts";
@@ -1197,28 +1197,13 @@ export const viewWriter = (writer: Writer, view: View): Writer => ({
   view: { people: view.people, askers: view.askers },
 });
 
-/** Whether every person behind a shared turn leads this project: it then runs at their level. */
-const viewLeads = Effect.fn("KinWorkTools.viewLeads")(function* (
-  lead: Lead,
-  view: View,
-  projectId: string | null | undefined,
-) {
-  if (projectId === null || projectId === undefined || view.people.length === 0) return false;
-  for (const person of view.people) {
-    const led = yield* ledProjects(lead.orgId, person);
-    if (!led.some((project) => project.recordId === projectId)) return false;
-  }
-  return true;
-});
-/** A row read whole in a shared turn: a doc or list entry they all see, or their led project's. */
+/** A row read whole in a shared turn (`viewReadsWhole`). */
 const viewWhole = Effect.fn("KinWorkTools.viewWhole")(function* (
   lead: Lead,
   view: View,
   row: RecordRow,
 ) {
-  if (row.registerId === "clients" || row.registerId === "contacts") return false;
-  if (row.registerId !== "work") return true;
-  return yield* viewLeads(lead, view, row.projectId);
+  return yield* viewReadsWhole(lead.orgId, view.people, row);
 });
 
 /** Refused, as the gate does, if the turn became one others read since the call was admitted. */

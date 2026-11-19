@@ -159,6 +159,26 @@ export const ledProjects = Effect.fn("KinTeamView.ledProjects")(function* (
     ORDER BY lower(title), key`;
 });
 
+/**
+ * A row a shared turn reads whole: a doc or list entry they all see, or a task of a project every
+ * one of them leads. Anything else they read as a teammate (`teamRecord`, `teamChanges`).
+ */
+export const viewReadsWhole = Effect.fn("KinTeamView.readsWhole")(function* (
+  orgId: KinOrgId,
+  people: ReadonlyArray<KinPersonId>,
+  row: { readonly registerId: string; readonly projectId: string | null | undefined },
+) {
+  if (row.registerId === "clients" || row.registerId === "contacts") return false;
+  if (row.registerId !== "work") return true;
+  const projectId = row.projectId;
+  if (projectId === null || projectId === undefined || people.length === 0) return false;
+  for (const person of people) {
+    const led = yield* ledProjects(orgId, person);
+    if (!led.some((project) => project.recordId === projectId)) return false;
+  }
+  return true;
+});
+
 /** What every one of these people sees: a turn's view (`turnPeople`). None sees nothing. */
 export const viewSees = (sql: SqlClient.SqlClient, people: ReadonlyArray<KinPersonId>) =>
   people.length === 0
@@ -744,11 +764,12 @@ const TEAM_FIELDS = new Set([
   "handedBack",
   "repeat",
 ]);
+export const teamSeesField = (field: string) => TEAM_FIELDS.has(field);
 /** Numbered among themselves, newest highest: the org's numbers would show what they can't see. */
 export const teamChanges = (changes: ReadonlyArray<KinRecordChange>) => {
   const shown = changes.flatMap((change): ReadonlyArray<KinRecordChange> => {
     if (change.kind === "linked") return [];
-    const fields = change.fields.filter((field) => TEAM_FIELDS.has(field.field));
+    const fields = change.fields.filter((field) => teamSeesField(field.field));
     return change.kind === "updated" && fields.length === 0 ? [] : [{ ...change, fields }];
   });
   return shown.map((change, index) => ({ ...change, seq: shown.length - index }));
