@@ -75,7 +75,13 @@ import { groupRules, teamRules } from "./instructions.ts";
 import { socialRules } from "../social/instructions.ts";
 import { isSocialDomain } from "../social/seat.ts";
 import { buildSeat } from "./seat.ts";
-import { dueTurnText, openQuestionsSection, undoneTurnText } from "../questions/openQuestions.ts";
+import {
+  answeredTurnText,
+  askedForSection,
+  dueTurnText,
+  openQuestionsSection,
+  undoneTurnText,
+} from "../questions/openQuestions.ts";
 import { asksUndo, recentChanges, UNDO_RULE } from "./undoSection.ts";
 
 export class KinLeadPromptError extends Schema.TaggedError<KinLeadPromptError>()(
@@ -455,6 +461,26 @@ export class KinLeadPrompt extends Context.Service<
               `${quote("event data", { event: event.eventId })}\n\n${
                 undone ?? "Kin couldn't read that question just now."
               } If nothing else needs saying, write exactly ${SILENT_REPLY}.`,
+            );
+            continue;
+          }
+          if (
+            event._tag === "deferral.due" &&
+            event.subject.type === "question" &&
+            event.subject.answered === true
+          ) {
+            fromOwner = false;
+            const back = yield* answeredTurnText(orgId, event.subject.questionId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.catch((cause) =>
+                Effect.logWarning("Kin open question unreadable", cause).pipe(Effect.as(undefined)),
+              ),
+            );
+            const eventQuote = quote("event data", { event: event.eventId });
+            events.push(
+              back === undefined
+                ? `${eventQuote}\n\nKin couldn't read that answer just now. Write exactly ${SILENT_REPLY}.`
+                : `${eventQuote}\n\n${back.text} If nothing is left to do, write exactly ${SILENT_REPLY}.\n\n${quote("answered question (data)", back.data, true)}`,
             );
             continue;
           }
@@ -1326,6 +1352,17 @@ export class KinLeadPrompt extends Context.Service<
                   ),
                 ),
               );
+        const askedFor =
+          input.lane === undefined
+            ? undefined
+            : yield* askedForSection({ orgId, agentId, chatId: input.lane.chatId, now }).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.catch((cause) =>
+                  Effect.logWarning("Kin questions asked for this chat unavailable", cause).pipe(
+                    Effect.as(undefined),
+                  ),
+                ),
+              );
         // The agent's own earlier lines here may say these wait; Kin's record says they don't.
         const declined =
           ownerOnly || input.lane === undefined || laneChat?.kind !== "direct"
@@ -1481,6 +1518,9 @@ export class KinLeadPrompt extends Context.Service<
                 sharedPart(seat.team.join("\n")),
               ]),
           ...(asked === undefined ? [] : [sharedPart(asked.heading), sharedPart(asked.body)]),
+          ...(askedFor === undefined
+            ? []
+            : [sharedPart(askedFor.heading), sharedPart(askedFor.body)]),
           ...(declined.length === 0
             ? []
             : [

@@ -84,7 +84,7 @@ const chatOnlyStateAtom = Atom.make((get): ChatOnlyState => {
 const sameIds = (left: ReadonlyArray<EnvironmentId>, right: ReadonlySet<EnvironmentId>) =>
   left.length === right.size && left.every((id) => right.has(id));
 
-const appShellAtom = Atom.make((get): KinAppShell => {
+export const kinAppShellAtom = Atom.make((get): KinAppShell => {
   const state = get(chatOnlyStateAtom);
   return kinAppShell({ ready: state.ready, saved: state.saved, chatOnly: state.chatOnly.length });
 });
@@ -95,11 +95,11 @@ const environmentChatOnlyAtom = Atom.family((environmentId: EnvironmentId) =>
 
 /** Whether the app is the coding app or, on a teammate's phone, only Kin. */
 export function useKinAppShell(): KinAppShell {
-  return useAtomValue(appShellAtom);
+  return useAtomValue(kinAppShellAtom);
 }
 
 export function readKinAppShell(): KinAppShell {
-  return appAtomRegistry.get(appShellAtom);
+  return appAtomRegistry.get(kinAppShellAtom);
 }
 
 /** The saved environments this device reaches as a teammate. */
@@ -164,19 +164,6 @@ export function installKinChatOnlyMemory(): () => void {
     },
     { immediate: true },
   );
-}
-
-/**
- * Home is a different screen in each shell, and a route keeps the bar its last screen set. When
- * the shell changes under a running app (a first join, leaving the last team), start Home afresh.
- */
-export function installKinShellReset(resetToHome: () => void): () => void {
-  let last = appAtomRegistry.get(appShellAtom);
-  return appAtomRegistry.subscribe(appShellAtom, (shell) => {
-    const changed = last !== "loading" && shell !== "loading" && shell !== last;
-    last = shell;
-    if (changed) resetToHome();
-  });
 }
 
 const noAccessAtom = Atom.make<KinPersonAccess | null>(null);

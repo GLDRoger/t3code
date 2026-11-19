@@ -473,17 +473,6 @@ features:
       - .agents/skills/verify-kin/scripts/private-task-hidden.sh
       - .agents/skills/verify-kin/scripts/lead-undoes-only-me.sh
 
-  - id: coding-entry
-    name: Coding, T3's coding threads and pull requests, from Kin
-    tab: chats
-    web: [home, button:Coding]
-    roles: { owner: web, co_owner: none, lead: none, member: none }
-    note: >-
-      One quiet entry beside the gear at the foot of Kin's sidebar, and Go to Coding in the command
-      palette, for a session that can open coding threads; a teammate's chat-only session gets
-      neither. Kin's destinations above the threads lead back. The phone is Kin only.
-    proof: [packages/client-runtime/src/kin/kinListSwitch.test.ts]
-
   - id: work-links
     name: Tasks, Money, Clients or Docs opened from the coding app
     tab: tasks
@@ -867,8 +856,9 @@ features:
     note: >-
       When the same hold-up keeps happening and a setting would end it, Kin puts one silent card in
       the owner's chat with Chief of staff (so it waits in Needs you); Do it makes the same change
-      the setting's own control makes. Settings lists each suggestion and what came of it; a done one
-      opens the agent's page, where access is changed, and a put-off one can Ask again.
+      the setting's own control makes: a teammate's access to an agent, the daily limit one step up,
+      or resuming a paused connection or agent. Settings lists each suggestion and what came of it;
+      a done one opens where that setting lives, and a put-off one can Ask again.
     proof:
       - apps/server/src/kin/recommend/KinRecommend.test.ts
       - apps/web/src/kin/KinRecommendations.browser.test.tsx

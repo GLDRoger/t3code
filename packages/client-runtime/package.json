@@ -775,6 +775,10 @@
       "types": "./src/kin/kinChatListRows.ts",
       "default": "./src/kin/kinChatListRows.ts"
     },
+    "./kin/kinNow": {
+      "types": "./src/kin/kinNow.ts",
+      "default": "./src/kin/kinNow.ts"
+    },
     "./kin/kinScreenState": {
       "types": "./src/kin/kinScreenState.ts",
       "default": "./src/kin/kinScreenState.ts"

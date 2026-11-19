@@ -266,6 +266,49 @@ export class KinHandoff extends Context.Service<
   }
 >()("t3/kin/lead/Handoff/KinHandoff") {}
 
+/**
+ * A held relay's or question's arrival, said by Kin in the asking chat: every reader's client shows the time
+ * on their own clock, naming the receiver's when it differs. Silent: they just asked.
+ */
+export const arrivesNote = Effect.fn("KinHandoff.arrivesNote")(function* (
+  chat: Pick<KinChatService["Service"], "notice">,
+  ctx: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: string },
+  name: string,
+  held: { readonly at: number; readonly zone: string; readonly why: "quiet" | "off" | "away" },
+  key: string,
+  audience: "owner" | "chat",
+) {
+  const here = yield* turnChat(ctx);
+  if (here === undefined) return;
+  const text = theirTime(held.at, held.zone, yield* textLocale(ctx.orgId));
+  const why =
+    held.why === "away"
+      ? `${name} is away`
+      : held.why === "off"
+        ? `Outside ${name}'s working hours`
+        : `In ${name}'s quiet hours`;
+  yield* chat
+    .notice({
+      orgId: ctx.orgId,
+      chatId: KinChatId.make(here.chatId),
+      messageId: KinMessageId.make(`kin-arrives:${key}`),
+      audience,
+      body: `${why}: it arrives at ${text}.`,
+      silent: true,
+      when: {
+        at: DateTime.formatIso(DateTime.makeUnsafe(held.at)),
+        zone: held.zone,
+        text,
+        of: name,
+      },
+    })
+    .pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Kin couldn't say when a relay arrives", cause),
+      ),
+    );
+});
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const identity = yield* KinIdentity;
@@ -904,48 +947,6 @@ const make = Effect.gen(function* () {
     return { personId: found.item.id, name: found.item.name };
   });
 
-  /**
-   * A held relay's arrival, said by Kin in the asking chat: every reader's client shows the time
-   * on their own clock, naming the receiver's when it differs. Silent: they just asked.
-   */
-  const arrivesNote = Effect.fn("KinHandoff.arrivesNote")(function* (
-    ctx: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: string },
-    name: string,
-    held: { readonly at: number; readonly zone: string; readonly why: "quiet" | "off" | "away" },
-    key: string,
-    audience: "owner" | "chat",
-  ) {
-    const here = yield* turnChat(ctx);
-    if (here === undefined) return;
-    const text = theirTime(held.at, held.zone, yield* textLocale(ctx.orgId));
-    const why =
-      held.why === "away"
-        ? `${name} is away`
-        : held.why === "off"
-          ? `Outside ${name}'s working hours`
-          : `In ${name}'s quiet hours`;
-    yield* chat
-      .notice({
-        orgId: ctx.orgId,
-        chatId: KinChatId.make(here.chatId),
-        messageId: KinMessageId.make(`kin-arrives:${key}`),
-        audience,
-        body: `${why}: it arrives at ${text}.`,
-        silent: true,
-        when: {
-          at: DateTime.formatIso(DateTime.makeUnsafe(held.at)),
-          zone: held.zone,
-          text,
-          of: name,
-        },
-      })
-      .pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Kin couldn't say when a relay arrives", cause),
-        ),
-      );
-  });
-
   const relay = Effect.fn("KinHandoff.relay")(function* (
     scope: McpInvocationScope,
     input: typeof RelayInput.Type,
@@ -1010,7 +1011,8 @@ const make = Effect.gen(function* () {
               }),
         },
       );
-      if (isHeld(posted)) yield* arrivesNote(ctx, to.name, posted, messageId, "owner").pipe(access);
+      if (isHeld(posted))
+        yield* arrivesNote(chat, ctx, to.name, posted, messageId, "owner").pipe(access);
       return {
         to: to.name,
         sent: true as const,
@@ -1109,7 +1111,7 @@ const make = Effect.gen(function* () {
             agentId: ctx.agentId,
             relay,
           }).pipe(access);
-          yield* arrivesNote(ctx, to.name, { ...held, at }, messageId, "chat").pipe(access);
+          yield* arrivesNote(chat, ctx, to.name, { ...held, at }, messageId, "chat").pipe(access);
           return {
             to: to.name,
             sent: true as const,
