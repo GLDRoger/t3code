@@ -59,6 +59,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { KinMonthGrid } from "./components/KinMonthGrid";
+import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinWorkFrame, KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
 import { KinDateRowLine } from "./KinWorkMoney";
@@ -90,6 +91,8 @@ export type KinListParams = {
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
 const decodeList = Schema.decodeUnknownOption(KinListId);
+// "No client" in the client filter: not a client, so its key can never be a record's.
+const NO_CLIENT: KinWorkRef = { key: "none", title: KIN_LISTS.noClient };
 
 /** One list an agent set up, whatever it holds: its entries, narrowed and added up. */
 export function KinListScreen({ route }: StaticScreenProps<KinListParams>) {
@@ -284,7 +287,6 @@ function KinListTable(props: {
 function kinListFilterMenu(props: {
   readonly def: KinListDefinition;
   readonly filter: KinListFilter;
-  readonly clients: ReadonlyArray<KinWorkRef>;
   readonly groupings: ReadonlyArray<KinListFilter["groupBy"]>;
   readonly table: boolean;
   readonly onTable: (table: boolean) => void;
@@ -334,30 +336,6 @@ function kinListFilterMenu(props: {
               ],
             },
           ]),
-      {
-        id: "client",
-        title: KIN_LISTS.clientFilter,
-        items: [
-          {
-            id: "client:any",
-            title: KIN_LISTS.anyClient,
-            selected: filter.party === null && !filter.noParty,
-            onPress: () => onChange({ ...filter, party: null, noParty: false }),
-          },
-          ...props.clients.map((client) => ({
-            id: `client:${client.key}`,
-            title: client.title,
-            selected: filter.party?.key === client.key,
-            onPress: () => onChange({ ...filter, party: client, noParty: false }),
-          })),
-          {
-            id: "client:none",
-            title: KIN_LISTS.noClient,
-            selected: filter.noParty,
-            onPress: () => onChange({ ...filter, party: null, noParty: true }),
-          },
-        ],
-      },
       ...(props.groupings.length <= 1
         ? []
         : [
@@ -450,11 +428,6 @@ function KinListEntries(
           kinListFilterMenu({
             def,
             filter,
-            // A client arrived at from elsewhere stays named though it isn't a choice.
-            clients:
-              filter.party === null || clients.some((held) => held.key === filter.party?.key)
-                ? clients
-                : [...clients, filter.party],
             groupings,
             table,
             onTable: setTable,
@@ -508,6 +481,28 @@ function KinListEntries(
                   <KinWorkStaleNotice environmentId={environmentId} onRetry={retry} />
                 </View>
               ) : null}
+              <View className="px-4">
+                <ListSection>
+                  <KinWorkPlacePicker
+                    target={props}
+                    noun="client"
+                    icon="person.2"
+                    label={KIN_LISTS.clientFilter}
+                    none={KIN_LISTS.anyClient}
+                    extra={NO_CLIENT}
+                    held={filter.noParty ? NO_CLIENT : filter.party}
+                    choices={clients}
+                    disabled={false}
+                    onPick={(party) =>
+                      entries.setFilter(
+                        party?.key === NO_CLIENT.key
+                          ? { ...filter, noParty: true, party: null }
+                          : { ...filter, noParty: false, party },
+                      )
+                    }
+                  />
+                </ListSection>
+              </View>
               {narrowed === null ? null : (
                 <View className="flex-row px-4">
                   <Chip

@@ -54,6 +54,7 @@ import {
 import { Skeleton } from "../components/ui/skeleton";
 import { cn, randomUUID } from "../lib/utils";
 import { kinClient } from "./kinClient";
+import { KinPlaceCombobox } from "./KinPlaceCombobox";
 import { KinWorkSection } from "./KinWorkParts";
 import { useNowMinuteMs } from "./useKinClock";
 import { kinListsOf, useKinListEntries, type KinListsHandle } from "./useKinMoney";
@@ -587,7 +588,7 @@ export function KinBudgetDialog(
   const [problem, setProblem] = useState<string | null>(null);
   const setter = useKinBudgetSet(props);
   const { projects } = useKinWorkChoices(props, true);
-  const ids = { category: useId(), project: useId(), limit: useId() };
+  const ids = { category: useId(), limit: useId() };
   const categories = props.expenses?.categories ?? [];
   const label = (category: string) => props.expenses?.categoryLabels?.[category] ?? category;
   const home = props.rates?.home ?? props.expenses?.currency ?? KIN_DEFAULT_HOME_CURRENCY;
@@ -610,7 +611,6 @@ export function KinBudgetDialog(
     const input = budget === null ? null : kinBudgetRemoval(props.orgId, budget, `${requestId}:rm`);
     if (input !== null && (await setter.set(input))) props.onClose();
   };
-  const project = projects.find((one) => one.key === draft.project) ?? null;
   const shownProblem = problem ?? setter.problem;
   return (
     <Dialog
@@ -659,30 +659,15 @@ export function KinBudgetDialog(
                   </SelectPopup>
                 </Select>
               </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor={ids.project}>{KIN_BUDGETS.project}</Label>
-                <Select
-                  value={draft.project ?? ANY}
-                  onValueChange={(value) =>
-                    setDraft({
-                      ...draft,
-                      project: projects.find((one) => one.key === value)?.key ?? null,
-                    })
-                  }
-                >
-                  <SelectTrigger id={ids.project} className="w-full">
-                    <SelectValue>{project?.title ?? KIN_BUDGETS.anyProject}</SelectValue>
-                  </SelectTrigger>
-                  <SelectPopup>
-                    <SelectItem value={ANY}>{KIN_BUDGETS.anyProject}</SelectItem>
-                    {projects.map((one) => (
-                      <SelectItem key={one.key} value={one.key}>
-                        {one.title}
-                      </SelectItem>
-                    ))}
-                  </SelectPopup>
-                </Select>
-              </div>
+              <KinPlaceCombobox
+                target={props}
+                noun="project"
+                label={KIN_BUDGETS.project}
+                placeholder={KIN_BUDGETS.anyProject}
+                value={draft.project}
+                choices={projects}
+                onChange={(project) => setDraft({ ...draft, project })}
+              />
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor={ids.limit}>{KIN_BUDGETS.limit}</Label>
                 <Input

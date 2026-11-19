@@ -1,6 +1,7 @@
 import {
   kinPatchWorkPage,
   kinWorkHeldPage,
+  type EnvironmentId,
   type KinOrgId,
   type KinPartiesInput,
   type KinPartiesResult,
@@ -727,6 +728,29 @@ export function createKinPickerSearch(options: {
       return read(words);
     },
     dispose: abandon,
+  };
+}
+
+export type KinPickerSearch = ReturnType<typeof createKinPickerSearch>;
+
+/** What a picker searches: whose host, which company, and clients or projects. */
+export interface KinPickerSearchTarget {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly kind: "clients" | "projects";
+  readonly done: boolean;
+}
+
+/**
+ * The search a mounted picker holds: the same one while its target stays, a fresh one once the
+ * host, company or what it searches changes, so a reused picker never asks the old company.
+ */
+export function createKinPickerSearchSlot<S>(create: (target: KinPickerSearchTarget) => S) {
+  let held: { readonly key: string; readonly search: S } | null = null;
+  return (target: KinPickerSearchTarget) => {
+    const key = JSON.stringify([target.environmentId, target.orgId, target.kind, target.done]);
+    if (held?.key !== key) held = { key, search: create(target) };
+    return held.search;
   };
 }
 

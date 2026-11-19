@@ -19,6 +19,7 @@ import {
   type KinListFilter,
   type KinListRowView,
 } from "@t3tools/client-runtime/kin/kinLists";
+import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type {
   KinListDefinition,
@@ -69,6 +70,7 @@ import {
 } from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
+import { KinPlaceCombobox } from "./KinPlaceCombobox";
 import {
   useKinListChanges,
   useKinListContext,
@@ -79,6 +81,8 @@ import { useKinWorkChoices, type KinWorkDirectory, type KinWorkTarget } from "./
 
 const ANY = "any";
 const NONE = "none";
+// "No client" in the client filter: not a client, so its key can never be a record's.
+const NO_CLIENT: KinWorkRef = { key: "none", title: KIN_LISTS.noClient };
 
 /** One list, found among all of them: its page once it is known, or why there isn't one. */
 export function KinWorkListPage(
@@ -162,7 +166,6 @@ function KinListEntries(
   const groupings = kinListGroupings(def);
   const { clients } = useKinWorkChoices(props, true);
   const category = filter.noCategory ? NONE : (filter.category ?? ANY);
-  const client = filter.noParty ? NONE : (filter.party?.key ?? ANY);
   const nothing = kinListNothing(def, filter);
   const footer = kinListFooter(rows.length, state.total, state.more);
   const searchId = useId();
@@ -282,32 +285,25 @@ function KinListEntries(
               </SelectPopup>
             </Select>
           )}
-          <Select
-            value={client}
-            onValueChange={(value) => {
-              const party = clients.find((held) => held.key === value) ?? null;
-              entries.setFilter({ ...filter, noParty: value === NONE, party });
-            }}
-          >
-            <SelectTrigger className="w-full min-w-0 sm:w-44" aria-label={KIN_LISTS.clientFilter}>
-              <SelectValue>
-                {client === ANY
-                  ? KIN_LISTS.anyClient
-                  : client === NONE
-                    ? KIN_LISTS.noClient
-                    : (filter.party?.title ?? KIN_LISTS.anyClient)}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectPopup alignItemWithTrigger={false}>
-              <SelectItem value={ANY}>{KIN_LISTS.anyClient}</SelectItem>
-              {clients.map((held) => (
-                <SelectItem key={held.key} value={held.key}>
-                  {held.title}
-                </SelectItem>
-              ))}
-              <SelectItem value={NONE}>{KIN_LISTS.noClient}</SelectItem>
-            </SelectPopup>
-          </Select>
+          <div className="w-full min-w-0 sm:w-44">
+            <KinPlaceCombobox
+              target={props}
+              noun="client"
+              label={KIN_LISTS.clientFilter}
+              labelHidden
+              placeholder={KIN_LISTS.anyClient}
+              value={filter.noParty ? NO_CLIENT : filter.party}
+              choices={clients}
+              extra={NO_CLIENT}
+              onChange={(party) =>
+                entries.setFilter(
+                  party?.key === NO_CLIENT.key
+                    ? { ...filter, noParty: true, party: null }
+                    : { ...filter, noParty: false, party },
+                )
+              }
+            />
+          </div>
           <div>
             <ToggleGroup
               aria-label="Layout"

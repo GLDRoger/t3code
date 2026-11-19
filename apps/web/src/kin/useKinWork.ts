@@ -34,6 +34,9 @@ import {
   KIN_PICKER_SEARCH_IDLE,
   createKinPagedList,
   createKinPickerSearch,
+  createKinPickerSearchSlot,
+  type KinPickerSearch,
+  type KinPickerSearchState,
   kinPagedListInitial,
   mapPage,
   type KinPagedListState,
@@ -411,22 +414,38 @@ export function useKinPickerSearch(
   kind: "clients" | "projects",
   done: boolean,
 ) {
-  const [state, setState] = useState(KIN_PICKER_SEARCH_IDLE);
-  const [search] = useState(() =>
-    createKinPickerSearch({
-      orgId,
-      kind,
-      done,
-      readClients: (input) => kinClient.workClients.run(appAtomRegistry, { environmentId, input }),
-      readProjects: (input) =>
-        kinClient.workProjects.run(appAtomRegistry, { environmentId, input }),
-      onChange: setState,
-      schedule: kinSchedule,
+  const [shown, setShown] = useState<{
+    readonly search: KinPickerSearch | null;
+    readonly state: KinPickerSearchState;
+  }>({ search: null, state: KIN_PICKER_SEARCH_IDLE });
+  const [slot] = useState(() =>
+    createKinPickerSearchSlot((target) => {
+      const search: KinPickerSearch = createKinPickerSearch({
+        ...target,
+        readClients: (input) =>
+          kinClient.workClients.run(appAtomRegistry, {
+            environmentId: target.environmentId,
+            input,
+          }),
+        readProjects: (input) =>
+          kinClient.workProjects.run(appAtomRegistry, {
+            environmentId: target.environmentId,
+            input,
+          }),
+        onChange: (state) => setShown({ search, state }),
+        schedule: kinSchedule,
+      });
+      return search;
     }),
   );
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- abandons a pending or in-flight search when the picker leaves
+  const search = slot({ environmentId, orgId, kind, done });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- abandons a pending or in-flight search when the picker leaves or its target changes
   useEffect(() => search.dispose, [search]);
-  return { state, type: search.type, retry: search.retry };
+  return {
+    state: shown.search === search ? shown.state : search.getState(),
+    type: search.type,
+    retry: search.retry,
+  };
 }
 
 /** A client, contact or project form: what is typed, and why a save didn't go through. */
