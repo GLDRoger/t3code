@@ -931,7 +931,7 @@ export const make = Effect.gen(function* () {
     if (isOwnerHimself(identity.owner, caller.personId))
       return yield* new KinChatError({
         reason: "not_allowed",
-        message: "The owner links devices from T3 Code's Sharing & access settings.",
+        message: "The owner links devices from Settings, Sharing & access.",
       });
     const secret = NodeCrypto.randomBytes(32).toString("base64url");
     const inviteId = KinInviteId.make(NodeCrypto.randomUUID());

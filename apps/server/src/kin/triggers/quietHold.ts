@@ -156,6 +156,19 @@ const personQuiet = Effect.fn("KinQuiet.person")(function* (
   return { quiet: why !== undefined, why, endsAt: freeAt(rule, now), zone: rule.zone };
 });
 
+/** The day `personId` is back on, on their calendar, while they are away now; else undefined. */
+export const awayBackOn = Effect.fn("KinQuiet.awayBackOn")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [person] = yield* sql<{ away: string | null }>`SELECT away_until AS away FROM kin_people
+    WHERE org_id = ${orgId} AND person_id = ${personId}`;
+  if (person?.away == null) return undefined;
+  const away = heldAt(yield* personRule(orgId, personId), yield* Clock.currentTimeMillis);
+  return away === "away" ? person.away : undefined;
+});
+
 /** For a push: whether they are in their quiet hours, or outside the hours they hold to. */
 export const personHoldNow = Effect.fn("KinQuiet.holdNow")(function* (
   orgId: KinOrgId,
@@ -217,12 +230,16 @@ export const holdFor = Effect.fn("KinQuiet.holdFor")(function* (input: {
   readonly personId: KinPersonId;
   readonly chatId: KinChatId;
   readonly notBefore?: number | undefined;
+  /** Nothing they said asks for it (a task handed to them): while they are away it waits anyway. */
+  readonly unasked?: boolean;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
   const quiet = yield* personQuiet(input.orgId, input.personId, now);
   const at = Math.max(quiet.endsAt, input.notBefore ?? now);
   if (at <= now) return undefined;
+  if (input.unasked === true && quiet.why === "away")
+    return { at, zone: quiet.zone, why: quiet.why };
   const [answers] = yield* sql`SELECT 1 FROM kin_messages
     WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
       AND author_person_id = ${input.personId} AND origin_json IS NULL

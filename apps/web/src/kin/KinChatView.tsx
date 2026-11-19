@@ -532,7 +532,7 @@ const STATE_COPY: Record<
   },
   noHost: {
     title: "Kin isn't set up on this environment",
-    detail: "Connect to a T3 server that runs Kin.",
+    detail: "Connect to a server that runs Kin.",
   },
   unpaired: {
     title: "This browser isn't connected to that server",

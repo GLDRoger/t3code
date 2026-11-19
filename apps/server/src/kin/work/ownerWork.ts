@@ -47,7 +47,7 @@ import { milestoneLinks } from "./projectSpine.ts";
 import { personSeesRecord, sheetExtras } from "./recordComments.ts";
 import { movePage, nudge as nudgeHolder } from "./workMoves.ts";
 import { isBuiltIn, listDef, unknownList } from "./registers.ts";
-import { type AssignNotice, movedNotices, tellPeople } from "./assignNotices.ts";
+import { type AssignNotice, movedNotices, tellPeople, toldWhenBack } from "./assignNotices.ts";
 import { teamAgent as theTeamAgent } from "../lead/LeadAccess.ts";
 import {
   endOfDay,
@@ -566,7 +566,12 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
   const can = (yield* cansOf(viewer, detail.orgId, [{ ...detail, registerId: row.registerId }]))(
     detail.recordId,
   );
+  const back =
+    row.registerId === "work"
+      ? yield* toldWhenBack(detail.orgId, detail.recordId, detail.owner).pipe(workFailure)
+      : undefined;
   const extras = {
+    ...(back === undefined ? {} : { toldWhenBack: back }),
     ...(yield* sheetExtras(detail.orgId, viewer, detail).pipe(workFailure)),
     ...(yield* linkedFromOf(
       detail.orgId,

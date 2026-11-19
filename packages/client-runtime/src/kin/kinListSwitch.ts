@@ -37,6 +37,17 @@ export function kinInboxAttention(inbox: KinInboxState | null): KinListAttention
   return { waiting: view.waitingCount > 0, unread: view.unreadCount > 0 };
 }
 
+/** Kin's one quiet way to T3's coding threads and pull requests. */
+export const KIN_CODING_ENTRY = "Coding";
+
+/** Over Kin, only for a session that can open coding threads: never a teammate's chat-only one. */
+export function kinCodingEntryShown(input: {
+  readonly current: KinList;
+  readonly chatOnly: boolean;
+}): boolean {
+  return input.current === "kin" && !input.chatOnly;
+}
+
 export type KinSwitcherDot = "waiting" | "unread" | null;
 
 /** The mark's dot speaks for the list you are not in; waiting on you outranks unread. */

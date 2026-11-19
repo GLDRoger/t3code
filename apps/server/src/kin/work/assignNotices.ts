@@ -6,6 +6,7 @@ import {
   KinMessageId,
   type KinOrgId,
   KinPersonId,
+  type KinWorkPrincipal,
   formatKinWhen,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -19,7 +20,7 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { turnChat } from "../lead/Audience.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
-import { heldUntil, holdFor, holdLine } from "../triggers/quietHold.ts";
+import { awayBackOn, heldUntil, holdFor, holdLine } from "../triggers/quietHold.ts";
 import { textLocale, type TextClock } from "./companyProfile.ts";
 import { parseFields } from "./lists.ts";
 import { byId, isClosed, ownerZone, type RecordRow } from "./recordRows.ts";
@@ -244,6 +245,22 @@ export const heldGivenBody = Effect.fn("KinAssignNotices.heldGiven")(function* (
     .join("\n\n");
 });
 
+/** The day a task's holder is back and hears it is theirs, while that line waits on them away. */
+export const toldWhenBack = Effect.fn("KinAssignNotices.toldWhenBack")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+  holder: KinWorkPrincipal,
+) {
+  if (holder._tag !== "person") return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  const prefix = `${GIVEN_HELD}${recordId}:`;
+  const [held] = yield* sql`SELECT 1 FROM kin_held_posts
+    WHERE org_id = ${orgId} AND person_id = ${holder.personId} AND delivered_at IS NULL
+      AND substr(kind, 1, ${prefix.length}) = ${prefix}
+    LIMIT 1`;
+  return held === undefined ? undefined : yield* awayBackOn(orgId, holder.personId);
+});
+
 /**
  * A task that leaves someone before their held "gave you" line posts was never theirs to hear
  * of: the line is dropped, and so is the notice that it was taken. Returns the notices left.
@@ -374,7 +391,7 @@ export const tellHolding = Effect.fn("KinAssignNotices.tell")(function* (
       continue;
     }
     // In their quiet hours or while away it waits; tasks given meanwhile post as one (`heldGivenBody`).
-    const held = yield* holdFor({ orgId: turn.orgId, personId: person, chatId });
+    const held = yield* holdFor({ orgId: turn.orgId, personId: person, chatId, unasked: true });
     if (held !== undefined) {
       const hold = (key: string, lines: string) =>
         holdLine({

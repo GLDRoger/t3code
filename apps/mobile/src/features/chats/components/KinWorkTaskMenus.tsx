@@ -11,6 +11,7 @@ import {
   kinWorkStatusOffer,
   type KinWorkAction,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
+import type { KinTaskPageStatus } from "@t3tools/client-runtime/kin/kinTaskRecord";
 import { View } from "react-native";
 
 import { ListRowLayout } from "../../../components/ui/ListRowLayout";
@@ -18,32 +19,40 @@ import { Menu } from "../../../components/ui/Menu";
 
 const WAITING = "waiting:";
 const NOBODY = "waiting";
+const REOPEN = "reopen";
 const DUE = "due:";
 const NO_DATE = "due";
 
-/** Where the task stands, other than done: started, waiting on someone, or not worth doing. */
+/** Where the task stands: done, reopened, started, or waiting on someone. Drop is in •••. */
 export function KinWorkStatusRow(props: {
   readonly view: KinWorkItemView;
   /** What the host takes (`kinWorkStatusOffer`). */
   readonly offer: ReturnType<typeof kinWorkStatusOffer>;
+  /** Which of it this viewer gets on the page (`kinTaskControls`). */
+  readonly status: KinTaskPageStatus;
   /** Everyone it could be waiting on. */
   readonly people: ReadonlyArray<KinWorkAssignee>;
   readonly disabled: boolean;
   readonly onAct: (action: KinWorkAction) => void;
 }) {
-  const { view, people, offer } = props;
+  const { view, people, offer, status } = props;
+  const note = view.leadNote === null ? {} : { subtitle: view.leadNote };
   return (
     <Menu
       title={KIN_WORK_COPY.status}
       accessibilityRole="button"
       accessibilityLabel={`${KIN_WORK_COPY.status}: ${view.status}. Change`}
       actions={[
-        ...offer.states.map((choice) => ({
-          id: choice.state,
-          title: choice.label,
-          state: view.state === choice.state ? ("on" as const) : ("off" as const),
-        })),
-        ...(!offer.waiting
+        ...(status.done ? [{ id: "done", title: KIN_WORK_COPY.done, ...note }] : []),
+        ...(status.reopen ? [{ id: REOPEN, title: KIN_WORK_COPY.reopen, ...note }] : []),
+        ...(!status.states
+          ? []
+          : offer.states.map((choice) => ({
+              id: choice.state,
+              title: choice.label,
+              state: view.state === choice.state ? ("on" as const) : ("off" as const),
+            }))),
+        ...(!status.waiting
           ? []
           : [
               {
@@ -62,13 +71,11 @@ export function KinWorkStatusRow(props: {
                 ],
               },
             ]),
-        ...(!offer.drop
-          ? []
-          : [{ id: "dropped", title: KIN_WORK_COPY.drop, attributes: { destructive: true } }]),
       ]}
       onPressAction={({ nativeEvent: { event } }) => {
         if (props.disabled) return;
-        if (event === "open" || event === "doing" || event === "dropped")
+        if (event === REOPEN) return props.onAct({ type: "state", state: "open" });
+        if (event === "open" || event === "doing" || event === "done")
           return props.onAct({ type: "state", state: event });
         if (event === NOBODY)
           return props.onAct({ type: "state", state: "waiting", waitingOn: null });
