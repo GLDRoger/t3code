@@ -61,6 +61,7 @@ import {
   amountOf,
   byId,
   byKey,
+  CODING_AGENT_NAME,
   countedEntry,
   effectivelySensitive,
   OWN_LABEL_LISTS,
@@ -2444,21 +2445,30 @@ const make = Effect.gen(function* () {
               asked_by_person_id AS "askedBy" FROM kin_records
             WHERE org_id = ${row.orgId} AND record_id = ${row.recordId}`;
           const seqs = detail.changes.map((change) => change.seq);
-          const askers = new Map(
+          const through = new Map(
             seqs.length === 0
               ? []
-              : (yield* sql<{ seq: number; askedBy: string }>`SELECT seq,
-                    asked_by_person_id AS "askedBy" FROM kin_record_changes
+              : (yield* sql<{ seq: number; askedBy: string | null; codingAgent: string | null }>`
+                  SELECT seq, asked_by_person_id AS "askedBy",
+                    ${sql.literal(CODING_AGENT_NAME("kin_record_changes"))} AS "codingAgent"
+                  FROM kin_record_changes
                   WHERE org_id = ${row.orgId} AND record_id = ${row.recordId}
-                    AND seq IN ${sql.in(seqs)} AND asked_by_person_id IS NOT NULL
-                  ORDER BY seq`).map((one) => [one.seq, KinPersonId.make(one.askedBy)] as const),
+                    AND seq IN ${sql.in(seqs)}
+                    AND (asked_by_person_id IS NOT NULL OR coding_agent_key IS NOT NULL)
+                  ORDER BY seq`).map((one) => [one.seq, one] as const),
           );
           const page = yield* commentsPage(row.orgId as KinOrgId, row.recordId);
           return {
             ...detail,
             changes: detail.changes.map((change) => {
-              const askedBy = askers.get(change.seq);
-              return askedBy === undefined ? change : { ...change, askedBy };
+              const one = through.get(change.seq);
+              return one === undefined
+                ? change
+                : {
+                    ...change,
+                    ...(one.askedBy === null ? {} : { askedBy: KinPersonId.make(one.askedBy) }),
+                    ...(one.codingAgent === null ? {} : { codingAgent: one.codingAgent }),
+                  };
             }),
             ...(record?.askedBy == null ? {} : { askedBy: KinPersonId.make(record.askedBy) }),
             comments: page.comments,
