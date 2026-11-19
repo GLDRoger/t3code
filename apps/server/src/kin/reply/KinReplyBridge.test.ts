@@ -422,6 +422,8 @@ it.effect.each<{
   readonly stored: ReadonlyArray<string>;
   /** Posted with a tool before the turn's reply. */
   readonly posted?: string;
+  /** A question card the turn raises for the owner before its reply. */
+  readonly asks?: string;
   readonly failed?: true;
   /** The evening summary's own day; the test clock's, in the company's UTC, is 1970-01-01. */
   readonly day?: string;
@@ -431,7 +433,7 @@ it.effect.each<{
     scheduleId: "checkin-morning",
     written: ["One client has gone quiet. A reminder is drafted.", "Nothing else today."],
     stored: [
-      "## Today\n\nOne client has gone quiet. A reminder is drafted.\n\nNothing else today.",
+      `${ReplyBridge.QUIET_PAGE}\n\n## Today\n\nOne client has gone quiet. A reminder is drafted.\n\nNothing else today.`,
     ],
   },
   {
@@ -444,7 +446,7 @@ it.effect.each<{
     name: "a bare label",
     scheduleId: "checkin-morning",
     written: ["Today:\nNothing needs you."],
-    stored: ["## Today\n\nToday:\nNothing needs you."],
+    stored: [`${ReplyBridge.QUIET_PAGE}\n\n## Today\n\nToday:\nNothing needs you.`],
   },
   {
     name: "NO_REPLY",
@@ -471,7 +473,7 @@ it.effect.each<{
     posted: "Drafting the reminders now.",
     written: ["## Needs you\nTwo reminders wait on your Confirm."],
     stored: [
-      "## Today\n\nDrafting the reminders now.",
+      `${ReplyBridge.QUIET_PAGE}\n\n## Today\n\nDrafting the reminders now.`,
       "## Needs you\nTwo reminders wait on your Confirm.",
     ],
   },
@@ -480,7 +482,42 @@ it.effect.each<{
     scheduleId: "checkin-morning",
     posted: "One client has gone quiet.",
     written: ["One client has gone quiet."],
-    stored: ["## Today\n\nOne client has gone quiet."],
+    stored: [`${ReplyBridge.QUIET_PAGE}\n\n## Today\n\nOne client has gone quiet.`],
+  },
+  {
+    name: "sections but no Needs you, and a card raised",
+    scheduleId: "checkin-morning",
+    asks: "Orbit Dental's retainer renews on 29 Nov. Where should it go?",
+    written: ["## Clients\n- Orbit Dental has had no contact.\n\n## Coming up\n- M-1 on 5 Dec."],
+    stored: [
+      "## Needs you\n\n- Orbit Dental's retainer renews on 29 Nov. Where should it go?\n\n## Clients\n- Orbit Dental has had no contact.\n\n## Coming up\n- M-1 on 5 Dec.",
+    ],
+  },
+  {
+    name: "sections but no Needs you, and no card",
+    scheduleId: "checkin-morning",
+    written: ["## Clients\n- Orbit Dental has had no contact.\n\n## Coming up\n- M-1 on 5 Dec."],
+    stored: [
+      `${ReplyBridge.QUIET_PAGE}\n\n## Clients\n- Orbit Dental has had no contact.\n\n## Coming up\n- M-1 on 5 Dec.`,
+    ],
+  },
+  {
+    name: "a card raised and nothing written",
+    scheduleId: "checkin-morning",
+    asks: "Orbit Dental's retainer renews on 29 Nov. Where should it go?",
+    written: [],
+    stored: ["## Needs you\n\n- Orbit Dental's retainer renews on 29 Nov. Where should it go?"],
+  },
+  {
+    name: "its own Needs you and a card raised",
+    scheduleId: "checkin-morning",
+    asks: "Orbit Dental's retainer renews on 29 Nov. Where should it go?",
+    written: [
+      "## Needs you\n- Orbit Dental's renewal, on the card below.\n\n## Coming up\n- M-1 on 5 Dec.",
+    ],
+    stored: [
+      "## Needs you\n- Orbit Dental's renewal, on the card below.\n\n## Coming up\n- M-1 on 5 Dec.",
+    ],
   },
   {
     name: "a failed turn on a morning with facts",
@@ -551,6 +588,19 @@ it.effect.each<{
       // A retry of it, word for word, is the same message, under the heading it was given.
       assert.strictEqual((yield* post).messageId, first.messageId);
     }
+    if (row.asks !== undefined)
+      yield* chats.ask(
+        Option.getOrThrow(yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId })),
+        {
+          chatId,
+          clientMessageId: "orbit-renewal",
+          question: row.asks,
+          options: [
+            { label: "Renew", kind: "yes" },
+            { label: "Let it lapse", kind: "no" },
+          ],
+        },
+      );
     fake.items = row.written.map((body, index) => text(`t${index}`, index + 1, body, runId));
     yield* row.failed === undefined
       ? complete
@@ -561,8 +611,10 @@ it.effect.each<{
           rootRunId: runId,
           rescueUntil: null,
         });
+    // A card's own message has no words.
     const rows = yield* sql<{ body: string; form: string | null }>`SELECT body, form
-      FROM kin_messages WHERE chat_id = ${chatId} AND author_kind = 'agent' ORDER BY seq`;
+      FROM kin_messages WHERE chat_id = ${chatId} AND author_kind = 'agent' AND body <> ''
+      ORDER BY seq`;
     assert.deepStrictEqual(
       rows.map((one) => one.body),
       row.stored,
@@ -1521,6 +1573,12 @@ it.effect.each([
     question: "Mark QT-1 accepted and draft the 30% advance invoice?",
     reply: "Want me to mark QT-1 as accepted and draft the advance invoice (30%)?",
     expected: [],
+  },
+  // The line break before the dropped question stays, so a heading keeps its own line.
+  {
+    reply:
+      "## Needs you\n\nShould I take it over? Tech has been quiet for a day.\n\n## Work\n\n- W-1",
+    expected: ["## Needs you\n\nTech has been quiet for a day.\n\n## Work\n\n- W-1"],
   },
 ])("a reply doesn't repeat the question its card asks ($reply)", ({ question, reply, expected }) =>
   Effect.gen(function* () {

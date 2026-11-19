@@ -540,6 +540,8 @@ export class KinChatRepository extends Context.Service<
         readonly wakeupId: KinWakeupId;
         readonly audience: WriteAudience;
         readonly body: string;
+        /** The body ends with the page as stored: Kin's own section goes before it, unshaped. */
+        readonly lead?: true;
       },
     ) => Effect.Effect<KinMessage, RepositoryError>;
     readonly history: (
@@ -1789,7 +1791,9 @@ const make = Effect.gen(function* () {
               message.author.threadId !== input.threadId ||
               message.status !== "posted" ||
               message.kind !== "text" ||
-              !input.body.startsWith(message.body) ||
+              (input.lead === true
+                ? message.form !== "brief" || !input.body.endsWith(message.body)
+                : !input.body.startsWith(message.body)) ||
               (message.widgetId !== null &&
                 message.body === "" &&
                 (yield* replyCard(input)) !== input.messageId) ||
@@ -1809,6 +1813,11 @@ const make = Effect.gen(function* () {
                 message: "Kin wake-up is not running.",
               });
             yield* ownerOnly(input.audience, input);
+            if (input.lead === true) {
+              yield* sql`UPDATE kin_messages SET body = ${input.body}
+                WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id = ${input.messageId}`;
+              return yield* requireRecord(messageOne(input));
+            }
             const kept =
               message.form === "brief" && message.body !== ""
                 ? message.form

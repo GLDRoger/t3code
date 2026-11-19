@@ -4,6 +4,7 @@ import {
   KIN_MESSAGE_BODY_MAX_LENGTH,
   KinChatId,
   kinIsPage,
+  kinPageSections,
   kinPageShape,
   KIN_FIGURE_SCHEME,
   KinMessageId,
@@ -89,6 +90,23 @@ const OVERFLOW_SUFFIX = "\n\n…more in the agent's thread";
 const MORNING_HEADROOM = 200;
 /** The morning page Kin posts when the turn wrote none: its one quiet line, under Needs you. */
 export const QUIET_PAGE = "## Needs you\n\nNothing new needs you this morning.";
+const NEEDS_YOU_HEADING = "## Needs you\n";
+const LINE_MAX = 200;
+const hasNeedsYou = (body: string) =>
+  kinPageSections(body).some(({ title }) => title?.trim().toLowerCase() === "needs you");
+/** The page's Needs you: one item per card the turn left waiting on them, within `room`. */
+const needsYouSection = (lines: ReadonlyArray<string>, room: number) => {
+  if (lines.length === 0) return QUIET_PAGE;
+  let section = NEEDS_YOU_HEADING;
+  for (const [index, text] of lines.entries()) {
+    const line = text.length <= LINE_MAX ? text : `${text.slice(0, LINE_MAX - 1).trimEnd()}…`;
+    const next = `${section}\n- ${line}`;
+    if (next.length <= room) section = next;
+    else if (index === 0) section = next.slice(0, Math.max(room, NEEDS_YOU_HEADING.length + 4));
+    else break;
+  }
+  return section;
+};
 /** The text in parts of at most `max` characters, cut between lines. */
 const fitParts = (text: string, max: number) =>
   text.split("\n").reduce<Array<string>>((parts, line) => {
@@ -488,8 +506,19 @@ const make = Effect.gen(function* () {
           ? capBody(joined)
           : null;
     if (body === null) return { _tag: "full" as const };
-    const lead = yield* agent(wake);
-    if (lead === undefined)
+    return yield* store(wake, slot, { body }, ordinal);
+  });
+  // Kin's own section put before the page as stored (`settlePage`).
+  const lead = (wake: Wake, slot: Slot, body: string) =>
+    store(wake, slot, { body, lead: true }, -1);
+  const store = Effect.fn("KinReplyBridge.store")(function* (
+    wake: Wake,
+    slot: Slot,
+    input: { readonly body: string; readonly lead?: true },
+    ordinal: number,
+  ) {
+    const author = yield* agent(wake);
+    if (author === undefined)
       return {
         _tag: "withheld" as const,
         reason: "wake-up ended",
@@ -498,8 +527,8 @@ const make = Effect.gen(function* () {
       };
     return yield* gate
       .extend(
-        lead,
-        { chatId: wake.lane.chatId, messageId: slot.messageId, body },
+        author,
+        { chatId: wake.lane.chatId, messageId: slot.messageId, ...input },
         repliedBy(wake, ordinal),
       )
       .pipe(
@@ -566,6 +595,35 @@ const make = Effect.gen(function* () {
       ? undefined
       : ([...wake.slots.values()].find((slot) => slot.messageId === row.messageId) ?? row);
   });
+  // Cards this turn raised that wait on the lane's person, as each card itself says it.
+  const waitingOn = Effect.fn("KinReplyBridge.waitingOn")(function* (wake: Wake) {
+    const since = iso(wake.startedAt);
+    const rows = yield* sql<{ line: string | null }>`SELECT line FROM (
+      SELECT w.created_at AS at, w.waiting_id AS id, CASE WHEN w.reason = 'approval' THEN m.body
+          ELSE COALESCE(json_extract(g.state_json, '$.question'), json_extract(g.state_json, '$.title'),
+            NULLIF(m.body, '')) END AS line
+        FROM kin_waiting w
+        JOIN kin_messages m ON m.org_id = w.org_id AND m.message_id = w.message_id
+        LEFT JOIN kin_widgets g ON g.org_id = w.org_id AND g.widget_id = w.widget_id
+        WHERE w.org_id = ${wake.orgId} AND w.resolved_at IS NULL AND w.reason <> 'mention'
+          AND w.person_id IN (SELECT person_id FROM kin_chat_members WHERE org_id = ${wake.orgId}
+            AND chat_id = ${wake.lane.chatId} AND person_id IS NOT NULL AND left_at IS NULL)
+          AND ((m.author_kind = 'agent' AND m.author_agent_id = ${wake.agentId}
+              AND m.author_thread_id = ${wake.threadId} AND m.created_at >= ${since})
+            OR (g.type = 'approval' AND EXISTS (SELECT 1 FROM kin_pending_actions a
+              WHERE a.org_id = w.org_id AND a.action_id = json_extract(g.state_json, '$.actionId')
+                AND a.requested_by_thread_id = ${wake.threadId} AND a.created_at >= ${wake.startedAt})))
+      UNION ALL
+      SELECT created_at, message_id, body FROM kin_messages
+        WHERE org_id = ${wake.orgId} AND status = 'suggested' AND author_kind = 'agent'
+          AND author_agent_id = ${wake.agentId} AND author_thread_id = ${wake.threadId}
+          AND created_at >= ${since})
+      ORDER BY at, id`;
+    return rows.flatMap((row) => {
+      const line = row.line?.split("\n").find((one) => one.trim() !== "");
+      return line === undefined ? [] : [normalized(line)];
+    });
+  });
   // The morning page is Kin's, whatever a finished turn wrote (`pulse/checkIn.ts`): with no page
   // of the turn's own, Kin posts one with its quiet line; on the weekly brief's day Kin's figures
   // go on it, or follow it as ordinary messages when it has no room. A failed turn posts nothing.
@@ -575,8 +633,10 @@ const make = Effect.gen(function* () {
       const brief = yield* briefIn(wake, ["checkin-morning", "checkin-weekly"]);
       if (brief === undefined) return;
       let slot = yield* pageOf(wake);
+      const waiting = slot !== undefined && hasNeedsYou(slot.body) ? [] : yield* waitingOn(wake);
       if (slot === undefined) {
-        const result = yield* deliver(wake, `kin-page:${wake.wakeupId}`, QUIET_PAGE, -1);
+        const page = needsYouSection(waiting, KIN_MESSAGE_BODY_MAX_LENGTH - MORNING_HEADROOM);
+        const result = yield* deliver(wake, `kin-page:${wake.wakeupId}`, page, -1);
         if (result._tag !== "posted") {
           wake.withheldWhy ??= result.why;
           wake.withheld ??= result.reason;
@@ -587,6 +647,13 @@ const make = Effect.gen(function* () {
         wake.posted++;
         wake.answered = true;
         wake.replied = true;
+      } else if (!hasNeedsYou(slot.body)) {
+        const room = KIN_MESSAGE_BODY_MAX_LENGTH - slot.body.length - 2;
+        const result = yield* lead(wake, slot, `${needsYouSection(waiting, room)}\n\n${slot.body}`);
+        if (result._tag === "withheld" && result.reason !== "not_found") {
+          wake.withheld = result.reason;
+          return;
+        }
       }
       if (brief.figures !== 1) return;
       const figures = yield* weeklyFigures({
