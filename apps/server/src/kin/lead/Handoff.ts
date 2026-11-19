@@ -849,7 +849,8 @@ const make = Effect.gen(function* () {
     const asker = { _tag: "person" as const, orgId: ctx.orgId, personId: ask.personId };
     const direct = yield* chat.createDirect(asker, { orgId: ctx.orgId, agentId: target.agentId });
     // The person's own words, posted as theirs in their own chat: that wakes the lead there at
-    // their access, from stored rows, and carries nothing of the group's chat or this turn.
+    // their access, from stored rows, and carries nothing of the group's chat or this turn. Kin's
+    // copy (its claim's key is its client id), so nothing waiting there takes it as their reply.
     yield* chat.notice({
       orgId: ctx.orgId,
       chatId: direct.chatId,
@@ -863,6 +864,7 @@ const make = Effect.gen(function* () {
       chatId: direct.chatId,
       clientMessageId: key,
       body: ask.message.body,
+      replies: false,
     });
     return { person: ask.personName, agent: target.name, continued: true as const };
   }, guarded("KinHandoff.takePrivate"));
