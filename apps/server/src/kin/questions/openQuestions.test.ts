@@ -984,6 +984,21 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
         retry: true,
       });
       assert.strictEqual(yield* cards(devChat), 1);
+      // Rhea's chat with the agent knows what waits on Dev; Dev's chat lists it as for her.
+      const waits = yield* Questions.askedForSection({
+        orgId: KinOrgId.make(orgId),
+        agentId: KinAgentId.make("chief"),
+        chatId: chatOf("chief"),
+        now: IST_MON_1130,
+      });
+      assert.include(waits!.body, `- ${toDev.questionId}, to Dev Malhotra, today:`);
+      const his = yield* Questions.openQuestionsSection({
+        orgId: KinOrgId.make(orgId),
+        chatId: devChat,
+        ownerOnly: false,
+        now: IST_MON_1130,
+      });
+      assert.include(his!.body, `- ${toDev.questionId}, Chief of staff for Rhea Rao, today:`);
       // A co-owner is asked in her own chat with the agent, as anyone else.
       const toMeera = yield* askFor("chief", rhea, { to: "Meera", intent: "shoot budget" });
       assert.strictEqual(toMeera.state, "posted");
@@ -1153,6 +1168,11 @@ it.effect("a tap on a question asked for someone goes back to the chat that aske
         { key: `question-answered:${asked.questionId}`, origin: null },
       ]);
       assert.strictEqual(yield* turnsIn(devChat), before);
+      // That turn is told the answer, and that Rhea already heard it.
+      const told = yield* Questions.answeredTurnText(KinOrgId.make(orgId), asked.questionId);
+      assert.include(told!.text, "Dev Malhotra answered your question for Rhea Rao");
+      assert.include(told!.text, "Kin already told Rhea Rao, so don't repeat it.");
+      assert.deepInclude(told!.data, { answer: "Friday", about: ["P-4"] });
       // The same tap again, or another, adds nothing.
       yield* chats.act(person("dev"), devTap);
       assert.isTrue(

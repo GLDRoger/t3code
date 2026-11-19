@@ -1456,6 +1456,29 @@ export const undoneTurnText = Effect.fn("KinQuestions.undoneTurnText")(function*
 });
 
 /**
+ * What the asker's turn is told when a question it asked for a chat was answered, in that chat's
+ * lane; undefined when there is nothing to carry on.
+ */
+export const answeredTurnText = Effect.fn("KinQuestions.answeredTurnText")(function* (
+  orgId: KinOrgId,
+  questionId: string,
+) {
+  const row = yield* readQuestion(orgId, questionId);
+  if (row === undefined || row.state !== "answered" || row.forChatId === null) return undefined;
+  const who = yield* personName(orgId, row.personId);
+  const asker = yield* personOfChat(orgId, row.forChatId);
+  const forWhom = asker === undefined ? "this chat" : yield* personName(orgId, asker);
+  return {
+    text: `${who} answered your question for ${forWhom}, “${row.question}”${row.answer === null ? `, in their chat with you` : `: “${row.answer}”`}. Kin already told ${forWhom}, so don't repeat it. Do what it was for now with your tools, inside the company and at ${forWhom}'s access: anything that would send, post or move money stays on its Confirm card. Don't ask ${who} again.`,
+    data: {
+      question: row.question,
+      answer: row.answer,
+      ...(row.about.length === 0 ? {} : { about: row.about }),
+    },
+  };
+});
+
+/**
  * Every open question to the person this chat is with, whoever asked: listed in each agent's turn
  * like facts already told, so no agent asks one again. Record keys only in owner-only turns.
  */
@@ -1471,6 +1494,15 @@ export const openQuestionsSection = Effect.fn("KinQuestions.section")(function* 
   if (open.length === 0) return undefined;
   const clock = yield* personClock(input.orgId, personId);
   const who = yield* personName(input.orgId, personId);
+  const forWhom = new Map<string, string>();
+  for (const row of open)
+    if (row.forChatId !== null && !forWhom.has(row.forChatId)) {
+      const asker = yield* personOfChat(input.orgId, row.forChatId);
+      forWhom.set(
+        row.forChatId,
+        asker === undefined ? "another chat" : yield* personName(input.orgId, asker),
+      );
+    }
   const lines = open.slice(-8).map((row) => {
     const tail =
       row.kind === "text"
@@ -1481,12 +1513,53 @@ export const openQuestionsSection = Effect.fn("KinQuestions.section")(function* 
             ? `no safe default: raised once more ${dayWord(row.actAt, input.now, clock.zone)}, then it waits for them`
             : "no safe default: waits for them";
     const about = input.ownerOnly && row.about.length > 0 ? ` (about ${row.about.join(", ")})` : "";
-    return `- ${row.questionId}, ${row.agentName}, ${dayWord(row.askedAt, input.now, clock.zone).replace(/^on /, "")}: “${row.question}”${about}; ${tail}`;
+    const asker = row.forChatId === null ? "" : ` for ${forWhom.get(row.forChatId)}`;
+    return `- ${row.questionId}, ${row.agentName}${asker}, ${dayWord(row.askedAt, input.now, clock.zone).replace(/^on /, "")}: “${row.question}”${about}; ${tail}`;
   });
   return {
     heading: `# Open questions to ${who} (already asked; don't ask or repeat them)`,
     body: [
       "Like a fact already told, each is with them once: never put one to them again, on a card or in words; at most say it is open and what happens at its day. When they answer one of yours in words in its chat, kin_ask_close it as answered; withdraw yours when it no longer stands. Another agent's is that agent's to close.",
+      ...(forWhom.size === 0
+        ? []
+        : [
+            "One marked “for” someone was asked for their chat: Kin sends the answer back there, and only that chat withdraws it.",
+          ]),
+      ...lines,
+    ].join("\n"),
+  };
+});
+
+/**
+ * The questions this agent asked someone else for this chat, still open: so a turn here can say
+ * truly whether they answered. Their answer arrives here as Kin's line.
+ */
+export const askedForSection = Effect.fn("KinQuestions.askedForSection")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly chatId: string;
+  readonly now: number;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const open = (yield* sql<Raw>`SELECT ${sql.literal(COLUMNS)} ${sql.literal(FROM)}
+    WHERE q.org_id = ${input.orgId} AND q.agent_id = ${input.agentId}
+      AND q.for_chat_id = ${input.chatId} AND q.state = 'open'
+    ORDER BY q.asked_at DESC, q.question_id LIMIT 8`).map(toRow);
+  if (open.length === 0) return undefined;
+  const zone = yield* ownerZone(input.orgId);
+  const lines: Array<string> = [];
+  for (const row of open.toReversed())
+    lines.push(
+      `- ${row.questionId}, to ${yield* personName(input.orgId, row.personId)}, ${dayWord(row.askedAt, input.now, zone).replace(/^on /, "")}: “${row.question}”; ${
+        row.widgetId === null
+          ? "held for their quiet hours or away days: Kin posts it when they're free"
+          : "waiting on their answer in their chat with you"
+      }`,
+    );
+  return {
+    heading: "# Questions you asked for this chat (not answered yet)",
+    body: [
+      "Each waits on its person, with no default. When one answers, Kin says so here and wakes you to carry on; until then say it is with them, and don't ask again. Withdraw one with kin_ask_close when it no longer stands.",
       ...lines,
     ].join("\n"),
   };
