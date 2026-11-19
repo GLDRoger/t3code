@@ -201,6 +201,9 @@ it.live(
       assert.isDefined(person);
       const orgId = person!.orgId;
       const sql = yield* SqlClient.SqlClient;
+      // The journal is filed under the company's day, here UTC's, on any host.
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'UTC', '08:00', '18:00', '02:00',
+          0, 1, '09:00', '{}') ON CONFLICT (org_id) DO UPDATE SET time_zone = 'UTC'`;
       yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES (${agentId}, ${orgId}, 'Fixture Lead', 'lead', ${person!.personId}, '2026-11-08T00:00:00.000Z')`;
       const chat = yield* chats.createDirect(person!, { orgId, agentId });
       yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, thread_id, models_json, worker_projects_json, owner_chat_id) VALUES (${agentId}, ${orgId}, 'Fixture Lead', 'L1', 0, ${threadId}, '{}', '[]', ${chat.chatId})`;

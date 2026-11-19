@@ -165,6 +165,9 @@ const ambermill = Effect.gen(function* () {
   });
   const owner = resolved!;
   const { orgId } = owner;
+  // The company's clock, which its days, quiet hours and away dates follow, on any host.
+  yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Kolkata', '08:00', '18:00', '02:00',
+      0, 1, '09:00', '{}') ON CONFLICT (org_id) DO UPDATE SET time_zone = 'Asia/Kolkata'`;
   yield* sql`UPDATE kin_people SET display_name = 'Rhea Rao' WHERE person_id = ${owner.personId}`;
   for (const [id, name, access] of [
     ["meera", "Meera Shah", "co_owner"],
