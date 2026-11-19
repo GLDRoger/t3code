@@ -154,9 +154,9 @@ export const ASKED =
 /** A call that became a Confirm card because the turn had read outside text. */
 export const DRAFTED =
   "Nothing was sent: this exact action waits on a Confirm card, marked as drafted after outside text, and runs only if the owner or a co-owner taps Confirm there. Tell them once in one short line that it is waiting, and don't ask for it again in words.";
-/** Added to a new card's result when the card it replaces held a person's saved words. */
-export const EDITED_OVER = (name: string) =>
-  `${name} had saved their own words on the card this one replaces: they are quoted below, and your new card doesn't have them. If their changes should stand, draft again starting from their words.`;
+/** Added to a new card's result when cards it replaces held people's saved words. */
+export const EDITED_OVER = (names: string, cards = 1) =>
+  `${names} had saved their own words on ${cards === 1 ? "the card" : "the cards"} this one replaces: they are quoted below, and your new card doesn't have them. If their changes should stand, draft again starting from their words.`;
 /** What an identical call is told once its card was answered or closed: nothing new is drawn. */
 export const ASK_CLOSED = {
   sending:
@@ -2540,10 +2540,13 @@ const make = Effect.gen(function* () {
     if (replaced.length > 0) yield* levelGate.closeReplaced(turn, replaced);
     yield* record(turn, { ...entry, status: "awaiting_approval" });
     const note = outside === undefined ? ASKED : DRAFTED;
-    const [over] = savedOver;
-    return over === undefined
+    const names = [...new Set(savedOver.map((one) => one.name))].join(" and ");
+    return savedOver.length === 0
       ? { note }
-      : { note: `${note} ${EDITED_OVER(over.name)}`, quoted: over.quoted };
+      : {
+          note: `${note} ${EDITED_OVER(names, savedOver.length)}`,
+          quoted: savedOver.map((one) => one.quoted).join("\n"),
+        };
   });
 
   /**

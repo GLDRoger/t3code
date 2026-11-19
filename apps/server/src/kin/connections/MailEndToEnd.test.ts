@@ -1105,6 +1105,36 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           assert.include(marked.quoted ?? "", "See you Monday at 10.");
           assert.strictEqual(yield* stateOf(twin), "stale");
           assert.isTrue(closed(twin));
+
+          // Two of its cards here with saved words, one for the file and one for the thread, give
+          // way to one mail that is both: the words on each come back.
+          yield* wake({ person: owner });
+          const invoice = { to: ["ravi@lumen.example"], subject: "Invoice", body: "Attached." };
+          yield* callTool(ACCOUNTS, "mail_send", { ...invoice, attachments: ["INV-1"] });
+          const filed = cards.at(-1)!;
+          yield* stored(filed);
+          yield* saveEdited(filed, owner, 1, { ...invoice, body: "The November invoice." });
+          yield* reply("Friday it is.");
+          // It replaced the unedited reply before it, whose close is noted after it.
+          const replied = cards.findLast((one) => !one.widgetId.startsWith("closed:"))!;
+          yield* stored(replied);
+          yield* saveEdited(replied, owner, 1, {
+            to: ["ravi@lumen.example"],
+            subject: "Re: Launch date",
+            body: "Friday it is, at the studio.",
+          });
+          const both = yield* callTool(ACCOUNTS, "mail_reply", {
+            threadId: inbound.threadId,
+            body: "Friday it is. The invoice is attached.",
+            attachments: ["INV-1"],
+          });
+          assert.strictEqual(both.note, `${ASKED} ${EDITED_OVER("Arjun", 2)}`);
+          assert.include(both.quoted ?? "", "The November invoice.");
+          assert.include(both.quoted ?? "", "Friday it is, at the studio.");
+          assert.deepStrictEqual(
+            [yield* stateOf(filed), yield* stateOf(replied)],
+            ["stale", "stale"],
+          );
           assert.lengthOf(fake.sent(), 0);
         }),
       ),
