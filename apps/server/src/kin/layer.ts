@@ -27,7 +27,7 @@ import { KinChatHub } from "./chat/KinChatHub.ts";
 import { KinChatService } from "./chat/KinChatService.ts";
 import * as FileSystem from "effect/FileSystem";
 import { ServerConfig } from "../config.ts";
-import { answerChoice, resumeInterruptedSends } from "./work/cardAnswers.ts";
+import { answerChoice, refusedChoice, resumeInterruptedSends } from "./work/cardAnswers.ts";
 import { requireRefreshObserver } from "./chat/KinRefreshHub.ts";
 import { KinIdentity, KinNewCompanyCountryUnset } from "./chat/KinIdentity.ts";
 import { seedPlaybooks } from "./work/playbookSeeds.ts";
@@ -58,6 +58,7 @@ import { FetchHttpClient } from "effect/http";
 import * as Connections from "./connections/ConnectionsService.ts";
 import * as ConnectionSecrets from "./connections/ConnectionSecrets.ts";
 import * as DevFakeMail from "./connections/DevFakeMail.ts";
+import * as DevClock from "./DevClock.ts";
 import * as McpGateway from "./connections/McpGateway.ts";
 import * as DevFakeSocial from "./social/DevFakeSocial.ts";
 
@@ -91,8 +92,15 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
       const scope = yield* Effect.scope;
       const files = yield* Effect.context<FileSystem.FileSystem | ServerConfig>();
       // Receipt and statement cards' answers carry out their work here, in the tap's transaction.
-      yield* chat.attachChoiceAnswers((input) =>
-        answerChoice(input, scope).pipe(Effect.provide(services), Effect.provide(files)),
+      yield* chat.attachChoiceAnswers(
+        (input) => answerChoice(input, scope).pipe(Effect.provide(services), Effect.provide(files)),
+        (input) =>
+          refusedChoice(input).pipe(
+            Effect.provide(services),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin couldn't show a card's sent-mail check", Cause.pretty(cause)),
+            ),
+          ),
       );
       yield* resumeInterruptedSends(owner.orgId, yield* Clock.currentTimeMillis).pipe(
         Effect.provide(services),
@@ -195,6 +203,8 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           ),
       ),
     ),
+    // Everything Kin builds above reads the time from here: a play-test's moved clock in dev.
+    Layer.provide(DevClock.layer),
     // Inside `enabled`: built only with Kin on, and a secret store failure disables Kin, not the server.
     Layer.provide(seal),
     // The server's own instance: layers are shared by reference.

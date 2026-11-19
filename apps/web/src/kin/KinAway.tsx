@@ -1,3 +1,4 @@
+import { kinNow } from "@t3tools/client-runtime/kin/kinNow";
 import {
   KIN_AWAY,
   kinAwayDefault,
@@ -130,7 +131,7 @@ function KinAwayDialog(props: {
 }) {
   const { profile } = props;
   const [day, setDay] = useState(
-    () => profile.awayUntil ?? kinAwayDefault(new Date(), profile.timeZone),
+    () => profile.awayUntil ?? kinAwayDefault(kinNow(), profile.timeZone),
   );
   const [problem, setProblem] = useState<string | null>(null);
   const dayId = useId();
@@ -142,7 +143,7 @@ function KinAwayDialog(props: {
           className="contents"
           onSubmit={(event) => {
             event.preventDefault();
-            const wrong = kinAwayProblem(day, new Date(), profile.timeZone);
+            const wrong = kinAwayProblem(day, kinNow(), profile.timeZone);
             setProblem(wrong);
             if (wrong === null) void props.onSave(day);
           }}

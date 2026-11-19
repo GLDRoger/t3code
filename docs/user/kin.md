@@ -265,7 +265,8 @@ the figures in the quote or the invoice.
 
 A coding agent key lets your own coding agent, such as Claude Code, Codex or Cursor, read the tasks
 you hold, add notes to them, and set them to to-do, in progress or done. It can't reach anyone
-else's tasks, or any chats, money or files.
+else's tasks, anything labelled sensitive or under a client or project labelled sensitive, or any
+chats, money or files.
 
 To make one, open **Settings → Profile** and choose **Make a
 key** under **Coding agent keys**. Name it for the computer or tool it's for. Kin shows the key, its
@@ -276,7 +277,7 @@ Kin at a different address than the app you made the key in, use that address wi
 Choose **Remove** beside a key to stop it; the coding agent loses access on its next call. The owner
 and co-owners can see and remove a teammate's keys on their profile, and removing someone's access
 ends all of their keys. Removing the device a key was made on ends that key too. A key made before
-this update isn't tied to a device, so remove it here yourself.
+keys were tied to a device has ended; make a new one.
 
 ## Clients and projects
 
@@ -371,7 +372,16 @@ from the account and thread the email is in.
 The card shows exactly what will be sent, from which account, to whom. One **Confirm** sends it
 once. Only the owner or a co-owner can confirm. To fix a mail's words yourself, tap **Edit**:
 change To, Cc, Subject or the message, then **Send edited mail** sends it as you left it, with
-no new draft from the agent. Attached files go as they were.
+no new draft from the agent. **Save** keeps your words on the card without sending, marked as
+edited by you, and its **Confirm** then sends them; leaving the chat or the app with changes saves
+them too. If the card changed meanwhile, your words stay on that device until the page is reloaded
+or the app restarts, and show again on the card for you to check and save. **Discard edits** puts
+the agent's draft back. Attached files go as they were.
+
+If an earlier try at a mail may already have gone (the account gave no clear answer, or Kin
+restarted while sending), every card for that mail says so, in any chat. Check the account's sent
+mail, then tick **I've checked the sent mail** to Confirm. From Tasks, open the card with
+**Review**.
 
 ### GitHub
 

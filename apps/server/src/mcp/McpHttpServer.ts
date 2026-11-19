@@ -1352,6 +1352,22 @@ export class ToolCallRefused extends Schema.Error<ToolCallRefused>("t3/mcp/ToolC
   code: Schema.tag(-32003),
 }) {}
 
+const toolCallGateFn =
+  <R>(
+    refusal: (name: string, args: unknown) => Effect.Effect<string | undefined, never, R>,
+  ): McpServer.middleware.Fn<never, McpSchema.McpErrorBase | ToolCallRefused, R> =>
+  (effect, { method, target, payload }) =>
+    method !== "tools/call"
+      ? effect
+      : refusal(
+          target,
+          Predicate.hasProperty(payload, "arguments") ? payload.arguments : undefined,
+        ).pipe(
+          Effect.flatMap((message) =>
+            message === undefined ? effect : Effect.fail(new ToolCallRefused({ message })),
+          ),
+        );
+
 /**
  * Every tool call on the server this joins passes `admit` before its handler, whichever toolkit
  * registered the tool, including ones added later. `admit` sees the tool name and its raw
@@ -1362,17 +1378,9 @@ export const toolCallGate = <R>(
   refusal: string,
 ) =>
   McpServer.middleware()(
-    (effect, { method, target, payload }) =>
-      method !== "tools/call"
-        ? effect
-        : admit(
-            target,
-            Predicate.hasProperty(payload, "arguments") ? payload.arguments : undefined,
-          ).pipe(
-            Effect.flatMap((admitted) =>
-              admitted ? effect : Effect.fail(new ToolCallRefused({ message: refusal })),
-            ),
-          ),
+    toolCallGateFn((name, args) =>
+      Effect.map(admit(name, args), (admitted) => (admitted ? undefined : refusal)),
+    ),
     { global: true },
   );
 
@@ -1434,9 +1442,16 @@ const layerToolExposure = Layer.effect(
   McpToolExposure.McpToolExposure,
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
+    const policy = yield* McpToolPolicy;
     return McpToolExposure.make(
       () =>
-        server.tools.map(({ tool }) => ({ name: tool.name, description: tool.description ?? "" })),
+        Effect.filter(
+          server.tools.map(({ tool }) => ({
+            name: tool.name,
+            description: tool.description ?? "",
+          })),
+          (tool) => policy.visible(tool.name),
+        ),
       () => server.notifications["notifications/tools/list_changed"]({}),
     );
   }),
@@ -1470,4 +1485,34 @@ export const layerToolSearch = Layer.mergeAll(
   layerDeferredListing,
 ).pipe(Layer.provide(layerToolExposure));
 
-export const layer = layerMcpTransport(Layer.mergeAll(layerTools, layerToolSearch));
+/**
+ * What a host narrows on `layer`: the tools a request lists, finds and may call, and a call's
+ * refusal, if any. The default narrows nothing; a host provides its own to `layer`.
+ */
+export const McpToolPolicy = Context.Reference<{
+  readonly visible: (name: string) => Effect.Effect<boolean>;
+  readonly refusal: (name: string, args: unknown) => Effect.Effect<string | undefined>;
+}>("t3/mcp/McpToolPolicy", {
+  defaultValue: () => ({
+    visible: () => Effect.succeed(true),
+    refusal: () => Effect.undefined,
+  }),
+});
+
+const layerToolPolicy = Layer.mergeAll(
+  McpServer.visibility(
+    Effect.map(
+      Effect.service(McpToolPolicy),
+      (policy) => (options: McpServer.MiddlewareOptions) => policy.visible(options.target),
+    ),
+    { global: true },
+  ),
+  McpServer.middleware()(
+    Effect.map(Effect.service(McpToolPolicy), (policy) => toolCallGateFn(policy.refusal)),
+    { global: true },
+  ),
+);
+
+export const layer = layerMcpTransport(
+  Layer.mergeAll(layerTools, layerToolSearch, layerToolPolicy),
+);

@@ -1,12 +1,15 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format a mail thread's date for React render, outside an Effect runtime.
+import { kinNow } from "./kinNow.ts";
 import {
   KIN_CHOICE_CARD_ACTION,
   KinChatError,
+  type KinConnectionSaveEditedInput,
   type KinConnectionSendEditedInput,
   KIN_CHOICE_CARD_TTL_MS,
   KinChoiceCardState,
   type KinPersonId,
   type KinSendCard,
+  type KinSendTry,
   type KinWidget,
   type KinWidgetsActInput,
   formatKinWhen,
@@ -15,6 +18,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { kinPersonWords } from "./kinAnswers.ts";
 import { type KinCardNotice, kinActionFailureNotice } from "./kinDeferralPresentation.ts";
 import { formatKinTime, kinSentences } from "./kinScreenState.ts";
 
@@ -81,6 +85,19 @@ export interface KinSendView {
   readonly outcome: { readonly tone: "pending" | "ok" | "error"; readonly text: string } | null;
   /** A mail's words as stored, which a person may change before it goes; null on other cards. */
   readonly edit: KinSendEditDraft | null;
+  /** Who saved the words shown over the agent's draft; null while they are the agent's. */
+  readonly edited: { readonly personId: KinPersonId; readonly name: string } | null;
+  /**
+   * On an unanswered card, that an earlier try at this mail may already have gone, and when;
+   * its Confirm (`confirmId`) then needs the person's tick that they checked. Null otherwise.
+   */
+  readonly mayHaveGone: {
+    readonly line: string;
+    /** The try it is about; a tick acknowledges this one only. */
+    readonly tryId: string;
+    readonly at: string;
+    readonly confirmId: string | null;
+  } | null;
 }
 
 /** A mail card's editable words, as its form holds them: addresses comma-separated. */
@@ -94,27 +111,53 @@ export interface KinSendEditDraft {
 export const KIN_SEND_EDIT_COPY = {
   edit: "Edit",
   editHint: "Change the mail's words before it goes",
+  save: "Save",
+  saving: "Saving…",
   send: "Send edited mail",
   sending: "Sending…",
   discard: "Discard edits",
+  discarding: "Discarding…",
+  closed:
+    "This card closed while you were editing, so your words weren't saved. They stay here until you discard them.",
   to: "To",
   cc: "Cc",
   subject: "Subject",
   body: "Message",
+  /** The body field's accessible name: the chat's own composer is "Message" too. */
+  bodyName: "Mail message",
   addresses: "Separate addresses with commas.",
   attachments: "Attached files go as they are.",
   quotedLabel: "Quoted message",
   quoted: "The quoted message goes below yours as it is.",
 } as const;
 
+/** The tick a card for a mail that may already have gone needs before its Confirm. */
+export const KIN_SEND_CHECKED = "I've checked the sent mail";
+
+/** "An earlier try at this mail at 9:52 AM may already have gone…", or on another day. */
+export function kinMayHaveGoneLine(at: string, now: Date = new Date()): string {
+  const tried = new Date(at);
+  const when =
+    tried.toDateString() === now.toDateString()
+      ? `at ${formatKinWhen(tried, "time")}`
+      : `on ${formatKinWhen(tried, "dayTime")}`;
+  return `An earlier try at this mail ${when} may already have gone. Check the account's sent mail before you confirm.`;
+}
+
 /** An open editor: the words as typed, bound to the card revision it was opened on. */
 export interface KinSendEditing {
   readonly revision: number;
+  /** The card's words when the editor opened: leaving with these unchanged keeps nothing. */
+  readonly opened: KinSendEditDraft;
   readonly draft: KinSendEditDraft;
   /** The host's last refusal, shown under the fields. */
   readonly problem: string | null;
   /** The host refused `revision` as changed: Send waits for the card as it is now. */
   readonly stale?: true;
+  /** The host acknowledged a save at `revision`: the card holds these words, whatever it shows yet. */
+  readonly saved?: true;
+  /** The try the host refused these typed words for, until it is ticked; the card's is its own. */
+  readonly mayHaveGone?: KinSendTry;
 }
 
 export interface KinSendFromChoice {
@@ -137,7 +180,7 @@ const kb = (bytes: number) =>
  * The provider's date of a thread's last message (RFC 2822 from Gmail, ISO from Microsoft), in
  * the reader's zone; null where it gave none we can read. Nothing mailed before 1995 is real.
  */
-export function kinThreadDate(raw: string | null, now: Date = new Date()): string | null {
+export function kinThreadDate(raw: string | null, now: Date = kinNow()): string | null {
   if (raw === null) return null;
   const at = new Date(raw.trim());
   return Number.isNaN(at.getTime()) || at.getTime() < Date.UTC(1995, 0, 1)
@@ -168,7 +211,7 @@ export function kinQuotedInZone(quoted: string, raw: string | null): string {
   return `On ${day} at ${time}, ${quoted.slice(`On ${raw}, `.length)}`;
 }
 
-function kinSendView(send: KinSendCard, now: Date): KinSendView {
+function kinSendView(send: KinSendCard, now: Date, confirmId: string | null): KinSendView {
   // Cards from before accounts carry only the account, in `from`.
   const account = send.account === undefined ? send.from : send.account;
   const legacy = send.account === undefined ? (send.from === null ? "" : ` from ${send.from}`) : "";
@@ -245,6 +288,16 @@ function kinSendView(send: KinSendCard, now: Date): KinSendView {
             body: send.body,
           }
         : null,
+    edited: send.edited ?? null,
+    mayHaveGone:
+      send.mayHaveGone === undefined || send.outcome !== null
+        ? null
+        : {
+            line: kinMayHaveGoneLine(send.mayHaveGone.at, now),
+            tryId: send.mayHaveGone.tryId,
+            at: send.mayHaveGone.at,
+            confirmId,
+          },
   };
 }
 
@@ -265,7 +318,7 @@ const line = (text: string) => text.replace(/\s+/g, " ").trim();
 
 export function kinChoiceCardView(
   widget: KinWidget,
-  now: Date = new Date(),
+  now: Date = kinNow(),
 ): KinChoiceCardView | null {
   const state = decode(widget.state);
   if (Option.isNone(state)) return null;
@@ -289,7 +342,14 @@ export function kinChoiceCardView(
     card.answer === null
       ? undefined
       : options.find((option) => option.id === card.answer?.optionId);
-  const send = card.send === undefined ? null : kinSendView(card.send, now);
+  const send =
+    card.send === undefined
+      ? null
+      : kinSendView(
+          card.send,
+          now,
+          card.options.find((option) => option.kind === "yes")?.optionId ?? null,
+        );
   return {
     orgId: widget.orgId,
     widgetId: widget.widgetId,
@@ -430,7 +490,7 @@ export function kinChoiceAnswered(
 export function kinChoiceUndoneLine(
   view: Pick<KinChoiceCardView, "undone">,
   viewerPersonId: KinPersonId | null,
-  now: Date = new Date(),
+  now: Date = kinNow(),
 ): string | null {
   const { undone } = view;
   if (undone === null) return null;
@@ -443,12 +503,26 @@ export function kinChoiceUndoneLine(
   return `Undone by ${who} ${when}.`;
 }
 
-export function kinChoiceAccessibilityLabel(view: KinChoiceCardView, status: string | null) {
+/**
+ * A card's spoken label. Where the group it labels hides its children from the screen reader
+ * (the phone), `message` says a send card's words and the quote under them too.
+ */
+export function kinChoiceAccessibilityLabel(
+  view: KinChoiceCardView,
+  status: string | null,
+  edited: string | null = null,
+  spoken: { readonly message?: boolean } = {},
+) {
   if (view.send !== null)
     return kinSentences([
       view.question,
+      edited,
       ...view.send.lines.map((line) => `${line.label}: ${line.value}`),
+      ...(spoken.message === true
+        ? [view.send.body === null ? null : `Message: ${view.send.body}`, view.send.quoted]
+        : []),
       ...view.send.attachments.map((file) => `Attached: ${file.name}`),
+      view.send.mayHaveGone?.line ?? null,
       view.send.outcome?.text ?? null,
       status,
     ]);
@@ -460,10 +534,12 @@ export function kinChoiceAccessibilityLabel(view: KinChoiceCardView, status: str
   ]);
 }
 
+/** `checkedSent`: the try the person's sent-mail tick is for (`kinSendTicked`). */
 export function kinChoiceActInput(
   view: Pick<KinChoiceCardView, "widgetId" | "revision">,
   optionId: string,
   clientActionId: string,
+  checkedSent: KinSendTry | null = null,
 ): KinWidgetsActInput {
   return {
     widgetId: view.widgetId,
@@ -471,7 +547,68 @@ export function kinChoiceActInput(
     actionId: KIN_CHOICE_CARD_ACTION,
     value: optionId,
     clientActionId,
+    ...(checkedSent === null ? {} : { checkedSent }),
   };
+}
+
+/**
+ * The try a person's tick acknowledges on this card now: null once the warning names another try,
+ * so a tick never carries over to a later one.
+ */
+export function kinSendTicked(
+  view: Pick<KinChoiceCardView, "send">,
+  ticked: KinSendTry | null,
+): KinSendTry | null {
+  const gone = view.send?.mayHaveGone ?? null;
+  return gone !== null && gone.tryId === ticked?.tryId && gone.at === ticked.at ? ticked : null;
+}
+
+/** The try a card's warning names, to tick for. */
+export function kinSendTry(view: Pick<KinChoiceCardView, "send">): KinSendTry | null {
+  const gone = view.send?.mayHaveGone ?? null;
+  return gone === null ? null : { tryId: gone.tryId, at: gone.at };
+}
+
+/**
+ * The card as the tick beside an open editor reads it: the try the host refused the typed words
+ * for, where it named one. The card's own warning stays about its saved words.
+ */
+export function kinSendEditWarned<V extends Pick<KinChoiceCardView, "send">>(
+  view: V,
+  editing: KinSendEditing | null,
+  now: Date = new Date(),
+): V {
+  const gone = editing?.mayHaveGone;
+  if (gone === undefined || view.send === null) return view;
+  return {
+    ...view,
+    send: {
+      ...view.send,
+      mayHaveGone: {
+        line: kinMayHaveGoneLine(gone.at, now),
+        tryId: gone.tryId,
+        at: gone.at,
+        confirmId: view.send.mayHaveGone?.confirmId ?? null,
+      },
+    },
+  };
+}
+
+/**
+ * Whether a press waits for the sent-mail tick: Send edited mail (no `optionId`) or the card's
+ * Confirm, on a card for a mail an earlier try at which may already have gone.
+ */
+export function kinSendCheckPending(
+  view: Pick<KinChoiceCardView, "send">,
+  ticked: KinSendTry | null,
+  optionId?: string,
+): boolean {
+  const gone = view.send?.mayHaveGone ?? null;
+  return (
+    gone !== null &&
+    kinSendTicked(view, ticked) === null &&
+    (optionId === undefined || optionId === gone.confirmId)
+  );
 }
 
 /**
@@ -482,6 +619,8 @@ export function kinChoiceFailureNotice(cause: KinChatError): KinCardNotice {
   const said = cause.message.trim();
   if ((cause.reason === "conflict" || cause.reason === "widget_changed") && said !== "")
     return { kind: cause.reason === "conflict" ? "error" : "stale", text: said };
+  // Kin can't send it until the person acts, such as a mail account signing in again: said as is.
+  if (cause.reason === "unavailable" && kinPersonWords(said)) return { kind: "error", text: said };
   return kinActionFailureNotice(cause);
 }
 
@@ -500,11 +639,126 @@ export function kinSendEditOffered(
   );
 }
 
-/** Edit pressed: the stored words, bound to the card as it is now. */
-export function kinSendEditStart(view: KinChoiceCardView): KinSendEditing | null {
-  return view.send?.edit == null
-    ? null
-    : { revision: view.revision, draft: view.send.edit, problem: null };
+/**
+ * What the host last took from this device's editor on a card, kept while the editor is closed:
+ * the revision its Save or Discard made, and the words a Save left there (`null` after Discard).
+ */
+export interface KinSendEditAck {
+  readonly revision: number;
+  readonly saved: KinSendEditDraft | null;
+}
+
+/**
+ * Edit pressed: the stored words, bound to the card as it is now. Until the card's update for
+ * this device's last Save or Discard arrives, bound instead to the revision that made, over the
+ * words it left, so a Discard there resets the right card.
+ */
+export function kinSendEditStart(
+  view: KinChoiceCardView,
+  ack: KinSendEditAck | null = null,
+): KinSendEditing | null {
+  if (view.send?.edit == null) return null;
+  if (ack === null || ack.revision <= view.revision)
+    return {
+      revision: view.revision,
+      opened: view.send.edit,
+      draft: view.send.edit,
+      problem: null,
+    };
+  const words = ack.saved ?? view.send.edit;
+  return {
+    revision: ack.revision,
+    opened: words,
+    draft: words,
+    problem: null,
+    ...(ack.saved === null ? {} : { saved: true as const }),
+  };
+}
+
+/** "Edited by you", or by name on another's card: shown on a mail card while it holds a saved edit. */
+export function kinSendEditedLine(
+  view: Pick<KinChoiceCardView, "send">,
+  viewerPersonId: KinPersonId | null,
+): string | null {
+  const edited = view.send?.edited ?? null;
+  if (edited === null) return null;
+  return `Edited by ${edited.personId === viewerPersonId ? "you" : edited.name}`;
+}
+
+/** Whether the words differ from what the editor opened with. */
+export function kinSendEditUnsaved(editing: KinSendEditing): boolean {
+  const { opened, draft } = editing;
+  return (
+    opened.to !== draft.to ||
+    opened.cc !== draft.cc ||
+    opened.subject !== draft.subject ||
+    opened.body !== draft.body
+  );
+}
+
+/** What the editor is doing: nothing, or waiting on the host for one of its three buttons. */
+export type KinSendEditBusy = "saving" | "sending" | "discarding" | null;
+export interface KinSendEditButton {
+  readonly label: string;
+  readonly disabled: boolean;
+}
+
+/**
+ * The editor's buttons, Save, Send edited mail and Discard edits, and the line above them. A card
+ * that no longer takes edits (`open` false) keeps unsaved words on screen, with only Discard.
+ */
+export function kinSendEditControls(
+  editing: KinSendEditing,
+  view: Pick<KinChoiceCardView, "revision">,
+  busy: KinSendEditBusy,
+  open: boolean,
+  /** Send waits for the sent-mail tick (`kinSendCheckPending`). */
+  unchecked = false,
+): {
+  readonly save: KinSendEditButton;
+  readonly send: KinSendEditButton;
+  readonly discard: KinSendEditButton;
+  readonly notice: string | null;
+} {
+  const takes = busy === null && open && kinSendEditBound(editing, view).ready;
+  return {
+    save: {
+      label: busy === "saving" ? KIN_SEND_EDIT_COPY.saving : KIN_SEND_EDIT_COPY.save,
+      disabled: !takes,
+    },
+    send: {
+      label: busy === "sending" ? KIN_SEND_EDIT_COPY.sending : KIN_SEND_EDIT_COPY.send,
+      disabled: !takes || unchecked,
+    },
+    discard: {
+      label: busy === "discarding" ? KIN_SEND_EDIT_COPY.discarding : KIN_SEND_EDIT_COPY.discard,
+      disabled: busy !== null,
+    },
+    notice: open ? null : KIN_SEND_EDIT_COPY.closed,
+  };
+}
+
+/** Whether the editor stays on screen: while the card takes edits, or it holds unsaved words. */
+export function kinSendEditShown(editing: KinSendEditing | null, open: boolean): boolean {
+  return editing !== null && (open || kinSendEditUnsaved(editing));
+}
+
+/**
+ * Leaving the chat or the app with unsaved words saves them, bound as Save is: a card that
+ * changed since refuses, and one the host already said changed is left for the person to choose.
+ */
+export function kinSendEditLeaveSaves(
+  editing: KinSendEditing | null,
+  busy: KinSendEditBusy,
+  open: boolean,
+): editing is KinSendEditing {
+  return (
+    editing !== null &&
+    busy === null &&
+    open &&
+    editing.stale !== true &&
+    kinSendEditUnsaved(editing)
+  );
 }
 
 const addresses = (typed: string) => typed.split(/[,;\s]+/u).filter((one) => one !== "");
@@ -528,6 +782,7 @@ export function kinSendEditInput(
   view: Pick<KinChoiceCardView, "orgId" | "widgetId" | "revision">,
   editing: KinSendEditing,
   clientActionId: string,
+  checkedSent: KinSendTry | null = null,
 ): KinConnectionSendEditedInput {
   return {
     orgId: view.orgId,
@@ -538,7 +793,72 @@ export function kinSendEditInput(
     cc: addresses(editing.draft.cc),
     subject: editing.draft.subject,
     body: editing.draft.body,
+    ...(checkedSent === null ? {} : { checkedSent }),
   };
+}
+
+/** Saved on leaving: the editor stays as it was, bound to the card that now holds the words. */
+export function kinSendEditKept(editing: KinSendEditing, revision: number): KinSendEditing {
+  return { revision, opened: editing.draft, draft: editing.draft, problem: null, saved: true };
+}
+
+const held = new Map<string, KinSendEditing>();
+/** Which card's words a device holds: one per environment, person and card. */
+export function kinSendEditHeldKey(
+  environmentId: string,
+  viewerPersonId: KinPersonId | null,
+  widgetId: string,
+): string {
+  return `${environmentId}\u0000${viewerPersonId ?? ""}\u0000${widgetId}`;
+}
+/** Words left unsaved on a card when its editor went away, kept in memory on this device. */
+export function kinSendEditHeld(key: string): KinSendEditing | null {
+  return held.get(key) ?? null;
+}
+/** Keeps an editor's words until they are saved, sent or discarded; `null` lets them go. */
+export function kinSendEditHold(key: string, editing: KinSendEditing | null): void {
+  if (editing === null) held.delete(key);
+  else held.set(key, editing);
+}
+
+/** The words kept on the card without sending, for the card Save is bound to. */
+export function kinSendEditSaveInput(
+  view: Pick<KinChoiceCardView, "orgId" | "widgetId" | "revision">,
+  editing: KinSendEditing,
+): KinConnectionSaveEditedInput {
+  return {
+    orgId: view.orgId,
+    widgetId: view.widgetId,
+    revision: kinSendEditBound(editing, view).revision,
+    edit: {
+      to: addresses(editing.draft.to),
+      cc: addresses(editing.draft.cc),
+      subject: editing.draft.subject,
+      body: editing.draft.body,
+    },
+  };
+}
+
+/**
+ * Discard edits on an open card holding a saved edit, as shown or as the host acknowledged a save,
+ * puts the agent's draft back on it, bound as Save is; otherwise it only closes the editor.
+ */
+export function kinSendEditDiscardInput(
+  view: Pick<KinChoiceCardView, "orgId" | "widgetId" | "revision" | "send">,
+  editing: KinSendEditing,
+  open: boolean,
+): KinConnectionSaveEditedInput | null {
+  // Bound past the card on screen, only what the host acknowledged says whether words are saved.
+  const saved =
+    editing.saved === true || (editing.revision <= view.revision && view.send?.edited != null);
+  return !open || !saved
+    ? null
+    : {
+        orgId: view.orgId,
+        widgetId: view.widgetId,
+        revision: kinSendEditBound(editing, view).revision,
+        edit: null,
+      };
 }
 
 const isKinChatError = Schema.is(KinChatError);
@@ -559,12 +879,10 @@ export function kinSendEditRefused(
   cause: unknown,
 ): KinSendEditing {
   const problem = kinSendEditFailure(cause);
+  const gone = isKinChatError(cause) ? cause.mayHaveGone : undefined;
+  const next =
+    gone === undefined ? { ...editing, problem } : { ...editing, problem, mayHaveGone: gone };
   return isKinChatError(cause) && cause.reason === "widget_changed"
-    ? {
-        draft: editing.draft,
-        problem,
-        revision: kinSendEditBound(editing, view).revision,
-        stale: true,
-      }
-    : { ...editing, problem };
+    ? { ...next, revision: kinSendEditBound(editing, view).revision, stale: true }
+    : next;
 }
