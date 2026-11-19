@@ -17,6 +17,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { kinPersonWords } from "./kinAnswers.ts";
 import { type KinCardNotice, kinActionFailureNotice } from "./kinDeferralPresentation.ts";
 import { formatKinTime, kinSentences } from "./kinScreenState.ts";
 
@@ -121,6 +122,8 @@ export const KIN_SEND_EDIT_COPY = {
   cc: "Cc",
   subject: "Subject",
   body: "Message",
+  /** The body field's accessible name: the chat's own composer is "Message" too. */
+  bodyName: "Mail message",
   addresses: "Separate addresses with commas.",
   attachments: "Attached files go as they are.",
   quotedLabel: "Quoted message",
@@ -615,6 +618,8 @@ export function kinChoiceFailureNotice(cause: KinChatError): KinCardNotice {
   const said = cause.message.trim();
   if ((cause.reason === "conflict" || cause.reason === "widget_changed") && said !== "")
     return { kind: cause.reason === "conflict" ? "error" : "stale", text: said };
+  // Kin can't send it until the person acts, such as a mail account signing in again: said as is.
+  if (cause.reason === "unavailable" && kinPersonWords(said)) return { kind: "error", text: said };
   return kinActionFailureNotice(cause);
 }
 

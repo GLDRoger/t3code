@@ -200,7 +200,7 @@ describe("a mail card's Edit", () => {
     const to = page.getByLabelText("To");
     await expect.element(to).toHaveValue("anita@orbitdental.example");
     await expect
-      .element(page.getByLabelText("Message"))
+      .element(page.getByLabelText("Mail message", { exact: true }))
       .toHaveValue("Hi Anita,\nThe invoice is attached.\nRhea");
     // The account it goes from and the file are shown, not editable.
     await expect.element(fromLine()).toHaveTextContent(RHEA);
@@ -218,7 +218,7 @@ describe("a mail card's Edit", () => {
     await userEvent.clear(to);
     await userEvent.type(to, "anita@orbitdental.example, dev@orbitdental.example");
     await userEvent.fill(
-      page.getByLabelText("Message"),
+      page.getByLabelText("Mail message", { exact: true }),
       "Hi Anita,\nThe invoice is attached.\nRhea\nPS: GST is on page 2.",
     );
     await userEvent.click(page.getByRole("button", { name: "Send edited mail" }));
@@ -358,7 +358,10 @@ describe("a mail card's Edit", () => {
     await expect.element(page.getByRole("button", { name: "Send edited mail" })).toBeDisabled();
     await userEvent.click(tick);
     await expect.element(tick).toBeChecked();
-    await userEvent.fill(page.getByLabelText("Message"), "Hi Anita,\nResending the invoice.\nRhea");
+    await userEvent.fill(
+      page.getByLabelText("Mail message", { exact: true }),
+      "Hi Anita,\nResending the invoice.\nRhea",
+    );
     await userEvent.click(page.getByRole("button", { name: "Send edited mail" }));
     await expect.element(page.getByLabelText("To")).not.toBeInTheDocument();
     expect(state.sent[0]).toMatchObject({
@@ -410,7 +413,7 @@ describe("a mail card's Edit", () => {
     await using screen = await render(view());
     await userEvent.click(page.getByRole("button", { name: "Edit" }));
     await userEvent.fill(
-      page.getByLabelText("Message"),
+      page.getByLabelText("Mail message", { exact: true }),
       "Hi Anita,\nThe invoice is attached.\nRhea\nPS: GST is on page 2.",
     );
 
@@ -422,7 +425,7 @@ describe("a mail card's Edit", () => {
       .element(page.getByRole("alert"))
       .toHaveTextContent("This card changed or was answered. Look at it again.");
     const words = "Hi Anita,\nThe invoice is attached.\nRhea\nPS: GST is on page 2.";
-    await expect.element(page.getByLabelText("Message")).toHaveValue(words);
+    await expect.element(page.getByLabelText("Mail message", { exact: true })).toHaveValue(words);
     expect(state.sent[0]).toMatchObject({ revision: 2, body: words });
     await expect.element(send).toBeDisabled();
 

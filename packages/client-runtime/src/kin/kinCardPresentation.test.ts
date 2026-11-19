@@ -862,12 +862,24 @@ describe("choice cards", () => {
   });
 
   it("says a refused answer in the host's words when its figures changed", () => {
-    const refusal = (reason: "conflict" | "widget_changed" | "not_allowed", message: string) =>
-      kinChoiceFailureNotice(new KinChatError({ reason, message }));
+    const refusal = (
+      reason: "conflict" | "widget_changed" | "not_allowed" | "unavailable",
+      message: string,
+    ) => kinChoiceFailureNotice(new KinChatError({ reason, message }));
     expect(refusal("conflict", "The figures changed since this card was made.")).toEqual({
       kind: "error",
       text: "The figures changed since this card was made.",
     });
+    // A mail whose account needs signing in: which one, that nothing went, where to sign in.
+    const signedOut =
+      "hello@ambermill.example needs signing in again in Settings › Connections. Nothing was sent; tap Confirm again once it's back.";
+    expect(refusal("unavailable", signedOut)).toEqual({ kind: "error", text: signedOut });
+    expect(
+      kinSendEditFailure(new KinChatError({ reason: "unavailable", message: signedOut })),
+    ).toBe(signedOut);
+    expect(refusal("unavailable", "Kin couldn't read mail_send's definition.").text).not.toContain(
+      "mail_send",
+    );
     expect(refusal("widget_changed", "This receipt was already answered.").kind).toBe("stale");
     expect(refusal("not_allowed", "Chat operation not allowed.").text).not.toContain("Chat");
   });

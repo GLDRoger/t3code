@@ -1437,8 +1437,19 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         const held = yield* tap(first.widgetId, owner).pipe(Effect.flip);
         assert.include(held.message, `${HELLO} needs signing in again`);
         assert.include(held.message, "Nothing was sent");
+        // Send edited mail is refused the same way, and neither refusal is a try that may have gone.
+        yield* stored(first);
+        const edited = yield* sendEdited(cards, first, owner, { to: ["ravi@lumen.example"] }).pipe(
+          Effect.flip,
+        );
+        assert.include(edited.message, `${HELLO} needs signing in again`);
+        assert.include(edited.message, "Nothing was sent");
+        const [untried] = yield* (yield* SqlClient.SqlClient)<{ tried: number }>`SELECT
+            COUNT(*) AS tried FROM kin_connection_asks WHERE done_at IS NOT NULL`;
+        assert.strictEqual(untried?.tried, 0);
         yield* signInAgain;
         assert.deepStrictEqual(yield* tap(first.widgetId, owner), { state: "sent", reason: null });
+        assert.lengthOf(fake.sent(), 1);
 
         // Found out while sending, over words the owner saved: not sent, and the same mail comes
         // back on a fresh card with their words marked as theirs, and the agent's draft under them.

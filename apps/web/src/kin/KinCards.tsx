@@ -727,6 +727,7 @@ function KinSendEditor(props: {
         <Label htmlFor={`${id}-body`}>{KIN_SEND_EDIT_COPY.body}</Label>
         <Textarea
           id={`${id}-body`}
+          aria-label={KIN_SEND_EDIT_COPY.bodyName}
           rows={8}
           value={draft.body}
           disabled={busy}

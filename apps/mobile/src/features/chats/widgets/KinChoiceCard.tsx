@@ -296,7 +296,7 @@ function SendEditor(props: {
           {KIN_SEND_EDIT_COPY.body}
         </Text>
         <TextInput
-          accessibilityLabel={KIN_SEND_EDIT_COPY.body}
+          accessibilityLabel={KIN_SEND_EDIT_COPY.bodyName}
           value={draft.body}
           editable={!busy}
           multiline
