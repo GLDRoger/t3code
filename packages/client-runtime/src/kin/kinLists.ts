@@ -275,10 +275,12 @@ export function kinPeriodLabel(period: KinPeriod): string {
   const month = period.from.slice(0, 7);
   const whole = kinMonthPeriod(month);
   if (whole.from === period.from && whole.to === period.to) return kinMonthLabel(month);
-  if (period.from.endsWith("-04-01") && period.to.endsWith("-03-31")) {
-    const start = Number(period.from.slice(0, 4));
-    if (Number(period.to.slice(0, 4)) === start + 1)
-      return kinFinancialYearLabel(`FY${start}-${String(start + 1).slice(2)}`);
+  const start = Number(period.from.slice(0, 4));
+  const first = Number(period.from.slice(5, 7));
+  const year = `FY${start}-${String(start + 1).slice(2)}`;
+  if (first > 1 && period.from.endsWith("-01")) {
+    const fy = kinFinancialYearPeriod(year, first);
+    if (fy.from === period.from && fy.to === period.to) return kinFinancialYearLabel(year);
   }
   const from = localDay(period.from);
   const to = localDay(period.to);
@@ -621,6 +623,8 @@ export function kinListHeader(
   filter: KinListFilter,
   totals: KinListTotals | null,
   total: number | null,
+  /** The month the company's year starts in, which a financial-year group runs from. */
+  yearStartMonth?: number,
 ): KinListHeaderView {
   const groups = (totals?.groups ?? []).map((group): KinListGroupView => {
     const figures = figuresOf(def, group);
@@ -653,7 +657,7 @@ export function kinListHeader(
         ? null
         : filter.groupBy === "month"
           ? kinMonthPeriod(group.group)
-          : kinFinancialYearPeriod(group.group);
+          : kinFinancialYearPeriod(group.group, yearStartMonth);
     const selected = period !== null && samePeriod(filter.period, period);
     return {
       ...base,
@@ -713,6 +717,8 @@ export interface KinListContext {
   /** Clients and projects by record id, which is how a link field stores one. */
   readonly refs: ReadonlyMap<string, KinWorkRef>;
   readonly now: Date;
+  /** The month the company's year starts in; absent from an older host, whose years start in April. */
+  readonly yearStartMonth?: number;
 }
 
 const isMoney = (value: KinFieldValue): value is KinMoney =>

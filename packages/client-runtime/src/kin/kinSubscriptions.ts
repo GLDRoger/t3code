@@ -408,6 +408,9 @@ export function kinSubscriptionsView(
   };
 }
 
-/** The first day of the Indian financial year `now` is in: 1 April. */
-export const kinFinancialYearStart = (now: Date) =>
-  `${now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1}-04-01`;
+/**
+ * The first day of the financial year `now` is in, for a year starting in `startMonth`: April
+ * where the host didn't say, as hosts before company years were set.
+ */
+export const kinFinancialYearStart = (now: Date, startMonth = 4) =>
+  `${now.getMonth() + 1 >= startMonth ? now.getFullYear() : now.getFullYear() - 1}-${pad(startMonth)}-01`;

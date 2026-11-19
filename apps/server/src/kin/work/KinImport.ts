@@ -29,8 +29,9 @@ import {
 import { type CreateInput, KinRecords, type Writer } from "./KinRecords.ts";
 import { type FieldValue } from "./lists.ts";
 import { dayIn, farAbove, issuedAfterDue, largestIn, parseAmount } from "./money.ts";
-import { homeCurrency } from "./companyProfile.ts";
+import { companyMoney } from "./companyProfile.ts";
 import { endOfDay, ownerZone, startOfDay, workFailure } from "./recordRows.ts";
+import { regionOf } from "./region.ts";
 import {
   defineList,
   keyFor,
@@ -98,9 +99,11 @@ export type ImportReport = {
   readonly payments: Counts;
   /** Imported before and changed in Kin since: left as they are, with their payments. */
   readonly changed: ReadonlyArray<{ readonly source: string; readonly key: string }>;
+  /** What the company's country calls a tax id, which a client's `gstin` holds: GSTIN in India. */
+  readonly taxIdLabel: string;
   /**
    * Clients of the file named like one already in Kin: matched to `key`, or, when both have a
-   * GSTIN and they differ, made as a new client `made` instead.
+   * tax id and they differ, made as a new client `made` instead.
    */
   readonly clientMatches: ReadonlyArray<{
     readonly source: string;
@@ -228,7 +231,8 @@ const make = Effect.gen(function* () {
       DAY.test(value) ? (end ? endOfDay(value, zone) : startOfDay(value, zone)) : Date.parse(value);
     const dayOf = (value: string | undefined) =>
       value === undefined ? undefined : DAY.test(value) ? value : dayIn(Date.parse(value), zone);
-    const home = yield* homeCurrency(orgId);
+    const company = yield* companyMoney(orgId);
+    const home = company.homeCurrency;
     // Each list's largest amount per currency, read once and raised as the file goes.
     const largest = new Map<string, bigint>();
     const slip = Effect.fn("KinImport.slip")(function* (
@@ -417,7 +421,7 @@ const make = Effect.gen(function* () {
         FROM kin_records WHERE org_id = ${orgId} AND register_id = 'clients'
           AND state NOT IN ${sql.in(CLOSED)} AND lower(title) = lower(${spec.name})
           ORDER BY key LIMIT 1`;
-      // Two GSTINs that differ are two businesses, however alike their names.
+      // Two tax ids that differ are two businesses, however alike their names.
       const differs =
         same !== undefined &&
         typeof same.gstin === "string" &&
@@ -584,7 +588,7 @@ const make = Effect.gen(function* () {
       rule: KinNumberingRule,
       issuedAt: number,
     ) {
-      const { series, seq } = seriesOf(rule, number);
+      const { series, seq } = seriesOf(rule, number, company.financialYearStartMonth);
       const clash = yield* sql`SELECT 1 FROM kin_issued_numbers WHERE org_id = ${orgId}
         AND register_id = ${registerId}
         AND (number = ${number} OR (series = ${series} AND seq = ${seq})) LIMIT 1`;
@@ -860,6 +864,7 @@ const make = Effect.gen(function* () {
       lists: listReport,
       ...counts,
       changed,
+      taxIdLabel: regionOf(company.country)?.taxIdLabel ?? "tax id",
       clientMatches,
       money: byName(money).map(([, one]) => ({
         list: one.list,
