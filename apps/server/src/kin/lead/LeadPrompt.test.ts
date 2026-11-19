@@ -699,6 +699,11 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
         VALUES (${orgId}, ${`rec-${key}`}, 1, ${body}, 'Character', 'created', 'seed', '[]', 'system',
           'import', ${`seed-${key}`}, 0)`;
     }
+    // The repos the owner's GitHub login reaches: their accounts are the company's.
+    const repos = ["Invented-org-zq/app", "invented-org-zq/site", "rhea-invented-zq/notes"];
+    yield* sql`INSERT INTO kin_github_watch (org_id, login, started_at, since_at, next_at, repos_json)
+      VALUES (${orgId}, 'rhea-invented-zq', 0, 0, 0,
+        ${JSON.stringify(repos.map((repo) => ({ repo, fork: false })))})`;
     const shared = yield* build("shared-wake");
     expect(shared).not.toContain(NodeOS.homedir());
     for (const kept of [
@@ -763,6 +768,7 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       "Budget:",
       "Domain:",
       "Charter:",
+      "GitHub accounts",
     ])
       expect(shared).not.toContain(owners);
     // Until the host turns team memory on, a shared turn's prompt carries no memory at all.
@@ -805,6 +811,7 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       "# Your seat\n\n- You hold 2 open.",
       'Standing permissions from the owner: "Invented-permission-zq"',
       'Your positions: "Invented-position-zq"',
+      `The company's GitHub accounts, the owner's and his organisations': "Invented-org-zq", "rhea-invented-zq".`,
     ])
       expect(owners).toContain(part);
     expect(owners).not.toContain("Invented-other-voice-zq");

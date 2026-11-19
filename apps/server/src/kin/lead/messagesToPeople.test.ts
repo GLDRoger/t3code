@@ -652,6 +652,8 @@ it.effect("a visual in a teammate's chat goes only when everyone there may see i
       const mine = yield* visual("Your week", "7 tasks done, 2 waiting");
       assert.isTrue(mine.ok);
       assert.match(String(mine.value.figure), /kin-figure:f_[A-Za-z0-9_-]{10}/);
+      // The result says where the person sees it, so the reply needs no marker of its own.
+      assert.match(String(mine.value.next), /^Made\. The page shows under your reply/);
       const hidden = yield* visual("This month", "47200 billed");
       assert.isFalse(hidden.ok);
       assert.match(String(hidden.value.message), /not everyone in this chat may see/);
@@ -669,6 +671,7 @@ it.effect("a visual in a teammate's chat goes only when everyone there may see i
       const shared = yield* chart([7, 2, 1], false);
       assert.isTrue(shared.ok, String(shared.value.message));
       assert.match(String(shared.value.figure), /kin-figure:f_[A-Za-z0-9_-]{10}/);
+      assert.match(String(shared.value.next), /^Made\. The chart shows under your reply/);
       const [turn] = yield* sql<{
         wakeupId: string;
       }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
