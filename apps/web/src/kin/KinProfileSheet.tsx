@@ -1,4 +1,4 @@
-import { type RouterHistory, useLocation, useRouter } from "@tanstack/react-router";
+import { type RouterHistory, useLocation, useNavigate, useRouter } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_DAY_LABELS,
@@ -24,6 +24,7 @@ import type {
   KinPersonProfile,
 } from "@t3tools/contracts";
 import { KIN_PEOPLE_CHAT } from "@t3tools/client-runtime/kin/kinPeopleChat";
+import { KIN_PERSON_TASKS } from "@t3tools/client-runtime/kin/kinTasksList";
 import { MessageSquareIcon } from "lucide-react";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -55,6 +56,8 @@ import { KinTasksKeysSection } from "./KinTasksKeys";
 import { useKinOwnerLevelKnown } from "./useKinOwnerLevel";
 import { KIN_DIALOG_PARTS, KIN_SHEET_PARTS } from "./kinOverlayParts";
 import { KinMyDevices } from "./KinDevices";
+import { KinPersonTasks } from "./KinPersonTasks";
+import { KIN_PLACE_PATH } from "./kinPlaces";
 import { kinClient } from "./kinClient";
 import { useKinProfiles } from "./kinPictures";
 import { useKinHostAt } from "./useKinHost";
@@ -199,7 +202,9 @@ function KinProfileSheet(props: {
 }) {
   const { environmentId, orgId, personId } = props.target;
   const profile = useKinProfileOf(environmentId, orgId, personId);
+  const navigate = useNavigate();
   const Parts = props.inDialog ? KIN_DIALOG_PARTS : KIN_SHEET_PARTS;
+  const params = { environmentId, orgId };
   return (
     <Parts.Root
       open
@@ -223,6 +228,23 @@ function KinProfileSheet(props: {
         </Parts.Header>
         <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
           <KinProfileBody {...props.target} />
+          {/* Over Settings, the Team page behind it already lists what they hold. Leaving the
+              sheet's address closes it. */}
+          {profile.mine || profile.profile === null || props.inDialog ? null : (
+            <Field label={KIN_PERSON_TASKS.title}>
+              <KinPersonTasks
+                environmentId={environmentId}
+                orgId={orgId}
+                personId={personId}
+                onOpenTask={(task) =>
+                  void navigate({ to: KIN_PLACE_PATH.tasks, params, search: { task } })
+                }
+                onSeeAll={() =>
+                  void navigate({ to: KIN_PLACE_PATH.tasks, params, search: { person: personId } })
+                }
+              />
+            </Field>
+          )}
         </div>
       </Parts.Popup>
     </Parts.Root>
