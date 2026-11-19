@@ -363,6 +363,38 @@ export const branchCommits = Effect.fn("kinBranchChecks.commits")(function* (
     });
 });
 
+/** Kin's own screens and messages: the web and phone clients', the server's and client-runtime's. */
+const KIN_NAME_DIRS = [
+  KIN_COPY_DIRS.web,
+  "apps/mobile/src/features/chats",
+  "apps/server/src/kin",
+  "packages/client-runtime/src/kin",
+];
+// isTestPath in scripts/lib/kinBrandEngine.ts; that module loads a native parser this script avoids.
+const TEST_PATH =
+  /(^|\/)(test|tests|__tests__|testkit|fixtures)\/|\.(test|spec|testkit|fixture)\.[^/]+$/;
+const LITERAL_OR_COMMENT =
+  /("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
+
+/** The product is Kin; "T3 Kin" is not its name anywhere a person reads it. Comments don't count. */
+export const checkProductName = (files: ReadonlyMap<string, string>) =>
+  [...files]
+    .filter(([file]) => !TEST_PATH.test(file))
+    .flatMap(([file, source]) =>
+      source
+        // A comment goes, keeping its line breaks so line numbers stay right.
+        .replace(
+          LITERAL_OR_COMMENT,
+          (match, literal: string | undefined) => literal ?? match.replace(/[^\n]/g, ""),
+        )
+        .split("\n")
+        .flatMap((line, index) =>
+          /\bT3 Kin\b/.test(line)
+            ? [`kin name: ${file}:${index + 1} says "T3 Kin"; the product is called Kin.`]
+            : [],
+        ),
+    );
+
 /** All checks for the branch at `root` against `ref`: problems, or none, and notes to print. */
 export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
   root: string,
@@ -431,6 +463,9 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
   problems.push(
     ...checkSharedCopy(yield* copyFiles(KIN_COPY_DIRS.web), yield* copyFiles(KIN_COPY_DIRS.phone)),
   );
+  const named = new Map<string, string>();
+  for (const dir of KIN_NAME_DIRS) for (const entry of yield* copyFiles(dir)) named.set(...entry);
+  problems.push(...checkProductName(named));
 
   // The iOS build brands a copy and fails on any upstream identity left; catch that here.
   if (yield* fs.exists(path.join(root, "branding/rules.yaml"))) {
