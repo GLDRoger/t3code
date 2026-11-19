@@ -33,7 +33,6 @@ import {
   KinWaitingId,
   KinChatError,
   KinChatHistoryInput,
-  kinPageSections,
   type KinChatHistoryResult,
   ThreadId,
   IsoDateTime,
@@ -940,28 +939,6 @@ const make = Effect.gen(function* () {
       ? ("brief" as const)
       : null;
   });
-  const MORNING_HEADING = "## Today\n\n";
-  // The morning check-in is read as a page with sections however it was written: text that came
-  // with no heading is put under one. The id is the seeded morning check-in's (`pulse/checkIn.ts`).
-  const morningPage = Effect.fn("KinChatRepository.morningPage")(function* (input: {
-    orgId: KinOrgId;
-    wakeupId?: KinWakeupId | undefined;
-    form: "brief" | null;
-    body: string;
-  }) {
-    if (
-      input.form !== "brief" ||
-      input.wakeupId === undefined ||
-      input.body.trim() === "" ||
-      input.body.length > KIN_MESSAGE_BODY_MAX_LENGTH - MORNING_HEADING.length ||
-      kinPageSections(input.body).some(({ title }) => title !== null)
-    )
-      return input.body;
-    const morning = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${input.orgId}
-      AND wakeup_id = ${input.wakeupId} AND tag = 'pulse'
-      AND json_extract(json, '$.checkIn.scheduleId') = 'checkin-morning' LIMIT 1`;
-    return morning.length > 0 ? `${MORNING_HEADING}${input.body}` : input.body;
-  });
   const replyCard = Effect.fn("KinChatRepository.replyCard")(
     function* (input: ReplyScope) {
       const cards = yield* sql<{ id: KinMessageId; eligible: number }>`SELECT m.message_id AS id,
@@ -1809,8 +1786,7 @@ const make = Effect.gen(function* () {
             const form =
               message.form ??
               (yield* briefForm({ ...input, kind: message.kind, author: message.author }));
-            const body = yield* morningPage({ ...input, form, body: named.body });
-            yield* sql`UPDATE kin_messages SET body = ${body}, form = ${form},
+            yield* sql`UPDATE kin_messages SET body = ${named.body}, form = ${form},
               embeds_json = ${placed.embeds.length === 0 ? null : yield* encodeEmbeds(placed.embeds)}
               WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id = ${input.messageId}`;
             yield* keepFigures(input, placed.figures);
@@ -1997,7 +1973,6 @@ const make = Effect.gen(function* () {
             })(input);
             const seq = (yield* requireRecord(Effect.succeed(allocated))).last_seq;
             const form = yield* briefForm(input);
-            const body = yield* morningPage({ ...input, form });
             const placed =
               author._tag === "agent" &&
               input.kind === "text" &&
@@ -2007,12 +1982,11 @@ const make = Effect.gen(function* () {
               input.widgetId === null
                 ? yield* placeFigures({
                     ...input,
-                    body,
                     agentId: author.agentId,
                     threadId: author.threadId,
                     wakeupId: input.wakeupId,
                   })
-                : { body, embeds: input.embeds ?? [], figures: [] };
+                : { body: input.body, embeds: input.embeds ?? [], figures: [] };
             // People read an entry by its name, not Kin's key for it.
             const named =
               author._tag === "agent" && input.kind === "text"

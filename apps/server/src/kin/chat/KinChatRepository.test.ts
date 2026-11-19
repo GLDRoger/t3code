@@ -230,69 +230,6 @@ describe("KinChatRepository", () => {
   );
 
   it.effect(
-    "the morning check-in is stored as a page with a heading however it was written; other check-ins are stored as written",
-    () =>
-      Effect.gen(function* () {
-        const repo = yield* seed;
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
-          VALUES (${agentId}, ${orgId}, 'Lead', 0, '{}', '[]', ${chatId})`;
-        const author = {
-          _tag: "agent" as const,
-          agentId,
-          memberId: agentMemberId,
-          ownerPersonId: personId,
-          threadId,
-        };
-        const post = Effect.fn("test.post")(function* (
-          id: string,
-          scheduleId: string,
-          body: string,
-        ) {
-          const wakeupId = KinWakeupId.make(`turn-${id}`);
-          yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
-            VALUES (${wakeupId}, ${orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
-          yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
-            VALUES (${`pulse-${id}`}, ${orgId}, ${agentId}, 'pulse', 'P2',
-              ${JSON.stringify({ checkIn: { scheduleId } })}, 0, 0, 'claimed', ${wakeupId})`;
-          const posted = yield* repo.insertMessage({
-            ...message(id, { body, author }),
-            audience: "owner",
-            wakeupId,
-          });
-          yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = ${wakeupId}`;
-          return { wakeupId, posted };
-        });
-        const plain = "Invented: one client has gone quiet. A reminder is drafted.";
-        const morning = yield* post("morning", "checkin-morning", plain);
-        assert.include(morning.posted, { form: "brief", body: `## Today\n\n${plain}` });
-        const headed = "## Needs you\nInvented: one card waits.";
-        assert.include((yield* post("headed", "checkin-morning", headed)).posted, {
-          form: "brief",
-          body: headed,
-        });
-        assert.include((yield* post("afternoon", "checkin-afternoon", plain)).posted, {
-          form: "brief",
-          body: plain,
-        });
-        // More of the same reply joins what is stored, under the one heading.
-        yield* sql`UPDATE kin_wakeups SET status = 'running' WHERE wakeup_id = ${morning.wakeupId}`;
-        const more = `${morning.posted.body}\n\nInvented: nothing else today.`;
-        const extended = yield* repo.extendAgentReply({
-          orgId,
-          chatId,
-          messageId: morning.posted.messageId,
-          agentId,
-          threadId,
-          wakeupId: morning.wakeupId,
-          audience: "owner",
-          body: more,
-        });
-        assert.strictEqual(extended.body, more);
-      }).pipe(Effect.provide(layer)),
-  );
-
-  it.effect(
     "round-trips records, deduplicates direct chats and sends, and separates action ids",
     () =>
       Effect.gen(function* () {
