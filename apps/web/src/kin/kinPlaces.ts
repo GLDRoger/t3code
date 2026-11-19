@@ -3,6 +3,7 @@ import {
   KinAgentId,
   KinDocSectionId,
   KinListId,
+  KinPersonId,
   KinRecordKey,
   type KinMessageLinkTarget,
 } from "@t3tools/contracts";
@@ -64,6 +65,8 @@ export interface KinPlaceSearch {
   open?: KinPlaceDialog;
   /** The Clients place's Projects tab; its Clients tab is the place with no tab named. */
   tab?: "projects";
+  /** Tasks opens narrowed to what this person holds, as their page's "See all in Tasks" asks. */
+  person?: KinPersonId;
 }
 
 export type KinPlaceDialog = "new" | "search";
@@ -84,6 +87,7 @@ export const withKinAgentPage = <T extends object>(search: T, agent: KinAgentId)
 };
 
 const isKey = Schema.is(KinRecordKey);
+const isPerson = Schema.is(KinPersonId);
 const isList = Schema.is(KinListId);
 const isSection = Schema.is(KinDocSectionId);
 const versionOf = (raw: unknown) => {
@@ -112,6 +116,7 @@ export function validateKinPlaceSearch(raw: Record<string, unknown>): KinPlaceSe
     ...(raw.history === true ? { history: true } : {}),
     ...(raw.open === "new" || raw.open === "search" ? { open: raw.open } : {}),
     ...(raw.tab === "projects" ? { tab: "projects" } : {}),
+    ...(isPerson(raw.person) ? { person: raw.person } : {}),
   };
 }
 

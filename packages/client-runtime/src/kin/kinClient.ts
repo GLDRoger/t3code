@@ -91,6 +91,7 @@ import {
   kinWorkListLean,
   kinWorkLiveStream,
 } from "./kinWorkStream.ts";
+import { KIN_PERSON_TASKS, kinTasksMostUrgent } from "./kinTasksList.ts";
 
 /** A dropped connection can leave a read pending; "Load earlier" fails after this and offers Retry. */
 const KIN_HISTORY_PAGE_TIMEOUT = Duration.seconds(20);
@@ -289,6 +290,7 @@ export function makeKinClient<R, ER>(
     tag: "kin.work.list",
     execute: kinWorkListLean,
   });
+  const readWorkList = kinGuardedRead(workListRead);
   const workItemRead = createKinRpcCommand(runtime, {
     label: "kin:work:item:read",
     tag: "kin.work.get",
@@ -1319,6 +1321,30 @@ export function makeKinClient<R, ER>(
       }),
       staleTimeMs: 30_000,
       refreshTrigger: kinWorkRefreshOn(["projects"], kinRefreshOn("workChoices")),
+    }),
+    /**
+     * A person's open tasks as the reader may see them, most urgent first, for their page. The
+     * host lists by soonest due, so the first page holds the most urgent ones.
+     */
+    personTasks: createKinQueryAtomFamily(runtime, {
+      label: "kin:work:person-tasks",
+      execute: Effect.fn("KinClient.personTasks")(function* (input: {
+        readonly orgId: KinOrgId;
+        readonly person: KinPersonId;
+      }) {
+        const page = yield* readWorkList({
+          orgId: input.orgId,
+          owner: { _tag: "person", personId: input.person },
+          open: true,
+          limit: 20,
+        });
+        return {
+          total: page.total,
+          records: kinTasksMostUrgent(page.records, KIN_PERSON_TASKS.shown),
+        };
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinWorkRefreshOn(["work"]),
     }),
     workClientCreate: createKinRpcCommand(runtime, {
       label: "kin:work:client:create",
