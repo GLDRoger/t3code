@@ -1,7 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
 import { kinAttentionBadge } from "@t3tools/client-runtime/kin/kinAttention";
-import { kinOpenBadge } from "@t3tools/client-runtime/kin/kinOpenView";
-import { kinWorkListsMoved } from "@t3tools/client-runtime/kin/kinWorkStream";
 import {
   KIN_DESTINATION_NAMES,
   type KinDestination,
@@ -35,11 +33,10 @@ import {
   kinShownDestinationsAtom,
   kinListShownAt,
 } from "./kinListSwitch";
-import { useKinAttention } from "./useKinAttention";
 import { useKinHost } from "./useKinHost";
-import { useKinOpen } from "./useKinOpen";
-import { useKinDestinations, useKinMyDueTasks } from "./useKinPlaces";
-import { useKinWorkDirectory, type KinWorkTarget } from "./useKinWork";
+import { useKinDestinations } from "./useKinPlaces";
+import { useKinTasksNeedsYou } from "./useKinTasksNeedsYou";
+import type { KinWorkTarget } from "./useKinWork";
 
 const ICON: Record<KinDestination, LucideIcon> = {
   chats: MessagesSquareIcon,
@@ -56,20 +53,10 @@ interface KinNavEntry {
 
 /** The destinations this person has, in the phone's order, each with the phone's badge. */
 function useKinNavEntries(target: KinWorkTarget): ReadonlyArray<KinNavEntry> {
-  const { work, ownerLevel, destinations } = useKinDestinations(target);
-  const ready = work._tag === "ready";
+  const { destinations } = useKinDestinations(target);
   const unread = useAtomValue(kinInboxUnreadAtom(target.environmentId));
-  // Where the host streams the open list, every level's badge is its count; else today's reads.
-  const open = useKinOpen(target);
-  const before = open === null;
-  const attention = useKinAttention(target, before && ownerLevel && work._tag !== "refused", true);
-  // Anyone else's badge counts their own late and due-today tasks, the ones "On me" marks.
-  const directory = useKinWorkDirectory(target, before && ready && !ownerLevel);
-  const mineDue = useKinMyDueTasks(
-    target,
-    before && ready && !ownerLevel ? directory.names.me : null,
-    ready && !work.stale ? kinWorkListsMoved(work.live, ["work"]) : null,
-  );
+  // The same number as Tasks' Needs you heading, as the phone's dock badge reads it.
+  const needsYou = useKinTasksNeedsYou(target);
   const key = destinations.join(",");
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes the destinations this person has, so the command palette lists the same ones the nav shows
   useEffect(() => {
@@ -84,9 +71,7 @@ function useKinNavEntries(target: KinWorkTarget): ReadonlyArray<KinNavEntry> {
       destination === "chats"
         ? kinAttentionBadge(unread)
         : destination === "tasks"
-          ? kinAttentionBadge(
-              open === undefined ? 0 : kinOpenBadge({ open, ownerLevel, attention, mineDue }),
-            )
+          ? kinAttentionBadge(needsYou ?? 0)
           : null,
   }));
 }

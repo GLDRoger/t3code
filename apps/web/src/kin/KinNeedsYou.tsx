@@ -1,5 +1,4 @@
 import {
-  KIN_ATTENTION,
   kinAttention,
   kinNeedsYouBeside,
   kinTasksAttention,
@@ -55,7 +54,7 @@ export interface KinNeedsYouGo {
  * Where the host streams the open list they are its rows, and `mine` is only whether to show.
  * Null while `mine` is (still loading, or not asked for: then nothing is read).
  */
-export function useKinNeedsRows(
+function useKinNeedsRows(
   props: KinWorkTarget & { readonly names: KinWorkNames },
   mine: ReadonlyArray<KinRecord> | null,
 ) {
@@ -168,26 +167,6 @@ export function KinNeedsYou(
   );
 }
 
-/** Over Tasks, the owner's and a co-owner's: what needs attention that "On me" doesn't hold. */
-export function KinTasksAttention(
-  props: KinWorkTarget &
-    KinNeedsYouGo &
-    NonNullable<ReturnType<typeof useKinNeedsRows>> & {
-      readonly total: number;
-      readonly onMe: number;
-      readonly more: boolean;
-    },
-) {
-  return (
-    <KinNeedsBlock
-      {...props}
-      title={KIN_ATTENTION.title}
-      empty={null}
-      below={props.openList ? props.onMe : 0}
-    />
-  );
-}
-
 function KinNeedsBlock(
   props: KinWorkTarget &
     KinNeedsYouGo &
@@ -197,11 +176,9 @@ function KinNeedsBlock(
       readonly more: boolean;
       /** What an empty block says; null where it never shows empty. */
       readonly empty: string | null;
-      /** Of `total`, the things the list below draws under "On me". */
-      readonly below?: number;
     },
 ) {
-  const { environmentId, orgId, handler, expanded, setExpanded, total, below = 0 } = props;
+  const { environmentId, orgId, handler, expanded, setExpanded, total } = props;
   const navigate = useNavigate();
   const rows: ReadonlyArray<KinNeedsYouRow> = props.needs;
   const attentionRows: ReadonlyArray<KinAttentionRow> = props.attention;
@@ -260,22 +237,7 @@ function KinNeedsBlock(
     </Button>
   );
   return (
-    <KinWorkSection
-      title={props.title}
-      action={
-        below === 0 ? (
-          seeAll
-        ) : (
-          <span className="flex min-w-0 items-center gap-1">
-            {seeAll}
-            <span className="truncate text-xs text-muted-foreground">
-              {props.more ? "· " : null}
-              {KIN_WORK_HOME.onMeBelow(below)}
-            </span>
-          </span>
-        )
-      }
-    >
+    <KinWorkSection title={props.title} action={seeAll}>
       {total === 0 ? (
         props.empty === null ? null : (
           <p className="px-2 text-sm text-muted-foreground">{props.empty}</p>
