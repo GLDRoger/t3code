@@ -100,7 +100,8 @@ import { KinAvatar } from "./components/KinAvatar";
 import { KinAttachments } from "./components/KinMessageBubble";
 import { KinTaskNoteComposer } from "./components/KinTaskNoteComposer";
 import { KinNextStep } from "./components/KinNextStep";
-import { KinWorkDueRow, KinWorkPlaceRow } from "./components/KinWorkTaskMenus";
+import { KinWorkDueRow } from "./components/KinWorkTaskMenus";
+import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinListEntryBody } from "./KinListEntry";
 import { KinMakeDocumentStep, type KinMakeStep } from "./KinInvoice";
 import { KinWorkFrame, KinWorkLoading, KinWorkTaskRow } from "./components/KinWorkPieces";
@@ -818,10 +819,11 @@ function KinWorkItemBody(props: ItemTarget) {
             />
           )
         ) : (
-          <KinWorkPlaceRow
+          <KinWorkPlacePicker
+            target={props}
+            noun="project"
             icon="folder"
             label={KIN_WORK_NEW_COPY.projectLabel}
-            none={KIN_WORK_NEW_COPY.none}
             held={view.project}
             choices={choices.projects}
             done={choices.doneProjects}
@@ -849,10 +851,11 @@ function KinWorkItemBody(props: ItemTarget) {
             />
           )
         ) : (
-          <KinWorkPlaceRow
+          <KinWorkPlacePicker
+            target={props}
+            noun="client"
             icon="person.2"
             label={KIN_WORK_NEW_COPY.clientLabel}
-            none={KIN_WORK_NEW_COPY.none}
             held={view.party}
             choices={choices.clients}
             disabled={saving}

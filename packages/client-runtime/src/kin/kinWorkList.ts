@@ -2,6 +2,10 @@ import {
   kinPatchWorkPage,
   kinWorkHeldPage,
   type KinOrgId,
+  type KinPartiesInput,
+  type KinPartiesResult,
+  type KinProjectsInput,
+  type KinProjectsResult,
   type KinRecord,
   type KinWorkHeldPage,
   type KinWorkListInput,
@@ -17,9 +21,13 @@ import {
   KIN_WORK_DEFAULT_FILTER,
   kinWorkByMove,
   kinWorkListQuery,
+  kinWorkRefsMatching,
   kinWorkSameFilter,
   type KinWorkFilter,
+  type KinWorkRef,
 } from "./kinWork.ts";
+import { kinFailure } from "./kinAnswers.ts";
+import { kinWorkRefOf } from "./kinWorkClients.ts";
 
 export const KIN_WORK_PAGE = 50;
 /** Typing in the search box reads once the owner pauses, not per letter. */
@@ -599,3 +607,170 @@ export function mapPage<A, Row>(
 }
 
 export type KinWorkList = ReturnType<typeof createKinWorkList>;
+
+/** A picker's search answers at most this many names; past it, the picker asks for more letters. */
+export const KIN_PICKER_SEARCH_CAP = 30;
+
+export const KIN_PICKER_COPY = {
+  searching: "Searching…",
+  failed: "Couldn't search.",
+  narrow: "Type more to narrow",
+  nothing: (noun: "client" | "project", words: string) => `No ${noun} named “${words}”`,
+} as const;
+
+export interface KinPickerSearchState {
+  /** What is typed, as typed. */
+  readonly text: string;
+  /** The host's answer for what is typed; null before it, and with nothing typed. */
+  readonly found: {
+    readonly open: ReadonlyArray<KinWorkRef>;
+    readonly done: ReadonlyArray<KinWorkRef>;
+    readonly more: boolean;
+  } | null;
+  readonly loading: boolean;
+  /** Why the last search failed; null otherwise. */
+  readonly failed: unknown;
+}
+
+export const KIN_PICKER_SEARCH_IDLE: KinPickerSearchState = {
+  text: "",
+  found: null,
+  loading: false,
+  failed: null,
+};
+
+/**
+ * A client or project picker's search over every one the person may see, not only the first page
+ * it holds: one read once typing pauses, none while nothing is typed.
+ */
+export function createKinPickerSearch(options: {
+  readonly orgId: KinOrgId;
+  readonly kind: "clients" | "projects";
+  /** Projects only: the done ones too, so a late task can still be filed there. */
+  readonly done: boolean;
+  readonly readClients: (
+    input: KinPartiesInput,
+  ) => Promise<AtomCommandResult<KinPartiesResult, unknown>>;
+  readonly readProjects: (
+    input: KinProjectsInput,
+  ) => Promise<AtomCommandResult<KinProjectsResult, unknown>>;
+  readonly onChange: (state: KinPickerSearchState) => void;
+  /** Runs `run` after `ms`; returns its cancel. */
+  readonly schedule: (run: () => void, ms: number) => () => void;
+}) {
+  let state = KIN_PICKER_SEARCH_IDLE;
+  let generation = 0;
+  let cancelTyping: (() => void) | null = null;
+  const set = (patch: Partial<KinPickerSearchState>) => {
+    state = { ...state, ...patch };
+    options.onChange(state);
+  };
+  const query = { orgId: options.orgId, limit: KIN_PICKER_SEARCH_CAP };
+  const refsOf = (value: KinPartiesResult | KinProjectsResult) => ({
+    refs: ("parties" in value ? value.parties : value.projects).map(kinWorkRefOf),
+    more: value.nextCursor !== null,
+  });
+  const read = async (words: string) => {
+    const mine = ++generation;
+    const text = words.slice(0, 200);
+    const reads: ReadonlyArray<
+      Promise<AtomCommandResult<KinPartiesResult | KinProjectsResult, unknown>>
+    > =
+      options.kind === "clients"
+        ? [options.readClients({ ...query, text })]
+        : [
+            options.readProjects({ ...query, text }),
+            ...(options.done ? [options.readProjects({ ...query, text, state: "done" })] : []),
+          ];
+    const results = await Promise.all(reads);
+    if (mine !== generation) return;
+    const [open, done] = results.flatMap((result) =>
+      AsyncResult.isSuccess(result) ? [refsOf(result.value)] : [],
+    );
+    // A failed read is kept whole: `kinFailure` reads its cause.
+    const failed = results.find((result) => !AsyncResult.isSuccess(result));
+    if (failed !== undefined || open === undefined)
+      return set({ loading: false, failed: failed ?? "failed" });
+    set({
+      loading: false,
+      failed: null,
+      found: { open: open.refs, done: done?.refs ?? [], more: open.more || done?.more === true },
+    });
+  };
+  const abandon = () => {
+    generation += 1;
+    cancelTyping?.();
+    cancelTyping = null;
+  };
+  return {
+    getState: () => state,
+    type: (text: string) => {
+      const words = text.trim();
+      if (words === state.text.trim() && state.failed === null) {
+        if (text !== state.text) set({ text });
+        return;
+      }
+      abandon();
+      if (words === "") return set(KIN_PICKER_SEARCH_IDLE);
+      set({ text, found: null, loading: true, failed: null });
+      cancelTyping = options.schedule(() => {
+        cancelTyping = null;
+        void read(words);
+      }, KIN_WORK_TYPING_MS);
+    },
+    /** Reads what is typed again now, after a failure. */
+    retry: () => {
+      const words = state.text.trim();
+      if (words === "") return Promise.resolve();
+      abandon();
+      set({ loading: true, failed: null });
+      return read(words);
+    },
+    dispose: abandon,
+  };
+}
+
+/**
+ * What a picker lists: the page it holds until something is typed, then the host's answer, with
+ * the held page's matches meanwhile. The current value stays listed whenever its name matches.
+ */
+export function kinPickerSearchView(input: {
+  readonly noun: "client" | "project";
+  readonly search: KinPickerSearchState;
+  readonly loaded: {
+    readonly open: ReadonlyArray<KinWorkRef>;
+    readonly done: ReadonlyArray<KinWorkRef>;
+  };
+  readonly held: KinWorkRef | null;
+}) {
+  const { search, held } = input;
+  const words = search.text.trim();
+  const shown =
+    words === ""
+      ? input.loaded
+      : (search.found ?? {
+          open: kinWorkRefsMatching(input.loaded.open, words),
+          done: kinWorkRefsMatching(input.loaded.done, words),
+        });
+  const listed = (ref: KinWorkRef) =>
+    shown.open.some((one) => one.key === ref.key) || shown.done.some((one) => one.key === ref.key);
+  const keep =
+    held !== null && !listed(held) && kinWorkRefsMatching([held], words).length > 0 ? held : null;
+  const open = keep === null ? shown.open : [keep, ...shown.open];
+  const settled = words !== "" && search.found !== null && !search.loading;
+  return {
+    open,
+    done: shown.done,
+    loading: search.loading,
+    /** What to say about a failed search, and whether Try again can help. */
+    failure: search.failed === null ? null : kinFailure(search.failed, KIN_PICKER_COPY.failed),
+    /** "No client named …" or "Type more to narrow", once the host has answered. */
+    note: !settled
+      ? null
+      : open.length + shown.done.length === 0
+        ? KIN_PICKER_COPY.nothing(input.noun, words)
+        : search.found?.more === true
+          ? KIN_PICKER_COPY.narrow
+          : null,
+  };
+}

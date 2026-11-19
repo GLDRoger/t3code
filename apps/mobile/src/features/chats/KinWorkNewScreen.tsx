@@ -299,6 +299,8 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                 <ListSection>
                   {!offersClient ? null : (
                     <KinWorkPlacePicker
+                      target={target}
+                      noun="client"
                       icon="person.2"
                       label={KIN_WORK_NEW_COPY.clientLabel}
                       held={draft.party}
@@ -316,6 +318,8 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                   )}
                   {!offersProject ? null : (
                     <KinWorkPlacePicker
+                      target={target}
+                      noun="project"
                       icon="folder"
                       label={KIN_WORK_NEW_COPY.projectLabel}
                       held={draft.project}
