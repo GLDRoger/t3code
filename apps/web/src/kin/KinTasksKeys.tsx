@@ -45,7 +45,7 @@ import {
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
-import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
+import { namedClipboardTarget, useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { usePreparedConnection } from "../state/session";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -354,7 +354,9 @@ function CopyField(props: {
   readonly rows: number;
 }) {
   const id = useId();
-  const { copyToClipboard, isCopied } = useCopyToClipboard({ target: props.label });
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    target: namedClipboardTarget(props.label),
+  });
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-2">
