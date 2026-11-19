@@ -23,6 +23,8 @@ export const KinTasksKey = Schema.Struct({
   createdAt: IsoDateTime,
   expiresAt: IsoDateTime,
   lastUsedAt: Schema.NullOr(IsoDateTime),
+  /** Whether the reader may remove it; absent from an older host. */
+  canRevoke: Schema.optional(Schema.Boolean),
 });
 export type KinTasksKey = typeof KinTasksKey.Type;
 
@@ -32,11 +34,15 @@ export const KinTasksKeysIssueInput = Schema.Struct({
   label: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(60))),
 });
 export type KinTasksKeysIssueInput = typeof KinTasksKeysIssueInput.Type;
+/** The public address a coding agent anywhere reaches this host by, when the host knows one. */
+const KinTasksKeyOrigin = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
+
 /** `secret` is shown this once; the host keeps no copy it could show again. */
 export const KinTasksKeysIssueResult = Schema.Struct({
   key: KinTasksKey,
   secret: TrimmedNonEmptyString,
   path: Schema.Literal(KIN_TASKS_KEY_PATH),
+  origin: Schema.optional(KinTasksKeyOrigin),
 });
 export type KinTasksKeysIssueResult = typeof KinTasksKeysIssueResult.Type;
 
@@ -46,7 +52,10 @@ export const KinTasksKeysListInput = Schema.Struct({
   personId: Schema.optional(KinPersonId),
 });
 export type KinTasksKeysListInput = typeof KinTasksKeysListInput.Type;
-export const KinTasksKeysListResult = Schema.Struct({ keys: Schema.Array(KinTasksKey) });
+export const KinTasksKeysListResult = Schema.Struct({
+  keys: Schema.Array(KinTasksKey),
+  origin: Schema.optional(KinTasksKeyOrigin),
+});
 export type KinTasksKeysListResult = typeof KinTasksKeysListResult.Type;
 
 export const KinTasksKeysRevokeInput = Schema.Struct({
