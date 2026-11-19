@@ -39,6 +39,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { uuidv4 } from "../../lib/uuid";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { KinAvatar } from "./components/KinAvatar";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinWorkSideRow } from "./components/KinWorkTaskMenus";
 import { kinWorkRefParam, type KinWorkParams } from "./KinWorkScreen";
@@ -237,6 +238,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                   {everyone.map((to) => (
                     <Chip
                       key={to.key}
+                      leading={<KinAvatar avatar={to.avatar} size="mini" />}
                       label={to.invited ? `${to.name}, invited` : to.name}
                       selected={to.key === ownerKey}
                       disabled={saving || to.invited === true}
