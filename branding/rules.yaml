@@ -463,7 +463,6 @@ text:
       - apps/web/index.html
       - apps/web/public/manifest.webmanifest
       - apps/web/src/components/ui/standalone-page.tsx
-      - apps/web/src/components/onboarding/WelcomeWizard.tsx
       - apps/web/src/components/sidebar/SidebarChrome.tsx
     from: T3 Code
     to: Kin
@@ -475,7 +474,6 @@ text:
   - files:
       - apps/web/src/components/sidebar/SidebarChrome.tsx
       - apps/web/src/components/ui/standalone-page.tsx
-      - apps/web/src/components/onboarding/WelcomeWizard.tsx
     from: Code
     to: ""
     exact: true

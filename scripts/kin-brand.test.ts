@@ -334,9 +334,17 @@ describe("kin-brand", () => {
         yield* fs.readFileString(path.join(checkout, "branding/rules.yaml")),
       );
       const inScope = (file: string) => matchesAny(file, rules.scopes?.web?.files ?? []);
-      // The scope's own files, as upstream has them, and one the full brand rewrites.
+      // The scope's own files, as upstream has them, the onboarding its name check reads, and one
+      // the full brand rewrites.
       const outside = "apps/mobile/app.config.ts";
-      const files = [...(yield* git(checkout, "ls-files")).split("\n").filter(inScope), outside];
+      const files = [
+        ...(yield* git(checkout, "ls-files"))
+          .split("\n")
+          .filter(
+            (file) => inScope(file) || file.startsWith("apps/web/src/components/onboarding/"),
+          ),
+        outside,
+      ];
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "kin-brand-test-" });
       const repo = path.join(root, "repo");
       for (const file of files) {
@@ -420,6 +428,9 @@ describe("kin-brand", () => {
             'export const stage = (input) =>\n  input.development\n    ? "Dev"\n    : "Beta";\n',
           "apps/web/public/manifest.webmanifest":
             '{ "icons": [{ "name": "Kin" }], "name": "T3 Code", "short_name": "Kin" }\n',
+          // T3 Code's own phone app may be named; the app itself, even unbranded, may not.
+          "apps/web/src/components/onboarding/WelcomePage.tsx":
+            "export const Welcome = () => (\n  <main>\n    {/* Welcome to T3 Code */}\n    <h1>\n      Welcome to T3 Code\n    </h1>\n    <span>Use T3 Code on your phone</span>\n  </main>\n);\n",
         };
         const unbranded = yield* makeRepo({ files });
         const message = yield* failure(brand(unbranded.repo, path.join(unbranded.root, "kin")));
@@ -435,16 +446,26 @@ describe("kin-brand", () => {
         );
         assert.include(message, "apps/web/src/branding.ts is missing; it holds APP_BASE_NAME");
         assert.notInclude(message, "short_name");
+        assert.include(
+          message,
+          'apps/web/src/components/onboarding/WelcomePage.tsx:4 says "Welcome to T3 Code"',
+        );
+        assert.include(message, "apps/web/src/components/onboarding/FirstRunGate.tsx is missing");
+        assert.notInclude(message, "on your phone");
 
         const branded = yield* makeRepo({
           files: {
             ...files,
             "apps/web/src/branding.ts":
               'export const APP_BASE_NAME =\n  injected?.baseName ??\n  "T3 Code";\n',
+            "apps/web/src/components/onboarding/WelcomePage.tsx":
+              "export const Welcome = () => (\n  <main>\n    <h1>Welcome to {APP_BASE_NAME}</h1>\n    <span>Use T3 Code on your phone</span>\n  </main>\n);\n",
+            "apps/web/src/components/onboarding/FirstRunGate.tsx":
+              "export const label = `${APP_BASE_NAME} could not confirm this workspace.`;\n",
           },
           rules: RULES.replace(
             "ignore:",
-            "  - files: [apps/web/**]\n    from: T3 Code\n    to: Kin\n  - files: [apps/web/src/branding.logic.ts]\n    from: Beta\n    to: Latest\n    exact: true\nignore:",
+            "  - files: [apps/web/index.html, apps/web/vite.config.ts, apps/web/src/branding.ts, apps/web/public/manifest.webmanifest]\n    from: T3 Code\n    to: Kin\n  - files: [apps/web/src/branding.logic.ts]\n    from: Beta\n    to: Latest\n    exact: true\nignore:",
           ),
         });
         yield* brand(branded.repo, path.join(branded.root, "kin"));

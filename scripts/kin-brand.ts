@@ -374,6 +374,19 @@ const NAME_CHECKS: ReadonlyArray<{
   },
 ];
 
+const ONBOARDING_DIR = "apps/web/src/components/onboarding/";
+/** Onboarding files a moved or renamed copy would otherwise let go unchecked. */
+const ONBOARDING_FILES = [`${ONBOARDING_DIR}WelcomePage.tsx`, `${ONBOARDING_DIR}FirstRunGate.tsx`];
+/** Onboarding text that names T3 Code's own products, not the app a person is setting up. */
+const ONBOARDING_T3_NAMES: ReadonlyMap<string, string> = new Map([
+  ["Use T3 Code on your phone", "the Phone row installs T3 Code's own phone app"],
+  ["T3 Code app for iPhone and Android", "the Phone row's QR code opens T3 Code's own phone app"],
+  [
+    "T3 Code collects anonymous usage data to improve the app.",
+    "the server's usage data goes to T3 Code under T3's privacy policy, which the line links",
+  ],
+]);
+
 export const kinBrand = Effect.fn("kinBrand")(function* (options: {
   readonly target: Option.Option<string>;
   readonly rules: Option.Option<string>;
@@ -441,11 +454,11 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
   const root = scan ? repoRoot : target;
   if (inPlace) yield* Console.log(`kin-brand: branding ${scopeName} in ${repoRoot}`);
   else if (!scan) yield* Console.log(`kin-brand: copying ${repoRoot} to ${target}`);
-  const copiedFiles = (
+  const checkoutFiles =
     scan || inPlace
       ? (yield* listCheckoutFiles(repoRoot)).files
-      : yield* copyCheckout(repoRoot, target)
-  ).filter(inScope);
+      : yield* copyCheckout(repoRoot, target);
+  const copiedFiles = checkoutFiles.filter(inScope);
   const hitsScope = (globs: ReadonlyArray<string>) =>
     copiedFiles.some((file) => matchesAny(file, globs));
   const rules: BrandRules = scope
@@ -470,7 +483,8 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
   const guarded = new Set<string>();
   const nameFiles = new Map<string, string>();
   const record = (file: string, result: FileResult) => {
-    if (NAME_CHECKS.some((check) => check.file === file)) nameFiles.set(file, result.output);
+    if (NAME_CHECKS.some((check) => check.file === file) || file.startsWith(ONBOARDING_DIR))
+      nameFiles.set(file, result.output);
     for (const entry of result.uncovered) drift.push(`${file}\t${excerpt(entry.text)}`);
     for (const entry of result.leaks) {
       if (isAllowedLeak(rules, file, entry.leak, entry.text)) continue;
@@ -559,6 +573,21 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
         problems.push(
           `${check.file}: ${check.what} is ${found === undefined ? "missing" : `"${found}"`}, not "${check.want}"`,
         );
+      }
+    }
+
+    // The web app's own onboarding, branded or not, may name T3 Code only as T3's own products.
+    for (const file of ONBOARDING_FILES.filter((file) => !checkoutFiles.includes(file)))
+      problems.push(`${file} is missing; its visible text must not call the app T3 Code`);
+    const onboarding = checkoutFiles.filter(
+      (file) => file.startsWith(ONBOARDING_DIR) && !isTestPath(file) && !removal.removed.has(file),
+    );
+    for (const file of onboarding.filter((file) => sourceKind(file) !== undefined)) {
+      const source = nameFiles.get(file) ?? (yield* fs.readFileString(path.join(root, file)));
+      for (const literal of brandSource({ ...rules, text: [] }, file, source).uncovered) {
+        const text = literal.text.replace(/\s+/g, " ");
+        if (text.includes("T3 Code") && !ONBOARDING_T3_NAMES.has(text))
+          problems.push(`${file}:${literal.line} says ${excerpt(text)}; the web app is Kin`);
       }
     }
   }
