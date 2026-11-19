@@ -260,7 +260,8 @@ describe("KinRefreshHub", () => {
   it("finds no write to a refreshed table outside the files that touch its topic", () => {
     const root = NodePath.resolve(import.meta.dirname, "..");
     const writers: Record<string, ReadonlyArray<string>> = {
-      kin_company_profile: ["work/companyProfile.ts"],
+      // The repository writes only a new company's first profile, at first start, before any client.
+      kin_company_profile: ["work/companyProfile.ts", "chat/KinChatRepository.ts"],
       kin_recipe_defaults: ["gendocs/recipeDefaults.ts"],
       kin_recipe_labels: ["gendocs/recipeLabels.ts"],
       kin_memory_heads: ["memory/Memory.ts"],

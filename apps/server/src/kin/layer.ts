@@ -27,7 +27,7 @@ import * as FileSystem from "effect/FileSystem";
 import { ServerConfig } from "../config.ts";
 import { answerChoice, resumeInterruptedSends } from "./work/cardAnswers.ts";
 import { requireRefreshObserver } from "./chat/KinRefreshHub.ts";
-import { KinIdentity } from "./chat/KinIdentity.ts";
+import { KinIdentity, KinNewCompanyCountryUnset } from "./chat/KinIdentity.ts";
 import { seedPlaybooks } from "./work/playbookSeeds.ts";
 import { seedCharacters } from "./lead/characters.ts";
 import { closeSubject } from "./open/closeSubject.ts";
@@ -272,6 +272,8 @@ export const mcpRegistryLayer = <E, R>(
 ) =>
   KinMcp.registry(base).pipe(
     Layer.provideMerge(layer),
+    // Only the running server creates companies whose country starts not chosen; tests keep India's.
+    Layer.provide(Layer.succeed(KinNewCompanyCountryUnset, true)),
     // The chat service takes this optionally, so the running server names it here.
     Layer.provide(KinAttachmentStore.layer),
     Layer.provide(SqlitePersistence.layerConfig),

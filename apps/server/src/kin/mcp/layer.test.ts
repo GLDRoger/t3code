@@ -57,6 +57,7 @@ import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as Kin from "../layer.ts";
 import { ServerActivation } from "../../serverActivation.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { companyMoney } from "../work/companyProfile.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { AssetSigner } from "../../assets/AssetSigner.ts";
 import { ServerSecretStore } from "../../auth/ServerSecretStore.ts";
@@ -291,6 +292,13 @@ it.effect.each([true, false])(
         }
         assert.isTrue(enabled);
         const identity = Context.get(kin.services.value, KinIdentity);
+        // The company the running server creates starts with its country not chosen.
+        assert.deepInclude(
+          yield* companyMoney(identity.owner.orgId).pipe(
+            Effect.provideService(SqlClient.SqlClient, Context.get(services, SqlClient.SqlClient)),
+          ),
+          { country: null, financialYearStartMonth: 1, tax: null },
+        );
         const chatService = Context.get(kin.services.value, KinChatService);
         yield* pairSession(AuthSessionId.make("owner")).pipe(
           Effect.provideService(SqlClient.SqlClient, Context.get(services, SqlClient.SqlClient)),
