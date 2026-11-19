@@ -638,6 +638,8 @@ const make = Effect.gen(function* () {
     ctx: Effect.Success<ReturnType<typeof resolve>>,
     itemId: KinMemoryItemId,
     sourceEventId: string,
+    /** `replaces` takes only an open item: one already cancelled is refused, as before. */
+    replacing = false,
   ) {
     yield* checkSource(ctx, sourceEventId);
     // A turn someone else reads learns nothing of an item that isn't its asker's own reminder.
@@ -652,7 +654,7 @@ const make = Effect.gen(function* () {
     if (head.kind !== "deferral")
       return yield* invalid(`${itemId} is not a deferral or scheduled task.`);
     // Cancelled already, by this lead or the owner's card: a repeat cancel changes nothing.
-    const already = head.status === "cancelled";
+    const already = head.status === "cancelled" && !replacing;
     if (
       (head.status !== "open" && !already) ||
       head.invalid_at !== null ||
@@ -1188,7 +1190,7 @@ const make = Effect.gen(function* () {
           // A native schedule is cancelled only once its replacement is staged.
           if (replaced === undefined) {
             if (input.replaces !== undefined && !retried)
-              yield* cancelOwn(ctx, input.replaces, input.sourceEventId);
+              yield* cancelOwn(ctx, input.replaces, input.sourceEventId, true);
           } else if (replaced.deletedAt === null)
             yield* ownSchedule(ctx, replaced, input.sourceEventId);
           const recorded = DateTime.formatIso(DateTime.makeUnsafe(ctx.startedAt));
@@ -1333,7 +1335,7 @@ const make = Effect.gen(function* () {
             return { itemId: replaced.scheduleId };
           }
           if (input.replaces !== undefined)
-            yield* cancelOwn(ctx, input.replaces, input.sourceEventId);
+            yield* cancelOwn(ctx, input.replaces, input.sourceEventId, true);
           yield* receipt(ctx, `schedule:${id}`, { ...input, itemId: id }, save(id, false));
           return { itemId: id };
         }),

@@ -640,6 +640,12 @@ it.effect("a teammate's turn sets their own reminder, in their own chat, and not
       title: "Invented def-cancelled",
       due: cancelled.due,
     });
+    // Replacing takes only an open one: an already cancelled one is refused, and stages nothing.
+    assert.strictEqual(
+      (yield* defer({ what: "Invented: moved again", replaces: "def-cancelled" }).pipe(Effect.flip))
+        .message,
+      "def-cancelled is already cancelled.",
+    );
     for (const other of ["def-owners", "def-someone-elses", "def-elsewhere", "def-starts"]) {
       const moved = yield* defer({ what: `Invented ${other}`, replaces: other }).pipe(Effect.flip);
       assert.strictEqual(moved.message, SHARED_REFUSAL, other);
