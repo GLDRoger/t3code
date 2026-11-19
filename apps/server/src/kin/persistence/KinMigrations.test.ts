@@ -422,6 +422,7 @@ describe("Kin migrations", () => {
           { migration_id: 182, name: "HandoffRoutes" },
           { migration_id: 183, name: "TasksKeyMakers" },
           { migration_id: 184, name: "Recommendations" },
+          { migration_id: 185, name: "AskedFor" },
           { migration_id: 186, name: "TasksKeysWithoutMaker" },
         ]);
         assert.deepStrictEqual(
@@ -626,6 +627,7 @@ describe("Kin migrations", () => {
           { migration_id: 182, name: "HandoffRoutes" },
           { migration_id: 183, name: "TasksKeyMakers" },
           { migration_id: 184, name: "Recommendations" },
+          { migration_id: 185, name: "AskedFor" },
           { migration_id: 186, name: "TasksKeysWithoutMaker" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
@@ -882,6 +884,7 @@ describe("Kin migrations", () => {
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       const before = yield* kinSchema;
@@ -1146,6 +1149,7 @@ describe("Kin migrations", () => {
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       assert.deepStrictEqual(
@@ -1314,6 +1318,7 @@ describe("Kin migrations", () => {
         { migration_id: 182, name: "HandoffRoutes" },
         { migration_id: 183, name: "TasksKeyMakers" },
         { migration_id: 184, name: "Recommendations" },
+        { migration_id: 185, name: "AskedFor" },
         { migration_id: 186, name: "TasksKeysWithoutMaker" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
@@ -1492,6 +1497,7 @@ describe("Kin migrations", () => {
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       assert.deepStrictEqual(
@@ -1640,6 +1646,7 @@ describe("Kin migrations", () => {
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       const columns = yield* sql<{ name: string }>`
@@ -1797,9 +1804,10 @@ describe("Kin migrations", () => {
           [182, "HandoffRoutes"],
           [183, "TasksKeyMakers"],
           [184, "Recommendations"],
+          [185, "AskedFor"],
           [186, "TasksKeysWithoutMaker"],
         ]);
-        assert.deepStrictEqual((yield* kinHistory).slice(-112), [
+        assert.deepStrictEqual((yield* kinHistory).slice(-113), [
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },
@@ -1911,6 +1919,7 @@ describe("Kin migrations", () => {
           { migration_id: 182, name: "HandoffRoutes" },
           { migration_id: 183, name: "TasksKeyMakers" },
           { migration_id: 184, name: "Recommendations" },
+          { migration_id: 185, name: "AskedFor" },
           { migration_id: 186, name: "TasksKeysWithoutMaker" },
         ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_lead_deliveries`, [delivery]);
@@ -2076,6 +2085,7 @@ describe("Kin migrations", () => {
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT message_id, status FROM kin_messages ORDER BY seq`, [
@@ -2264,6 +2274,7 @@ describe("Kin migrations", () => {
           [182, "HandoffRoutes"],
           [183, "TasksKeyMakers"],
           [184, "Recommendations"],
+          [185, "AskedFor"],
           [186, "TasksKeysWithoutMaker"],
         ]);
         assert.deepStrictEqual(
@@ -2428,6 +2439,7 @@ describe("Kin migrations", () => {
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       assert.deepStrictEqual(
@@ -2567,6 +2579,7 @@ describe("Kin migrations", () => {
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       assert.deepStrictEqual(
@@ -2719,6 +2732,7 @@ describe("Kin migrations", () => {
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       assert.deepStrictEqual(
@@ -2862,6 +2876,7 @@ describe("Kin migrations", () => {
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT * FROM kin_memory_labels`, []);
@@ -3012,6 +3027,7 @@ describe("Kin migrations", () => {
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       assert.deepStrictEqual(
@@ -3071,6 +3087,7 @@ describe("Kin migrations", () => {
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       const one = JSON.parse(strong);
@@ -3118,6 +3135,7 @@ describe("Kin migrations", () => {
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       assert.deepStrictEqual(
@@ -3165,6 +3183,7 @@ describe("Kin migrations", () => {
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       assert.deepStrictEqual(
@@ -3185,9 +3204,32 @@ describe("Kin migrations", () => {
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("K185 runs after K184 and only once, with K186 behind it", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      const drop = Effect.gen(function* () {
+        yield* sql`DROP INDEX kin_questions_for_chat`;
+        for (const column of ["for_chat_id", "for_person_id", "card_json"])
+          yield* sql`ALTER TABLE kin_questions DROP COLUMN ${sql.literal(column)}`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id > 184`;
+      });
+      const columns = sql<{ name: string }>`SELECT name FROM pragma_table_info('kin_questions')
+        WHERE name IN ('for_chat_id', 'for_person_id', 'card_json') ORDER BY name`;
+      yield* drop;
+      assert.deepStrictEqual(yield* runKinMigrations(), [
+        [185, "AskedFor"],
+        [186, "TasksKeysWithoutMaker"],
+      ]);
+      assert.lengthOf(yield* columns, 3);
+      assert.deepStrictEqual(yield* runKinMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
   it.effect(
@@ -3885,6 +3927,7 @@ it.effect("K058 adds Work to a database at K057, keeps its rows, and reruns with
       [182, "HandoffRoutes"],
       [183, "TasksKeyMakers"],
       [184, "Recommendations"],
+      [185, "AskedFor"],
       [186, "TasksKeysWithoutMaker"],
     ]);
     assert.deepStrictEqual(yield* sql`SELECT org_id FROM kin_orgs`, [{ org_id: "org" }]);
@@ -4006,6 +4049,7 @@ it.effect(
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       assert.lengthOf(
@@ -4130,6 +4174,7 @@ it.effect("K061 turns the withdrawals K059 stored into stops of those attempts",
       [182, "HandoffRoutes"],
       [183, "TasksKeyMakers"],
       [184, "Recommendations"],
+      [185, "AskedFor"],
       [186, "TasksKeysWithoutMaker"],
     ]);
     assert.deepStrictEqual(
@@ -4284,6 +4329,7 @@ it.effect(
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT key, repo FROM kin_records`, [
@@ -4410,6 +4456,7 @@ it.effect("K062 upgrades a database at K061, keeps its attempts, and reruns clea
       [182, "HandoffRoutes"],
       [183, "TasksKeyMakers"],
       [184, "Recommendations"],
+      [185, "AskedFor"],
       [186, "TasksKeysWithoutMaker"],
     ]);
     assert.deepStrictEqual(
@@ -4529,6 +4576,7 @@ it.effect("K164 keeps a worker's PR on the Work entry it belongs to, and reruns 
       [182, "HandoffRoutes"],
       [183, "TasksKeyMakers"],
       [184, "Recommendations"],
+      [185, "AskedFor"],
       [186, "TasksKeysWithoutMaker"],
     ]);
     const links = sql`SELECT kind, target, relation, label FROM kin_record_links ORDER BY kind, target`;
@@ -4599,6 +4647,7 @@ it.effect("K166 declines a review still waiting on its Post card and clears the 
       [182, "HandoffRoutes"],
       [183, "TasksKeyMakers"],
       [184, "Recommendations"],
+      [185, "AskedFor"],
       [186, "TasksKeysWithoutMaker"],
     ]);
     const shown = sql`SELECT p.post_id AS post, p.state, m.status,
@@ -4732,6 +4781,7 @@ it.effect(
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       assert.deepStrictEqual(yield* shape, fresh);
@@ -4856,6 +4906,7 @@ it.effect(
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       assert.deepStrictEqual(yield* column, fresh);
@@ -4976,6 +5027,7 @@ it.effect(
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       assert.deepStrictEqual(yield* index, fresh);
@@ -5088,6 +5140,7 @@ it.effect(
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       const indexed = yield* found;
@@ -5198,6 +5251,7 @@ it.effect("K068 adds money to a database at K067, keeps its entries, and reruns 
       [182, "HandoffRoutes"],
       [183, "TasksKeyMakers"],
       [184, "Recommendations"],
+      [185, "AskedFor"],
       [186, "TasksKeysWithoutMaker"],
     ]);
     assert.deepStrictEqual(
@@ -5323,6 +5377,7 @@ it.effect(
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       yield* K069WorkerNetwork;
@@ -5424,6 +5479,7 @@ it.effect("K071 adds a proposal's card and one profile change per card, and reru
       [182, "HandoffRoutes"],
       [183, "TasksKeyMakers"],
       [184, "Recommendations"],
+      [185, "AskedFor"],
       [186, "TasksKeysWithoutMaker"],
     ]);
     yield* K071OwnerAnswerCards;
@@ -5528,6 +5584,7 @@ it.effect("K072 issues each number once per series and entry, and reruns cleanly
       [182, "HandoffRoutes"],
       [183, "TasksKeyMakers"],
       [184, "Recommendations"],
+      [185, "AskedFor"],
       [186, "TasksKeysWithoutMaker"],
     ]);
     yield* K072GeneratedDocuments;
@@ -5624,6 +5681,7 @@ it.effect("K073 owes one push per key change, each notice's once, and reruns cle
       [182, "HandoffRoutes"],
       [183, "TasksKeyMakers"],
       [184, "Recommendations"],
+      [185, "AskedFor"],
       [186, "TasksKeysWithoutMaker"],
     ]);
     yield* K073KeyPushes;
@@ -5717,6 +5775,7 @@ it.effect("K074 owes every document job's worktree until it is removed, and reru
       [182, "HandoffRoutes"],
       [183, "TasksKeyMakers"],
       [184, "Recommendations"],
+      [185, "AskedFor"],
       [186, "TasksKeysWithoutMaker"],
     ]);
     yield* K074DocJobCleanup;
@@ -5807,6 +5866,7 @@ it.effect("K075 keeps what a rendered document was asked with, and reruns cleanl
       [182, "HandoffRoutes"],
       [183, "TasksKeyMakers"],
       [184, "Recommendations"],
+      [185, "AskedFor"],
       [186, "TasksKeysWithoutMaker"],
     ]);
     yield* K075ServerRenderedDocuments;
@@ -5901,6 +5961,7 @@ it.effect("K077 adds recipe labels and request fingerprints, and reruns cleanly"
       [182, "HandoffRoutes"],
       [183, "TasksKeyMakers"],
       [184, "Recommendations"],
+      [185, "AskedFor"],
       [186, "TasksKeysWithoutMaker"],
     ]);
     yield* K077DocumentLabels;
@@ -5993,6 +6054,7 @@ it.effect("K078 keeps one baseline per workspace, and reruns cleanly", () =>
       [182, "HandoffRoutes"],
       [183, "TasksKeyMakers"],
       [184, "Recommendations"],
+      [185, "AskedFor"],
       [186, "TasksKeysWithoutMaker"],
     ]);
     assert.deepStrictEqual(
@@ -6063,6 +6125,7 @@ it.effect(
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       assert.deepStrictEqual(
@@ -6158,6 +6221,7 @@ it.effect("K088 lets a Dates list take an amount, keeps rendered figures, and re
       [182, "HandoffRoutes"],
       [183, "TasksKeyMakers"],
       [184, "Recommendations"],
+      [185, "AskedFor"],
       [186, "TasksKeysWithoutMaker"],
     ]);
     yield* K088MoneyRecords;
@@ -6265,6 +6329,7 @@ it.effect(
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       yield* K107Connections;
@@ -6353,6 +6418,7 @@ it.effect("K131 carries each statement's wrong passwords into its budget, and re
       [182, "HandoffRoutes"],
       [183, "TasksKeyMakers"],
       [184, "Recommendations"],
+      [185, "AskedFor"],
       [186, "TasksKeysWithoutMaker"],
     ]);
     const budget = sql`SELECT budget_key AS key, remaining, refill_at IS NOT NULL AS "refills"
@@ -6420,6 +6486,7 @@ it.effect("K131 carries each statement's wrong passwords into its budget, and re
       [182, "HandoffRoutes"],
       [183, "TasksKeyMakers"],
       [184, "Recommendations"],
+      [185, "AskedFor"],
       [186, "TasksKeysWithoutMaker"],
     ]);
     assert.deepStrictEqual(yield* budget, carried);
@@ -6505,6 +6572,7 @@ it.effect(
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       assert.deepStrictEqual(yield* schemaOf(), widened);
@@ -6550,6 +6618,7 @@ it.effect("K175 leaves existing K174 hand-offs with a null answer preference", (
       [182, "HandoffRoutes"],
       [183, "TasksKeyMakers"],
       [184, "Recommendations"],
+      [185, "AskedFor"],
       [186, "TasksKeysWithoutMaker"],
     ]);
     assert.deepStrictEqual(yield* sql`SELECT wants_answer FROM kin_handoffs`, [
@@ -6591,6 +6660,7 @@ it.effect(
         [182, "HandoffRoutes"],
         [183, "TasksKeyMakers"],
         [184, "Recommendations"],
+        [185, "AskedFor"],
         [186, "TasksKeysWithoutMaker"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT asked_by_person_id FROM kin_records`, [
@@ -6653,6 +6723,7 @@ it.effect("K178 counts a send under way at the upgrade as started, and nothing e
       [182, "HandoffRoutes"],
       [183, "TasksKeyMakers"],
       [184, "Recommendations"],
+      [185, "AskedFor"],
       [186, "TasksKeysWithoutMaker"],
     ]);
     const rows = yield* sql<{

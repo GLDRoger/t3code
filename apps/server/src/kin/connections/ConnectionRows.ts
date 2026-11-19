@@ -60,6 +60,9 @@ export type ToolRow = {
   readonly removedAt: number | null;
 };
 
+/** A call on a paused connection is refused, and logged, with this; Recommendations count by it. */
+export const pausedRefusal = (label: string) =>
+  `The owner paused ${label}. Only the owner can resume it.`;
 /** Callable: on, not removed, and listed exactly as the owner accepted it. */
 export const callable = (tool: ToolRow) =>
   tool.mode !== "off" && tool.removedAt === null && tool.pinDigest === tool.acceptedDigest;
