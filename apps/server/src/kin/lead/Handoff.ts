@@ -1465,7 +1465,8 @@ const make = Effect.gen(function* () {
                 AND a.retired_at IS NULL
               WHERE l.org_id = ${input.orgId} AND l.agent_id = ${handoff.fromAgentId}`;
             if (asker === undefined) return;
-            const key = `handoff-back:${handoff.messageId}`;
+            // Keyed by the answer, not the hand-off: one reply to several hand-offs is one relay.
+            const key = `handoff-back:${reply.messageId}:${asker.ownerChatId}`;
             const id = NodeCrypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
             const { message: back } = yield* chat.notice({
               orgId: input.orgId,
