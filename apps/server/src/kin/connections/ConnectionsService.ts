@@ -154,6 +154,9 @@ export const ASKED =
 /** A call that became a Confirm card because the turn had read outside text. */
 export const DRAFTED =
   "Nothing was sent: this exact action waits on a Confirm card, marked as drafted after outside text, and runs only if the owner or a co-owner taps Confirm there. Tell them once in one short line that it is waiting, and don't ask for it again in words.";
+/** Added to a new card's result when the card it replaces held a person's saved words. */
+export const EDITED_OVER = (name: string) =>
+  `${name} had saved their own words on the card this one replaces: they are quoted below, and your new card doesn't have them. If their changes should stand, draft again starting from their words.`;
 /** What an identical call is told once its card was answered or closed: nothing new is drawn. */
 export const ASK_CLOSED = {
   sending:
@@ -2462,6 +2465,7 @@ const make = Effect.gen(function* () {
     });
     // A newer card for the same document, or the same thread and people, replaces the older,
     // in the card's own transaction: no Confirm lands on the older once the newer shows.
+    const savedOver: Array<{ readonly name: string; readonly quoted: string }> = [];
     const replaceOlder = Effect.fnUntraced(function* () {
       const older = (yield* sql<{
         askId: string;
@@ -2482,6 +2486,21 @@ const make = Effect.gen(function* () {
         WHERE org_id = ${turn.orgId} AND state = 'open'
           AND ask_id IN ${sql.in(older.map((row) => row.askId))}`;
       replaced.push(...older.map((row) => row.widgetId));
+      // The agent is handed a person's words saved on a card it replaces, the latest first.
+      for (const row of older.toReversed()) {
+        const shown = yield* cardSend(sql, turn.orgId, row.widgetId);
+        if (shown?.edited === undefined) continue;
+        savedOver.push({
+          name: shown.edited.name,
+          quoted: quote("Their words on the card this replaces", {
+            to: shown.to,
+            cc: shown.cc,
+            subject: shown.subject,
+            body: shown.body,
+          }),
+        });
+        break;
+      }
     });
     yield* levelGate.ask(
       { ...turn, wakeupId: KinWakeupId.make(turn.wakeupId) },
@@ -2504,7 +2523,11 @@ const make = Effect.gen(function* () {
     );
     if (replaced.length > 0) yield* levelGate.closeReplaced(turn, replaced);
     yield* record(turn, { ...entry, status: "awaiting_approval" });
-    return { note: outside === undefined ? ASKED : DRAFTED };
+    const note = outside === undefined ? ASKED : DRAFTED;
+    const [over] = savedOver;
+    return over === undefined
+      ? { note }
+      : { note: `${note} ${EDITED_OVER(over.name)}`, quoted: over.quoted };
   });
 
   /**

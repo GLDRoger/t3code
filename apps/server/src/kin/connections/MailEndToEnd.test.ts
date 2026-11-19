@@ -39,6 +39,7 @@ import * as ConnectionSecrets from "./ConnectionSecrets.ts";
 import {
   ASK_CLOSED,
   ASKED,
+  EDITED_OVER,
   type EditCards,
   KinConnections,
   type SaveCards,
@@ -580,11 +581,21 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.deepInclude(card.send?.thread, { subject: "Launch date", replyingTo: CLIENT });
         assert.lengthOf(fake.sent(), 0);
 
-        // A corrected reply on the same thread to the same person replaces the first card (H05).
-        yield* callTool(ACCOUNTS, "mail_reply", {
+        // The owner saved words of their own on it; a corrected reply on the same thread to the
+        // same person replaces the first card (H05), and the agent is handed the owner's words.
+        yield* stored(card);
+        const theirs = "Thanks Ravi, Friday works. I'll confirm the time tomorrow.";
+        yield* saveEdited(card, owner, 1, {
+          to: ["ravi@lumen.example"],
+          subject: "Re: Launch date",
+          body: theirs,
+        });
+        const redrafted = yield* callTool(ACCOUNTS, "mail_reply", {
           threadId: inbound.threadId,
           body: "Friday works. I'll confirm 11:00 tomorrow.",
         });
+        assert.strictEqual(redrafted.note, `${ASKED} ${EDITED_OVER("Arjun")}`);
+        assert.include(redrafted.quoted ?? "", theirs);
         const corrected = cards.at(-2)!;
         // The first card is replaced by the time the correction shows, so no tap lands between.
         assert.deepStrictEqual(corrected.asksWhenShown?.slice(-2), ["stale", "open"]);
