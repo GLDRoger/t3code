@@ -15,6 +15,7 @@ import {
   KinPerson,
   KinPersonId,
   KinWakeupId,
+  KinWidgetId,
   type KinAgentId,
   type KinOrgId,
   type KinPeopleCreateInviteInput,
@@ -76,6 +77,7 @@ import { reholdAfter, validZone } from "../triggers/quietHold.ts";
 import { companyMoney } from "../work/companyProfile.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { closeHeldQuestions } from "../questions/openQuestions.ts";
+import { strandedAskCards } from "../connections/strandedAsks.ts";
 
 const isKinError = Schema.is(KinChatError);
 const isSqlError = Schema.is(PersistenceSqlError);
@@ -991,6 +993,7 @@ export const make = Effect.gen(function* () {
             Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessReset")),
           );
           yield* viewMoved(input.orgId, input.personId);
+          if (gone.access === "co_owner") yield* closeStranded(input.orgId, gone);
           if (Option.isSome(records))
             yield* noteTasks(records.value, caller.personId, input, "accessRemoved");
           // An unused link would let them straight back in.
@@ -1124,6 +1127,24 @@ export const make = Effect.gen(function* () {
         { field, from: `person:${input.personId}`, to: null },
       ]);
   });
+  /** In the change that took their owner-level: the send cards it left unconfirmable close. */
+  const closeStranded = Effect.fn("KinPeople.closeStranded")(function* (
+    orgId: KinOrgId,
+    gone: Pick<KinPerson, "personId" | "displayName">,
+  ) {
+    const why = `${gone.displayName} is no longer a co-owner here, so this needs asking again.`;
+    const cards = yield* strandedAskCards(orgId, gone.personId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.mapError(toPersistenceSqlError("KinPeople.strandedAsks")),
+    );
+    if (Option.isNone(chats)) return;
+    for (const widgetId of cards)
+      yield* chats.value.closeReplaced({
+        orgId,
+        widgetId: KinWidgetId.make(widgetId),
+        outcome: { title: "Closed", text: `Closed: ${why}` },
+      });
+  });
   const setGithubLogin = Effect.fn("KinPeople.setGithubLogin")(function* (
     session: AuthenticatedSession,
     input: KinPeopleSetGithubLoginInput,
@@ -1184,13 +1205,16 @@ export const make = Effect.gen(function* () {
             yield* refresh.touch(input.orgId, "people");
             return yield* person(input.orgId, input.personId);
           }
-          const before = (yield* person(input.orgId, input.personId)).access;
+          const was = yield* person(input.orgId, input.personId);
+          const before = was.access;
           if (before === input.access) return yield* person(input.orgId, input.personId);
           yield* sql`UPDATE kin_people SET access = ${input.access}
             WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND access IS NOT 'owner'`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.setAccess")),
           );
           yield* viewMoved(input.orgId, input.personId);
+          if (before === "co_owner" && input.access === "member")
+            yield* closeStranded(input.orgId, was);
           // A co-owner talks to every agent in their own chat with it, never in the owner's.
           if (input.access === "co_owner" && Option.isSome(chats)) {
             const leads = yield* sql<{ agentId: KinAgentId }>`SELECT l.agent_id AS "agentId"
