@@ -616,10 +616,47 @@ it.live(
         );
         const second = yield* service.defer(scope, { ...deferred, what: "Another invented task" });
         assert.notStrictEqual(second.itemId, first.itemId);
+        // Every follow-up says what its due run does, whoever it is for.
+        assert.strictEqual(first.scheduled, "due_card");
+        assert.strictEqual(
+          first.note,
+          "No question was posted. Planned for its due time: a card asking to start, move or cancel it; Kin checks then who and what still stand.",
+        );
+        for (const [onDue, ask, scheduled, asks] of [
+          ["remind", undefined, "reminder", undefined],
+          ["start", undefined, "start", undefined],
+          ["chase", undefined, "chase_ping", { name: "Owner" }],
+          ["chase", "Memb", "chase_ping", { name: "Member" }],
+        ] as const) {
+          const set = yield* service.defer(scope, {
+            ...deferred,
+            what: `Invented ${onDue} ${ask ?? "self"}`,
+            onDue,
+            ...(ask === undefined ? {} : { ask }),
+          });
+          assert.strictEqual(set.scheduled, scheduled, `${onDue} ${ask}`);
+          assert.match(set.note ?? "", /^No question was posted\. Planned for its due time: a /);
+          assert.deepStrictEqual(set.asks, asks, `${onDue} ${ask}`);
+        }
         // Who to ask is named as people are found here, and kept as the item's person.
         const askMember = { ...deferred, what: "Invented ask", ask: "Memb" };
         const asked = yield* service.defer(scope, askMember);
         assert.deepStrictEqual(yield* service.defer(scope, askMember), asked);
+        // Nothing is asked yet: the result names who Kin wakes the lead to ask, and their day
+        // back when they are away at that time.
+        assert.deepStrictEqual(asked.asks, { name: "Member" });
+        assert.strictEqual(asked.scheduled, "ask_follow_up");
+        assert.strictEqual(
+          asked.note,
+          "No question was posted. Planned for its due time: a follow-up to ask Member; Kin checks then who and what still stand.",
+        );
+        yield* sql`UPDATE kin_people SET away_until = '2026-11-16'
+          WHERE org_id = ${orgId} AND person_id = 'fixture-member'`;
+        const whileAway = yield* service.defer(scope, { ...askMember, what: "Invented ask, away" });
+        assert.deepStrictEqual(whileAway.asks, { name: "Member", back: "2026-11-16" });
+        assert.include(whileAway.note, " Recorded return date: 2026-11-16.");
+        yield* sql`UPDATE kin_people SET away_until = NULL
+          WHERE org_id = ${orgId} AND person_id = 'fixture-member'`;
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
           VALUES ('other-meera', ${other}, 'meera', 'Meera', '2026-11-08T00:00:00.000Z')`;
         for (const [ask, onDue, refusal] of [
@@ -859,8 +896,29 @@ it.live(
         );
         yield* copied(null);
         const scheduled = yield* service.schedule(scope, scheduleInput);
-        // kin_cancel removes a native schedule through the same owner-only gate.
-        yield* service.cancel(scope, { itemId: scheduled.itemId, sourceEventId: "fixture-event" });
+        yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json,
+            project_id, workspace_strategy_json, model_selection_json, runtime_mode,
+            interaction_mode, created_by, creation_source, created_at, updated_at,
+            last_run_status, run_count)
+          VALUES (${KinSchedules.scheduleTaskId(orgId, scheduled.itemId)}, 'Summarise the open PRs',
+            'Summarise the open PRs', 1, '{"type":"fixed_time","timeOfDay":"08:00"}', 'project',
+            '{}', '{}', 'approval-required', 'plan', 'system', 'server', '2026-11-08T00:00:00.000Z',
+            '2026-11-08T00:00:00.000Z', 'never', 0)`;
+        // kin_cancel removes a native schedule through the same owner-only gate, by the title its
+        // task had before the cancel removed it.
+        const scheduleCancelled = {
+          itemId: scheduled.itemId,
+          outcome: "stopped",
+          title: "Summarise the open PRs",
+          note: "Stopped: no further runs. A run already started isn't recalled.",
+        } as const;
+        assert.deepStrictEqual(
+          yield* service.cancel(scope, {
+            itemId: scheduled.itemId,
+            sourceEventId: "fixture-event",
+          }),
+          scheduleCancelled,
+        );
         // kin_defer can turn a native schedule into a one-off: the schedule goes once it is staged.
         const recurring = yield* service.schedule(scope, {
           ...scheduleInput,
@@ -913,8 +971,13 @@ it.live(
           yield* git(remote, ["show", `${committed.commit}:claims/new-claim.md`]),
           "quote: The demo client wants every report as a PDF",
         );
-        // A schedule is a native task with its Kin row now, not a memory item.
-        assert.notInclude(files, `deferrals/${scheduled.itemId}.md`);
+        // A schedule is a native task with its Kin row now; memory keeps only its cancel's receipt.
+        const receipt = yield* git(remote, [
+          "show",
+          `${committed.commit}:deferrals/${scheduled.itemId}.md`,
+        ]);
+        assert.include(receipt, "status: cancelled");
+        assert.notInclude(receipt, "every:");
         assert.deepInclude(nativeSaves[0], {
           scheduleId: scheduled.itemId,
           existing: false,
@@ -1127,6 +1190,33 @@ it.live(
         assert.deepStrictEqual(stopped, [{ state: "undone" }]);
         // Cancelling it again is the same staged change, not a conflict.
         yield* service.cancel(scope, { itemId: reminder.itemId, sourceEventId: "fixture-event" });
+        // Its row gone with Kin's tick, the cancelled schedule's receipt still answers its lead.
+        yield* sql`DELETE FROM kin_schedules WHERE schedule_id = ${scheduled.itemId}`;
+        assert.deepStrictEqual(
+          yield* service.cancel(scope, {
+            itemId: scheduled.itemId,
+            sourceEventId: "fixture-event",
+          }),
+          { ...scheduleCancelled, note: "Stopped: it doesn't run." },
+        );
+        // A due run that already handed its work on isn't stopped, and the cancel says what went.
+        for (const [itemId, runState, onDue, handedOff] of [
+          [asked.itemId, "started", "ask", "ask"],
+          [second.itemId, "started", "start", "start"],
+          [whileAway.itemId, "chased", "chase", "ping"],
+        ] as const) {
+          yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due,
+              snapshot_json, updated_at)
+            VALUES (${orgId}, ${itemId}, ${runState}, 0, ${onDue}, '{}', 0)
+            ON CONFLICT (org_id, item_id) DO UPDATE SET state = excluded.state,
+              on_due = excluded.on_due`;
+          const late = yield* service.cancel(scope, { itemId, sourceEventId: "fixture-event" });
+          assert.deepInclude(late, { outcome: "handed_off", handedOff });
+          assert.match(late.note ?? "", /^Not stopped: its due run already handed off /);
+          const kept = yield* sql<{ state: string }>`SELECT state FROM kin_deferral_runs
+            WHERE org_id = ${orgId} AND item_id = ${itemId}`;
+          assert.deepStrictEqual(kept, [{ state: runState }]);
+        }
         const cancelCommit = yield* writerService.commitWakeup(orgId, "cancel-wakeup", "completed");
         assert.include(
           yield* git(remote, ["show", `${cancelCommit.commit}:deferrals/${reminder.itemId}.md`]),
