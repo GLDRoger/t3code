@@ -251,6 +251,17 @@ export const KinMessageRelay = Schema.Struct({
 export type KinMessageRelay = typeof KinMessageRelay.Type;
 
 /**
+ * A person's own words Kin posted again in another of their chats (`kin_hand_off`): the agent
+ * that passed them on, and the chat and message they were first written in. Never a person's send.
+ */
+export const KinMessageOrigin = Schema.Struct({
+  agentId: KinAgentId,
+  chatId: KinChatId,
+  messageId: KinMessageId,
+});
+export type KinMessageOrigin = typeof KinMessageOrigin.Type;
+
+/**
  * A time the body names, such as when a held message arrives: `text` is how the body writes it,
  * on `zone`'s clock. A client puts the reader's own clock in its place (`kinMessageBody`).
  */
@@ -323,6 +334,8 @@ export const KinMessage = Schema.Struct({
   discussionId: Schema.optional(KinDiscussionId),
   // Absent on a message no agent sent across.
   relay: Schema.optional(KinMessageRelay),
+  // Absent on everything but a person's words Kin passed on for them.
+  origin: Schema.optional(KinMessageOrigin),
   // Absent on a message that names no time.
   when: Schema.optional(KinMessageWhen),
   // An agent's reply from a wake-up, for each reader; absent on every other message.

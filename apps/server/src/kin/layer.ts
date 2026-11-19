@@ -26,7 +26,6 @@ import { KinChatService } from "./chat/KinChatService.ts";
 import * as FileSystem from "effect/FileSystem";
 import { ServerConfig } from "../config.ts";
 import { answerChoice, resumeInterruptedSends } from "./work/cardAnswers.ts";
-import { answerRouteCard } from "./lead/Handoff.ts";
 import { requireRefreshObserver } from "./chat/KinRefreshHub.ts";
 import { KinIdentity } from "./chat/KinIdentity.ts";
 import { seedPlaybooks } from "./work/playbookSeeds.ts";
@@ -89,16 +88,8 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
       const scope = yield* Effect.scope;
       const files = yield* Effect.context<FileSystem.FileSystem | ServerConfig>();
       // Receipt and statement cards' answers carry out their work here, in the tap's transaction.
-      // A teammate's request put to the owner is answered first; it is no decision to remember.
       yield* chat.attachChoiceAnswers((input) =>
-        answerRouteCard(input).pipe(
-          Effect.filterOrElse(
-            (routed) => routed !== undefined,
-            () => answerChoice(input, scope),
-          ),
-          Effect.provide(services),
-          Effect.provide(files),
-        ),
+        answerChoice(input, scope).pipe(Effect.provide(services), Effect.provide(files)),
       );
       yield* resumeInterruptedSends(owner.orgId, yield* Clock.currentTimeMillis).pipe(
         Effect.provide(services),

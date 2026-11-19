@@ -76,7 +76,26 @@ const DefaultPlan = Schema.Struct({
   final: Schema.NullOr(RunPlan),
   draw: CardDraw,
 });
-export const CardPlan = Schema.Union([RecordPlan, StartPlan, ListPlan, DefaultPlan]);
+/**
+ * Kin's own card on a teammate's request for an agent they may not message (`routeCard.ts`):
+ * let them, and pass on that one message, or tell them it wasn't. Never drawn by an agent.
+ */
+const RoutePlan = Schema.Struct({
+  kind: Schema.Literal("let_talk"),
+  answer: Schema.Literals(["let", "decline"]),
+  personId: Schema.String,
+  personName: Schema.String,
+  /** The agent that owns the request, and the one it was asked of. */
+  agentId: Schema.String,
+  agentName: Schema.String,
+  fromName: Schema.String,
+  /** The teammate's own message, in their direct chat with the agent it was asked of. */
+  messageId: Schema.String,
+  chatId: Schema.String,
+  draw: CardDraw,
+});
+export type RoutePlan = typeof RoutePlan.Type;
+export const CardPlan = Schema.Union([RecordPlan, StartPlan, ListPlan, DefaultPlan, RoutePlan]);
 export type CardPlan = typeof CardPlan.Type;
 const PlanJson = Schema.fromJsonString(CardPlan);
 const encodePlan = Schema.encodeEffect(PlanJson);

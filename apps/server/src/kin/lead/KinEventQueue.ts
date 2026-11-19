@@ -3,7 +3,10 @@ import {
   KinEvent,
   KinEventId,
   KinAgentId,
+  KinChatId,
+  KinMessageId,
   KinOrgId,
+  KinPersonId,
   KinWakeupId,
   NonNegativeInt,
   TrimmedNonEmptyString,
@@ -14,6 +17,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -24,7 +28,10 @@ import {
   PersistenceSqlError,
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
+import * as LeadAccess from "./LeadAccess.ts";
 
 const EventJson = Schema.fromJsonString(KinEvent);
 const encodeEvent = Schema.encodeEffect(EventJson);
@@ -235,6 +242,8 @@ const LATER_RETRY_MS = 60_000;
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const repo = yield* Effect.serviceOption(KinChatRepository);
+  const hub = yield* Effect.serviceOption(KinChatHub);
   const laneOf = sql.literal(LANE_OF);
   const storedAuthor = sql.literal(STORED_AUTHOR);
   const authorOf = sql.literal(AUTHOR_OF);
@@ -447,6 +456,79 @@ const make = Effect.gen(function* () {
     return { readyAt, next: Math.min(readyAt, window?.deferred_at ?? Infinity) };
   });
 
+  /**
+   * A teammate's request Kin passed on (`routeCard.forward`) starts only while they may still
+   * message the agent and their own message still stands; otherwise it expires. One that expired
+   * for any reason is told once, in the chat they asked it in.
+   */
+  const expireStaleRoutes = Effect.fn("KinEventQueue.expireStaleRoutes")(function* (
+    orgId: KinOrgId,
+    agentId: KinAgentId,
+  ) {
+    const queued = yield* sql<{ eventId: string; personId: string; live: number | null }>`SELECT
+        e.event_id AS "eventId", json_extract(e.json, '$.origin.personId') AS "personId",
+        (SELECT 1 FROM kin_messages o WHERE o.org_id = c.org_id
+          AND o.message_id = json_extract(c.origin_json, '$.messageId')
+          AND o.chat_id = json_extract(c.origin_json, '$.chatId') AND o.status = 'posted') AS live
+      FROM kin_events e
+      JOIN kin_messages c ON c.org_id = e.org_id
+        AND c.message_id = json_extract(e.json, '$.messageId') AND c.origin_json IS NOT NULL
+      WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.state = 'queued'
+        AND e.tag = 'chat.message' AND json_extract(e.json, '$.origin.personId') IS NOT NULL
+      ORDER BY e.event_id`;
+    for (const row of queued) {
+      const personId = KinPersonId.make(row.personId);
+      if (
+        row.live !== 1 ||
+        !(yield* LeadAccess.allowed({ orgId, agentId, personId }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ))
+      )
+        yield* sql`UPDATE kin_events SET state = 'expired'
+          WHERE org_id = ${orgId} AND event_id = ${row.eventId} AND state = 'queued'`;
+    }
+    const told = yield* sql<{ eventId: string; messageId: string }>`UPDATE kin_handoffs
+      SET route_state = 'stale'
+      WHERE org_id = ${orgId} AND to_agent_id = ${agentId} AND route_state = 'passed'
+        AND EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = kin_handoffs.org_id
+          AND e.event_id = kin_handoffs.event_id AND e.state = 'expired')
+      RETURNING event_id AS "eventId", message_id AS "messageId"`;
+    if (Option.isNone(repo)) return;
+    for (const row of told.toSorted((a, b) => (a.eventId < b.eventId ? -1 : 1))) {
+      const [where] = yield* sql<{ chatId: string; name: string | null }>`SELECT
+          m.chat_id AS "chatId", l.name FROM kin_messages m
+        LEFT JOIN kin_leads l ON l.org_id = m.org_id AND l.agent_id = ${agentId}
+        WHERE m.org_id = ${orgId} AND m.message_id = ${row.messageId}`;
+      if (where === undefined) continue;
+      const notice = yield* repo.value
+        .insertMessage({
+          orgId,
+          chatId: KinChatId.make(where.chatId),
+          // Fixed words about their own request, said where they asked it.
+          audience: "chat",
+          messageId: KinMessageId.make(`kin-forward-stale:${row.eventId}`),
+          author: { _tag: "system" },
+          kind: "system",
+          body: `This wasn't passed on to ${where.name ?? "that agent"} after all.`,
+          intent: null,
+          mentions: [],
+          replyTo: null,
+          widgetId: null,
+          floorRunId: null,
+          status: "posted",
+          sentBy: null,
+          clientMessageId: null,
+          createdAt: DateTime.formatIso(yield* DateTime.now),
+          editedAt: null,
+        })
+        .pipe(Effect.option);
+      if (Option.isSome(notice) && Option.isSome(hub))
+        yield* sql.afterCommit(
+          hub.value.publish({ type: "message.posted", orgId, message: notice.value }),
+        );
+    }
+  });
+
   const claim = Effect.fn("KinEventQueue.claim")(
     function* (input: ClaimInput) {
       yield* decodeClaimInput(input);
@@ -458,6 +540,7 @@ const make = Effect.gen(function* () {
             Effect.gen(function* () {
               while (true) {
                 const changed = entry.changed;
+                yield* sql.withTransaction(expireStaleRoutes(input.orgId, input.agentId));
                 const now = yield* Clock.currentTimeMillis;
                 const { readyAt, next } = yield* readiness(input, now);
                 if (readyAt > now) {
