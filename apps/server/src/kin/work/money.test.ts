@@ -2206,8 +2206,19 @@ describe("the company profile", () => {
         clientRequestId: "new-company-budget",
       });
       const lists = LeadMoney.define(scope, { sourceEventId: asked, template: "invoices" });
-      for (const call of [invoice, expense, budget, ownersBudget, lists])
-        assert.strictEqual((yield* Effect.flip(call)).message, refusal);
+      // Each call keeps its own type: a list of them makes the checker pick one for all.
+      const said = <A, R>(call: Effect.Effect<A, { readonly message: string }, R>) =>
+        Effect.map(Effect.flip(call), (error) => error.message);
+      assert.deepStrictEqual(
+        yield* Effect.all([
+          said(invoice),
+          said(expense),
+          said(budget),
+          said(ownersBudget),
+          said(lists),
+        ]),
+        [refusal, refusal, refusal, refusal, refusal],
+      );
       // A task works as before; an amount on it is money, and waits too.
       const task = yield* OwnerWork.create(people, {
         orgId,
