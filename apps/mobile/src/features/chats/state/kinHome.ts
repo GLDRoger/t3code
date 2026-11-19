@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { kinPhoneHome } from "@t3tools/client-runtime/kin/kinListSwitch";
+import { installForPhoneHome, kinPhoneHome } from "@t3tools/client-runtime/kin/kinListSwitch";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { KIN_ONLY } from "../../../lib/kinOnly";
@@ -48,6 +48,18 @@ export function whenKinIsHomeKnown(): Promise<boolean> {
     unsubscribe = appAtomRegistry.subscribe(kinHomeAtom, read, { immediate: true });
     if (done) unsubscribe();
   });
+}
+
+/** App-lifetime: runs `kin` where Kin is Home (always in a Kin-only build) and `coding` elsewhere. */
+export function installForKinHome(installs: {
+  readonly kin: () => () => void;
+  readonly coding: () => () => void;
+}): () => void {
+  if (KIN_ONLY) return installs.kin();
+  return installForPhoneHome(
+    (onHome) => appAtomRegistry.subscribe(kinHomeAtom, onHome, { immediate: true }),
+    installs,
+  );
 }
 
 /** The route that shows the chat list: Home where Kin is home, its own page over coding threads otherwise. */

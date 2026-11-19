@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinPhoneHome, kinSwitcherDot } from "./kinListSwitch.ts";
+import { installForPhoneHome, kinPhoneHome, kinSwitcherDot } from "./kinListSwitch.ts";
 
 describe("kinPhoneHome", () => {
   it.each([
@@ -17,6 +17,40 @@ describe("kinPhoneHome", () => {
     { kinOnly: true, shell: "coding", host: "none", savedHost: false, expected: "kin" },
   ] as const)("$shell, host $host, saved $savedHost, Kin-only $kinOnly: $expected", (row) => {
     expect(kinPhoneHome(row)).toBe(row.expected);
+  });
+});
+
+describe("installForPhoneHome", () => {
+  it.each([
+    // Launcher shortcuts and shares start coding threads: off where Kin is Home.
+    { homes: ["loading", "kin"], log: ["kin on"] },
+    { homes: ["loading", "coding", "coding"], log: ["coding on"] },
+    // A host turning Kin on or off swaps them, each once.
+    {
+      homes: ["coding", "kin", "loading", "kin", "coding"],
+      log: ["coding on", "coding off", "kin on", "kin off", "coding on"],
+    },
+    { homes: ["loading"], log: [] },
+  ] as const)("Home $homes runs $log", (row) => {
+    const log: Array<string> = [];
+    let push: (home: (typeof row.homes)[number]) => void = () => {};
+    const install = (name: string) => () => {
+      log.push(`${name} on`);
+      return () => log.push(`${name} off`);
+    };
+    const stop = installForPhoneHome(
+      (onHome) => {
+        push = onHome;
+        return () => log.push("unsubscribed");
+      },
+      { kin: install("kin"), coding: install("coding") },
+    );
+    for (const home of row.homes) push(home);
+    expect(log).toEqual(row.log);
+    stop();
+    expect(log.slice(row.log.length)).toEqual(
+      row.log.length === 0 ? ["unsubscribed"] : ["unsubscribed", `${row.homes.at(-1)} off`],
+    );
   });
 });
 

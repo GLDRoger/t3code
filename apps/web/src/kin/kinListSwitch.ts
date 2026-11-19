@@ -68,7 +68,7 @@ export function kinReturnHref(): string {
   return lastKinHref ?? "/kin";
 }
 
-/** T3's shortcuts that open a coding thread; Kin offers none, so over Kin they do nothing. */
+/** T3's keys for coding threads and project files; Kin has neither, so over Kin they do nothing. */
 const CODING_COMMANDS: ReadonlySet<KeybindingCommand> = new Set([
   "chat.new",
   "chat.newLocal",
@@ -76,6 +76,8 @@ const CODING_COMMANDS: ReadonlySet<KeybindingCommand> = new Set([
   "thread.previous",
   "thread.next",
   "view.reopenClosed",
+  "filePicker.toggle",
+  "projectSearch.toggle",
   ...THREAD_JUMP_KEYBINDING_COMMANDS,
 ]);
 

@@ -23,6 +23,27 @@ export function kinPhoneHome(input: {
   return input.savedHost ? "kin" : "coding";
 }
 
+/**
+ * Runs `kin` while Kin is the phone's Home and `coding` while the coding workspace is, swapping
+ * when Home changes. Nothing runs until Home is known.
+ */
+export function installForPhoneHome(
+  subscribe: (onHome: (home: ReturnType<typeof kinPhoneHome>) => void) => () => void,
+  installs: { readonly kin: () => () => void; readonly coding: () => () => void },
+): () => void {
+  let running: { readonly home: "kin" | "coding"; readonly stop: () => void } | null = null;
+  const unsubscribe = subscribe((home) => {
+    if (home === "loading" || home === running?.home) return;
+    running?.stop();
+    running = { home, stop: installs[home]() };
+  });
+  return () => {
+    unsubscribe();
+    running?.stop();
+    running = null;
+  };
+}
+
 /** What a list holds for the viewer. */
 export interface KinListAttention {
   readonly waiting: boolean;

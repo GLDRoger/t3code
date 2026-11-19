@@ -25,6 +25,8 @@ const keybindings: ResolvedKeybindingsConfig = (
     ["k", "chat.new"],
     ["6", "thread.jump.6"],
     ["]", "thread.next"],
+    ["p", "filePicker.toggle"],
+    ["f", "projectSearch.toggle"],
     ["s", "kin.switchList"],
   ] as const satisfies ReadonlyArray<readonly [string, KeybindingCommand]>
 ).map(([key, command]) => ({
@@ -54,9 +56,13 @@ describe("registerKinListCommands", () => {
     { at: "/kin/kin-host/org/chat", host: KIN_HOST, key: "k", reaches: false },
     { at: "/kin/kin-host/org/tasks", host: KIN_HOST, key: "6", reaches: false },
     { at: "/kin", host: KIN_HOST, key: "]", reaches: false },
+    { at: "/kin/kin-host/org/docs", host: KIN_HOST, key: "p", reaches: false },
+    { at: "/kin/kin-host/org/docs", host: KIN_HOST, key: "f", reaches: false },
     // Over a thread opened from a task, and without Kin at all, they are T3's as before.
     { at: "/kin-host/thread-1", host: KIN_HOST, key: "k", reaches: true },
     { at: "/kin-host/thread-1", host: KIN_HOST, key: "6", reaches: true },
+    { at: "/kin-host/thread-1", host: KIN_HOST, key: "p", reaches: true },
+    { at: "/", host: { _tag: "none" } as const, key: "f", reaches: true },
     { at: "/", host: { _tag: "none" } as const, key: "k", reaches: true },
     { at: "/kin", host: { _tag: "none" } as const, key: "]", reaches: true },
   ])("$key at $at with host $host._tag reaches T3: $reaches", (row) => {
@@ -74,7 +80,13 @@ describe("registerKinListCommands", () => {
     const { router } = fakeRouter(row.at);
     stack.defer(
       registerCommands(
-        { "chat.new": t3, "thread.jump.6": t3, "thread.next": t3 },
+        {
+          "chat.new": t3,
+          "thread.jump.6": t3,
+          "thread.next": t3,
+          "filePicker.toggle": t3,
+          "projectSearch.toggle": t3,
+        },
         { keybindings: () => keybindings },
       ),
     );
