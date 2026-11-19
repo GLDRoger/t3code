@@ -1347,7 +1347,8 @@ const make = Effect.gen(function* () {
           repeat: patch.repeat,
         });
         if (invalidFor !== undefined) return yield* invalidFor;
-        if (recordsMoney(patch.amount, patch.fields)) yield* countryFirst(orgId).pipe(provideSql);
+        if (recordsMoney(patch.amount, patch.fields))
+          yield* countryFirst(orgId, { saved: true }).pipe(provideSql);
         const zero = zeroOwed(def, patch.amount, patch.category ?? row.category);
         if (zero !== undefined) return yield* zero;
         if (list === "receipts") {

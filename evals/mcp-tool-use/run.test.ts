@@ -1227,6 +1227,20 @@ it.effect("fails preview calls with T3's errors when browser access is off or a 
     const status = yield* answer(unsupported, "preview_status");
     assert.isUndefined(status.is_error);
     assert.include(String(status.content), '"available":false');
+    // An `$error` mock fails the call with its value, as Kin's refusals reach the agent.
+    const refusing = browserCase(unsupported);
+    const mocks = { record_create: { $error: { _tag: "No" } } };
+    const kin = makeSample({ ...refusing, setup: { ...refusing.setup, mocks } }, base);
+    kin.tools.push({ name: "mcp__t3-code__record_create" });
+    assert.deepInclude(
+      yield* answerToolCall(kin, config, {
+        type: "tool_use",
+        id: "create",
+        name: "mcp__t3-code__record_create",
+        input: {},
+      }),
+      { is_error: true, content: '{"_tag":"No"}' },
+    );
     // A sequence mock answers each call with its next result, then repeats the last.
     const flow = makeSample(browserCase("br-flow-qa-missing-cli"), base);
     flow.tools.push({ name: "mcp__t3-code__preview_snapshot" });

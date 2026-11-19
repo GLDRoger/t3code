@@ -2228,7 +2228,9 @@ describe("the company profile", () => {
           said(ownersBudget),
           said(goal("new-company-goal")),
         ]);
-      const refused = [refusal, refusal, refusal, refusal, refusal];
+      // A batch, such as a client with its invoice, saved nothing; one entry wasn't created.
+      const saved = countryFirstMessage("Owner", { saved: true });
+      const refused = [saved, refusal, refusal, refusal, refusal];
       const asked = yield* turn(1, "Invoice Invented Kestrel 1,200 for the brand kit");
       assert.deepStrictEqual(yield* refusedIn(asked), refused);
       // A task works as before; an amount on it is money, and waits too.
@@ -2243,7 +2245,7 @@ describe("the company profile", () => {
         rev: task.rev,
         amount: { minor: 120_000, currency: "GBP" },
       });
-      assert.strictEqual((yield* Effect.flip(priced)).message, refusal);
+      assert.strictEqual((yield* Effect.flip(priced)).message, saved);
       // Dates and a deadline with no fee work; a fee waits. A list asked for now takes no currency.
       yield* defined(2, { template: "dates" });
       const renewals = yield* turn(4, "Track the domain renewal");

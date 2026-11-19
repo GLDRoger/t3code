@@ -139,26 +139,39 @@ export const countryNeeded = Effect.fn("KinCompanyProfile.countryNeeded")(functi
   return (yield* storedProfile(orgId)).pending;
 });
 
-const COUNTRY_FIRST = "Nothing was created: ";
-export const countryFirstMessage = (owner: string) =>
-  `${COUNTRY_FIRST}this company's country isn't chosen yet, so Kin can't tell its currency or tax. Ask ${owner} to choose it in Settings, Company details.`;
+const NOT_CHOSEN = "this company's country isn't chosen yet";
+/** How the agent's call reads it: a batch or a change saved nothing; a teammate's turn asks no one. */
+export interface CountryAsk {
+  readonly saved?: boolean;
+  readonly forTeammate?: boolean;
+}
+export const countryFirstMessage = (owner: string, ask: CountryAsk = {}) =>
+  `Nothing was ${ask.saved === true ? "saved" : "created"}: ${NOT_CHOSEN}, ${
+    ask.forTeammate === true
+      ? `and Kin records no money until ${owner} chooses it in Settings, Company details.`
+      : `so Kin can't tell its currency or tax. Ask ${owner} to choose it in Settings, Company details.`
+  }`;
 /** A refusal no fix to the call itself answers: the company's country comes first. */
 export const isCountryFirst = (error: { readonly message: string }) =>
-  error.message.startsWith(COUNTRY_FIRST);
+  error.message.startsWith("Nothing was ") && error.message.includes(NOT_CHOSEN);
 /** What a person's own request says instead: no name in it (an older phone hides names). */
 export const countryFirstForPerson = (ownerLevel: boolean) =>
   ownerLevel
     ? "Nothing was saved: choose your company's country first, in Settings, Company details."
     : "Nothing was saved: an owner needs to choose the company's country first.";
 
-const countryRefusal = Effect.fn("KinCompanyProfile.countryRefusal")(function* (orgId: KinOrgId) {
+/** The refusal naming the owner, whoever saved the profile last. */
+export const countryRefusal = Effect.fn("KinCompanyProfile.countryRefusal")(function* (
+  orgId: KinOrgId,
+  ask: CountryAsk = {},
+) {
   const sql = yield* SqlClient.SqlClient;
   const [owner] = yield* sql<{ name: string }>`SELECT p.display_name AS name FROM kin_people p
     WHERE p.org_id = ${orgId} AND ${sql.literal(accessSql("p"))} = 'owner'
-    ORDER BY p.created_at, p.person_id LIMIT 1`;
+    ORDER BY p.created_at, p.person_id LIMIT 1`.pipe(Effect.orElseSucceed(() => []));
   return new KinChatError({
     reason: "invalid_state",
-    message: countryFirstMessage(owner?.name.trim() || "the owner"),
+    message: countryFirstMessage(owner?.name.trim() || "the owner", ask),
   });
 });
 
@@ -186,10 +199,11 @@ export const companyMoneyState = Effect.fn("KinCompanyProfile.moneyState")(funct
 /** Refuses anything that records money while the company's country is not chosen. */
 export const countryFirst = Effect.fn("KinCompanyProfile.countryFirst")(function* (
   orgId: KinOrgId,
+  ask?: CountryAsk,
 ) {
   const sql = yield* SqlClient.SqlClient;
   if (settledIn(sql).has(orgId)) return;
-  if (yield* countryNeeded(orgId)) return yield* yield* countryRefusal(orgId);
+  if (yield* countryNeeded(orgId)) return yield* yield* countryRefusal(orgId, ask);
   yield* markSettled(sql, orgId);
 });
 
