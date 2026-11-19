@@ -1,8 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
-  KIN_RECEIPT_MODES,
   KIN_RECEIPTS,
   kinReceiptModeLabel,
+  kinReceiptModes,
+  kinReceiptReferencePlaceholder,
   kinAdvanceDraft,
   kinAdvanceInput,
   kinReceiptView,
@@ -51,7 +52,12 @@ import { KinMoneyActionNotice } from "./KinInvoice";
 import { KinWorkSection, KinLoadFailed } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
-import { useKinHomeCurrency, useKinMoneyActions, useKinReceipts } from "./useKinMoney";
+import {
+  useKinCompanyCountry,
+  useKinHomeCurrency,
+  useKinMoneyActions,
+  useKinReceipts,
+} from "./useKinMoney";
 import { kinWorkChoicesAtom, type KinWorkTarget } from "./useKinWork";
 
 const SHOWN = 8;
@@ -238,6 +244,7 @@ function KinAdvanceDialog(
   const [requestId] = useState(randomUUID);
   // A plain number is in the home currency; a typed symbol or code still names its own.
   const home = useKinHomeCurrency(props) ?? KIN_DEFAULT_HOME_CURRENCY;
+  const country = useKinCompanyCountry(props);
   const clients =
     Option.getOrNull(AsyncResult.value(useAtomValue(kinWorkChoicesAtom(props))))?.clients ?? [];
   const ids = {
@@ -354,7 +361,7 @@ function KinAdvanceDialog(
                     </SelectTrigger>
                     <SelectPopup>
                       <SelectItem value={NO_CLIENT}>{KIN_RECEIPTS.noMode}</SelectItem>
-                      {KIN_RECEIPT_MODES.map((one) => (
+                      {kinReceiptModes(country).map((one) => (
                         <SelectItem key={one.value} value={one.value}>
                           {one.label}
                         </SelectItem>
@@ -362,7 +369,12 @@ function KinAdvanceDialog(
                     </SelectPopup>
                   </Select>
                 </div>
-                {text("reference", KIN_RECEIPTS.reference, KIN_RECEIPTS.referencePlaceholder, 120)}
+                {text(
+                  "reference",
+                  KIN_RECEIPTS.reference,
+                  kinReceiptReferencePlaceholder(country),
+                  120,
+                )}
               </div>
               {problem === null ? null : (
                 <Alert variant="error">

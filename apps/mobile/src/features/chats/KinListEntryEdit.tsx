@@ -33,10 +33,12 @@ import { ListSection } from "../../components/ui/ListSection";
 import { Notice } from "../../components/ui/Notice";
 import { SearchField } from "../../components/ui/SearchField";
 import { useNowMinuteMs } from "../../lib/clock";
+import { KinCountryFirstField } from "./components/KinCountryFirst";
 import { KinMonthGrid } from "./components/KinMonthGrid";
 import { KinWorkFrame, KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 import {
+  useKinCountryNeeded,
   kinListsOf,
   useKinEntryChanges,
   useKinListContext,
@@ -183,6 +185,8 @@ function TypedEdit(
   const [text, setText] = useState(field === null ? (amount?.draft ?? "") : field.draft);
   const [problem, setProblem] = useState<string | null>(null);
   const numeric = field === null || field.type === "money";
+  // An amount waits on the company's country; the field gives way to that step.
+  const waiting = useKinCountryNeeded(props) && numeric;
   const save = async () => {
     const checked =
       field === null
@@ -208,7 +212,7 @@ function TypedEdit(
         label: KIN_LISTS.entry.save,
         onPress: () => void save(),
         loading: changes.busy,
-        disabled: changes.busy,
+        disabled: changes.busy || waiting,
       }}
     >
       <View className="px-2">
@@ -218,16 +222,18 @@ function TypedEdit(
       </View>
       {shown === null ? null : <Notice message={shown} tone="danger" />}
       <ListSection>
-        <KinWorkTextField
-          label={props.label}
-          value={text}
-          autoFocus
-          multiline={!numeric}
-          keyboard={numeric ? "numbers" : "plain"}
-          disabled={changes.busy}
-          {...(numeric ? { placeholder: KIN_LISTS.entry.amountPlaceholder } : {})}
-          onChangeText={setText}
-        />
+        <KinCountryFirstField target={props} label={props.label}>
+          <KinWorkTextField
+            label={props.label}
+            value={text}
+            autoFocus
+            multiline={!numeric}
+            keyboard={numeric ? "numbers" : "plain"}
+            disabled={changes.busy}
+            {...(numeric ? { placeholder: KIN_LISTS.entry.amountPlaceholder } : {})}
+            onChangeText={setText}
+          />
+        </KinCountryFirstField>
       </ListSection>
     </KinWorkFrame>
   );

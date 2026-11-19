@@ -56,7 +56,8 @@ import { cn } from "../../lib/cn";
 import { useKinTab } from "./components/KinTab";
 import { KinFoldSection, KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
-import { useKinIsOwnerLevel, useKinViewerScope } from "./state/kinChatOnly";
+import { KinChooseCountry } from "./components/KinCountryFirst";
+import { useKinIsOwnerLevel, useKinPlaceReach, useKinViewerScope } from "./state/kinChatOnly";
 import {
   kinListsOf,
   useKinAskAgent,
@@ -397,6 +398,7 @@ export function KinMoneyArea(props: Shared) {
   const scope = useKinViewerScope(props.environmentId);
   const countryNeeded = useKinCountryNeeded(target);
   const ownerLevel = useKinIsOwnerLevel(props.environmentId);
+  const reach = useKinPlaceReach(props.environmentId);
   const scopeNote = kinScopeNote("money", scope);
   const { state } = money;
   const frame = {
@@ -407,25 +409,15 @@ export function KinMoneyArea(props: Shared) {
       lists.refresh();
     },
   };
-  if (countryNeeded) {
+  // A teammate kept out of Money sees Money's own refusal, as before.
+  if (countryNeeded && (ownerLevel || reach?.money === true)) {
     return (
       <AreaFrame {...frame} adding={false}>
         {ownerLevel ? (
           <EmptyState
             variant="plain"
             {...KIN_MONEY.countryFirst}
-            action={
-              <Button
-                tone="primary"
-                label={KIN_MONEY.chooseCountry}
-                onPress={() =>
-                  navigation.navigate("KinCompany", {
-                    environmentId: String(target.environmentId),
-                    orgId: String(target.orgId),
-                  })
-                }
-              />
-            }
+            action={<KinChooseCountry target={target} />}
           />
         ) : (
           <EmptyState variant="plain" {...KIN_MONEY.countryFirstMember} />

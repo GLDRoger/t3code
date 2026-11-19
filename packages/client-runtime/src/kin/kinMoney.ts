@@ -56,7 +56,7 @@ export const KIN_MONEY = {
   none: {
     title: "Nothing is tracked here yet",
     detail:
-      "Once an agent keeps your expenses and invoices, this shows who owes you, what came in and what went out, to the rupee.",
+      "Once an agent keeps your expenses and invoices, this shows who owes you, what came in and what went out.",
   },
   ask: "Ask an agent to start tracking expenses",
   /** Before the first agent exists, the way in is making one. */
@@ -73,7 +73,7 @@ export const KIN_MONEY = {
   },
   countryFirstMember: {
     title: "Not set up yet",
-    detail: "The owner chooses the company's country first, so amounts, tax and dates read right.",
+    detail: "An owner chooses the company's country first, so amounts, tax and dates read right.",
   },
   chooseCountry: "Open Company details",
 };

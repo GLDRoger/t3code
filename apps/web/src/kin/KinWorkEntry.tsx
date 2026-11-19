@@ -90,6 +90,7 @@ import {
 import { KinInvoiceCurrency } from "./KinMoneyEstimate";
 import { KinNotesVersions } from "./KinConfirm";
 import { KinEntryFilePicker, KinEntryPick, KinEntryText } from "./KinWorkEntryEdit";
+import { KinCountryFirstField } from "./KinCountryFirst";
 import { KinWorkPrivateMark, KinWorkSection as Section } from "./KinWorkParts";
 import { KinWorkShareRow } from "./KinWorkShareRow";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
@@ -377,8 +378,8 @@ function FieldEdit(
   const current = typeof field.value === "string" ? field.value : null;
   switch (field.type) {
     case "text":
-    case "money":
-      return (
+    case "money": {
+      const edit = (
         <KinEntryText
           label={field.label}
           shown={field.text}
@@ -392,6 +393,14 @@ function FieldEdit(
           }}
         />
       );
+      return field.type === "money" ? (
+        <KinCountryFirstField environmentId={props.environmentId} label={field.label}>
+          {edit}
+        </KinCountryFirstField>
+      ) : (
+        edit
+      );
+    }
     case "date":
       return (
         <DayMenu
@@ -595,23 +604,25 @@ export function KinListEntry(
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
         <div className="flex flex-col gap-3">
           {amountEdit !== null && canDraft ? (
-            <div>
-              <KinEntryText
-                headline
-                numeric
-                label={KIN_LISTS.entry.amount}
-                shown={entry.amount}
-                draft={amountEdit.draft}
-                placeholder={KIN_LISTS.entry.amountPlaceholder}
-                disabled={busy}
-                onSave={async (text) => {
-                  const checked = kinAmountCheck(text, amountEdit.currency, amountEdit.received);
-                  return checked.ok
-                    ? changes.edit(item.rev, { amount: checked.value })
-                    : checked.problem;
-                }}
-              />
-            </div>
+            <KinCountryFirstField environmentId={environmentId} label={KIN_LISTS.entry.amount}>
+              <div>
+                <KinEntryText
+                  headline
+                  numeric
+                  label={KIN_LISTS.entry.amount}
+                  shown={entry.amount}
+                  draft={amountEdit.draft}
+                  placeholder={KIN_LISTS.entry.amountPlaceholder}
+                  disabled={busy}
+                  onSave={async (text) => {
+                    const checked = kinAmountCheck(text, amountEdit.currency, amountEdit.received);
+                    return checked.ok
+                      ? changes.edit(item.rev, { amount: checked.value })
+                      : checked.problem;
+                  }}
+                />
+              </div>
+            </KinCountryFirstField>
           ) : entry.amount === null ? null : (
             <p className="text-2xl font-semibold tracking-tight text-foreground tabular-nums">
               {entry.amount}
