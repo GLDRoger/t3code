@@ -151,7 +151,7 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
   if (last !== undefined && at - last.sentAt < NUDGE_BACK_OFF_MS) {
     const [answered] = yield* sql`SELECT 1 FROM kin_messages
       WHERE org_id = ${orgId} AND chat_id = ${last.chatId} AND author_person_id = ${personId}
-        AND created_at > ${iso(last.sentAt)} LIMIT 1`;
+        AND origin_json IS NULL AND created_at > ${iso(last.sentAt)} LIMIT 1`;
     if (answered === undefined)
       return yield* refuse(
         `${person.name} hasn't answered your last nudge (${last.factKey}, ${last.day}). Don't nag: replan, take it over, or tell the owner.`,

@@ -1483,7 +1483,8 @@ it.effect(
       Effect.gen(function* () {
         const { sql, orgId, owner } = ctx;
         yield* mate.grant(tech);
-        yield* mate.ask("meera-event", "Can I offer Lumen $4,500 off the renewal?");
+        // Spaced out as a paste leaves it: what Dev would read is checked, not what she typed.
+        yield* mate.ask("meera-event", "Can I offer Lumen $  4,500 off the renewal?");
         yield* mate.pass("Tech lead");
         const [routed] = (yield* mate.reached).events;
         yield* techTurn(ctx, routed!.eventId);
@@ -1512,13 +1513,13 @@ it.effect(
         // The agent's words are clean; hers name a sum Dev may not see, so nothing goes.
         const refused = yield* Effect.flip(up("Dev"));
         assert.strictEqual(refused.reason, "not_allowed");
-        assert.include(refused.message, "Not for Dev: “$4,500” reads as an amount of money");
+        assert.include(refused.message, "Not for Dev: “$ 4,500” reads as an amount of money");
         assert.lengthOf(yield* relayed, 0);
         const me = yield* ownerName(ctx);
         assert.strictEqual((yield* up(me)).to, me);
         assert.deepStrictEqual(yield* relayed, [
           {
-            body: 'Meera asked:\n"Can I offer Lumen $4,500 off the renewal?"\nTech lead suggests: May I offer a renewal discount?',
+            body: 'Meera asked:\n"Can I offer Lumen $ 4,500 off the renewal?"\nTech lead suggests: May I offer a renewal discount?',
           },
         ]);
       }),

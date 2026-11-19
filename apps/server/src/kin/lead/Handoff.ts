@@ -915,10 +915,12 @@ const make = Effect.gen(function* () {
         reason: "not_found",
         message: "The message this was about has been cleared, so nothing was sent.",
       });
+    // As it is sent, on one line: what is checked for its reader is exactly what they will read.
+    const flat = (text: string) => text.replace(/\s+/g, " ");
     // A routed relay quotes her stored words too, so they are held to the same reader.
     if (!toOwnerSide)
       for (const text of original === undefined ? [input.text] : [input.text, original.body]) {
-        const why = yield* unreadableBy(ctx.orgId, to.personId, text, asker).pipe(access);
+        const why = yield* unreadableBy(ctx.orgId, to.personId, flat(text), asker).pipe(access);
         if (why !== undefined)
           return yield* refuse(
             `Not for ${to.name}: ${why}. Send it without that, or ask the owner to share it with ${to.name}.`,
@@ -926,6 +928,15 @@ const make = Effect.gen(function* () {
       }
     const [who] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
       WHERE org_id = ${ctx.orgId} AND person_id = ${asker} ORDER BY person_id`;
+    const askedAlready = `The owner side was already asked about this request, so nothing more was sent. Tell ${who?.name ?? "them"} it is with them.`;
+    // Before a chat is opened for it; the claim below still decides.
+    if (original !== undefined) {
+      const [free] = yield* sql`SELECT 1 FROM kin_handoffs
+        WHERE org_id = ${ctx.orgId} AND message_id = ${original.messageId}
+          AND route_state = 'passed'
+          AND (asked_message_id IS NULL OR asked_message_id = ${messageId})`;
+      if (free === undefined) return yield* refuse(askedAlready);
+    }
     const chatId =
       to.personId === self.owner
         ? self.ownerChatId
@@ -933,13 +944,13 @@ const make = Effect.gen(function* () {
             { _tag: "person", orgId: ctx.orgId, personId: to.personId },
             { orgId: ctx.orgId, agentId: ctx.agentId },
           )).chatId;
-    const quoted = (text: string) => `"${text.replace(/\s+/g, " ").replace(/"/g, "'")}"`;
+    const quoted = (text: string) => `"${flat(text).replace(/"/g, "'")}"`;
     // Their words, quoted and named as theirs: a request to decide, never the owner's instruction.
     // A routed request quotes what they stored, and the agent's own words are named as its.
     const body =
       original === undefined
         ? `${who?.name ?? "A teammate"} asked ${self.name}:\n${quoted(input.text)}`
-        : `${who?.name ?? "A teammate"} asked:\n${quoted(original.body)}\n${self.name} suggests: ${input.text.replace(/\s+/g, " ")}`;
+        : `${who?.name ?? "A teammate"} asked:\n${quoted(original.body)}\n${self.name} suggests: ${flat(input.text)}`;
     const where = { orgId: ctx.orgId, personId: to.personId, chatId };
     const relay = {
       kind: "sent_by" as const,
@@ -956,10 +967,7 @@ const make = Effect.gen(function* () {
               AND route_state = 'passed'
               AND (asked_message_id IS NULL OR asked_message_id = ${messageId})
             RETURNING message_id`;
-          if (claimed.length === 0)
-            return yield* refuse(
-              `The owner side was already asked about this request, so nothing more was sent. Tell ${who?.name ?? "them"} it is with them.`,
-            );
+          if (claimed.length === 0) return yield* refuse(askedAlready);
         }
         const held =
           input.urgent === undefined

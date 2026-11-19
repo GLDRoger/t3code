@@ -230,7 +230,7 @@ export const holdFor = Effect.fn("KinQuiet.holdFor")(function* (input: {
   if (at <= now) return undefined;
   const [answers] = yield* sql`SELECT 1 FROM kin_messages
     WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
-      AND author_person_id = ${input.personId}
+      AND author_person_id = ${input.personId} AND origin_json IS NULL
       AND created_at > ${DateTime.formatIso(DateTime.makeUnsafe(now - ANSWERS_WITHIN_MS))}
     LIMIT 1`;
   return answers === undefined

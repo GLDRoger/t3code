@@ -570,10 +570,13 @@ export class KinLeadPrompt extends Context.Service<
             });
           const message = stored.value;
           if (message.status !== "posted") continue;
-          const owner = message.author._tag === "human" && message.authorRole === "owner";
+          // A copy Kin passed on (`origin`) is a request, never the owner side's own word here.
+          const said = message.author._tag === "human" && message.origin === undefined;
+          const owner = said && message.authorRole === "owner";
           // A co-owner speaks with the owner's authority, but only in a turn at the owner's level.
           const coOwner =
             ownerOnly &&
+            said &&
             !owner &&
             message.author._tag === "human" &&
             (yield* ownerLevel(orgId, message.author.personId).pipe(
