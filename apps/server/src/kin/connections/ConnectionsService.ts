@@ -174,7 +174,7 @@ export const ASK_CLOSED = {
   replaced: "A newer card replaced the one for this exact action, so nothing was sent from it.",
   closed: (why: string) => `The card for this exact action was closed: ${why}`,
   edited: (name: string) =>
-    `This exact action was sent, edited by ${name} on its card: what went is quoted below, not your draft. Nothing was sent again.`,
+    `This exact action was sent as ${name} edited it on its card before confirming: what went is quoted below, not your draft. Nothing was sent again.`,
 } as const;
 export const OFFERED = "The owner will see a card to connect it.";
 const SEVERAL_ACCOUNTS =

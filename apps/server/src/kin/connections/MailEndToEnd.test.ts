@@ -1013,9 +1013,12 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           subject: mine.subject,
           to: mine.to,
         });
-        // The agent's repeat of its own draft is told the person's words went, quoted.
+        // The agent's repeat of its own draft is told the person's words went, quoted, and when.
         const repeat = yield* callTool(ACCOUNTS, "mail_send", draft);
-        assert.strictEqual(repeat.note, ASK_CLOSED.edited("Arjun"));
+        assert.strictEqual(
+          repeat.note,
+          "This exact action was sent as Arjun edited it on its card before confirming: what went is quoted below, not your draft. Nothing was sent again.",
+        );
         assert.include(repeat.quoted ?? "", "See you Monday at 10.");
 
         // Sending the agent's own words over a saved edit sends those words, not the saved ones.
