@@ -58,6 +58,7 @@ import { KinPlaceLists } from "./KinPlaceLists";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinProjectPeopleSection } from "./KinProjectPeopleScreen";
 import { kinClient } from "./state/kinClient";
+import { useKinAskRecord } from "./state/useKinAskRecord";
 import { kinHostConnected, useKinGate } from "./state/useKinHost";
 import {
   useKinProjectPage,
@@ -212,6 +213,7 @@ function KinProjectBody(
       if (outcome.problem.kind === "conflict") props.onRefresh();
     }
   };
+  const asker = useKinAskRecord(props, { key: view.key, title: view.name });
   const openTask = (task: KinRecordKey) =>
     openRecord("KinWorkItem", { environmentId, orgId, task });
   return (
@@ -229,6 +231,7 @@ function KinProjectBody(
         bar: canChange
           ? {
               actions: [
+                ...asker.actions,
                 {
                   accessibilityLabel: KIN_PROJECTS.edit,
                   icon: "pencil",
@@ -242,6 +245,7 @@ function KinProjectBody(
                 },
               ],
               menus: [
+                ...asker.menus,
                 {
                   title: "More",
                   icon: "ellipsis",
@@ -273,7 +277,7 @@ function KinProjectBody(
                 },
               ],
             }
-          : {},
+          : asker,
         header: (
           <>
             <KinProjectSummary
