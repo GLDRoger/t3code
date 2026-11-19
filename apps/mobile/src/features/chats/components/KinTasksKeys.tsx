@@ -146,7 +146,7 @@ export function KinTasksKeysSection(props: {
                 label={row.label}
                 description={row.line}
                 accessory={
-                  canRemove ? (
+                  canRemove && row.canRemove ? (
                     <Button
                       tone="outline"
                       size="compact"
@@ -192,6 +192,7 @@ function KinTasksKeyOnce(props: {
   const panel = kinTasksKeyMade({
     key: props.made.key,
     secret: props.made.secret,
+    origin: props.made.origin,
     httpBaseUrl: connection.httpBaseUrl,
     device: "phone",
   });
