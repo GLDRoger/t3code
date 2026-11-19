@@ -17,6 +17,7 @@ import {
   type KinWorkPrincipal,
   type KinPartyPage,
   type KinPartyRow,
+  type KinPersonId,
   KinChatError,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -33,6 +34,7 @@ import {
   dueMillis,
   found,
   inList,
+  ownerOnly,
   ownerWriter,
   tellMoved,
   theOwner,
@@ -41,11 +43,22 @@ import {
 } from "./ownerWork.ts";
 import { principalOfText, principalText } from "./projectSpine.ts";
 import { projectNoteOf } from "./recordComments.ts";
-import { iso, notFound, type RecordRow, unavailable } from "./recordRows.ts";
+import {
+  iso,
+  notFound,
+  principal,
+  type RecordRow,
+  samePrincipal,
+  unavailable,
+  workFailure,
+} from "./recordRows.ts";
 import {
   KIN_OWNER_LEVEL,
   inProject,
   placesOf,
+  teamClients,
+  teamRecordIn,
+  teamSeesField,
   teamSeq,
   teamVisible,
   viewerOfPeople,
@@ -54,9 +67,10 @@ import {
 import * as Touches from "./touches.ts";
 
 /**
- * The light CRM's pages and edits. The owner and co-owners read and edit everything; anyone else
- * reads, by `personSees`, the clients their Clients place shows and the projects they lead, and
- * edits none of it here. Every write goes through `KinRecords`, revision-checked and logged.
+ * The light CRM's pages and edits. The owner level does everything; anyone else reads what
+ * `personSees` shows. A member with the Clients switch on also adds prospects, changes the ones
+ * they look after and logs contact (`memberParty`), checked inside the write's transaction; terms,
+ * tax, labels, who looks after a client and closing it stay the owner level's.
  */
 
 /** The read model's SQL failures reach a client as Work being unavailable, logged here. */
@@ -93,9 +107,18 @@ const reader = Effect.fn("KinWork.crm.reader")(function* (
   if (!places.reaches.clients) return yield* noClients;
   return viewerOfPeople([viewer.person.personId]);
 });
+/** Whether this member's Clients switch is on: a project they lead alone reaches names. */
+const switchedOn = Effect.fn("KinWork.crm.switchedOn")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+) {
+  const [person] = viewer._tag === "people" ? viewer.people : [];
+  if (person === undefined) return viewer._tag === "ownerLevel";
+  return (yield* read(placesOf(orgId, person))).clients;
+});
 /**
- * A client row as anyone besides the owner reads it: who they are, not what is owed. The contact
- * log is the owner's, so the row carries no word on it rather than "none logged".
+ * A client row as anyone without the Clients switch reads it: who they are, not what is owed.
+ * The contact log isn't theirs, so the row carries no word on it rather than "none logged".
  */
 const nameOnly = <A extends KinPartyRow>({ lastContactAt: _, ...row }: A): A =>
   ({ ...row, weOwe: 0, theyOwe: 0, late: 0, overdue: 0, next: null }) as A;
@@ -124,10 +147,11 @@ export const parties = Effect.fn("KinWork.parties")(function* (
   input: KinPartiesInput,
 ) {
   const viewer = yield* reader(people, input.orgId);
+  const works = yield* switchedOn(input.orgId, viewer);
   const { now, seq } = yield* asOf(input.orgId, viewer);
   const page = yield* read(Crm.parties(input.orgId, now, input, viewer));
   return {
-    parties: viewer._tag === "ownerLevel" ? page.rows : page.rows.map(nameOnly),
+    parties: works ? page.rows : page.rows.map(nameOnly),
     total: page.total,
     nextCursor: page.nextCursor,
     seq,
@@ -174,9 +198,11 @@ export const party = Effect.fn("KinWork.party")(function* (
   yield* unseen(viewer, row, input);
   const { now, seq } = yield* asOf(input.orgId, viewer);
   const page = yield* read(Crm.partyPage(row, now, seq, viewer));
-  if (viewer._tag === "ownerLevel") return page;
+  if (viewer._tag === "ownerLevel")
+    return { ...page, can: { edit: true, log: true, owner: true } } satisfies KinPartyPage;
   const [team] = viewer.people;
   if (team === undefined) return yield* noClients;
+  if (yield* switchedOn(input.orgId, viewer)) return yield* read(memberPage(page, team, row));
   // Its name, contacts and the projects they lead; never terms, tax, notes, contact log or what's owed.
   const shown = yield* read(
     teamVisible(input.orgId, team, [
@@ -205,6 +231,47 @@ export const party = Effect.fn("KinWork.party")(function* (
     theyOwe: none,
     // The contact log carries the owner's notes on the relationship.
     ...(page.touches === undefined ? {} : { touches: [] }),
+    can: { edit: false, log: false, owner: false },
+  } satisfies KinPartyPage;
+});
+
+/**
+ * The client page for a member with the Clients switch on: everything but its terms and tax
+ * details, its work and Kin's own contact lines only as far as they see them.
+ */
+const memberPage = Effect.fn("KinWork.crm.memberPage")(function* (
+  page: KinPartyPage,
+  personId: KinPersonId,
+  row: RecordRow,
+) {
+  const orgId = row.orgId as KinOrgId;
+  const records = [...page.weOwe.records, ...page.theyOwe.records];
+  const shown = yield* teamVisible(orgId, personId, [
+    ...page.contacts.map((one) => one.recordId),
+    ...page.projects.map((one) => one.recordId),
+    ...records.flatMap((one) => (one.project === undefined ? [] : [one.project.recordId])),
+    ...(page.touches ?? []).flatMap((one) => (one.record === null ? [] : [one.record.recordId])),
+  ]);
+  const clients = new Set([row.recordId]);
+  const owed = (side: KinPartyPage["weOwe"]) => ({
+    ...side,
+    records: side.records.map((one) => teamRecordIn(one, shown, clients)),
+  });
+  return {
+    ...page,
+    party: { ...page.party, terms: null, gstin: null, placeOfSupply: null },
+    contacts: page.contacts.filter((one) => shown.has(one.recordId)),
+    projects: page.projects.filter((one) => shown.has(one.recordId)),
+    weOwe: owed(page.weOwe),
+    theyOwe: owed(page.theyOwe),
+    ...(page.touches === undefined
+      ? {}
+      : {
+          touches: page.touches.filter(
+            (one) => one.record === null || shown.has(one.record.recordId),
+          ),
+        }),
+    can: { edit: looksAfter(row, personId), log: true, owner: false },
   } satisfies KinPartyPage;
 });
 
@@ -251,7 +318,8 @@ export const history = Effect.fn("KinWork.history")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinWorkHistoryInput,
 ) {
-  yield* theOwner(people, input.orgId);
+  const viewer = yield* viewerOf(people, input.orgId);
+  if (viewer.teammate) return yield* memberHistory(viewer.person, input);
   const row = yield* found(input.orgId, input);
   if (row.registerId !== "clients" && row.registerId !== "projects")
     return yield* new KinChatError({
@@ -276,6 +344,47 @@ export const history = Effect.fn("KinWork.history")(function* (
     items: page,
     nextCursor: items.length > limit && last !== undefined ? `s:${last.seq}` : null,
     seq: (yield* asOf(input.orgId, KIN_OWNER_LEVEL)).seq,
+  };
+});
+
+/** What a member reads of a client's history besides what a task says (`teamSeesField`). */
+const CLIENT_LINES = new Set(["address", "source", "tags", "role", "email", "phone"]);
+
+/**
+ * A client's history for a member with the Clients switch on: what they see of it, without terms,
+ * tax, labels or money. Projects' histories stay the owner level's.
+ */
+const memberHistory = Effect.fn("KinWork.crm.memberHistory")(function* (
+  person: PersonIdentity,
+  input: KinWorkHistoryInput,
+) {
+  const viewer = viewerOfPeople([person.personId]);
+  if (!(yield* switchedOn(input.orgId, viewer))) return yield* ownerOnly;
+  const row = yield* found(input.orgId, input);
+  const reached = yield* read(teamClients(input.orgId, person.personId, [row.recordId]));
+  if (!reached.has(row.recordId))
+    return yield* notFound("key" in input ? input.key : "with that id");
+  const before = yield* beforeOf(input.cursor);
+  const limit = input.limit ?? 50;
+  const { items } = yield* read(
+    Crm.history(
+      row,
+      { ...(before === null ? {} : { beforeSeq: before }), limit: limit + 1 },
+      viewer,
+    ),
+  );
+  const page = items.slice(0, limit);
+  const last = page.at(-1);
+  return {
+    items: page.flatMap((item) => {
+      if (item.kind === "linked") return [];
+      const fields = item.fields.filter(
+        (field) => teamSeesField(field.field) || CLIENT_LINES.has(field.field),
+      );
+      return item.kind === "updated" && fields.length === 0 ? [] : [{ ...item, fields }];
+    }),
+    nextCursor: items.length > limit && last !== undefined ? `s:${last.seq}` : null,
+    seq: (yield* asOf(input.orgId, viewer)).seq,
   };
 });
 
@@ -327,8 +436,53 @@ const createIn = Effect.fn("KinWork.crm.create")(function* (
   });
   return row;
 });
-const partyOut = (row: RecordRow) =>
-  read(Effect.flatMap(Clock.currentTimeMillis, (now) => Crm.partyDetail(row, now)));
+const partyOut = (row: RecordRow, viewer: KinViewer = KIN_OWNER_LEVEL) =>
+  read(Effect.flatMap(Clock.currentTimeMillis, (now) => Crm.partyDetail(row, now, viewer)));
+
+/** A member's own view of a client they just wrote: never its terms or tax details. */
+const memberOut = (row: RecordRow, person: PersonIdentity) =>
+  partyOut(row, viewerOfPeople([person.personId])).pipe(
+    Effect.map((detail) => ({ ...detail, terms: null, gstin: null, placeOfSupply: null })),
+  );
+
+const looksAfter = (row: RecordRow, personId: KinPersonId) =>
+  row.category !== "vendor" &&
+  samePrincipal(principal(row.ownerKind, row.ownerId), { _tag: "person", personId });
+const MEMBER_FIELDS = new KinChatError({
+  reason: "not_allowed",
+  message:
+    "Only the owner or a co-owner sets a client's terms, tax details, address, Keep private or who looks after it, closes it, or makes it a vendor.",
+});
+const PROSPECTS_ONLY = new KinChatError({
+  reason: "not_allowed",
+  message: "You can add a prospect; the owner or a co-owner adds clients and vendors.",
+});
+const notTheirs = (key: string) =>
+  new KinChatError({
+    reason: "not_allowed",
+    message: `Only whoever looks after ${key}, the owner or a co-owner changes it.`,
+  });
+
+/**
+ * The member's Clients switch and the client they name, read inside the write's transaction: one
+ * they see answers; one they don't is no client at all. `theirs` also needs them to look after it.
+ */
+const memberParty = Effect.fn("KinWork.crm.memberParty")(function* (
+  person: PersonIdentity,
+  orgId: KinOrgId,
+  ref: { readonly key: string } | { readonly recordId: string },
+  theirs: boolean,
+) {
+  if (!(yield* switchedOn(orgId, viewerOfPeople([person.personId])))) return yield* ownerOnly;
+  const name = "key" in ref ? ref.key : "with that id";
+  const row = yield* found(orgId, ref).pipe(Effect.mapError(() => notFound(name)));
+  const reached = yield* read(teamClients(orgId, person.personId, [row.recordId]));
+  if (!reached.has(row.recordId)) return yield* notFound(name);
+  if (theirs && !looksAfter(row, person.personId)) return yield* notTheirs(row.key);
+  return row;
+});
+const defines = (input: object, keys: ReadonlyArray<string>) =>
+  keys.some((key) => (input as Record<string, unknown>)[key] !== undefined);
 const projectOut = (row: RecordRow) =>
   read(
     Effect.flatMap(Clock.currentTimeMillis, (now) => Crm.projectDetail(row, now, KIN_OWNER_LEVEL)),
@@ -338,60 +492,138 @@ export const createParty = Effect.fn("KinWork.createParty")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPartyCreateInput,
 ) {
-  const person = yield* theOwner(people, input.orgId);
-  const row = yield* createIn(person, input.orgId, "clients", input, {
+  const viewer = yield* viewerOf(people, input.orgId);
+  const { person } = viewer;
+  const create = createIn(person, input.orgId, "clients", input, {
     title: input.name,
     owner: input.owner ?? me(person),
-    category: input.kind ?? "client",
+    category:
+      input.prospect === true && input.kind !== "vendor" ? "prospect" : (input.kind ?? "client"),
     ...(input.notes === undefined ? {} : { notes: input.notes }),
     ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
-    fields: fieldsOf(partyFields(input)),
+    fields: fieldsOf({ ...partyFields(input), ...tagged(input) }),
   });
-  return yield* partyOut(row);
+  if (!viewer.teammate) return yield* partyOut(yield* create);
+  const row = yield* asViewer(
+    viewer,
+    Effect.gen(function* () {
+      if (!(yield* switchedOn(input.orgId, viewerOfPeople([person.personId]))))
+        return yield* ownerOnly;
+      if (input.prospect !== true || input.kind === "vendor") return yield* PROSPECTS_ONLY;
+      if (
+        defines(input, ["terms", "address", "gstin", "placeOfSupply", "sensitive"]) ||
+        (input.owner !== undefined && !samePrincipal(input.owner, me(person)))
+      )
+        return yield* MEMBER_FIELDS;
+      return yield* create;
+    }),
+  );
+  return yield* memberOut(row, person);
 });
 
 export const updateParty = Effect.fn("KinWork.updateParty")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPartyUpdateInput,
 ) {
-  const person = yield* theOwner(people, input.orgId);
-  const row = yield* saved(
-    person,
-    input.orgId,
-    input.key,
-    "clients",
-    {
-      ...defined({
-        title: input.name,
-        category: input.kind,
-        owner: input.owner,
-        notes: input.notes,
-        sensitive: input.sensitive,
-      }),
-      ...activeState(input.active),
-      ...(Object.keys(defined(partyFields(input))).length === 0
-        ? {}
-        : { fields: fieldsOf(partyFields(input)) }),
-    },
-    input.rev,
+  const viewer = yield* viewerOf(people, input.orgId);
+  const { person } = viewer;
+  const fields = { ...defined(partyFields(input)), ...defined(tagged(input)) };
+  const write = Effect.gen(function* () {
+    const before = yield* inList(input.orgId, input.key, "clients");
+    return yield* saved(
+      person,
+      input.orgId,
+      input.key,
+      "clients",
+      {
+        ...defined({
+          title: input.name,
+          category: categoryOf(before, input),
+          owner: input.owner,
+          notes: input.notes,
+          sensitive: input.sensitive,
+        }),
+        ...activeState(input.active),
+        ...(Object.keys(fields).length === 0 ? {} : { fields: fieldsOf(fields) }),
+      },
+      input.rev,
+    );
+  });
+  if (!viewer.teammate) return yield* partyOut(yield* write);
+  const row = yield* asViewer(
+    viewer,
+    Effect.gen(function* () {
+      yield* memberParty(person, input.orgId, { key: input.key }, true);
+      if (
+        defines(input, [
+          "terms",
+          "address",
+          "gstin",
+          "placeOfSupply",
+          "sensitive",
+          "active",
+          "owner",
+        ]) ||
+        input.kind === "vendor"
+      )
+        return yield* MEMBER_FIELDS;
+      return yield* write;
+    }),
   );
-  return yield* partyOut(row);
+  return yield* memberOut(row, person);
+});
+
+/** The stored category a change asks for: `kind` first, and `prospect` within a client. */
+const categoryOf = (
+  row: RecordRow,
+  input: Pick<KinPartyUpdateInput, "kind" | "prospect">,
+): string | undefined => {
+  const kind = input.kind ?? (row.category === "vendor" ? "vendor" : "client");
+  if (kind === "vendor") return input.kind;
+  if (input.prospect !== undefined) return input.prospect ? "prospect" : "client";
+  // A client's kind given again leaves a prospect a prospect.
+  return input.kind === undefined || row.category === "prospect" ? undefined : input.kind;
+};
+const tagged = (
+  input:
+    | Pick<KinPartyCreateInput, "source" | "tags">
+    | Pick<KinPartyUpdateInput, "source" | "tags">,
+) => ({
+  source: input.source,
+  tags:
+    input.tags === undefined
+      ? undefined
+      : input.tags.length === 0
+        ? null
+        : [...new Set(input.tags)],
 });
 
 export const createContact = Effect.fn("KinWork.createContact")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinContactCreateInput,
 ) {
-  const person = yield* theOwner(people, input.orgId);
-  const party = yield* inList(input.orgId, input.party, "clients");
-  const row = yield* createIn(person, input.orgId, "contacts", input, {
-    title: input.name,
-    owner: me(person),
-    partyId: party.recordId,
-    ...(input.notes === undefined ? {} : { notes: input.notes }),
-    ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
-    fields: fieldsOf({ role: input.role, email: input.email, phone: input.phone }),
+  const viewer = yield* viewerOf(people, input.orgId);
+  const { person } = viewer;
+  const write = Effect.gen(function* () {
+    const party = yield* inList(input.orgId, input.party, "clients");
+    return yield* createIn(person, input.orgId, "contacts", input, {
+      title: input.name,
+      owner: me(person),
+      partyId: party.recordId,
+      ...(input.notes === undefined ? {} : { notes: input.notes }),
+      ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
+      fields: fieldsOf({ role: input.role, email: input.email, phone: input.phone }),
+    });
   });
+  if (!viewer.teammate) return Crm.toContact(yield* write);
+  const row = yield* asViewer(
+    viewer,
+    Effect.gen(function* () {
+      yield* memberParty(person, input.orgId, { key: input.party }, true);
+      if (input.sensitive !== undefined) return yield* MEMBER_FIELDS;
+      return yield* write;
+    }),
+  );
   return Crm.toContact(row);
 });
 
@@ -399,23 +631,41 @@ export const updateContact = Effect.fn("KinWork.updateContact")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinContactUpdateInput,
 ) {
-  const person = yield* theOwner(people, input.orgId);
-  const partyId =
-    input.party === undefined
-      ? undefined
-      : (yield* inList(input.orgId, input.party, "clients")).recordId;
+  const viewer = yield* viewerOf(people, input.orgId);
+  const { person } = viewer;
   const fields = fieldsOf({ role: input.role, email: input.email, phone: input.phone });
-  const row = yield* saved(
-    person,
-    input.orgId,
-    input.key,
-    "contacts",
-    {
-      ...defined({ title: input.name, notes: input.notes, sensitive: input.sensitive, partyId }),
-      ...activeState(input.active),
-      ...(Object.keys(fields).length === 0 ? {} : { fields }),
-    },
-    input.rev,
+  const write = Effect.gen(function* () {
+    const partyId =
+      input.party === undefined
+        ? undefined
+        : (yield* inList(input.orgId, input.party, "clients")).recordId;
+    return yield* saved(
+      person,
+      input.orgId,
+      input.key,
+      "contacts",
+      {
+        ...defined({ title: input.name, notes: input.notes, sensitive: input.sensitive, partyId }),
+        ...activeState(input.active),
+        ...(Object.keys(fields).length === 0 ? {} : { fields }),
+      },
+      input.rev,
+    );
+  });
+  if (!viewer.teammate) return Crm.toContact(yield* write);
+  const row = yield* asViewer(
+    viewer,
+    Effect.gen(function* () {
+      const contact = yield* inList(input.orgId, input.key, "contacts").pipe(
+        Effect.mapError(() => notFound(input.key)),
+      );
+      if (contact.partyId === null) return yield* notFound(input.key);
+      yield* memberParty(person, input.orgId, { recordId: contact.partyId }, true).pipe(
+        Effect.mapError((error) => (error.reason === "not_found" ? notFound(input.key) : error)),
+      );
+      if (input.sensitive !== undefined || input.party !== undefined) return yield* MEMBER_FIELDS;
+      return yield* write;
+    }),
   );
   return Crm.toContact(row);
 });
@@ -564,38 +814,91 @@ export const updateProject = Effect.fn("KinWork.updateProject")(function* (
   return yield* projectOut(row);
 });
 
-/** The owner logs contact by hand; open client pages read again when it commits. */
+/**
+ * Someone logs contact by hand, and with `next` the follow-up it leaves, theirs to do, in the same
+ * transaction: both land or neither. A member logs on any client they see. Open client pages read
+ * again when it commits.
+ */
 export const logTouch = Effect.fn("KinWork.logTouch")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinTouchLogInput,
 ) {
-  const person = yield* theOwner(people, input.orgId);
-  const party = yield* inList(input.orgId, input.party, "clients");
+  const viewer = yield* viewerOf(people, input.orgId);
+  const { person } = viewer;
+  const records = yield* KinRecords;
+  const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
   const at = input.at === undefined ? now : Date.parse(input.at);
-  const touch = yield* read(
-    Touches.logTouch(input.orgId, {
-      partyId: party.recordId,
-      kind: input.kind,
-      at,
-      note: input.note ?? "",
-      personId: person.personId,
-      by: { kind: "person", id: person.personId },
-      originKey: `owner:touch:${input.clientRequestId}`,
-      now,
-    }),
-  );
-  yield* (yield* KinRecords).announce(input.orgId);
+  // A member's requests have their own keys, so a retry never finds someone else's.
+  const origin = viewer.teammate ? `member:${person.personId}:touch` : "owner:touch";
+  const touch = yield* sql
+    .withTransaction(
+      Effect.gen(function* () {
+        const party = viewer.teammate
+          ? yield* memberParty(person, input.orgId, { key: input.party }, false)
+          : yield* inList(input.orgId, input.party, "clients");
+        const logged = yield* Touches.logTouch(input.orgId, {
+          partyId: party.recordId,
+          kind: input.kind,
+          at,
+          note: input.note ?? "",
+          personId: person.personId,
+          by: { kind: "person", id: person.personId },
+          originKey: `${origin}:${input.clientRequestId}`,
+          now,
+        });
+        const { next } = input;
+        if (next !== undefined)
+          yield* records.create(input.orgId, writerOf(viewer), {
+            originKey: `${origin}-next:${input.clientRequestId}`,
+            requestHash: requestHashOf({ clientRequestId: input.clientRequestId, ...next }),
+            title: next.title,
+            owner: me(person),
+            category: "task",
+            side: "ours",
+            partyId: party.recordId,
+            dueAt:
+              next.dueAt === undefined
+                ? null
+                : yield* dueMillis(input.orgId, next.dueAt, next.dueAllDay),
+            dueAllDay: next.dueAt !== undefined && next.dueAllDay === true,
+          });
+        return logged;
+      }),
+    )
+    .pipe(workFailure);
+  yield* records.announce(input.orgId);
   return touch;
 });
 
+/** Takes a logged contact back: the owner level any, a member one they logged on a client they see. */
 export const removeTouch = Effect.fn("KinWork.removeTouch")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinTouchRemoveInput,
 ) {
-  yield* theOwner(people, input.orgId);
+  const viewer = yield* viewerOf(people, input.orgId);
   const now = yield* Clock.currentTimeMillis;
-  const removed = yield* read(Touches.removeTouch(input.orgId, input.touchId, now));
+  const remove = read(Touches.removeTouch(input.orgId, input.touchId, now));
+  const removed = viewer.teammate
+    ? yield* asViewer(
+        viewer,
+        Effect.gen(function* () {
+          const logged = yield* read(Touches.loggedBy(input.orgId, input.touchId));
+          if (logged === undefined) return false;
+          yield* memberParty(viewer.person, input.orgId, { recordId: logged.partyId }, false).pipe(
+            Effect.mapError((error) =>
+              error.reason === "not_found" ? notFound("that contact") : error,
+            ),
+          );
+          if (logged.byKind !== "person" || logged.byId !== viewer.person.personId)
+            return yield* new KinChatError({
+              reason: "not_allowed",
+              message: "Only whoever logged it, the owner or a co-owner removes a contact.",
+            });
+          return yield* remove;
+        }),
+      )
+    : yield* remove;
   if (removed) yield* (yield* KinRecords).announce(input.orgId);
   return { removed };
 });

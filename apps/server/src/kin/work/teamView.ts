@@ -117,6 +117,22 @@ export const personSeesAs = (sql: SqlClient.SqlClient, personId: KinPersonId, al
   sql`EXISTS (SELECT 1 FROM kin_records r WHERE r.org_id = ${sql(alias)}.org_id
     AND r.record_id = ${sql(alias)}.record_id AND ${personSees(sql, personId)})`;
 
+/** Of these, the clients and prospects this person reaches through their Clients switch. */
+export const teamClients = Effect.fn("KinTeamView.clients")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  recordIds: ReadonlyArray<string>,
+) {
+  if (recordIds.length === 0) return new Set<string>();
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ recordId: string }>`SELECT r.record_id AS "recordId" FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.record_id IN ${sql.in([...new Set(recordIds)])}
+      AND r.register_id = 'clients' AND ${placeOn(sql, personId, "sees_clients")}
+      AND ${personSees(sql, personId)}
+    ORDER BY r.record_id`;
+  return new Set(rows.map((row) => row.recordId));
+});
+
 /** The places this person has beyond Tasks, and the projects they lead, read per request. */
 export const placesOf = Effect.fn("KinTeamView.placesOf")(function* (
   orgId: KinOrgId,
@@ -433,6 +449,8 @@ const teamFactsOf = Effect.fn("KinTeamView.facts")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
   recordIds: ReadonlyArray<string>,
+  /** Clients a write would put an entry under. */
+  partyIds: ReadonlyArray<string> = [],
 ) {
   const sql = yield* SqlClient.SqlClient;
   const member = yield* sql`SELECT 1 FROM kin_session_bindings b
@@ -449,8 +467,10 @@ const teamFactsOf = Effect.fn("KinTeamView.facts")(function* (
           marked: number;
           gave: number;
           registerId: string;
+          partyId: string | null;
         }>`SELECT
           r.record_id AS "recordId", ${teamWrites(sql, personId)} AS writes,
+          r.party_id AS "partyId",
           COALESCE(r.assigned_by_person_id = ${personId}, 0) AS gave,
           ${leadWrites(sql, personId)} AS leads,
           COALESCE(r.marked_by_person_id = ${personId}, 0) AS marked, r.register_id AS "registerId"
@@ -458,10 +478,20 @@ const teamFactsOf = Effect.fn("KinTeamView.facts")(function* (
           AND r.record_id IN ${sql.in([...new Set(recordIds)])} AND ${personSees(sql, personId)}
         ORDER BY r.record_id`;
   const byId = new Map(seen.map((row) => [row.recordId, row]));
+  const [switched] = yield* sql<{ on: number }>`SELECT sees_clients AS "on" FROM kin_people
+    WHERE org_id = ${orgId} AND person_id = ${personId}`;
+  const clients = {
+    on: switched?.on === 1,
+    seen: yield* teamClients(orgId, personId, [
+      ...partyIds,
+      ...seen.flatMap((row) => (row.partyId === null ? [] : [row.partyId])),
+    ]),
+  };
   /** One entry's facts; `undefined` for a write that makes one. */
   return (recordId: string | undefined) => ({
     member: member.length > 0,
     led,
+    clients,
     seen: recordId === undefined ? undefined : (byId.get(recordId) ?? null),
   });
 });
@@ -486,7 +516,8 @@ const teamRule = (facts: TeamFacts, write: TeamWrite): KinChatError | undefined 
     row === undefined || !write.changes
       ? (typeof unmarked.list === "string" ? unmarked.list : "work") === "work"
       : facts.seen?.registerId === "work" && facts.seen.gave === 1;
-  const input = task ? { ...unmarked, repeat: undefined } : unmarked;
+  const own = task ? { ...unmarked, repeat: undefined } : unmarked;
+  const input = clientFits(facts, own) ? { ...own, partyId: undefined } : own;
   if (
     !task &&
     unmarked.repeat !== undefined &&
@@ -530,6 +561,23 @@ const teamRule = (facts: TeamFacts, write: TeamWrite): KinChatError | undefined 
 };
 
 /**
+ * With the Clients switch on, a task of theirs may name a client they see, or drop one they see.
+ * Anything else about the client stays the owner's (`OWNERS_FIELDS`).
+ */
+const clientFits = (facts: TeamFacts, input: TeamWrite["input"]) => {
+  const { partyId } = input;
+  if (partyId === undefined || !facts.clients.on) return false;
+  const task =
+    facts.seen === undefined
+      ? (typeof input.list === "string" ? input.list : "work") === "work"
+      : facts.seen?.registerId === "work";
+  if (!task) return false;
+  const now = facts.seen?.partyId ?? null;
+  if (partyId === null) return now === null || facts.clients.seen.has(now);
+  return typeof partyId === "string" && facts.clients.seen.has(partyId);
+};
+
+/**
  * A teammate's write, checked inside its transaction before any retry, revision or other answer.
  * The repository runs this, so no caller's earlier read decides it.
  */
@@ -542,6 +590,7 @@ export const teamGuard = Effect.fn("KinTeamView.guard")(function* (
     orgId,
     personId,
     write.row === undefined ? [] : [write.row.recordId],
+    typeof write.input.partyId === "string" ? [write.input.partyId] : [],
   );
   const refused = teamRule(facts(write.row?.recordId), write);
   if (refused !== undefined) return yield* refused;
@@ -581,7 +630,9 @@ export const teamCan = Effect.fn("KinTeamView.can")(function* (
       const can: KinRecordCan = {
         states: row.states.filter((state) => state !== row.state && takes({ state })),
         edit: moves,
-        party: takes({ partyId: "" }),
+        party:
+          takes({ partyId: "" }) ||
+          (facts.clients.on && facts.seen?.registerId === "work" && moves),
         project: led !== undefined && takes({ projectId: led }),
         clearProject: takes({ projectId: null }),
         give: open && moves,
@@ -735,17 +786,27 @@ export const teamRecord = <
   ...record
 }: A) => record;
 
-/** `teamRecord`, keeping its project where the teammate sees that project (`personSees`). */
+/**
+ * `teamRecord`, keeping its project where the teammate sees that project (`personSees`), and its
+ * client where they reach it through their Clients switch (`teamClients`).
+ */
 export const teamRecordIn = <
   A extends KinRecord & { readonly files?: unknown; readonly payments?: unknown },
 >(
   record: A,
   seen: ReadonlySet<string>,
+  clients: ReadonlySet<string> = new Set(),
 ) => {
   const plain = teamRecord(record);
-  return record.project !== undefined && seen.has(record.project.recordId)
-    ? { ...plain, project: record.project }
-    : plain;
+  return {
+    ...plain,
+    ...(record.project !== undefined && seen.has(record.project.recordId)
+      ? { project: record.project }
+      : {}),
+    ...(record.party !== undefined && clients.has(record.party.recordId)
+      ? { party: record.party }
+      : {}),
+  };
 };
 
 /** History lines a teammate reads: what the task says and who holds it, never money or labels. */
@@ -794,8 +855,13 @@ export const teamDetail = Effect.fn("KinTeamView.detail")(function* (
     ...linked,
     ...(detail.project === undefined ? [] : [detail.project.recordId]),
   ]);
+  const clients = yield* teamClients(
+    detail.orgId,
+    personId,
+    detail.party === undefined ? [] : [detail.party.recordId],
+  );
   const sheet: KinRecordDetail = {
-    ...(whole ? detail : teamRecordIn(detail, visible)),
+    ...(whole ? detail : teamRecordIn(detail, visible, clients)),
     source: { chatId: null, messageId: null },
     links: detail.links.filter((link) =>
       link.kind === "pull_request" || link.kind === "url"

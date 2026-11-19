@@ -361,6 +361,10 @@ export type PaymentInput = {
   readonly originKey: string;
 };
 const CLOSED = ["done", "dropped"] as const;
+/** A client and a prospect share names: one company is either, never both at once. */
+const clientFamily = (sql: SqlClient.SqlClient, category: Statement.Fragment) =>
+  sql`(CASE COALESCE(${category}, 'client') WHEN 'prospect' THEN 'client'
+    ELSE COALESCE(${category}, 'client') END)`;
 const OPEN_KEYS_NAMED = 20;
 /** A retry whose first result was taken back since: answering it with that result would lie. */
 const undoneRetry = (what: string) =>
@@ -1137,7 +1141,7 @@ const make = Effect.gen(function* () {
       WHERE r.org_id = ${orgId} AND r.register_id = ${list} AND r.state NOT IN ${sql.in(CLOSED)}
         AND lower(r.title) = lower(${title}) AND r.record_id IS NOT ${except}
         AND (${list} != 'contacts' OR r.party_id IS ${partyId})
-        AND (${list} != 'clients' OR COALESCE(r.category, 'client') = ${category ?? "client"})
+        AND (${list} != 'clients' OR ${clientFamily(sql, sql`r.category`)} = ${clientFamily(sql, sql`${category ?? "client"}`)})
       ORDER BY r.key LIMIT 1`;
     if (row !== undefined) {
       const error = {

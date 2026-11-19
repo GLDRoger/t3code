@@ -70,6 +70,7 @@ import {
   inProject,
   ledProjects,
   teamCan,
+  teamClients,
   teamDetail,
   teamKeys,
   teamRecord,
@@ -87,7 +88,7 @@ import {
  * reads the tasks `teamView.ts` gives them and changes their own, and nothing else here.
  */
 
-const ownerOnly = new KinChatError({
+export const ownerOnly = new KinChatError({
   reason: "not_allowed",
   message: "Only the owner or a co-owner can do that in Work.",
 });
@@ -250,7 +251,8 @@ const cansOf = Effect.fn("KinWork.cansOf")(function* (
 
 /**
  * A client or project named in Work. To a teammate there is none, save a project they lead (to
- * file under) or, to `read`, one they are on: any other key is answered as one never there.
+ * file under), a client their Clients switch reaches (`teamClients`; the write's `teamGuard`
+ * decides again), or, to `read`, one they are on: any other key is answered as one never there.
  */
 const refId = Effect.fn("KinWork.refId")(function* (
   viewer: Viewer,
@@ -260,9 +262,16 @@ const refId = Effect.fn("KinWork.refId")(function* (
 ) {
   if (key === undefined) return undefined;
   if (viewer.teammate) {
-    if (key === null || list === "clients")
-      return yield* key === null ? ownerOnly : missing(key, list);
+    if (key === null) return list === "clients" ? null : yield* ownerOnly;
     const row = yield* (yield* KinRecords).get(orgId, key);
+    if (list === "clients") {
+      const reached =
+        row !== undefined &&
+        (yield* teamClients(orgId, viewer.person.personId, [row.recordId]).pipe(workFailure)).has(
+          row.recordId,
+        );
+      return reached ? row.recordId : yield* missing(key, list);
+    }
     if (row === undefined || row.registerId !== "projects") return yield* missing(key, list);
     if (!(yield* ledIds(viewer)).has(row.recordId)) return yield* missing(key, list);
     return row.recordId;
@@ -469,11 +478,16 @@ export const shownRecords = Effect.fn("KinWork.shownRecords")(function* (
         ),
       ]).pipe(workFailure)
     : new Set<string>();
+  const clients = viewer.teammate
+    ? yield* teamClients(orgId, viewer.person.personId, [
+        ...new Set(shown.flatMap(({ record }) => (record.party ? [record.party.recordId] : []))),
+      ]).pipe(workFailure)
+    : new Set<string>();
   return shown.map(({ row, record: whole }): KinRecord => {
     // Only the task's own sheet sets a repeat or links, so its rows don't carry the answers.
     const { repeat: _repeat, links: _links, ...rowCan } = can(whole.recordId);
     const record = { ...whole, can: rowCan };
-    if (viewer.teammate && plainTask(row, led)) return teamRecordIn(record, projects);
+    if (viewer.teammate && plainTask(row, led)) return teamRecordIn(record, projects, clients);
     const fields = isBuiltIn(row.registerId) ? {} : parseFields(row.fieldsJson);
     return Object.keys(fields).length === 0 ? record : { ...record, fields };
   });

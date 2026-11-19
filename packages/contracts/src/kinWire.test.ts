@@ -6,7 +6,14 @@ import * as Schema from "effect/Schema";
 import { KinOrgId, KinPersonId } from "./kinChat.ts";
 import { kinOpenApply, kinOpenDiff, type KinOpenRead, type KinOpenRow } from "./kinOpen.ts";
 import type { KinPulseFact } from "./kinPulse.ts";
-import type { KinRecord, KinRecordCan, KinWorkListResult } from "./kinWork.ts";
+import {
+  KinPartyKind,
+  KinPartyPage,
+  KinPartyRow,
+  type KinRecord,
+  type KinRecordCan,
+  type KinWorkListResult,
+} from "./kinWork.ts";
 import { kinCompactWorkList, kinPulsePage, kinRestoreWorkList } from "./kinWire.ts";
 
 // Invented rows only.
@@ -92,6 +99,68 @@ describe("acceptCompactRows", () => {
     const compact = kinCompactWorkList(page);
     expect(compact.can).toBeUndefined();
     expect(kinRestoreWorkList(compact, orgId)).toEqual(page);
+  });
+});
+
+describe("a prospect on the wire", () => {
+  const { prospect: _prospect, source: _source, tags: _tags, ...before } = KinPartyRow.fields;
+  // The row an app from before prospects decodes: everything new on it is optional and unknown.
+  const OlderRow = Schema.Struct(before);
+  // As a host sends it.
+  const row = {
+    recordId: "rec-C-3",
+    key: "C-3",
+    name: "Invented Tallmoor Logistics",
+    kind: "client",
+    prospect: true,
+    source: "Invented trade fair",
+    tags: ["freight"],
+    owner: { _tag: "person", personId: "zoya" },
+    active: true,
+    sensitive: false,
+    weOwe: 0,
+    theyOwe: 0,
+    late: 0,
+    overdue: 0,
+    lastContactAt: null,
+    next: null,
+    rev: 1,
+  };
+  const decodeUnknown = (schema: Schema.Codec<unknown, unknown>, input: unknown) =>
+    Schema.decodeUnknownSync(schema)(input);
+
+  it("reads as a client to an app from before prospects, which knows only clients and vendors", () => {
+    expect(KinPartyKind.literals).toEqual(["client", "vendor"]);
+    expect(decodeUnknown(KinPartyRow, row)).toMatchObject({ prospect: true, kind: "client" });
+    expect(decodeUnknown(OlderRow, row)).toMatchObject({
+      key: "C-3",
+      kind: "client",
+    });
+    const { can: _can, ...pageBefore } = KinPartyPage.fields;
+    expect(() =>
+      decodeUnknown(Schema.Struct(pageBefore), {
+        party: {
+          ...row,
+          notes: "",
+          terms: null,
+          address: null,
+          gstin: null,
+          placeOfSupply: null,
+          sensitiveFields: ["terms"],
+          createdAt: "2026-11-01T00:00:00.000Z",
+          updatedAt: "2026-11-01T00:00:00.000Z",
+          closedAt: null,
+          seq: 1,
+        },
+        contacts: [],
+        projects: [],
+        weOwe: { records: [], total: 0 },
+        theyOwe: { records: [], total: 0 },
+        can: { edit: true, log: true, owner: false },
+        seq: 1,
+        asOf: "2026-11-01T00:00:00.000Z",
+      }),
+    ).not.toThrow();
   });
 });
 

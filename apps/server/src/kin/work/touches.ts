@@ -199,6 +199,19 @@ export const logTouch = Effect.fn("KinTouches.log")(function* (
   return toTouch(row!);
 });
 
+/** Who logged a contact still showing, and on which client; undefined for any other id. */
+export const loggedBy = Effect.fn("KinTouches.loggedBy")(function* (
+  orgId: KinOrgId,
+  touchId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ partyId: string; byKind: string; byId: string }>`SELECT
+      party_id AS "partyId", logged_by_kind AS "byKind", logged_by_id AS "byId"
+    FROM kin_client_touches
+    WHERE org_id = ${orgId} AND touch_id = ${touchId} AND removed_at IS NULL`;
+  return row;
+});
+
 /** Only a logged one goes; what Kin knows from its records stays as long as they do. */
 export const removeTouch = Effect.fn("KinTouches.remove")(function* (
   orgId: KinOrgId,
@@ -238,10 +251,10 @@ export type ClientSense = {
 };
 
 /**
- * The client senses, for the pulse, on each client's playbook values: cold after
- * `client_cold_after_days` without contact and no open project, quiet after `client_checkin_days`
- * during one, waiting on us once an obligation we owe them is `reply_owed_hours` past due. Days count
- * from the last contact or the last project we finished for them, else the client's creation.
+ * The client senses on each client's playbook values: cold (`client_cold_after_days`, no open
+ * project), quiet (`client_checkin_days`, during one), waiting on us (`reply_owed_hours` past an
+ * obligation's due). Days count from the last contact or finished project, else its adding. A
+ * prospect is no client yet: never cold or quiet, though what we owe it still waits on us.
  */
 export const clientSenses = Effect.fn("KinTouches.senses")(function* (
   orgId: KinOrgId,
@@ -253,11 +266,13 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
     key: string;
     title: string;
     sensitive: number;
+    prospect: number;
     createdAt: number;
     openProjects: number;
     lastProjectAt: number | null;
     dueAt: number | null;
   }>`SELECT c.record_id AS "partyId", c.key, c.title, c.sensitive, c.created_at AS "createdAt",
+      COALESCE(c.category, 'client') = 'prospect' AS prospect,
       (SELECT MAX(p.closed_at) FROM kin_records p WHERE p.org_id = c.org_id
         AND p.register_id = 'projects' AND p.party_id = c.record_id AND p.state = 'done'
         AND p.closed_at <= ${now}) AS "lastProjectAt",
@@ -269,7 +284,7 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
         AND w.category = 'obligation' AND w.state IN ('open', 'doing', 'waiting') AND w.due_at < ${now}) AS "dueAt"
     FROM kin_records c
     WHERE c.org_id = ${orgId} AND c.register_id = 'clients' AND c.state = 'open'
-      AND COALESCE(c.category, 'client') = 'client'
+      AND COALESCE(c.category, 'client') IN ('client', 'prospect')
     ORDER BY c.key`;
   const lookup = yield* playbookThresholds(orgId);
   const last = yield* newestContacts(
@@ -305,7 +320,8 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
       episode: `${client.key}:${lastAt ?? "never"}`,
     };
     const limit = (key: ClientLimitKey) => lookup(key, client.partyId);
-    const quiet = client.openProjects > 0 ? limit("client_checkin_days") : undefined;
+    const quiet =
+      client.openProjects > 0 && client.prospect === 0 ? limit("client_checkin_days") : undefined;
     if (quiet !== undefined && days >= quiet.value)
       senses.push({
         ...base,
@@ -313,7 +329,10 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
         since: from + quiet.value * DAY_MS,
         limit: quiet,
       });
-    const cold = client.openProjects === 0 ? limit("client_cold_after_days") : undefined;
+    const cold =
+      client.openProjects === 0 && client.prospect === 0
+        ? limit("client_cold_after_days")
+        : undefined;
     if (cold !== undefined && days >= cold.value)
       senses.push({
         ...base,

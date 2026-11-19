@@ -84,7 +84,7 @@ export const KinWorkListName = Schema.Literals([
   "goals",
 ]);
 export type KinWorkListName = typeof KinWorkListName.Type;
-/** A client or a vendor: one list, by kind. */
+/** A client or a vendor: one list, by kind. A prospect goes out as a client with `prospect`. */
 export const KinPartyKind = Schema.Literals(["client", "vendor"]);
 export type KinPartyKind = typeof KinPartyKind.Type;
 /** Another entry, as it is now, to open it by key. */
@@ -964,6 +964,11 @@ const PageLimit = Schema.Int.check(
   Schema.isLessThanOrEqualTo(KIN_RECORDS_PAGE_CAP),
 );
 const PageCursor = Schema.String.check(Schema.isMaxLength(200));
+/** Where a client or prospect came from, in the company's own words. */
+const Source = KinTrimmedText.check(Schema.isMaxLength(120));
+/** A client's own words for it, the company's to choose. */
+export const KinPartyTag = KinTrimmedText.check(Schema.isMaxLength(60));
+const Tags = Schema.Array(KinPartyTag).check(Schema.isMaxLength(20));
 /** By key, or by record id as a `party` or `project` ref names it. */
 const KinRecordLookup = Schema.Union([
   Schema.Struct({ orgId: KinOrgId, key: KinRecordKey }),
@@ -984,6 +989,11 @@ export const KinPartyRow = Schema.Struct({
   ...KinPartyCounts,
   /** The latest contact Kin knows of (`KinClientTouch`); absent from hosts before contact logs. */
   lastContactAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** A company we haven't sold to yet; `kind` stays `client`, so an older app shows a client. */
+  prospect: Schema.optional(Schema.Literal(true)),
+  /** Where it came from. */
+  source: Schema.optional(Source),
+  tags: Schema.optional(Tags),
   /** The soonest open entry we owe them. */
   next: Schema.NullOr(
     Schema.Struct({
@@ -1127,6 +1137,18 @@ export const KinClientTouch = Schema.Struct({
 });
 export type KinClientTouch = typeof KinClientTouch.Type;
 
+/**
+ * What the reader may do on a client page, decided by the checks its writes run. `edit`: name,
+ * notes, came from, tags, prospect or client, and contacts. `owner`: terms, tax, who looks after
+ * it, Keep private and closing it. Absent from hosts before prospects: the owner level does all.
+ */
+export const KinPartyCan = Schema.Struct({
+  edit: Schema.Boolean,
+  log: Schema.Boolean,
+  owner: Schema.Boolean,
+});
+export type KinPartyCan = typeof KinPartyCan.Type;
+
 /** The client page. `weOwe` is soonest due first; `theyOwe` is overdue first, then soonest. */
 export const KinPartyPage = Schema.Struct({
   party: KinPartyDetail,
@@ -1138,6 +1160,7 @@ export const KinPartyPage = Schema.Struct({
   theyOwe: Capped(KinRecord),
   /** Newest first, a few; absent from hosts before contact logs. */
   touches: Schema.optional(Schema.Array(KinClientTouch)),
+  can: Schema.optional(KinPartyCan),
   seq: NonNegativeInt,
   asOf: IsoDateTime,
 });
@@ -1253,7 +1276,12 @@ export type KinWorkHistory = typeof KinWorkHistory.Type;
 /** The clients directory, by name. Active only unless `active: false` asks for the closed. */
 export const KinPartiesInput = Schema.Struct({
   orgId: KinOrgId,
+  /** `client` lists clients alone, without prospects. */
   kind: Schema.optional(KinPartyKind),
+  /** Only prospects. */
+  prospect: Schema.optional(Schema.Literal(true)),
+  /** Only those this person or agent looks after. */
+  owner: Schema.optional(KinWorkPrincipal),
   active: Schema.optional(Schema.Boolean),
   /** Case-insensitive match on the name. */
   text: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
@@ -1296,6 +1324,10 @@ export const KinPartyCreateInput = Schema.Struct({
   orgId: KinOrgId,
   name: Name,
   kind: Schema.optional(KinPartyKind),
+  /** A prospect: a client we haven't sold to yet. */
+  prospect: Schema.optional(Schema.Boolean),
+  source: Schema.optional(Source),
+  tags: Schema.optional(Tags),
   /** Defaults to the owner. Looking after a client is not an instruction to a lead. */
   owner: Schema.optional(KinWorkPrincipal),
   notes: Schema.optional(Notes),
@@ -1319,6 +1351,12 @@ export const KinPartyUpdateInput = Schema.Struct({
   rev: NonNegativeInt,
   name: Schema.optional(Name),
   kind: Schema.optional(KinPartyKind),
+  /** `true` makes a client a prospect, `false` a prospect a client; both are logged. */
+  prospect: Schema.optional(Schema.Boolean),
+  /** `null` clears. */
+  source: Schema.optional(Schema.NullOr(Source)),
+  /** The whole list; empty clears it. */
+  tags: Schema.optional(Tags),
   owner: Schema.optional(KinWorkPrincipal),
   notes: Schema.optional(Notes),
   /** `null` clears. */
@@ -1353,6 +1391,14 @@ export const KinTouchLogInput = Schema.Struct({
   /** When it happened; now if left out. */
   at: Schema.optional(IsoDateTime),
   note: Schema.optional(Notes),
+  /** The follow-up it leaves: a task we owe them, held by whoever logs it, made in the same step. */
+  next: Schema.optional(
+    Schema.Struct({
+      title: KinTrimmedText.check(Schema.isMaxLength(280)),
+      dueAt: Schema.optional(IsoDateTime),
+      dueAllDay: Schema.optional(Schema.Boolean),
+    }),
+  ),
   clientRequestId: RequestId,
 });
 export type KinTouchLogInput = typeof KinTouchLogInput.Type;

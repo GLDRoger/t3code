@@ -1196,6 +1196,331 @@ it.effect("a teammate gets none of the client calls, and a client change ticks s
 );
 
 it.effect(
+  "a teammate with Clients on works their own prospects; terms, tax, labels and closing stay the owner's",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* setup("ask-event");
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('s-mate', ${orgId}, ${mateId}, 0)`;
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${mateId}`;
+      const acme = (yield* Clients.party([owner], { orgId, key: "C-1" })).party;
+      yield* Clients.updateParty([owner], {
+        orgId,
+        key: "C-1",
+        rev: acme.rev,
+        gstin: "27ABCDE1234F1Z5",
+        placeOfSupply: "Invented Province",
+      });
+      const quiet = yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Quiet Co",
+        sensitive: true,
+        clientRequestId: "quiet",
+      });
+      const refused = (effect: Effect.Effect<unknown, KinChatError, Services>) =>
+        effect.pipe(
+          Effect.asVoid,
+          Effect.flip,
+          Effect.map((error) => error.reason),
+        );
+      const add = { orgId, name: "Invented Tallmoor Logistics", clientRequestId: "tallmoor" };
+      // A prospect is theirs to add; a client or vendor, terms, tax, a label or someone else's
+      // name on it are not.
+      for (const extra of [
+        {},
+        { prospect: true, kind: "vendor" as const },
+        { prospect: true, terms: "Invented net 30" },
+        { prospect: true, gstin: "27ABCDE1234F1Z5" },
+        { prospect: true, placeOfSupply: "Invented Province" },
+        { prospect: true, address: "Invented street" },
+        { prospect: true, sensitive: true },
+        { prospect: true, owner: { _tag: "person" as const, personId: ownerId } },
+      ])
+        assert.strictEqual(
+          yield* refused(Clients.createParty([mate], { ...add, ...extra })),
+          "not_allowed",
+        );
+      const tallmoor = yield* Clients.createParty([mate], {
+        ...add,
+        prospect: true,
+        source: "Invented trade fair",
+        tags: ["freight", "freight", "north"],
+      });
+      assert.deepInclude(tallmoor, {
+        kind: "client",
+        prospect: true,
+        source: "Invented trade fair",
+        tags: ["freight", "north"],
+        owner: { _tag: "person", personId: mateId },
+      });
+      const key = tallmoor.key;
+      // Only the prospect's own words are theirs to change, and whether it is a client yet.
+      for (const change of [
+        { terms: "Invented net 30" },
+        { gstin: "27ABCDE1234F1Z5" },
+        { placeOfSupply: "Invented Province" },
+        { address: "Invented street" },
+        { sensitive: true },
+        { active: false },
+        { owner: { _tag: "person" as const, personId: ownerId } },
+        { kind: "vendor" as const },
+      ])
+        assert.strictEqual(
+          yield* refused(Clients.updateParty([mate], { orgId, key, rev: tallmoor.rev, ...change })),
+          "not_allowed",
+        );
+      const won = yield* Clients.updateParty([mate], {
+        orgId,
+        key,
+        rev: tallmoor.rev,
+        name: "Invented Tallmoor Freight",
+        notes: "Invented: met at the fair",
+        source: null,
+        tags: [],
+        prospect: false,
+      });
+      assert.deepInclude(won, { kind: "client", name: "Invented Tallmoor Freight" });
+      assert.notProperty(won, "prospect");
+      assert.notProperty(won, "source");
+      assert.notProperty(won, "tags");
+      const back = yield* Clients.updateParty([mate], {
+        orgId,
+        key,
+        rev: won.rev,
+        prospect: true,
+      });
+      assert.isTrue(back.prospect);
+      // Both moves are in its history, for them as for the owner.
+      const moves = (yield* Clients.history([mate], { orgId, key })).items.flatMap((item) =>
+        item.fields.filter((field) => field.field === "category").map((field) => field.to),
+      );
+      assert.deepStrictEqual(moves, ["prospect", "client"]);
+      // A client someone else looks after: contact is theirs to log, the record is not.
+      assert.strictEqual(
+        yield* refused(Clients.updateParty([mate], { orgId, key: "C-1", rev: 9, name: "x" })),
+        "not_allowed",
+      );
+      assert.strictEqual(
+        yield* refused(
+          Clients.createContact([mate], { orgId, party: "C-1", name: "x", clientRequestId: "c" }),
+        ),
+        "not_allowed",
+      );
+      assert.strictEqual(
+        yield* refused(Clients.updateContact([mate], { orgId, key: "CT-1", rev: 1, name: "x" })),
+        "not_allowed",
+      );
+      const call = yield* Clients.logTouch([mate], {
+        orgId,
+        party: "C-1",
+        kind: "call",
+        note: "Invented call about the pilot",
+        clientRequestId: "mate-call",
+      });
+      const ownerCall = yield* Clients.logTouch([owner], {
+        orgId,
+        party: "C-1",
+        kind: "email",
+        note: "Invented owner's email",
+        clientRequestId: "owner-mail",
+      });
+      // Its page and history: the contact log, never its terms or tax details.
+      const page = yield* Clients.party([mate], { orgId, key: "C-1" });
+      assert.deepStrictEqual(page.can, { edit: false, log: true, owner: false });
+      assert.include(
+        { terms: page.party.terms, gstin: page.party.gstin, place: page.party.placeOfSupply },
+        { terms: null, gstin: null, place: null },
+      );
+      assert.sameMembers(
+        (page.touches ?? []).filter((one) => one.logged).map((one) => one.id),
+        [call.id, ownerCall.id],
+      );
+      const history = yield* Clients.history([mate], { orgId, key: "C-1" });
+      for (const read of [page, history])
+        assert.notMatch(JSON.stringify(read), /retainer|27ABCDE1234F1Z5|Invented Province/u);
+      assert.deepStrictEqual((yield* Clients.party([mate], { orgId, key })).can, {
+        edit: true,
+        log: true,
+        owner: false,
+      });
+      // A logged contact goes back by whoever logged it; someone else's stays.
+      assert.strictEqual(
+        yield* refused(Clients.removeTouch([mate], { orgId, touchId: ownerCall.id })),
+        "not_allowed",
+      );
+      assert.deepStrictEqual(yield* Clients.removeTouch([mate], { orgId, touchId: call.id }), {
+        removed: true,
+      });
+      // Their prospect's people are theirs; a label on one, or moving one, is not.
+      const ingrid = yield* Clients.createContact([mate], {
+        orgId,
+        party: key,
+        name: "Invented Ingrid",
+        email: "ingrid@x.invalid",
+        clientRequestId: "ingrid",
+      });
+      assert.strictEqual(
+        yield* refused(
+          Clients.createContact([mate], {
+            orgId,
+            party: key,
+            name: "Invented Ola",
+            sensitive: true,
+            clientRequestId: "ola",
+          }),
+        ),
+        "not_allowed",
+      );
+      for (const change of [{ sensitive: true }, { party: "C-1" }])
+        assert.strictEqual(
+          yield* refused(
+            Clients.updateContact([mate], { orgId, key: ingrid.key, rev: ingrid.rev, ...change }),
+          ),
+          "not_allowed",
+        );
+      assert.deepInclude(
+        yield* Clients.updateContact([mate], {
+          orgId,
+          key: ingrid.key,
+          rev: ingrid.rev,
+          role: "Invented head of operations",
+        }),
+        { role: "Invented head of operations", email: "ingrid@x.invalid" },
+      );
+      // A private client they don't look after is no client at all to them.
+      for (const effect of [
+        Clients.party([mate], { orgId, key: quiet.key }),
+        Clients.history([mate], { orgId, key: quiet.key }),
+        Clients.updateParty([mate], { orgId, key: quiet.key, rev: quiet.rev, name: "x" }),
+        Clients.createContact([mate], { orgId, party: quiet.key, name: "x", clientRequestId: "q" }),
+        Clients.logTouch([mate], {
+          orgId,
+          party: quiet.key,
+          kind: "call",
+          clientRequestId: "q",
+        }),
+      ])
+        assert.strictEqual(yield* refused(effect), "not_found");
+      assert.notInclude(
+        (yield* Clients.parties([mate], { orgId })).parties.map((row) => row.key),
+        quiet.key,
+      );
+      // Looked after by me: the list narrows to theirs.
+      assert.deepStrictEqual(
+        (yield* Clients.parties([mate], {
+          orgId,
+          owner: { _tag: "person", personId: mateId },
+        })).parties.map((row) => row.key),
+        [key],
+      );
+      assert.deepStrictEqual(
+        (yield* Clients.parties([owner], { orgId, prospect: true })).parties.map((row) => row.key),
+        [key],
+      );
+      // A task of theirs may name a client they see, and they read it there.
+      const task = yield* OwnerWork.create([mate], {
+        orgId,
+        title: "Invented send the outline",
+        party: key,
+        clientRequestId: "outline",
+      });
+      assert.strictEqual(task.party?.key, key);
+      assert.strictEqual(
+        yield* refused(
+          OwnerWork.create([mate], {
+            orgId,
+            title: "Invented hidden",
+            party: quiet.key,
+            clientRequestId: "hidden",
+          }),
+        ),
+        "not_found",
+      );
+      const plain = yield* OwnerWork.create([mate], {
+        orgId,
+        title: "Invented no client",
+        clientRequestId: "plain",
+      });
+      // The write's own guard decides it again, whatever named the client.
+      const records = yield* KinRecords.KinRecords;
+      const guarded = (originKey: string, partyId: string) =>
+        records.create(
+          orgId,
+          { actor: { _tag: "person", personId: mateId }, via: "owner", teammate: true },
+          {
+            originKey,
+            title: "Invented guarded",
+            owner: { _tag: "person", personId: mateId },
+            partyId,
+          },
+        );
+      assert.strictEqual(yield* refused(guarded("guard-hidden", quiet.recordId)), "not_allowed");
+      // With the switch off, none of it, as before.
+      yield* sql`UPDATE kin_people SET sees_clients = 0 WHERE person_id = ${mateId}`;
+      assert.strictEqual(yield* refused(guarded("guard-off", tallmoor.recordId)), "not_allowed");
+      assert.strictEqual(
+        yield* refused(
+          records.update(
+            orgId,
+            { actor: { _tag: "person", personId: mateId }, via: "owner", teammate: true },
+            plain.key,
+            { partyId: null },
+          ),
+        ),
+        "not_allowed",
+      );
+      for (const effect of [
+        Clients.createParty([mate], { ...add, prospect: true, clientRequestId: "again" }),
+        Clients.updateParty([mate], { orgId, key, rev: back.rev, name: "x" }),
+        Clients.logTouch([mate], { orgId, party: key, kind: "call", clientRequestId: "off" }),
+        Clients.history([mate], { orgId, key }),
+        OwnerWork.create([mate], {
+          orgId,
+          title: "Invented off",
+          party: key,
+          clientRequestId: "off",
+        }),
+      ])
+        assert.include(["not_allowed", "not_found"], yield* refused(effect));
+      assert.isUndefined((yield* OwnerWork.get([mate], { orgId, key: task.key })).party);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("logging contact with a next step makes the follow-up in the same transaction", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* seed;
+    yield* setup("ask-event");
+    const log = (clientRequestId: string, dueAt: string) =>
+      Clients.logTouch([owner], {
+        orgId,
+        party: "C-1",
+        kind: "call",
+        note: "Invented call",
+        next: { title: "Invented send the outline", dueAt, dueAllDay: true },
+        clientRequestId,
+      });
+    yield* log("call", "1970-01-03");
+    yield* log("call", "1970-01-03");
+    const made = yield* sql<{ key: string; owner: string; side: string; party: string }>`SELECT
+        r.key, r.owner_id AS owner, r.side, c.key AS party FROM kin_records r
+      JOIN kin_records c ON c.record_id = r.party_id
+      WHERE r.org_id = ${orgId} AND r.title = 'Invented send the outline'`;
+    assert.deepStrictEqual(
+      made.map(({ owner: holder, side, party }) => ({ holder, side, party })),
+      [{ holder: ownerId, side: "ours", party: "C-1" }],
+    );
+    // A step that can't be made leaves no contact behind either.
+    assert.strictEqual((yield* Effect.flip(log("bad", "not a day"))).reason, "invalid_state");
+    const [touches] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
+      FROM kin_client_touches WHERE org_id = ${orgId}`;
+    assert.strictEqual(touches?.count, 1);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
   "in a teammate's turn a client they can't see answers like no client, and no name comes back",
   () =>
     Effect.gen(function* () {
@@ -1406,6 +1731,25 @@ it.effect(
         yield* Effect.clockWith((clock) => clock.currentTimeMillis),
       )).find((one) => one.key === harbour && one.sense === "client_cold");
       assert.strictEqual(harbourCold?.from, "project");
+      // A prospect is no client yet: it never goes cold, though what we owe it still waits on us.
+      const prospect = yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Fennick Prospect",
+        prospect: true,
+        clientRequestId: "fennick",
+      });
+      yield* sql`UPDATE kin_records SET created_at = 0 WHERE key = ${prospect.key}`;
+      assert.deepStrictEqual(yield* senses(prospect.key), []);
+      yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented reply to Fennick",
+        party: prospect.key,
+        category: "obligation",
+        dueAt: "1970-01-02",
+        dueAllDay: true,
+        clientRequestId: "fennick-reply",
+      });
+      assert.deepStrictEqual(yield* senses(prospect.key), ["client_waiting_on_us"]);
       for (const typed of [
         "INVENTED HARBOURLINE LOGISTICS",
         "Invented Harbor",

@@ -37,7 +37,7 @@ const REPLAY_LIMIT = 128;
 /** One viewer's pending change, keyed for `bufferLatestLiveStream`: the latest per entry wins. */
 type Pending = {
   readonly sequence: number;
-  /** An entry's key, or `START`, `RESCAN` or `GAP`. */
+  /** An entry's key, or `START`, `RESCAN`, `PLACES` or `GAP`. */
   readonly key: string;
   readonly list: string | null;
   readonly created: boolean;
@@ -50,6 +50,8 @@ const START = "*start";
 const RESCAN = "*rescan";
 /** Something moved that left no change to replay, such as an undo. */
 const GAP = "*gap";
+/** This teammate's own places moved: a task's client and `can.party` follow their Clients switch. */
+const PLACES = "*places";
 
 type Out = KinWorkEvent;
 
@@ -231,6 +233,7 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
         : [];
     return [
       ...rescan,
+      ...(mine ? [{ ...base, sequence, key: PLACES }] : []),
       ...projects,
       ...(tick.key === undefined ? [] : [{ ...base, sequence, key: tick.key }]),
     ];
@@ -248,11 +251,14 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
     if (items.length === 0) return [];
     if (items.some((one) => one.key === GAP)) return yield* restart();
     const top = Math.max(...items.map((one) => one.sequence));
-    const keyed = items.filter((one) => one.key !== RESCAN);
+    const keyed = items.filter((one) => one.key !== RESCAN && one.key !== PLACES);
     const place = (one: Pending) =>
       one.key !== RESCAN && (one.list === "clients" || one.list === "projects");
     // A place's own change can reach a burst apart from its rescan, so either one looks again.
-    if (viewer.teammate && items.some((one) => one.key === RESCAN || place(one))) {
+    if (
+      viewer.teammate &&
+      items.some((one) => one.key === RESCAN || one.key === PLACES || place(one))
+    ) {
       // A label or a place shows or hides entries with no change of their own.
       const sees = yield* teamKeyLists(orgId, own(viewer)).pipe(workFailure);
       const named = new Set(keyed.map((one) => one.key));
@@ -264,6 +270,8 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
       };
       for (const [key, list] of seen) if (!sees.has(key)) add(key, list);
       for (const [key, list] of sees) if (!seen.has(key)) add(key, list);
+      if (items.some((one) => one.key === PLACES))
+        for (const [key, list] of sees) if (list === "work") add(key, list);
       // Their entries under a client or project that moved read differently now: a task shows
       // its project once they see that project, and what they may do follows its lead.
       for (const one of items)
