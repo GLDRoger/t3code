@@ -299,7 +299,7 @@ const writerFor = (personId: KinPersonId) => ({
 });
 
 it.effect(
-  "nothing labelled sensitive reaches a key, whoever holds it, nor its project's name",
+  "nothing labelled sensitive reaches a key, whoever holds it, nor what sits under a labelled client or project",
   () =>
     Effect.gen(function* () {
       const { orgId, rhea, zoya } = yield* team;
@@ -316,17 +316,32 @@ it.effect(
             ...fields,
           })
           .pipe(Effect.map(({ row }) => row));
-      const hidden = yield* make("quiet audit", { list: "projects", sensitive: true });
+      const label = (key: string) =>
+        records.update(orgId, writerFor(rhea.personId), key, { sensitive: true });
+      const audit = yield* make("quiet audit", { list: "projects" });
+      const client = yield* make("Invented Lanterns", { list: "clients" });
+      const quietClient = yield* make("Invented Kilns", { list: "clients", sensitive: true });
+      const theirs = yield* make("kiln launch", {
+        list: "projects",
+        partyId: quietClient.recordId,
+      });
       const secret = yield* make("salary review", { sensitive: true });
-      const plain = yield* make("file the audit", { projectId: hidden.recordId });
+      const plain = yield* make("order clay");
+      const underProject = yield* make("file the audit", { projectId: audit.recordId });
+      const underClient = yield* make("send the quote", { partyId: client.recordId });
+      const underTheirs = yield* make("book the hall", { projectId: theirs.recordId });
       const key = yield* admitted((yield* TasksKeys.issue(zoya.app, { orgId })).secret);
+      const listed = Effect.map(listMine(key), ({ tasks }) => tasks.map((one) => one.key));
+      assert.includeMembers(yield* listed, [plain.key, underProject.key, underClient.key]);
 
-      // Her screen shows both, labels and all; her key only the unlabelled one, its project unnamed.
+      // Labelled after the key was made, the project and the client take their tasks with them.
+      yield* label(audit.key);
+      yield* label(client.key);
       assert.deepStrictEqual(yield* listMine(key), {
         tasks: [
           {
             key: plain.key,
-            title: "Invented: file the audit",
+            title: "Invented: order clay",
             state: "open",
             due: null,
             project: null,
@@ -334,21 +349,22 @@ it.effect(
         ],
         more: false,
       });
-      assert.isNull((yield* getMine(key, plain.key)).project);
-      assert.strictEqual(yield* reason(getMine(key, secret.key)), "not_found");
-      assert.strictEqual(
-        yield* reason(setStateMine(key, { key: secret.key, state: "done" })),
-        "not_found",
-      );
-      assert.strictEqual(
-        yield* reason(commentMine(key, { key: secret.key, text: "Invented: done" })),
-        "not_found",
-      );
-      assert.strictEqual((yield* records.get(orgId, secret.key))?.state, "open");
-      assert.lengthOf(
-        yield* sql`SELECT 1 FROM kin_record_comments WHERE record_id = ${secret.recordId}`,
-        0,
-      );
+      for (const hidden of [secret, underProject, underClient, underTheirs]) {
+        assert.strictEqual(yield* reason(getMine(key, hidden.key)), "not_found");
+        assert.strictEqual(
+          yield* reason(setStateMine(key, { key: hidden.key, state: "done" })),
+          "not_found",
+        );
+        assert.strictEqual(
+          yield* reason(commentMine(key, { key: hidden.key, text: "Invented: done" })),
+          "not_found",
+        );
+        assert.strictEqual((yield* records.get(orgId, hidden.key))?.state, "open");
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_record_comments WHERE record_id = ${hidden.recordId}`,
+          0,
+        );
+      }
     }).pipe(Effect.provide(layer)),
 );
 
@@ -367,8 +383,16 @@ it.effect("a key's list is soonest due first and counts only what it may show", 
           ...fields,
         })
         .pipe(Effect.map(({ row }) => row));
-    // Soonest of all, but labelled: it takes no place in the hundred and makes no `more`.
+    // Soonest of all, but labelled or under a labelled project: no place in the hundred, no `more`.
     yield* make(0, { sensitive: true });
+    const quiet = (yield* records.create(orgId, writerFor(rhea.personId), {
+      originKey: "quiet audit",
+      title: "Invented: quiet audit",
+      list: "projects",
+      owner: writerFor(rhea.personId).actor,
+      sensitive: true,
+    })).row;
+    yield* make(-1, { projectId: quiet.recordId });
     const open: Array<string> = [];
     for (let n = 1; n <= 100; n++) open.push((yield* make(n)).key);
     // Under way, but due last: due date orders the list, not state.
@@ -461,6 +485,36 @@ it.effect(
       yield* people.removeAccess(rhea.app, { orgId, personId: arjun.personId });
       assert.strictEqual(yield* reason(listMine(arjunKey)), "not_allowed");
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a key outlives its person's idle devices, and ends only by its own date or an end", () =>
+  Effect.gen(function* () {
+    const { orgId, rhea, zoya } = yield* team;
+    const records = yield* Records.KinRecords;
+    const sessions = yield* SessionStore;
+    const task = (yield* records.create(orgId, writerFor(rhea.personId), {
+      originKey: "glaze order",
+      title: "Invented: glaze order",
+      owner: { _tag: "person", personId: zoya.personId },
+    })).row;
+    yield* TestClock.adjust("1 day");
+    const key = yield* admitted((yield* TasksKeys.issue(zoya.app, { orgId })).secret);
+    yield* TestClock.adjust("29 days");
+    yield* TestClock.adjust("12 hours");
+    assert.isTrue((yield* Effect.exit(sessions.verify(zoya.token)))._tag === "Failure");
+    // On purpose: a key is its own credential, so not opening Kin for a month must not end it.
+    assert.deepStrictEqual(
+      (yield* listMine(key)).tasks.map((one) => one.key),
+      [task.key],
+    );
+    assert.strictEqual((yield* getMine(key, task.key)).key, task.key);
+    yield* setStateMine(key, { key: task.key, state: "doing" });
+    assert.strictEqual(
+      (yield* commentMine(key, { key: task.key, text: "Invented: on it" })).key,
+      task.key,
+    );
+    assert.strictEqual((yield* records.get(orgId, task.key))?.state, "doing");
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect(

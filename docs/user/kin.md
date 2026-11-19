@@ -264,7 +264,8 @@ the figures in the quote or the invoice.
 
 A coding agent key lets your own coding agent, such as Claude Code, Codex or Cursor, read the tasks
 you hold, add notes to them, and set them to to-do, in progress or done. It can't reach anyone
-else's tasks, anything labelled sensitive, or any chats, money or files.
+else's tasks, anything labelled sensitive or under a client or project labelled sensitive, or any
+chats, money or files.
 
 To make one, open **Settings → Profile** and choose **Make a
 key** under **Coding agent keys**. Name it for the computer or tool it's for. Kin shows the key, its

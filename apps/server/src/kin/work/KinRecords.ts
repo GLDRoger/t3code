@@ -84,6 +84,7 @@ import {
   repeatOf,
   samePrincipal,
   selectRecords,
+  keySensitive,
   sensitiveNow,
   type StoredRepeat,
   toDetail,
@@ -297,7 +298,7 @@ export type QueryInput = {
   readonly view?: ReadonlyArray<KinPersonId>;
   /** Server-only, never from a client: soonest due first, whatever the state. */
   readonly order?: "dueFirst";
-  /** Server-only, never from a client: nothing labelled sensitive now, before the limit. */
+  /** Server-only, never from a client: nothing a coding-agent key may not reach, before the limit. */
   readonly withoutSensitive?: boolean;
 };
 
@@ -2463,7 +2464,7 @@ const make = Effect.gen(function* () {
     const where = [sql`r.org_id = ${orgId}`, sql`r.register_id = ${input.list ?? "work"}`];
     if (input.team !== undefined) where.push(personSees(sql, input.team));
     if (input.view !== undefined) where.push(viewSees(sql, input.view));
-    if (input.withoutSensitive === true) where.push(sql`NOT ${sensitiveNow(sql)}`);
+    if (input.withoutSensitive === true) where.push(sql`NOT ${keySensitive(sql)}`);
     if (input.partyId !== undefined) where.push(sql`r.party_id IS ${input.partyId}`);
     if (input.projectId !== undefined) where.push(sql`r.project_id = ${input.projectId}`);
     if (input.repo !== undefined) where.push(sql`lower(r.repo) = lower(${input.repo})`);

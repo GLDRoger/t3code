@@ -11,7 +11,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { isOwnerHimself } from "../people/KinAccess.ts";
 import { holderOf, type TasksKeyHolder } from "../tasksKey/TasksKeys.ts";
-import { sensitiveNow } from "./recordRows.ts";
+import { keySensitive } from "./recordRows.ts";
 
 /**
  * A person's own coding agent, calling with its key: who it acts as, from `admit`, never from a
@@ -57,7 +57,7 @@ export const connectionLive = Effect.fn("KinCodingAgent.live")(function* (
 
 /**
  * In the caller's transaction: what the key adds to the screen's own check for one entry. A Work
- * task this person holds, nobody dropped and not labelled sensitive now.
+ * task this person holds, nobody dropped, and neither it nor its client or project labelled now.
  */
 export const connectionReaches = Effect.fn("KinCodingAgent.reaches")(function* (
   connection: CodingAgentConnection,
@@ -68,6 +68,6 @@ export const connectionReaches = Effect.fn("KinCodingAgent.reaches")(function* (
     WHERE r.org_id = ${connection.orgId} AND r.record_id = ${recordId}
       AND r.register_id = 'work' AND r.owner_kind = 'person'
       AND r.owner_id = ${connection.personId} AND r.state <> 'dropped'
-      AND NOT ${sensitiveNow(sql)}`;
+      AND NOT ${keySensitive(sql)}`;
   return found.length > 0;
 });
