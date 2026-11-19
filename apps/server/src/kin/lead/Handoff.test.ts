@@ -18,6 +18,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -44,6 +45,7 @@ import * as LeadProvision from "./KinLeadProvision.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { toolAdmitted } from "./SharedTools.ts";
 import { recordTextQuestion } from "../questions/openQuestions.ts";
+import { DECLINED_WINDOW_MS, declinedRequests } from "./declinedSection.ts";
 
 const at = "1970-01-01T00:00:00.000Z";
 const chief = KinAgentId.make("chief");
@@ -1159,6 +1161,11 @@ const utcClock = (ctx: Effect.Success<typeof setup>) =>
 const ownerName = (ctx: Effect.Success<typeof setup>) =>
   ctx.sql<{ name: string }>`SELECT display_name AS name FROM kin_people
     WHERE person_id = ${ctx.owner.personId}`.pipe(Effect.map(([row]) => row!.name));
+/** What the Chief of staff's next turn in Meera's chat is told the owner declined. */
+const declinedFor = (ctx: Effect.Success<typeof setup>, chatId: KinChatId) =>
+  Effect.flatMap(Clock.currentTimeMillis, (now) =>
+    declinedRequests({ orgId: ctx.orgId, agentId: chief, chatId, now }),
+  );
 
 it.effect(
   "a teammate's request for an agent she may not message waits on one card, and the owner's Let allows her and passes it on with no turn",
@@ -1277,6 +1284,8 @@ it.effect(
           title: "Passed on",
           text: "Meera may message Tech lead from now on, and their request went there.",
         });
+        // A request the owner let through is not told to her agent's turn as declined.
+        assert.deepStrictEqual(yield* declinedFor(ctx, mate.direct), []);
         const shown =
           "Kin has posted a line in this chat telling Meera it went to Tech lead, who answers them in their chat with it, so don't say that again. If you have nothing to add, write exactly NO_REPLY.";
         const letHer = `${me} let Meera message Tech lead on Thu 1 Jan 12:00 am`;
@@ -1401,7 +1410,12 @@ it.effect(
 
         // "This time": her new request is put to the owner on a card of its own.
         yield* mate.ask("meera-third", "Can I get the staging logs now?");
-        yield* mate.pass("Tech lead", "meera-third");
+        const anew = {
+          passed: false as const,
+          note: `${then} an earlier request of Meera's for Tech lead. This message is a new request: Meera may not message Tech lead, so ${me} has been asked about it on a new card and hasn't answered yet; nothing has gone to Tech lead. The card asks ${me} to let this request reach Tech lead and to let Meera message Tech lead from then on. Anything that would leave the company, such as a mail or a payment, still needs ${me}'s own Confirm. When a yes or a not this time takes effect, Kin posts it in this chat. Tell Meera the earlier request was declined and this new one is with ${me}, and promise nothing more.`,
+        };
+        assert.deepStrictEqual(yield* mate.pass("Tech lead", "meera-third"), anew);
+        assert.deepStrictEqual(yield* mate.pass("Tech lead", "meera-third"), anew);
         const cards = yield* ownerCard(ctx);
         assert.lengthOf(cards, 2);
         yield* sql`UPDATE kin_people SET removed_at = 1 WHERE org_id = ${orgId} AND person_id = 'meera'`;
@@ -1417,6 +1431,53 @@ it.effect(
           0,
         );
         assert.deepStrictEqual(yield* mate.reached, { copies: [], events: [] });
+      }),
+    ),
+);
+
+it.effect(
+  "the asker's next turn is told the owner declined her request, by whom and when, for three days",
+  () =>
+    runTeammate(({ ctx, mate }) =>
+      Effect.gen(function* () {
+        const asked = yield* mate.ask("meera-event", "Can I see the deploy keys?");
+        yield* mate.pass("Tech lead");
+        yield* mate.ask("meera-second", "Can I get the staging logs?");
+        yield* mate.pass("Tech lead", "meera-second");
+        assert.deepStrictEqual(yield* declinedFor(ctx, mate.direct), []);
+        yield* TestClock.adjust("2 minutes");
+        const [card] = yield* ownerCard(ctx);
+        yield* tap(ctx, card!.widgetId, card!.state.options[1]!.optionId);
+        // The card's own request; the one that waited on it was never put to the owner.
+        const told = [
+          {
+            messageId: asked.messageId,
+            body: "Can I see the deploy keys?",
+            toAgentId: tech,
+            agentName: "Tech lead",
+            personName: "Meera",
+            widgetId: card!.widgetId,
+            by: yield* ownerName(ctx),
+            askedAt: 0,
+            answeredAt: 120_000,
+          },
+        ];
+        assert.deepStrictEqual(yield* declinedFor(ctx, mate.direct), told);
+        // Only in her chat, and only for the agent that put it to the owner.
+        assert.deepStrictEqual(yield* declinedFor(ctx, ctx.chiefChat), []);
+        assert.deepStrictEqual(
+          yield* declinedRequests({
+            orgId: ctx.orgId,
+            agentId: tech,
+            chatId: mate.direct,
+            now: 120_000,
+          }),
+          [],
+        );
+        yield* TestClock.adjust(DECLINED_WINDOW_MS - 1);
+        assert.deepStrictEqual(yield* declinedFor(ctx, mate.direct), told);
+        yield* TestClock.adjust(1);
+        assert.deepStrictEqual(yield* declinedFor(ctx, mate.direct), []);
       }),
     ),
 );

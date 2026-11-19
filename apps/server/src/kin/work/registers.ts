@@ -27,7 +27,12 @@ import {
   parseFields,
   sensitiveFields,
 } from "./lists.ts";
-import { type CompanyMoney, companyMoney, countryBefore, homeCurrency } from "./companyProfile.ts";
+import {
+  type CompanyMoney,
+  companyMoneyState,
+  countryBefore,
+  homeCurrency,
+} from "./companyProfile.ts";
 import { regionOf } from "./region.ts";
 import { companyRegion, NEUTRAL_PAID_WITH } from "./statements/statementRegion.ts";
 import { dayIn, isCurrency } from "./money.ts";
@@ -64,6 +69,8 @@ export const StoredDefinition = Schema.Struct({
   sensitive: Schema.Boolean,
   amount: Schema.Boolean,
   currency: KinCurrency,
+  /** Made while the company's country wasn't chosen: takes the company's currency once it is. */
+  currencyPending: Schema.optional(Schema.Literal(true)),
   dueLabel: Schema.optional(Label),
   dateLabel: Schema.optional(Label),
   categoryLabels: Schema.optional(Schema.Record(Schema.String, Label)),
@@ -249,9 +256,15 @@ const DATE_CATEGORIES = ["income tax", "company", "payroll", "renewal", "other"]
  * its currency's region), and its Dates start with its country's filings. Lists already made
  * keep their choices.
  */
-const presetFor = (id: PresetId, money: Pick<CompanyMoney, "homeCurrency" | "country">) => {
+const presetFor = (
+  id: PresetId,
+  money: Pick<CompanyMoney, "homeCurrency" | "country">,
+  countryPending = false,
+) => {
   const preset = PRESETS[id];
-  const paidWith = companyRegion(money.homeCurrency)?.paidWith ?? NEUTRAL_PAID_WITH;
+  // A company still waiting on its country has only the placeholder's, so it gets no country's ways.
+  const paidWith =
+    (countryPending ? undefined : companyRegion(money.homeCurrency)?.paidWith) ?? NEUTRAL_PAID_WITH;
   const filings = regionOf(money.country)?.filings ?? [];
   return {
     ...preset,
@@ -833,10 +846,10 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
     input.id ?? input.template ?? (input.name === undefined ? undefined : idFor(input.name));
   if (named === undefined)
     return yield* invalid("Name the list, start from a template, or say which list to add to.");
-  const money = yield* companyMoney(orgId);
+  const { pending, ...money } = yield* companyMoneyState(orgId);
   const home = money.homeCurrency;
   const preset = (PRESET_IDS as ReadonlyArray<string>).includes(named)
-    ? presetFor(named as PresetId, money)
+    ? presetFor(named as PresetId, money, pending)
     : undefined;
   if (preset === undefined && (isBuiltIn(named) || named === "docs"))
     return yield* invalid(`${input.name ?? named} is one of Kin's own lists already.`);
@@ -872,6 +885,7 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
     sensitive: input.sensitive ?? preset?.sensitive ?? amount,
     amount,
     currency: input.currency ?? home,
+    ...(pending && input.currency === undefined ? { currencyPending: true as const } : {}),
     ...((input.dueLabel ?? preset?.dueLabel)
       ? { dueLabel: (input.dueLabel ?? preset?.dueLabel)! }
       : {}),
@@ -948,6 +962,12 @@ export const attachCard = Effect.fn("KinRegisters.attachCard")(function* (input:
     WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId} AND widget_id IS NULL`;
 });
 
+/** The currency a list made now keeps; while the country isn't chosen, the company's once it is. */
+export const listCurrency = Effect.fn("KinRegisters.listCurrency")(function* (orgId: KinOrgId) {
+  const { pending, homeCurrency: currency } = yield* companyMoneyState(orgId);
+  return pending ? { currency, currencyPending: true as const } : { currency };
+});
+
 /** Creates or extends the list `proposal` describes, now, in the caller's transaction. */
 export const defineList = Effect.fn("KinRegisters.defineList")(function* (
   orgId: KinOrgId,
@@ -956,7 +976,16 @@ export const defineList = Effect.fn("KinRegisters.defineList")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   if (proposal._tag === "new") {
-    const draft = { ...proposal };
+    const { currencyPending, ...made } = proposal.definition;
+    // A proposal from before the country was chosen, said yes to after, takes today's currency.
+    const today = currencyPending === true ? yield* listCurrency(orgId) : undefined;
+    const draft = {
+      ...proposal,
+      definition:
+        today === undefined || today.currencyPending === true
+          ? proposal.definition
+          : { ...made, ...today },
+    };
     const refused = checkDraft(draft);
     if (refused !== undefined) return yield* refused;
     const taken = yield* sql<{ id: string; prefix: string }>`SELECT register_id AS id,
@@ -1143,15 +1172,21 @@ export const listOrPreset = Effect.fn("KinRegisters.listOrPreset")(function* (
   id: string,
   now: number,
 ) {
+  const sql = yield* SqlClient.SqlClient;
   const existing = yield* listDef(orgId, id);
   if (existing !== undefined || !isRecipeList(id)) return existing;
-  const proposal = yield* proposalFor(orgId, { template: id as PresetId });
-  yield* defineList(orgId, proposal, now).pipe(
-    // Two first quotes at once: the other made it, which is the same list.
-    Effect.catchIf(
-      (error) => isChatError(error) && error.reason === "conflict",
-      () => Effect.void,
-    ),
+  // One transaction, so a country saved meanwhile either rewrites this list or comes after it.
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const proposal = yield* proposalFor(orgId, { template: id as PresetId });
+      yield* defineList(orgId, proposal, now).pipe(
+        // Two first quotes at once: the other made it, which is the same list.
+        Effect.catchIf(
+          (error) => isChatError(error) && error.reason === "conflict",
+          () => Effect.void,
+        ),
+      );
+      return yield* listDef(orgId, id);
+    }),
   );
-  return yield* listDef(orgId, id);
 });

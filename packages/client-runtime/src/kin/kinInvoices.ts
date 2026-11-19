@@ -108,7 +108,7 @@ export const KIN_RECEIPTS = {
 };
 
 /** The host's receipt modes; it refuses any other. */
-export const KIN_RECEIPT_MODES = [
+const KIN_RECEIPT_MODES = [
   { value: "bank transfer", label: "Bank transfer" },
   { value: "upi", label: "UPI" },
   { value: "cheque", label: "Cheque" },
@@ -116,6 +116,13 @@ export const KIN_RECEIPT_MODES = [
   { value: "card", label: "Card" },
   { value: "other", label: "Other" },
 ] as const;
+
+/** India's form, UPI and a UTR, unless another country is chosen; no country was India's form before. */
+const inIndia = (country: string | null | undefined) => country == null || country === "IN";
+export const kinReceiptModes = (country: string | null | undefined) =>
+  inIndia(country) ? KIN_RECEIPT_MODES : KIN_RECEIPT_MODES.filter((one) => one.value !== "upi");
+export const kinReceiptReferencePlaceholder = (country: string | null | undefined) =>
+  inIndia(country) ? KIN_RECEIPTS.referencePlaceholder : KIN_RECEIPTS.reference;
 
 export const kinReceiptModeLabel = (mode: string) =>
   KIN_RECEIPT_MODES.find((one) => one.value === mode)?.label ?? KIN_RECEIPTS.noMode;
