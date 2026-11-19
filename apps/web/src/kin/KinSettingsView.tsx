@@ -176,7 +176,8 @@ export function KinSettingsMoved(props: {
 }) {
   const target = kinNewLeadTarget(useKinHost());
   if (target === null) return props.fallback;
-  return <Navigate to="/kin" search={{ settings: props.page }} replace />;
+  // The hash is the setting a settings search found, so Settings opens at it.
+  return <Navigate to="/kin" search={{ settings: props.page }} hash replace />;
 }
 
 /** Settings, open over the Kin page on screen while the address names a section. */

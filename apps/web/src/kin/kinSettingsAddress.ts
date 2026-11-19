@@ -1,4 +1,6 @@
-import type { RouterHistory } from "@tanstack/react-router";
+import { type RouterHistory, useLocation, useNavigate } from "@tanstack/react-router";
+
+import { scrollToSettingsTarget } from "../components/settings/settingsLayout";
 
 import { kinListAt, kinReturnHref } from "./kinListSwitch";
 
@@ -24,12 +26,7 @@ export function kinSettingsSectionIn(searchStr: string): string | null {
 export const kinSettingsFindIn = (searchStr: string): string =>
   new URLSearchParams(searchStr).get(FIND_PARAM) ?? "";
 
-function withSection(
-  href: string,
-  section: string | null,
-  find?: string,
-  target?: string,
-): string {
+function withSection(href: string, section: string | null, find?: string, target?: string): string {
   const url = new URL(href, "http://kin.invalid");
   if (target !== undefined) url.hash = target;
   url.searchParams.delete(FIND_PARAM);
@@ -99,4 +96,15 @@ export function closeKinSettings(history: RouterHistory): void {
   const { pathname, search, hash, state } = history.location;
   if (state.kinSettingsPushed === true) return history.back();
   history.replace(withSection(`${pathname}${search}${hash}`, null), state);
+}
+
+/** A ref for the setting `id`: scrolls to it when the address names it, as a settings search hit lands. */
+export function useKinSettingTarget(id: string | undefined) {
+  const hash = useLocation({ select: (location) => location.hash.replace(/^#/, "") });
+  const navigate = useNavigate();
+  return (node: HTMLElement | null) => {
+    if (node === null || id === undefined || hash !== id) return;
+    scrollToSettingsTarget(id);
+    void navigate({ to: ".", search: true, hash: "", replace: true, resetScroll: false });
+  };
 }
