@@ -1,6 +1,6 @@
 import type { RouterHistory } from "@tanstack/react-router";
 
-import { kinListAt, kinListSwitchHref } from "./kinListSwitch";
+import { kinListAt, kinReturnHref } from "./kinListSwitch";
 
 declare module "@tanstack/react-router" {
   interface HistoryState {
@@ -42,7 +42,7 @@ function withSection(
 
 /** Settings on `section` over the Kin page last open: for an address outside Kin's pages. */
 function kinSettingsHref(section: string, find?: string, target?: string): string {
-  return withSection(kinListSwitchHref("threads"), section, find, target);
+  return withSection(kinReturnHref(), section, find, target);
 }
 
 /**

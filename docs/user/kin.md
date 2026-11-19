@@ -11,8 +11,6 @@ dock at the bottom of a narrow window. `⌘1` to `⌘5` (`Ctrl` on Windows and L
 the phone and in a narrow window. It opens over whatever you're looking at; close it to carry on
 where you were. What you see in each depends on your place in the team; see
 [Who sees and does what](#who-sees-and-does-what).
-For the owner, **Coding** beside the gear on the web and the desktop app opens T3 Code's coding
-threads and pull requests; Kin's places at the top of the sidebar there bring you back.
 
 Settings has **You** (your profile, notifications and appearance) for everyone, and for the owner and co-owners
 **Company** (Team, Agents, Check-ins, Connections, Memory, Company details, Approvals). On the
