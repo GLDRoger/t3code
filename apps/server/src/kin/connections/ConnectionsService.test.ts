@@ -2867,6 +2867,15 @@ describe("KinConnections sending", () => {
           reason: "widget_changed",
         });
         assert.lengthOf(vendor.vendor.sent, 0);
+        // Reopened, the same call is told why its card closed, not that a newer card replaced it.
+        yield* sql`UPDATE kin_records SET state = 'open'
+          WHERE org_id = ${orgId} AND record_id = 'rec_inv'`;
+        assert.deepInclude(
+          yield* sendCall("mail_send", { ...mail, body: "Attached, as promised." }),
+          {
+            note: "The card for this exact action was closed: INV-1 is void now, so nothing was sent.",
+          },
+        );
 
         // Paid is not closed for sending: a copy of a paid invoice still goes.
         yield* sql`UPDATE kin_records SET state = 'done'
