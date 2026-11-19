@@ -193,6 +193,17 @@ else
   UNIT_CHANGED=1
 fi
 
+# T3's managed policy, KIN_HOST_POLICY in packages/contracts/src/kinHost.ts. Root-owned so kin
+# can't loosen it; the server reads it at start and logs a warning while it isn't in force.
+POLICY_FILE=/etc/t3code/policy.json
+if [ -f "$POLICY_FILE" ] && cmp -s "$SCRIPT_DIR/policy.json" "$POLICY_FILE"; then
+  say "$POLICY_FILE is current."
+else
+  run install -d -m 0755 -o root -g root /etc/t3code
+  run install -m 0644 -o root -g root "$SCRIPT_DIR/policy.json" "$POLICY_FILE"
+  UNIT_CHANGED=1
+fi
+
 run as_kin systemctl --user daemon-reload
 run as_kin systemctl --user enable kin-server.service
 run as_kin systemctl --user enable --now kin-backup.timer
@@ -242,6 +253,7 @@ check "kin-server enabled" as_kin systemctl --user is-enabled kin-server.service
 check "kin-server running" as_kin systemctl --user is-active kin-server.service
 check "backup timer enabled" as_kin systemctl --user is-enabled kin-backup.timer
 check "backup destination set (~/.config/kin/backup.env)" test -f "$CONFIG_DIR/backup.env"
+check "T3 policy installed ($POLICY_FILE)" cmp -s "$SCRIPT_DIR/policy.json" "$POLICY_FILE"
 
 if [ "$UNIT_CHANGED" -eq 1 ] && [ "$DRY_RUN" -eq 0 ] && as_kin systemctl --user is-active --quiet kin-server.service; then
   say ""

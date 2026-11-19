@@ -26,7 +26,7 @@ import {
   KinWidgetId,
 } from "./kinChat.ts";
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
-import { KinRecordId, KinRecordKey, KinRecordState } from "./kinWork.ts";
+import { KinRecordId, KinRecordKey, KinRecordState, KinWorkPrincipal } from "./kinWork.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { ScheduledTaskWebhookDeliveryId } from "./scheduledTask.ts";
 
@@ -116,6 +116,8 @@ export const KinLeadTracking = Schema.Struct({
   // Work entries only: the entry's key and state, so a row opens its entry.
   key: Schema.optional(KinRecordKey),
   state: Schema.optional(KinRecordState),
+  // A waiting Work entry: who it waits on. Absent from older hosts.
+  waitingOn: Schema.optional(KinWorkPrincipal),
 });
 export type KinLeadTracking = typeof KinLeadTracking.Type;
 export const KIN_LEAD_TRACKING_CAP = 20;
@@ -321,6 +323,8 @@ export const KinLeadAccessResult = Schema.Struct({
       personId: KinPersonId,
       displayName: TrimmedNonEmptyString,
       since: Schema.toEncoded(CanonicalUtcTimestamp),
+      /** Owner or co-owner: they message every agent, row or not. An older server leaves it out. */
+      ownerLevel: Schema.optional(Schema.Boolean),
     }),
   ),
 });

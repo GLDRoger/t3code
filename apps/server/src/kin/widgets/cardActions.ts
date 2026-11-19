@@ -21,6 +21,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { KinChatService } from "../chat/KinChatService.ts";
 import { SHARED_REFUSAL, aborted, peopleBehind } from "../lead/Audience.ts";
 import { routeShown, runRoute } from "../lead/routeCard.ts";
+import { recommendShown, runRecommend } from "../recommend/card.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import * as Memory from "../memory/Memory.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
@@ -95,6 +96,8 @@ const labelOf = (plan: CardPlan): string => {
     }
     case "let_talk":
       return routeShown(plan).label;
+    case "recommend":
+      return recommendShown(plan).label;
     case "undo_default":
       return "Undo";
     case "keep_default":
@@ -122,6 +125,8 @@ const lineOf = (plan: CardPlan): string => {
     }
     case "let_talk":
       return routeShown(plan).line;
+    case "recommend":
+      return recommendShown(plan).line;
     case "undo_default":
       return undoLine(plan);
     case "keep_default":
@@ -334,7 +339,8 @@ const drawDefault = Effect.fn("KinCardActions.drawDefault")(function* (
   if (source === undefined)
     return yield* refuse("That question's card is gone or answered, so there's no default.");
   const sealed = source.final;
-  if (sealed?.kind === "let_talk") return yield* refuse("That question has no default to take.");
+  if (sealed?.kind === "let_talk" || sealed?.kind === "recommend")
+    return yield* refuse("That question has no default to take.");
   if (sealed?.kind === "take_default")
     return yield* refuse(
       `That question's default only takes another question's default. Offer what it runs directly${
@@ -441,7 +447,13 @@ export const redraw = Effect.fn("KinCardActions.redraw")(function* (
   chatId: KinChatId,
   sealed: CardPlan,
 ) {
-  if (sealed.kind === "let_talk" || isTaken(sealed) || isAnswered(sealed)) return undefined;
+  if (
+    sealed.kind === "let_talk" ||
+    sealed.kind === "recommend" ||
+    isTaken(sealed) ||
+    isAnswered(sealed)
+  )
+    return undefined;
   const lead = {
     orgId,
     agentId: KinAgentId.make(sealed.draw.agentId),
@@ -530,6 +542,7 @@ export const run = Effect.fn("KinCardActions.run")(function* (
   },
 ) {
   if (plan.kind === "let_talk") return yield* runRoute(tap, plan);
+  if (plan.kind === "recommend") return yield* runRecommend(tap, plan);
   if (isAnswered(plan)) return yield* runAnswered(tap, plan, deps.chat);
   if (isTaken(plan))
     return yield* runTaken(
@@ -614,7 +627,10 @@ export const untakenAtDay = Effect.fn("KinCardActions.untakenAtDay")(function* (
 export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
   orgId: KinOrgId,
   plan: CardPlan,
-  question: Pick<QuestionRow, "questionId" | "agentId" | "chatId" | "widgetId" | "raiseWidgetId">,
+  question: Pick<
+    QuestionRow,
+    "questionId" | "agentId" | "chatId" | "widgetId" | "raiseWidgetId" | "askedAt"
+  >,
   records: KinRecords["Service"],
 ) {
   if (!takesAsDefault(plan) || plan.draw.agentId !== question.agentId) return false;
@@ -644,21 +660,30 @@ export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
   }
   if ((yield* drawHolds(orgId, plan.draw)) !== undefined) return false;
   if (!(yield* teamMay(orgId, plan.draw, row, state))) return false;
-  yield* records.update(
-    orgId,
-    {
-      actor: { _tag: "agent", agentId: question.agentId },
-      via: "lead",
-      chatId: question.chatId,
-      // Its own cards say what Kin went with, not that the task closed under them.
-      answering: [question.widgetId, question.raiseWidgetId].filter((id) => id !== null),
-    },
-    row.key,
-    { state },
-    plan.rev,
-    takenFor(question.questionId),
-  );
-  return true;
+  // A person's change since it was asked, or since it was offered, waits for its person.
+  return yield* records
+    .update(
+      orgId,
+      {
+        actor: { _tag: "agent", agentId: question.agentId },
+        via: "lead",
+        chatId: question.chatId,
+        // Its own cards say what Kin went with, not that the task closed under them.
+        answering: [question.widgetId, question.raiseWidgetId].filter((id) => id !== null),
+        since: { at: question.askedAt, woke: [] },
+      },
+      row.key,
+      { state },
+      plan.rev,
+      takenFor(question.questionId),
+    )
+    .pipe(
+      Effect.as(true),
+      Effect.catchIf(
+        (error) => error.reason === "conflict",
+        () => Effect.succeed(false),
+      ),
+    );
 });
 
 /** A start the queue refused after its run moved: the whole tap rolls back, and says so. */

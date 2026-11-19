@@ -2,14 +2,14 @@
 
 Runs the Kin server from a source build on the always-on Linux machine, as the dedicated `kin` user. Design and reasons: [triggers spec, "Running on the Kin host"](../../../docs/kin/specs/triggers.md#running-on-the-kin-host).
 
-| File                                      | What it does                                                                                                                                      |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `setup.sh`                                | As root, from `/root/kin-ops`: creates `kin`, turns on linger, masks sleep, installs and enables the units, prints a checklist.                   |
-| `kin-server.service`                      | The server, as a systemd user unit for `kin`.                                                                                                     |
-| `backup.sh`, `kin-backup.{service,timer}` | Nightly backup of `~/.t3/userdata` and `service.env` to an encrypted volume, keeping 14 days.                                                     |
-| `update.sh`                               | As `kin`: builds `kin` in its own worktree, runs the contract tests, then switches `~/kin-current` to it and restarts. Also does the first build. |
-| `restore.md`                              | The restore drill.                                                                                                                                |
-| `retire-workers.sh`                       | As root, once: removes what the retired workers installed and lists what they left in kin's files; keeps the GitHub App.                          |
+| File                                      | What it does                                                                                                                                                                      |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `setup.sh`                                | As root, from `/root/kin-ops`: creates `kin`, turns on linger, masks sleep, installs and enables the units, installs T3's policy (`/etc/t3code/policy.json`), prints a checklist. |
+| `kin-server.service`                      | The server, as a systemd user unit for `kin`.                                                                                                                                     |
+| `backup.sh`, `kin-backup.{service,timer}` | Nightly backup of `~/.t3/userdata` and `service.env` to an encrypted volume, keeping 14 days.                                                                                     |
+| `update.sh`                               | As `kin`: builds `kin` in its own worktree, runs the contract tests, then switches `~/kin-current` to it and restarts. Also does the first build.                                 |
+| `restore.md`                              | The restore drill.                                                                                                                                                                |
+| `retire-workers.sh`                       | As root, once: removes what the retired workers installed and lists what they left in kin's files; keeps the GitHub App.                                                          |
 
 ## A kin shell
 

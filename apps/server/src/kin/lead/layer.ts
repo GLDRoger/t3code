@@ -52,6 +52,7 @@ import { handlers as docHandlers } from "../work/mcp/docHandlers.ts";
 import { handlers as statementHandlers } from "../work/mcp/statementHandlers.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
+import * as KinRecommend from "../recommend/KinRecommend.ts";
 import * as OpenShadow from "../open/shadow.ts";
 import { handlers as pulseHandlers, KinPulseToolkit } from "../pulse/mcp.ts";
 import { importWork } from "../work/importWork.ts";
@@ -104,6 +105,7 @@ const routineRuntime = Layer.mergeAll(
   GitHubWatch.liveLayer,
   Watchdogs.layer,
   KinPulse.layer,
+  KinRecommend.layer,
   OpenShadow.layer,
 ).pipe(
   Layer.provideMerge(LeadDelivery.layer),
