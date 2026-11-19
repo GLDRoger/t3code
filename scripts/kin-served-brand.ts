@@ -158,7 +158,7 @@ export const checkServedBrand = Effect.fn("checkServedBrand")(function* (
   const servedBytes = Effect.fn("checkServedBrand.servedBytes")(function* (file: string) {
     const names = yield* fs
       .readDirectory(path.join(clientDir, path.dirname(file)))
-      .pipe(Effect.orElseSucceed(() => []));
+      .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
     if (!names.includes(path.basename(file))) return Option.none<Uint8Array>();
     return yield* fs.readFile(path.join(clientDir, file)).pipe(Effect.option);
   });
