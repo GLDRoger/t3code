@@ -319,8 +319,10 @@ it.effect("a tap on an action option runs it once, as the server wrote it", () =
         "messageId",
         "note",
         "question",
+        "untaken",
         "widgetId",
       ]);
+      assert.strictEqual(asked.value.untaken, "none");
       assert.match(
         asked.value.note as string,
         /^With no default, nothing happens until they answer; Kin raises it with them once more /,
@@ -786,6 +788,9 @@ it.effect("in a shared chat only an awaited person who may do it runs it", () =>
       assert.isFalse(listProposal.ok);
       const asked = yield* callAs("finance", "kin_ask", closeIt(devs.key));
       assert.isTrue(asked.ok, JSON.stringify(asked.value));
+      // Not one person's chat: a card, but no question, default or day is kept, and it says so.
+      assert.strictEqual(asked.value.untaken, "group");
+      assert.isUndefined(asked.value.by);
 
       yield* sql`UPDATE kin_session_bindings SET revoked_at = 1 WHERE person_id = 'dev'`;
       const refused = yield* kin
@@ -1505,6 +1510,7 @@ const askToClose = Effect.fn("test.askToClose")(function* (
     question: asked.value.question as string,
     widgetId: asked.value.widgetId as string,
     due: Date.parse(asked.value.by as string),
+    untaken: asked.value.untaken,
     note: asked.value.note,
   };
 });
@@ -1706,6 +1712,10 @@ it.effect("a default Kin couldn't undo, or on a task changed since, waits for it
         [false, false, true, true],
       );
       // And Finance is told so when it asks, in the words the card will say.
+      assert.deepStrictEqual(
+        asked.map((one) => one.untaken),
+        ["repeats", "handed_back", undefined, undefined],
+      );
       assert.deepStrictEqual(
         asked.map((one) => one.note),
         [

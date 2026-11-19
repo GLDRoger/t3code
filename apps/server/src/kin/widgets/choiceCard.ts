@@ -75,6 +75,13 @@ export const AskResult = Schema.Struct({
   question: Schema.optional(KinTrimmedText),
   /** The day Kin takes the default, or raises it again when there is none. */
   by: Schema.optional(KinTrimmedText),
+  /**
+   * Why Kin won't take a default on its own (`planAsk`), or `group`: not one person's direct
+   * chat, so no question, default or day was stored.
+   */
+  untaken: Schema.optional(
+    Schema.Literals(["none", "money", "leaves", "action", "repeats", "handed_back", "group"]),
+  ),
   /** Set when Kin won't take the default on its own: why, and what happens instead. */
   note: Schema.optional(KinTrimmedText),
 });

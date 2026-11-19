@@ -231,12 +231,13 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
               }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       );
       return plan === undefined
-        ? { widgetId: result.widgetId, messageId: result.messageId }
+        ? { widgetId: result.widgetId, messageId: result.messageId, untaken: "group" as const }
         : {
             widgetId: result.widgetId,
             messageId: result.messageId,
             question: plan.questionId,
             by: DateTime.formatIso(DateTime.makeUnsafe(plan.dueAt)),
+            ...(plan.untaken === undefined ? {} : { untaken: plan.untaken }),
             ...(plan.note === undefined ? {} : { note: plan.note }),
           };
     }, Effect.mapError(failure)),
