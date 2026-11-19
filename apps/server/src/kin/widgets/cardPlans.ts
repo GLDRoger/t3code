@@ -122,6 +122,29 @@ export const RecommendChange = Schema.Union([
     agentId: Schema.String,
     agentName: Schema.String,
   }),
+  Schema.Struct({
+    kind: Schema.Literal("daily_limit"),
+    /** The agents' limits the card was drawn at, both of them, and the next choice up it offers. */
+    fromLeadUnits: Schema.Number,
+    fromWorkerUnits: Schema.Number,
+    fromName: Schema.String,
+    toLeadUnits: Schema.Number,
+    toWorkerUnits: Schema.Number,
+    toName: Schema.String,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("connection_resume"),
+    connectionId: Schema.String,
+    connectionName: Schema.String,
+    /** When the pause the card was drawn for began: a later pause is another one. */
+    pausedAt: Schema.Number,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("agent_resume"),
+    agentId: Schema.String,
+    agentName: Schema.String,
+    pausedAt: Schema.Number,
+  }),
 ]);
 /** Kin's own suggestion to the owner (`recommend/KinRecommend.ts`): Do it, or Not now. */
 const RecommendPlan = Schema.Struct({

@@ -12,6 +12,7 @@ import {
   isInside,
   LIVE_T3,
   ORG,
+  readJson,
   readSeed,
   readState,
   sleep,
@@ -130,6 +131,7 @@ export interface WebSession {
   readonly base: string;
   /** Where `view --zone` keeps this person's clock zone. */
   readonly zoneFile: string;
+  readonly instance: Instance;
 }
 
 // Chrome drops a zone override when the connection that set it closes, so each one sets it again.
@@ -141,6 +143,23 @@ async function applyZone(page: Page, zoneFile: string) {
   await cdp.send("Emulation.setTimezoneOverride", {
     timezoneId: NodeFS.readFileSync(zoneFile, "utf8"),
   });
+}
+
+/**
+ * The dev web reads `kv clock`'s offset from local storage when it loads (`useKinClock.ts`), so
+ * a page that holds another one loads again.
+ */
+async function applyClock(page: Page, instance: Instance, web: string) {
+  if (!page.url().startsWith(web)) return;
+  const offset = String(
+    readJson<{ offsetMs: number }>(NodePath.join(instance.userdata, "kin-dev-clock.json"))
+      ?.offsetMs ?? 0,
+  );
+  const held = await page.evaluate(() => localStorage.getItem("kin-dev-clock-offset") ?? "0");
+  if (held === offset) return;
+  await page.evaluate((value) => localStorage.setItem("kin-dev-clock-offset", value), offset);
+  await page.reload();
+  await settle(page);
 }
 
 async function livePage(instance: Instance, person: string): Promise<Page> {
@@ -191,7 +210,8 @@ export async function openWeb(
   }
   const zoneFile = NodePath.join(profileOf(instance, person), "kin-verify-zone");
   await applyZone(page, zoneFile);
-  return { page, web: state.web, base, zoneFile };
+  await applyClock(page, instance, state.web);
+  return { page, web: state.web, base, zoneFile, instance };
 }
 
 export function routeUrl(session: WebSession, route: string): string {
@@ -205,6 +225,7 @@ export function routeUrl(session: WebSession, route: string): string {
 export async function open(session: WebSession, route: string) {
   await session.page.goto(routeUrl(session, route));
   await settle(session.page);
+  await applyClock(session.page, session.instance, session.web);
 }
 
 /** The browser's Back, as the person would press it. */

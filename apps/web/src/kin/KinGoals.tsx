@@ -1,3 +1,4 @@
+import { kinNow } from "@t3tools/client-runtime/kin/kinNow";
 import {
   KIN_GOALS,
   kinGoalDraft,
@@ -157,7 +158,7 @@ export function KinGoalSheet(props: {
 }) {
   const { goal } = props;
   const [requestId] = useState(randomUUID);
-  const [draft, setDraft] = useState<KinGoalDraft>(() => kinGoalDraft(goal, new Date()));
+  const [draft, setDraft] = useState<KinGoalDraft>(() => kinGoalDraft(goal, kinNow()));
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const ids = {

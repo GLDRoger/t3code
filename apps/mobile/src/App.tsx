@@ -36,6 +36,11 @@ import {
 } from "./features/sharing/IncomingShareProvider";
 import { installKin } from "./features/chats/installKin";
 import {
+  installForKinHome,
+  readKinIsHome,
+  whenKinIsHomeKnown,
+} from "./features/chats/state/kinHome";
+import {
   installAgentNotificationNavigation,
   setAgentNotificationPathname,
 } from "./features/agent-awareness/notificationNavigation";
@@ -165,8 +170,13 @@ const appLinking = {
   ],
   config: { initialRouteName: "Home" },
   filter: (url: string) => shouldHandleAppLink(url, hasCloudPublicConfig()),
-  getInitialURL: async () =>
-    (await Linking.getInitialURL()) ?? (KIN_ONLY ? null : await launchWorkspaceURL()),
+  getInitialURL: async () => {
+    const link = await Linking.getInitialURL();
+    if (link !== null || KIN_ONLY) return link;
+    const restored = await launchWorkspaceURL();
+    // Where a host runs Kin, a launch opens Kin, never the last coding thread.
+    return restored !== null && (await whenKinIsHomeKnown()) ? null : restored;
+  },
   getActionFromState: (
     state: Parameters<typeof getActionFromState>[0],
     options: Parameters<typeof getActionFromState>[1],
@@ -201,7 +211,7 @@ const Navigation = createStaticNavigation(RootStack);
 
 function handleNavigationStateChange(state: NavigationState | undefined): void {
   recordWorkspaceSelections(state);
-  if (!KIN_ONLY) presentPendingIncomingShare();
+  if (!readKinIsHome()) presentPendingIncomingShare();
   resolvePendingNewTaskPromptLink(state);
   resolvePendingThreadPromptLink(state);
   if (!state) return;
@@ -235,11 +245,11 @@ const appServiceDisposers = [
   installPermissionUpdateNotice(),
   installThreadOutboxDelivery(),
   installComposerAttachmentUploads(),
-  // Shares and launcher shortcuts both start coding threads, which a Kin-only app doesn't have.
-  ...(KIN_ONLY ? [] : [startIncomingShareInbox()]),
+  // Shares and launcher shortcuts both start coding threads, which Kin as Home doesn't have.
+  installForKinHome({ kin: () => () => {}, coding: startIncomingShareInbox }),
   installKin(linkToAppPath),
   installAgentNotificationNavigation(linkToAppPath),
-  ...(KIN_ONLY ? [clearAppShortcuts()] : [installAppShortcuts(linkToAppPath)]),
+  installForKinHome({ kin: clearAppShortcuts, coding: () => installAppShortcuts(linkToAppPath) }),
   installAppUpdateChecks(),
   installShowcaseCapture(rootPathnameFromState),
 ];

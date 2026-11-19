@@ -3,6 +3,7 @@ import * as NodeCrypto from "node:crypto";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import {
   KIN_RECORDS_PAGE_CAP,
+  KIN_TEXT_LOCALE,
   KinChatError,
   KinAgentId,
   KinChatId,
@@ -19,6 +20,7 @@ import {
   type KinRecordState,
   type KinWorkPrincipal,
   KinRecordId,
+  formatKinWhen,
   mentionsKinMoney,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -75,12 +77,14 @@ import {
   notFound,
   owedInvoices,
   ownerZone,
+  parseChanges,
   principal,
   principalId,
   type RecordRow,
   repeatOf,
   samePrincipal,
   selectRecords,
+  keySensitive,
   sensitiveNow,
   type StoredRepeat,
   toDetail,
@@ -108,8 +112,10 @@ import {
   teamPairs,
   personSees,
   ROOM_LISTS,
+  teamSeesField,
   teamSeq,
   viewGuard,
+  viewReadsWhole,
   viewSees,
 } from "./teamView.ts";
 
@@ -120,6 +126,7 @@ export type Writer = {
     | { readonly _tag: "person"; readonly personId: KinPersonId }
     | { readonly _tag: "system" };
   readonly via: KinRecordChangeVia;
+  /** An agent's own turn; on a person's write, the turn whose confirmed ask Kin carries out. */
   readonly wakeupId?: string;
   readonly chatId?: KinChatId;
   /** The human who asked for this, from stored rows: becomes the assigner of work given away. */
@@ -146,6 +153,16 @@ export type Writer = {
    * anew, and an agent holding it other than `asker` hears it is open again.
    */
   readonly undoing?: { readonly asker: string };
+  /**
+   * An agent's write: the last moment a person addressed its turn (`addressedAt`). It changes no
+   * field a person changed at or after then, bar the trigger's own changes (`woke`, by seq) and,
+   * when a tap set it, what that tap wrote as `tappedBy` in its own moment.
+   */
+  readonly since?: {
+    readonly at: number;
+    readonly woke: ReadonlyArray<number>;
+    readonly tappedBy?: KinPersonId;
+  };
 };
 /** A Work task this writer, a person, holds now and nobody dropped. */
 const heldBy = (
@@ -279,6 +296,10 @@ export type QueryInput = {
   /** Only what every one of these people may see (`viewSees`). */
   // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- the owner-level primitive; person reads and writes reach it through ownerWork/leadWork, which set it.
   readonly view?: ReadonlyArray<KinPersonId>;
+  /** Server-only, never from a client: soonest due first, whatever the state. */
+  readonly order?: "dueFirst";
+  /** Server-only, never from a client: nothing a coding-agent key may not reach, before the limit. */
+  readonly withoutSensitive?: boolean;
 };
 
 const isChatError = Schema.is(KinChatError);
@@ -378,6 +399,23 @@ const shownRepeat = (rule: KinRepeatRule | null | undefined) =>
     : rule.every === "days"
       ? `every ${rule.days} days`
       : `every ${rule.every}`;
+/** A History field as the one thing a person set: a date with its all-day flag, a holder with its marks. */
+const asSet = (field: string) =>
+  field === "dueAllDay"
+    ? "due"
+    : field === "dateAllDay"
+      ? "date"
+      : field === "untold" || field === "handedBack"
+        ? "owner"
+        : field;
+const FIELD_NAMES: Readonly<Record<string, string>> = {
+  owner: "its holder",
+  waitingOn: "who it waits on",
+  due: "its due date",
+  party: "its client",
+};
+/** What a refusal may quote of an entry that isn't sensitive; money, notes and a list's own fields it doesn't. */
+const QUOTED = new Set(["title", "state", "owner", "waitingOn", "due", "date", "category", "side"]);
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 /** Whether an entry's amount or fields put money on it. */
 const recordsMoney = (
@@ -895,6 +933,112 @@ const make = Effect.gen(function* () {
           KinEventQueueUnknownAgent: () => Effect.succeed(false),
         }),
       );
+  });
+
+  /**
+   * In the write's own transaction: an agent's write that would change a field a person changed
+   * since a person last addressed its turn is refused, whatever revision it passes.
+   */
+  const keptForPerson = Effect.fn("KinRecords.keptForPerson")(function* (
+    orgId: KinOrgId,
+    since: NonNullable<Writer["since"]>,
+    row: RecordRow,
+    def: ListDef,
+    writes: ReadonlySet<string>,
+    view: Writer["view"],
+  ) {
+    // A person's row with a turn is Kin carrying out that turn's confirmed ask (`markQuotesSent`).
+    const rows = yield* sql<{ seq: number; at: number; actorId: string; fieldsJson: string }>`
+      SELECT seq, at, actor_id AS "actorId", fields_json AS "fieldsJson" FROM kin_record_changes
+      WHERE org_id = ${orgId} AND record_id = ${row.recordId} AND actor_kind = 'person'
+        AND actor_id IS NOT NULL AND kind = 'updated' AND at >= ${since.at}
+        AND wakeup_id IS NULL
+      ORDER BY seq DESC`;
+    const newest = new Map<
+      string,
+      {
+        seq: number;
+        at: number;
+        actorId: string;
+        field: string;
+        to: string | null;
+        exact: boolean;
+      }
+    >();
+    for (const change of rows) {
+      if (since.woke.includes(change.seq)) continue;
+      // A tap's own writes land as the tapper no later than the tap's message (`KinChatService.act`).
+      if (change.actorId === since.tappedBy && change.at <= since.at) continue;
+      for (const field of parseChanges(change.fieldsJson)) {
+        const name = asSet(field.field);
+        const had = newest.get(name);
+        if (!writes.has(name) || (had !== undefined && (had.seq !== change.seq || had.exact)))
+          continue;
+        newest.set(name, {
+          ...change,
+          field: field.field,
+          to: field.to,
+          exact: field.field === name,
+        });
+      }
+    }
+    if (newest.size === 0) return;
+    // A shared turn reads this history as its people's own record_get does (`teamChanges`).
+    if (
+      view !== undefined &&
+      [...newest.values()].some((change) => !teamSeesField(change.field)) &&
+      !(yield* viewReadsWhole(orgId, view.people, row).pipe(provideSql))
+    )
+      return yield* new KinChatError({
+        reason: "conflict",
+        message: `Nothing changed on ${row.key}: someone changed it since you were asked. Tell whoever asked, and change it only if they say so.`,
+      });
+    const zone = yield* ownerZone(orgId).pipe(provideSql);
+    const nameOf = Effect.fn("KinRecords.nameOf")(function* (who: Principal | null) {
+      const [named] =
+        who === null
+          ? []
+          : who._tag === "agent"
+            ? yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_agents
+                WHERE org_id = ${orgId} AND agent_id = ${who.agentId}`
+            : yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+                WHERE org_id = ${orgId} AND person_id = ${who.personId}`;
+      return named?.name ?? "someone";
+    });
+    const sensitive = row.sensitive === 1 || row.inheritedSensitive === 1;
+    const clauses: Array<string> = [];
+    for (const [name, change] of newest) {
+      const label = FIELD_NAMES[name] ?? `its ${name}`;
+      const to = change.to;
+      const value =
+        !change.exact || sensitive || !QUOTED.has(name)
+          ? undefined
+          : to === null
+            ? null
+            : name === "state"
+              ? stateLabel(def, to)
+              : name === "owner" || name === "waitingOn"
+                ? yield* nameOf(principal(to.split(":")[0] ?? "", to.slice(to.indexOf(":") + 1)))
+                : name === "due" || name === "date"
+                  ? formatKinWhen(
+                      Date.parse(to),
+                      (name === "due" ? row.dueAllDay : row.dateAllDay) === 1 ? "date" : "dateTime",
+                      { zone, locale: KIN_TEXT_LOCALE },
+                    )
+                  : `"${to.length > 120 ? `${to.slice(0, 119)}…` : to}"`;
+      const did =
+        value === undefined
+          ? `changed ${label} (value not shown)`
+          : value === null
+            ? `cleared ${label}`
+            : `changed ${label} to ${value}`;
+      const when = formatKinWhen(change.at, "dayTime", { zone, locale: KIN_TEXT_LOCALE });
+      clauses.push(`${yield* nameOf(principal("person", change.actorId))} ${did} on ${when}`);
+    }
+    return yield* new KinChatError({
+      reason: "conflict",
+      message: `Nothing changed on ${row.key}: ${clauses.join("; ")}. Tell whoever asked, and change it only if they say so.`,
+    });
   });
 
   /** Whose agent this is: the authority a hand back wakes it with when none was stored. */
@@ -1770,6 +1914,15 @@ const make = Effect.gen(function* () {
         changes.push(...also);
         // A retry of a change that already landed finds nothing to do: that is success.
         if (sets.length === 0 && also.length === 0) return row;
+        if (writer.since !== undefined) {
+          // A doc's body keeps to its own base version (`docs.ts`); its version count is no field.
+          const writes = new Set(
+            changes.filter((one) => one.field !== "version").map((one) => asSet(one.field)),
+          );
+          if (patch.dateAllDay !== undefined && (patch.dateAllDay ? 1 : 0) !== row.dateAllDay)
+            writes.add("date");
+          yield* keptForPerson(orgId, writer.since, row, def, writes, writer.view);
+        }
         if (expectedRev !== undefined && expectedRev !== row.rev)
           return yield* conflict(row.key, row.rev);
         const rev = row.rev + 1;
@@ -2311,6 +2464,7 @@ const make = Effect.gen(function* () {
     const where = [sql`r.org_id = ${orgId}`, sql`r.register_id = ${input.list ?? "work"}`];
     if (input.team !== undefined) where.push(personSees(sql, input.team));
     if (input.view !== undefined) where.push(viewSees(sql, input.view));
+    if (input.withoutSensitive === true) where.push(sql`NOT ${keySensitive(sql)}`);
     if (input.partyId !== undefined) where.push(sql`r.party_id IS ${input.partyId}`);
     if (input.projectId !== undefined) where.push(sql`r.project_id = ${input.projectId}`);
     if (input.repo !== undefined) where.push(sql`lower(r.repo) = lower(${input.repo})`);
@@ -2363,12 +2517,14 @@ const make = Effect.gen(function* () {
         // list open and soonest due first, then newest.
         const list = input.list ?? "work";
         const order =
-          list === "work"
-            ? sql`CASE r.state WHEN 'doing' THEN 0 WHEN 'waiting' THEN 1 WHEN 'open' THEN 2
+          input.order === "dueFirst"
+            ? sql`r.due_at IS NULL, r.due_at, r.created_at, r.key`
+            : list === "work"
+              ? sql`CASE r.state WHEN 'doing' THEN 0 WHEN 'waiting' THEN 1 WHEN 'open' THEN 2
                 ELSE 3 END, r.due_at IS NULL, r.due_at, r.created_at, r.key`
-            : isBuiltIn(list)
-              ? sql`r.state IN ('done', 'dropped'), lower(r.title), r.key`
-              : sql`r.state IN ('done', 'dropped'), r.due_at IS NULL, r.due_at,
+              : isBuiltIn(list)
+                ? sql`r.state IN ('done', 'dropped'), lower(r.title), r.key`
+                : sql`r.state IN ('done', 'dropped'), r.due_at IS NULL, r.due_at,
                   ${moneyDay(sql)} DESC, r.created_at DESC, r.key`;
         const rows = yield* sql<RecordRow>`${selectRecords(sql)} WHERE ${filter}
           ORDER BY ${order}

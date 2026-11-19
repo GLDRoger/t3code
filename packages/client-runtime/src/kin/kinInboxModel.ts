@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
+import { kinNow } from "./kinNow.ts";
 import {
   KinChatSummary,
   KinMessage,
@@ -287,7 +288,7 @@ function advanceContiguous(messages: ReadonlyArray<KinMessage>, from: number): n
 export function applyKinChatEvent(
   state: KinChatState,
   event: KinChatStreamEvent,
-  now: string = new Date().toISOString(),
+  now: string = kinNow().toISOString(),
 ): KinChatState {
   switch (event._tag) {
     case "backlog": {

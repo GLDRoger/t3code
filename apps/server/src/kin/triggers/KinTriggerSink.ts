@@ -1,3 +1,4 @@
+import * as DevClock from "../DevClock.ts";
 import * as KinEnabled from "../KinEnabled.ts";
 import { type CommandId, KinTriggerFireId, KinTriggerFired } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -306,5 +307,9 @@ export function wrapTaskDispatch<E, R, E2, R2>(
             : refusing("Kin is off"),
       ),
     ),
-  ).pipe(Layer.provide(KinEnabled.layer));
+  ).pipe(
+    Layer.provide(KinEnabled.layer),
+    // T3's scheduled tasks run Kin's check-ins, so they keep Kin's dev clock too.
+    Layer.merge(DevClock.layer),
+  );
 }

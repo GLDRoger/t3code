@@ -538,7 +538,7 @@ export const run = Effect.fn("KinCardActions.run")(function* (
   plan: CardPlan,
   deps: {
     readonly records: KinRecords["Service"];
-    readonly chat: Pick<KinChatService["Service"], "closeReplaced" | "reopenClosed">;
+    readonly chat: Pick<KinChatService["Service"], "closeReplaced" | "reopenClosed" | "notice">;
   },
 ) {
   if (plan.kind === "let_talk") return yield* runRoute(tap, plan);
@@ -576,13 +576,16 @@ export const run = Effect.fn("KinCardActions.run")(function* (
       ? undefined
       : yield* runOne(tap, plan.final, deps.records, [plan.draw], [plan.widgetId]);
   if (done?.title === NOTHING_DONE) return done;
-  yield* answerCard({
-    orgId: tap.orgId,
-    widgetId: plan.widgetId,
-    personId: tap.personId,
-    label: plan.label,
-    now: tap.now,
-  });
+  yield* answerCard(
+    {
+      orgId: tap.orgId,
+      widgetId: plan.widgetId,
+      personId: tap.personId,
+      label: plan.label,
+      now: tap.now,
+    },
+    deps.chat,
+  );
   const went = { title: `Went with ${quoted(plan.label, 40)}`, text: "Answered on a later card." };
   for (const widgetId of new Set([row.widgetId, row.raiseWidgetId]))
     if (widgetId !== null && widgetId !== tap.widget.widgetId)
@@ -627,7 +630,10 @@ export const untakenAtDay = Effect.fn("KinCardActions.untakenAtDay")(function* (
 export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
   orgId: KinOrgId,
   plan: CardPlan,
-  question: Pick<QuestionRow, "questionId" | "agentId" | "chatId" | "widgetId" | "raiseWidgetId">,
+  question: Pick<
+    QuestionRow,
+    "questionId" | "agentId" | "chatId" | "widgetId" | "raiseWidgetId" | "askedAt"
+  >,
   records: KinRecords["Service"],
 ) {
   if (!takesAsDefault(plan) || plan.draw.agentId !== question.agentId) return false;
@@ -657,21 +663,30 @@ export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
   }
   if ((yield* drawHolds(orgId, plan.draw)) !== undefined) return false;
   if (!(yield* teamMay(orgId, plan.draw, row, state))) return false;
-  yield* records.update(
-    orgId,
-    {
-      actor: { _tag: "agent", agentId: question.agentId },
-      via: "lead",
-      chatId: question.chatId,
-      // Its own cards say what Kin went with, not that the task closed under them.
-      answering: [question.widgetId, question.raiseWidgetId].filter((id) => id !== null),
-    },
-    row.key,
-    { state },
-    plan.rev,
-    takenFor(question.questionId),
-  );
-  return true;
+  // A person's change since it was asked, or since it was offered, waits for its person.
+  return yield* records
+    .update(
+      orgId,
+      {
+        actor: { _tag: "agent", agentId: question.agentId },
+        via: "lead",
+        chatId: question.chatId,
+        // Its own cards say what Kin went with, not that the task closed under them.
+        answering: [question.widgetId, question.raiseWidgetId].filter((id) => id !== null),
+        since: { at: question.askedAt, woke: [] },
+      },
+      row.key,
+      { state },
+      plan.rev,
+      takenFor(question.questionId),
+    )
+    .pipe(
+      Effect.as(true),
+      Effect.catchIf(
+        (error) => error.reason === "conflict",
+        () => Effect.succeed(false),
+      ),
+    );
 });
 
 /** A start the queue refused after its run moved: the whole tap rolls back, and says so. */

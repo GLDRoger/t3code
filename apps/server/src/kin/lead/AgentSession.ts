@@ -7,6 +7,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
+import * as McpToolExposure from "../../mcp/McpToolExposure.ts";
 import { OrchestratorToolkit } from "../../mcp/toolkits/orchestrator/tools.ts";
 import { ProjectToolkit } from "../../mcp/toolkits/project/tools.ts";
 import { PullRequestsToolkit } from "../../mcp/toolkits/pullRequests/tools.ts";
@@ -30,6 +31,7 @@ import { outsideRead } from "./OutsideContent.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { listedOnSharedThread } from "./SharedTools.ts";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
+import { wakeupOfRuns } from "../chat/wakeupRuns.ts";
 import { isSocialTool } from "../social/mcp.ts";
 import { socialSeatThread } from "../social/seat.ts";
 
@@ -59,13 +61,10 @@ const isT3Tool = (name: string) => t3Tools.has(name);
 
 type Turn = { orgId: KinOrgId; agentId: KinAgentId; wakeupId: string };
 
-/** Deeper chains than this are refused: T3 nests delegated tasks only a few levels. */
-const MAX_DELEGATION_DEPTH = 8;
-
 /**
- * The Kin turn whose rights a thread's built-in tools follow: the thread's own running wake-up,
- * else, for a task delegated (at any depth) from a lead's run, the wake-up of that run.
- * `delegated` says the thread descends from a lead's thread.
+ * Where a thread's task links lead, and the Kin turn its built-in tools follow: its own running
+ * wake-up (`lead`), a plain T3 tree (`ordinary`), a task under a lead's thread at any depth (`kin`,
+ * the wake-up of the run that asked for its first link), or links that never reach a root.
  */
 const governingTurn = Effect.fnUntraced(function* (threadId: ThreadId) {
   const sql = yield* SqlClient.SqlClient;
@@ -73,27 +72,38 @@ const governingTurn = Effect.fnUntraced(function* (threadId: ThreadId) {
     SELECT org_id AS "orgId", agent_id AS "agentId", wakeup_id AS "wakeupId" FROM kin_wakeups
     WHERE thread_id = ${threadId} AND status = 'running'
     ORDER BY started_at, wakeup_id LIMIT 1`;
-  if (own !== undefined) return { turn: own, delegated: false };
+  if (own !== undefined) return { lineage: "lead", delegated: false, turn: own } as const;
+  const seen = new Set<string>([threadId]);
   let current: string = threadId;
-  for (let depth = 0; depth < MAX_DELEGATION_DEPTH; depth++) {
-    const [link] = yield* sql<{ threadId: string; runId: string | null }>`
-      SELECT thread_id AS "threadId", run_id AS "runId" FROM orchestration_v2_projection_subagents
-      WHERE child_thread_id = ${current} AND origin = 'app_owned' ORDER BY subagent_id LIMIT 1`;
-    if (link === undefined) return { turn: undefined, delegated: false };
-    const [lead] = yield* sql<Turn & { run: string | null }>`
-      SELECT org_id AS "orgId", agent_id AS "agentId", wakeup_id AS "wakeupId", run_id AS run
-      FROM kin_wakeups WHERE thread_id = ${link.threadId}
-      ORDER BY run_id = ${link.runId} DESC, started_at DESC, wakeup_id LIMIT 1`;
-    // A lead's thread: its task follows the turn whose run asked for it, and none other.
-    if (lead !== undefined)
+  for (;;) {
+    const [link] = yield* sql<{ threadId: string; runId: string | null; lead: number }>`
+      SELECT s.thread_id AS "threadId", s.run_id AS "runId",
+        EXISTS (SELECT 1 FROM kin_wakeups w WHERE w.thread_id = s.thread_id) AS lead
+      FROM orchestration_v2_projection_subagents s
+      WHERE s.child_thread_id = ${current} AND s.origin = 'app_owned' ORDER BY s.subagent_id LIMIT 1`;
+    if (link === undefined)
+      return { lineage: "ordinary", delegated: false, turn: undefined } as const;
+    if (link.lead === 1) {
+      const [turn] =
+        link.runId === null
+          ? []
+          : yield* wakeupOfRuns(
+              sql,
+              sql`SELECT run_id, thread_id, ordinal, payload_json FROM orchestration_v2_projection_runs
+                WHERE run_id = ${link.runId} AND thread_id = ${link.threadId}`,
+              sql`w.thread_id = ${link.threadId}`,
+            );
       return {
-        turn: link.runId !== null && lead.run === link.runId ? lead : undefined,
+        lineage: "kin",
         delegated: true,
-      };
+        turn,
+      } as const;
+    }
+    if (seen.has(link.threadId))
+      return { lineage: "unresolved", delegated: true, turn: undefined } as const;
+    seen.add(link.threadId);
     current = link.threadId;
   }
-  // Too deep to trace: treat it as Kin's, so its hook admits nothing.
-  return { turn: undefined, delegated: true };
 });
 
 /**
@@ -118,17 +128,27 @@ export const fullSessionRefusal = Effect.fn("KinAgentSession.fullSessionRefusal"
   ),
 );
 
-/** Whether a thread is a task delegated, at any depth, from a Kin lead's thread. */
-export const delegatedFromLead = Effect.fn("KinAgentSession.delegatedFromLead")(
-  function* (threadId: ThreadId) {
-    const { delegated } = yield* governingTurn(threadId);
-    return delegated;
-  },
+/** Whether a thread is a task delegated, at any depth, from a lead, and the turn it follows. */
+export const delegatedTurn = Effect.fn("KinAgentSession.delegatedTurn")(
+  (threadId: ThreadId) => governingTurn(threadId),
   // Unknown lineage still gets Kin's hook, which then admits nothing it can't prove.
   Effect.catchCause((cause) =>
-    Effect.logWarning("Kin delegation lineage failed; confining", { cause }).pipe(Effect.as(true)),
+    Effect.logWarning("Kin delegation lineage failed; confining", { cause }).pipe(
+      Effect.as({ lineage: "unresolved", delegated: true, turn: undefined } as const),
+    ),
   ),
 );
+
+/** Whether a thread is a task delegated, at any depth, from a Kin lead's thread. */
+export const delegatedFromLead = Effect.fn("KinAgentSession.delegatedFromLead")(function* (
+  threadId: ThreadId,
+) {
+  return (yield* delegatedTurn(threadId)).delegated;
+});
+
+/** What a task delegated from a lead may reach on T3's own endpoint: its lead's T3 tools. */
+export const workerMayReach = (name: string) =>
+  leadT3Tools.has(name) || name === McpToolExposure.TOOL_SEARCH;
 
 /** Social's tools show only in the own thread of the lead whose remit is social media. */
 const onSocialSeat = Effect.fn("KinAgentSession.onSocialSeat")(
@@ -147,12 +167,15 @@ const onSocialSeat = Effect.fn("KinAgentSession.onSocialSeat")(
   ),
 );
 
+/** How far up T3's task links a lead's name is looked for. */
+const MAX_NAME_DEPTH = 8;
+
 /** The name of the lead whose thread this is, or whose task it is, up T3's task links. */
 export const leadNameOf = Effect.fn("KinAgentSession.leadNameOf")(
   function* (threadId: ThreadId) {
     const sql = yield* SqlClient.SqlClient;
     let current: string = threadId;
-    for (let depth = 0; depth <= MAX_DELEGATION_DEPTH; depth++) {
+    for (let depth = 0; depth <= MAX_NAME_DEPTH; depth++) {
       const [lead] = yield* sql<{ name: string }>`SELECT l.name FROM kin_wakeups w
         JOIN kin_leads l ON l.org_id = w.org_id AND l.agent_id = w.agent_id
         WHERE w.thread_id = ${current} ORDER BY w.started_at DESC LIMIT 1`;
