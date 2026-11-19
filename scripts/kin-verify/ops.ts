@@ -80,6 +80,15 @@ export const mailDeliver = (instance: Instance, args: ReadonlyArray<string>) =>
 export const mailExpire = (instance: Instance, args: ReadonlyArray<string>) =>
   fakeMail(instance, ["expire", ...args.filter((arg) => arg !== "expire")]).trim();
 
+/** The fake vendor's half of a sign-in: a working grant, and the page Kin's sign-in returns to. */
+export function mailApprove(instance: Instance, authorizationUrl: string, address: string) {
+  if (!NodeFS.existsSync(mailbox(instance)))
+    throw new VerifyError(
+      "this instance has no fake mailbox (KIN_DEV_FAKE_MAIL), so no sign-in here",
+    );
+  return fakeMail(instance, ["approve", authorizationUrl, address]).trim();
+}
+
 /** "3d", "12h", "90m", "2w" to milliseconds. */
 export function parseDuration(text: string): number {
   const match = /^(\d+)\s*(m|h|d|w)$/.exec(text.trim());

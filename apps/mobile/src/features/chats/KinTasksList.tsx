@@ -12,6 +12,7 @@ import {
   kinTaskGroupedChip,
   kinTaskLine,
   kinTaskStep,
+  kinTaskStepStatusShown,
   kinTasksByMove,
   kinTasksGroupedBy,
   type KinTasksItem,
@@ -485,7 +486,7 @@ export function KinTasksList(
                     })}
                     avatar={kinWorkAvatar(record.owner)}
                     step={shown}
-                    status={steps.status[record.key] ?? null}
+                    status={kinTaskStepStatusShown(steps.status[record.key], shown)}
                     first={item.first}
                     last={item.last}
                     saving={changed.pending[item.key] !== undefined}

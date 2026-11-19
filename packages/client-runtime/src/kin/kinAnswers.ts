@@ -68,6 +68,10 @@ export interface KinFailureWords {
   readonly device?: string;
 }
 
+/** Whether a host's message is for a person: words for an agent's tools (`list_define`, `dueAt`) aren't. */
+export const kinPersonWords = (said: string) =>
+  said !== "" && !/[a-z]+_[a-z]+|[a-z][A-Z]/.test(said);
+
 export function kinFailure(cause: unknown, what: string, words: KinFailureWords = {}): KinFailure {
   const error = errorOf(cause);
   if (isAuthorizationError(error))
@@ -79,8 +83,7 @@ export function kinFailure(cause: unknown, what: string, words: KinFailureWords 
   if (!isChatError(error))
     return { kind: "offline", text: `${what} ${KIN_CHECK_CONNECTION}`, retry: true };
   const said = error.message.trim();
-  // Words written for an agent's tools (`list_define`, `dueAt`) are not a person's.
-  const own = said !== "" && !/[a-z]+_[a-z]+|[a-z][A-Z]/.test(said) ? said : null;
+  const own = kinPersonWords(said) ? said : null;
   switch (error.reason) {
     case "not_allowed":
       return {

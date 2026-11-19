@@ -18,6 +18,7 @@ import {
   KinMessageId,
   KinOrgId,
   KinPersonId,
+  KinSendTry,
   KinText,
   KinTrimmedText,
   KinWidgetId,
@@ -513,6 +514,8 @@ export const KinWorkMoveCard = Schema.Struct({
   ...KinRecordWaiting.fields,
   revision: NonNegativeInt,
   options: Schema.Array(KinChoiceOption),
+  /** A mail card's `send.mayHaveGone`: its Confirm needs the card itself, where it is ticked. */
+  mayHaveGone: Schema.optional(KinSendTry),
 });
 export type KinWorkMoveCard = typeof KinWorkMoveCard.Type;
 

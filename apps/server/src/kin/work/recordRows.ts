@@ -678,8 +678,10 @@ const sentWith = Effect.fn("KinRecords.sentWith")(function* (orgId: KinOrgId, re
     threadId: string | null;
     at: number;
   }>`
-    SELECT json_extract(payload_json, '$.to') AS "to",
-      json_extract(payload_json, '$.subject') AS subject,
+    SELECT COALESCE(json_extract(payload_json, '$.confirmed.to'),
+        json_extract(payload_json, '$.to')) AS "to",
+      COALESCE(json_extract(payload_json, '$.confirmed.subject'),
+        json_extract(payload_json, '$.subject')) AS subject,
       json_extract(result_json, '$.threadId') AS "threadId", done_at AS at
     FROM kin_connection_asks
     WHERE org_id = ${orgId} AND entry_record_id = ${recordId} AND state = 'sent'

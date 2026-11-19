@@ -440,6 +440,36 @@ it.effect("a mail waiting to be confirmed about an entry shows on the sheet of w
     } as never);
     const hers = yield* OwnerWork.list([zoya], { orgId, byMove: true });
     assert.deepStrictEqual(hers.moves, [{ key: made.key, group: "needsYou" }] as never);
+    // Words a person saved on the card are what its Confirm sends, so the row names those.
+    const edited = {
+      question: "Send this email?",
+      detail: null,
+      options: [
+        { optionId: "yes", label: "Confirm", kind: "yes" },
+        { optionId: "no", label: "Don't send", kind: "no" },
+      ],
+      send: {
+        service: "Mail",
+        action: "email",
+        from: null,
+        to: ["billing@client.invalid"],
+        cc: [],
+        subject: "October invoice, corrected",
+        body: "Invented edit",
+        attachments: [],
+        outcome: null,
+        edited: { personId: rheaId, name: "Rhea" },
+      },
+      answer: null,
+    };
+    yield* sql`UPDATE kin_widgets SET revision = 2, state_json = ${JSON.stringify(edited)}
+      WHERE widget_id = 'card'`;
+    const saved = (yield* OwnerWork.list([rhea], { orgId, byMove: true })).moves?.[0]?.card;
+    assert.deepInclude(saved, {
+      preview: "To billing@client.invalid: October invoice, corrected",
+      revision: 2,
+    } as never);
+    assert.lengthOf(saved?.options ?? [], 2);
     // Once decided, nothing waits.
     yield* sql`UPDATE kin_connection_asks SET state = 'sent'`;
     assert.notProperty(yield* OwnerWork.get([rhea], { orgId, key: made.key }), "waiting");

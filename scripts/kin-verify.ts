@@ -40,6 +40,7 @@ import {
 } from "./kin-verify/instance.ts";
 import {
   mailDeliver,
+  mailApprove,
   mailExpire,
   fakeSocial,
   mailSentLines,
@@ -76,6 +77,8 @@ const HELP = `kin-verify [--instance <name>] <command>
   tool <agent> --script <file.json>       the same with several calls (and "shell"/"sleep" steps)
   mail sent | mail deliver --to a --from "N <b>" --subject s --body t [--thread id]
   mail expire <address> [--back]          the account's sign-in stops working (or works again)
+  mail signin <address>                   the owner signs that fake account in again, as Settings'
+                                          Sign in again does once the vendor approves (fake mailbox only)
   push sent                               what Kin would have pushed, per person's device (no APNs)
   social profile <name> <platform:handle>... [all-profiles] | social past <profileId> '<json>' | social fail-next <accountId> <reason> | social posts
   clock show                              this instance's now, in the company's zone and UTC
@@ -105,6 +108,7 @@ function parse(argv: ReadonlyArray<string>): Args {
     "json",
     "dark",
     "light",
+    "back",
   ]);
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index]!;
@@ -389,6 +393,33 @@ function pairingUrlFor(instance: Instance, web: string) {
   const token = /^Token: (\S+)/m.exec(out.stdout)?.[1];
   if (token === undefined) throw new VerifyError("t3 pair failed; run `kin-verify doctor`");
   return `${web}/pair#token=${token}`;
+}
+
+/** Sign in again through the owner's own sign-in, with the fake vendor approving in the browser's place. */
+async function mailSignIn(instance: Instance, address: string | undefined) {
+  if (address === undefined) throw new VerifyError("mail signin needs the account's address");
+  const connection = await rpcAs(instance, "owner");
+  try {
+    type View = {
+      connections: Array<{ connectionId: string; accountLabel: string | null; state: string }>;
+    };
+    const find = async () =>
+      ((await connection.call("kin.connections.list", { orgId: ORG })) as View).connections.find(
+        (one) => one.accountLabel?.toLowerCase() === address.toLowerCase(),
+      );
+    const account = await find();
+    if (account === undefined) throw new VerifyError(`no connection for ${address}`);
+    const started = (await connection.call("kin.connections.signInStart", {
+      orgId: ORG,
+      connectionId: account.connectionId,
+      returnTo: "web",
+    })) as { authorizationUrl: string };
+    const response = mailApprove(instance, started.authorizationUrl, address);
+    await connection.call("kin.connections.signInFinish", { orgId: ORG, response });
+    return `${address}: signed in again (was ${account.state}, now ${(await find())?.state})`;
+  } finally {
+    connection.close();
+  }
 }
 
 async function rpc(instance: Instance, person: string, args: Args) {
@@ -763,8 +794,9 @@ async function main() {
           ),
         );
       if (action === "expire") return console.log(mailExpire(instance, rest.slice(1)));
+      if (action === "signin") return console.log(await mailSignIn(instance, args.positional[1]));
       throw new VerifyError(
-        "mail sent | mail deliver --to --from --subject --body [--thread] | mail expire <address> [--back]",
+        "mail sent | mail deliver --to --from --subject --body [--thread] | mail expire <address> [--back] | mail signin <address>",
       );
     }
     case "social":

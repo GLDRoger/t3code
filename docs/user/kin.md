@@ -372,7 +372,16 @@ from the account and thread the email is in.
 The card shows exactly what will be sent, from which account, to whom. One **Confirm** sends it
 once. Only the owner or a co-owner can confirm. To fix a mail's words yourself, tap **Edit**:
 change To, Cc, Subject or the message, then **Send edited mail** sends it as you left it, with
-no new draft from the agent. Attached files go as they were.
+no new draft from the agent. **Save** keeps your words on the card without sending, marked as
+edited by you, and its **Confirm** then sends them; leaving the chat or the app with changes saves
+them too. If the card changed meanwhile, your words stay on that device until the page is reloaded
+or the app restarts, and show again on the card for you to check and save. **Discard edits** puts
+the agent's draft back. Attached files go as they were.
+
+If an earlier try at a mail may already have gone (the account gave no clear answer, or Kin
+restarted while sending), every card for that mail says so, in any chat. Check the account's sent
+mail, then tick **I've checked the sent mail** to Confirm. From Tasks, open the card with
+**Review**.
 
 ### GitHub
 
