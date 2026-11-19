@@ -119,6 +119,18 @@ export class KinLevelGate extends Context.Service<
       input: AskInput,
       bind?: (widget: KinWidget) => Effect.Effect<void, SqlError.SqlError>,
     ) => Effect.Effect<KinWidget, KinChatError>;
+    /**
+     * A question card for one person in their own direct chat with the lead (`askPerson.ts`),
+     * under every check `ask` makes; a shared turn may post there too, its route checked by the
+     * caller. Kin posts it, spending no floor grant. Held for their quiet hours or away days,
+     * nothing is posted and `bind` gets null.
+     */
+    readonly askTo: (
+      agent: AgentIdentity,
+      personId: KinPersonId,
+      input: AskInput,
+      bind: (widget: KinWidget | null) => Effect.Effect<void, SqlError.SqlError>,
+    ) => Effect.Effect<KinWidget | HeldPost, KinChatError>;
     /** A doc card, gated like a post. */
     /** Closes the agent's own unanswered choice cards that a newer card replaced. */
     readonly closeReplaced: (
@@ -286,7 +298,12 @@ const make = Effect.gen(function* () {
     agent: AgentIdentity,
     chatId: KinChatId,
     allowed: Effect.Effect<A, E>,
-    to?: { readonly personId: KinPersonId; readonly text: string },
+    to?: {
+      readonly personId: KinPersonId;
+      readonly text: string;
+      /** A shared turn may write there too: the person's own chat, its route checked already. */
+      readonly outside?: true;
+    },
   ): Effect.Effect<A, KinChatError> =>
     // A turn found shared stays shared: settled before the write's transaction, which a
     // refusal rolls back. The destination is checked again inside it.
@@ -331,7 +348,7 @@ const make = Effect.gen(function* () {
                   reason: "not_allowed",
                   message: AUDIENCE_MOVED,
                 });
-              if (where === "elsewhere")
+              if (where === "elsewhere" && to?.outside !== true)
                 return yield* new KinChatError({
                   reason: "not_allowed",
                   message: SHARED_ELSEWHERE,
@@ -514,6 +531,30 @@ const make = Effect.gen(function* () {
               ),
             ),
           ),
+      ),
+    ),
+    askTo: Effect.fn("KinLevelGate.askTo")((agent, personId, input, bind) =>
+      gated(
+        "gated ask to",
+        agent,
+        input.chatId,
+        Effect.gen(function* () {
+          const where = { orgId: agent.orgId, personId, chatId: input.chatId, unasked: true };
+          const held = yield* holdFor(where);
+          if (held === undefined)
+            return yield* chat
+              .ask({ ...agent, hostPosted: true }, { ...input, forChat: true })
+              .pipe(Effect.tap(bind));
+          yield* bind(null);
+          return { _tag: "held" as const, at: held.at, zone: held.zone, why: held.why };
+        }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+        {
+          personId,
+          text: [input.question, input.detail ?? "", ...input.options.map((one) => one.label)].join(
+            "\n",
+          ),
+          outside: true,
+        },
       ),
     ),
     showCard: Effect.fn("KinLevelGate.showCard")((agent, input) =>

@@ -26,6 +26,7 @@ import * as CardActions from "../../widgets/cardActions.ts";
 import * as CardPlans from "../../widgets/cardPlans.ts";
 import * as ChoiceCard from "../../widgets/choiceCard.ts";
 import { KinHandoff } from "../Handoff.ts";
+import { KinEventQueue } from "../KinEventQueue.ts";
 import { KinTeam } from "../../team/KinTeam.ts";
 import { KinLevelGate } from "../LevelGate.ts";
 import { LeadMemory, resolveLead } from "../LeadMemory.ts";
@@ -276,6 +277,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
             now: yield* Clock.currentTimeMillis,
           },
           Context.get(services, KinChatService),
+          Context.get(services, KinEventQueue),
         ),
       );
       return { question: closed.questionId, state: closed.state };

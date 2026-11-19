@@ -526,7 +526,7 @@ export const run = Effect.fn("KinCardActions.run")(function* (
   plan: CardPlan,
   deps: {
     readonly records: KinRecords["Service"];
-    readonly chat: Pick<KinChatService["Service"], "closeReplaced" | "reopenClosed">;
+    readonly chat: Pick<KinChatService["Service"], "closeReplaced" | "reopenClosed" | "notice">;
   },
 ) {
   if (plan.kind === "let_talk") return yield* runRoute(tap, plan);
@@ -563,13 +563,16 @@ export const run = Effect.fn("KinCardActions.run")(function* (
       ? undefined
       : yield* runOne(tap, plan.final, deps.records, [plan.draw], [plan.widgetId]);
   if (done?.title === NOTHING_DONE) return done;
-  yield* answerCard({
-    orgId: tap.orgId,
-    widgetId: plan.widgetId,
-    personId: tap.personId,
-    label: plan.label,
-    now: tap.now,
-  });
+  yield* answerCard(
+    {
+      orgId: tap.orgId,
+      widgetId: plan.widgetId,
+      personId: tap.personId,
+      label: plan.label,
+      now: tap.now,
+    },
+    deps.chat,
+  );
   const went = { title: `Went with ${quoted(plan.label, 40)}`, text: "Answered on a later card." };
   for (const widgetId of new Set([row.widgetId, row.raiseWidgetId]))
     if (widgetId !== null && widgetId !== tap.widget.widgetId)
