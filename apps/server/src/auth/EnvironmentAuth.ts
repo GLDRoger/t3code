@@ -1477,7 +1477,11 @@ export const make = Effect.gen(function* () {
     // A T3 Connect device would otherwise mint itself a new session right away.
     return yield* Option.match(yield* proofKeyOf(sessionId), {
       onNone: () => revokeSession(sessionId, callerSessionId),
-      onSome: revokeConnectDevice,
+      // Kin keeps the host CLI's revoke to the session, so a lapsed one leaves the device trusted.
+      onSome: (proofKey) =>
+        Effect.flatMap(kinHooks.revokesSessionOnly(callerSessionId), (sessionOnly) =>
+          sessionOnly ? revokeSession(sessionId, callerSessionId) : revokeConnectDevice(proofKey),
+        ),
     });
   });
 
