@@ -104,7 +104,9 @@ features:
     note: >-
       Stored only for a direct chat with one person. A repeat (same intent about a shared record)
       is refused; at its day Kin takes the default once, or raises a question with no safe default
-      once on the next working morning. Text questions close on the person's next message.
+      once on the next working morning. Text questions close on the person's next message. Only the
+      asker records an answer in words, in a turn woken by the person's message in that chat; its
+      note's Undo reopens the question.
     proof:
       - apps/server/src/kin/questions/openQuestions.test.ts
       - apps/server/src/kin/questions/rules.test.ts
