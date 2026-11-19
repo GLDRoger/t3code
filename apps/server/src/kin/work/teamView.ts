@@ -32,6 +32,7 @@ const NOT_LISTS = [
   "clients",
   "contacts",
   "projects",
+  "deals",
   "bank_transactions",
 ];
 
@@ -88,10 +89,9 @@ const attends = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fra
     WHERE a.value = 'person:' || ${personId})`;
 
 /**
- * What a non-owner-level person sees, on every screen, count, search and turn: a task they hold,
- * attend or marked private themselves, private or not. Unlabelled: what they made, gave or share, the projects they are on,
- * their projects' entries and docs (a private task is never its project lead's), and company docs
- * with the Docs place on.
+ * What a non-owner-level person sees everywhere: a task they hold, attend or marked private; unlabelled,
+ * what they made, gave or share, their projects with those projects' entries and docs (never a
+ * private task), company docs with Docs on, and with Clients on the deals of clients they see.
  */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`((r.register_id = 'work' AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
@@ -109,6 +109,9 @@ export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Sta
     OR (r.register_id = 'docs' AND (r.team_shared = 1
       OR json_extract(r.fields_json, '$.home') = 'company')
       AND ${placeOn(sql, personId, "sees_docs")})))
+  OR (r.register_id = 'deals' AND NOT ${inheritedSensitive(sql)}
+    AND ${placeOn(sql, personId, "sees_clients")}
+    AND (r.sensitive = 0 OR (r.owner_kind = 'person' AND r.owner_id = ${personId})))
   OR (r.register_id NOT IN ${sql.in(NOT_LISTS)} AND r.team_shared = 1 AND ${ownLabelOff(sql)}
     AND NOT ${inheritedSensitive(sql)} AND ${placeOn(sql, personId, "sees_money")}))`;
 

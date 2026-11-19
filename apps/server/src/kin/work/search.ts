@@ -143,7 +143,8 @@ export const search = Effect.fn("KinSearch.search")(function* (
       // A milestone or a goal opens as an entry does.
       kind: MONEY.has(row.registerId)
         ? (row.registerId as KinSearchKind)
-        : ((list) => (list === "milestones" || list === "goals" ? "work" : list))(
+        : ((list) =>
+            list === "milestones" || list === "goals" || list === "deals" ? "work" : list)(
             listOf(row.registerId),
           ),
       title: row.title,

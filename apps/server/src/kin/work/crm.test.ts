@@ -10,6 +10,7 @@ import {
   KinOrgId,
   KinPersonId,
   KinRecordId,
+  KinRecordKey,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -36,6 +37,7 @@ import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
 import * as Clients from "./ownerClients.ts";
+import * as Deals from "./deals.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import * as Docs from "./docs.ts";
 import * as Search from "./search.ts";
@@ -2081,5 +2083,107 @@ it.effect(
           late,
           atRisk,
         });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "an agent makes and moves a deal through the same rules: a prospect's win makes it a client, a vendor has none, lost needs its reason",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* setup("ask-event");
+      const prospect = yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Brightwater",
+        prospect: true,
+        source: "Invented trade fair",
+        clientRequestId: "brightwater",
+      });
+      const vendor = yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Supplies",
+        kind: "vendor",
+        clientRequestId: "supplies",
+      });
+      const refused = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.flip,
+          Effect.map((error) => (isChatError(error) ? error.reason : error._tag)),
+        );
+      assert.strictEqual(
+        yield* refused(
+          LeadWork.create(scope, {
+            sourceEventId: "ask-event",
+            records: [{ list: "deals", title: "Invented supply deal", client: vendor.key }],
+          }),
+        ),
+        "invalid_state",
+      );
+      for (const fields of [{ stage: "nope" }, { offering: "Invented" }])
+        assert.strictEqual(
+          yield* refused(
+            LeadWork.create(scope, {
+              sourceEventId: "ask-event",
+              records: [{ list: "deals", title: "Invented pilot", client: prospect.key, fields }],
+            }),
+          ),
+          "invalid_state",
+        );
+      const made = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          {
+            list: "deals",
+            title: "Invented pilot",
+            client: prospect.key,
+            fields: { stage: "in-talks" },
+            amount: "18000",
+            currency: "EUR",
+            due: "2026-12-18",
+          },
+        ],
+      });
+      const key = made.records[0]!.key;
+      // The same row from the same event is a retry.
+      const again = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ list: "deals", title: "Invented pilot", client: prospect.key }],
+      });
+      assert.deepStrictEqual(again.records[0]!, { ...again.records[0]!, key, created: false });
+      const deal = (yield* Deals.page([owner], { orgId, key })).deal;
+      assert.deepInclude(deal, {
+        stage: "in-talks",
+        value: { minor: 1_800_000, currency: "EUR" },
+        source: "Invented trade fair",
+        // Looked after by the person the agent made it for.
+        owner: { _tag: "person", personId: ownerId },
+      });
+      assert.strictEqual(
+        yield* refused(
+          LeadWork.update(scope, {
+            key: KinRecordKey.make(key),
+            sourceEventId: "ask-event",
+            state: "dropped",
+          }),
+        ),
+        "invalid_state",
+      );
+      const won = yield* LeadWork.update(scope, {
+        key: KinRecordKey.make(key),
+        sourceEventId: "ask-event",
+        state: "done",
+      });
+      assert.strictEqual(won.state, "done");
+      assert.isUndefined(
+        (yield* Clients.party([owner], { orgId, key: prospect.key })).party.prospect,
+      );
+      const reopened = yield* LeadWork.update(scope, {
+        key: KinRecordKey.make(key),
+        sourceEventId: "ask-event",
+        state: "open",
+        fields: { stage: "deciding" },
+      });
+      assert.strictEqual(reopened.state, "open");
+      assert.strictEqual((yield* Deals.page([owner], { orgId, key })).deal.stage, "deciding");
     }).pipe(Effect.provide(layer)),
 );

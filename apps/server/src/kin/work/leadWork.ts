@@ -59,6 +59,7 @@ import {
   isMoneyMeasure,
 } from "./goals.ts";
 import { FieldInputs, turnFiles, typedFields } from "./leadFields.ts";
+import * as Deals from "./deals.ts";
 import {
   OWNERS_SPINE,
   ProjectRead,
@@ -90,6 +91,7 @@ import {
   type RecordRow,
   sensitiveNow,
   toRecord,
+  workFailure,
 } from "./recordRows.ts";
 import {
   allLists,
@@ -1815,6 +1817,8 @@ const createRow = Effect.fnUntraced(function* (
   if (row.amount !== undefined) yield* countryFirst(lead.orgId);
   const def = yield* listFor(lead, row.list ?? "work");
   const list = def.id;
+  // A deal's rules are `deals.ts`'s, whoever writes it.
+  if (list === "deals") return yield* dealRow(lead, sourceEventId, writer, def, lists, row);
   // A client or contact is the owner's to look after unless told otherwise.
   const owner = yield* resolveWho(
     lead,
@@ -1965,6 +1969,157 @@ const createRow = Effect.fnUntraced(function* (
     ...(sameEmail === undefined ? {} : { sameEmail }),
   };
 });
+const DEAL_FIELDS = ["stage", "source", "lostReason"];
+const dealFields = (fields: FieldInputs | undefined) => {
+  const given = fields ?? {};
+  const extra = Object.keys(given).filter((key) => !DEAL_FIELDS.includes(key));
+  if (extra.length > 0) return Effect.fail(invalid(`A deal has no ${extra.join(", ")}.`));
+  const text = (key: string) => {
+    const value = given[key];
+    return typeof value === "string" ? value : value === null ? null : undefined;
+  };
+  return Effect.succeed({
+    stage: text("stage"),
+    source: text("source"),
+    lostReason: text("lostReason"),
+  });
+};
+/** A deal's value as the agent wrote it: in the currency named, else the deal's own, else home. */
+const dealValue = (
+  def: ListDef,
+  amount: string | null | undefined,
+  currency: string | undefined,
+  stored: string | undefined,
+) =>
+  amount === undefined || amount === null
+    ? Effect.succeed(amount)
+    : amountFrom(def, amount, currency, stored);
+
+const dealRow = Effect.fnUntraced(function* (
+  lead: Lead,
+  sourceEventId: string,
+  writer: Writer,
+  def: ListDef,
+  lists: Lists,
+  row: typeof CreateRow.Type,
+) {
+  if (row.client === undefined)
+    return yield* invalid("A deal needs its client or prospect: give client.");
+  const party = yield* refRecord(lead, row.client, "clients");
+  const fields = yield* dealFields(row.fields);
+  if (fields.lostReason !== undefined && fields.lostReason !== null)
+    return yield* invalid("A new deal is open; record why it was lost with record_update.");
+  const owner =
+    row.owner === undefined ? undefined : yield* resolveWho(lead, row.owner).pipe(asField("owner"));
+  const due = row.due === undefined ? {} : yield* dueOf(lead.orgId, row.due);
+  const value = yield* dealValue(def, row.amount, row.currency, undefined);
+  const actor = yield* Deals.agentActor(lead.orgId, writer);
+  const { row: stored, created } = yield* Deals.createAs(actor, {
+    partyKey: party.key,
+    title: row.title,
+    ...(fields.stage === undefined || fields.stage === null ? {} : { stage: fields.stage }),
+    ...(value === undefined || value === null ? {} : { value }),
+    ...due,
+    ...(fields.source === undefined || fields.source === null ? {} : { source: fields.source }),
+    ...(owner === undefined ? {} : { owner }),
+    ...(row.sensitive === undefined ? {} : { sensitive: true }),
+    ...(row.notes === undefined ? {} : { notes: row.notes }),
+    originKey: `lead:${lead.agentId}:${sourceEventId}:${retryKey(`deals|${party.recordId}|${titleKey(row.title)}`)}`,
+  });
+  return {
+    key: stored.key,
+    title: stored.title,
+    created,
+    ...marksOf(lists, stored),
+    ...(party.also === undefined ? {} : { alsoNamed: party.also }),
+  };
+});
+
+/**
+ * An agent's change to a deal, through `deals.ts` in one transaction: what it says, then its
+ * stage, then won (state done), lost (dropped, with fields.lostReason) or reopened (open).
+ */
+const dealUpdate = Effect.fnUntraced(function* (
+  lead: Lead,
+  writer: Writer,
+  before: RecordRow,
+  input: Change,
+) {
+  const records = yield* KinRecords;
+  const sql = yield* SqlClient.SqlClient;
+  if (input.client !== undefined || input.project !== undefined)
+    return yield* invalid(`${before.key} stays with its client; make a new deal for another.`);
+  const fields = yield* dealFields(input.fields);
+  const def = yield* listFor(lead, "deals");
+  const stored = parseFields(before.fieldsJson).value;
+  const value = yield* dealValue(
+    def,
+    input.amount,
+    input.currency,
+    stored !== undefined && isMoney(stored) ? stored.currency : undefined,
+  );
+  const actor = yield* Deals.agentActor(lead.orgId, writer);
+  const change = {
+    ...(input.title === undefined ? {} : { title: input.title }),
+    ...(input.notes === undefined ? {} : { notes: input.notes }),
+    ...(value === undefined ? {} : { value }),
+    ...(input.due === undefined ? {} : yield* dueOf(lead.orgId, input.due)),
+    ...(fields.source === undefined ? {} : { source: fields.source }),
+    ...(input.owner === undefined ? {} : { owner: yield* resolveWho(lead, input.owner) }),
+    ...(input.sensitive === undefined ? {} : { sensitive: true }),
+  };
+  const closing = input.state === "done" || input.state === "dropped";
+  yield* sql
+    .withTransaction(
+      Effect.gen(function* () {
+        let rev = input.expectedRev;
+        const once = () => {
+          const at = rev;
+          rev = undefined;
+          return at;
+        };
+        if (Object.keys(change).length > 0)
+          yield* Deals.updateAs(actor, before.key, change, once());
+        if (fields.stage !== undefined && fields.stage !== null && !closing) {
+          if (input.state === "open")
+            yield* Deals.moveAs(actor, before.key, { _tag: "reopen" }, once());
+          yield* Deals.moveAs(actor, before.key, { _tag: "stage", stage: fields.stage }, once());
+        } else if (input.state === "open")
+          yield* Deals.moveAs(actor, before.key, { _tag: "reopen" }, once());
+        if (input.state === "done") yield* Deals.moveAs(actor, before.key, { _tag: "won" }, once());
+        if (input.state === "dropped")
+          yield* Deals.moveAs(
+            actor,
+            before.key,
+            { _tag: "lost", reason: fields.lostReason ?? "" },
+            once(),
+          );
+        if (input.state === "doing" || input.state === "waiting")
+          return yield* invalid("A deal is open, done (won) or dropped (lost).");
+      }),
+    )
+    .pipe(workFailure);
+  const after = (yield* records.get(lead.orgId, before.key)) ?? before;
+  const changed =
+    after.rev === before.rev
+      ? []
+      : [
+          ...new Set(
+            (yield* records.detail(after, Math.min(after.rev - before.rev, 10))).changes
+              .toReversed()
+              .flatMap((one) => one.fields.map((field) => field.field)),
+          ),
+        ];
+  const out: typeof Updated.Type & { readonly noLongerSeenBy?: ReadonlyArray<string> } = {
+    key: after.key,
+    rev: after.rev,
+    state: after.state,
+    changed,
+    ...marksOf(yield* allLists(lead.orgId), after),
+  };
+  return out;
+});
+
 const orList = (items: ReadonlyArray<string>) =>
   items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} or ${items.at(-1)}`;
 /** The country refusal as the call reads it: in a batch nothing was saved; whose choice it is. */
@@ -2305,6 +2460,8 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
   if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, before.recordId)))
     return yield* notFound(key);
   if (listOf(before.registerId) === "docs") return yield* isDoc(key);
+  if (before.registerId === "deals")
+    return { result: yield* dealUpdate(lead, writer, before, input), notices: [], held: [] };
   yield* explainedHonestly(lead, before, input.state, input.kind ?? input.category);
   const def = yield* listFor(lead, before.registerId);
   const patch: Patch = {

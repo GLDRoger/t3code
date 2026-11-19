@@ -32,7 +32,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
-import { parseFields } from "./lists.ts";
+import { listNameOf, parseFields } from "./lists.ts";
 import { isBuiltIn } from "./registers.ts";
 
 /** The plain rows behind `KinRecords`: reads and the shapes they decode into. No writes here. */
@@ -410,6 +410,7 @@ export const toRecord = (row: RecordRow, now: number): KinRecord => {
       ? { markedBy: KinPersonId.make(row.markedBy) }
       : {}),
     ...moneyOf(row),
+    ...listNameOf(row.registerId),
   };
 };
 

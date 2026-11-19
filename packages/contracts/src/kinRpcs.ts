@@ -31,6 +31,7 @@ import { KinLevelRpcs, KIN_LEVEL_RPC_SCOPES } from "./kinLevels.ts";
 import { KinMemoryRpcs, KIN_MEMORY_RPC_SCOPES } from "./kinMemory.ts";
 import { KinWorkRpcs, KIN_WORK_RPC_SCOPES } from "./kinWork.ts";
 import { KinDocsRpcs, KIN_DOCS_RPC_SCOPES } from "./kinDocs.ts";
+import { KinDealRpcs, KIN_DEAL_RPC_SCOPES } from "./kinDeals.ts";
 import { KinFinanceRpcs, KIN_FINANCE_RPC_SCOPES } from "./kinFinance.ts";
 import { KinStatementRpcs, KIN_STATEMENT_RPC_SCOPES } from "./kinStatements.ts";
 import { KinMoneyAnswerRpcs, KIN_MONEY_ANSWER_RPC_SCOPES } from "./kinMoneyAnswers.ts";
@@ -183,6 +184,7 @@ export const KinRpcs = [
   ...KinLevelRpcs,
   ...KinMemoryRpcs,
   ...KinWorkRpcs,
+  ...KinDealRpcs,
   ...KinDocsRpcs,
   ...KinFinanceRpcs,
   ...KinMoneyAnswerRpcs,
@@ -204,6 +206,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_LEVEL_RPC_SCOPES,
   ...KIN_MEMORY_RPC_SCOPES,
   ...KIN_WORK_RPC_SCOPES,
+  ...KIN_DEAL_RPC_SCOPES,
   ...KIN_DOCS_RPC_SCOPES,
   ...KIN_FINANCE_RPC_SCOPES,
   ...KIN_MONEY_ANSWER_RPC_SCOPES,
@@ -364,6 +367,15 @@ const KIN_RPC_ACCESS = {
   "kin.work.projectPeople": "person",
   "kin.work.logTouch": "person",
   "kin.work.removeTouch": "person",
+  // Deals: a teammate reads and changes theirs; the service decides. Stages are owner level.
+  "kin.work.deals": "person",
+  "kin.work.deal": "person",
+  "kin.work.createDeal": "person",
+  "kin.work.updateDeal": "person",
+  "kin.work.moveDeal": "person",
+  "kin.work.dealStep": "person",
+  "kin.work.dealStages": "person",
+  "kin.work.setDealStages": "owner_level",
   "kin.docs.list": "person",
   "kin.docs.get": "person",
   "kin.docs.history": "person",
@@ -636,6 +648,14 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.projectPeople": "kin-work",
   "kin.work.logTouch": "kin-work",
   "kin.work.removeTouch": "kin-work",
+  "kin.work.deals": "kin-work",
+  "kin.work.deal": "kin-work",
+  "kin.work.createDeal": "kin-work",
+  "kin.work.updateDeal": "kin-work",
+  "kin.work.moveDeal": "kin-work",
+  "kin.work.dealStep": "kin-work",
+  "kin.work.dealStages": "kin-work",
+  "kin.work.setDealStages": "kin-work",
   "kin.work.lists": "kin-work",
   "kin.work.updateList": "kin-work",
   "kin.work.dates": "kin-work",
