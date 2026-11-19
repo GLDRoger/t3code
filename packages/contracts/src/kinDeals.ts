@@ -131,6 +131,8 @@ export const KinDealPage = Schema.Struct({
   changes: Schema.Array(KinRecordChange),
   /** Open follow-ups linked to it, soonest first. */
   steps: Schema.Array(KinDealNext),
+  /** Its client's quotes the reader may see and link, newest first; only when it may edit. */
+  quotes: Schema.optional(Schema.Array(KinDealQuote)),
   seq: NonNegativeInt,
 });
 export type KinDealPage = typeof KinDealPage.Type;

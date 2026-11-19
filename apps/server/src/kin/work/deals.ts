@@ -358,8 +358,30 @@ export const updateAs = Effect.fn("KinDeals.update")(function* (
     Object.keys(patch).length === 0
       ? row
       : yield* records.update(actor.orgId, actor.writer, row.key, patch, rev);
+  if (change.owner !== undefined) yield* seesItAfter(actor.orgId, after, change.owner);
   if (change.quoteKey !== undefined) yield* relinkQuote(actor, after, change.quoteKey);
   return after;
+});
+
+/** Whoever a deal is handed to must still see it: owner level, or Clients on and not hidden. */
+const seesItAfter = Effect.fn("KinDeals.seesItAfter")(function* (
+  orgId: KinOrgId,
+  deal: RecordRow,
+  to: KinWorkPrincipal,
+) {
+  if (to._tag !== "person") return;
+  const { owner } = yield* KinIdentity;
+  if (yield* mayActAsOwner(orgId, to.personId, owner).pipe(workFailure)) return;
+  const sees =
+    (yield* placesOf(orgId, to.personId)).clients &&
+    (yield* teamVisible(orgId, to.personId, [deal.recordId])).has(deal.recordId);
+  if (sees) return;
+  const sql = yield* SqlClient.SqlClient;
+  const [person] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+    WHERE org_id = ${orgId} AND person_id = ${to.personId}`;
+  return yield* invalid(
+    `${person?.name ?? "They"} can't see ${deal.key}: give it to the owner, a co-owner or someone with Clients on who sees its client.`,
+  );
 });
 
 const relinkQuote = Effect.fn("KinDeals.relinkQuote")(function* (
@@ -559,6 +581,28 @@ const quotesFor = Effect.fn("KinDeals.quotes")(function* (
   return out;
 });
 
+/** The deal's client's quotes this viewer may see, newest first: what Edit offers to link. */
+const quoteChoices = Effect.fn("KinDeals.quoteChoices")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+  deal: RecordRow,
+) {
+  if (deal.partyId === null) return [];
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ recordId: string; key: string; title: string; state: string }>`SELECT
+      r.record_id AS "recordId", r.key, r.title, r.state FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'quotes' AND r.party_id = ${deal.partyId}
+      AND ${seenBy(sql, viewer)}
+    ORDER BY r.created_at DESC, r.key LIMIT ${KIN_DEAL_QUOTES_CAP}`;
+  return rows.map((row): KinDealQuote => ({
+    recordId: KinRecordId.make(row.recordId),
+    key: row.key,
+    title: row.title as KinDealQuote["title"],
+    accepted: row.state === "done",
+  }));
+});
+const KIN_DEAL_QUOTES_CAP = 50;
+
 const dealOf = (
   row: RecordRow,
   viewer: KinViewer,
@@ -737,12 +781,16 @@ export const page = Effect.fn("KinDeals.page")(function* (
   const steps = yield* stepsFor(input.orgId, viewer, [row.recordId], now).pipe(workFailure);
   const { stages } = yield* stagesOf(input.orgId).pipe(workFailure);
   const detail = yield* records.detail(row, KIN_RECORD_CHANGES_CAP);
+  const quotes = deal!.can.edit
+    ? yield* quoteChoices(input.orgId, viewer, row).pipe(workFailure)
+    : undefined;
   return {
     deal: deal!,
     stages,
     notes: row.notes as KinDealPage["notes"],
     changes: dealChanges(detail.changes, stages, viewer),
     steps: steps.get(row.recordId) ?? [],
+    ...(quotes === undefined ? {} : { quotes }),
     seq: yield* seqFor(input.orgId, viewer),
   } satisfies KinDealPage;
 });

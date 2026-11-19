@@ -308,6 +308,14 @@ it.effect(
         ),
         "not_allowed",
       );
+      // She hands her own only to someone who would still see it: never to Dev, Clients off.
+      const toDev = Deals.update([zoya], {
+        orgId,
+        key: hers.deal.key,
+        rev: moved.deal.rev,
+        owner: { _tag: "person", personId: devId },
+      });
+      assert.strictEqual(yield* refusal(toDev), "invalid_state");
       const given = yield* Deals.update([zoya], {
         orgId,
         key: hers.deal.key,
@@ -315,6 +323,53 @@ it.effect(
         owner: { _tag: "person", personId: ownerId },
       });
       assert.deepStrictEqual(given.deal.can.move, false);
+      // The owner level hands any deal over, and back, to whoever would see it; the move is
+      // the deal's Activity.
+      const toZoya = yield* Deals.update([owner], {
+        orgId,
+        key: rheas.deal.key,
+        rev: rheas.deal.rev,
+        owner: asZoya,
+      });
+      assert.deepStrictEqual(toZoya.deal.owner, asZoya);
+      assert.isTrue((yield* Deals.page([zoya], { orgId, key: rheas.deal.key })).deal.can.give);
+      const back = yield* Deals.update([owner], {
+        orgId,
+        key: rheas.deal.key,
+        rev: toZoya.deal.rev,
+        owner: { _tag: "person", personId: ownerId },
+      });
+      const moves = (yield* Deals.page([owner], { orgId, key: rheas.deal.key })).changes.flatMap(
+        (change) => change.fields.filter((field) => field.field === "owner").map((f) => f.to),
+      );
+      // Newest first, down to the line that added it.
+      assert.sameOrderedMembers(moves, ["person:owner", "person:zoya", "person:owner"]);
+      const underHushNow = yield* Deals.update([owner], {
+        orgId,
+        key: underHush.deal.key,
+        rev: underHush.deal.rev,
+        owner: { _tag: "person", personId: ownerId },
+      });
+      for (const write of [
+        Deals.update([owner], {
+          orgId,
+          key: back.deal.key,
+          rev: back.deal.rev,
+          owner: { _tag: "person", personId: devId },
+        }),
+        // Under a private client she sees nothing, so it can't become hers.
+        Deals.update([owner], {
+          orgId,
+          key: underHush.deal.key,
+          rev: underHushNow.deal.rev,
+          owner: asZoya,
+        }),
+      ])
+        assert.strictEqual(yield* refusal(write), "invalid_state");
+      assert.deepStrictEqual(
+        (yield* Deals.page([owner], { orgId, key: underHush.deal.key })).deal.owner,
+        { _tag: "person", personId: ownerId },
+      );
       // Nothing writes a deal but Deals: Work's own edit, as an older phone sends it, finds no
       // entry, and the repository refuses any other writer, so its stage stays.
       assert.strictEqual(
@@ -575,10 +630,38 @@ it.effect(
       const after = yield* Deals.deals([owner], { orgId });
       assert.deepInclude(after.deals[0]!, { state: "open" });
       assert.isTrue(after.deals[0]!.quote?.accepted);
-      // A quote is money: Zoya, without the Money switch, sees the deal and not its quote.
+      // Edit offers only this client's quotes; another client's is refused all the same.
+      const brightwaterRow = (yield* records.get(orgId, brightwater))!;
+      const { row: theirQuote } = yield* records.create(orgId, writer, {
+        list: "quotes",
+        originKey: "invented-other-quote",
+        title: "Invented clinic quote",
+        owner: { _tag: "person", personId: ownerId },
+        partyId: brightwaterRow.recordId,
+        amount: euros(500_000),
+      });
+      const offered = (yield* Deals.page([owner], { orgId, key: made.deal.key })).quotes;
+      assert.deepStrictEqual(
+        offered?.map((one) => [one.key, one.accepted]),
+        [[quote.key, true]],
+      );
+      assert.strictEqual(
+        yield* refusal(
+          Deals.update([owner], {
+            orgId,
+            key: made.deal.key,
+            rev: after.deals[0]!.rev,
+            quote: theirQuote.key,
+          }),
+        ),
+        "invalid_state",
+      );
+      // A quote is money: Zoya, without the Money switch, sees the deal and not its quote, and
+      // Edit offers her none.
       yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${zoyaId}`;
       const hers = yield* Deals.deals([zoya], { orgId });
       assert.isUndefined(hers.deals[0]!.quote);
+      assert.deepStrictEqual((yield* Deals.page([zoya], { orgId, key: made.deal.key })).quotes, []);
       // Unlinking takes it off.
       const off = yield* Deals.update([owner], {
         orgId,
