@@ -15,10 +15,13 @@ import * as NodeCrypto from "node:crypto";
 
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import {
+  everyOf,
   LOOSE_AFTER_MINUTES,
   LOOSE_BEFORE_MINUTES,
   looseSpanMinutes,
   looseWindowStartAt,
+  readNativeTask,
+  readSchedule,
 } from "../triggers/kinSchedules.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
@@ -43,14 +46,32 @@ export const looseOffsetMs = (
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 const OUTSIDE_CAP = 60;
 
-/** The seeded check-in the weekly brief stands in for on its day. */
 const MORNING = "checkin-morning";
 const WEEKLY = "checkin-weekly";
+const EVENING = "checkin-evening";
+/** The briefs: not skipped for a quiet pulse. The evening one has its own facts (`scheduledTasks`). */
+const BRIEFS: ReadonlySet<string> = new Set([MORNING, WEEKLY, EVENING]);
+
+/** Whether the weekly brief is set to come on the host day `dueAt` falls on. */
+const weeklyDue = Effect.fn("KinPulse.weeklyDue")(function* (
+  orgId: KinOrgId,
+  dueAt: number,
+  zone: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const row = yield* readSchedule(sql, orgId, WEEKLY);
+  if (row === undefined || row.deletedAt !== null || row.checkIn !== 1) return false;
+  const task = yield* readNativeTask(sql, row.taskId);
+  if (task === undefined || (row.pendingEnabled ?? task.enabled) !== 1) return false;
+  const weekDay = DateTime.toParts(DateTime.makeZonedUnsafe(dueAt, { timeZone: zone })).weekDay;
+  return everyOf(task, row.looseAt)?.days.includes(weekDay) === true;
+});
 
 /**
  * One check-in at the slot's minute: what the owner hasn't been told and what is new outside.
- * With nothing untold no model runs; Run now tells every open fact. On a weekly brief's day the
- * morning check-in is the brief. `slot` keys the event, so a slot queues once.
+ * With nothing untold no model runs, except for a brief; Run now tells every open fact. On the
+ * weekly brief's day the first of the morning and weekly briefs carries the week's figures and
+ * the other is folded. `slot` keys the event, so a slot queues once.
  */
 export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   readonly orgId: KinOrgId;
@@ -86,15 +107,20 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
     .map((line) => byId.get(`${line.source}\0${line.id}`) ?? line)
     .toSorted((a, b) => Number(b.matched !== undefined) - Number(a.matched !== undefined))
     .slice(0, OUTSIDE_CAP);
-  if (facts.length === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
+  const brief = BRIEFS.has(input.scheduleId);
+  if (!brief && facts.length === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
   const slot = input.manualId ?? dayIn(input.dueAt, input.zone);
   const dedupeKey = `checkin:${input.scheduleId}:${slot}`;
   const eventId = KinEventId.make(`pulse-${sha(`${orgId}\0${dedupeKey}`).slice(0, 32)}`);
   const sql = yield* SqlClient.SqlClient;
-  if (input.manualId === undefined && input.scheduleId === MORNING) {
-    const [brief] = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
-      AND dedupe_key = ${`checkin:${WEEKLY}:${slot}`} AND state != 'failed' LIMIT 1`;
-    if (brief !== undefined) return { _tag: "folded" } as const;
+  const page =
+    input.manualId === undefined && (input.scheduleId === MORNING || input.scheduleId === WEEKLY);
+  if (page) {
+    const other = input.scheduleId === MORNING ? WEEKLY : MORNING;
+    const [first] = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
+      AND dedupe_key = ${`checkin:${other}:${slot}`} AND state != 'failed'
+      AND (${other} = ${WEEKLY} OR json_extract(json, '$.checkIn.figures') = 1) LIMIT 1`;
+    if (first !== undefined) return { _tag: "folded", into: other } as const;
   }
   // The same slot fired again, as after a restart: its stored event and minute stand.
   const [stored] = yield* sql<{ notBefore: number | null; queuedAt: number }>`
@@ -112,7 +138,7 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   if (agent === undefined) return { _tag: "nothing_new" } as const;
   const told = { orgId, personId: agent.owner, at, zone: yield* ownerZone(orgId) };
   const tell = input.manualId !== undefined ? facts : yield* untold({ ...told, facts });
-  if (tell.length === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
+  if (!brief && tell.length === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
   // The minute is picked in the window as it stands that day, never from a late start: a run
   // that starts after its minute fires at once.
   const minute =
@@ -129,6 +155,17 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
       ? yield* agentQuietUntil(orgId, input.agentId, minute ?? at)
       : undefined;
   const notBefore = quietUntil ?? minute;
+  // The evening summary sums up its own day; held past it, the morning brief covers it.
+  if (
+    input.scheduleId === EVENING &&
+    input.manualId === undefined &&
+    notBefore !== undefined &&
+    dayIn(notBefore, input.zone) !== slot
+  )
+    return { _tag: "past_its_day" } as const;
+  const figures =
+    input.scheduleId === WEEKLY ||
+    (page && input.scheduleId === MORNING && (yield* weeklyDue(orgId, input.dueAt, input.zone)));
   const queued = yield* sql.withTransaction(
     queue
       .enqueue(
@@ -146,6 +183,7 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
             title: input.title.slice(0, 200),
             what: input.what.slice(0, 2000),
             slot: slot.slice(0, 200),
+            ...(figures ? { figures: true } : {}),
           },
           ...(lines.length === 0 ? {} : { outside: lines }),
         }),

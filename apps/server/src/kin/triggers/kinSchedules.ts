@@ -214,6 +214,11 @@ export interface SaveInput {
   /** Fires once somewhere around `every.at`, a different minute each day. */
   readonly around?: boolean | undefined;
   readonly checkIn?: boolean | undefined;
+  /**
+   * A change of time or days only: the wording the owner approved and any edit waiting for his
+   * confirm stay as they are, so this save approves no wording.
+   */
+  readonly keepWording?: true | undefined;
   readonly now: number;
 }
 
@@ -310,6 +315,7 @@ const make = Effect.gen(function* () {
       creationSource: "server",
     }).pipe(Effect.catch(failed("The schedule could not be saved.")));
     const hash = yield* promptSha256(input.prompt);
+    const keep = input.keepWording === true && existing !== undefined ? 1 : 0;
     yield* tasks.upsert(upsert).pipe(Effect.catch(failed("The schedule could not be saved.")));
     // After the task: a crash between leaves a task with no row, which the sink refuses.
     yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
@@ -322,8 +328,10 @@ const make = Effect.gen(function* () {
       ON CONFLICT (task_id) DO UPDATE SET chat_id = excluded.chat_id,
         loose_at = excluded.loose_at, check_in = excluded.check_in,
         source_event = excluded.source_event, said_by = excluded.said_by,
-        audience = excluded.audience, content_sha256 = excluded.content_sha256,
-        inbox_thread_id = excluded.inbox_thread_id, asked_sha256 = NULL,
+        audience = excluded.audience,
+        content_sha256 = CASE WHEN ${keep} THEN content_sha256 ELSE excluded.content_sha256 END,
+        inbox_thread_id = excluded.inbox_thread_id,
+        asked_sha256 = CASE WHEN ${keep} THEN asked_sha256 ELSE NULL END,
         updated_at = excluded.updated_at`.pipe(
       Effect.catch((cause) =>
         existing !== undefined

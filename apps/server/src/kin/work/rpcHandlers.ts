@@ -399,6 +399,21 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.checkIns.act": Effect.fn("KinCheckIns.rpc.act")(function* (input) {
         return yield* call((people) => CheckIns.act(people, input));
       }),
+      "kin.briefs.list": Effect.fn("KinBriefs.rpc.list")(function* (input) {
+        return yield* call((people) => CheckIns.briefs(people, input.orgId));
+      }),
+      "kin.briefs.save": Effect.fn("KinBriefs.rpc.save")(function* (input) {
+        if (Option.isNone(scheduling)) return yield* disabled;
+        const { tasks, launcher, threads } = scheduling.value;
+        return yield* call((people) =>
+          CheckIns.saveBrief(people, input).pipe(
+            Effect.provide(KinSchedules.layer),
+            Effect.provideService(ScheduledTaskService.ScheduledTaskService, tasks),
+            Effect.provideService(ThreadLaunchService.ThreadLaunchService, launcher),
+            Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+          ),
+        );
+      }),
     }),
   };
 });

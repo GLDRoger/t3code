@@ -3,6 +3,7 @@ import {
   KIN_DOC_CARD,
   KIN_MESSAGE_BODY_MAX_LENGTH,
   KinChatId,
+  kinHasSections,
   kinPageSections,
   kinPageShape,
   KIN_FIGURE_SCHEME,
@@ -73,6 +74,7 @@ import {
 } from "./classify.ts";
 import { KinPresence, syncQueued } from "./KinPresence.ts";
 import { missingCard, NUDGE_PREFIX, relayPrefix, unkeptPromise } from "./promises.ts";
+import { weeklyFigures } from "../pulse/weekly.ts";
 import { flagTextQuestion } from "../questions/openQuestions.ts";
 
 export { rescueMessageId };
@@ -84,6 +86,19 @@ const RESCUE_TIMEOUT_MS = 120_000;
 const OVERFLOW_SUFFIX = "\n\n…more in the agent's thread";
 // Room left for the heading and for entry keys Kin replaces with longer names when it stores.
 const MORNING_HEADROOM = 200;
+/** The morning page Kin posts when the turn wrote none: its one quiet line, under Needs you. */
+export const QUIET_PAGE = "## Needs you\n\nNothing new needs you this morning.";
+const isPage = (text: string) =>
+  kinHasSections(text) && kinPageSections(text).some(({ title }) => title !== null);
+/** The text in parts of at most `max` characters, cut between lines. */
+const fitParts = (text: string, max: number) =>
+  text.split("\n").reduce<Array<string>>((parts, line) => {
+    const last = parts.at(-1);
+    if (last !== undefined && last.length + 1 + line.length <= max)
+      parts[parts.length - 1] = `${last}\n${line}`;
+    else parts.push(line.slice(0, max));
+    return parts;
+  }, []);
 
 // Which wake-ups owe words: a message, card tap or reaction asked in its chat (`reply`); an entry
 // someone gave the lead and finished work wait on it too (`owedNotice`). Reminders, briefs and
@@ -493,27 +508,92 @@ const make = Effect.gen(function* () {
         AND agent_id = ${wake.agentId} AND chat_id = ${wake.lane.chatId} AND message_id IS NULL LIMIT 1`;
     return rows.length > 0;
   });
-  // The morning check-in reads as a page with sections however it was written: its reply gets a
-  // heading when it opens with none. Only the bridge's own reply; a tool post stays as written.
-  // The id is the seeded morning check-in's (`pulse/checkIn.ts`).
+  // The seeded brief this wake-up runs alone (`pulse/checkInSeeds.ts`), not a turn someone asked.
+  const briefIn = (wake: Wake, scheduleIds: ReadonlyArray<string>) =>
+    sql<{ figures: number | null }>`SELECT CASE
+        WHEN json_extract(e.json, '$.checkIn.scheduleId') = 'checkin-weekly' THEN 1
+        ELSE json_extract(e.json, '$.checkIn.figures') END AS figures
+      FROM kin_events e WHERE e.org_id = ${wake.orgId}
+      AND e.wakeup_id = ${wake.wakeupId} AND e.tag = 'pulse'
+      AND json_extract(e.json, '$.checkIn.scheduleId') IN ${sql.in(scheduleIds)}
+      AND NOT EXISTS (SELECT 1 FROM kin_events m WHERE m.org_id = e.org_id
+        AND m.wakeup_id = e.wakeup_id AND m.tag = 'chat.message')
+      ORDER BY e.event_id LIMIT 1`.pipe(Effect.map((rows) => rows[0]));
+  // The morning brief and evening summary read as a page with sections however they were written:
+  // the reply gets a heading when it opens with none, or with only a label such as "Today:".
   const underMorningHeading = Effect.fn("KinReplyBridge.underMorningHeading")(function* (
     wake: Wake,
     text: string,
   ) {
-    if (
-      wake.posted > 0 ||
-      text.length > KIN_MESSAGE_BODY_MAX_LENGTH - MORNING_HEADROOM ||
-      kinPageSections(text).some(({ title }) => title !== null)
-    )
-      return text;
-    const morning = yield* sql`SELECT 1 FROM kin_events e WHERE e.org_id = ${wake.orgId}
-      AND e.wakeup_id = ${wake.wakeupId} AND e.tag = 'pulse'
-      AND json_extract(e.json, '$.checkIn.scheduleId') = 'checkin-morning'
-      AND NOT EXISTS (SELECT 1 FROM kin_events m WHERE m.org_id = e.org_id
-        AND m.wakeup_id = e.wakeup_id AND m.tag = 'chat.message')
-      LIMIT 1`;
-    return morning.length > 0 ? `## Today\n\n${text}` : text;
+    if (wake.posted > 0 || isPage(text)) return text;
+    if ((yield* briefIn(wake, ["checkin-morning", "checkin-evening"])) === undefined) return text;
+    const page = `## Today\n\n${text}`;
+    const room = KIN_MESSAGE_BODY_MAX_LENGTH - MORNING_HEADROOM;
+    return page.length <= room
+      ? page
+      : `${page.slice(0, room - OVERFLOW_SUFFIX.length)}${OVERFLOW_SUFFIX}`;
   });
+  // A page the turn posted itself, with a tool.
+  const postedPage = Effect.fn("KinReplyBridge.postedPage")(function* (wake: Wake) {
+    const rows = yield* sql<{
+      messageId: KinMessageId;
+      body: string;
+    }>`SELECT message_id AS "messageId",
+        body FROM kin_messages
+      WHERE org_id = ${wake.orgId} AND chat_id = ${wake.lane.chatId} AND author_kind = 'agent'
+        AND author_agent_id = ${wake.agentId} AND author_thread_id = ${wake.threadId}
+        AND created_at >= ${iso(wake.startedAt)} AND form = 'brief' AND status = 'posted'
+      ORDER BY seq`;
+    return rows.find((row) => isPage(row.body));
+  });
+  // The morning page is Kin's, whatever the turn wrote (`pulse/checkIn.ts`): with no page of the
+  // turn's own, Kin posts one with its quiet line; on the weekly brief's day Kin's figures go on
+  // it, or follow it in messages of their own when it has no room, so none is cut or retyped.
+  const settlePage = Effect.fn("KinReplyBridge.settlePage")(
+    function* (wake: Wake) {
+      if (wake.withheld !== null) return;
+      const brief = yield* briefIn(wake, ["checkin-morning", "checkin-weekly"]);
+      if (brief === undefined) return;
+      let slot = wake.slots.get(-1) ?? (yield* postedPage(wake));
+      if (slot === undefined) {
+        const result = yield* deliver(wake, `kin-page:${wake.wakeupId}`, QUIET_PAGE, -1);
+        if (result._tag !== "posted") {
+          wake.withheldWhy ??= result.why;
+          wake.withheld ??= result.reason;
+          return;
+        }
+        slot = { messageId: result.messageId, body: result.body };
+        wake.slots.set(-1, slot);
+        wake.posted++;
+        wake.answered = true;
+        wake.replied = true;
+      }
+      if (brief.figures !== 1) return;
+      const figures = yield* weeklyFigures({
+        orgId: wake.orgId,
+        now: yield* Clock.currentTimeMillis,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      if (slot.body.length + 2 + figures.length <= KIN_MESSAGE_BODY_MAX_LENGTH - MORNING_HEADROOM) {
+        const result = yield* extend(wake, slot, figures, -1);
+        if (result._tag === "posted") return;
+        if (result._tag === "withheld" && result.reason !== "not_found") {
+          wake.withheld = result.reason;
+          return;
+        }
+      }
+      for (const [index, part] of fitParts(
+        figures,
+        KIN_MESSAGE_BODY_MAX_LENGTH - MORNING_HEADROOM,
+      ).entries()) {
+        const result = yield* deliver(wake, `kin-week:${wake.wakeupId}:${index}`, part, -1);
+        if (result._tag === "withheld") {
+          wake.withheld = result.reason;
+          return;
+        }
+      }
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Kin morning page not settled", { cause })),
+  );
   const post = Effect.fn("KinReplyBridge.post")(function* (wake: Wake, segment: Segment) {
     const end = (messageId: KinMessageId | null) =>
       segment.drafting
@@ -1067,6 +1147,7 @@ const make = Effect.gen(function* () {
             yield* post(wake, note);
           }
           yield* flushOverflow(wake);
+          yield* settlePage(wake);
           yield* settleFigures(wake);
           yield* keptPromises(wake);
           // A reply ending on a question to the one person here: stored as open, for every agent.

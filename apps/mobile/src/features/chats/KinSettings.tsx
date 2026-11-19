@@ -46,6 +46,7 @@ import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { useSettingsPageBack } from "../settings/useSettingsPageBack";
 import { useKinTab } from "./components/KinTab";
+import { KinBriefsSection } from "./KinBriefs";
 import { KinCheckInsSection } from "./KinCheckIns";
 import { useKinIsHome } from "./state/kinHome";
 import { openKinNotificationSettings } from "./notifications/installKinNotifications";
@@ -287,6 +288,9 @@ export function KinSettings(props: {
               />
             )}
           </SettingsSection>
+          {host._tag !== "host" || orgId === null ? null : (
+            <KinBriefsSection environmentId={host.environmentId} orgId={orgId} />
+          )}
           {owned.length === 0 ? null : (
             <SettingsSection
               title="Your Kin"

@@ -494,13 +494,21 @@ check-in opens with what worked.
 ## Check-ins and the weekly brief
 
 A check-in is an agent's regular round: it looks over what needs attention and tells you what
-moved. By default the Chief of staff checks in around 9:30 and 15:30 on weekdays, and writes the
-**Weekly brief** around 9:00 on Mondays: the week's figures, then which goal is behind, what matters
-most, and each decision as a plain question.
+moved. By default the Chief of staff sends you a **Morning brief** around 9:30 every day, checks in
+around 15:30 on weekdays, sends an **Evening summary** of the day around 18:30 on weekdays (what got
+done, what moved, what carries to tomorrow), and writes the **Weekly brief** around 9:00 on Mondays.
+On Monday you get one page: whichever of the morning and weekly briefs comes first carries the week's
+figures, written by Kin from its records, and the other isn't sent.
 
 Check-in times are loose: "around 9:30" means near then, not on the minute. When you give an agent
-a plain time it keeps to it; say "around" or "-ish" for a loose one. A check-in with nothing to
-report stays quiet.
+a plain time it keeps to it; say "around" or "-ish" for a loose one. The morning brief comes on a
+quiet day too. The evening summary comes only on a day with something to sum up, and only that
+day; another check-in with nothing to report stays quiet.
+
+The briefs are yours to set under **Settings → Briefs** (in **Profile** on the web): which days the
+morning brief comes and when, and whether and when the afternoon check-in and evening summary come.
+Your quiet hours hold any of them that would land inside them; an evening summary they would hold
+past midnight isn't sent, and the next morning's brief covers that day.
 
 Owners and co-owners manage them under **Settings → Check-ins**: add one, turn one off, or **Run
 now**. Or say it in a chat: "check in at 11 instead".

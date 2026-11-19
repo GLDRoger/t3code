@@ -352,6 +352,41 @@ export const KinCheckInActInput = Schema.Struct({
 });
 export type KinCheckInActInput = typeof KinCheckInActInput.Type;
 
+// Briefs: the seeded check-ins a person receives, as they set them for themselves in Settings.
+
+export const KinBriefKind = Schema.Literals(["morning", "afternoon", "evening"]);
+export type KinBriefKind = typeof KinBriefKind.Type;
+
+export const KinBrief = Schema.Struct({
+  kind: KinBriefKind,
+  at: KinClockTime,
+  days: KinWeekdays,
+  /** Fires somewhere around `at`, not on the minute. */
+  around: Schema.Boolean,
+  on: Schema.Boolean,
+});
+export type KinBrief = typeof KinBrief.Type;
+
+export const KinBriefsInput = Schema.Struct({ orgId: KinOrgId });
+export type KinBriefsInput = typeof KinBriefsInput.Type;
+export const KinBriefsResult = Schema.Struct({
+  /** The company time zone check-ins keep, which `at` is in. */
+  zone: Schema.String,
+  /** Only the briefs this person receives; none for someone who receives none. */
+  briefs: Schema.Array(KinBrief),
+});
+export type KinBriefsResult = typeof KinBriefsResult.Type;
+
+/** Changes one of the caller's own briefs: its time and days, and whether it comes. */
+export const KinBriefSaveInput = Schema.Struct({
+  orgId: KinOrgId,
+  kind: KinBriefKind,
+  at: KinClockTime,
+  days: KinWeekdays,
+  on: Schema.Boolean,
+});
+export type KinBriefSaveInput = typeof KinBriefSaveInput.Type;
+
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 export const KinPulseRpcs = [
   Rpc.make("kin.pulse.read", { payload: KinPulseListInput, success: KinPulseScreenRead, error }),
@@ -371,6 +406,8 @@ export const KinPulseRpcs = [
     error,
   }),
   Rpc.make("kin.checkIns.act", { payload: KinCheckInActInput, success: KinCheckInsResult, error }),
+  Rpc.make("kin.briefs.list", { payload: KinBriefsInput, success: KinBriefsResult, error }),
+  Rpc.make("kin.briefs.save", { payload: KinBriefSaveInput, success: KinBriefsResult, error }),
 ] as const;
 
 export const KIN_PULSE_RPC_SCOPES = {
@@ -382,4 +419,6 @@ export const KIN_PULSE_RPC_SCOPES = {
   "kin.checkIns.list": AuthKinChatScope,
   "kin.checkIns.save": AuthKinChatScope,
   "kin.checkIns.act": AuthKinChatScope,
+  "kin.briefs.list": AuthKinChatScope,
+  "kin.briefs.save": AuthKinChatScope,
 } as const;

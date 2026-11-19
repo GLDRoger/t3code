@@ -21,10 +21,12 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Chat from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as CheckIns from "../pulse/checkIns.ts";
-import { followOwnerZone, seedCheckIns } from "../pulse/checkInSeeds.ts";
+import { followOwnerZone, onHostClock, seedCheckIns } from "../pulse/checkInSeeds.ts";
+import { checkInIndex } from "../pulse/prompt.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as Budget from "../lead/KinBudget.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
+import * as RoutineContent from "../lead/RoutineContent.ts";
 import { leadWakeup } from "../lead/LeadDelivery.testkit.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as TriggerScheduler from "./KinTriggerScheduler.ts";
@@ -60,7 +62,10 @@ const identity = Layer.mock(KinIdentity)({
 });
 
 /** Kin's consumer over the real native scheduler; `recorded` holds what would be bare threads. */
-const harness = (projects?: Set<string>) => {
+const harness = (
+  projects?: Set<string>,
+  routine: Layer.Layer<never> | Layer.Layer<RoutineContent.KinRoutineContent> = Layer.empty,
+) => {
   const recorded = {
     launches: [] as ThreadLaunchService.ThreadLaunchInput[],
     sends: [] as string[],
@@ -83,6 +88,7 @@ const harness = (projects?: Set<string>) => {
         }),
       }),
     ),
+    Layer.provideMerge(routine),
   );
   return { recorded, workers, kinTicks, layer };
 };
@@ -734,6 +740,7 @@ it.effect(
       const listed = yield* CheckIns.list(people, orgId);
       assert.deepStrictEqual(listed.checkIns.map((row) => row.title).toSorted(), [
         "Afternoon check-in",
+        "Evening summary",
         "Morning check-in",
         "Weekly brief",
       ]);
@@ -745,7 +752,155 @@ it.effect(
         at: "18:00",
         days: [1, 2, 3, 4, 5],
       });
-      assert.lengthOf(added.checkIns, 4);
+      assert.lengthOf(added.checkIns, 5);
+    }).pipe(Effect.provide(Layer.merge(layer, identity)));
+  },
+);
+
+it.effect(
+  "briefs are their receiver's own: Settings and the chat move one schedule, and days and off reach it",
+  () => {
+    // What the evening summary would sum up today, as `KinRoutineContent` gathers it.
+    const today: { evening: string | null } = { evening: null };
+    const { layer, kinTicks, workers } = harness(
+      undefined,
+      Layer.mock(RoutineContent.KinRoutineContent)({
+        eveningFacts: () => Effect.sync(() => today.evening),
+      }),
+    );
+    return Effect.gen(function* () {
+      yield* setup();
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_leads SET models_json = ${MODELS} WHERE org_id = ${orgId}`;
+      yield* kinTicks.get("kin-scheduled-tasks")!;
+      const tasks = yield* ScheduledTaskService.ScheduledTaskService;
+      const drain = (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
+      const host = KinSchedules.hostTimeZone();
+      const zone = "Asia/Kolkata";
+      const weekdays = [1, 2, 3, 4, 5];
+      const people = [owner];
+      const native = (title: string) =>
+        tasks.list().pipe(Effect.map(({ tasks }) => tasks.find((row) => row.title === title)!));
+      // Defaults: the morning brief every day, the afternoon and evening ones on weekdays.
+      assert.deepStrictEqual((yield* CheckIns.briefs(people, orgId)).briefs, [
+        { kind: "morning", at: "09:30", days: [0, 1, 2, 3, 4, 5, 6], around: true, on: true },
+        { kind: "afternoon", at: "15:30", days: weekdays, around: true, on: true },
+        { kind: "evening", at: "18:30", days: weekdays, around: true, on: true },
+      ]);
+
+      // A day with nothing to sum up brings no evening summary; a day with something does.
+      const summaries = sql<{ key: string }>`SELECT dedupe_key AS key FROM kin_events
+        WHERE org_id = ${orgId} AND tag = 'pulse' AND dedupe_key LIKE 'checkin:checkin-evening:%'
+        ORDER BY queued_at`;
+      for (const [facts, queued] of [
+        [null, 0],
+        ['{"routine":"evening_summary"}', 1],
+      ] as const) {
+        today.evening = facts;
+        yield* TestClock.setTime(Date.parse((yield* native("Evening summary")).nextRunAt!));
+        yield* workers.get("scheduled-tasks")!;
+        yield* drain;
+        assert.lengthOf(yield* summaries, queued);
+      }
+
+      // Off: the task stops, so its next slot brings nothing; on again, it comes back.
+      const save = (input: Omit<Parameters<typeof CheckIns.saveBrief>[1], "orgId">) =>
+        CheckIns.saveBrief(people, { orgId, ...input });
+      assert.include(
+        (yield* save({ kind: "evening", at: "18:30", days: weekdays, on: false })).briefs[2],
+        { on: false },
+      );
+      yield* drain;
+      assert.isFalse((yield* native("Evening summary")).enabled);
+      yield* TestClock.adjust("1 day");
+      yield* workers.get("scheduled-tasks")!;
+      yield* drain;
+      assert.lengthOf(yield* summaries, 1);
+      yield* save({ kind: "evening", at: "18:30", days: weekdays, on: true });
+      yield* drain;
+      assert.isTrue((yield* native("Evening summary")).enabled);
+
+      // A day switched off is off the task; the agent's list of check-ins says the same.
+      const noSaturday = [0, 1, 2, 3, 4, 5];
+      yield* save({ kind: "morning", at: "08:00", days: noSaturday, on: true });
+      const morning = onHostClock("08:00", noSaturday, zone, host, yield* Clock.currentTimeMillis);
+      assert.deepStrictEqual(
+        KinSchedules.everyOf(
+          (yield* KinSchedules.readNativeTask(
+            sql,
+            KinSchedules.scheduleTaskId(orgId, "checkin-morning"),
+          ))!,
+          morning.at,
+        ),
+        morning,
+      );
+      assert.include(
+        (yield* checkInIndex(orgId, KinAgentId.make("lead-a"))).join("\n"),
+        `checkin-morning Morning check-in: around ${morning.at}`,
+      );
+
+      // The chat moves the same row (kin_schedule with replaces), and Settings shows it.
+      const schedules = yield* KinSchedules.KinSchedules;
+      const row = (yield* KinSchedules.readSchedule(sql, orgId, "checkin-afternoon"))!;
+      yield* schedules.save({
+        orgId,
+        agentId: row.agentId,
+        scheduleId: row.scheduleId,
+        existing: true,
+        chatId: row.chatId,
+        sourceEvent: "chat-event",
+        saidBy: owner.personId,
+        title: "Afternoon check-in",
+        prompt: "Afternoon check-in.",
+        every: onHostClock("16:45", weekdays, zone, host, yield* Clock.currentTimeMillis),
+        around: true,
+        checkIn: true,
+        now: yield* Clock.currentTimeMillis,
+      });
+      assert.include((yield* CheckIns.briefs(people, orgId)).briefs[1], {
+        kind: "afternoon",
+        at: "16:45",
+      });
+      assert.lengthOf(
+        (yield* tasks.list()).tasks.filter((one) => one.title.startsWith("After")),
+        1,
+      );
+
+      // Made exact on T3's screen, with new wording not yet confirmed: a new time keeps it
+      // exact, and approves no wording.
+      const afternoon = KinSchedules.scheduleTaskId(orgId, "checkin-afternoon");
+      yield* sql`UPDATE scheduled_tasks SET prompt = 'Afternoon check-in, and chase every invoice.',
+        schedule_json = json_set(schedule_json, '$.timeOfDay', '17:00') WHERE task_id = ${afternoon}`;
+      yield* sql`UPDATE kin_schedules SET asked_sha256 = 'asked' WHERE task_id = ${afternoon}`;
+      const approved = (yield* KinSchedules.readSchedule(sql, orgId, "checkin-afternoon"))!;
+      assert.include((yield* CheckIns.briefs(people, orgId)).briefs[1], { around: false });
+      assert.include(
+        (yield* save({ kind: "afternoon", at: "18:00", days: weekdays, on: true })).briefs[1],
+        { at: "18:00", around: false },
+      );
+      const moved = (yield* KinSchedules.readSchedule(sql, orgId, "checkin-afternoon"))!;
+      assert.include(moved, {
+        contentSha256: approved.contentSha256,
+        askedSha256: "asked",
+        looseAt: null,
+      });
+      assert.strictEqual(
+        (yield* KinSchedules.readNativeTask(sql, afternoon))!.prompt,
+        "Afternoon check-in, and chase every invoice.",
+      );
+
+      // Someone else, a co-owner included, has no briefs here and changes none of these.
+      const other = { ...owner, personId: KinPersonId.make("co-owner-a") };
+      assert.deepStrictEqual((yield* CheckIns.briefs([other], orgId)).briefs, []);
+      const refused = yield* CheckIns.saveBrief([other], {
+        orgId,
+        kind: "evening",
+        at: "07:00",
+        days: [1],
+        on: false,
+      }).pipe(Effect.flip);
+      assert.include(refused, { _tag: "KinChatError", reason: "not_allowed" });
+      assert.include((yield* CheckIns.briefs(people, orgId)).briefs[2], { at: "18:30", on: true });
     }).pipe(Effect.provide(Layer.merge(layer, identity)));
   },
 );

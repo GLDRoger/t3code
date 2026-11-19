@@ -25,6 +25,8 @@ import { fakeRepository } from "../memory/__fixtures__/repository.ts";
 import * as Memory from "../memory/Memory.ts";
 import { MemoryConfig } from "../memory/MemoryConfig.ts";
 import { deferralWidgetId } from "../triggers/deferrals.ts";
+import { hostTimeZone } from "../triggers/kinSchedules.ts";
+import { dayIn } from "../work/money.ts";
 import * as Queue from "./KinEventQueue.ts";
 import * as RoutineContent from "./RoutineContent.ts";
 import { renderRoutine, ROUTINE_MAX_LINES } from "./routines.ts";
@@ -596,6 +598,66 @@ it.effect("a failed brief retries on its own with a counted attempt", () =>
                   }),
                 ),
               morningFacts: () => Effect.succeed(null),
+              eveningFacts: () => Effect.succeed(null),
+            }),
+          ),
+          Layer.provideMerge(orchestrationHarness()),
+        ),
+      ),
+    );
+  }),
+);
+
+it.effect("an evening summary that runs past its own day is not sent; its facts are untold", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(now);
+    yield* Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const yesterday = dayIn(now - 24 * 60 * 60_000, hostTimeZone());
+      yield* (yield* Queue.KinEventQueue).enqueue(
+        decodeEvent({
+          _tag: "pulse",
+          orgId,
+          agentId,
+          eventId: "pulse-evening",
+          receivedAt: timestamp,
+          dedupeKey: `checkin:checkin-evening:${yesterday}`,
+          provenance: { _tag: "system" },
+          factKeys: [],
+          checkIn: {
+            scheduleId: "checkin-evening",
+            title: "Evening summary",
+            what: "Evening summary.",
+            slot: yesterday,
+          },
+        }),
+      );
+      yield* sql`INSERT INTO kin_pulse_told (org_id, person_id, fact_key, event_id, sig, told_at)
+        VALUES (${orgId}, 'owner', 'task_late:r-W-1', 'pulse-evening', 'sig', ${now})`;
+      const fiber = yield* (yield* WakeupRunner.WakeupRunner)
+        .runOnce(orgId, agentId)
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust("20 seconds");
+      yield* Fiber.join(fiber);
+      assert.deepStrictEqual(
+        yield* sql`SELECT state FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`,
+        [{ state: "done" }],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT status, thread_id AS "threadId" FROM kin_wakeups WHERE org_id = ${orgId}`,
+        [{ status: "completed", threadId: null }],
+      );
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_pulse_told WHERE org_id = ${orgId}`, 0);
+    }).pipe(
+      Effect.provide(
+        WakeupRunner.layer.pipe(
+          Layer.provide(
+            Layer.succeed(RoutineContent.KinRoutineContent, {
+              prepare: () => Effect.succeed(null),
+              post: () => Effect.succeed(null),
+              morningFacts: () => Effect.succeed(null),
+              eveningFacts: () => Effect.succeed('{"routine":"evening_summary"}'),
             }),
           ),
           Layer.provideMerge(orchestrationHarness()),
