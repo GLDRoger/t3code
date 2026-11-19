@@ -80,13 +80,19 @@ function KinRecommendationList(props: {
   const rows = Option.getOrNull(AsyncResult.value(result))?.rows ?? null;
   const navigation = useNavigation();
   const act = (row: KinRecommendationRow, action: KinRecommendationAction) => {
-    // Who can message an agent is changed on its screen: a done row only goes there.
+    // A done row only goes where its setting is changed: the agent's screen, Settings (where
+    // Daily limit is), or the connection's screen.
+    const at = { environmentId: props.environmentId, orgId: props.orgId };
     if (action.kind === "open_agent") {
-      navigation.navigate("KinLead", {
-        environmentId: props.environmentId,
-        orgId: props.orgId,
-        agentId: action.agentId,
-      });
+      navigation.navigate("KinLead", { ...at, agentId: action.agentId });
+      return;
+    }
+    if (action.kind === "open_daily_limit") {
+      navigation.navigate("SettingsKin");
+      return;
+    }
+    if (action.kind === "open_connection") {
+      navigation.navigate("KinConnection", { ...at, connectionId: action.connectionId });
       return;
     }
     setBusy(row.recId);

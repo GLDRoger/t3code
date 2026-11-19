@@ -5,7 +5,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinRecommendations";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { KinRecommendationAction, KinRecommendationRow } from "@t3tools/contracts";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouter } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
@@ -20,6 +20,7 @@ import { Empty, EmptyDescription, EmptyHeader } from "../components/ui/empty";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
 import { withKinAgentPage } from "./kinPlaces";
+import { openKinSettings } from "./kinSettingsAddress";
 import type { KinWorkTarget } from "./useKinWork";
 
 /**
@@ -87,13 +88,31 @@ export function KinRecommendationsSettings(props: KinWorkTarget) {
   );
 }
 
-/** A done row opens the agent's page, over the Kin page under Settings as Agents does. */
+/**
+ * A done row opens where its setting lives: the agent's page, over the Kin page under Settings as
+ * Agents does, or another section of Settings (a connection opens at itself).
+ */
 function RowAction(props: {
   readonly action: KinRecommendationAction;
   readonly disabled: boolean;
   readonly onAskAgain: () => void;
 }) {
   const { action } = props;
+  const router = useRouter();
+  if (action.kind === "open_daily_limit" || action.kind === "open_connection")
+    return (
+      <Button
+        size="xs"
+        variant="outline"
+        onClick={() =>
+          action.kind === "open_daily_limit"
+            ? openKinSettings(router.history, "company")
+            : openKinSettings(router.history, "connections", action.connectionId)
+        }
+      >
+        {action.label}
+      </Button>
+    );
   if (action.kind === "open_agent") {
     const { agentId } = action;
     return (

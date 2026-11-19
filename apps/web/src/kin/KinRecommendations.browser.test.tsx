@@ -1,4 +1,10 @@
-import { EnvironmentId, KinAgentId, KinOrgId, type KinRecommendationRow } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  KinAgentId,
+  KinConnectionId,
+  KinOrgId,
+  type KinRecommendationRow,
+} from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import "~/index.css";
@@ -114,5 +120,30 @@ describe("Settings → Recommendations", () => {
     setup([]);
     await using _screen = await render(settingsPage());
     await expect.element(page.getByText(/^Nothing suggested yet\./)).toBeVisible();
+  });
+
+  it("a done limit or connection opens Settings where it is changed, a connection at itself", async () => {
+    setup([
+      row("limit", {
+        rule: "daily_limit",
+        outcome: "Done 12 Nov: the daily limit is Twice the usual.",
+        action: { kind: "open_daily_limit", label: "Open Daily limit" },
+      }),
+      row("zoho", {
+        rule: "connection_paused",
+        outcome: "Done 12 Nov: Zoho Books is running.",
+        action: {
+          kind: "open_connection",
+          label: "Open Zoho Books",
+          connectionId: KinConnectionId.make("conn-zoho"),
+        },
+      }),
+    ]);
+    await using screen = await render(settingsPage());
+    const search = () => new URLSearchParams(screen.router!.history.location.search);
+    await userEvent.click(page.getByRole("button", { name: "Open Daily limit" }));
+    expect(search().get("settings")).toBe("company");
+    await userEvent.click(page.getByRole("button", { name: "Open Zoho Books" }));
+    expect([search().get("settings"), search().get("find")]).toEqual(["connections", "conn-zoho"]);
   });
 });

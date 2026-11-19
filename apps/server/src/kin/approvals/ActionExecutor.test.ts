@@ -1501,13 +1501,22 @@ describe("KinActionExecutor", () => {
       /if \(!\(yield\* ownerLevel\(orgId, tap\.personId\)\)\)[\s\S]*LeadProvision\.allow\(\{\s*editor: \{ _tag: "person", personId: tap\.personId \}/,
     );
     assert.notMatch(source("kin/lead/Handoff.ts"), /\brunRoute\b/);
-    // A suggestion grants only on its own sealed Let, after the exact-owner check, as the owner
-    // who tapped. The hourly pass that draws the card reaches neither the module nor the tap.
+    // A suggestion grants or resumes only on its own sealed Do it, after the exact-owner check, as
+    // the owner who tapped: `make` is the one place that changes anything, called only here, after
+    // Not now has returned. The hourly pass that draws the card reaches neither the module nor the tap.
     const recommendCard = source("kin/recommend/card.ts");
-    assert.strictEqual(recommendCard.match(/\bLeadProvision\.\w+/g)?.join(), "LeadProvision.allow");
+    assert.strictEqual(
+      recommendCard.match(/\bLeadProvision\.\w+/g)?.join(),
+      "LeadProvision.allow,LeadProvision.setPaused",
+    );
     assert.match(
       recommendCard,
-      /yield\* onlyOwner\(orgId, tap\.personId\);[\s\S]*if \(plan\.answer === "not_now"\) \{[\s\S]*\}\s*const \{ change \} = plan;\s*yield\* LeadProvision\.allow\(\{\s*editor: \{ _tag: "person", personId: tap\.personId \}/,
+      /LeadProvision\.allow\(\{\s*editor: \{ _tag: "person", personId \}[\s\S]*LeadProvision\.setPaused\(\{\s*by: \{ _tag: "person", personId \}/,
+    );
+    assert.lengthOf(recommendCard.match(/(?<![.\w])make\(/g) ?? [], 1);
+    assert.match(
+      recommendCard,
+      /yield\* onlyOwner\(orgId, tap\.personId\);[\s\S]*if \(plan\.answer === "not_now"\) \{[\s\S]*\}\s*const text = yield\* make\(orgId, tap\.personId, plan\.change\)/,
     );
     assert.notMatch(source("kin/recommend/KinRecommend.ts"), /KinLeadProvision|\brunRecommend\b/);
     // An agent's page reads and retires as its checked owner; a turn's model change is the
