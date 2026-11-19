@@ -17,7 +17,8 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
-import { ownerLevel } from "../people/KinAccess.ts";
+import { accessSql, ownerLevel } from "../people/KinAccess.ts";
+import { countryCurrency } from "./countryCurrency.ts";
 import { iso } from "./recordRows.ts";
 import { localeOf, regionOf } from "./region.ts";
 
@@ -27,7 +28,14 @@ import { localeOf, regionOf } from "./region.ts";
  * owner reads, and changes it only by a card the owner confirms.
  */
 
-const ProfileJson = Schema.fromJsonString(KinCompanyProfileData);
+// `countryPending` is written only when a company is created, and dropped by the first save that
+// sets a country; a profile stored before it existed never has it, so no older company gets it.
+const ProfileJson = Schema.fromJsonString(
+  Schema.Struct({
+    ...KinCompanyProfileData.fields,
+    countryPending: Schema.optional(Schema.Literal(true)),
+  }),
+);
 const decodeProfile = Schema.decodeUnknownOption(ProfileJson);
 const encodeProfile = Schema.encodeEffect(ProfileJson);
 const EMPTY: KinCompanyProfileData = {
@@ -99,19 +107,128 @@ const moneyOf = (profile: KinCompanyProfileData): CompanyMoney => {
  * The row a company created now starts with: its country not chosen. A company with no row was
  * made before countries and keeps reading as India (`countryBefore`).
  */
-export const newCompanyProfileJson = encodeProfile({ ...EMPTY, country: null });
+export const newCompanyProfileJson = encodeProfile({
+  ...EMPTY,
+  country: null,
+  countryPending: true,
+});
 
 const storedProfile = Effect.fn("KinCompanyProfile.stored")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ json: string; rev: number; updatedAt: number }>`
     SELECT profile_json AS json, rev, updated_at AS "updatedAt" FROM kin_company_profile
     WHERE org_id = ${orgId}`;
-  if (row === undefined) return { data: EMPTY, rev: 0, updatedAt: null };
-  const data = Option.getOrElse(decodeProfile(row.json), () => EMPTY);
+  if (row === undefined) return { data: EMPTY, pending: false, rev: 0, updatedAt: null };
+  const { countryPending, ...data } = Option.getOrElse(decodeProfile(row.json), () => ({
+    ...EMPTY,
+    countryPending: undefined,
+  }));
+  const pending = countryPending === true;
   // The new company's row (updated_at 0) was never saved: its forms still offer the device's country.
   return row.updatedAt === 0
-    ? { data, rev: 0, updatedAt: null }
-    : { data, rev: row.rev, updatedAt: iso(row.updatedAt) };
+    ? { data, pending, rev: 0, updatedAt: null }
+    : { data, pending, rev: row.rev, updatedAt: iso(row.updatedAt) };
+});
+
+/**
+ * True while a company created now has no country chosen: Kin records no money for it until one
+ * is saved. Never true for a company made before, saved with a country or not.
+ */
+export const countryNeeded = Effect.fn("KinCompanyProfile.countryNeeded")(function* (
+  orgId: KinOrgId,
+) {
+  return (yield* storedProfile(orgId)).pending;
+});
+
+const NOT_CHOSEN = "this company's country isn't chosen yet";
+/** How the agent's call reads it: a batch or a change saved nothing; a teammate's turn asks no one. */
+export interface CountryAsk {
+  readonly saved?: boolean;
+  readonly forTeammate?: boolean;
+}
+export const countryFirstMessage = (owner: string, ask: CountryAsk = {}) =>
+  `Nothing was ${ask.saved === true ? "saved" : "created"}: ${NOT_CHOSEN}, ${
+    ask.forTeammate === true
+      ? "and Kin records no money until an owner chooses it in Settings, Company details."
+      : `so Kin can't tell its currency or tax. Ask ${owner} to choose it in Settings, Company details.`
+  }`;
+/** A refusal no fix to the call itself answers: the company's country comes first. */
+export const isCountryFirst = (error: { readonly message: string }) =>
+  error.message.startsWith("Nothing was ") && error.message.includes(NOT_CHOSEN);
+/** What a person's own request says instead: no name in it (an older phone hides names). */
+export const countryFirstForPerson = (ownerLevel: boolean) =>
+  ownerLevel
+    ? "Nothing was saved: choose your company's country first, in Settings, Company details."
+    : "Nothing was saved: an owner needs to choose the company's country first.";
+
+/** The refusal naming the owner, whoever saved the profile last. */
+export const countryRefusal = Effect.fn("KinCompanyProfile.countryRefusal")(function* (
+  orgId: KinOrgId,
+  ask: CountryAsk = {},
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [owner] = yield* sql<{ name: string }>`SELECT p.display_name AS name FROM kin_people p
+    WHERE p.org_id = ${orgId} AND ${sql.literal(accessSql("p"))} = 'owner'
+    ORDER BY p.created_at, p.person_id LIMIT 1`.pipe(Effect.orElseSucceed(() => []));
+  return new KinChatError({
+    reason: "invalid_state",
+    message: countryFirstMessage(owner?.name.trim() || "the owner", ask),
+  });
+});
+
+// Orgs read as not waiting on a country, per database. The state only ever ends, so a committed
+// read stays true; a read inside a transaction counts only once that transaction commits.
+const settled = new WeakMap<SqlClient.SqlClient, Set<string>>();
+const settledIn = (sql: SqlClient.SqlClient) => {
+  const known = settled.get(sql) ?? new Set<string>();
+  settled.set(sql, known);
+  return known;
+};
+const markSettled = (sql: SqlClient.SqlClient, orgId: KinOrgId) =>
+  sql.afterCommit(Effect.sync(() => settledIn(sql).add(orgId)));
+
+/** The company's money as it reads, and whether it still waits on its country, in one read. */
+export const companyMoneyState = Effect.fn("KinCompanyProfile.moneyState")(function* (
+  orgId: KinOrgId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const stored = yield* storedProfile(orgId);
+  if (!stored.pending) yield* markSettled(sql, orgId);
+  return { ...moneyOf(stored.data), pending: stored.pending };
+});
+
+/** Refuses anything that records money while the company's country is not chosen. */
+export const countryFirst = Effect.fn("KinCompanyProfile.countryFirst")(function* (
+  orgId: KinOrgId,
+  ask?: CountryAsk,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  if (settledIn(sql).has(orgId)) return;
+  if (yield* countryNeeded(orgId)) return yield* yield* countryRefusal(orgId, ask);
+  yield* markSettled(sql, orgId);
+});
+
+/**
+ * The company's money for a write that turns a bare amount into money or keeps the currency it
+ * reads: refused while the country is not chosen, read with that state in one query.
+ */
+const recordingMoney = Effect.fn("KinCompanyProfile.recordingMoney")(function* (
+  orgId: KinOrgId,
+  ask?: CountryAsk,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const stored = yield* storedProfile(orgId);
+  if (stored.pending) return yield* yield* countryRefusal(orgId, ask);
+  yield* markSettled(sql, orgId);
+  return moneyOf(stored.data);
+});
+
+/** The currency a bare amount in a write is in: refused while the country is not chosen. */
+export const recordingCurrency = Effect.fn("KinCompanyProfile.recordingCurrency")(function* (
+  orgId: KinOrgId,
+  ask?: CountryAsk,
+) {
+  return (yield* recordingMoney(orgId, ask)).homeCurrency;
 });
 
 /** The profile with its country, year and tax as they read, set or not. */
@@ -161,13 +278,17 @@ export const textLocale = Effect.fn("KinCompanyProfile.textLocale")(function* (o
 
 /**
  * A change of country brings that country's currency, year and tax for whichever of them the
- * same change doesn't give; a country with no row keeps the currency and has no tax.
+ * same change doesn't give; a country with no row keeps the currency and has no tax, unless it is
+ * the first a new company chooses: that takes its country's currency (`countryCurrency.ts`).
  */
-const followCountry = (data: KinCompanyProfileData, patch: ProfilePatch) => {
+const followCountry = (data: KinCompanyProfileData, patch: ProfilePatch, pending: boolean) => {
   if (patch.country === undefined || patch.country === moneyOf(data).country) return {};
   const region = regionOf(patch.country);
+  const currency =
+    region?.currency ??
+    (pending && patch.country !== null ? countryCurrency(patch.country) : undefined);
   return {
-    ...(region === undefined ? {} : { homeCurrency: region.currency }),
+    ...(currency === undefined ? {} : { homeCurrency: currency }),
     financialYearStartMonth: region?.financialYearStartMonth ?? 1,
     tax:
       region === undefined || patch.country === "IN"
@@ -186,19 +307,27 @@ export const setProfile = Effect.fn("KinCompanyProfile.set")(function* (
   const sql = yield* SqlClient.SqlClient;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      const { data, rev: storedRev } = yield* storedProfile(orgId);
+      const { data, pending, rev: storedRev } = yield* storedProfile(orgId);
+      if (pending && patch.country != null && countryCurrency(patch.country) === undefined)
+        return yield* new KinChatError({
+          reason: "invalid_state",
+          message: `Country: ${patch.country} isn't a country Kin knows. Write its two-letter code, like GB, US or IN.`,
+        });
       const { bank, brand, ...rest } = patch;
       const given = <A extends object>(value: A | undefined) =>
         Object.fromEntries(Object.entries(value ?? {}).filter(([, one]) => one !== undefined));
       const next: KinCompanyProfileData = {
         ...data,
-        ...followCountry(data, patch),
+        ...followCountry(data, patch, pending),
         ...given(rest),
         bank: { ...data.bank, ...given(bank) },
         brand: { ...data.brand, ...given(brand) },
       };
-      const json = yield* encodeProfile(next);
-      if (json === (yield* encodeProfile(data))) return yield* readProfile(orgId);
+      // Only a saved country ends the wait; a logo, a name or "no country" keeps it.
+      const stillPending = pending && (next.country ?? null) === null;
+      const json = yield* encodeProfile(stillPending ? { ...next, countryPending: true } : next);
+      if (json === (yield* encodeProfile(pending ? { ...data, countryPending: true } : data)))
+        return yield* readProfile(orgId);
       if (rev !== undefined && rev !== storedRev)
         return yield* new KinChatError({
           reason: "conflict",
@@ -212,7 +341,18 @@ export const setProfile = Effect.fn("KinCompanyProfile.set")(function* (
         ON CONFLICT (org_id) DO UPDATE SET profile_json = excluded.profile_json,
           rev = kin_company_profile.rev + 1, updated_at = excluded.updated_at,
           updated_by_kind = excluded.updated_by_kind, updated_by_id = excluded.updated_by_id`;
-      yield* (yield* KinRefreshObserver).touch(orgId, "company");
+      // Lists made while waiting took no currency of their own (`registers.ts` `listCurrency`).
+      const rewritten =
+        pending && !stillPending
+          ? yield* sql`UPDATE kin_registers SET definition_json = json_remove(
+                json_set(definition_json, '$.currency', ${next.homeCurrency}), '$.currencyPending'),
+                rev = rev + 1
+              WHERE org_id = ${orgId} AND json_extract(definition_json, '$.currencyPending') = 1
+              RETURNING register_id`
+          : [];
+      const observer = yield* KinRefreshObserver;
+      yield* observer.touch(orgId, "company");
+      if (rewritten.length > 0) yield* observer.touch(orgId, "workLists");
       return yield* readProfile(orgId);
     }),
   );

@@ -13,7 +13,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { homeCurrency } from "./companyProfile.ts";
+import { countryFirst, homeCurrency } from "./companyProfile.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { turnChat } from "../lead/Audience.ts";
@@ -388,6 +388,13 @@ const CHAT_LIMIT =
 
 const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput.Type) {
   yield* admitted(lead, "statement_read", input);
+  // Again, a refresh, a password or pages go on with a statement already read.
+  const reread =
+    input.again === true ||
+    input.refresh === true ||
+    input.password !== undefined ||
+    input.pages !== undefined;
+  yield* countryFirst(lead.orgId, { saved: reread });
   yield* sourceOf(lead, input.sourceEventId);
   const chat = yield* turnChat(lead);
   if (chat === undefined) return yield* invalid("This turn has no chat to read a statement in.");
