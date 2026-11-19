@@ -20,14 +20,19 @@ import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import { type AuthenticatedSession, EnvironmentAuth } from "../../auth/EnvironmentAuth.ts";
 import * as AuthHttp from "../../auth/http.ts";
 import { ServerSecretStore } from "../../auth/ServerSecretStore.ts";
 import { SessionStore } from "../../auth/SessionStore.ts";
+import { CloudLink } from "../../cloud/CloudLink.ts";
 import { layerAuthTest } from "../auth/ProofKeySessions.testkit.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import * as People from "../people/KinPeople.ts";
 import * as Records from "../work/KinRecords.ts";
 import { TasksKeyAudience } from "./audience.ts";
@@ -360,6 +365,109 @@ it.effect("a key ends at once when revoked, by its holder or the owner and nobod
         .pipe(Effect.provideService(TasksKeyAudience, true), Effect.result))._tag,
       "Failure",
     );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "making or removing a key moves people once it commits, and a refusal moves nothing",
+  () =>
+    Effect.gen(function* () {
+      const { orgId, zoya } = yield* team;
+      const hub = yield* RefreshHub.KinRefreshHub;
+      const heard = yield* Stream.toQueue(hub.changes(orgId), { capacity: "unbounded" });
+      const start = (yield* Queue.take(heard)).people;
+      const moved = Effect.gen(function* () {
+        yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+        return (yield* Queue.take(heard)).people;
+      });
+      const made = yield* TasksKeys.issue(zoya.app, { orgId });
+      assert.strictEqual(yield* moved, start + 1);
+      yield* TasksKeys.revoke(zoya.app, { orgId, sessionId: made.key.sessionId });
+      assert.strictEqual(yield* moved, start + 2);
+      // At the limit the issue rolls back after its touch; nobody hears of it.
+      for (let n = 0; n < 3; n++) yield* TasksKeys.issue(zoya.app, { orgId });
+      assert.strictEqual(yield* moved, start + 5);
+      assert.strictEqual(yield* reason(TasksKeys.issue(zoya.app, { orgId })), "limit");
+      yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+      assert.strictEqual(yield* Queue.size(heard), 0);
+    }).pipe(Effect.scoped, Effect.provide(RefreshHub.layer.pipe(Layer.provideMerge(layer)))),
+);
+
+it.effect("Remove is offered exactly where revoke would take it", () =>
+  Effect.gen(function* () {
+    const { orgId, rhea, zoya, arjun } = yield* team;
+    const people = yield* People.KinPeople;
+    const sessions = yield* SessionStore;
+    const invite = yield* people.createInvite(rhea.app, { orgId, displayName: "Meera" });
+    const joined = yield* people.accept({ secret: invite.secret });
+    const meera = {
+      personId: joined.person.personId,
+      app: yield* sessions.verify(joined.accessToken),
+    };
+    for (const co of [zoya, meera])
+      yield* people.setAccess(rhea.app, { orgId, personId: co.personId, access: "co_owner" });
+    const rows = [
+      ["her own key", zoya, zoya, true],
+      ["the owner, a co-owner's", rhea, zoya, true],
+      ["a co-owner, the owner's", zoya, rhea, false],
+      ["a co-owner, another co-owner's", zoya, meera, false],
+      ["a co-owner, a member's", zoya, arjun, true],
+      ["a member, a co-owner's", arjun, zoya, false],
+    ] as const;
+    for (const [name, viewer, holder, expected] of rows) {
+      const { key } = yield* TasksKeys.issue(holder.app, { orgId });
+      const listed = yield* Effect.result(
+        TasksKeys.list(viewer.app, { orgId, personId: holder.personId }),
+      );
+      // A member can't read another person's keys at all, so is offered nothing.
+      const offered =
+        listed._tag === "Success"
+          ? listed.success.keys.find((one) => one.sessionId === key.sessionId)?.canRevoke
+          : false;
+      const revoked = yield* Effect.result(
+        TasksKeys.revoke(viewer.app, { orgId, sessionId: key.sessionId }),
+      );
+      assert.deepStrictEqual(
+        [name, offered, revoked._tag === "Success"],
+        [name, expected, expected],
+      );
+    }
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("names T3 Connect's tunnel as the address, and nothing while none serves this host", () =>
+  Effect.gen(function* () {
+    const { orgId, zoya } = yield* team;
+    const state = {
+      linked: true,
+      cloudUserId: "invented-user",
+      relayUrl: "wss://relay.example.test",
+      relayIssuer: null,
+      publishAgentActivity: false,
+    };
+    const cases = [
+      [
+        { ...state, tunnelHostname: "ambermill.tunnel.example.test" },
+        "https://ambermill.tunnel.example.test",
+      ],
+      // A relay with no tunnel yet, a revoked link, an unlinked host, and a loopback name.
+      [state, undefined],
+      [{ ...state, linkRevoked: true, tunnelHostname: "ambermill.tunnel.example.test" }, undefined],
+      [{ ...state, linked: false, tunnelHostname: "ambermill.tunnel.example.test" }, undefined],
+      [{ ...state, tunnelHostname: "localhost" }, undefined],
+    ] as const;
+    for (const [linkState, origin] of cases) {
+      const cloud = Layer.mock(CloudLink)({ linkState: () => Effect.succeed(linkState) });
+      const made = yield* TasksKeys.issue(zoya.app, { orgId }).pipe(Effect.provide(cloud));
+      assert.strictEqual(made.origin, origin);
+      assert.strictEqual(
+        (yield* TasksKeys.list(zoya.app, { orgId }).pipe(Effect.provide(cloud))).origin,
+        origin,
+      );
+      yield* TasksKeys.revoke(zoya.app, { orgId, sessionId: made.key.sessionId });
+    }
+    // A host without T3 Connect at all says nothing either.
+    assert.notProperty(yield* TasksKeys.issue(zoya.app, { orgId }), "origin");
   }).pipe(Effect.provide(layer)),
 );
 

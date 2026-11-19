@@ -6,6 +6,7 @@ import {
   KinChatError,
   type KinOrgId,
   KinPersonId,
+  kinIsLocalOnlyHost,
   type KinTasksKey,
   type KinTasksKeysIssueInput,
   type KinTasksKeysIssueResult,
@@ -21,7 +22,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { EnvironmentAuth, type AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { SessionStore } from "../../auth/SessionStore.ts";
+import { CloudLink } from "../../cloud/CloudLink.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { isOwnerHimself, ownerLevel } from "../people/KinAccess.ts";
 import { workFailure } from "../work/recordRows.ts";
 import { isTasksKey, TasksKeyAudience } from "./audience.ts";
@@ -59,13 +62,14 @@ type KeyRow = {
   readonly lastUsedAt: number | null;
 };
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
-const toKey = (row: KeyRow): KinTasksKey => ({
+const toKey = (row: KeyRow, canRevoke: boolean): KinTasksKey => ({
   sessionId: AuthSessionId.make(row.sessionId),
   personId: KinPersonId.make(row.personId),
   label: row.label,
   createdAt: iso(row.createdAt),
   expiresAt: iso(row.expiresAt),
   lastUsedAt: row.lastUsedAt === null ? null : iso(row.lastUsedAt),
+  canRevoke,
 });
 
 /** Live: not revoked here or as a T3 session, not expired, and its person not removed. */
@@ -87,6 +91,38 @@ const liveKeys = Effect.fn("KinTasksKeys.liveKeys")(function* (
     FROM kin_tasks_keys k
     WHERE k.org_id = ${orgId} AND k.person_id = ${personId} AND ${live(sql, now)}
     ORDER BY k.created_at, k.session_id`;
+});
+
+/** Who may end a key: its holder, the owner for anyone, or a co-owner for a member's. */
+const mayRevoke = Effect.fn("KinTasksKeys.mayRevoke")(function* (
+  orgId: KinOrgId,
+  by: KinPersonId,
+  holder: KinPersonId,
+) {
+  const { owner } = yield* KinIdentity;
+  return (
+    holder === by ||
+    isOwnerHimself(owner, by) ||
+    ((yield* ownerLevel(orgId, by)) &&
+      !isOwnerHimself(owner, holder) &&
+      !(yield* ownerLevel(orgId, holder)))
+  );
+});
+
+/**
+ * The address anyone's coding agent can reach this host by: T3 Connect's tunnel while it serves
+ * this host. A LAN, tailnet or relay connection gives the host no address of its own to name.
+ */
+const publicOrigin = Effect.fn("KinTasksKeys.publicOrigin")(function* () {
+  const cloud = yield* Effect.serviceOption(CloudLink);
+  if (Option.isNone(cloud)) return undefined;
+  const state = yield* cloud.value.linkState().pipe(Effect.option);
+  if (Option.isNone(state)) return undefined;
+  const { linked, linkRevoked, tunnelHostname } = state.value;
+  if (!linked || linkRevoked || tunnelHostname === undefined) return undefined;
+  if (!URL.canParse(`https://${tunnelHostname}`)) return undefined;
+  const url = new URL(`https://${tunnelHostname}`);
+  return kinIsLocalOnlyHost(url.hostname) ? undefined : url.origin;
 });
 
 /** The person signed in on this app session, never a key: who a key is made for and by. */
@@ -114,8 +150,12 @@ export const issue = Effect.fn("KinTasksKeys.issue")(function* (
   const person = yield* caller(session, input.orgId);
   const auth = yield* EnvironmentAuth;
   const sql = yield* SqlClient.SqlClient;
+  const refresh = yield* KinRefreshObserver;
   const label = input.label ?? "Coding agent";
+  const origin = yield* publicOrigin();
   return yield* Effect.gen(function* () {
+    // Moves only once this commits: a refusal below announces nothing.
+    yield* refresh.touch(person.orgId, "people");
     const now = yield* Clock.currentTimeMillis;
     // A removal may have committed since `caller`: the issuer is read again where the key is made.
     const issuer = yield* sql`SELECT 1 FROM auth_sessions a
@@ -146,9 +186,10 @@ export const issue = Effect.fn("KinTasksKeys.issue")(function* (
         expires_at)
       VALUES (${row.sessionId}, ${person.orgId}, ${row.personId}, ${label}, ${now}, ${row.expiresAt})`;
     const result: KinTasksKeysIssueResult = {
-      key: toKey(row),
+      key: toKey(row, true),
       secret: issued.token,
       path: KIN_TASKS_KEY_PATH,
+      ...(origin === undefined ? {} : { origin }),
     };
     return result;
   }).pipe(sql.withTransaction, workFailure);
@@ -164,7 +205,12 @@ export const list = Effect.fn("KinTasksKeys.list")(function* (
   if (whose !== person.personId && !(yield* ownerLevel(input.orgId, person.personId)))
     return yield* missing;
   const now = yield* Clock.currentTimeMillis;
-  return { keys: (yield* liveKeys(input.orgId, whose, now)).map(toKey) };
+  const canRevoke = yield* mayRevoke(input.orgId, person.personId, whose);
+  const origin = yield* publicOrigin();
+  return {
+    keys: (yield* liveKeys(input.orgId, whose, now)).map((row) => toKey(row, canRevoke)),
+    ...(origin === undefined ? {} : { origin }),
+  };
 }, workFailure);
 
 /**
@@ -176,26 +222,21 @@ export const revoke = Effect.fn("KinTasksKeys.revoke")(function* (
   input: KinTasksKeysRevokeInput,
 ) {
   const person = yield* caller(session, input.orgId);
-  const { owner } = yield* KinIdentity;
   const auth = yield* EnvironmentAuth;
   const sql = yield* SqlClient.SqlClient;
+  const refresh = yield* KinRefreshObserver;
   return yield* Effect.gen(function* () {
     const [row] = yield* sql<{ personId: string }>`SELECT person_id AS "personId"
       FROM kin_tasks_keys WHERE org_id = ${input.orgId} AND session_id = ${input.sessionId}
         AND revoked_at IS NULL`;
     if (row === undefined) return yield* missing;
-    const holder = KinPersonId.make(row.personId);
-    const allowed =
-      holder === person.personId ||
-      isOwnerHimself(owner, person.personId) ||
-      ((yield* ownerLevel(input.orgId, person.personId)) &&
-        !isOwnerHimself(owner, holder) &&
-        !(yield* ownerLevel(input.orgId, holder)));
-    if (!allowed) return yield* missing;
+    if (!(yield* mayRevoke(input.orgId, person.personId, KinPersonId.make(row.personId))))
+      return yield* missing;
     const now = yield* Clock.currentTimeMillis;
     yield* sql`UPDATE kin_tasks_keys SET revoked_at = ${now}
       WHERE org_id = ${input.orgId} AND session_id = ${input.sessionId} AND revoked_at IS NULL`;
     yield* auth.revokeSession(input.sessionId).pipe(Effect.mapError(() => unavailable));
+    yield* refresh.touch(input.orgId, "people");
     return { revoked: true };
   }).pipe(sql.withTransaction, workFailure);
 });
