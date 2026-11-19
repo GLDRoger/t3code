@@ -10,6 +10,7 @@ import {
   KIN_DOC_HOMES,
   KIN_DOC_SHELVES,
   KIN_SEARCH,
+  KIN_WHAT_WE_SELL,
   kinDocLibrary,
   kinDocRow,
   kinDocUnfiled,
@@ -18,7 +19,10 @@ import {
   kinDocsSameShow,
   kinSearchHit,
   kinSearchNothing,
+  kinWhatWeSellShown,
+  kinWhatWeSellWays,
   type KinDocRowView,
+  type KinWhatWeSellWay,
   type KinDocsShow,
   type KinSearchHitView,
   type KinSearchState,
@@ -32,9 +36,11 @@ import { KIN_WORK_HOME, kinPlaceLists } from "@t3tools/client-runtime/kin/kinWor
 import type { KinDocListRow, KinListDefinition, KinListId, KinRecordKey } from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
 import {
+  ArrowRightIcon,
   BookOpenIcon,
   Building2Icon,
   ChevronDownIcon,
+  FileTextIcon,
   FolderInputIcon,
   MessageSquareIcon,
   TableIcon,
@@ -57,7 +63,14 @@ import {
 import { KinDocFileDialog } from "./KinDocFileDialog";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
-import { useKinDocsList, useKinDocsLive, useKinDocsUnder, useKinSearch } from "./useKinDocs";
+import {
+  useKinDocsList,
+  useKinDocsLive,
+  useKinDocsUnder,
+  useKinSearch,
+  useKinWhatWeSell,
+  useKinWhatWeSellStart,
+} from "./useKinDocs";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 
 const ROW =
@@ -87,6 +100,11 @@ function KinDocRowButton(props: {
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex min-w-0 items-center gap-1.5">
             <span className="truncate text-sm text-foreground">{row.title}</span>
+            {row.pinned ? (
+              <Badge size="sm" variant="info">
+                {KIN_WHAT_WE_SELL.pinned}
+              </Badge>
+            ) : null}
             {row.private ? <KinWorkPrivateMark /> : null}
           </span>
           <span className="truncate text-xs text-muted-foreground">{row.line}</span>
@@ -112,6 +130,60 @@ function KinDocRowButton(props: {
         </Button>
       )}
     </div>
+  );
+}
+
+const WAY_ICON: Record<KinWhatWeSellWay, typeof ArrowRightIcon> = {
+  website: ArrowRightIcon,
+  brochure: FileTextIcon,
+  talk: MessageSquareIcon,
+};
+
+/** No What we sell yet: three ways in, each starting it and opening the sales agent's chat. */
+function KinWhatWeSellEmpty(props: {
+  readonly agent: string;
+  readonly start: (draft: string) => Promise<boolean>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  return (
+    <section
+      aria-label={KIN_WHAT_WE_SELL.empty.title}
+      className="flex flex-col gap-2 rounded-lg bg-muted/60 px-4 py-3"
+    >
+      <h2 className="text-sm font-medium text-foreground">{KIN_WHAT_WE_SELL.empty.title}</h2>
+      <p className="text-xs text-muted-foreground">{KIN_WHAT_WE_SELL.empty.detail}</p>
+      <ul className="flex flex-col">
+        {kinWhatWeSellWays(props.agent).map((way) => {
+          const Icon = WAY_ICON[way.way];
+          return (
+            <li key={way.way}>
+              <button
+                type="button"
+                disabled={busy}
+                aria-busy={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  setFailed(false);
+                  const started = await props.start(way.draft);
+                  setBusy(false);
+                  setFailed(!started);
+                }}
+                className={ROW}
+              >
+                <Icon aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                <span className="text-sm text-foreground">{way.label}</span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {failed ? (
+        <p role="alert" className="text-xs text-destructive-foreground">
+          {KIN_WHAT_WE_SELL.startFailed}
+        </p>
+      ) : null}
+    </section>
   );
 }
 
@@ -198,6 +270,7 @@ type Item =
       readonly unfiled?: true;
     }
   | { readonly type: "recent"; readonly id: string; readonly rows: ReadonlyArray<KinDocListRow> }
+  | { readonly type: "whatWeSell"; readonly id: string }
   | {
       readonly type: "doc";
       readonly id: string;
@@ -283,7 +356,15 @@ export function KinDocsList(
               ]
             : []),
         ];
-  const library = kinDocLibrary(state.records);
+  // What we sell is read on its own: pinned whatever page holds it, or its empty state's ways in.
+  const pinShown = kinWhatWeSellShown(filter);
+  const pinned = useKinWhatWeSell(props, pinShown);
+  const starter = useKinWhatWeSellStart(props);
+  const library = kinDocLibrary(state.records, pinShown ? (pinned ?? null) : null);
+  const whatWeSell: ReadonlyArray<Item> =
+    pinShown && pinned === null && starter !== null
+      ? [{ type: "whatWeSell", id: "what-we-sell" }]
+      : [];
   // Typed words narrow the list on the host, so every doc is looked through, not just these rows.
   const docItems: ReadonlyArray<Item> = library.homes.flatMap((home): ReadonlyArray<Item> => [
     {
@@ -327,7 +408,7 @@ export function KinDocsList(
     everything && !searching && !filter.archived && library.recent.length > 0
       ? [{ type: "recent", id: "recent", rows: library.recent }]
       : [];
-  const items = [...recent, ...listItems, ...docItems, ...playbookItems];
+  const items = [...whatWeSell, ...recent, ...listItems, ...docItems, ...playbookItems];
   const footer = kinDocsFooter(state.records.length, state.total, state.more);
   const chip = kinDocsChip(filter);
   const show = (next: KinDocsShow) => list.setFilter({ ...filter, show: next });
@@ -338,7 +419,16 @@ export function KinDocsList(
       <LegendList<Item>
         data={items}
         keyExtractor={(item) => item.id}
-        extraData={[state, found, allLists, playbooksOpen, canFile, props.selected]}
+        extraData={[
+          state,
+          found,
+          allLists,
+          playbooksOpen,
+          canFile,
+          props.selected,
+          starter?.agent,
+          pinned,
+        ]}
         recycleItems
         onEndReached={() => void list.loadMore()}
         onEndReachedThreshold={0.5}
@@ -484,7 +574,13 @@ export function KinDocsList(
           </>
         }
         renderItem={({ item }) =>
-          item.type === "recent" ? (
+          item.type === "whatWeSell" ? (
+            starter === null ? null : (
+              <div className="mx-auto w-full max-w-3xl px-4 pt-3">
+                <KinWhatWeSellEmpty agent={starter.agent} start={starter.start} />
+              </div>
+            )
+          ) : item.type === "recent" ? (
             <div className="mx-auto w-full max-w-3xl px-4 pt-3">
               <h2 className="px-2 pb-1.5 text-xs font-medium text-muted-foreground">
                 {KIN_DOC_HOMES.recent}

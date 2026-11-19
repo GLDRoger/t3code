@@ -55,6 +55,8 @@ export function KinAwayField(props: {
   readonly profile: KinPersonProfile;
   readonly mine: boolean;
   readonly mayEdit: boolean;
+  /** The settings search id that lands here. */
+  readonly target?: string | undefined;
 }) {
   const { profile } = props;
   const update = useAtomCommand(kinClient.profileUpdate, { reportFailure: false });
@@ -76,7 +78,11 @@ export function KinAwayField(props: {
     return false;
   };
   return (
-    <section className="flex flex-col gap-1">
+    <section
+      id={props.target}
+      tabIndex={props.target === undefined ? undefined : -1}
+      className="flex flex-col gap-1"
+    >
       <h3 className="text-xs font-medium text-muted-foreground">{KIN_AWAY.label}</h3>
       {line === null ? null : <p className="text-sm text-foreground">{line}</p>}
       {props.mayEdit ? (
