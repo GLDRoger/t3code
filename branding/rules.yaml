@@ -17,6 +17,8 @@
 #   reason. Any other hit fails the run. Strings that are code (import paths, keys) are scanned too.
 # remove: files the copy doesn't have at all, each with its reason. An entry that matches nothing
 #   fails the run.
+# scopes: named file sets `--scope <name>` brands alone (rules, assets, removes and guards for
+#   those files only); `--in-place` applies one to a clean checkout instead of a copy.
 # apps/mobile/app.config.ts also gets a structural edit; see scripts/lib/kinBrandMobileConfig.ts.
 # A few functions get a guard statement put first; see scripts/lib/kinBrandGuards.ts.
 # Assets: every file under assets/ next to this file replaces the same path in the copy.
@@ -448,15 +450,21 @@ text:
     to: Kin
 
   # Web: app name, page title, install manifest, brand marks.
-  - files: [apps/web/src/branding.ts]
+  - files: [apps/web/src/branding.ts, apps/web/vite.config.ts]
     from: T3 Code
     to: Kin
+    exact: true
+  # Kin's web build has no release stage, so it is named Kin, never "Kin (Beta)".
+  - files: [apps/web/src/branding.logic.ts]
+    from: Beta
+    to: Latest
     exact: true
   - files:
       - apps/web/index.html
       - apps/web/public/manifest.webmanifest
       - apps/web/src/components/ui/standalone-page.tsx
       - apps/web/src/components/onboarding/WelcomeWizard.tsx
+      - apps/web/src/components/sidebar/SidebarChrome.tsx
     from: T3 Code
     to: Kin
   # The wordmark itself is an asset (assets/apps/web/src/components/T3Wordmark.tsx).
@@ -617,6 +625,26 @@ remove:
       T3 Code's shared remote build cache endpoint. Without it remoteCacheUrl returns nothing,
       so the copy always builds locally and never reads or writes T3's cache.
     files: [.task-cache.json]
+
+scopes:
+  web:
+    reason: >-
+      The Kin server's own web app (ops/kin/host/update.sh brands its build worktree in place):
+      its name, title, install manifest, icons and marks. Only these, because the server itself
+      stays unbranded: it runs on ~/.t3 and keeps T3's identities.
+    files:
+      - apps/web/index.html
+      - apps/web/vite.config.ts
+      - apps/web/public/manifest.webmanifest
+      - apps/web/public/favicon.ico
+      - apps/web/public/favicon-*.png
+      - apps/web/public/apple-touch-icon.png
+      - apps/web/public/icon-*.png
+      - apps/web/src/branding.ts
+      - apps/web/src/branding.logic.ts
+      - apps/web/src/components/T3Wordmark.tsx
+      - apps/web/src/components/sidebar/SidebarChrome.tsx
+      - apps/web/src/components/ui/standalone-page.tsx
 
 sourceAssets:
   apps/web/src/components/T3Wordmark.tsx: ba20ddca13c7436ca7ad1f25fbc1acc67b95b9242573fd6e70611f389deabf4d

@@ -41,6 +41,7 @@ const makeRepo = Effect.fn("makeRepo")(function* (options: {
     options.app ?? 'export const name = "T3 Code";\n',
   );
   for (const [file, content] of Object.entries(options.files ?? {})) {
+    yield* fs.makeDirectory(path.dirname(path.join(repo, file)), { recursive: true });
     yield* fs.writeFileString(path.join(repo, file), content);
   }
   yield* fs.makeDirectory(path.join(repo, "branding/assets"), { recursive: true });
@@ -52,7 +53,7 @@ const makeRepo = Effect.fn("makeRepo")(function* (options: {
   }
   for (const args of [
     ["init", "-q"],
-    ["add", "app"],
+    ["add", "app", ...Object.keys(options.files ?? {})],
   ]) {
     yield* spawner.string(ChildProcess.make("git", args, { cwd: repo }));
   }
@@ -67,10 +68,14 @@ const brand = (
     readonly updateDriftBaseline?: boolean;
     readonly guards?: ReadonlyArray<Guard>;
     readonly scan?: boolean;
+    readonly scope?: string;
+    readonly inPlace?: boolean;
   } = {},
 ) =>
   kinBrand({
     scan: options.scan ?? false,
+    scope: Option.fromUndefinedOr(options.scope),
+    inPlace: options.inPlace ?? false,
     repoRoot: repo,
     target: Option.some(target),
     rules: Option.none(),
@@ -312,6 +317,73 @@ describe("kin-brand", () => {
         yield* failure(brand(missing.repo, path.join(missing.root, "kin"))),
         `source-file asset app/mark.tsx needs its upstream sha256 in sourceAssets in rules.yaml: ${yield* sha256(upstream)}`,
       );
+    }).pipe(Effect.scoped, Effect.provide(TestLayer)),
+  );
+
+  it.live("brands one scope in place, only in a checkout git can undo", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const { root, repo } = yield* makeRepo({
+        files: { "server/home.ts": 'export const home = ".t3";\n' },
+        rules: RULES.replace(
+          "ignore:",
+          "  - files: [server/home.ts]\n    from: .t3\n    to: .kin\n    exact: true\nignore:",
+        ).concat("scopes:\n  web:\n    reason: test\n    files: [app/**]\n"),
+      });
+      const target = path.join(root, "unused");
+      assert.include(
+        yield* failure(brand(repo, target, { inPlace: true })),
+        "--in-place brands one --scope",
+      );
+      assert.include(
+        yield* failure(brand(repo, target, { inPlace: true, scope: "web" })),
+        "without uncommitted changes",
+      );
+      yield* spawner.string(
+        ChildProcess.make(
+          "git",
+          ["-c", "user.name=Rhea", "-c", "user.email=rhea@ambermill.invalid", "commit", "-qm", "x"],
+          { cwd: repo },
+        ),
+      );
+
+      yield* brand(repo, target, { inPlace: true, scope: "web" });
+      assert.strictEqual(
+        yield* fs.readFileString(path.join(repo, "app/name.ts")),
+        'export const name = "Kin";\n',
+      );
+      // Outside the scope nothing changes, and its rules don't count as matching nothing.
+      assert.strictEqual(
+        yield* fs.readFileString(path.join(repo, "server/home.ts")),
+        'export const home = ".t3";\n',
+      );
+      assert.isFalse(yield* fs.exists(target));
+    }).pipe(Effect.scoped, Effect.provide(TestLayer)),
+  );
+
+  it.live("fails when the web app's first-paint name isn't Kin", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const files = {
+        "apps/web/index.html": "<html><head><title>T3 Code</title></head></html>\n",
+        "apps/web/public/manifest.webmanifest": '{ "name": "T3 Code", "short_name": "Kin" }\n',
+      };
+      const unbranded = yield* makeRepo({ files });
+      const message = yield* failure(brand(unbranded.repo, path.join(unbranded.root, "kin")));
+      assert.include(message, 'apps/web/index.html: <title> is "T3 Code", not "Kin"');
+      assert.include(message, 'apps/web/public/manifest.webmanifest: name is "T3 Code", not "Kin"');
+      assert.notInclude(message, "short_name");
+
+      const branded = yield* makeRepo({
+        files,
+        rules: RULES.replace(
+          "ignore:",
+          "  - files: [apps/web/**]\n    from: T3 Code\n    to: Kin\nignore:",
+        ),
+      });
+      yield* brand(branded.repo, path.join(branded.root, "kin"));
     }).pipe(Effect.scoped, Effect.provide(TestLayer)),
   );
 });

@@ -197,6 +197,7 @@ const copyAssets = Effect.fn("kinBrand.copyAssets")(function* (
   assetsRoot: string,
   target: string,
   write = true,
+  inScope: (file: string) => boolean = () => true,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -210,6 +211,7 @@ const copyAssets = Effect.fn("kinBrand.copyAssets")(function* (
     const source = path.join(assetsRoot, asset);
     if ((yield* fs.stat(source)).type !== "File") continue;
     const file = asset.split(path.sep).join("/");
+    if (!inScope(file)) continue;
     const destination = path.join(target, file);
     yield* assertNoSymlink(target, file);
     if (!(yield* fs.exists(destination))) {
@@ -304,6 +306,46 @@ const emptyResult = (source: string, leaks: FileResult["leaks"]): FileResult => 
   leaks,
 });
 
+/** The name a Kin web build shows before any script runs: tab title, installed app, its stage. */
+const NAME_CHECKS: ReadonlyArray<{
+  readonly file: string;
+  readonly what: string;
+  readonly read: RegExp;
+  readonly want: string;
+}> = [
+  { file: "apps/web/index.html", what: "<title>", read: /<title>([^<]*)<\/title>/, want: "Kin" },
+  {
+    file: "apps/web/vite.config.ts",
+    what: "the title the build stamps",
+    read: /formatAppDisplayName\(\{ baseName: "([^"]*)"/,
+    want: "Kin",
+  },
+  {
+    file: "apps/web/src/branding.ts",
+    what: "APP_BASE_NAME",
+    read: /APP_BASE_NAME = [^;]*\?\? "([^"]*)"/,
+    want: "Kin",
+  },
+  {
+    file: "apps/web/src/branding.logic.ts",
+    what: "a production build's stage label",
+    read: /input\.development \? "Dev" : "([^"]*)"/,
+    want: "Latest",
+  },
+  {
+    file: "apps/web/public/manifest.webmanifest",
+    what: "name",
+    read: /"name":\s*"([^"]*)"/,
+    want: "Kin",
+  },
+  {
+    file: "apps/web/public/manifest.webmanifest",
+    what: "short_name",
+    read: /"short_name":\s*"([^"]*)"/,
+    want: "Kin",
+  },
+];
+
 export const kinBrand = Effect.fn("kinBrand")(function* (options: {
   readonly target: Option.Option<string>;
   readonly rules: Option.Option<string>;
@@ -311,12 +353,15 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
   readonly updateDriftBaseline: boolean;
   /** Brand in memory and report problems only: no copy, no writes, no drift, no install. */
   readonly scan?: boolean;
+  /** Brand only the files of this `scopes` entry in the rules. */
+  readonly scope?: Option.Option<string>;
+  /** Write into the checkout itself, which must be clean so git can undo it; needs `scope`. */
+  readonly inPlace?: boolean;
   /** Tests point this at a temp repo and skip the install and typecheck. */
   readonly repoRoot?: string;
   readonly skipTypecheck?: boolean;
   readonly guards?: ReadonlyArray<Guard>;
 }) {
-  const guards = options.guards ?? GUARDS;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const repoRoot = path.resolve(
@@ -326,24 +371,66 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
     Option.getOrElse(options.rules, () => path.join(repoRoot, "branding/rules.yaml")),
   );
   const brandingDir = path.dirname(rulesPath);
-  const rules = yield* parseBrandRules(yield* fs.readFileString(rulesPath));
-  const target = path.resolve(
-    Option.getOrElse(options.target, () =>
-      path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}-kin`),
-    ),
-  );
-
+  const allRules = yield* parseBrandRules(yield* fs.readFileString(rulesPath));
   const scan = options.scan === true;
+  const inPlace = options.inPlace === true;
+  const scopeName = Option.getOrUndefined(options.scope ?? Option.none());
+  const scope = scopeName === undefined ? undefined : allRules.scopes?.[scopeName];
+  if (scopeName !== undefined && scope === undefined) {
+    return yield* fail(`rules.yaml has no scope "${scopeName}"`);
+  }
+  if (scope && (options.check || options.updateDriftBaseline)) {
+    return yield* fail("--check and --update-drift-baseline cover the whole copy; drop --scope");
+  }
+  if (inPlace && (scan || !scope)) {
+    // Every rule at once would move a checkout's data home and app identity under it.
+    return yield* fail("--in-place brands one --scope and can't be combined with --scan");
+  }
+  if (inPlace) {
+    const dirty = yield* run(
+      "git",
+      ["status", "--porcelain", "--untracked-files=no"],
+      repoRoot,
+      true,
+    );
+    if (dirty.trim() !== "") {
+      return yield* fail(
+        `--in-place needs ${repoRoot} without uncommitted changes, so git can undo it`,
+      );
+    }
+  }
+  const target = inPlace
+    ? repoRoot
+    : path.resolve(
+        Option.getOrElse(options.target, () =>
+          path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}-kin`),
+        ),
+      );
+  const inScope = (file: string) => scope === undefined || matchesAny(file, scope.files);
+
   const assetsDir = path.join(brandingDir, "assets");
   // A scan reads the checkout in place, and an asset's own file where one replaces a path.
   const root = scan ? repoRoot : target;
-  if (!scan) yield* Console.log(`kin-brand: copying ${repoRoot} to ${target}`);
-  const copiedFiles = scan
-    ? (yield* listCheckoutFiles(repoRoot)).files
-    : yield* copyCheckout(repoRoot, target);
+  if (inPlace) yield* Console.log(`kin-brand: branding ${scopeName} in ${repoRoot}`);
+  else if (!scan) yield* Console.log(`kin-brand: copying ${repoRoot} to ${target}`);
+  const copiedFiles = (
+    scan || inPlace
+      ? (yield* listCheckoutFiles(repoRoot)).files
+      : yield* copyCheckout(repoRoot, target)
+  ).filter(inScope);
+  const hitsScope = (globs: ReadonlyArray<string>) =>
+    copiedFiles.some((file) => matchesAny(file, globs));
+  const rules: BrandRules = scope
+    ? {
+        ...allRules,
+        text: allRules.text.filter((rule) => hitsScope(rule.files)),
+        remove: allRules.remove?.filter((entry) => hitsScope(entry.files)),
+      }
+    : allRules;
+  const guards = (options.guards ?? GUARDS).filter((guard) => inScope(guard.file));
   const removal = yield* removeFiles(rules, copiedFiles, root, !scan);
   const files = copiedFiles.filter((file) => !removal.removed.has(file));
-  const assets = yield* copyAssets(rules, assetsDir, root, !scan);
+  const assets = yield* copyAssets(rules, assetsDir, root, !scan, inScope);
   const replaced = new Set(assets.copied);
 
   const matches = new Map<number, number>();
@@ -353,7 +440,9 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
   const unscanned: Array<string> = [];
   const problems: Array<string> = [...removal.problems, ...assets.problems];
   const guarded = new Set<string>();
+  const nameFiles = new Map<string, string>();
   const record = (file: string, result: FileResult) => {
+    if (NAME_CHECKS.some((check) => check.file === file)) nameFiles.set(file, result.output);
     for (const entry of result.uncovered) drift.push(`${file}\t${excerpt(entry.text)}`);
     for (const entry of result.leaks) {
       if (isAllowedLeak(rules, file, entry.leak, entry.text)) continue;
@@ -425,6 +514,15 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
     }),
     { concurrency: 16, discard: true },
   );
+
+  for (const check of NAME_CHECKS.filter((check) => files.includes(check.file))) {
+    const found = check.read.exec(nameFiles.get(check.file) ?? "")?.[1];
+    if (found !== check.want) {
+      problems.push(
+        `${check.file}: ${check.what} is ${found === undefined ? "missing" : `"${found}"`}, not "${check.want}"`,
+      );
+    }
+  }
 
   if (!scan) {
     yield* Console.log(
@@ -539,6 +637,16 @@ export const kinBrandCommand = Command.make(
     ),
     updateDriftBaseline: Flag.Boolean("update-drift-baseline").pipe(
       Flag.withDescription("Rewrite the drift baseline with the copy's current upstream text."),
+      Flag.withDefault(false),
+    ),
+    scope: Flag.String("scope").pipe(
+      Flag.withDescription("Brand only the files of this scope in the rules (see scopes:)."),
+      Flag.optional,
+    ),
+    inPlace: Flag.Boolean("in-place").pipe(
+      Flag.withDescription(
+        "Brand the checkout itself instead of a copy; needs --scope and no uncommitted changes.",
+      ),
       Flag.withDefault(false),
     ),
     scan: Flag.Boolean("scan").pipe(

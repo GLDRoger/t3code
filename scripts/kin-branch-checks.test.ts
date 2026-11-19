@@ -3,6 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   addedLines,
   checkInstructions,
+  checkProductName,
   checkSharedCopy,
   checkMigrations,
   checkSurvival,
@@ -124,5 +125,20 @@ describe("kin branch checks", () => {
       said.map((problem) => problem.split('"')[1]),
       ["Open the chat with"],
     );
+  });
+
+  it("refuses a Kin file that calls the product T3 Kin", () => {
+    const problems = checkProductName(
+      new Map([
+        [
+          "kin/Welcome.tsx",
+          'const title = "Welcome to Kin";\nconst body = "Open T3 Kin to start.";',
+        ],
+        ["kin/Host.ts", 'const note = "Runs on a T3 server, as T3 Kinds do.";'],
+      ]),
+    );
+    assert.deepStrictEqual(problems, [
+      'kin name: kin/Welcome.tsx:2 says "T3 Kin"; the product is called Kin.',
+    ]);
   });
 });
