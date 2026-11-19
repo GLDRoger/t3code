@@ -351,8 +351,10 @@ it.effect("a question is asked once, and its default is taken once at its day", 
         }),
       );
       assert.isNotNull(card.closedAt);
-      assert.deepInclude((card.state as { outcome: unknown }).outcome, {
+      // The notice above says nobody answered; the card only reads as closed.
+      assert.deepStrictEqual((card.state as { outcome: unknown }).outcome, {
         title: "Went with “Draft it”",
+        text: 'Went with “Draft it”. Say "undo it" in the chat to reverse.',
       });
       // A tap after the default was taken changes nothing: the card is closed.
       const late = yield* chats

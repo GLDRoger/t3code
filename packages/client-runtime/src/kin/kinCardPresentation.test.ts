@@ -1,5 +1,10 @@
 // @effect-diagnostics globalDate:off - Fixtures read a thread date against a fixed now.
-import { KinChatError, type EnvironmentId, type KinWidget } from "@t3tools/contracts";
+import {
+  formatKinWhen,
+  KinChatError,
+  type EnvironmentId,
+  type KinWidget,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -14,6 +19,7 @@ import {
   kinChoiceAnswered,
   kinChoiceFailureNotice,
   kinChoicePhase,
+  kinChoiceUndoneLine,
   kinQuotedInZone,
   kinAddressPieces,
   kinSendEditFailure,
@@ -355,6 +361,28 @@ describe("choice cards", () => {
       "expired",
       "No answer by Tuesday, so Finance went with “Wait”.",
     ]);
+    expect(kinChoiceUndoneLine(taken, null)).toBeNull();
+    // A taken default's note, undone from Settings: who and when, said to each reader.
+    const at = new Date(2026, 10, 10, 9, 52);
+    const undone = choice({
+      closedAt: at.toISOString(),
+      state: {
+        ...choiceState(),
+        untilAnswered: true,
+        outcome: {
+          title: "Undone",
+          text: "Put W-3 “Clinic deck” back as it was.",
+          undone: { personId: "owner", name: "Rhea Rao", at: at.toISOString() },
+        },
+      },
+    });
+    const later = new Date(2026, 10, 10, 18, 0);
+    expect(kinChoiceUndoneLine(undone, "owner" as never, later)).toBe(
+      `Undone by you at ${formatKinWhen(at, "time")}.`,
+    );
+    expect(kinChoiceUndoneLine(undone, "zoya" as never, new Date(2026, 10, 12))).toBe(
+      `Undone by Rhea Rao on ${formatKinWhen(at, "dayTime")}.`,
+    );
     expect(
       kinCardView(
         widget({ type: "choice", state: { ...choiceState(), options: [] } }),

@@ -16,6 +16,9 @@ import {
 import { Label } from "../components/ui/label";
 import { useKinPickerSearch, type KinWorkTarget } from "./useKinWork";
 
+// Not a record key: those are a prefix, a dash and a number.
+const NOTHING_KEY = "kin:nothing";
+
 /**
  * A client or a project, or neither, found by typing part of its name: the first page shows at
  * once, and typing asks the host about every one the person may see.
@@ -26,7 +29,7 @@ export function KinPlaceCombobox(props: {
   readonly label: string;
   /** A toolbar's picker names itself to assistive tech only. */
   readonly labelHidden?: boolean;
-  /** What an empty field says: what picking nothing means here. */
+  /** What an empty field says: what picking nothing means here, offered as a row of its own. */
   readonly placeholder?: string;
   readonly value: KinWorkRef | null;
   readonly choices: ReadonlyArray<KinWorkRef>;
@@ -48,8 +51,16 @@ export function KinPlaceCombobox(props: {
     loaded: { open: props.choices, done: [] },
     held,
   });
-  const items =
-    extra === undefined || search.state.text.trim() !== "" ? view.open : [...view.open, extra];
+  const typed = search.state.text.trim() !== "";
+  const nothing =
+    props.placeholder === undefined ? undefined : { key: NOTHING_KEY, title: props.placeholder };
+  const items = typed
+    ? view.open
+    : [
+        ...(nothing === undefined ? [] : [nothing]),
+        ...view.open,
+        ...(extra === undefined ? [] : [extra]),
+      ];
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
       {props.labelHidden ? null : <Label htmlFor={id}>{props.label}</Label>}
@@ -70,7 +81,7 @@ export function KinPlaceCombobox(props: {
         }}
         onValueChange={(choice: KinWorkRef | null) => {
           search.type("");
-          props.onChange(choice);
+          props.onChange(choice?.key === NOTHING_KEY ? null : choice);
         }}
       >
         <ComboboxInput
