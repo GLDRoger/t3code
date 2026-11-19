@@ -1448,10 +1448,10 @@ it.effect(
         "Who is a good customer for us",
         "Our first offering",
       ]);
-      assert.deepStrictEqual(first.whatWeSell, { offerings: 1 });
+      assert.strictEqual(first.whatWeSell, true);
       assert.deepStrictEqual(
         (yield* pinned()).docs.map((doc) => [doc.key, doc.whatWeSell]),
-        [[first.key, { offerings: 1 }]],
+        [[first.key, true]],
       );
       // Only the owner level starts it.
       assert.strictEqual(
@@ -1508,7 +1508,7 @@ it.effect(
       const pinned = () => OwnerDocs.list([owner], { orgId, whatWeSell: true });
       assert.deepStrictEqual(
         (yield* pinned()).docs.map((doc) => [doc.key, doc.whatWeSell]),
-        [[made.key, { offerings: 1 }]],
+        [[made.key, true]],
       );
       const index = yield* offeringsPromptIndex(orgId, KIN_OWNER_LEVEL);
       assert.deepStrictEqual(index._tag === "index" ? index.index.sections : index._tag, [

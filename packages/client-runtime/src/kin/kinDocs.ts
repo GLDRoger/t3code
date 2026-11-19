@@ -311,13 +311,8 @@ export const kinDocUnfiled = (row: Pick<KinDocListRow, "party" | "project" | "co
   row.party === undefined && row.project === undefined && row.company !== true;
 
 export function kinDocRow(row: KinDocListRow, names: KinWorkNames, now: Date): KinDocRowView {
-  const change = kinDocChangeLine(changeOf(row.latest), names, now);
-  // What we sell says how many offerings it holds where another doc says what changed.
-  const text =
-    row.whatWeSell === undefined
-      ? change.text
-      : `${change.lead} · ${KIN_WHAT_WE_SELL.offerings(row.whatWeSell.offerings)}`;
-  const pinned = row.whatWeSell !== undefined;
+  const { text } = kinDocChangeLine(changeOf(row.latest), names, now);
+  const pinned = row.whatWeSell === true;
   const under =
     row.company === true
       ? KIN_DOC_HOMES.company
@@ -436,7 +431,7 @@ export function kinDocsPinned(
   rows: ReadonlyArray<KinDocListRow>,
   pinned: KinDocListRow | null,
 ): Array<KinDocListRow> {
-  const pin = pinned ?? rows.find((row) => row.whatWeSell !== undefined) ?? null;
+  const pin = pinned ?? rows.find((row) => row.whatWeSell === true) ?? null;
   return pin === null ? [...rows] : [pin, ...rows.filter((row) => row.recordId !== pin.recordId)];
 }
 
@@ -512,7 +507,6 @@ export const kinDocsQuery = (orgId: KinOrgId, filter: KinDocsFilter) => ({
 export const KIN_WHAT_WE_SELL = {
   title: "What we sell",
   pinned: "Pinned",
-  offerings: (count: number) => (count === 1 ? "1 offering" : `${count} offerings`),
   empty: {
     title: "Tell Kin what you sell",
     detail:

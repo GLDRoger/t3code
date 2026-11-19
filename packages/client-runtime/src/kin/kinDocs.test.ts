@@ -178,13 +178,13 @@ describe("kinDocLibrary", () => {
     ]);
   });
 
-  it("pins What we sell first in Company, from its own read or the page, once, saying its offerings", () => {
+  it("pins What we sell first in Company, from its own read or the page, once, reading like any doc", () => {
     const at = (day: number) => new Date(2026, 10, day).toISOString();
     const sells = row("D-9", {
       title: "What we sell",
       company: true,
       updatedAt: at(1),
-      whatWeSell: { offerings: 4 },
+      whatWeSell: true,
     });
     const page = [
       row("D-7", { company: true, updatedAt: at(8) }),
@@ -196,14 +196,17 @@ describe("kinDocLibrary", () => {
     expect(company(kinDocLibrary(page, sells))).toEqual(["D-9", "D-8", "D-7"]);
     expect(company(kinDocLibrary([...page, sells], sells))).toEqual(["D-9", "D-8", "D-7"]);
     expect(company(kinDocLibrary([...page, sells]))).toEqual(["D-9", "D-8", "D-7"]);
-    const view = kinDocRow(
-      { ...sells, latest: version({ summary: "Added the single-site start" }) },
-      names,
-      now,
-    );
+    const changed = { ...sells, latest: version({ summary: "Added the single-site start" }) };
+    const view = kinDocRow(changed, names, now);
+    const { whatWeSell: _pin, ...unpinned } = changed;
+    const plain = kinDocRow(unpinned, names, now);
+    // No count Kin can't vouch for: what last changed and who, as any doc, plus Pinned.
     expect(view.pinned).toBe(true);
-    expect(view.line).toMatch(/^Updated today .* by Growth · 4 offerings$/);
-    expect(view.accessibilityLabel).toMatch(/^What we sell\. Pinned\. /);
+    expect(view.line).toBe(plain.line);
+    expect(view.line).toMatch(/^Updated today .* by Growth · Added the single-site start$/);
+    expect(view.accessibilityLabel).toBe(
+      plain.accessibilityLabel.replace(/^What we sell\. /, "What we sell. Pinned. "),
+    );
     expect(kinDocRow(page[0]!, names, now).pinned).toBe(false);
     // Pinned, or offered when missing, only where the company's current docs show.
     expect(kinWhatWeSellShown(KIN_DOCS_DEFAULT_FILTER)).toBe(true);

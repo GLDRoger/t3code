@@ -15,9 +15,8 @@ import { iso, type RecordRow } from "./recordRows.ts";
 import { KIN_OWNER_LEVEL, viewVisible, type KinViewer } from "./teamView.ts";
 
 /**
- * What we sell: one company doc per company, found by its origin key. Each level-2 section is one
- * offering, except the first, which says who a good customer is. Kin reads only which sections
- * exist, never the prose.
+ * What we sell: one company doc per company, found by its origin key. Kin reads only its level-2
+ * section titles, for agents' prompts, never the prose.
  */
 
 export const OFFERINGS_ORIGIN = "kin-offerings";
@@ -48,18 +47,9 @@ const INDEX_MAX = 30;
 export const offeringsIndex = (body: string): ReadonlyArray<string> =>
   sectionsOf(body).flatMap((section) => (section.level === 2 ? [section.title] : []));
 
-/** Level-2 sections after the first, which says who a good customer is. */
-const offeringCount = (body: string) => Math.max(0, offeringsIndex(body).length - 1);
-
 /** A Docs row, marked when it is What we sell. */
-export const withOfferings = (
-  doc: KinDocRow,
-  row: Pick<RecordRow, "originKey">,
-  latest: { readonly body: string },
-): KinDocRow =>
-  row.originKey === OFFERINGS_ORIGIN
-    ? { ...doc, whatWeSell: { offerings: offeringCount(latest.body) } }
-    : doc;
+export const withOfferings = (doc: KinDocRow, row: Pick<RecordRow, "originKey">): KinDocRow =>
+  row.originKey === OFFERINGS_ORIGIN ? { ...doc, whatWeSell: true } : doc;
 
 /** The company's What we sell, archived or not; undefined before anyone started it. */
 export const findOfferings = Effect.fn("KinOfferings.find")(function* (orgId: KinOrgId) {

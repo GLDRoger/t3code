@@ -163,8 +163,8 @@ export const KinDocRow = Schema.Struct({
   /** The owner shared it with the team: members who can see Docs read it. */
   shared: Schema.optional(Schema.Literal(true)),
   archived: Schema.Boolean,
-  /** The company's What we sell, pinned first in Docs; its level-2 sections after the first. */
-  whatWeSell: Schema.optional(Schema.Struct({ offerings: NonNegativeInt })),
+  /** The company's What we sell, pinned first in Docs. */
+  whatWeSell: Schema.optional(Schema.Literal(true)),
   bodyKind: KinDocBodyKind,
   /** The latest version, with its "what changed" line. */
   latest: KinDocVersion,

@@ -127,7 +127,7 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
       linked = new Set([...(linked ?? seen)].filter((id) => seen.has(id)));
     }
   return {
-    ...withOfferings(Docs.toDocRow(row, latest, now), row, latest),
+    ...withOfferings(Docs.toDocRow(row, latest, now), row),
     version: Docs.toVersion(shown),
     body: shown.body,
     outline: [...outlineOf(shown.body)],
@@ -233,7 +233,7 @@ export const list = Effect.fn("KinDocs.list")(
       docs: rows.flatMap((row) => {
         const version = latest.get(row.recordId);
         if (version === undefined) return [];
-        const doc = withOfferings(Docs.toDocRow(row, version, now), row, version);
+        const doc = withOfferings(Docs.toDocRow(row, version, now), row);
         return [input.acceptSlimLatest === true ? kinSlimDocRow(doc) : doc];
       }),
       total: count?.total ?? 0,
@@ -451,7 +451,7 @@ const listedOf = Effect.fn("KinDocs.listedOf")(
       total: count?.total ?? 0,
       ...(row === undefined || version === undefined
         ? { unlisted: true as const }
-        : { row: kinSlimDocRow(withOfferings(Docs.toDocRow(row, version, now), row, version)) }),
+        : { row: kinSlimDocRow(withOfferings(Docs.toDocRow(row, version, now), row)) }),
     };
   },
   Effect.catchTags({ SqlError: () => unavailable }),

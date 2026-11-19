@@ -107,23 +107,27 @@ const list = () => (
 );
 
 describe("Docs, Company", () => {
-  it("pins What we sell first, with its offerings, though the page read before it holds others", async () => {
+  it("pins What we sell first, reading like any doc, though the page read before it holds others", async () => {
     setup({
       rows: [
         doc("D-2", "Brand notes", { updatedAt: "2026-11-19T10:00:00.000Z" }),
         doc("D-3", "Office rules", { updatedAt: "2026-11-20T10:00:00.000Z" }),
       ],
-      pinned: doc("D-1", "What we sell", { whatWeSell: { offerings: 4 } }),
+      pinned: doc("D-1", "What we sell", { whatWeSell: true }),
     });
     await using _screen = await render(list());
     const rows = page.getByRole("button", { name: /^(What we sell|Brand notes|Office rules)\./ });
-    await expect.element(rows.first()).toHaveAccessibleName(/^What we sell\. Pinned\. /);
+    await expect
+      .element(rows.first())
+      .toHaveAccessibleName(
+        /^What we sell\. Pinned\. Company\. Updated .* by Growth · Added the single-site start$/,
+      );
     expect(rows.elements().map((row) => row.getAttribute("aria-label")?.split(".")[0])).toEqual([
       "What we sell",
       "Office rules",
       "Brand notes",
     ]);
-    await expect.element(page.getByText(/by Growth · 4 offerings$/)).toBeVisible();
+    await expect.element(page.getByText(/offerings?$/)).not.toBeInTheDocument();
     await expect.element(page.getByText("Pinned")).toBeVisible();
     await expect.element(page.getByText("Tell Kin what you sell")).not.toBeInTheDocument();
   });
