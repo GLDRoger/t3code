@@ -1565,7 +1565,15 @@ export function kinWorkItemState(
   given: KinRecordDetail | null,
 ): KinWorkItemState {
   const read = Option.getOrNull(AsyncResult.value(result));
-  const item = given !== null && (read === null || given.rev >= read.rev) ? given : read;
+  // A link or a project's note leaves `rev` alone: at the same `rev` the fresh read wins unless the
+  // answer has seen more of the entry's changes (`seq`, links included).
+  const item =
+    given !== null &&
+    (read === null ||
+      given.rev > read.rev ||
+      (given.rev === read.rev && (given.seq ?? -1) > (read.seq ?? -1)))
+      ? given
+      : read;
   if (
     AsyncResult.isFailure(result) &&
     kinWorkFailuresOf(result.cause).some(

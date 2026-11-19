@@ -31,6 +31,7 @@ import {
   kinWorkAudience,
   kinWorkAudienceMove,
   kinWorkHostEdits,
+  kinWorkItemState,
   kinWorkItemView,
   kinWorkListFooter,
   kinWorkListQuery,
@@ -707,6 +708,38 @@ describe("links to other tasks and to a lead's work", () => {
       ["url", { environmentId: hostEnvironment, threadId: "invented-thread" }],
       ["url", null],
     ]);
+  });
+});
+
+describe("kinWorkItemState", () => {
+  const webLink = {
+    kind: "url",
+    relation: "relates",
+    target: "https://ambermill.example/logos",
+    chatId: null,
+    label: null,
+    createdAt: now.toISOString(),
+  } as const;
+  const projectNote = {
+    body: "Invented: brand blue is #1a4f8b",
+    at: now.toISOString(),
+    by: me,
+    project: { recordId: KinRecordId.make("rec-p"), key: "P-1", title: "Invented site" },
+  };
+  const shown = (read: KinRecordDetail, given: KinRecordDetail | null) => {
+    const state = kinWorkItemState(AsyncResult.success(read), given);
+    return state._tag === "ready" ? state.item : null;
+  };
+
+  it("shows a link or a project's note read after the last change's answer, at the same rev", () => {
+    const answer = detail({ rev: 4, seq: 7 });
+    const linked = detail({ rev: 4, seq: 8, links: [webLink] });
+    expect(shown(linked, answer)).toBe(linked);
+    const noted = detail({ rev: 4, seq: 7, projectNote });
+    expect(shown(noted, answer)).toBe(noted);
+    // A read from before the change still gives way to its answer.
+    expect(shown(detail({ rev: 3, seq: 6 }), answer)).toBe(answer);
+    expect(shown(detail({ rev: 4, seq: 6 }), answer)).toBe(answer);
   });
 });
 
