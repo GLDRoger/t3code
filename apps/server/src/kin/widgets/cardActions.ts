@@ -23,7 +23,7 @@ import { SHARED_REFUSAL, aborted, peopleBehind } from "../lead/Audience.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import * as Memory from "../memory/Memory.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
-import { runTaken, takenFor } from "../questions/defaultTaken.ts";
+import { runTaken, takenFor, undoLine } from "../questions/defaultTaken.ts";
 import { type QuestionRow, answerCard, readQuestion } from "../questions/openQuestions.ts";
 import {
   KinDeferralStopSwitch,
@@ -33,6 +33,7 @@ import {
 } from "../triggers/deferrals.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { viewOf } from "../work/leadWork.ts";
+import { repeatOf } from "../work/recordRows.ts";
 import { defineProposed, proposalToCreate } from "../work/registers.ts";
 import { teamGuard, viewVisible } from "../work/teamView.ts";
 import {
@@ -106,7 +107,7 @@ const lineOf = (plan: CardPlan): string => {
       return plan.final === null ? went : `${went}: ${lineOf(plan.final)}`;
     }
     case "undo_default":
-      return `Put ${plan.key} ${quoted(plan.title)} back as it was`;
+      return undoLine(plan);
     case "keep_default":
       return `Keep ${quoted(plan.label, 40)}`;
   }
@@ -506,7 +507,12 @@ export const run = Effect.fn("KinCardActions.run")(function* (
 ) {
   if (isTaken(plan))
     return yield* runTaken(
-      { orgId: tap.orgId, personId: tap.personId, chatId: tap.widget.chatId },
+      {
+        orgId: tap.orgId,
+        personId: tap.personId,
+        chatId: tap.widget.chatId,
+        widgetId: tap.widget.widgetId,
+      },
       plan,
       deps.records,
     );
@@ -550,9 +556,10 @@ export const run = Effect.fn("KinCardActions.run")(function* (
 });
 
 /**
- * A question's default, sealed with a task's done or drop, taken at its day with no tap: written
- * as the agent that asked, its change marked as that question's default (`takenFor`), while the
- * task is as it was offered and whoever it was drawn for still could. False when it doesn't hold.
+ * A question's sealed done or drop, taken at its day as the asker, marked as its default
+ * (`takenFor`), while the task is as offered and its drawer still could. False otherwise, or when
+ * closing does more than Undo puts back: a repeating task's next (`KinRecords.spawnNext`), a
+ * handed-back one's mark.
  */
 export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
   orgId: KinOrgId,
@@ -565,6 +572,12 @@ export const takeAtDay = Effect.fn("KinCardActions.takeAtDay")(function* (
   const state = plan.kind === "done" ? "done" : "dropped";
   const row = yield* recordRow(orgId, { recordId: plan.recordId });
   if (row === undefined || row.rev !== plan.rev) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const [more] = yield* sql<{ repeat: string | null; handedBack: number | null }>`SELECT
+      repeat_json AS repeat, handed_back_at AS "handedBack" FROM kin_records
+    WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
+  if (more === undefined || repeatOf(more.repeat) !== undefined || more.handedBack !== null)
+    return false;
   if ((yield* drawHolds(orgId, plan.draw)) !== undefined) return false;
   if (!(yield* teamMay(orgId, plan.draw, row, state))) return false;
   yield* records.update(

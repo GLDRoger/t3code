@@ -21,6 +21,7 @@ import * as NodeCrypto from "node:crypto";
 
 import type { KinChatService } from "../chat/KinChatService.ts";
 import type * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { isOrgPaused } from "../lead/orgState.ts";
 import { holdFor } from "../triggers/quietHold.ts";
 import type * as CardActions from "../widgets/cardActions.ts";
 import { type CardPlan, plansOf, sealPlans, sealedOptions } from "../widgets/cardPlans.ts";
@@ -558,12 +559,13 @@ export const settleDue = Effect.fn("KinQuestions.settleDue")(function* (
   return settled;
 });
 
-/** A taken default its person hasn't heard of in this long is no longer news. */
-const TELL_WITHIN_MS = 30 * 24 * 60 * 60 * 1000;
+/** Notices told in one pass; ones held for someone away or in quiet hours don't count. */
+const TELL_PER_PASS = 50;
 
 /**
- * Each default taken since this was built (`raised_at` marks it owed) whose person hasn't been
- * told: told now, unless their quiet hours or an away day hold it, when a later pass tells them.
+ * Each default taken since this was built (`raised_at` marks it owed) whose person, still in its
+ * chat, hasn't been told: told now, unless their quiet hours or an away day hold it, when a later
+ * pass tells them. Owed until told, however long they are away.
  */
 const tellDue = Effect.fn("KinQuestions.tellDue")(function* (
   orgId: KinOrgId,
@@ -573,13 +575,19 @@ const tellDue = Effect.fn("KinQuestions.tellDue")(function* (
   const sql = yield* SqlClient.SqlClient;
   const owed = (yield* sql<Raw>`SELECT ${sql.literal(COLUMNS)} ${sql.literal(FROM)}
     WHERE q.org_id = ${orgId} AND q.state = 'default_taken'
-      AND q.raised_at >= ${now - TELL_WITHIN_MS} AND q.default_label IS NOT NULL AND NOT EXISTS (SELECT 1 FROM kin_pulse_told t
+      AND q.raised_at IS NOT NULL AND q.default_label IS NOT NULL AND NOT EXISTS (SELECT 1 FROM kin_pulse_told t
         WHERE t.org_id = q.org_id AND t.person_id = q.person_id
           AND t.fact_key = ${TAKEN_KEY} || q.question_id)
-    ORDER BY q.raised_at, q.question_id LIMIT 50`).map(toRow);
+      AND EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = q.org_id
+        AND m.chat_id = q.chat_id AND m.principal_kind = 'person' AND m.person_id = q.person_id
+        AND m.left_at IS NULL)
+    ORDER BY q.raised_at, q.question_id`).map(toRow);
+  let tried = 0;
   for (const row of owed) {
+    if (tried >= TELL_PER_PASS) break;
     if ((yield* holdFor({ orgId, personId: row.personId, chatId: row.chatId })) !== undefined)
       continue;
+    tried += 1;
     yield* sql
       .withTransaction(
         tellTaken(
@@ -621,6 +629,15 @@ const lapse = Effect.fn("KinQuestions.lapse")(function* (
   return moved.length > 0;
 });
 
+/** The pauses the runner keeps to: the company's (`isOrgPaused`) and the agent's own. */
+const pausedFor = Effect.fn("KinQuestions.pausedFor")(function* (orgId: KinOrgId, agentId: string) {
+  if (yield* isOrgPaused(orgId)) return true;
+  const sql = yield* SqlClient.SqlClient;
+  const paused = yield* sql`SELECT 1 FROM kin_agents
+    WHERE org_id = ${orgId} AND agent_id = ${agentId} AND paused_at IS NOT NULL`;
+  return paused.length > 0;
+});
+
 const takeDefault = Effect.fn("KinQuestions.takeDefault")(function* (
   orgId: KinOrgId,
   row: QuestionRow,
@@ -628,6 +645,8 @@ const takeDefault = Effect.fn("KinQuestions.takeDefault")(function* (
   deps: SettleDeps,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  // Paused, Kin or its asker, it stays due: the first pass after resume takes it.
+  if (yield* pausedFor(orgId, row.agentId)) return false;
   // Never before its day, and at most once: only an open row past its day moves. `raised_at`
   // marks its person as owed the news (`tellDue`).
   const moved = yield* sql`UPDATE kin_questions SET state = 'default_taken', closed_at = ${now},

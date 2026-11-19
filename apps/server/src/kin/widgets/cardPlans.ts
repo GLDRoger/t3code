@@ -90,6 +90,8 @@ const TakenPlan = Schema.Struct({
   label: Schema.String,
   seq: Schema.Number,
   rev: Schema.Number,
+  /** Its person couldn't see the entry when told: its words never name it (`key`, `title`). */
+  hidden: Schema.optional(Schema.Literal(true)),
 });
 export type TakenPlan = typeof TakenPlan.Type;
 export const CardPlan = Schema.Union([RecordPlan, StartPlan, ListPlan, DefaultPlan, TakenPlan]);

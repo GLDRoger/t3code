@@ -8,12 +8,14 @@ import {
   KinAgentId,
   type KinChatId,
   KinOrgId,
+  KinPersonId,
   KinWidgetId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -286,6 +288,30 @@ it.effect("a question is asked once, and its default is taken once at its day", 
         WHERE t.org_id = ${orgId} AND t.fact_key = ${`default_taken:${questionId}`}`;
       assert.strictEqual(yield* settle(orgId, TUE_1930 - 60_000), 0);
       assert.strictEqual((yield* questionRow(sql, questionId)).state, "open");
+      // Paused, the company or Finance alone, its turn isn't started and the card stays open.
+      const asking = Option.getOrThrow(
+        yield* repo.getWidget({
+          orgId,
+          widgetId: KinWidgetId.make(asked.value.widgetId as string),
+        }),
+      );
+      yield* sql`INSERT INTO kin_org_state (org_id, paused, paused_at, paused_by, reason)
+        VALUES (${orgId}, 1, ${TUE_1930}, ${owner.personId}, 'Invented pause')
+        ON CONFLICT (org_id) DO UPDATE SET paused = 1, paused_at = ${TUE_1930},
+          paused_by = ${owner.personId}, reason = 'Invented pause'`;
+      assert.strictEqual(yield* settle(orgId, TUE_1930), 0);
+      yield* sql`UPDATE kin_org_state SET paused = 0, paused_at = NULL, paused_by = NULL,
+          reason = NULL
+        WHERE org_id = ${orgId}`;
+      yield* sql`UPDATE kin_agents SET paused_at = ${at} WHERE agent_id = 'finance'`;
+      assert.strictEqual(yield* settle(orgId, TUE_1930), 0);
+      assert.strictEqual((yield* questionRow(sql, questionId)).state, "open");
+      assert.lengthOf(yield* dueEvents(sql, orgId), 0);
+      assert.strictEqual(
+        Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId: asking.widgetId })).revision,
+        asking.revision,
+      );
+      yield* sql`UPDATE kin_agents SET paused_at = NULL WHERE agent_id = 'finance'`;
       assert.strictEqual(yield* settle(orgId, TUE_1930), 1);
       assert.strictEqual(yield* settle(orgId, TUE_1930 + 60_000), 0);
       assert.strictEqual((yield* questionRow(sql, questionId)).state, "default_taken");
@@ -548,6 +574,67 @@ it.effect("questions close on the person's words, and only the asker withdraws o
       assert.strictEqual((yield* questionRow(sql, questionId)).state, "answered");
       assert.strictEqual(yield* settle(orgId, TUE_1930), 0);
       assert.lengthOf(yield* dueEvents(sql, orgId), 0);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// Rhea is away six weeks and Finance's default is taken in the first: she is told once she is
+// back, counted in her chat itself. Later, Meera, still away, has more held notices than one pass
+// tells: Rhea, who is back, is told of her next one in that same pass.
+it.effect("a taken default is owed until told, and held ones don't crowd out people back", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const { sql, chats, owner, orgId, chatOf, wake } = yield* ambermill;
+      const chatId = chatOf("finance");
+      const ask = Effect.fn("test.ask")(function* (body: string, input: typeof reminderAsk) {
+        yield* wake("finance", yield* chats.send(owner, { chatId, body, clientMessageId: body }));
+        const asked = yield* callAs("finance", "kin_ask", input);
+        assert.isTrue(asked.ok, JSON.stringify(asked.value));
+        return { id: asked.value.question as string, due: Date.parse(asked.value.by as string) };
+      });
+      const told = (questionId: string) =>
+        sql`SELECT 1 FROM kin_pulse_told
+          WHERE org_id = ${orgId} AND fact_key = ${`default_taken:${questionId}`}`;
+      const posted = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_messages
+        WHERE org_id = ${orgId} AND chat_id = ${chatId}`.pipe(Effect.map((rows) => rows[0]!.n));
+      const day = 86_400_000;
+
+      const first = yield* ask("What about VIOM?", reminderAsk);
+      const back = DateTime.formatIsoDate(DateTime.makeUnsafe(first.due + 42 * day));
+      yield* sql`UPDATE kin_people SET away_until = ${back} WHERE person_id = ${owner.personId}`;
+      assert.strictEqual(yield* settle(orgId, first.due), 1);
+      yield* settle(orgId, first.due + 31 * day);
+      assert.lengthOf(yield* told(first.id), 0);
+      const away = yield* posted;
+      const home = Date.parse(`${back}T06:00:00.000Z`);
+      yield* settle(orgId, home);
+      yield* settle(orgId, home + 60_000);
+      assert.lengthOf(yield* told(first.id), 1);
+      assert.strictEqual(yield* posted, away + 1);
+
+      const meera = { _tag: "person" as const, orgId, personId: KinPersonId.make("meera") };
+      const meeraChat = (yield* chats.createDirect(meera, {
+        orgId,
+        agentId: KinAgentId.make("finance"),
+      })).chatId;
+      yield* sql`UPDATE kin_people SET away_until = '2027-12-31' WHERE person_id = 'meera'`;
+      for (let index = 0; index < 51; index += 1)
+        yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id,
+            kind, question, default_label, safe, asked_at, due_at, act_at, state, raised_at,
+            closed_at)
+          VALUES (${`q-held-${index}`}, ${orgId}, 'finance', 'meera', ${meeraChat}, 'card',
+            ${`Invented held question ${index}?`}, 'Yes', 1, 0, 0, 0, 'default_taken',
+            ${index + 1}, ${index + 1})`;
+      const second = yield* ask("And the Apex receipts?", {
+        question: "Shall I file the Apex receipts under October?",
+        options: [{ label: "File them" }, { label: "Leave them" }],
+        default: "File them",
+        about: [],
+        intent: "file the Apex receipts",
+      });
+      assert.strictEqual(yield* settle(orgId, second.due), 1);
+      assert.lengthOf(yield* told(second.id), 1);
     }).pipe(Effect.provide(layer)),
   ),
 );

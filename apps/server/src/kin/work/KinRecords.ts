@@ -139,6 +139,8 @@ export type Writer = {
   };
   /** The cards a person's tap settles itself: closing the entry leaves them to the tap. */
   readonly answering?: ReadonlyArray<string>;
+  /** Putting back a default Kin took (`defaultTaken.ts`): reopened, a task is given to nobody anew. */
+  readonly undoing?: boolean;
 };
 /** A Work task this writer, a person, holds now and nobody dropped. */
 const heldBy = (
@@ -1601,6 +1603,7 @@ const make = Effect.gen(function* () {
         }
         // Reopened by a person, a lead's entry is given to it again, with that person's authority.
         const reopened =
+          writer.undoing !== true &&
           reassigned === undefined &&
           before.owner._tag === "agent" &&
           writer.actor._tag === "person" &&
