@@ -101,6 +101,7 @@ import RecordChangesByWakeup from "./migrations/K177_RecordChangesByWakeup.ts";
 import AskOutsideAndDispatch from "./migrations/K178_AskOutsideAndDispatch.ts";
 import DeviceLinks from "./migrations/K179_DeviceLinks.ts";
 import CardPlans from "./migrations/K180_CardPlans.ts";
+import TasksKeys from "./migrations/K181_TasksKeys.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -282,6 +283,7 @@ const loader = Migrator.fromRecord({
   "178_AskOutsideAndDispatch": AskOutsideAndDispatch,
   "179_DeviceLinks": DeviceLinks,
   "180_CardPlans": CardPlans,
+  "181_TasksKeys": TasksKeys,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

@@ -51,6 +51,8 @@ import { KinAvatar } from "./KinAvatar";
 import { KinAwayField } from "./KinAway";
 import { useOpenKinPeopleChat } from "./KinPeopleChat";
 import { kinSettingsSectionIn } from "./kinSettingsAddress";
+import { KinTasksKeysSection } from "./KinTasksKeys";
+import { useKinOwnerLevelKnown } from "./useKinOwnerLevel";
 import { KIN_DIALOG_PARTS, KIN_SHEET_PARTS } from "./kinOverlayParts";
 import { KinMyDevices } from "./KinDevices";
 import { kinClient } from "./kinClient";
@@ -360,6 +362,7 @@ function KinProfileRead(props: {
 }) {
   const { profile } = props;
   const hours = kinHoursLine(profile.workHours);
+  const ownerLevel = useKinOwnerLevelKnown(props.environmentId);
   return (
     <>
       <div className="flex items-center gap-4">
@@ -420,6 +423,14 @@ function KinProfileRead(props: {
         <Button variant="outline" className="self-start" onClick={props.onEdit}>
           {KIN_PROFILE_COPY.edit}
         </Button>
+      ) : null}
+      {props.mine || ownerLevel === true ? (
+        <KinTasksKeysSection
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          personId={profile.personId}
+          holder={props.mine ? null : profile.displayName}
+        />
       ) : null}
     </>
   );

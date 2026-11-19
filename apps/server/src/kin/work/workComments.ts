@@ -15,8 +15,10 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as SqlError from "effect/sql/SqlError";
 
 import type { PendingUploadOwner } from "../../assets/AttachmentUpload.ts";
+import type { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { KinAttachmentStore } from "../chat/KinAttachmentStore.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
@@ -45,6 +47,18 @@ const oneLine = (text: string, max: number) => {
   return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
 };
 
+/** The person's own coding agent writing as them: what its key reaches, and the key it marks. */
+export type ThroughKey = {
+  readonly sessionId: string;
+  readonly sees: (
+    recordId: string,
+  ) => Effect.Effect<
+    boolean,
+    KinChatError | PersistenceSqlError | SqlError.SqlError,
+    SqlClient.SqlClient
+  >;
+};
+
 /**
  * A person says something on an entry they see, with files they just uploaded. When an agent
  * holds it, it is woken once with their words, on their authority. Nothing on the entry changes.
@@ -53,6 +67,7 @@ export const comment = Effect.fn("KinWorkComments.comment")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinWorkCommentInput,
   uploader?: PendingUploadOwner,
+  through?: ThroughKey,
 ) {
   const viewer = yield* viewerOf(people, input.orgId);
   const personId = viewer.person.personId;
@@ -72,7 +87,11 @@ export const comment = Effect.fn("KinWorkComments.comment")(function* (
         body: input.body,
         files,
         now: yield* Clock.currentTimeMillis,
-        sees: (recordId) => personSeesRecord(input.orgId, personId, recordId),
+        sees: (recordId) =>
+          through === undefined
+            ? personSeesRecord(input.orgId, personId, recordId)
+            : through.sees(recordId),
+        ...(through === undefined ? {} : { codingAgentKey: through.sessionId }),
       });
       const holder = yield* records.getById(input.orgId, written.recordId);
       if (written.created && holder?.ownerKind === "agent")
@@ -86,7 +105,7 @@ export const comment = Effect.fn("KinWorkComments.comment")(function* (
     written: Effect.Success<ReturnType<typeof write>>,
   ) {
     if (written.created) yield* tellReaders(viewer.person, input.key, written.shown);
-    return { comment: written.shown };
+    return { comment: written.shown, created: written.created };
   });
   if (requested.length === 0) return yield* posted(yield* write([]));
   // A retry finds its comment before its uploads are claimed a second time.

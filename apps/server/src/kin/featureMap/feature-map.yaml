@@ -1083,6 +1083,36 @@ features:
       - apps/server/src/kin/lead/messagesToPeople.test.ts
       - .agents/skills/verify-kin/scripts/hours-two-zones.sh
 
+  - id: coding-agent-keys
+    name: Coding agent keys for the tasks you hold
+    tab: settings
+    web: [home, sheet:Profile, section:Coding agent keys]
+    phone: [SettingsKin, KinProfile, section:Coding agent keys]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      A person makes a key for their own coding agent (Claude Code, Codex, Cursor) to read the
+      tasks they hold, comment and set state through `/kin/you/mcp`, and nothing else. The key and
+      setup lines show once; at most three live keys, 30 days each. Settings → Profile on the web
+      shows the same section.
+    proof:
+      - packages/client-runtime/src/kin/kinTasksKeys.test.ts
+      - apps/web/src/kin/KinTasksKeys.browser.test.tsx
+      - apps/server/src/kin/tasksKey/TasksKeys.test.ts
+      - apps/server/src/kin/tasksKey/mcp.test.ts
+
+  - id: teammate-coding-agent-keys
+    name: See and remove a teammate's coding agent keys
+    tab: settings
+    web: [home, sheet:Profile, section:Coding agent keys]
+    phone: [SettingsKin, KinTeam, KinTeammate, section:Coding agent keys]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      Read and Remove only; nobody makes a key for someone else. The host lets a co-owner remove a
+      member's keys but not the owner's or another co-owner's, and removing access ends them all.
+    proof:
+      - apps/server/src/kin/tasksKey/TasksKeys.test.ts
+      - apps/server/src/kin/people/KinPeople.test.ts
+
   # ── Joining ────────────────────────────────────────────────────────────────────────────────
   - id: join
     name: Join with an invite link
