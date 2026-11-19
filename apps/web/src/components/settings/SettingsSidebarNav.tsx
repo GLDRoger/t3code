@@ -36,6 +36,7 @@ import {
   XIcon,
   Building2Icon,
   PlugIcon,
+  CircleUserIcon,
 } from "lucide-react";
 import { resolveEventKeys } from "@t3tools/shared/keybindings";
 import { useLocation, useNavigate } from "@tanstack/react-router";
@@ -120,6 +121,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/company": Building2Icon,
   "/settings/check-ins": CalendarCheckIcon,
   "/settings/kin-connections": PlugIcon,
+  "/settings/kin-profile": CircleUserIcon,
   "/settings/maintenance": WrenchIcon,
   "/settings/labs": FlaskConicalIcon,
   "/settings/about": InfoIcon,

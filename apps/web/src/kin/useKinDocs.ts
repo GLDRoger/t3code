@@ -9,6 +9,8 @@ import {
   kinDocsSameFilter,
   kinPendingRefAtom,
   kinPendingRefKey,
+  kinWhatWeSellAgent,
+  kinWhatWeSellQuery,
   type KinDocAsk,
   type KinDocsFilter,
   type KinSearchState,
@@ -34,8 +36,10 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useState } from "react";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
+import { useAtomCommand } from "../state/use-atom-command";
 import { prefillKinDraft } from "./kinDraft";
-import { kinClient } from "./kinClient";
+import { kinClient, kinReads } from "./kinClient";
+import { useKinOpenChat } from "./useKinOpenChat";
 import { useKinInbox } from "./useKinHost";
 import { kinSchedule, useKinPagedList, type KinWorkTarget } from "./useKinWork";
 
@@ -111,6 +115,51 @@ export function useKinDocsUnder(
     if (behind) appAtomRegistry.refresh(atom);
   }, [behind, atom]);
   return held?.docs ?? null;
+}
+
+/**
+ * The company's What we sell as this viewer's Docs list shows it, read again when any doc changes;
+ * `undefined` until read, null when there is none. Off, it reads nothing.
+ */
+export function useKinWhatWeSell(target: KinWorkTarget, enabled: boolean) {
+  const { refused, live } = useKinDocsLive(target);
+  const atom = kinClient.docsUnder({
+    environmentId: target.environmentId,
+    input: kinWhatWeSellQuery(target.orgId),
+  });
+  const result = useAtomValue(refused || !enabled ? noDocsAtom : atom);
+  const held = Option.getOrNull(AsyncResult.value(result));
+  const behind = held !== null && live !== null && live.seq > held.seq;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads What we sell from the host again when the host announces a doc changed
+  useEffect(() => {
+    if (behind) appAtomRegistry.refresh(atom);
+  }, [behind, atom]);
+  return held === null ? undefined : (held.docs[0] ?? null);
+}
+
+/**
+ * The owner level's way into What we sell: Kin makes its outline (or brings it back), then the
+ * sales agent's chat opens with the first words ready. Null where this viewer can't start it.
+ */
+export function useKinWhatWeSellStart(target: KinWorkTarget) {
+  const { environmentId, orgId } = target;
+  const openChat = useKinOpenChat();
+  const canStart = useAtomValue(kinClient.docStartWhatWeSell.permissionAtom(environmentId));
+  const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
+  const leads = useAtomValue(kinReads.askLeads(target, canRestore));
+  const startDoc = useAtomCommand(kinClient.docStartWhatWeSell, { reportFailure: false });
+  const agent = kinWhatWeSellAgent(Option.getOrNull(AsyncResult.value(leads))?.leads ?? []);
+  if (!canStart || agent === null) return null;
+  return {
+    agent: agent.name,
+    /** False when the host couldn't start it; nothing opens then. */
+    start: async (draft: string) => {
+      const result = await startDoc({ environmentId, input: { orgId } });
+      if (!AsyncResult.isSuccess(result)) return false;
+      openChat(environmentId, orgId, agent.ownerChatId, draft);
+      return true;
+    },
+  };
 }
 
 /** One doc at a version, kept current when the host says it changed. */
