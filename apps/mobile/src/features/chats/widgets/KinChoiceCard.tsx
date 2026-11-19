@@ -1,6 +1,7 @@
 import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { useAtomValue } from "@effect/atom-react";
+import { useNavigation } from "@react-navigation/native";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinPersonId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
@@ -34,7 +35,9 @@ import {
   kinSendEditControls,
   kinSendEditDiscardInput,
   kinSendEditedLine,
-  kinSendEditFailure,
+  kinSendEditHeld,
+  kinSendEditHeldKey,
+  kinSendEditHold,
   kinSendEditInput,
   kinSendEditKept,
   kinSendEditLeaveSaves,
@@ -434,7 +437,8 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   const canEdit = useAtomValue(kinClient.connectionSendEdited.permissionAtom(environmentId));
   const sendEdited = useAtomCommand(kinClient.connectionSendEdited, { reportFailure: false });
   const saveEdited = useAtomCommand(kinClient.connectionSaveEdited, { reportFailure: false });
-  const [editing, setEditing] = useState<KinSendEditing | null>(null);
+  const heldKey = kinSendEditHeldKey(environmentId, props.viewerPersonId, choice.widgetId);
+  const [editing, setEditing] = useState<KinSendEditing | null>(() => kinSendEditHeld(heldKey));
   const [editBusy, setEditBusy] = useState<KinSendEditBusy>(null);
   const [lastStatus, setLastStatus] = useState<
     (KinCardStatus & { readonly optionId: string }) | null
@@ -507,6 +511,11 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       : null;
   const undone = kinChoiceUndoneLine(choice, props.viewerPersonId, new Date(nowMs));
 
+  /** The editor after the host answered: words it refused stay on this device until let go. */
+  const settle = (next: KinSendEditing | null, kept: KinSendEditing | null = next) => {
+    kinSendEditHold(heldKey, kept);
+    setEditing(next);
+  };
   const sendEdit = async () => {
     if (shownEdit === null || editBusy !== null || editBound?.ready !== true) return;
     setEditBusy("sending");
@@ -515,7 +524,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       input: kinSendEditInput(choice, shownEdit, uuidv4()),
     });
     setEditBusy(null);
-    setEditing(
+    settle(
       AsyncResult.isFailure(result)
         ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
         : null,
@@ -524,49 +533,56 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   /** Save closes the editor; a save on leaving keeps it open over the saved card. */
   const saveEdit = async (stay = false) => {
     if (shownEdit === null || editBusy !== null || editBound?.ready !== true) return;
-    if (!kinSendEditUnsaved(shownEdit)) return setEditing(null);
+    if (!kinSendEditUnsaved(shownEdit)) return settle(null);
     setEditBusy("saving");
     const result = await saveEdited({
       environmentId,
       input: kinSendEditSaveInput(choice, shownEdit),
     });
     setEditBusy(null);
-    setEditing(
-      AsyncResult.isFailure(result)
-        ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
-        : stay && AsyncResult.isSuccess(result)
-          ? kinSendEditKept(shownEdit, result.value.revision)
-          : null,
+    if (AsyncResult.isFailure(result))
+      return settle(kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result)));
+    settle(
+      stay && AsyncResult.isSuccess(result)
+        ? kinSendEditKept(shownEdit, result.value.revision)
+        : null,
+      null,
     );
   };
   const discardEdit = async () => {
     if (shownEdit === null || editBusy !== null) return;
-    const input = kinSendEditDiscardInput(choice, editable);
-    if (input === null) return setEditing(null);
+    const input = kinSendEditDiscardInput(choice, shownEdit, editable);
+    if (input === null) return settle(null);
     setEditBusy("discarding");
     const result = await saveEdited({ environmentId, input });
     setEditBusy(null);
-    setEditing(
+    settle(
       AsyncResult.isFailure(result)
-        ? { ...shownEdit, problem: kinSendEditFailure(squashAtomCommandFailure(result)) }
+        ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
         : null,
     );
   };
   const leave = useEffectEvent(() => {
     if (kinSendEditLeaveSaves(shownEdit, editBusy, editable)) void saveEdit(true);
+    else if (shownEdit !== null && kinSendEditUnsaved(shownEdit))
+      kinSendEditHold(heldKey, shownEdit);
   });
+  const navigation = useNavigation();
   const editorOpen = shownEdit !== null;
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- unsaved words are kept when the app goes to the background or the chat is left.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- unsaved words are kept when the app goes to the background, the chat loses focus or is left.
   useEffect(() => {
     if (!editorOpen) return;
     const subscription = AppState.addEventListener("change", (next) => {
       if (next === "background") leave();
     });
+    // Opening another chat or a task from this one keeps this screen mounted, out of focus.
+    const blurred = navigation.addListener("blur", () => leave());
     return () => {
       subscription.remove();
+      blurred();
       leave();
     };
-  }, [editorOpen]);
+  }, [editorOpen, navigation]);
   const edited = kinSendEditedLine(choice, props.viewerPersonId);
 
   const fromPicker =
@@ -682,7 +698,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
                 size="compact"
                 fullWidth
                 disabled={switching}
-                onPress={() => setEditing(kinSendEditStart(choice))}
+                onPress={() => setEditing(kinSendEditHeld(heldKey) ?? kinSendEditStart(choice))}
               />
             ) : null}
           </View>

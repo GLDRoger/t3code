@@ -633,9 +633,8 @@ describe("choice cards", () => {
     const drafted = choice({ state: { ...choiceState(null), send } });
     expect(drafted.send?.edited).toBeNull();
     expect(kinSendEditedLine(drafted, KinPersonId.make("rhea"))).toBeNull();
-    expect(kinSendEditDiscardInput(drafted, true)).toBeNull();
-
     const started = kinSendEditStart(drafted)!;
+    expect(kinSendEditDiscardInput(drafted, started, true)).toBeNull();
     // Nothing typed: leaving keeps nothing, and a closed card takes the editor with it.
     expect(kinSendEditLeaveSaves(started, null, true)).toBe(false);
     expect(kinSendEditShown(started, false)).toBe(false);
@@ -660,8 +659,22 @@ describe("choice cards", () => {
     expect(kinSendEditLeaveSaves(typed, null, false)).toBe(false);
     // Saved on leaving, the editor stays over the saved card, with nothing left unsaved.
     const kept = kinSendEditKept(typed, 2);
-    expect(kept).toEqual({ revision: 2, opened: typed.draft, draft: typed.draft, problem: null });
+    expect(kept).toEqual({
+      revision: 2,
+      opened: typed.draft,
+      draft: typed.draft,
+      problem: null,
+      saved: true,
+    });
     expect(kinSendEditLeaveSaves(kept, null, true)).toBe(false);
+    // The save's answer came before the card's update: Discard still puts the draft back, bound
+    // to the revision the host acknowledged, never only closing the editor.
+    expect(kinSendEditDiscardInput(drafted, kept, true)).toEqual({
+      orgId: "org",
+      widgetId: "w1",
+      revision: 2,
+      edit: null,
+    });
 
     const label = (controls: ReturnType<typeof kinSendEditControls>) => ({
       save: [controls.save.label, controls.save.disabled],
@@ -717,13 +730,14 @@ describe("choice cards", () => {
     expect(kinSendEditStart(saved)?.draft.body).toBe(typed.draft.body);
     expect(kinSendEditedLine(saved, KinPersonId.make("rhea"))).toBe("Edited by you");
     expect(kinSendEditedLine(saved, KinPersonId.make("meera"))).toBe("Edited by Rhea");
-    expect(kinSendEditDiscardInput(saved, true)).toEqual({
+    const reopened = kinSendEditStart(saved)!;
+    expect(kinSendEditDiscardInput(saved, reopened, true)).toEqual({
       orgId: "org",
       widgetId: "w1",
       revision: 2,
       edit: null,
     });
-    expect(kinSendEditDiscardInput(saved, false)).toBeNull();
+    expect(kinSendEditDiscardInput(saved, reopened, false)).toBeNull();
   });
 
   it("says a refused answer in the host's words when its figures changed", () => {

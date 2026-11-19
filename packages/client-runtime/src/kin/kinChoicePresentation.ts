@@ -125,6 +125,8 @@ export interface KinSendEditing {
   readonly problem: string | null;
   /** The host refused `revision` as changed: Send waits for the card as it is now. */
   readonly stale?: true;
+  /** The host acknowledged a save at `revision`: the card holds these words, whatever it shows yet. */
+  readonly saved?: true;
 }
 
 export interface KinSendFromChoice {
@@ -643,7 +645,26 @@ export function kinSendEditInput(
 
 /** Saved on leaving: the editor stays as it was, bound to the card that now holds the words. */
 export function kinSendEditKept(editing: KinSendEditing, revision: number): KinSendEditing {
-  return { revision, opened: editing.draft, draft: editing.draft, problem: null };
+  return { revision, opened: editing.draft, draft: editing.draft, problem: null, saved: true };
+}
+
+const held = new Map<string, KinSendEditing>();
+/** Which card's words a device holds: one per environment, person and card. */
+export function kinSendEditHeldKey(
+  environmentId: string,
+  viewerPersonId: KinPersonId | null,
+  widgetId: string,
+): string {
+  return `${environmentId}\u0000${viewerPersonId ?? ""}\u0000${widgetId}`;
+}
+/** Words left unsaved on a card when its editor went away, kept in memory on this device. */
+export function kinSendEditHeld(key: string): KinSendEditing | null {
+  return held.get(key) ?? null;
+}
+/** Keeps an editor's words until they are saved, sent or discarded; `null` lets them go. */
+export function kinSendEditHold(key: string, editing: KinSendEditing | null): void {
+  if (editing === null) held.delete(key);
+  else held.set(key, editing);
 }
 
 /** The words kept on the card without sending, for the card Save is bound to. */
@@ -665,16 +686,22 @@ export function kinSendEditSaveInput(
 }
 
 /**
- * Discard edits on an open card holding a saved edit puts the agent's draft back on it; otherwise
- * it only closes the editor.
+ * Discard edits on an open card holding a saved edit, as shown or as the host acknowledged a save,
+ * puts the agent's draft back on it, bound as Save is; otherwise it only closes the editor.
  */
 export function kinSendEditDiscardInput(
   view: Pick<KinChoiceCardView, "orgId" | "widgetId" | "revision" | "send">,
+  editing: KinSendEditing,
   open: boolean,
 ): KinConnectionSaveEditedInput | null {
-  return !open || view.send?.edited == null
+  return !open || (editing.saved !== true && view.send?.edited == null)
     ? null
-    : { orgId: view.orgId, widgetId: view.widgetId, revision: view.revision, edit: null };
+    : {
+        orgId: view.orgId,
+        widgetId: view.widgetId,
+        revision: kinSendEditBound(editing, view).revision,
+        edit: null,
+      };
 }
 
 const isKinChatError = Schema.is(KinChatError);

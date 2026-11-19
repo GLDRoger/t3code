@@ -20,8 +20,10 @@ import {
   kinSendEditControls,
   kinSendEditDiscardInput,
   kinSendEditedLine,
-  kinSendEditFailure,
   kinSendEditBound,
+  kinSendEditHeld,
+  kinSendEditHeldKey,
+  kinSendEditHold,
   kinSendEditInput,
   kinSendEditKept,
   kinSendEditLeaveSaves,
@@ -397,7 +399,8 @@ function KinChoiceCard(props: {
   const canEdit = useAtomValue(kinClient.connectionSendEdited.permissionAtom(environmentId));
   const sendEdited = useAtomCommand(kinClient.connectionSendEdited, { reportFailure: false });
   const saveEdited = useAtomCommand(kinClient.connectionSaveEdited, { reportFailure: false });
-  const [editing, setEditing] = useState<KinSendEditing | null>(null);
+  const heldKey = kinSendEditHeldKey(environmentId, props.viewerPersonId, choice.widgetId);
+  const [editing, setEditing] = useState<KinSendEditing | null>(() => kinSendEditHeld(heldKey));
   const [editBusy, setEditBusy] = useState<KinSendEditBusy>(null);
   const [lastStatus, setLastStatus] = useState<
     (KinCardStatus & { readonly optionId: string }) | null
@@ -465,6 +468,11 @@ function KinChoiceCard(props: {
 
   const editBound = shownEdit === null ? null : kinSendEditBound(shownEdit, choice);
 
+  /** The editor after the host answered: words it refused stay on this device until let go. */
+  const settle = (next: KinSendEditing | null, kept: KinSendEditing | null = next) => {
+    kinSendEditHold(heldKey, kept);
+    setEditing(next);
+  };
   const sendEdit = async () => {
     if (shownEdit === null || editBusy !== null || editBound?.ready !== true) return;
     setEditBusy("sending");
@@ -473,7 +481,7 @@ function KinChoiceCard(props: {
       input: kinSendEditInput(choice, shownEdit, randomUUID()),
     });
     setEditBusy(null);
-    setEditing(
+    settle(
       AsyncResult.isFailure(result)
         ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
         : null,
@@ -482,36 +490,39 @@ function KinChoiceCard(props: {
   /** Save closes the editor; a save on leaving keeps it open over the saved card. */
   const saveEdit = async (stay = false) => {
     if (shownEdit === null || editBusy !== null || editBound?.ready !== true) return;
-    if (!kinSendEditUnsaved(shownEdit)) return setEditing(null);
+    if (!kinSendEditUnsaved(shownEdit)) return settle(null);
     setEditBusy("saving");
     const result = await saveEdited({
       environmentId,
       input: kinSendEditSaveInput(choice, shownEdit),
     });
     setEditBusy(null);
-    setEditing(
-      AsyncResult.isFailure(result)
-        ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
-        : stay && AsyncResult.isSuccess(result)
-          ? kinSendEditKept(shownEdit, result.value.revision)
-          : null,
+    if (AsyncResult.isFailure(result))
+      return settle(kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result)));
+    settle(
+      stay && AsyncResult.isSuccess(result)
+        ? kinSendEditKept(shownEdit, result.value.revision)
+        : null,
+      null,
     );
   };
   const discardEdit = async () => {
     if (shownEdit === null || editBusy !== null) return;
-    const input = kinSendEditDiscardInput(choice, editable);
-    if (input === null) return setEditing(null);
+    const input = kinSendEditDiscardInput(choice, shownEdit, editable);
+    if (input === null) return settle(null);
     setEditBusy("discarding");
     const result = await saveEdited({ environmentId, input });
     setEditBusy(null);
-    setEditing(
+    settle(
       AsyncResult.isFailure(result)
-        ? { ...shownEdit, problem: kinSendEditFailure(squashAtomCommandFailure(result)) }
+        ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
         : null,
     );
   };
   const leave = useEffectEvent(() => {
     if (kinSendEditLeaveSaves(shownEdit, editBusy, editable)) void saveEdit(true);
+    else if (shownEdit !== null && kinSendEditUnsaved(shownEdit))
+      kinSendEditHold(heldKey, shownEdit);
   });
   const editorOpen = shownEdit !== null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- unsaved words are kept when the tab is hidden or the chat is left.
@@ -594,7 +605,7 @@ function KinChoiceCard(props: {
                 variant="outline"
                 size="sm-multiline"
                 disabled={switching}
-                onClick={() => setEditing(kinSendEditStart(choice))}
+                onClick={() => setEditing(kinSendEditHeld(heldKey) ?? kinSendEditStart(choice))}
               >
                 {KIN_SEND_EDIT_COPY.edit}
               </Button>
