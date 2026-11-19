@@ -108,7 +108,7 @@ function RowAction(props: {
         variant="outline"
         onClick={() =>
           action.kind === "open_daily_limit"
-            ? openKinSettings(router.history, "company")
+            ? openKinSettings(router.history, "company", undefined, "kin-daily-limit")
             : openKinSettings(router.history, "connections", action.connectionId)
         }
       >

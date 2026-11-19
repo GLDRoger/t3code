@@ -24,8 +24,14 @@ export function kinSettingsSectionIn(searchStr: string): string | null {
 export const kinSettingsFindIn = (searchStr: string): string =>
   new URLSearchParams(searchStr).get(FIND_PARAM) ?? "";
 
-function withSection(href: string, section: string | null, find?: string): string {
+function withSection(
+  href: string,
+  section: string | null,
+  find?: string,
+  target?: string,
+): string {
   const url = new URL(href, "http://kin.invalid");
+  if (target !== undefined) url.hash = target;
   url.searchParams.delete(FIND_PARAM);
   if (section === null) url.searchParams.delete(SETTINGS_PARAM);
   else url.searchParams.set(SETTINGS_PARAM, section);
@@ -35,21 +41,27 @@ function withSection(href: string, section: string | null, find?: string): strin
 }
 
 /** Settings on `section` over the Kin page last open: for an address outside Kin's pages. */
-function kinSettingsHref(section: string, find?: string): string {
-  return withSection(kinListSwitchHref("threads"), section, find);
+function kinSettingsHref(section: string, find?: string, target?: string): string {
+  return withSection(kinListSwitchHref("threads"), section, find, target);
 }
 
 /**
  * Opens Settings on `section` ("" for none chosen) over the page on screen; Memory can open
- * filtered to `find`, and Connections at the connection it names.
+ * filtered to `find`, and Connections at the connection it names. `target` is the setting the
+ * section scrolls to, by its settings-search id.
  */
-export function openKinSettings(history: RouterHistory, section = "", find?: string): void {
+export function openKinSettings(
+  history: RouterHistory,
+  section = "",
+  find?: string,
+  target?: string,
+): void {
   const { pathname, search, hash, state } = history.location;
   if (kinListAt(pathname) !== "kin") {
-    history.push(kinSettingsHref(section, find));
+    history.push(kinSettingsHref(section, find, target));
     return;
   }
-  const href = withSection(`${pathname}${search}${hash}`, section, find);
+  const href = withSection(`${pathname}${search}${hash}`, section, find, target);
   // From one section to another keeps the one step back to the page underneath.
   if (kinSettingsSectionIn(search) !== null) history.replace(href, state);
   else history.push(href, { ...state, kinSettingsPushed: true });

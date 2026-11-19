@@ -143,6 +143,7 @@ describe("Settings → Recommendations", () => {
     const search = () => new URLSearchParams(screen.router!.history.location.search);
     await userEvent.click(page.getByRole("button", { name: "Open Daily limit" }));
     expect(search().get("settings")).toBe("company");
+    expect(screen.router!.history.location.hash).toContain("kin-daily-limit");
     await userEvent.click(page.getByRole("button", { name: "Open Zoho Books" }));
     expect([search().get("settings"), search().get("find")]).toEqual(["connections", "conn-zoho"]);
   });
