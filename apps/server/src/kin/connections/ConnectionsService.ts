@@ -161,6 +161,7 @@ export const ASK_CLOSED = {
   declined: "This exact action was already cancelled on its card, so nothing was sent.",
   expired: "The card for this exact action was closed without an answer, so nothing was sent.",
   replaced: "A newer card replaced the one for this exact action, so nothing was sent from it.",
+  closed: (why: string) => `The card for this exact action was closed: ${why}`,
   edited: (name: string) =>
     `This exact action was sent, edited by ${name} on its card: what went is quoted below, not your draft. Nothing was sent again.`,
 } as const;
@@ -405,6 +406,7 @@ const askClosed = (ask: {
   readonly state: string;
   readonly decidedBy: string | null;
   readonly closed: number;
+  readonly reason: string | null;
 }) => {
   switch (ask.state) {
     case "open":
@@ -416,8 +418,12 @@ const askClosed = (ask: {
     case "declined":
       return ASK_CLOSED.declined;
     case "stale":
-      // Only a newer card makes an unanswered ask stale; a tap's refusal records who tapped.
-      return ask.decidedBy === null ? ASK_CLOSED.replaced : ASK_CLOSED.confirmed;
+      // A tap's refusal records who tapped. Unanswered, a newer card or an edited copy replaced
+      // it, or what it was about closed, which is the reason stored.
+      if (ask.decidedBy !== null) return ASK_CLOSED.confirmed;
+      return ask.reason === null || ask.reason.startsWith("Replaced ")
+        ? ASK_CLOSED.replaced
+        : ASK_CLOSED.closed(nothingSent(ask.reason));
     default:
       return ASK_CLOSED.confirmed;
   }
@@ -2312,9 +2318,10 @@ const make = Effect.gen(function* () {
         closed: number;
         widgetId: string | null;
         result: string | null;
+        reason: string | null;
       }>`
         SELECT k.state, k.decided_by AS "decidedBy", (w.closed_at IS NOT NULL) AS closed,
-          k.widget_id AS "widgetId", k.result_json AS result
+          k.widget_id AS "widgetId", k.result_json AS result, k.reason
         FROM kin_connection_asks k
         LEFT JOIN kin_widgets w ON w.org_id = k.org_id AND w.widget_id = k.widget_id
         WHERE k.org_id = ${turn.orgId} AND k.ask_id = ${id}`.pipe(Effect.map(([ask]) => ask));
@@ -2325,6 +2332,7 @@ const make = Effect.gen(function* () {
       readonly decidedBy: string | null;
       readonly closed: number;
       readonly result: string | null;
+      readonly reason: string | null;
     }) {
       const edited =
         ask.state === "stale" && ask.result !== null
