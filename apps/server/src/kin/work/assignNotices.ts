@@ -19,7 +19,7 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { turnChat } from "../lead/Audience.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
-import { holdFor, holdLine } from "../triggers/quietHold.ts";
+import { heldUntil, holdFor, holdLine } from "../triggers/quietHold.ts";
 import { textLocale, type TextClock } from "./companyProfile.ts";
 import { parseFields } from "./lists.ts";
 import { byId, isClosed, ownerZone, type RecordRow } from "./recordRows.ts";
@@ -273,24 +273,25 @@ const dropUnheard = Effect.fn("KinAssignNotices.dropUnheard")(function* (
 /**
  * Tells each person what this call did to their tasks, in one message: in their direct chat with
  * the agent, else with the team agent, opened if needed. Someone in the turn's own chat already
- * reads the reply, so is not told twice. Returns who was told.
+ * reads the reply, so is not told twice. Returns who was told, and until when it waits for whom.
  */
-export const tellPeople = Effect.fn("KinAssignNotices.tell")(function* (
+export const tellHolding = Effect.fn("KinAssignNotices.tell")(function* (
   turn: Turn,
   notices: ReadonlyArray<AssignNotice>,
 ) {
   const told = new Set<string>();
-  if (notices.length === 0) return told;
+  const waits = new Map<string, Parameters<typeof heldUntil>[1]>();
+  if (notices.length === 0) return { told, waits };
   const sql = yield* SqlClient.SqlClient;
   const repo = yield* Effect.serviceOption(KinChatRepository);
-  if (Option.isNone(repo)) return told;
+  if (Option.isNone(repo)) return { told, waits };
   const chats = yield* Effect.serviceOption(KinChatService);
   const hub = yield* Effect.serviceOption(KinChatHub);
   const here = turn.by === undefined ? yield* turnChat(turn) : undefined;
   const [agent] = yield* sql<{ name: string; owner: string }>`SELECT display_name AS name,
       owner_person_id AS owner FROM kin_agents
     WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId}`;
-  if (agent === undefined) return told;
+  if (agent === undefined) return { told, waits };
   const teamAgent = yield* LeadAccess.teamAgent(turn.orgId);
   const fallbackZone = yield* ownerZone(turn.orgId);
   const byPerson = new Map<string, Array<AssignNotice>>();
@@ -395,6 +396,7 @@ export const tellPeople = Effect.fn("KinAssignNotices.tell")(function* (
           rest.length === theirs.length ? body : bodyFor(giver, rest, clock, now, gaveTo),
         );
       told.add(person);
+      waits.set(person, held);
       continue;
     }
     const message = yield* repo.value.insertMessage({
@@ -421,5 +423,7 @@ export const tellPeople = Effect.fn("KinAssignNotices.tell")(function* (
       yield* hub.value.publish({ type: "message.posted", orgId: turn.orgId, message });
     told.add(person);
   }
-  return told;
+  return { told, waits };
 });
+export const tellPeople = (turn: Turn, notices: ReadonlyArray<AssignNotice>) =>
+  tellHolding(turn, notices).pipe(Effect.map((result) => result.told));

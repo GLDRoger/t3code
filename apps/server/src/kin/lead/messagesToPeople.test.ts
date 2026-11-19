@@ -887,6 +887,9 @@ it.effect(
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
           access, time_zone)
         VALUES ('dev', ${orgId}, 'dev', 'Dev Kulkarni', ${at}, 'member', 'Asia/Kolkata')`;
+        yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Kolkata', '08:30',
+            '18:30', '03:00', 0, 1, '09:00', '{"from":"22:00","to":"07:00"}')
+          ON CONFLICT (org_id) DO UPDATE SET time_zone = 'Asia/Kolkata'`;
         yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
         VALUES ('zoya-session', ${orgId}, ${zoyaId}, 0)`;
         yield* sql`UPDATE kin_people SET display_name = 'Rhea Kapoor' WHERE person_id = ${owner.personId}`;
@@ -992,6 +995,13 @@ it.effect(
           tasks: [{ key: prices, to: "Zoya Sheikh", reason: "She knows the client" }],
         });
         assert.isTrue(given.ok, JSON.stringify(given.value));
+        // The giver reads that she waits, and until when on the owner's calendar, not that she knows.
+        assert.deepStrictEqual(given.value, {
+          toldLater: [
+            "Zoya Sheikh is away until Thu 19 Nov, so they'll be told when they're back.",
+          ],
+          tasks: [{ key: prices, to: "Zoya Sheikh" }],
+        });
         const handed = yield* OwnerWork.handOver([owner], {
           orgId,
           from: { _tag: "person", personId: owner.personId },
@@ -1047,19 +1057,21 @@ it.effect(
           assert.isTrue(one.ok, JSON.stringify(one.value));
         }
         const onward = yield* says(owner, ownerChat, "Actually, the flyer is Dev's.");
-        assert.isTrue(
+        assert.deepInclude(
           (yield* call("record_assign", {
             sourceEventId: onward,
             tasks: [{ key: flyer, to: "Dev Kulkarni", reason: "Zoya is away" }],
-          })).ok,
+          })).value,
+          { told: ["Dev Kulkarni"] },
         );
         const quiet = yield* says(owner, ownerChat, "Give Zoya the banner, don't tell her yet.");
-        assert.isTrue(
+        assert.deepStrictEqual(
           (yield* call("record_assign", {
             sourceEventId: quiet,
             tell: false,
             tasks: [{ key: banner, to: "Zoya Sheikh", reason: "She has the files" }],
-          })).ok,
+          })).value,
+          { held: ["Zoya Sheikh"], tasks: [{ key: banner, to: "Zoya Sheikh" }] },
         );
         const holders = yield* sql<{ key: string; owner: string }>`SELECT key, owner_id AS owner
           FROM kin_records WHERE org_id = ${orgId} AND key IN ${sql.in([prices!, venues!, poster!, flyer!, banner!])}
