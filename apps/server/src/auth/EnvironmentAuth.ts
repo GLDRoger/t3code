@@ -1331,16 +1331,15 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("EnvironmentAuth.listConnectDevices"),
     );
 
-  const revokeConnectDevice = Effect.fn("EnvironmentAuth.revokeConnectDevice")(function* (
-    proofKeyThumbprint: string,
-    callerSessionId?: AuthSessionId,
-  ) {
+  const revokeConnectDevice: EnvironmentAuth["Service"]["revokeConnectDevice"] = Effect.fn(
+    "EnvironmentAuth.revokeConnectDevice",
+  )(function* (proofKeyThumbprint) {
     return yield* Effect.gen(function* () {
       const removed = yield* bootstrapCredentials
         .revokeConnectDevice(proofKeyThumbprint)
         .pipe(Effect.mapError((cause) => new ServerAuthConnectDevicesError({ cause })));
       const revokedSessions = yield* sessions
-        .revokeByProofKey(proofKeyThumbprint, callerSessionId)
+        .revokeByProofKey(proofKeyThumbprint)
         .pipe(Effect.mapError((cause) => new ServerAuthSessionRevocationError({ cause })));
       return removed || revokedSessions > 0;
     }).pipe(connectTrustLock.withPermits(1));
@@ -1476,7 +1475,7 @@ export const make = Effect.gen(function* () {
     // A T3 Connect device would otherwise mint itself a new session right away.
     return yield* Option.match(yield* proofKeyOf(sessionId), {
       onNone: () => revokeSession(sessionId, callerSessionId),
-      onSome: (proofKeyThumbprint) => revokeConnectDevice(proofKeyThumbprint, callerSessionId),
+      onSome: revokeConnectDevice,
     });
   });
 
@@ -1492,7 +1491,7 @@ export const make = Effect.gen(function* () {
       targetProofKey !== undefined &&
       Option.getOrUndefined(yield* proofKeyOf(currentSessionId)) === targetProofKey
     ) {
-      return yield* revokeSession(targetSessionId);
+      return yield* revokeSession(targetSessionId, currentSessionId);
     }
     return yield* revokeClient(targetSessionId, currentSessionId);
   });

@@ -488,7 +488,6 @@ export class SessionStore extends Context.Service<
     /** Revokes every session bound to this DPoP key, so a device it belongs to is cut off now. */
     readonly revokeByProofKey: (
       proofKeyThumbprint: string,
-      callerSessionId?: AuthSessionId,
     ) => Effect.Effect<number, SessionCredentialInternalError>;
     readonly markConnected: (sessionId: AuthSessionId) => Effect.Effect<void, never>;
     readonly markDisconnected: (sessionId: AuthSessionId) => Effect.Effect<void, never>;
