@@ -26,7 +26,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { PreparedJson } from "../connections/Sending.ts";
+import { PreparedJson, shownMail } from "../connections/Sending.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { teamVisible } from "./teamView.ts";
 
@@ -454,13 +454,18 @@ export const waitingCards = Effect.fn("KinRecordComments.waitingCards")(function
     if (found.has(ask.recordId)) continue;
     const prepared = Option.getOrUndefined(decodePrepared(ask.payload));
     if (prepared === undefined) continue;
+    // The row offers Confirm, so it names what Confirm sends: a person's saved edit, when one is on the card.
+    const mail =
+      prepared._tag === "email"
+        ? shownMail(prepared, Option.getOrUndefined(decodeChoice(ask.state))?.send)
+        : undefined;
     found.set(
       ask.recordId,
-      prepared._tag === "email"
+      prepared._tag === "email" && mail !== undefined
         ? card(
             "send",
             ask,
-            `To ${prepared.to.join(", ")}: ${prepared.subject}`,
+            `To ${mail.to.join(", ")}: ${mail.subject}`,
             prepared.attachments.map((file) => ({ name: file.name, mimeType: file.mimeType })),
           )
         : card(

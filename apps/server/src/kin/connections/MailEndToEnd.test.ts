@@ -1122,6 +1122,19 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           // nothing of it. Confirmed first, the older card is refused; the newer one sends.
           const theirs = "Thanks Ravi, Friday works. Between us, the venue is still open.";
           const saved = yield* savedReply(theirs);
+          // However many other mails wait across the company, the same mail is still found.
+          yield* sql`CREATE TEMP TABLE crowd AS SELECT * FROM kin_connection_asks
+            WHERE widget_id = ${saved.widgetId}`;
+          yield* Effect.forEach(
+            Array.from({ length: 60 }, (_, index) => index),
+            (index) =>
+              sql`UPDATE crowd SET ask_id = ${`crowd-${index}`}, widget_id = ${`crowd-card-${index}`},
+                proposed_at = proposed_at - 1000 - ${index},
+                payload_json = json_set(payload_json, '$.threadId', ${`crowd-thread-${index}`})`.pipe(
+                Effect.andThen(sql`INSERT INTO kin_connection_asks SELECT * FROM crowd`),
+              ),
+          );
+          yield* sql`DROP TABLE crowd`;
           yield* wake({ person: owner }, finance);
           assert.deepStrictEqual(yield* reply("Friday works, from Finance.", financeScope), {
             note: ASKED,

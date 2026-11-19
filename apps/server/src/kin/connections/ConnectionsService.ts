@@ -2249,6 +2249,10 @@ const make = Effect.gen(function* () {
       one.to.every((address) => other.to.includes(address))
     );
   };
+  /** Narrows to asks that could be the same mail, so no page limit can hide the one that is. */
+  const maybeSameMail = (ask: { readonly payload: string; readonly entry: string | null }) =>
+    sql`(entry_record_id = ${ask.entry}
+      OR json_extract(payload_json, '$.threadId') = json_extract(${ask.payload}, '$.threadId'))`;
   /** Whether the agent asked for the same mail again after this ask: then that card stands. */
   const superseded = Effect.fnUntraced(function* (orgId: KinOrgId, askId: string) {
     const [ask] = yield* sql<{ payload: string; entry: string | null; at: number }>`SELECT
@@ -2257,7 +2261,7 @@ const make = Effect.gen(function* () {
     if (ask === undefined) return false;
     const later = yield* sql<{ payload: string; entry: string | null }>`SELECT
         payload_json AS payload, entry_record_id AS entry FROM kin_connection_asks
-      WHERE org_id = ${orgId} AND rowid > ${ask.at} ORDER BY rowid LIMIT 50`;
+      WHERE org_id = ${orgId} AND rowid > ${ask.at} AND ${maybeSameMail(ask)}`;
     return later.some((one) => sameMail(ask, one));
   });
   const REPLACED_SINCE = "The agent has put up a newer card for this mail since.";
@@ -2517,10 +2521,8 @@ const make = Effect.gen(function* () {
           entry_record_id AS entry, agent_id AS "agentId", chat_id AS "chatId"
         FROM kin_connection_asks
         WHERE org_id = ${turn.orgId} AND ask_id <> ${askId} AND state = 'open'
-          AND widget_id IS NOT NULL
-        ORDER BY proposed_at LIMIT 50`).filter((row) =>
-        sameMail({ payload, entry: entryRecordId }, row),
-      );
+          AND widget_id IS NOT NULL AND ${maybeSameMail({ payload, entry: entryRecordId })}
+        ORDER BY proposed_at`).filter((row) => sameMail({ payload, entry: entryRecordId }, row));
       yield* replace(older);
     });
     yield* levelGate.ask(
