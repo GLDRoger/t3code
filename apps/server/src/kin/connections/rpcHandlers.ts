@@ -275,6 +275,25 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
           act: (person, act) => chat.act(person, act).pipe(Effect.mapError(chatFailure)),
         }),
       ),
+    "kin.connections.saveEdited": (input) =>
+      call((c, people, chat) =>
+        c.saveEdited(people, input, {
+          canTap: (person, widgetId) =>
+            chat
+              .canTap(person, { widgetId: KinWidgetId.make(widgetId) })
+              .pipe(Effect.mapError(chatFailure)),
+          rewrite: (card) =>
+            chat
+              .setSendCard({
+                orgId: input.orgId,
+                widgetId: KinWidgetId.make(card.widgetId),
+                revision: card.revision,
+                detail: card.detail,
+                send: card.send,
+              })
+              .pipe(Effect.mapError(chatFailure)),
+        }),
+      ),
     "kin.connections.setSendFrom": (input) =>
       call((c, people, chat) =>
         c.setSendFrom(people, input, (card) =>

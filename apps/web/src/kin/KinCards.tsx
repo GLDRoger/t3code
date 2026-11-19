@@ -17,14 +17,27 @@ import {
   kinChoiceFailureNotice,
   kinChoicePhase,
   kinChoiceUndoneLine,
+  kinSendEditControls,
+  kinSendEditDiscardInput,
+  kinSendEditedLine,
   kinSendEditBound,
+  kinSendEditHeld,
+  kinSendEditHeldKey,
+  kinSendEditHold,
   kinSendEditInput,
+  kinSendEditKept,
+  kinSendEditLeaveSaves,
   kinSendEditOffered,
   kinSendEditRefused,
+  kinSendEditSaveInput,
+  kinSendEditShown,
   kinSendEditStart,
+  kinSendEditUnsaved,
   KIN_SEND_EDIT_COPY,
+  type KinSendEditBusy,
   type KinChoiceCardView,
   type KinSendEditDraft,
+  type KinSendEditAck,
   type KinSendEditing,
 } from "@t3tools/client-runtime/kin/kinChoicePresentation";
 import {
@@ -65,7 +78,16 @@ import {
   MenuRadioItem,
   MenuTrigger,
 } from "../components/ui/menu";
-import { Fragment, memo, useId, useRef, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  memo,
+  useEffect,
+  useEffectEvent,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { useAssetUrls } from "../assets/assetUrls";
 import { AttachmentImage } from "../components/media/AttachmentImage";
@@ -377,8 +399,12 @@ function KinChoiceCard(props: {
   const setSendFrom = useAtomCommand(kinClient.connectionSetSendFrom, { reportFailure: false });
   const canEdit = useAtomValue(kinClient.connectionSendEdited.permissionAtom(environmentId));
   const sendEdited = useAtomCommand(kinClient.connectionSendEdited, { reportFailure: false });
-  const [editing, setEditing] = useState<KinSendEditing | null>(null);
-  const [editBusy, setEditBusy] = useState(false);
+  const saveEdited = useAtomCommand(kinClient.connectionSaveEdited, { reportFailure: false });
+  const heldKey = kinSendEditHeldKey(environmentId, props.viewerPersonId, choice.widgetId);
+  const [editing, setEditing] = useState<KinSendEditing | null>(() => kinSendEditHeld(heldKey));
+  const [editBusy, setEditBusy] = useState<KinSendEditBusy>(null);
+  // Kept with the editor closed: Edit before the card's update binds to what the host took.
+  const [ack, setAck] = useState<KinSendEditAck | null>(null);
   const [lastStatus, setLastStatus] = useState<
     (KinCardStatus & { readonly optionId: string }) | null
   >(null);
@@ -435,7 +461,7 @@ function KinChoiceCard(props: {
   const answered = kinChoiceAnswered(choice, props.viewerPersonId, sentOption?.label ?? null);
   const editable =
     answered === null && pending === null && kinSendEditOffered(choice, phase, canAct && canEdit);
-  const shownEdit = editable ? editing : null;
+  const shownEdit = kinSendEditShown(editing, editable) ? editing : null;
   const waiting = useKinOpenWaiting({ environmentId, orgId: choice.orgId });
   const takes =
     answered === null && phase === "open"
@@ -445,40 +471,101 @@ function KinChoiceCard(props: {
 
   const editBound = shownEdit === null ? null : kinSendEditBound(shownEdit, choice);
 
+  /** The editor after the host answered: words it refused stay on this device until let go. */
+  const settle = (next: KinSendEditing | null, kept: KinSendEditing | null = next) => {
+    kinSendEditHold(heldKey, kept);
+    setEditing(next);
+  };
   const sendEdit = async () => {
-    if (shownEdit === null || editBusy || editBound?.ready !== true) return;
-    setEditBusy(true);
+    if (shownEdit === null || editBusy !== null || editBound?.ready !== true) return;
+    setEditBusy("sending");
     const result = await sendEdited({
       environmentId,
       input: kinSendEditInput(choice, shownEdit, randomUUID()),
     });
-    setEditBusy(false);
-    setEditing(
+    setEditBusy(null);
+    settle(
       AsyncResult.isFailure(result)
         ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
         : null,
     );
   };
+  /** Save closes the editor; a save on leaving keeps it open over the saved card. */
+  const saveEdit = async (stay = false) => {
+    if (shownEdit === null || editBusy !== null || editBound?.ready !== true) return;
+    if (!kinSendEditUnsaved(shownEdit)) return settle(null);
+    setEditBusy("saving");
+    const result = await saveEdited({
+      environmentId,
+      input: kinSendEditSaveInput(choice, shownEdit),
+    });
+    setEditBusy(null);
+    if (AsyncResult.isFailure(result))
+      return settle(kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result)));
+    if (AsyncResult.isSuccess(result))
+      setAck({ revision: result.value.revision, saved: shownEdit.draft });
+    settle(
+      stay && AsyncResult.isSuccess(result)
+        ? kinSendEditKept(shownEdit, result.value.revision)
+        : null,
+      null,
+    );
+  };
+  const discardEdit = async () => {
+    if (shownEdit === null || editBusy !== null) return;
+    const input = kinSendEditDiscardInput(choice, shownEdit, editable);
+    if (input === null) return settle(null);
+    setEditBusy("discarding");
+    const result = await saveEdited({ environmentId, input });
+    setEditBusy(null);
+    if (AsyncResult.isSuccess(result)) setAck({ revision: result.value.revision, saved: null });
+    settle(
+      AsyncResult.isFailure(result)
+        ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
+        : null,
+    );
+  };
+  const leave = useEffectEvent(() => {
+    if (kinSendEditLeaveSaves(shownEdit, editBusy, editable)) void saveEdit(true);
+    else if (shownEdit !== null && kinSendEditUnsaved(shownEdit))
+      kinSendEditHold(heldKey, shownEdit);
+  });
+  const editorOpen = shownEdit !== null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- unsaved words are kept when the tab is hidden or the chat is left.
+  useEffect(() => {
+    if (!editorOpen) return;
+    const hidden = () => {
+      if (document.visibilityState === "hidden") leave();
+    };
+    document.addEventListener("visibilitychange", hidden);
+    return () => {
+      document.removeEventListener("visibilitychange", hidden);
+      leave();
+    };
+  }, [editorOpen]);
+  const edited = kinSendEditedLine(choice, props.viewerPersonId);
 
   return (
-    <CardFrame label={kinChoiceAccessibilityLabel(choice, answered?.text ?? null)}>
+    <CardFrame label={kinChoiceAccessibilityLabel(choice, answered?.text ?? null, edited)}>
       <p className="font-medium text-foreground">{choice.question}</p>
       {takes === null ? null : <p className="text-xs text-muted-foreground">{takes}</p>}
       {choice.send !== null && shownEdit !== null ? (
         <KinSendEditor
           send={choice.send}
           draft={shownEdit.draft}
-          busy={editBusy}
+          busy={editBusy !== null}
           problem={shownEdit.problem}
           review={editBound?.review === true}
-          ready={editBound?.ready === true}
+          controls={kinSendEditControls(shownEdit, choice, editBusy, editable)}
           onChange={(draft) => setEditing({ ...shownEdit, draft })}
+          onSave={() => void saveEdit()}
           onSend={() => void sendEdit()}
-          onDiscard={() => setEditing(null)}
+          onDiscard={() => void discardEdit()}
         />
       ) : choice.send !== null ? (
         <KinSendDetail
           send={choice.send}
+          edited={edited}
           pickFrom={
             phase === "open" && canAct && answered === null && choice.send.fromChoices.length > 1
               ? { busy: switching, problem: switchProblem, pick: (id) => void pickFrom(id) }
@@ -524,7 +611,9 @@ function KinChoiceCard(props: {
                 variant="outline"
                 size="sm-multiline"
                 disabled={switching}
-                onClick={() => setEditing(kinSendEditStart(choice))}
+                onClick={() =>
+                  setEditing(kinSendEditHeld(heldKey) ?? kinSendEditStart(choice, ack))
+                }
               >
                 {KIN_SEND_EDIT_COPY.edit}
               </Button>
@@ -548,12 +637,13 @@ function KinSendEditor(props: {
   readonly problem: string | null;
   /** The card changed under the editor: who it goes from now is shown again beside Send. */
   readonly review: boolean;
-  readonly ready: boolean;
+  readonly controls: ReturnType<typeof kinSendEditControls>;
   readonly onChange: (draft: KinSendEditDraft) => void;
+  readonly onSave: () => void;
   readonly onSend: () => void;
   readonly onDiscard: () => void;
 }) {
-  const { send, draft, busy } = props;
+  const { send, draft, busy, controls } = props;
   const id = useId();
   const field = (name: keyof KinSendEditDraft, value: string) =>
     props.onChange({ ...draft, [name]: value });
@@ -639,24 +729,40 @@ function KinSendEditor(props: {
       {props.review && props.problem !== null && send.from.length > 0 ? (
         <KinSendLines lines={send.from} />
       ) : null}
+      {controls.notice === null ? null : (
+        <p role="status" className="text-xs text-muted-foreground">
+          {controls.notice}
+        </p>
+      )}
       <div className="flex flex-col gap-1.5 pt-1">
         <Button
           type="button"
+          variant="outline"
           size="sm-multiline"
-          aria-busy={busy}
-          disabled={busy || !props.ready}
+          aria-busy={controls.save.label === KIN_SEND_EDIT_COPY.saving}
+          disabled={controls.save.disabled}
+          onClick={props.onSave}
+        >
+          {controls.save.label}
+        </Button>
+        <Button
+          type="button"
+          size="sm-multiline"
+          aria-busy={controls.send.label === KIN_SEND_EDIT_COPY.sending}
+          disabled={controls.send.disabled}
           onClick={props.onSend}
         >
-          {busy ? KIN_SEND_EDIT_COPY.sending : KIN_SEND_EDIT_COPY.send}
+          {controls.send.label}
         </Button>
         <Button
           type="button"
           variant="outline"
           size="sm-multiline"
-          disabled={busy}
+          aria-busy={controls.discard.label === KIN_SEND_EDIT_COPY.discarding}
+          disabled={controls.discard.disabled}
           onClick={props.onDiscard}
         >
-          {KIN_SEND_EDIT_COPY.discard}
+          {controls.discard.label}
         </Button>
       </div>
     </div>
@@ -725,6 +831,8 @@ function AddressPieces(props: { readonly value: string }) {
 
 function KinSendDetail(props: {
   readonly send: NonNullable<KinChoiceCardView["send"]>;
+  /** "Edited by you" while the words shown are a person's saved edit. */
+  readonly edited: string | null;
   /** Set while the owner may still switch From. */
   readonly pickFrom: {
     readonly busy: boolean;
@@ -796,6 +904,9 @@ function KinSendDetail(props: {
         </p>
       )}
       <KinSendMessage label="Message" body={send.body} quoted={send.quoted} />
+      {props.edited === null ? null : (
+        <p className="text-xs text-muted-foreground">{props.edited}</p>
+      )}
       {send.attachments.length === 0 ? null : (
         <ul className="flex flex-col gap-1">
           {send.attachments.map((file) => (

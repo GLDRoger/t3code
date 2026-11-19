@@ -14,6 +14,8 @@ import {
   type KinConnectionDetail,
   type KinConnectionPreset,
   type KinConnectionRef,
+  type KinConnectionSaveEdited,
+  type KinConnectionSaveEditedInput,
   type KinConnectionSendEdited,
   type KinConnectionSendEditedInput,
   type KinConnectionSetKeyInput,
@@ -128,7 +130,10 @@ import {
   type Prepared,
   PreparedJson,
   sendCard,
+  confirmedOf,
+  confirmedWords,
   sameWords,
+  shownMail,
   sendMail,
   markQuotesSent,
   sentMail,
@@ -151,6 +156,9 @@ export const ASKED =
 /** A call that became a Confirm card because the turn had read outside text. */
 export const DRAFTED =
   "Nothing was sent: this exact action waits on a Confirm card, marked as drafted after outside text, and runs only if the owner or a co-owner taps Confirm there. Tell them once in one short line that it is waiting, and don't ask for it again in words.";
+/** Added to a new card's result when cards it replaces held people's saved words. */
+export const EDITED_OVER = (names: string, cards = 1) =>
+  `${names} had saved their own words on ${cards === 1 ? "the card" : "the cards"} this one replaces: they are quoted below, and your new card doesn't have them. If their changes should stand, draft again starting from their words.`;
 /** What an identical call is told once its card was answered or closed: nothing new is drawn. */
 export const ASK_CLOSED = {
   sending:
@@ -341,6 +349,7 @@ type AskRow = {
   readonly outsideFrom: string | null;
   readonly decidedBy: string | null;
   readonly dispatchedAt: number | null;
+  readonly widgetId: string | null;
 };
 const FRESH_BELOW = "A fresh card is below.";
 const REPAIR_BATCH = 50;
@@ -497,6 +506,17 @@ export type EditCards = {
   ) => Effect.Effect<unknown, KinChatError>;
 };
 
+/** The chat side of a saved edit, run in its transaction. */
+export type SaveCards = Pick<EditCards, "canTap"> & {
+  /** Redraws the card in place, bound to the revision the person edited. */
+  readonly rewrite: (card: {
+    readonly widgetId: string;
+    readonly revision: number;
+    readonly detail: string;
+    readonly send: KinSendCard;
+  }) => Effect.Effect<{ readonly revision: number }, KinChatError>;
+};
+
 type Owner<I, A> = (people: People, input: I) => Effect.Effect<A, KinChatError>;
 type Lead<I, A> = (scope: McpInvocationScope, input: I) => Effect.Effect<A, KinChatError>;
 
@@ -574,6 +594,15 @@ export class KinConnections extends Context.Service<
       input: KinConnectionSendEditedInput,
       cards: EditCards,
     ) => Effect.Effect<KinConnectionSendEdited, KinChatError>;
+    /**
+     * A person's own words kept on an unanswered mail card, unsent: the card is redrawn in place
+     * with them, marked as theirs, and its Confirm sends them. `edit: null` puts the draft back.
+     */
+    readonly saveEdited: (
+      people: People,
+      input: KinConnectionSaveEditedInput,
+      cards: SaveCards,
+    ) => Effect.Effect<KinConnectionSaveEdited, KinChatError>;
     /** After the tap commits: sends a confirmed ask, once. */
     readonly sendAsk: (orgId: KinOrgId, askId: string) => Effect.Effect<AskOutcome, KinChatError>;
     /**
@@ -2313,31 +2342,49 @@ const make = Effect.gen(function* () {
     const twinId = idOf(key);
     const persisted = (id: string) =>
       sql<{
+        askId: string;
         state: string;
         decidedBy: string | null;
         closed: number;
         widgetId: string | null;
         result: string | null;
         reason: string | null;
+        payload: string;
+        agentId: string;
+        chatId: string;
       }>`
-        SELECT k.state, k.decided_by AS "decidedBy", (w.closed_at IS NOT NULL) AS closed,
-          k.widget_id AS "widgetId", k.result_json AS result, k.reason
+        SELECT k.ask_id AS "askId", k.state, k.decided_by AS "decidedBy",
+          (w.closed_at IS NOT NULL) AS closed, k.widget_id AS "widgetId", k.result_json AS result,
+          k.reason, k.payload_json AS payload, k.agent_id AS "agentId", k.chat_id AS "chatId"
         FROM kin_connection_asks k
         LEFT JOIN kin_widgets w ON w.org_id = k.org_id AND w.widget_id = k.widget_id
         WHERE k.org_id = ${turn.orgId} AND k.ask_id = ${id}`.pipe(Effect.map(([ask]) => ask));
     const noted = (note: string | undefined) => (note === undefined ? undefined : { note });
     // An ask a person's edit replaced answers as the edited one went, and with what went.
     const toldFor = Effect.fnUntraced(function* (ask: {
+      readonly askId: string;
       readonly state: string;
       readonly decidedBy: string | null;
       readonly closed: number;
       readonly result: string | null;
       readonly reason: string | null;
+      readonly payload: string;
     }) {
+      const kept = Option.getOrUndefined(
+        Option.map(decodePrepared(ask.payload), (one) => confirmedOf(one, ask.payload)),
+      );
+      // Words a person saved on the card went in place of the draft this call repeats.
+      const savedOver =
+        ask.state === "sent" &&
+        prepared._tag === "email" &&
+        kept?._tag === "email" &&
+        !sameWords(prepared, kept);
       const edited =
         ask.state === "stale" && ask.result !== null
           ? Option.getOrUndefined(decodeEdited(ask.result))
-          : undefined;
+          : savedOver
+            ? { editedAs: ask.askId }
+            : undefined;
       if (edited === undefined) return noted(askClosed(ask));
       const went = yield* persisted(edited.editedAs);
       if (went?.state !== "sent")
@@ -2348,7 +2395,11 @@ const make = Effect.gen(function* () {
         LEFT JOIN kin_people p ON p.org_id = k.org_id AND p.person_id = k.decided_by
         WHERE k.org_id = ${turn.orgId} AND k.ask_id = ${edited.editedAs}`;
       const mail =
-        sent === undefined ? undefined : Option.getOrUndefined(decodePrepared(sent.payload));
+        sent === undefined
+          ? undefined
+          : Option.getOrUndefined(
+              Option.map(decodePrepared(sent.payload), (one) => confirmedOf(one, sent.payload)),
+            );
       return {
         note: ASK_CLOSED.edited(sent?.name ?? "the owner"),
         ...(mail?._tag === "email"
@@ -2373,6 +2424,39 @@ const make = Effect.gen(function* () {
         : null;
     const now = yield* Clock.currentTimeMillis;
     const replaced: Array<string> = [];
+    const savedOver: Array<{ readonly name: string; readonly quoted: string }> = [];
+    // Every older card for the mail goes, so one card can send. A person's saved words stay on it,
+    // and are read to this call only when this agent drew it in this chat.
+    const replace = Effect.fnUntraced(function* (
+      asks: ReadonlyArray<{
+        readonly askId: string;
+        readonly widgetId: string | null;
+        readonly agentId: string;
+        readonly chatId: string;
+      }>,
+    ) {
+      if (asks.length === 0) return;
+      for (const ask of asks) {
+        if (ask.widgetId === null || ask.agentId !== turn.agentId || ask.chatId !== chat.chatId)
+          continue;
+        const shown = yield* cardSend(sql, turn.orgId, ask.widgetId);
+        if (shown?.edited !== undefined)
+          savedOver.push({
+            name: shown.edited.name,
+            quoted: quote("Their words on the card this replaces", {
+              to: shown.to,
+              cc: shown.cc,
+              subject: shown.subject,
+              body: shown.body,
+            }),
+          });
+      }
+      yield* sql`UPDATE kin_connection_asks SET state = 'stale',
+          reason = 'Replaced by a newer card.', decided_at = ${now}
+        WHERE org_id = ${turn.orgId} AND state = 'open'
+          AND ask_id IN ${sql.in(asks.map((one) => one.askId))}`;
+      replaced.push(...asks.flatMap((one) => (one.widgetId === null ? [] : [one.widgetId])));
+    });
     // The twin is decided with this ask's insert: a tap on it lands before (its answer stands,
     // nothing new is drawn) or after (it finds the twin replaced), never between. The stamp is
     // read here too, so outside text read since the call began marks this ask, in either order.
@@ -2389,12 +2473,7 @@ const make = Effect.gen(function* () {
           const twin = yield* persisted(twinId);
           const told = twin === undefined ? undefined : yield* toldFor(twin);
           if (told !== undefined) return done(told);
-          if (twin !== undefined) {
-            yield* sql`UPDATE kin_connection_asks SET state = 'stale',
-                reason = 'Replaced by a newer card.', decided_at = ${now}
-              WHERE org_id = ${turn.orgId} AND ask_id = ${twinId} AND state = 'open'`;
-            if (twin.widgetId !== null) replaced.push(twin.widgetId);
-          }
+          if (twin !== undefined) yield* replace([twin]);
         }
         yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
             pin_digest, payload_json, agent_id, wakeup_id, chat_id, entry_record_id, proposed_at,
@@ -2431,20 +2510,18 @@ const make = Effect.gen(function* () {
         widgetId: string;
         payload: string;
         entry: string | null;
+        agentId: string;
+        chatId: string;
       }>`
         SELECT ask_id AS "askId", widget_id AS "widgetId", payload_json AS payload,
-          entry_record_id AS entry FROM kin_connection_asks
+          entry_record_id AS entry, agent_id AS "agentId", chat_id AS "chatId"
+        FROM kin_connection_asks
         WHERE org_id = ${turn.orgId} AND ask_id <> ${askId} AND state = 'open'
           AND widget_id IS NOT NULL
         ORDER BY proposed_at LIMIT 50`).filter((row) =>
         sameMail({ payload, entry: entryRecordId }, row),
       );
-      if (older.length === 0) return;
-      yield* sql`UPDATE kin_connection_asks SET state = 'stale',
-          reason = 'Replaced by a newer card.', decided_at = ${now}
-        WHERE org_id = ${turn.orgId} AND state = 'open'
-          AND ask_id IN ${sql.in(older.map((row) => row.askId))}`;
-      replaced.push(...older.map((row) => row.widgetId));
+      yield* replace(older);
     });
     yield* levelGate.ask(
       { ...turn, wakeupId: KinWakeupId.make(turn.wakeupId) },
@@ -2467,7 +2544,14 @@ const make = Effect.gen(function* () {
     );
     if (replaced.length > 0) yield* levelGate.closeReplaced(turn, replaced);
     yield* record(turn, { ...entry, status: "awaiting_approval" });
-    return { note: outside === undefined ? ASKED : DRAFTED };
+    const note = outside === undefined ? ASKED : DRAFTED;
+    const names = [...new Set(savedOver.map((one) => one.name))].join(" and ");
+    return savedOver.length === 0
+      ? { note }
+      : {
+          note: `${note} ${EDITED_OVER(names, savedOver.length)}`,
+          quoted: savedOver.map((one) => one.quoted).join("\n"),
+        };
   });
 
   /**
@@ -2543,6 +2627,8 @@ const make = Effect.gen(function* () {
         if (tool === undefined) return yield* fail("invalid_state", "That account can't send now.");
         const from = fromOf(chosen.row.accountLabel, sendAsOf(chosen.row), chosen.choice.address);
         const next = { ...prepared, from: from ?? null };
+        // A person's saved words stay on the card under the new From.
+        const was = yield* cardSend(sql, input.orgId, input.widgetId);
         yield* sql`UPDATE kin_connection_asks SET connection_id = ${chosen.row.connectionId},
             pin_digest = ${tool.pinDigest}, payload_json = ${encodePrepared(next)},
             account = ${chosen.row.accountLabel}, sign_in_gen = ${chosen.row.signInGen}
@@ -2557,14 +2643,14 @@ const make = Effect.gen(function* () {
           ...(mail === undefined ? {} : { mail }),
           account: chosen.row.accountLabel,
           tool: ask.toolName,
-          prepared: next,
+          prepared: shownMail(next, was),
           choices: choices.map((one) => one.choice),
         });
         const done = yield* rewrite({
           widgetId: input.widgetId,
           revision: input.revision,
           detail: card.detail,
-          send: card.send,
+          send: was?.edited === undefined ? card.send : { ...card.send, edited: was.edited },
         });
         yield* touched(input.orgId);
         return { revision: done.revision } satisfies KinConnectionSetSendFrom;
@@ -2620,7 +2706,7 @@ const make = Effect.gen(function* () {
         yield* decide("declined", null);
         return { _tag: "declined" as const, askId: row.askId };
       }
-      const prepared = Option.getOrUndefined(decodePrepared(row.payload));
+      const drafted = Option.getOrUndefined(decodePrepared(row.payload));
       const connection = yield* connectionById(input.orgId, row.connectionId);
       // Refused before the tap counts, so the card stays open for after the sign-in.
       if (connection?.state === "needs_sign_in")
@@ -2628,24 +2714,33 @@ const make = Effect.gen(function* () {
           "unavailable",
           `${connection.accountLabel ?? connection.label} needs signing in again in Settings › Connections. Nothing was sent; tap Confirm again once it's back.`,
         );
-      const reason = yield* askBlocked(input.orgId, row, prepared, connection);
+      // A refused Confirm keeps the agent's draft; its card's saved words follow onto a fresh one.
+      const reason = yield* askBlocked(input.orgId, row, drafted, connection);
       if (reason !== null) {
-        const { told, owes } = yield* staleTold(input.orgId, row.askId, reason, prepared);
+        const { told, owes } = yield* staleTold(input.orgId, row.askId, reason, drafted);
         yield* decide("stale", told, owes);
         return {
           _tag: "stale" as const,
           askId: row.askId,
           reason: told,
           fresh:
-            owes && prepared?._tag === "email" && connection !== undefined
+            owes && drafted?._tag === "email" && connection !== undefined
               ? {
-                  prepared,
+                  prepared: drafted,
                   row,
                   label: connection.label,
                   account: connection?.accountLabel ?? null,
                 }
               : undefined,
         };
+      }
+      // Confirm sends the words the card shows: a person's saved edit is kept beside the draft.
+      if (drafted?._tag === "email") {
+        const shown = shownMail(drafted, yield* cardSend(tx, input.orgId, input.widgetId));
+        if (shown !== drafted)
+          yield* tx`UPDATE kin_connection_asks SET payload_json = json_set(payload_json,
+              '$.confirmed', json(${toJson(confirmedWords(shown))}))
+            WHERE org_id = ${input.orgId} AND ask_id = ${row.askId} AND state = 'open'`;
       }
       yield* decide("sending", null);
       return { _tag: "send" as const, askId: row.askId };
@@ -2655,6 +2750,17 @@ const make = Effect.gen(function* () {
 
   const decodeChoice = Schema.decodeUnknownOption(KinChoiceCardState);
   const decodeAwaiting = Schema.decodeOption(Schema.fromJsonString(Schema.Array(Schema.String)));
+  /** What a send card shows now, as stored; undefined when it is no send card. */
+  const cardSend = (tx: SqlClient.SqlClient, orgId: KinOrgId, widgetId: string) =>
+    tx<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+      WHERE org_id = ${orgId} AND widget_id = ${widgetId}`.pipe(
+      Effect.map(
+        ([widget]) =>
+          Option.getOrUndefined(
+            decodeChoice(widget === undefined ? undefined : stored(widget.state)),
+          )?.send,
+      ),
+    );
   /** The Confirm a send card offers. */
   const confirmOf = (card: Option.Option<KinChoiceCardState>) =>
     Option.getOrUndefined(card)?.options.find((option) => option.kind === "yes")?.optionId;
@@ -2749,7 +2855,8 @@ const make = Effect.gen(function* () {
             value: optionId,
             clientActionId: input.clientActionId,
           });
-        if (sameWords(prepared, edited)) {
+        // The card's Confirm sends what it shows, which may be a saved edit.
+        if (sameWords(shownMail(prepared, card.value.send), edited)) {
           yield* tap(input.widgetId, input.revision, confirm);
           return { widgetId: input.widgetId };
         }
@@ -2816,6 +2923,99 @@ const make = Effect.gen(function* () {
     );
   }, settle);
 
+  const saveEdited = Effect.fn("KinConnections.saveEdited")(function* (
+    people: People,
+    input: KinConnectionSaveEditedInput,
+    cards: SaveCards,
+  ) {
+    const person = people.find((one) => one.orgId === input.orgId);
+    if (person === undefined) return yield* fail("not_found", "Kin couldn't find that card.");
+    return yield* sql.withTransaction(
+      Effect.gen(function* () {
+        // Who may save is who may Confirm: owner level, waited on, and able to tap the card.
+        if (!(yield* ownerLevel(input.orgId, person.personId).pipe(provideSql)))
+          return yield* fail("not_allowed", "Only the owner or a co-owner changes what Kin sends.");
+        const [row] = yield* sql<AskRow>`${askRow(sql, input.orgId)}
+          AND k.widget_id = ${input.widgetId}`;
+        if (row === undefined) return yield* fail("not_found", "Kin couldn't find that card.");
+        const prepared = Option.getOrUndefined(decodePrepared(row.payload));
+        if (prepared?._tag !== "email")
+          return yield* fail("invalid_state", "Only a mail's words can be changed on its card.");
+        if (row.state !== "open") return yield* cardChanged(ALREADY);
+        const [widget] = yield* sql<{
+          revision: number;
+          closedAt: string | null;
+          updatedAt: string;
+          state: string;
+          awaiting: string;
+        }>`SELECT revision, closed_at AS "closedAt", updated_at AS "updatedAt",
+            state_json AS state, awaiting_json AS awaiting
+          FROM kin_widgets WHERE org_id = ${input.orgId} AND widget_id = ${input.widgetId}`;
+        if (widget === undefined) return yield* fail("not_found", "Kin couldn't find that card.");
+        if (widget.revision !== input.revision)
+          return yield* cardChanged("This card changed or was answered. Look at it again.");
+        if (
+          !Option.exists(decodeAwaiting(widget.awaiting), (awaiting) =>
+            awaiting.includes(person.personId),
+          )
+        )
+          return yield* fail(
+            "not_allowed",
+            "This card isn't waiting on you, so nothing was saved.",
+          );
+        const card = decodeChoice(stored(widget.state));
+        const now = yield* Clock.currentTimeMillis;
+        if (
+          Option.isNone(card) ||
+          card.value.send === undefined ||
+          widget.closedAt !== null ||
+          choiceExpired({ updatedAt: widget.updatedAt, state: card.value }, now)
+        )
+          return yield* fail("invalid_state", "This question expired.");
+        yield* cards.canTap(person, input.widgetId);
+        const edited = input.edit === null ? prepared : editedMail(prepared, input.edit);
+        if (typeof edited === "string") return yield* fail("invalid_state", edited);
+        const [named] = yield* sql<{ name: string | null }>`SELECT display_name AS name
+          FROM kin_people WHERE org_id = ${input.orgId} AND person_id = ${person.personId}`;
+        const connection = yield* connectionEverById(input.orgId, row.connectionId).pipe(
+          provideSql,
+        );
+        const mail = connection === undefined ? undefined : mailProviderOf(connection);
+        const drawn = sendCard({
+          clock: {
+            zone: yield* ownerZone(input.orgId).pipe(provideSql),
+            locale: yield* textLocale(input.orgId).pipe(provideSql),
+          },
+          service: connection?.label ?? row.toolName,
+          ...(mail === undefined ? {} : { mail }),
+          account: row.account,
+          tool: row.toolName,
+          prepared: edited,
+        });
+        const { fromChoices } = card.value.send;
+        const name = named?.name?.trim() ?? "";
+        const done = yield* cards.rewrite({
+          widgetId: input.widgetId,
+          revision: input.revision,
+          detail: drawn.detail,
+          send: {
+            ...drawn.send,
+            ...(fromChoices === undefined ? {} : { fromChoices }),
+            ...(sameWords(prepared, edited)
+              ? {}
+              : {
+                  edited: {
+                    personId: person.personId,
+                    name: name === "" ? "the owner" : name.slice(0, 200),
+                  },
+                }),
+          },
+        });
+        return { revision: done.revision } satisfies KinConnectionSaveEdited;
+      }),
+    );
+  }, settle);
+
   /** A failed ask whose mail now stands on a card again owes none. */
   const settled = (orgId: KinOrgId, askId: string) =>
     sql`UPDATE kin_connection_asks SET owes_card = 0
@@ -2857,7 +3057,12 @@ const make = Effect.gen(function* () {
     const named =
       connection ?? (yield* connectionEverById(orgId, stale.row.connectionId).pipe(provideSql));
     const mail = named === undefined ? undefined : mailProviderOf(named);
-    const card = sendCard({
+    // Words a person saved on the stale card stand on the fresh one, over the same draft.
+    const was =
+      stale.row.widgetId === null ? undefined : yield* cardSend(sql, orgId, stale.row.widgetId);
+    const kept =
+      was !== undefined && !sameWords(prepared, shownMail(prepared, was)) ? was : undefined;
+    const drawn = sendCard({
       clock: {
         zone: yield* ownerZone(orgId).pipe(provideSql),
         locale: yield* textLocale(orgId).pipe(provideSql),
@@ -2866,7 +3071,7 @@ const make = Effect.gen(function* () {
       ...(mail === undefined ? {} : { mail }),
       account: connection?.accountLabel ?? stale.account,
       tool: stale.row.toolName,
-      prepared,
+      prepared: shownMail(prepared, kept),
       ...(stale.row.outsideFrom === null
         ? {}
         : { outside: yield* outsideLabel(orgId, stale.row.outsideFrom).pipe(provideSql) }),
@@ -2875,6 +3080,10 @@ const make = Effect.gen(function* () {
           ? []
           : (yield* choicesFor(orgId, connection, prepared)).map((one) => one.choice),
     });
+    const card =
+      kept?.edited === undefined
+        ? drawn
+        : { ...drawn, send: { ...drawn.send, edited: kept.edited } };
     return {
       askId,
       chatId: KinChatId.make(stale.row.chatId),
@@ -2954,12 +3163,14 @@ const make = Effect.gen(function* () {
         if (row.dispatchedAt !== null)
           return { _tag: "done" as const, outcome: { state: "sending" as const, reason: null } };
         const connection = yield* connectionById(orgId, row.connectionId).pipe(provideSql);
-        const prepared = Option.getOrUndefined(decodePrepared(row.payload));
+        // What goes is what Confirm took; a mail that comes back is the agent's draft again.
+        const drafted = Option.getOrUndefined(decodePrepared(row.payload));
+        const prepared = drafted === undefined ? undefined : confirmedOf(drafted, row.payload);
         const stop = (reason: string, owes: boolean) =>
           finish(false, "failed", reason, null, owes).pipe(
             Effect.map((failed) => ({
               _tag: "done" as const,
-              outcome: owes ? again(failed, row, prepared, connection) : failed,
+              outcome: owes ? again(failed, row, drafted, connection) : failed,
             })),
           );
         // What the tap checked, checked again as the send is claimed, against the state now.
@@ -2984,7 +3195,8 @@ const make = Effect.gen(function* () {
           return yield* stop(told, owes);
         }
         // `askBlocked` passed, so both are here; the definition checked is the one that goes.
-        if (connection === undefined || prepared === undefined) return yield* unavailable;
+        if (connection === undefined || prepared === undefined || drafted === undefined)
+          return yield* unavailable;
         const [tool] = (yield* toolsOf(orgId, row.connectionId).pipe(provideSql)).filter(
           (candidate) => candidate.name === row.toolName,
         );
@@ -3001,13 +3213,14 @@ const make = Effect.gen(function* () {
           _tag: "claimed" as const,
           row,
           connection,
+          drafted,
           prepared,
           definition: Option.getOrUndefined(definition),
         };
       }),
     );
     if (claim._tag === "done") return claim.outcome;
-    const { row, connection, prepared, definition } = claim;
+    const { row, connection, drafted, prepared, definition } = claim;
     // Set right before the request leaves Kin, on each try: only after that may it have gone.
     let started = false;
     // How the last try that left ended: a forced retry that never leaves doesn't replace it.
@@ -3084,7 +3297,7 @@ const make = Effect.gen(function* () {
           null,
           email,
         );
-        return email ? again(failed, row, prepared, connection) : failed;
+        return email ? again(failed, row, drafted, connection) : failed;
       }
       const after = yield* connectionById(orgId, row.connectionId).pipe(provideSql);
       // A refusal sent nothing, so when the retry it forced ended here, that reason says what to do.
@@ -3105,7 +3318,7 @@ const make = Effect.gen(function* () {
       if (ended === "not_sent" && after !== undefined && !signedInAsShown(row, after)) {
         const email = prepared._tag === "email";
         const failed = yield* finish(true, "failed", accountMoved(after, email), null, email);
-        return email ? again(failed, row, prepared, after) : failed;
+        return email ? again(failed, row, drafted, after) : failed;
       }
       if (ended === "not_sent" && after?.state === "needs_sign_in" && prepared._tag === "email") {
         const failed = yield* finish(
@@ -3115,7 +3328,7 @@ const make = Effect.gen(function* () {
           null,
           true,
         );
-        return again(failed, row, prepared, after);
+        return again(failed, row, drafted, after);
       }
       const why = ended === "not_sent" || said !== failure ? nothingSent(message) : message;
       if (prepared._tag !== "email") return yield* finish(true, "failed", why, null);
@@ -3127,7 +3340,7 @@ const make = Effect.gen(function* () {
         null,
         true,
       );
-      return again(failed, row, prepared, after ?? connection);
+      return again(failed, row, drafted, after ?? connection);
     }
     const done = yield* finish(true, "sent", null, sent.success);
     if (prepared._tag === "email" && Option.isSome(records))
@@ -3452,6 +3665,7 @@ const make = Effect.gen(function* () {
     note,
     answerAsk,
     sendEdited,
+    saveEdited,
     freshAsk,
     sendAsk,
     interruptedSends,

@@ -158,10 +158,13 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
         yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = 'ravi'`;
         assert.isFalse(yield* allowed("ravi", "kin.work.recordPayment"));
         // Sending a mail with one's own edits is a Confirm: whoever may confirm, as they stand now.
+        // Keeping them on the card unsent is for the same people.
         assert.isFalse(yield* allowed("ravi", "kin.connections.sendEdited"));
+        assert.isFalse(yield* allowed("ravi", "kin.connections.saveEdited"));
         yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = 'meera'`;
         assert.isTrue(yield* allowed("meera", "kin.work.recordPayment"));
         assert.isTrue(yield* allowed("meera", "kin.connections.sendEdited"));
+        assert.isTrue(yield* allowed("meera", "kin.connections.saveEdited"));
         // Someone the org doesn't know is refused, not admitted as a member of nothing.
         assert.isFalse(yield* allowed("stranger", "kin.work.recordPayment"));
         // Team memory is the owner's call: a co-owner (now Meera) may set it, a member never.

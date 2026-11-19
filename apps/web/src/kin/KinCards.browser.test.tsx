@@ -3,6 +3,7 @@ import {
   KinChatError,
   KinOrgId,
   KinPersonId,
+  type KinConnectionSaveEditedInput,
   type KinConnectionSendEditedInput,
   type KinWaitingItem,
   type KinWidget,
@@ -11,6 +12,11 @@ import type { Atom } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import "~/index.css";
+
+import {
+  kinSendEditHeldKey,
+  kinSendEditHold,
+} from "@t3tools/client-runtime/kin/kinChoicePresentation";
 
 import { render } from "../../test/render";
 import { AppAtomRegistryProvider, appAtomRegistry } from "../rpc/atomRegistry";
@@ -21,8 +27,11 @@ const state = vi.hoisted(() => ({
   /** Whether this session may send an edited mail; the card reads it as it would a grant. */
   canEdit: null as Atom.Writable<boolean> | null,
   sent: [] as Array<KinConnectionSendEditedInput>,
+  saved: [] as Array<KinConnectionSaveEditedInput>,
   /** How each send is answered, in order: a refusal in the host's words, or null for done. */
   answers: [] as Array<{ reason: "invalid_state" | "widget_changed"; message: string } | null>,
+  /** How each save is answered, in the same way. */
+  saveAnswers: [] as Array<{ reason: "widget_changed"; message: string } | null>,
   /** What the open list says waits on the reader. */
   waiting: null as ReadonlyArray<KinWaitingItem> | null,
 }));
@@ -32,7 +41,16 @@ vi.mock(import("~/state/use-atom-command"), async () => {
   const { AsyncResult } = await import("effect/reactivity");
   return {
     useAtomCommand: ((command: { readonly label: string }) =>
-      async (value: { readonly input: KinConnectionSendEditedInput }) => {
+      async (value: {
+        readonly input: KinConnectionSendEditedInput | KinConnectionSaveEditedInput;
+      }) => {
+        if ("edit" in value.input) {
+          state.saved.push(value.input);
+          const refused = state.saveAnswers.shift() ?? null;
+          return refused === null
+            ? AsyncResult.success({ revision: value.input.revision + 1 })
+            : AsyncResult.failure(Cause.fail(new KinChatError(refused)));
+        }
         if (command.label !== "kin:connection:sendEdited")
           return AsyncResult.failure(Cause.fail("unused"));
         state.sent.push(value.input);
@@ -53,6 +71,7 @@ vi.mock(import("./kinClient"), async () => {
       widgetAction: { label: "kin:widget:act", permissionAtom: () => allowed },
       connectionSetSendFrom: { label: "kin:connection:setSendFrom", permissionAtom: () => allowed },
       connectionSendEdited: { label: "kin:connection:sendEdited", permissionAtom: () => canEdit },
+      connectionSaveEdited: { label: "kin:connection:saveEdited", permissionAtom: () => canEdit },
     },
     // Imported by the pages a card can open; no test here reaches them.
     refreshKinAgents: () => {},
@@ -73,8 +92,18 @@ vi.mock(import("./useKinClock"), () => ({ useNowMinuteMs: () => POSTED + 60_000 
 function setup() {
   appAtomRegistry.set(state.canEdit!, true);
   state.sent.length = 0;
+  state.saved.length = 0;
   state.answers.length = 0;
+  state.saveAnswers.length = 0;
   state.waiting = null;
+  kinSendEditHold(kinSendEditHeldKey("env-1", KinPersonId.make("rhea"), "choice:m1"), null);
+}
+
+/** The tab goes to the background, as when a person switches to another. */
+function hideTab() {
+  const hidden = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+  document.dispatchEvent(new Event("visibilitychange"));
+  return hidden;
 }
 
 const RHEA = "rhea@ambermill.example";
@@ -189,7 +218,7 @@ describe("a mail card's Edit", () => {
     expect(state.sent[1]!.clientActionId).not.toBe(state.sent[0]!.clientActionId);
   });
 
-  it("discards edits back to the card, and isn't offered to one who can't send", async () => {
+  it("saves or discards edits without sending, and isn't offered to one who can't send", async () => {
     setup();
     await using screen = await render(view());
     await userEvent.click(page.getByRole("button", { name: "Edit" }));
@@ -198,6 +227,76 @@ describe("a mail card's Edit", () => {
     await expect.element(page.getByRole("button", { name: "Confirm" })).toBeVisible();
     await expect.element(screen.getByText("Invoice", { exact: true })).toBeVisible();
     expect(state.sent).toHaveLength(0);
+    expect(state.saved).toHaveLength(0);
+
+    // Save keeps the words on the card for its Confirm; nothing is sent.
+    await userEvent.click(page.getByRole("button", { name: "Edit" }));
+    await userEvent.type(page.getByLabelText("Subject"), " for November");
+    await userEvent.click(page.getByRole("button", { name: "Save", exact: true }));
+    await expect.element(page.getByLabelText("Subject")).not.toBeInTheDocument();
+    expect(state.saved).toEqual([
+      {
+        orgId: "org-1",
+        widgetId: "choice:m1",
+        revision: 2,
+        edit: {
+          to: ["anita@orbitdental.example"],
+          cc: [],
+          subject: "Invoice for November",
+          body: "Hi Anita,\nThe invoice is attached.\nRhea",
+        },
+      },
+    ]);
+    expect(state.sent).toHaveLength(0);
+    // Edit again before the saved card's update arrives: the saved words open, and Discard edits
+    // resets the card the save made, however late that update is.
+    await userEvent.click(page.getByRole("button", { name: "Edit" }));
+    await expect.element(page.getByLabelText("Subject")).toHaveValue("Invoice for November");
+    await userEvent.click(page.getByRole("button", { name: "Discard edits" }));
+    await expect.element(page.getByLabelText("Subject")).not.toBeInTheDocument();
+    expect(state.saved[1]).toEqual({
+      orgId: "org-1",
+      widgetId: "choice:m1",
+      revision: 3,
+      edit: null,
+    });
+
+    // The saved card shows the person's words as theirs; Discard edits puts the draft back.
+    const edited = { personId: "rhea", name: "Rhea" };
+    await screen.rerender(
+      view(mail({ revision: 5, send: { subject: "Invoice for November", edited } })),
+    );
+    await expect.element(screen.getByText("Edited by you")).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Edit" }));
+    await expect.element(page.getByLabelText("Subject")).toHaveValue("Invoice for November");
+    await userEvent.click(page.getByRole("button", { name: "Discard edits" }));
+    await expect.element(page.getByLabelText("Subject")).not.toBeInTheDocument();
+    expect(state.saved[2]).toEqual({
+      orgId: "org-1",
+      widgetId: "choice:m1",
+      revision: 5,
+      edit: null,
+    });
+
+    // Hiding the tab saves the words and the editor stays. The save's answer lands before the
+    // card's update does, and Discard edits still puts the draft back on the saved card.
+    await screen.rerender(view(mail({ revision: 6 })));
+    await userEvent.click(page.getByRole("button", { name: "Edit" }));
+    await userEvent.type(page.getByLabelText("Subject"), ", again");
+    {
+      using _hidden = hideTab();
+      await vi.waitFor(() => expect(state.saved).toHaveLength(4));
+    }
+    expect(state.saved[3]).toMatchObject({ revision: 6, edit: { subject: "Invoice, again" } });
+    await expect.element(page.getByLabelText("Subject")).toHaveValue("Invoice, again");
+    await userEvent.click(page.getByRole("button", { name: "Discard edits" }));
+    await expect.element(page.getByLabelText("Subject")).not.toBeInTheDocument();
+    expect(state.saved[4]).toEqual({
+      orgId: "org-1",
+      widgetId: "choice:m1",
+      revision: 7,
+      edit: null,
+    });
 
     // The grant goes, as a session's scopes change, and the open card follows.
     appAtomRegistry.set(state.canEdit!, false);
@@ -266,6 +365,43 @@ describe("a mail card's Edit", () => {
     await expect.element(page.getByLabelText("Subject")).not.toBeInTheDocument();
     expect(state.sent).toHaveLength(2);
     expect(state.sent[1]).toMatchObject({ revision: 3, body: words });
+  });
+
+  it("keeps words a save on leaving couldn't keep, and shows them with the change next time", async () => {
+    setup();
+    state.saveAnswers.push({
+      reason: "widget_changed",
+      message: "This card changed or was answered. Look at it again.",
+    });
+    {
+      await using _left = await render(view());
+      await userEvent.click(page.getByRole("button", { name: "Edit" }));
+      await userEvent.type(page.getByLabelText("Subject"), " for November");
+    }
+    expect(state.saved).toEqual([
+      expect.objectContaining({
+        revision: 2,
+        edit: expect.objectContaining({ subject: "Invoice for November" }),
+      }),
+    ]);
+
+    // Back on the chat, the card changed meanwhile: the words are there with why they weren't
+    // kept, and Save carries the card on screen only when pressed again.
+    await using _back = await render(
+      view(mail({ revision: 3, send: { from: BILLING, account: BILLING } })),
+    );
+    await expect.element(page.getByLabelText("Subject")).toHaveValue("Invoice for November");
+    await expect
+      .element(page.getByRole("alert"))
+      .toHaveTextContent("This card changed or was answered. Look at it again.");
+    await expect.element(fromLine().last()).toHaveTextContent(BILLING);
+    expect(state.saved).toHaveLength(1);
+    await userEvent.click(page.getByRole("button", { name: "Save", exact: true }));
+    await expect.element(page.getByLabelText("Subject")).not.toBeInTheDocument();
+    expect(state.saved[1]).toMatchObject({
+      revision: 3,
+      edit: { subject: "Invoice for November" },
+    });
   });
 });
 

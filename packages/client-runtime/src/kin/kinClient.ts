@@ -793,6 +793,12 @@ export function makeKinClient<R, ER>(
       tag: "kin.connections.sendEdited",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.widgetId },
     }),
+    /** A person keeps their edits on a mail card without sending, or puts the agent's draft back. */
+    connectionSaveEdited: createKinRpcCommand(runtime, {
+      label: "kin:connection:saveEdited",
+      tag: "kin.connections.saveEdited",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.widgetId },
+    }),
     /** The owner switches an open send card's From before Confirm. */
     connectionSetSendFrom: createKinRpcCommand(runtime, {
       label: "kin:connection:setSendFrom",

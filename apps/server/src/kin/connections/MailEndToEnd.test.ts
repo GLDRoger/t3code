@@ -8,6 +8,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
   KinAgentId,
+  KinChatError,
   KinMessageId,
   KinOrgId,
   KinPersonId,
@@ -38,8 +39,11 @@ import * as ConnectionSecrets from "./ConnectionSecrets.ts";
 import {
   ASK_CLOSED,
   ASKED,
+  DRAFTED,
+  EDITED_OVER,
   type EditCards,
   KinConnections,
+  type SaveCards,
   SHARED_CONNECTIONS,
 } from "./ConnectionsService.ts";
 import * as Connections from "./ConnectionsService.ts";
@@ -53,6 +57,7 @@ const owner = KinPersonId.make("owner");
 const coOwner = KinPersonId.make("asha");
 const member = KinPersonId.make("mate");
 const lead = KinAgentId.make("cos");
+const finance = KinAgentId.make("fin");
 const stamp = "2026-11-01T00:00:00.000Z";
 const NOW = Date.UTC(2026, 10, 16, 9);
 const ACCOUNTS = "accounts@invented-co.example";
@@ -71,6 +76,10 @@ const scope: McpInvocationScope = {
     providerSessionId: "fixture",
     providerInstanceId: ProviderInstanceId.make("claude"),
   },
+};
+const financeScope: McpInvocationScope = {
+  ...scope,
+  thread: { ...scope.thread!, threadId: ThreadId.make("fin-thread") },
 };
 
 type Card = Parameters<KinLevelGate["Service"]["ask"]>[1] & {
@@ -138,13 +147,13 @@ const layerFor = (fake: FakeMail, cards: Array<Card>) =>
         owner: people(owner)[0]!,
         isAgentThread: () => true,
         isLeadThread: () => true,
-        resolveAgent: () =>
+        resolveAgent: (scope) =>
           Effect.succeed({
             _tag: "agent" as const,
             orgId,
-            agentId: lead,
+            agentId: scope.thread?.threadId === "fin-thread" ? finance : lead,
             ownerPersonId: owner,
-            threadId: ThreadId.make("cos-thread"),
+            threadId: scope.thread?.threadId ?? ThreadId.make("cos-thread"),
           }),
       }),
     ),
@@ -157,7 +166,10 @@ const layerFor = (fake: FakeMail, cards: Array<Card>) =>
     Layer.provideMerge(Layer.mergeAll(NodeServices.layer, PlatformCrypto.layer)),
   );
 
-/** The owner, a co-owner and a member, the Chief of staff with a direct chat with each, a client. */
+/**
+ * The owner, a co-owner and a member, the Chief of staff with a direct chat with each, Finance
+ * with one with the owner, a client.
+ */
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Invented Co', ${stamp})`;
@@ -183,6 +195,17 @@ const seed = Effect.gen(function* () {
       worker_projects_json, owner_chat_id, domain)
     VALUES (${lead}, ${orgId}, 'Chief of staff', 0, 'cos-thread', '{}', '[]', 'cos-owner',
       'chief-of-staff')`;
+  yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+    VALUES (${finance}, ${orgId}, 'Finance', 'lead', ${owner}, ${stamp})`;
+  yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+    VALUES ('fin-owner', ${orgId}, 'direct', ${`${owner}:fin`}, 0, ${stamp})`;
+  yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+      agent_id, role, joined_at)
+    VALUES ('fin-owner-person', ${orgId}, 'fin-owner', 'person', ${owner}, NULL, 'owner', ${stamp}),
+      ('fin-owner-lead', ${orgId}, 'fin-owner', 'agent', NULL, ${finance}, 'member', ${stamp})`;
+  yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
+      worker_projects_json, owner_chat_id, domain)
+    VALUES (${finance}, ${orgId}, 'Finance', 0, 'fin-thread', '{}', '[]', 'fin-owner', 'finance')`;
   yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
     VALUES (${orgId}, 'clients', 'Clients', 'C', 0), (${orgId}, 'contacts', 'Contacts', 'CT', 0),
       (${orgId}, 'invoices', 'Invoices', 'INV', 0), (${orgId}, 'docs', 'Docs', 'DOC', 0)`;
@@ -202,34 +225,45 @@ const seed = Effect.gen(function* () {
       worktree_path, branch, chat_id, audience, created_at)
     VALUES (${orgId}, 'job-1', ${lead}, 'boot', 'recipe', 'invoice', 'c0', 'rec_inv', 'in',
       'INV/26-27/001', 1, 'recipe:invoice', '/nowhere', 'kin-doc', 'cos-owner', 'owner_only', 0)`;
-  const fs = yield* FileSystem.FileSystem;
-  const { attachmentsDir } = yield* ServerConfig;
-  const bytes = new TextEncoder().encode("%PDF-1.4 invented invoice");
-  const attachmentId = "kin-00000000-0000-4000-8000-000000000001-pdf";
-  yield* fs.makeDirectory(attachmentsDir, { recursive: true });
-  yield* fs.writeFile(`${attachmentsDir}/${attachmentId}.pdf`, bytes);
-  const file = {
-    attachmentId,
-    name: "INV-26-27-001.pdf",
-    mimeType: "application/pdf",
-    bytes: bytes.length,
-    sha256: NodeCrypto.createHash("sha256").update(bytes).digest("hex"),
-    pages: 1,
-    recipe: { name: "invoice", commit: "c0" },
-    inputsHash: "in",
-    workerId: "job-1",
-    number: "INV/26-27/001",
-    draft: false,
-  };
-  yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body_kind, file_json,
-      title, kind, summary, operations_json, actor_kind, via, worker_id, origin_key, created_at)
-    VALUES (${orgId}, 'rec_doc', 1, 'file', ${JSON.stringify(file)}, 'Invoice', 'created',
-      'made', '[]', 'system', 'recipe', 'job-1', 'v1', 1)`;
+  yield* docVersion(1);
 });
+/** A version of the invoice's PDF, each with its own bytes. */
+const docVersion = (version: number) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const fs = yield* FileSystem.FileSystem;
+    const { attachmentsDir } = yield* ServerConfig;
+    const bytes = new TextEncoder().encode(
+      `%PDF-1.4 invented invoice${version === 1 ? "" : `, v${version}`}`,
+    );
+    const attachmentId = `kin-00000000-0000-4000-8000-00000000000${version}-pdf`;
+    yield* fs.makeDirectory(attachmentsDir, { recursive: true });
+    yield* fs.writeFile(`${attachmentsDir}/${attachmentId}.pdf`, bytes);
+    const file = {
+      attachmentId,
+      name: "INV-26-27-001.pdf",
+      mimeType: "application/pdf",
+      bytes: bytes.length,
+      sha256: NodeCrypto.createHash("sha256").update(bytes).digest("hex"),
+      pages: 1,
+      recipe: { name: "invoice", commit: "c0" },
+      inputsHash: "in",
+      workerId: "job-1",
+      number: "INV/26-27/001",
+      draft: false,
+    };
+    yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body_kind, file_json,
+      title, kind, summary, operations_json, actor_kind, via, worker_id, origin_key, created_at)
+    VALUES (${orgId}, 'rec_doc', ${version}, 'file', ${JSON.stringify(file)}, 'Invoice',
+      'created', 'made', '[]', 'system', 'recipe', 'job-1', ${`v${version}`}, ${version})`;
+  });
 
 let wakes = 0;
-/** One running turn of the lead: a person's message in their chat, or the pulse event queued. */
-const wake = (from: { readonly person: KinPersonId } | { readonly eventId: string }) =>
+/** One running turn of a lead: a person's message in their chat, or the pulse event queued. */
+const wake = (
+  from: { readonly person: KinPersonId } | { readonly eventId: string },
+  agentId: KinAgentId = lead,
+) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const wakeupId = `wake-${++wakes}`;
@@ -237,14 +271,14 @@ const wake = (from: { readonly person: KinPersonId } | { readonly eventId: strin
     const eventId = "person" in from ? `msg-${wakeupId}` : from.eventId;
     yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
         status, event_ids, audience)
-      VALUES (${wakeupId}, ${orgId}, ${lead}, 'cos-thread', 'test', ${NOW}, 'running',
+      VALUES (${wakeupId}, ${orgId}, ${agentId}, ${`${agentId}-thread`}, 'test', ${NOW}, 'running',
         ${JSON.stringify([eventId])}, 'owner_only')`;
     if (!("person" in from)) {
       yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = ${wakeupId}
         WHERE org_id = ${orgId} AND event_id = ${eventId}`;
       return;
     }
-    const chatId = `cos-${from.person}`;
+    const chatId = `${agentId}-${from.person}`;
     const messageId = `m-${wakeupId}`;
     yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
         author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
@@ -255,7 +289,7 @@ const wake = (from: { readonly person: KinPersonId } | { readonly eventId: strin
     const event = {
       _tag: "chat.message",
       orgId,
-      agentId: lead,
+      agentId,
       eventId,
       receivedAt: stamp,
       dedupeKey: null,
@@ -265,7 +299,7 @@ const wake = (from: { readonly person: KinPersonId } | { readonly eventId: strin
     };
     yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
         received_at, queued_at, state, wakeup_id)
-      VALUES (${eventId}, ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)}, 0, 0,
+      VALUES (${eventId}, ${orgId}, ${agentId}, 'chat.message', 'P0', ${JSON.stringify(event)}, 0, 0,
         'claimed', ${wakeupId})`;
   });
 
@@ -338,9 +372,14 @@ type Env =
   | FileSystem.FileSystem
   | ServerConfig;
 
-const callTool = (connection: string, tool: string, args: Record<string, unknown>) =>
+const callTool = (
+  connection: string,
+  tool: string,
+  args: Record<string, unknown>,
+  as: McpInvocationScope = scope,
+) =>
   Effect.gen(function* () {
-    return yield* (yield* KinConnections).call(scope, { connection, tool, arguments: args });
+    return yield* (yield* KinConnections).call(as, { connection, tool, arguments: args });
   });
 /** A person's tap on a card, in the tap's transaction, then the send once it committed. */
 const tap = (widgetId: string, personId: KinPersonId, confirmed = true) =>
@@ -450,6 +489,7 @@ const sendEdited = (
   personId: KinPersonId,
   edit: { to: ReadonlyArray<string>; cc?: ReadonlyArray<string>; subject?: string; body?: string },
   press = "press-1",
+  revision = 1,
 ) =>
   Effect.gen(function* () {
     const connections = yield* KinConnections;
@@ -459,7 +499,7 @@ const sendEdited = (
       {
         orgId,
         widgetId: card.widgetId,
-        revision: 1,
+        revision,
         clientActionId: press,
         to: edit.to,
         cc: edit.cc ?? card.send?.cc ?? [],
@@ -473,6 +513,46 @@ const sendEdited = (
       (askId) => connections.sendAsk(orgId, askId),
     );
     return { ...done, taps, outcomes };
+  });
+/** The chat side of a saved edit: the stored card is redrawn in place, one revision on. */
+const saveCards = Effect.map(SqlClient.SqlClient, (sql): SaveCards => ({
+  canTap: () => Effect.void,
+  rewrite: (card) =>
+    Effect.gen(function* () {
+      const [row] = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+          WHERE widget_id = ${card.widgetId} AND revision = ${card.revision}`.pipe(Effect.orDie);
+      if (row === undefined)
+        return yield* new KinChatError({ reason: "widget_changed", message: "Changed." });
+      const state = { ...JSON.parse(row.state), detail: card.detail, send: card.send };
+      yield* sql`UPDATE kin_widgets SET state_json = ${JSON.stringify(state)},
+            revision = revision + 1
+          WHERE widget_id = ${card.widgetId}`.pipe(Effect.orDie);
+      return { revision: card.revision + 1 };
+    }),
+}));
+/** A person's words kept on a card without sending; `null` puts the agent's draft back. */
+const saveEdited = (
+  card: Card,
+  personId: KinPersonId,
+  revision: number,
+  edit: {
+    to: ReadonlyArray<string>;
+    cc?: ReadonlyArray<string>;
+    subject: string;
+    body: string;
+  } | null,
+) =>
+  Effect.gen(function* () {
+    return yield* (yield* KinConnections).saveEdited(
+      people(personId),
+      {
+        orgId,
+        widgetId: card.widgetId,
+        revision,
+        edit: edit === null ? null : { cc: [], ...edit },
+      },
+      yield* saveCards,
+    );
   });
 const outside = Effect.gen(function* () {
   return fromConnections(yield* KinConnections, yield* SqlClient.SqlClient);
@@ -542,11 +622,21 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.deepInclude(card.send?.thread, { subject: "Launch date", replyingTo: CLIENT });
         assert.lengthOf(fake.sent(), 0);
 
-        // A corrected reply on the same thread to the same person replaces the first card (H05).
-        yield* callTool(ACCOUNTS, "mail_reply", {
+        // The owner saved words of their own on it; a corrected reply on the same thread to the
+        // same person replaces the first card (H05), and the agent is handed the owner's words.
+        yield* stored(card);
+        const theirs = "Thanks Ravi, Friday works. I'll confirm the time tomorrow.";
+        yield* saveEdited(card, owner, 1, {
+          to: ["ravi@lumen.example"],
+          subject: "Re: Launch date",
+          body: theirs,
+        });
+        const redrafted = yield* callTool(ACCOUNTS, "mail_reply", {
           threadId: inbound.threadId,
           body: "Friday works. I'll confirm 11:00 tomorrow.",
         });
+        assert.strictEqual(redrafted.note, `${ASKED} ${EDITED_OVER("Arjun")}`);
+        assert.include(redrafted.quoted ?? "", theirs);
         const corrected = cards.at(-2)!;
         // The first card is replaced by the time the correction shows, so no tap lands between.
         assert.deepStrictEqual(corrected.asksWhenShown?.slice(-2), ["stale", "open"]);
@@ -808,6 +898,309 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     ),
   );
 
+  it.effect("a saved edit is what the card shows and what its Confirm sends", () =>
+    setUp((fake, cards) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const accounts = yield* connect(fake, "google", ACCOUNTS);
+        yield* wake({ person: owner });
+        const draft = {
+          to: ["ravi@lumen.example"],
+          subject: "Kickoff",
+          body: "Hi Ravi,\nSee you Monday.\nArjun",
+        };
+        yield* callTool(ACCOUNTS, "mail_send", draft);
+        const card = cards.at(-1)!;
+        yield* stored(card);
+        const shownOf = (widgetId: string) =>
+          sql<{ revision: number; state: string }>`SELECT revision,
+            state_json AS state FROM kin_widgets WHERE widget_id = ${widgetId}`.pipe(
+            Effect.map(([row]) => ({ revision: row!.revision, send: JSON.parse(row!.state).send })),
+          );
+        const shown = shownOf(card.widgetId);
+        const drafted = sql<{ payload: string }>`SELECT payload_json AS payload
+          FROM kin_connection_asks WHERE widget_id = ${card.widgetId}`.pipe(
+          Effect.map(([row]) => JSON.parse(row!.payload).body),
+        );
+        const mine = {
+          ...draft,
+          subject: "Kickoff, Monday at 10",
+          body: "Hi Ravi,\nSee you Monday at 10.\nArjun",
+        };
+
+        // Only someone who may Confirm the card may keep words on it.
+        const notYours = yield* saveEdited(card, member, 1, mine).pipe(Effect.flip);
+        assert.strictEqual(notYours.reason, "not_allowed");
+        const bad = yield* saveEdited(card, owner, 1, { ...mine, to: ["ravi at lumen"] }).pipe(
+          Effect.flip,
+        );
+        assert.strictEqual(bad.reason, "invalid_state");
+        assert.strictEqual((yield* shown).revision, 1);
+
+        // Saved, the card shows the person's words as theirs; the agent's draft is kept.
+        assert.deepStrictEqual(yield* saveEdited(card, owner, 1, mine), { revision: 2 });
+        assert.deepInclude((yield* shown).send, {
+          body: mine.body,
+          edited: { personId: owner, name: "Arjun" },
+        });
+        assert.strictEqual(yield* drafted, draft.body);
+        // A save bound to a card that changed since is refused, and changes nothing.
+        const late = yield* saveEdited(card, owner, 1, draft).pipe(Effect.flip);
+        assert.strictEqual(late.reason, "widget_changed");
+        // Discard edits puts the agent's draft back, unmarked.
+        assert.deepStrictEqual(yield* saveEdited(card, owner, 2, null), { revision: 3 });
+        const back = (yield* shown).send;
+        assert.strictEqual(back.body, draft.body);
+        assert.notProperty(back, "edited");
+
+        // Confirm sends what the card showed, kept beside the agent's draft, which stays as it was.
+        yield* saveEdited(card, owner, 3, mine);
+        assert.deepStrictEqual(yield* tap(card.widgetId, owner), { state: "sent", reason: null });
+        assert.lengthOf(fake.sent(), 1);
+        assert.deepInclude(fake.sent()[0], {
+          to: draft.to,
+          subject: mine.subject,
+          body: mine.body,
+        });
+        assert.strictEqual(yield* drafted, draft.body);
+        const [kept] = yield* sql<{ payload: string }>`SELECT payload_json AS payload
+          FROM kin_connection_asks WHERE widget_id = ${card.widgetId}`;
+        assert.deepStrictEqual(JSON.parse(kept!.payload).confirmed, { ...mine, cc: [] });
+        assert.deepInclude((yield* (yield* KinConnections).tools(scope, {})).recentlySent?.[0], {
+          subject: mine.subject,
+          to: mine.to,
+        });
+        // The agent's repeat of its own draft is told the person's words went, quoted.
+        const repeat = yield* callTool(ACCOUNTS, "mail_send", draft);
+        assert.strictEqual(repeat.note, ASK_CLOSED.edited("Arjun"));
+        assert.include(repeat.quoted ?? "", "See you Monday at 10.");
+
+        // Sending the agent's own words over a saved edit sends those words, not the saved ones.
+        yield* callTool(ACCOUNTS, "mail_send", { ...draft, subject: "Kickoff, again" });
+        const again = cards.at(-1)!;
+        yield* stored(again);
+        yield* saveEdited(again, owner, 1, { ...mine, subject: "Kickoff, again" });
+        // Another From keeps the saved words on the card.
+        const { rewrite } = yield* saveCards;
+        yield* (yield* KinConnections).setSendFrom(
+          people(owner),
+          {
+            orgId,
+            widgetId: again.widgetId,
+            revision: 2,
+            choice: `${accounts} billing@invented-co.example`,
+          },
+          rewrite,
+        );
+        assert.deepInclude((yield* shownOf(again.widgetId)).send, {
+          from: "billing@invented-co.example",
+          body: mine.body,
+          edited: { personId: owner, name: "Arjun" },
+        });
+        const theirs = { ...draft, subject: "Kickoff, again" };
+        const typedBack = yield* sendEdited(cards, again, owner, theirs, "press-3", 3);
+        assert.deepStrictEqual(typedBack.outcomes, [{ state: "sent", reason: null }]);
+        assert.deepInclude(fake.sent()[1], { subject: "Kickoff, again", body: draft.body });
+
+        // The file changed under a saved edit: nothing goes, the fresh card holds the person's
+        // words as theirs, and its Discard puts the agent's draft back to go with the new file.
+        const invoice = { ...draft, subject: "Invoice" };
+        yield* callTool(ACCOUNTS, "mail_send", { ...invoice, attachments: ["INV-1"] });
+        const filed = cards.at(-1)!;
+        yield* stored(filed);
+        const words = {
+          to: ["ravi@lumen.example", "dev@lumen.example"],
+          cc: ["meera@invented-co.example"],
+          subject: "Invoice, November",
+          body: "Hi Ravi and Dev,\nThe invoice is attached.\nArjun",
+        };
+        yield* saveEdited(filed, owner, 1, words);
+        yield* docVersion(2);
+        const stale = yield* tap(filed.widgetId, owner);
+        if (stale === undefined || !("_tag" in stale) || stale._tag !== "stale" || !stale.fresh)
+          return assert.fail("not stale");
+        assert.lengthOf(fake.sent(), 2);
+        const fresh = yield* (yield* KinConnections).freshAsk(orgId, stale.fresh, NOW);
+        if (fresh === undefined) return assert.fail("no fresh card");
+        assert.deepInclude(fresh.card.send, {
+          ...words,
+          edited: { personId: owner, name: "Arjun" },
+        });
+        const reissued: Card = {
+          ...filed,
+          widgetId: "w-fresh",
+          question: fresh.card.question,
+          detail: fresh.card.detail,
+          send: fresh.card.send,
+        };
+        yield* fresh.bind(reissued.widgetId);
+        yield* stored(reissued);
+        yield* saveEdited(reissued, owner, 1, null);
+        const restored = (yield* shownOf(reissued.widgetId)).send;
+        assert.deepInclude(restored, { ...invoice, cc: [] });
+        assert.notProperty(restored, "edited");
+        assert.deepStrictEqual(yield* tap(reissued.widgetId, owner), {
+          state: "sent",
+          reason: null,
+        });
+        assert.deepInclude(fake.sent()[2], {
+          ...invoice,
+          cc: [],
+          attachments: ["INV-26-27-001.pdf"],
+        });
+        const [went] = yield* sql<{ payload: string }>`SELECT payload_json AS payload
+          FROM kin_connection_asks WHERE widget_id = ${reissued.widgetId}`;
+        assert.strictEqual(JSON.parse(went!.payload).attachments[0].version, 2);
+      }),
+    ),
+  );
+
+  it.effect(
+    "a redraft anywhere replaces a card with a person's saved words, and only the agent that drew it, in its chat, reads them",
+    () =>
+      setUp((fake, cards) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* connect(fake, "google", ACCOUNTS);
+          const inbound = fake.deliver({
+            to: ACCOUNTS,
+            from: CLIENT,
+            subject: "Launch date",
+            body: "Can we move the launch to Friday?\nRavi",
+            at: NOW - 60_000,
+          });
+          const reply = (body: string, as = scope) =>
+            callTool(ACCOUNTS, "mail_reply", { threadId: inbound.threadId, body }, as);
+          const stateOf = (card: Card) =>
+            sql<{ state: string }>`SELECT state FROM kin_connection_asks
+              WHERE widget_id = ${card.widgetId}`.pipe(Effect.map(([row]) => row?.state));
+          const closed = (card: Card) =>
+            cards.some((one) => one.widgetId === `closed:${card.widgetId}`);
+          const shownOn = (card: Card) =>
+            sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+              WHERE widget_id = ${card.widgetId}`.pipe(
+              Effect.map(([row]) => JSON.parse(row!.state).send),
+            );
+          /** The owner's words saved on the Chief of staff's reply in the owner's chat. */
+          const savedReply = (body: string) =>
+            Effect.gen(function* () {
+              yield* wake({ person: owner });
+              yield* reply("Friday works.");
+              const saved = cards.at(-1)!;
+              yield* stored(saved);
+              yield* saveEdited(saved, owner, 1, {
+                to: ["ravi@lumen.example"],
+                subject: "Re: Launch date",
+                body,
+              });
+              return saved;
+            });
+          /** The older card is replaced, keeps the words, and can't be confirmed or sent edited. */
+          const replacedKeeping = (saved: Card, body: string) =>
+            Effect.gen(function* () {
+              assert.strictEqual(yield* stateOf(saved), "stale");
+              assert.isTrue(closed(saved));
+              assert.deepInclude(yield* shownOn(saved), {
+                body,
+                edited: { personId: owner, name: "Arjun" },
+              });
+              assert.include(yield* tap(saved.widgetId, owner).pipe(Effect.flip), {
+                reason: "widget_changed",
+              });
+              const typed = yield* sendEdited(
+                cards,
+                saved,
+                owner,
+                { to: ["ravi@lumen.example"], body },
+                `press-${saved.widgetId}`,
+                2,
+              ).pipe(Effect.flip);
+              assert.strictEqual(typed.reason, "widget_changed");
+            });
+
+          // Finance drafts the same reply in its chat: the saved card goes, and Finance is told
+          // nothing of it. Confirmed first, the older card is refused; the newer one sends.
+          const theirs = "Thanks Ravi, Friday works. Between us, the venue is still open.";
+          const saved = yield* savedReply(theirs);
+          yield* wake({ person: owner }, finance);
+          assert.deepStrictEqual(yield* reply("Friday works, from Finance.", financeScope), {
+            note: ASKED,
+          });
+          const fromFinance = cards.findLast((one) => !one.widgetId.startsWith("closed:"))!;
+          assert.strictEqual(fromFinance.chatId, "fin-owner");
+          yield* replacedKeeping(saved, theirs);
+          assert.lengthOf(fake.sent(), 0);
+          assert.deepStrictEqual(yield* tap(fromFinance.widgetId, owner), {
+            state: "sent",
+            reason: null,
+          });
+          assert.lengthOf(fake.sent(), 1);
+          assert.include(fake.sent()[0]!.body, "from Finance");
+
+          // The same agent in the co-owner's chat: the newer card confirmed first, then the older.
+          const ours = "Thanks Ravi, Friday works. Arjun will bring the samples.";
+          const again = yield* savedReply(ours);
+          yield* wake({ person: coOwner });
+          assert.deepStrictEqual(yield* reply("Friday works, Asha here."), { note: ASKED });
+          const fromAsha = cards.findLast((one) => !one.widgetId.startsWith("closed:"))!;
+          assert.strictEqual(fromAsha.chatId, `cos-${coOwner}`);
+          assert.deepStrictEqual(yield* tap(fromAsha.widgetId, coOwner), {
+            state: "sent",
+            reason: null,
+          });
+          yield* replacedKeeping(again, ours);
+          assert.lengthOf(fake.sent(), 2);
+          assert.include(fake.sent()[1]!.body, "Asha here");
+
+          // Words saved on a card, then outside text read in the same turn: the same mail drawn
+          // again as drafted after it replaces that card and hands the words over too.
+          yield* wake({ person: owner });
+          const draft = { to: ["ravi@lumen.example"], subject: "Kickoff", body: "See you Monday." };
+          yield* callTool(ACCOUNTS, "mail_send", draft);
+          const twin = cards.at(-1)!;
+          yield* stored(twin);
+          yield* saveEdited(twin, owner, 1, { ...draft, body: "See you Monday at 10." });
+          yield* callTool("mail", "mail_search", { query: "from:ravi@lumen.example" });
+          const marked = yield* callTool(ACCOUNTS, "mail_send", draft);
+          assert.strictEqual(marked.note, `${DRAFTED} ${EDITED_OVER("Arjun")}`);
+          assert.include(marked.quoted ?? "", "See you Monday at 10.");
+          assert.strictEqual(yield* stateOf(twin), "stale");
+          assert.isTrue(closed(twin));
+
+          // Two of its cards here with saved words, one for the file and one for the thread, give
+          // way to one mail that is both: the words on each come back.
+          yield* wake({ person: owner });
+          const invoice = { to: ["ravi@lumen.example"], subject: "Invoice", body: "Attached." };
+          yield* callTool(ACCOUNTS, "mail_send", { ...invoice, attachments: ["INV-1"] });
+          const filed = cards.at(-1)!;
+          yield* stored(filed);
+          yield* saveEdited(filed, owner, 1, { ...invoice, body: "The November invoice." });
+          yield* reply("Friday it is.");
+          // It replaced the unedited reply before it, whose close is noted after it.
+          const replied = cards.findLast((one) => !one.widgetId.startsWith("closed:"))!;
+          yield* stored(replied);
+          yield* saveEdited(replied, owner, 1, {
+            to: ["ravi@lumen.example"],
+            subject: "Re: Launch date",
+            body: "Friday it is, at the studio.",
+          });
+          const both = yield* callTool(ACCOUNTS, "mail_reply", {
+            threadId: inbound.threadId,
+            body: "Friday it is. The invoice is attached.",
+            attachments: ["INV-1"],
+          });
+          assert.strictEqual(both.note, `${ASKED} ${EDITED_OVER("Arjun", 2)}`);
+          assert.include(both.quoted ?? "", "The November invoice.");
+          assert.include(both.quoted ?? "", "Friday it is, at the studio.");
+          assert.deepStrictEqual(
+            [yield* stateOf(filed), yield* stateOf(replied)],
+            ["stale", "stale"],
+          );
+          assert.lengthOf(fake.sent(), 2);
+        }),
+      ),
+  );
+
   it.effect(
     "an edit keeps the outside mark, sends unchanged as a Confirm, and a moved sign-in or a chat read below owner level refuses it",
     () =>
@@ -991,8 +1384,17 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         yield* signInAgain;
         assert.deepStrictEqual(yield* tap(first.widgetId, owner), { state: "sent", reason: null });
 
-        // Found out while sending: not sent, and the same mail comes back on a fresh card.
+        // Found out while sending, over words the owner saved: not sent, and the same mail comes
+        // back on a fresh card with their words marked as theirs, and the agent's draft under them.
         const second = yield* reply("Yes, GST is included.");
+        yield* stored(second);
+        const theirs = {
+          to: ["ravi@lumen.example", "dev@lumen.example"],
+          cc: ["meera@invented-co.example"],
+          subject: "Re: Invoice question, GST",
+          body: "Yes, GST is included at 18%.",
+        };
+        yield* saveEdited(second, owner, 1, theirs);
         fake.setExpired(HELLO, true);
         yield* TestClock.adjust("2 hours");
         const failed = yield* tap(second.widgetId, owner);
@@ -1005,10 +1407,30 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         const fresh = yield* connections.freshAsk(orgId, failed.fresh, NOW);
         if (fresh === undefined) return assert.fail("no fresh card");
         assert.strictEqual(fresh.card.send.account, HELLO);
+        assert.deepInclude(fresh.card.send, {
+          ...theirs,
+          edited: { personId: owner, name: "Arjun" },
+        });
         yield* fresh.bind("w-fresh");
+        const reissued: Card = { ...second, widgetId: "w-fresh", send: fresh.card.send };
+        yield* stored(reissued);
+        yield* saveEdited(reissued, owner, 1, null);
+        const drafted = {
+          to: ["ravi@lumen.example"],
+          cc: [],
+          subject: "Re: Invoice question",
+          body: "Yes, GST is included.",
+        };
+        const [back] = yield* (yield* SqlClient.SqlClient)<{ state: string }>`SELECT
+            state_json AS state FROM kin_widgets WHERE widget_id = 'w-fresh'`;
+        const restored = JSON.parse(back!.state).send;
+        assert.deepInclude(restored, drafted);
+        assert.notProperty(restored, "edited");
         assert.deepStrictEqual(yield* tap("w-fresh", owner), { state: "sent", reason: null });
         assert.lengthOf(fake.sent(), 2);
-        assert.strictEqual(fake.sent()[1]!.threadId, inbound.threadId);
+        const { to, cc, subject } = drafted;
+        assert.deepInclude(fake.sent()[1], { to, cc, subject, threadId: inbound.threadId });
+        assert.match(fake.sent()[1]!.body, /^Yes, GST is included\.\n\nOn /);
 
         // A 503 once the send left may have gone: never resent, and the mail comes back to check.
         const third = yield* reply("Yes, and the PDF is attached.");
