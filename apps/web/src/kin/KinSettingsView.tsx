@@ -188,6 +188,10 @@ export function KinSettingsMoved(props: {
   );
 }
 
+// A still ring, not the focus outline, so a click marks the row as Enter does; no motion.
+const KIN_FOUND_MARK =
+  "[&_[data-kin-setting-found]]:rounded-xl [&_[data-kin-setting-found]]:outline-none [&_[data-kin-setting-found]]:ring-2 [&_[data-kin-setting-found]]:ring-primary/60 [&_[data-kin-setting-found]]:ring-offset-4 [&_[data-kin-setting-found]]:ring-offset-background";
+
 /** Settings, open over the Kin page on screen while the address names a section. */
 export function KinSettingsModalHost() {
   const section = useLocation({ select: (location) => kinSettingsSectionIn(location.searchStr) });
@@ -262,7 +266,10 @@ function KinSettingsModal(props: { readonly target: KinSettingsTarget; readonly 
               <AppRouteModalClose />
             </div>
           </header>
-          <div ref={landing} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <div
+            ref={landing}
+            className={cn("flex min-h-0 flex-1 flex-col overflow-y-auto", KIN_FOUND_MARK)}
+          >
             {waiting ? null : <KinSettingsPageBody page={page} target={target} />}
           </div>
         </div>

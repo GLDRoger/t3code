@@ -104,11 +104,12 @@ export function closeKinSettings(history: RouterHistory): void {
   history.replace(withSection(`${pathname}${search}${hash}`, null), state);
 }
 
+const FOUND_ATTRIBUTE = "data-kin-setting-found";
 const HANDS_ON = ["wheel", "touchmove", "pointerdown", "keydown"] as const;
 
 /**
- * A ref for the open section's scroller: brings the setting the address names into view and
- * focuses it. Rows draw as their data arrives, so it waits for the row and
+ * A ref for the open section's scroller: brings the setting the address names into view, focuses
+ * and marks it until focus leaves. Rows draw as their data arrives, so it waits for the row and
  * holds it in view while the page above it settles, until the person scrolls, clicks or types.
  */
 export function useKinSettingLanding() {
@@ -130,7 +131,11 @@ export function useKinSettingLanding() {
         const found = document.getElementById(at);
         if (found === null || !body.contains(found)) return;
         row = found;
+        found.setAttribute(FOUND_ATTRIBUTE, "");
         found.focus({ preventScroll: true });
+        found.addEventListener("blur", () => found.removeAttribute(FOUND_ATTRIBUTE), {
+          once: true,
+        });
       }
       center();
     };

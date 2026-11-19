@@ -76,6 +76,7 @@ describe("an app settings address that moved into Kin's Settings", () => {
     screen.rerender(<SettingsPage loaded />);
     const row = () => document.getElementById("kin-daily-limit")!;
     await vi.waitFor(() => expect(document.activeElement).toBe(row()));
+    expect(row().hasAttribute("data-kin-setting-found")).toBe(true);
     const box = document.querySelector("[data-settings-page-scroll]")!.getBoundingClientRect();
     expect(row().getBoundingClientRect().top).toBeGreaterThanOrEqual(box.top);
     expect(row().getBoundingClientRect().bottom).toBeLessThanOrEqual(box.bottom);
@@ -84,6 +85,7 @@ describe("an app settings address that moved into Kin's Settings", () => {
     await vi.waitFor(() =>
       expect(screen.router!.state.location.searchStr).toBe("?settings=company"),
     );
+    expect(row().hasAttribute("data-kin-setting-found")).toBe(false);
   });
 });
 
