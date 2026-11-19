@@ -49,6 +49,7 @@ import { buildStartedSection, STARTED_RULE } from "./startedSection.ts";
 import {
   buildPulseSection,
   CHECK_IN_PULSE_RULE,
+  MORNING_RULE,
   checkInIndex,
   PULSE_RULE,
 } from "../pulse/prompt.ts";
@@ -1542,9 +1543,6 @@ export class KinLeadPrompt extends Context.Service<
 /** The last line of a turn someone waits on an answer from, for an agent with a character. */
 export const REPLY_SHAPE =
   "Your reply: one short paragraph in your character's voice and within its length; no bullets, bold or blank lines unless asked.";
-/** The morning check-in, which took over the morning brief's sections. */
-const MORNING_RULE =
-  "This is the morning check-in. Besides the pulse: what is due today, overdue promises, what waits on the owner, reviews and red checks, objectives this week and stuck tasks. Lead with what needs the owner today, in a few short lines, then every pulse fact as the pulse rule says. Stay silent only when there is no pulse fact and nothing here needs them.";
 const fallbackLeadName = "Agent";
 const decodeRoleTags = Schema.decodeUnknownOption(Schema.fromJsonString(KinRoleTags));
 /** The owner's display name until they set one (`KIN_OWNER_DISPLAY_NAME`'s default). */
