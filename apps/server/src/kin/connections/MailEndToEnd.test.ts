@@ -922,7 +922,11 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           FROM kin_connection_asks WHERE widget_id = ${card.widgetId}`.pipe(
           Effect.map(([row]) => JSON.parse(row!.payload).body),
         );
-        const mine = { ...draft, body: "Hi Ravi,\nSee you Monday at 10.\nArjun" };
+        const mine = {
+          ...draft,
+          subject: "Kickoff, Monday at 10",
+          body: "Hi Ravi,\nSee you Monday at 10.\nArjun",
+        };
 
         // Only someone who may Confirm the card may keep words on it.
         const notYours = yield* saveEdited(card, member, 1, mine).pipe(Effect.flip);
@@ -949,12 +953,23 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.strictEqual(back.body, draft.body);
         assert.notProperty(back, "edited");
 
-        // Confirm sends what the card showed, and the stored ask now holds exactly that.
+        // Confirm sends what the card showed, kept beside the agent's draft, which stays as it was.
         yield* saveEdited(card, owner, 3, mine);
         assert.deepStrictEqual(yield* tap(card.widgetId, owner), { state: "sent", reason: null });
         assert.lengthOf(fake.sent(), 1);
-        assert.deepInclude(fake.sent()[0], { to: draft.to, body: mine.body });
-        assert.strictEqual(yield* drafted, mine.body);
+        assert.deepInclude(fake.sent()[0], {
+          to: draft.to,
+          subject: mine.subject,
+          body: mine.body,
+        });
+        assert.strictEqual(yield* drafted, draft.body);
+        const [kept] = yield* sql<{ payload: string }>`SELECT payload_json AS payload
+          FROM kin_connection_asks WHERE widget_id = ${card.widgetId}`;
+        assert.deepStrictEqual(JSON.parse(kept!.payload).confirmed, { ...mine, cc: [] });
+        assert.deepInclude((yield* (yield* KinConnections).tools(scope, {})).recentlySent?.[0], {
+          subject: mine.subject,
+          to: mine.to,
+        });
         // The agent's repeat of its own draft is told the person's words went, quoted.
         const repeat = yield* callTool(ACCOUNTS, "mail_send", draft);
         assert.strictEqual(repeat.note, ASK_CLOSED.edited("Arjun"));
@@ -1041,7 +1056,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
   );
 
   it.effect(
-    "a person's saved words are replaced and read only by the agent that drew the card, in its chat",
+    "a redraft anywhere replaces a card with a person's saved words, and only the agent that drew it, in its chat, reads them",
     () =>
       setUp((fake, cards) =>
         Effect.gen(function* () {
@@ -1061,35 +1076,81 @@ describe("Kin mail end to end, on a fake mailbox", () => {
               WHERE widget_id = ${card.widgetId}`.pipe(Effect.map(([row]) => row?.state));
           const closed = (card: Card) =>
             cards.some((one) => one.widgetId === `closed:${card.widgetId}`);
-          yield* wake({ person: owner });
-          yield* reply("Friday works.");
-          const saved = cards.at(-1)!;
-          yield* stored(saved);
-          const theirs = "Thanks Ravi, Friday works. Between us, the venue is still open.";
-          yield* saveEdited(saved, owner, 1, {
-            to: ["ravi@lumen.example"],
-            subject: "Re: Launch date",
-            body: theirs,
-          });
+          const shownOn = (card: Card) =>
+            sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+              WHERE widget_id = ${card.widgetId}`.pipe(
+              Effect.map(([row]) => JSON.parse(row!.state).send),
+            );
+          /** The owner's words saved on the Chief of staff's reply in the owner's chat. */
+          const savedReply = (body: string) =>
+            Effect.gen(function* () {
+              yield* wake({ person: owner });
+              yield* reply("Friday works.");
+              const saved = cards.at(-1)!;
+              yield* stored(saved);
+              yield* saveEdited(saved, owner, 1, {
+                to: ["ravi@lumen.example"],
+                subject: "Re: Launch date",
+                body,
+              });
+              return saved;
+            });
+          /** The older card is replaced, keeps the words, and can't be confirmed or sent edited. */
+          const replacedKeeping = (saved: Card, body: string) =>
+            Effect.gen(function* () {
+              assert.strictEqual(yield* stateOf(saved), "stale");
+              assert.isTrue(closed(saved));
+              assert.deepInclude(yield* shownOn(saved), {
+                body,
+                edited: { personId: owner, name: "Arjun" },
+              });
+              assert.include(yield* tap(saved.widgetId, owner).pipe(Effect.flip), {
+                reason: "widget_changed",
+              });
+              const typed = yield* sendEdited(
+                cards,
+                saved,
+                owner,
+                { to: ["ravi@lumen.example"], body },
+                `press-${saved.widgetId}`,
+                2,
+              ).pipe(Effect.flip);
+              assert.strictEqual(typed.reason, "widget_changed");
+            });
 
-          // The same agent in the co-owner's chat, and Finance in its own, draft the same reply:
-          // the saved card stays open and untouched, and neither is told what it holds.
-          yield* wake({ person: coOwner });
-          assert.deepStrictEqual(yield* reply("Friday works, Asha here."), { note: ASKED });
+          // Finance drafts the same reply in its chat: the saved card goes, and Finance is told
+          // nothing of it. Confirmed first, the older card is refused; the newer one sends.
+          const theirs = "Thanks Ravi, Friday works. Between us, the venue is still open.";
+          const saved = yield* savedReply(theirs);
           yield* wake({ person: owner }, finance);
           assert.deepStrictEqual(yield* reply("Friday works, from Finance.", financeScope), {
             note: ASKED,
           });
-          assert.strictEqual(yield* stateOf(saved), "open");
-          assert.isFalse(closed(saved));
+          const fromFinance = cards.findLast((one) => !one.widgetId.startsWith("closed:"))!;
+          assert.strictEqual(fromFinance.chatId, "fin-owner");
+          yield* replacedKeeping(saved, theirs);
+          assert.lengthOf(fake.sent(), 0);
+          assert.deepStrictEqual(yield* tap(fromFinance.widgetId, owner), {
+            state: "sent",
+            reason: null,
+          });
+          assert.lengthOf(fake.sent(), 1);
+          assert.include(fake.sent()[0]!.body, "from Finance");
 
-          // The agent that drew it, in its chat, replaces it and is handed the words.
-          yield* wake({ person: owner });
-          const redrafted = yield* reply("Friday works. I'll confirm 11:00 tomorrow.");
-          assert.strictEqual(redrafted.note, `${ASKED} ${EDITED_OVER("Arjun")}`);
-          assert.include(redrafted.quoted ?? "", theirs);
-          assert.strictEqual(yield* stateOf(saved), "stale");
-          assert.isTrue(closed(saved));
+          // The same agent in the co-owner's chat: the newer card confirmed first, then the older.
+          const ours = "Thanks Ravi, Friday works. Arjun will bring the samples.";
+          const again = yield* savedReply(ours);
+          yield* wake({ person: coOwner });
+          assert.deepStrictEqual(yield* reply("Friday works, Asha here."), { note: ASKED });
+          const fromAsha = cards.findLast((one) => !one.widgetId.startsWith("closed:"))!;
+          assert.strictEqual(fromAsha.chatId, `cos-${coOwner}`);
+          assert.deepStrictEqual(yield* tap(fromAsha.widgetId, coOwner), {
+            state: "sent",
+            reason: null,
+          });
+          yield* replacedKeeping(again, ours);
+          assert.lengthOf(fake.sent(), 2);
+          assert.include(fake.sent()[1]!.body, "Asha here");
 
           // Words saved on a card, then outside text read in the same turn: the same mail drawn
           // again as drafted after it replaces that card and hands the words over too.
@@ -1135,7 +1196,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             [yield* stateOf(filed), yield* stateOf(replied)],
             ["stale", "stale"],
           );
-          assert.lengthOf(fake.sent(), 0);
+          assert.lengthOf(fake.sent(), 2);
         }),
       ),
   );
@@ -1323,8 +1384,17 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         yield* signInAgain;
         assert.deepStrictEqual(yield* tap(first.widgetId, owner), { state: "sent", reason: null });
 
-        // Found out while sending: not sent, and the same mail comes back on a fresh card.
+        // Found out while sending, over words the owner saved: not sent, and the same mail comes
+        // back on a fresh card with their words marked as theirs, and the agent's draft under them.
         const second = yield* reply("Yes, GST is included.");
+        yield* stored(second);
+        const theirs = {
+          to: ["ravi@lumen.example", "dev@lumen.example"],
+          cc: ["meera@invented-co.example"],
+          subject: "Re: Invoice question, GST",
+          body: "Yes, GST is included at 18%.",
+        };
+        yield* saveEdited(second, owner, 1, theirs);
         fake.setExpired(HELLO, true);
         yield* TestClock.adjust("2 hours");
         const failed = yield* tap(second.widgetId, owner);
@@ -1337,10 +1407,30 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         const fresh = yield* connections.freshAsk(orgId, failed.fresh, NOW);
         if (fresh === undefined) return assert.fail("no fresh card");
         assert.strictEqual(fresh.card.send.account, HELLO);
+        assert.deepInclude(fresh.card.send, {
+          ...theirs,
+          edited: { personId: owner, name: "Arjun" },
+        });
         yield* fresh.bind("w-fresh");
+        const reissued: Card = { ...second, widgetId: "w-fresh", send: fresh.card.send };
+        yield* stored(reissued);
+        yield* saveEdited(reissued, owner, 1, null);
+        const drafted = {
+          to: ["ravi@lumen.example"],
+          cc: [],
+          subject: "Re: Invoice question",
+          body: "Yes, GST is included.",
+        };
+        const [back] = yield* (yield* SqlClient.SqlClient)<{ state: string }>`SELECT
+            state_json AS state FROM kin_widgets WHERE widget_id = 'w-fresh'`;
+        const restored = JSON.parse(back!.state).send;
+        assert.deepInclude(restored, drafted);
+        assert.notProperty(restored, "edited");
         assert.deepStrictEqual(yield* tap("w-fresh", owner), { state: "sent", reason: null });
         assert.lengthOf(fake.sent(), 2);
-        assert.strictEqual(fake.sent()[1]!.threadId, inbound.threadId);
+        const { to, cc, subject } = drafted;
+        assert.deepInclude(fake.sent()[1], { to, cc, subject, threadId: inbound.threadId });
+        assert.match(fake.sent()[1]!.body, /^Yes, GST is included\.\n\nOn /);
 
         // A 503 once the send left may have gone: never resent, and the mail comes back to check.
         const third = yield* reply("Yes, and the PDF is attached.");

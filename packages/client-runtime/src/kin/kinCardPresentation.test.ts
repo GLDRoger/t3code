@@ -16,6 +16,7 @@ import {
   kinScheduledTaskCardView,
 } from "./kinCardPresentation.ts";
 import {
+  kinChoiceAccessibilityLabel,
   kinChoiceOutcomeSentence,
   kinChoiceAnswered,
   kinChoiceFailureNotice,
@@ -615,6 +616,13 @@ describe("choice cards", () => {
       ],
       "On Mon, Anita wrote:\n> Could you resend it?",
     ]);
+    // The phone's card is one spoken group: it says the words that go, and the quote under them.
+    const spoken = kinChoiceAccessibilityLabel(reply, null, null, { message: true });
+    expect(spoken).toContain(
+      "Subject: Invoice. Message: Hi Anita,\n\nAttached. On Mon, Anita wrote:",
+    );
+    expect(spoken).toContain("> Could you resend it?");
+    expect(kinChoiceAccessibilityLabel(reply, null)).not.toContain("Message:");
     expect(mail({ action: "event" }).send?.from).toEqual([]);
   });
 
@@ -670,6 +678,17 @@ describe("choice cards", () => {
     // The save's answer came before the card's update: Discard still puts the draft back, bound
     // to the revision the host acknowledged, never only closing the editor.
     expect(kinSendEditDiscardInput(drafted, kept, true)).toEqual({
+      orgId: "org",
+      widgetId: "w1",
+      revision: 2,
+      edit: null,
+    });
+    // Save closed the editor and the card's update is late: Edit opens over the saved words, and
+    // its Discard is the reset bound to the revision the host acknowledged.
+    const acked = { revision: 2, saved: typed.draft };
+    const late = kinSendEditStart(drafted, acked)!;
+    expect(late).toEqual(kept);
+    expect(kinSendEditDiscardInput(drafted, late, true)).toEqual({
       orgId: "org",
       widgetId: "w1",
       revision: 2,
@@ -738,6 +757,13 @@ describe("choice cards", () => {
       edit: null,
     });
     expect(kinSendEditDiscardInput(saved, reopened, false)).toBeNull();
+    // That Discard was taken and the update is late: Edit binds to the reset card, whose Discard
+    // only closes the editor, though the card on screen still shows the saved words.
+    const reset = kinSendEditStart(saved, { revision: 3, saved: null })!;
+    expect(reset.revision).toBe(3);
+    expect(kinSendEditDiscardInput(saved, reset, true)).toBeNull();
+    // Once the card has caught up, or moved past, the card itself is what Edit opens.
+    expect(kinSendEditStart(saved, { revision: 2, saved: null })).toEqual(reopened);
   });
 
   it("says a refused answer in the host's words when its figures changed", () => {

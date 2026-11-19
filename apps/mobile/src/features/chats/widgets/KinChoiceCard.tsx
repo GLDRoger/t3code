@@ -50,6 +50,7 @@ import {
   type KinSendEditBusy,
   type KinChoiceCardView,
   type KinSendEditDraft,
+  type KinSendEditAck,
   type KinSendEditing,
 } from "@t3tools/client-runtime/kin/kinChoicePresentation";
 import {
@@ -439,6 +440,8 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   const heldKey = kinSendEditHeldKey(environmentId, props.viewerPersonId, choice.widgetId);
   const [editing, setEditing] = useState<KinSendEditing | null>(() => kinSendEditHeld(heldKey));
   const [editBusy, setEditBusy] = useState<KinSendEditBusy>(null);
+  // Kept with the editor closed: Edit before the card's update binds to what the host took.
+  const [ack, setAck] = useState<KinSendEditAck | null>(null);
   const [lastStatus, setLastStatus] = useState<
     (KinCardStatus & { readonly optionId: string }) | null
   >(null);
@@ -541,6 +544,8 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
     setEditBusy(null);
     if (AsyncResult.isFailure(result))
       return settle(kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result)));
+    if (AsyncResult.isSuccess(result))
+      setAck({ revision: result.value.revision, saved: shownEdit.draft });
     settle(
       stay && AsyncResult.isSuccess(result)
         ? kinSendEditKept(shownEdit, result.value.revision)
@@ -555,6 +560,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
     setEditBusy("discarding");
     const result = await saveEdited({ environmentId, input });
     setEditBusy(null);
+    if (AsyncResult.isSuccess(result)) setAck({ revision: result.value.revision, saved: null });
     settle(
       AsyncResult.isFailure(result)
         ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
@@ -598,7 +604,9 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       <View
         // Grouped for VoiceOver, except while Change or the editor sits inside: a group hides them.
         accessible={fromPicker === null && shownEdit === null}
-        accessibilityLabel={kinChoiceAccessibilityLabel(choice, answered?.text ?? takes, edited)}
+        accessibilityLabel={kinChoiceAccessibilityLabel(choice, answered?.text ?? takes, edited, {
+          message: true,
+        })}
         className="gap-1.5"
       >
         <Text textRole="headline" className="font-t3-bold text-foreground">
@@ -697,7 +705,9 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
                 size="compact"
                 fullWidth
                 disabled={switching}
-                onPress={() => setEditing(kinSendEditHeld(heldKey) ?? kinSendEditStart(choice))}
+                onPress={() =>
+                  setEditing(kinSendEditHeld(heldKey) ?? kinSendEditStart(choice, ack))
+                }
               />
             ) : null}
           </View>

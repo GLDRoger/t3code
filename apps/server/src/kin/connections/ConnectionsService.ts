@@ -130,6 +130,8 @@ import {
   type Prepared,
   PreparedJson,
   sendCard,
+  confirmedOf,
+  confirmedWords,
   sameWords,
   shownMail,
   sendMail,
@@ -2368,7 +2370,9 @@ const make = Effect.gen(function* () {
       readonly reason: string | null;
       readonly payload: string;
     }) {
-      const kept = Option.getOrUndefined(decodePrepared(ask.payload));
+      const kept = Option.getOrUndefined(
+        Option.map(decodePrepared(ask.payload), (one) => confirmedOf(one, ask.payload)),
+      );
       // Words a person saved on the card went in place of the draft this call repeats.
       const savedOver =
         ask.state === "sent" &&
@@ -2391,7 +2395,11 @@ const make = Effect.gen(function* () {
         LEFT JOIN kin_people p ON p.org_id = k.org_id AND p.person_id = k.decided_by
         WHERE k.org_id = ${turn.orgId} AND k.ask_id = ${edited.editedAs}`;
       const mail =
-        sent === undefined ? undefined : Option.getOrUndefined(decodePrepared(sent.payload));
+        sent === undefined
+          ? undefined
+          : Option.getOrUndefined(
+              Option.map(decodePrepared(sent.payload), (one) => confirmedOf(one, sent.payload)),
+            );
       return {
         note: ASK_CLOSED.edited(sent?.name ?? "the owner"),
         ...(mail?._tag === "email"
@@ -2417,8 +2425,8 @@ const make = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     const replaced: Array<string> = [];
     const savedOver: Array<{ readonly name: string; readonly quoted: string }> = [];
-    // A card holding a person's saved words is this call's to replace, and to read, only when this
-    // agent drew it in this chat; anywhere else it stays open, untouched and unmentioned.
+    // Every older card for the mail goes, so one card can send. A person's saved words stay on it,
+    // and are read to this call only when this agent drew it in this chat.
     const replace = Effect.fnUntraced(function* (
       asks: ReadonlyArray<{
         readonly askId: string;
@@ -2427,12 +2435,12 @@ const make = Effect.gen(function* () {
         readonly chatId: string;
       }>,
     ) {
-      const going: Array<(typeof asks)[number]> = [];
+      if (asks.length === 0) return;
       for (const ask of asks) {
-        const shown =
-          ask.widgetId === null ? undefined : yield* cardSend(sql, turn.orgId, ask.widgetId);
-        if (shown?.edited !== undefined) {
-          if (ask.agentId !== turn.agentId || ask.chatId !== chat.chatId) continue;
+        if (ask.widgetId === null || ask.agentId !== turn.agentId || ask.chatId !== chat.chatId)
+          continue;
+        const shown = yield* cardSend(sql, turn.orgId, ask.widgetId);
+        if (shown?.edited !== undefined)
           savedOver.push({
             name: shown.edited.name,
             quoted: quote("Their words on the card this replaces", {
@@ -2442,15 +2450,12 @@ const make = Effect.gen(function* () {
               body: shown.body,
             }),
           });
-        }
-        going.push(ask);
       }
-      if (going.length === 0) return;
       yield* sql`UPDATE kin_connection_asks SET state = 'stale',
           reason = 'Replaced by a newer card.', decided_at = ${now}
         WHERE org_id = ${turn.orgId} AND state = 'open'
-          AND ask_id IN ${sql.in(going.map((one) => one.askId))}`;
-      replaced.push(...going.flatMap((one) => (one.widgetId === null ? [] : [one.widgetId])));
+          AND ask_id IN ${sql.in(asks.map((one) => one.askId))}`;
+      replaced.push(...asks.flatMap((one) => (one.widgetId === null ? [] : [one.widgetId])));
     });
     // The twin is decided with this ask's insert: a tap on it lands before (its answer stands,
     // nothing new is drawn) or after (it finds the twin replaced), never between. The stamp is
@@ -2729,11 +2734,12 @@ const make = Effect.gen(function* () {
               : undefined,
         };
       }
-      // Confirm sends the words the card shows: a person's saved edit replaces the draft here.
+      // Confirm sends the words the card shows: a person's saved edit is kept beside the draft.
       if (drafted?._tag === "email") {
-        const prepared = shownMail(drafted, yield* cardSend(tx, input.orgId, input.widgetId));
-        if (prepared !== drafted)
-          yield* tx`UPDATE kin_connection_asks SET payload_json = ${encodePrepared(prepared)}
+        const shown = shownMail(drafted, yield* cardSend(tx, input.orgId, input.widgetId));
+        if (shown !== drafted)
+          yield* tx`UPDATE kin_connection_asks SET payload_json = json_set(payload_json,
+              '$.confirmed', json(${toJson(confirmedWords(shown))}))
             WHERE org_id = ${input.orgId} AND ask_id = ${row.askId} AND state = 'open'`;
       }
       yield* decide("sending", null);
@@ -3157,12 +3163,14 @@ const make = Effect.gen(function* () {
         if (row.dispatchedAt !== null)
           return { _tag: "done" as const, outcome: { state: "sending" as const, reason: null } };
         const connection = yield* connectionById(orgId, row.connectionId).pipe(provideSql);
-        const prepared = Option.getOrUndefined(decodePrepared(row.payload));
+        // What goes is what Confirm took; a mail that comes back is the agent's draft again.
+        const drafted = Option.getOrUndefined(decodePrepared(row.payload));
+        const prepared = drafted === undefined ? undefined : confirmedOf(drafted, row.payload);
         const stop = (reason: string, owes: boolean) =>
           finish(false, "failed", reason, null, owes).pipe(
             Effect.map((failed) => ({
               _tag: "done" as const,
-              outcome: owes ? again(failed, row, prepared, connection) : failed,
+              outcome: owes ? again(failed, row, drafted, connection) : failed,
             })),
           );
         // What the tap checked, checked again as the send is claimed, against the state now.
@@ -3187,7 +3195,8 @@ const make = Effect.gen(function* () {
           return yield* stop(told, owes);
         }
         // `askBlocked` passed, so both are here; the definition checked is the one that goes.
-        if (connection === undefined || prepared === undefined) return yield* unavailable;
+        if (connection === undefined || prepared === undefined || drafted === undefined)
+          return yield* unavailable;
         const [tool] = (yield* toolsOf(orgId, row.connectionId).pipe(provideSql)).filter(
           (candidate) => candidate.name === row.toolName,
         );
@@ -3204,13 +3213,14 @@ const make = Effect.gen(function* () {
           _tag: "claimed" as const,
           row,
           connection,
+          drafted,
           prepared,
           definition: Option.getOrUndefined(definition),
         };
       }),
     );
     if (claim._tag === "done") return claim.outcome;
-    const { row, connection, prepared, definition } = claim;
+    const { row, connection, drafted, prepared, definition } = claim;
     // Set right before the request leaves Kin, on each try: only after that may it have gone.
     let started = false;
     // How the last try that left ended: a forced retry that never leaves doesn't replace it.
@@ -3287,7 +3297,7 @@ const make = Effect.gen(function* () {
           null,
           email,
         );
-        return email ? again(failed, row, prepared, connection) : failed;
+        return email ? again(failed, row, drafted, connection) : failed;
       }
       const after = yield* connectionById(orgId, row.connectionId).pipe(provideSql);
       // A refusal sent nothing, so when the retry it forced ended here, that reason says what to do.
@@ -3308,7 +3318,7 @@ const make = Effect.gen(function* () {
       if (ended === "not_sent" && after !== undefined && !signedInAsShown(row, after)) {
         const email = prepared._tag === "email";
         const failed = yield* finish(true, "failed", accountMoved(after, email), null, email);
-        return email ? again(failed, row, prepared, after) : failed;
+        return email ? again(failed, row, drafted, after) : failed;
       }
       if (ended === "not_sent" && after?.state === "needs_sign_in" && prepared._tag === "email") {
         const failed = yield* finish(
@@ -3318,7 +3328,7 @@ const make = Effect.gen(function* () {
           null,
           true,
         );
-        return again(failed, row, prepared, after);
+        return again(failed, row, drafted, after);
       }
       const why = ended === "not_sent" || said !== failure ? nothingSent(message) : message;
       if (prepared._tag !== "email") return yield* finish(true, "failed", why, null);
@@ -3330,7 +3340,7 @@ const make = Effect.gen(function* () {
         null,
         true,
       );
-      return again(failed, row, prepared, after ?? connection);
+      return again(failed, row, drafted, after ?? connection);
     }
     const done = yield* finish(true, "sent", null, sent.success);
     if (prepared._tag === "email" && Option.isSome(records))

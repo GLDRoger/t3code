@@ -37,6 +37,7 @@ import {
   type KinSendEditBusy,
   type KinChoiceCardView,
   type KinSendEditDraft,
+  type KinSendEditAck,
   type KinSendEditing,
 } from "@t3tools/client-runtime/kin/kinChoicePresentation";
 import {
@@ -402,6 +403,8 @@ function KinChoiceCard(props: {
   const heldKey = kinSendEditHeldKey(environmentId, props.viewerPersonId, choice.widgetId);
   const [editing, setEditing] = useState<KinSendEditing | null>(() => kinSendEditHeld(heldKey));
   const [editBusy, setEditBusy] = useState<KinSendEditBusy>(null);
+  // Kept with the editor closed: Edit before the card's update binds to what the host took.
+  const [ack, setAck] = useState<KinSendEditAck | null>(null);
   const [lastStatus, setLastStatus] = useState<
     (KinCardStatus & { readonly optionId: string }) | null
   >(null);
@@ -499,6 +502,8 @@ function KinChoiceCard(props: {
     setEditBusy(null);
     if (AsyncResult.isFailure(result))
       return settle(kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result)));
+    if (AsyncResult.isSuccess(result))
+      setAck({ revision: result.value.revision, saved: shownEdit.draft });
     settle(
       stay && AsyncResult.isSuccess(result)
         ? kinSendEditKept(shownEdit, result.value.revision)
@@ -513,6 +518,7 @@ function KinChoiceCard(props: {
     setEditBusy("discarding");
     const result = await saveEdited({ environmentId, input });
     setEditBusy(null);
+    if (AsyncResult.isSuccess(result)) setAck({ revision: result.value.revision, saved: null });
     settle(
       AsyncResult.isFailure(result)
         ? kinSendEditRefused(shownEdit, choice, squashAtomCommandFailure(result))
@@ -605,7 +611,9 @@ function KinChoiceCard(props: {
                 variant="outline"
                 size="sm-multiline"
                 disabled={switching}
-                onClick={() => setEditing(kinSendEditHeld(heldKey) ?? kinSendEditStart(choice))}
+                onClick={() =>
+                  setEditing(kinSendEditHeld(heldKey) ?? kinSendEditStart(choice, ack))
+                }
               >
                 {KIN_SEND_EDIT_COPY.edit}
               </Button>

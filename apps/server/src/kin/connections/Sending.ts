@@ -479,6 +479,27 @@ export const shownMail = (mail: Email, send: KinSendCard | undefined): Email =>
   send?.edited === undefined
     ? mail
     : { ...mail, to: send.to, cc: send.cc, subject: send.subject, body: send.body };
+const Words = Schema.Struct({
+  to: Schema.Array(Schema.String),
+  cc: Schema.Array(Schema.String),
+  subject: Schema.String,
+  body: Schema.String,
+});
+const decodeConfirmed = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ confirmed: Schema.optionalKey(Words) })),
+);
+/** The person's words a Confirm took, kept in the ask's payload beside the agent's draft. */
+export const confirmedWords = (mail: Email): typeof Words.Type => ({
+  to: mail.to,
+  cc: mail.cc,
+  subject: mail.subject,
+  body: mail.body,
+});
+/** What a confirmed ask sends: the words its Confirm took, else the agent's draft. */
+export const confirmedOf = (prepared: Prepared, payload: string): Prepared => {
+  const words = Option.getOrUndefined(decodeConfirmed(payload))?.confirmed;
+  return prepared._tag !== "email" || words === undefined ? prepared : { ...prepared, ...words };
+};
 /** Whether an edit left the words exactly as drawn. */
 export const sameWords = (one: Email, other: Email) =>
   one.subject === other.subject &&
@@ -883,7 +904,9 @@ export const sentMail = Effect.fn("KinSending.sentMail")(function* (input: {
     LIMIT ${SENT_SCAN}`;
   const sent: Array<SentMail> = [];
   for (const row of rows) {
-    const prepared = Option.getOrUndefined(decodeSentPayload(row.payload));
+    const prepared = Option.getOrUndefined(
+      Option.map(decodeSentPayload(row.payload), (one) => confirmedOf(one, row.payload)),
+    );
     if (prepared?._tag !== "email") continue;
     const matches =
       !filtered ||

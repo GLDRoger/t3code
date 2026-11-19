@@ -456,16 +456,24 @@ export function kinChoiceUndoneLine(
   return `Undone by ${who} ${when}.`;
 }
 
+/**
+ * A card's spoken label. Where the group it labels hides its children from the screen reader
+ * (the phone), `message` says a send card's words and the quote under them too.
+ */
 export function kinChoiceAccessibilityLabel(
   view: KinChoiceCardView,
   status: string | null,
   edited: string | null = null,
+  spoken: { readonly message?: boolean } = {},
 ) {
   if (view.send !== null)
     return kinSentences([
       view.question,
       edited,
       ...view.send.lines.map((line) => `${line.label}: ${line.value}`),
+      ...(spoken.message === true
+        ? [view.send.body === null ? null : `Message: ${view.send.body}`, view.send.quoted]
+        : []),
       ...view.send.attachments.map((file) => `Attached: ${file.name}`),
       view.send.outcome?.text ?? null,
       status,
@@ -518,11 +526,40 @@ export function kinSendEditOffered(
   );
 }
 
-/** Edit pressed: the stored words, bound to the card as it is now. */
-export function kinSendEditStart(view: KinChoiceCardView): KinSendEditing | null {
-  return view.send?.edit == null
-    ? null
-    : { revision: view.revision, opened: view.send.edit, draft: view.send.edit, problem: null };
+/**
+ * What the host last took from this device's editor on a card, kept while the editor is closed:
+ * the revision its Save or Discard made, and the words a Save left there (`null` after Discard).
+ */
+export interface KinSendEditAck {
+  readonly revision: number;
+  readonly saved: KinSendEditDraft | null;
+}
+
+/**
+ * Edit pressed: the stored words, bound to the card as it is now. Until the card's update for
+ * this device's last Save or Discard arrives, bound instead to the revision that made, over the
+ * words it left, so a Discard there resets the right card.
+ */
+export function kinSendEditStart(
+  view: KinChoiceCardView,
+  ack: KinSendEditAck | null = null,
+): KinSendEditing | null {
+  if (view.send?.edit == null) return null;
+  if (ack === null || ack.revision <= view.revision)
+    return {
+      revision: view.revision,
+      opened: view.send.edit,
+      draft: view.send.edit,
+      problem: null,
+    };
+  const words = ack.saved ?? view.send.edit;
+  return {
+    revision: ack.revision,
+    opened: words,
+    draft: words,
+    problem: null,
+    ...(ack.saved === null ? {} : { saved: true as const }),
+  };
 }
 
 /** "Edited by you", or by name on another's card: shown on a mail card while it holds a saved edit. */
@@ -694,7 +731,10 @@ export function kinSendEditDiscardInput(
   editing: KinSendEditing,
   open: boolean,
 ): KinConnectionSaveEditedInput | null {
-  return !open || (editing.saved !== true && view.send?.edited == null)
+  // Bound past the card on screen, only what the host acknowledged says whether words are saved.
+  const saved =
+    editing.saved === true || (editing.revision <= view.revision && view.send?.edited != null);
+  return !open || !saved
     ? null
     : {
         orgId: view.orgId,

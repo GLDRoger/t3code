@@ -248,12 +248,8 @@ describe("a mail card's Edit", () => {
       },
     ]);
     expect(state.sent).toHaveLength(0);
-    // The saved card shows the person's words as theirs; Discard edits puts the draft back.
-    const edited = { personId: "rhea", name: "Rhea" };
-    await screen.rerender(
-      view(mail({ revision: 3, send: { subject: "Invoice for November", edited } })),
-    );
-    await expect.element(screen.getByText("Edited by you")).toBeVisible();
+    // Edit again before the saved card's update arrives: the saved words open, and Discard edits
+    // resets the card the save made, however late that update is.
     await userEvent.click(page.getByRole("button", { name: "Edit" }));
     await expect.element(page.getByLabelText("Subject")).toHaveValue("Invoice for November");
     await userEvent.click(page.getByRole("button", { name: "Discard edits" }));
@@ -265,23 +261,40 @@ describe("a mail card's Edit", () => {
       edit: null,
     });
 
+    // The saved card shows the person's words as theirs; Discard edits puts the draft back.
+    const edited = { personId: "rhea", name: "Rhea" };
+    await screen.rerender(
+      view(mail({ revision: 5, send: { subject: "Invoice for November", edited } })),
+    );
+    await expect.element(screen.getByText("Edited by you")).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Edit" }));
+    await expect.element(page.getByLabelText("Subject")).toHaveValue("Invoice for November");
+    await userEvent.click(page.getByRole("button", { name: "Discard edits" }));
+    await expect.element(page.getByLabelText("Subject")).not.toBeInTheDocument();
+    expect(state.saved[2]).toEqual({
+      orgId: "org-1",
+      widgetId: "choice:m1",
+      revision: 5,
+      edit: null,
+    });
+
     // Hiding the tab saves the words and the editor stays. The save's answer lands before the
     // card's update does, and Discard edits still puts the draft back on the saved card.
-    await screen.rerender(view(mail({ revision: 4 })));
+    await screen.rerender(view(mail({ revision: 6 })));
     await userEvent.click(page.getByRole("button", { name: "Edit" }));
     await userEvent.type(page.getByLabelText("Subject"), ", again");
     {
       using _hidden = hideTab();
-      await vi.waitFor(() => expect(state.saved).toHaveLength(3));
+      await vi.waitFor(() => expect(state.saved).toHaveLength(4));
     }
-    expect(state.saved[2]).toMatchObject({ revision: 4, edit: { subject: "Invoice, again" } });
+    expect(state.saved[3]).toMatchObject({ revision: 6, edit: { subject: "Invoice, again" } });
     await expect.element(page.getByLabelText("Subject")).toHaveValue("Invoice, again");
     await userEvent.click(page.getByRole("button", { name: "Discard edits" }));
     await expect.element(page.getByLabelText("Subject")).not.toBeInTheDocument();
-    expect(state.saved[3]).toEqual({
+    expect(state.saved[4]).toEqual({
       orgId: "org-1",
       widgetId: "choice:m1",
-      revision: 5,
+      revision: 7,
       edit: null,
     });
 
