@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Pure view helpers word due days for React render, outside an Effect runtime.
 import type {
   KinAgentId,
   KinChatSummary,
@@ -12,6 +13,7 @@ import { KIN_PROVIDER_FACTS, kinCantDo, kinProviderFacts } from "@t3tools/contra
 import { formatModelSlugName } from "@t3tools/shared/model";
 
 import { formatKinDeferralTime } from "./kinDeferralPresentation.ts";
+import { kinWorkDueText } from "./kinWork.ts";
 import { kinFailureText } from "./kinAnswers.ts";
 
 export const KIN_LEAD_NAME_MAX = 80;
@@ -137,12 +139,17 @@ const TRACKING_KINDS: Record<KinLeadTracking["kind"], string> = {
 
 /** The second line under something a lead has in hand: "Reminder, Fri 13 Nov, 9:00". */
 export function kinLeadTrackingDetail(
-  item: Pick<KinLeadTracking, "kind" | "dueAt">,
+  item: Pick<KinLeadTracking, "kind" | "dueAt" | "dueAllDay">,
   timeZone?: string,
+  now: Date = new Date(),
 ): string {
   const kind = TRACKING_KINDS[item.kind];
   const due = item.dueAt === undefined ? Number.NaN : Date.parse(item.dueAt);
-  return Number.isNaN(due) ? kind : `${kind}, ${formatKinDeferralTime(due, timeZone)}`;
+  if (Number.isNaN(due)) return kind;
+  // A due day has no time: the day where the owner is, as Tasks says it.
+  if (item.dueAllDay === true && item.dueAt !== undefined)
+    return `${kind}, due ${kinWorkDueText({ dueAt: item.dueAt, dueAllDay: true }, { zone: timeZone ?? null }, now)}`;
+  return `${kind}, ${formatKinDeferralTime(due, timeZone)}`;
 }
 
 /**

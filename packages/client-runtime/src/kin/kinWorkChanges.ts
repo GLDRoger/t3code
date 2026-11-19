@@ -16,6 +16,7 @@ import type { AtomCommandResult } from "../state/runtime.ts";
 import {
   KIN_WORK_NOTES_MAX,
   KIN_WORK_TITLE_MAX,
+  KIN_WORK_TITLE_TOO_LONG,
   kinWorkClosed,
   kinRepeatText,
   kinWorkName,
@@ -508,7 +509,7 @@ export function createKinWorkChanges(options: {
         title === ""
           ? "A task needs a title."
           : title.length > KIN_WORK_TITLE_MAX
-            ? `Keep the title under ${KIN_WORK_TITLE_MAX} characters.`
+            ? KIN_WORK_TITLE_TOO_LONG
             : notes.length > KIN_WORK_NOTES_MAX
               ? "Those notes are too long. Say the rest in chat."
               : null;

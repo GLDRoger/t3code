@@ -24,7 +24,12 @@ import {
   type KinClientsTab,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { KIN_WORK_HOME } from "@t3tools/client-runtime/kin/kinWorkHome";
-import { KinOrgId, type EnvironmentId, type KinRecordKey } from "@t3tools/contracts";
+import {
+  KinOrgId,
+  type EnvironmentId,
+  type KinPersonId,
+  type KinRecordKey,
+} from "@t3tools/contracts";
 import {
   useChildMatches,
   useLocation,
@@ -178,6 +183,7 @@ export function KinPlacesRoute() {
         ).toString()
       }
       dialog={search.open ?? null}
+      person={search.person ?? null}
       onDialog={(next) => {
         const pushed = location.state.kinDialogPushed === true;
         // Closing a dialog this page opened is the browser's Back, so Back never reopens it.
@@ -269,9 +275,12 @@ export function KinPlaceView({
   docLink,
   tab,
   onTab,
+  person = null,
   ...props
 }: KinWorkTarget & {
   readonly place: KinPlace;
+  /** A person's page opened Tasks for what they hold. */
+  readonly person?: KinPersonId | null;
   /** Which of Clients and Projects the Clients place lists. */
   readonly tab: KinClientsTab;
   readonly onTab: (tab: KinClientsTab) => void;
@@ -310,7 +319,11 @@ export function KinPlaceView({
   const [adding, setAdding] = useState<Adding>(null);
   const searching = dialog === "search";
   // Where the task list starts when it is opened from a client: narrowed to that client.
-  const [narrowed, setNarrowed] = useState<KinWorkFilter>(KIN_WORK_DEFAULT_FILTER);
+  const [narrowed, setNarrowed] = useState<KinWorkFilter>(() =>
+    person === null
+      ? KIN_WORK_DEFAULT_FILTER
+      : { ...KIN_WORK_DEFAULT_FILTER, owner: { _tag: "person", personId: person } },
+  );
   // Where a list starts when a figure or a client opened it: narrowed to what is behind it.
   const [listStart, setListStart] = useState<KinListOpen | null>(null);
 
@@ -517,8 +530,10 @@ export function KinPlaceView({
       );
     return (
       <KinWorkTaskList
-        // Opened from a client, the list starts over narrowed to that client.
-        key={narrowed.party?.key ?? "all"}
+        // Opened from a client or a person, the list starts over narrowed to them.
+        key={
+          narrowed.party?.key ?? (narrowed.owner === null ? "all" : JSON.stringify(narrowed.owner))
+        }
         {...props}
         live={state.live}
         stale={state.stale}
