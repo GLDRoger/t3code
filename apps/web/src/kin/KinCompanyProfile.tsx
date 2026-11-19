@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_COMPANY,
+  kinCompanyCountrySuggestion,
   kinCompanyEditSections,
   kinCompanyDraftOf,
   kinDeviceRegion,
@@ -38,7 +39,7 @@ import { KinTemplatesSection } from "./KinTemplates";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { kinClient } from "./kinClient";
 import { kinHostConnected, useKinHost } from "./useKinHost";
-import { useKinCompanyProfile } from "./useKinMoney";
+import { useKinCompanyProfile, useKinCountryNeeded } from "./useKinMoney";
 import type { KinWorkTarget } from "./useKinWork";
 import { KinGateFailed, KinLoadFailed } from "./KinWorkParts";
 import { useKinGate } from "./useKinHost";
@@ -111,6 +112,8 @@ function Profile(
   const [problem, setProblem] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const waiting = useKinCountryNeeded(props);
+  const region = kinDeviceRegion();
   const formId = useId();
   const save = async (typed: KinCompanyDraft) => {
     const checked = kinCompanyInput(orgId, profile, typed);
@@ -148,7 +151,7 @@ function Profile(
               variant="outline"
               onClick={() => {
                 setSaved(false);
-                setDraft(kinCompanyDraftOf(profile, kinDeviceRegion()));
+                setDraft(kinCompanyDraftOf(profile, region, waiting));
               }}
             >
               <PencilIcon />
@@ -228,6 +231,13 @@ function Profile(
                     onChange={(event) => setDraft({ ...draft, [field.id]: event.target.value })}
                   />
                 )}
+                {field.id === "country" ? (
+                  <CountrySuggestion
+                    offer={kinCompanyCountrySuggestion(draft, region, waiting)}
+                    disabled={saving}
+                    onAccept={setDraft}
+                  />
+                ) : null}
                 {problems[field.id] === undefined ? null : (
                   <p id={`${id}-problem`} className="text-xs text-destructive-foreground">
                     {problems[field.id]}
@@ -261,6 +271,29 @@ function Profile(
         </Button>
       </div>
     </form>
+  );
+}
+
+/** This device's country, offered to a new company still waiting on its own; a tap takes it. */
+function CountrySuggestion(props: {
+  readonly offer: ReturnType<typeof kinCompanyCountrySuggestion>;
+  readonly disabled: boolean;
+  readonly onAccept: (draft: KinCompanyDraft) => void;
+}) {
+  const { offer } = props;
+  if (offer === null) return null;
+  return (
+    <div>
+      <Button
+        type="button"
+        size="xs"
+        variant="outline"
+        disabled={props.disabled}
+        onClick={() => props.onAccept(offer.accept())}
+      >
+        {offer.label}
+      </Button>
+    </div>
   );
 }
 
