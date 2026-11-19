@@ -11,11 +11,7 @@ import {
   kinRemoveDeviceCopy,
   kinRemoveDeviceProblem,
 } from "@t3tools/client-runtime/kin/kinDevices";
-import {
-  KIN_INVITE_LOCAL_ONLY_NOTE,
-  kinInviteLink,
-  kinInviteLinkLocalOnly,
-} from "@t3tools/client-runtime/kin/kinTeam";
+import { kinShareLink } from "@t3tools/client-runtime/kin/kinTeam";
 import { executeAtomQuery, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentId,
@@ -54,6 +50,7 @@ import { QRCodeSvg } from "../components/ui/qr-code";
 import { namedClipboardTarget, useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { usePreparedConnection } from "../state/session";
+import { useKinPublicUrl } from "./useKinOwnerLevel";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
@@ -290,8 +287,13 @@ function KinLinkDeviceDialog(props: {
 }) {
   const { made } = props;
   const connection = Option.getOrNull(usePreparedConnection(props.environmentId));
+  const publicUrl = useKinPublicUrl(props.environmentId);
   const left = kinDeviceLinkLeft(made.expiresAt, useNowMinuteMs());
-  const link = connection === null ? null : kinInviteLink(connection.httpBaseUrl, made.secret);
+  const shared =
+    connection === null
+      ? null
+      : kinShareLink({ publicUrl, httpBaseUrl: connection.httpBaseUrl }, made.secret);
+  const link = shared?.link ?? null;
   return (
     <Dialog
       open
@@ -349,11 +351,11 @@ function KinLinkDeviceDialog(props: {
                   </div>
                 </div>
               </div>
-              {kinInviteLinkLocalOnly(link) ? (
+              {shared === null || shared.note === null ? null : (
                 <Alert variant="warning">
-                  <AlertDescription>{KIN_INVITE_LOCAL_ONLY_NOTE}</AlertDescription>
+                  <AlertDescription>{shared.note}</AlertDescription>
                 </Alert>
-              ) : null}
+              )}
             </div>
           )}
         </DialogPanel>
