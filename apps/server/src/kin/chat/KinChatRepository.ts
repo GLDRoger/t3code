@@ -1,5 +1,6 @@
 import { ACTIVE_RUN_STATUSES } from "../../orchestration-v2/ThreadManagementService.ts";
 import type { McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
+import { wakeupOfRuns } from "./wakeupRuns.ts";
 import {
   KIN_TEAM_ROOM_TEAM_ID,
   KIN_MESSAGE_FIGURES_MAX,
@@ -846,49 +847,14 @@ const make = Effect.gen(function* () {
       },
     ) {
       if (input.caller.subagent === true || input.caller.threadId !== input.threadId) return false;
-      const rows =
-        yield* sql`WITH RECURSIVE ancestors(run_id, thread_id, ordinal, payload_json) AS (
-        SELECT run_id, thread_id, ordinal, payload_json
-        FROM orchestration_v2_projection_runs INDEXED BY orchestration_v2_projection_runs_thread_status_idx
-        WHERE thread_id = ${input.threadId} AND status IN ${sql.in(ACTIVE_RUN_STATUSES)}
-        UNION
-        SELECT p.run_id, p.thread_id, p.ordinal, p.payload_json
-        FROM ancestors child JOIN orchestration_v2_projection_runs p
-          ON p.thread_id = child.thread_id
-          AND (p.run_id = json_extract(child.payload_json, '$.restartContinuationOfRunId')
-            OR p.run_id = json_extract(child.payload_json, '$.usageLimitContinuationOfRunId'))
-        -- Continuation links plus agent/server provenance come only from the restart and usage-limit workers.
-        JOIN orchestration_v2_projection_messages cm
-          ON cm.message_id = json_extract(child.payload_json, '$.userMessageId')
-          AND cm.thread_id = child.thread_id AND cm.run_id = child.run_id
-          AND json_extract(cm.payload_json, '$.createdBy') = 'agent'
-          AND json_extract(cm.payload_json, '$.creationSource') = 'server'
-      )
-      SELECT 1 FROM kin_wakeups w JOIN ancestors root ON root.thread_id = w.thread_id
-      JOIN orchestration_v2_projection_messages m
-        ON m.message_id = json_extract(root.payload_json, '$.userMessageId')
-        AND m.thread_id = root.thread_id AND m.run_id = root.run_id
-      WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
-        AND w.thread_id = ${input.threadId} AND w.status = 'running'
-        AND json_extract(m.payload_json, '$.creationSource') = 'server'
-        AND ((json_extract(m.payload_json, '$.createdBy') = 'system'
-        AND ((json_extract(root.payload_json, '$.userMessageId') = 'kin-wakeup-msg:' || w.wakeup_id
-          AND root.run_id = COALESCE(w.run_id, (
-            SELECT first.run_id FROM orchestration_v2_projection_runs first
-            WHERE first.thread_id = w.thread_id
-              AND json_extract(first.payload_json, '$.userMessageId') = 'kin-wakeup-msg:' || w.wakeup_id
-            ORDER BY first.ordinal LIMIT 1
-          )))
-          -- A late steer or the rescue turn, sent after this wake-up's own run (KinIdentity).
-          OR ((json_extract(root.payload_json, '$.userMessageId') = 'kin-rescue-msg:' || w.wakeup_id
-              OR substr(json_extract(root.payload_json, '$.userMessageId'), 1, length(w.wakeup_id) + 15)
-                = 'kin-steer-msg:' || w.wakeup_id || ':')
-            AND root.ordinal > (SELECT own.ordinal FROM orchestration_v2_projection_runs own
-              WHERE own.thread_id = w.thread_id AND own.run_id = w.run_id))))
-          -- T3's notice that a delegated task finished, in the run this wake-up took over: only
-          -- Kin sets run_id, and only to such a run (TaskWake).
-          OR (json_extract(m.payload_json, '$.createdBy') = 'agent' AND root.run_id = w.run_id))
-        ORDER BY w.wakeup_id LIMIT 1`;
+      const rows = yield* wakeupOfRuns(
+        sql,
+        sql`SELECT run_id, thread_id, ordinal, payload_json
+          FROM orchestration_v2_projection_runs INDEXED BY orchestration_v2_projection_runs_thread_status_idx
+          WHERE thread_id = ${input.threadId} AND status IN ${sql.in(ACTIVE_RUN_STATUSES)}`,
+        sql`w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
+          AND w.thread_id = ${input.threadId} AND w.status = 'running'`,
+      );
       return rows.length > 0;
     },
     Effect.mapError(toRepositoryError("KinChatRepository.hasRunningWakeup")),
