@@ -2,6 +2,7 @@ import {
   KIN_CHOICE_CARD_TTL_MS,
   KinAgentId,
   KinChatError,
+  KinConnectionId,
   KinOrgId,
   KinPersonId,
   type KinRecommendationRow,
@@ -28,7 +29,13 @@ import * as KinOpen from "../open/KinOpen.ts";
 import { personQuietUntil } from "../triggers/quietHold.ts";
 import { type RecommendPlan, sealPlans } from "../widgets/cardPlans.ts";
 import { dayIn } from "../work/money.ts";
-import { RAN_OUT, agentPageLabel, recommendShown } from "./card.ts";
+import {
+  DAILY_LIMIT_LABEL,
+  RAN_OUT,
+  agentPageLabel,
+  connectionLabel,
+  recommendShown,
+} from "./card.ts";
 import {
   type StoredRow,
   dayOf,
@@ -40,7 +47,17 @@ import {
   ruleContext,
   storedRows,
 } from "./ledger.ts";
-import { type Candidate, DAY_MS, RULES, type RuleContext, grantNow } from "./rules.ts";
+import {
+  type Candidate,
+  DAY_MS,
+  RULES,
+  type RecommendChange,
+  type RuleContext,
+  agentNow,
+  connectionNow,
+  grantNow,
+  limitNow,
+} from "./rules.ts";
 
 /*
  * Kin's suggestions to the owner: the rules (`rules.ts`) over its own rows, at most one card a
@@ -250,12 +267,25 @@ const rowOf = Effect.fn("KinRecommend.rowOf")(function* (ctx: RuleContext, row: 
             );
     case "stale":
       return shown(`Nothing changed on ${decided}: it no longer applied when you tapped.`);
-    case "done": {
-      const { change } = row;
-      if (change === undefined) return shown(`Done ${decided}.`);
+    case "done":
+      return row.change === undefined
+        ? shown(`Done ${decided}.`)
+        : yield* doneNow(ctx.orgId, decided, row.change, shown);
+  }
+});
+
+/** A done row, read from what is true now; its one action opens where that setting lives. */
+const doneNow = Effect.fn("KinRecommend.doneNow")(function* (
+  orgId: KinOrgId,
+  decided: string,
+  change: RecommendChange,
+  shown: (outcome: string, action?: KinRecommendationRow["action"]) => KinRecommendationRow,
+) {
+  switch (change.kind) {
+    case "lead_access": {
       const { personName: person, agentName: agent } = change;
       // Who can message an agent is changed in one place, its page; the row only points there.
-      switch (yield* grantNow(ctx.orgId, change)) {
+      switch (yield* grantNow(orgId, change)) {
         case "gone":
           return shown(`Done ${decided}. ${agent} is no longer there.`);
         case "ended":
@@ -263,10 +293,58 @@ const rowOf = Effect.fn("KinRecommend.rowOf")(function* (ctx: RuleContext, row: 
         case "live":
           return shown(`Done ${decided}: ${person} can message ${agent}.`, {
             kind: "open_agent",
-            label: agentPageLabel(change),
+            label: agentPageLabel(agent),
             agentId: KinAgentId.make(change.agentId),
           });
       }
+    }
+    case "daily_limit": {
+      const limit = yield* limitNow(orgId);
+      const open = { kind: "open_daily_limit" as const, label: DAILY_LIMIT_LABEL };
+      if (limit.leadUnits === change.toLeadUnits && limit.workerUnits === change.toWorkerUnits)
+        return shown(`Done ${decided}: the daily limit is ${change.toName}.`, open);
+      return shown(
+        limit.name === null
+          ? `Done ${decided}: the daily limit went to ${change.toName}. It has its own amount now.`
+          : `Done ${decided}: the daily limit went to ${change.toName}. It is ${limit.name} now.`,
+        open,
+      );
+    }
+    case "connection_resume": {
+      const now = yield* connectionNow(orgId, change.connectionId);
+      const name = now?.name ?? change.connectionName;
+      if (now === undefined || now.removedAt !== null)
+        return shown(`Done ${decided}. ${name} is no longer connected.`);
+      const open = {
+        kind: "open_connection" as const,
+        label: connectionLabel(name),
+        connectionId: KinConnectionId.make(change.connectionId),
+      };
+      if (now.pausedAt !== null)
+        return shown(`Done ${decided}. ${name} was paused again since.`, open);
+      return shown(
+        now.state === "needs_sign_in"
+          ? `Done ${decided}: ${name} was resumed. It needs signing in again now.`
+          : `Done ${decided}: ${name} is no longer paused.`,
+        open,
+      );
+    }
+    case "agent_resume": {
+      const now = yield* agentNow(orgId, change.agentId);
+      const name = now?.name ?? change.agentName;
+      if (now === undefined || now.retired)
+        return shown(`Done ${decided}. ${name} is no longer there.`);
+      const open = {
+        kind: "open_agent" as const,
+        label: agentPageLabel(name),
+        agentId: KinAgentId.make(change.agentId),
+      };
+      return shown(
+        now.pausedAt === null
+          ? `Done ${decided}: ${name} is no longer paused.`
+          : `Done ${decided}. ${name} was paused again since.`,
+        open,
+      );
     }
   }
 });
@@ -376,7 +454,16 @@ export const layer = Layer.effectDiscard(
               Effect.logWarning("Kin recommendation failed", { orgId, cause }),
             ),
           );
-          if (result?._tag === "skipped" && result.why === "turn_running") last.delete(orgId);
+          if (result?._tag === "skipped" && result.why === "turn_running") {
+            last.delete(orgId);
+            continue;
+          }
+          // Hourly per org: why no suggestion came is otherwise invisible to whoever runs the host.
+          if (result !== undefined)
+            yield* Effect.logInfo("Kin recommendation pass", {
+              orgId,
+              result: result._tag === "posted" ? "posted" : result.why,
+            });
         }
       }).pipe(
         Effect.catch((cause) => Effect.logWarning("Kin recommendation scan failed", { cause })),

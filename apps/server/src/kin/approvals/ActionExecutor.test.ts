@@ -1518,13 +1518,43 @@ describe("KinActionExecutor", () => {
       /if \(!\(yield\* ownerLevel\(orgId, tap\.personId\)\)\)[\s\S]*LeadProvision\.allow\(\{\s*editor: \{ _tag: "person", personId: tap\.personId \}/,
     );
     assert.notMatch(source("kin/lead/Handoff.ts"), /\brunRoute\b/);
-    // A suggestion grants only on its own sealed Let, after the exact-owner check, as the owner
-    // who tapped. The hourly pass that draws the card reaches neither the module nor the tap.
+    // A suggestion grants or resumes only on its own sealed Do it, after the exact-owner check, as
+    // the owner who tapped: `make` is the one place that changes anything, called only here, after
+    // Not now has returned. The hourly pass that draws the card reaches neither the module nor the tap.
     const recommendCard = source("kin/recommend/card.ts");
-    assert.strictEqual(recommendCard.match(/\bLeadProvision\.\w+/g)?.join(), "LeadProvision.allow");
+    assert.strictEqual(
+      recommendCard.match(/\bLeadProvision\.\w+/g)?.join(),
+      "LeadProvision.allow,LeadProvision.setPaused",
+    );
     assert.match(
       recommendCard,
-      /yield\* onlyOwner\(orgId, tap\.personId\);[\s\S]*if \(plan\.answer === "not_now"\) \{[\s\S]*\}\s*const \{ change \} = plan;\s*yield\* LeadProvision\.allow\(\{\s*editor: \{ _tag: "person", personId: tap\.personId \}/,
+      /LeadProvision\.allow\(\{\s*editor: \{ _tag: "person", personId \}[\s\S]*LeadProvision\.setPaused\(\{\s*by: \{ _tag: "person", personId \}/,
+    );
+    // The daily limit and a connection's pause change the same way, in `make` as the owner who
+    // tapped: one call each, through the method their own Settings place calls.
+    assert.strictEqual(
+      recommendCard.match(/\(yield\* (?:KinBudget|KinConnections)\)\.\w+/g)?.join(),
+      "(yield* KinBudget).set,(yield* KinConnections).update",
+    );
+    assert.lengthOf(recommendCard.match(/\bKin(?:Budget|Connections)\b(?!\.ts)/g) ?? [], 4);
+    assert.match(
+      recommendCard,
+      /const make = [\s\S]*const people = \[\{ _tag: "person" as const, orgId, personId \}\];[\s\S]*\(yield\* KinBudget\)\.set\(people, \{[\s\S]*\(yield\* KinConnections\)\.update\(people, \{/,
+    );
+    // The rules only read: the budget module's one constant and the connections' row readers.
+    const recommendRules = source("kin/recommend/rules.ts");
+    assert.match(recommendRules, /import \{ USUAL_LIMITS \} from "\.\.\/lead\/KinBudget\.ts";/);
+    assert.lengthOf(recommendRules.match(/from "\.\.\/lead\/KinBudget\.ts"/g) ?? [], 1);
+    assert.notMatch(recommendRules, /yield\* KinBudget\b/);
+    assert.match(
+      recommendRules,
+      /import \{ callable, pausedRefusal, toolsOf \} from "\.\.\/connections\/ConnectionRows\.ts";/,
+    );
+    assert.notMatch(recommendRules, /ConnectionsService\.ts|yield\* KinConnections\b/);
+    assert.lengthOf(recommendCard.match(/(?<![.\w])make\(/g) ?? [], 1);
+    assert.match(
+      recommendCard,
+      /yield\* onlyOwner\(orgId, tap\.personId\);[\s\S]*if \(plan\.answer === "not_now"\) \{[\s\S]*\}\s*const text = yield\* make\(orgId, tap\.personId, plan\.change\)/,
     );
     assert.notMatch(source("kin/recommend/KinRecommend.ts"), /KinLeadProvision|\brunRecommend\b/);
     // An agent's page reads and retires as its checked owner; a turn's model change is the

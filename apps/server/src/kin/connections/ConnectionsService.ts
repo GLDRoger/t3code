@@ -79,6 +79,7 @@ import {
   connectionEverById,
   connectionView,
   liveConnections,
+  pausedRefusal as paused,
   resolveConnection,
   sendAsOf,
   toolsOf,
@@ -168,7 +169,6 @@ export const ASK_CLOSED = {
 export const OFFERED = "The owner will see a card to connect it.";
 const SEVERAL_ACCOUNTS =
   "There are several mail accounts: name one by its id or address. Connection mail on a mail search, inbox list or calendar list reads every one of them (connection google or microsoft reads that provider's). A reply always goes from the account its thread is in, whatever you name. For a new email or event, pick the account and from address by the owner's notes, then by the account earlier mail with that person or client went through; with neither, use the first account listed. The card shows the owner the account and From, and he can switch them there.";
-const paused = (label: string) => `The owner paused ${label}. Only the owner can resume it.`;
 const signedOut = (label: string) =>
   `${label}'s sign-in expired. The owner can sign in again in Settings.`;
 const SIGN_IN_TTL = Duration.minutes(10);
