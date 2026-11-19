@@ -31,7 +31,7 @@ import { stampEvent } from "./OutsideContent.ts";
  * answers are fixed actions (`cardActions.ts`) that run here, as the owner's tap, with no turn.
  */
 
-export const hashOf = (key: string) =>
+const hashOf = (key: string) =>
   NodeCrypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
 /** The wake-up a routed request starts: one per teammate message, whoever retries. */
 export const forwardEventId = (messageId: string) =>

@@ -40,4 +40,4 @@ Each file replaces the upstream file at the same path. Rows marked **Kin** are i
 | `apps/mobile/assets/android-splash-icon-prod.png`  | 1152×1152            | PNG, RGBA, mark in the central third | Android 12+ splash **Kin**                                                        |
 | `apps/mobile/assets/widget/T3Mark.svg`             | 111×74 viewBox       | SVG                                  | Logo inside the iOS widgets **Kin**                                               |
 
-The dev and nightly variants (`assets/dev/`, `assets/nightly/`, `android-*-dev.png`, `android-*-nightly.png`) can stay upstream's until Kin ships those channels.
+`assets/dev/blueprint-web-*` are Kin's web icons too (the same files as `apps/web/public/`): the server build copies them over its bundled client, so without them a packaged Kin server would serve T3's development icons. The other dev and nightly variants (`assets/dev/`, `assets/nightly/`, `android-*-dev.png`, `android-*-nightly.png`) can stay upstream's until Kin ships those channels.
