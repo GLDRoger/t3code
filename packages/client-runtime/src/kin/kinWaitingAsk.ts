@@ -67,6 +67,8 @@ export function kinChoiceDefaultLine(
   const ask = waiting?.find((item) => item.widgetId === widgetId)?.ask;
   if (ask === undefined || ask.default === null) return null;
   const by = Date.parse(ask.by);
+  // Past its time and not yet taken (the agent is paused, or Kin's next pass is due): no promise.
+  if (by <= nowMs) return null;
   const day = kinAskDay(by, nowMs).replace(/^on /, "");
   const label = /[.!?…]$/u.test(ask.default) ? ask.default : `${ask.default}.`;
   return `If nobody answers by ${day} at ${formatKinWhen(new Date(by), "time")}: ${label}`;

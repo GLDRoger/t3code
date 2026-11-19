@@ -94,5 +94,6 @@ describe("an open question's card", () => {
     expect(kinChoiceDefaultLine(KinWidgetId.make("widget-2"), asked({}), now)).toBeNull();
     expect(kinChoiceDefaultLine(card, waiting(undefined), now)).toBeNull();
     expect(kinChoiceDefaultLine(card, null, now)).toBeNull();
+    expect(kinChoiceDefaultLine(card, asked({}), Date.parse(asked({})[0]!.ask!.by))).toBeNull();
   });
 });
