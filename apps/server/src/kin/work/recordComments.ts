@@ -18,6 +18,7 @@ import {
   type KinRecordWaiting,
   KinWidgetId,
   type KinWorkMoveCard,
+  type KinRecordChange,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -117,12 +118,23 @@ type SheetViewer = {
   readonly teammate: boolean;
 };
 
+/** A coding-agent key's name is its own person's and the owner level's; others read a generic one. */
+export const keyNamedFor = <A extends Pick<KinRecordChange, "by" | "codingAgent">>(
+  viewer: SheetViewer,
+  row: A,
+): A =>
+  row.codingAgent === undefined ||
+  !viewer.teammate ||
+  (row.by._tag === "person" && row.by.personId === viewer.person.personId)
+    ? row
+    : { ...row, codingAgent: "a coding agent" };
+
 /** Whether this viewer may take a comment back: its author, or the owner level any. */
 export const withCanRemove = (
   viewer: SheetViewer,
   comment: KinRecordComment,
 ): KinRecordComment => ({
-  ...comment,
+  ...keyNamedFor(viewer, comment),
   canRemove:
     comment.removed === undefined &&
     (!viewer.teammate ||

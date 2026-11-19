@@ -243,7 +243,7 @@ it.effect("a key reaches only tasks its person holds, narrowly and as them, even
       FROM kin_record_changes WHERE record_id = ${hers.recordId} ORDER BY seq DESC LIMIT 1`;
     assert.deepInclude(change, { kind: "person", actor: zoya.personId, viaKey: zoyaKey.sessionId });
     assert.include(change?.fields, '"to":"doing"');
-    // N3: every reader's Activity names the key it came through, by its name.
+    // The stored sheet names the key it came through; who reads the name is `keyNamedFor`'s.
     yield* sql`UPDATE kin_tasks_keys SET label = 'Invented laptop'
       WHERE session_id = ${zoyaKey.sessionId}`;
     const shown = yield* records.detail((yield* records.get(orgId, hers.key))!, 5);
