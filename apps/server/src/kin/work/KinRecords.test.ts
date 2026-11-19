@@ -2738,6 +2738,8 @@ it.effect(
       assert.lengthOf(told, 1);
       assert.include(told[0]!.body, "gave you 3 tasks");
       assert.include(told[0]!.body, "W-2 Invented: fix the login screen, due Fri 20 Nov. Why: iOS");
+      // The agent reads the day the owner named, west of UTC too.
+      assert.include(yield* LeadWork.get(scope, { key: "W-2" }), { due: "2026-11-20" });
       // The owner asked, so the owner gave it; the agent only carried it.
       const given = yield* OwnerWork.get([mate], { orgId, key: "W-2" });
       assert.deepInclude(given, {
