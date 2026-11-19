@@ -302,6 +302,10 @@ clients.
 Money shows what you're owed, what's overdue, who owes you, the next 30 days, cash in the bank and
 each month. **Needs attention** at the top lists overdue invoices and renewals coming up.
 
+A company that's new to Kin chooses its country first, in **Settings → Company details**. Its
+currency, financial year and tax name follow from the country. Until then, nothing that records money is made,
+and agents say so.
+
 Most of the bookkeeping happens by telling an agent: "Acme paid ₹48,250 today", "we spent $120 on
 hosting", "the GST filing is due on the 20th". It records the entry and answers in a line.
 

@@ -114,6 +114,44 @@ const storedProfile = Effect.fn("KinCompanyProfile.stored")(function* (orgId: Ki
     : { data, rev: row.rev, updatedAt: iso(row.updatedAt) };
 });
 
+/**
+ * A company created now whose profile was never saved and whose country is not chosen: the name
+ * of who chooses it. Undefined for every other company, those made before countries included.
+ */
+export const countryNeeded = Effect.fn("KinCompanyProfile.countryNeeded")(function* (
+  orgId: KinOrgId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ json: string; owner: string | null }>`
+    SELECT c.profile_json AS json, p.display_name AS owner FROM kin_company_profile c
+    LEFT JOIN kin_people p ON p.org_id = c.org_id AND p.person_id = c.updated_by_id
+    WHERE c.org_id = ${orgId} AND c.updated_at = 0
+    ORDER BY c.org_id`;
+  if (row === undefined) return undefined;
+  const data = Option.getOrUndefined(decodeProfile(row.json));
+  if (data === undefined || data.country !== null) return undefined;
+  return { owner: row.owner?.trim() || "the owner" };
+});
+
+const COUNTRY_FIRST = "Nothing was created: ";
+export const countryFirstMessage = (owner: string) =>
+  `${COUNTRY_FIRST}this company's country isn't chosen yet, so Kin can't tell its currency or tax. Ask ${owner} to choose it in Settings, Company details.`;
+/** A refusal no fix to the call itself answers: the company's country comes first. */
+export const isCountryFirst = (error: { readonly message: string }) =>
+  error.message.startsWith(COUNTRY_FIRST);
+
+/** Refuses anything that records money while the company's country is not chosen. */
+export const countryFirst = Effect.fn("KinCompanyProfile.countryFirst")(function* (
+  orgId: KinOrgId,
+) {
+  const needed = yield* countryNeeded(orgId);
+  if (needed !== undefined)
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: countryFirstMessage(needed.owner),
+    });
+});
+
 /** The profile with its country, year and tax as they read, set or not. */
 export const readProfile = Effect.fn("KinCompanyProfile.read")(function* (orgId: KinOrgId) {
   const stored = yield* storedProfile(orgId);

@@ -56,10 +56,11 @@ import { cn } from "../../lib/cn";
 import { useKinTab } from "./components/KinTab";
 import { KinFoldSection, KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
-import { useKinViewerScope } from "./state/kinChatOnly";
+import { useKinIsOwnerLevel, useKinViewerScope } from "./state/kinChatOnly";
 import {
   kinListsOf,
   useKinAskAgent,
+  useKinCountryNeeded,
   useKinLists,
   useKinMoneySummary,
   useKinRates,
@@ -90,6 +91,8 @@ function AreaFrame(props: {
   readonly target: KinWorkTarget;
   readonly stale: boolean;
   readonly onRefresh: () => void;
+  /** False while the company's country is not chosen: nothing that records money is offered. */
+  readonly adding?: boolean;
   readonly children: React.ReactNode;
 }) {
   const navigation = useNavigation();
@@ -104,7 +107,7 @@ function AreaFrame(props: {
     environmentId: String(props.target.environmentId),
     orgId: String(props.target.orgId),
   };
-  const addItems: ReadonlyArray<AppBarMenuItem> = [
+  const offered: ReadonlyArray<AppBarMenuItem> = [
     ...(agent === null
       ? []
       : [
@@ -165,6 +168,7 @@ function AreaFrame(props: {
           },
         ]),
   ];
+  const addItems = props.adding === false ? [] : offered;
   // The counts may be what failed, so they are read again with the area's own figures.
   const refresh = () => {
     refreshKinWorkLive(props.target);
@@ -391,6 +395,8 @@ export function KinMoneyArea(props: Shared) {
   const openList = useKinOpenList(target);
   const { names } = props.directory;
   const scope = useKinViewerScope(props.environmentId);
+  const countryNeeded = useKinCountryNeeded(target);
+  const ownerLevel = useKinIsOwnerLevel(props.environmentId);
   const scopeNote = kinScopeNote("money", scope);
   const { state } = money;
   const frame = {
@@ -401,6 +407,32 @@ export function KinMoneyArea(props: Shared) {
       lists.refresh();
     },
   };
+  if (countryNeeded) {
+    return (
+      <AreaFrame {...frame} adding={false}>
+        {ownerLevel ? (
+          <EmptyState
+            variant="plain"
+            {...KIN_MONEY.countryFirst}
+            action={
+              <Button
+                tone="primary"
+                label={KIN_MONEY.chooseCountry}
+                onPress={() =>
+                  navigation.navigate("KinCompany", {
+                    environmentId: String(target.environmentId),
+                    orgId: String(target.orgId),
+                  })
+                }
+              />
+            }
+          />
+        ) : (
+          <EmptyState variant="plain" {...KIN_MONEY.countryFirstMember} />
+        )}
+      </AreaFrame>
+    );
+  }
   if (state._tag !== "ready") {
     return (
       <AreaFrame {...frame}>

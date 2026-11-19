@@ -66,6 +66,16 @@ export const KIN_MONEY = {
     title: "Not available",
     detail: "Money is kept by whoever runs this Kin.",
   },
+  /** A company made new records no money until its country is chosen (`countryNeeded`). */
+  countryFirst: {
+    title: "Choose your country",
+    detail: "Choose your company's country first, so amounts, tax and dates read right.",
+  },
+  countryFirstMember: {
+    title: "Not set up yet",
+    detail: "The owner chooses the company's country first, so amounts, tax and dates read right.",
+  },
+  chooseCountry: "Open Company details",
 };
 
 /** The lists the host's summary is built from. Everything else about a list is its definition. */

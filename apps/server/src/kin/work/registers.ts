@@ -27,7 +27,13 @@ import {
   parseFields,
   sensitiveFields,
 } from "./lists.ts";
-import { type CompanyMoney, companyMoney, countryBefore, homeCurrency } from "./companyProfile.ts";
+import {
+  type CompanyMoney,
+  companyMoney,
+  countryBefore,
+  countryFirst,
+  homeCurrency,
+} from "./companyProfile.ts";
 import { regionOf } from "./region.ts";
 import { companyRegion, NEUTRAL_PAID_WITH } from "./statements/statementRegion.ts";
 import { dayIn, isCurrency } from "./money.ts";
@@ -948,6 +954,10 @@ export const attachCard = Effect.fn("KinRegisters.attachCard")(function* (input:
     WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId} AND widget_id IS NULL`;
 });
 
+/** A list that holds money keeps the currency it is made in. */
+const holdsMoney = (definition: StoredDefinition) =>
+  definition.amount || definition.fields.some((one) => one.type === "money");
+
 /** Creates or extends the list `proposal` describes, now, in the caller's transaction. */
 export const defineList = Effect.fn("KinRegisters.defineList")(function* (
   orgId: KinOrgId,
@@ -959,6 +969,7 @@ export const defineList = Effect.fn("KinRegisters.defineList")(function* (
     const draft = { ...proposal };
     const refused = checkDraft(draft);
     if (refused !== undefined) return yield* refused;
+    if (holdsMoney(draft.definition)) yield* countryFirst(orgId);
     const taken = yield* sql<{ id: string; prefix: string }>`SELECT register_id AS id,
         key_prefix AS prefix FROM kin_registers WHERE org_id = ${orgId}
         AND (register_id = ${draft.id} OR key_prefix = ${draft.prefix}) ORDER BY register_id`;
@@ -979,6 +990,7 @@ export const defineList = Effect.fn("KinRegisters.defineList")(function* (
     if (def === undefined || def.builtIn !== null) return yield* unknownList(proposal.id);
     const next = extended(def, proposal);
     if (isChatError(next)) return yield* next;
+    if (holdsMoney(next)) yield* countryFirst(orgId);
     yield* sql`UPDATE kin_registers SET definition_json = ${yield* encodeDefinition(next)},
         rev = rev + 1
       WHERE org_id = ${orgId} AND register_id = ${proposal.id}`;

@@ -28,7 +28,12 @@ import { KinWorkspace } from "../gendocs/workspace.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
-import { answerChange, changeLines } from "./companyProfile.ts";
+import {
+  answerChange,
+  changeLines,
+  countryFirstMessage,
+  newCompanyProfileJson,
+} from "./companyProfile.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
@@ -2159,6 +2164,101 @@ describe("the company profile", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("records no money for a company created now until its country is chosen", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      // The row `bootstrapIdentity` writes for a company it creates (`chat/KinIdentity.test.ts`).
+      yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+          updated_by_kind, updated_by_id)
+        VALUES (${orgId}, ${yield* newCompanyProfileJson}, 1, 0, 'person', ${ownerId})`;
+      const refusal = countryFirstMessage("Owner");
+      const asked = yield* turn(1, "Invoice Invented Kestrel 1,200 for the brand kit");
+      const invoice = LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          { list: "clients", title: "Invented Kestrel" },
+          {
+            list: "invoices",
+            title: "Invented brand kit",
+            client: "Invented Kestrel",
+            amount: "1,200",
+          },
+        ],
+      });
+      const expense = LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          { list: "expenses", title: "Invented fonts", amount: "40", category: "software" },
+        ],
+      });
+      const budget = LeadMoney.budget(scope, {
+        sourceEventId: asked,
+        category: "travel",
+        limit: "500",
+      });
+      const ownersBudget = OwnerMoneyAnswers.setBudget(people, {
+        orgId,
+        category: "travel",
+        project: null,
+        currency: "GBP",
+        limitMinor: 50_000,
+        clientRequestId: "new-company-budget",
+      });
+      const lists = LeadMoney.define(scope, { sourceEventId: asked, template: "invoices" });
+      for (const call of [invoice, expense, budget, ownersBudget, lists])
+        assert.strictEqual((yield* Effect.flip(call)).message, refusal);
+      // A task works as before; an amount on it is money, and waits too.
+      const task = yield* OwnerWork.create(people, {
+        orgId,
+        title: "Invented: send the brand kit",
+        clientRequestId: "new-company-task",
+      });
+      const priced = OwnerWork.update(people, {
+        orgId,
+        key: task.key,
+        rev: task.rev,
+        amount: { minor: 120_000, currency: "GBP" },
+      });
+      assert.strictEqual((yield* Effect.flip(priced)).message, refusal);
+      assert.deepStrictEqual(
+        yield* sql`SELECT register_id AS list FROM kin_records ORDER BY register_id`,
+        [{ list: "work" }],
+      );
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_money_budgets`, 0);
+
+      yield* OwnerMoney.setCompanyProfile(people, { orgId, rev: 0, country: "GB" });
+      yield* defined(2, { template: "invoices" });
+      yield* defined(4, { template: "expenses" });
+      const again = yield* turn(6, "Invoice Invented Kestrel 1,200 for the brand kit");
+      yield* LeadWork.create(scope, {
+        sourceEventId: again,
+        records: [
+          { list: "clients", title: "Invented Kestrel" },
+          {
+            list: "invoices",
+            title: "Invented brand kit",
+            client: "Invented Kestrel",
+            amount: "1,200",
+          },
+          { list: "expenses", title: "Invented fonts", amount: "40", category: "software" },
+        ],
+      });
+      yield* LeadMoney.budget(scope, { sourceEventId: again, category: "travel", limit: "500" });
+      assert.deepStrictEqual(
+        yield* sql`SELECT register_id AS list, currency FROM kin_records
+          WHERE amount_minor IS NOT NULL ORDER BY register_id`,
+        [
+          { list: "expenses", currency: "GBP" },
+          { list: "invoices", currency: "GBP" },
+        ],
+      );
+      assert.deepStrictEqual(yield* sql`SELECT currency FROM kin_money_budgets`, [
+        { currency: "GBP" },
+      ]);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "reads a profile stored before countries by its currency, and a new country as its own",
     () =>
@@ -2281,6 +2381,17 @@ describe("the company profile", () => {
         assert.deepStrictEqual(unset.labels, {});
         assert.notInclude(unset.categories, "gst");
         assert.notInclude(unset.categories, "tds");
+        // Saved with no country, it was never a company made new: its money is made as before.
+        const later = yield* turn(5, "Another invoice for Invented Acme");
+        yield* LeadWork.create(scope, {
+          sourceEventId: later,
+          records: [
+            { list: "invoices", title: "Invented extra", client: "Invented Acme", amount: "500" },
+          ],
+        });
+        assert.deepInclude(yield* OwnerMoney.issue(people, { orgId, key: "INV-2" }), {
+          number: "INV/2026/002",
+        });
       }).pipe(Effect.provide(layer)),
   );
 
