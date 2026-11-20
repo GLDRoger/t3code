@@ -41,9 +41,10 @@ reaches you, check **Your devices** for any you didn't add.
 A linked device stays signed in for 30 days, then you link it again the same way. You can have 10
 devices at a time. Remove a device from the same list to sign it out at once, along with every
 device linked from it and the coding agent keys made on them. Signing a device out from **Sharing &
-access** does the same. **Leave this team**, or removing the computer, on a phone forgets the team on that phone and stops
-that team's notifications there. Left while offline, they keep coming until you remove the phone
-from your list. The device stays in your list until you remove it. A device you linked can remove itself and the
+access** does the same. **Leave this team**, or removing the computer, on a phone forgets the team on that phone and asks
+your Kin to stop that team's notifications there. If your Kin doesn't confirm, because the phone is
+offline or Kin doesn't answer, the phone says so, and the notifications keep coming until you
+remove the phone from your list. The device stays in your list until you remove it. A device you linked can remove itself and the
 devices linked from it, but not the device you joined with. The owner can see and remove a
 teammate's devices on the **Team** page.
 

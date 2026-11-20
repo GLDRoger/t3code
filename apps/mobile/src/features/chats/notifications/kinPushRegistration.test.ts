@@ -2,9 +2,11 @@ import { EnvironmentId, KinOrgId, KinPersonId, KinPushError } from "@t3tools/con
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  createKinPushFence,
   createKinPushRefusals,
   kinPushHost,
   kinPushLeaveOrgs,
+  kinPushLeaveOutcome,
   kinPushPermissionStep,
 } from "./kinPushRegistration";
 
@@ -86,5 +88,38 @@ describe("kinPushLeaveOrgs", () => {
     const other = EnvironmentId.make("env-2");
     expect(kinPushLeaveOrgs(host(other, ["org-x"]), env, cached)).toEqual(["org-b", "org-c"]);
     expect(kinPushLeaveOrgs({ _tag: "searching" }, env, null)).toEqual([]);
+  });
+});
+
+describe("leaving a host", () => {
+  it("lets a registration already sent land before the unregister, and sends no new one", async () => {
+    const fence = createKinPushFence();
+    const order: Array<string> = [];
+    let land = () => {};
+    const sent = new Promise<void>((resolve) => {
+      land = () => {
+        order.push("registered");
+        resolve();
+      };
+    });
+    expect(fence.allows(env)).toBe(true);
+    fence.track(env, sent);
+    const fenced = fence.fence(env).then(() => order.push("unregister"));
+    expect(fence.allows(env)).toBe(false);
+    expect(fence.allows(EnvironmentId.make("env-2"))).toBe(true);
+    land();
+    await fenced;
+    expect(order).toEqual(["registered", "unregister"]);
+    // Joining the same host again registers as before.
+    fence.release(env);
+    expect(fence.allows(env)).toBe(true);
+  });
+
+  it("says the alerts stopped only when every org there answered", () => {
+    expect(kinPushLeaveOutcome({ orgs: 0, answers: null })).toBe("nothing");
+    expect(kinPushLeaveOutcome({ orgs: 2, answers: [true, true] })).toBe("confirmed");
+    // Refused, timed out, or not sent because the host was offline.
+    expect(kinPushLeaveOutcome({ orgs: 2, answers: [true, false] })).toBe("unconfirmed");
+    expect(kinPushLeaveOutcome({ orgs: 1, answers: null })).toBe("unconfirmed");
   });
 });
