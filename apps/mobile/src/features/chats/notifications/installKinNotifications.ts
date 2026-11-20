@@ -13,6 +13,7 @@ import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { AtomRegistry } from "effect/reactivity";
 import { Linking, Platform } from "react-native";
 
 import { connectionAtomRuntime } from "../../../connection/runtime";
@@ -20,11 +21,16 @@ import { appAtomRegistry } from "../../../state/atom-registry";
 import { environmentPresentations } from "../../../state/presentation";
 import { requestAgentNotificationPermission } from "../../agent-awareness/notificationPermissions";
 import { resolveApsEnvironment } from "../../agent-awareness/registrationPayload";
-import { kinClient } from "../state/kinClient";
+import { kinCachedOrgsAtom, kinClient } from "../state/kinClient";
 import { kinHostAtom } from "../state/useKinHost";
 import { KIN_NOTIFICATION_CATEGORIES } from "./kinCategories";
 import { kinActionDelivery, kinNotificationRoute } from "./kinPushPayload";
-import { createKinPushRefusals, kinPushHost, kinPushPermissionStep } from "./kinPushRegistration";
+import {
+  createKinPushRefusals,
+  kinPushHost,
+  kinPushLeaveOrgs,
+  kinPushPermissionStep,
+} from "./kinPushRegistration";
 
 // A refusal is final for this response; anything else (a dropped socket) waits for a connect.
 const isFinalRefusal = Schema.is(Schema.Union([KinChatError, EnvironmentAuthorizationError]));
@@ -128,6 +134,46 @@ export async function openKinNotificationSettings(): Promise<void> {
     return;
   }
   await Linking.openSettings();
+}
+
+// Leaving never waits longer than this on a host that is slow to answer.
+const UNREGISTER_WAIT_MS = 4_000;
+
+/**
+ * Before this phone forgets a host: take its token back from each org there, so that team's
+ * alerts stop. Best effort: a host that isn't connected keeps the token until it drops it.
+ */
+export async function unregisterKinPush(environmentId: EnvironmentId): Promise<void> {
+  if (Platform.OS !== "ios" || !isConnected(environmentId)) return;
+  const unregister = async () => {
+    const permission = await Notifications.getPermissionsAsync();
+    if (!permission.granted) return;
+    const token = String((await Notifications.getDevicePushTokenAsync()).data).toLowerCase();
+    const cached = await Effect.runPromise(
+      AtomRegistry.getResult(appAtomRegistry, kinCachedOrgsAtom(environmentId), {
+        suspendOnWaiting: true,
+      }).pipe(Effect.orElseSucceed(() => null)),
+    );
+    const orgIds = kinPushLeaveOrgs(appAtomRegistry.get(kinHostAtom), environmentId, cached);
+    await Promise.all(
+      orgIds.map((orgId) =>
+        runAtomCommand(
+          appAtomRegistry,
+          kinClient.unregisterPush,
+          { environmentId, input: { orgId, token } },
+          { reportFailure: false },
+        ),
+      ),
+    );
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    unregister().catch((cause: unknown) => console.warn("Kin push unregister failed", cause)),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, UNREGISTER_WAIT_MS);
+    }),
+  ]);
+  clearTimeout(timer);
 }
 
 /** Registers the APNs token with the Kin host on every connect, for each org the viewer is in. */

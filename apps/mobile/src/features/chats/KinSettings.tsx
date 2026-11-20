@@ -50,7 +50,10 @@ import { useSettingsPageBack } from "../settings/useSettingsPageBack";
 import { useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinBriefsSection } from "./KinBriefs";
 import { useKinIsHome } from "./state/kinHome";
-import { openKinNotificationSettings } from "./notifications/installKinNotifications";
+import {
+  openKinNotificationSettings,
+  unregisterKinPush,
+} from "./notifications/installKinNotifications";
 import { useChatOnlyEnvironments, useKinOwnerLevel, useKinSeesClients } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
 import { useKinInbox } from "./state/useKinInbox";
@@ -203,7 +206,9 @@ export function KinSettings(props: {
   );
   const forget = (environmentId: EnvironmentId) => {
     setLeft((held) => new Set(held).add(environmentId));
-    void controller.removeEnvironment(environmentId).then((result) => {
+    void unregisterKinPush(environmentId)
+      .then(() => controller.removeEnvironment(environmentId))
+      .then((result) => {
       if (result._tag === "Success") return;
       setLeft((held) => {
         const next = new Set(held);

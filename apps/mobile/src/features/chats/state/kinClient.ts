@@ -165,6 +165,10 @@ export const kinClient = {
     label: "kin:register-push",
     tag: KIN_PUSH_WS_METHODS.registerDevice,
   }),
+  unregisterPush: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:unregister-push",
+    tag: KIN_PUSH_WS_METHODS.unregisterDevice,
+  }),
   /** Mounted while a chat is on screen: the host skips this device's pushes for it. */
   pushWatch: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
     label: "kin:push-watch",
