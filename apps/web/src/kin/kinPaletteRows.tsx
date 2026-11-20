@@ -68,8 +68,9 @@ export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
   const navigate = useNavigate();
   const shown = useAtomValue(kinShownDestinationsAtom);
   // The owner level's, as the host has it: the same gate the host applies to the call.
+  // T3's palette tests answer every atom with [], so the target may be absent there.
   const canImport = useAtomValue(
-    kinClient.importApply.permissionAtom(shown?.target.environmentId ?? null),
+    kinClient.importApply.permissionAtom(shown?.target?.environmentId ?? null),
   );
   const destinations = shown?.destinations ?? [];
   if (shown === null || destinations.length === 0) return [];
