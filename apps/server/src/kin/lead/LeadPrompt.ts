@@ -2116,16 +2116,21 @@ export const messageBodyLimit = 8_000;
 const textFieldLimit = 2_000;
 const eventsLimit = 60_000;
 
+/** A text field as a lead is shown it: cut past `limit`, saying how much went. */
+export const cappedText = (field: string, limit = textFieldLimit) => {
+  if (field.length <= limit) return field;
+  const code = field.charCodeAt(limit - 1);
+  const cut = code >= 0xd800 && code <= 0xdbff ? limit - 1 : limit;
+  return `${field.slice(0, cut)}…[truncated ${field.length - cut} chars]`;
+};
+
 function encoded(value: unknown, capText = false): string {
   const json =
-    JSON.stringify(value, (key, field: unknown) => {
-      if (!capText || typeof field !== "string") return field;
-      const limit = key === "body" ? messageBodyLimit : textFieldLimit;
-      if (field.length <= limit) return field;
-      const code = field.charCodeAt(limit - 1);
-      const cut = code >= 0xd800 && code <= 0xdbff ? limit - 1 : limit;
-      return `${field.slice(0, cut)}…[truncated ${field.length - cut} chars]`;
-    }) ?? "null";
+    JSON.stringify(value, (key, field: unknown) =>
+      !capText || typeof field !== "string"
+        ? field
+        : cappedText(field, key === "body" ? messageBodyLimit : textFieldLimit),
+    ) ?? "null";
   return json.replace(
     /\\(?:["\\/bfnrt]|u[\da-fA-F]{4})|[<>&\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,
     (character) => {
