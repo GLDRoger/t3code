@@ -342,7 +342,7 @@ export function kinChoiceCardView(
           : card.detail;
   // `detail` opens with the asker's line too, for older clients; shown here once, first.
   const by = card.askedBy;
-  const own =
+  const asked =
     noted === null || by === undefined
       ? noted
       : noted === by
@@ -350,6 +350,14 @@ export function kinChoiceCardView(
         : noted.startsWith(`${by}\n`)
           ? noted.slice(by.length + 1)
           : noted;
+  // Settled, it shows only what happened: never what held while it waited.
+  const own =
+    asked === null ||
+    card.whileOpen === undefined ||
+    (card.answer === null && widget.closedAt === null) ||
+    !asked.startsWith(card.whileOpen)
+      ? asked
+      : asked.slice(card.whileOpen.length);
   const chosen =
     card.answer === null
       ? undefined

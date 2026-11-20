@@ -504,6 +504,11 @@ export const KinChoiceCardState = Schema.Struct({
    * the question. `detail` opens with the same line for older clients.
    */
   askedBy: Schema.optionalKey(KinTrimmedText.check(Schema.isMaxLength(500))),
+  /**
+   * What holds only until someone answers, such as "Until someone chooses, …": shown while the
+   * card is open, never once it is settled. `detail` opens with it for older clients.
+   */
+  whileOpen: Schema.optionalKey(KinTrimmedText.check(Schema.isMaxLength(600))),
   // An agent's kin_ask offers at most four; Kin's own cards, such as a statement's currency, up to eight.
   options: Schema.Array(KinChoiceOption).check(Schema.isMinLength(2), Schema.isMaxLength(8)),
   /** A picture of what is asked about, such as a new logo: a file in this card's chat. */

@@ -371,6 +371,24 @@ describe("choice cards", () => {
     expect(kinChoiceAccessibilityLabel(forZoya, null)).toMatch(
       /^Question\. Zoya Sheikh asks, through Chief of staff\. Ship today\?/,
     );
+    // What holds only while nobody has chosen shows while open, on no settled copy.
+    const waiting = "Until someone chooses, they stay in Zoya's name and can still be found.";
+    const handOver = (change: Record<string, unknown>, state: Record<string, unknown> = {}) =>
+      choice({
+        ...change,
+        state: { ...choiceState(), detail: waiting, whileOpen: waiting, ...state },
+      }).detail;
+    const given = { title: "Given to Meera", text: "Meera now looks after 2 clients." };
+    const tapped = {
+      optionId: "option-1",
+      personId: "rhea",
+      via: "tap",
+      emoji: null,
+      answeredAt: "2026-11-08T09:01:00.000Z",
+    };
+    expect(handOver({})).toBe(waiting);
+    expect(handOver({}, { answer: tapped, outcome: given })).toBeNull();
+    expect(handOver({ closedAt: "2026-11-08T09:01:00.000Z" }, { outcome: given })).toBeNull();
     expect(kinChoicePhase(open, posted + 60_000)).toBe("open");
     expect(kinChoicePhase(open, posted + 24 * 60 * 60 * 1000)).toBe("expired");
     expect(kinChoicePhase(choice({ closedAt: "2026-11-08T10:00:00.000Z" }), posted)).toBe(

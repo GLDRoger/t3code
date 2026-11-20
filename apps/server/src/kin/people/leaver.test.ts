@@ -173,6 +173,7 @@ type Card = {
   readonly chatId: string;
   readonly closed: boolean;
   readonly question: string;
+  readonly whileOpen: string | undefined;
   readonly labels: ReadonlyArray<string>;
   readonly outcome: { readonly title: string; readonly text: string } | undefined;
 };
@@ -188,6 +189,7 @@ const cards = (ctx: Ctx) =>
       rows.map((row): Card => {
         const state = JSON.parse(row.state) as {
           question: string;
+          whileOpen?: string;
           options: ReadonlyArray<{ label: string }>;
           outcome?: { title: string; text: string };
         };
@@ -196,6 +198,7 @@ const cards = (ctx: Ctx) =>
           chatId: row.chatId,
           closed: row.closedAt !== null,
           question: state.question,
+          whileOpen: state.whileOpen,
           labels: state.options.map((option) => option.label),
           outcome: state.outcome,
         };
@@ -272,6 +275,11 @@ it.effect(
           assert.strictEqual(
             card.question,
             `Zoya left the team and looked after ${HELD}. Who takes them?`,
+          );
+          // Shown only while nobody has chosen, on every copy.
+          assert.strictEqual(
+            card.whileOpen,
+            "Until someone chooses, they stay in Zoya's name and can still be found.",
           );
           // Dev has Clients off: never offered.
           assert.deepStrictEqual(card.labels, [
