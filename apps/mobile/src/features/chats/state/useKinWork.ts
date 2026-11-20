@@ -12,7 +12,6 @@ import {
   kinWorkChangesStart,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
-  KIN_CLIENTS_DEFAULT_FILTER,
   KIN_PROJECTS_DEFAULT_FILTER,
   kinClientPageKeys,
   kinClientsQuery,
@@ -272,13 +271,13 @@ export function useKinPagedList<Filter extends { readonly text: string }, Row>(
   return { state, list };
 }
 
-/** The clients list: active or closed, by name, a page at a time. */
+/** The clients list: late first, then no next step, then by name, a page at a time. */
 export function useKinClientsList(
   { environmentId, orgId }: KinWorkTarget,
   seq: number | null,
-  closed = false,
+  /** Where it starts; read once, as the list is made. */
+  initial: KinClientsFilter,
 ) {
-  const initial = { ...KIN_CLIENTS_DEFAULT_FILTER, closed };
   return useKinPagedList<KinClientsFilter, KinPartyRow>(
     initial,
     (onChange) =>

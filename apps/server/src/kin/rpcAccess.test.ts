@@ -84,14 +84,19 @@ const MEMBER = [
   "kin.work.commentRemove",
   "kin.work.comments",
   "kin.work.create",
+  // The light CRM's: the gate lets a person through, and `ownerClients.ts` decides the rest.
+  "kin.work.createContact",
+  "kin.work.createParty",
   "kin.work.dates",
   "kin.work.get",
   "kin.work.handBack",
   "kin.work.handOver",
+  "kin.work.history",
   "kin.work.linkAdd",
   "kin.work.linkRemove",
   "kin.work.list",
   "kin.work.lists",
+  "kin.work.logTouch",
   "kin.work.money",
   "kin.work.nudge",
   "kin.work.parties",
@@ -99,9 +104,12 @@ const MEMBER = [
   "kin.work.project",
   "kin.work.projectPeople",
   "kin.work.projects",
+  "kin.work.removeTouch",
   "kin.work.subscribe",
   "kin.work.summary",
   "kin.work.update",
+  "kin.work.updateContact",
+  "kin.work.updateParty",
 ];
 
 it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {

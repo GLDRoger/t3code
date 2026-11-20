@@ -6,7 +6,13 @@ import {
   KIN_TOUCH_KINDS,
   kinLocalDay,
   kinTouchAt,
+  kinTouchNext,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
+import {
+  KIN_WORK_NEW_COPY,
+  kinWorkDueChoices,
+  kinWorkDueLabel,
+} from "@t3tools/client-runtime/kin/kinWork";
 import { EnvironmentId, KinOrgId, KinRecordKey, type KinTouchKind } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -46,6 +52,9 @@ export function KinTouchFormScreen({ route }: StaticScreenProps<KinTouchFormPara
   const [kind, setKind] = useState<KinTouchKind>("call");
   const [daysAgo, setDaysAgo] = useState(0);
   const [note, setNote] = useState("");
+  const [nextTitle, setNextTitle] = useState("");
+  const [nextDay, setNextDay] = useState("");
+  const [opened] = useState(() => new Date());
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   if (environmentId === null || orgId === null || party === null)
@@ -60,6 +69,8 @@ export function KinTouchFormScreen({ route }: StaticScreenProps<KinTouchFormPara
     );
   const save = async () => {
     if (saving || note.trim() === "") return;
+    const next = kinTouchNext(nextTitle, nextDay);
+    if (next !== undefined && "problem" in next) return setFailed(next.problem);
     setSaving(true);
     setFailed(null);
     const now = new Date();
@@ -72,6 +83,7 @@ export function KinTouchFormScreen({ route }: StaticScreenProps<KinTouchFormPara
         kind,
         note: note.trim(),
         ...(at === undefined ? {} : { at }),
+        ...(next === undefined ? {} : { next }),
         clientRequestId: requestId,
       },
     });
@@ -134,6 +146,39 @@ export function KinTouchFormScreen({ route }: StaticScreenProps<KinTouchFormPara
           ))}
         </View>
       </View>
+      <ListSection>
+        <KinWorkTextField
+          label={KIN_CLIENTS.nextStepTitle}
+          value={nextTitle}
+          disabled={saving}
+          maxLength={280}
+          placeholder={KIN_CLIENTS.nextStepPlaceholder}
+          onChangeText={setNextTitle}
+        />
+      </ListSection>
+      {nextTitle.trim() === "" ? null : (
+        <View className="gap-2">
+          <Text className="px-2 text-sm text-foreground-muted">{KIN_CLIENTS.nextStepWhen}</Text>
+          <View className="flex-row flex-wrap gap-2">
+            <Chip
+              label={KIN_WORK_NEW_COPY.noDue}
+              selected={nextDay === ""}
+              disabled={saving}
+              onPress={() => setNextDay("")}
+            />
+            {kinWorkDueChoices(opened).map((choice) => (
+              <Chip
+                key={choice.day}
+                label={choice.label}
+                accessibilityLabel={`${choice.label}, ${kinWorkDueLabel(choice.day, opened)}`}
+                selected={nextDay === choice.day}
+                disabled={saving}
+                onPress={() => setNextDay(choice.day)}
+              />
+            ))}
+          </View>
+        </View>
+      )}
     </KinWorkFrame>
   );
 }

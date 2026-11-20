@@ -6,6 +6,12 @@ import {
 } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinPlaceReach, type KinPlaceReach } from "@t3tools/client-runtime/kin/kinJoin";
 import {
+  KIN_CLIENTS_DEFAULT_FILTER,
+  kinClientsStartFilter,
+  kinSeesClients,
+  type KinClientsFilter,
+} from "@t3tools/client-runtime/kin/kinWorkClients";
+import {
   KIN_SCOPE_ALL,
   kinViewerScope,
   type KinViewerScope,
@@ -49,6 +55,19 @@ export function useKinViewerScope(environmentId: EnvironmentId): KinViewerScope 
 export function useKinOpensClients(environmentId: EnvironmentId): boolean {
   const ownerLevel = useKinOwnerLevel(environmentId);
   return useKinPlaceReach(environmentId)?.clients === true || ownerLevel;
+}
+
+/** Whether this viewer sees every client and may add a prospect: owner level, or Clients on. */
+export function useKinSeesClients(environmentId: EnvironmentId): boolean {
+  const ownerLevel = useKinOwnerLevel(environmentId);
+  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
+  return ownerLevel || kinSeesClients(me);
+}
+
+/** Where the clients list starts: a teammate with Clients on, on their own. */
+export function useKinClientsStart(environmentId: EnvironmentId): KinClientsFilter {
+  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
+  return isChatOnlySession() ? kinClientsStartFilter(me) : KIN_CLIENTS_DEFAULT_FILTER;
 }
 
 /**

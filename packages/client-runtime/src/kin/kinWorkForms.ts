@@ -53,8 +53,15 @@ export const KIN_WORK_FORM_COPY = {
     name: "Name",
     namePlaceholder: "Acme Foods",
     kind: "They are a",
+    kindProspect: "Prospect",
     kindClient: "Client",
     kindVendor: "Vendor",
+    prospectTitle: "New prospect",
+    source: "Came from",
+    sourcePlaceholder: "Where you met them, or who sent them",
+    tags: "Tags",
+    tagsPlaceholder: "Words to find them by, separated by commas",
+    memberHint: "Terms, tax details and Keep private stay with the owner and co-owners.",
     terms: "Terms",
     termsPlaceholder: "Retainer, billed monthly, net 30",
     termsHint: "Always private. Only you see the terms.",
@@ -114,9 +121,14 @@ export const KIN_WORK_FORM_COPY = {
 
 // What the owner types
 
+export type KinClientDraftKind = "prospect" | "client" | "vendor";
+
 export interface KinClientDraft {
   readonly name: string;
-  readonly vendor: boolean;
+  readonly kind: KinClientDraftKind;
+  readonly source: string;
+  /** As typed: words separated by commas. */
+  readonly tags: string;
   readonly terms: string;
   readonly address: string;
   readonly gstin: string;
@@ -155,14 +167,35 @@ export const kinIndiaFields = (country: string | null | undefined) =>
 export const kinClientDraftOf = (
   party?: Pick<
     KinPartyDetail,
-    "name" | "kind" | "terms" | "address" | "gstin" | "placeOfSupply" | "notes" | "sensitive"
+    | "name"
+    | "kind"
+    | "prospect"
+    | "source"
+    | "tags"
+    | "terms"
+    | "address"
+    | "gstin"
+    | "placeOfSupply"
+    | "notes"
+    | "sensitive"
   >,
+  /** A new one starts as this; a new client from a teammate is always a prospect. */
+  start: KinClientDraftKind = "client",
 ): KinClientDraft => {
   const place = party?.placeOfSupply?.trim() ?? "";
   const state = kinGstStateName(place);
   return {
     name: party?.name ?? "",
-    vendor: party?.kind === "vendor",
+    kind:
+      party === undefined
+        ? start
+        : party.kind === "vendor"
+          ? "vendor"
+          : party.prospect === true
+            ? "prospect"
+            : "client",
+    source: party?.source ?? "",
+    tags: (party?.tags ?? []).join(", "),
     terms: party?.terms ?? "",
     address: party?.address ?? "",
     gstin: party?.gstin ?? "",
@@ -195,10 +228,34 @@ export function kinClientGstinNote(draft: KinClientDraft): string | null {
 const tooLong = (text: string, max: number, what: string) =>
   text.trim().length > max ? `Keep ${what} under ${max} characters.` : null;
 
+const SOURCE_MAX = 120;
+const TAG_MAX = 60;
+const TAGS_MAX = 20;
+
+/** The tags typed, each once, in the order typed. */
+const kinClientTags = (text: string): ReadonlyArray<string> => [
+  ...new Set(
+    text
+      .split(",")
+      .map((tag) => tag.trim())
+      .filter((tag) => tag !== ""),
+  ),
+];
+
+const tagsCheck = (text: string): string | null => {
+  const tags = kinClientTags(text);
+  if (tags.length > TAGS_MAX) return `Keep it to ${TAGS_MAX} tags.`;
+  return tags.some((tag) => tag.length > TAG_MAX)
+    ? `Keep each tag under ${TAG_MAX} characters.`
+    : null;
+};
+
 export const kinClientDraftCheck = (draft: KinClientDraft): string | null =>
   draft.name.trim() === ""
     ? "Give them a name."
     : (tooLong(draft.name, NAME_MAX, "the name") ??
+      tooLong(draft.source, SOURCE_MAX, "where they came from") ??
+      tagsCheck(draft.tags) ??
       tooLong(draft.terms, NOTES_MAX, "the terms") ??
       tooLong(draft.address, ADDRESS_MAX, "the address") ??
       (draft.gstin.trim() !== "" && !KIN_GSTIN_PATTERN.test(gstinOf(draft.gstin))
@@ -211,7 +268,10 @@ export const kinClientCreateInput = (
   draft: KinClientDraft,
 ): Omit<KinPartyCreateInput, "orgId" | "clientRequestId"> => ({
   name: draft.name.trim(),
-  ...(draft.vendor ? { kind: "vendor" as const } : {}),
+  ...(draft.kind === "vendor" ? { kind: "vendor" as const } : {}),
+  ...(draft.kind === "prospect" ? { prospect: true } : {}),
+  ...(draft.source.trim() === "" ? {} : { source: draft.source.trim() }),
+  ...(kinClientTags(draft.tags).length === 0 ? {} : { tags: kinClientTags(draft.tags) }),
   ...(draft.terms.trim() === "" ? {} : { terms: draft.terms.trim() }),
   ...(draft.address.trim() === "" ? {} : { address: draft.address.trim() }),
   ...(draft.gstin.trim() === "" ? {} : { gstin: gstinOf(draft.gstin) }),
@@ -222,13 +282,19 @@ export const kinClientCreateInput = (
 
 type Changed<D> = { readonly [K in keyof D]?: D[K] };
 
+const KIND_INPUT: Record<KinClientDraftKind, Pick<KinPartyUpdateInput, "kind" | "prospect">> = {
+  vendor: { kind: "vendor" },
+  client: { kind: "client", prospect: false },
+  prospect: { kind: "client", prospect: true },
+};
+
 export const kinClientUpdateInput = (
   changed: Changed<KinClientDraft>,
 ): Omit<KinPartyUpdateInput, "orgId" | "key" | "rev"> => ({
   ...(changed.name === undefined ? {} : { name: changed.name.trim() }),
-  ...(changed.vendor === undefined
-    ? {}
-    : { kind: changed.vendor ? ("vendor" as const) : ("client" as const) }),
+  ...(changed.kind === undefined ? {} : KIND_INPUT[changed.kind]),
+  ...(changed.source === undefined ? {} : { source: changed.source.trim() || null }),
+  ...(changed.tags === undefined ? {} : { tags: kinClientTags(changed.tags) }),
   ...(changed.terms === undefined ? {} : { terms: changed.terms.trim() || null }),
   ...(changed.address === undefined ? {} : { address: changed.address.trim() || null }),
   ...(changed.gstin === undefined ? {} : { gstin: gstinOf(changed.gstin) || null }),

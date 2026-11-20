@@ -55,7 +55,7 @@ export function KinPlaceLists(props: Shared) {
 /** What this client owes us and how late, from the same figures as Money; its invoices follow. */
 function PlaceOwed(props: Shared & { readonly party: KinWorkRef }) {
   const lists = useKinLists(props, { enabled: true });
-  const { state } = useKinMoneySummary(props, { enabled: true });
+  const { state } = useKinMoneySummary(props, { enabled: true, party: props.party.key });
   if (state._tag !== "ready") return null;
   const client = kinMoneyView(state.value, kinListsOf(lists)).clients.find(
     (held) => held.key === props.party.key,

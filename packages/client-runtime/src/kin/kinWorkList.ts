@@ -19,10 +19,12 @@ import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import {
+  isKinChatError,
   KIN_WORK_DEFAULT_FILTER,
   kinWorkByMove,
   kinWorkListQuery,
   kinWorkRefsMatching,
+  kinWorkRefused,
   kinWorkSameFilter,
   type KinWorkFilter,
   type KinWorkRef,
@@ -31,6 +33,10 @@ import { kinFailure } from "./kinAnswers.ts";
 import { kinWorkRefOf } from "./kinWorkClients.ts";
 
 export const KIN_WORK_PAGE = 50;
+
+/** The host refused the read, or no longer finds what it reads: not a failure that may pass. */
+const kinWorkDenied = (error: unknown) =>
+  kinWorkRefused(error) || (isKinChatError(error) && error.reason === "not_found");
 /** Typing in the search box reads once the owner pauses, not per letter. */
 const KIN_WORK_TYPING_MS = 250;
 
@@ -164,16 +170,14 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
       });
       if (mine !== generation) return;
       if (!AsyncResult.isSuccess(result)) {
-        // Rows read for other words can't stand in for these, so only the same filter's stay up.
-        if (shownFor !== null && sameFilter(shownFor, state.filter))
+        const failed = squashAtomCommandFailure(result);
+        // Rows read for other words can't stand in for these, so only the same filter's stay up,
+        // and only through a failure that may pass: a refusal means they are no longer theirs.
+        if (shownFor !== null && sameFilter(shownFor, state.filter) && !kinWorkDenied(failed))
           set({ refreshing: false, stale: true });
         else {
           shownFor = null;
-          set({
-            ...emptyState<Filter, Row>(state.filter),
-            loading: false,
-            failed: squashAtomCommandFailure(result),
-          });
+          set({ ...emptyState<Filter, Row>(state.filter), loading: false, failed });
         }
         return afterRead();
       }

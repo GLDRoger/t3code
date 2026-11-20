@@ -264,6 +264,8 @@ export const KinMoneySummaryInput = Schema.Struct({
   orgId: KinOrgId,
   /** `false` answers `upcoming` empty, `upcomingTotal` still counted: for screens that draw only the count. */
   upcomingRows: Schema.optional(Schema.Boolean),
+  /** One client's page: what is owed is that client's alone, and none to a teammate without Money. */
+  party: Schema.optional(KinRecordKey),
 });
 export type KinMoneySummaryInput = typeof KinMoneySummaryInput.Type;
 

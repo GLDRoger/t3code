@@ -7,6 +7,7 @@ import {
   KinPersonId,
   KinRecordId,
   KinRecordKey,
+  type KinPartyPage,
   type KinPartyRow,
   type KinProjectRow,
 } from "@t3tools/contracts";
@@ -15,10 +16,18 @@ import {
   kinProjectPeopleChoices,
   kinNewTaskChoices,
   kinClientContactLine,
+  kinClientPageView,
   kinClientRow,
+  kinClientsNothing,
+  kinClientsQuery,
+  kinClientsShowChoices,
+  kinClientsStartFilter,
+  KIN_CLIENTS_DEFAULT_FILTER,
   kinLastContactLine,
   kinProjectsByClient,
   kinTouchAt,
+  kinTouchNext,
+  kinWorkTimeline,
 } from "./kinWorkClients.ts";
 
 describe("kinLastContactLine", () => {
@@ -64,6 +73,21 @@ describe("kinTouchAt", () => {
   });
 });
 
+describe("kinTouchNext", () => {
+  it("leaves a follow-up only with a title, due all day on the day picked", () => {
+    expect(kinTouchNext("  ", "2026-11-24")).toBeUndefined();
+    expect(kinTouchNext(" Send the pilot outline ", "")).toEqual({
+      title: "Send the pilot outline",
+    });
+    expect(kinTouchNext("Send the pilot outline", "2026-11-24")).toEqual({
+      title: "Send the pilot outline",
+      dueAt: "2026-11-24",
+      dueAllDay: true,
+    });
+    expect(kinTouchNext("x".repeat(281), "")).toHaveProperty("problem");
+  });
+});
+
 describe("kinClientRow", () => {
   const now = new Date("2026-11-15T10:00:00.000Z");
   const names = { people: new Map(), agents: new Map(), me: null, zone: "Asia/Kolkata" };
@@ -88,6 +112,253 @@ describe("kinClientRow", () => {
     );
     // A teammate's row comes without counts, so its zeros aren't "Nothing open".
     expect(kinClientRow(row, names, now).line).toBe("");
+  });
+
+  const zoya = KinPersonId.make("zoya");
+  const named = { ...names, people: new Map([[zoya, "Zoya"]]) };
+  const prospect: KinPartyRow = {
+    ...row,
+    prospect: true,
+    source: "Harbour trade fair",
+    owner: { _tag: "person", personId: zoya },
+    lastContactAt: null,
+  };
+  it.each([
+    ["a prospect", prospect, named, "Prospect", "Zoya", "No next step · from Harbour trade fair"],
+    [
+      "your own prospect",
+      prospect,
+      { ...named, me: zoya },
+      "Prospect",
+      "",
+      "No next step · from Harbour trade fair",
+    ],
+    [
+      "a client with nothing next",
+      { ...row, lastContactAt: null },
+      names,
+      null,
+      "Nothing open · No logged contact yet",
+      "No next step",
+    ],
+    // Without counts a row can't know there is no next step; a vendor has none to take.
+    ["a teammate's name-only row", row, names, null, "", null],
+    [
+      "a vendor",
+      { ...row, kind: "vendor", lastContactAt: null },
+      names,
+      null,
+      "Vendor · Nothing open",
+      null,
+    ],
+    ["a closed prospect", { ...prospect, active: false }, named, "Prospect", "Zoya · Closed", null],
+  ] as const)("%s reads its mark, line and next", (_what, held, who, mark, line, next) => {
+    const view = kinClientRow(held, who, now);
+    expect([view.mark, view.line, view.next, view.noNext]).toEqual([
+      mark,
+      line,
+      next,
+      next?.startsWith("No next step") === true,
+    ]);
+  });
+
+  it("names the next step it has, late or not, and never says there is none", () => {
+    const next = {
+      key: KinRecordKey.make("W-4"),
+      title: "Send the plan",
+      dueAt: null,
+      dueAllDay: true,
+      late: true,
+    };
+    expect(kinClientRow({ ...prospect, next }, named, now)).toMatchObject({
+      next: "Late: Send the plan",
+      noNext: false,
+    });
+  });
+});
+
+describe("the clients list's Show and Looked after by", () => {
+  const orgId = KinOrgId.make("invented-org");
+  const arjun = { _tag: "person", personId: KinPersonId.make("arjun") } as const;
+  it.each([
+    ["open", {}],
+    ["prospects", { prospect: true }],
+    ["clients", { kind: "client" }],
+    ["vendors", { kind: "vendor" }],
+    ["closed", { active: false }],
+  ] as const)("%s asks the host for %o", (show, asked) => {
+    expect(kinClientsQuery(orgId, { ...KIN_CLIENTS_DEFAULT_FILTER, show })).toEqual({
+      orgId,
+      ...asked,
+    });
+  });
+
+  it("asks for whoever looks after them, and words alongside", () => {
+    expect(
+      kinClientsQuery(orgId, { show: "prospects", lookedAfter: arjun, text: " Fen " }),
+    ).toEqual({ orgId, prospect: true, owner: arjun, text: "Fen" });
+  });
+
+  it("offers someone who reads names only no choice that tells a prospect from a client", () => {
+    expect(kinClientsShowChoices(true).map((one) => one.id)).toEqual([
+      "open",
+      "prospects",
+      "clients",
+      "vendors",
+      "closed",
+    ]);
+    expect(kinClientsShowChoices(false).map((one) => one.id)).toEqual(["open", "closed"]);
+  });
+
+  it("starts a teammate with Clients on at their own, and everyone else at everyone's", () => {
+    const personId = KinPersonId.make("zoya");
+    const on = { clients: true } as never;
+    expect(kinClientsStartFilter({ access: "member", personId, places: on }).lookedAfter).toEqual({
+      _tag: "person",
+      personId,
+    });
+    for (const me of [
+      { access: "owner", personId, places: on },
+      { access: "co_owner", personId },
+      { access: "member", personId, places: { clients: false } as never },
+      { access: "member", personId },
+    ] as const)
+      expect(kinClientsStartFilter(me)).toBe(KIN_CLIENTS_DEFAULT_FILTER);
+    expect(kinClientsStartFilter(null)).toBe(KIN_CLIENTS_DEFAULT_FILTER);
+  });
+
+  it("says why nothing shows, and offers a prospect where adding one helps", () => {
+    const me = KinPersonId.make("zoya");
+    const nothing = (filter: Partial<typeof KIN_CLIENTS_DEFAULT_FILTER>) =>
+      kinClientsNothing({ ...KIN_CLIENTS_DEFAULT_FILTER, ...filter }, undefined, me);
+    expect(nothing({})).toMatchObject({ title: "No clients or prospects yet", offerNew: true });
+    expect(nothing({ show: "prospects" })).toMatchObject({ title: "No prospects", offerNew: true });
+    expect(nothing({ show: "vendors" })).toMatchObject({ title: "No vendors", offerNew: false });
+    expect(nothing({ lookedAfter: { _tag: "person", personId: me } })).toMatchObject({
+      title: "You don't look after any yet",
+      offerNew: true,
+    });
+    expect(nothing({ lookedAfter: arjun })).toMatchObject({ offerNew: false });
+  });
+});
+
+describe("kinClientPageView", () => {
+  const now = new Date("2026-11-20T10:00:00.000Z");
+  const zoya = KinPersonId.make("zoya");
+  const names = { people: new Map([[zoya, "Zoya"]]), agents: new Map(), me: null, zone: "UTC" };
+  const page = (party: Partial<KinPartyPage["party"]>, can?: KinPartyPage["can"]) =>
+    ({
+      party: {
+        recordId: KinRecordId.make("r-C-7"),
+        key: KinRecordKey.make("C-7"),
+        name: "Brightwater Clinics",
+        kind: "client",
+        owner: { _tag: "person", personId: zoya },
+        active: true,
+        sensitive: false,
+        weOwe: 0,
+        theyOwe: 0,
+        late: 0,
+        overdue: 0,
+        next: null,
+        rev: 1,
+        notes: "",
+        terms: null,
+        address: null,
+        gstin: null,
+        placeOfSupply: null,
+        sensitiveFields: [],
+        createdAt: "2026-11-01T10:00:00.000Z",
+        updatedAt: "2026-11-01T10:00:00.000Z",
+        closedAt: null,
+        seq: 1,
+        ...party,
+      },
+      weOwe: { records: [], total: 0 },
+      theyOwe: { records: [], total: 0 },
+      projects: [],
+      contacts: [],
+      ...(can === undefined ? {} : { can }),
+    }) as unknown as KinPartyPage;
+
+  it("reads Prospect, where it came from and who looks after it", () => {
+    const view = kinClientPageView(
+      page({ prospect: true, source: "Harbour trade fair", tags: ["clinics"] }),
+      names,
+      now,
+      true,
+    );
+    expect(view).toMatchObject({
+      line: "Prospect · from Harbour trade fair",
+      lookedAfter: { name: "Zoya" },
+      source: "Harbour trade fair",
+      tags: ["clinics"],
+      nextStep: { next: null },
+    });
+    expect(kinClientPageView(page({}), names, now, true).line).toBe("Client");
+  });
+
+  it("opens with the soonest thing owed, and a vendor has no Next step row", () => {
+    const next = {
+      key: KinRecordKey.make("W-38"),
+      title: "Send the revised proposal",
+      dueAt: "2026-11-18T00:00:00.000Z",
+      dueAllDay: true,
+      late: true,
+    };
+    const step = kinClientPageView(page({ next }), names, now, true).nextStep?.next;
+    expect(step).toMatchObject({ title: "Send the revised proposal", late: true });
+    expect(step?.line).toMatch(/^Was due .+ · W-38$/);
+    expect(kinClientPageView(page({ kind: "vendor" }), names, now, true).nextStep).toBeNull();
+  });
+
+  it("takes what the host says this reader may do, and from an older host only the owner level", () => {
+    const can = { edit: true, log: true, owner: false };
+    expect(kinClientPageView(page({}, can), names, now, false).can).toEqual(can);
+    expect(kinClientPageView(page({}), names, now, true).can).toEqual({
+      edit: true,
+      log: true,
+      owner: true,
+    });
+    expect(kinClientPageView(page({}), names, now, false).can).toEqual({
+      edit: false,
+      log: false,
+      owner: false,
+    });
+  });
+});
+
+describe("kinWorkTimeline", () => {
+  const now = new Date("2026-11-20T10:00:00.000Z");
+  const rhea = KinPersonId.make("rhea");
+  const zoya = KinPersonId.make("zoya");
+  const own = KinRecordKey.make("C-4");
+  const kindChange = (from: string | null, to: string) =>
+    ({
+      seq: 1,
+      at: "2026-11-20T09:00:00.000Z",
+      by: { _tag: "person", personId: rhea },
+      via: "ui",
+      kind: "updated",
+      fields: [{ field: "category", from, to }],
+      record: { recordId: KinRecordId.make("r-C-4"), key: own, title: "Fennick", list: "clients" },
+    }) as never;
+  it.each([
+    ["prospect", "client", "marked them a client"],
+    ["client", "prospect", "marked them a prospect again"],
+    ["vendor", "prospect", "marked them a prospect"],
+    ["client", "vendor", "marked them a vendor"],
+    ["vendor", "client", "marked them a client"],
+  ] as const)("names a move from %s to %s, both ways", (from, to, said) => {
+    const line = (me: KinPersonId | null) =>
+      kinWorkTimeline(
+        [kindChange(from, to)],
+        { people: new Map([[rhea, "Rhea"]]), agents: new Map(), me, zone: "UTC" },
+        now,
+        own,
+      )[0]?.text;
+    expect(line(rhea)).toBe(`You ${said}`);
+    expect(line(zoya)).toBe(`Rhea ${said}`);
   });
 });
 
@@ -222,5 +493,9 @@ describe("kinNewTaskChoices", () => {
     // Until the host says, or from a host that sends no leads, the host is left to refuse.
     expect(kinNewTaskChoices(choices, null)).toBe(choices);
     expect(kinNewTaskChoices(choices, { access: "member" })).toBe(choices);
+    // With Clients on, any client they see goes on their own task.
+    expect(
+      kinNewTaskChoices(choices, { access: "member", leads, places: { clients: true } as never }),
+    ).toEqual({ clients: ["C-1"], projects: [p1] });
   });
 });

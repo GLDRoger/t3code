@@ -89,6 +89,45 @@ describe("createKinWorkForm", () => {
     expect(kinClientUpdateInput({ address: " \n " })).toEqual({ address: null });
   });
 
+  it("sends a prospect, where it came from and its tags, and switches prospect and client", () => {
+    const draft = {
+      ...kinClientDraftOf(undefined, "prospect"),
+      name: "Fennick & Daughters",
+      source: " Harbour trade fair ",
+      tags: "clinics, north,, clinics ",
+    };
+    expect(kinClientCreateInput(draft)).toEqual({
+      name: "Fennick & Daughters",
+      prospect: true,
+      source: "Harbour trade fair",
+      tags: ["clinics", "north"],
+    });
+    expect(kinClientDraftCheck({ ...draft, tags: "x".repeat(61) })).toMatch(/each tag/);
+    expect(kinClientUpdateInput({ kind: "client" })).toEqual({ kind: "client", prospect: false });
+    expect(kinClientUpdateInput({ kind: "prospect" })).toEqual({ kind: "client", prospect: true });
+    expect(kinClientUpdateInput({ kind: "vendor" })).toEqual({ kind: "vendor" });
+    // Typed away, both clear.
+    expect(kinClientUpdateInput({ source: " ", tags: "" })).toEqual({ source: null, tags: [] });
+    const stored = kinClientDraftOf({
+      name: "Fennick & Daughters",
+      kind: "client",
+      prospect: true,
+      source: "Harbour trade fair",
+      tags: ["clinics", "north"],
+      terms: null,
+      address: null,
+      gstin: null,
+      placeOfSupply: null,
+      notes: "",
+      sensitive: false,
+    });
+    expect([stored.kind, stored.source, stored.tags]).toEqual([
+      "prospect",
+      "Harbour trade fair",
+      "clinics, north",
+    ]);
+  });
+
   it("takes a client's GSTIN and state, the state from the GSTIN, saying when they disagree", () => {
     const blank = { ...kinClientDraftOf(), name: "Invented Foods" };
     const typed = kinClientDraftWithGstin(blank, " 27bbbbb2222b1z5 ");

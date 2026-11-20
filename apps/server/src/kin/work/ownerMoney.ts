@@ -258,12 +258,25 @@ export const money = Effect.fn("KinMoney.summary")(function* (
   input: KinMoneySummaryInput,
 ) {
   const team = yield* moneyReader(people, input.orgId);
+  // For a client's page, a teammate without the Money switch reads none, whichever project they lead.
+  const hidden =
+    input.party !== undefined && team !== undefined && !(yield* placesOf(input.orgId, team)).money;
   const summary = yield* moneySummary(
     input.orgId,
     yield* Clock.currentTimeMillis,
-    team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
+    team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(hidden ? [] : [team]),
   );
-  return input.upcomingRows === false ? { ...summary, upcoming: [] } : summary;
+  const shown =
+    input.party === undefined
+      ? summary
+      : {
+          ...summary,
+          owed: {
+            ...summary.owed,
+            byClient: summary.owed.byClient.filter((one) => one.party?.key === input.party),
+          },
+        };
+  return input.upcomingRows === false ? { ...shown, upcoming: [] } : shown;
 }, workFailure);
 
 const noMoney = new KinChatError({
