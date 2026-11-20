@@ -134,6 +134,8 @@ export type Writer = {
   readonly askedBy?: KinPersonId | null;
   /** A teammate from their own app: `teamGuard` decides the write inside its transaction. */
   readonly teammate?: boolean;
+  /** `deals.ts`, which decided the write's rules: no other path writes a deal. */
+  readonly deal?: true;
   /** A member's write in Clients: a name clashes only with what this person sees there (`crmSees`). */
   readonly namesSeenBy?: KinPersonId;
   /**
@@ -236,6 +238,8 @@ export type Patch = Partial<Omit<Fields, "owner">> & {
   readonly owner?: KinWorkPrincipal;
   /** The holder gives it back to `owner`, whoever gave it to them, in their own words. */
   readonly handedBack?: { readonly note: string | null };
+  /** What a field's old and new ids read as now, kept on its history line (`FieldChange.names`). */
+  readonly names?: Readonly<Record<string, NonNullable<FieldChange["names"]>>>;
 };
 export type LinkInput = {
   readonly kind: KinRecordLinkKind;
@@ -313,6 +317,9 @@ const encodeFields = Schema.encodeEffect(
         field: Schema.String,
         from: Schema.NullOr(Schema.String),
         to: Schema.NullOr(Schema.String),
+        names: Schema.optional(
+          Schema.Struct({ from: Schema.NullOr(Schema.String), to: Schema.NullOr(Schema.String) }),
+        ),
       }),
     ),
   ),
@@ -447,6 +454,11 @@ export const paymentIdFor = (orgId: string, originKey: string) =>
   `pay_${NodeCrypto.createHash("sha256").update(`${orgId.length}:${orgId}${originKey}`).digest("hex").slice(0, 20)}`;
 
 /** What a write may set on a list: its states, kinds, fields, and an amount, date or repeat. */
+const dealsOnly = new KinChatError({
+  reason: "invalid_state",
+  message: "A deal changes in Deals: move it, win or lose it there.",
+});
+
 const checkInput = (
   def: ListDef,
   input: {
@@ -1124,12 +1136,17 @@ const make = Effect.gen(function* () {
       ? new KinChatError({ reason: "invalid_state", message: "A client has no client or project." })
       : list === "contacts" && partyId === null
         ? new KinChatError({ reason: "invalid_state", message: "A contact needs its client." })
-        : list !== "work" && list !== "docs" && list !== "milestones" && projectId !== null
+        : list === "deals" && partyId === null
           ? new KinChatError({
               reason: "invalid_state",
-              message: `A ${LISTS[list].noun} has no project.`,
+              message: "A deal needs its client or prospect.",
             })
-          : undefined;
+          : list !== "work" && list !== "docs" && list !== "milestones" && projectId !== null
+            ? new KinChatError({
+                reason: "invalid_state",
+                message: `A ${LISTS[list].noun} has no project.`,
+              })
+            : undefined;
 
   /**
    * One active client, project, or contact of a client, per name: a second is a mistake. A vendor
@@ -1235,6 +1252,7 @@ const make = Effect.gen(function* () {
     if (def.archivedAt !== null)
       return yield* invalid(`${def.name} is archived; the owner can restore it.`);
     const list = def.id;
+    if (list === "deals" && writer.deal !== true) return yield* dealsOnly;
     const fields = Object.fromEntries(
       Object.entries(input.fields ?? {}).filter(
         (entry): entry is [string, FieldValue] => entry[1] !== null,
@@ -1491,6 +1509,7 @@ const make = Effect.gen(function* () {
         const before = toRecord(row, now);
         const def = yield* resolveList(orgId, row.registerId);
         const list = def.id;
+        if (list === "deals" && writer.deal !== true) return yield* dealsOnly;
         const invalidFor = checkInput(def, {
           title: patch.title,
           state: patch.state,
@@ -1615,7 +1634,8 @@ const make = Effect.gen(function* () {
           const from = shownField(stored[field]);
           const to = shownField(value);
           if (from === to) continue;
-          changes.push({ field, from, to });
+          const names = patch.names?.[field];
+          changes.push({ field, from, to, ...(names === undefined ? {} : { names }) });
           fieldsChanged = true;
           if (value === null) delete merged[field];
           else merged[field] = value;

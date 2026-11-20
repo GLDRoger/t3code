@@ -32,7 +32,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
-import { parseFields } from "./lists.ts";
+import { listNameOf, parseFields } from "./lists.ts";
 import { isBuiltIn } from "./registers.ts";
 
 /** The plain rows behind `KinRecords`: reads and the shapes they decode into. No writes here. */
@@ -410,6 +410,7 @@ export const toRecord = (row: RecordRow, now: number): KinRecord => {
       ? { markedBy: KinPersonId.make(row.markedBy) }
       : {}),
     ...moneyOf(row),
+    ...listNameOf(row.registerId),
   };
 };
 
@@ -507,6 +508,8 @@ export type FieldChange = {
   readonly field: string;
   readonly from: string | null;
   readonly to: string | null;
+  /** What `from` and `to` read as at the change, such as a deal's stage names for their ids. */
+  readonly names?: { readonly from: string | null; readonly to: string | null };
 };
 
 /** SQL for the name of the coding-agent key a `table` row came through; NULL when none did. */
@@ -523,6 +526,9 @@ export const parseChanges = (json: string): ReadonlyArray<FieldChange> => {
   }
 };
 
+/** A history line as stored: its fields keep their `names` until a reader puts them in words. */
+export type StoredChange = KinRecordChange & { readonly fields: ReadonlyArray<FieldChange> };
+
 const changesOf = Effect.fn("KinRecords.changesOf")(function* (
   orgId: KinOrgId,
   recordId: string,
@@ -533,7 +539,7 @@ const changesOf = Effect.fn("KinRecords.changesOf")(function* (
       actor_id AS "actorId", via, kind, fields_json AS "fieldsJson"
     FROM kin_record_changes WHERE org_id = ${orgId} AND record_id = ${recordId}
     ORDER BY seq DESC LIMIT ${limit}`;
-  return rows.map((row): KinRecordChange => ({
+  return rows.map((row): StoredChange => ({
     seq: row.seq,
     at: iso(row.at),
     by: actorOf(row.actorKind, row.actorId),

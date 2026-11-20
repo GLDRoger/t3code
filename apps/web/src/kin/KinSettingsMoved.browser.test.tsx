@@ -21,6 +21,7 @@ const ROUTE_PAGE: Partial<Record<SettingsPath, KinSettingsPage>> = {
   "/settings/approvals": "approvals",
   "/settings/check-ins": "check-ins",
   "/settings/company": "company",
+  "/settings/deals": "deals",
   "/settings/kin-connections": "connections",
   "/settings/kin-profile": "profile",
 };
@@ -29,6 +30,7 @@ const ROUTE_PAGE: Partial<Record<SettingsPath, KinSettingsPage>> = {
 const HOLDS: Readonly<Record<string, KinSettingsPage>> = {
   "approval-phones": "approvals",
   "kin-check-ins": "check-ins",
+  "kin-deals": "deals",
   "company-details": "company",
   "kin-time-zone": "company",
   "kin-daily-limit": "company",

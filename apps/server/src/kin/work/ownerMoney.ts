@@ -75,8 +75,13 @@ export const lists = Effect.fn("KinMoney.lists")(function* (
   );
   return {
     lists: [...all.values()]
-      // Docs are a list underneath, with their own screens and RPCs.
-      .filter((def) => def.id !== "docs" && (input.archived === true || def.archivedAt === null))
+      // Docs and deals are lists underneath, with their own screens and RPCs.
+      .filter(
+        (def) =>
+          def.id !== "docs" &&
+          def.id !== "deals" &&
+          (input.archived === true || def.archivedAt === null),
+      )
       // Anyone else gets the lists they see an entry of, never Work's own.
       .filter((def) => team === undefined || (def.builtIn === null && open.has(def.id)))
       .map((def) => toDefinition(def, open.get(def.id) ?? 0)),

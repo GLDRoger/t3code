@@ -89,8 +89,14 @@ const MEMBER = [
   "kin.work.create",
   // The light CRM's: the gate lets a person through, and `ownerClients.ts` decides the rest.
   "kin.work.createContact",
+  // Deals': the gate lets a person through, and `deals.ts` decides the rest (Clients on, `crmSees`).
+  "kin.work.createDeal",
   "kin.work.createParty",
   "kin.work.dates",
+  "kin.work.deal",
+  "kin.work.dealStages",
+  "kin.work.dealStep",
+  "kin.work.deals",
   "kin.work.get",
   "kin.work.handBack",
   "kin.work.handOver",
@@ -101,6 +107,7 @@ const MEMBER = [
   "kin.work.lists",
   "kin.work.logTouch",
   "kin.work.money",
+  "kin.work.moveDeal",
   "kin.work.nudge",
   "kin.work.parties",
   "kin.work.party",
@@ -112,6 +119,7 @@ const MEMBER = [
   "kin.work.summary",
   "kin.work.update",
   "kin.work.updateContact",
+  "kin.work.updateDeal",
   "kin.work.updateParty",
 ];
 

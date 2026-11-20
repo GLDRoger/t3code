@@ -41,6 +41,7 @@ export type SettingsPath =
   | "/settings/secrets"
   | "/settings/company"
   | "/settings/check-ins"
+  | "/settings/deals"
   | "/settings/kin-connections"
   | "/settings/kin-profile"
   | "/settings/maintenance"
@@ -123,6 +124,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/secrets": msg("Secrets"),
   "/settings/company": msg("Company details"),
   "/settings/check-ins": msg("Check-ins"),
+  "/settings/deals": msg("Deals"),
   "/settings/kin-connections": msg("Connections"),
   "/settings/kin-profile": msg("Profile"),
   "/settings/maintenance": msg("Maintenance"),
@@ -145,6 +147,7 @@ export const SETTINGS_NAV_LABELS: Readonly<Record<SettingsPath, string>> = {
 export const KIN_ONLY_SETTINGS_PATHS: ReadonlySet<SettingsPath> = new Set([
   "/settings/approvals",
   "/settings/check-ins",
+  "/settings/deals",
   "/settings/kin-connections",
   "/settings/kin-profile",
 ]);
@@ -154,6 +157,7 @@ export const KIN_MOVED_SETTINGS_PATHS: ReadonlySet<SettingsPath> = new Set([
   "/settings/approvals",
   "/settings/check-ins",
   "/settings/company",
+  "/settings/deals",
   "/settings/kin-connections",
   "/settings/kin-profile",
 ]);
@@ -202,7 +206,12 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
   },
   {
     heading: msg("Kin"),
-    paths: ["/settings/company", "/settings/check-ins", "/settings/kin-connections"],
+    paths: [
+      "/settings/company",
+      "/settings/check-ins",
+      "/settings/deals",
+      "/settings/kin-connections",
+    ],
   },
   {
     heading: msg("More"),
@@ -1409,6 +1418,13 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   ...KIN_PROFILE_SETTINGS_SEARCH_ITEMS,
   {
+    id: "kin-deals",
+    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
+    title: "Deal stages",
+    to: "/settings/deals",
+    searchTerms: ["kin deals stages pipeline won lost sales prospect"],
+  },
+  {
     id: "network-access",
     title: msg("Network access"),
     to: "/settings/access",
@@ -1570,6 +1586,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/secrets": null,
   "/settings/company": null,
   "/settings/check-ins": null,
+  "/settings/deals": null,
   "/settings/kin-connections": null,
   "/settings/kin-profile": null,
   "/settings/scheduled-tasks": null,

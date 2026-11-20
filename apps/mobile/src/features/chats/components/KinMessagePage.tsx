@@ -1,3 +1,4 @@
+import { kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
 import { useNavigation } from "@react-navigation/native";
 import {
   kinBodyMarkdown,
@@ -60,7 +61,9 @@ export function useKinOpenTarget(environmentId: EnvironmentId, orgId: string) {
             ? navigation.navigate("KinProject", { ...where, project: to.key })
             : to.kind === "doc"
               ? navigation.navigate("KinDoc", { ...where, doc: to.key })
-              : navigation.navigate("KinWorkItem", { ...where, task: to.key });
+              : kinIsDealKey(to.key)
+                ? navigation.navigate("KinDeal", { ...where, deal: to.key })
+                : navigation.navigate("KinWorkItem", { ...where, task: to.key });
     }
   };
 }

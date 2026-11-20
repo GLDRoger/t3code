@@ -73,6 +73,8 @@ describe("place addresses", () => {
         tab: "projects",
       },
     ],
+    // A deal opens over the Deals tab, which stays in the address.
+    ["clients", { tab: "deals" }, "/kin/$environmentId/$orgId/clients", { tab: "deals" }],
     ["docs", { doc: party, v: 2 }, "/kin/$environmentId/$orgId/docs", { doc: party, v: 2 }],
     // The Projects tab is the Clients place's alone, and a dialog closes as a task opens.
     [

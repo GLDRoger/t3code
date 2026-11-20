@@ -10,6 +10,7 @@ import {
   KinOrgId,
   KinPersonId,
   KinRecordId,
+  KinRecordKey,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -36,6 +37,7 @@ import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
 import * as Clients from "./ownerClients.ts";
+import * as Deals from "./deals.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
 import * as OwnerWork from "./ownerWork.ts";
@@ -997,6 +999,8 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
         true,
       ],
       dates_query: [LeadMoney.datesQuery(scope, { from: "1970-01-01", to: "2030-12-31" }), true],
+      // Stage names only: nothing of a deal.
+      deal_stages: [LeadWork.dealStages(scope, {}), false],
       company_profile: [LeadMoney.profile(scope, {}), true],
       // Its record part is record_get's; contact and memory show no entry of their own.
       client_read: [LeadClients.contact(scope, { key: "C-1" }), false],
@@ -2980,5 +2984,175 @@ it.effect(
           late,
           atRisk,
         });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "an agent makes and moves a deal through the same rules: a prospect's win makes it a client, a vendor has none, lost needs its reason",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* setup("ask-event");
+      const prospect = yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Brightwater",
+        prospect: true,
+        source: "Invented trade fair",
+        clientRequestId: "brightwater",
+      });
+      const vendor = yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Supplies",
+        kind: "vendor",
+        clientRequestId: "supplies",
+      });
+      // The stages an agent may name, in the company's order.
+      assert.strictEqual(
+        (yield* LeadWork.dealStages(scope, {})).answer,
+        "4 stages: New, In talks, Proposal, Deciding.",
+      );
+      const refused = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.flip,
+          Effect.map((error) => (isChatError(error) ? error.reason : error._tag)),
+        );
+      assert.strictEqual(
+        yield* refused(
+          LeadWork.create(scope, {
+            sourceEventId: "ask-event",
+            records: [{ list: "deals", title: "Invented supply deal", client: vendor.key }],
+          }),
+        ),
+        "invalid_state",
+      );
+      for (const fields of [{ stage: "nope" }, { offering: "Invented" }])
+        assert.strictEqual(
+          yield* refused(
+            LeadWork.create(scope, {
+              sourceEventId: "ask-event",
+              records: [{ list: "deals", title: "Invented pilot", client: prospect.key, fields }],
+            }),
+          ),
+          "invalid_state",
+        );
+      const made = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          {
+            list: "deals",
+            title: "Invented pilot",
+            client: prospect.key,
+            fields: { stage: "in-talks" },
+            amount: "18000",
+            currency: "EUR",
+            due: "2026-12-18",
+          },
+        ],
+      });
+      const key = made.records[0]!.key;
+      // The same row from the same event is a retry.
+      const again = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ list: "deals", title: "Invented pilot", client: prospect.key }],
+      });
+      assert.deepStrictEqual(again.records[0]!, { ...again.records[0]!, key, created: false });
+      const deal = (yield* Deals.page([owner], { orgId, key })).deal;
+      assert.deepInclude(deal, {
+        stage: "in-talks",
+        value: { minor: 1_800_000, currency: "EUR" },
+        source: "Invented trade fair",
+        // Looked after by the person the agent made it for.
+        owner: { _tag: "person", personId: ownerId },
+      });
+      assert.strictEqual(
+        yield* refused(
+          LeadWork.update(scope, {
+            key: KinRecordKey.make(key),
+            sourceEventId: "ask-event",
+            state: "dropped",
+          }),
+        ),
+        "invalid_state",
+      );
+      const won = yield* LeadWork.update(scope, {
+        key: KinRecordKey.make(key),
+        sourceEventId: "ask-event",
+        state: "done",
+      });
+      assert.strictEqual(won.state, "done");
+      assert.isUndefined(
+        (yield* Clients.party([owner], { orgId, key: prospect.key })).party.prospect,
+      );
+      const reopened = yield* LeadWork.update(scope, {
+        key: KinRecordKey.make(key),
+        sourceEventId: "ask-event",
+        state: "open",
+        fields: { stage: "deciding" },
+      });
+      assert.strictEqual(reopened.state, "open");
+      assert.strictEqual((yield* Deals.page([owner], { orgId, key })).deal.stage, "deciding");
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "an agent reads a deal as its page shows whoever the turn is for: its next step, or that it has none",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* setup("ask-event");
+      const prospect = yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Brightwater",
+        prospect: true,
+        clientRequestId: "brightwater",
+      });
+      // The owner's own follow-up from the deal, not shared with the team.
+      const stepped = yield* Deals.create([owner], {
+        orgId,
+        party: prospect.key,
+        title: "Invented scheduling pilot",
+        clientRequestId: "pilot",
+        stage: "proposal",
+        value: { minor: 2_000_000, currency: "EUR" },
+        expectedOn: "2026-12-15",
+        next: { title: "Invented: call Ingrid", dueAt: "2026-11-24", dueAllDay: true },
+      });
+      const bare = yield* Deals.create([owner], {
+        orgId,
+        party: prospect.key,
+        title: "Invented renewal",
+        clientRequestId: "renewal",
+      });
+      const deals = LeadWork.query(scope, { list: "deals" });
+      const of = (result: Effect.Success<typeof deals>, key: string) =>
+        result.records.find((row) => row.key === key)?.deal;
+      // The owner's own turn: her unshared follow-up is her deal's next step, as on her page.
+      const hers = yield* deals;
+      const pilot = {
+        stage: "Proposal",
+        value: "€20,000.00",
+        expected: "2026-12-15",
+        lookedAfterBy: "owner",
+        next: { key: stepped.deal.next!.key, title: "Invented: call Ingrid", due: "2026-11-24" },
+      };
+      assert.deepStrictEqual(of(hers, stepped.deal.key), pilot);
+      assert.deepInclude(of(hers, bare.deal.key), { stage: "New", next: null });
+      assert.deepStrictEqual(
+        (yield* LeadWork.get(scope, { key: KinRecordKey.make(stepped.deal.key) })).deal,
+        pilot,
+      );
+      // A teammate's turn: the owner's unshared step is not theirs, so the deal has none for
+      // them, and nothing in the read names it.
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${mateId}`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('lead-chat-mate', ${orgId}, 'lead-chat', 'person', ${mateId}, 'member', ${at})`;
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
+      const theirs = yield* deals;
+      assert.deepInclude(of(theirs, stepped.deal.key), { stage: "Proposal", next: null });
+      const got = yield* LeadWork.get(scope, { key: KinRecordKey.make(stepped.deal.key) });
+      assert.deepInclude(got.deal, { next: null });
+      assert.notInclude(JSON.stringify([theirs, got]), "call Ingrid");
+      assert.notInclude(JSON.stringify([theirs, got]), stepped.deal.next!.key);
     }).pipe(Effect.provide(layer)),
 );

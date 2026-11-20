@@ -48,6 +48,9 @@ import {
   type KinSocialInput,
   type KinGitHubInput,
   type KinProjectPageInput,
+  type KinDealsInput,
+  type KinDealPageInput,
+  type KinDealStagesInput,
   type KinWorkGetInput,
   type KinWorkSubscribeInput,
 } from "@t3tools/contracts";
@@ -92,6 +95,7 @@ import {
 import { createKinOwnerTimeZoneSync } from "./kinTimeZone.ts";
 import {
   createKinWorkRefreshTriggers,
+  KIN_WORK_DEAL_LISTS,
   KIN_WORK_LABEL,
   KIN_WORK_NOT_TASKS,
   kinDocsListLean,
@@ -338,6 +342,18 @@ export function makeKinClient<R, ER>(
     tag: "kin.work.project",
   });
   const readWorkProject = kinGuardedRead(workProjectRead);
+  const readWorkDeals = kinGuardedRead(
+    createKinRpcCommand(runtime, { label: "kin:work:deals:read", tag: "kin.work.deals" }),
+  );
+  const readWorkDeal = kinGuardedRead(
+    createKinRpcCommand(runtime, { label: "kin:work:deal:read", tag: "kin.work.deal" }),
+  );
+  const readWorkDealStages = kinGuardedRead(
+    createKinRpcCommand(runtime, {
+      label: "kin:work:deal-stages:read",
+      tag: "kin.work.dealStages",
+    }),
+  );
   const workHistoryRead = createKinRpcCommand(runtime, {
     label: "kin:work:history:read",
     tag: "kin.work.history",
@@ -1326,6 +1342,58 @@ export function makeKinClient<R, ER>(
       staleTimeMs: 30_000,
       // Reads again when the host can't say what changed; the screen's watch follows named changes.
       refreshTrigger: kinWorkRefreshOn([]),
+    }),
+    /** Deals under the filters, with the stages and open totals; a client's when `party` is given. */
+    workDeals: createKinQueryAtomFamily(runtime, {
+      label: "kin:work:deals",
+      execute: Effect.fn("KinClient.workDeals")(function* (input: KinDealsInput) {
+        return yield* readWorkDeals(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinWorkRefreshOn(KIN_WORK_DEAL_LISTS),
+    }),
+    /** One deal's page. */
+    workDeal: createKinQueryAtomFamily(runtime, {
+      label: "kin:work:deal",
+      execute: Effect.fn("KinClient.workDeal")(function* (input: KinDealPageInput) {
+        return yield* readWorkDeal(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinWorkRefreshOn(KIN_WORK_DEAL_LISTS),
+    }),
+    /** The company's stages, for Settings → Deals. */
+    workDealStages: createKinQueryAtomFamily(runtime, {
+      label: "kin:work:deal-stages",
+      execute: Effect.fn("KinClient.workDealStages")(function* (input: KinDealStagesInput) {
+        return yield* readWorkDealStages(input);
+      }),
+      staleTimeMs: 60_000,
+      refreshTrigger: kinWorkRefreshOn(["work", "deals"]),
+    }),
+    workDealCreate: createKinRpcCommand(runtime, {
+      label: "kin:work:deal:create",
+      tag: "kin.work.createDeal",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    workDealUpdate: createKinRpcCommand(runtime, {
+      label: "kin:work:deal:update",
+      tag: "kin.work.updateDeal",
+    }),
+    workDealMove: createKinRpcCommand(runtime, {
+      label: "kin:work:deal:move",
+      tag: "kin.work.moveDeal",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
+    workDealStep: createKinRpcCommand(runtime, {
+      label: "kin:work:deal:step",
+      tag: "kin.work.dealStep",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    /** The owner and co-owners only. */
+    workDealStagesSet: createKinRpcCommand(runtime, {
+      label: "kin:work:deal-stages:set",
+      tag: "kin.work.setDealStages",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
     }),
     /** How many clients and open projects there are: the lists' own totals, without their rows. */
     workCounts: createKinQueryAtomFamily(runtime, {

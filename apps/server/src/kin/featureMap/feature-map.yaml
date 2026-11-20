@@ -701,6 +701,75 @@ features:
       - .agents/skills/verify-kin/scripts/lead-adds-milestone.sh
       - packages/client-runtime/src/kin/kinWorkForms.test.ts
 
+  - id: deals
+    name: Deals, by the company's stages
+    tab: clients
+    web: [clients, button:Deals]
+    phone: [tab:clients, button:Deals]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      A member reaches Deals only with the Clients place on, and sees every deal but those marked
+      private and those under a private client. The web shows a board with Won and Lost at its
+      end; at phone width and on the phone, a list by stage. Totals stay per currency.
+    tools: [deal_stages]
+    proof:
+      - apps/server/src/kin/work/deals.test.ts
+      - packages/client-runtime/src/kin/kinDeals.test.ts
+      - apps/web/src/kin/KinDeals.browser.test.tsx
+
+  - id: deal
+    name: A deal
+    tab: clients
+    web: [clients, button:Deals, "?task"]
+    phone: [tab:clients, KinDeal]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      Moves through the stages, wins (a prospect becomes a client) or loses with a reason, and
+      reopens. Whoever looks after it moves it and hands it from Looked after by to someone who
+      still sees it; a quote of its client is linked from a picker. Only the owner level marks it
+      private.
+    proof:
+      - apps/server/src/kin/work/deals.test.ts
+      - apps/web/src/kin/KinDeals.browser.test.tsx
+
+  - id: deal-form
+    name: Add a deal
+    tab: clients
+    web: [clients, button:Deals, dialog:New deal]
+    phone: [tab:clients, KinDealNew]
+    form: true
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: A new deal names its first next step, or says there is none yet.
+    proof: [apps/server/src/kin/work/deals.test.ts]
+
+  - id: deal-edit
+    name: Edit a deal
+    tab: clients
+    web: [clients, button:Deals, "?task", dialog:Edit]
+    phone: [tab:clients, KinDeal, KinDealEdit]
+    form: true
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      Title, value, expected day, came from and the quote, from a picker of its client's quotes;
+      the client stays. Web and phone send the same change.
+    proof:
+      - apps/server/src/kin/work/deals.test.ts
+      - packages/client-runtime/src/kin/kinDeals.test.ts
+      - apps/web/src/kin/KinDeals.browser.test.tsx
+
+  - id: deal-stages
+    name: The company's deal stages
+    tab: settings
+    web: [settings, section:Deals]
+    phone: [SettingsKin, KinDealStages]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      The owner and co-owners rename, reorder, add and remove stages; removing one with open deals
+      moves them first. A member with Clients on reads them.
+    proof:
+      - apps/server/src/kin/work/deals.test.ts
+      - apps/web/src/kin/KinDeals.browser.test.tsx
+
   - id: project-people
     name: Who is on a project
     tab: clients
@@ -1176,9 +1245,10 @@ unlisted:
   "web:settings/company": The app's old address; opens Kin's Settings → Company details.
   "web:settings/check-ins": The app's old address; opens Kin's Settings → Check-ins.
   "web:settings/kin-connections": The app's old address; opens Kin's Settings → Connections.
+  "web:settings/deals": The app's settings address for Deals; opens Kin's Settings → Deals.
   "web:settings/kin-profile": Where app Settings search lands for quiet hours, working hours and away; opens Kin's Settings → Profile.
   "web:?v": Picks the version of the open doc; not a screen.
-  "web:?tab": Switches the Clients place between its Clients and Projects lists; not a screen.
+  "web:?tab": Switches the Clients place between its Clients, Deals and Projects lists; not a screen.
   "web:?person": Starts Tasks narrowed to what one person holds, from their page's See all in Tasks; not a screen.
   "web:?section": Scrolls the open doc to a section; not a screen.
   "web:?from": The base version of the compare view (`?changes`); not a screen.
