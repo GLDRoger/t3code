@@ -211,10 +211,13 @@ export const ReadResult = Schema.Union([
 ]);
 /** What the owner's search returns of an item: enough to choose what to read, nothing more. */
 const SearchHit = Schema.Struct({
-  ...Struct.pick(MemoryItemFrontMatter.fields, ["id", "kind", "title", "status", "due"]),
+  ...Struct.pick(MemoryItemFrontMatter.fields, ["id", "kind", "title", "what", "status", "due"]),
   reviewOverdue: Schema.Boolean,
+  misleading: Schema.optional(Schema.Literal(true)),
+  supersededBy: Schema.optional(KinMemoryItemId),
   duplicate: Schema.Boolean,
 });
+const SEARCH_WHAT_CHARS = 200;
 export const SearchResult = Schema.Array(
   Schema.Union([SearchHit, Schema.Struct({ ...SharedHead.fields, duplicate: Schema.Boolean })]),
 );
@@ -1116,9 +1119,19 @@ const make = Effect.gen(function* () {
         id: item.id,
         kind: item.kind,
         title: item.title,
+        ...(item.what === undefined
+          ? {}
+          : {
+              what:
+                item.what.length <= SEARCH_WHAT_CHARS
+                  ? item.what
+                  : `${item.what.slice(0, SEARCH_WHAT_CHARS - 1)}…`,
+            }),
         status: item.status,
         due: item.due,
         reviewOverdue: reviewOverdue(item, now),
+        ...(item.invalid_at === null ? {} : { misleading: true as const }),
+        ...(item.superseded_by === null ? {} : { supersededBy: item.superseded_by }),
         duplicate: (counts.get(item.id) ?? 0) > 1,
       }));
     }, Effect.mapError(failure)),

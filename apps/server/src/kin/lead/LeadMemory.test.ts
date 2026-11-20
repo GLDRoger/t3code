@@ -143,6 +143,8 @@ it.live(
           due: null,
           review_by: "2000-01-01",
           invalid_at: "2000-01-01",
+          superseded_by: "spare-item",
+          what: `Invented maintenance window ${"detail ".repeat(40)}`,
         }),
       );
       // One thing the team can know and one for the owner alone; `a-item` was never labelled.
@@ -454,16 +456,30 @@ it.live(
         assert.isFalse(toolSearch.isError);
         const hits = toolSearch.structuredContent as typeof Lead.SearchResult.Encoded;
         assert.deepStrictEqual(
-          hits.find((hit) => hit.id === "a-item"),
-          {
-            id: "a-item",
-            kind: "claim",
-            title: "Invented service maintenance",
-            status: "open",
-            due: null,
-            reviewOverdue: true,
-            duplicate: false,
-          },
+          ["a-item", "spare-item"].map((id) => hits.find((hit) => hit.id === id)),
+          [
+            {
+              id: "a-item",
+              kind: "claim",
+              title: "Invented service maintenance",
+              what: `Invented maintenance window ${"detail ".repeat(40)}`.slice(0, 199) + "…",
+              status: "open",
+              due: null,
+              reviewOverdue: true,
+              misleading: true,
+              supersededBy: "spare-item",
+              duplicate: false,
+            },
+            {
+              id: "spare-item",
+              kind: "claim",
+              title: "Invented service maintenance",
+              status: "open",
+              due: null,
+              reviewOverdue: true,
+              duplicate: false,
+            },
+          ],
         );
         const opened = yield* service.read(scope, { id: KinMemoryItemId.make("a-item") });
         assert.isTrue("head" in opened && opened.reviewOverdue);
