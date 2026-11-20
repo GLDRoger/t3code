@@ -1,3 +1,5 @@
+import type { OxlintConfig } from "vite-plus/lint";
+
 // Kin's own lint rules, spread into the root vite.config.ts overrides in place.
 export const kinLintOverrides = [
   {
@@ -95,4 +97,4 @@ export const kinLintOverrides = [
     excludeFiles: ["**/*.{test,testkit}.ts"],
     rules: { "t3code/kin-viewer-scoped-reads": ["error", { transport: true }] },
   },
-];
+] satisfies NonNullable<OxlintConfig["overrides"]>;
