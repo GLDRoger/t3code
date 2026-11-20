@@ -30,6 +30,7 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { wordOf } from "./holds.ts";
 import * as KinPulse from "./KinPulse.ts";
+import { headStarts } from "./headStart.ts";
 import { buildPulseSection } from "./prompt.ts";
 import { projectLastMoved } from "./senses/projects.ts";
 import { buildWeeklySection, wantsWeekly, WEEK_FIGURES_TITLE, weeklyFigures } from "./weekly.ts";
@@ -452,6 +453,47 @@ describe("KinPulse", () => {
         title: "Invented D-1",
       });
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a renewal is mentioned from its heads-up and handed over to draft from its draft day",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const stageOf = (subject: string, at: number) =>
+          read(at).pipe(Effect.map((result) => keyed(result.facts, "renewal_due", subject)[0]));
+        // DT-1 is due on the 41st day: mentioned from 14 days before, drafted from 7.
+        assert.isUndefined(yield* stageOf("DT-1", B + 26 * DAY - MINUTE));
+        const ahead = (yield* stageOf("DT-1", B + 33 * DAY - MINUTE))!;
+        assert.strictEqual(ahead.stage, "heads_up");
+        assert.include(ahead.consequence, "drafting starts 2026-12-04, not before");
+        assert.isFalse((yield* headStarts(orgId, [ahead])).byFact.has(ahead.key));
+        const drafting = (yield* stageOf("DT-1", B + 33 * DAY))!;
+        assert.strictEqual(drafting.stage, "draft");
+        assert.notInclude(drafting.consequence, "drafting starts");
+        assert.isTrue((yield* headStarts(orgId, [drafting])).byFact.has(drafting.key));
+        // Lumen's own playbook drafts 3 days ahead; the company's, 10.
+        yield* insert({
+          id: "DT-3",
+          list: "dates",
+          category: "renewal",
+          dueAt: B + 40 * DAY,
+          partyId: "r-C-1",
+        });
+        yield* sql`UPDATE kin_doc_versions SET body = ${"# Chasing Lumen\n\n```kin\nchase_invoice_after_days: 7\nrenewal_draft_days: 3\n```\n"}
+        WHERE record_id = 'r-D-1'`;
+        assert.strictEqual((yield* stageOf("DT-3", B + 37 * DAY - MINUTE))?.stage, "heads_up");
+        assert.strictEqual((yield* stageOf("DT-3", B + 37 * DAY))?.stage, "draft");
+        yield* insert({ id: "D-4", list: "docs", category: "playbook" });
+        yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind, summary,
+          operations_json, actor_kind, actor_id, via, origin_key, created_at)
+        VALUES (${orgId}, 'r-D-4', 1, ${"# Renewals\n\n```kin\nrenewal_draft_days: 10\n```\n"},
+          'Renewals', 'created', 'Seeded', '[]', 'person', ${owner}, 'owner', 'seed-D-4', 0)`;
+        assert.strictEqual((yield* stageOf("DT-1", B + 30 * DAY - MINUTE))?.stage, "heads_up");
+        assert.strictEqual((yield* stageOf("DT-1", B + 30 * DAY))?.stage, "draft");
+        assert.strictEqual((yield* stageOf("DT-3", B + 37 * DAY - MINUTE))?.stage, "heads_up");
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("ticking twice wakes each agent once, and one agent's facts claim as one batch", () =>

@@ -1234,6 +1234,10 @@ const make = Effect.gen(function* () {
       return yield* refuse(
         "That fact isn't open now: pulse_read lists the open ones. Nothing was passed on.",
       );
+    if (fact.stage === "heads_up")
+      return yield* refuse(
+        `${fact.subject.key} is a renewal before its draft day: mention it, don't hand it over yet (${fact.consequence}). Nothing was passed on.`,
+      );
     const target = yield* targetOf(ctx, all, input.to);
     const key = `handoff:fact:${ctx.wakeupId}:${fact.key}`;
     const id = NodeCrypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
