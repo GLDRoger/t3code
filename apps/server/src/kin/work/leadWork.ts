@@ -115,6 +115,7 @@ import {
 } from "./sensitiveReads.ts";
 import { memberAdds, memberAddsContact, memberChangesContact } from "./ownerClients.ts";
 import {
+  crmSeenBy,
   crmVisible,
   KIN_OWNER_LEVEL,
   TEAM_REFUSED,
@@ -412,6 +413,8 @@ export const GetResult = Schema.Struct({
   /** The note its project leaves on every task: the project's words, not this entry's. */
   projectNote: Schema.optional(Schema.Struct({ from: Schema.String, text: Schema.String })),
 });
+/** A deal's next step: a task of ours on its client, linked to the deal, as its page adds one. */
+const DealNext = Schema.Struct({ title: Title, due: Schema.optional(Due) });
 const CreateRow = Schema.Struct({
   list: Schema.optional(List),
   title: Title,
@@ -458,6 +461,7 @@ const CreateRow = Schema.Struct({
   besides: Schema.optional(Schema.Array(KinRecordKey).check(Schema.isMaxLength(20))).annotate({
     description: "Keys of open entries this row repeats on purpose, as a refusal named them.",
   }),
+  next: Schema.optional(DealNext),
   ...SpineInputs,
   ...GoalInputs,
 });
@@ -544,6 +548,7 @@ export const UpdateInput = Schema.Struct({
   }),
   expectedRev: Schema.optional(Schema.Int),
   tell: Tell,
+  next: Schema.optional(DealNext),
   ...SpineInputs,
   ...GoalInputs,
 });
@@ -1998,6 +2003,7 @@ const createRow = Effect.fnUntraced(function* (
   const list = def.id;
   // A deal's rules are `deals.ts`'s, whoever writes it.
   if (list === "deals") return yield* dealRow(lead, sourceEventId, writer, def, lists, row);
+  if (row.next !== undefined) return yield* NEXT_IS_A_DEALS;
   // For a teammate alone in the turn, a prospect or a contact is what their own Clients form adds
   // (`memberAdds`, `memberAddsContact`).
   const [only, ...others] = team?.people ?? [];
@@ -2253,6 +2259,8 @@ const dealRow = Effect.fnUntraced(function* (
   const due = row.due === undefined ? {} : yield* dueOf(lead.orgId, row.due);
   const value = yield* dealValue(def, row.amount, row.currency, undefined);
   const actor = yield* Deals.agentActor(lead.orgId, writer);
+  const originKey = `lead:${lead.agentId}:${sourceEventId}:${retryKey(`deals|${party.recordId}|${titleKey(row.title)}`)}`;
+  yield* dealsOpenOn(actor, party.recordId, originKey, row.besides ?? []);
   const { row: stored, created } = yield* Deals.createAs(actor, {
     partyKey: party.key,
     title: row.title,
@@ -2266,7 +2274,8 @@ const dealRow = Effect.fnUntraced(function* (
     ...(fields.concerns === undefined || fields.concerns === null
       ? {}
       : { concerns: fields.concerns }),
-    originKey: `lead:${lead.agentId}:${sourceEventId}:${retryKey(`deals|${party.recordId}|${titleKey(row.title)}`)}`,
+    ...(row.next === undefined ? {} : { next: stepOf(row.next) }),
+    originKey,
   });
   return {
     key: stored.key,
@@ -2275,6 +2284,51 @@ const dealRow = Effect.fnUntraced(function* (
     ...marksOf(lists, stored),
     ...(party.also === undefined ? {} : { alsoNamed: party.also }),
   };
+});
+
+/** The open deals a new one would sit beside, and how to add it anyway. */
+const dealOpenAlready = (open: ReadonlyArray<{ readonly key: string; readonly title: string }>) =>
+  `${open.map((one) => `${one.key} "${one.title}"`).join(", ")} ${open.length === 1 ? "is" : "are"} open for the same client. Use ${open[0]!.key}, or pass besides: [${open.map((one) => `"${one.key}"`).join(", ")}] to add another.`;
+
+const NEXT_IS_A_DEALS = invalid("next is a deal's next step; give a task its own due.");
+
+/** A deal's next step as its page's Add next step sends it. */
+const stepOf = (next: typeof DealNext.Type) =>
+  next.due === undefined || next.due === null
+    ? { title: next.title }
+    : { title: next.title, dueAt: next.due, dueAllDay: isCalendarDay(next.due) };
+
+/**
+ * An agent's new deal on a client that has open ones the turn's people see is refused once,
+ * naming them, unless `besides` names each; a retry of the same row is the deal it made.
+ */
+const dealsOpenOn = Effect.fn("KinWorkTools.dealsOpenOn")(function* (
+  actor: Deals.DealActor,
+  partyId: string,
+  originKey: string,
+  besides: ReadonlyArray<string>,
+) {
+  yield* Deals.switchedOn(actor.orgId, actor.members);
+  const sql = yield* SqlClient.SqlClient;
+  const viewer = actor.members.length === 0 ? KIN_OWNER_LEVEL : viewerOfPeople(actor.members);
+  const rows = yield* sql<{
+    key: string;
+    title: string;
+    originKey: string | null;
+    sensitive: number;
+  }>`SELECT r.key, r.title, r.origin_key AS "originKey", ${sensitiveNow(sql)} AS sensitive
+    FROM kin_records r
+    WHERE r.org_id = ${actor.orgId} AND r.register_id = 'deals' AND r.party_id = ${partyId}
+      AND r.state = 'open' AND ${crmSeenBy(sql, viewer)}
+    ORDER BY r.key LIMIT ${REPEAT_CANDIDATES}`;
+  if (rows.some((one) => one.originKey === originKey)) return;
+  const open = rows.filter((one) => !besides.includes(one.key)).slice(0, REPEATS_SHOWN);
+  if (open.length === 0) return;
+  const Refused = open.some((one) => one.sensitive === 1) ? SensitiveRefusal : KinChatError;
+  return yield* new Refused({
+    reason: "conflict",
+    message: dealOpenAlready(open.map((one) => ({ key: one.key, title: one.title.slice(0, 80) }))),
+  });
 });
 
 /**
@@ -2339,6 +2393,13 @@ const dealUpdate = Effect.fnUntraced(function* (
           );
         if (input.state === "doing" || input.state === "waiting")
           return yield* invalid("A deal is open, done (won) or dropped (lost).");
+        if (input.next !== undefined)
+          yield* Deals.stepAs(
+            actor,
+            before.key,
+            stepOf(input.next),
+            `lead:${lead.agentId}:${input.sourceEventId}:${retryKey(`deals-next|${before.recordId}|${titleKey(input.next.title)}`)}`,
+          );
       }),
     )
     .pipe(workFailure);
@@ -2357,7 +2418,7 @@ const dealUpdate = Effect.fnUntraced(function* (
     key: after.key,
     rev: after.rev,
     state: after.state,
-    changed,
+    changed: input.next === undefined ? changed : [...changed, "next"],
     ...marksOf(yield* allLists(lead.orgId), after),
   };
   return out;
@@ -2707,6 +2768,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
   if (listOf(before.registerId) === "docs") return yield* isDoc(key);
   if (before.registerId === "deals")
     return { result: yield* dealUpdate(lead, writer, before, input), notices: [], held: [] };
+  if (input.next !== undefined) return yield* NEXT_IS_A_DEALS;
   // For a teammate alone in the turn, a contact changes as their own Edit contact changes it.
   const [only, ...others] = team?.people ?? [];
   const contactFor =

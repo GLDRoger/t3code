@@ -25,6 +25,7 @@ import {
   kinDealQuoteChoices,
   kinDealsHeader,
   kinDealsQuery,
+  kinDealsRaisedInput,
   kinDealsStartFilter,
   kinDealStageBeside,
   kinDealStagesProblem,
@@ -210,7 +211,14 @@ describe("kinDealsQuery", () => {
     [{ _tag: "me" } as const, { _tag: "person", personId: rhea }],
     [{ _tag: "person", personId: zoya } as const, { _tag: "person", personId: zoya }],
   ])("%j asks for %j", (who, owner) => {
-    expect(kinDealsQuery(orgId, { who, state: "open" }, null, rhea)?.input.owner).toEqual(owner);
+    const query = kinDealsQuery(orgId, { who, state: "won" }, null, rhea);
+    expect(query?.input.owner).toEqual(owner);
+    // A row of What we hear counts every state of the same whose, so it opens them all.
+    expect(kinDealsRaisedInput(query!.input, "Price")).toEqual({
+      orgId,
+      ...(owner === undefined ? {} : { owner }),
+      concern: "Price",
+    });
   });
 
   it("starts an owner known late on Everyone without ever asking for Mine, and a teammate on theirs", () => {
@@ -389,7 +397,24 @@ describe("kinDealChangeText", () => {
       [{ field: "concerns", from: null, to: "Staff confidence: half will never manage it" }],
       "Zoya noted the concerns",
     ],
-    [[{ field: "concerns", from: "Staff confidence", to: null }], "Zoya cleared the concerns"],
+    [
+      [{ field: "concerns", from: "Past failure\nPrice", to: "Past failure" }],
+      "Zoya removed the concern Price",
+    ],
+    [
+      [{ field: "concerns", from: "Staff confidence", to: null }],
+      "Zoya removed the concern Staff confidence",
+    ],
+    [
+      [{ field: "concerns", from: "Price\nTiming\nStaff confidence\nPast failure", to: null }],
+      "Zoya removed the concerns Price, Timing, Staff confidence and 1 more",
+    ],
+    [
+      [{ field: "concerns", from: "Price\nTiming", to: "Timing" }],
+      "Zoya removed the concern Price",
+    ],
+    // Taking one off while adding another is still noting them.
+    [[{ field: "concerns", from: "Price", to: "Timing" }], "Zoya noted the concerns"],
     [[{ field: "state", from: "dropped", to: "open" }], "Zoya reopened it"],
   ] as const)("%j", (fields, text) => {
     expect(kinDealChangeText(change(fields), names, now)).toBe(text);

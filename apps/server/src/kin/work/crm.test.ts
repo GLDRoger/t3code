@@ -1479,7 +1479,7 @@ it.effect(
       });
       // Its page and history: the contact log, never its terms or tax details.
       const page = yield* Clients.party([mate], { orgId, key: "C-1" });
-      assert.deepStrictEqual(page.can, { edit: false, log: true, owner: false });
+      assert.deepStrictEqual(page.can, { edit: false, log: true, owner: false, contacts: false });
       assert.include(
         { terms: page.party.terms, gstin: page.party.gstin, place: page.party.placeOfSupply },
         { terms: null, gstin: null, place: null },
@@ -1495,6 +1495,7 @@ it.effect(
         edit: true,
         log: true,
         owner: false,
+        contacts: true,
       });
       // A logged contact goes back by whoever logged it; someone else's stays.
       assert.strictEqual(
