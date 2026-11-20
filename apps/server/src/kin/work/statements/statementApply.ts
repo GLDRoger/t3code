@@ -75,6 +75,8 @@ const Prior = Schema.Struct({
       paidWith: Schema.NullOr(Schema.String),
     }),
   ),
+  /** A payment recorded before this statement that its line was matched to (`paymentSourceColumns`). */
+  matched: Schema.optional(Schema.String),
 });
 const PriorJson = Schema.fromJsonString(Prior);
 const encodePrior = Schema.encodeEffect(PriorJson);
@@ -450,7 +452,10 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
             yield* livePayment(candidate.paymentId);
             const prior = yield* settleBank(row, states.explained, "payment received");
             // The payment was there before this statement, so Undo leaves it be.
-            yield* entry(row, "payment", candidate.recordId, null, { bank: prior });
+            yield* entry(row, "payment", candidate.recordId, null, {
+              bank: prior,
+              matched: candidate.paymentId,
+            });
             tally.recorded += 1;
           } else if (candidate.kind === "invoice") {
             // Paid, taken back or re-priced since the read: the match may be the same money twice.

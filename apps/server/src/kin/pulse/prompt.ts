@@ -5,7 +5,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { sentMail, type SentMail } from "../connections/Sending.ts";
 import { dayIn, timeIn } from "../work/money.ts";
-import { ownerZone } from "../work/recordRows.ts";
+import { ownerZone, recordName } from "../work/recordRows.ts";
 import { clientHistory } from "./clientHistory.ts";
 import { headStarts } from "./headStart.ts";
 import { covers, endedHolds, holdNames } from "./holds.ts";
@@ -103,7 +103,10 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
     : new Map<string, string>();
   const row = (fact: KinPulseFact) => ({
     key: fact.key,
-    about: `${fact.subject.key === fact.subject.title ? fact.subject.title : `${fact.subject.key} ${fact.subject.title}`}`,
+    about:
+      fact.subject.key === fact.subject.title
+        ? fact.subject.title
+        : `${recordName(fact.subject.key, fact.subject.number)} ${fact.subject.title}`,
     consequence: fact.consequence,
     acts: who(fact.actor),
     ...(fact.measure?.from._tag === "playbook"
