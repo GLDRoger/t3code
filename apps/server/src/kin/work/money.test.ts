@@ -54,6 +54,8 @@ import * as OwnerMoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import * as Quotes from "../gendocs/quotes.ts";
 import { endOfDay } from "./recordRows.ts";
+import { moneyOf } from "./projectSpine.ts";
+import { KIN_OWNER_LEVEL } from "./teamView.ts";
 
 // Invented org, people, amounts and files only; nothing here reads a real database.
 const orgId = KinOrgId.make("org");
@@ -1666,6 +1668,105 @@ describe("invoices", () => {
             JOIN kin_records r ON r.org_id = c.org_id AND r.record_id = c.record_id
             WHERE r.org_id = ${orgId} AND r.key = 'INV-6' AND c.fields_json LIKE '%"notes"%'`,
           [{ kind: "system" }],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "file a project's invoices under it however they are made, and count them against it",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* defined(1, { template: "invoices" });
+        yield* defined(3, { template: "quotes" });
+        const records = yield* KinRecords.KinRecords;
+        const owner: KinRecords.Writer = {
+          actor: { _tag: "person", personId: ownerId },
+          via: "owner",
+        };
+        const asked = yield* turn(5, "Set up Acme's work and bill it");
+        yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [{ list: "clients", title: "Invented Acme" }],
+        });
+        const projects = yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            { list: "projects", title: "Invented site", client: "Invented Acme", value: "1 lakh" },
+            {
+              list: "projects",
+              title: "Invented retainer",
+              client: "Invented Acme",
+              billing: "retainer",
+              value: "20,000",
+            },
+          ],
+        });
+        const site = (yield* records.get(orgId, projects.records[0]!.key))!;
+        const retainer = (yield* records.get(orgId, projects.records[1]!.key))!;
+        const made = yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            {
+              list: "quotes",
+              title: "Invented site quote",
+              client: "Invented Acme",
+              project: site.key,
+              amount: "1,00,000",
+              state: "done",
+            },
+            {
+              list: "invoices",
+              title: "Invented site deposit",
+              client: "Invented Acme",
+              project: site.key,
+              amount: "30,000",
+              date: "2026-11-10",
+              state: "waiting",
+            },
+            {
+              list: "invoices",
+              title: "Invented retainer November",
+              client: "Invented Acme",
+              project: "Invented retainer",
+              amount: "20,000",
+              date: "2026-11-01",
+              due: "2026-11-15",
+              state: "waiting",
+              repeat: { every: "month" },
+            },
+          ],
+        });
+        const [quote, deposit, monthly] = made.records.map((one) => one.key);
+        // From the project's quote, from the agent that named it, and the retainer's next one.
+        const { entry: invoiced } = yield* Quotes.invoiceFromQuote(orgId, owner, quote!);
+        yield* records.update(orgId, owner, monthly!, { state: "done" });
+        const next = (yield* records.query(orgId, { list: "invoices" })).rows.find(
+          (one) => one.title === "Invented retainer November" && one.key !== monthly,
+        );
+        assert.deepStrictEqual(
+          [(yield* records.get(orgId, deposit!))?.projectId, invoiced.projectId, next?.projectId],
+          [site.recordId, site.recordId, retainer.recordId],
+        );
+        // The quote's invoice is a draft until issued, so only the deposit counts so far.
+        assert.deepStrictEqual(
+          [
+            (yield* moneyOf(orgId, site.recordId, KIN_OWNER_LEVEL)).invoiced,
+            (yield* moneyOf(orgId, retainer.recordId, KIN_OWNER_LEVEL)).invoiced,
+            yield* ownerLevelStillToInvoice(orgId),
+          ],
+          [
+            [{ minor: 3_000_000, currency: "INR" }],
+            [{ minor: 2_000_000, currency: "INR" }],
+            [
+              {
+                project: `${site.key} Invented site (Invented Acme)`,
+                stillToInvoice: "₹70,000.00",
+                agreed: "₹1,00,000.00, from accepted quotes",
+                invoicedSoFar: "₹30,000.00",
+              },
+            ],
+          ],
         );
       }).pipe(Effect.provide(layer)),
   );

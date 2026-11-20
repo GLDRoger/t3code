@@ -263,7 +263,10 @@ export const projectSpecChanges = Effect.fn("KinProjectSpine.projectSpecChanges"
   return yield* specChangesOf(orgId, tasks, viewer);
 });
 
-/** Quotes, invoices and receipts filed under the project, by the counted rule, per currency. */
+/**
+ * Quotes, invoices and receipts filed under the project, by the counted rule, per currency. A
+ * draft is no figure yet: only what was sent or issued counts, as in what is still to invoice.
+ */
 export const moneyOf = Effect.fn("KinProjectSpine.money")(function* (
   orgId: KinOrgId,
   projectId: string,
@@ -271,10 +274,12 @@ export const moneyOf = Effect.fn("KinProjectSpine.money")(function* (
 ) {
   const records = yield* KinRecords;
   const sums = Effect.fn("KinProjectSpine.sums")(function* (list: string) {
-    if ((yield* listDef(orgId, list)) === undefined) return undefined;
+    const def = yield* listDef(orgId, list);
+    if (def === undefined) return undefined;
     return yield* records.totals(orgId, {
       list,
       projectId,
+      states: def.states.filter((state) => state !== "open" && state !== "dropped"),
       ...(viewer._tag === "ownerLevel" ? {} : { view: viewer.people }),
     });
   });
