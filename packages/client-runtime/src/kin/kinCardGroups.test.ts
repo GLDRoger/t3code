@@ -99,7 +99,7 @@ const question = (id: string, answered: boolean) =>
   });
 
 type Step =
-  | { readonly card: KinWidget; readonly agent?: string }
+  | { readonly card: KinWidget; readonly agent?: string; readonly body?: string }
   | { readonly text: string; readonly human?: boolean };
 
 /** Builds the feed, groups it, and names each row: `Q+T+T` for a group, `msg`, `card`. */
@@ -108,7 +108,10 @@ function shape(steps: ReadonlyArray<Step>, reacted: ReadonlyArray<number> = []) 
   const messages = steps.map((step) => {
     if ("text" in step) return message(null, { body: step.text, human: step.human === true });
     widgets.set(step.card.widgetId, step.card);
-    return message(step.card.widgetId, step.agent === undefined ? {} : { agent: step.agent });
+    return message(step.card.widgetId, {
+      ...(step.agent === undefined ? {} : { agent: step.agent }),
+      ...(step.body === undefined ? {} : { body: step.body }),
+    });
   });
   const rows = buildKinFeedRows(messages, viewer, new Set(), new Date(AT)).filter(
     (row) => row.type !== "day",
@@ -135,6 +138,20 @@ describe("kinGroupCardRows", () => {
       "an answered question and the two tasks it started",
       [{ card: question("a", true) }, { card: task("a") }, { card: task("b") }],
       ["Q+T+T"],
+    ],
+    [
+      "a question asked on the agent's own reply, whose words stay above the card",
+      [
+        { card: question("a", true), body: "Both drafts are ready to start." },
+        { card: task("a") },
+        { card: task("b") },
+      ],
+      ["Q+T+T"],
+    ],
+    [
+      "a task card with words of its own, which leads its own card",
+      [{ card: task("a") }, { card: task("b"), body: "This one needs the ledger." }],
+      ["T", "T"],
     ],
     ["tasks alone", [{ card: task("a") }, { card: task("b") }], ["T+T"]],
     ["one task", [{ card: task("a") }], ["T"]],

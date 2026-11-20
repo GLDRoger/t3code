@@ -20,19 +20,22 @@ export interface KinCardGroupRow {
 
 const isTaskState = Schema.is(KinTaskCardState);
 
-// Only a card with nothing else on its row: no words, files, refs, edit or receipt to lose.
-function bareAgentCard(row: KinFeedRow, widgets: ReadonlyMap<string, KinWidget>) {
+/**
+ * An agent's card. The group's first row is drawn whole, its words above the card; a card that
+ * joins it must have nothing else on its row (words, files, refs, an edit, a receipt) to lose.
+ */
+function agentCard(row: KinFeedRow, widgets: ReadonlyMap<string, KinWidget>, joins: boolean) {
   if (row.type !== "message" || row.own) return null;
   const { message } = row;
+  if (message.author._tag !== "agent" || message.status !== "posted" || message.widgetId === null)
+    return null;
   if (
-    message.author._tag !== "agent" ||
-    message.status !== "posted" ||
-    message.widgetId === null ||
-    message.body.trim() !== "" ||
-    message.editedAt !== null ||
-    (message.attachments ?? []).length > 0 ||
-    (message.refs ?? []).length > 0 ||
-    (message.turnChanges?.count ?? 0) > 0
+    joins &&
+    (message.body.trim() !== "" ||
+      message.editedAt !== null ||
+      (message.attachments ?? []).length > 0 ||
+      (message.refs ?? []).length > 0 ||
+      (message.turnChanges?.count ?? 0) > 0)
   )
     return null;
   const widget = widgets.get(message.widgetId);
@@ -86,7 +89,7 @@ export function kinGroupCardRows(
 ): ReadonlyArray<KinFeedRow | KinCardGroupRow> {
   const out: Array<KinFeedRow | KinCardGroupRow> = [];
   for (let index = 0; index < rows.length;) {
-    const lead = bareAgentCard(rows[index]!, widgets);
+    const lead = agentCard(rows[index]!, widgets, false);
     const question = lead !== null && answeredQuestion(lead.widget) ? lead.row : null;
     if (lead === null || (question === null && !isTask(lead.widget))) {
       out.push(rows[index]!);
@@ -97,7 +100,7 @@ export function kinGroupCardRows(
     const tasks: Array<MessageRow> = question === null ? [lead.row] : [];
     let end = index + 1;
     while (end < rows.length) {
-      const next = bareAgentCard(rows[end]!, widgets);
+      const next = agentCard(rows[end]!, widgets, true);
       if (
         next === null ||
         !isTask(next.widget) ||
