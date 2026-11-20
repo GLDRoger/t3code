@@ -2119,38 +2119,42 @@ export const messageBodyLimit = 8_000;
 const textFieldLimit = 2_000;
 const eventsLimit = 60_000;
 
-/** A text field as a lead is shown it: cut past `limit`, saying how much went. */
-export const cappedText = (field: string, limit = textFieldLimit) => {
+const cut = (field: string, limit: number) => {
   if (field.length <= limit) return field;
   const code = field.charCodeAt(limit - 1);
-  const cut = code >= 0xd800 && code <= 0xdbff ? limit - 1 : limit;
-  return `${field.slice(0, cut)}…[truncated ${field.length - cut} chars]`;
+  const end = code >= 0xd800 && code <= 0xdbff ? limit - 1 : limit;
+  return `${field.slice(0, end)}…[truncated ${field.length - end} chars]`;
 };
+
+// Markup, control, format (bidi, zero-width) and line-separator characters.
+const unsafeCharacter = /[<>&\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+const unicodeEscape = (character: string) =>
+  character
+    .split("")
+    .map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`)
+    .join("");
+
+/** A text field as a lead is shown it in a tool result: cut past `limit`, escaped as `quote()` escapes it. */
+export const cappedText = (field: string, limit = textFieldLimit) =>
+  cut(field, limit).replace(unsafeCharacter, unicodeEscape);
 
 function encoded(value: unknown, capText = false): string {
   const json =
     JSON.stringify(value, (key, field: unknown) =>
       !capText || typeof field !== "string"
         ? field
-        : cappedText(field, key === "body" ? messageBodyLimit : textFieldLimit),
+        : cut(field, key === "body" ? messageBodyLimit : textFieldLimit),
     ) ?? "null";
-  return json.replace(
-    /\\(?:["\\/bfnrt]|u[\da-fA-F]{4})|[<>&\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,
-    (character) => {
-      const controls: Readonly<Record<string, string>> = {
-        "\\b": "\\u0008",
-        "\\f": "\\u000c",
-        "\\n": "\\u000a",
-        "\\r": "\\u000d",
-        "\\t": "\\u0009",
-      };
-      if (character.startsWith("\\")) return controls[character] ?? character;
-      return character
-        .split("")
-        .map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`)
-        .join("");
-    },
-  );
+  const controls: Readonly<Record<string, string>> = {
+    "\\b": "\\u0008",
+    "\\f": "\\u000c",
+    "\\n": "\\u000a",
+    "\\r": "\\u000d",
+    "\\t": "\\u0009",
+  };
+  return json
+    .replace(/\\(?:["\\/bfnrt]|u[\da-fA-F]{4})/g, (escape) => controls[escape] ?? escape)
+    .replace(unsafeCharacter, unicodeEscape);
 }
 
 /** Every line is server-written or JSON-encoded, so quoted text cannot close its own quote. */
