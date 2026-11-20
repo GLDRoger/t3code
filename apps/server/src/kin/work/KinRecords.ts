@@ -1354,7 +1354,10 @@ const make = Effect.gen(function* () {
             dateAt: input.dateAt ?? null,
             numbered: "number" in fields,
             now,
-            zone: def.id === "expenses" ? yield* ownerZone(orgId).pipe(provideSql) : "UTC",
+            zone:
+              def.id === "expenses" || def.id === "invoices"
+                ? yield* ownerZone(orgId).pipe(provideSql)
+                : "UTC",
           }));
     const waitingOn = state === "waiting" ? (input.waitingOn ?? null) : null;
     const givenAway =

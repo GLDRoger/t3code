@@ -330,8 +330,8 @@ const isPreset = (id: string): id is PresetId => (PRESET_IDS as ReadonlyArray<st
 export const owesIn = (def: ListDef, state: KinRecordState) =>
   state !== "done" && state !== "dropped" && !(def.id === "invoices" && state === "open");
 /**
- * Where a new entry with no state asked for starts: an invoice is Issued only once it has an
- * issue day or a number, else Draft; an expense is Paid only on or before today, else To pay.
+ * Where a new entry with no state asked for starts: an invoice is Issued once it has a number or
+ * an issue day on or before today, else Draft; an expense is Paid only on or before today, else To pay.
  */
 export const startState = (
   def: ListDef,
@@ -344,7 +344,10 @@ export const startState = (
 ): KinRecordState => {
   const fallback = def.states.includes("open") ? "open" : def.defaultState;
   if (def.id === "invoices" && def.defaultState === "waiting")
-    return entry.dateAt !== null || entry.numbered ? "waiting" : fallback;
+    return entry.numbered ||
+      (entry.dateAt !== null && dayIn(entry.dateAt, entry.zone) <= dayIn(entry.now, entry.zone))
+      ? "waiting"
+      : fallback;
   if (def.id === "expenses" && def.defaultState === "done" && entry.dateAt !== null)
     return dayIn(entry.dateAt, entry.zone) > dayIn(entry.now, entry.zone) ? fallback : "done";
   return def.defaultState;

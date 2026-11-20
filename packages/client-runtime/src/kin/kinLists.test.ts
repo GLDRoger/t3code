@@ -411,6 +411,11 @@ describe("a list by its definition", () => {
       dateLabel: "Issued",
     });
     expect(kinListColumns(issued, [kept]).find((one) => one.id === "date")?.label).toBe("Issued");
+    // A kept draft hasn't gone out: its day is no issue day either.
+    expect(kinListEntryView({ ...kept, state: "open" }, issued, context)).toMatchObject({
+      stateLabel: "Draft",
+      dateLabel: "Date",
+    });
     // Its page notes Money only where Money would count it, a draft that it is owed only once
     // issued, and offers Not needed only where it can drop it.
     expect(kinSuggestionKeep(suggested, issued)).toEqual({

@@ -358,12 +358,12 @@ export const kinSuggestionText = (
       ? KIN_SUGGESTED
       : `${KIN_SUGGESTED} · ${label}`;
 const KIN_DAY = "Date";
-/** The day's label, or the plain one on a suggestion where it names a state, as Issued does. */
+/** The day's label, or the plain one on a suggestion or draft where it names a state, as Issued does. */
 const kinDayLabel = (
   def: Pick<KinListDefinition, "dateLabel" | "states" | "stateLabels">,
-  suggested: boolean,
+  notIssued: boolean,
 ) =>
-  suggested && def.states.some((state) => kinListStateLabel(def, state) === def.dateLabel)
+  notIssued && def.states.some((state) => kinListStateLabel(def, state) === def.dateLabel)
     ? KIN_DAY
     : def.dateLabel;
 /** Late as a figure would read it: never for a suggestion in a money list. */
@@ -1268,7 +1268,7 @@ export function kinListEntryView(
         ? item.dateAt === undefined
           ? null
           : KIN_DAY
-        : (kinDayLabel(def, kinSuggestion(item)) ?? null),
+        : (kinDayLabel(def, kinSuggestion(item) || item.state === "open") ?? null),
     dueDay: kinWorkAllDay(item.dueAt, item.dueAllDay, names),
     dateDay: kinWorkAllDay(item.dateAt ?? null, item.dateAllDay ?? true, names),
     due,
