@@ -42,10 +42,8 @@ import { ImageVendorError, type KinImageVendor, type PixelSize } from "./ImageVe
 import { openAiImages } from "./OpenAiImages.ts";
 import { KIN_PICTURE_SIZES, type KinPictureSize, pictureOutput } from "./sizes.ts";
 
-/** Generation is slow; past this the vendor counts as down and nothing is counted. */
+/** Generation is slow; past this no answer is coming, and what may have been made is counted. */
 export const PICTURE_TIMEOUT = Duration.seconds(120);
-/** A reservation older than this was cut off by a crash, and stops counting. */
-const STALE_RESERVATION_MS = 10 * 60_000;
 const WARN_PERCENT = 80;
 const MAX_PROMPT = 32_000;
 
@@ -54,6 +52,8 @@ export type GenerateRequest = {
   readonly agentId: KinAgentId;
   /** Who asked, when a person did. */
   readonly askedBy: KinPersonId | null;
+  /** Only the owner level reads the turn: a rejected key is named to it, and to no one else. */
+  readonly ownerLevel: boolean;
   readonly prompt: string;
   readonly size: KinPictureSize;
   /** 1 to 4. */
@@ -62,7 +62,14 @@ export type GenerateRequest = {
   readonly retryKey?: string;
 };
 
-export type GenerateRefusal = "no_key" | "limit" | "refused" | "key_rejected" | "unavailable";
+/** `unavailable`: nothing was made or counted; `lost`: it may have been made, and is counted. */
+export type GenerateRefusal =
+  | "no_key"
+  | "limit"
+  | "refused"
+  | "key_rejected"
+  | "unavailable"
+  | "lost";
 export type GenerateResult =
   | {
       readonly _tag: "made";
@@ -77,16 +84,22 @@ export type GenerateResult =
   | { readonly _tag: "refused"; readonly reason: GenerateRefusal; readonly sentence: string };
 
 const WHERE = "Settings → Connections → Pictures";
-/** The server's own words for every way a picture isn't made, each saying who can fix it. */
+/**
+ * The server's own words for every way a picture isn't made, each saying who can fix it; the
+ * service's own words never reach an agent or a person.
+ */
 export const GENERATE_SENTENCES = {
   no_key: `No picture service is connected yet. An owner or co-owner can connect one in ${WHERE}.`,
   limit: (limit: number, resetsOn: string) =>
     `This month's ${limit} generated pictures are used. An owner or co-owner can raise the limit in ${WHERE}; it resets on ${resetsOn}.`,
-  refused: (reason: string | null) =>
-    `The picture service turned this prompt down${reason === null ? "" : `: ${reason}`}. Nothing was counted. Describe it differently and try again.`,
+  refused:
+    "The picture service refused this description, so nothing was made or counted. Tell the person; don't send it again.",
   key_rejected: `The picture service turned down Kin's key. Nothing was counted. An owner or co-owner can check it in ${WHERE}.`,
+  not_working:
+    "The picture service isn't working right now, so nothing was made or counted; the owner can check it in Settings.",
   unavailable:
-    "The picture service didn't answer. Nothing was counted; try again in a few minutes.",
+    "The picture service didn't take this request, so nothing was made and nothing was counted. Try again in a few minutes.",
+  lost: "The picture service may have made this picture, but Kin didn't get it back, so nothing was posted and it is counted. Try again in a few minutes.",
 } as const;
 
 /** What a made generation returned, kept on its count row so a retry returns it again. */
@@ -140,6 +153,29 @@ const sniff = (bytes: Uint8Array) => {
   if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50))
     return { mime: "image/webp", ext: "webp" };
   return undefined;
+};
+
+/** What differs from what was asked: the size, or fewer pictures than asked for. */
+const noteOf = (input: {
+  readonly size: PixelSize;
+  readonly wanted: PixelSize;
+  readonly request: GenerateRequest;
+  readonly held: { readonly take: number; readonly limit: number | null };
+  readonly made: number;
+  readonly counted: number;
+}) => {
+  const { size, wanted, request, held, made, counted } = input;
+  const notes = [
+    size.width === wanted.width && size.height === wanted.height
+      ? null
+      : `Made at ${size.width}×${size.height}, the picture service's nearest size to ${request.size} (${wanted.width}×${wanted.height}).`,
+    held.take < request.count
+      ? `Only ${held.take} of this month's ${held.limit} pictures were left, so Kin made ${made}.`
+      : made < request.count
+        ? `The picture service made ${made} of the ${request.count} asked for; ${made === counted ? "only those were counted" : `the ${counted} it sent are counted`}.`
+        : null,
+  ].filter((note) => note !== null);
+  return notes.length === 0 ? null : notes.join(" ");
 };
 
 type Settings = {
@@ -214,19 +250,15 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
     return { now, month, resetsOn: `${shiftMonth(month, 1)}-01` };
   });
 
-  const used = Effect.fn("KinPictures.used")(function* (
-    orgId: KinOrgId,
-    month: string,
-    now: number,
-  ) {
+  const used = Effect.fn("KinPictures.used")(function* (orgId: KinOrgId, month: string) {
+    // A reservation counts until settled: one a crash left may have been made, so it stays.
     const [row] = yield* sql<{ used: number | null }>`SELECT SUM(count) AS used
-      FROM kin_picture_counts WHERE org_id = ${orgId} AND month = ${month}
-        AND (state = 'made' OR at > ${now - STALE_RESERVATION_MS})`;
+      FROM kin_picture_counts WHERE org_id = ${orgId} AND month = ${month}`;
     return row?.used ?? 0;
   });
 
   const view = Effect.fn("KinPictures.view")(function* (orgId: KinOrgId) {
-    const { now, month, resetsOn } = yield* monthNow(orgId);
+    const { month, resetsOn } = yield* monthNow(orgId);
     const settings = yield* settingsOf(orgId);
     const key = yield* secrets.getPicturesKey(vendor.name);
     const connected = settings?.keySavedAt != null && Option.isSome(key);
@@ -237,7 +269,7 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
       savedAt: connected ? DateTime.formatIso(DateTime.makeUnsafe(settings.keySavedAt)) : null,
       model: settings?.model ?? vendor.defaultModel,
       monthlyLimit: settings === undefined ? KIN_PICTURES_PROPOSED_LIMIT : settings.monthlyLimit,
-      usedThisMonth: yield* used(orgId, month, now),
+      usedThisMonth: yield* used(orgId, month),
       resetsOn,
     } satisfies KinPicturesView;
   });
@@ -299,8 +331,6 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
       }
       const settings = yield* settingsOf(request.orgId);
       const limit = settings?.monthlyLimit ?? null;
-      yield* sql`DELETE FROM kin_picture_counts WHERE org_id = ${request.orgId}
-        AND state = 'reserved' AND at <= ${now - STALE_RESERVATION_MS}`;
       const countId =
         request.retryKey === undefined
           ? `pic_${NodeCrypto.randomBytes(10).toString("hex")}`
@@ -322,7 +352,7 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
         if (made === undefined || Option.isNone(made)) return yield* stillMaking;
         return { _tag: "done" as const, made: made.value };
       }
-      const before = yield* used(request.orgId, month, now);
+      const before = yield* used(request.orgId, month);
       const take = limit === null ? request.count : Math.min(request.count, limit - before);
       if (take <= 0)
         return {
@@ -347,12 +377,24 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
     }).pipe(sql.withTransaction);
   });
 
+  /** The request never left, or the service settled it with nothing made: the count is freed. */
   const release = (orgId: KinOrgId, countId: string) =>
     sql`DELETE FROM kin_picture_counts WHERE org_id = ${orgId} AND count_id = ${countId}
       AND state = 'reserved'`.pipe(
       Effect.tapError((cause) =>
         Effect.logWarning("Kin couldn't release a picture count", { cause }),
       ),
+      Effect.ignore,
+    );
+  /**
+   * Sent, and nothing usable came back: it may have been made and billed, so the count stays,
+   * under an id of its own so the same call can be asked again.
+   */
+  const keepLost = (orgId: KinOrgId, countId: string, count: number) =>
+    sql`UPDATE kin_picture_counts SET count_id = ${`lost_${NodeCrypto.randomBytes(10).toString("hex")}`},
+        state = 'made', count = ${count}
+      WHERE org_id = ${orgId} AND count_id = ${countId} AND state = 'reserved'`.pipe(
+      Effect.tapError((cause) => Effect.logWarning("Kin couldn't keep a picture count", { cause })),
       Effect.ignore,
     );
 
@@ -363,9 +405,8 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
   ) {
     const limit = held.limit;
     if (limit === null) return;
-    const now = yield* Clock.currentTimeMillis;
     yield* Effect.gen(function* () {
-      const count = yield* used(orgId, held.month, now);
+      const count = yield* used(orgId, held.month);
       if (count * 100 < limit * WARN_PERCENT) return;
       const claimed = yield* sql`UPDATE kin_picture_settings SET warned_month = ${held.month}
         WHERE org_id = ${orgId} AND (warned_month IS NULL OR warned_month <> ${held.month})
@@ -388,10 +429,18 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
     );
   });
 
-  const sentenceOf = (error: ImageVendorError) =>
+  const refusal = (reason: GenerateRefusal, sentence: string) =>
+    ({ _tag: "refused", reason, sentence }) as const;
+  const settledBy = (error: ImageVendorError, ownerLevel: boolean) =>
     error.kind === "refused"
-      ? GENERATE_SENTENCES.refused(error.reason?.trim().replace(/[.\s]+$/, "") || null)
-      : GENERATE_SENTENCES[error.kind];
+      ? refusal("refused", GENERATE_SENTENCES.refused)
+      : error.kind === "key_rejected"
+        ? refusal(
+            "key_rejected",
+            ownerLevel ? GENERATE_SENTENCES.key_rejected : GENERATE_SENTENCES.not_working,
+          )
+        : refusal("unavailable", GENERATE_SENTENCES.unavailable);
+  const lost = refusal("lost", GENERATE_SENTENCES.lost);
 
   const generate = Effect.fn("KinPictures.generate")(
     function* (request: GenerateRequest) {
@@ -406,45 +455,45 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
       const settings = yield* settingsOf(request.orgId);
       const key = yield* secrets.getPicturesKey(vendor.name);
       if (settings?.keySavedAt == null || Option.isNone(key))
-        return { _tag: "refused", reason: "no_key", sentence: GENERATE_SENTENCES.no_key } as const;
+        return refusal("no_key", GENERATE_SENTENCES.no_key);
       const held = yield* reserve(request);
-      if (held._tag === "full")
-        return { _tag: "refused", reason: "limit", sentence: held.sentence } as const;
+      if (held._tag === "full") return refusal("limit", held.sentence);
       if (held._tag === "done") return { _tag: "made", ...held.made } as const;
       const size = nearestSize(vendor.sizes, wanted);
+      // Once sent, an interrupted turn leaves its reservation: the picture may still be made.
       const answer = yield* vendor
         .generate(key.value, { model: held.model, prompt, size, count: held.take })
         .pipe(
           Effect.provideService(HttpClient.HttpClient, http),
           Effect.timeoutOrElse({
             duration: PICTURE_TIMEOUT,
-            orElse: () => Effect.fail(new ImageVendorError({ kind: "unavailable", reason: null })),
+            orElse: () => Effect.fail(new ImageVendorError({ kind: "lost" })),
           }),
           Effect.map((made) => ({ _tag: "made" as const, made })),
           Effect.catch((error) => Effect.succeed({ _tag: "failed" as const, error })),
-          // A turn stopped mid-call frees its count at once rather than when it goes stale.
-          Effect.onInterrupt(() => release(request.orgId, held.countId)),
         );
-      const images =
-        answer._tag === "made"
-          ? answer.made.images.slice(0, held.take).flatMap((image) => {
-              const type = sniff(image.bytes);
-              return type === undefined ||
-                image.bytes.byteLength === 0 ||
-                image.bytes.byteLength > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES
-                ? []
-                : [{ bytes: image.bytes, ...type }];
-            })
-          : [];
-      if (images.length === 0) {
+      if (answer._tag === "failed") {
+        if (answer.error.kind === "lost") {
+          yield* keepLost(request.orgId, held.countId, held.take);
+          return lost;
+        }
         yield* release(request.orgId, held.countId);
-        const reason = answer._tag === "failed" ? answer.error.kind : "unavailable";
-        return {
-          _tag: "refused",
-          reason,
-          sentence:
-            answer._tag === "failed" ? sentenceOf(answer.error) : GENERATE_SENTENCES.unavailable,
-        } as const;
+        return settledBy(answer.error, request.ownerLevel);
+      }
+      const sent = answer.made.images.slice(0, held.take);
+      const images = sent.flatMap((image) => {
+        const type = sniff(image.bytes);
+        return type === undefined ||
+          image.bytes.byteLength === 0 ||
+          image.bytes.byteLength > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES
+          ? []
+          : [{ bytes: image.bytes, ...type }];
+      });
+      // What the service sent is what it made: each is counted, usable or not.
+      const counted = Math.max(1, sent.length);
+      if (images.length === 0) {
+        yield* keepLost(request.orgId, held.countId, counted);
+        return lost;
       }
       const files = yield* Effect.forEach(images, (image, index) =>
         renderer
@@ -462,27 +511,31 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
               sizeBytes: image.bytes.byteLength,
             })),
           ),
-      ).pipe(Effect.tapError(() => release(request.orgId, held.countId)));
-      const notes = [
-        size.width === wanted.width && size.height === wanted.height
-          ? null
-          : `Made at ${size.width}×${size.height}, the picture service's nearest size to ${request.size} (${wanted.width}×${wanted.height}).`,
-        held.take < request.count
-          ? `Only ${held.take} of this month's ${held.limit} pictures were left, so Kin made ${files.length}.`
-          : files.length < request.count
-            ? `The picture service made ${files.length} of the ${request.count} asked for; only those were counted.`
-            : null,
-      ].filter((note) => note !== null);
+      ).pipe(Effect.option);
+      if (Option.isNone(files)) {
+        yield* keepLost(request.orgId, held.countId, counted);
+        return lost;
+      }
       const made = {
-        files,
+        files: files.value,
         size,
         vendor: vendor.label,
         model: held.model,
-        note: notes.length === 0 ? null : notes.join(" "),
+        note: noteOf({ size, wanted, request, held, made: images.length, counted }),
       };
-      yield* sql`UPDATE kin_picture_counts SET state = 'made', count = ${files.length},
+      const settled = yield* sql`UPDATE kin_picture_counts SET state = 'made', count = ${counted},
           made_json = ${encodeMade(made)}
-        WHERE org_id = ${request.orgId} AND count_id = ${held.countId}`.pipe(sql.withTransaction);
+        WHERE org_id = ${request.orgId} AND count_id = ${held.countId}`.pipe(
+        sql.withTransaction,
+        Effect.as(true),
+        Effect.catchTags({
+          SqlError: (cause) =>
+            Effect.logWarning("Kin couldn't settle a picture count", { cause }).pipe(
+              Effect.as(false),
+            ),
+        }),
+      );
+      if (!settled) return lost;
       yield* refreshes.touch(request.orgId, "connections");
       yield* warnIfNear(request.orgId, held);
       return { _tag: "made", ...made } as const;

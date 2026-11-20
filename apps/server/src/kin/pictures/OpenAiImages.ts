@@ -4,6 +4,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as HttpClient from "effect/http/HttpClient";
+import type * as HttpClientError from "effect/http/HttpClientError";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 
 import { ImageVendorError, type KinImageVendor } from "./ImageVendor.ts";
@@ -26,8 +27,30 @@ const field = (value: unknown, ...path: ReadonlyArray<string>): unknown =>
 const text = (value: unknown) => (typeof value === "string" && value.trim() !== "" ? value : null);
 
 const isVendorError = Schema.is(ImageVendorError);
-const fail = (kind: ImageVendorError["kind"], reason: string | null = null) =>
-  new ImageVendorError({ kind, reason });
+const fail = (kind: ImageVendorError["kind"]) => new ImageVendorError({ kind });
+
+/** Failures before a connection was made: the request never left. */
+const NOT_CONNECTED = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "EKINEGRESS",
+]);
+/** Whether a failed request certainly never reached the service; anything unsure may have. */
+const neverLeft = (error: HttpClientError.HttpClientError) => {
+  const reason = error.reason;
+  if (reason._tag === "EncodeError" || reason._tag === "InvalidUrlError") return true;
+  if (reason._tag !== "TransportError") return false;
+  for (let cause: unknown = reason.cause, depth = 0; cause !== undefined && depth < 5; depth++) {
+    const code = field(cause, "code");
+    if (typeof code === "string" && NOT_CONNECTED.has(code)) return true;
+    cause = field(cause, "cause");
+  }
+  return false;
+};
 
 /** The body as JSON, refused past the cap without reading the rest. */
 const cappedJson = (stream: Stream.Stream<Uint8Array, unknown>, maxBytes: number) =>
@@ -36,12 +59,12 @@ const cappedJson = (stream: Stream.Stream<Uint8Array, unknown>, maxBytes: number
       () => ({ size: 0, chunks: [] as Array<Uint8Array> }),
       (acc, chunk) => {
         const size = acc.size + chunk.length;
-        if (size > maxBytes) return Effect.fail(fail("unavailable"));
+        if (size > maxBytes) return Effect.fail(fail("lost"));
         acc.chunks.push(chunk);
         return Effect.succeed({ size, chunks: acc.chunks });
       },
     ),
-    Effect.mapError((cause) => (isVendorError(cause) ? cause : fail("unavailable"))),
+    Effect.mapError((cause) => (isVendorError(cause) ? cause : fail("lost"))),
     Effect.map(({ size, chunks }) => {
       const body = new Uint8Array(size);
       let offset = 0;
@@ -91,14 +114,15 @@ export const makeOpenAiImages = (maxResponseBytes = MAX_RESPONSE_BYTES): KinImag
           }),
         ),
       )
-      .pipe(Effect.mapError(() => fail("unavailable")));
+      .pipe(Effect.mapError((error) => fail(neverLeft(error) ? "not_sent" : "lost")));
     const body = yield* cappedJson(response.stream, maxResponseBytes);
     const status = response.status;
-    const said = text(field(body, "error", "message"))?.slice(0, 200) ?? null;
+    // Settled by status and stable code alone; the service's own message is never read.
+    const code = text(field(body, "error", "code"));
     if (status === 401 || status === 403) return yield* fail("key_rejected");
-    if (status === 400 && field(body, "error", "code") === "moderation_blocked")
-      return yield* fail("refused", said);
-    if (status < 200 || status >= 300) return yield* fail("unavailable");
+    if (status === 400 && code === "moderation_blocked") return yield* fail("refused");
+    if (status >= 400 && status < 500 && code !== null) return yield* fail("declined");
+    if (status < 200 || status >= 300) return yield* fail("lost");
     const format = text(field(body, "output_format")) ?? "png";
     const data = field(body, "data");
     const images = (Array.isArray(data) ? data : []).flatMap((one) => {
@@ -107,7 +131,7 @@ export const makeOpenAiImages = (maxResponseBytes = MAX_RESPONSE_BYTES): KinImag
         ? []
         : [{ bytes: new Uint8Array(Buffer.from(b64, "base64")), mimeType: MIME[format] ?? "" }];
     });
-    if (images.length === 0) return yield* fail("unavailable");
+    if (images.length === 0) return yield* fail("lost");
     return { images: images.slice(0, request.count) };
   }),
 });

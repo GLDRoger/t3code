@@ -4,19 +4,22 @@ import type * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
 /**
- * Why a picture service made nothing. `reason` is the service's own words when it gave any, cut
- * short; it never carries the key, the request or a raw body.
+ * Why a picture service gave no picture, by what it means for the count: whether the request
+ * left at all, and whether the service settled it. Its own words are never kept.
  */
 export class ImageVendorError extends Schema.TaggedError<ImageVendorError>()("ImageVendorError", {
   kind: Schema.Literals([
-    /** It turned the prompt down. */
+    /** It turned the prompt down, by its stable code: nothing was made. */
     "refused",
-    /** The key is wrong, revoked, or may not use the model. */
+    /** The key is wrong, revoked, or may not use the model: nothing was made. */
     "key_rejected",
-    /** No answer, too slow, or the service failed. */
-    "unavailable",
+    /** Another refusal with a stable code (a 4xx such as a rate limit): nothing was made. */
+    "declined",
+    /** The request never left: nothing was made. */
+    "not_sent",
+    /** It left and no settled answer came back (a 5xx, a timeout, a broken body): it may be made. */
+    "lost",
   ]),
-  reason: Schema.NullOr(Schema.String),
 }) {}
 
 export type PictureKey = Redacted.Redacted<string>;

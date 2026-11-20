@@ -78,13 +78,8 @@ describe("OpenAI's Images API", () => {
   });
 
   it.effect.each([
-    [
-      401,
-      { error: { message: "Incorrect API key provided: sk-inv***0000." } },
-      "key_rejected",
-      null,
-    ],
-    [403, { error: { message: "Your organization must be verified." } }, "key_rejected", null],
+    [401, { error: { message: "Incorrect API key provided: sk-inv***0000." } }, "key_rejected"],
+    [403, { error: { message: "Your organization must be verified." } }, "key_rejected"],
     [
       400,
       {
@@ -94,20 +89,47 @@ describe("OpenAI's Images API", () => {
         },
       },
       "refused",
-      "Your request was rejected by the safety system.",
     ],
-    [400, { error: { code: "invalid_value", message: "Invalid size." } }, "unavailable", null],
-    [429, { error: { message: "Rate limit reached." } }, "unavailable", null],
-    [500, { error: { message: "The server had an error." } }, "unavailable", null],
-    [200, { data: [] }, "unavailable", null],
-  ] as const)("answers HTTP %i as a %s", ([status, body, kind, reason]) => {
+    [400, { error: { code: "invalid_value", message: "Invalid size." } }, "declined"],
+    [429, { error: { code: "rate_limit_exceeded", message: "Rate limit reached." } }, "declined"],
+    // A 4xx with no stable code, a 5xx or an empty answer settles nothing: it may be made.
+    [429, { error: { message: "Rate limit reached." } }, "lost"],
+    [500, { error: { message: "The server had an error." } }, "lost"],
+    [200, { data: [] }, "lost"],
+  ] as const)("answers HTTP %i, %j, as %s", ([status, body, kind]) => {
     const { seen, http } = served(() => json(status, body));
     return Effect.gen(function* () {
       const error = yield* ask().pipe(Effect.flip);
-      assert.deepInclude(error, { kind, reason });
+      // Its kind alone: the service's own words go nowhere.
+      assert.deepStrictEqual({ ...error }, { _tag: "ImageVendorError", kind });
       assert.strictEqual(seen.length, 1);
     }).pipe(Effect.provide(http));
   });
+
+  it.effect("a request that never connected was not sent; one cut off after may have been", () =>
+    Effect.gen(function* () {
+      const failing = (cause: unknown) =>
+        Layer.effect(HttpClient.HttpClient, Effect.map(HttpClient.HttpClient, guard)).pipe(
+          Layer.provide(FetchHttpClient.layer),
+          Layer.provide(
+            Layer.succeed(FetchHttpClient.Fetch, (() =>
+              Promise.reject(cause)) as typeof globalThis.fetch),
+          ),
+        );
+      const refused = new TypeError("fetch failed", {
+        cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+      });
+      const reset = new TypeError("fetch failed", {
+        cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }),
+      });
+      assert.deepInclude(yield* ask().pipe(Effect.flip, Effect.provide(failing(refused))), {
+        kind: "not_sent",
+      });
+      assert.deepInclude(yield* ask().pipe(Effect.flip, Effect.provide(failing(reset))), {
+        kind: "lost",
+      });
+    }),
+  );
 
   it.effect("follows no redirect and reads no answer past its cap", () =>
     Effect.gen(function* () {
@@ -115,7 +137,7 @@ describe("OpenAI's Images API", () => {
         () => new Response(null, { status: 302, headers: { location: "https://elsewhere.test/" } }),
       );
       assert.deepInclude(yield* ask().pipe(Effect.flip, Effect.provide(moved.http)), {
-        kind: "unavailable",
+        kind: "lost",
       });
       assert.deepStrictEqual(
         moved.seen.map((one) => one.url),
@@ -123,7 +145,7 @@ describe("OpenAI's Images API", () => {
       );
       const big = served(() => json(200, { data: [{ b64_json: b64.repeat(100) }] }));
       assert.deepInclude(yield* ask(1024).pipe(Effect.flip, Effect.provide(big.http)), {
-        kind: "unavailable",
+        kind: "lost",
       });
     }),
   );

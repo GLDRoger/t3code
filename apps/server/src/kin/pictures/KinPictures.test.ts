@@ -50,12 +50,15 @@ const harness = () => {
     setPicturesKey: (vendor, key) => Effect.sync(() => void keys.set(vendor, key)),
     removePicturesKey: (vendor) => Effect.sync(() => void keys.delete(vendor)),
   });
+  const storage = { fails: false };
   const renderer = Layer.mock(KinDocRenderer)({
     store: (org, _job, file) =>
-      Effect.sync(() => {
-        stored.push({ orgId: org, sha256: file.sha256, bytes: file.bytes.byteLength });
-        return `kin-${file.sha256.slice(0, 12)}-${file.extension}`;
-      }),
+      storage.fails
+        ? Effect.fail(new KinChatError({ reason: "unavailable", message: "The disk is full." }))
+        : Effect.sync(() => {
+            stored.push({ orgId: org, sha256: file.sha256, bytes: file.bytes.byteLength });
+            return `kin-${file.sha256.slice(0, 12)}-${file.extension}`;
+          }),
   });
   const identity = Layer.mock(KinIdentity)({
     owner: { _tag: "person", orgId, personId: owner },
@@ -91,7 +94,7 @@ const harness = () => {
       yield* TestClock.setTime(NOW);
       return yield* body.pipe(Effect.provide(layer));
     });
-  return { fake, keys, stored, logs, run };
+  return { fake, keys, stored, storage, logs, run };
 };
 
 /** The seeded org with a teammate and a co-owner, and the company in India's zone. */
@@ -122,6 +125,7 @@ const ask = (overrides: Partial<GenerateRequest> = {}) =>
       orgId,
       agentId: growth,
       askedBy: KinPersonId.make("meera"),
+      ownerLevel: false,
       prompt: "Our team at a café, warm morning light",
       size: "square",
       count: 1,
@@ -220,60 +224,97 @@ describe("KinPictures", () => {
     },
   );
 
-  it.effect("gives each failure its sentence and counts nothing", () => {
+  it.effect(
+    "frees the count only when nothing left or the service settled it, and keeps it once a picture may be made",
+    () => {
+      const { fake, storage, run } = harness();
+      return run(
+        Effect.gen(function* () {
+          yield* setUp;
+          assert.deepStrictEqual(yield* ask(), {
+            _tag: "refused",
+            reason: "no_key",
+            sentence: GENERATE_SENTENCES.no_key,
+          });
+          assert.lengthOf(fake.calls, 0);
+          yield* connect();
+          const used = Effect.map(
+            Effect.flatMap(KinPictures, (pictures) => pictures.get(asOwner, { orgId })),
+            (view) => view.usedThisMonth,
+          );
+          // Never sent, or settled by the service with nothing made: nothing is counted.
+          for (const [mode, ownerLevel, reason, sentence] of [
+            ["refuse", false, "refused", GENERATE_SENTENCES.refused],
+            ["reject", true, "key_rejected", GENERATE_SENTENCES.key_rejected],
+            ["reject", false, "key_rejected", GENERATE_SENTENCES.not_working],
+            ["decline", false, "unavailable", GENERATE_SENTENCES.unavailable],
+            ["unsent", false, "unavailable", GENERATE_SENTENCES.unavailable],
+          ] as const) {
+            fake.control.mode = mode;
+            assert.deepStrictEqual(yield* ask({ ownerLevel }), {
+              _tag: "refused",
+              reason,
+              sentence,
+            });
+          }
+          assert.deepStrictEqual(yield* counts, []);
+          assert.strictEqual(yield* used, 0);
+          // Sent, and nothing usable came back: it may be made, so it is counted.
+          const lost = { _tag: "refused", reason: "lost", sentence: GENERATE_SENTENCES.lost };
+          fake.control.mode = "lost";
+          assert.deepStrictEqual(yield* ask(), lost);
+          fake.control.mode = "garbage";
+          assert.deepStrictEqual(yield* ask({ count: 2 }), lost);
+          fake.control.mode = "silent";
+          const waiting = yield* Effect.forkChild(ask());
+          yield* TestClock.adjust(PICTURE_TIMEOUT);
+          assert.deepStrictEqual(yield* Fiber.join(waiting), lost);
+          fake.control.mode = "ok";
+          storage.fails = true;
+          assert.deepStrictEqual(yield* ask(), lost);
+          storage.fails = false;
+          assert.strictEqual(yield* used, 5);
+          // A turn stopped while the service has it keeps its count too.
+          fake.control.mode = "silent";
+          const sent = yield* Deferred.make<void>();
+          fake.control.before = Deferred.succeed(sent, undefined);
+          const stopped = yield* Effect.forkChild(ask());
+          yield* Deferred.await(sent);
+          yield* Fiber.interrupt(stopped);
+          fake.control.before = Effect.void;
+          assert.strictEqual(yield* used, 6);
+          assert.deepStrictEqual(
+            (yield* counts).map((row) => `${row.count} ${row.state}`).toSorted(),
+            ["1 made", "1 made", "1 made", "1 reserved", "2 made"],
+          );
+          // An agent or a person from another org looks unknown, and nothing is asked or counted.
+          const calls = fake.calls.length;
+          fake.control.mode = "ok";
+          for (const request of [
+            { agentId: KinAgentId.make(`lead-${otherOrg}`) },
+            { askedBy: KinPersonId.make(`owner-${otherOrg}`) },
+          ]) {
+            const exit = yield* ask(request).pipe(Effect.flip);
+            assert.isTrue(isKinError(exit) && exit.reason === "not_found");
+          }
+          assert.strictEqual(fake.calls.length, calls);
+          assert.strictEqual(yield* used, 6);
+        }),
+      );
+    },
+  );
+
+  it.effect("keeps counting a reservation a crash left, however old", () => {
     const { fake, run } = harness();
     return run(
       Effect.gen(function* () {
-        yield* setUp;
-        assert.deepStrictEqual(yield* ask(), {
-          _tag: "refused",
-          reason: "no_key",
-          sentence: GENERATE_SENTENCES.no_key,
-        });
+        const sql = yield* setUp;
+        yield* connect(2);
+        yield* sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id, count, state, at)
+          VALUES (${orgId}, 'crashed', '2026-11', ${growth}, 2, 'reserved', ${NOW - 86_400_000})`;
+        assert.deepInclude(yield* ask(), { reason: "limit" });
         assert.lengthOf(fake.calls, 0);
-        yield* connect();
-        const cases = [
-          [
-            "refuse",
-            "refused",
-            GENERATE_SENTENCES.refused("The prompt asks for a real person's likeness"),
-          ],
-          ["reject", "key_rejected", GENERATE_SENTENCES.key_rejected],
-          ["down", "unavailable", GENERATE_SENTENCES.unavailable],
-        ] as const;
-        for (const [mode, reason, sentence] of cases) {
-          fake.control.mode = mode;
-          assert.deepStrictEqual(yield* ask(), { _tag: "refused", reason, sentence });
-        }
-        fake.control.mode = "refuse";
-        fake.control.refusal = null;
-        assert.deepInclude(yield* ask(), {
-          sentence:
-            "The picture service turned this prompt down. Nothing was counted. Describe it differently and try again.",
-        });
-        // Silent: after two minutes it counts as down.
-        fake.control.mode = "silent";
-        const waiting = yield* Effect.forkChild(ask());
-        yield* TestClock.adjust(PICTURE_TIMEOUT);
-        assert.deepStrictEqual(yield* Fiber.join(waiting), {
-          _tag: "refused",
-          reason: "unavailable",
-          sentence: GENERATE_SENTENCES.unavailable,
-        });
-        assert.deepStrictEqual(yield* counts, []);
-        assert.strictEqual((yield* (yield* KinPictures).get(asOwner, { orgId })).usedThisMonth, 0);
-        // An agent or a person from another org looks unknown, and nothing is asked or counted.
-        const calls = fake.calls.length;
-        fake.control.mode = "ok";
-        for (const request of [
-          { agentId: KinAgentId.make(`lead-${otherOrg}`) },
-          { askedBy: KinPersonId.make(`owner-${otherOrg}`) },
-        ]) {
-          const exit = yield* ask(request).pipe(Effect.flip);
-          assert.isTrue(isKinError(exit) && exit.reason === "not_found");
-        }
-        assert.strictEqual(fake.calls.length, calls);
-        assert.deepStrictEqual(yield* counts, []);
+        assert.strictEqual((yield* (yield* KinPictures).get(asOwner, { orgId })).usedThisMonth, 2);
       }),
     );
   });
@@ -313,8 +354,8 @@ describe("KinPictures", () => {
         yield* setUp;
         yield* connect();
         const retryKey = "kin-picture:wake-1:cafe";
-        // A failed call frees its key: the retry makes the picture.
-        fake.control.mode = "down";
+        // A call that never left frees its key: the retry makes the picture.
+        fake.control.mode = "unsent";
         assert.deepInclude(yield* ask({ retryKey }), { reason: "unavailable" });
         fake.control.mode = "ok";
         const inCall = yield* Deferred.make<void>();
@@ -464,7 +505,7 @@ describe("KinPictures", () => {
         const sql = yield* setUp;
         const pictures = yield* KinPictures;
         const said: Array<unknown> = [yield* connect(5)];
-        for (const mode of ["ok", "refuse", "reject", "down", "ok", "ok", "ok"] as const) {
+        for (const mode of ["ok", "refuse", "reject", "unsent", "lost", "ok", "ok"] as const) {
           fake.control.mode = mode;
           said.push(yield* ask());
         }

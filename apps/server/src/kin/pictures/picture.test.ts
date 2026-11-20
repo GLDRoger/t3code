@@ -499,7 +499,7 @@ describe("kin_picture", () => {
           WHERE a.attachment_id = ${second.files[0]!}`;
         yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at, joined_seq)
           VALUES ('team-chat-dev', ${orgId}, 'team-chat', 'person', ${dev}, 'member', ${at}, ${joined!.seq})`;
-        const fails = <A, E>(effect: Effect.Effect<A, E>) =>
+        const fails = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
           effect.pipe(
             Effect.as(false),
             Effect.orElseSucceed(() => true),
@@ -699,17 +699,20 @@ describe("kin_picture", () => {
           monthlyLimit: 1,
         });
         for (const [mode, reason, message] of [
-          [
-            "refuse",
-            "invalid_state",
-            GENERATE_SENTENCES.refused("The prompt asks for a real person's likeness"),
-          ],
+          ["refuse", "invalid_state", GENERATE_SENTENCES.refused],
           ["reject", "unavailable", GENERATE_SENTENCES.key_rejected],
-          ["down", "unavailable", GENERATE_SENTENCES.unavailable],
+          ["unsent", "unavailable", GENERATE_SENTENCES.unavailable],
         ] as const) {
           fake.control.mode = mode;
           assert.include(yield* refusal(), { reason, message });
         }
+        // A rejected key is named only where the owner level alone reads.
+        yield* turn(2, "meera", "shared");
+        fake.control.mode = "reject";
+        assert.include(yield* refusal(), {
+          reason: "unavailable",
+          message: GENERATE_SENTENCES.not_working,
+        });
         fake.control.mode = "ok";
         yield* sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id, count, state, at)
           VALUES (${orgId}, 'earlier', '2026-11', ${lead}, 1, 'made', 0)`;
@@ -718,7 +721,7 @@ describe("kin_picture", () => {
           message:
             "This month's 1 generated pictures are used. An owner or co-owner can raise the limit in Settings → Connections → Pictures; it resets on 1 Dec.",
         });
-        assert.lengthOf(fake.calls, 3);
+        assert.lengthOf(fake.calls, 4);
         assert.deepStrictEqual(placed, []);
         assert.deepStrictEqual(
           yield* sql`SELECT key FROM kin_records WHERE org_id = ${orgId} AND register_id = 'docs'`,

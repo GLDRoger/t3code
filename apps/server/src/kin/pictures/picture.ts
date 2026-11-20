@@ -208,6 +208,7 @@ const SENTENCE_REASONS = {
   refused: "invalid_state",
   key_rejected: "unavailable",
   unavailable: "unavailable",
+  lost: "unavailable",
 } as const;
 
 /** `kin_picture`: draws the page or generates from the prompt, files each as a doc and puts it on the reply. */
@@ -285,6 +286,7 @@ export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: Pict
         orgId: lead.orgId,
         agentId: lead.agentId,
         askedBy: writer.askedBy ?? null,
+        ownerLevel: team === undefined,
         prompt,
         size: input.size,
         count: input.count ?? 1,

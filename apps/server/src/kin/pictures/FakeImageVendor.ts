@@ -11,7 +11,15 @@ export const FAKE_PNG = new Uint8Array(
   ),
 );
 
-export type FakeImageMode = "ok" | "refuse" | "reject" | "silent" | "down";
+export type FakeImageMode =
+  | "ok"
+  | "refuse"
+  | "reject"
+  | "decline"
+  | "unsent"
+  | "lost"
+  | "garbage"
+  | "silent";
 export type FakeImageCall = {
   readonly key: string;
   readonly model: string;
@@ -22,8 +30,9 @@ export type FakeImageCall = {
 
 /**
  * A picture service in memory: the fixed PNG per picture asked for, every call recorded. `mode`
- * makes it refuse the prompt, reject the key, fail, or never answer; `before` runs ahead of each
- * answer, so a test can hold a call there.
+ * makes it refuse the prompt, reject the key, decline, fail before or after sending, answer with
+ * bytes that are no image, or never answer; `before` runs ahead of each answer, so a test can
+ * hold a call there.
  */
 export const makeFakeImageVendor = (
   options: { readonly name?: string; readonly label?: string } = {},
@@ -31,7 +40,6 @@ export const makeFakeImageVendor = (
   const calls: Array<FakeImageCall> = [];
   const control = {
     mode: "ok" as FakeImageMode,
-    refusal: "The prompt asks for a real person's likeness." as string | null,
     before: Effect.void as Effect.Effect<void>,
   };
   const vendor: KinImageVendor = {
@@ -56,12 +64,23 @@ export const makeFakeImageVendor = (
               mimeType: "image/png",
             })),
           };
+        case "garbage":
+          return {
+            images: Array.from({ length: request.count }, () => ({
+              bytes: new TextEncoder().encode("<html>not an image</html>"),
+              mimeType: "image/png",
+            })),
+          };
         case "refuse":
-          return yield* new ImageVendorError({ kind: "refused", reason: control.refusal });
+          return yield* new ImageVendorError({ kind: "refused" });
         case "reject":
-          return yield* new ImageVendorError({ kind: "key_rejected", reason: null });
-        case "down":
-          return yield* new ImageVendorError({ kind: "unavailable", reason: null });
+          return yield* new ImageVendorError({ kind: "key_rejected" });
+        case "decline":
+          return yield* new ImageVendorError({ kind: "declined" });
+        case "unsent":
+          return yield* new ImageVendorError({ kind: "not_sent" });
+        case "lost":
+          return yield* new ImageVendorError({ kind: "lost" });
         case "silent":
           return yield* Effect.never;
       }
