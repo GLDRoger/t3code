@@ -1010,6 +1010,14 @@
     "./kin/kinRecommendations": {
       "types": "./src/kin/kinRecommendations.ts",
       "default": "./src/kin/kinRecommendations.ts"
+    },
+    "./kin/react/kinHookApp": {
+      "types": "./src/kin/react/kinHookApp.ts",
+      "default": "./src/kin/react/kinHookApp.ts"
+    },
+    "./kin/react/kinAttentionHooks": {
+      "types": "./src/kin/react/kinAttentionHooks.ts",
+      "default": "./src/kin/react/kinAttentionHooks.ts"
     }
   },
   "scripts": {
@@ -1043,9 +1051,16 @@
     "unified": "catalog:"
   },
   "devDependencies": {
+    "@effect/atom-react": "catalog:",
     "@effect/vitest": "catalog:",
     "@types/mdast": "^4.0.4",
+    "@types/react": "catalog:",
     "@types/three": "0.180.0",
+    "react": "catalog:",
     "vite-plus": "catalog:"
+  },
+  "peerDependencies": {
+    "@effect/atom-react": "catalog:",
+    "react": "catalog:"
   }
 }

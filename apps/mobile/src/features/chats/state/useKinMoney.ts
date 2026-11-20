@@ -36,7 +36,7 @@ import type {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useNowMinuteMs } from "../../../lib/clock";
 import { uuidv4 } from "../../../lib/uuid";
@@ -65,18 +65,6 @@ const noCompanyAtom: Atom.Atom<AsyncResult.AsyncResult<KinCompanyProfile, unknow
 );
 
 export type { KinMoneyUse };
-
-/** Reads again when Work says something changed; `seq` is null while that isn't known. */
-export function useRereadOnChange(seq: number | null, reread: () => void) {
-  const seen = useRef(seq);
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the host's figures again when the host announces a change to Work
-  useEffect(() => {
-    if (seq === null || seq === seen.current) return;
-    const first = seen.current === null;
-    seen.current = seq;
-    if (!first) reread();
-  }, [seq, reread]);
-}
 
 /** Every list there is, as its definition. `enabled` is off for a viewer the host would refuse. */
 export function useKinLists(

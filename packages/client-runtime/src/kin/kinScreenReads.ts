@@ -230,3 +230,5 @@ export function kinAskAboutAgent<
     kinWorkAgent(leads, "tasks")
   );
 }
+
+export type KinScreenReads = ReturnType<typeof makeKinScreenReads>;
