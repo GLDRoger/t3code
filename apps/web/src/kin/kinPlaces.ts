@@ -1,4 +1,5 @@
 import { kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
+import type { KinSearchHitView } from "@t3tools/client-runtime/kin/kinDocs";
 import { kinInMoney } from "@t3tools/client-runtime/kin/kinMoney";
 import {
   KinAgentId,
@@ -22,8 +23,13 @@ export const KIN_PLACE_PATH = {
   docs: "/kin/$environmentId/$orgId/docs",
 } as const satisfies Record<KinPlace, string>;
 
-/** The page and search that open a record a message names. */
+/**
+ * The page and search that open a record, from a message link, a notice or a search hit alike.
+ * A deal opens on Clients' Deals tab, whatever kind it came as.
+ */
 export function kinRecordPlace(to: Extract<KinMessageLinkTarget, { readonly _tag: "record" }>) {
+  if ((to.kind === "entry" || to.kind === "task") && kinIsDealKey(to.key))
+    return { to: KIN_PLACE_PATH.clients, search: { tab: "deals" as const, task: to.key } };
   switch (to.kind) {
     case "client":
       return { to: KIN_PLACE_PATH.clients, search: { client: to.key } };
@@ -32,11 +38,37 @@ export function kinRecordPlace(to: Extract<KinMessageLinkTarget, { readonly _tag
     case "doc":
       return { to: KIN_PLACE_PATH.docs, search: { doc: to.key } };
     case "entry":
-      return kinIsDealKey(to.key)
-        ? { to: KIN_PLACE_PATH.clients, search: { task: to.key } }
-        : { to: KIN_PLACE_PATH.money, search: { task: to.key } };
+      return { to: KIN_PLACE_PATH.money, search: { task: to.key } };
     case "task":
       return { to: KIN_PLACE_PATH.tasks, search: { task: to.key } };
+  }
+}
+
+/** Where a search hit opens; null for memory, which opens in Settings. A contact opens its client. */
+export function kinHitPlace(hit: KinSearchHitView) {
+  const record = (kind: Extract<KinMessageLinkTarget, { readonly _tag: "record" }>["kind"]) =>
+    kinRecordPlace({ _tag: "record", key: hit.key, kind });
+  switch (hit.kind) {
+    case "docs": {
+      const place = record("doc");
+      return hit.section === null
+        ? place
+        : { ...place, search: { ...place.search, section: hit.section.id } };
+    }
+    case "clients":
+      return record("client");
+    case "contacts":
+      return hit.clientKey === null
+        ? { to: KIN_PLACE_PATH.clients, search: {} }
+        : kinRecordPlace({ _tag: "record", key: hit.clientKey, kind: "client" });
+    case "projects":
+      return record("project");
+    case "memory":
+      return null;
+    case "work":
+      return record("task");
+    default:
+      return record("entry");
   }
 }
 

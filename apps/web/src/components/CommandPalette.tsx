@@ -111,7 +111,6 @@ import { useAtomValue } from "@effect/atom-react";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinSearchHit } from "@t3tools/client-runtime/kin/kinDocs";
 import { kinClient } from "../kin/kinClient";
 import {
@@ -125,6 +124,7 @@ import { useKinHost } from "../kin/useKinHost";
 import { useKinListSwitch } from "../kin/useKinListSwitch";
 import { kinListShownAt, kinReturnHref } from "../kin/kinListSwitch";
 import { useKinChatRows, useKinPlaceRows } from "../kin/kinPaletteRows";
+import { kinHitPlace } from "../kin/kinPlaces";
 import { openKinSettings } from "../kin/kinSettingsAddress";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { copyThreadReference } from "../lib/copyThreadReference";
@@ -317,8 +317,6 @@ const ADD_PROJECT_ENTRY_GROUP = "add-project";
 const NEW_THREAD_IN_GROUP = "projects";
 
 /** The submenu an open intent starts in; its groups resolve while rendering. */
-// The address says "client"; reading it by name keeps it apart from an RPC client in lint's eyes.
-const KIN_CLIENT_PARAM = "client";
 /** What Kin is asked for: nothing for a command filter or a single letter. */
 const kinPaletteQuery = (query: string) => {
   const text = query.trim();
@@ -2090,49 +2088,13 @@ function OpenCommandPaletteDialog(props: {
                   .join(" · "),
                 icon: <Icon className={ITEM_ICON_CLASS} />,
                 run: async () => {
-                  const params = {
-                    environmentId: kinNewLead.environmentId,
-                    orgId: kinNewLead.orgId,
-                  };
-                  if (hit.kind === "memory") {
-                    await navigate({ to: "/kin/$environmentId/$orgId/memory", params });
-                    return;
-                  }
-                  if (kinIsDealKey(raw.key)) {
+                  const place = kinHitPlace(hit);
+                  if (place === null) openKinSettings(router.history, "memory", hit.title);
+                  else
                     await navigate({
-                      to: "/kin/$environmentId/$orgId/clients",
-                      params,
-                      search: { tab: "deals", task: raw.key },
+                      ...place,
+                      params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
                     });
-                    return;
-                  }
-                  const money =
-                    hit.kind === "invoices" ||
-                    hit.kind === "quotes" ||
-                    hit.kind === "expenses" ||
-                    hit.kind === "receipts";
-                  await navigate({
-                    to:
-                      hit.kind === "docs"
-                        ? "/kin/$environmentId/$orgId/docs"
-                        : hit.kind === "clients" || hit.kind === "projects"
-                          ? "/kin/$environmentId/$orgId/clients"
-                          : money
-                            ? "/kin/$environmentId/$orgId/money"
-                            : "/kin/$environmentId/$orgId/tasks",
-                    params,
-                    search:
-                      hit.kind === "docs"
-                        ? {
-                            doc: raw.key,
-                            ...(hit.section === null ? {} : { section: hit.section.id }),
-                          }
-                        : hit.kind === "clients"
-                          ? { [KIN_CLIENT_PARAM]: raw.key }
-                          : hit.kind === "projects"
-                            ? { project: raw.key }
-                            : { task: raw.key },
-                  });
                 },
               };
             }),

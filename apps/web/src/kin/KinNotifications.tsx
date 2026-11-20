@@ -27,7 +27,7 @@ import {
   hasNotificationSound,
   playNotificationSound,
 } from "../threadNotifications";
-import { KIN_PLACE_PATH } from "./kinPlaces";
+import { KIN_PLACE_PATH, kinRecordPlace } from "./kinPlaces";
 import { useKinInbox } from "./useKinHost";
 
 /** Settings → You → Notifications: this computer's alerts for Kin messages. */
@@ -64,17 +64,7 @@ export function openDestination(
     });
   if (destination._tag === "tasks") return navigate({ to: KIN_PLACE_PATH.tasks, params: where });
   const { key, kind } = destination;
-  return kind === "client"
-    ? navigate({ to: KIN_PLACE_PATH.clients, params: where, search: { client: key } })
-    : kind === "project"
-      ? navigate({ to: KIN_PLACE_PATH.clients, params: where, search: { project: key } })
-      : kind === "doc"
-        ? navigate({ to: KIN_PLACE_PATH.docs, params: where, search: { doc: key } })
-        : navigate({
-            to: kind === "entry" ? KIN_PLACE_PATH.money : KIN_PLACE_PATH.tasks,
-            params: where,
-            search: { task: key },
-          });
+  return navigate({ ...kinRecordPlace({ _tag: "record", key, kind }), params: where });
 }
 
 /**

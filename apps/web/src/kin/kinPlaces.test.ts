@@ -1,10 +1,12 @@
-import { KinAgentId, KinListId, KinRecordKey } from "@t3tools/contracts";
+import type { KinSearchHitView } from "@t3tools/client-runtime/kin/kinDocs";
+import { KinAgentId, KinListId, KinRecordKey, type KinSearchKind } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   KIN_PLACE_PATH,
   kinPlaceOfWork,
   kinRecordOf,
+  kinHitPlace,
   kinRecordPlace,
   kinSearchOf,
   kinTaskAddress,
@@ -49,13 +51,49 @@ describe("kinRecordPlace", () => {
     ["project", "P-1", "clients", { project: "P-1" }],
     ["doc", "D-1", "docs", { doc: "D-1" }],
     ["entry", "INV-1", "money", { task: "INV-1" }],
-    // A deal lives with Clients, beside its client.
-    ["entry", "DL-1", "clients", { task: "DL-1" }],
+    // A deal lives on Clients' Deals tab, however a message, notice or search names it.
+    ["entry", "DL-1", "clients", { tab: "deals", task: "DL-1" }],
+    ["task", "DL-1", "clients", { tab: "deals", task: "DL-1" }],
   ] as const)("opens %s %s where it lives", (kind, key, place, search) => {
     expect(kinRecordPlace({ _tag: "record", key, kind })).toEqual({
       to: KIN_PLACE_PATH[place],
       search,
     });
+  });
+});
+
+describe("kinHitPlace", () => {
+  const hit = (kind: KinSearchKind, key: string, fields: Partial<KinSearchHitView> = {}) => ({
+    id: key,
+    key,
+    kind,
+    kindLabel: "",
+    title: "Invented",
+    snippet: null,
+    section: null,
+    clientKey: null,
+    private: false,
+    closed: null,
+    accessibilityLabel: "",
+    ...fields,
+  });
+  it.each([
+    [hit("work", "W-1"), "tasks", { task: "W-1" }],
+    [hit("work", "DL-2"), "clients", { tab: "deals", task: "DL-2" }],
+    [hit("invoices", "INV-1"), "money", { task: "INV-1" }],
+    [hit("clients", "C-1"), "clients", { client: "C-1" }],
+    [hit("contacts", "CT-1", { clientKey: "C-1" }), "clients", { client: "C-1" }],
+    [hit("projects", "P-1"), "clients", { project: "P-1" }],
+    [
+      hit("docs", "D-1", { section: { id: "risks", title: "Risks" } }),
+      "docs",
+      { doc: "D-1", section: "risks" },
+    ],
+  ] as const)("opens a %s hit where its record lives", (found, place, search) => {
+    expect(kinHitPlace(found)).toEqual({ to: KIN_PLACE_PATH[place], search });
+  });
+  it("leaves memory to Settings", () => {
+    expect(kinHitPlace(hit("memory", "memory:1"))).toBeNull();
   });
 });
 
