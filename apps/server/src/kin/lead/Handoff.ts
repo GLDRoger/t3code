@@ -45,6 +45,7 @@ import { wakeEvent } from "./ChatWake.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { resolveLead } from "./LeadMemory.ts";
 import { messageBodyLimit } from "./LeadPrompt.ts";
+import { teammatesLimited } from "./KinBudget.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import { directKey } from "./LeadAccess.ts";
 import { outsideStamp, stampEvent } from "./OutsideContent.ts";
@@ -669,7 +670,7 @@ const make = Effect.gen(function* () {
         personId: ask.personId,
         now,
       }).pipe(access);
-      if (used.turns >= dailyTurns)
+      if (used.turns >= dailyTurns && (yield* teammatesLimited(ctx.orgId).pipe(access)))
         return {
           passed: false as const,
           note: `${ask.personName} has reached today's limit, so nothing was passed on. Tell them they can ask again later.`,

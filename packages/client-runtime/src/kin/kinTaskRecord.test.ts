@@ -254,7 +254,8 @@ describe("kinNextStep", () => {
         dueAllDay: true,
       }),
       names: asZoya,
-      chip: "2 days late",
+      // Due the 15th, read the 18th: three calendar days, as Money counts days overdue.
+      chip: "3 days late",
       step: { kind: "late", note: "Waiting on you." },
     },
     {

@@ -913,6 +913,39 @@ describe("kinWorkRow", () => {
       today,
     );
     expect([day!.day, day!.rows[0]!.time]).toEqual(["2026-12-05", "12:16 AM"]);
+    // A suggestion's dates stay, tagged as the lists tag it; stored issued, it reads Suggested.
+    const suggested = {
+      ...record({ dueAt: "2026-12-16T00:00:00.000Z" }),
+      list: "invoices",
+      state: "waiting",
+      confirmed: false,
+    } as KinRecord;
+    const lines = kinDatesAgenda(
+      (
+        [
+          ["date", "Date", "Issued", suggested],
+          ["due", "Due", "Issued", suggested],
+          ["due", "Due", "Draft", { ...suggested, state: "open" }],
+          ["date", "Issued", "Issued", { ...suggested, confirmed: true }],
+        ] as const
+      ).map(([kind, label, stateLabel, one]) => ({
+        record: one,
+        listName: "Invoices",
+        stateLabel,
+        kind,
+        label,
+        at: "2026-12-16T00:00:00.000Z",
+        allDay: true,
+      })),
+      names,
+      today,
+    ).flatMap((one) => one.rows.map((row) => row.line));
+    expect(lines).toEqual([
+      "Invoices · Date · Suggested",
+      "Invoices · Due · Suggested",
+      "Invoices · Due · Suggested · Draft",
+      "Invoices · Issued",
+    ]);
   });
 
   it("says who it waits on only while it is waiting, and never doubles a title's full stop", () => {

@@ -386,7 +386,8 @@ export function KinOutlookSection(props: Section) {
   );
 }
 
-const OPEN_QUOTES = { ...KIN_LIST_DEFAULT_FILTER, show: "open" as const };
+// As Money counts them: no suggestion is an open quote until it is kept.
+const OPEN_QUOTES = { ...KIN_LIST_DEFAULT_FILTER, show: "open" as const, kept: true };
 
 /** Open quotes first, each opening the quote; See all opens the whole list. */
 export function KinQuotesSection(

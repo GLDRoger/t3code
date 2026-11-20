@@ -29,6 +29,7 @@ import {
   kinPrincipalValue,
   kinListQuery,
   kinListRow,
+  kinSuggestionKeep,
   kinMoneyText,
   kinPaymentCheck,
   kinPeriodLabel,
@@ -354,6 +355,82 @@ describe("a list by its definition", () => {
     ]);
     expect(entry.payments[0]).toMatchObject({ amount: "₹40,000.00", note: null, voided: false });
     expect(kinListRow(detail, invoices, context).owed).toBe("₹60,000 still owed");
+    // A suggestion says so before its state, and is paid by nobody until it is kept; as a
+    // deadline it is never overdue in a money list. Stored issued, it reads Suggested alone, and
+    // its day is no issue day.
+    const issued = list({
+      list: KinListId.make("invoices"),
+      amount: true,
+      states: ["open", "waiting", "done", "dropped"],
+      stateLabels: {
+        open: "Draft" as never,
+        waiting: "Issued" as never,
+        done: "Paid" as never,
+        dropped: "Void" as never,
+      },
+      dateLabel: "Issued" as never,
+    });
+    const suggested = {
+      ...detail,
+      list: "invoices",
+      confirmed: false,
+      late: true,
+      dateAt: "2026-12-01T00:00:00.000Z",
+    };
+    expect(kinListEntryView(suggested, issued, context)).toMatchObject({
+      stateLabel: "Suggested",
+      dateLabel: "Date",
+      suggested: true,
+      late: false,
+      finish: null,
+    });
+    const row = kinListRow(suggested, issued, context);
+    expect([row.stateLabel, row.cells.state, row.suggested, row.late]).toEqual([
+      "Suggested",
+      "Suggested",
+      true,
+      false,
+    ]);
+    expect(row.line.split(" · ").filter((part) => part.startsWith("Suggested"))).toHaveLength(1);
+    expect(row.line).not.toContain("Issued");
+    expect(kinListColumns(issued, [suggested]).find((one) => one.id === "date")?.label).toBe(
+      "Date",
+    );
+    const draft = { ...suggested, state: "open" as const };
+    expect(kinListEntryView(draft, issued, context)).toMatchObject({
+      stateLabel: "Suggested · Draft",
+      dateLabel: "Date",
+    });
+    const paid = kinListRow({ ...suggested, state: "done" }, issued, context);
+    expect([paid.stateLabel, paid.suggested]).toEqual(["Suggested · Paid", true]);
+    expect(kinListRow({ ...suggested, state: "dropped" }, issued, context).suggested).toBe(false);
+    // Kept, it reads by its state and its day is the issue day again.
+    const kept = { ...suggested, confirmed: true };
+    expect(kinListEntryView(kept, issued, context)).toMatchObject({
+      stateLabel: "Issued",
+      dateLabel: "Issued",
+    });
+    expect(kinListColumns(issued, [kept]).find((one) => one.id === "date")?.label).toBe("Issued");
+    // Its page notes Money only where Money would count it, a draft that it is owed only once
+    // issued, and offers Not needed only where it can drop it.
+    expect(kinSuggestionKeep(suggested, issued)).toEqual({
+      note: "Not in any Money figure until you keep it.",
+      declines: true,
+    });
+    expect(kinSuggestionKeep(draft, issued).note).toBe(
+      "Not in any Money figure until you keep it, and not owed until it's issued.",
+    );
+    expect(kinSuggestionKeep({ list: "work" }, null)).toEqual({ note: null, declines: true });
+    expect(kinSuggestionKeep({ list: "leave" as never }, { states: ["open", "done"] })).toEqual({
+      note: null,
+      declines: false,
+    });
+    // Opened from a figure it asks for what the figure counts, and says so with a way back.
+    const counted = { ...KIN_LIST_DEFAULT_FILTER, show: "waiting" as const, kept: true };
+    expect(kinListQuery(orgId, "invoices" as never, counted)).toMatchObject({ kept: true });
+    expect(kinListNarrowings(counted)).toEqual([
+      { id: "kept", label: "Counted in Money", cleared: { ...counted, kept: null } },
+    ]);
   });
 
   it("sends only the names that changed when a list is renamed", () => {

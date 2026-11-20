@@ -18,7 +18,7 @@ import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import { KinRecords, type Writer } from "../KinRecords.ts";
 import type { RecordRow } from "../recordRows.ts";
 import { type FieldValue, parseFields } from "../lists.ts";
-import { endOfDay, ownerZone } from "../recordRows.ts";
+import { endOfDay, isSuggestion, ownerZone, stillSuggestion } from "../recordRows.ts";
 import { homeCurrency } from "../companyProfile.ts";
 import { defineList, listDef, PRESETS, presetDefinition } from "../registers.ts";
 import {
@@ -446,6 +446,8 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           const candidate = match.candidates[decision.option]!;
           const targetRow = yield* records.getById(input.orgId, candidate.recordId);
           if (targetRow === undefined) return yield* changed;
+          // A suggestion's line applies nothing: not its payment, not its bill, until it is kept.
+          if (isSuggestion(targetRow)) return yield* invalid(stillSuggestion(targetRow.key));
           if (candidate.kind === "invoice" && candidate.paymentId !== undefined) {
             yield* livePayment(candidate.paymentId);
             const prior = yield* settleBank(row, states.explained, "payment received");

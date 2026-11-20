@@ -33,7 +33,7 @@ import { KinDock, kinDockClearance, type KinDockProps } from "./components/KinDo
 import { useKinTasksBadge } from "./state/useKinTasksBadge";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { KinPlace } from "./KinWorkScreen";
-import { KinTabContext } from "./components/KinTab";
+import { KinTabContext, kinTabFoot } from "./components/KinTab";
 import { kinHomeTabAtom } from "./state/kinHomeTab";
 import {
   useKinAccessEnded,
@@ -258,7 +258,7 @@ function KinHomeMessage(props: {
           contentInsetAdjustmentBehavior="automatic"
           contentContainerStyle={{
             padding: 16,
-            paddingBottom: 16 + props.bottomClearance,
+            paddingBottom: kinTabFoot(props.bottomClearance),
             gap: 12,
           }}
         >

@@ -9,14 +9,17 @@ import {
   kinCoveredLine,
   kinBriefProblem,
   kinBriefSave,
+  kinBriefScheduleId,
+  kinCheckInsBeyondBriefs,
 } from "@t3tools/client-runtime/kin/kinCheckIns";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, KinBrief, KinOrgId } from "@t3tools/contracts";
+import type { EnvironmentId, KinBrief, KinCheckInsResult, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 
+import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
@@ -24,6 +27,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
+import { KinCheckInRows, useCheckIns } from "./KinCheckIns";
 import { FormMessage, FormShell, NO_LINK, targetOf } from "./KinWorkFormScreens";
 import { kinClient, refreshKinBriefs } from "./state/kinClient";
 
@@ -45,41 +49,75 @@ function useBriefs(target: Target) {
   };
 }
 
-/** The briefs this person receives, under You; each opens its sheet. None for who gets none. */
-export function KinBriefsSection(props: Target) {
+/**
+ * The briefs this person receives, under You, each opening its sheet; for the owner level the
+ * company's other check-ins follow, so no check-in is listed twice. None for who has neither.
+ */
+export function KinBriefsSection(props: Target & { readonly checkIns: boolean }) {
+  return props.checkIns ? <BriefsWithCheckIns {...props} /> : <Briefs {...props} checkIns={null} />;
+}
+
+function BriefsWithCheckIns(props: Target) {
+  const { result, value, canRead } = useCheckIns(props);
+  return (
+    <Briefs
+      {...props}
+      checkIns={
+        !canRead || (AsyncResult.isFailure(result) && value === null) ? null : (value ?? undefined)
+      }
+    />
+  );
+}
+
+/** `checkIns` is null where none are shown, undefined while they load. */
+function Briefs(props: Target & { readonly checkIns: KinCheckInsResult | null | undefined }) {
   const navigation = useNavigation();
   const { result, value } = useBriefs(props);
-  if (value === null ? AsyncResult.isFailure(result) : value.briefs.length === 0) return null;
+  const briefs = value?.briefs ?? [];
+  const checkIns = props.checkIns ?? null;
+  const beyond = checkIns === null ? [] : kinCheckInsBeyondBriefs(checkIns.checkIns, briefs);
+  const loading =
+    (value === null && !AsyncResult.isFailure(result)) || props.checkIns === undefined;
+  if (
+    !loading &&
+    briefs.length === 0 &&
+    (checkIns === null || (beyond.length === 0 && checkIns.agents.length === 0))
+  )
+    return null;
+  const zone = value?.zone ?? checkIns?.zone ?? null;
+  const detail =
+    briefs.length === 0 && checkIns !== null ? KIN_CHECK_INS.detail : KIN_BRIEFS.detail;
   return (
     <SettingsSection
       title={KIN_BRIEFS.title}
-      footer={
-        value === null
-          ? KIN_BRIEFS.detail
-          : `${KIN_BRIEFS.detail} ${KIN_CHECK_INS.zone(value.zone)}`
-      }
+      footer={zone === null ? detail : `${detail} ${KIN_CHECK_INS.zone(zone)}`}
     >
-      {value === null ? (
+      {loading ? (
         <SettingsRow icon="clock" label={KIN_BRIEFS.title} value="…" valuePosition="trailing" />
       ) : (
-        value.briefs.map((brief) => (
-          <SettingsRow
-            key={brief.kind}
-            icon={brief.on ? "clock" : "moon"}
-            label={KIN_BRIEFS.titles[brief.kind]}
-            valuePosition="below"
-            value={[kinBriefLine(brief), kinCoveredLine(brief)]
-              .filter((line) => line !== null)
-              .join("\n")}
-            onPress={() =>
-              navigation.navigate("KinBriefForm", {
-                environmentId: props.environmentId,
-                orgId: props.orgId,
-                kind: brief.kind,
-              })
-            }
-          />
-        ))
+        <>
+          {briefs.map((brief) => (
+            <SettingsRow
+              key={brief.kind}
+              icon={brief.on ? "clock" : "moon"}
+              label={KIN_BRIEFS.titles[brief.kind]}
+              valuePosition="below"
+              value={[kinBriefLine(brief), kinCoveredLine(brief)]
+                .filter((line) => line !== null)
+                .join("\n")}
+              onPress={() =>
+                navigation.navigate("KinBriefForm", {
+                  environmentId: props.environmentId,
+                  orgId: props.orgId,
+                  kind: brief.kind,
+                })
+              }
+            />
+          ))}
+          {checkIns === null ? null : (
+            <KinCheckInRows {...props} result={checkIns} beyond={beyond} />
+          )}
+        </>
       )}
     </SettingsSection>
   );
@@ -120,6 +158,8 @@ function BriefForm(
 ) {
   const navigation = useNavigation();
   const save = useAtomCommand(kinClient.briefSave, { reportFailure: false });
+  // The owner level also runs, removes or rewords it, on the check-in's own sheet.
+  const ownerLevel = useAtomValue(kinClient.checkInSave.permissionAtom(props.environmentId));
   // As the form opened: a refresh while it is open must not count as the person's change.
   const [opened] = useState(props.brief);
   const [draft, setDraft] = useState(props.brief);
@@ -191,6 +231,22 @@ function BriefForm(
               }
             />
           ))}
+        </ListSection>
+      ) : null}
+      {ownerLevel ? (
+        <ListSection>
+          <ListActionRow
+            icon="slider.horizontal.3"
+            label={KIN_CHECK_INS.edit}
+            disabled={saving}
+            onPress={() =>
+              navigation.navigate("KinCheckInForm", {
+                environmentId: props.environmentId,
+                orgId: props.orgId,
+                checkIn: kinBriefScheduleId(draft.kind),
+              })
+            }
+          />
         </ListSection>
       ) : null}
     </FormShell>

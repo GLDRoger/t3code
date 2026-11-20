@@ -37,7 +37,7 @@ import { KinClientsList } from "./KinWorkLists";
 import { KinMoneyArea } from "./KinWorkMoney";
 import { KinListBanner } from "./components/KinListBanner";
 import { KinLoadFailed } from "./components/KinLoadFailed";
-import { useKinTab } from "./components/KinTab";
+import { useKinTab, kinTabFoot } from "./components/KinTab";
 import { useKinViewerScope } from "./state/kinChatOnly";
 import { retryKinAccess } from "./state/kinClient";
 import { useKinOpenPlace } from "./state/kinHomeTab";
@@ -211,7 +211,7 @@ function KinWorkMessage(props: { readonly title: string; readonly children: Reac
           contentInsetAdjustmentBehavior="automatic"
           contentContainerStyle={{
             padding: 16,
-            paddingBottom: 32 + (tab?.bottomClearance ?? 0),
+            paddingBottom: kinTabFoot(tab?.bottomClearance ?? 0),
             gap: 20,
           }}
         >

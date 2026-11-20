@@ -1,11 +1,11 @@
 import type { KinBrief, KinBriefSaveInput, KinCheckIn, KinCoveringBrief } from "@t3tools/contracts";
 
-import { kinZoneName } from "./kinTimeZone.ts";
+import { kinZoneLabel } from "./kinTimeZone.ts";
 
 export const KIN_CHECK_INS = {
   title: "Check-ins",
   detail: "When your agents look over what needs attention and tell you what moved.",
-  zone: (zone: string) => `Times are in ${kinZoneName(zone)}.`,
+  zone: (zone: string) => `Times are in ${kinZoneLabel(zone)}.`,
   empty: "No check-ins. Add one to have an agent look over the company at a set time.",
   add: "Add check-in",
   edit: "Edit check-in",
@@ -126,6 +126,18 @@ export function kinBriefLine(brief: KinBrief): string {
   const line = `${brief.around ? "Around " : ""}${brief.at} · ${kinCheckInDays(brief.days)}`;
   return brief.on ? line : `${KIN_BRIEFS.off} · ${line}`;
 }
+
+/** The check-in a brief is: the server seeds each as `checkin-<kind>`. */
+export const kinBriefScheduleId = (kind: KinBrief["kind"]) => `checkin-${kind}`;
+
+/** The company's check-ins less the ones this person already sees as their briefs. */
+export const kinCheckInsBeyondBriefs = (
+  checkIns: ReadonlyArray<KinCheckIn>,
+  briefs: ReadonlyArray<Pick<KinBrief, "kind">>,
+) =>
+  checkIns.filter(
+    (checkIn) => !briefs.some((brief) => checkIn.scheduleId === kinBriefScheduleId(brief.kind)),
+  );
 
 /** The morning brief comes on the days its person picks; the other two are on or off. */
 export const kinBriefHasDays = (kind: KinBrief["kind"]) => kind === "morning";

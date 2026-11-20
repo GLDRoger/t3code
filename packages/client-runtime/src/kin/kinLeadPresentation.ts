@@ -164,22 +164,26 @@ export function kinLeadTrackingDetail(
  * The lead's model as T3's model picker names it: the name its provider lists, else the id
  * read the way the picker reads one it has no name for.
  */
-export function kinLeadModelName(
-  model: string,
-  providers:
-    | ReadonlyArray<{
-        readonly models: ReadonlyArray<Pick<ServerProviderModel, "slug" | "name" | "aliases">>;
-      }>
-    | null
-    | undefined,
-): string {
+export function kinLeadModelName(model: string, providers: KinModelProviders): string {
+  return kinListedModelName(model, providers) ?? formatModelSlugName(model);
+}
+
+type KinModelProviders =
+  | ReadonlyArray<{
+      readonly models: ReadonlyArray<Pick<ServerProviderModel, "slug" | "name" | "aliases">>;
+    }>
+  | null
+  | undefined;
+
+/** The name a provider lists for a model, as Settings shows it; null where none lists it. */
+export function kinListedModelName(model: string, providers: KinModelProviders): string | null {
   for (const provider of providers ?? []) {
     const listed = provider.models.find(
       (candidate) => candidate.slug === model || candidate.aliases?.includes(model) === true,
     );
     if (listed !== undefined) return listed.name;
   }
-  return formatModelSlugName(model);
+  return null;
 }
 
 /** The first agent a company is offered: the front door that hands work to the rest. */
