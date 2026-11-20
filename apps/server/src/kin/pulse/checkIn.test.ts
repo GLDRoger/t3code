@@ -268,7 +268,7 @@ describe("pulse check-ins", () => {
     assert.strictEqual(opens, row.fires ? SLOT : undefined);
   });
 
-  it.effect("a fact someone has in hand still brings the check-in, never 'nothing new'", () =>
+  it.effect("a fact someone has in hand brings no check-in, and is told once when it is back", () =>
     Effect.gen(function* () {
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
@@ -286,13 +286,74 @@ describe("pulse check-ins", () => {
           first_seen_at, last_seen_at, handled_by_kind, handled_by_id, handled_at, handled_until)
         VALUES (${orgId}, ${fact.key}, ${fact.sense}, ${fact.subject.recordId ?? null}, '{}',
           ${SLOT - HOUR}, ${SLOT - HOUR}, 'agent', ${chief}, ${SLOT - HOUR}, ${SLOT + 2 * DAY})`;
-      const held = yield* checkIn(SLOT);
-      assert.strictEqual(held._tag, "queued");
-      assert.strictEqual(held._tag === "queued" ? held.facts : 0, 1);
+      assert.deepStrictEqual(yield* checkIn(SLOT), { _tag: "nothing_new" });
+      const back = yield* checkIn(SLOT + 2 * DAY);
+      assert.strictEqual(back._tag === "queued" ? back.facts : 0, 1);
       // Marked not a problem, it has no end: on its own it starts no check-in.
       yield* sql`UPDATE kin_pulse_facts SET handled_until = NULL WHERE fact_key = ${fact.key}`;
-      assert.deepStrictEqual(yield* checkIn(SLOT + DAY), { _tag: "nothing_new" });
+      yield* sql`DELETE FROM kin_pulse_told WHERE fact_key = ${fact.key}`;
+      assert.deepStrictEqual(yield* checkIn(SLOT + 3 * DAY), { _tag: "nothing_new" });
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a client set aside is told nothing while held, whatever moves, and once when it ends",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* record({ key: "C-1", list: "clients", title: "Invented Foods" });
+        // Due 12 days ago with a 10-day chase: overdue, and another interval passes on day 20.
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+            owner_kind, owner_id, party_id, due_at, amount_minor, currency, fields_json,
+            created_by_kind, created_by_id, origin_key, created_at, updated_at)
+          VALUES (${orgId}, 'r-INV-9', 'invoices', 'INV-9', 'Invented site build', 'waiting',
+            'agent', ${finance}, 'r-C-1', ${MONDAY - 12 * DAY}, 90000, 'EUR', '{}', 'person',
+            ${owner}, 'origin-INV-9', ${MONDAY - 40 * DAY}, ${MONDAY - 40 * DAY})`;
+        const told = (day: number) =>
+          checkIn(SLOT + day * DAY).pipe(
+            Effect.map((result) => (result._tag === "queued" ? result.facts : 0)),
+          );
+        // The invoice and the client's own quiet fact.
+        assert.strictEqual(yield* told(0), 2);
+        const hold = (agentId: KinAgentId, until: number) =>
+          KinPulse.aside({
+            orgId,
+            at: SLOT + HOUR,
+            viewer: { _tag: "owner" },
+            by: { _tag: "agent", agentId },
+            recordKey: "C-1",
+            action: "set",
+            until,
+            note: null,
+            holding: { _tag: "may", forPersonId: null, onWordOf: owner },
+          });
+        yield* hold(finance, SLOT + 30 * DAY);
+        assert.strictEqual(yield* told(1), 0);
+        // Another agent takes the hold over on the owner's word: nothing to tell.
+        yield* hold(chief, SLOT + 30 * DAY);
+        assert.strictEqual(yield* told(2), 0);
+        // Day 20 since due, another chase interval, and still held: nothing.
+        assert.strictEqual(yield* told(9), 0);
+        // Its day comes: both told once, then not again.
+        assert.strictEqual(yield* told(30), 2);
+        assert.strictEqual(yield* told(31), 0);
+        // Set aside again and lifted: told once more.
+        yield* hold(finance, SLOT + 60 * DAY);
+        assert.strictEqual(yield* told(32), 0);
+        yield* KinPulse.aside({
+          orgId,
+          at: SLOT + 32 * DAY + HOUR,
+          viewer: { _tag: "owner" },
+          by: { _tag: "person", personId: owner },
+          recordKey: "C-1",
+          action: "lift",
+          until: null,
+          note: null,
+          holding: { _tag: "may", forPersonId: null, onWordOf: null },
+        });
+        assert.strictEqual(yield* told(33), 2);
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("a fact is told once; only a change, a failed turn or Run now tells it again", () =>
@@ -327,20 +388,25 @@ describe("pulse check-ins", () => {
       });
       assert.strictEqual(asked._tag, "queued");
       assert.deepStrictEqual(yield* told("checkin:checkin-afternoon:run-now-1"), [w1]);
-      // Changed: Finance takes W-1 in hand until Friday, and W-3 is new: both are told.
+      // W-3 is new and told; Finance takes W-1 in hand until Friday, so it is not.
       yield* record({ key: "W-3", list: "work", title: "Invented menu", dueAt: MONDAY });
       yield* sql`INSERT INTO kin_pulse_facts (org_id, fact_key, sense, subject_record_id, scope_json,
           first_seen_at, last_seen_at, handled_by_kind, handled_by_id, handled_at, handled_until)
         VALUES (${orgId}, ${w1!}, 'task_late', 'r-W-1', '{}', ${SLOT}, ${SLOT}, 'agent', ${finance},
           ${SLOT + DAY}, ${SLOT + 4 * DAY})`;
+      yield* sql`DELETE FROM kin_pulse_told WHERE fact_key = ${w1!}`;
       assert.strictEqual((yield* checkIn(SLOT + 2 * DAY))._tag, "queued");
       const wednesday = yield* told("checkin:checkin-afternoon:2026-11-18");
-      assert.lengthOf(wednesday, 2);
+      assert.lengthOf(wednesday, 1);
+      assert.notInclude(wednesday, w1);
       // A check-in whose turn failed told nothing: the next one tells it again.
       yield* sql`UPDATE kin_events SET state = 'failed'
         WHERE dedupe_key = 'checkin:checkin-afternoon:2026-11-18'`;
       assert.strictEqual((yield* checkIn(SLOT + 3 * DAY))._tag, "queued");
       assert.deepStrictEqual(yield* told("checkin:checkin-afternoon:2026-11-19"), wednesday);
+      // Friday it is out of Finance's hands: told once more.
+      assert.strictEqual((yield* checkIn(SLOT + 4 * DAY))._tag, "queued");
+      assert.deepStrictEqual(yield* told("checkin:checkin-afternoon:2026-11-20"), [w1]);
     }).pipe(Effect.provide(layer)),
   );
 

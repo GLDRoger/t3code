@@ -2,6 +2,7 @@ import {
   KIN_PULSE_LATER_SENSES,
   KinChatError,
   type KinOrgId,
+  type KinPulseAsideInput,
   type KinPulseFact,
   type KinPulseHandleInput,
   type KinPulseListInput,
@@ -88,11 +89,12 @@ export const read = Effect.fn("KinPulsePeople.read")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPulseListInput,
 ) {
-  const { viewer } = yield* viewerIn(people, input.orgId);
+  const { person, viewer } = yield* viewerIn(people, input.orgId);
   const read = yield* KinPulse.read({
     orgId: input.orgId,
     at: yield* Clock.currentTimeMillis,
     viewer,
+    personId: person.personId,
     includeHandled: input.includeHandled,
     scope: input.scope,
     limit: SCREEN_CAP,
@@ -158,12 +160,20 @@ export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinPulse
     }),
   );
 
+/** An owner-level person's hold is the company's; a teammate's hides it for them alone. */
+const holdingOf = (viewer: KinPulse.Viewer, person: PersonIdentity): KinPulse.Holding => ({
+  _tag: "may",
+  forPersonId: viewer._tag === "owner" ? null : person.personId,
+  onWordOf: null,
+});
+
 export const handle = Effect.fn("KinPulsePeople.handle")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPulseHandleInput,
 ) {
   const { person, viewer } = yield* viewerIn(people, input.orgId);
   return yield* KinPulse.handle({
+    holding: holdingOf(viewer, person),
     orgId: input.orgId,
     at: yield* Clock.currentTimeMillis,
     viewer,
@@ -175,4 +185,27 @@ export const handle = Effect.fn("KinPulsePeople.handle")(function* (
         ? undefined
         : startOfDay(input.until, yield* ownerZone(input.orgId)),
   }).pipe(Effect.catchTags({ SqlError: unavailableOn, SchemaError: unavailableOn }));
+});
+
+/** `kin.pulse.aside`: a record set aside, or its hold lifted, by the person asking. */
+export const aside = Effect.fn("KinPulsePeople.aside")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinPulseAsideInput,
+) {
+  const { person, viewer } = yield* viewerIn(people, input.orgId);
+  const held = yield* KinPulse.aside({
+    orgId: input.orgId,
+    at: yield* Clock.currentTimeMillis,
+    viewer,
+    by: { _tag: "person", personId: person.personId },
+    recordKey: input.record,
+    action: input.action,
+    until:
+      input.until === undefined || input.action === "lift"
+        ? null
+        : startOfDay(input.until, yield* ownerZone(input.orgId)),
+    note: null,
+    holding: holdingOf(viewer, person),
+  }).pipe(Effect.catchTags({ SqlError: unavailableOn }));
+  return { aside: held };
 });

@@ -35,11 +35,15 @@ const PLAYBOOK_KEYS = {
   // Days to pay an invoice issued without a due date, when the client's terms name none.
   payment_due_days: { unit: "days", min: 1, max: 180, default: 15, client: true },
   chase_invoice_after_days: { unit: "days", min: 1, max: 120, default: 10, client: true },
+  // Days after a month ends before its missing bank statement is worth a line in the morning brief.
+  statement_due_days: { unit: "days", min: 1, max: 60, default: 5 },
   second_reminder_after_days: { unit: "days", min: 1, max: 60, default: 7, client: true },
   client_checkin_days: { unit: "days", min: 1, max: 180, default: 14, client: true },
   client_cold_after_days: { unit: "days", min: 1, max: 365, default: 30, client: true },
   reply_owed_hours: { unit: "hours", min: 1, max: 336, default: 24, client: true },
   renewal_heads_up_days: { unit: "days", min: 1, max: 120, default: 14, client: true },
+  // Inside the heads-up, a renewal is only mentioned until this many days before it: then drafted.
+  renewal_draft_days: { unit: "days", min: 1, max: 120, default: 7, client: true },
   // How far under the straight line to its target a goal may fall before it counts as behind.
   goal_behind_percent: { unit: "percent", min: 1, max: 90, default: 20 },
 } as const satisfies Record<string, KeyDef>;

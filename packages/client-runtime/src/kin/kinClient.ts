@@ -1230,6 +1230,12 @@ export function makeKinClient<R, ER>(
       tag: "kin.pulse.handle",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.factKey },
     }),
+    /** A record set aside, or its hold lifted, as the person asking (`kin.pulse.aside`). */
+    attentionAside: createKinRpcCommand(runtime, {
+      label: "kin:pulse:aside",
+      tag: "kin.pulse.aside",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.record },
+    }),
     /** The company's goals with progress; Work's changes re-read it too (`useKinGoals`). */
     goals: createKinQueryAtomFamily(runtime, {
       label: "kin:goals",

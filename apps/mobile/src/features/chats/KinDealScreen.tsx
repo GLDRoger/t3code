@@ -46,6 +46,7 @@ import { Notice } from "../../components/ui/Notice";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
+import { KinAsideNote } from "./KinAttention";
 import { KinDayField } from "./components/KinDayField";
 import { KinDealOwnerRow, KinDealQuoteRow } from "./components/KinDealPicks";
 import { KinLoadFailed } from "./components/KinLoadFailed";
@@ -235,6 +236,7 @@ function KinDealBody(
           </View>
         )}
       </View>
+      <KinAsideNote {...target} record={deal.key} names={names} />
 
       {deal.state !== "open" ? null : <DealStrip deal={deal} stages={stages} />}
 

@@ -20,6 +20,7 @@ import * as Schema from "effect/Schema";
 
 import { kinEstimate, type KinRates } from "./kinCurrency.ts";
 import {
+  kinBankKnownText,
   kinCategoryLabel,
   kinMoneyText,
   kinParseMoney,
@@ -225,6 +226,8 @@ export interface KinCashCurrencyView {
 
 export interface KinCashView {
   readonly known: boolean;
+  /** "Bank known to 31 Oct"; null from an older host, or where Money already says none is in. */
+  readonly bank: string | null;
   readonly accounts: ReadonlyArray<KinCashAccountView>;
   readonly currencies: ReadonlyArray<KinCashCurrencyView>;
   /** Reads that aren't balances of record, apart from any account. */
@@ -274,6 +277,11 @@ export function kinCashView(cash: KinCash, rates: KinRates | null, now: Date): K
   });
   return {
     known: cash.known,
+    // With no balance at all, Money's own line already says no statement is confirmed.
+    bank:
+      !cash.known && cash.bankKnown?.through === null
+        ? null
+        : kinBankKnownText(cash.bankKnown, now),
     accounts,
     currencies: cash.byCurrency.map((one) => ({
       currency: one.currency,

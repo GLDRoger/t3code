@@ -26,7 +26,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 import { textLocale } from "../work/companyProfile.ts";
-import { ownerZone } from "../work/recordRows.ts";
+import { ownerZone, recordName } from "../work/recordRows.ts";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
@@ -1231,9 +1231,13 @@ const make = Effect.gen(function* () {
       limit: 200,
     }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     const fact = facts.facts.find((one) => one.key === input.fact);
-    if (fact === undefined)
+    if (fact === undefined || fact.aside !== undefined)
       return yield* refuse(
         "That fact isn't open now: pulse_read lists the open ones. Nothing was passed on.",
+      );
+    if (fact.stage === "heads_up")
+      return yield* refuse(
+        `${fact.subject.key} is a renewal before its draft day: mention it, don't hand it over yet (${fact.consequence}). Nothing was passed on.`,
       );
     const target = yield* targetOf(ctx, all, input.to);
     const key = `handoff:fact:${ctx.wakeupId}:${fact.key}`;
@@ -1248,7 +1252,7 @@ const make = Effect.gen(function* () {
     const about =
       fact.subject.key === fact.subject.title
         ? fact.subject.title
-        : `${fact.subject.key} ${fact.subject.title}`;
+        : `${recordName(fact.subject.key, fact.subject.number)} ${fact.subject.title}`;
     const body = [
       input.request.replace(/\s+/g, " "),
       `From ${event.checkIn?.title ?? "Kin's facts"}: ${about}: ${fact.consequence} (${fact.key})`,

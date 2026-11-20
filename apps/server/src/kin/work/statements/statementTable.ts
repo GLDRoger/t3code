@@ -341,6 +341,43 @@ const findHeader = (lines: ReadonlyArray<Line>): Header | undefined => {
   }
   return undefined;
 };
+const CURRENCY_COLUMN = /^(currency|currency code|ccy|curr)$/;
+const ACCOUNT_COLUMN = /^(account|account no|account number|acct|acct no|a c|a c no|account id)$/;
+/**
+ * A spreadsheet's or CSV's own Currency and Account columns, where every dated row says the same
+ * one. A PDF's cells sit by position, so its columns are never read this way.
+ */
+export const columnFacts = (lines: ReadonlyArray<Line>) => {
+  const header = findHeader(lines);
+  const cells = header === undefined ? undefined : lines[header.at]!;
+  const date = header?.columns.find((column) => column.role === "date");
+  if (header === undefined || cells === undefined || date === undefined || date.x !== undefined)
+    return { currency: null, account: null };
+  const rows = lines.slice(header.at + 1).filter((line) => {
+    const cell = line[date.index];
+    return cell !== undefined && parseDay(cell.text, "dmy", cell.serial) !== undefined;
+  });
+  const said = (column: RegExp) => {
+    const index = cells.findIndex((cell) => column.test(words(cell.text)));
+    if (index < 0) return null;
+    const values = new Set(rows.map((line) => line[index]?.text.trim() ?? ""));
+    const [one] = values;
+    return values.size === 1 && one !== undefined && one !== "" ? one : null;
+  };
+  const code = said(CURRENCY_COLUMN)?.toUpperCase() ?? null;
+  const number = said(ACCOUNT_COLUMN);
+  const digits = number?.replace(/\D/g, "") ?? "";
+  return {
+    currency: code !== null && isCurrency(code) ? code : null,
+    account:
+      number === null || digits.length < 4
+        ? null
+        : {
+            digits: digits.slice(-4),
+            number: /[Xx*•]/.test(number) || digits.length < 8 ? null : digits,
+          },
+  };
+};
 const firstOfEach = <C extends { readonly role: Role }>(columns: ReadonlyArray<C>) =>
   columns.filter((column, index) => columns.findIndex((one) => one.role === column.role) === index);
 
@@ -486,11 +523,18 @@ export const readFacts = (lines: ReadonlyArray<Line>, reading: StatementReading)
   const isCard =
     /credit card|card statement|total (amount )?dues?|minimum (amount )?due/i.test(text) &&
     card !== null;
+  // The file's own Account column says which account it is, whatever its text matched.
+  const column = isCard ? null : columnFacts(lines).account;
+  const printed = account !== null ? whole(account) : whole(card);
   return {
     kind: isCard ? ("card" as const) : ("account" as const),
     bank,
-    account: isCard ? digits(card) : (digits(account) ?? digits(card)),
-    accountNumber: isCard ? whole(card) : account !== null ? whole(account) : whole(card),
+    account: isCard ? digits(card) : (column?.digits ?? digits(account) ?? digits(card)),
+    accountNumber: isCard
+      ? whole(card)
+      : column === null
+        ? printed
+        : (column.number ?? (printed?.endsWith(column.digits) === true ? printed : null)),
     from: period === null ? null : (parseDay(period[1]!, order) ?? null),
     to: period === null ? null : (parseDay(period[2]!, order) ?? null),
     ...statedBalances(lines, currencyDigits(currency)),
