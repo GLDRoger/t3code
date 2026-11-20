@@ -44,7 +44,7 @@ export const restrictedLine = (name: string, agentName: string, asker?: string |
   }`;
 
 export const UNRESTRICTABLE = "Owners and co-owners can message everyone.";
-export const OWN_AGENT = "An agent's own owner can always message it.";
+const OWN_AGENT = "An agent's own owner can always message it.";
 
 /**
  * SQL over trusted column names, for `sql.literal`: a live restriction binds this agent and
