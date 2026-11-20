@@ -127,14 +127,8 @@ import {
   viewVisible,
 } from "./teamView.ts";
 import { type AssignNotice, movedNotices, tellHolding } from "./assignNotices.ts";
-import { markOutside } from "../lead/OutsideContent.ts";
-import {
-  ALERT_SOURCE,
-  BankAnswer,
-  bankAnswer,
-  bankKnown,
-  INVOICE_ALERT_NOTE,
-} from "./statements/bankKnown.ts";
+import { ALERT_SOURCE, markOutside } from "../lead/OutsideContent.ts";
+import { BankAnswer, bankAnswer, bankKnown, INVOICE_ALERT_NOTE } from "./statements/bankKnown.ts";
 import { invoiceAlert } from "./statements/bankAlerts.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 import { TurnEvent } from "../lead/eventIds.ts";

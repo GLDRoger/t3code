@@ -24,6 +24,12 @@ type Condition = (
  */
 export type OutsideToolPolicy = "allowed" | "refused" | Condition;
 
+/** Where a turn's outside text came from when it read a bank alert. */
+export const ALERT_SOURCE = "bank alert";
+/** `payment_record` in a turn that read a bank alert: Kin's own card is already with the owner. */
+export const ALERT_PAYMENT_REFUSAL =
+  "This turn read a bank alert, and an alert is never proof of payment, so nothing is recorded from it. If it matches an invoice, Kin's own card for it is already with the owner and only their tap there records it: say what the alert shows and that the card is with them.";
+
 /** The one line a tool refused after outside text answers with. */
 export const OUTSIDE_REFUSAL =
   "This turn read text from a connected service, so it can't do this now. Offer it to the owner with kin_ask instead; their tap starts it in a fresh turn.";
@@ -113,6 +119,7 @@ export const OUTSIDE_TOOLS = {
   company_profile: "allowed",
   statement_read: "allowed",
   statement_rows: "allowed",
+  bank_alerts_read: "allowed",
   kin_document: recipeOnly,
   kin_recipes: "allowed",
   kin_issue: "allowed",
@@ -208,6 +215,19 @@ export const inheritOutside = Effect.fn("KinOutsideContent.inherit")(function* (
   const source = events[0]?.source;
   if (source !== undefined) yield* markOutside(input, source);
 });
+
+/** Whether a payment may be recorded: never in a turn whose outside text was a bank alert. */
+export const alertPaymentAllowed = Effect.fn("KinOutsideContent.alertPayment")(
+  function* (turn: Turn, name: string, _args: unknown) {
+    if (name !== "payment_record") return true;
+    return (yield* outsideStamp(turn)) !== ALERT_SOURCE;
+  },
+  Effect.catchCause((cause) =>
+    Effect.logWarning("Kin bank alert payment check failed; refusing", { cause }).pipe(
+      Effect.as(false),
+    ),
+  ),
+);
 
 /** Whether `name` may run with these arguments once the turn has read outside text. */
 export const outsideToolAllowed = Effect.fn("KinOutsideContent.allowed")(

@@ -51,8 +51,8 @@ import {
   writerFor,
 } from "./leadWork.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
-import { markOutside } from "../lead/OutsideContent.ts";
-import { ALERT_SOURCE, BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
+import { ALERT_SOURCE, markOutside } from "../lead/OutsideContent.ts";
+import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
 import { homeCurrency } from "./companyProfile.ts";
 import { dayIn, formatMinor, formatMoney, parseAmount, timeIn } from "./money.ts";
 import { dates, moneySection, moneySummary, ownerLevelStillToInvoice } from "./moneyViews.ts";

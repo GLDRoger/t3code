@@ -71,7 +71,8 @@ import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import { KIN_OWNER_LEVEL } from "../teamView.ts";
 import { queueTap, tellLead } from "./statementWake.ts";
-import { outsideRead, outsideToolAllowed } from "../../lead/OutsideContent.ts";
+import { alertPaymentAllowed, outsideRead, outsideToolAllowed } from "../../lead/OutsideContent.ts";
+import * as LeadAlerts from "../leadAlerts.ts";
 import { bankKnown } from "./bankKnown.ts";
 
 // An invented company, Lakeview Studio, with invented clients, invoices and statements.
@@ -699,6 +700,14 @@ describe("bank statements", () => {
             {},
           ),
         );
+        // Refused with the bank alert's own line, which points to the card the owner has.
+        assert.isFalse(
+          yield* alertPaymentAllowed(
+            { orgId, agentId: lead, wakeupId: "wake-2" },
+            "payment_record",
+            {},
+          ),
+        );
         // A sender stopped since: a statement settles its alerts all the same.
         yield* sql`UPDATE kin_bank_alert_senders SET state = 'stopped'`;
         yield* LeadStatements.read(scope, {
@@ -748,6 +757,84 @@ describe("bank statements", () => {
         assert.deepStrictEqual(yield* source(), [
           { _tag: "person", personId: ownerId, bankAlert: true },
         ]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "hands the Finance lead the alerts plain code couldn't read, and counts only readings true to the mail",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+            url_host, auth, reach, state, created_at, updated_at)
+          VALUES (${orgId}, 'mailbox', 'google', 'Gmail', 'builtin', 'gmail.googleapis.com',
+            'oauth', 'open', 'active', 0, 0)`;
+        yield* sql`INSERT INTO kin_connection_tools (org_id, connection_id, tool_name,
+            definition_json, pin_digest, mode, suggested_mode, open_world, first_seen_at)
+          VALUES (${orgId}, 'mailbox', 'mail_read_thread', '{}', 'pin', 'read', 'read', 0, 0)`;
+        yield* sql`INSERT INTO kin_bank_alert_senders (org_id, sender_id, connection_id, address,
+            account, currency, state, widget_id, asked_at, since_at, cursor_at)
+          VALUES (${orgId}, 'bs-lake', 'mailbox', 'alerts@lakebank.example', '4821', 'INR',
+            'counted', 'w-sender', 0, 0, 0)`;
+        const unread = (id: string, text: string) =>
+          sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, message_id, address,
+              subject, received_at, state, text, created_at)
+            VALUES (${orgId}, ${id}, 'mailbox', ${id}, 'alerts@lakebank.example', 'Alert', 0,
+              'unread', ${text}, 0)`;
+        yield* unread(
+          "ba_declined",
+          "Alert\nDebit declined: INR 5,000.00 from account XX4821. No money left your account.",
+        );
+        yield* unread(
+          "ba_credit",
+          "Alert\nYour a/c XX4821 is credited by INR 11,800.00 on 10 Nov 2026; balance follows",
+        );
+        yield* unread("ba_wrong", "Alert\nYour a/c XX4821 is credited by INR 700.00 in your name");
+        yield* turn(3);
+        const listed = yield* LeadAlerts.read(scope, {});
+        assert.deepStrictEqual(
+          listed.unread.map((one) => one.alert),
+          ["ba_credit", "ba_declined", "ba_wrong"],
+        );
+        assert.include(listed.unread[1]!.mail, "bank alert mail (untrusted)");
+        // The mail is outside text: the turn is marked before it sees any.
+        assert.isTrue(yield* outsideRead({ orgId, wakeupId: "wake-3" }));
+        const moved = {
+          kind: "moved" as const,
+          direction: "in" as const,
+          currency: "INR",
+          day: "2026-11-10",
+          account: "4821",
+        };
+        const settled = yield* LeadAlerts.read(scope, {
+          readings: [
+            { alert: "ba_declined", kind: "not_moved" },
+            { alert: "ba_credit", ...moved, amount: "11,800.00" },
+            // An amount the mail doesn't print counts nowhere, whoever read it.
+            { alert: "ba_wrong", ...moved, amount: "7,000.00" },
+            { alert: "ba_unknown", kind: "not_moved" },
+          ],
+        });
+        assert.deepStrictEqual(settled.read, [
+          { alert: "ba_declined", counted: false, why: "not_moved" },
+          { alert: "ba_credit", counted: true },
+          { alert: "ba_wrong", counted: false, why: "not_in_text" },
+          {
+            alert: "ba_unknown",
+            counted: false,
+            why: "Not an unread alert of a sender Kin counts now.",
+          },
+        ]);
+        assert.deepStrictEqual(settled.unread, []);
+        assert.deepStrictEqual(
+          yield* sql`SELECT alert_id AS id, state, text FROM kin_bank_alerts ORDER BY alert_id`,
+          [
+            { id: "ba_credit", state: "counted", text: null },
+            { id: "ba_declined", state: "not_counted", text: null },
+            { id: "ba_wrong", state: "not_counted", text: null },
+          ],
+        );
       }).pipe(Effect.provide(layer)),
   );
 

@@ -10,7 +10,12 @@ import { McpInvocationContext, type McpThreadCaller } from "../../mcp/McpInvocat
 import { KinServer, type Services } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { SHARED_REFUSAL } from "../lead/Audience.ts";
-import { OUTSIDE_REFUSAL, outsideToolAllowed } from "../lead/OutsideContent.ts";
+import {
+  ALERT_PAYMENT_REFUSAL,
+  alertPaymentAllowed,
+  OUTSIDE_REFUSAL,
+  outsideToolAllowed,
+} from "../lead/OutsideContent.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { TURN_EVENT_TOOLS, TURN_ONLY_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
@@ -125,6 +130,7 @@ const turnEvents = McpHttpServer.toolCallPrepare(
 
 const kinChecks = [
   [toolAdmitted, SHARED_REFUSAL],
+  [alertPaymentAllowed, ALERT_PAYMENT_REFUSAL],
   [outsideToolAllowed, OUTSIDE_REFUSAL],
   [taskAdmitted, TASK_LIMIT_REFUSAL],
 ] as const;
@@ -189,6 +195,11 @@ export const layer = Layer.mergeAll(
     REMOTE_REFUSAL,
   ),
   McpHttpServer.toolCallGate(gate("KinToolGate.admitted", toolAdmitted), SHARED_REFUSAL),
+  // Before the outside check, so a turn that read a bank alert hears why, and where the card is.
+  McpHttpServer.toolCallGate(
+    gate("KinToolGate.alertPayment", alertPaymentAllowed),
+    ALERT_PAYMENT_REFUSAL,
+  ),
   McpHttpServer.toolCallGate(gate("KinToolGate.outside", outsideToolAllowed), OUTSIDE_REFUSAL),
   McpHttpServer.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
 );

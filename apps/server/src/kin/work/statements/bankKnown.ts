@@ -376,8 +376,6 @@ export const BankAnswer = Schema.Struct({
   alertsNote: Schema.optional(Schema.String),
 });
 
-/** Where a turn's outside text came from when it read a bank alert. */
-export const ALERT_SOURCE = "bank alert";
 /** An invoice's matched alert, as an agent reads it. */
 export const INVOICE_ALERT_NOTE =
   "A bank alert, the bank's own mail, shows this money coming in. It is not recorded as paid: Kin's own card asks the owner, and only their tap records it.";

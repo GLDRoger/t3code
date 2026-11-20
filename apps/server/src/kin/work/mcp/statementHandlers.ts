@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
+import * as Alerts from "../leadAlerts.ts";
 import * as Statements from "../leadStatements.ts";
 import { KinStatementToolkit } from "./statementTools.ts";
 
@@ -23,6 +24,11 @@ export const handlers = McpToolAccess.toLayer(KinStatementToolkit, {
   statement_rows: McpToolAccess.reads(
     Effect.fn("KinStatementToolkit.rows")(function* (input) {
       return yield* Statements.rows(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
+  bank_alerts_read: McpToolAccess.actsAsCaller(
+    Effect.fn("KinStatementToolkit.alerts")(function* (input) {
+      return yield* Alerts.read(yield* McpInvocationContext, input);
     }, Effect.mapError(failure)),
   ),
 });
