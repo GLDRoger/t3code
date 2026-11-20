@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- the guard reads source files synchronously, outside any Effect.
 import { assert, describe, it } from "@effect/vitest";
 import {
   KinOrgId,
@@ -7,15 +8,14 @@ import {
   KinTriggerId,
   KinTriggerSettings,
 } from "@t3tools/contracts";
-import * as NodeFS from "node:fs";
-import * as NodePath from "node:path";
-
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
