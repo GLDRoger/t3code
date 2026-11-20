@@ -1006,7 +1006,9 @@ export function KinProjectDialog(
       {editing === null && props.directory !== undefined ? (
         <div className="flex flex-col gap-1.5">
           <Label>{KIN_PROJECT_PEOPLE.choose}</Label>
-          <p className="text-xs text-muted-foreground">{KIN_PROJECT_PEOPLE.detail}</p>
+          <p className="text-xs text-muted-foreground">
+            {draft.private ? KIN_PROJECT_PEOPLE.privateDetail : KIN_PROJECT_PEOPLE.detail}
+          </p>
           <div className="max-h-64 overflow-y-auto rounded-md border border-border p-1">
             <KinProjectPeoplePicker
               people={props.directory.people}

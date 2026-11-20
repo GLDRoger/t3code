@@ -1045,7 +1045,7 @@ function ProjectForm(
             picked.current = next;
             setMembers(next);
           }}
-          footer={KIN_PROJECT_PEOPLE.detail}
+          footer={draft.private ? KIN_PROJECT_PEOPLE.privateDetail : KIN_PROJECT_PEOPLE.detail}
         />
       ) : null}
       <ListSection title={COPY.project.billing}>

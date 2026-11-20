@@ -62,6 +62,8 @@ export const KIN_PROJECT_PEOPLE = {
   choose: "Who's on this project",
   detail:
     "People on a project see its tasks, milestones and docs, and are told they were added. Taken off, its tasks leave their list at once.",
+  privateDetail:
+    "People on a private project see its tasks and milestones, not its page or docs, and are told they were added. Taken off, its tasks leave their list at once.",
   agents: "Agents",
   people: "People",
   nobodyLeft: "Everyone is already on it.",
@@ -266,7 +268,8 @@ export const KIN_PROJECTS = {
   reopen: "Reopen",
   noTarget: "No target date",
   privateLabel: "Keep private",
-  privateOn: "Private. Only you see this project and its tasks.",
+  privateOn:
+    "Private. Only you can open this project and its docs. People on it still see its tasks.",
   privateOff: "Your team will be able to see this project.",
   milestones: "Milestones",
   addMilestone: "Add milestone",
