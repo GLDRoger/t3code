@@ -48,8 +48,11 @@ const ownReminder: Condition = Effect.fnUntraced(function* (turn, args) {
   return typeof chatId === "string" && (yield* askersDirectChat(turn, chatId));
 });
 
-/** Asked in the asker's own chat with this agent; `LeadMemory.cancelOwn` checks the item is theirs. */
-const ownReminderCancel: Condition = Effect.fnUntraced(function* (turn) {
+/**
+ * Asked in the asker's own chat with this agent: `LeadMemory.cancelOwn` checks a cancelled item
+ * is theirs, `askPerson` whom they may ask.
+ */
+const fromAskersOwnChat: Condition = Effect.fnUntraced(function* (turn) {
   const chat = yield* turnChat(turn);
   return chat !== undefined && (yield* askersDirectChat(turn, chat.chatId));
 });
@@ -77,6 +80,8 @@ export const SHARED_TOOLS = {
   // Closes a question to the person in the turn's chat; only its asker withdraws one.
   kin_ask_close: "allowed",
   kin_react: "allowed",
+  // Only from one person's own chat, to whoever decides for them; never from a group.
+  kin_ask_person: fromAskersOwnChat,
   // Numbers the agent supplies, which it could have written in that chat as text; it reads nothing.
   kin_chart: "allowed",
   // Like a chart, in the sealed frame; its figures are checked against everyone behind the
@@ -110,7 +115,7 @@ export const SHARED_TOOLS = {
   memory_label: "refused",
   kin_defer: ownReminder,
   kin_schedule: "refused",
-  kin_cancel: ownReminderCancel,
+  kin_cancel: fromAskersOwnChat,
   kin_github_review: "refused",
   kin_github_link: "refused",
   kin_github_watch: "refused",

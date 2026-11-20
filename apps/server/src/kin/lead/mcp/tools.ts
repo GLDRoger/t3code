@@ -23,6 +23,7 @@ import { KinRecords } from "../../work/KinRecords.ts";
 import { MEMORY_RULE } from "../../memory/keeping.ts";
 import * as ChartCard from "../../widgets/chartCard.ts";
 import * as ChoiceCard from "../../widgets/choiceCard.ts";
+import * as AskPerson from "../../questions/askPerson.ts";
 import * as VisualCard from "../../widgets/visualCard.ts";
 import * as Handoff from "../Handoff.ts";
 import * as Team from "../../team/KinTeam.ts";
@@ -160,6 +161,13 @@ export const KinLeadToolkit = Toolkit.make(
       "Ask with 2-4 tap-to-answer options in the chat your reply goes to, when the answer is one of a few choices; kind marks a yes/no pair. default: the label you'll take if they don't answer, or \"none\" when nothing is safe without them; by: that day, YYYY-MM-DD (left out: the end of their next working day); about: the record keys it concerns; intent: what you'd do, in a few words. Kin refuses another agent asking the same. It shows under your reply: don't restate the question or its options. Say only what you did or what changed. An option may carry action {kind, target}, which Kin runs when it is tapped, with no turn of yours: done or drop a task, start a due deferral, create_list for a new list from your list_define proposal, or take_default of an open question of yours (it runs that default's own action). Kin checks it now as you could do it and writes that option's button and the line under it itself; your label for it isn't shown. A reaction or a passed day never runs it. A plain option's tap arrives later and is never an approval.",
     parameters: ChoiceCard.LeadAskInput,
     success: ChoiceCard.AskResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_ask_person", {
+    ...chat,
+    dependencies: [...chat.dependencies, KinServer],
+    description: "Ask one person outside this chat.",
+    parameters: AskPerson.AskPersonInput,
+    success: AskPerson.AskPersonResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_ask_close", {
     ...chat,

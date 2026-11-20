@@ -50,6 +50,15 @@ export const AskPersonInput = Schema.Struct({
   intent: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(120))),
 });
 
+/** What the call did: the question stored, and whether its card is in their chat or held. */
+export const AskPersonResult = Schema.Struct({
+  to: KinTrimmedText,
+  question: KinTrimmedText,
+  state: Schema.Literals(["posted", "held"]),
+  arrives: Schema.optional(KinTrimmedText),
+  by: KinTrimmedText,
+});
+
 /** At most this many questions asked for others wait on one person, from every agent together. */
 const ASKED_FOR_PER_PERSON = 3;
 const NOTHING = "Nothing was asked.";
@@ -278,7 +287,7 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
           questionId,
           to: target.name,
           state: "held" as const,
-          at: posted.at,
+          held: { at: posted.at, zone: posted.zone, why: posted.why },
           dueAt,
           retry: false,
         };

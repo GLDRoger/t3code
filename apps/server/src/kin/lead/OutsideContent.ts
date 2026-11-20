@@ -42,6 +42,8 @@ export const OUTSIDE_TOOLS = {
   kin_widget_upsert: "allowed",
   kin_ask: "allowed",
   kin_ask_close: "allowed",
+  // A question to one person of the company, checked for what they may read; no action rides on it.
+  kin_ask_person: "allowed",
   kin_react: "allowed",
   kin_chart: "allowed",
   kin_visual: "allowed",

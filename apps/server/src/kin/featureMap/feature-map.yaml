@@ -100,13 +100,15 @@ features:
     web: [home, section:Waiting on you, chat, card:Choice]
     phone: [tab:chats, KinWaiting, card:Choice]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    tools: [kin_ask, kin_ask_close]
+    tools: [kin_ask, kin_ask_close, kin_ask_person]
     note: >-
       Stored only for a direct chat with one person. A repeat (same intent about a shared record)
       is refused; at its day Kin takes the default once, or raises a question with no safe default
       once on the next working morning. Text questions close on the person's next message. Only the
       asker records an answer in words, in a turn woken by the person's message in that chat; its
-      note's Undo reopens the question.
+      note's Undo reopens the question. kin_ask_person puts a card with no default in someone
+      else's chat with the agent, saying who asks; their answer comes back to the asking chat as
+      Kin's line and one turn there, and at its day the asker is told once that it is still open.
     proof:
       - apps/server/src/kin/questions/openQuestions.test.ts
       - apps/server/src/kin/questions/rules.test.ts

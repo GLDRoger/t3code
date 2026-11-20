@@ -21,6 +21,7 @@ import { toolAdmitted } from "../SharedTools.ts";
 import { laneFor } from "../../reply/replyLane.ts";
 import { KinChatService } from "../../chat/KinChatService.ts";
 import { KinServer } from "../../KinServer.ts";
+import * as AskPerson from "../../questions/askPerson.ts";
 import * as Questions from "../../questions/openQuestions.ts";
 import * as CardActions from "../../widgets/cardActions.ts";
 import * as CardPlans from "../../widgets/cardPlans.ts";
@@ -256,6 +257,25 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
             ...(plan.untaken === undefined ? {} : { untaken: plan.untaken }),
             ...(plan.note === undefined ? {} : { note: plan.note }),
           };
+    }, Effect.mapError(failure)),
+  ),
+  kin_ask_person: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.askPerson")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      const services = Option.getOrThrow((yield* KinServer).services);
+      const asked = yield* AskPerson.askPerson(
+        { ...lead, wakeupId: KinWakeupId.make(lead.wakeupId) },
+        input,
+        { chat: Context.get(services, KinChatService), gate: yield* KinLevelGate },
+      );
+      const iso = (at: number) => DateTime.formatIso(DateTime.makeUnsafe(at));
+      return {
+        to: asked.to,
+        question: asked.questionId,
+        state: asked.state,
+        ...("held" in asked ? { arrives: iso(asked.held.at) } : {}),
+        by: iso(asked.dueAt),
+      };
     }, Effect.mapError(failure)),
   ),
   kin_ask_close: McpToolAccess.actsAsCaller(

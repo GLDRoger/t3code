@@ -41,6 +41,7 @@ import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
 import * as KinToolGate from "../mcp/KinToolGate.ts";
+import { SHARED_REFUSAL } from "../lead/Audience.ts";
 import * as Handoff from "../lead/Handoff.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
@@ -51,7 +52,6 @@ import * as Team from "../team/KinTeam.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { presetDefinition } from "../work/registers.ts";
-import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as Provision from "../lead/KinLeadProvision.ts";
 import { encodeLeadModel } from "../lead/leadModels.ts";
 import * as AskPerson from "./askPerson.ts";
@@ -1006,30 +1006,33 @@ const askingTeam = Effect.gen(function* () {
     id === "rhea"
       ? Effect.succeed(studio.chatOf("chief"))
       : chats.createDirect(person(id), { orgId, agentId: chief }).pipe(Effect.map((c) => c.chatId));
-  const lead = (agent: string, wakeupId: KinWakeupId) => ({
-    _tag: "agent" as const,
-    orgId,
-    agentId: KinAgentId.make(agent),
-    ownerPersonId: owner.personId,
-    threadId: ThreadId.make(`${agent}-thread`),
-    wakeupId,
-  });
-  const askFor = (
+  /** `kin_ask_person` as `agent`'s provider calls it in its running turn, `wakeupId`. */
+  const askFor = Effect.fn("test.askFor")(function* (
     agent: string,
     wakeupId: KinWakeupId,
-    input: Partial<typeof AskPerson.AskPersonInput.Type> & { readonly to: string },
-  ) =>
-    AskPerson.askPerson(
-      lead(agent, wakeupId),
-      {
-        question: "Does the shoot move to Friday?",
-        options: [{ label: "Friday" }, { label: "Keep the date" }],
-        about: ["P-4"],
-        intent: "shoot date",
-        ...input,
-      },
-      { chat: chats, gate: Context.get(services, KinLevelGate) },
+    input: { readonly [K in keyof typeof AskPerson.AskPersonInput.Type]?: unknown } & {
+      readonly to: string;
+    },
+  ) {
+    const [running] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId"
+      FROM kin_wakeups WHERE org_id = ${orgId} AND agent_id = ${agent} AND status = 'running'`;
+    assert.strictEqual(running?.wakeupId, wakeupId);
+    const args = {
+      question: "Does the shoot move to Friday?",
+      options: [{ label: "Friday" }, { label: "Keep the date" }],
+      about: ["P-4"],
+      intent: "shoot date",
+      ...input,
+    };
+    const result = yield* callAs(
+      agent,
+      "kin_ask_person",
+      Object.fromEntries(Object.entries(args).filter(([, value]) => value !== undefined)),
     );
+    if (!result.ok) return yield* Effect.fail({ message: String(result.value.message) });
+    const asked = result.value as typeof AskPerson.AskPersonResult.Type;
+    return { ...asked, questionId: asked.question };
+  });
   /** A turn of `agent`'s woken by `who`'s words in their own chat with it. */
   const wakeOn = Effect.fn("test.wakeOn")(function* (
     agent: string,
@@ -1103,7 +1106,7 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
       // Rhea, in her own chat with the Chief of staff.
       const rhea = yield* wakeOn("chief", "rhea", chatOf("chief"), "Ask Dev about the shoot.");
       const toDev = yield* askFor("chief", rhea, { to: "Dev" });
-      assert.deepInclude(toDev, { to: "Dev Malhotra", state: "posted", retry: false });
+      assert.deepInclude(toDev, { to: "Dev Malhotra", state: "posted" });
       const devChat = yield* chiefChat("dev");
       const stored = yield* cardOf(toDev.questionId);
       assert.deepStrictEqual(stored, {
@@ -1119,10 +1122,7 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
         detail: "Rhea Rao asks, through Chief of staff.",
       });
       // The same call again is a retry: the same question, no second card.
-      assert.deepInclude(yield* askFor("chief", rhea, { to: "Dev" }), {
-        questionId: toDev.questionId,
-        retry: true,
-      });
+      assert.deepStrictEqual(yield* askFor("chief", rhea, { to: "Dev" }), toDev);
       assert.strictEqual(yield* cards(devChat), 1);
       // Rhea's chat with the agent knows what waits on Dev; Dev's chat lists it as for her.
       const waits = yield* Questions.askedForSection({
@@ -1197,7 +1197,10 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
         /3 questions asked for others already wait on Dev Malhotra/,
       );
       // Neither intent nor records: Kin couldn't tell a repeat, so it isn't asked.
-      yield* refused(askFor("chief", again, { to: "Zoya", intent: "", about: [] }), /intent/);
+      yield* refused(
+        askFor("chief", again, { to: "Zoya", intent: undefined, about: [] }),
+        /intent/,
+      );
 
       // A check-in asks for the owner, as "Chief of staff asks.", one at a time per person.
       yield* startAgentWakeup({
@@ -1242,6 +1245,16 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
         askFor("chief", inGroup, { to: "Zoya", intent: "props again" }),
         /never a group/,
       );
+      // A group a teammate reads: the gate refuses it before anything is looked up.
+      const crew = (yield* Context.get(services, KinGroups).create([owner], {
+        orgId,
+        title: "Crew",
+        agentIds: [KinAgentId.make("chief")],
+        personIds: [KinPersonId.make("dev")],
+      })).chatId;
+      const inCrew = yield* wakeOn("chief", "dev", crew, "Ask Rhea about the shoot.");
+      const shared = yield* Effect.flip(askFor("chief", inCrew, { to: "Rhea", intent: "crew" }));
+      assert.strictEqual(shared.message, SHARED_REFUSAL);
     }).pipe(Effect.provide(layer)),
   ),
 );
