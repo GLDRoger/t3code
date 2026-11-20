@@ -1162,6 +1162,28 @@ describe("KinPulse", () => {
       assert.lengthOf(yield* missing(B + 40 * DAY - MINUTE), 0);
       const [november] = yield* missing(B + 40 * DAY);
       assert.strictEqual(november!.key, "statement_missing:2026-11");
+      assert.match(november!.consequence, /^November's statement isn't in yet/);
+      // A second account that is further on: the line names the account still waited on.
+      yield* sql`INSERT INTO kin_bank_statements (org_id, statement_id, attachment_id, file_name,
+          chat_id, agent_id, wakeup_id, status, review_json, created_at, read_at, applied_at)
+        VALUES (${orgId}, 'st-other', 'att-st-other', 'invented.csv', ${`chat-${finance}`},
+          ${finance}, 'w-old', 'read', ${JSON.stringify({
+            statement: {
+              kind: "account",
+              bank: "Invented Bank",
+              account: "5678",
+              currency: "INR",
+              from: "2026-10-01",
+              to: "2026-11-30",
+              rows: [],
+            },
+          })}, 0, 0, 1)`;
+      const [named] = yield* missing(B + 40 * DAY);
+      assert.strictEqual(named!.key, "statement_missing:2026-11");
+      assert.match(
+        named!.consequence,
+        /^November's statement for Invented Bank Account ••1234 isn't in yet/,
+      );
     }).pipe(Effect.provide(layer)),
   );
 

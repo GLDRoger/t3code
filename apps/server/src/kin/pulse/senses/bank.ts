@@ -32,8 +32,11 @@ const lastDayOf = (month: string) => shiftDay(`${shiftMonth(month, 1)}-01`, -1);
  * that Money says Kin can't see the bank. One fact per month, so it is told once.
  */
 export const statementSenses = Effect.fn("KinPulse.statementSenses")(function* (ctx: SenseContext) {
-  const { through } = yield* bankKnown(ctx.orgId, ctx.at);
+  const { through, accounts } = yield* bankKnown(ctx.orgId, ctx.at);
   if (through === null) return [];
+  // With several accounts, the line names the one whose statement is waited on.
+  const behind = accounts.filter((one) => one.keptUp && one.through === through);
+  const whose = accounts.length > 1 && behind.length === 1 ? ` for ${behind[0]!.label}` : "";
   const month = monthOf(shiftDay(through, 1));
   const last = lastDayOf(month);
   const due = yield* threshold(ctx.orgId, "statement_due_days");
@@ -53,7 +56,7 @@ export const statementSenses = Effect.fn("KinPulse.statementSenses")(function* (
     subject: { kind: "bank", key: `statement:${month}`, title: "Bank statement" },
     scope: {},
     since: iso(startOfDay(shownFrom, ctx.zone)),
-    consequence: `${name}'s statement isn't in yet${
+    consequence: `${name}'s statement${whose} isn't in yet${
       waiting === 0
         ? "."
         : `: ${waiting === 1 ? "1 invoice" : `${waiting} invoices`} can't be confirmed until it is.`
