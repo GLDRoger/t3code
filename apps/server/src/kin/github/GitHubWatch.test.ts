@@ -273,10 +273,11 @@ describe("KinGitHubWatch", () => {
       github.world.calls.length = 0;
       yield* look(github);
       assert.lengthOf(yield* events, 1);
-      // Both answers were "not modified": nothing else was read.
+      // Both answers were "not modified"; the one list is for the reviewed PR's head.
       assert.deepStrictEqual(github.world.calls, [
         "GET notifications",
         "GET users/invented-owner/events",
+        `GET repos/${REPO}/pulls`,
       ]);
 
       // The agent's review posts under the owner's login; its inline words call no one.
@@ -779,6 +780,176 @@ describe("KinGitHubWatch", () => {
         touch: (_org, topic) => Effect.sync(() => void told.push(topic)),
       }),
     );
+  });
+});
+
+/** A teammate's PR Kin reviewed at its first head, that review finished; then `push` commits. */
+const reviewed = Effect.fn("test.reviewed")(function* (
+  github: FakeGitHub,
+  options: { readonly author?: string; readonly body?: string } = {},
+) {
+  yield* start(github);
+  const number = github.openItem({
+    repo: REPO,
+    pull: true,
+    author: options.author ?? "teammate-a",
+    association: "COLLABORATOR",
+    title: "Add a hello script",
+    body: options.body ?? "Closes #1",
+  });
+  const first = github.world.items.find((item) => item.number === number)!.head_sha;
+  yield* look(github);
+  yield* finishReviews;
+  return { number, first };
+});
+
+const finishReviews = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_events SET state = 'done' WHERE tag = 'github' AND state = 'queued'`;
+});
+
+const reReviews = events.pipe(
+  Effect.map((all) => all.filter((trigger) => trigger.kind === "review_request")),
+);
+
+describe("a reviewed PR whose head moves", () => {
+  it.effect(
+    "is re-reviewed once its head has been still five minutes, on what changed since",
+    () => {
+      const { github, layer } = setup();
+      return Effect.gen(function* () {
+        const { number, first } = yield* reviewed(github);
+        const head = github.push({ repo: REPO, number, diff: "+the fix\n" });
+        yield* look(github, 4);
+        assert.lengthOf(yield* reReviews, 0);
+        yield* look(github, 1);
+        const [again, ...rest] = yield* reReviews;
+        assert.lengthOf(rest, 0);
+        assert.strictEqual(again!.key, GitHubWatch.headKey(REPO, number, head));
+        assert.deepStrictEqual(again!.pull?.reReview, { from: first, whole: false });
+        assert.strictEqual(again!.pull?.diff, "+the fix\n");
+        assert.strictEqual(again!.pull?.headSha, head);
+        // The same look again, and after its turn: nothing more for this head.
+        yield* look(github);
+        yield* finishReviews;
+        yield* look(github);
+        assert.lengthOf(yield* reReviews, 1);
+
+        // Changes GitHub won't give since the last head: the whole PR at the new one.
+        const next = github.push({ repo: REPO, number, diff: "+another\n" });
+        github.world.failing = [`repos/${REPO}/compare/${head}...${next}`];
+        yield* look(github, 5);
+        const whole = (yield* reReviews).at(-1)!;
+        assert.strictEqual(whole.key, GitHubWatch.headKey(REPO, number, next));
+        assert.deepStrictEqual(whole.pull?.reReview, { from: head, whole: true });
+        assert.include(whole.pull?.diff, "an invented line");
+        assert.include(whole.pull?.diff, "+another\n");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("the hourly cap counts re-reviews as it counts every wake", () => {
+    const { github, layer } = setup();
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const { number } = yield* reviewed(github);
+      // Three more wakes this hour: with the first review, the re-review is the fifth.
+      for (const id of [1, 2, 3])
+        yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id,
+            outcome, at)
+          VALUES (${orgId}, ${`call:${REPO}#${number}:c${id}`}, ${REPO}, ${number}, 'tech', 'woke',
+            ${T0 + MINUTE})`;
+      github.push({ repo: REPO, number });
+      yield* look(github, 5);
+      yield* finishReviews;
+      assert.lengthOf(yield* reReviews, 1);
+      const capped = github.push({ repo: REPO, number });
+      yield* look(github, 5);
+      assert.lengthOf(yield* reReviews, 1);
+      const [row] = yield* sql<{ outcome: string }>`SELECT outcome FROM kin_github_handled
+        WHERE trigger_key = ${GitHubWatch.headKey(REPO, number, capped)}`;
+      assert.strictEqual(row?.outcome, "capped");
+    }).pipe(Effect.provide(layer));
+  });
+
+  const nothing: ReadonlyArray<
+    readonly [
+      string,
+      (input: {
+        readonly github: FakeGitHub;
+        readonly number: number;
+      }) => Effect.Effect<void, never, SqlClient.SqlClient>,
+      pushes?: true,
+    ]
+  > = [
+    [
+      "a draft",
+      ({ github, number }) =>
+        Effect.sync(() => {
+          github.world.items.find((item) => item.number === number)!.draft = true;
+        }),
+    ],
+    [
+      "a closed PR",
+      ({ github, number }) =>
+        Effect.sync(() => {
+          github.world.items.find((item) => item.number === number)!.state = "closed";
+        }),
+    ],
+    [
+      "a repo switched off",
+      () => setRepo({ orgId, repo: REPO, watched: false }, T0).pipe(Effect.asVoid, Effect.orDie),
+    ],
+    [
+      "the first review still under way",
+      () =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`UPDATE kin_events SET state = 'claimed' WHERE tag = 'github'`;
+        }).pipe(Effect.orDie),
+    ],
+    [
+      "an ask already holding the new head",
+      ({ github, number }) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const head = github.push({ repo: REPO, number });
+          yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id,
+              outcome, at)
+            VALUES (${orgId}, ${GitHubWatch.headKey(REPO, number, head)}, ${REPO}, ${number},
+              'tech', 'woke', ${T0})`;
+        }).pipe(Effect.orDie),
+      true,
+    ],
+  ];
+  it.effect.each(nothing)("starts nothing for %s", ([, change, pushes]) => {
+    const { github, layer } = setup();
+    return Effect.gen(function* () {
+      const { number } = yield* reviewed(github);
+      yield* change({ github, number });
+      if (pushes !== true) github.push({ repo: REPO, number });
+      yield* look(github, 5);
+      yield* look(github, 1);
+      assert.lengthOf(yield* reReviews, 0);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("starts nothing for Kin's own PR, even with a reviewed head on file", () => {
+    const { github, layer } = setup();
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const { number, first } = yield* reviewed(github, {
+        author: "invented-owner",
+        body: signed("Closes #1", "Tech lead"),
+      });
+      yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id,
+          outcome, at, review_url)
+        VALUES (${orgId}, ${GitHubWatch.headKey(REPO, number, first)}, ${REPO}, ${number}, 'tech',
+          'woke', ${T0}, 'https://github.com/invented/review')`;
+      github.push({ repo: REPO, number });
+      yield* look(github, 5);
+      assert.lengthOf(yield* events, 0);
+    }).pipe(Effect.provide(layer));
   });
 });
 

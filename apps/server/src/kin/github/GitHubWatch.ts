@@ -29,6 +29,7 @@ import { agentPostKeys, signed } from "./agentMark.ts";
 import { UNFINISHED } from "./askedFor.ts";
 import { AGENT_POSTS_FILE, GH_APP_FOLDER } from "./ghSign.ts";
 import {
+  type DecideContext,
   decideTriggers,
   isAgentsOwn,
   type ThreadComment,
@@ -36,7 +37,14 @@ import {
   type Trigger,
 } from "./githubTriggers.ts";
 import { checkGuards } from "./branchGuard.ts";
-import { companyRepo, knownRepos, type KnownRepo, repoList, watchRow } from "./githubWatchStore.ts";
+import {
+  companyRepo,
+  knownRepos,
+  type KnownRepo,
+  repoList,
+  watchRow,
+  type WatchRow,
+} from "./githubWatchStore.ts";
 import { gitHubApp } from "./KinGitHubApp.ts";
 
 /**
@@ -62,6 +70,11 @@ const THREADS_PER_LOOK = 30;
 /** Replies an agent makes in one issue or PR in an hour before it stops and says so. */
 export const PER_THREAD_HOURLY = 5;
 const DIFF_CAP = 30_000;
+/** A moved head is re-reviewed once nothing has changed on the PR for this long. */
+const STILL_MS = 5 * MINUTE;
+/** How long after Kin's last review of a repo's PR the watch still lists that repo's PRs. */
+const REVIEWED_KEPT_MS = 30 * 24 * HOUR;
+const LIST_PAGE = 100;
 
 export const capNote = (count: number) =>
   `I've replied ${count} times here in an hour, so I'm stopping for now; say /kin again to continue.`;
@@ -221,6 +234,7 @@ const Pull = Schema.Struct({
     repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })),
   }),
   base: Schema.Struct({ ref: Schema.String }),
+  updated_at: Schema.optional(Schema.String),
   additions: Schema.optional(Schema.Int),
   deletions: Schema.optional(Schema.Int),
   changed_files: Schema.optional(Schema.Int),
@@ -251,6 +265,16 @@ const decodeIssue = Schema.decodeUnknownOption(Issue);
 const decodePull = Schema.decodeUnknownOption(Pull);
 const decodeComments = Schema.decodeUnknownOption(Schema.Array(Comment));
 const decodeChecks = Schema.decodeUnknownOption(CheckRuns);
+const decodeOpenPulls = Schema.decodeUnknownOption(
+  Schema.Array(
+    Schema.Struct({
+      number: Schema.Int,
+      draft: Schema.optional(Schema.Boolean),
+      updated_at: Schema.String,
+      head: Schema.Struct({ sha: Schema.String }),
+    }),
+  ),
+);
 const toJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 
@@ -333,6 +357,7 @@ export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
               baseRef: facts.base.ref,
               headSha: facts.head.sha,
               fork: (facts.head.repo?.full_name ?? "").toLowerCase() !== thread.repo.toLowerCase(),
+              ...(facts.updated_at === undefined ? {} : { updatedAt: parsed(facts.updated_at) }),
             },
           }),
       comments,
@@ -341,11 +366,18 @@ export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
   };
 });
 
+/** A re-review's head Kin last reviewed, and whether its diff is the whole PR's. */
+export interface ReReview {
+  readonly from: string;
+  readonly whole: boolean;
+}
+
 const triggerFacts = (
   thread: ThreadSnapshot,
   trigger: Trigger,
   ownerLogin: string,
   diff: string | undefined,
+  reReview: ReReview | undefined,
 ): KinGithubTrigger => ({
   key: trigger.key,
   kind: trigger.kind,
@@ -372,6 +404,7 @@ const triggerFacts = (
           ownersOwn: thread.author.toLowerCase() === ownerLogin.toLowerCase(),
           headSha: thread.pull.headSha,
           ...(diff === undefined ? {} : { diff }),
+          ...(reReview === undefined ? {} : { reReview }),
         },
       }),
   ...(trigger.kind === "checks" ? { failing: trigger.text.split(", ") } : {}),
@@ -410,6 +443,57 @@ export const reclaimable = (row: { readonly outcome: string; readonly at: number
   (row.outcome === "capped" && row.at <= now - HOUR);
 
 /**
+ * The head Kin last reviewed on a PR: a first review's head, or a review of a head that posted or
+ * finished; or that one is still under way. Undefined when Kin hasn't reviewed it.
+ */
+export const lastReviewed = Effect.fn("KinGitHubWatch.lastReviewed")(function* (
+  orgId: KinOrgId,
+  repo: string,
+  number: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const at = `${repo.toLowerCase()}#${number}`;
+  const prefix = `review:${at}:`;
+  const rows = yield* sql<{ key: string; outcome: string; url: string | null }>`SELECT
+      trigger_key AS key, outcome, review_url AS url FROM kin_github_handled
+    WHERE org_id = ${orgId} AND repo = ${repo.toLowerCase()} AND number = ${number}
+      AND outcome IN ('woke', ${FIRST_REVIEW_HEAD})
+      AND substr(trigger_key, 1, ${prefix.length}) = ${prefix}
+    ORDER BY at DESC, trigger_key DESC LIMIT 20`;
+  for (const row of rows) {
+    const ran = row.outcome === FIRST_REVIEW_HEAD ? `review:${at}` : row.key;
+    const [event] = yield* sql<{ state: string }>`SELECT state FROM kin_events
+      WHERE org_id = ${orgId} AND tag = 'github' AND json_extract(json, '$.trigger.key') = ${ran}
+      ORDER BY queued_at DESC, rowid DESC LIMIT 1`;
+    if (event?.state === "queued" || event?.state === "claimed") return { underWay: true } as const;
+    if (row.url !== null || event?.state === "done")
+      return { underWay: false, head: row.key.slice(prefix.length) } as const;
+  }
+  return undefined;
+});
+
+/**
+ * One re-review of a reviewed PR whose head moved and has been still for `STILL_MS` by GitHub's
+ * own `updated_at`: the trigger a re-requested review of that head is, so one key holds per head.
+ */
+const reReviewOf = (
+  thread: ThreadSnapshot,
+  last: Effect.Success<ReturnType<typeof lastReviewed>>,
+  context: DecideContext,
+  now: number,
+) => {
+  const pull = thread.pull;
+  if (last === undefined || last.underWay || pull === undefined || pull.headSha === last.head)
+    return undefined;
+  if (pull.updatedAt === undefined || now - pull.updatedAt < STILL_MS) return undefined;
+  const trigger = decideTriggers(
+    { ...thread, comments: [], reviewRequested: true },
+    { ...context, since: Number.POSITIVE_INFINITY, draftSeen: false },
+  ).find((one) => one.kind === "review_request");
+  return trigger === undefined ? undefined : { trigger, from: last.head };
+};
+
+/**
  * Stores the trigger once and, when it may, wakes its agent in the same transaction: the watch's
  * every trigger, and a review someone asked for in Kin (`askedBy`). An ask the caps refuse claims
  * nothing, and one whose turn didn't finish runs again as a new event in the same lane.
@@ -425,6 +509,7 @@ export const claimTrigger = Effect.fn("KinGitHubWatch.handle")(function* (input:
   readonly happenedAt: number;
   readonly diff: string | undefined;
   readonly askedBy?: KinPersonId | undefined;
+  readonly reReview?: ReReview | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
@@ -483,7 +568,7 @@ export const claimTrigger = Effect.fn("KinGitHubWatch.handle")(function* (input:
             ${FIRST_REVIEW_HEAD}, ${now})
           ON CONFLICT (org_id, trigger_key) DO UPDATE SET outcome = excluded.outcome,
             agent_id = excluded.agent_id, at = excluded.at, review_url = NULL`;
-      const facts = triggerFacts(thread, trigger, input.ownerLogin, input.diff);
+      const facts = triggerFacts(thread, trigger, input.ownerLogin, input.diff, input.reReview);
       const delivery = retry ? `ask:${trigger.key}:${now}` : `poll:${trigger.key}`;
       yield* queue.enqueue(
         yield* decodeEvent({
@@ -680,6 +765,239 @@ export const make = Effect.gen(function* () {
     });
   });
 
+  interface LookContext {
+    readonly orgId: KinOrgId;
+    readonly now: number;
+    readonly account: { readonly login: string };
+    readonly startedAt: number;
+    readonly since: number;
+    readonly watched: ReadonlyMap<string, { readonly mentions: boolean }>;
+    readonly agents: ReadonlyArray<{ readonly agentId: string; readonly name: string }>;
+    readonly bot: string | undefined;
+    readonly posts: ReadonlySet<string> | undefined;
+    readonly lead: { readonly agentId: string; readonly name: string } | undefined;
+  }
+  interface Tally {
+    woken: number;
+    later: boolean;
+    readonly held: Set<number>;
+  }
+
+  const lookContext = Effect.fn("KinGitHubWatch.lookContext")(function* (
+    orgId: KinOrgId,
+    now: number,
+    account: { readonly login: string },
+    row: WatchRow,
+  ) {
+    const repos = yield* repoList(orgId);
+    return {
+      orgId,
+      now,
+      account,
+      startedAt: row.startedAt,
+      since: row.sinceAt - OVERLAP_MS,
+      watched: new Map(
+        repos.filter((repo) => repo.watched).map((repo) => [repo.repo.toLowerCase(), repo]),
+      ),
+      agents: yield* agentsOf(orgId),
+      bot: yield* botLogin,
+      posts: yield* agentPosts,
+      lead: yield* liveLead(sql, orgId, { prefer: ENGINEERING_DOMAIN }),
+    } satisfies LookContext;
+  });
+
+  /** Watched repos with a PR Kin reviewed lately, but not one whose last list showed none open. */
+  const listedIdle = new Map<string, number>();
+  const reviewedRepos = Effect.fn("KinGitHubWatch.reviewedRepos")(function* (
+    orgId: KinOrgId,
+    now: number,
+    watched: ReadonlyMap<string, { readonly repo: string }>,
+  ) {
+    const rows = yield* sql<{ repo: string; at: number }>`SELECT repo, MAX(at) AS at
+      FROM kin_github_handled WHERE org_id = ${orgId} AND outcome IN ('woke', ${FIRST_REVIEW_HEAD})
+        AND substr(trigger_key, 1, 7) = 'review:' AND at > ${now - REVIEWED_KEPT_MS}
+      GROUP BY repo ORDER BY repo`;
+    return rows.flatMap((row) => {
+      const entry = watched.get(row.repo);
+      const idle = listedIdle.get(`${orgId}:${row.repo}`);
+      return entry === undefined || (idle !== undefined && row.at <= idle) ? [] : [entry.repo];
+    });
+  });
+
+  /** Reviewed open PRs whose head has no key yet and has been still long enough: one list call. */
+  const movedHeads = Effect.fn("KinGitHubWatch.movedHeads")(function* (
+    orgId: KinOrgId,
+    repo: string,
+    now: number,
+  ) {
+    const answer = yield* get(
+      `repos/${repo}/pulls?state=open&sort=updated&direction=desc&per_page=${LIST_PAGE}`,
+    );
+    const open = answer.status === 200 ? decodeOpenPulls(answer.body) : Option.none();
+    if (Option.isNone(open)) return [];
+    const rows = yield* sql<{ number: number; key: string; outcome: string; at: number }>`SELECT
+        number, trigger_key AS key, outcome, at FROM kin_github_handled
+      WHERE org_id = ${orgId} AND repo = ${repo.toLowerCase()} AND substr(trigger_key, 1, 7) = 'review:'
+      ORDER BY number, at`;
+    const keys = new Set(rows.map((row) => row.key));
+    const reviewed = new Set(
+      rows
+        .filter((row) => row.outcome === "woke" || row.outcome === FIRST_REVIEW_HEAD)
+        .map((row) => row.number),
+    );
+    const listed = open.value.filter((pull) => reviewed.has(pull.number));
+    if (listed.length === 0 && open.value.length < LIST_PAGE)
+      listedIdle.set(`${orgId}:${repo.toLowerCase()}`, Math.max(0, ...rows.map((row) => row.at)));
+    return listed
+      .filter(
+        (pull) =>
+          pull.draft !== true &&
+          !keys.has(headKey(repo, pull.number, pull.head.sha)) &&
+          now - parsed(pull.updated_at) >= STILL_MS,
+      )
+      .map((pull) => pull.number);
+  });
+
+  /** What changed since the head Kin reviewed, else the whole PR at its head; null when neither. */
+  const changesSince = Effect.fn("KinGitHubWatch.changesSince")(function* (
+    thread: ThreadSnapshot,
+    from: string,
+  ) {
+    if (thread.pull === undefined) return null;
+    const { headSha, baseRef } = thread.pull;
+    const since = yield* readDiff(get, thread.repo, thread.number, { baseRef: from, headSha });
+    if (since !== undefined) return { diff: since, reReview: { from, whole: false } };
+    const whole = yield* readDiff(get, thread.repo, thread.number, { baseRef, headSha });
+    return whole === undefined ? null : { diff: whole, reReview: { from, whole: true } };
+  });
+
+  /** One issue or PR read now and weighed: what it starts is claimed, what it shows is kept. */
+  const weigh = Effect.fn("KinGitHubWatch.weigh")(function* (
+    context: LookContext,
+    thread: Thread,
+    tally: Tally,
+  ) {
+    const { orgId, now, account, since, agents, bot, posts, lead } = context;
+    const { held } = tally;
+    const read = yield* readThread(get, thread, since);
+    if (read === undefined) return;
+    let current: ThreadSnapshot = read.thread;
+    const at = `${current.repo.toLowerCase()}#${current.number}`;
+    if (current.item === "pull" && read.merged && Option.isSome(records))
+      yield* githubClosed({
+        orgId,
+        repo: current.repo,
+        number: current.number,
+        item: "pull_request",
+      }).pipe(
+        Effect.provideService(KinRecords, records.value),
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't close Work entries for a merge", { cause }),
+        ),
+      );
+    if (current.item === "pull" && isAgentsOwn(current.body, current.author, bot, posts)) {
+      const failing = current.open ? yield* failingChecks(orgId, current) : undefined;
+      if (!current.open)
+        yield* sql`UPDATE kin_github_agent_pulls SET open = 0
+          WHERE org_id = ${orgId} AND repo = ${current.repo.toLowerCase()} AND number = ${current.number}`;
+      current = { ...current, failing };
+    }
+    if (lead === undefined) return;
+    const [draft] = yield* sql`SELECT 1 AS present FROM kin_github_handled
+      WHERE org_id = ${orgId} AND trigger_key = ${`draft:${at}`}`;
+    if (current.item === "pull" && current.draft && draft === undefined)
+      yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id, outcome, at)
+        VALUES (${orgId}, ${`draft:${at}`}, ${current.repo.toLowerCase()}, ${current.number}, NULL, 'seen', ${now})
+        ON CONFLICT DO NOTHING`;
+    // A comment is weighed once: a later look, or a switch turned on since, never re-reads it.
+    const seenKey = (comment: ThreadComment) =>
+      `seen:${at}:${comment.kind === "review" ? "r" : "c"}${comment.id}`;
+    const seen =
+      current.comments.length === 0
+        ? new Set<string>()
+        : new Set(
+            (yield* sql<{ key: string }>`SELECT trigger_key AS key FROM kin_github_handled
+              WHERE org_id = ${orgId} AND trigger_key IN ${sql.in(current.comments.map(seenKey))}`).map(
+              (found) => found.key,
+            ),
+          );
+    const fresh = current.comments.filter((comment) => !seen.has(seenKey(comment)));
+    current = { ...current, comments: fresh };
+    const decide: DecideContext = {
+      ownerLogin: account.login,
+      agents,
+      defaultAgentId: lead.agentId,
+      mentions: context.watched.get(current.repo.toLowerCase())?.mentions ?? false,
+      since: context.startedAt,
+      draftSeen: draft !== undefined,
+      botLogin: bot,
+      agentPosts: posts,
+    };
+    const triggers = decideTriggers(current, decide);
+    const again =
+      current.item === "pull"
+        ? reReviewOf(current, yield* lastReviewed(orgId, current.repo, current.number), decide, now)
+        : undefined;
+    for (const trigger of again === undefined
+      ? triggers
+      : [...triggers.filter((one) => one.key !== again.trigger.key), again.trigger]) {
+      const agentId = agents.some((agent) => agent.agentId === trigger.agentId)
+        ? trigger.agentId
+        : lead.agentId;
+      const happenedAt =
+        trigger.reactTo.type === "comment"
+          ? (current.comments.find(
+              (comment) => comment.id === (trigger.reactTo as { id: number }).id,
+            )?.createdAt ?? now)
+          : trigger.kind === "review"
+            ? current.createdAt
+            : now;
+      const moved =
+        again?.trigger === trigger ? yield* changesSince(current, again.from) : undefined;
+      // Changes GitHub wouldn't give are read again on the next look; nothing is claimed.
+      if (moved === null) continue;
+      // A stranger's PR is read for them: their turn gets no shell to fetch it.
+      const diff =
+        moved !== undefined
+          ? moved.diff
+          : !trigger.inside && current.item === "pull"
+            ? yield* readDiff(get, current.repo, current.number)
+            : undefined;
+      const outcome = yield* handle({
+        orgId,
+        thread: current,
+        trigger,
+        ownerLogin: account.login,
+        agentId,
+        now,
+        woken: tally.woken,
+        happenedAt: moved === undefined ? happenedAt : (current.pull?.updatedAt ?? now),
+        diff,
+        reReview: moved?.reReview,
+      });
+      if (outcome === "later") {
+        tally.later = true;
+        if (trigger.reactTo.type === "comment") held.add(trigger.reactTo.id);
+      }
+      if (outcome === "woke") {
+        tally.woken += 1;
+        yield* react(current.repo, current.number, trigger);
+      }
+      if (outcome === "capped")
+        yield* capComment(
+          orgId,
+          current,
+          agents.find((agent) => agent.agentId === agentId)?.name ?? lead.name,
+          now,
+        );
+    }
+    for (const comment of fresh.filter((comment) => !held.has(comment.id)))
+      yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id, outcome, at)
+        VALUES (${orgId}, ${seenKey(comment)}, ${current.repo.toLowerCase()}, ${current.number}, NULL, 'seen', ${now})
+        ON CONFLICT DO NOTHING`;
+  });
+
   const poll = Effect.fn("KinGitHubWatch.poll")(function* (
     orgId: KinOrgId,
     options?: { readonly force?: boolean },
@@ -781,118 +1099,15 @@ export const make = Effect.gen(function* () {
       FROM kin_github_agent_pulls WHERE org_id = ${orgId} AND open = 1 ORDER BY repo, number LIMIT 20`)
       note(pull.repo, pull.number);
 
-    const agents = yield* agentsOf(orgId);
-    const bot = yield* botLogin;
-    const posts = yield* agentPosts;
-    const lead = yield* liveLead(sql, orgId, { prefer: ENGINEERING_DOMAIN });
-    let woken = 0;
-    let later = false;
-    const held = new Set<number>();
-    for (const thread of [...threads.values()].slice(0, THREADS_PER_LOOK)) {
-      const read = yield* readThread(get, thread, since);
-      if (read === undefined) continue;
-      let current: ThreadSnapshot = read.thread;
-      const at = `${current.repo.toLowerCase()}#${current.number}`;
-      if (current.item === "pull" && read.merged && Option.isSome(records))
-        yield* githubClosed({
-          orgId,
-          repo: current.repo,
-          number: current.number,
-          item: "pull_request",
-        }).pipe(
-          Effect.provideService(KinRecords, records.value),
-          Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Kin couldn't close Work entries for a merge", { cause }),
-          ),
-        );
-      if (current.item === "pull" && isAgentsOwn(current.body, current.author, bot, posts)) {
-        const failing = current.open ? yield* failingChecks(orgId, current) : undefined;
-        if (!current.open)
-          yield* sql`UPDATE kin_github_agent_pulls SET open = 0
-            WHERE org_id = ${orgId} AND repo = ${current.repo.toLowerCase()} AND number = ${current.number}`;
-        current = { ...current, failing };
-      }
-      if (lead === undefined) continue;
-      const [draft] = yield* sql`SELECT 1 AS present FROM kin_github_handled
-        WHERE org_id = ${orgId} AND trigger_key = ${`draft:${at}`}`;
-      if (current.item === "pull" && current.draft && draft === undefined)
-        yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id, outcome, at)
-          VALUES (${orgId}, ${`draft:${at}`}, ${current.repo.toLowerCase()}, ${current.number}, NULL, 'seen', ${now})
-          ON CONFLICT DO NOTHING`;
-      // A comment is weighed once: a later look, or a switch turned on since, never re-reads it.
-      const seenKey = (comment: ThreadComment) =>
-        `seen:${at}:${comment.kind === "review" ? "r" : "c"}${comment.id}`;
-      const seen =
-        current.comments.length === 0
-          ? new Set<string>()
-          : new Set(
-              (yield* sql<{ key: string }>`SELECT trigger_key AS key FROM kin_github_handled
-                WHERE org_id = ${orgId} AND trigger_key IN ${sql.in(current.comments.map(seenKey))}`).map(
-                (found) => found.key,
-              ),
-            );
-      const fresh = current.comments.filter((comment) => !seen.has(seenKey(comment)));
-      current = { ...current, comments: fresh };
-      const triggers = decideTriggers(current, {
-        ownerLogin: account.login,
-        agents,
-        defaultAgentId: lead.agentId,
-        mentions: watched.get(current.repo.toLowerCase())?.mentions ?? false,
-        since: row.startedAt,
-        draftSeen: draft !== undefined,
-        botLogin: bot,
-        agentPosts: posts,
-      });
-      for (const trigger of triggers) {
-        const agentId = agents.some((agent) => agent.agentId === trigger.agentId)
-          ? trigger.agentId
-          : lead.agentId;
-        const happenedAt =
-          trigger.reactTo.type === "comment"
-            ? (current.comments.find(
-                (comment) => comment.id === (trigger.reactTo as { id: number }).id,
-              )?.createdAt ?? now)
-            : trigger.kind === "review"
-              ? current.createdAt
-              : now;
-        // A stranger's PR is read for them: their turn gets no shell to fetch it.
-        const diff =
-          !trigger.inside && current.item === "pull"
-            ? yield* readDiff(get, current.repo, current.number)
-            : undefined;
-        const outcome = yield* handle({
-          orgId,
-          thread: current,
-          trigger,
-          ownerLogin: account.login,
-          agentId,
-          now,
-          woken,
-          happenedAt,
-          diff,
-        });
-        if (outcome === "later") {
-          later = true;
-          if (trigger.reactTo.type === "comment") held.add(trigger.reactTo.id);
-        }
-        if (outcome === "woke") {
-          woken += 1;
-          yield* react(current.repo, current.number, trigger);
-        }
-        if (outcome === "capped")
-          yield* capComment(
-            orgId,
-            current,
-            agents.find((agent) => agent.agentId === agentId)?.name ?? lead.name,
-            now,
-          );
-      }
-      for (const comment of fresh.filter((comment) => !held.has(comment.id)))
-        yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id, outcome, at)
-          VALUES (${orgId}, ${seenKey(comment)}, ${current.repo.toLowerCase()}, ${current.number}, NULL, 'seen', ${now})
-          ON CONFLICT DO NOTHING`;
-    }
+    // New commits notify no one: a reviewed PR's head is read from one list per such repo.
+    for (const repo of yield* reviewedRepos(orgId, now, watched))
+      for (const number of yield* movedHeads(orgId, repo, now)) note(repo, number);
+
+    const context = yield* lookContext(orgId, now, account, row);
+    const tally: Tally = { woken: 0, later: false, held: new Set() };
+    for (const thread of [...threads.values()].slice(0, THREADS_PER_LOOK))
+      yield* weigh(context, thread, tally);
+    const later = tally.later;
     const asked = Number(notifications.headers["x-poll-interval"]);
     const interval = asked > 0 ? asked * 1000 : DEFAULT_INTERVAL_MS;
     // With work left over, the cursors stay put: the next look reads the same and handles the rest.

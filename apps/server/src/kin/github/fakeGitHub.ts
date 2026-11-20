@@ -80,6 +80,10 @@ export interface FakeItem {
   deletions: number;
   changed_files: number;
   diff: string;
+  /** When GitHub last changed it: opened, commented on, labelled, pushed to. */
+  updated_at?: number;
+  /** Each push to the PR: the head it moved from and to, and what it changed. */
+  pushes?: { from: string; to: string; diff: string }[];
 }
 export interface FakeComment {
   id: number;
@@ -217,6 +221,10 @@ export class FakeGitHub {
     reason = "subscribed",
   ) {
     const at = this.world.now;
+    const touched = this.world.items.find(
+      (item) => item.repo.toLowerCase() === repo.toLowerCase() && item.number === number,
+    );
+    if (touched !== undefined) touched.updated_at = at;
     if (actor.toLowerCase() === this.world.user.toLowerCase()) {
       this.world.events.unshift({ id: String(this.next()), type, repo, number, created_at: at });
       this.world.eventsVersion += 1;
@@ -269,6 +277,7 @@ export class FakeGitHub {
       draft: input.draft ?? false,
       merged: false,
       created_at: this.world.now,
+      updated_at: this.world.now,
       labels: input.labels ?? [],
       head_ref: input.headRef ?? `change-${number}`,
       head_sha: `sha${this.next()}`,
@@ -338,8 +347,16 @@ export class FakeGitHub {
     item.merged = true;
     this.happened(input.repo, input.number, input.actor, "PullRequestEvent");
   }
-  push(input: { repo: string; number: number }) {
-    this.item(input.repo, input.number).head_sha = `sha${this.next()}`;
+  /** New commits on a PR's branch: GitHub sends no notification, but the PR's `updated_at` moves. */
+  push(input: { repo: string; number: number; diff?: string }) {
+    const item = this.item(input.repo, input.number);
+    const from = item.head_sha;
+    item.head_sha = `sha${this.next()}`;
+    item.updated_at = this.world.now;
+    const diff = input.diff ?? `diff --git a/CHANGES.md b/CHANGES.md\n+pushed ${item.head_sha}\n`;
+    (item.pushes ??= []).push({ from, to: item.head_sha, diff });
+    item.diff += diff;
+    return item.head_sha;
   }
 
   private issueJson(item: FakeItem) {
@@ -352,6 +369,7 @@ export class FakeGitHub {
       state: item.state,
       labels: item.labels.map((name) => ({ name })),
       created_at: iso(item.created_at),
+      updated_at: iso(item.updated_at ?? item.created_at),
       html_url: `https://github.com/${item.repo}/${item.pull ? "pull" : "issues"}/${item.number}`,
       ...(item.pull ? { pull_request: { url: "" } } : {}),
     };
@@ -906,12 +924,23 @@ export class FakeGitHub {
           ? { status: 204, headers: {}, body: null }
           : missing;
       }
-      // A head's changes against the base, as a PR's diff reads at that head.
-      if (method === "GET" && (found = /^compare\/[^/]+\.\.\.([^/]+)$/.exec(rest))) {
+      // A head's changes against the base, as a PR's diff reads at that head; against an earlier
+      // head of the PR, what the pushes since it changed.
+      if (method === "GET" && (found = /^compare\/([^/]+)\.\.\.([^/]+)$/.exec(rest))) {
+        const base = decodeURIComponent(found[1]!);
         const item = this.world.items.find(
-          (one) => one.repo.toLowerCase() === repo.toLowerCase() && one.head_sha === found![1],
+          (one) => one.repo.toLowerCase() === repo.toLowerCase() && one.head_sha === found![2],
         );
-        return item === undefined ? missing : ok(item.diff);
+        if (item === undefined) return missing;
+        const since = (item.pushes ?? []).findIndex((push) => push.from === base);
+        return since < 0
+          ? ok(item.diff)
+          : ok(
+              (item.pushes ?? [])
+                .slice(since)
+                .map((push) => push.diff)
+                .join(""),
+            );
       }
       if (method === "GET" && (found = /^issues\/(\d+)$/.exec(rest)))
         return ok(this.issueJson(this.item(repo, Number(found[1]))));

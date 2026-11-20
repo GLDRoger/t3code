@@ -705,6 +705,11 @@ export const KinGithubTrigger = Schema.Struct({
       headSha: Schema.optional(Schema.String),
       /** For an outside PR, whose turn gets no shell: the diff as the server read it, clipped. */
       diff: Schema.optional(Schema.String),
+      /**
+       * A re-review after new commits: the head Kin last reviewed, and whether `diff` is the whole
+       * PR's at `headSha` because GitHub didn't give what changed since `from`.
+       */
+      reReview: Schema.optional(Schema.Struct({ from: Schema.String, whole: Schema.Boolean })),
     }),
   ),
   /** Failing check names, for `checks`. */

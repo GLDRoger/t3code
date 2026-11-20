@@ -46,6 +46,8 @@ export interface ThreadSnapshot {
         readonly baseRef: string;
         readonly headSha: string;
         readonly fork: boolean;
+        /** When GitHub last changed the PR; a push moves it, so the head is at least this still. */
+        readonly updatedAt?: number | undefined;
       }
     | undefined;
   readonly comments: ReadonlyArray<ThreadComment>;

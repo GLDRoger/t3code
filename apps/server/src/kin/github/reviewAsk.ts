@@ -372,7 +372,10 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
   };
 });
 
-/** The review someone asked for that this turn runs, if it runs one, and any post it made. */
+/**
+ * The review this turn runs that is bound to one head: one someone asked for, or a re-review after
+ * new commits; and any post it made.
+ */
 const askedTurn = Effect.fn("KinGitHubReviewAsk.turn")(function* (turn: {
   readonly orgId: KinOrgId;
   readonly wakeupId: string;
@@ -385,7 +388,9 @@ const askedTurn = Effect.fn("KinGitHubReviewAsk.turn")(function* (turn: {
     key: string;
     head: string | null;
     url: string | null;
+    asked: number;
   }>`SELECT e.event_id AS "eventId", json_extract(e.json, '$.repo') AS repo,
+      json_extract(e.json, '$.askedBy') IS NOT NULL AS asked,
       json_extract(e.json, '$.trigger.number') AS number,
       json_extract(e.json, '$.trigger.key') AS key,
       json_extract(e.json, '$.trigger.pull.headSha') AS head, h.review_url AS url
@@ -393,14 +398,16 @@ const askedTurn = Effect.fn("KinGitHubReviewAsk.turn")(function* (turn: {
     LEFT JOIN kin_github_handled h ON h.org_id = e.org_id
       AND h.trigger_key = json_extract(e.json, '$.trigger.key')
     WHERE e.org_id = ${turn.orgId} AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'github'
-      AND e.state = 'claimed' AND json_extract(e.json, '$.askedBy') IS NOT NULL
+      AND e.state = 'claimed' AND (json_extract(e.json, '$.askedBy') IS NOT NULL
+        OR json_extract(e.json, '$.trigger.pull.reReview') IS NOT NULL)
     ORDER BY e.event_id LIMIT 1`;
   return event;
 });
 
 /**
  * `kin_github_review`. In a turn running a review someone asked for, only that pull request, at
- * the head admitted, once; the post leaves its receipt on the claimed head. Otherwise as before.
+ * the head admitted, once; a re-review's post on its pull request likewise. The post leaves its
+ * receipt on the claimed head. Otherwise as before.
  */
 export const postReview = Effect.fn("KinGitHubReviewAsk.post")(function* (
   lead: { readonly orgId: KinOrgId; readonly agentId: string; readonly wakeupId: string },
@@ -411,7 +418,9 @@ export const postReview = Effect.fn("KinGitHubReviewAsk.post")(function* (
   const sql = yield* SqlClient.SqlClient;
   const ref = `${asked.repo}#${asked.number}`;
   if (input.repo.trim().toLowerCase() !== asked.repo.toLowerCase() || input.number !== asked.number)
-    return yield* refuse(POST_REFUSAL.other(ref));
+    return asked.asked === 1
+      ? yield* refuse(POST_REFUSAL.other(ref))
+      : yield* ownerGitHubReview(lead, input);
   if (asked.url !== null) return yield* refuse(POST_REFUSAL.again(ref));
   // Held while it posts: a second call in this turn is refused, and the queue sees the turn acted.
   const call = `github-review:${asked.eventId}`;

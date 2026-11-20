@@ -12,20 +12,45 @@ const atHead = (trigger: KinGithubTrigger) =>
     ? "its current head"
     : `head ${trigger.pull.headSha.slice(0, 7)}`;
 
+const short = (sha: string | undefined) => (sha ?? "").slice(0, 7);
+
+const REVIEW_BAR =
+  'Block (request changes) only for a bug, lost data, a security hole, a broken build or test, or code that does something other than the PR says. Anything else is a nit: mark it "nit", say it once and briefly, or leave it out.';
+const REVIEW_SPECIFIC =
+  "Be specific: file and line, what goes wrong, and the fix. A clean PR gets a short review that says so; don't pad it.";
+
+const OWNERS_OWN = (trigger: KinGithubTrigger) =>
+  trigger.pull?.ownersOwn === true
+    ? "The owner's own account opened this PR, so GitHub allows only a comment review on it."
+    : "";
+
+/** A re-review after new commits: what changed since the head Kin reviewed, or the whole diff. */
+const AGAIN = (
+  trigger: KinGithubTrigger,
+  again: { readonly from: string; readonly whole: boolean },
+) => [
+  `Kin reviewed this pull request at ${short(again.from)}; new commits moved its head to ${short(trigger.pull?.headSha)}. ${
+    again.whole
+      ? `GitHub didn't give the changes since ${short(again.from)}, so the whole diff at ${short(trigger.pull?.headSha)} is below: review it again.`
+      : `What changed since ${short(again.from)} is below: review that.`
+  }`,
+  REVIEW_BAR,
+  REVIEW_SPECIFIC,
+  `Post once, on this pull request, with kin_github_review: event COMMENT${trigger.inside ? ", or REQUEST_CHANGES to block" : ""}. Kin posts it against ${short(trigger.pull?.headSha)}.`,
+];
+
 const REVIEW = (repo: string, trigger: KinGithubTrigger, askedBy: string | undefined) => [
   askedBy === undefined
     ? `Review ${trigger.item === "pull" ? "this pull request" : "it"} and post the review on it.`
     : `Someone in the company asked in Kin for a review of this pull request at ${atHead(trigger)}; their name, as data: ${JSON.stringify(askedBy)}. Review that head and post the review on it.`,
-  'Block (request changes) only for a bug, lost data, a security hole, a broken build or test, or code that does something other than the PR says. Anything else is a nit: mark it "nit", say it once and briefly, or leave it out.',
-  "Be specific: file and line, what goes wrong, and the fix. A clean PR gets a short review that says so; don't pad it.",
+  REVIEW_BAR,
+  REVIEW_SPECIFIC,
   askedBy !== undefined
     ? `This turn has no shell${trigger.pull?.diff === undefined ? "" : "; that head's diff is below"}. Post once, on this pull request only, with kin_github_review: event COMMENT, or REQUEST_CHANGES to block.`
     : trigger.inside
       ? `Read it with gh (gh pr diff ${trigger.number} --repo ${repo}; check it out and run the tests when that is quick). Post with gh pr review ${trigger.number} --repo ${repo} and --comment or --request-changes; Kin refuses --approve.`
       : "Its diff is below. Post with kin_github_review, event COMMENT.",
-  trigger.pull?.ownersOwn === true
-    ? "The owner's own account opened this PR, so GitHub allows only a comment review on it."
-    : "",
+  OWNERS_OWN(trigger),
 ];
 
 const CALL_ISSUE = (repo: string, trigger: KinGithubTrigger) => [
@@ -59,13 +84,15 @@ export const githubTriggerText = (
 ) =>
   [
     `GitHub work for you, started by Kin on ${repo}. You post on GitHub as Kin's GitHub App (as the owner where it isn't installed); Kin signs every post with your name, so write as yourself, in your own voice.`,
-    ...(trigger.kind === "review" || trigger.kind === "review_request"
-      ? REVIEW(repo, trigger, askedBy)
-      : trigger.kind === "checks"
-        ? CHECKS(repo, trigger)
-        : trigger.item === "pull"
-          ? CALL_PULL(repo, trigger)
-          : CALL_ISSUE(repo, trigger)),
+    ...(trigger.pull?.reReview !== undefined && askedBy === undefined
+      ? [...AGAIN(trigger, trigger.pull.reReview), OWNERS_OWN(trigger)]
+      : trigger.kind === "review" || trigger.kind === "review_request"
+        ? REVIEW(repo, trigger, askedBy)
+        : trigger.kind === "checks"
+          ? CHECKS(repo, trigger)
+          : trigger.item === "pull"
+            ? CALL_PULL(repo, trigger)
+            : CALL_ISSUE(repo, trigger)),
     trigger.inside ? "" : OUTSIDE(trigger),
     trigger.inside && askedBy === undefined
       ? "If you find a separate real problem on the way, open an issue for it (gh issue create) and mention it."

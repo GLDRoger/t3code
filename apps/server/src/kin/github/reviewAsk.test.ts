@@ -929,3 +929,58 @@ it.effect(
     }).pipe(Effect.provide(layer));
   },
 );
+
+it.effect(
+  "after an asked review posts, new commits get one re-review that posts against the new head",
+  () => {
+    const { github, layer } = harness();
+    return Effect.gen(function* () {
+      for (const title of ["Parse invoice dates", "Round the totals"])
+        github.openItem({ repo: APP, pull: true, author: "dev-gh", association: "MEMBER", title });
+      const { review, ask, end, runReview, look, directOf, githubEvents, handled } =
+        yield* ambermill(github);
+      const devChat = yield* directOf("dev");
+      const post = (number: number) =>
+        callAs("tech", "kin_github_review", {
+          repo: APP,
+          number,
+          body: "One nit.",
+          event: "COMMENT",
+        });
+      yield* ask("dev", devChat, "Review my first PR");
+      assert.isTrue((yield* review({ repo: APP, number: 1 })).ok);
+      const admitted = headOf(github, APP, 1);
+      yield* runReview((yield* githubEvents).at(-1)!.eventId);
+      assert.isTrue((yield* post(1)).ok);
+      yield* end("completed");
+
+      const head = github.push({ repo: APP, number: 1, diff: "+rounding fixed\n" });
+      for (let minute = 0; minute < 5; minute++) yield* look;
+      const again = (yield* githubEvents).at(-1)!;
+      assert.strictEqual(again.trigger.key, GitHubWatch.headKey(APP, 1, head));
+      assert.deepStrictEqual(again.trigger.pull?.reReview, { from: admitted, whole: false });
+      assert.isUndefined(again.askedBy);
+
+      yield* runReview(again.eventId);
+      const done = yield* post(1);
+      assert.isTrue(done.ok, JSON.stringify(done.value));
+      assert.strictEqual((yield* post(1)).value.message, POST_REFUSAL.again(`${APP}#1`));
+      // Another PR in the same turn posts as the watch's own reviews do, unbound.
+      assert.isTrue((yield* post(2)).ok);
+      assert.deepStrictEqual(
+        github.world.reviews.map((one) => [one.number, one.commit_id]),
+        [
+          [1, admitted],
+          [1, head],
+          [2, undefined],
+        ],
+      );
+      assert.deepStrictEqual(yield* handled(again.trigger.key), [
+        { outcome: "woke", url: String(done.value.url) },
+      ]);
+      yield* end("completed");
+      for (let minute = 0; minute < 6; minute++) yield* look;
+      assert.strictEqual((yield* githubEvents).at(-1)!.eventId, again.eventId);
+    }).pipe(Effect.provide(layer));
+  },
+);
