@@ -14,7 +14,9 @@ where you were. What you see in each depends on your place in the team; see
 [Who sees and does what](#who-sees-and-does-what).
 
 Settings has **You** (your profile, notifications and appearance) for everyone, and for the owner and co-owners
-**Company** (Team, Agents, Check-ins, Connections, Memory, Company details, Approvals). On the
+**Company** (Team, Agents, Check-ins, Connections, Deals, Memory, Company details, Approvals, and
+Recommendations for the owner himself). A member with **Can see Clients** has a Company group with
+Deals only, to read the company's deal stages. On the
 computer Kin runs on, **This computer** holds the app's own settings, such as providers and models,
 and how much of each provider's usage your agents have spent.
 
@@ -655,7 +657,7 @@ on the projects they lead.
 | Docs                                                 | All                                 | Company docs with **Can see Docs**, and their projects' docs                     |                                                      |
 | Restore an older version of a doc                    | Yes                                 | No                                                                               |                                                      |
 | Confirm an email, statement or receipt; approve      | Yes                                 | No                                                                               |                                                      |
-| Settings, Check-ins, Connections, Memory, Team       | Yes                                 | No; their own profile only                                                       |                                                      |
+| Settings, Check-ins, Connections, Memory, Team       | Yes                                 | Their own profile, and Deals to read with **Can see Clients**                    |                                                      |
 
 The owner and co-owners edit a member's profile. Only the owner himself edits a co-owner's
 profile, manages co-owners, and sees his own private chats. Agents act with the authority of
