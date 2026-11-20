@@ -127,6 +127,18 @@ export function kinBriefLine(brief: KinBrief): string {
   return brief.on ? line : `${KIN_BRIEFS.off} · ${line}`;
 }
 
+/** The check-in a brief is: the server seeds each as `checkin-<kind>`. */
+export const kinBriefScheduleId = (kind: KinBrief["kind"]) => `checkin-${kind}`;
+
+/** The company's check-ins less the ones this person already sees as their briefs. */
+export const kinCheckInsBeyondBriefs = (
+  checkIns: ReadonlyArray<KinCheckIn>,
+  briefs: ReadonlyArray<Pick<KinBrief, "kind">>,
+) =>
+  checkIns.filter(
+    (checkIn) => !briefs.some((brief) => checkIn.scheduleId === kinBriefScheduleId(brief.kind)),
+  );
+
 /** The morning brief comes on the days its person picks; the other two are on or off. */
 export const kinBriefHasDays = (kind: KinBrief["kind"]) => kind === "morning";
 

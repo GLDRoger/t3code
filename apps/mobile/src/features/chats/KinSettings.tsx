@@ -47,7 +47,6 @@ import { SettingsSection } from "../settings/components/SettingsSection";
 import { useSettingsPageBack } from "../settings/useSettingsPageBack";
 import { useKinTab } from "./components/KinTab";
 import { KinBriefsSection } from "./KinBriefs";
-import { KinCheckInsSection } from "./KinCheckIns";
 import { useKinIsHome } from "./state/kinHome";
 import { openKinNotificationSettings } from "./notifications/installKinNotifications";
 import { useChatOnlyEnvironments, useKinOwnerLevel, useKinSeesClients } from "./state/kinChatOnly";
@@ -78,7 +77,7 @@ const CONNECTION_LABEL: Record<EnvironmentPresentation["connection"]["phase"], s
  * itself, and so does a co-owner; a member gets the app and the way to leave.
  * Drawn as a tab of the Kin home, or as a pushed page where there is no dock.
  */
-/** Company pages that open a screen of their own; Check-ins and Approvals are sections here. */
+/** Company pages that open a screen of their own; Approvals is a section here, check-ins sit under Briefs. */
 const COMPANY_ROWS: Partial<
   Record<
     KinSettingsPage,
@@ -320,7 +319,11 @@ export function KinSettings(props: {
             )}
           </SettingsSection>
           {host._tag !== "host" || orgId === null ? null : (
-            <KinBriefsSection environmentId={host.environmentId} orgId={orgId} />
+            <KinBriefsSection
+              environmentId={host.environmentId}
+              orgId={orgId}
+              checkIns={company !== null}
+            />
           )}
           {owned.length === 0 ? null : (
             <SettingsSection
@@ -359,7 +362,6 @@ export function KinSettings(props: {
                 <KinCompanyChatRow {...company} />
               </SettingsSection>
               <KinDailyLimitSection {...company} />
-              <KinCheckInsSection {...company} />
               <SettingsSection
                 title={KIN_SETTINGS_PAGE_TITLES.approvals}
                 footer="Your agents ask before anything that needs your say. You approve on this phone with Face ID."
