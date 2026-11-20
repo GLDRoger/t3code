@@ -50,7 +50,10 @@ const START = "*start";
 const RESCAN = "*rescan";
 /** Something moved that left no change to replay, such as an undo. */
 const GAP = "*gap";
-/** This teammate's own places moved: a task's client and `can.party` follow their Clients switch. */
+/**
+ * This teammate's own places moved: everything they hold is read again (`snapshot-required`),
+ * an open client page included, even where no row or count changed.
+ */
 const PLACES = "*places";
 
 type Out = KinWorkEvent;
@@ -250,15 +253,13 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
     const items = all.filter((one) => one.level === level);
     if (items.length === 0) return [];
     if (items.some((one) => one.key === GAP)) return yield* restart();
+    if (viewer.teammate && items.some((one) => one.key === PLACES)) return yield* restart();
     const top = Math.max(...items.map((one) => one.sequence));
-    const keyed = items.filter((one) => one.key !== RESCAN && one.key !== PLACES);
+    const keyed = items.filter((one) => one.key !== RESCAN);
     const place = (one: Pending) =>
       one.key !== RESCAN && (one.list === "clients" || one.list === "projects");
     // A place's own change can reach a burst apart from its rescan, so either one looks again.
-    if (
-      viewer.teammate &&
-      items.some((one) => one.key === RESCAN || one.key === PLACES || place(one))
-    ) {
+    if (viewer.teammate && items.some((one) => one.key === RESCAN || place(one))) {
       // A label or a place shows or hides entries with no change of their own.
       const sees = yield* teamKeyLists(orgId, own(viewer)).pipe(workFailure);
       const named = new Set(keyed.map((one) => one.key));
@@ -270,8 +271,6 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
       };
       for (const [key, list] of seen) if (!sees.has(key)) add(key, list);
       for (const [key, list] of sees) if (!seen.has(key)) add(key, list);
-      if (items.some((one) => one.key === PLACES))
-        for (const [key, list] of sees) if (list === "work") add(key, list);
       // Their entries under a client or project that moved read differently now: a task shows
       // its project once they see that project, and what they may do follows its lead.
       for (const one of items)

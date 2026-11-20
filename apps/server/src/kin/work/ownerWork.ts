@@ -4,6 +4,8 @@ import {
   type KinOrgId,
   type KinRecord,
   type KinRecordCan,
+  type KinRecordDetail,
+  type KinPersonId,
   type KinWorkAssignInput,
   type KinWorkConfirmInput,
   type KinWorkCreateInput,
@@ -77,6 +79,7 @@ import {
   inProject,
   ledProjects,
   teamCan,
+  taskClients,
   teamClients,
   teamDetail,
   teamKeys,
@@ -544,19 +547,63 @@ export const shownRecords = Effect.fn("KinWork.shownRecords")(function* (
         ),
       ]).pipe(workFailure)
     : new Set<string>();
+  const parties = [
+    ...new Set(shown.flatMap(({ record }) => (record.party ? [record.party.recordId] : []))),
+  ];
   const clients = viewer.teammate
-    ? yield* teamClients(orgId, viewer.person.personId, [
-        ...new Set(shown.flatMap(({ record }) => (record.party ? [record.party.recordId] : []))),
-      ]).pipe(workFailure)
+    ? yield* teamClients(orgId, viewer.person.personId, parties).pipe(workFailure)
+    : new Set<string>();
+  const named = viewer.teammate
+    ? yield* taskClients(orgId, viewer.person.personId, parties).pipe(workFailure)
     : new Set<string>();
   return shown.map(({ row, record: whole }): KinRecord => {
     // Only the task's own sheet sets a repeat or links, so its rows don't carry the answers.
     const { repeat: _repeat, links: _links, ...rowCan } = can(whole.recordId);
     const record = { ...whole, can: rowCan };
     if (viewer.teammate && plainTask(row, led)) return teamRecordIn(record, projects, clients);
+    if (viewer.teammate && row.registerId === "work") return withClient(record, named);
     const fields = isBuiltIn(row.registerId) ? {} : parseFields(row.fieldsJson);
     return Object.keys(fields).length === 0 ? record : { ...record, fields };
   });
+});
+
+/** A client's terms and tax details: the owner level's, now and in its changes. */
+const OWNERS_CLIENT_FIELDS: ReadonlySet<string> = new Set(["terms", "gstin", "placeOfSupply"]);
+
+/** A task read whole, naming its client only while this person may see it (`taskClients`). */
+const withClient = <A extends { readonly party?: { readonly recordId: string } | undefined }>(
+  record: A,
+  named: ReadonlySet<string>,
+) => {
+  if (record.party === undefined || named.has(record.party.recordId)) return record;
+  const { party: _party, ...rest } = record;
+  return rest;
+};
+
+/** A task's sheet read whole: its client, now and in its changes, only where `taskClients` names it. */
+const clientShown = Effect.fn("KinWork.clientShown")(function* (
+  detail: KinRecordDetail,
+  personId: KinPersonId,
+) {
+  const keys = detail.changes.flatMap((change) =>
+    change.fields.flatMap((field) =>
+      field.field === "party" ? [field.from, field.to].filter((one) => one !== null) : [],
+    ),
+  );
+  const named = yield* taskClients(detail.orgId, personId, [
+    ...(detail.party === undefined ? [] : [detail.party.recordId]),
+    ...keys,
+  ]).pipe(workFailure);
+  const shown = (value: string | null) => value === null || named.has(value);
+  return {
+    ...withClient(detail, named),
+    changes: detail.changes.flatMap((change) => {
+      const fields = change.fields.filter(
+        (field) => field.field !== "party" || (shown(field.from) && shown(field.to)),
+      );
+      return change.kind === "updated" && fields.length === 0 ? [] : [{ ...change, fields }];
+    }),
+  };
 });
 
 const listTotals = ({ counted: _counted, groups, ...sums }: Totals) => ({
@@ -699,13 +746,24 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
   };
   const shown =
     whole && row.registerId === "clients"
-      ? unfielded
+      ? {
+          ...unfielded,
+          changes: detail.changes.flatMap((change) => {
+            const fields = change.fields.filter((one) => !OWNERS_CLIENT_FIELDS.has(one.field));
+            return change.kind === "updated" && fields.length === 0 ? [] : [{ ...change, fields }];
+          }),
+        }
       : whole &&
           row.registerId === "contacts" &&
           !(yield* placesOf(detail.orgId, personId).pipe(workFailure)).clients
         ? named()
         : detail;
-  const sheet = yield* teamDetail(shown, personId, number, whole).pipe(workFailure);
+  const sheet = yield* teamDetail(
+    whole && row.registerId === "work" ? yield* clientShown(shown, personId) : shown,
+    personId,
+    number,
+    whole,
+  ).pipe(workFailure);
   return {
     ...sheet,
     changes: sheet.changes.map((change) => keyNamedFor(viewer, change)),

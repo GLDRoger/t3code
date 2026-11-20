@@ -17,6 +17,7 @@ import {
   type KinWorkRows,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -36,6 +37,7 @@ import {
   type KinWorkListState,
 } from "./kinWorkList.ts";
 
+const isChatError = Schema.is(KinChatError);
 const orgId = KinOrgId.make("invented-org");
 const owner = { _tag: "person", personId: KinPersonId.make("invented-owner") } as const;
 const record = (n: number): KinRecord => ({
@@ -72,7 +74,7 @@ const page = (from: number, count: number, total: number, seq: number): KinWorkL
 function harness(rows?: () => KinWorkRows | null) {
   const states: Array<KinWorkListState> = [];
   const asked: Array<KinWorkListInput> = [];
-  const waiting: Array<(result: KinWorkListResult | null) => void> = [];
+  const waiting: Array<(result: KinWorkListResult | KinChatError | null) => void> = [];
   const timers: Array<() => void> = [];
   const list = createKinWorkList({
     orgId,
@@ -81,9 +83,11 @@ function harness(rows?: () => KinWorkRows | null) {
       return new Promise((resolve) =>
         waiting.push((result) =>
           resolve(
-            result === null
+            result === null || isChatError(result)
               ? AsyncResult.failure(
-                  Cause.fail(new KinChatError({ reason: "unavailable", message: "Down." })),
+                  Cause.fail(
+                    result ?? new KinChatError({ reason: "unavailable", message: "Down." }),
+                  ),
                 )
               : AsyncResult.success(result),
           ),
@@ -99,7 +103,7 @@ function harness(rows?: () => KinWorkRows | null) {
     },
     ...(rows === undefined ? {} : { rows }),
   });
-  const answer = async (result: KinWorkListResult | null) => {
+  const answer = async (result: KinWorkListResult | KinChatError | null) => {
     waiting.shift()?.(result);
     // The controller continues on the promise's microtasks.
     await Promise.resolve();
@@ -226,6 +230,19 @@ describe("createKinWorkList", () => {
     await h.answer(page(1, 5, 5, 9));
     expect(h.state()).toMatchObject({ stale: false, refreshing: false, seq: 9 });
     expect(h.state().records).toHaveLength(5);
+
+    // A refusal is no passing failure: the rows were someone else's to show, so they go.
+    for (const [seq, reason] of [
+      [10, "not_allowed"],
+      [11, "not_found"],
+    ] as const) {
+      h.list.changed(seq);
+      const refused = new KinChatError({ reason, message: "Not yours." });
+      await h.answer(refused);
+      expect(h.state()).toMatchObject({ records: [], stale: false, failed: refused });
+      h.list.refresh();
+      await h.answer(page(1, 5, 5, seq));
+    }
   });
 
   it("says so when the first read fails, and retries on demand or when the host is heard again", async () => {

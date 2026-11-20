@@ -109,6 +109,7 @@ import {
   bumpTeamSeqs,
   dependents,
   teamGuard,
+  crmSees,
   teamPairs,
   personSees,
   ROOM_LISTS,
@@ -133,6 +134,8 @@ export type Writer = {
   readonly askedBy?: KinPersonId | null;
   /** A teammate from their own app: `teamGuard` decides the write inside its transaction. */
   readonly teammate?: boolean;
+  /** A member's write in Clients: a name clashes only with what this person sees there (`crmSees`). */
+  readonly namesSeenBy?: KinPersonId;
   /**
    * The person's own coding agent, with this key: the write reaches only a Work task that person
    * holds now, whatever their level, and its history names the key.
@@ -367,7 +370,7 @@ export type PaymentInput = {
 };
 const CLOSED = ["done", "dropped"] as const;
 /** A client and a prospect share names: one company is either, never both at once. */
-const clientFamily = (sql: SqlClient.SqlClient, category: Statement.Fragment) =>
+export const clientFamily = (sql: SqlClient.SqlClient, category: Statement.Fragment) =>
   sql`(CASE COALESCE(${category}, 'client') WHEN 'prospect' THEN 'client'
     ELSE COALESCE(${category}, 'client') END)`;
 const OPEN_KEYS_NAMED = 20;
@@ -1139,6 +1142,7 @@ const make = Effect.gen(function* () {
     partyId: string | null,
     except: string | null,
     category: string | null | undefined,
+    seenBy: KinPersonId | undefined,
   ) {
     if (list === "work" || list === "docs" || list === "milestones" || !isBuiltIn(list)) return;
     const [row] = yield* sql<{ key: string; sensitive: number }>`SELECT r.key,
@@ -1147,6 +1151,7 @@ const make = Effect.gen(function* () {
         AND lower(r.title) = lower(${title}) AND r.record_id IS NOT ${except}
         AND (${list} != 'contacts' OR r.party_id IS ${partyId})
         AND (${list} != 'clients' OR ${clientFamily(sql, sql`r.category`)} = ${clientFamily(sql, sql`${category ?? "client"}`)})
+        AND ${seenBy === undefined ? sql`1 = 1` : crmSees(sql, seenBy)}
       ORDER BY r.key LIMIT 1`;
     if (row !== undefined) {
       const error = {
@@ -1259,7 +1264,7 @@ const make = Effect.gen(function* () {
     const invalidRefs = checkRefs(def, partyId, projectId);
     if (invalidRefs !== undefined) return yield* invalidRefs;
     const party = partyId === null ? undefined : yield* target(orgId, partyId, "clients");
-    yield* sameName(orgId, list, input.title, partyId, null, input.category);
+    yield* sameName(orgId, list, input.title, partyId, null, input.category, writer.namesSeenBy);
     yield* ownerExists(orgId, input.owner);
     const repeat =
       options.repeat ??
@@ -1601,6 +1606,7 @@ const make = Effect.gen(function* () {
             partyId,
             row.recordId,
             patch.category === undefined ? row.category : patch.category,
+            writer.namesSeenBy,
           );
         const stored = parseFields(row.fieldsJson);
         const merged: Record<string, FieldValue> = { ...stored };

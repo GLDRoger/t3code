@@ -1371,8 +1371,10 @@ const streamCase = ([w, ops]: readonly [World, ReadonlyArray<Step>]) =>
             step % 2 === 0
               ? [[...new Map(items.map((one) => [one.key, one])).values()]]
               : items.map((one) => [one]);
+          let restarted = false;
           for (const burst of bursts) {
             const events = yield* screen.session.batch(burst);
+            restarted ||= events.some((event) => event._tag === "snapshot-required");
             if (now !== screen.teammate) {
               // Before anything else, everything they held goes.
               assert.strictEqual(events[0]?._tag, "snapshot-required", `${who} kept rows`);
@@ -1380,6 +1382,9 @@ const streamCase = ([w, ops]: readonly [World, ReadonlyArray<Step>]) =>
             }
             yield* fold(who, screen, events);
           }
+          // Their own places moved: all they hold is read again, an open client page included.
+          if (op._tag === "places" && op.who === who && now)
+            assert.isTrue(restarted, `${who} not told their places moved`);
         }
         for (const who of VIEWERS) {
           const screen = screens.get(who)!;
