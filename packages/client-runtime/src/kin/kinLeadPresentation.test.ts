@@ -114,7 +114,7 @@ describe("lead draft", () => {
 describe("what a lead has in hand", () => {
   it("adds the due time when there is one", () => {
     expect(kinLeadTrackingDetail({ kind: "work" })).toBe("Working on it now");
-    expect(kinLeadTrackingDetail({ kind: "scheduled" })).toBe("Repeats");
+    expect(kinLeadTrackingDetail({ kind: "scheduled" })).toBeNull();
     expect(
       kinLeadTrackingDetail({ kind: "reminder", dueAt: "2026-11-13T09:00:00.000Z" }, "UTC"),
     ).toBe("Reminder, Fri, Nov 13, 9:00 AM");

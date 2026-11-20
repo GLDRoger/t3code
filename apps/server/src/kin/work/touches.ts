@@ -12,7 +12,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
 import { type playbookThreshold, playbookThresholds } from "./playbooks.ts";
-import { iso, keptEntry } from "./recordRows.ts";
+import { iso, issuedNumber, keptEntry } from "./recordRows.ts";
 import { crmSeenBy, KIN_OWNER_LEVEL, type KinViewer } from "./teamView.ts";
 
 /**
@@ -38,6 +38,7 @@ type TouchSql = {
   readonly recordId: string | null;
   readonly key: string | null;
   readonly title: string | null;
+  readonly number: unknown;
   /** When Kin learned of it: a contact logged for yesterday today is new to the dream today. */
   readonly recorded: number;
 };
@@ -48,13 +49,13 @@ const paidAt = (sql: Sql) =>
 
 const touchColumns = (sql: Sql) =>
   sql`"partyId", id, at, kind, note, who, logged, "byKind", "byName", "recordId", key, title,
-    recorded`;
+    "number", recorded`;
 
 /** One logged contact as a row of the union; removed ones only when `removed` is asked. */
 const loggedRows = (sql: Sql) => sql`SELECT t.party_id AS "partyId", t.touch_id AS id, t.at,
       t.kind, t.note, COALESCE(wp.display_name, lp.display_name) AS who, 1 AS logged,
       t.logged_by_kind AS "byKind", COALESCE(lp.handle, t.logged_by_id) AS "byName",
-      NULL AS "recordId", NULL AS key, NULL AS title, t.created_at AS recorded
+      NULL AS "recordId", NULL AS key, NULL AS title, NULL AS "number", t.created_at AS recorded
     FROM kin_client_touches t
     LEFT JOIN kin_people wp ON wp.org_id = t.org_id AND wp.person_id = t.person_id
     LEFT JOIN kin_people lp ON t.logged_by_kind = 'person' AND lp.org_id = t.org_id
@@ -84,7 +85,8 @@ const touchUnion = (
     SELECT r.party_id, 'record:' || r.key, ${issued},
       CASE r.register_id WHEN 'invoices' THEN 'invoice' WHEN 'quotes' THEN 'quote'
         ELSE 'meeting' END,
-      r.title, NULL, 0, NULL, NULL, r.record_id, r.key, r.title, ${issued}
+      r.title, NULL, 0, NULL, NULL, r.record_id, r.key, r.title,
+      json_extract(r.fields_json, '$.number'), ${issued}
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND ${of(sql`r.party_id`)} AND (
       (r.register_id IN ('invoices', 'quotes') AND r.state IN ('waiting', 'done')
@@ -93,7 +95,8 @@ const touchUnion = (
       AND ${seen}
     UNION ALL
     SELECT r.party_id, 'payment:' || p.payment_id, ${paidAt(sql)}, 'payment', r.title, NULL, 0,
-      NULL, NULL, r.record_id, r.key, r.title, p.created_at
+      NULL, NULL, r.record_id, r.key, r.title, json_extract(r.fields_json, '$.number'),
+      p.created_at
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND p.withheld = 0
@@ -116,6 +119,7 @@ const toTouch = (row: TouchSql): KinClientTouch => ({
           key: row.key,
           title: row.title as NonNullable<KinClientTouch["record"]>["title"],
         },
+  ...issuedNumber(row.number),
 });
 
 /** A client's contacts, newest first. */

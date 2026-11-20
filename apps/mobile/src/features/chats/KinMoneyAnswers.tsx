@@ -656,7 +656,6 @@ function BudgetForm(props: KinWorkTarget & { readonly budget: KinMoneyBudget | n
         <KinWorkTextField
           label={KIN_BUDGETS.limit}
           value={draft.limit}
-          placeholder={KIN_BUDGETS.limitPlaceholder}
           keyboard="numbers"
           disabled={setter.busy}
           onChangeText={(limit) => setDraft({ ...draft, limit })}
@@ -842,7 +841,6 @@ export function KinLinesFields(props: {
           <KinWorkTextField
             label={KIN_LINES.sac}
             value={line.sac}
-            placeholder={KIN_LINES.sacPlaceholder}
             maxLength={8}
             keyboard="numbers"
             disabled={props.disabled}

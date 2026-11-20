@@ -146,7 +146,6 @@ export function KinWorkNewDialog(
                 <Input
                   id={titleId}
                   value={draft.title}
-                  placeholder={words.titlePlaceholder}
                   autoComplete="off"
                   autoFocus
                   aria-describedby={titleCount === null ? undefined : titleCountId}

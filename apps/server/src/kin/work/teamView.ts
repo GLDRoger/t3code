@@ -22,6 +22,7 @@ import { LISTS } from "./lists.ts";
 import {
   inheritedSensitive,
   iso,
+  issuedNumber,
   keySensitive,
   notFound,
   samePrincipal,
@@ -457,9 +458,10 @@ export const linkedFromOf = Effect.fn("KinTeamView.linkedFrom")(function* (
     recordId: KinRecordId;
     key: KinRecordKey;
     title: KinRecord["title"];
+    number: unknown;
     total: number;
   }>`SELECT l.relation, l.created_at AS "createdAt", r.record_id AS "recordId", r.key, r.title,
-      COUNT(*) OVER () AS total
+      json_extract(r.fields_json, '$.number') AS "number", COUNT(*) OVER () AS total
     FROM kin_record_links l
     JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
     WHERE l.org_id = ${orgId} AND l.kind = 'record' AND l.target = ${recordId}
@@ -481,6 +483,7 @@ export const linkedFromOf = Effect.fn("KinTeamView.linkedFrom")(function* (
             label: null,
             createdAt: iso(row.createdAt),
             record: { recordId: row.recordId, key: row.key, title: row.title },
+            ...issuedNumber(row.number),
           })),
         }),
     ...(more > 0 ? { linkedFromMore: more } : {}),

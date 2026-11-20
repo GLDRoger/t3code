@@ -23,6 +23,7 @@ import {
   kinCategoryLabel,
   kinMoneyText,
   kinParseMoney,
+  kinRecordName,
   kinSuggestionText,
   kinTotalsLines,
 } from "./kinLists.ts";
@@ -113,7 +114,6 @@ export const KIN_BUDGETS = {
   project: "Project",
   anyProject: "Every project",
   limit: "Monthly limit",
-  limitPlaceholder: "50,000",
   needsTarget: "Pick a category, a project, or both.",
   needsLimit: "Enter the monthly limit, like 50,000 or $200.",
   detail: "A monthly limit on paid expenses, in the currency you type.",
@@ -165,7 +165,6 @@ export const KIN_LINES = {
   detail: "What is billed, one row each. Leave empty to bill the amount as one line.",
   description: "What",
   sac: "SAC/HSN",
-  sacPlaceholder: "998314",
   quantity: "Qty",
   unit: "Unit",
   rate: "Rate",
@@ -545,11 +544,10 @@ export interface KinQuoteRowView {
 
 export function kinQuoteRow(record: KinRecord, rates: KinRates | null, now: Date): KinQuoteRowView {
   const state = kinQuoteState(record, now);
-  const number = record.fields?.number;
   const until = record.dueAt === null ? null : kinWorkDueLabel(record.dueAt.slice(0, 10), now);
   return {
     key: record.key,
-    number: typeof number === "string" && number.trim() !== "" ? number : record.key,
+    number: kinRecordName(record.key, record.fields?.number),
     party: record.party?.title ?? KIN_QUOTES.noClient,
     title: record.title,
     amount: record.amount === undefined ? null : kinMoneyText(record.amount),

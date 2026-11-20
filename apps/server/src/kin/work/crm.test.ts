@@ -2966,7 +2966,14 @@ it.effect(
       // An edit to the invoice later, such as a payment, is no new contact.
       const invoiceAt = after.touches!.find((touch) => touch.kind === "invoice")!.at;
       yield* sql`UPDATE kin_records SET updated_at = updated_at + ${5 * DAY} WHERE key = 'INV-1'`;
+      // Once it is issued, the client page names it by its number.
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/1')
+        WHERE key = 'INV-1'`;
       const edited = yield* Clients.party([owner], { orgId, key: "C-1" });
+      assert.deepStrictEqual(
+        edited.touches?.filter((touch) => touch.record !== null).map((touch) => touch.number),
+        ["AM/1", "AM/1"],
+      );
       assert.deepStrictEqual(
         edited.touches?.map((touch) => [touch.kind, touch.kind === "invoice" ? touch.at : ""]),
         after.touches?.map((touch) => [touch.kind, touch.kind === "invoice" ? invoiceAt : ""]),

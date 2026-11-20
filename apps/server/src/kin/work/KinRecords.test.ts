@@ -3003,26 +3003,32 @@ it.effect("a record lists what links to it, of what the reader sees, newest firs
     yield* linkTo(mine, doc.recordId);
     yield* Docs.link(orgId, ownerWrites, { key: doc.key }, [both.key], "relates");
     const from = (detail: Pick<KinRecordDetail, "linkedFrom" | "linkedFromMore">) => [
-      detail.linkedFrom?.map((link) => [link.record?.key, link.target]),
+      detail.linkedFrom?.map((link) => [link.record?.key, link.target, link.number]),
       detail.linkedFromMore,
     ];
+    // An issued number goes with the link, both ways round.
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/7')
+      WHERE record_id = ${mine.recordId}`;
     // Newest first; one the doc links back to is in its own links, not here.
     assert.deepStrictEqual(from(yield* OwnerDocs.get([owner], { orgId, key: doc.key })), [
       [
-        [mine.key, mine.recordId],
-        [theirs.key, theirs.recordId],
+        [mine.key, mine.recordId, "AM/7"],
+        [theirs.key, theirs.recordId, undefined],
       ],
       undefined,
     ]);
     // A teammate who may not see the owner's task never learns of it, by key, title or count.
     const seen = yield* OwnerDocs.get([mate], { orgId, key: doc.key });
-    assert.deepStrictEqual(from(seen), [[[theirs.key, theirs.recordId]], undefined]);
+    assert.deepStrictEqual(from(seen), [[[theirs.key, theirs.recordId, undefined]], undefined]);
     assert.notInclude(JSON.stringify(seen), "owner's task");
     // The task's sheet reads the same way round: the doc is in its links, and nothing links to it.
+    yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/8')
+      WHERE record_id = ${doc.recordId}`;
     const task = yield* OwnerWork.get([owner], { orgId, key: theirs.key });
     assert.deepStrictEqual(
-      [task.links.map((link) => link.record?.key), task.linkedFrom],
-      [[doc.key], undefined],
+      [task.links.map((link) => [link.record?.key, link.number]), task.linkedFrom],
+      [[[doc.key, "AM/8"]], undefined],
     );
 
     for (let n = 0; n < 60; n++) yield* linkTo(yield* ownerTask(`linker ${n}`), mine.recordId);

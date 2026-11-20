@@ -254,7 +254,7 @@ export function kinConnectionStatus(connection: KinConnection): KinConnectionSta
       connection.readTools === 0
         ? "Turn on the tools agents may use."
         : (connection.sendAs?.length ?? 0) > 0 && connection.needsSignInToSend !== true
-          ? "Read, and send on your Confirm."
+          ? "Kin reads it, and sends only after you confirm."
           : `Agents can use ${plural(connection.readTools, "tool", "tools")}.`,
   };
 }

@@ -29,7 +29,6 @@ export const KIN_TASKS_KEYS_COPY = {
   make: "Make a key",
   makeTitle: "Make a coding agent key",
   labelLabel: "What is it for?",
-  labelPlaceholder: "Work laptop, Claude Code",
   labelHint: "A short name, such as the computer or tool, so you know which key is which.",
   labelMissing: "Give the key a short name.",
   create: "Make key",

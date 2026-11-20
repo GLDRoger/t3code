@@ -515,6 +515,10 @@ type ChangeRow = {
   readonly kind: KinRecordChange["kind"];
   readonly fieldsJson: string;
 };
+/** An entry's issued number from its `$.number` field, as an optional `number` to spread. */
+export const issuedNumber = (value: unknown) =>
+  typeof value === "string" && value.trim() !== "" ? { number: value.trim() } : {};
+
 type LinkRow = {
   readonly kind: KinRecordLink["kind"];
   readonly relation: KinRecordLink["relation"];
@@ -525,6 +529,7 @@ type LinkRow = {
   readonly otherId: string | null;
   readonly otherKey: string | null;
   readonly otherTitle: string | null;
+  readonly otherNumber: unknown;
   readonly workerId: string | null;
   readonly workerThreadId: string | null;
   readonly workerEnvironmentId: string | null;
@@ -583,6 +588,7 @@ const linksOf = Effect.fn("KinRecords.linksOf")(function* (orgId: KinOrgId, reco
   const rows = yield* sql<LinkRow>`SELECT l.kind, l.relation, l.target, l.chat_id AS "chatId",
       l.label, l.created_at AS "createdAt",
       o.record_id AS "otherId", o.key AS "otherKey", o.title AS "otherTitle",
+      json_extract(o.fields_json, '$.number') AS "otherNumber",
       k.worker_id AS "workerId", k.thread_id AS "workerThreadId",
       k.environment_id AS "workerEnvironmentId", k.ended_at AS "workerEndedAt",
       k.pull_request_url AS "workerPullUrl", k.pull_request_number AS "workerPullNumber"
@@ -606,6 +612,7 @@ const linksOf = Effect.fn("KinRecords.linksOf")(function* (orgId: KinOrgId, reco
             key: row.otherKey,
             title: row.otherTitle as KinRecord["title"],
           },
+          ...issuedNumber(row.otherNumber),
         }),
     ...(row.workerId === null
       ? {}

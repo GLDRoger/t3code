@@ -342,7 +342,6 @@ export function KinBrandSection(
               id={footerId}
               rows={2}
               value={draft.footer}
-              placeholder={KIN_BRAND.footerPlaceholder}
               disabled={saving}
               aria-invalid={problems.footer !== undefined}
               onChange={(event) => setDraft({ ...draft, footer: event.target.value })}

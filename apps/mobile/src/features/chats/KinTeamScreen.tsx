@@ -6,9 +6,11 @@ import {
   KIN_TEAM_ONLY_OWNER,
   KIN_TEAM_TITLE,
   kinTeamEntrySummary,
+  kinTeamFooter,
   kinTeamView,
   type KinTeammate,
 } from "@t3tools/client-runtime/kin/kinTeam";
+import { KIN_ONLY } from "../../lib/kinOnly";
 import { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -154,7 +156,7 @@ function KinTeamBody(target: KinTeamTarget) {
           ) : (
             <>
               {team.edits.problem === null ? null : <ErrorBanner message={team.edits.problem} />}
-              <ListSection footer="Teammates chat with you, your agents and the groups you add them to. They can't see your code or settings.">
+              <ListSection footer={kinTeamFooter(KIN_ONLY)}>
                 {rows.map((row, index) => (
                   <View
                     key={row.key}

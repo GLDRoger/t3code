@@ -1016,7 +1016,6 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
             value={draft.tds ?? ""}
             keyboard="numbers"
             disabled={changes.busy}
-            placeholder={KIN_LISTS.entry.payTdsPlaceholder}
             onChangeText={(tds) => setDraft({ ...draft, tds })}
           />
         ) : null}

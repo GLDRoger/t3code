@@ -481,7 +481,7 @@ export function KinLeadProfileView({
             <View key={index} className={index === 0 ? undefined : "border-t border-border-subtle"}>
               <ListRowLayout
                 label={item.title}
-                description={kinLeadTrackingDetail(item, undefined, undefined, names)}
+                description={kinLeadTrackingDetail(item, undefined, undefined, names) ?? undefined}
               />
             </View>
           ))

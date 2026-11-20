@@ -129,23 +129,24 @@ export function kinLeadChanges(
   return Object.keys(changes).length === 0 ? null : changes;
 }
 
-const TRACKING_KINDS: Record<KinLeadTracking["kind"], string> = {
+// A repeating task's own cadence isn't sent here, so its line says nothing rather than half of it.
+const TRACKING_KINDS: Record<KinLeadTracking["kind"], string | null> = {
   work: "Working on it now",
   reminder: "Reminder",
   follow_up: "Follow-up",
-  scheduled: "Repeats",
+  scheduled: null,
 };
 
 /**
  * The second line under something a lead has in hand: "Reminder, Fri 13 Nov, 9:00". A waiting task
- * says so as the Tasks list does ("Waiting on you, due tomorrow").
+ * says so as the Tasks list does ("Waiting on you, due tomorrow"). Null when there is nothing to say.
  */
 export function kinLeadTrackingDetail(
   item: Pick<KinLeadTracking, "kind" | "dueAt" | "dueAllDay" | "state" | "waitingOn">,
   timeZone?: string,
   now: Date = kinNow(),
   names: KinWorkNames | null = null,
-): string {
+): string | null {
   const kind =
     item.kind === "work" && item.state === "waiting"
       ? kinWorkStatusText({ state: item.state, waitingOn: item.waitingOn ?? null }, names)
@@ -153,9 +154,11 @@ export function kinLeadTrackingDetail(
   const due = item.dueAt === undefined ? Number.NaN : Date.parse(item.dueAt);
   if (Number.isNaN(due)) return kind;
   // A due day has no time: the day where the owner is, as Tasks says it.
-  if (item.dueAllDay === true && item.dueAt !== undefined)
-    return `${kind}, due ${kinWorkDueText({ dueAt: item.dueAt, dueAllDay: true }, { zone: timeZone ?? null }, now)}`;
-  return `${kind}, ${formatKinDeferralTime(due, timeZone)}`;
+  const when =
+    item.dueAllDay === true && item.dueAt !== undefined
+      ? `due ${kinWorkDueText({ dueAt: item.dueAt, dueAllDay: true }, { zone: timeZone ?? null }, now)}`
+      : formatKinDeferralTime(due, timeZone);
+  return kind === null ? when : `${kind}, ${when}`;
 }
 
 /**

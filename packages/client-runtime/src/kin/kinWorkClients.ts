@@ -23,7 +23,7 @@ import type {
 } from "@t3tools/contracts";
 
 import { kinLinkToOpen } from "./kinChatFeed.ts";
-import { kinMoneyText } from "./kinLists.ts";
+import { kinMoneyText, kinRecordName } from "./kinLists.ts";
 import { formatKinTime, type KinAvatarView } from "./kinScreenState.ts";
 import { KIN_SCOPE_ALL, kinNothingShown, type KinViewerScope } from "./kinViewerScope.ts";
 import {
@@ -171,7 +171,6 @@ export const KIN_CLIENTS = {
   noneLogged: "None logged",
   noTouches: "Nothing logged yet. Log a call, meeting or email here, or tell an agent about it.",
   touchNote: "What happened",
-  touchNotePlaceholder: "Spoke to Asha, they want the revised quote by Friday",
   touchWhen: "When",
   touchKind: "How",
   touchSave: "Log it",
@@ -407,7 +406,7 @@ function kinTouchView(touch: KinClientTouch, now: Date): KinTouchView {
     id: touch.id,
     title: touch.logged
       ? `${base}${touch.who === null ? "" : ` · ${touch.who}`}`
-      : `${base}${touch.record === null ? "" : `: ${touch.record.key}`}`,
+      : `${base}${touch.record === null ? "" : `: ${kinRecordName(touch.record.key, touch.number)}`}`,
     note: touch.logged ? (note === "" ? null : note) : (touch.record?.title ?? null),
     when: formatKinTime(new Date(touch.at), now),
     removable: touch.logged,

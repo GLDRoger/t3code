@@ -30,7 +30,6 @@ export const KIN_PROFILE_COPY = {
   skillsHint: "Everyone on the team and their agents can read this.",
   talkLabel: "How to talk to me",
   talkHint: "Agents read this before they write to you. Only you can change it.",
-  talkPlaceholder: "Short and direct. Numbers first. No messages after 8 pm.",
   noTalk: "Not said yet",
   hoursLabel: "Working hours",
   timeZoneLabel: "Time zone",
