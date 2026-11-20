@@ -178,6 +178,16 @@ export const lastContacts = Effect.fn("KinTouches.last")(function* (
 });
 
 export const daysSince = (at: number, now: number) => Math.max(0, Math.floor((now - at) / DAY_MS));
+/** When we last finished a project for this client, epoch ms, as a scalar subquery; null if never. */
+export const lastProjectDone = (
+  sql: Sql,
+  org: Statement.Fragment,
+  party: Statement.Fragment,
+  now: number,
+) => sql`(SELECT MAX(dp.closed_at) FROM kin_records dp WHERE dp.org_id = ${org}
+    AND dp.register_id = 'projects' AND dp.party_id = ${party} AND dp.state = 'done'
+    AND dp.closed_at <= ${now})`;
+
 /** `daysSince(at, now) >= days` in SQL, for days of 1 or more. */
 export const quietFor = (sql: Sql, at: Statement.Fragment, now: number, days: Statement.Fragment) =>
   sql`${now} - ${at} >= ${DAY_MS} * ${days}`;
@@ -305,9 +315,7 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
     dueAt: number | null;
   }>`SELECT c.record_id AS "partyId", c.key, c.title, c.sensitive, c.created_at AS "createdAt",
       COALESCE(c.category, 'client') = 'prospect' AS prospect,
-      (SELECT MAX(p.closed_at) FROM kin_records p WHERE p.org_id = c.org_id
-        AND p.register_id = 'projects' AND p.party_id = c.record_id AND p.state = 'done'
-        AND p.closed_at <= ${now}) AS "lastProjectAt",
+      ${lastProjectDone(sql, sql`c.org_id`, sql`c.record_id`, now)} AS "lastProjectAt",
       (SELECT COUNT(*) FROM kin_records p WHERE p.org_id = c.org_id
         AND p.register_id = 'projects' AND p.party_id = c.record_id AND p.state = 'open')
         AS "openProjects",

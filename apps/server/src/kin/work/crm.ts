@@ -65,7 +65,14 @@ import {
 } from "./recordRows.ts";
 import { contactAll, contactSensitive } from "./contactDetails.ts";
 import { playbookClientValues } from "./playbooks.ts";
-import { daysSince, lastContactRows, lastContacts, quietFor, touchesOf } from "./touches.ts";
+import {
+  daysSince,
+  lastContactRows,
+  lastContacts,
+  lastProjectDone,
+  quietFor,
+  touchesOf,
+} from "./touches.ts";
 
 /**
  * The light CRM's read model: the client page, the project page and their history, computed on
@@ -230,7 +237,6 @@ type ProjectRowSql = {
   readonly partyTitle: string | null;
   readonly partyCategory: string | null;
   readonly partySensitive: number | null;
-  readonly partyCreatedAt: number | null;
   readonly ownerKind: string;
   readonly ownerId: string;
   readonly state: KinProjectState;
@@ -243,6 +249,7 @@ type ProjectRowSql = {
   readonly waitingLong: number | null;
   readonly overdueInvoices: number | null;
   readonly lastContactAt: number | null;
+  readonly quietFrom: number;
   readonly quiet: number;
 };
 
@@ -273,10 +280,15 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
           (whens, [partyId, days]) => sql`${whens} WHEN ${partyId} THEN ${days}`,
           sql``,
         )} ELSE ${checkIn.value} END`;
-  // A client's silence, as the client_quiet sense reads it: from the last contact, else their adding.
+  // A client's silence, as the client_quiet sense reads it: from the last contact or finished
+  // project, whichever came later, else their adding.
+  const lastProject = lastProjectDone(sql, sql`p.org_id`, sql`p.party_id`, now);
+  const quietFrom = sql`CASE WHEN lc.at IS NULL AND ${lastProject} IS NULL
+    THEN COALESCE(pa.created_at, ${now})
+    ELSE MAX(COALESCE(lc.at, 0), COALESCE(${lastProject}, 0)) END`;
   const quiet = sql`(p.state = 'open' AND pa.state = 'open'
     AND COALESCE(pa.category, 'client') = 'client'
-    AND ${quietFor(sql, sql`COALESCE(lc.at, pa.created_at, ${now})`, now, checkInDays)})`;
+    AND ${quietFor(sql, quietFrom, now, checkInDays)})`;
   const health = sql`CASE WHEN p.state IN ('done', 'dropped') THEN 3
     WHEN p.due_at < ${now} THEN 0
     WHEN COALESCE(n.late, 0) + COALESCE(n."waitingLong", 0) + COALESCE(i.overdue, 0) > 0
@@ -285,10 +297,11 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
   const rows = yield* sql<ProjectRowSql>`
     SELECT p.record_id AS "recordId", p.key, p.title, p.party_id AS "partyId",
       pa.key AS "partyKey", pa.title AS "partyTitle", pa.category AS "partyCategory",
-      pa.sensitive AS "partySensitive", pa.created_at AS "partyCreatedAt",
+      pa.sensitive AS "partySensitive",
       p.owner_kind AS "ownerKind", p.owner_id AS "ownerId", p.state, p.due_at AS "dueAt",
       p.due_all_day AS "dueAllDay", p.sensitive, p.rev, n.open, n.late, n."waitingLong",
-      i.overdue AS "overdueInvoices", lc.at AS "lastContactAt", ${quiet} AS quiet
+      i.overdue AS "overdueInvoices", lc.at AS "lastContactAt", ${quietFrom} AS "quietFrom",
+      ${quiet} AS quiet
     FROM kin_records p
     LEFT JOIN kin_records pa ON pa.org_id = p.org_id AND pa.record_id = p.party_id
     LEFT JOIN (
@@ -319,7 +332,7 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
         ? undefined
         : {
             lastContactAt: row.lastContactAt === null ? null : iso(row.lastContactAt),
-            days: daysSince(row.lastContactAt ?? row.partyCreatedAt ?? now, now),
+            days: daysSince(row.quietFrom, now),
           };
     const because = {
       targetPassed:

@@ -696,6 +696,36 @@ it.effect("an overdue invoice or a long silence with the client puts a project a
       crowded.find((one) => one.project.key === silentBuild.key),
       { health: "at_risk" },
     );
+    // A returning client: the project we finished last week counts as contact, as client_quiet reads it.
+    const back = yield* Clients.createParty([owner], {
+      orgId,
+      name: "Invented Returning Co",
+      clientRequestId: "returning",
+    });
+    yield* Clients.logTouch([owner], {
+      orgId,
+      party: back.key,
+      kind: "call",
+      clientRequestId: "returning-call",
+    });
+    const first = yield* Clients.createProject([owner], {
+      orgId,
+      name: "Invented returning first",
+      party: back.key,
+      clientRequestId: "returning-first",
+    });
+    yield* TestClock.adjust(23 * DAY);
+    yield* Clients.updateProject([owner], { orgId, key: first.key, rev: first.rev, state: "done" });
+    const again = yield* Clients.createProject([owner], {
+      orgId,
+      name: "Invented returning second",
+      party: back.key,
+      clientRequestId: "returning-second",
+    });
+    yield* TestClock.adjust(7 * DAY);
+    const returning = yield* health(again.key);
+    assert.include(returning, { health: "on_track" });
+    assert.isUndefined(returning.healthBecause.noContact);
   }).pipe(Effect.provide(layer)),
 );
 
