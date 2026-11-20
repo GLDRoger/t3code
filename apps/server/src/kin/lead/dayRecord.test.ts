@@ -120,6 +120,11 @@ const seed = Effect.gen(function* () {
       paid_on, origin_key, created_at, created_by_kind, created_by_id)
     VALUES (${orgId}, 'p1', 'r-INV-1', 2000000, 'INR', '2026-11-20', 'pay-1', ${from + 5 * HOUR},
       'person', 'rhea')`;
+  // A payment on a suggestion is in no money line until someone keeps it.
+  yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor, currency,
+      paid_on, origin_key, created_at, created_by_kind, created_by_id)
+    VALUES (${orgId}, 'p2', 'r-INV-2', 975000, 'INR', '2026-11-20', 'pay-2', ${from + 13 * HOUR},
+      'agent', 'fin')`;
   yield* sql`INSERT INTO kin_client_touches (org_id, touch_id, party_id, at, kind, note,
       logged_by_kind, logged_by_id, origin_key, created_at)
     VALUES (${orgId}, 't1', 'r-C-2', ${from + 6 * HOUR}, 'email', 'Billing contact for INV-1',
@@ -140,7 +145,7 @@ it.effect(
         ],
         notes: ['W-4 Pilot handoff checklist: note by Rhea: "The clinic confirmed the checklist."'],
         made: [
-          "INV-2 Renewal invoice, Orbit Dental (invoice, suggested, not confirmed), by Finance",
+          "INV-2 Renewal invoice, Orbit Dental (invoice, suggested, not kept yet), by Finance",
         ],
         money: ["₹20,000.00 in on INV-1 Retainer, Orbit Dental, recorded by Rhea"],
         mail: ['received from C-2 Orbit Dental Care: "Billing contact for INV-1"'],

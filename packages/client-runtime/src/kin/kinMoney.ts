@@ -4,17 +4,21 @@ import type {
   KinListId,
   KinMoneySummary,
   KinMoneyTotals,
+  KinRecordKey,
 } from "@t3tools/contracts";
 
 import {
   KIN_LIST_DEFAULT_FILTER,
   KIN_MONEY_NOTHING,
+  KIN_SUGGESTED,
+  KIN_SUGGESTION_NOTE,
   kinCategoryLabel,
   kinFinancialYearLabel,
   kinFinancialYearMonths,
   kinFinancialYearPeriod,
   kinMonthLabel,
   kinMonthPeriod,
+  kinMoneyText,
   kinTotalsLines,
   kinTotalsText,
   type KinListFilter,
@@ -51,6 +55,10 @@ export const KIN_MONEY = {
   rates: "Exchange rates",
   nothingUpcoming: "Nothing is due in the next 30 days.",
   allDates: "All dates",
+  suggested: "Suggested by your agents",
+  suggestedNote: KIN_SUGGESTION_NOTE,
+  /** Past the newest shown, the rest of one list's suggestions: "12 more in Invoices". */
+  suggestedMore: (count: number, listName: string) => `${count} more in ${listName}`,
   lists: "Lists",
   clients: "Clients",
   none: {
@@ -123,8 +131,22 @@ export interface KinMoneyMonthView {
   readonly openSpent: KinListOpen | null;
 }
 
+/** An entry an agent suggested, for the owner to keep or decline where Money shows it. */
+export interface KinMoneySuggestionView {
+  readonly key: KinRecordKey;
+  readonly rev: number;
+  readonly title: string;
+  readonly amount: string | null;
+  /** "INV-2 · Invoices · Suggested · Orbit Dental Care". */
+  readonly line: string;
+}
+
 export interface KinMoneyView {
   readonly empty: boolean;
+  /** Empty for a teammate, and from an older host. */
+  readonly suggested: ReadonlyArray<KinMoneySuggestionView>;
+  /** Each list holding more suggestions than are shown, opened on its suggestions. */
+  readonly suggestedMore: ReadonlyArray<{ readonly label: string; readonly open: KinListOpen }>;
   readonly owed: KinMoneyFigure;
   readonly overdue: KinMoneyFigure;
   readonly clients: ReadonlyArray<KinMoneyClientView>;
@@ -169,7 +191,8 @@ export function kinMoneyView(
   ): KinListOpen | null =>
     def === undefined
       ? null
-      : { list: def.list, filter: { ...KIN_LIST_DEFAULT_FILTER, ...filter } };
+      : // Opened from a figure, the list holds exactly what the figure counted.
+        { list: def.list, filter: { ...KIN_LIST_DEFAULT_FILTER, kept: true, ...filter } };
   // Issued and not yet paid in full: the state the host counts as owed.
   const owing = { show: "waiting" as const };
   // Paid expenses by their own date: what the host counts as spent.
@@ -197,9 +220,30 @@ export function kinMoneyView(
     summary.upcomingTotal === 0 &&
     currencies.length === 0 &&
     summary.receivedThisFinancialYear.length === 0 &&
-    summary.spentThisFinancialYear.length === 0;
+    summary.spentThisFinancialYear.length === 0 &&
+    (summary.suggested ?? []).length === 0;
   return {
     empty: nothing && !lists.some((def) => !def.builtIn),
+    suggested: (summary.suggested ?? []).map(({ record, listName }) => ({
+      key: record.key,
+      rev: record.rev,
+      title: record.title,
+      amount: record.amount === undefined ? null : kinMoneyText(record.amount),
+      line: [record.key, listName, KIN_SUGGESTED, record.party?.title ?? null]
+        .filter((part) => part !== null)
+        .join(" · "),
+    })),
+    suggestedMore: (summary.suggestedLists ?? []).flatMap(({ list, listName, count }) => {
+      const shown = (summary.suggested ?? []).filter(({ record }) => record.list === list).length;
+      return count > shown
+        ? [
+            {
+              label: KIN_MONEY.suggestedMore(count - shown, listName),
+              open: { list, filter: { ...KIN_LIST_DEFAULT_FILTER, kept: false } },
+            },
+          ]
+        : [];
+    }),
     owed: {
       id: "owed",
       label: KIN_MONEY.owed,

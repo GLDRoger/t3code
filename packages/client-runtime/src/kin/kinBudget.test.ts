@@ -1,7 +1,12 @@
 import { KinAgentId, KinOrgId, type KinBudget } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinDailyLimitChoices, kinDailyLimitUsed, kinDailyLimitWaiting } from "./kinBudget.ts";
+import {
+  kinDailyLimitAsks,
+  kinDailyLimitChoices,
+  kinDailyLimitUsed,
+  kinDailyLimitWaiting,
+} from "./kinBudget.ts";
 
 const budget = (leadUnits: number | null, workerUnits: number | null): KinBudget => ({
   orgId: KinOrgId.make("invented-org"),
@@ -33,6 +38,9 @@ describe("the daily limit", () => {
     expect(
       kinDailyLimitUsed({ ...budget(2_000_000, null), leadUnits: 500_000, workerUnits: 1_250_000 }),
     ).toBe("agents 25% of the limit, tasks they started 1.3M units");
+    expect(
+      kinDailyLimitUsed({ ...budget(null, null), leadUnits: 2_500_000, workerUnits: 40_000 }),
+    ).toBe("agents 2.5M units, tasks they started 40k units");
     expect(kinDailyLimitUsed(null)).toBeNull();
   });
 
@@ -49,6 +57,15 @@ describe("the daily limit", () => {
       workerUnits: 6_000_000,
       teammateUnits: 5,
     });
+    // No limit is none for anyone, so it never pauses anyone's work, and it alone is asked first.
+    const { choices, current } = kinDailyLimitChoices(shared);
+    expect(current).toBe("custom");
+    expect(choices.find(kinDailyLimitAsks)?.limits).toEqual({
+      leadUnits: null,
+      workerUnits: null,
+      teammateUnits: null,
+    });
+    expect(choices.filter(kinDailyLimitAsks).map((choice) => choice.value)).toEqual(["none"]);
   });
 
   it("says what waits for tomorrow", () => {

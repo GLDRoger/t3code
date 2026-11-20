@@ -268,6 +268,8 @@ export function kinSubscriptionsView(
   let uncounted = 0;
   const rows: Array<KinSubscriptionRow & { readonly sortDay: string }> = [];
   for (const record of records) {
+    // A suggestion is no subscription yet: Money lists it to keep.
+    if (!record.confirmed) continue;
     const cycle = kinCycleOf(record, fields);
     const cancelled = record.state === "dropped" || record.state === "done";
     const renewal = record.dateAt ?? record.dueAt;

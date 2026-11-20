@@ -29,6 +29,7 @@ import { speakerOrder } from "../floor/KinFloor.ts";
 import { KinPresence, queueLabel, syncQueued } from "../reply/KinPresence.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { RETIRED_NOTICE_PREFIX, retiredAgentNotice, retiredNoticeId } from "./Retirement.ts";
+import { teammatesLimited } from "./KinBudget.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import * as Reach from "./Reach.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
@@ -127,7 +128,8 @@ const make = Effect.gen(function* () {
       ...pair,
       now: yield* Clock.currentTimeMillis,
     }).pipe(access);
-    if (used.turns < dailyTurns) return true;
+    if (used.turns < dailyTurns || !(yield* teammatesLimited(message.orgId).pipe(access)))
+      return true;
     // Everyone in a group reads the line, so there it names who it is about.
     const [person] = target.direct
       ? []

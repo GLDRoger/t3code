@@ -26,7 +26,6 @@ import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsRow } from "../settings/components/SettingsRow";
-import { SettingsSection } from "../settings/components/SettingsSection";
 import { KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
 import { FormMessage, FormShell, NO_LINK, targetOf } from "./KinWorkFormScreens";
 import { kinClient, refreshKinBriefs } from "./state/kinClient";
@@ -38,7 +37,7 @@ interface Target {
   readonly orgId: KinOrgId;
 }
 
-function useCheckIns(target: Target) {
+export function useCheckIns(target: Target) {
   const atom = kinClient.checkIns({
     environmentId: target.environmentId,
     input: { orgId: target.orgId },
@@ -52,62 +51,52 @@ function useCheckIns(target: Target) {
   };
 }
 
-/** The company's check-ins in Settings; each opens its sheet, where it is changed or run. */
-export function KinCheckInsSection(props: Target) {
+/** The company's check-ins beyond the person's own briefs, in the Briefs section; each opens its sheet. */
+export function KinCheckInRows(
+  props: Target & {
+    readonly result: KinCheckInsResult;
+    readonly beyond: ReadonlyArray<KinCheckIn>;
+  },
+) {
   const navigation = useNavigation();
-  const { result, value, canRead } = useCheckIns(props);
-  if (!canRead || (AsyncResult.isFailure(result) && value === null)) return null;
   return (
-    <SettingsSection
-      title={KIN_CHECK_INS.title}
-      footer={
-        value === null
-          ? KIN_CHECK_INS.detail
-          : `${KIN_CHECK_INS.detail} ${KIN_CHECK_INS.zone(value.zone)}`
-      }
-    >
-      {value === null ? (
-        <SettingsRow icon="clock" label={KIN_CHECK_INS.title} value="…" valuePosition="trailing" />
-      ) : (
-        <>
-          {value.checkIns.map((checkIn) => (
-            <SettingsRow
-              key={checkIn.scheduleId}
-              icon={checkIn.on ? "clock" : "moon"}
-              label={checkIn.title}
-              valuePosition="below"
-              value={[
-                checkIn.on
-                  ? kinCheckInLine(checkIn)
-                  : `${KIN_CHECK_INS.off} · ${kinCheckInLine(checkIn)}`,
-                kinCoveredLine(checkIn),
-              ]
-                .filter((line) => line !== null)
-                .join("\n")}
-              onPress={() =>
-                navigation.navigate("KinCheckInForm", {
-                  environmentId: props.environmentId,
-                  orgId: props.orgId,
-                  checkIn: checkIn.scheduleId,
-                })
-              }
-            />
-          ))}
-          {value.agents.length === 0 ? null : (
-            <SettingsRow
-              icon="plus"
-              label={KIN_CHECK_INS.add}
-              onPress={() =>
-                navigation.navigate("KinCheckInForm", {
-                  environmentId: props.environmentId,
-                  orgId: props.orgId,
-                })
-              }
-            />
-          )}
-        </>
+    <>
+      {props.beyond.map((checkIn) => (
+        <SettingsRow
+          key={checkIn.scheduleId}
+          icon={checkIn.on ? "clock" : "moon"}
+          label={checkIn.title}
+          valuePosition="below"
+          value={[
+            checkIn.on
+              ? kinCheckInLine(checkIn)
+              : `${KIN_CHECK_INS.off} · ${kinCheckInLine(checkIn)}`,
+            kinCoveredLine(checkIn),
+          ]
+            .filter((line) => line !== null)
+            .join("\n")}
+          onPress={() =>
+            navigation.navigate("KinCheckInForm", {
+              environmentId: props.environmentId,
+              orgId: props.orgId,
+              checkIn: checkIn.scheduleId,
+            })
+          }
+        />
+      ))}
+      {props.result.agents.length === 0 ? null : (
+        <SettingsRow
+          icon="plus"
+          label={KIN_CHECK_INS.add}
+          onPress={() =>
+            navigation.navigate("KinCheckInForm", {
+              environmentId: props.environmentId,
+              orgId: props.orgId,
+            })
+          }
+        />
       )}
-    </SettingsSection>
+    </>
   );
 }
 

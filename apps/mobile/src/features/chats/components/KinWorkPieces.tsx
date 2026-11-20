@@ -639,13 +639,34 @@ export function KinWorkTextField(props: {
   readonly hint?: string;
   readonly moved?: string | undefined;
   readonly keyboard?: "email" | "phone" | "numbers" | "plain";
+  /** Takes this field off, beside its label. */
+  readonly remove?: { readonly label: string; readonly onPress: () => void };
 }) {
   const keyboard = props.keyboard ?? "sentences";
+  const { remove } = props;
   return (
     <View className="gap-2 px-4 py-3">
       <View className="flex-row items-center justify-between gap-2">
         <Text className="text-sm text-foreground-muted">{props.label}</Text>
-        {props.isPrivate ? <KinWorkPrivateMark /> : null}
+        <View className="flex-row items-center gap-3">
+          {props.isPrivate ? <KinWorkPrivateMark /> : null}
+          {remove === undefined ? null : (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={remove.label}
+              disabled={props.disabled}
+              hitSlop={12}
+              onPress={remove.onPress}
+            >
+              <SymbolView
+                name="xmark.circle.fill"
+                size={18}
+                tintColorClassName="accent-icon-muted"
+                type="monochrome"
+              />
+            </Pressable>
+          )}
+        </View>
       </View>
       <TextInput
         accessibilityLabel={props.label}

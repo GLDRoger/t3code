@@ -27,7 +27,9 @@ import {
   countedEntry,
   fieldDateAt,
   countedPayment,
+  isSuggestion,
   iso,
+  keptEntry,
   moneyDay,
   owedInvoices,
   ownerZone,
@@ -35,8 +37,8 @@ import {
   selectRecords,
   toRecord,
 } from "./recordRows.ts";
-import { parseFields } from "./lists.ts";
-import { allLists, isFieldDate, type ListDef, stateLabel } from "./registers.ts";
+import { LISTS, parseFields } from "./lists.ts";
+import { allLists, isBuiltIn, isFieldDate, type ListDef, stateLabel } from "./registers.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 
 /**
@@ -69,6 +71,7 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
     readonly to: number;
     readonly lists?: ReadonlyArray<string> | undefined;
     readonly open?: boolean | undefined;
+    readonly kept?: boolean | undefined;
     readonly viewer: KinViewer;
   },
 ) {
@@ -87,6 +90,7 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
         r.record_id AS id, r.key, r.fields_json AS "fieldsJson" FROM kin_records r
       WHERE r.org_id = ${orgId} AND r.register_id = ${def.id}
         ${input.open === true ? sql`AND r.state NOT IN ('done', 'dropped')` : sql``}
+        ${input.kept === true ? sql`AND ${keptEntry(sql)}` : sql``}
         AND ${seenBy(sql, input.viewer)}
         AND (${sql.or(
           fields.map(
@@ -124,6 +128,8 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
     readonly to: number;
     readonly lists?: ReadonlyArray<string> | undefined;
     readonly open?: boolean | undefined;
+    /** Only entries someone kept, as a figure counts them. */
+    readonly kept?: boolean | undefined;
     readonly offset?: number | undefined;
     readonly limit?: number | undefined;
     readonly viewer: KinViewer;
@@ -142,6 +148,7 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
         ? []
         : [sql`r.register_id IN ${sql.in(input.lists)}`]),
       ...(input.open === true ? [sql`r.state NOT IN ('done', 'dropped')`] : []),
+      ...(input.kept === true ? [keptEntry(sql)] : []),
       seenBy(sql, input.viewer),
     ]);
   const hits = sql`SELECT r.record_id AS id, 'due' AS kind, r.due_at AS at, r.key FROM kin_records r
@@ -178,13 +185,19 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
   };
 });
 
+/** A suggestion's own day is no issue day: where its list names the day after a state, "Date". */
+const dayLabel = (def: ListDef, row: RecordRow) =>
+  def.dateLabel === undefined ||
+  (isSuggestion(row) && def.states.some((state) => stateLabel(def, state) === def.dateLabel))
+    ? "Date"
+    : def.dateLabel;
+
 const dateRow = (row: RecordRow, def: ListDef, hit: DateHit, now: number): KinDateRow => ({
   record: toRecord(row, now),
   listName: def.name,
   stateLabel: stateLabel(def, row.state),
   kind: hit.kind,
-  label:
-    hit.field?.label ?? (hit.kind === "due" ? (def.dueLabel ?? "Due") : (def.dateLabel ?? "Date")),
+  label: hit.field?.label ?? (hit.kind === "due" ? (def.dueLabel ?? "Due") : dayLabel(def, row)),
   ...(hit.field === undefined ? {} : { field: hit.field.key }),
   at: iso(hit.at),
   allDay: hit.field?.allDay ?? (hit.kind === "due" ? row.dueAllDay : row.dateAllDay) === 1,
@@ -202,6 +215,10 @@ const monthStart = (month: string, zone: string) =>
       { timeZone: zone, adjustForTimeZone: true },
     ),
   );
+
+const SUGGESTED_CAP = 20;
+/** Lists whose every entry is money, amount or not yet. */
+const MONEY_LISTS = ["quotes", "invoices", "expenses", "receipts", "subscriptions"];
 
 /** The Money tab's figures: owed and overdue by client, received and spent, dates ahead, a year. */
 export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
@@ -250,7 +267,6 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   const byClient = [...clients].map(([partyId, members]) => {
     const first = members[0]!;
     const late = members.filter((one) => one.overdue);
-    const oldest = Math.min(...late.map((one) => one.dueAt ?? now));
     const party: KinRecordRef | null =
       partyId === null ||
       first.partyKey === null ||
@@ -269,7 +285,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
         home,
       ),
       invoices: members.length,
-      oldestOverdueDays: late.length === 0 ? null : Math.floor((now - oldest) / DAY_MS),
+      oldestOverdueDays: late.length === 0 ? null : Math.max(...late.map((one) => one.daysOverdue)),
     };
   });
 
@@ -332,9 +348,31 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
 
   const upcoming = yield* dates(
     orgId,
-    { from: now, to: now + 30 * DAY_MS, open: true, limit: 50, viewer },
+    { from: now, to: now + 30 * DAY_MS, open: true, kept: true, limit: 50, viewer },
     now,
   );
+  // Suggestions in money lists, and any other with an amount: what Money's figures leave out.
+  const suggestion = sql`r.org_id = ${orgId} AND r.confirmed = 0 AND r.state <> 'dropped'
+    AND (r.register_id IN ${sql.in(MONEY_LISTS)} OR r.amount_minor IS NOT NULL) AND ${seen}`;
+  const suggested =
+    viewer._tag === "ownerLevel"
+      ? yield* sql<RecordRow & { listName: string | null }>`SELECT s.*, g.name AS "listName"
+          FROM (${selectRecords(sql)} WHERE ${suggestion}
+            ORDER BY r.created_at DESC, r.key LIMIT ${SUGGESTED_CAP}) s
+          LEFT JOIN kin_registers g ON g.org_id = ${orgId} AND g.register_id = s."registerId"
+          ORDER BY s."createdAt" DESC, s.key`
+      : [];
+  const suggestedLists =
+    viewer._tag === "ownerLevel"
+      ? yield* sql<{ list: string; listName: string | null; count: number }>`
+          SELECT r.register_id AS list, g.name AS "listName", COUNT(*) AS count
+          FROM kin_records r
+          LEFT JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id
+          WHERE ${suggestion}
+          GROUP BY r.register_id, g.name ORDER BY COUNT(*) DESC, r.register_id`
+      : [];
+  const listNamed = (list: string, name: string | null) =>
+    name ?? (isBuiltIn(list) ? LISTS[list].name : list);
   const owedTotal = addUp(
     owing.map((one) => one.balance),
     home,
@@ -381,6 +419,19 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     ),
     upcoming: upcoming.rows,
     upcomingTotal: upcoming.total,
+    ...(viewer._tag === "ownerLevel"
+      ? {
+          suggested: suggested.map((row) => ({
+            record: toRecord(row, now),
+            listName: listNamed(row.registerId, row.listName),
+          })),
+          suggestedLists: suggestedLists.map((one) => ({
+            list: one.list,
+            listName: listNamed(one.list, one.listName),
+            count: one.count,
+          })),
+        }
+      : {}),
     series: months.map((month) => ({
       month,
       received: receivedIn(month),
@@ -426,6 +477,9 @@ const aboutSection = (summary: KinMoneySummary) => {
   return Object.values(section).every((one) => one === undefined) ? {} : { about: section };
 };
 const SECTION_DATES = 10;
+/** What the section says of its suggestions: only what the server guarantees about them. */
+const SUGGESTED_NOTE =
+  "Entries an agent suggested that the owner or a co-owner hasn't kept. No figure here counts them or any payment recorded on them: none is owed, due, received or spent until it is kept.";
 
 /**
  * The Money summary as a short block for an owner-only prompt, built by code: figures already
@@ -438,8 +492,10 @@ export const moneySection = (summary: KinMoneySummary, zone: string) => {
     summary.received.lastMonth.length === 0 &&
     summary.spent.thisMonth.total.length === 0 &&
     summary.spent.lastMonth.total.length === 0 &&
-    summary.upcoming.length === 0;
+    summary.upcoming.length === 0 &&
+    (summary.suggested ?? []).length === 0;
   if (nothing) return undefined;
+  const suggested = summary.suggested ?? [];
   return {
     asOf: summary.asOf,
     owedToUs: shown(summary.owed.total),
@@ -483,6 +539,22 @@ export const moneySection = (summary: KinMoneySummary, zone: string) => {
     ...(summary.upcomingTotal > SECTION_DATES
       ? { moreDates: summary.upcomingTotal - SECTION_DATES }
       : {}),
+    ...(suggested.length === 0
+      ? {}
+      : {
+          suggestedNotKept: {
+            note: SUGGESTED_NOTE,
+            entries: suggested.map(({ record, listName }) => ({
+              key: record.key,
+              title: record.title,
+              list: listName,
+              ...(record.amount === undefined ? {} : { amount: formatMoney(record.amount) }),
+              ...(record.party === undefined
+                ? {}
+                : { client: `${record.party.title} (${record.party.key})` }),
+            })),
+          },
+        }),
   };
 };
 
@@ -501,12 +573,13 @@ export const ownerLevelStillToInvoice = Effect.fn("KinMoneyViews.stillToInvoice"
     title: string;
     client: string | null;
     value: string | null;
+    kept: number;
     list: string | null;
     state: string | null;
     minor: number | null;
     currency: string | null;
   }>`SELECT p.key, p.title, c.title AS client, json_extract(p.fields_json, '$.value') AS value,
-      r.register_id AS list, r.state, r.amount_minor AS minor, r.currency
+      p.confirmed AS kept, r.register_id AS list, r.state, r.amount_minor AS minor, r.currency
     FROM kin_records p
     LEFT JOIN kin_records c ON c.org_id = p.org_id AND c.record_id = p.party_id
     LEFT JOIN kin_records r ON r.org_id = p.org_id AND r.project_id = p.record_id
@@ -527,7 +600,8 @@ export const ownerLevelStillToInvoice = Effect.fn("KinMoneyViews.stillToInvoice"
       );
     const accepted = money("quotes", ["done"]);
     const sent = money("quotes", ["waiting"]);
-    const value = first.value === null ? undefined : moneyOf(first.value);
+    // A suggested project's value is nobody's agreement yet.
+    const value = first.value === null || first.kept === 0 ? undefined : moneyOf(first.value);
     const [agreed, basis] =
       accepted.length > 0
         ? [accepted, "accepted quotes"]

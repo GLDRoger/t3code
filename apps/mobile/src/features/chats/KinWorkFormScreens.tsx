@@ -24,6 +24,10 @@ import {
   kinIndiaFields,
   kinClientUpdateInput,
   kinContactCreateInput,
+  kinContactDetailAdd,
+  kinContactDetailCanAdd,
+  kinContactDetailRemove,
+  kinContactDetailSet,
   kinContactDraftCheck,
   kinContactDraftOf,
   kinContactUpdateInput,
@@ -404,6 +408,41 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
           onChangeText={(tags) => form.edit({ tags })}
         />
       </ListSection>
+      {editing !== null ? null : (
+        <ListSection
+          title={COPY.party.contact}
+          footer={`${COPY.party.contactHint} ${COPY.contact.detailsHint}`}
+        >
+          <KinWorkTextField
+            label={COPY.party.contactName}
+            value={draft.contactName}
+            disabled={state.saving}
+            maxLength={KIN_WORK_FORM_LIMITS.name}
+            placeholder={COPY.contact.namePlaceholder}
+            onChangeText={(contactName) => form.edit({ contactName })}
+          />
+          <KinWorkTextField
+            label={COPY.contact.role}
+            value={draft.contactRole}
+            disabled={state.saving}
+            maxLength={KIN_WORK_FORM_LIMITS.short}
+            placeholder={COPY.contact.rolePlaceholder}
+            onChangeText={(contactRole) => form.edit({ contactRole })}
+          />
+          <ContactDetailFields
+            kind="email"
+            values={draft.contactEmails}
+            disabled={state.saving}
+            onChange={(contactEmails) => form.edit({ contactEmails })}
+          />
+          <ContactDetailFields
+            kind="phone"
+            values={draft.contactPhones}
+            disabled={state.saving}
+            onChange={(contactPhones) => form.edit({ contactPhones })}
+          />
+        </ListSection>
+      )}
       {member ? null : (
         <>
           <ListSection>
@@ -702,25 +741,19 @@ function ContactForm(
         />
       </ListSection>
       <ListSection footer={COPY.contact.detailsHint}>
-        <KinWorkTextField
-          label={COPY.contact.email}
-          value={draft.email}
-          keyboard="email"
-          isPrivate
+        <ContactDetailFields
+          kind="email"
+          values={draft.emails}
           disabled={busy}
-          maxLength={KIN_WORK_FORM_LIMITS.short}
-          moved={moved.email}
-          onChangeText={(email) => form.edit({ email })}
+          moved={moved.emails}
+          onChange={(emails) => form.edit({ emails })}
         />
-        <KinWorkTextField
-          label={COPY.contact.phone}
-          value={draft.phone}
-          keyboard="phone"
-          isPrivate
+        <ContactDetailFields
+          kind="phone"
+          values={draft.phones}
           disabled={busy}
-          maxLength={KIN_WORK_FORM_LIMITS.short}
-          moved={moved.phone}
-          onChangeText={(phone) => form.edit({ phone })}
+          moved={moved.phones}
+          onChange={(phones) => form.edit({ phones })}
         />
       </ListSection>
       <ListSection>
@@ -746,6 +779,54 @@ function ContactForm(
         </ListSection>
       )}
     </FormShell>
+  );
+}
+
+/** A contact's emails or phones: the first is the main one, each after it can be taken off. */
+function ContactDetailFields(props: {
+  readonly kind: "email" | "phone";
+  readonly values: ReadonlyArray<string>;
+  readonly disabled: boolean;
+  readonly moved?: ReadonlyArray<string> | undefined;
+  readonly onChange: (next: ReadonlyArray<string>) => void;
+}) {
+  const { values, onChange } = props;
+  const email = props.kind === "email";
+  const label = email ? COPY.contact.email : COPY.contact.phone;
+  return (
+    <>
+      {values.map((value, at) => (
+        <KinWorkTextField
+          // oxlint-disable-next-line react/no-array-index-key -- typed text has no identity besides its place, and blanks repeat
+          key={at}
+          label={at === 0 ? label : `${label} ${at + 1}`}
+          value={value}
+          keyboard={email ? "email" : "phone"}
+          isPrivate
+          disabled={props.disabled}
+          maxLength={KIN_WORK_FORM_LIMITS.short}
+          autoFocus={at > 0 && value === "" && at === values.length - 1}
+          moved={at === 0 ? props.moved?.join(", ") : undefined}
+          onChangeText={(text) => onChange(kinContactDetailSet(values, at, text))}
+          {...(at === 0
+            ? {}
+            : {
+                remove: {
+                  label: `${email ? COPY.contact.removeEmail : COPY.contact.removePhone}: ${value.trim() || `${label} ${at + 1}`}`,
+                  onPress: () => onChange(kinContactDetailRemove(values, at)),
+                },
+              })}
+        />
+      ))}
+      {kinContactDetailCanAdd(values) ? (
+        <ListActionRow
+          icon="plus"
+          label={email ? COPY.contact.addEmail : COPY.contact.addPhone}
+          disabled={props.disabled}
+          onPress={() => onChange(kinContactDetailAdd(values))}
+        />
+      ) : null}
+    </>
   );
 }
 

@@ -4,7 +4,7 @@ import type { KinDateRow, KinDatesInput, KinDatesResult, KinRecordKey } from "@t
 import { AsyncResult } from "effect/reactivity";
 
 import type { AtomCommandResult } from "../state/runtime.ts";
-import { kinMoneyText, kinMonthLabel } from "./kinLists.ts";
+import { kinMoneyText, kinMonthLabel, kinSuggestionText } from "./kinLists.ts";
 import {
   kinWorkAllDay,
   kinWorkClock,
@@ -136,7 +136,8 @@ function kinDateRowView(row: KinDateRow, names: KinWorkNames, now: Date): KinDat
   const late = row.kind === "due" && record.late;
   const time = row.allDay || Number.isNaN(at.getTime()) ? null : kinWorkClock(at, names.zone);
   const amount = record.amount === undefined ? null : kinMoneyText(record.amount);
-  const state = row.stateLabel === row.label ? null : row.stateLabel;
+  const stateLabel = kinSuggestionText(record, row.stateLabel);
+  const state = stateLabel === row.label ? null : stateLabel;
   const line = [row.listName, row.label, state, record.party?.title ?? null]
     .filter((part) => part !== null)
     .join(" · ");

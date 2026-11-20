@@ -800,7 +800,7 @@ const keptForPerson = [
     }),
   ),
   row(
-    "a confirmed send marking a quote Sent is Kin's, not a person's; their own later change is",
+    "a confirmed send marking a quote Sent, and keeping an agent's suggestion, is Kin's, not a person's; their own later change is",
     Effect.gen(function* () {
       const scene = yield* asked();
       yield* scene.sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
@@ -811,6 +811,8 @@ const keptForPerson = [
         originKey: "quote",
         title: "Invented Acme design work",
         owner: { _tag: "person", personId: ownerId },
+        amount: { minor: 300_000_00, currency: "INR" },
+        confirmed: false,
       });
       const ask = yield* scene.say("Mail QT-1 to Invented Acme and mark it accepted once sent");
       yield* scene.wake();
@@ -819,10 +821,25 @@ const keptForPerson = [
         orgId,
         personId: ownerId,
         wakeupId: "wake-1",
-        entryRecordIds: [quote.recordId],
+        attachments: [
+          {
+            key: "DOC-1",
+            recordId: "rec-doc",
+            version: 1,
+            attachmentId: "att-1",
+            sha256: "0",
+            name: "QT-1.pdf",
+            mimeType: "application/pdf",
+            bytes: 1,
+            label: null,
+            entryRecordId: quote.recordId,
+            entryRev: quote.rev,
+          },
+        ],
       });
       const state = Effect.map(scene.records.get(orgId, "QT-1"), (row) => row!.state);
       assert.strictEqual(yield* state, "waiting");
+      assert.strictEqual((yield* scene.records.get(orgId, "QT-1"))!.confirmed, 1);
       const accept = Effect.suspend(() =>
         LeadWork.update(scopeOf(lead), { key: "QT-1", sourceEventId: ask, state: "done" }),
       );
@@ -2458,7 +2475,9 @@ it.effect(
       // Closing it tells nobody: only the lead's owner withdraws work.
       yield* OwnerWork.update([mate], { orgId, key: given.key, rev: given.rev, state: "done" });
       assert.lengthOf(yield* assignedEvents, 2);
-      // A day of turns used up: giving it again is refused and changes nothing.
+      // A day of turns used up under a limit: giving it again is refused and changes nothing.
+      yield* sql`INSERT INTO kin_budget_limits (org_id, limits_json)
+        VALUES (${orgId}, '{"leadUnits":1000,"workerUnits":1000}')`;
       for (let n = 0; n < 50; n++)
         yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
             received_at, queued_at, state)
@@ -2473,6 +2492,11 @@ it.effect(
       );
       assert.include(yield* OwnerWork.get([mate], { orgId, key: given.key }), { state: "done" });
       assert.lengthOf(yield* assignedEvents, 2);
+      // With no limit the cap is lifted, and the same change goes through.
+      yield* sql`UPDATE kin_budget_limits SET limits_json = '{"leadUnits":null,"workerUnits":null}'
+        WHERE org_id = ${orgId}`;
+      yield* OwnerWork.update([mate], { orgId, key: given.key, rev: closed.rev, state: "open" });
+      assert.lengthOf(yield* assignedEvents, 3);
     }).pipe(Effect.provide(layer)),
 );
 

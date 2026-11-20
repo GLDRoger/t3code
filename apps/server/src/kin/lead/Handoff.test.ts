@@ -1783,10 +1783,12 @@ it.effect(
     ),
 );
 
-it.effect("a teammate at today's limit has nothing passed on", () =>
+it.effect("a teammate at today's limit has nothing passed on, unless the owner set no limit", () =>
   runTeammate(({ ctx, mate }) =>
     Effect.gen(function* () {
       const { sql, orgId } = ctx;
+      yield* sql`INSERT INTO kin_budget_limits (org_id, limits_json)
+        VALUES (${orgId}, '{"leadUnits":1000,"workerUnits":1000}')`;
       // 49 earlier turns today, and this one is the 50th: the same count ChatWake admits by.
       for (let n = 0; n < 49; n++)
         yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state)
@@ -1799,6 +1801,9 @@ it.effect("a teammate at today's limit has nothing passed on", () =>
         note: "Meera has reached today's limit, so nothing was passed on. Tell them they can ask again later.",
       });
       assert.deepStrictEqual(yield* mate.reached, { copies: [], events: [] });
+      yield* sql`UPDATE kin_budget_limits SET limits_json = '{"leadUnits":null,"workerUnits":null}'
+        WHERE org_id = ${orgId}`;
+      assert.include(yield* mate.pass("Tech lead"), { to: "Tech lead", passed: true });
     }),
   ),
 );

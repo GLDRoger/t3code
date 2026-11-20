@@ -32,6 +32,8 @@ import { retiredAgentNotice, retiredNoticeId } from "./Retirement.ts";
 const decodeMessage = Schema.decodeUnknownSync(KinMessage);
 const decodeEventJson = Schema.decodeEffect(Schema.fromJsonString(KinEvent));
 const createdAt = "1970-01-01T00:00:00.000Z";
+// A limit is set: with none, the per-teammate turn cap is lifted.
+const limited = JSON.stringify({ leadUnits: 1000, workerUnits: 1000 });
 
 const database = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
 const services = Layer.mergeAll(KinEventQueue.layer, Presence.layer).pipe(
@@ -648,6 +650,7 @@ describe("ChatWake", () => {
           VALUES ('mate', 'a', 'mate', 'Mate', ${createdAt})`;
         yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
           VALUES ('mate-chat', 'a', 'direct', 'mate:lead-a', 0, ${createdAt})`;
+        yield* sql`INSERT INTO kin_budget_limits (org_id, limits_json) VALUES ('a', ${limited})`;
         yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
           VALUES ('mate-member', 'a', 'mate-chat', 'person', 'mate', 'member', ${createdAt})`;
         yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
@@ -701,14 +704,27 @@ describe("ChatWake", () => {
         yield* settle;
         assert.deepStrictEqual(yield* notices, [capped, capped]);
 
+        // With no limit for teammates' turns the cap is lifted; a limit again restores it.
+        const setLimits = (json: string) =>
+          sql`UPDATE kin_budget_limits SET limits_json = ${json} WHERE org_id = 'a'`;
+        yield* setLimits('{"leadUnits":null,"workerUnits":null}');
+        yield* say("no-limit", 8);
+        yield* settle;
+        assert.include(keys(attempts), "chat-message:no-limit:lead-a");
+        yield* setLimits(limited);
+        yield* say("limited-again", 9);
+        yield* settle;
+        assert.notInclude(keys(attempts), "chat-message:limited-again:lead-a");
+        assert.deepStrictEqual(yield* notices, [capped, capped]);
+
         // The turns age out a day after they were asked for.
         yield* TestClock.adjust("25 hours");
-        yield* say("next-day", 8);
+        yield* say("next-day", 10);
         yield* settle;
         assert.include(keys(attempts), "chat-message:next-day:lead-a");
 
         yield* restrict("limit-2");
-        yield* say("after", 9);
+        yield* say("after", 11);
         yield* settle;
         assert.notInclude(keys(attempts), "chat-message:after:lead-a");
         assert.lengthOf(yield* notices, 2);
@@ -733,6 +749,7 @@ describe("ChatWake", () => {
       yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
         VALUES ('mate-chat', 'a', 'direct', 'mate:lead-a', 0, ${createdAt}),
           ('group', 'a', 'team_group', NULL, 0, ${createdAt})`;
+      yield* sql`INSERT INTO kin_budget_limits (org_id, limits_json) VALUES ('a', ${limited})`;
       yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, agent_id, role, joined_at)
         VALUES ('mate-member', 'a', 'mate-chat', 'person', 'mate', NULL, 'member', ${createdAt}),
           ('lead-in-mate-chat', 'a', 'mate-chat', 'agent', NULL, 'lead-a', 'member', ${createdAt}),

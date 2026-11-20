@@ -1179,6 +1179,20 @@ it.effect(
         "reason",
         "not_allowed",
       );
+      // The level she comes back at is the owner's to read and set, not a co-owner's.
+      assert.deepStrictEqual(
+        (yield* service.list(raviSession, orgId)).removed?.find(
+          (one) => one.personId === meera.person.personId,
+        ),
+        { personId: meera.person.personId },
+      );
+      assert.propertyVal(
+        yield* service
+          .setAccess(raviSession, { orgId, personId: meera.person.personId, access: "member" })
+          .pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
 
       // Back to member: the next request reads it, and owner-level work is refused again.
       yield* service.setAccess(ownerSession, {
@@ -1486,6 +1500,31 @@ it.effect(
       );
       yield* queue.finish({ orgId, wakeupId: turn.wakeupId, status: "completed" });
 
+      // Removed again while a link is out: only the link ends; what she comes back to stays.
+      yield* service.setPlaces(ownerSession, {
+        orgId,
+        personId: mira.person.personId,
+        money: true,
+      });
+      const lost = yield* service.createInvite(ownerSession, {
+        orgId,
+        displayName: "Mira",
+        personId: mira.person.personId,
+      });
+      yield* TestClock.adjust(1_000);
+      yield* service.removeAccess(ownerSession, { orgId, personId: mira.person.personId });
+      assert.propertyVal(
+        yield* service.accept({ secret: lost.secret }).pipe(Effect.flip),
+        "reason",
+        "not_found",
+      );
+      assert.deepStrictEqual(
+        (yield* service.list(ownerSession, orgId)).removed?.find(
+          (one) => one.personId === mira.person.personId,
+        ),
+        { personId: mira.person.personId, access: "member" },
+      );
+
       // Back again: in every chat and with every lead she had, history and all; nothing she
       // wrote before is answered again.
       const back = yield* service.accept({
@@ -1509,6 +1548,15 @@ it.effect(
           .pipe(Effect.map((page) => page.messages.map((message) => message.body)));
       assert.include(yield* said(direct.chatId), "Invented-mira-question");
       assert.include(yield* said(group.chatId), "Invented-mira-in-group");
+      const backList = yield* service.list(ownerSession, orgId);
+      assert.include(
+        backList.places?.find((one) => one.personId === mira.person.personId),
+        { clients: true, docs: true, money: true },
+      );
+      assert.notInclude(
+        (backList.removed ?? []).map((one) => one.personId),
+        mira.person.personId,
+      );
       assert.deepStrictEqual(yield* states(mira.person.personId), [
         "expired",
         "expired",
@@ -2066,8 +2114,23 @@ it.effect(
         displayName: string,
         levels: ReadonlyArray<"co_owner" | "member">,
       ) {
+        const backAs = service
+          .list(ownerSession, orgId)
+          .pipe(
+            Effect.map(
+              (list) => list.removed?.find((one) => one.personId === person.personId)?.access,
+            ),
+          );
+        const was = (yield* service.list(ownerSession, orgId)).people.find(
+          (one) => one.personId === person.personId,
+        )?.access;
         yield* service.removeAccess(ownerSession, { orgId, personId: person.personId });
-        for (const level of levels) yield* access(person, level);
+        // The owner reads the level they come back at, never the member's level held meanwhile.
+        assert.strictEqual(yield* backAs, was);
+        for (const level of levels) {
+          yield* access(person, level);
+          assert.strictEqual(yield* backAs, level);
+        }
         yield* service.accept({
           secret: (yield* service.createInvite(ownerSession, {
             orgId,

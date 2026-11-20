@@ -170,6 +170,7 @@ type RecordRow = {
   readonly amountMinor: number | null;
   readonly currency: string | null;
   readonly sensitive: number;
+  readonly confirmed: number;
   readonly notes: string;
   readonly fieldsJson: string;
   readonly createdAt: number;
@@ -294,8 +295,8 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
   const selectRecords = sql`SELECT record_id AS "recordId", register_id AS "registerId", key,
       title, state, category, party_id AS "partyId", project_id AS "projectId", due_at AS "dueAt",
       due_all_day AS "dueAllDay", date_at AS "dateAt", date_all_day AS "dateAllDay",
-      amount_minor AS "amountMinor", currency, sensitive, notes, fields_json AS "fieldsJson",
-      created_at AS "createdAt", closed_at AS "closedAt"
+      amount_minor AS "amountMinor", currency, sensitive, confirmed, notes,
+      fields_json AS "fieldsJson", created_at AS "createdAt", closed_at AS "closedAt"
     FROM kin_records`;
   /** One register's rows in pages, so a company's whole history never sits in memory. */
   const pages = (registers: ReadonlyArray<string>, not: boolean) =>
@@ -406,6 +407,7 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
           ...some("notes", row.notes),
           ...(Object.keys(fields).length === 0 ? {} : { fields }),
           ...(row.sensitive === 1 ? { sensitive: true } : {}),
+          ...(row.confirmed === 0 ? { suggested: true } : {}),
           ...(number !== undefined && NUMBER.test(number) ? { number } : {}),
           createdAt: iso(row.createdAt),
           ...some("closedAt", row.closedAt === null ? undefined : iso(row.closedAt)),

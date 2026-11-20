@@ -21,6 +21,7 @@ import {
   kinAccessChangeCopy,
   kinTeammateActions,
   kinTeammateAgentsLine,
+  kinTeammateKind,
   kinTeammateKindEditable,
   kinOpenCountsFollower,
   type KinMadeInvite,
@@ -164,6 +165,7 @@ function useKinTeam(target: KinTeamTarget) {
           people: heldPeople.people,
           joined: heldPeople.joined,
           places: heldPeople.places,
+          removed: heldPeople.removed,
           invites: heldInvites.invites,
           profiles,
         };
@@ -399,7 +401,11 @@ function KinTeammateDialog(props: {
   const { teammate, actions } = props;
   const offered = kinTeammateActions(teammate, props.viewer);
   const [kindAsked, setKindAsked] = useState<KinPeopleSetAccessInput["access"] | null>(null);
-  const kindCopy = kindAsked === null ? null : kinAccessChangeCopy(teammate.name, kindAsked);
+  const kind = kinTeammateKind(teammate);
+  const kindCopy =
+    kindAsked === null
+      ? null
+      : kinAccessChangeCopy(teammate.name, kindAsked, teammate.backAs !== null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -467,14 +473,15 @@ function KinTeammateDialog(props: {
             />
           )}
           {kinTeammateKindEditable(teammate, props.viewer) ? (
-            <Section title={KIN_TEAM_COPY.canDo}>
+            <Section
+              title={teammate.backAs === null ? KIN_TEAM_COPY.canDo : KIN_TEAM_COPY.canDoBack}
+            >
               <RadioGroup
-                value={teammate.access}
+                value={kind}
                 disabled={busy}
                 onValueChange={(value) => {
                   const choice = KIN_ACCESS_CHOICES.find((held) => held.access === value);
-                  if (choice !== undefined && choice.access !== teammate.access)
-                    setKindAsked(choice.access);
+                  if (choice !== undefined && choice.access !== kind) setKindAsked(choice.access);
                 }}
               >
                 {KIN_ACCESS_CHOICES.map((choice) => (

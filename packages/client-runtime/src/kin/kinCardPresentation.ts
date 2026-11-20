@@ -27,6 +27,7 @@ import { kinChartCardView, type KinChartView } from "./kinChart.ts";
 import { kinDocCardView, type KinDocCardView } from "./kinDocs.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinSentences } from "./kinScreenState.ts";
+import { kinZoneLabel } from "./kinTimeZone.ts";
 import {
   kinSocialPackView,
   kinSocialWeekView,
@@ -355,7 +356,7 @@ function scheduleLine(
           : days.map((day) => WEEKDAYS[day]).join(", ");
   const [hour, minute] = every.at.split(":");
   const deviceZone = timeZone ?? new Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const zone = sameZone(deviceZone, ownerZone) ? "" : ` (${ownerZone})`;
+  const zone = sameZone(deviceZone, ownerZone) ? "" : ` (${kinZoneLabel(ownerZone)})`;
   return `${when} ${around ? "around" : "at"} ${Number(hour)}:${minute}${zone}.`;
 }
 
