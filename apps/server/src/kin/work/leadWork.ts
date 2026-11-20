@@ -154,7 +154,7 @@ const List = KinListId.annotate({
 });
 const Category = KinToolText(
   60,
-  "Work: task, issue or obligation. A defined list: one of its categories.",
+  "Work: task, issue or obligation. A project: campaign. A defined list: one of its categories.",
 );
 const Amount = KinToolText(
   60,
@@ -186,8 +186,11 @@ const CameFrom = KinToolText(
 // Past twenty, Kin's own rule (`cleanTags`) refuses in words an agent can pass on.
 const PartyTags = Schema.Array(KinToolText(60))
   .check(Schema.isMaxLength(50))
-  .annotate({ description: "A client's: the company's own words for it." });
-const Audience = KinToolText(60);
+  .annotate({ description: "A client's or contact's: the company's own words for them." });
+const Audience = KinToolText(
+  60,
+  "A campaign's (a project with category campaign): the tag whose contacts are its list.",
+);
 const Terms = KinToolText(4_000);
 const Repos = Schema.Array(KinRepoName).check(Schema.isMaxLength(20));
 
