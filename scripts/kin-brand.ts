@@ -385,6 +385,10 @@ const ONBOARDING_T3_NAMES: ReadonlyMap<string, string> = new Map([
     "T3 Code collects anonymous usage data to improve the app.",
     "the server's usage data goes to T3 Code under T3's privacy policy, which the line links",
   ],
+  [
+    "T3 Code collects anonymous usage data to improve the app. To opt out, see the",
+    "the same notice, translated as one sentence with its privacy link",
+  ],
 ]);
 
 export const kinBrand = Effect.fn("kinBrand")(function* (options: {

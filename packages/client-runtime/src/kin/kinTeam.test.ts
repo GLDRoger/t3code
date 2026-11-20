@@ -17,7 +17,8 @@ import {
   KIN_TEAM_NO_EDITS,
   createKinTeamActions,
   kinInviteLink,
-  kinInviteLinkLocalOnly,
+  KIN_INVITE_LOCAL_ONLY_NOTE,
+  kinShareLink,
   kinNamesakeHandle,
   kinOpenCountsFollower,
   kinPickLine,
@@ -147,9 +148,36 @@ describe("kinInviteLink", () => {
       httpBaseUrl: "https://kin.example.test:8443/",
       kinInvite: true,
     });
-    expect(kinInviteLinkLocalOnly("http://localhost:5733/")).toBe(true);
-    expect(kinInviteLinkLocalOnly("http://127.0.0.1:3773")).toBe(true);
-    expect(kinInviteLinkLocalOnly("https://kin.example.test/")).toBe(false);
+  });
+});
+
+describe("kinShareLink", () => {
+  it("carries the host's public address when it has one, and notes only a link that opens nowhere else", () => {
+    const secret = "kin-default.0b6f.AbC_d-9";
+    const cases = [
+      // Public given: on it, whatever this device reaches Kin at.
+      [
+        "https://kin.ambermill.example.test",
+        "https://office.example.test/",
+        "https://kin.ambermill.example.test/",
+        null,
+      ],
+      [
+        "https://kin.ambermill.example.test",
+        "http://localhost:5733/",
+        "https://kin.ambermill.example.test/",
+        null,
+      ],
+      // Public absent: this device's own address, noted when only this machine reaches it.
+      [undefined, "https://kin.example.test/", "https://kin.example.test/", null],
+      [undefined, "http://localhost:5733/", "http://localhost:5733/", KIN_INVITE_LOCAL_ONLY_NOTE],
+      [undefined, "http://127.0.0.1:3773", "http://127.0.0.1:3773/", KIN_INVITE_LOCAL_ONLY_NOTE],
+    ] as const;
+    for (const [publicUrl, httpBaseUrl, base, note] of cases)
+      expect(kinShareLink({ publicUrl, httpBaseUrl }, secret)).toEqual({
+        link: `${base}kin/invite#${secret}`,
+        note,
+      });
   });
 });
 

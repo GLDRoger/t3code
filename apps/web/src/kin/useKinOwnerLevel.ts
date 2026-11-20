@@ -18,8 +18,11 @@ import {
 } from "@t3tools/client-runtime/kin/kinViewerScope";
 import { kinOwnerLevel, type EnvironmentId } from "@t3tools/contracts";
 
+import { useEffect } from "react";
+
 import { connectionAtomRuntime } from "../connection/runtime";
 import { isChatOnlySession } from "../environments/primary";
+import { refreshKinAccessMe } from "./kinClient";
 
 /**
  * Whether the viewer runs the company here: the owner's own session always does; a chat-only
@@ -65,4 +68,15 @@ export function useKinSeesClients(environmentId: EnvironmentId): boolean {
 export function useKinClientsStart(environmentId: EnvironmentId): KinClientsFilter {
   const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
   return isChatOnlySession() ? kinClientsStartFilter(me) : KIN_CLIENTS_DEFAULT_FILTER;
+}
+
+/**
+ * The host's public address, for a link shown to another device; undefined when it has none or
+ * is older. Read again as the link shows: the address follows the host's tunnel.
+ */
+export function useKinPublicUrl(environmentId: EnvironmentId): string | undefined {
+  const publicUrl = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId))?.publicUrl;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- nothing announces a tunnel coming up or going down, so a shown link reads the host again.
+  useEffect(() => refreshKinAccessMe(environmentId), [environmentId]);
+  return publicUrl;
 }

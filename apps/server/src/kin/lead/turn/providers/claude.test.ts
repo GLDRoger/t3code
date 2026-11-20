@@ -21,7 +21,7 @@ import { hookAllows, kinSecretVariables } from "../../../claudeConfinement.testk
 import * as DreamIsolation from "../../../dreaming/DreamIsolation.ts";
 import { builtinTools, claude } from "./claude.ts";
 import { kinInstructions } from "../session.ts";
-import { ownerOnlyWakeup } from "../../Audience.testkit.ts";
+import { ownerOnlyWakeup, wakeupRun } from "../../Audience.testkit.ts";
 import { delegatedFromLead, leadNameOf, fullSessionRefusal } from "../../AgentSession.ts";
 import { SESSION_REFUSAL } from "../../Audience.ts";
 import { KinAgentSessionPolicy } from "../../sessionPolicy.ts";
@@ -410,6 +410,18 @@ it.effect(
         run_id = 'run-owner', status = 'running' WHERE wakeup_id = 'wake-owner'`;
       yield* sql`UPDATE kin_wakeups SET thread_id = 'kin:tech', audience = 'shared',
         run_id = 'run-mate', started_at = -1 WHERE wakeup_id = 'wake-mate'`;
+      yield* wakeupRun({
+        threadId: "kin:tech",
+        runId: "run-mate",
+        ordinal: 1,
+        wakeupId: "wake-mate",
+      });
+      yield* wakeupRun({
+        threadId: "kin:tech",
+        runId: "run-owner",
+        ordinal: 2,
+        wakeupId: "wake-owner",
+      });
       const link = (id: string, parent: string, run: string, child: string) =>
         sql`INSERT INTO orchestration_v2_projection_subagents (subagent_id, thread_id, run_id,
           parent_node_id, provider, child_thread_id, origin, status, updated_at, payload_json)

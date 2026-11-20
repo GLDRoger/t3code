@@ -24,12 +24,14 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { useEffect } from "react";
 
 import { environmentCatalog } from "../../../connection/catalog";
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import * as MobileSecureStorage from "../../../persistence/mobile-secure-storage";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { environmentSession } from "../../../state/session";
+import { refreshKinAccessMe } from "./kinClient";
 
 const KIN_CHAT_ONLY_STORAGE_KEY = "kin.chatOnlyEnvironmentIds";
 const RememberedIds = Schema.fromJsonString(Schema.Array(EnvironmentId));
@@ -217,4 +219,15 @@ export function useKinSeesClients(environmentId: EnvironmentId): boolean | null 
 /** Where the clients list starts: a teammate with Clients on, on their own. */
 export function useKinClientsStart(environmentId: EnvironmentId): KinClientsFilter {
   return kinClientsStartFilter(useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)));
+}
+
+/**
+ * The host's public address, for a link shown to another device; undefined when it has none or
+ * is older. Read again as the link shows: the address follows the host's tunnel.
+ */
+export function useKinPublicUrl(environmentId: EnvironmentId): string | undefined {
+  const publicUrl = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId))?.publicUrl;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- nothing announces a tunnel coming up or going down, so a shown link reads the host again.
+  useEffect(() => refreshKinAccessMe(environmentId), [environmentId]);
+  return publicUrl;
 }

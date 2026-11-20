@@ -6,6 +6,7 @@ import { WorkspaceExtraTab } from "./WorkspaceExtraTab";
 import { WorkspaceSettingsList } from "../../settings/SettingsRouteScreen";
 import { WorkspaceSectionToolbar } from "./WorkspaceSectionToolbar";
 import { useNavigation } from "@react-navigation/native";
+import { useGT, useMessages } from "gt-react-native";
 import { use } from "react";
 import { View, useWindowDimensions } from "react-native";
 import { useKeyboardState } from "react-native-keyboard-controller";
@@ -53,14 +54,16 @@ function WorkspaceRootTitle(props: {
   readonly onOpenEnvironments: () => void;
   readonly onOpenKin: () => void;
 }) {
+  const gt = useGT();
+  const m = useMessages();
   const { state, settingsOpen } = useWorkspaceTabs()!;
   const maxWidth = Math.max(0, props.columnWidth - (use(HeaderItemsWidthContext) ?? 160));
   const enabled = useEnabledNavigationTabs();
   const tabTitle = settingsOpen
-    ? "Settings"
+    ? gt("Settings")
     : enabled.length
-      ? TAB_TITLES[state.selectedTab]
-      : "Navigation";
+      ? m(TAB_TITLES[state.selectedTab])
+      : gt("Navigation", { $context: "screen title when every navigation tab is hidden" });
   return (
     <View style={{ width: maxWidth, minHeight: 32, justifyContent: "center" }}>
       <WorkspaceConnectionTitle
@@ -71,7 +74,10 @@ function WorkspaceRootTitle(props: {
             <KinListSwitch onOpenKin={props.onOpenKin}>
               {(trailing) => (
                 <CompactBrandTitle
-                  accessibilityLabel={`T3 Code, ${tabTitle}`}
+                  accessibilityLabel={gt("{product}, {title}", {
+                    product: "T3 Code",
+                    title: tabTitle,
+                  })}
                   fit
                   trailing={trailing}
                 />
@@ -87,6 +93,8 @@ function WorkspaceRootTitle(props: {
 }
 
 function WorkspaceRootContent() {
+  const gt = useGT();
+  const m = useMessages();
   const navigation = useNavigation();
   const { width: windowWidth } = useWindowDimensions();
   const { layout, startNewTask } = useAdaptiveWorkspaceLayout();
@@ -149,10 +157,12 @@ function WorkspaceRootContent() {
           ]}
           options={{
             title: settingsOpen
-              ? "Settings"
+              ? gt("Settings")
               : enabled.length
-                ? TAB_TITLES[state.selectedTab]
-                : "Navigation",
+                ? m(TAB_TITLES[state.selectedTab])
+                : gt("Navigation", {
+                    $context: "screen title when every navigation tab is hidden",
+                  }),
             headerShown: true,
             headerTransparent: NATIVE_LIQUID_GLASS_SUPPORTED,
             headerStyle: NATIVE_LIQUID_GLASS_SUPPORTED

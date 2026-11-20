@@ -1103,9 +1103,17 @@ function InvoiceFileDoc(props: {
   const { doc } = props;
   if (doc === null) return null;
   return (
-    <Button size="xs" variant="ghost" onClick={() => props.onOpenDoc(doc.key)}>
+    <Button
+      size="xs"
+      variant="ghost"
+      className="max-w-full"
+      title={`${doc.title} · ${doc.key}`}
+      onClick={() => props.onOpenDoc(doc.key)}
+    >
       <FileTextIcon />
-      {doc.title} · {doc.key}
+      <span className="truncate">
+        {doc.title} · {doc.key}
+      </span>
     </Button>
   );
 }

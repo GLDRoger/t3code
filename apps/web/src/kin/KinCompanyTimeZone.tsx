@@ -7,7 +7,7 @@ import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 
 import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
-import { searchableSetting } from "../components/settings/settingsSearch";
+import { useSearchableSetting } from "../components/settings/settingsSearch";
 import { Button } from "../components/ui/button";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
@@ -26,6 +26,7 @@ const browserZone = (() => {
 
 /** The company's time zone: what check-ins, due days and the agents' times follow. */
 export function KinCompanyTimeZoneSetting() {
+  const searchableSetting = useSearchableSetting();
   const target = kinNewLeadTarget(useKinHost());
   return target === null ? null : (
     <SettingsSection {...searchableSetting("kin-time-zone")} hideTitle>

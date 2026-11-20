@@ -242,6 +242,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.docs.setDefaultRecipe": Effect.fn("KinDocs.rpc.setDefaultRecipe")(function* (input) {
         return yield* call((people) => Docs.setDefaultRecipe(people, input));
       }),
+      "kin.docs.startWhatWeSell": Effect.fn("KinDocs.rpc.startWhatWeSell")(function* (input) {
+        return yield* call((people) => Docs.startWhatWeSell(people, input));
+      }),
       "kin.search": Effect.fn("KinDocs.rpc.search")(function* (input) {
         return yield* call((people) => Docs.search(people, input));
       }),

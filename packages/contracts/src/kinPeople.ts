@@ -221,6 +221,8 @@ export const KinAccessMeResult = Schema.Struct({
   financialYearStartMonth: Schema.optional(KinMonthNumber),
   /** True while a company created new has no country chosen: nothing that records money is made until it is. */
   countryNeeded: Schema.optional(Schema.Boolean),
+  /** The origin another device reaches this host at, for links and QR codes; absent when it has none or from an older host. */
+  publicUrl: Schema.optional(Schema.String),
 });
 export type KinAccessMeResult = typeof KinAccessMeResult.Type;
 

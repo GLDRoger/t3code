@@ -62,6 +62,7 @@ import { toPersistenceSqlError, PersistenceSqlError } from "../../persistence/Er
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { publicAddress } from "../publicAddress.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { abortChatTurns } from "../lead/Audience.ts";
 import { closeUngranted } from "../lead/directClose.ts";
@@ -1296,6 +1297,7 @@ export const make = Effect.gen(function* () {
     );
     if (access === undefined) return yield* missing;
     const places = yield* placesFor(input.orgId, caller.personId);
+    const publicUrl = yield* publicAddress();
     const all = access === "owner" || access === "co_owner";
     return {
       personId: caller.personId,
@@ -1318,6 +1320,7 @@ export const make = Effect.gen(function* () {
       ))
         ? { countryNeeded: true }
         : {}),
+      ...(publicUrl === undefined ? {} : { publicUrl }),
     };
   });
   const setPlaces = Effect.fn("KinPeople.setPlaces")(function* (

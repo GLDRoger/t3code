@@ -6,7 +6,6 @@ import {
   KinChatError,
   type KinOrgId,
   KinPersonId,
-  kinIsLocalOnlyHost,
   type KinTasksKey,
   type KinTasksKeysIssueInput,
   type KinTasksKeysIssueResult,
@@ -22,8 +21,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { EnvironmentAuth, type AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { SessionStore } from "../../auth/SessionStore.ts";
-import { CloudLink } from "../../cloud/CloudLink.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { publicAddress } from "../publicAddress.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { isOwnerHimself, ownerLevel } from "../people/KinAccess.ts";
 import { workFailure } from "../work/recordRows.ts";
@@ -112,22 +111,6 @@ const mayRevoke = Effect.fn("KinTasksKeys.mayRevoke")(function* (
   );
 });
 
-/**
- * The address anyone's coding agent can reach this host by: T3 Connect's tunnel while it serves
- * this host. A LAN, tailnet or relay connection gives the host no address of its own to name.
- */
-const publicOrigin = Effect.fn("KinTasksKeys.publicOrigin")(function* () {
-  const cloud = yield* Effect.serviceOption(CloudLink);
-  if (Option.isNone(cloud)) return undefined;
-  const state = yield* cloud.value.linkState().pipe(Effect.option);
-  if (Option.isNone(state)) return undefined;
-  const { linked, linkRevoked, tunnelHostname } = state.value;
-  if (!linked || linkRevoked || tunnelHostname === undefined) return undefined;
-  if (!URL.canParse(`https://${tunnelHostname}`)) return undefined;
-  const url = new URL(`https://${tunnelHostname}`);
-  return kinIsLocalOnlyHost(url.hostname) ? undefined : url.origin;
-});
-
 /** The person signed in on this app session, never a key: who a key is made for and by. */
 const caller = Effect.fn("KinTasksKeys.caller")(function* (
   session: AuthenticatedSession,
@@ -155,7 +138,7 @@ export const issue = Effect.fn("KinTasksKeys.issue")(function* (
   const sql = yield* SqlClient.SqlClient;
   const refresh = yield* KinRefreshObserver;
   const label = input.label ?? "Coding agent";
-  const origin = yield* publicOrigin();
+  const origin = yield* publicAddress();
   return yield* Effect.gen(function* () {
     // Moves only once this commits: a refusal below announces nothing.
     yield* refresh.touch(person.orgId, "people");
@@ -211,7 +194,7 @@ export const list = Effect.fn("KinTasksKeys.list")(function* (
     return yield* missing;
   const now = yield* Clock.currentTimeMillis;
   const canRevoke = yield* mayRevoke(input.orgId, person.personId, whose);
-  const origin = yield* publicOrigin();
+  const origin = yield* publicAddress();
   return {
     keys: (yield* liveKeys(input.orgId, whose, now)).map((row) => toKey(row, canRevoke)),
     ...(origin === undefined ? {} : { origin }),
