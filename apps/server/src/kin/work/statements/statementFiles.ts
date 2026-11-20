@@ -15,6 +15,7 @@ import { statementRegion } from "./statementRegion.ts";
 import {
   type Cell,
   cellBudget,
+  columnFacts,
   currencyIn,
   delimitedLines,
   EMPTY_CELL,
@@ -125,7 +126,9 @@ export const readStatementFile = async (
   const lines = pageLines === undefined ? (read as ReadonlyArray<Line>) : pageLines.flat();
   const pages = pageLines?.map(pageText);
   const whole = lines.map((line) => line.map((cell) => cell.text.trim()).join(" ")).join("\n");
-  const said = currencyIn(whole, home);
+  // A Currency column every row agrees on outranks the text.
+  const column = columnFacts(lines).currency;
+  const said = currencyIn(column === null ? whole : `Currency ${column}`, home);
   if ("refused" in said) return { _tag: "unreadable", reason: said.refused };
   const reading = { currency: said.currency, dateOrder: statementRegion(whole, home).dateOrder };
   const parsed = readTable(lines, reading);
