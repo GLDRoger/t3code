@@ -32,7 +32,7 @@ const lastDayOf = (month: string) => shiftDay(`${shiftMonth(month, 1)}-01`, -1);
  * that Money says Kin can't see the bank. One fact per month, so it is told once.
  */
 export const statementSenses = Effect.fn("KinPulse.statementSenses")(function* (ctx: SenseContext) {
-  const { through } = yield* bankKnown(ctx.orgId);
+  const { through } = yield* bankKnown(ctx.orgId, ctx.at);
   if (through === null) return [];
   const month = monthOf(shiftDay(through, 1));
   const last = lastDayOf(month);

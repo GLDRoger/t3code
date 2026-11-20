@@ -3620,20 +3620,23 @@ describe("money answers", () => {
   const statement = (
     id: string,
     input: {
-      readonly account: string;
+      readonly account: string | null;
       readonly currency: string;
       readonly to: string;
-      readonly closing: number;
+      readonly closing: number | null;
       readonly from?: string;
       readonly opening?: number;
       readonly bank?: string;
       readonly status?: string;
       readonly standing?: "confirmed" | "unconfirmed" | "undone";
       readonly check?: "adds_up" | "off";
+      /** As a CSV export gives them: no period or balances printed, a running balance per row. */
+      readonly rows?: ReadonlyArray<readonly [string, "credit" | "debit", number, number]>;
     },
   ) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
+      const csv = input.rows !== undefined;
       const review = {
         statement: {
           kind: "account",
@@ -3641,10 +3644,19 @@ describe("money answers", () => {
           account: input.account,
           currency: input.currency,
           from: input.from ?? null,
-          to: input.to,
+          to: csv ? null : input.to,
           openingMinor: input.opening ?? null,
           closingMinor: input.closing,
-          rows: [],
+          rows: (input.rows ?? []).map(([date, direction, amountMinor, balanceMinor], index) => ({
+            index,
+            date,
+            description: "Invented row",
+            reference: null,
+            amountMinor,
+            direction,
+            balanceMinor,
+            foreign: null,
+          })),
           check: { status: input.check ?? "adds_up", line: "" },
         },
         format: "csv",
@@ -3997,6 +4009,79 @@ describe("money answers", () => {
           [runway?.currency, runway?.runwayMonths, runway?.cash],
           ["INR", null, undefined],
         );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "read one account's monthly CSV statements as one account, whatever each said of its digits",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* TestClock.setTime(Date.parse("2026-12-06T02:45:00.000Z"));
+        const now = yield* Clock.currentTimeMillis;
+        const october = [
+          ["2026-10-01", "credit", 1_800_00, 1_800_00],
+          ["2026-10-30", "credit", 47_150_00, 48_950_00],
+          ["2026-10-31", "debit", 50_00, 48_900_00],
+        ] as const;
+        const november = [
+          ["2026-11-01", "debit", 100_00, 48_800_00],
+          ["2026-11-30", "debit", 40_00, 48_760_00],
+        ] as const;
+        const december = [
+          ["2026-12-01", "debit", 110_00, 48_650_00],
+          ["2026-12-31", "debit", 60_00, 48_590_00],
+        ] as const;
+        const csv = (
+          id: string,
+          account: string | null,
+          rows: ReadonlyArray<readonly [string, "credit" | "debit", number, number]>,
+        ) => statement(id, { account, currency: "INR", to: rows.at(-1)![0], closing: null, rows });
+        const seen = Effect.gen(function* () {
+          const cash = yield* cashPosition(orgId, now);
+          const answer = cashAnswer(cash);
+          if (!answer.known) return assert.fail(answer.note);
+          return {
+            accounts: answer.accounts.map((one) => [one.account, one.closingBalance, one.on]),
+            apart: answer.accounts.some((one) => one.cannotTellApart === true),
+            total: answer.byCurrency.map((one) =>
+              "totalOfTheseAccounts" in one ? one.totalOfTheseAccounts : null,
+            ),
+            through: cash.bank.through,
+            known: cash.bank.accounts.map((one) => [one.label, one.from, one.through]),
+          };
+        });
+        // October stored before the file's account column was read, November with its digits.
+        yield* csv("st_oct", null, october);
+        yield* csv("st_nov", "1234", november);
+        assert.deepStrictEqual(yield* seen, {
+          accounts: [["Account ••1234", "₹48,760.00", "2026-11-30"]],
+          apart: false,
+          total: ["₹48,760.00"],
+          through: "2026-11-30",
+          known: [["Account ••1234", "2026-10-01", "2026-11-30"]],
+        });
+        // December runs to the 31st on the 6th: Kin sees the bank to today, not past it.
+        yield* csv("st_dec", "1234", december);
+        assert.deepStrictEqual(yield* seen, {
+          accounts: [["Account ••1234", "₹48,590.00", "2026-12-31"]],
+          apart: false,
+          total: ["₹48,590.00"],
+          through: "2026-12-06",
+          known: [["Account ••1234", "2026-10-01", "2026-12-06"]],
+        });
+        // October and December without November: one account with a gap, seen to October's end.
+        yield* sql`DELETE FROM kin_bank_statements`;
+        yield* csv("st_oct", "1234", october);
+        yield* csv("st_dec", "1234", december);
+        assert.deepStrictEqual(yield* seen, {
+          accounts: [["Account ••1234", "₹48,590.00", "2026-12-31"]],
+          apart: false,
+          total: ["₹48,590.00"],
+          through: "2026-10-31",
+          known: [["Account ••1234", "2026-10-01", "2026-10-31"]],
+        });
       }).pipe(Effect.provide(layer)),
   );
 

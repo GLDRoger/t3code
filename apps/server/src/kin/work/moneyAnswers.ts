@@ -19,6 +19,13 @@ import {
 } from "./recordRows.ts";
 import { nextDates, repeatsBetween } from "./repeat.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
+import {
+  type AccountRead,
+  firstRowOf,
+  openingOf,
+  periodOf,
+  sameAccounts,
+} from "./statements/bankAccounts.ts";
 import { findBankList } from "./statements/bankList.ts";
 import { reviewOf } from "./statements/statementReview.ts";
 import type { Statement } from "./statements/statementTable.ts";
@@ -64,7 +71,7 @@ const closingOf = (statement: Statement) => {
 };
 
 /** Only a statement's four digits name its account: the rest of what it says is the bank's text. */
-const accountLabel = (statement: Statement) => {
+const accountLabel = (statement: Pick<Statement, "kind" | "bank" | "account">) => {
   const digits = /^\d{4}$/.test(statement.account ?? "") ? ` ••${statement.account}` : "";
   const label = `${statement.kind === "card" ? "Card" : "Account"}${digits}`;
   return statement.bank === null ? label : `${statement.bank} ${label}`;
@@ -101,17 +108,12 @@ const recordedMoney = Effect.fn("KinMoneyAnswers.recorded")(function* (
   };
 });
 
-type Read = {
+type Read = AccountRead & {
   readonly statementId: string;
   /** Everything Kin stores of an account: kind, bank, last four digits, and currency. */
   readonly identity: string;
   readonly label: string;
-  readonly kind: Statement["kind"];
-  readonly currency: string;
-  readonly from: string | null;
-  readonly opening: number | null;
   readonly minor: number;
-  readonly on: string;
   readonly check: Statement["check"]["status"];
   /** Why it isn't a balance of record, or `undefined` when it is one. */
   readonly standing:
@@ -122,23 +124,9 @@ type Read = {
 };
 
 /**
- * Whether `newer` continues `older`'s account: the same statement read twice, or one that opens on
- * the other's closing balance and starts once it ends. Digits alone never prove it.
- */
-const continues = (older: Read, newer: Read) =>
-  (newer.from === older.from &&
-    newer.on === older.on &&
-    newer.opening === older.opening &&
-    newer.minor === older.minor) ||
-  (newer.opening !== null &&
-    newer.opening === older.minor &&
-    newer.from !== null &&
-    newer.from >= older.on);
-
-/**
- * Per account, the latest closing balance of a statement the owner confirmed (not undone, check
- * not off); newer reads beside it, never counted. Same-identity statements no chain links are
- * listed apart with no total. Records carry no account, so movements are per currency.
+ * Per account (`sameAccounts`), the latest closing balance of a statement the owner confirmed
+ * (not undone, check not off); newer reads beside it, never counted. Accounts Kin can't tell
+ * apart are listed with no total. Records carry no account, so movements are per currency.
  */
 export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
   orgId: KinOrgId,
@@ -160,7 +148,9 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
   const reads = stored.flatMap((row): ReadonlyArray<Read> => {
     const statement = reviewOf(row.reviewJson)?.statement;
     const closing = statement === undefined ? undefined : closingOf(statement);
-    if (statement === undefined || closing === undefined) return [];
+    const period = statement === undefined ? undefined : periodOf(statement);
+    if (statement === undefined || closing === undefined || period === undefined) return [];
+    const digits = /^\d{4}$/.test(statement.account ?? "") ? statement.account : null;
     return [
       {
         statementId: row.statementId,
@@ -172,11 +162,15 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
         ].join("\u0000"),
         label: accountLabel(statement),
         kind: statement.kind,
+        bank: statement.bank,
+        digits,
+        accountId: statement.accountId ?? null,
         currency: statement.currency,
-        from: statement.from,
-        opening: statement.openingMinor,
-        minor: closing.minor,
+        from: period.from < closing.on ? period.from : closing.on,
         on: closing.on,
+        opening: openingOf(statement, firstRowOf(statement)),
+        closing: closing.minor,
+        minor: closing.minor,
         check: statement.check.status,
         standing:
           row.appliedAt === null || row.undoneAt !== null
@@ -190,31 +184,45 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
     ];
   });
   const byDay = (a: Read, b: Read) => (a.on === b.on ? 0 : a.on < b.on ? -1 : 1);
-  const chains: Array<Array<Read>> = [];
-  for (const read of reads.filter((one) => one.standing === undefined).toSorted(byDay)) {
-    const chain = chains.find(
-      (one) => one[0]!.identity === read.identity && continues(one.at(-1)!, read),
-    );
-    if (chain === undefined) chains.push([read]);
-    else chain.push(read);
-  }
-  const heads = chains.map((chain) => chain.at(-1)!);
-  const twins = (head: Read) => heads.filter((one) => one.identity === head.identity).length > 1;
+  const groups = sameAccounts(reads.filter((one) => one.standing === undefined));
+  // A read not of record belongs beside the one account it could be, when there is just one.
+  const candidates = (read: Read) =>
+    groups.filter((group) => {
+      const head = group.reads.at(-1)!;
+      return (
+        head.kind === read.kind &&
+        head.currency === read.currency &&
+        (group.digits === null || read.digits === null || group.digits === read.digits) &&
+        (group.bank === null ||
+          read.bank === null ||
+          group.bank.toLowerCase() === read.bank.toLowerCase())
+      );
+    });
   // The newest read not of record per identity, unless a balance of record is as new.
   const pending = new Map<string, Read>();
-  for (const read of reads.filter((one) => one.standing !== undefined).toSorted(byDay)) {
-    const recordOn = heads.filter((one) => one.identity === read.identity).map((one) => one.on);
-    if (recordOn.every((on) => on < read.on)) pending.set(read.identity, read);
-  }
-  const accounts = heads
-    .map((head) => {
+  for (const read of reads.filter((one) => one.standing !== undefined).toSorted(byDay))
+    if (candidates(read).every((group) => group.reads.at(-1)!.on < read.on))
+      pending.set(read.identity, read);
+  const accounts = groups
+    .map((group) => {
+      const head = group.reads.at(-1)!;
       const ageDays = Math.max(daysBetween(head.on, today), 0);
-      const newer = twins(head) ? undefined : pending.get(head.identity);
+      const newer = group.apart
+        ? undefined
+        : [...pending.values()].findLast((read) => {
+            const fits = candidates(read);
+            return fits.length === 1 && fits[0] === group;
+          });
       return {
         ...head,
+        label: accountLabel({
+          kind: head.kind,
+          bank: group.bank,
+          account: group.digits,
+        }),
         ageDays,
         stale: ageDays > STALE_DAYS,
-        cannotTellApart: twins(head),
+        cannotTellApart: group.apart,
         newerRead: newer,
       };
     })
@@ -267,7 +275,7 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
     accounts,
     notOfRecord,
     byCurrency,
-    bank: yield* bankKnown(orgId),
+    bank: yield* bankKnown(orgId, now),
   };
 });
 export type CashPosition = Effect.Success<ReturnType<typeof cashPosition>>;
