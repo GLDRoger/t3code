@@ -14,7 +14,7 @@ export type TurnAudience = "owner_only" | "shared";
 
 /**
  * Events that answer in the chat they name: a finished task names the chat its work was asked in,
- * and a teammate's task their direct chat with the lead.
+ * a teammate's task their direct chat with the lead, and an answer the chat that asked for it.
  */
 export const CHAT_ANSWER_TAGS = [
   "chat.message",
@@ -22,6 +22,7 @@ export const CHAT_ANSWER_TAGS = [
   "chat.reaction",
   "record.changed",
   "task.finished",
+  "deferral.due",
 ];
 
 /**
@@ -105,10 +106,12 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
           return "shared" as const;
         chats.add(event.chatId);
       } else if (
-        (event.tag === "record.changed" || event.tag === "task.finished") &&
+        (event.tag === "record.changed" ||
+          event.tag === "task.finished" ||
+          event.tag === "deferral.due") &&
         event.chatId !== null
       ) {
-        // A finished task answers in the chat it was asked for in, read by everyone there.
+        // A finished task, or an answer, answers where it was asked for, read by everyone there.
         answersChat = true;
         chats.add(event.chatId);
       }

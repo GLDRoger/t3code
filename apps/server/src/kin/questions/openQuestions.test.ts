@@ -41,7 +41,7 @@ import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
 import * as KinToolGate from "../mcp/KinToolGate.ts";
-import { SHARED_REFUSAL } from "../lead/Audience.ts";
+import { effectiveAudience, SHARED_REFUSAL } from "../lead/Audience.ts";
 import * as Handoff from "../lead/Handoff.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
@@ -53,7 +53,10 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { presetDefinition } from "../work/registers.ts";
 import * as Provision from "../lead/KinLeadProvision.ts";
+import * as People from "../people/KinPeople.ts";
+import { SessionStore } from "../../auth/SessionStore.ts";
 import { encodeLeadModel } from "../lead/leadModels.ts";
+import { laneFor } from "../reply/replyLane.ts";
 import * as AskPerson from "./askPerson.ts";
 import * as Questions from "./openQuestions.ts";
 import { defaultDue } from "./rules.ts";
@@ -1068,6 +1071,37 @@ const askingTeam = Effect.gen(function* () {
   const answeredWakes = sql<{ key: string; origin: string | null }>`SELECT dedupe_key AS key,
       json_extract(json, '$.origin') AS origin FROM kin_events
     WHERE org_id = ${orgId} AND dedupe_key LIKE 'question-answered:%' ORDER BY rowid`;
+  /** `who` taps `option` on the card of a question asked for someone. */
+  const tap = Effect.fn("test.tap")(function* (
+    who: Parameters<typeof chats.act>[0],
+    questionId: string,
+    option: string,
+    clientActionId: string,
+  ) {
+    const card = yield* widgetOf((yield* cardOf(questionId)).widgetId!);
+    return yield* chats.act(who, {
+      widgetId: card.widgetId,
+      revision: card.revision,
+      actionId: "choose",
+      value: option,
+      clientActionId,
+    });
+  });
+  /** The Chief of staff's turn on what Kin queued for it, and where that turn answers. */
+  const wakeQueued = Effect.gen(function* () {
+    const wakeupId = yield* startAgentWakeup({
+      orgId,
+      agentId: chief,
+      threadId: ThreadId.make("chief-thread"),
+      queued: true,
+    });
+    const turn = { orgId, agentId: chief, wakeupId };
+    const lane = Option.getOrThrow(yield* laneFor(turn));
+    return {
+      lane: { chatId: lane.chatId, mode: lane.mode },
+      audience: yield* effectiveAudience(turn),
+    };
+  });
   return {
     ...studio,
     person,
@@ -1078,6 +1112,8 @@ const askingTeam = Effect.gen(function* () {
     widgetOf,
     kinLines,
     answeredWakes,
+    tap,
+    wakeQueued,
   };
 });
 
@@ -1270,22 +1306,7 @@ it.effect("a tap on a question asked for someone goes back to the chat that aske
     TestClock.setTime(IST_MON_1130),
     Effect.gen(function* () {
       const team = yield* askingTeam;
-      const { sql, chats, orgId, owner, person, chatOf, chiefChat, askFor, wakeOn } = team;
-      const tap = Effect.fn("test.tap")(function* (
-        who: Parameters<typeof chats.act>[0],
-        questionId: string,
-        option: string,
-        clientActionId: string,
-      ) {
-        const card = yield* team.widgetOf((yield* team.cardOf(questionId)).widgetId!);
-        return yield* chats.act(who, {
-          widgetId: card.widgetId,
-          revision: card.revision,
-          actionId: "choose",
-          value: option,
-          clientActionId,
-        });
-      });
+      const { sql, chats, orgId, owner, person, chatOf, chiefChat, askFor, wakeOn, tap } = team;
       const turnsIn = (chatId: KinChatId) =>
         sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_events WHERE org_id = ${orgId}
           AND tag IN ('chat.message', 'widget.action') AND json_extract(json, '$.chatId') = ${chatId}`.pipe(
@@ -1339,10 +1360,12 @@ it.effect("a tap on a question asked for someone goes back to the chat that aske
       );
       assert.lengthOf(yield* team.kinLines(chatOf("chief")), 1);
       assert.lengthOf(yield* team.answeredWakes, 1);
+      // Rhea asked, so its turn answers in her chat, hers alone.
+      assert.deepInclude(yield* team.wakeQueued, {
+        lane: { chatId: chatOf("chief"), mode: "notice" },
+        audience: "owner_only",
+      });
 
-      // Its turn would be claimed ahead of Dev's message; this test drives Dev's instead.
-      yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId}
-        AND dedupe_key LIKE 'question-answered:%'`;
       // Dev asks Rhea: her tap comes back to Dev's chat, and the turn there works at Dev's access.
       const dev = yield* wakeOn("chief", "dev", devChat, "Can someone decide the shoot date?");
       const up = yield* askFor("chief", dev, { to: "Rhea", intent: "shoot date for dev" });
@@ -1357,6 +1380,119 @@ it.effect("a tap on a question asked for someone goes back to the chat that aske
         chatId: devChat,
         personId: "dev",
       });
+      // Its turn is Dev's chat's, as if he had written there: what it says goes to him, never to
+      // Rhea's chat, and it is shared, so nothing of the owner's (here the Team room) opens.
+      assert.deepInclude(yield* team.wakeQueued, {
+        lane: { chatId: devChat, mode: "notice" },
+        audience: "shared",
+      });
+      const ownerOnly = yield* Effect.flip(
+        callAs("chief", "team_open", {
+          topic: "Shoot budget",
+          question: "What did Rhea budget for the shoot?",
+          decider: "Finance",
+          text: "Dev asks what the shoot may cost.",
+        }),
+      );
+      assert.strictEqual(ownerOnly.message, SHARED_REFUSAL);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// An answer's turn is the asking chat's: a co-owner's in her own chat, at her level. When its
+// asker may no longer write there (removed, or no longer let message the agent), there is no
+// turn at all, and none lands in the owner's chat instead.
+it.effect("an answer's turn answers in the chat that asked, or nowhere", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const team = yield* askingTeam;
+      const { sql, orgId, owner, services, person, chatOf, chiefChat, askFor, wakeOn, tap } = team;
+      const wakes = sql<{ key: string; state: string; chatId: string | null }>`SELECT
+          dedupe_key AS key, state, json_extract(json, '$.chatId') AS "chatId" FROM kin_events
+        WHERE org_id = ${orgId} AND dedupe_key LIKE 'question-answered:%' ORDER BY rowid`;
+
+      // Meera, a co-owner, asks Dev from her own chat: its turn is hers, owner-tier as she is.
+      const meeraChat = yield* chiefChat("meera");
+      const meera = yield* wakeOn("chief", "meera", meeraChat, "Ask Dev about the shoot.");
+      const toDev = yield* askFor("chief", meera, { to: "Dev" });
+      yield* tap(person("dev"), toDev.questionId, "option-1", "dev-tap");
+      assert.deepStrictEqual(yield* team.kinLines(meeraChat), [
+        "Dev Malhotra answered “Friday” to “Does the shoot move to Friday?”",
+      ]);
+      assert.deepInclude(yield* team.wakeQueued, {
+        lane: { chatId: meeraChat, mode: "notice" },
+        audience: "owner_only",
+      });
+
+      // Zoya, Dev and Arjun each ask Rhea something of their own.
+      const askRhea = Effect.fn("test.askRhea")(function* (who: string) {
+        const chatId = yield* chiefChat(who);
+        const turn = yield* wakeOn("chief", who, chatId, "Can Rhea decide this?");
+        return { chatId, ...(yield* askFor("chief", turn, { to: "Rhea", intent: `for ${who}` })) };
+      });
+      const zoya = yield* askRhea("zoya");
+      const dev = yield* askRhea("dev");
+      const arjun = yield* askRhea("arjun");
+      const rheaLines = yield* team.kinLines(chatOf("chief"));
+
+      // Zoya is removed: Rhea's answer still closes her card, and no turn follows anywhere.
+      const people = yield* People.KinPeople.pipe(
+        Effect.provide(
+          People.layer.pipe(
+            Layer.provide(
+              Layer.mock(SessionStore)({ cookieName: "kin", legacyCookieName: undefined }),
+            ),
+            Layer.provide(Layer.succeedContext(services)),
+          ),
+        ),
+      );
+      yield* people.removeAccess(
+        {
+          sessionId: AuthSessionId.make("owner"),
+          subject: "browser",
+          method: "browser-session-cookie",
+          scopes: AuthStandardClientScopes,
+        },
+        { orgId, personId: KinPersonId.make("zoya") },
+      );
+      yield* tap(owner, zoya.questionId, "option-1", "rhea-zoya");
+      assert.strictEqual((yield* questionRow(sql, zoya.questionId)).state, "answered");
+      // Arjun may still write: his turn waits, in his chat.
+      yield* tap(owner, arjun.questionId, "option-1", "rhea-arjun");
+      // The owner names no team agent now, so neither Dev nor Arjun may message it: Arjun's
+      // waiting turn never runs, and Dev's answer, after, starts none. Set as the owner does it,
+      // so its lead rows need a model, and its teammates are those signed in.
+      yield* sql`UPDATE kin_leads SET models_json = ${encodeLeadModel({ instanceId: providerInstanceId, model: "gpt-5.5" })}`;
+      for (const id of ["dev", "arjun"])
+        yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+          VALUES (${`${id}-session`}, ${orgId}, ${id}, 0)`;
+      yield* Provision.setTeamAgent({
+        editor: { _tag: "person", personId: owner.personId },
+        orgId,
+        agentId: null,
+      }).pipe(Effect.provideContext(services));
+      yield* tap(owner, dev.questionId, "option-1", "rhea-dev");
+      assert.deepStrictEqual(yield* wakes, [
+        { key: `question-answered:${toDev.questionId}`, state: "done", chatId: meeraChat },
+        { key: `question-answered:${arjun.questionId}`, state: "expired", chatId: arjun.chatId },
+      ]);
+      // Each asking chat has Kin's answer line, and Rhea's own chat nothing more.
+      for (const asked of [dev, arjun])
+        assert.include(
+          yield* team.kinLines(asked.chatId),
+          "Rhea Rao answered “Friday” to “Does the shoot move to Friday?”",
+        );
+      assert.deepStrictEqual(yield* team.kinLines(chatOf("chief")), rheaLines);
+      // Her cards close as answered, the removed asker's by no name.
+      for (const [asked, text] of [
+        [zoya, "Sent to the chat that asked."],
+        [dev, "Sent to Dev Malhotra."],
+      ] as const)
+        assert.deepInclude(
+          (yield* team.widgetOf((yield* team.cardOf(asked.questionId)).widgetId!)).state,
+          { outcome: { title: "Answered", text } },
+        );
     }).pipe(Effect.provide(layer)),
   ),
 );

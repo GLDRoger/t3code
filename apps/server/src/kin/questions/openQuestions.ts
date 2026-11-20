@@ -23,6 +23,7 @@ import * as NodeCrypto from "node:crypto";
 import { storedClientId } from "../chat/KinChatRepository.ts";
 import type { KinChatService } from "../chat/KinChatService.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import * as LeadAccess from "../lead/LeadAccess.ts";
 import { effectiveAudience, turnAsker, turnChat } from "../lead/Audience.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
@@ -427,8 +428,9 @@ export const askedBy = (askerName: string | null, agentName: string) =>
 
 /**
  * An answer to a question asked for another chat goes back there, in the answer's transaction:
- * Kin's line in that chat, and one turn of the asker there (`question-answered:<id>`), at that
- * chat's access. Returns the name of the person that chat is with.
+ * Kin's line in that chat, and one turn of the asker answering there (`question-answered:<id>`),
+ * at that chat's access; none when its asker no longer writes there. Returns the name of the
+ * person that chat is with.
  */
 const sendBack = Effect.fn("KinQuestions.sendBack")(function* (
   orgId: KinOrgId,
@@ -468,6 +470,25 @@ const sendBack = Effect.fn("KinQuestions.sendBack")(function* (
     );
   const [lead] = yield* sql<{ ownerChatId: string }>`SELECT owner_chat_id AS "ownerChatId"
     FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${row.agentId}`;
+  const ownerAsked = lead === undefined || lead.ownerChatId === forChatId;
+  const named = asker === undefined ? "the chat that asked" : yield* personName(orgId, asker);
+  // Its turn answers in the chat that asked, so only while its asker still writes there.
+  if (
+    !ownerAsked &&
+    (asker === undefined ||
+      asker !== row.forPersonId ||
+      !(
+        (yield* ownerLevel(orgId, asker)) ||
+        (yield* LeadAccess.allowed({ orgId, agentId: row.agentId, personId: asker }))
+      ))
+  ) {
+    yield* Effect.logInfo("Kin dropped an answer's turn: the chat that asked can't take it", {
+      orgId,
+      questionId: row.questionId,
+      forChatId,
+    });
+    return named;
+  }
   const event = yield* decodeEvent({
     _tag: "deferral.due",
     eventId: KinEventId.make(
@@ -480,14 +501,11 @@ const sendBack = Effect.fn("KinQuestions.sendBack")(function* (
     dedupeKey: `question-answered:${row.questionId}`,
     subject: { type: "question", questionId: row.questionId, answered: true },
     lateByMs: 0,
-    ...(lead === undefined || lead.ownerChatId === forChatId
+    ...(ownerAsked || asker === undefined
       ? {}
       : {
-          origin: {
-            agentId: row.agentId,
-            chatId: forChatId,
-            ...(asker === undefined ? {} : { personId: asker }),
-          },
+          chatId: forChatId,
+          origin: { agentId: row.agentId, chatId: forChatId, personId: asker },
         }),
   }).pipe(Effect.orDie);
   yield* queue.enqueue(event).pipe(
@@ -498,7 +516,7 @@ const sendBack = Effect.fn("KinQuestions.sendBack")(function* (
       KinEventQueueUnknownEvent: () => Effect.fail(notSentBack),
     }),
   );
-  return asker === undefined ? "the chat that asked" : yield* personName(orgId, asker);
+  return named;
 });
 const notSentBack = new KinChatError({
   reason: "conflict",
