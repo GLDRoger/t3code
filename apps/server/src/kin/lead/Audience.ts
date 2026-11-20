@@ -347,6 +347,16 @@ export const askersDirectChat = Effect.fn("KinAudience.askersDirectChat")(functi
   return rows.length > 0;
 });
 
+/** Whether the turn may read `chatId`, by the rule its chat reads use (`KinLevelGate.read`). */
+export const mayReadChat = Effect.fn("KinAudience.mayReadChat")(function* (
+  turn: Turn,
+  chatId: string,
+) {
+  if (yield* aborted(turn)) return false;
+  if ((yield* effectiveAudience(turn)) === "shared") return yield* askedIn(turn, chatId);
+  return (yield* ownerAlone(turn)) || (yield* behindAllIn(turn, chatId));
+});
+
 /**
  * Everyone who is or ever was in the chat is owner-level; none is, in a chat that isn't this
  * org's. A chat someone else could once read stays out of owner-tier reach.

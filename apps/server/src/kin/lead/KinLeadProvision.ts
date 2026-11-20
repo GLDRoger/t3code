@@ -907,8 +907,9 @@ const ownedLead = Effect.fn("KinLeadProvision.ownedLead")(function* (input: {
 });
 
 /**
- * The teammates who may message the agent now, since they were added or last let back. Owners
- * and co-owners message every agent and are never restricted, so they aren't listed.
+ * Everyone who may message the agent now, since they were added or last let back; owners and
+ * co-owners marked, as they are never restricted. `everyone` (the team agent, as older phones
+ * read it) only while no one is restricted from it, so those phones list who can and may lift.
  */
 const accessRows = Effect.fn("KinLeadProvision.accessRows")(function* (lead: LeadSummary) {
   const sql = yield* SqlClient.SqlClient;
@@ -918,18 +919,18 @@ const accessRows = Effect.fn("KinLeadProvision.accessRows")(function* (lead: Lea
     createdAt: string;
     lifted: number | null;
     ownerLevel: number;
+    restricted: number;
   }>`
     SELECT p.person_id AS "personId", p.display_name AS "displayName", p.created_at AS "createdAt",
       (SELECT MAX(rl.lifted_at) FROM kin_reach_limits rl WHERE rl.org_id = p.org_id
         AND rl.one_kind = 'agent' AND rl.one_id = ag.agent_id AND rl.other_kind = 'person'
         AND rl.other_id = p.person_id) AS lifted,
-      ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))} AS "ownerLevel"
+      (${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))}
+        OR p.person_id = ag.owner_person_id) AS "ownerLevel",
+      ${sql.literal(Reach.restrictedSql("p.org_id", "ag.agent_id", "p.person_id"))} AS restricted
     FROM kin_people p
     JOIN kin_agents ag ON ag.org_id = p.org_id AND ag.agent_id = ${lead.agentId}
     WHERE p.org_id = ${lead.orgId} AND p.removed_at IS NULL
-      AND p.person_id IS NOT ag.owner_person_id
-      AND NOT ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))}
-      AND NOT ${sql.literal(Reach.restrictedSql("p.org_id", "ag.agent_id", "p.person_id"))}
     ORDER BY p.created_at, p.person_id`.pipe(
     Effect.mapError(toPersistenceSqlError("KinLeadProvision.accessRows")),
   );
@@ -937,14 +938,16 @@ const accessRows = Effect.fn("KinLeadProvision.accessRows")(function* (lead: Lea
     Effect.mapError(toPersistenceSqlError("KinLeadProvision.accessRows")),
   );
   return {
-    everyone: team === lead.agentId,
-    people: rows.map((row) => ({
-      personId: row.personId,
-      displayName: row.displayName as KinLeadAccessResult["people"][number]["displayName"],
-      since:
-        row.lifted === null ? row.createdAt : DateTime.formatIso(DateTime.makeUnsafe(row.lifted)),
-      ownerLevel: row.ownerLevel === 1,
-    })),
+    everyone: team === lead.agentId && rows.every((row) => row.restricted === 0),
+    people: rows
+      .filter((row) => row.restricted === 0)
+      .map((row) => ({
+        personId: row.personId,
+        displayName: row.displayName as KinLeadAccessResult["people"][number]["displayName"],
+        since:
+          row.lifted === null ? row.createdAt : DateTime.formatIso(DateTime.makeUnsafe(row.lifted)),
+        ownerLevel: row.ownerLevel === 1,
+      })),
   } satisfies KinLeadAccessResult;
 });
 
@@ -992,10 +995,12 @@ export const allow = Effect.fn("KinLeadProvision.allow")(function* (
       }).pipe(Effect.mapError(toPersistenceSqlError("KinLeadProvision.allow")));
       yield* limitRefused(change);
       if (change._tag === "changed") yield* leadsChanged(lead.orgId);
-      yield* chats.createDirect(
-        { _tag: "person", orgId: lead.orgId, personId: input.personId },
-        { orgId: lead.orgId, agentId: lead.agentId },
-      );
+      // Someone removed has the row lifted and no chat opened.
+      if (yield* liveAgain(lead.orgId, Reach.person(input.personId), Reach.agent(lead.agentId)))
+        yield* chats.createDirect(
+          { _tag: "person", orgId: lead.orgId, personId: input.personId },
+          { orgId: lead.orgId, agentId: lead.agentId },
+        );
       return yield* accessRows(lead);
     }),
   );
@@ -1032,6 +1037,10 @@ export const disallow = Effect.fn("KinLeadProvision.disallow")(function* (
   );
 });
 
+/** Both sides of a lifted pair are live and may message each other again. */
+const liveAgain = (orgId: KinOrgId, a: Reach.KinParty, b: Reach.KinParty) =>
+  Reach.reaches(orgId, a, b).pipe(Effect.mapError(toPersistenceSqlError("KinLeadProvision.lift")));
+
 const toReach = (party: KinReachParty): Reach.KinParty =>
   party.kind === "person" ? Reach.person(party.personId) : Reach.agent(party.agentId);
 const fromReach = (kind: "agent" | "person", id: string): KinReachParty =>
@@ -1042,17 +1051,29 @@ const fromReach = (kind: "agent" | "person", id: string): KinReachParty =>
 /** The restrictions that bind now: one stored before someone became a co-owner binds no one. */
 const reachRows = Effect.fn("KinLeadProvision.reachRows")(
   function* (orgId: KinOrgId) {
+    const sql = yield* SqlClient.SqlClient;
     const limits: Array<KinReachListResult["limits"][number]> = [];
     for (const row of yield* Reach.liveLimits(orgId)) {
       const one = fromReach(row.oneKind, row.oneId);
       const other = fromReach(row.otherKind, row.otherId);
-      if ((yield* Reach.mayReach(orgId, toReach(one), toReach(other))) === "restricted")
-        limits.push({
-          one,
-          other,
-          setBy: row.setBy,
-          setAt: DateTime.formatIso(DateTime.makeUnsafe(row.setAt)),
-        });
+      if ((yield* Reach.mayReach(orgId, toReach(one), toReach(other))) !== "restricted") continue;
+      const memberOf = (kind: "agent" | "person", id: string) =>
+        sql`EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = c.org_id
+          AND m.chat_id = c.chat_id AND m.left_at IS NULL AND m.principal_kind = ${kind}
+          AND (CASE m.principal_kind WHEN 'agent' THEN m.agent_id ELSE m.person_id END) = ${id})`;
+      // Untitled rooms have no name to show.
+      const groups = yield* sql<{ title: string }>`SELECT c.title FROM kin_chats c
+        WHERE c.org_id = ${orgId} AND c.kind IN ('team_group', 'project_group')
+          AND c.archived_at IS NULL AND c.title IS NOT NULL
+          AND ${memberOf(row.oneKind, row.oneId)} AND ${memberOf(row.otherKind, row.otherId)}
+        ORDER BY c.title, c.chat_id`;
+      limits.push({
+        one,
+        other,
+        setBy: row.setBy,
+        setAt: DateTime.formatIso(DateTime.makeUnsafe(row.setAt)),
+        groups: groups.map((group) => group.title),
+      });
     }
     const sql = yield* SqlClient.SqlClient;
     const restrictable = yield* sql<{ personId: KinPersonId }>`
@@ -1132,7 +1153,11 @@ export const reachSet = Effect.fn("KinLeadProvision.reachSet")(function* (input:
           const [had] = yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${orgId}
             AND kind = 'direct' AND direct_key = ${LeadAccess.directKey(people[0], agent.agentId)}
             LIMIT 1`.pipe(Effect.mapError(toPersistenceSqlError("KinLeadProvision.reachSet")));
-          if (had !== undefined)
+          // A removed person or retired agent has the row lifted and no chat opened.
+          if (
+            had !== undefined &&
+            (yield* liveAgain(orgId, Reach.person(people[0]), Reach.agent(agent.agentId)))
+          )
             yield* chats.createDirect({ _tag: "person", orgId, personId: people[0] }, lead);
         }
       } else if (people[0] !== undefined && people[1] !== undefined)
@@ -1230,13 +1255,15 @@ const switchTeamAgent = Effect.fn("KinLeadProvision.switchTeamAgent")(function* 
             set_by = excluded.set_by, set_at = excluded.set_at`
   ).pipe(Effect.mapError(sqlError));
   const people = yield* teammates(orgId);
-  // Everyone keeps messaging the previous one (`Reach`); only the new one's chats are opened.
+  // Everyone keeps messaging the previous one (`Reach`); only the new one's chats are opened,
+  // and none for someone restricted from it: the switch goes on all the same.
   if (next !== null)
     for (const personId of people)
-      yield* chats.createDirect(
-        { _tag: "person", orgId, personId },
-        { orgId, agentId: next.agentId },
-      );
+      if (yield* liveAgain(orgId, Reach.person(personId), Reach.agent(next.agentId)))
+        yield* chats.createDirect(
+          { _tag: "person", orgId, personId },
+          { orgId, agentId: next.agentId },
+        );
   yield* leadsChanged(orgId);
   return nextId;
 });

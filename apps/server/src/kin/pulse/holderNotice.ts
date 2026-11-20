@@ -150,9 +150,8 @@ export const noticeHolder = Effect.fn("KinPulse.noticeHolder")(function* (input:
   const chats = yield* Effect.serviceOption(KinChatService);
   if (Option.isNone(chats)) return undefined;
   const sql = yield* SqlClient.SqlClient;
-  // As `createDirect` lets them (`Reach`); a restricted pair hears it from the team agent.
-  const reaches = yield* Reach.reaches(orgId, Reach.person(personId), Reach.agent(input.agentId));
-  const via = reaches ? input.agentId : yield* LeadAccess.teamAgent(orgId);
+  // A restricted pair hears it from the team agent, if that may message them; else no chat.
+  const via = yield* Reach.carrierFor(orgId, personId, input.agentId);
   if (via === null) return undefined;
   const [open] = yield* sql<{ chatId: string }>`SELECT c.chat_id AS "chatId" FROM kin_chats c
     JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id

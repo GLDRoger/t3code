@@ -309,7 +309,6 @@ export const tellHolding = Effect.fn("KinAssignNotices.tell")(function* (
       owner_person_id AS owner FROM kin_agents
     WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId}`;
   if (agent === undefined) return { told, waits };
-  const teamAgent = yield* LeadAccess.teamAgent(turn.orgId);
   const fallbackZone = yield* ownerZone(turn.orgId);
   const byPerson = new Map<string, Array<AssignNotice>>();
   for (const notice of notices)
@@ -324,12 +323,8 @@ export const tellHolding = Effect.fn("KinAssignNotices.tell")(function* (
         AND left_at IS NULL LIMIT 1`;
       if (reading.length > 0) continue;
     }
-    const mayMessage = yield* Reach.reaches(
-      turn.orgId,
-      Reach.person(person),
-      Reach.agent(turn.agentId),
-    );
-    const via = mayMessage ? turn.agentId : teamAgent;
+    // No agent that may message them carries it: the task is on their own Tasks all the same.
+    const via = yield* Reach.carrierFor(turn.orgId, person, turn.agentId);
     if (via === null) continue;
     const [open] = yield* sql<{ chatId: string }>`SELECT c.chat_id AS "chatId" FROM kin_chats c
       JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id

@@ -58,6 +58,7 @@ import { KinAttachmentStore } from "../chat/KinAttachmentStore.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinGroups } from "../chat/KinGroups.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import * as Reach from "../lead/Reach.ts";
 import { toPersistenceSqlError, PersistenceSqlError } from "../../persistence/Errors.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
@@ -609,7 +610,18 @@ export const make = Effect.gen(function* () {
               Effect.provideService(SqlClient.SqlClient, sql),
               Effect.mapError(toPersistenceSqlError("KinPeople.teamAgent")),
             );
-            if (teamAgent !== null)
+            // A teammate restricted from it hears in their own chats instead; joining goes on.
+            if (
+              teamAgent !== null &&
+              (yield* Reach.reaches(
+                member.orgId,
+                Reach.person(personId),
+                Reach.agent(teamAgent),
+              ).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.mapError(toPersistenceSqlError("KinPeople.teamAgentReach")),
+              ))
+            )
               told.push(
                 (yield* chats.value.createDirect(
                   { _tag: "person", orgId: member.orgId, personId },

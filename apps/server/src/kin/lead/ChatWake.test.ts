@@ -689,24 +689,29 @@ describe("ChatWake", () => {
           "chat-message:second:lead-a",
           "chat-message:owners:lead-a",
         ]);
-        // Told once, however many more arrive.
-        assert.deepStrictEqual(yield* notices, [
-          {
-            body: "Lead has answered as much as it can for you today and didn't see your last message. Send it again later.",
-          },
-        ]);
+        // Told once, however many more arrive that hour.
+        const capped = {
+          body: "Lead has answered as much as it can for you today and didn't see your last message. Send it again later.",
+        };
+        assert.deepStrictEqual(yield* notices, [capped]);
+        // An hour on and still capped, the next one hears it again rather than silence.
+        yield* TestClock.adjust("61 minutes");
+        yield* say("an-hour-on", 6);
+        yield* say("and-another", 7);
+        yield* settle;
+        assert.deepStrictEqual(yield* notices, [capped, capped]);
 
         // The turns age out a day after they were asked for.
         yield* TestClock.adjust("25 hours");
-        yield* say("next-day", 6);
+        yield* say("next-day", 8);
         yield* settle;
         assert.include(keys(attempts), "chat-message:next-day:lead-a");
 
         yield* restrict("limit-2");
-        yield* say("after", 7);
+        yield* say("after", 9);
         yield* settle;
         assert.notInclude(keys(attempts), "chat-message:after:lead-a");
-        assert.lengthOf(yield* notices, 1);
+        assert.lengthOf(yield* notices, 2);
       }).pipe(
         Effect.provide(
           Layer.merge(
@@ -752,16 +757,24 @@ describe("ChatWake", () => {
       const notices = sql<{ chat: string; body: string }>`SELECT chat_id AS chat, body
         FROM kin_messages WHERE org_id = 'a' AND author_kind = 'system' ORDER BY chat_id`;
 
-      yield* say("group-first", 1, "group");
-      yield* say("group-tap", 2, "group", "approve");
+      // Restricted from the lead, the group is no way to wake it, and the room hears nothing.
+      yield* sql`INSERT INTO kin_reach_limits (limit_id, org_id, one_kind, one_id, other_kind,
+          other_id, set_by_person_id, set_at)
+        VALUES ('limit-group', 'a', 'agent', 'lead-a', 'person', 'mate', 'owner-a', 0)`;
+      yield* say("group-restricted", 1, "group");
+      yield* settle;
+      assert.deepStrictEqual(keys(attempts), []);
+      yield* sql`UPDATE kin_reach_limits SET lifted_at = 1, lifted_by_person_id = 'owner-a'`;
+      yield* say("group-first", 2, "group");
+      yield* say("group-tap", 3, "group", "approve");
       // The day's turns are used up in the group, so the direct chat and the group both stop.
       yield* say("direct-after", 1, "mate-chat");
-      yield* say("group-after", 3, "group");
+      yield* say("group-after", 4, "group");
       yield* hub.publish({
         type: "message.posted",
         orgId: KinOrgId.make("a"),
         message: decodeMessage({
-          ...message("a", "owner-in-group", { chat: "group", seq: 4 }),
+          ...message("a", "owner-in-group", { chat: "group", seq: 5 }),
           author: { _tag: "human", personId: "owner-a", memberId: "owner-in-group" },
         }),
       });

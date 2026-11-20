@@ -13,7 +13,7 @@ type Pair = {
 export const directKey = (personId: KinPersonId, agentId: KinAgentId) => `${personId}:${agentId}`;
 
 /** The org's team agent while it is a live lead: it answers in the company chat and for notices. */
-export const teamAgentSql = (sql: SqlClient.SqlClient, orgId: KinOrgId) => sql`(
+const teamAgentSql = (sql: SqlClient.SqlClient, orgId: KinOrgId) => sql`(
     SELECT o.agent_id FROM kin_team_agents o
     JOIN kin_agents t ON t.org_id = o.org_id AND t.agent_id = o.agent_id
       AND t.role = 'lead' AND t.retired_at IS NULL

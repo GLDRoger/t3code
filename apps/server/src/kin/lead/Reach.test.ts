@@ -122,6 +122,17 @@ it.effect(
       assert.deepStrictEqual(yield* limit("rhea", p("dev"), p("zoya")), { _tag: "changed" });
       assert.strictEqual(yield* reach(p("zoya"), p("dev")), "restricted");
 
+      // A notice Kin sends goes through an agent that may message them: the team agent when
+      // the one at hand may not, and none when neither may.
+      yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+        VALUES (${orgId}, 'chief', 'rhea', 0)`;
+      const via = (person: string, agent: string) =>
+        Reach.carrierFor(orgId, KinPersonId.make(person), KinAgentId.make(agent));
+      assert.strictEqual(yield* via("arjun", "finance"), "finance");
+      assert.strictEqual(yield* via("dev", "finance"), "chief");
+      yield* limit("rhea", p("arjun"), a("finance"));
+      assert.isNull(yield* via("arjun", "finance"));
+
       // Someone removed, or an agent retired, is reached by no one.
       yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = 'zoya'`;
       assert.strictEqual(yield* reach(a("chief"), p("zoya")), "removed");

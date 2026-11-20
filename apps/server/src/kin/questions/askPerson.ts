@@ -22,11 +22,13 @@ import {
   aborted,
   askersDirectChat,
   effectiveAudience,
+  mayReadChat,
   turnAsker,
   turnPeople,
 } from "../lead/Audience.ts";
 import { arrivesNote } from "../lead/Handoff.ts";
 import type { KinLevelGate } from "../lead/LevelGate.ts";
+import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import * as Reach from "../lead/Reach.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { signedIn } from "../people/signedIn.ts";
@@ -168,6 +170,16 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
       });
       if (!(yield* Reach.reaches(orgId, Reach.person(target.id), Reach.agent(agentId))))
         return yield* unreached;
+      // Whoever it is asked for must reach them too, whichever agent carries it.
+      if (
+        asker !== null &&
+        (yield* Reach.mayReach(orgId, Reach.person(asker), Reach.person(target.id))) ===
+          "restricted"
+      )
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: Reach.restrictedLine(target.name, askerName ?? "they", askerName),
+        });
       const direct = yield* deps.chat
         .createDirect({ _tag: "person", orgId, personId: target.id }, { orgId, agentId })
         .pipe(Effect.mapError(() => unreached));
@@ -201,17 +213,28 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
         };
       }
       const open = yield* openFor(orgId, target.id);
+      // Its wording and asker are quoted only to a turn that may read the card or the chat it is for.
+      const readable = Effect.fn("KinQuestions.askPerson.readable")(function* (
+        row: (typeof open)[number],
+      ) {
+        if (yield* mayReadChat(turn, row.chatId)) return true;
+        return row.forChatId !== null && (yield* mayReadChat(turn, row.forChatId));
+      });
       const repeat = open.find((row) => askedAgain({ intent, about }, row));
       if (repeat !== undefined)
         return yield* refuse(
-          `${repeat.agentName} already asked ${target.name} that: “${repeat.question}”. It waits on ${target.name}; don't ask it again.`,
+          (yield* readable(repeat))
+            ? `${repeat.agentName} already asked ${target.name} that: “${repeat.question}”. It waits on ${target.name}; don't ask it again.`
+            : `${target.name} already has an open question on this; don't ask it again.`,
         );
       const forOthers = open.filter((row) => row.forChatId !== null);
       if (forOthers.length >= ASKED_FOR_PER_PERSON)
         return yield* refuse(
-          `${ASKED_FOR_PER_PERSON} questions asked for others already wait on ${target.name}: ${forOthers
-            .map((row) => `“${row.question}” (${row.agentName})`)
-            .join(", ")}.`,
+          (yield* Effect.forEach(forOthers, readable)).every(Boolean)
+            ? `${ASKED_FOR_PER_PERSON} questions asked for others already wait on ${target.name}: ${forOthers
+                .map((row) => `“${row.question}” (${row.agentName})`)
+                .join(", ")}.`
+            : `${ASKED_FOR_PER_PERSON} questions asked for others already wait on ${target.name}.`,
         );
       if (
         asker === null &&
@@ -282,6 +305,8 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
         },
         (widget) => store(widget === null ? null : widget.widgetId),
       );
+      // Asked after an outside read, its answer wakes a turn that has read outside text too.
+      yield* stampEvent(orgId, questionId, yield* outsideStamp(turn));
       const joined = yield* signedIn(orgId, target.id);
       if ("_tag" in posted) {
         yield* arrivesNote(

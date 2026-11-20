@@ -9,7 +9,7 @@ import {
   type KinChatId,
   type KinEvent,
   KinMemoryItemId,
-  type KinMessageId,
+  KinMessageId,
   type KinOrgId,
   KinPersonId,
   type KinWidgetId,
@@ -787,6 +787,22 @@ it.effect(
             request: "Yours.",
             sourceEventId: "mate-event",
           });
+        // Restricted from the Tech lead, Arjun's request isn't handed to it in the group.
+        const pair = (restricted: boolean) =>
+          Reach.setLimit({
+            orgId,
+            by: ctx.owner.personId,
+            a: Reach.person(KinPersonId.make("mate")),
+            b: Reach.agent(tech),
+            restricted,
+          });
+        yield* pair(true);
+        assert.strictEqual(
+          (yield* Effect.flip(pass("Tech lead"))).message,
+          "Arjun and Tech lead can't message each other here, so nothing was sent. Tell Arjun in one line that the owner can lift it. Don't try another way.",
+        );
+        assert.lengthOf(yield* sql`SELECT 1 FROM kin_handoffs WHERE org_id = ${orgId}`, 0);
+        yield* pair(false);
         assert.deepStrictEqual(yield* pass("Tech lead"), { to: "Tech lead", passed: true });
         yield* pass("engineering");
         const events = yield* sql<{ agentId: string; json: string }>`SELECT agent_id AS "agentId",
@@ -948,6 +964,21 @@ it.effect(
           "Dev Kulkarni and Chief of staff can't message each other here, so nothing was sent. Tell Zoya Sheikh in one line that the owner can lift it. Don't try another way.",
         );
         yield* restrict(false);
+        // Zoya and Dev restricted: no agent carries her words to him.
+        const people = (restricted: boolean) =>
+          Reach.setLimit({
+            orgId,
+            by: owner.personId,
+            a: Reach.person(KinPersonId.make("zoya")),
+            b: Reach.person(KinPersonId.make("dev")),
+            restricted,
+          });
+        yield* people(true);
+        assert.strictEqual(
+          (yield* Effect.flip(sideways)).message,
+          "Dev Kulkarni and Zoya Sheikh can't message each other here, so nothing was sent. Tell Zoya Sheikh in one line that the owner can lift it. Don't try another way.",
+        );
+        yield* people(false);
         // Dev never signed in: it waits in his chat, and the result says so.
         assert.deepStrictEqual(yield* sideways, {
           to: "Dev Kulkarni",
@@ -991,6 +1022,61 @@ it.effect(
         yield* sql`UPDATE kin_events SET json = ${JSON.stringify({ messageId: later.messageId, chatId: ctx.chiefChat })}
           WHERE event_id = 'go-event'`;
         assert.deepStrictEqual(yield* forWhom(["go-run"]), []);
+
+        // Dev answers what Zoya's relay asked him, and his turn relays that to the owner: an
+        // answer, so the work the owner's next message starts is the owner's own.
+        const devChat = (yield* chatOf("dev"))! as KinChatId;
+        const reply = yield* ctx.chats.send(
+          { _tag: "person", orgId, personId: "dev" as KinPersonId },
+          { chatId: devChat, body: "Yes, I can take W-7.", clientMessageId: "dev-yes" },
+        );
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, run_id, model, started_at, status, event_ids)
+          VALUES ('dev-wake', ${orgId}, ${chief}, 'dev-run', 'test', 0, 'completed', '[]')`;
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+          VALUES ('dev-event', ${orgId}, ${chief}, 'chat.message', 'P0',
+            ${JSON.stringify({ messageId: reply.messageId, chatId: devChat })}, 0, 0, 'done', 'dev-wake')`;
+        yield* ctx.chats.notice({
+          orgId,
+          chatId: ctx.chiefChat,
+          audience: "chat",
+          messageId: KinMessageId.make("kin-relay:dev-wake:to-owner"),
+          body: 'Dev Kulkarni asked Chief of staff:\n"Yes, I can take W-7."',
+          from: chief,
+          relay: { kind: "sent_by", agentId: chief, personId: KinPersonId.make("dev") },
+        });
+        const van = yield* ctx.chats.send(owner, {
+          chatId: ctx.chiefChat,
+          body: "Good, then book the van.",
+          clientMessageId: "owner-van",
+        });
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, run_id, model, started_at, status, event_ids)
+          VALUES ('van-wake', ${orgId}, ${chief}, 'van-run', 'test', 0, 'completed', '[]')`;
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+          VALUES ('van-event', ${orgId}, ${chief}, 'chat.message', 'P0',
+            ${JSON.stringify({ messageId: van.messageId, chatId: ctx.chiefChat })}, 0, 0, 'done', 'van-wake')`;
+        assert.deepStrictEqual(yield* forWhom(["van-run"]), []);
+
+        // Finished work for Zoya her turn sent nothing about: Kin's one line, in her chat.
+        const lines = (chatId: string) =>
+          sql<{ body: string }>`SELECT body FROM kin_messages WHERE chat_id = ${chatId}
+            AND message_id LIKE 'kin-work-done:%' ORDER BY seq`.pipe(
+            Effect.map((rows) => rows.map((row) => row.body)),
+          );
+        const owed = [
+          { eventId: "finished", personId: KinPersonId.make("zoya") },
+          { eventId: "finished", personId: KinPersonId.make("dev") },
+        ];
+        // Its turn did send Dev the outcome, held for his hours: he gets no second word.
+        yield* sql`INSERT INTO kin_held_posts (hold_id, org_id, chat_id, person_id, kind, body,
+            audience, held_at, deliver_at, agent_id, waits, relay_json)
+          VALUES ('held-outcome', ${orgId}, ${devChat}, 'dev', 'kin-relay:go-wake:dev', 'Done.',
+            'chat', 0, 0, ${chief}, 0, NULL)`;
+        yield* handoff.workDone({ orgId, agentId: chief, wakeupId: "go-wake", owed });
+        yield* handoff.workDone({ orgId, agentId: chief, wakeupId: "go-wake", owed });
+        assert.deepStrictEqual(yield* lines(theirs), [
+          "The work Chief of staff started for your request is finished; the owner's side has the result.",
+        ]);
+        assert.deepStrictEqual(yield* lines(devChat), []);
       }),
     ),
 );

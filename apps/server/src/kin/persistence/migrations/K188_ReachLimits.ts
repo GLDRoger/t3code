@@ -2,9 +2,10 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 /**
- * Restricted pairs (`lead/Reach.ts`), stored once sorted by (kind, id) so each holds both ways.
- * Access rows revoked by hand carry over; a revoke stamped at the person's removal instant is the
- * removal's (`KinPeople`), and team-agent and owner-level rows never closed anything.
+ * Restricted pairs (`lead/Reach.ts`), sorted by (kind, id) to hold both ways. Hand revokes carry;
+ * one at the person's removal instant is the removal's (`KinPeople`).
+ * A hand revoke of a pair open anyway (team agent, owner-level) closed nothing then; not carried.
+ * A removal revoke that reads as hand-set after a second Remove carries: closed, and liftable.
  */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

@@ -263,6 +263,16 @@ export class KinHandoff extends Context.Service<
       readonly agentId: KinAgentId;
       readonly wakeupId: string;
     }) => Effect.Effect<void>;
+    /**
+     * A wake-up that finished work for a teammate's relayed request (`workFor`) ended: each one
+     * it sent nothing gets one Kin line in their chat with the agent, so none is left unanswered.
+     */
+    readonly workDone: (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+      readonly wakeupId: string;
+      readonly owed: ReadonlyArray<{ readonly eventId: string; readonly personId: KinPersonId }>;
+    }) => Effect.Effect<void>;
   }
 >()("t3/kin/lead/Handoff/KinHandoff") {}
 
@@ -749,6 +759,18 @@ const make = Effect.gen(function* () {
         "No other agent is in this group. Answer it yourself, or take it private with kin_take_private.",
       );
     const target = yield* pick(others, input.to);
+    // Being in one group doesn't carry a request across a restricted pair.
+    if (
+      !(yield* Reach.reaches(
+        ctx.orgId,
+        Reach.person(ask.personId),
+        Reach.agent(target.agentId),
+      ).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+    )
+      return yield* new KinChatError({
+        reason: "not_allowed",
+        message: Reach.restrictedLine(ask.personName, target.name, ask.personName),
+      });
     const { messageId } = ask.message;
     const claimed = yield* sql<{ toAgentId: KinAgentId }>`INSERT INTO kin_handoffs
         (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at, wants_answer)
@@ -884,6 +906,24 @@ const make = Effect.gen(function* () {
             ),
     });
     if (reach !== "allowed") return yield* unreached;
+    // Whoever the words are from must reach them too, whichever agent carries them.
+    const fromRestricted = Effect.fn("KinHandoff.relay.fromRestricted")(function* (
+      from: KinPersonId,
+      name: string | undefined,
+    ) {
+      if (from === to.personId) return;
+      const pair = yield* Reach.mayReach(
+        ctx.orgId,
+        Reach.person(from),
+        Reach.person(to.personId),
+      ).pipe(access);
+      if (pair === "restricted")
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: Reach.restrictedLine(to.name, name ?? "they", name ?? null),
+        });
+    });
+    if (sender !== null) yield* fromRestricted(KinPersonId.make(sender), senderRow?.name);
     const theirChat =
       to.personId === self.owner
         ? self.ownerChatId
@@ -940,6 +980,12 @@ const make = Effect.gen(function* () {
     const asker = askers.length === 1 ? askers[0] : undefined;
     if (asker === undefined)
       return yield* refuse("Only one person's own request can be passed on from here.");
+    if (asker !== sender)
+      yield* fromRestricted(
+        asker,
+        (yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+          WHERE org_id = ${ctx.orgId} AND person_id = ${asker} ORDER BY person_id`)[0]?.name,
+      );
     const original = yield* routedFrom(ctx, input.sourceEventId);
     if (original === "cleared")
       return yield* new KinChatError({
@@ -1427,7 +1473,56 @@ const make = Effect.gen(function* () {
     Effect.catchCause((cause) => Effect.logError("Kin hand-off report-back failed", { cause })),
   );
 
-  return KinHandoff.of({ leads, handOff, takePrivate, relay, reportBack });
+  const workDone = Effect.fn("KinHandoff.workDone")(
+    function* (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+      readonly wakeupId: string;
+      readonly owed: ReadonlyArray<{ readonly eventId: string; readonly personId: KinPersonId }>;
+    }) {
+      const prefix = relayPrefix(input.wakeupId);
+      for (const { eventId, personId } of input.owed) {
+        const [direct] = yield* sql<{
+          chatId: KinChatId;
+          name: string;
+        }>`SELECT c.chat_id AS "chatId",
+            l.name FROM kin_chats c JOIN kin_leads l ON l.org_id = c.org_id
+              AND l.agent_id = ${input.agentId}
+          WHERE c.org_id = ${input.orgId} AND c.kind = 'direct' AND c.archived_at IS NULL
+            AND c.direct_key = ${`${personId}:${input.agentId}`}`;
+        if (direct === undefined) continue;
+        const sent = yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${input.orgId}
+            AND chat_id = ${direct.chatId} AND (substr(message_id, 1, ${prefix.length}) = ${prefix}
+              OR substr(client_message_id, 1, ${prefix.length + 5}) = ${`send:${prefix}`})
+          UNION ALL SELECT 1 FROM kin_held_posts WHERE org_id = ${input.orgId}
+            AND chat_id = ${direct.chatId} AND substr(kind, 1, ${prefix.length}) = ${prefix}
+          LIMIT 1`;
+        if (sent.length > 0) continue;
+        if (
+          !(yield* Reach.reaches(
+            input.orgId,
+            Reach.person(personId),
+            Reach.agent(input.agentId),
+          ).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+        )
+          continue;
+        const id = NodeCrypto.createHash("sha256")
+          .update(`${eventId}:${personId}`)
+          .digest("hex")
+          .slice(0, 32);
+        yield* chat.notice({
+          orgId: input.orgId,
+          chatId: direct.chatId,
+          audience: "chat",
+          messageId: KinMessageId.make(`kin-work-done:${id}`),
+          body: `The work ${direct.name} started for your request is finished; the owner's side has the result.`,
+        });
+      }
+    },
+    Effect.catchCause((cause) => Effect.logError("Kin finished-work line failed", { cause })),
+  );
+
+  return KinHandoff.of({ leads, handOff, takePrivate, relay, reportBack, workDone });
 });
 
 export const layer = Layer.effect(KinHandoff, make);

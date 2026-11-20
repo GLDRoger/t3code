@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { accessSql } from "../people/KinAccess.ts";
+import { teamAgent } from "./LeadAccess.ts";
 
 // Approvals reach this through KinLevels, so it must not reach the chat service.
 
@@ -43,7 +44,7 @@ export const restrictedLine = (name: string, agentName: string, asker?: string |
   }`;
 
 export const UNRESTRICTABLE = "Owners and co-owners can message everyone.";
-export const OWN_AGENT = "An agent's own owner can always message it.";
+const OWN_AGENT = "An agent's own owner can always message it.";
 
 /**
  * SQL over trusted column names, for `sql.literal`: a live restriction binds this agent and
@@ -135,6 +136,20 @@ export const mayReach = Effect.fn("KinReach.mayReach")(function* (
 
 export const reaches = (orgId: KinOrgId, a: KinParty, b: KinParty) =>
   mayReach(orgId, a, b).pipe(Effect.map((reach) => reach === "allowed"));
+
+/**
+ * The agent a notice to `personId` goes through: `agentId` when they may reach each other, else
+ * the team agent when it may; null when neither may, so it stays on their own Tasks.
+ */
+export const carrierFor = Effect.fn("KinReach.carrierFor")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  agentId: KinAgentId,
+) {
+  if (yield* reaches(orgId, person(personId), agent(agentId))) return agentId;
+  const team = yield* teamAgent(orgId);
+  return team !== null && (yield* reaches(orgId, person(personId), agent(team))) ? team : null;
+});
 
 export type LimitChange =
   | { readonly _tag: "changed" | "unchanged" }

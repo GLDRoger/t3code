@@ -365,6 +365,8 @@ export const KinReachListResult = Schema.Struct({
       other: KinReachParty,
       setBy: KinPersonId,
       setAt: Schema.toEncoded(CanonicalUtcTimestamp),
+      /** Groups both are in: a restriction doesn't take either out of one. An older server leaves it out. */
+      groups: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
     }),
   ),
   /** The people still in the company who aren't owners or co-owners: who can be restricted. */

@@ -221,7 +221,7 @@ const turnEvent = (id: string): OrchestrationV2DomainEvent => ({
 
 /** A lead at `level` with its direct chat; `ask` is an owner message that wakes it. */
 const setup = Effect.fn("test.setup")(function* (input: {
-  readonly level?: "L0" | "L1";
+  readonly level?: "L0" | "L1" | "L2";
   readonly ask?: string;
   /**
    * `own-group`: a group the owner owns, with no one else in it yet; `shared-group`: the same,
@@ -1544,17 +1544,28 @@ it.effect("posts nothing for an L0 lead's reply in a chat its owner didn't place
 );
 
 it.effect.each([
-  { restricted: false, expected: ["agent:Both reviews are with Rhea's go; I've asked her."] },
+  {
+    restricted: false,
+    level: "L0" as const,
+    expected: ["agent:Both reviews are with Rhea's go; I've asked her."],
+  },
   {
     restricted: true,
+    level: "L0" as const,
+    expected: ["system:Ada's reply couldn't be posted: you and Ada can't message each other here."],
+  },
+  // A level the owner set higher carries no reply across a restricted pair either.
+  {
+    restricted: true,
+    level: "L2" as const,
     expected: ["system:Ada's reply couldn't be posted: you and Ada can't message each other here."],
   },
 ])(
-  "a teammate's direct chat: the reply posts there, or one Kin line says why it couldn't (restricted $restricted)",
-  ({ restricted, expected }) =>
+  "a teammate's direct chat: the reply posts there, or one Kin line says why it couldn't (restricted $restricted, $level)",
+  ({ restricted, level, expected }) =>
     Effect.gen(function* () {
       const { fake, runId, complete, posted, sql, owner } = yield* setup({
-        level: "L0",
+        level,
         lane: "teammate",
         ask: "Can you review the two open pull requests?",
       });

@@ -1263,8 +1263,15 @@ it.effect(
       yield* send(priya, chat.chatId, "hers-3");
       assert.strictEqual((yield* contacts).contacts?.[0]?.chatId, chat.chatId);
 
-      // Settings' list of restricted pairs: two people too, whose own chat turns read-only.
+      // Settings' list of restricted pairs: two people too, whose own chat turns read-only, and
+      // the groups both stay in.
       const theirs = yield* priya["kin.chats.withPerson"]({ ...org, personId: samId });
+      yield* owner["kin.groups.create"]({
+        ...org,
+        title: "Shoot crew",
+        agentIds: [],
+        personIds: [samId, priyaId],
+      });
       const pair = {
         ...org,
         a: { kind: "person" as const, personId: samId },
@@ -1274,14 +1281,21 @@ it.effect(
         (yield* owner["kin.reach.set"]({ ...pair, restricted: true })).limits.map((limit) => [
           limit.one,
           limit.other,
+          limit.groups,
         ]),
-        [[pair.b, pair.a]],
+        [[pair.b, pair.a, ["Shoot crew"]]],
       );
       assert.strictEqual(
         yield* refused(priya["kin.reach.set"]({ ...pair, restricted: false })),
         unauthorized,
       );
       assert.include(yield* send(priya, theirs.chatId, "to-sam").pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      // Whatever its member rows say, a write between the pair is refused.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_chat_members SET role = 'member' WHERE chat_id = ${theirs.chatId}`;
+      assert.include(yield* send(priya, theirs.chatId, "to-sam-by-rows").pipe(Effect.flip), {
         reason: "not_allowed",
       });
       assert.include(
@@ -1301,6 +1315,20 @@ it.effect(
         restricted: true,
       }).pipe(Effect.flip);
       assert.deepStrictEqual((yield* owner["kin.reach.list"](org)).limits, []);
+      // Lifting one for someone since removed lifts the row and opens no chat.
+      const samFinance = {
+        ...org,
+        a: { kind: "person" as const, personId: samId },
+        b: { kind: "agent" as const, agentId: finance.agentId },
+      };
+      yield* owner["kin.reach.set"]({ ...samFinance, restricted: true });
+      yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = ${samId}`;
+      yield* owner["kin.reach.set"]({ ...samFinance, restricted: false });
+      assert.deepStrictEqual(
+        yield* sql`SELECT 1 AS live FROM kin_reach_limits WHERE other_id = ${samId}
+          AND lifted_at IS NULL`,
+        [],
+      );
     }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 
