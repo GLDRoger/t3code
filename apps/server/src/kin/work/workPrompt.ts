@@ -168,7 +168,7 @@ export const WORK_RULE =
   "Where work stands comes only from this section and the records tools, never from memory or earlier messages. `changed` lists only what others changed since you last spoke in this chat. Anything not in it you have already reported or nothing happened to it: don't bring it up again unless asked.";
 
 export const MONEY_RULE =
-  "Kin calculated these figures from the records, exactly and per currency. Quote what needs the owner, such as what is overdue and dates coming up; never add, convert or estimate figures yourself.";
+  "Kin calculated these figures from the records, exactly and per currency. Quote what needs the owner, such as what is overdue and dates coming up.";
 
 /** The event line for an open entry the owner closed or took back while this lead held it. */
 export const WITHDRAWN_WORK = `The owner closed this Work entry or took it back from you. If a task you started for it is still working, stop it with task_cancel; start nothing new and leave the entry as it is. Reply only if the owner needs to know something about it, in one line; otherwise write exactly ${SILENT_REPLY}.`;
