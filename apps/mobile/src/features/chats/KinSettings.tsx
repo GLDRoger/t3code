@@ -45,7 +45,7 @@ import { useConnectionController } from "../connection/useConnectionController";
 import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { useSettingsPageBack } from "../settings/useSettingsPageBack";
-import { useKinTab } from "./components/KinTab";
+import { useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinBriefsSection } from "./KinBriefs";
 import { useKinIsHome } from "./state/kinHome";
 import { openKinNotificationSettings } from "./notifications/installKinNotifications";
@@ -253,7 +253,11 @@ export function KinSettings(props: {
         <ScreenScrollView
           className="flex-1"
           contentInsetAdjustmentBehavior="automatic"
-          contentContainerStyle={{ padding: 16, paddingBottom: 32 + bottomClearance, gap: 20 }}
+          contentContainerStyle={{
+            padding: 16,
+            paddingBottom: kinTabFoot(bottomClearance),
+            gap: 20,
+          }}
         >
           <SettingsSection title={you.title}>
             {you.pages.map((page) => {
