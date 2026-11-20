@@ -70,6 +70,7 @@ import { KinStatementToolkit } from "../../apps/server/src/kin/work/mcp/statemen
 import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
 import { KinDocsToolkit } from "../../apps/server/src/kin/work/mcp/docTools.ts";
 import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
+import { KinPictureToolkit } from "../../apps/server/src/kin/pictures/mcp.ts";
 import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
 import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
 import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
@@ -595,6 +596,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   KinStatementToolkit,
   KinDocsToolkit,
   KinDocumentToolkit,
+  KinPictureToolkit,
   KinConnectionsToolkit,
   KinPulseToolkit,
   KinSocialToolkit,
@@ -687,6 +689,8 @@ const visibleT3Tools = (options: {
               ...Object.keys(KinStatementToolkit.tools),
               ...Object.keys(KinDocsToolkit.tools),
               ...Object.keys(KinDocumentToolkit.tools),
+              ...Object.keys(KinPictureToolkit.tools),
+              ...Object.keys(KinPictureToolkit.tools),
               ...Object.keys(KinPulseToolkit.tools),
               ...Object.keys(KinConnectionsToolkit.tools),
               ...(options.kinSocial === true ? Object.keys(KinSocialToolkit.tools) : []),
