@@ -82,6 +82,25 @@ describe("kin release check", () => {
     );
   });
 
+  it("runs every lifecycle script: run-all's list is the scripts folder, less the four that aren't", () => {
+    const dir = NodePath.resolve(import.meta.dirname, "../.agents/skills/verify-kin/scripts");
+    const notLifecycle = ["lib", "run-all", "card-gallery", "provider-conformance"];
+    const files = NodeFS.readdirSync(dir)
+      .filter((file) => file.endsWith(".sh"))
+      .map((file) => file.slice(0, -3))
+      .filter((name) => !notLifecycle.includes(name));
+    const listed = NodeChildProcess.execFileSync(
+      "bash",
+      [NodePath.join(dir, "run-all.sh"), "--list"],
+      {
+        encoding: "utf8",
+      },
+    )
+      .trim()
+      .split("\n");
+    assert.deepStrictEqual(listed.toSorted(), files.toSorted());
+  });
+
   it("records a program that can't start as a failed command instead of crashing the check", async () => {
     const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "kin-release-run-"));
     try {
