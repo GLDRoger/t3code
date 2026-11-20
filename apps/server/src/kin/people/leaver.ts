@@ -157,6 +157,7 @@ export const leaverCards = Effect.fn("KinLeaver.cards")(function* (input: {
                 240,
               ),
               detail,
+              whileOpen: detail,
               options: words.map((one) => ({ label: one.label })),
               actions: words,
               untilAnswered: true,
