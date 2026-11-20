@@ -6,7 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { budgetsAnswer, budgetsView } from "../../work/budgets.ts";
 import { formatMoneyPlain } from "../../work/money.ts";
-import { countedEntry, endOfDay, invoiceDue } from "../../work/recordRows.ts";
+import { countedEntry, daysOverdue, endOfDay, invoiceDue } from "../../work/recordRows.ts";
 import { DAY_MS, type Threshold, threshold, toMs } from "../thresholds.ts";
 import {
   agentOrOwner,
@@ -83,7 +83,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
   for (const row of invoices) {
     const chase = yield* forClient("chase_invoice_after_days", row.clientId);
     if (row.base > at - toMs(chase)) continue;
-    const days = elapsed(row.base, at, "days");
+    const days = daysOverdue(row.base, at, ctx.zone);
     const owed = formatMoneyPlain({ minor: row.amountMinor! - row.paid, currency: row.currency! });
     facts.push(
       moneyFact(ctx, row, {

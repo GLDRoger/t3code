@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinBriefLine, kinBriefProblem, kinBriefSave, kinCheckInDays } from "./kinCheckIns.ts";
+import type { KinCheckIn } from "@t3tools/contracts";
+
+import {
+  kinBriefLine,
+  kinBriefProblem,
+  kinBriefSave,
+  kinCheckInDays,
+  kinCheckInsBeyondBriefs,
+} from "./kinCheckIns.ts";
 
 describe("kinCheckInDays", () => {
   it.each([
@@ -43,5 +51,18 @@ describe("a brief", () => {
     [{ on: false }, ["on"]],
   ])("a save of %j names only %j as changed", (change, changed) => {
     expect(kinBriefSave(morning, { ...morning, ...change }).changed).toEqual(changed);
+  });
+});
+
+describe("kinCheckInsBeyondBriefs", () => {
+  const checkIn = (scheduleId: string) => ({ scheduleId }) as unknown as KinCheckIn;
+  const company = ["checkin-weekly", "checkin-morning", "checkin-evening", "sched-1"].map(checkIn);
+  it("drops the check-ins this person already sees as briefs, and only those", () => {
+    expect(
+      kinCheckInsBeyondBriefs(company, [{ kind: "morning" }, { kind: "evening" }]).map(
+        (one) => one.scheduleId,
+      ),
+    ).toEqual(["checkin-weekly", "sched-1"]);
+    expect(kinCheckInsBeyondBriefs(company, [])).toEqual(company);
   });
 });

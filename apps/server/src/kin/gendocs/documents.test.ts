@@ -783,7 +783,7 @@ describe("recipe documents", () => {
       );
       assert.deepStrictEqual(
         [section?.owedToUs, section?.overdue, section?.byClient[0]?.daysOverdue],
-        ["₹2,36,000.00", "₹2,36,000.00", 6],
+        ["₹2,36,000.00", "₹2,36,000.00", 7],
       );
 
       // The issued document's own figures are kept beside its job, as it was rendered.

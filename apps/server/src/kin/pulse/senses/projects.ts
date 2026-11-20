@@ -4,7 +4,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { fieldList, parseFields } from "../../work/lists.ts";
 import { milestoneRisk, principalOfText, specChangesOf } from "../../work/projectSpine.ts";
 import { KIN_OWNER_LEVEL } from "../../work/teamView.ts";
-import { type RecordRow, selectRecords } from "../../work/recordRows.ts";
+import { daysOverdue, type RecordRow, selectRecords } from "../../work/recordRows.ts";
 import { DAY_MS, HOUR_MS, thresholds, toMs } from "../thresholds.ts";
 import {
   agentOrOwner,
@@ -133,7 +133,7 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
           sense: "milestone_late",
           key: `milestone_late:${row.key}:due=${due}`,
           since: iso(due),
-          consequence: `Milestone was due ${dayOf(ctx, due)}, ${daysText(Math.max(1, elapsed(due, at, "days")))} ago; ${progress}.`,
+          consequence: `Milestone was due ${dayOf(ctx, due)}, ${daysText(Math.max(1, daysOverdue(due, at, ctx.zone)))} ago; ${progress}.`,
           wake: "sweep",
         }),
       );

@@ -3,7 +3,7 @@ import { kinNow } from "./kinNow.ts";
 import { kinWhenFormat, formatKinWhen, kinWhenParts } from "@t3tools/contracts";
 import type { KinMessage, KinMessageWhen, KinPersonProfile } from "@t3tools/contracts";
 
-import { kinSameTimeZone, kinZoneName } from "./kinTimeZone.ts";
+import { kinSameTimeZone, kinZoneLabel } from "./kinTimeZone.ts";
 
 /** "Away until <day>" on a profile: what Kin holds meanwhile, and the way back. */
 export const KIN_AWAY = {
@@ -63,7 +63,7 @@ export function kinAwayLine(
   const theirs =
     profile.timeZone === null || kinSameTimeZone(profile.timeZone, reader.zone ?? deviceZone())
       ? ""
-      : ` (${kinZoneName(profile.timeZone)})`;
+      : ` (${kinZoneLabel(profile.timeZone)})`;
   return reader.mine ? `You're away until ${day}${theirs}` : `Away until ${day}${theirs}`;
 }
 

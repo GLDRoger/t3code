@@ -1248,13 +1248,14 @@ describe("invoices", () => {
       assert.deepStrictEqual(summary.owed.total, [{ minor: 6_000_000, currency: "INR" }]);
       assert.deepStrictEqual(summary.owed.overdue, [{ minor: 6_000_000, currency: "INR" }]);
       assert.strictEqual(summary.owed.byClient[0]!.party?.title, "Invented Acme");
-      assert.strictEqual(summary.owed.byClient[0]!.oldestOverdueDays, 10);
+      // Due the 1st, read the 12th in the company's zone: 11 calendar days.
+      assert.strictEqual(summary.owed.byClient[0]!.oldestOverdueDays, 11);
       assert.deepStrictEqual(summary.received.thisMonth, [{ minor: 4_000_000, currency: "INR" }]);
       // The morning summary's section carries the same figures, formatted in code.
       const section = moneySection(summary, summary.timeZone);
       assert.deepStrictEqual(
         [section?.owedToUs, section?.byClient[0]?.daysOverdue],
-        ["₹60,000.00", 10],
+        ["₹60,000.00", 11],
       );
 
       // "Received this month" opens the invoices a payment came in against that month.
@@ -2340,8 +2341,8 @@ describe("the owner's taps", () => {
       assert.deepStrictEqual(
         summary.owed.byClient.map((row) => [row.party?.title ?? null, row.oldestOverdueDays]),
         [
-          ["Invented Birch", 71],
-          ["Invented Acme", 10],
+          ["Invented Birch", 72],
+          ["Invented Acme", 11],
           [null, null],
         ],
       );

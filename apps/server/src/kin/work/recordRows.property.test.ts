@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { KinOrgId } from "@t3tools/contracts";
 import * as Arbitrary from "effect/Arbitrary";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -13,7 +14,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { moneySummary } from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL } from "./teamView.ts";
-import { owedInvoices, termsDays } from "./recordRows.ts";
+import { daysOverdue, endOfDay, owedInvoices, startOfDay, termsDays } from "./recordRows.ts";
 
 // Invented org, clients, invoices and payments only.
 const orgId = KinOrgId.make("org");
@@ -258,5 +259,37 @@ layer(testLayer)("money owed", (it) => {
         const given = one === undefined || one.dueAt === null ? undefined : (one.dueAt - NOW) / DAY;
         assert.strictEqual(given, termsDays(text), text);
       }),
+  );
+
+  it.effect.prop(
+    "days overdue are whole calendar days in the company's zone, wherever the server's clock is",
+    [
+      pick(["UTC", "Pacific/Auckland", "America/Los_Angeles", "Asia/Kolkata"]),
+      int(0, 400),
+      int(0, 60),
+      // Under 23 hours, so a day that loses one to daylight saving still holds it.
+      int(0, 23 * 3_600_000 - 1),
+    ],
+    ([zone, from, late, into]) =>
+      Effect.sync(() => {
+        const day = (offset: number) =>
+          DateTime.formatIsoDate(DateTime.makeUnsafe(Date.UTC(2026, 0, 1) + offset * DAY));
+        const now = startOfDay(day(from + late), zone) + into;
+        assert.strictEqual(daysOverdue(endOfDay(day(from), zone), now, zone), late);
+      }),
+  );
+
+  it.effect("an invoice due the 8th is 12 days overdue on the 20th, and due today is none", () =>
+    Effect.sync(() => {
+      const now = Date.parse("2026-11-20T10:38:00.000+05:30");
+      assert.strictEqual(
+        daysOverdue(endOfDay("2026-11-08", "Asia/Kolkata"), now, "Asia/Kolkata"),
+        12,
+      );
+      assert.strictEqual(
+        daysOverdue(endOfDay("2026-11-20", "Asia/Kolkata"), now, "Asia/Kolkata"),
+        0,
+      );
+    }),
   );
 });

@@ -223,7 +223,7 @@ export function KinMessagePage(
           hitSlop={8}
           className="min-h-11 justify-center self-start active:opacity-60"
         >
-          <Text textRole="body" className="font-t3-medium text-foreground">
+          <Text textRole="body" className="font-t3-medium text-primary">
             {cut.label}
           </Text>
         </Pressable>
