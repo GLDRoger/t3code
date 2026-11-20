@@ -100,7 +100,8 @@ export function KinMessageAlerts() {
       const notice = toastManager.add({
         type: "info",
         title,
-        description: body,
+        // Four lines, as a phone's banner shows the same message.
+        description: <span className="line-clamp-4">{body}</span>,
         actionProps: {
           children: KIN_MESSAGE_ALERTS.open,
           onClick: () => {
