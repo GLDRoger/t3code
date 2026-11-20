@@ -434,7 +434,7 @@ export const GetResult = Schema.Struct({
 });
 const CreateRow = Schema.Struct({
   list: Schema.optional(List),
-  title: Schema.optional(Title),
+  title: Title,
   owner: Schema.optional(Who),
   state: Schema.optional(KinRecordState),
   waitingOn: Schema.optional(Who),
@@ -2009,23 +2009,6 @@ const finishedAt = Effect.fnUntraced(function* (
   return (yield* lastContacts(orgId, [partyId], now)).get(partyId);
 });
 
-type TitledRow = typeof CreateRow.Type & { readonly title: string };
-
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-/** A purchase given no title is named by its vendor and month, else by its list's noun. */
-const moneyTitle = (def: ListDef, row: typeof CreateRow.Type) => {
-  const vendor = row.fields?.vendor;
-  const party = row.client !== undefined && !/^C-\d+$/.test(row.client) ? row.client : undefined;
-  const named =
-    (typeof vendor === "string" && vendor.trim() !== "" ? vendor.trim().slice(0, 200) : party) ??
-    def.noun.charAt(0).toUpperCase() + def.noun.slice(1);
-  const day = row.date ?? undefined;
-  return day === undefined
-    ? named
-    : `${named}, ${MONTHS[Number(day.slice(5, 7)) - 1]} ${day.slice(0, 4)}`;
-};
-
 const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
   yield* admitted(lead, "record_create", input);
   // In a turn others read, the write's own check (`viewGuard`) decides what may be made for them.
@@ -2040,7 +2023,7 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
   const notices: Array<AssignNotice> = [];
   const results = yield* allOrNone(
     input.records,
-    (row, index) => `Row ${index + 1} ("${(row.title ?? row.list ?? "").slice(0, 60)}")`,
+    (row, index) => `Row ${index + 1} ("${row.title.slice(0, 60)}")`,
     (row) => createRow(lead, input.sourceEventId, writer, team, source, lists, row, notices),
   );
   return { ...(yield* tell(lead, notices)), records: results };
@@ -2053,17 +2036,13 @@ const createRow = Effect.fnUntraced(function* (
   team: View | undefined,
   source: Effect.Success<ReturnType<typeof sourceOf>>,
   lists: Lists,
-  asked: typeof CreateRow.Type,
+  row: typeof CreateRow.Type,
   notices: Array<AssignNotice>,
 ) {
   const records = yield* KinRecords;
   // Before the list is read, so an expense for a list not made yet says what comes first.
-  if (asked.amount !== undefined) yield* countryFirst(lead.orgId);
-  const def = yield* listFor(lead, asked.list ?? "work");
-  const bought = def.fields.some((one) => one.key === "vendor");
-  const title = asked.title ?? (bought ? moneyTitle(def, asked) : undefined);
-  if (title === undefined) return yield* invalid("Each row needs a title.");
-  const row = { ...asked, title };
+  if (row.amount !== undefined) yield* countryFirst(lead.orgId);
+  const def = yield* listFor(lead, row.list ?? "work");
   const list = def.id;
   // A deal's rules are `deals.ts`'s, whoever writes it.
   if (list === "deals") return yield* dealRow(lead, sourceEventId, writer, def, lists, row);
@@ -2328,7 +2307,7 @@ const dealRow = Effect.fnUntraced(function* (
   writer: Writer,
   def: ListDef,
   lists: Lists,
-  row: TitledRow,
+  row: typeof CreateRow.Type,
 ) {
   if (row.client === undefined)
     return yield* invalid("A deal needs its client or prospect: give client.");

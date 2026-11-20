@@ -891,53 +891,6 @@ describe("lists through the tools", () => {
       }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("title an expense from its vendor and month when the agent gives none", () =>
-    Effect.gen(function* () {
-      yield* seed;
-      yield* defined(1, { template: "expenses" });
-      const mailed = yield* turn(3, "Fwd: Your receipt", ["a.pdf", "b.pdf", "c.pdf", "d.pdf"]);
-      const made = yield* LeadWork.create(scope, {
-        sourceEventId: mailed,
-        records: [
-          {
-            list: "expenses",
-            title: "Invented Cloud Pro, Nov 2026",
-            amount: "₹1,770",
-            date: "2026-11-10",
-            fields: { vendor: "Invented Cloud", receipt: ["a.pdf"] },
-          },
-          {
-            list: "expenses",
-            amount: "₹590",
-            date: "2026-11-12",
-            fields: { vendor: "Invented API", receipt: ["b.pdf"] },
-          },
-          {
-            list: "expenses",
-            amount: "₹200",
-            fields: { vendor: "Invented Cabs", receipt: ["c.pdf"] },
-          },
-          { list: "expenses", date: "2026-10-03", suggested: true, fields: { receipt: ["d.pdf"] } },
-        ],
-      });
-      assert.deepStrictEqual(
-        made.records.map((one) => one.title),
-        [
-          "Invented Cloud Pro, Nov 2026",
-          "Invented API, Nov 2026",
-          "Invented Cabs",
-          "Expense, Oct 2026",
-        ],
-      );
-      // Only an entry's own details make a title; a task without one is refused.
-      const untitled = yield* LeadWork.create(scope, {
-        sourceEventId: mailed,
-        records: [{ list: "work" }],
-      }).pipe(Effect.flip);
-      assert.include(untitled, { reason: "invalid_state" });
-    }).pipe(Effect.provide(layer)),
-  );
-
   it.effect("record one charge mailed as an invoice and a receipt once, keeping both files", () =>
     Effect.gen(function* () {
       yield* seed;
