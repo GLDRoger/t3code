@@ -8,6 +8,7 @@ import { KinCompanyProfileSettings } from "../kin/KinCompanyProfile";
 import { KinCompanyTimeZoneSetting } from "../kin/KinCompanyTimeZone";
 import { KinAgentsSetting } from "../kin/KinAgentsSetting";
 import { KinDailyLimitSetting } from "../kin/KinDailyLimit";
+import { KinStopSetting } from "../kin/KinStopSetting";
 
 // Moved into Kin's Settings; this address goes there once Kin's host is known.
 function SettingsCompanyRoute() {
@@ -22,6 +23,7 @@ function SettingsCompanyRoute() {
           </SettingsSection>
           <KinCompanyTimeZoneSetting />
           <KinDailyLimitSetting />
+          <KinStopSetting />
           <KinAgentsSetting />
         </SettingsPageContainer>
       }

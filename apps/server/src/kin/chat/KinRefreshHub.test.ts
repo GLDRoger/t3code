@@ -103,7 +103,7 @@ describe("KinRefreshHub", () => {
   );
 
   it.effect(
-    "tells a teammate only about their own lead list, people, the time zone, the lists she sees and what needs attention, never the owner's reads",
+    "tells a teammate only about their own lead list, people, the time zone, the lists she sees, the stop switch and what needs attention, never the owner's reads",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -138,6 +138,7 @@ describe("KinRefreshHub", () => {
           leads: 0,
           pulse: 0,
           workLists: 0,
+          stop: 0,
           company: 0,
           boot,
           streams: KIN_STREAMS,
@@ -187,6 +188,7 @@ describe("KinRefreshHub", () => {
           leads: 1,
           pulse: 0,
           workLists: 0,
+          stop: 0,
           company: 0,
           boot,
           streams: KIN_STREAMS,
@@ -207,6 +209,10 @@ describe("KinRefreshHub", () => {
         );
         yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
         assert.deepStrictEqual(yield* Queue.take(priyaSees), { ...moved, company: 1 });
+        // The owner stops every agent: she hears it, so her chat says why nobody answers.
+        yield* sql.withTransaction((yield* RefreshHub.KinRefreshObserver).touch(me.orgId, "stop"));
+        yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+        assert.deepStrictEqual(yield* Queue.take(priyaSees), { ...moved, company: 1, stop: 1 });
       }).pipe(Effect.scoped, Effect.provide(paired)),
   );
 
@@ -356,6 +362,8 @@ describe("KinRefreshHub", () => {
         "github/appRepos.ts",
       ],
       kin_budget_limits: ["lead/KinBudget.ts"],
+      // Pause and resume touch `stop` (KinStop.test.ts counts them).
+      kin_org_state: ["lead/KinStop.ts"],
       // A zone change renames due-keyed facts; KinRoutines.configure touches pulse (pinned below).
       kin_pulse_facts: ["pulse/KinPulse.ts", "work/allDayZone.ts"],
       // Lists read only rows a company defined (`built_in = 0`). The deals files write the built-in

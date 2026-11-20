@@ -1013,6 +1013,19 @@ features:
       - apps/server/src/kin/lead/KinStop.test.ts
       - apps/server/src/kin/chat/rpcHandlers.test.ts
 
+  - id: stop-switch
+    name: Stop all agents, and resume them
+    tab: settings
+    web: [settings, section:Company details, section:All agents]
+    phone: [SettingsKin, KinCompany, section:All agents]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      While agents are stopped, every chat with an agent says so above the box, for every member
+      (a member cannot stop or resume them), and it follows the switch without a reload.
+    proof:
+      - packages/client-runtime/src/kin/kinStop.test.ts
+      - apps/server/src/kin/lead/KinStop.test.ts
+
   - id: recommendations
     name: Recommendations, a setting Kin suggests changing
     tab: settings
@@ -1399,9 +1412,6 @@ unlisted:
   "web:?person": Starts Tasks narrowed to what one person holds, from their page's See all in Tasks; not a screen.
   "web:?section": Scrolls the open doc to a section; not a screen.
   "web:?from": The base version of the compare view (`?changes`); not a screen.
-  "rpc:kin.org.get": Served; no client calls it yet (the company's paused state).
-  "rpc:kin.org.pause": Served; no client offers the company stop switch yet.
-  "rpc:kin.org.resume": Served; no client offers the company stop switch yet.
   "rpc:kin.lead.access.list": Served; no client shows an agent's access grants yet.
   "rpc:kin.lead.access.grant": Served; no client grants an agent access yet.
   "rpc:kin.lead.access.revoke": Served; no client revokes an agent's access yet.

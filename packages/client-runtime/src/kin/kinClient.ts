@@ -21,6 +21,7 @@ import {
   type KinDocsListInput,
   type KinDocsSubscribeInput,
   type KinBudgetGetInput,
+  type KinOrgGetInput,
   type KinGoalsInput,
   type KinBriefsInput,
   type KinCheckInsInput,
@@ -284,6 +285,11 @@ export function makeKinClient<R, ER>(
     tag: "kin.budget.get",
   });
   const readBudget = kinGuardedRead(budgetRead);
+  const orgStateRead = createKinRpcCommand(runtime, {
+    label: "kin:org:read",
+    tag: "kin.org.get",
+  });
+  const readOrgState = kinGuardedRead(orgStateRead);
   const pulseRead = createKinRpcCommand(runtime, {
     label: "kin:pulse:read",
     tag: "kin.pulse.read",
@@ -1309,6 +1315,25 @@ export function makeKinClient<R, ER>(
     budgetSet: createKinRpcCommand(runtime, {
       label: "kin:budget:set",
       tag: "kin.budget.set",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+    }),
+    /** The company stop switch, for every member; the reason only reaches owners. */
+    orgState: createKinQueryAtomFamily(runtime, {
+      label: "kin:org",
+      execute: Effect.fn("KinClient.orgState")(function* (input: KinOrgGetInput) {
+        return yield* readOrgState(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinRefreshOn("stop"),
+    }),
+    orgPause: createKinRpcCommand(runtime, {
+      label: "kin:org:pause",
+      tag: "kin.org.pause",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+    }),
+    orgResume: createKinRpcCommand(runtime, {
+      label: "kin:org:resume",
+      tag: "kin.org.resume",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
     }),
     workLive,
