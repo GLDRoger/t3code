@@ -352,6 +352,7 @@ const watchContext = (agentPosts?: ReadonlySet<string>): DecideContext => ({
   draftSeen: false,
   botLogin: BOT,
   agentPosts,
+  writes: (login) => login === "invented-owner",
 });
 
 describe("the gh a Kin agent's shell runs", () => {

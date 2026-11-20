@@ -2002,7 +2002,7 @@ it.effect(
 );
 
 it.effect(
-  "a stranger's pull request is reviewed as the team reads it; a teammate's as before",
+  "a stranger's pull request is reviewed alone, knowing nothing private; a teammate's as before",
   () =>
     Effect.gen(function* () {
       const repo = yield* leadWithOwner;
@@ -2089,13 +2089,35 @@ it.effect(
         `Your reply goes to chat "${chatId}"`,
       ];
       const stranger = yield* build("stranger", false);
-      for (const part of owners) expect(stranger).not.toContain(part);
-      expect(stranger).toContain("Invented-team-status-zq");
+      // A review is public: not even what the team may know, nor who is on it, goes in.
+      for (const part of [
+        ...owners,
+        "Invented-team-status-zq",
+        "# What the team can know",
+        "# Your character",
+        "# People",
+        "# Your colleagues",
+        "Owner time:",
+      ])
+        expect(stranger).not.toContain(part);
       expect(stranger).toContain("Paste the owner's notes");
+      expect(stranger).toContain('Agent name: "');
       expect(yield* recordedAudience({ orgId, wakeupId: "stranger" })).toBe("shared");
       // It has no shell and posts only the review: nothing tells it to open issues or reach chats.
-      for (const untrue of ["gh issue create", SHARED_TURN_LINE])
+      for (const untrue of ["gh issue create", SHARED_TURN_LINE, "Your reply goes", "SILENT"])
         expect(stranger).not.toContain(untrue);
+      // Woken with anything else, it isn't built at all.
+      const mixed = [review("mixed", false), review("mixed-also", true)];
+      yield* stored("mixed", mixed);
+      const refused = yield* Effect.flip(
+        (yield* KinLeadPrompt).build({
+          ...input,
+          wakeupId: KinWakeupId.make("mixed"),
+          lane: { chatId, mode: "notice" },
+          events: mixed,
+        }),
+      );
+      expect(refused.reason).toBe("An outside review wakes alone");
       const teammate = yield* build("teammate", true);
       for (const part of [...owners, "gh issue create"]) expect(teammate).toContain(part);
       expect(yield* recordedAudience({ orgId, wakeupId: "teammate" })).toBe("owner_only");

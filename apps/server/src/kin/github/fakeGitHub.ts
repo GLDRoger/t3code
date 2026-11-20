@@ -25,6 +25,8 @@ export interface FakeRepo {
   classic?: Record<string, unknown>;
   /** Logins GitHub lists as able to read it, besides the user. */
   collaborators?: string[];
+  /** Each login's role here as GitHub's permission read says it; unlisted, see `permissionOf`. */
+  roles?: Record<string, "admin" | "maintain" | "write" | "triage" | "read" | "none">;
 }
 export interface FakeRuleset {
   id: number;
@@ -84,6 +86,8 @@ export interface FakeItem {
   updated_at?: number;
   /** Each push to the PR: the head it moved from and to, and what it changed. */
   pushes?: { from: string; to: string; diff: string }[];
+  /** Its timeline's label events, oldest first, as `issues/{n}/events` lists them. */
+  labelEvents?: { label: string; actor: string }[];
 }
 export interface FakeComment {
   id: number;
@@ -151,6 +155,8 @@ export interface FakeWorld {
   down: number | null;
   /** Paths that answer 502 while listed, as GitHub does in a short outage. */
   failing?: string[];
+  /** Paths GitHub refuses while listed (422), having done nothing. */
+  refusing?: string[];
   /** The seconds GitHub asks between looks; real GitHub says 60. */
   pollInterval?: number;
   repos: FakeRepo[];
@@ -285,6 +291,7 @@ export class FakeGitHub {
       created_at: this.world.now,
       updated_at: this.world.now,
       labels: input.labels ?? [],
+      labelEvents: (input.labels ?? []).map((label) => ({ label, actor: input.author })),
       head_ref: input.headRef ?? `change-${number}`,
       head_sha: `sha${this.next()}`,
       fork: input.fork ?? false,
@@ -333,7 +340,9 @@ export class FakeGitHub {
     return id;
   }
   label(input: { repo: string; number: number; label: string; actor: string }) {
-    this.item(input.repo, input.number).labels.push(input.label);
+    const item = this.item(input.repo, input.number);
+    item.labels.push(input.label);
+    (item.labelEvents ??= []).push({ label: input.label, actor: input.actor });
     this.happened(input.repo, input.number, input.actor, "IssuesEvent");
   }
   ready(input: { repo: string; number: number; actor: string }) {
@@ -363,6 +372,31 @@ export class FakeGitHub {
     (item.pushes ??= []).push({ from, to: item.head_sha, diff });
     item.diff += diff;
     return item.head_sha;
+  }
+
+  /**
+   * A login's role on a repo: the user's is admin; one the test names is that; otherwise someone
+   * whose items or comments GitHub marks as the repo's owner, member or collaborator can write,
+   * a listed collaborator or anyone on a public repo can read, and no one else has any.
+   */
+  permissionOf(repo: string, login: string) {
+    const entry = this.world.repos.find(
+      (one) => one.full_name.toLowerCase() === repo.toLowerCase(),
+    );
+    const who = login.toLowerCase();
+    if (who === this.world.user.toLowerCase()) return "admin";
+    const named = Object.entries(entry?.roles ?? {}).find(([one]) => one.toLowerCase() === who);
+    if (named !== undefined) return named[1];
+    const inside = (user: string, association: string) =>
+      user.toLowerCase() === who && ["OWNER", "MEMBER", "COLLABORATOR"].includes(association);
+    const same = (other: string) => other.toLowerCase() === repo.toLowerCase();
+    if (
+      this.world.items.some((item) => same(item.repo) && inside(item.user, item.association)) ||
+      this.world.comments.some((one) => same(one.repo) && inside(one.user, one.association))
+    )
+      return "write";
+    if ((entry?.collaborators ?? []).some((one) => one.toLowerCase() === who)) return "read";
+    return entry?.private === false ? "read" : "none";
   }
 
   private issueJson(item: FakeItem) {
@@ -648,6 +682,8 @@ export class FakeGitHub {
       return { status: this.world.down, headers: {}, body: { message: "Bad credentials" } };
     if (this.world.failing?.includes(path) === true)
       return { status: 502, headers: {}, body: { message: "Server Error" } };
+    if (this.world.refusing?.includes(path) === true)
+      return { status: 422, headers: {}, body: { message: "Validation Failed" } };
     const app = this.world.app ?? null;
     const bearer = /^bearer (.+)$/i.exec(headers.authorization ?? "")?.[1];
     const asApp = app !== null && bearer !== undefined && bearer.split(".").length === 3;
@@ -941,6 +977,20 @@ export class FakeGitHub {
     const guarded = this.rulesAnswer(method, repo, rest, body, actor, installation !== undefined);
     if (guarded !== undefined) return guarded;
     try {
+      if (method === "GET" && (found = /^collaborators\/([^/]+)\/permission$/.exec(rest))) {
+        const login = decodeURIComponent(found[1]!);
+        const role = this.permissionOf(repo, login);
+        const legacy = role === "maintain" ? "write" : role === "triage" ? "read" : role;
+        return ok({ permission: legacy, role_name: role, user: { login } });
+      }
+      if (method === "GET" && (found = /^issues\/(\d+)\/events$/.exec(rest)))
+        return ok(
+          (this.item(repo, Number(found[1])).labelEvents ?? []).map((one) => ({
+            event: "labeled",
+            actor: { login: one.actor },
+            label: { name: one.label },
+          })),
+        );
       if (method === "GET" && (found = /^collaborators\/([^/]+)$/.exec(rest))) {
         const login = decodeURIComponent(found[1]!).toLowerCase();
         const entry = this.world.repos.find(

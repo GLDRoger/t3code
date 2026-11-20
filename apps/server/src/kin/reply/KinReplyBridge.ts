@@ -694,7 +694,7 @@ const make = Effect.gen(function* () {
         ? presence.endDraft(wake.orgId, wake.lane.chatId, segment.id, messageId)
         : Effect.void;
     // In the Team room an agent speaks with team_say; what else it writes is its own thinking.
-    if (wake.lane.team === true) {
+    if (wake.lane.team === true || wake.lane.quiet === true) {
       segment.outcome = "dropped";
       return yield* end(null);
     }

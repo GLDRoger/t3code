@@ -17,7 +17,6 @@ import {
   AuthStandardClientScopes,
   EnvironmentId,
   KinAgentId,
-  KinChatError,
   KinOrgId,
   ProviderInstanceId,
   ThreadId,
@@ -33,7 +32,7 @@ import { SHARED_TOOLS, sharedToolAllowed, toolAdmitted } from "../lead/SharedToo
 import { isSocialTool } from "../social/mcp.ts";
 import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
 import { visibleOnKinEndpoint } from "../lead/AgentSession.ts";
-import { REVIEW_THREAD_PREFIX, REVIEW_TOOLS, reviewOnce } from "../lead/outsideReview.ts";
+import { REVIEW_REFUSAL, REVIEW_THREAD_PREFIX, REVIEW_TOOLS } from "../lead/outsideReview.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import * as FileSystem from "effect/FileSystem";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
@@ -503,7 +502,7 @@ it.effect.each([true, false])(
               )
             )
               reviewListed.push(name);
-          assert.sameMembers(reviewListed, Object.keys(REVIEW_TOOLS));
+          assert.sameMembers(reviewListed, [...REVIEW_TOOLS]);
           assert.isTrue(yield* visibleOnKinEndpoint("kin_relay", ThreadId.make("kin-shared:x")));
         }
         // Every tool a lead can call says what it may do where others read; a tool added later
@@ -880,30 +879,25 @@ it.effect.each([true, false])(
           ["kin_chat_post", { chatId: chat.chatId, body: "Invented", intent: "evidence" }],
           ["web_page", { url: "https://example.com" }],
           ["delegate_task", { task: "Invented: apply the PR." }],
+          // It knows nothing private: no memory, team-level or not.
+          ["memory_search", { query: "Invented" }],
+          ["memory_read", { id: "Invented" }],
         ] as const)
-          assert.include(yield* call(name, args), OUTSIDE_REFUSAL, name);
-        const searched = yield* call("memory_search", { query: "Invented" });
-        assert.notInclude(searched, OUTSIDE_REFUSAL);
-        assert.notInclude(searched, SHARED_REFUSAL);
+          assert.include(yield* call(name, args), REVIEW_REFUSAL, name);
         // GitHub's tools show only with the owner's login, which this server lacks: the check
-        // their handlers repeat binds them to the pull request that woke the turn.
+        // their handlers repeat admits the review alone.
         const admits = (name: string, args: unknown) =>
           toolAdmitted(reviewTurn, name, args).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
           );
+        // Where and how it posts is the post's own check (`reviewAsk.test.ts`).
         for (const [name, args, admitted] of [
-          ["kin_github_review", { repo: "invented-org/site", number: 7 }, false],
-          ["kin_github_review", { repo: "invented-org/app", number: 8 }, false],
           ["kin_github_review", { repo: "invented-org/APP", number: 7 }, true],
-          [
-            "kin_github_link",
-            { entry: "W-1", url: "https://github.com/invented-org/app/pull/8" },
-            false,
-          ],
+          // Linking let a stranger's text pick a Work entry a merge would close.
           [
             "kin_github_link",
             { entry: "W-1", url: "https://github.com/invented-org/app/pull/7" },
-            true,
+            false,
           ],
           ["kin_github_watch", {}, false],
         ] as const)
@@ -912,23 +906,7 @@ it.effect.each([true, false])(
             admitted,
             `${name} ${JSON.stringify(args)}`,
           );
-        // Once posted, a second review of this head is refused; a post that failed spends nothing.
-        const post = (result: Effect.Effect<{ status: "posted" } | undefined, KinChatError>) =>
-          reviewOnce(reviewTurn, result).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-        assert.isUndefined(yield* post(Effect.undefined));
-        yield* Effect.flip(
-          post(Effect.fail(new KinChatError({ reason: "unavailable", message: "Down" }))),
-        );
-        assert.deepStrictEqual(yield* post(Effect.succeed({ status: "posted" })), {
-          status: "posted",
-        });
-        assert.isFalse(yield* admits("kin_github_review", { repo: "invented-org/app", number: 7 }));
-        assert.include(
-          (yield* Effect.flip(post(Effect.succeed({ status: "posted" })))).message,
-          OUTSIDE_REFUSAL,
-        );
         yield* sql`DELETE FROM kin_events WHERE event_id = 'stranger-review'`;
-        yield* sql`DELETE FROM kin_github_handled WHERE trigger_key = 'posted:review:invented-org/app#7'`;
         yield* sql`UPDATE kin_wakeups SET shared_since = NULL WHERE agent_id = ${agentId}
           AND status = 'running'`;
         // A teammate's pull request, or their `/kin` call, keeps the owner's turn as it was.

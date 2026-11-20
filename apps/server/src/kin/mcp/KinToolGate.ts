@@ -12,7 +12,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { SHARED_REFUSAL } from "../lead/Audience.ts";
 import { OUTSIDE_REFUSAL, outsideToolAllowed } from "../lead/OutsideContent.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
-import { reviewToolAllowed } from "../lead/outsideReview.ts";
+import { REVIEW_REFUSAL, reviewToolAllowed } from "../lead/outsideReview.ts";
 import { TURN_EVENT_TOOLS, TURN_ONLY_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import { delegatedTurn, workerMayReach } from "../lead/AgentSession.ts";
@@ -124,19 +124,23 @@ const turnEvents = McpHttpServer.toolCallPrepare(
   ),
 );
 
-/** An outside review's turn refuses what it may not call with outside text's refusal. */
+/** An outside review's turn refuses what it may not call with the review's own refusal. */
 const reviewOnly: Check = (turn, tool, args) =>
   reviewToolAllowed(turn, tool, args).pipe(Effect.map((allowed) => allowed ?? true));
 /** `reviewOnly` decides for an outside review, whichever gate runs first. */
-const admitted: Check = (turn, tool, args) =>
-  reviewToolAllowed(turn, tool, args).pipe(
-    Effect.flatMap((allowed) =>
-      allowed === undefined ? toolAdmitted(turn, tool, args) : Effect.succeed(true),
-    ),
-  );
+const besideReview =
+  (check: Check): Check =>
+  (turn, tool, args) =>
+    reviewToolAllowed(turn, tool, args).pipe(
+      Effect.flatMap((allowed) =>
+        allowed === undefined ? check(turn, tool, args) : Effect.succeed(true),
+      ),
+    );
+const admitted = besideReview(toolAdmitted);
+const outside = besideReview(outsideToolAllowed);
 
 const kinChecks = [
-  [reviewOnly, OUTSIDE_REFUSAL],
+  [reviewOnly, REVIEW_REFUSAL],
   [toolAdmitted, SHARED_REFUSAL],
   [outsideToolAllowed, OUTSIDE_REFUSAL],
   [taskAdmitted, TASK_LIMIT_REFUSAL],
@@ -202,8 +206,8 @@ export const layer = Layer.mergeAll(
     (_tool, args) => Effect.map(namesOtherMachine(args), (other) => !other),
     REMOTE_REFUSAL,
   ),
-  McpHttpServer.toolCallGate(gate("KinToolGate.review", reviewOnly), OUTSIDE_REFUSAL),
+  McpHttpServer.toolCallGate(gate("KinToolGate.review", reviewOnly), REVIEW_REFUSAL),
   McpHttpServer.toolCallGate(gate("KinToolGate.admitted", admitted), SHARED_REFUSAL),
-  McpHttpServer.toolCallGate(gate("KinToolGate.outside", outsideToolAllowed), OUTSIDE_REFUSAL),
+  McpHttpServer.toolCallGate(gate("KinToolGate.outside", outside), OUTSIDE_REFUSAL),
   McpHttpServer.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
 );

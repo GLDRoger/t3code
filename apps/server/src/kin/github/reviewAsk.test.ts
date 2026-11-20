@@ -48,9 +48,10 @@ import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import * as Reach from "../lead/Reach.ts";
 import * as Team from "../team/KinTeam.ts";
 import { signed } from "./agentMark.ts";
-import { postedLine, unfinishedLine } from "./askedFor.ts";
+import { outsideLine, postedLine, unfinishedLine } from "./askedFor.ts";
 import { emptyWorld, FakeGitHub, ghApiOutput, ghApiStderr, runGh } from "./fakeGitHub.ts";
 import * as GitHubWatch from "./GitHubWatch.ts";
+import { headKey, POSTING } from "./boundReview.ts";
 import { ASK_REFUSAL, POST_REFUSAL, PULL_REFUSAL } from "./reviewAsk.ts";
 
 /**
@@ -957,7 +958,7 @@ it.effect(
       const head = github.push({ repo: APP, number: 1, diff: "+rounding fixed\n" });
       for (let minute = 0; minute < 5; minute++) yield* look;
       const again = (yield* githubEvents).at(-1)!;
-      assert.strictEqual(again.trigger.key, GitHubWatch.headKey(APP, 1, head));
+      assert.strictEqual(again.trigger.key, headKey(APP, 1, head));
       assert.deepStrictEqual(again.trigger.pull?.reReview, { from: admitted, whole: false });
       assert.isUndefined(again.askedBy);
 
@@ -981,6 +982,85 @@ it.effect(
       yield* end("completed");
       for (let minute = 0; minute < 6; minute++) yield* look;
       assert.strictEqual((yield* githubEvents).at(-1)!.eventId, again.eventId);
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+it.effect(
+  "an outsider's pull request is reviewed once per head, only there and as a comment; only GitHub's refusal frees the head",
+  () => {
+    const { github, layer } = harness();
+    return Effect.gen(function* () {
+      const { end, runReview, look, githubEvents, handled, told, sql, orgId } =
+        yield* ambermill(github);
+      // Opened after the watch began, so each is new to it.
+      github.tick(120_000);
+      const pulls = ["Fix a typo", "Tidy the readme"].map((title) =>
+        github.openItem({ repo: APP, pull: true, author: "passer-by", association: "NONE", title }),
+      );
+      yield* look;
+      const [ownerChat] = yield* sql<{ chatId: KinChatId }>`SELECT owner_chat_id AS "chatId"
+        FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${tech}`;
+      const post = (number: number, event = "COMMENT") =>
+        callAs("tech", "kin_github_review", { repo: APP, number, body: "Reads well.", event });
+      const reviewsPath = (number: number) => `repos/${APP}/pulls/${number}/reviews`;
+      const [first, second] = yield* githubEvents;
+      assert.deepStrictEqual(
+        [first, second].map((event) => [event!.trigger.number, event!.trigger.inside]),
+        pulls.map((number) => [number, false]),
+      );
+
+      // The first: another PR or a request for changes posts nothing; no answer keeps the head.
+      yield* runReview(first!.eventId);
+      const ref = `${APP}#${pulls[0]}`;
+      assert.strictEqual((yield* post(pulls[1]!)).value.message, POST_REFUSAL.only(ref));
+      assert.strictEqual(
+        (yield* post(pulls[0]!, "REQUEST_CHANGES")).value.message,
+        POST_REFUSAL.comment,
+      );
+      github.world.failing = [reviewsPath(pulls[0]!)];
+      assert.strictEqual((yield* post(pulls[0]!)).value.message, POST_REFUSAL.unknown(ref));
+      github.world.failing = [];
+      assert.strictEqual((yield* post(pulls[0]!)).value.message, POST_REFUSAL.unsure(ref));
+      const firstHead = headKey(APP, pulls[0]!, headOf(github, APP, pulls[0]!));
+      assert.deepStrictEqual(yield* handled(firstHead), [{ outcome: "head", url: POSTING }]);
+      yield* end("failed");
+
+      // The second: GitHub's refusal gives the head back, and the post goes on that head.
+      yield* runReview(second!.eventId);
+      github.world.refusing = [reviewsPath(pulls[1]!)];
+      assert.isFalse((yield* post(pulls[1]!)).ok);
+      github.world.refusing = [];
+      const done = yield* post(pulls[1]!);
+      assert.isTrue(done.ok, JSON.stringify(done.value));
+      yield* end("completed");
+      assert.deepStrictEqual(
+        github.world.reviews.map((one) => [one.number, one.event, one.commit_id]),
+        [[pulls[1], "COMMENT", headOf(github, APP, pulls[1]!)]],
+      );
+      // The owner hears it from Kin's records, whatever the model wrote.
+      assert.deepStrictEqual(yield* told(ownerChat!.chatId), [
+        outsideLine(ref, { _tag: "unknown" }, `https://github.com/${APP}/pull/${pulls[0]}`),
+        outsideLine(
+          `${APP}#${pulls[1]}`,
+          { _tag: "posted", url: String(done.value.url) },
+          `https://github.com/${APP}/pull/${pulls[1]}`,
+        ),
+      ]);
+
+      // New commits on the reviewed one: its re-review is the same seat, bound the same way.
+      const moved = github.push({ repo: APP, number: pulls[1]!, diff: "+a second line\n" });
+      for (let minute = 0; minute < 6; minute++) yield* look;
+      const again = (yield* githubEvents).at(-1)!;
+      assert.include(again.trigger, { key: headKey(APP, pulls[1]!, moved), inside: false });
+      yield* runReview(again.eventId);
+      assert.strictEqual(
+        (yield* post(pulls[0]!)).value.message,
+        POST_REFUSAL.only(`${APP}#${pulls[1]}`),
+      );
+      assert.isTrue((yield* post(pulls[1]!)).ok);
+      assert.strictEqual(github.world.reviews.at(-1)?.commit_id, moved);
+      assert.lengthOf(github.world.reviews, 2);
     }).pipe(Effect.provide(layer));
   },
 );

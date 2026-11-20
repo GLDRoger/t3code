@@ -26,12 +26,14 @@ import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { githubClosed } from "../work/githubEntries.ts";
 import { agentPostKeys, signed } from "./agentMark.ts";
+import { headKey, receiptOf } from "./boundReview.ts";
 import { UNFINISHED } from "./askedFor.ts";
 import { AGENT_POSTS_FILE, GH_APP_FOLDER } from "./ghSign.ts";
 import {
   type DecideContext,
   decideTriggers,
   isAgentsOwn,
+  KIN_LABEL,
   type ThreadComment,
   type ThreadSnapshot,
   type Trigger,
@@ -76,6 +78,8 @@ const STILL_MS = 5 * MINUTE;
 /** How long after Kin's last review of a repo's PR the watch still lists that repo's PRs. */
 const REVIEWED_KEPT_MS = 30 * 24 * HOUR;
 const LIST_PAGE = 100;
+/** How long GitHub's answer on who can write to a repo is used before it is asked again. */
+const PERMISSION_KEPT_MS = 10 * MINUTE;
 
 export const capNote = (count: number) =>
   `I've replied ${count} times here in an hour, so I'm stopping for now; say /kin again to continue.`;
@@ -249,6 +253,15 @@ const Comment = Schema.Struct({
   path: Schema.optional(Schema.String),
   line: Schema.optional(Schema.NullOr(Schema.Int)),
 });
+const Permission = Schema.Struct({
+  permission: Schema.String,
+  role_name: Schema.optional(Schema.String),
+});
+const IssueEvent = Schema.Struct({
+  event: Schema.String,
+  actor: Schema.NullOr(Login),
+  label: Schema.optional(Schema.Struct({ name: Schema.String })),
+});
 const CheckRuns = Schema.Struct({
   check_runs: Schema.Array(
     Schema.Struct({ name: Schema.String, conclusion: Schema.NullOr(Schema.String) }),
@@ -266,6 +279,8 @@ const decodeIssue = Schema.decodeUnknownOption(Issue);
 const decodePull = Schema.decodeUnknownOption(Pull);
 const decodeComments = Schema.decodeUnknownOption(Schema.Array(Comment));
 const decodeChecks = Schema.decodeUnknownOption(CheckRuns);
+const decodePermission = Schema.decodeUnknownOption(Permission);
+const decodeIssueEvents = Schema.decodeUnknownOption(Schema.Array(IssueEvent));
 const decodeOpenPulls = Schema.decodeUnknownOption(
   Schema.Array(
     Schema.Struct({
@@ -367,6 +382,36 @@ export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
   };
 });
 
+const WRITE_ROLES: ReadonlySet<string> = new Set(["admin", "maintain", "write"]);
+
+/**
+ * Whether GitHub says `login` can write to `repo` (write, maintain or admin): who is inside the
+ * company, never the author association. Undefined when GitHub didn't say, which is outside.
+ */
+export const writesTo = Effect.fn("KinGitHubWatch.writesTo")(function* (
+  get: (path: string) => Effect.Effect<ApiAnswer>,
+  repo: string,
+  login: string,
+) {
+  const answer = yield* get(`repos/${repo}/collaborators/${encodeURIComponent(login)}/permission`);
+  const found = answer.status === 200 ? decodePermission(answer.body) : Option.none();
+  if (Option.isNone(found)) return undefined;
+  return WRITE_ROLES.has(found.value.permission) || WRITE_ROLES.has(found.value.role_name ?? "");
+});
+
+/** Who last applied the `kin` label to an issue or PR, from its first page of events. */
+const labelActor = Effect.fn("KinGitHubWatch.labelActor")(function* (
+  get: (path: string) => Effect.Effect<ApiAnswer>,
+  repo: string,
+  number: number,
+) {
+  const answer = yield* get(`repos/${repo}/issues/${number}/events?per_page=100`);
+  const found = answer.status === 200 ? decodeIssueEvents(answer.body) : Option.none();
+  return Option.getOrElse(found, () => []).findLast(
+    (event) => event.event === "labeled" && event.label?.name.toLowerCase() === KIN_LABEL,
+  )?.actor?.login;
+});
+
 /** A re-review's head Kin last reviewed, and whether its diff is the whole PR's. */
 export interface ReReview {
   readonly from: string;
@@ -435,8 +480,6 @@ export const readDiff = (
 
 /** The head a first review (`review:<repo>#<n>`) read, kept under that head's own key. */
 export const FIRST_REVIEW_HEAD = "head";
-export const headKey = (repo: string, number: number, headSha: string) =>
-  `review:${repo.toLowerCase()}#${number}:${headSha}`;
 /** Whether an ask may claim this head again: nothing ran for it, or its cap's hour is over. */
 export const reclaimable = (row: { readonly outcome: string; readonly at: number }, now: number) =>
   row.outcome === UNFINISHED ||
@@ -445,12 +488,14 @@ export const reclaimable = (row: { readonly outcome: string; readonly at: number
 
 /**
  * The head Kin last reviewed on a PR: a first review's head, or a review of a head that posted or
- * finished; or that one is still under way. Undefined when Kin hasn't reviewed it.
+ * finished; or that one is still under way. Undefined when Kin hasn't reviewed it. With
+ * `posted`, only a head whose review GitHub took counts.
  */
 export const lastReviewed = Effect.fn("KinGitHubWatch.lastReviewed")(function* (
   orgId: KinOrgId,
   repo: string,
   number: number,
+  posted = false,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const at = `${repo.toLowerCase()}#${number}`;
@@ -467,7 +512,10 @@ export const lastReviewed = Effect.fn("KinGitHubWatch.lastReviewed")(function* (
       WHERE org_id = ${orgId} AND tag = 'github' AND json_extract(json, '$.trigger.key') = ${ran}
       ORDER BY queued_at DESC, rowid DESC LIMIT 1`;
     if (event?.state === "queued" || event?.state === "claimed") return { underWay: true } as const;
-    if (row.url !== null || event?.state === "done")
+    if (
+      receiptOf(row.url)._tag === "posted" ||
+      (!posted && (row.url !== null || event?.state === "done"))
+    )
       return { underWay: false, head: row.key.slice(prefix.length) } as const;
   }
   return undefined;
@@ -771,6 +819,25 @@ export const make = Effect.gen(function* () {
     });
   });
 
+  /** Each login's write access per repo, as GitHub said it lately; a failed read isn't kept. */
+  const permissions = new Map<string, { readonly writes: boolean; readonly at: number }>();
+  const canWrite = Effect.fn("KinGitHubWatch.canWrite")(function* (
+    orgId: KinOrgId,
+    repo: string,
+    login: string,
+    ownerLogin: string,
+    now: number,
+  ) {
+    if (login.toLowerCase() === ownerLogin.toLowerCase()) return true;
+    const key = `${orgId}|${repo.toLowerCase()}|${login.toLowerCase()}`;
+    const kept = permissions.get(key);
+    if (kept !== undefined && now - kept.at < PERMISSION_KEPT_MS) return kept.writes;
+    const writes = yield* writesTo(get, repo, login);
+    if (writes === undefined) return false;
+    permissions.set(key, { writes, at: now });
+    return writes;
+  });
+
   interface LookContext {
     readonly orgId: KinOrgId;
     readonly now: number;
@@ -902,13 +969,28 @@ export const make = Effect.gen(function* () {
           Effect.logWarning("Kin couldn't close Work entries for a merge", { cause }),
         ),
       );
-    if (current.item === "pull" && isAgentsOwn(current.body, current.author, bot, posts)) {
+    const by = (login: string | undefined) =>
+      login !== undefined && login !== "" && current.author.toLowerCase() === login.toLowerCase();
+    const [recorded] =
+      current.item === "pull"
+        ? yield* sql`SELECT 1 AS present FROM kin_github_agent_pulls WHERE org_id = ${orgId}
+            AND repo = ${current.repo.toLowerCase()} AND number = ${current.number}`
+        : [];
+    // Kin's own PR is the App's, or one an agent opened as the owner; a marker alone is anyone's.
+    const kinsPull =
+      current.item === "pull" &&
+      (by(bot) ||
+        (by(account.login) &&
+          (recorded !== undefined || isAgentsOwn(current.body, current.author, bot, posts))));
+    if (kinsPull) {
       const failing = current.open ? yield* failingChecks(orgId, current) : undefined;
       if (!current.open)
         yield* sql`UPDATE kin_github_agent_pulls SET open = 0
           WHERE org_id = ${orgId} AND repo = ${current.repo.toLowerCase()} AND number = ${current.number}`;
       current = { ...current, failing };
-    }
+    } else if (recorded !== undefined)
+      yield* sql`UPDATE kin_github_agent_pulls SET open = 0
+        WHERE org_id = ${orgId} AND repo = ${current.repo.toLowerCase()} AND number = ${current.number}`;
     if (lead === undefined) return;
     const [draft] = yield* sql`SELECT 1 AS present FROM kin_github_handled
       WHERE org_id = ${orgId} AND trigger_key = ${`draft:${at}`}`;
@@ -930,7 +1012,7 @@ export const make = Effect.gen(function* () {
           );
     const fresh = current.comments.filter((comment) => !seen.has(seenKey(comment)));
     current = { ...current, comments: fresh };
-    const decide: DecideContext = {
+    const base = {
       ownerLogin: account.login,
       agents,
       defaultAgentId: lead.agentId,
@@ -939,15 +1021,55 @@ export const make = Effect.gen(function* () {
       draftSeen: draft !== undefined,
       botLogin: bot,
       agentPosts: posts,
+      kinsPull,
+    };
+    // Someone who can't write is re-reviewed only from a head whose review GitHub took.
+    const last =
+      current.item === "pull"
+        ? yield* lastReviewed(orgId, current.repo, current.number)
+        : undefined;
+    const lastPosted =
+      current.item === "pull"
+        ? yield* lastReviewed(orgId, current.repo, current.number, true)
+        : undefined;
+    // Who can write is asked of GitHub only for what this look could still claim.
+    const everyone: DecideContext = { ...base, writes: () => true, labeledBy: "" };
+    const possible = [...decideTriggers(current, everyone)];
+    const possibleAgain = reReviewOf(current, last, everyone, now);
+    if (possibleAgain !== undefined) possible.push(possibleAgain.trigger);
+    const handled =
+      possible.length === 0
+        ? new Set<string>()
+        : new Set(
+            (yield* sql<{ key: string }>`SELECT trigger_key AS key FROM kin_github_handled
+              WHERE org_id = ${orgId} AND trigger_key IN ${sql.in(possible.map((one) => one.key))}`).map(
+              (found) => found.key,
+            ),
+          );
+    const open = possible.filter((one) => !handled.has(one.key));
+    const logins = new Set(open.map((one) => one.author));
+    const labeledBy = open.some((one) => one.kind === "label")
+      ? yield* labelActor(get, current.repo, current.number)
+      : undefined;
+    if (labeledBy !== undefined) logins.add(labeledBy);
+    const writers = new Set<string>();
+    for (const login of logins)
+      if (yield* canWrite(orgId, current.repo, login, account.login, now))
+        writers.add(login.toLowerCase());
+    const decide: DecideContext = {
+      ...base,
+      writes: (login) => writers.has(login.toLowerCase()),
+      labeledBy,
     };
     const triggers = decideTriggers(current, decide);
     const again =
       current.item === "pull"
-        ? reReviewOf(current, yield* lastReviewed(orgId, current.repo, current.number), decide, now)
+        ? reReviewOf(current, decide.writes(current.author) ? last : lastPosted, decide, now)
         : undefined;
     for (const trigger of again === undefined
       ? triggers
       : [...triggers.filter((one) => one.key !== again.trigger.key), again.trigger]) {
+      if (handled.has(trigger.key)) continue;
       const agentId = agents.some((agent) => agent.agentId === trigger.agentId)
         ? trigger.agentId
         : lead.agentId;
@@ -1168,6 +1290,19 @@ export const make = Effect.gen(function* () {
 });
 
 /**
+ * What a review's POST came to: GitHub took it, GitHub refused it (nothing was posted), or no
+ * answer said either (it may have posted).
+ */
+export type Sent =
+  | { readonly _tag: "posted"; readonly url: string; readonly asOwner: boolean }
+  | {
+      readonly _tag: "refused";
+      readonly reason: "not_allowed" | "unavailable";
+      readonly message: string;
+    }
+  | { readonly _tag: "unknown"; readonly message: string };
+
+/**
  * Posts a review on one of the company's repos, signed by the agent: as Kin's GitHub App where it
  * is installed and can, else as the owner. Other people's repos are asked first.
  */
@@ -1191,11 +1326,12 @@ const ownerReview = Effect.fn("KinGitHubWatch.review")(
     const get = (path: string) => api.call({ path });
     const ours = yield* companyRepo(input.orgId, input.repo);
     if (ours === undefined)
-      return yield* new KinChatError({
+      return {
+        _tag: "refused",
         reason: "not_allowed",
         message:
           "That repo isn't the company's. Ask the owner in chat before posting there, then post with gh in a turn he started.",
-      });
+      } satisfies Sent as Sent;
     const pullAnswer = yield* get(`repos/${ours.repo}/issues/${input.number}`);
     const issue = pullAnswer.status === 200 ? decodeIssue(pullAnswer.body) : Option.none();
     const account = yield* api.connected();
@@ -1263,18 +1399,21 @@ const ownerReview = Effect.fn("KinGitHubWatch.review")(
       typeof answer.body === "object" && answer.body !== null
         ? Reflect.get(answer.body, "html_url")
         : undefined;
-    if (answer.status >= 300 || typeof url !== "string")
-      return yield* new KinChatError({
-        reason: "unavailable",
-        message: `GitHub didn't post the review (${problemOf(answer)})`,
-      });
-    return { url, asOwner: fellBack };
+    if (answer.status < 300 && typeof url === "string")
+      return { _tag: "posted", url, asOwner: fellBack } satisfies Sent as Sent;
+    const message = `GitHub didn't post the review (${problemOf(answer)})`;
+    // Only GitHub's own refusal says nothing was posted; no answer, or a server error, doesn't.
+    return answer.status >= 400 && answer.status < 500
+      ? ({ _tag: "refused", reason: "unavailable", message } satisfies Sent as Sent)
+      : ({ _tag: "unknown", message } satisfies Sent as Sent);
   },
   Effect.catchTags({
     SqlError: () =>
-      Effect.fail(
-        new KinChatError({ reason: "unavailable", message: "Kin couldn't read its repo list." }),
-      ),
+      Effect.succeed<Sent>({
+        _tag: "refused",
+        reason: "unavailable",
+        message: "Kin couldn't read its repo list.",
+      }),
   }),
 );
 
@@ -1310,10 +1449,10 @@ export const layer = Layer.effect(KinGitHubWatch, make);
 export const liveLayer = runtimeLayer.pipe(Layer.provideMerge(layer), Layer.provide(ghApiLayer));
 
 /**
- * `kin_github_review` with the owner's GitHub connected: posted at once on the company's repos and
- * then told, never a card. Undefined while GitHub isn't connected.
+ * A review sent with the owner's GitHub connected, and what came of it; undefined while GitHub
+ * isn't connected, when nothing was sent.
  */
-export const ownerGitHubReview = Effect.fn("KinGitHubWatch.ownerGitHubReview")(function* (
+export const sendReview = Effect.fn("KinGitHubWatch.sendReview")(function* (
   lead: { readonly orgId: KinOrgId; readonly agentId: string },
   input: {
     readonly repo: string;
@@ -1335,7 +1474,7 @@ export const ownerGitHubReview = Effect.fn("KinGitHubWatch.ownerGitHubReview")(f
     WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`.pipe(
     Effect.orElseSucceed(() => []),
   );
-  const posted = yield* ownerReview({
+  return yield* ownerReview({
     orgId: lead.orgId,
     agentName: named?.name ?? "Agent",
     repo: input.repo,
@@ -1345,11 +1484,31 @@ export const ownerGitHubReview = Effect.fn("KinGitHubWatch.ownerGitHubReview")(f
     comments: input.comments ?? [],
     commitId,
   });
-  return {
-    status: "posted" as const,
-    url: posted.url,
-    next: posted.asOwner
-      ? "Posted on the PR as the owner: Kin's GitHub App can't write there. Tell the owner in one line with the link, and that it went out as him."
-      : "Posted on the PR. Tell the owner in one line with the link.",
-  };
+});
+
+/** What `kin_github_review` answers for a review GitHub took. */
+export const postedResult = (sent: Extract<Sent, { _tag: "posted" }>) => ({
+  status: "posted" as const,
+  url: sent.url,
+  next: sent.asOwner
+    ? "Posted on the PR as the owner: Kin's GitHub App can't write there. Tell the owner in one line with the link, and that it went out as him."
+    : "Posted on the PR. Tell the owner in one line with the link.",
+});
+
+/**
+ * `kin_github_review` with the owner's GitHub connected: posted at once on the company's repos and
+ * then told, never a card. Undefined while GitHub isn't connected.
+ */
+export const ownerGitHubReview = Effect.fn("KinGitHubWatch.ownerGitHubReview")(function* (
+  lead: { readonly orgId: KinOrgId; readonly agentId: string },
+  input: Parameters<typeof sendReview>[1],
+  commitId?: string,
+) {
+  const sent = yield* sendReview(lead, input, commitId);
+  if (sent === undefined) return undefined;
+  if (sent._tag === "posted") return postedResult(sent);
+  return yield* new KinChatError({
+    reason: sent._tag === "refused" ? sent.reason : "unavailable",
+    message: sent.message,
+  });
 });

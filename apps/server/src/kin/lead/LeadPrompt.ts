@@ -820,6 +820,22 @@ export class KinLeadPrompt extends Context.Service<
       const steer = Effect.fn("KinLeadPrompt.steer")(function* (
         input: Pick<KinLeadPromptInput, "orgId" | "agentId" | "wakeupId" | "events">,
       ) {
+        const review = yield* outsideReview(input).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(
+            (cause) =>
+              new KinLeadPromptError({
+                orgId: input.orgId,
+                reason: "Could not read the turn",
+                cause,
+              }),
+          ),
+        );
+        if (review !== undefined)
+          return yield* new KinLeadPromptError({
+            orgId: input.orgId,
+            reason: "An outside review wakes alone",
+          });
         const { events, fromOwner } = yield* quoteEvents(input);
         // Rakazo's wording; who sent it comes from each quote's stored role, never this line.
         return [
@@ -964,6 +980,27 @@ export class KinLeadPrompt extends Context.Service<
               new KinLeadPromptError({ orgId, reason: "Could not record the audience", cause }),
           ),
         );
+        // An outsider's pull request is reviewed knowing nothing private: its own facts and diff,
+        // the review rules and the agent's name. Anything woken with it fails the turn closed.
+        if (review !== undefined) {
+          if (input.events.length !== 1 || input.events[0]!._tag !== "github")
+            return yield* new KinLeadPromptError({
+              orgId,
+              reason: "An outside review wakes alone",
+            });
+          const { events } = yield* quoteEvents({ ...input, audience: "shared" });
+          const agent = yield* chat.getAgent({ orgId, agentId }).pipe(
+            Effect.map(Option.getOrUndefined),
+            Effect.orElseSucceed(() => undefined),
+          );
+          const name =
+            Array.from(agent?.displayName.trim() ?? "")
+              .slice(0, 80)
+              .join("") || fallbackLeadName;
+          return [`Agent name: ${encoded(name, true)}`, "# Events", boundedEvents(events)].join(
+            "\n\n",
+          );
+        }
         // Once found shared, a rebuilt prompt for the same turn stays shared.
         const audience = yield* effectiveAudience(input).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),

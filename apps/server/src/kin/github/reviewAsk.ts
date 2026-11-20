@@ -15,18 +15,21 @@ import { resolveLead } from "../lead/LeadMemory.ts";
 import * as Reach from "../lead/Reach.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { isOwnerHimself, mayActAsOwner } from "../people/KinAccess.ts";
+import { boundReview, headKey, POSTING, receiptOf } from "./boundReview.ts";
 import {
   agentPostsOf,
   botLoginOf,
   claimTrigger,
   FIRST_REVIEW_HEAD,
-  headKey,
   KinGitHubApi,
   ownerGitHubReview,
   PER_THREAD_HOURLY,
+  postedResult,
+  sendReview,
   readDiff,
   readThread,
   reclaimable,
+  writesTo,
 } from "./GitHubWatch.ts";
 import { decideTriggers } from "./githubTriggers.ts";
 import { isMemoryRepo, repoList } from "./githubWatchStore.ts";
@@ -89,7 +92,13 @@ export const PULL_REFUSAL = {
 export const POST_REFUSAL = {
   other: (ref: string) =>
     `This turn reviews only ${ref}, the pull request someone asked for. Nothing was posted.`,
+  only: (ref: string) => `This turn reviews only ${ref}. Nothing was posted.`,
+  comment: "This review posts as a comment only: event COMMENT. Nothing was posted.",
   again: (ref: string) => `The review of ${ref} is already posted. Nothing more was posted.`,
+  unsure: (ref: string) =>
+    `A review of ${ref} was sent and GitHub never said whether it took it, so Kin sends no other. Nothing was posted.`,
+  unknown: (ref: string) =>
+    `GitHub didn't say whether it took the review of ${ref}, so Kin won't send it again. It may be on the pull request.`,
 } as const;
 
 const OpenPull = Schema.Struct({
@@ -302,7 +311,11 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
       continue;
     }
     // The watch's own decision for a review asked of the owner: none for Kin's own PRs.
+    const inside =
+      thread.author.toLowerCase() === account.login.toLowerCase() ||
+      (yield* writesTo(get, thread.repo, thread.author)) === true;
     const trigger = decideTriggers(thread, {
+      writes: (author) => inside && author.toLowerCase() === thread.author.toLowerCase(),
       ownerLogin: account.login,
       agents: [],
       defaultAgentId: agentId,
@@ -373,72 +386,65 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
 });
 
 /**
- * The review this turn runs that is bound to one head: one someone asked for, or a re-review after
- * new commits; and any post it made.
- */
-const askedTurn = Effect.fn("KinGitHubReviewAsk.turn")(function* (turn: {
-  readonly orgId: KinOrgId;
-  readonly wakeupId: string;
-}) {
-  const sql = yield* SqlClient.SqlClient;
-  const [event] = yield* sql<{
-    eventId: string;
-    repo: string;
-    number: number;
-    key: string;
-    head: string | null;
-    url: string | null;
-    asked: number;
-  }>`SELECT e.event_id AS "eventId", json_extract(e.json, '$.repo') AS repo,
-      json_extract(e.json, '$.askedBy') IS NOT NULL AS asked,
-      json_extract(e.json, '$.trigger.number') AS number,
-      json_extract(e.json, '$.trigger.key') AS key,
-      json_extract(e.json, '$.trigger.pull.headSha') AS head, h.review_url AS url
-    FROM kin_events e
-    LEFT JOIN kin_github_handled h ON h.org_id = e.org_id
-      AND h.trigger_key = json_extract(e.json, '$.trigger.key')
-    WHERE e.org_id = ${turn.orgId} AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'github'
-      AND e.state = 'claimed' AND (json_extract(e.json, '$.askedBy') IS NOT NULL
-        OR json_extract(e.json, '$.trigger.pull.reReview') IS NOT NULL)
-    ORDER BY e.event_id LIMIT 1`;
-  return event;
-});
-
-/**
- * `kin_github_review`. In a turn running a review someone asked for, only that pull request, at
- * the head admitted, once; a re-review's post on its pull request likewise. The post leaves its
- * receipt on the claimed head. Otherwise as before.
+ * `kin_github_review`. A turn bound to one pull request at one head (`boundReview`) posts there
+ * once, against that head, its receipt on the head's row. An asked or outside review posts only
+ * there, an outside one as a comment only; a teammate's re-review may post elsewhere unbound, as it
+ * has a shell. The head is claimed before anything is sent and kept unless GitHub refused it.
  */
 export const postReview = Effect.fn("KinGitHubReviewAsk.post")(function* (
   lead: { readonly orgId: KinOrgId; readonly agentId: string; readonly wakeupId: string },
-  input: Parameters<typeof ownerGitHubReview>[1],
+  input: Parameters<typeof sendReview>[1],
 ) {
-  const asked = yield* askedTurn(lead);
-  if (asked === undefined) return yield* ownerGitHubReview(lead, input);
+  const bound = yield* boundReview(lead);
+  if (bound === undefined) return yield* ownerGitHubReview(lead, input);
   const sql = yield* SqlClient.SqlClient;
-  const ref = `${asked.repo}#${asked.number}`;
-  if (input.repo.trim().toLowerCase() !== asked.repo.toLowerCase() || input.number !== asked.number)
-    return asked.asked === 1
+  const ref = `${bound.repo}#${bound.number}`;
+  if (input.repo.trim().toLowerCase() !== bound.repo.toLowerCase() || input.number !== bound.number)
+    return bound.asked
       ? yield* refuse(POST_REFUSAL.other(ref))
-      : yield* ownerGitHubReview(lead, input);
-  if (asked.url !== null) return yield* refuse(POST_REFUSAL.again(ref));
-  // Held while it posts: a second call in this turn is refused, and the queue sees the turn acted.
-  const call = `github-review:${asked.eventId}`;
-  const held = yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key,
-      request_hash)
-    VALUES (${lead.orgId}, ${lead.wakeupId}, ${call}, 'posting')
-    ON CONFLICT DO NOTHING RETURNING call_key`;
-  if (held.length === 0) return yield* refuse(POST_REFUSAL.again(ref));
-  const release = sql`DELETE FROM kin_lead_tool_calls
-    WHERE org_id = ${lead.orgId} AND wakeup_id = ${lead.wakeupId} AND call_key = ${call}`;
-  const posted = yield* ownerGitHubReview(lead, input, asked.head ?? undefined).pipe(
-    Effect.tapError(() => release),
+      : bound.outside
+        ? yield* refuse(POST_REFUSAL.only(ref))
+        : yield* ownerGitHubReview(lead, input);
+  if (bound.outside && (input.event ?? "COMMENT") !== "COMMENT")
+    return yield* refuse(POST_REFUSAL.comment);
+  const receipt = receiptOf(bound.url);
+  if (receipt._tag !== "none")
+    return yield* refuse(
+      receipt._tag === "posted" ? POST_REFUSAL.again(ref) : POST_REFUSAL.unsure(ref),
+    );
+  const claimed = yield* sql`UPDATE kin_github_handled SET review_url = ${POSTING}
+    WHERE org_id = ${lead.orgId} AND trigger_key = ${bound.key} AND review_url IS NULL
+    RETURNING trigger_key`;
+  if (claimed.length === 0) return yield* refuse(POST_REFUSAL.again(ref));
+  // The queue sees the turn acted, so a failure after this isn't run again.
+  yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash)
+    VALUES (${lead.orgId}, ${lead.wakeupId}, ${`github-review:${bound.eventId}`}, 'posting')
+    ON CONFLICT DO NOTHING`;
+  const giveBack = sql`UPDATE kin_github_handled SET review_url = NULL
+    WHERE org_id = ${lead.orgId} AND trigger_key = ${bound.key} AND review_url = ${POSTING}`.pipe(
+    Effect.andThen(
+      sql`DELETE FROM kin_lead_tool_calls WHERE org_id = ${lead.orgId}
+        AND wakeup_id = ${lead.wakeupId} AND call_key = ${`github-review:${bound.eventId}`}`,
+    ),
   );
-  if (posted === undefined) {
-    yield* release;
-    return posted;
+  // Nothing left this server before a failure here: the head is given back.
+  const sent = yield* sendReview(lead, input, bound.head).pipe(Effect.tapError(() => giveBack));
+  if (sent === undefined) {
+    yield* giveBack;
+    return undefined;
   }
-  yield* sql`UPDATE kin_github_handled SET review_url = ${posted.url}
-    WHERE org_id = ${lead.orgId} AND trigger_key = ${asked.key} AND review_url IS NULL`;
-  return posted;
+  switch (sent._tag) {
+    case "posted":
+      yield* sql`UPDATE kin_github_handled SET review_url = ${sent.url}
+        WHERE org_id = ${lead.orgId} AND trigger_key = ${bound.key}`;
+      return postedResult(sent);
+    case "refused":
+      yield* giveBack;
+      return yield* new KinChatError({ reason: sent.reason, message: sent.message });
+    case "unknown":
+      return yield* new KinChatError({
+        reason: "unavailable",
+        message: POST_REFUSAL.unknown(ref),
+      });
+  }
 });

@@ -238,7 +238,7 @@ export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(functio
   const shared = threadId.startsWith(SHARED_THREAD_PREFIX);
   if (
     threadId.startsWith(REVIEW_THREAD_PREFIX)
-      ? !Object.hasOwn(REVIEW_TOOLS, name)
+      ? !REVIEW_TOOLS.has(name)
       : shared && !listedOnSharedThread(name)
   )
     return false;

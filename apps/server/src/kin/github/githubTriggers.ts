@@ -6,11 +6,7 @@ import { isAgentText, postKey } from "./agentMark.ts";
  * (`GitHubWatch.ts`) reads one issue or PR and what is new on it; this says what to wake for.
  */
 
-/** GitHub's author associations for people who can write to the repo: inside the company. */
-const INSIDE_ASSOCIATIONS: ReadonlySet<string> = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
-const isInside = (association: string) => INSIDE_ASSOCIATIONS.has(association.toUpperCase());
-
-const KIN_LABEL = "kin";
+export const KIN_LABEL = "kin";
 const TEXT_CAP = 4_000;
 
 export interface ThreadComment {
@@ -77,11 +73,18 @@ export interface DecideContext {
   readonly botLogin?: string | undefined;
   /** `postKey`s of texts agents' shells sent: their own words, even unsigned and as the owner. */
   readonly agentPosts?: ReadonlySet<string> | undefined;
+  /** Whether GitHub says this login can write to the repo: inside the company. */
+  readonly writes: (login: string) => boolean;
+  /** A PR Kin opened, by its record or the App's login: only its failing checks start work. */
+  readonly kinsPull?: boolean | undefined;
+  /** Who applied the `kin` label, when GitHub says. */
+  readonly labeledBy?: string | undefined;
 }
 
 /**
- * Kin's own work: written by its GitHub App, carrying an agent's marker, or a text an agent's shell
- * recorded sending (as the owner, a marker can be lost).
+ * Kin's own words, so the watch never answers them: written by its GitHub App, carrying an agent's
+ * marker, or a text an agent's shell recorded sending. Anyone can copy a marker: it authorises
+ * nothing (`kinsPull` does).
  */
 export const isAgentsOwn = (
   text: string | null | undefined,
@@ -172,7 +175,7 @@ export const decideTriggers = (
   if (thread.pull?.headRef.startsWith(WRITE_BRANCH_PREFIX) === true) return [];
   const at = `${thread.repo.toLowerCase()}#${thread.number}`;
   const agentsOwn = isAgentsOwn(thread.body, thread.author, context.botLogin, context.agentPosts);
-  const itemInside = isInside(thread.association);
+  const itemInside = context.writes(thread.author);
   const triggers: Trigger[] = [];
   const onItem = {
     agentId: context.defaultAgentId,
@@ -203,7 +206,7 @@ export const decideTriggers = (
   if (
     thread.item === "pull" &&
     thread.open &&
-    agentsOwn &&
+    context.kinsPull === true &&
     thread.pull !== undefined &&
     (thread.failing?.length ?? 0) > 0
   )
@@ -215,12 +218,18 @@ export const decideTriggers = (
       text: (thread.failing ?? []).join(", "),
     });
 
-  if (thread.open && !agentsOwn && thread.labels.some((label) => label.toLowerCase() === KIN_LABEL))
+  // Starts only when who applied it can write; the words shown are still the item author's.
+  if (
+    thread.open &&
+    !agentsOwn &&
+    context.labeledBy !== undefined &&
+    context.writes(context.labeledBy) &&
+    thread.labels.some((label) => label.toLowerCase() === KIN_LABEL)
+  )
     triggers.push({
       ...onItem,
       key: `label:${at}`,
       kind: "label",
-      // Only people who can write may label; the words shown are still the item author's.
       inside: itemInside,
       text: clip(thread.body),
     });
@@ -250,7 +259,7 @@ export const decideTriggers = (
     if (
       comment.createdAt < context.since ||
       isAgentsOwn(comment.body, comment.author, context.botLogin, context.agentPosts) ||
-      !isInside(comment.association)
+      !context.writes(comment.author)
     )
       continue;
     const agentId = calledAgent(comment.body, context);
