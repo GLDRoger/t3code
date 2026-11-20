@@ -98,6 +98,7 @@ const TasksKeyToolkit = Toolkit.make(
     .annotate(Tool.Idempotent, true)
     .annotate(Tool.OpenWorld, false),
 );
+export const TASKS_KEY_TOOLS = Object.keys(TasksKeyToolkit.tools);
 
 // Read from the request, not declared: tool services are built with the server, and the holder
 // exists only per request. Without `auth` in front there is none, and every call fails.

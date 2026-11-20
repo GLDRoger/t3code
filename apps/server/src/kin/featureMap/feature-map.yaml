@@ -1,6 +1,8 @@
 # Kin's features: where each lives, how each role reaches it on web and phone, which agent tools
 # serve it, and what proves it. featureMap.test.ts holds this file to the code:
 #   - every web route and pane, phone screen and agent tool belongs to a feature (or `unlisted`);
+#   - every Kin RPC is named by a web, phone or client-runtime file, or is `unlisted` with why;
+#   - a lead reaches at least what a member reaches;
 #   - every proof file exists (`proof: none` is allowed and counted);
 #   - paths keep the owner's rule: list → record, forms are sheets, at most three levels past
 #     where you start, never a page opened from a sheet. A path that breaks it says why.
@@ -467,15 +469,15 @@ features:
   - id: task-comment
     name: Notes on a task, with files
     tab: tasks
+    web: [tasks, "?task", section:Activity]
     phone: [tab:tasks, KinWorkItem, section:Activity]
-    roles: { owner: phone, co_owner: phone, lead: phone, member: phone }
+    roles: { owner: both, co_owner: both, lead: both, member: both }
     tools: [record_comment]
-    note: >-
-      Anyone who sees the task adds a note, and whoever holds it is told; the web task page
-      follows.
+    note: Anyone who sees the task adds a note, and whoever holds it is told.
     proof:
       - apps/server/src/kin/work/recordComments.test.ts
       - packages/client-runtime/src/kin/kinTaskRecord.test.ts
+      - apps/web/src/kin/KinTaskRecord.browser.test.tsx
 
   - id: task-private
     name: Only me, a private task
@@ -760,7 +762,7 @@ features:
     tab: clients
     web: [clients, button:Deals, section:What we hear, dialog:Deals that raised it]
     phone: [tab:clients, button:Deals, KinDealsConcern]
-    roles: { owner: both, co_owner: both, lead: none, member: both }
+    roles: { owner: both, co_owner: both, lead: both, member: both }
     note: >-
       A row of What we hear opens the deals that raised it, each with its client and its stage or
       Won or Lost, under the same who-sees-what and whose filter as the count; one opens its page.
@@ -1334,6 +1336,7 @@ features:
     web: [home, sheet:Profile, section:Coding agent keys]
     phone: [SettingsKin, KinProfile, section:Coding agent keys]
     roles: { owner: both, co_owner: both, lead: both, member: both }
+    tools: [list_my_tasks, get_task, comment_on_task, set_task_state]
     note: >-
       A person makes a key for their own coding agent (Claude Code, Codex, Cursor) to read the
       tasks they hold, comment and set state through `/kin/you/mcp`, and nothing else. The key shows
@@ -1383,3 +1386,22 @@ unlisted:
   "web:?person": Starts Tasks narrowed to what one person holds, from their page's See all in Tasks; not a screen.
   "web:?section": Scrolls the open doc to a section; not a screen.
   "web:?from": The base version of the compare view (`?changes`); not a screen.
+  "rpc:kin.org.get": Served; no client calls it yet (the company's paused state).
+  "rpc:kin.org.pause": Served; no client offers the company stop switch yet.
+  "rpc:kin.org.resume": Served; no client offers the company stop switch yet.
+  "rpc:kin.lead.access.list": Served; no client shows an agent's access grants yet.
+  "rpc:kin.lead.access.grant": Served; no client grants an agent access yet.
+  "rpc:kin.lead.access.revoke": Served; no client revokes an agent's access yet.
+  "rpc:kin.approvals.list": Served; clients read approvals one at a time (kin.approvals.get), none lists them.
+  "rpc:kin.audit.list": Served; no client shows the audit log yet.
+  "rpc:kin.audit.verify": Served; no client checks the audit log yet.
+  "rpc:kin.levels.get": Served; no client shows levels yet.
+  "rpc:kin.levels.lower": Served; no client changes levels yet.
+  "rpc:kin.levels.raise": Served; no client changes levels yet.
+  "rpc:kin.docs.clearRecipeLabel": Served; no client clears a recipe's label yet.
+  "rpc:kin.work.statementPasswords": Served; no client manages statement passwords yet.
+  "rpc:kin.work.statementForgetAccount": Served; no client forgets a statement account yet.
+  "rpc:kin.push.unregisterDevice": Served; the phone never unregisters its push device yet.
+  "rpc:kin.people.setOwnerName": Called by the kin-verify seed (scripts/kin-verify/seed.ts); no client calls it.
+  "rpc:kin.refreshes.announce": Called by the host CLI (apps/server/src/kin/cli/announce.ts) from the owner's session.
+  "rpc:kin.open.read": Served; clients follow the open list through kin.open.subscribe instead.
