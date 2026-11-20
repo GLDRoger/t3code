@@ -1321,24 +1321,14 @@ export const runs = Effect.fn("KinImportFile.runs")(function* (
     FROM kin_import_runs WHERE org_id = ${input.orgId} ORDER BY seq`.pipe(workFailure);
   const live = yield* (yield* KinImport).running(input.orgId);
   const liveSeqs = new Map(live.flatMap((one) => (one.seq === null ? [] : [[one.seq, one]])));
-  const running: Array<KinImportRunning> = live
-    .filter((one) => one.action === "check")
-    .map((one) => ({
-      action: one.action,
-      batch: one.batch,
-      file: one.file,
-      by: one.personId,
-      at: iso(one.startedAt),
-      done: one.done,
-      of: one.of,
-    }));
+  const running: Array<KinImportRunning> = [];
   const last = new Map<string, KinImportRuns["runs"][number]>();
   for (const row of rows) {
     const summary = Option.getOrUndefined(decodeSummary(row.summary ?? "{}"));
     const progress = { done: count(summary?.done), of: count(summary?.rows) };
     if (row.finishedAt === null && liveSeqs.has(row.seq)) {
       running.push({
-        action: row.action === "undo" ? "undo" : "apply",
+        action: row.action === "undo" ? "undo" : row.action === "check" ? "check" : "apply",
         batch: row.batch,
         file: summary?.file ?? liveSeqs.get(row.seq)?.file ?? null,
         by: KinPersonId.make(row.personId),
@@ -1347,6 +1337,8 @@ export const runs = Effect.fn("KinImportFile.runs")(function* (
       });
       continue;
     }
+    // A check keeps nothing: a row of one its host isn't running is left by a stop.
+    if (row.action === "check") continue;
     const held = last.get(row.batch);
     if (row.action === "undo") {
       if (held === undefined) continue;

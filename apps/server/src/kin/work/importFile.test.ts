@@ -340,6 +340,59 @@ describe("bringing a file in", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("finds each same name by the title index as it did without it", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const decisions = { clients: { r5: "new" as const }, stages: { negotiation: "deciding" } };
+      const first = fileOf(csvText);
+      const { batch } = yield* ImportFile.check([rhea], {
+        orgId,
+        file: first,
+        mapping: mapping(ready),
+        decisions,
+      });
+      yield* ImportFile.apply([rhea], {
+        orgId,
+        file: first,
+        mapping: mapping(ready),
+        decisions,
+        batch,
+      });
+      // Names Kin has in another case, a contact and a deal at their client, a deal's name at
+      // another client, and one deal twice in the file.
+      const again = fileOf(
+        `${HEADERS}\n${[
+          "INVENTED HARBOUR TILES,,OdA DaHl,,,,,SHOWROOM REFIT,500,In talks,01/05/2026,,",
+          "invented kestrel freight,,LARS HOLM,,,,,Second site,100,In talks,01/05/2026,,",
+          "Invented Fjord Mills,Prospect,Ivo Lind,ivo@fjordmills.example,,,,Second Site,100,In talks,01/05/2026,,",
+          "Invented Fjord Mills,,,,,,,second site,100,In talks,01/05/2026,,",
+        ].join("\n")}\n`,
+        "again.csv",
+      );
+      const check = ImportFile.check([rhea], { orgId, file: again, mapping: mapping(ready) });
+      const indexed = yield* check;
+      yield* sql`DROP INDEX idx_kin_records_title`;
+      assert.deepStrictEqual(yield* check, indexed);
+      assert.deepStrictEqual(indexed.will, { prospects: 1, clients: 0, contacts: 1, deals: 0 });
+      assert.deepStrictEqual(
+        indexed.matches.map((one) => [one.name, one.by]),
+        [
+          ["INVENTED HARBOUR TILES", "name"],
+          ["invented kestrel freight", "name"],
+        ],
+      );
+      assert.deepStrictEqual(
+        indexed.leftOut.map((one) => [one.line, one.reason]),
+        [
+          [2, "There is already a deal named SHOWROOM REFIT: DL-1."],
+          [3, "There is already a deal named Second site: DL-2."],
+          [4, "There is already a deal named Second Site: DL-2."],
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "imports as checked: in-file duplicates collapse, several emails and phones, deals through Deals, and a rerun changes nothing",
     () =>
@@ -587,6 +640,7 @@ describe("bringing a file in", () => {
       Effect.gen(function* () {
         yield* seed;
         const imports = yield* KinImport.KinImport;
+        const sql = yield* SqlClient.SqlClient;
         const linesFor = (batch: string) => [
           JSON.stringify({ format: "kin-import", version: 1, batch, source: "Old CRM" }),
           ...Array.from({ length: 150 }, (_, index) =>
@@ -608,15 +662,35 @@ describe("bringing a file in", () => {
           })
           .pipe(Effect.forkChild);
         yield* Deferred.await(paused);
-        // A co-owner opening Import sees Rhea's import and how far it is; it isn't listed as done.
+        const checking = yield* Deferred.make<void>();
+        const checked = yield* Deferred.make<void>();
+        const check = yield* imports
+          .plan(orgId, ownerId, Stream.fromIterable(linesFor("next")), {
+            progress: (done) =>
+              done !== 99
+                ? Effect.void
+                : Deferred.succeed(checking, undefined).pipe(
+                    Effect.andThen(Deferred.await(checked)),
+                  ),
+            file: "next.csv",
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(checking);
+        // A co-owner opening Import sees Rhea's import and check and how far each is; neither is
+        // listed as done.
         const mid = yield* ImportFile.runs([meera], { orgId });
         assert.deepStrictEqual(
           mid.running?.map((one) => [one.action, one.by, one.file, one.done, one.of]),
-          [["apply", ownerId, "old-crm.csv", 99, 150]],
+          [
+            ["apply", ownerId, "old-crm.csv", 99, 150],
+            ["check", ownerId, "next.csv", 99, 150],
+          ],
         );
         assert.deepStrictEqual(mid.runs, []);
         yield* Deferred.succeed(resume, undefined);
+        yield* Deferred.succeed(checked, undefined);
         yield* Fiber.join(going);
+        yield* Fiber.join(check);
         const after = yield* ImportFile.runs([rhea], { orgId });
         assert.deepStrictEqual(after.running, []);
         assert.deepStrictEqual(
@@ -646,6 +720,16 @@ describe("bringing a file in", () => {
         assert.deepStrictEqual(
           [cut?.file, cut?.added.clients, cut?.stopped, cut?.undone],
           ["cut.csv", 119, { done: 119, of: 150 }, null],
+        );
+        // A check's row its host isn't running, as a stop leaves one, is neither going nor done.
+        yield* sql`INSERT INTO kin_import_runs (org_id, batch, action, person_id, started_at,
+            summary_json)
+          VALUES (${orgId}, 'cut', 'check', ${ownerId}, ${NOW}, '{"done":40,"rows":150}')`;
+        const left = yield* ImportFile.runs([rhea], { orgId });
+        assert.deepStrictEqual(left.running, []);
+        assert.deepStrictEqual(
+          left.runs.find((one) => one.batch === "cut"),
+          cut,
         );
       }).pipe(Effect.provide(layer)),
   );

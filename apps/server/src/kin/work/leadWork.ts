@@ -2396,7 +2396,7 @@ const sameNamed = Effect.fn("KinWorkTools.sameNamed")(function* (
       AND (${list} != 'contacts' OR r.party_id IS ${partyId})
       AND (${list} != 'clients' OR ${clientFamily(sql, sql`r.category`)} = ${clientFamily(sql, sql`${kind ?? "client"}`)})
       AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
-    ORDER BY r.key LIMIT 1`;
+    ORDER BY +r.key LIMIT 1`;
   return row;
 });
 

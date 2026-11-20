@@ -1180,12 +1180,12 @@ const make = Effect.gen(function* () {
     seenBy: KinPersonId | undefined,
   ) {
     if (list === "work" || list === "docs" || list === "milestones" || !isBuiltIn(list)) return;
-    // `+` keeps SQLite off the key index, which walks every key in the company for each name;
-    // it narrows to the list instead, or to a contact's client.
+    // `+key` keeps SQLite off the key index, which walks every key in the company for each name;
+    // it reads the title index instead.
     const [row] = yield* sql<{ key: string; sensitive: number }>`SELECT r.key,
         ${sensitiveNow(sql)} AS sensitive FROM kin_records r
-      WHERE r.org_id = ${orgId}
-        AND ${list === "contacts" ? sql`+r.register_id = ${list} AND r.party_id IS ${partyId}` : sql`r.register_id = ${list}`}
+      WHERE r.org_id = ${orgId} AND r.register_id = ${list}
+        AND ${list === "contacts" ? sql`r.party_id IS ${partyId}` : sql`1 = 1`}
         AND r.state NOT IN ${sql.in(CLOSED)}
         AND lower(r.title) = lower(${title}) AND r.record_id IS NOT ${except}
         AND (${list} != 'clients' OR ${clientFamily(sql, sql`r.category`)} = ${clientFamily(sql, sql`${category ?? "client"}`)})

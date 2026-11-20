@@ -267,7 +267,7 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
   const runs = yield* sql<{ action: string; lists: string; summary: string | null }>`SELECT
       action, lists_json AS lists, summary_json AS summary
     FROM kin_import_runs WHERE org_id = ${orgId} AND batch = ${batch}
-      AND (action = 'apply' OR finished_at IS NOT NULL)
+      AND (action = 'apply' OR (action = 'undo' AND finished_at IS NOT NULL))
     ORDER BY seq`;
   const made = new Set<string>();
   const fills = new Map<string, { key: string; rev: number; fields: ReadonlyArray<string> }>();

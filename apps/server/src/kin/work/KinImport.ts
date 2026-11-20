@@ -1271,23 +1271,31 @@ const make = Effect.gen(function* () {
         .withTransaction(work.pipe(Effect.andThen(Effect.fail(new Rollback()))))
         .pipe(Effect.catchTags({ KinImportRollback: () => Effect.void }));
 
+    const started = Effect.fn("KinImport.started")(function* (
+      action: "apply" | "check",
+      lists: ReadonlyArray<string>,
+    ) {
+      const [row] = yield* sql<{ seq: number }>`INSERT INTO kin_import_runs (org_id, batch,
+          action, person_id, started_at, lists_json, summary_json)
+        VALUES (${orgId}, ${doc.batch}, ${action}, ${owner}, ${now}, ${encodeJson(lists)},
+          ${encodeJson({ done: 0, rows: scan.rows, ...(options.file === undefined ? {} : { file: options.file }) })})
+        RETURNING seq`;
+      return row?.seq;
+    });
     // The run's own row commits with its lists, so an undo knows which lists the batch made.
     const begin = Effect.gen(function* () {
       if (options.guard !== undefined) yield* options.guard;
       yield* defineLists(true);
       if (!keep) return undefined;
       const made = listReport.filter((one) => one.action === "create").map((one) => one.list);
-      const [started] = yield* sql<{ seq: number }>`INSERT INTO kin_import_runs (org_id, batch,
-          action, person_id, started_at, lists_json, summary_json)
-        VALUES (${orgId}, ${doc.batch}, 'apply', ${owner}, ${now}, ${encodeJson(made)},
-          ${encodeJson({ done: 0, rows: scan.rows, ...(options.file === undefined ? {} : { file: options.file }) })})
-        RETURNING seq`;
-      return started?.seq;
+      return yield* started("apply", made);
     });
     const runSeq = keep
       ? yield* sql.withTransaction(begin)
       : yield* rolledBack(begin).pipe(Effect.as(undefined));
-    watched.seq = runSeq ?? null;
+    // A check keeps only its own row while it runs, so how far it is reads as an import's does.
+    const checkSeq = keep ? undefined : yield* started("check", []);
+    watched.seq = runSeq ?? checkSeq ?? null;
     yield* refreshes.touch(orgId, "imports");
 
     let done = 0;
@@ -1335,6 +1343,10 @@ const make = Effect.gen(function* () {
           });
           if (keep) yield* sql.withTransaction(work);
           else yield* rolledBack(work);
+          if (checkSeq !== undefined)
+            yield* sql`UPDATE kin_import_runs
+              SET summary_json = json_set(summary_json, '$.done', ${done + decoded.length})
+              WHERE seq = ${checkSeq}`;
           forget();
           done += decoded.length;
           watched.done = done;
@@ -1421,9 +1433,17 @@ const make = Effect.gen(function* () {
   return KinImport.of({
     plan: Effect.fn("KinImport.plan")(function* (orgId, owner, lines, options) {
       const entry = yield* entryFor("check", owner, "");
+      const forget = Effect.suspend(() =>
+        entry.seq === null
+          ? Effect.void
+          : sql`DELETE FROM kin_import_runs WHERE seq = ${entry.seq} AND action = 'check'`.pipe(
+              Effect.ignore,
+            ),
+      );
       return yield* tracked(orgId, entry, (one) =>
         run(orgId, owner, lines, false, options ?? {}, one).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.ensuring(forget),
         ),
       );
     }),

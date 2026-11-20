@@ -1107,6 +1107,37 @@ describe("KinImport", () => {
           ],
         );
         assert.strictEqual(yield* countOf("kin_records"), 0);
+
+        // A check says how far it is on its own row too, and leaves no row when it ends.
+        const checking = yield* Deferred.make<void>();
+        const checked = yield* Deferred.make<void>();
+        const check = yield* imports
+          .plan(orgId, ownerId, whole, {
+            progress: (done) =>
+              done !== 199
+                ? Effect.void
+                : Deferred.succeed(checking, undefined).pipe(
+                    Effect.andThen(Deferred.await(checked)),
+                  ),
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(checking);
+        assert.deepStrictEqual((yield* runRows).slice(2), [["check", null, 199, 250]]);
+        yield* Deferred.succeed(checked, undefined);
+        yield* Fiber.join(check);
+        assert.deepStrictEqual(
+          (yield* runRows).map(([action]) => action),
+          ["apply", "undo"],
+        );
+        const checkMoves = yield* Effect.forEach(Array.from({ length: 5 }), () => Queue.take(told));
+        assert.deepStrictEqual(checkMoves, [
+          [["check", 0]],
+          [["check", 99]],
+          [["check", 199]],
+          [["check", 250]],
+          [],
+        ]);
+        assert.strictEqual(yield* countOf("kin_records"), 0);
       }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
