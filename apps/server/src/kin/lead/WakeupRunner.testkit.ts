@@ -135,6 +135,8 @@ type HarnessOptions = {
   readonly writer?: Layer.Layer<Writer.MemoryWriter, never, SqlClient.SqlClient>;
   readonly piUsage?: boolean;
   readonly prepare?: Memory.Memory["Service"]["prepareWakeup"];
+  /** Reads a memory item; by default no item exists. */
+  readonly readItem?: Memory.Memory["Service"]["readItemQuietly"];
   /** Each turn opens a command approval and ends only once it is answered. */
   readonly approval?: Deferred.Deferred<ProviderApprovalDecision | undefined>;
   readonly runtimeModes?: Array<RuntimeMode>;
@@ -626,6 +628,8 @@ function parts(options: HarnessOptions) {
       ensureCheckouts: () => Effect.succeed({ writer: "/private/tmp", read: "/private/tmp" }),
       readPromptSnapshot: () =>
         Effect.succeed({ rules: "rules", index: "index", items: [], bodies: new Map() }),
+      readItemQuietly:
+        options.readItem ?? ((orgId, id) => Effect.fail(new Memory.MemoryNotFound({ orgId, id }))),
     }),
   );
   const stack = Layer.mergeAll(

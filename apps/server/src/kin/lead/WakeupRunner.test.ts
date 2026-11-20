@@ -556,6 +556,75 @@ describe("WakeupRunner", () => {
       provideDeterministicTestRuntime,
     ),
   );
+  it.effect.each([
+    ["a scheduled task gone from memory", "gone", 0],
+    ["a scheduled task whose native task was deleted", "deleted", 0],
+    ["a question answered or withdrawn before its day", "question", 0],
+    ["a scheduled task whose memory read failed, in a turn", "unread", 1],
+  ] as const)(
+    "answers %s without the model when only NO_REPLY could answer it",
+    ([, kind, turns]) =>
+      Effect.gen(function* () {
+        const prompts: Array<KinLeadPromptInput> = [];
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const queue = yield* KinEventQueue.KinEventQueue;
+          const sql = yield* SqlClient.SqlClient;
+          if (kind === "deleted")
+            yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+              source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at)
+            VALUES ('deleted-task', ${orgId}, 'schedule-item', ${agentId}, 'owner-chat', 'ask',
+              'owner', 'owner_only', 'sha', 'inbox', 0, 0)`;
+          yield* queue.enqueue(
+            decodeEvent({
+              _tag: "deferral.due",
+              orgId,
+              agentId,
+              eventId: "due",
+              receivedAt: "2026-11-08T00:00:00.000Z",
+              dedupeKey: "due",
+              provenance: { _tag: "system" },
+              subject:
+                kind === "question"
+                  ? { type: "question", questionId: "question-1" }
+                  : { type: "scheduled_task", itemId: "schedule-item", runId: "fire-1" },
+              lateByMs: 0,
+            }),
+          );
+          yield* Fiber.join(yield* run());
+          assert.lengthOf(prompts, turns);
+          assert.deepEqual(yield* sql`SELECT state FROM kin_events ORDER BY event_id`, [
+            { state: "done" },
+          ]);
+          assert.deepEqual(
+            (yield* sql<{ threadId: string | null; status: string }>`SELECT thread_id AS "threadId",
+            status FROM kin_wakeups ORDER BY wakeup_id`).map((row) => [
+              row.threadId !== null,
+              row.status,
+            ]),
+            [[turns > 0, "completed"]],
+          );
+        }).pipe(
+          Effect.provide(
+            harness({
+              prompts,
+              ...(kind === "unread"
+                ? {
+                    readItem: (orgId) =>
+                      Effect.fail(
+                        new Memory.MemorySyncConflict({
+                          orgId,
+                          operation: "read",
+                          reason: "fixture",
+                        }),
+                      ),
+                  }
+                : {}),
+            }),
+          ),
+        );
+      }).pipe(provideDeterministicTestRuntime),
+  );
   it.effect("discards a failed commit session so the next wake-up can stage", () =>
     Effect.gen(function* () {
       let owner: string | undefined;

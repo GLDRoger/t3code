@@ -44,6 +44,8 @@ import * as Writer from "../memory/MemoryWriter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
+import * as KinSchedules from "../triggers/kinSchedules.ts";
+import { dueTurnText } from "../questions/openQuestions.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
@@ -325,6 +327,34 @@ const make = Effect.gen(function* () {
         Effect.as<ReadonlyArray<{ eventId: string; personId: KinPersonId }>>([]),
       ),
     ),
+  );
+  /**
+   * A due run of a scheduled task that no longer exists, or a question with nothing left to take:
+   * every prompt answers it with NO_REPLY (`KinLeadPrompt`), so it starts no turn. A failed read
+   * keeps the event for the turn.
+   */
+  const goneBeforeTurn = Effect.fn("WakeupRunner.goneBeforeTurn")(
+    function* (orgId: KinOrgId, event: KinEvent) {
+      if (event._tag !== "deferral.due") return false;
+      const subject = event.subject;
+      if (subject.type === "scheduled_task") {
+        const schedule = yield* KinSchedules.readSchedule(sql, orgId, subject.itemId);
+        if (schedule !== undefined)
+          return (yield* KinSchedules.readNativeTask(sql, schedule.taskId)) === undefined;
+        return yield* memory
+          .readItemQuietly(orgId, subject.itemId, "triggers")
+          .pipe(Effect.as(false), Effect.catchTags({ MemoryNotFound: () => Effect.succeed(true) }));
+      }
+      if (subject.type !== "question" || subject.undone === true || subject.answered === true)
+        return false;
+      const due = yield* dueTurnText(orgId, subject.questionId, yield* Clock.currentTimeMillis);
+      return due === undefined;
+    },
+    (effect) =>
+      effect.pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.orElseSucceed(() => false),
+      ),
   );
   const settings = yield* ServerSettingsService;
   const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
@@ -951,6 +981,9 @@ const make = Effect.gen(function* () {
                     Effect.map((records) => noticeState(records, event.messageId)._tag !== "seen"),
                   )
                 : Effect.succeed(true),
+            );
+            events = yield* Effect.filter(events, (event) =>
+              goneBeforeTurn(orgId, event).pipe(Effect.map((gone) => !gone)),
             );
             if (events.length === 0) {
               yield* queue.finish({ orgId, wakeupId, status: "completed" });
