@@ -416,6 +416,9 @@ describe("a list by its definition", () => {
       stateLabel: "Draft",
       dateLabel: "Date",
     });
+    expect(
+      kinListColumns(issued, [{ ...kept, state: "open" }]).find((one) => one.id === "date")?.label,
+    ).toBe("Date");
     // Its page notes Money only where Money would count it, a draft that it is owed only once
     // issued, and offers Not needed only where it can drop it.
     expect(kinSuggestionKeep(suggested, issued)).toEqual({

@@ -366,6 +366,9 @@ const kinDayLabel = (
   notIssued && def.states.some((state) => kinListStateLabel(def, state) === def.dateLabel)
     ? KIN_DAY
     : def.dateLabel;
+/** Not gone out yet: a suggestion or a draft, whose day is no issue day. */
+const kinNotIssued = (item: Pick<KinRecord, "confirmed" | "state">) =>
+  kinSuggestion(item) || item.state === "open";
 /** Late as a figure would read it: never for a suggestion in a money list. */
 const kinLateShown = (record: Pick<KinRecord, "late" | "confirmed" | "list">) =>
   record.late && (record.confirmed || !KIN_MONEY_LISTS.has(record.list ?? "work"));
@@ -906,7 +909,7 @@ export function kinListColumns(
     ...(def.categories.length > 0 ? [text("category", KIN_LISTS.entry.category)] : []),
     ...(def.dateLabel === undefined
       ? []
-      : [text("date", kinDayLabel(def, records.some(kinSuggestion)) ?? def.dateLabel)]),
+      : [text("date", kinDayLabel(def, records.some(kinNotIssued)) ?? def.dateLabel)]),
     ...(def.dueLabel === undefined ? [] : [text("due", def.dueLabel)]),
     ...(records.some((record) => record.party !== undefined)
       ? [text("party", KIN_LISTS.entry.client)]
@@ -1268,7 +1271,7 @@ export function kinListEntryView(
         ? item.dateAt === undefined
           ? null
           : KIN_DAY
-        : (kinDayLabel(def, kinSuggestion(item) || item.state === "open") ?? null),
+        : (kinDayLabel(def, kinNotIssued(item)) ?? null),
     dueDay: kinWorkAllDay(item.dueAt, item.dueAllDay, names),
     dateDay: kinWorkAllDay(item.dateAt ?? null, item.dateAllDay ?? true, names),
     due,

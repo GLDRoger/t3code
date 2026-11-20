@@ -40,6 +40,7 @@ import {
   numberingOf,
   type Proposal,
   proposalFor,
+  startState,
   storedCategoryLabels,
 } from "./registers.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
@@ -742,7 +743,17 @@ const make = Effect.gen(function* () {
             originKey: originOf("entry", spec.source),
             title: spec.title,
             owner: me,
-            state: spec.state ?? def.defaultState,
+            // An invoice the file gives no state starts as a new one would, unless it was paid.
+            state:
+              spec.state ??
+              (def.id === "invoices" && due.length === 0
+                ? startState(def, {
+                    dateAt: dateAt ?? null,
+                    numbered: spec.number !== undefined,
+                    now,
+                    zone,
+                  })
+                : def.defaultState),
             ...(spec.category === undefined ? {} : { category: spec.category }),
             ...(partyId === undefined ? {} : { partyId }),
             ...(projectId === undefined || projectId === null ? {} : { projectId }),
