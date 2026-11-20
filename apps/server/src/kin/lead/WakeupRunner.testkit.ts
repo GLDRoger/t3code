@@ -176,10 +176,26 @@ type HarnessOptions = {
    * runs in its project's root, offered here when the turn resolves it.
    */
   readonly realProjects?: Queue.Queue<string | null>;
+  /** Each thread a whole-history projection read was made of, in order. */
+  readonly wholeThreadReads?: Array<ThreadId>;
 };
 
 export function harness(options: HarnessOptions = {}) {
-  return WakeupRunner.layer.pipe(Layer.provideMerge(orchestrationHarness(options)));
+  // Only the runner's own reads count: T3's launch reads the thread it just created.
+  const counted = Layer.effect(
+    ThreadManagement.ThreadManagementService,
+    Effect.map(ThreadManagement.ThreadManagementService, (service) => ({
+      ...service,
+      getThreadProjection: (threadId: ThreadId) =>
+        Effect.sync(() => options.wholeThreadReads?.push(threadId)).pipe(
+          Effect.andThen(service.getThreadProjection(threadId)),
+        ),
+    })),
+  );
+  return WakeupRunner.layer.pipe(
+    Layer.provide(counted),
+    Layer.provideMerge(orchestrationHarness(options)),
+  );
 }
 
 /** The fake-provider orchestration stack without the wake-up runner. */
