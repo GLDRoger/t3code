@@ -90,7 +90,6 @@ export function SettingsScopeNotice({
             label: group.displayName,
             secondary: [
               ...(group.archived ? [gt("Archived", { $context: "project state" })] : []),
-              ...(group.internal ? [gt("Internal", { $context: "project state" })] : []),
               ...(projectGroups.some(
                 (other) =>
                   other.projectKey !== group.projectKey && other.displayName === group.displayName,

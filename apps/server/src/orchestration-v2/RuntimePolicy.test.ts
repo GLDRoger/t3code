@@ -106,7 +106,6 @@ const layerWithPolicy = (policy?: ManagedPolicySummary) =>
             scripts: [],
             pinnedAt: null,
             archivedAt: null,
-            internal: false,
             createdAt: "2026-06-21T00:00:00.000Z",
             updatedAt: "2026-06-21T00:00:00.000Z",
             deletedAt: null,

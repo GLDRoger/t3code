@@ -103,7 +103,6 @@ export const layer = Layer.effect(
             projectId: ProjectId.make(`kin-dream:${turn.orgId}${suffix}`),
             workspaceRoot: turn.workspaceRoot,
             title: `Kin dreams · ${turn.orgId}`,
-            internal: true,
           });
         const shared = (yield* bootstrap("")).project;
         // Someone deleted the org's dream project; its id and command now replay the deletion.

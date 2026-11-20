@@ -216,9 +216,7 @@ export function IssueTrackerProjectRows(props: {
   const bind = useAtomCommand(issueTrackerEnvironment.bindProject, {
     label: `bind project to ${tracker.displayName}`,
   });
-  const projects = useProjects().filter(
-    (project) => project.environmentId === environmentId && project.internal !== true,
-  );
+  const projects = useProjects().filter((project) => project.environmentId === environmentId);
   const [binding, setBinding] = useState<ProjectId | null>(null);
   const change = async (projectId: ProjectId, scope: string) => {
     if (props.disabled || binding !== null) return;

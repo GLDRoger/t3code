@@ -1085,12 +1085,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   };
   // A scope whose project is gone reads as all projects once every snapshot has
   // loaded. The stored keys are left alone, so the scope returns with its project.
-  // An archived or internal project's scope reads as all projects, matching the menu.
+  // An archived project's scope reads as all projects, matching the menu.
   const scopeGroups = pickableProjectGroups(projectGroups);
   const archivedProjectKeys = new Set(
-    projectGroups
-      .filter((project) => project.archived || project.internal)
-      .map((project) => project.projectKey),
+    projectGroups.filter((project) => project.archived).map((project) => project.projectKey),
   );
   const chosenProjectScopeKeys = resolveSidebarProjectScopeKeys({
     groups: projectGroups,
@@ -1357,15 +1355,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     routeRowThreadKey,
     folderGroups: boringSidebarEnabled
       ? scopedProjectGroups.length === 0
-        ? // An archived or internal project keeps a folder for its active threads, below the rest.
-          [
-            ...scopeGroups,
-            ...projectGroups.filter((project) => project.archived || project.internal),
-          ]
+        ? // An archived project keeps a folder for its active threads, below the rest.
+          [...scopeGroups, ...projectGroups.filter((project) => project.archived)]
         : scopedProjectGroups
       : null,
     keepEmptyFolders: (group) =>
-      scopedProjectGroups.length > 0 || (group.pinned && !group.archived && !group.internal),
+      scopedProjectGroups.length > 0 || (group.pinned && !group.archived),
   });
 
   // Ranked across environments as the palette ranks them, so one
@@ -2658,9 +2653,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 AuthOrchestrationOperateScope,
               ),
               branch: thread.branch ?? null,
-              // An archived or internal project is not a filter choice.
+              // An archived project is not a filter choice.
               projectFilter:
-                threadProjectGroup && !threadProjectGroup.archived && !threadProjectGroup.internal
+                threadProjectGroup && !threadProjectGroup.archived
                   ? {
                       label: threadProjectGroup.displayName,
                       isActive: projectScopeKeys.includes(threadProjectGroup.projectKey),

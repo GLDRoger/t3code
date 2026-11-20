@@ -212,8 +212,6 @@ export function buildSidebarProjectSnapshots(
       remoteEnvironmentLabels,
       pinned: group.pinned,
       archived: group.archived,
-      // The group's, not the representative's: a group stays listed while one member is a repo.
-      internal: group.internal,
     };
   });
 }

@@ -6,7 +6,6 @@ import { chooseLoadBalancedEnvironment } from "../load-balancing.ts";
 import {
   buildProjectGroups,
   deriveLogicalProjectKeyFromSettings,
-  isPickableProjectMember,
   pickableProjectGroups,
   derivePhysicalProjectKey,
   resolveScratchProjectScopeKey,
@@ -461,21 +460,6 @@ describe("project pins and archives", () => {
       { key: "d", pinned: false, archived: true },
     ]);
     expect(pickable.map((entry) => entry.key)).toEqual(["c", "a"]);
-  });
-
-  it("leaves a project the server made for itself out of pickers but keeps it in its group", () => {
-    const kin = makeProject("kin", "/kin/memory", { repositoryIdentity: null, internal: true });
-    const repo = makeProject("repo", "/work/t3code");
-    expect(isPickableProjectMember(kin)).toBe(false);
-    expect(isPickableProjectMember(repo)).toBe(true);
-    const groups = buildProjectGroups({ projects: [kin, repo], settings: settings("repository") });
-    expect(groups.map((entry) => [entry.key, entry.internal, entry.archived])).toEqual([
-      [expect.any(String), true, false],
-      [expect.any(String), false, false],
-    ]);
-    expect(pickableProjectGroups(groups).map((entry) => entry.representative.id)).toEqual(["repo"]);
-    const other = makeProject("remote", "/work/t3code", { environmentId: remote });
-    expect(group({ ...repo, internal: true }, other).internal).toBe(false);
   });
 });
 

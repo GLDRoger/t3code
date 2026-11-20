@@ -130,7 +130,7 @@ export function FirstRunGate({
         catalogReady: environmentCatalogReady,
         serverConfigAvailable: serverConfig !== null,
         workspaceFresh,
-        projectCount: projects.filter((project) => project.internal !== true).length,
+        projectCount: projects.length,
         threadCount,
       });
 

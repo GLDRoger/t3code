@@ -23,7 +23,6 @@ export interface ProjectCreateCommand {
   readonly title: string;
   readonly workspaceRoot: string;
   readonly scripts?: ReadonlyArray<ProjectScript>;
-  readonly internal?: boolean;
 }
 
 export interface ProjectMetaUpdateCommand {
@@ -164,7 +163,6 @@ export function planProjectCommand(input: {
           faviconPath: null,
           projectIcon: null,
           scripts: command.scripts ?? [],
-          ...(command.internal === true ? { internal: true } : {}),
           createdAt: occurredAt,
           updatedAt: occurredAt,
         },

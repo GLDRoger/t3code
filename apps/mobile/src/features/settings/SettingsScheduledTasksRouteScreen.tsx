@@ -1,4 +1,3 @@
-import { isPickableProjectMember } from "@t3tools/client-runtime/state/project-grouping";
 import { msg, T, useGT, useLocale, useMessages, Var } from "gt-react-native";
 import { managedCapabilityDenial } from "@t3tools/client-runtime/contract-labels";
 import { KIN_ONLY } from "../../lib/kinOnly";
@@ -748,7 +747,7 @@ function TaskForm({
     .filter(
       (project) =>
         project.environmentId === environmentId &&
-        (isPickableProjectMember(project) ||
+        (project.archivedAt == null ||
           project.id === draft.projectId ||
           project.id === draft.task?.projectId),
     )

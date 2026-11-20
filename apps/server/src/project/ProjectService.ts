@@ -45,8 +45,6 @@ import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 export interface ProjectCreateInput extends ProjectCreatePayload {
   readonly commandId: CommandId;
   readonly projectId: ProjectId;
-  /** The server made it for its own use; project lists leave it out. Clients cannot set it. */
-  readonly internal?: boolean;
 }
 
 export interface ProjectUpdateInput extends ProjectUpdatePayload {
@@ -164,7 +162,6 @@ export class ProjectService extends Context.Service<
     readonly listPage: (input: {
       readonly cursor: number;
       readonly limit: number;
-      readonly includeInternal?: boolean;
     }) => Effect.Effect<
       { readonly projects: ReadonlyArray<Project>; readonly nextCursor: number | null },
       ProjectOperationError
@@ -212,7 +209,6 @@ export const make = Effect.gen(function* () {
     scripts: row.scripts,
     pinnedAt: row.pinnedAt,
     archivedAt: row.archivedAt,
-    internal: row.internal,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     deletedAt: row.deletedAt,
@@ -428,7 +424,6 @@ export const make = Effect.gen(function* () {
         title: input.title,
         workspaceRoot,
         ...(input.scripts === undefined ? {} : { scripts: input.scripts }),
-        ...(input.internal === true ? { internal: true } : {}),
       });
       yield* projectEnrichment.invalidate([workspaceRoot]);
       return yield* readCommitted(input.projectId);
@@ -664,10 +659,8 @@ export const make = Effect.gen(function* () {
   });
 
   const listPage: ProjectService["Service"]["listPage"] = Effect.fn("ProjectService.listPage")(
-    function* ({ cursor, limit, includeInternal }) {
-      const rows = (yield* listRows).filter(
-        (project) => project.deletedAt === null && (includeInternal === true || !project.internal),
-      );
+    function* ({ cursor, limit }) {
+      const rows = (yield* listRows).filter((project) => project.deletedAt === null);
       const projects = yield* Effect.forEach(
         rows.slice(cursor, cursor + limit),
         (row) =>

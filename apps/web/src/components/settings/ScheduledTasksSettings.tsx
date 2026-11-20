@@ -1,4 +1,3 @@
-import { isPickableProjectMember } from "@t3tools/client-runtime/state/project-grouping";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { managedCapabilityDenial } from "@t3tools/client-runtime/contract-labels";
 import { useAtomValue } from "@effect/atom-react";
@@ -1515,7 +1514,7 @@ function ScheduledTaskEditorForm({
   const projects = scopedProjects
     .filter(
       (project) =>
-        isPickableProjectMember(project) ||
+        project.archivedAt == null ||
         project.id === draft.projectId ||
         project.id === task?.projectId,
     )

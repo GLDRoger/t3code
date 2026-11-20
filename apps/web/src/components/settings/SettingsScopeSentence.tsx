@@ -436,13 +436,9 @@ function ProjectScopeMenu({ value, groups, environments, onChange }: SettingsSco
         return {
           value: group.projectKey,
           label: group.displayName,
-          secondary: [
-            ...(group.archived ? [gt("Archived", { $context: "project state" })] : []),
-            ...(group.internal ? [gt("Internal", { $context: "project state" })] : []),
-            location,
-          ]
-            .filter(Boolean)
-            .join(" · "),
+          secondary: group.archived
+            ? [gt("Archived", { $context: "project state" }), location].filter(Boolean).join(" · ")
+            : location,
           icon: <ProjectFavicon project={group} className="size-3.5 shrink-0" />,
         };
       })}

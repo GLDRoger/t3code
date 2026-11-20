@@ -1,4 +1,3 @@
-import { isPickableProjectMember } from "@t3tools/client-runtime/state/project-grouping";
 import { isListedThreadLineage, isWebhookDedupeTemplate } from "@t3tools/contracts";
 import {
   EnvironmentId,
@@ -466,10 +465,9 @@ export function defaultScheduledTaskProjectId<
     readonly id: ProjectId;
     readonly pinnedAt?: string | null | undefined;
     readonly archivedAt?: string | null | undefined;
-    readonly internal?: boolean | undefined;
   },
 >(scopedProjects: ReadonlyArray<TProject>, scope: ResolvedSettingsScope): ProjectId | "" {
-  const open = scopedProjects.filter(isPickableProjectMember);
+  const open = scopedProjects.filter((project) => project.archivedAt == null);
   const scopedToProject = scope.kind === "project" || scope.kind === "checkout";
   return (
     (

@@ -67,7 +67,6 @@ type ProjectOrder = readonly {
   readonly memberProjectRefs: readonly ScopedProjectRef[];
   readonly pinned: boolean;
   readonly archived: boolean;
-  readonly internal: boolean;
 }[];
 const sameProjectOrder = (previous: ProjectOrder, next: ProjectOrder) =>
   previous.length === next.length &&
@@ -76,7 +75,6 @@ const sameProjectOrder = (previous: ProjectOrder, next: ProjectOrder) =>
     return (
       group.pinned === next[index]!.pinned &&
       group.archived === next[index]!.archived &&
-      group.internal === next[index]!.internal &&
       group.memberProjectRefs.length === members.length &&
       group.memberProjectRefs.every(
         (ref, member) =>
@@ -103,7 +101,6 @@ const sidebarProjectOrderFamily = Atom.family((mode: SidebarProjectGroupingMode)
       memberProjectRefs: scope.projectRefs,
       pinned: scope.pinned,
       archived: scope.archived,
-      internal: scope.internal,
     })),
   ).pipe(Atom.withEquality(sameProjectOrder)),
 );

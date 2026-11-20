@@ -22,7 +22,6 @@ import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { selectProjectGroupingSettings } from "@t3tools/client-runtime/state/project-grouping";
 import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 import { buildSidebarProjectSnapshots } from "../sidebarProjectGrouping";
 import { readProjects, readThreadShell } from "../state/entities";
 import { defaultProjectFallbackReadyAtom } from "../state/projects";
@@ -153,7 +152,7 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
         if (
           !shouldCreateNewThreadInCurrentProject(
             false,
-            pickableProjectGroups(groups).length,
+            groups.filter((group) => !group.archived).length,
             groups.length,
           )
         ) {

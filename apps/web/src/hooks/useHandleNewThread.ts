@@ -1,4 +1,3 @@
-import { isPickableProjectMember } from "@t3tools/client-runtime/state/project-grouping";
 import {
   scopedProjectKey,
   scopeProjectRef,
@@ -469,13 +468,13 @@ export function resolveDefaultProjectRef(
 ): ScopedProjectRef | null {
   const lastUsed = projects.find(
     (project) =>
-      isPickableProjectMember(project) &&
+      project.archivedAt == null &&
       scopedProjectKey(scopeProjectRef(project.environmentId, project.id)) === lastUsedProjectKey,
   );
   if (lastUsed) return scopeProjectRef(lastUsed.environmentId, lastUsed.id);
   if (!fallbackReady) return null;
   const [defaultProject] = orderItemsByPreferredIds({
-    items: projects.filter(isPickableProjectMember),
+    items: projects.filter((project) => project.archivedAt == null),
     preferredIds: projectOrder,
     getId: getProjectOrderKey,
     getPreferenceIds: (project) => [

@@ -127,7 +127,7 @@ export function NewThreadLinkView({ link }: { readonly link: NewThreadLink }) {
 
   const recentProjects = () =>
     sortScopedProjectsForSidebar(
-      projects.filter((project) => project.isScratch !== true && project.internal !== true),
+      projects.filter((project) => project.isScratch !== true),
       threads,
       "updated_at",
     );

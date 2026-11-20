@@ -21,5 +21,4 @@ export const bootstrapLeadProject = (
     projectId: leadProjectId(input.orgId, input.agentId),
     workspaceRoot: input.workspaceRoot,
     title: `Kin · ${input.orgName} · ${input.name}`,
-    internal: true,
   });

@@ -34,7 +34,6 @@ export interface HomeProjectScope {
   readonly projectRefs: ReadonlyArray<ScopedProjectRef>;
   readonly pinned: boolean;
   readonly archived: boolean;
-  readonly internal: boolean;
 }
 
 function getProjectSortTimestamp(
@@ -78,7 +77,6 @@ export function buildHomeProjectScopes(
       projectRefs: group.memberProjectRefs,
       pinned: group.pinned,
       archived: group.archived,
-      internal: group.internal,
     };
   });
 }

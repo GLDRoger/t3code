@@ -1,4 +1,3 @@
-import { isPickableProjectMember } from "@t3tools/client-runtime/state/project-grouping";
 import { msg, useMessages } from "gt-react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -73,9 +72,9 @@ export function useScheduledTaskEditor() {
           ),
         ) ??
         environmentProjects.find(
-          (project) => project.pinnedAt != null && isPickableProjectMember(project),
+          (project) => project.pinnedAt != null && project.archivedAt == null,
         ) ??
-        environmentProjects.find(isPickableProjectMember);
+        environmentProjects.find((project) => project.archivedAt == null);
       return createDraft(
         project?.id ?? null,
         scheduledTaskDefaultModel(configs.get(environmentId) ?? null, project ?? null),
