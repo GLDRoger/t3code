@@ -818,7 +818,7 @@ describe("kin_picture", () => {
         assert.include(yield* refusal(), {
           reason: "limit",
           message:
-            "This month's 1 generated pictures are used. An owner or co-owner can raise the limit in Settings → Connections → Pictures; it resets on 1 Dec.",
+            "This month's 1 generated pictures are used. An owner or co-owner can raise the limit in Settings → Connections → Pictures; it resets on Dec 1.",
         });
         assert.lengthOf(fake.calls, 4);
         assert.deepStrictEqual(placed, []);

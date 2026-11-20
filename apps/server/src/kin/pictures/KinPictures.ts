@@ -3,8 +3,7 @@ import * as NodeCrypto from "node:crypto";
 
 import {
   KIN_PICTURES_PROPOSED_LIMIT,
-  KIN_TEXT_LOCALE,
-  formatKinWhen,
+  formatKinPicturesDay,
   KinChatError,
   KinChatId,
   KinMessageId,
@@ -36,7 +35,6 @@ import { KinDocRenderer } from "../gendocs/render.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
 import { dayIn, monthOf, shiftMonth } from "../work/money.ts";
-import { textLocale } from "../work/companyProfile.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { ImageVendorError, type KinImageVendor, type PixelSize } from "./ImageVendor.ts";
 import { openAiImages } from "./OpenAiImages.ts";
@@ -143,15 +141,78 @@ export const nearestSize = (sizes: ReadonlyArray<PixelSize>, wanted: PixelSize):
   });
 };
 
-/** The type from the leading bytes; a vendor's own label is never trusted. */
-const sniff = (bytes: Uint8Array) => {
+/** A side no picture service makes past: an image's header naming more is refused. */
+const MAX_SIDE = 4096;
+
+/**
+ * The type and size from the image's own header, never the vendor's label: a PNG, JPEG or WebP
+ * whole from start to end, none truncated or with bytes after it, and no side over `MAX_SIDE`.
+ */
+export const pictureHeader = (bytes: Uint8Array) => {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const length = bytes.byteLength;
   const at = (index: number, ...values: ReadonlyArray<number>) =>
+    index + values.length <= length &&
     values.every((value, offset) => bytes[index + offset] === value);
-  if (at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a))
-    return { mime: "image/png", ext: "png" };
-  if (at(0, 0xff, 0xd8, 0xff)) return { mime: "image/jpeg", ext: "jpg" };
-  if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50))
-    return { mime: "image/webp", ext: "webp" };
+  const sized = (type: { mime: string; ext: string }, width: number, height: number) =>
+    width >= 1 && height >= 1 && width <= MAX_SIDE && height <= MAX_SIDE
+      ? { ...type, width, height }
+      : undefined;
+  if (at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) {
+    if (!at(12, 0x49, 0x48, 0x44, 0x52) || length < 24) return undefined;
+    // Chunk by chunk to IEND, which must end the file.
+    for (let index = 8; index + 12 <= length;) {
+      const next = index + 12 + view.getUint32(index);
+      if (next > length) return undefined;
+      if (at(index + 4, 0x49, 0x45, 0x4e, 0x44))
+        return next === length
+          ? sized({ mime: "image/png", ext: "png" }, view.getUint32(16), view.getUint32(20))
+          : undefined;
+      index = next;
+    }
+    return undefined;
+  }
+  if (at(0, 0xff, 0xd8)) {
+    // Segment by segment to the frame header and the scan; the file ends at its end marker.
+    let size: { width: number; height: number } | undefined;
+    for (let index = 2; index + 4 <= length;) {
+      if (bytes[index] !== 0xff) return undefined;
+      const marker = bytes[index + 1]!;
+      if (marker === 0xff) {
+        index += 1;
+        continue;
+      }
+      if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+        index += 2;
+        continue;
+      }
+      if (marker === 0xd9) return undefined;
+      const segment = view.getUint16(index + 2);
+      if (index + 2 + segment > length) return undefined;
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc)
+        size = { height: view.getUint16(index + 5), width: view.getUint16(index + 7) };
+      if (marker === 0xda)
+        return size !== undefined && at(length - 2, 0xff, 0xd9)
+          ? sized({ mime: "image/jpeg", ext: "jpg" }, size.width, size.height)
+          : undefined;
+      index += 2 + segment;
+    }
+    return undefined;
+  }
+  if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) {
+    // The RIFF length is the whole file's, so a cut one or one with more after it fails here.
+    if (length < 30 || view.getUint32(4, true) + 8 !== length) return undefined;
+    const webp = { mime: "image/webp", ext: "webp" };
+    const u24 = (index: number) => view.getUint16(index, true) | (bytes[index + 2]! << 16);
+    if (at(12, 0x56, 0x50, 0x38, 0x58)) return sized(webp, 1 + u24(24), 1 + u24(27));
+    if (at(12, 0x56, 0x50, 0x38, 0x4c) && bytes[20] === 0x2f) {
+      const bits = view.getUint32(21, true);
+      return sized(webp, 1 + (bits & 0x3fff), 1 + ((bits >>> 14) & 0x3fff));
+    }
+    if (at(12, 0x56, 0x50, 0x38, 0x20) && at(23, 0x9d, 0x01, 0x2a))
+      return sized(webp, view.getUint16(26, true) & 0x3fff, view.getUint16(28, true) & 0x3fff);
+    return undefined;
+  }
   return undefined;
 };
 
@@ -214,15 +275,6 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
   const refreshes = yield* KinRefreshObserver;
   const db = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
     effect.pipe(Effect.provideService(SqlClient.SqlClient, sql));
-
-  /** The day a month starts, as the company writes a date: "1 Dec". */
-  const dayName = (orgId: KinOrgId, day: string) =>
-    db(textLocale(orgId)).pipe(
-      Effect.orElseSucceed(() => KIN_TEXT_LOCALE),
-      Effect.map((locale) =>
-        formatKinWhen(Date.parse(`${day}T12:00:00.000Z`), "date", { zone: "UTC", locale }),
-      ),
-    );
 
   const ownerOf = Effect.fn("KinPictures.ownerOf")(function* (
     people: ReadonlyArray<PersonIdentity>,
@@ -288,28 +340,41 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
       if (input.disconnect === true && input.key !== undefined)
         return yield* invalid("Save a key or disconnect, not both at once.");
       const now = yield* Clock.currentTimeMillis;
-      if (input.disconnect === true) yield* secrets.removePicturesKey(vendor.name);
+      // The secret first, then the row; a row that fails puts back the secret there was.
+      const previous =
+        input.key === undefined ? Option.none() : yield* secrets.getPicturesKey(vendor.name);
       if (input.key !== undefined) yield* secrets.setPicturesKey(vendor.name, input.key);
-      const existing = yield* settingsOf(input.orgId);
-      const limit =
-        input.monthlyLimit !== undefined
-          ? input.monthlyLimit
-          : existing === undefined
-            ? KIN_PICTURES_PROPOSED_LIMIT
-            : existing.monthlyLimit;
-      const keySavedAt =
-        input.disconnect === true
-          ? null
-          : input.key !== undefined
-            ? now
-            : (existing?.keySavedAt ?? null);
-      const model = input.model ?? existing?.model ?? null;
-      yield* sql`INSERT INTO kin_picture_settings (org_id, monthly_limit, model, key_saved_at,
+      const putBack = Option.match(previous, {
+        onNone: () => secrets.removePicturesKey(vendor.name),
+        onSome: (key) => secrets.setPicturesKey(vendor.name, key),
+      });
+      yield* Effect.gen(function* () {
+        const existing = yield* settingsOf(input.orgId);
+        const limit =
+          input.monthlyLimit !== undefined
+            ? input.monthlyLimit
+            : existing === undefined
+              ? KIN_PICTURES_PROPOSED_LIMIT
+              : existing.monthlyLimit;
+        const keySavedAt =
+          input.disconnect === true
+            ? null
+            : input.key !== undefined
+              ? now
+              : (existing?.keySavedAt ?? null);
+        const model = input.model ?? existing?.model ?? null;
+        yield* sql`INSERT INTO kin_picture_settings (org_id, monthly_limit, model, key_saved_at,
           warned_month, updated_at, updated_by)
         VALUES (${input.orgId}, ${limit}, ${model}, ${keySavedAt}, NULL, ${now}, ${person.personId})
         ON CONFLICT (org_id) DO UPDATE SET monthly_limit = excluded.monthly_limit,
           model = excluded.model, key_saved_at = excluded.key_saved_at,
           updated_at = excluded.updated_at, updated_by = excluded.updated_by`;
+        // Disconnecting forgets the key last, inside the row's transaction: both go, or neither.
+        if (input.disconnect === true) yield* secrets.removePicturesKey(vendor.name);
+      }).pipe(
+        sql.withTransaction,
+        Effect.onError(() => (input.key === undefined ? Effect.void : Effect.ignore(putBack))),
+      );
       // Every other device showing Connections reads it again.
       yield* refreshes.touch(input.orgId, "connections");
       return yield* view(input.orgId);
@@ -357,7 +422,7 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
       if (take <= 0)
         return {
           _tag: "full" as const,
-          sentence: GENERATE_SENTENCES.limit(limit ?? 0, yield* dayName(request.orgId, resetsOn)),
+          sentence: GENERATE_SENTENCES.limit(limit ?? 0, formatKinPicturesDay(resetsOn)),
         };
       const inserted = yield* sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id,
           person_id, count, state, at)
@@ -398,7 +463,10 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
       Effect.ignore,
     );
 
-  /** Once a month, as a set limit passes 80%: the owner notice line, in the Chief of staff's chat. */
+  /**
+   * The owner notice line, in the Chief of staff's chat: once a month as a set limit passes 80%,
+   * and once it is reached. A call that goes from under 80% to the limit sends only the second.
+   */
   const warnIfNear = Effect.fn("KinPictures.warnIfNear")(function* (
     orgId: KinOrgId,
     held: { readonly limit: number | null; readonly month: string; readonly resetsOn: string },
@@ -408,18 +476,27 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
     yield* Effect.gen(function* () {
       const count = yield* used(orgId, held.month);
       if (count * 100 < limit * WARN_PERCENT) return;
+      const full = count >= limit;
       const claimed = yield* sql`UPDATE kin_picture_settings SET warned_month = ${held.month}
         WHERE org_id = ${orgId} AND (warned_month IS NULL OR warned_month <> ${held.month})
         RETURNING org_id`;
-      if (claimed.length === 0) return;
+      if (!full && claimed.length === 0) return;
       const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
       if (lead === undefined) return;
+      const until = formatKinPicturesDay(held.resetsOn);
       yield* chat.notice({
         orgId,
         chatId: KinChatId.make(lead.ownerChatId),
-        messageId: KinMessageId.make(`kin-pictures-near:${orgId}:${held.month}`),
+        // The limit's own id: one notice for it, even should a later call reach it again.
+        messageId: KinMessageId.make(
+          full
+            ? `kin-pictures-full:${orgId}:${held.month}:${limit}`
+            : `kin-pictures-near:${orgId}:${held.month}`,
+        ),
         audience: "owner",
-        body: `Kin has made ${count} of this month's ${limit} generated pictures. At ${limit}, new ones stop until ${yield* dayName(orgId, held.resetsOn)}. You can raise the limit or choose No limit in ${WHERE}.`,
+        body: full
+          ? `Kin has made all ${limit} of this month's generated pictures, so new ones stop until ${until}. You can raise the limit or choose No limit in ${WHERE}.`
+          : `Kin has made ${count} of this month's ${limit} generated pictures. At ${limit}, new ones stop until ${until}. You can raise the limit or choose No limit in ${WHERE}.`,
       });
     }).pipe(
       sql.withTransaction,
@@ -482,12 +559,10 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
       }
       const sent = answer.made.images.slice(0, held.take);
       const images = sent.flatMap((image) => {
-        const type = sniff(image.bytes);
-        return type === undefined ||
-          image.bytes.byteLength === 0 ||
-          image.bytes.byteLength > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES
+        const type = pictureHeader(image.bytes);
+        return type === undefined || image.bytes.byteLength > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES
           ? []
-          : [{ bytes: image.bytes, ...type }];
+          : [{ bytes: image.bytes, mime: type.mime, ext: type.ext }];
       });
       // What the service sent is what it made: each is counted, usable or not.
       const counted = Math.max(1, sent.length);

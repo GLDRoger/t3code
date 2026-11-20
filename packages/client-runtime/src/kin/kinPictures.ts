@@ -1,5 +1,6 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
+  formatKinPicturesDay,
   formatKinWhen,
   KinConnectionKey,
   type KinOrgId,
@@ -88,10 +89,7 @@ export function kinPicturesRows(
   view: KinPicturesView,
   options: { readonly locale?: string; readonly zone?: string } = {},
 ): KinPicturesRows {
-  const resetsOn = formatKinWhen(Date.parse(`${view.resetsOn}T12:00:00.000Z`), "date", {
-    zone: "UTC",
-    locale: options.locale,
-  });
+  const resetsOn = formatKinPicturesDay(view.resetsOn, options.locale);
   return {
     connected: view.connected,
     service: view.vendor.label,

@@ -6,11 +6,16 @@ import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchema
 import { KinChatError, KinOrgId } from "./kinChat.ts";
 import { KinConnectionKey } from "./kinConnections.ts";
 import { KinDay } from "./kinMoney.ts";
+import { formatKinWhen } from "./kinWhen.ts";
 
 /**
  * Generated pictures: one image service behind an owner-level key, and a monthly count. Not a
  * connection preset, so an older phone's Connections list decodes as before.
  */
+
+/** "Dec 1": the day a picture month starts, as Settings and Kin's own sentences write it. */
+export const formatKinPicturesDay = (day: string, locale?: string) =>
+  formatKinWhen(Date.parse(`${day}T12:00:00.000Z`), "date", { zone: "UTC", locale });
 
 /** What Settings offers when a key is first saved. */
 export const KIN_PICTURES_PROPOSED_LIMIT = 50;

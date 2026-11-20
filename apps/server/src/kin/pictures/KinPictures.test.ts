@@ -24,6 +24,7 @@ import {
   nearestSize,
   GENERATE_SENTENCES,
   PICTURE_TIMEOUT,
+  pictureHeader,
   type GenerateRequest,
 } from "./KinPictures.ts";
 import { KinPictureSize, pictureOutput } from "./sizes.ts";
@@ -150,7 +151,7 @@ const madeRows = (count: number) =>
 const notices = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   return yield* sql<{ chat: string; body: string }>`SELECT chat_id AS chat, body FROM kin_messages
-    WHERE org_id = ${orgId} AND message_id LIKE 'kin-pictures-near:%' ORDER BY message_id`;
+    WHERE org_id = ${orgId} AND message_id LIKE 'kin-pictures-%' ORDER BY seq`;
 });
 
 describe("KinPictures", () => {
@@ -341,7 +342,7 @@ describe("KinPictures", () => {
           _tag: "refused",
           reason: "limit",
           sentence:
-            "This month's 3 generated pictures are used. An owner or co-owner can raise the limit in Settings → Connections → Pictures; it resets on 1 Dec.",
+            "This month's 3 generated pictures are used. An owner or co-owner can raise the limit in Settings → Connections → Pictures; it resets on Dec 1.",
         });
         yield* Deferred.succeed(answer, undefined);
         assert.strictEqual((yield* Fiber.join(first))._tag, "made");
@@ -435,14 +436,120 @@ describe("KinPictures", () => {
         assert.deepStrictEqual(yield* notices, []);
         yield* ask();
         yield* ask();
-        assert.deepStrictEqual(yield* notices, [
-          {
-            chat: `chat-${orgId}`,
-            body: "Kin has made 4 of this month's 5 generated pictures. At 5, new ones stop until 1 Dec. You can raise the limit or choose No limit in Settings → Connections → Pictures.",
-          },
-        ]);
+        const near = {
+          chat: `chat-${orgId}`,
+          body: "Kin has made 4 of this month's 5 generated pictures. At 5, new ones stop until Dec 1. You can raise the limit or choose No limit in Settings → Connections → Pictures.",
+        };
+        const full = {
+          chat: `chat-${orgId}`,
+          body: "Kin has made all 5 of this month's generated pictures, so new ones stop until Dec 1. You can raise the limit or choose No limit in Settings → Connections → Pictures.",
+        };
+        assert.deepStrictEqual(yield* notices, [near, full]);
+        // Refused at the limit, nothing more is said.
+        assert.deepInclude(yield* ask(), { reason: "limit" });
+        assert.deepStrictEqual(yield* notices, [near, full]);
       }),
     );
+  });
+
+  it.effect("tells the owner only of the limit when one call goes from under 80% to it", () => {
+    const { run } = harness();
+    return run(
+      Effect.gen(function* () {
+        yield* setUp;
+        yield* connect(5);
+        yield* ask({ count: 2 });
+        yield* ask({ count: 3 });
+        assert.deepStrictEqual(
+          (yield* notices).map((notice) => notice.body),
+          [
+            "Kin has made all 5 of this month's generated pictures, so new ones stop until Dec 1. You can raise the limit or choose No limit in Settings → Connections → Pictures.",
+          ],
+        );
+      }),
+    );
+  });
+
+  it.effect("saves a key with its row or not at all, and forgets both or neither", () => {
+    const { keys, run } = harness();
+    return run(
+      Effect.gen(function* () {
+        const sql = yield* setUp;
+        const pictures = yield* KinPictures;
+        const failing = Effect.all([
+          sql`CREATE TRIGGER fail_insert BEFORE INSERT ON kin_picture_settings
+            BEGIN SELECT RAISE(ABORT, 'the disk is full'); END`,
+          sql`CREATE TRIGGER fail_update BEFORE UPDATE ON kin_picture_settings
+            BEGIN SELECT RAISE(ABORT, 'the disk is full'); END`,
+        ]);
+        const fixed = Effect.all([sql`DROP TRIGGER fail_insert`, sql`DROP TRIGGER fail_update`]);
+        const stored = () => Option.map(Option.fromNullishOr(keys.get("openai")), Redacted.value);
+        // The row can't be written: the key just saved goes too.
+        yield* failing;
+        assert.include(yield* Effect.flip(connect()), { reason: "unavailable" });
+        assert.deepStrictEqual(stored(), Option.none());
+        yield* fixed;
+        yield* connect();
+        // A new key whose row fails leaves the one there was.
+        yield* failing;
+        const other = Redacted.make("sk-invented-ambermill-key-0002");
+        assert.include(yield* Effect.flip(pictures.set(asOwner, { orgId, key: other })), {
+          reason: "unavailable",
+        });
+        assert.deepStrictEqual(stored(), Option.some(KEY));
+        // A disconnect whose row fails forgets nothing.
+        assert.include(yield* Effect.flip(pictures.set(asOwner, { orgId, disconnect: true })), {
+          reason: "unavailable",
+        });
+        assert.deepStrictEqual(stored(), Option.some(KEY));
+        yield* fixed;
+        assert.isTrue((yield* pictures.get(asOwner, { orgId })).connected);
+      }),
+    );
+  });
+
+  it("reads an image's type and size from its own header, whole and within the cap", () => {
+    const png = (width: number, height: number) => {
+      const bytes = Uint8Array.from(FAKE_PNG);
+      new DataView(bytes.buffer).setUint32(16, width);
+      new DataView(bytes.buffer).setUint32(20, height);
+      return bytes;
+    };
+    // prettier-ignore
+    const jpeg = Uint8Array.of(
+      0xff, 0xd8,
+      0xff, 0xc0, 0x00, 0x11, 0x08, 0x05, 0xa0, 0x04, 0x00, 0x03,
+      0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
+      0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00,
+      0x12, 0x34, 0xff, 0xd9,
+    );
+    // prettier-ignore
+    const webp = Uint8Array.of(
+      0x52, 0x49, 0x46, 0x46, 22, 0, 0, 0, 0x57, 0x45, 0x42, 0x50,
+      0x56, 0x50, 0x38, 0x58, 10, 0, 0, 0, 0, 0, 0, 0,
+      0xff, 0x03, 0x00, 0xff, 0x05, 0x00,
+    );
+    const read = (bytes: Uint8Array) => {
+      const header = pictureHeader(bytes);
+      return header === undefined ? null : `${header.mime} ${header.width}x${header.height}`;
+    };
+    assert.deepStrictEqual([png(1, 1), png(1024, 1536), jpeg, webp].map(read), [
+      "image/png 1x1",
+      "image/png 1024x1536",
+      "image/jpeg 1024x1440",
+      "image/webp 1024x1536",
+    ]);
+    // Cut short, with bytes after its end, or larger than any picture: none is a picture.
+    for (const bytes of [
+      FAKE_PNG.subarray(0, 40),
+      Uint8Array.of(...FAKE_PNG, 0),
+      png(5000, 10),
+      jpeg.subarray(0, jpeg.length - 2),
+      Uint8Array.of(...jpeg, 0),
+      webp.subarray(0, 28),
+      Uint8Array.of(...webp, 0, 0),
+    ])
+      assert.isNull(read(bytes));
   });
 
   it.effect("turns the month in the company's zone, not the server's", () => {
