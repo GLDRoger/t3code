@@ -72,16 +72,17 @@ export const LISTS: Record<ListName, List> = {
     states: ["open", "dropped"],
     categories: [],
     // `emails` and `phones` hold every one, main first, only beside a second (`contactDetails.ts`).
-    fields: ["role", "email", "phone", "emails", "phones"],
+    fields: ["role", "email", "phone", "emails", "phones", "tags"],
   },
   projects: {
     name: "Projects",
     prefix: "P",
     noun: "project",
     states: ["open", "done", "dropped"],
-    categories: [],
+    // None is an ordinary project; a campaign's `audience` is a tag (`tags.ts`).
+    categories: ["campaign"],
     // `members` holds `person:<id>` and `agent:<id>`; days are `YYYY-MM-DD`.
-    fields: ["repos", "billing", "value", "startsOn", "renewsOn", "members"],
+    fields: ["repos", "billing", "value", "startsOn", "renewsOn", "members", "audience"],
   },
   milestones: {
     name: "Milestones",

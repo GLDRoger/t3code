@@ -1,3 +1,4 @@
+import { KIN_MARKETING } from "@t3tools/client-runtime/kin/kinMarketing";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -85,6 +86,7 @@ import { KinCountryFirstField } from "./components/KinCountryFirst";
 import { useKinCompanyCountry, useKinHomeCurrency } from "./state/useKinMoney.ts";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { KinProjectPeoplePicker } from "./KinProjectPeopleScreen";
+import { KinCameFromFields, KinTagFields, useKinMarketing } from "./KinMarketing";
 import { kinWorkRefParam, type KinWorkParams } from "./KinWorkScreen";
 import { useKinIsOwnerLevel, useKinSeesClients } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
@@ -275,6 +277,7 @@ const ABROAD = "abroad";
 function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
   const navigation = useNavigation();
   const { environmentId, orgId, editing, member } = props;
+  const marketing = useKinMarketing(props);
   const create = useAtomCommand(kinClient.workClientCreate, { reportFailure: false });
   const update = useAtomCommand(kinClient.workClientUpdate, { reportFailure: false });
   // One id for the form's life: trying again after a dropped answer never adds a second client.
@@ -390,14 +393,14 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
         </View>
       )}
       <ListSection>
-        <KinWorkTextField
+        <KinCameFromFields
           label={COPY.party.source}
           value={draft.source}
+          choices={marketing.cameFrom}
           disabled={state.saving}
-          maxLength={120}
           placeholder={COPY.party.sourcePlaceholder}
           moved={moved.source}
-          onChangeText={(source) => form.edit({ source })}
+          onChange={(source) => form.edit({ source })}
         />
         <KinWorkTextField
           label={COPY.party.tags}
@@ -683,6 +686,7 @@ function ContactForm(
   useEffect(() => {
     if (editing !== null) form.latest(kinContactDraftOf(editing), editing.rev);
   }, [form, editing]);
+  const marketing = useKinMarketing(props);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
   const busy = state.saving || aside.busy;
@@ -756,6 +760,12 @@ function ContactForm(
           onChange={(phones) => form.edit({ phones })}
         />
       </ListSection>
+      <KinTagFields
+        tags={draft.tags ?? []}
+        company={marketing.tags}
+        disabled={busy}
+        onChange={(tags) => form.edit({ tags })}
+      />
       <ListSection>
         <KinWorkTextField
           label={COPY.contact.notes}
@@ -925,6 +935,7 @@ function ProjectForm(
   const [requestId] = useState(uuidv4);
   const [key] = useState(() => editing?.project.key ?? null);
   const [opened] = useState(() => new Date());
+  const marketing = useKinMarketing(props);
   const home = useKinHomeCurrency(props);
   const { state, form } = useKinWorkForm(environmentId, {
     noun: "project",
@@ -1088,6 +1099,43 @@ function ProjectForm(
               form.edit({ renewsOn: text.trim() === "" ? null : text.trim() })
             }
           />
+        ) : null}
+      </ListSection>
+      <ListSection footer={draft.campaign ? KIN_MARKETING.audienceHint : undefined}>
+        <ListToggleRow
+          icon="tag"
+          label={KIN_MARKETING.campaign}
+          description={KIN_MARKETING.campaignHint}
+          value={draft.campaign}
+          disabled={state.saving}
+          onValueChange={(campaign) => form.edit({ campaign })}
+        />
+        {draft.campaign ? (
+          <>
+            <KinWorkTextField
+              label={KIN_MARKETING.audience}
+              value={draft.audience}
+              disabled={state.saving}
+              maxLength={60}
+              placeholder={KIN_MARKETING.audiencePlaceholder}
+              moved={moved.audience}
+              onChangeText={(audience) => form.edit({ audience })}
+            />
+            {marketing.tags.length === 0 ? null : (
+              <View className="flex-row flex-wrap gap-2 px-4 pb-3">
+                {marketing.tags.slice(0, 12).map((tag) => (
+                  <Chip
+                    key={tag}
+                    label={tag}
+                    size="small"
+                    selected={draft.audience === tag}
+                    disabled={state.saving}
+                    onPress={() => form.edit({ audience: tag })}
+                  />
+                ))}
+              </View>
+            )}
+          </>
         ) : null}
       </ListSection>
       <ListSection>

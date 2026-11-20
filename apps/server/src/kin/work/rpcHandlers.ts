@@ -35,6 +35,7 @@ import * as Clients from "./ownerClients.ts";
 import * as Deals from "./deals.ts";
 import * as Docs from "./ownerDocs.ts";
 import * as Export from "./exportBundle.ts";
+import * as Marketing from "./ownerMarketing.ts";
 import * as Money from "./ownerMoney.ts";
 import * as MoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as MoneyStream from "./moneyStream.ts";
@@ -227,6 +228,15 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       }),
       "kin.work.projectPeople": Effect.fn("KinWork.rpc.projectPeople")(function* (input) {
         return yield* call((people) => Clients.projectPeople(people, input));
+      }),
+      "kin.work.marketing": Effect.fn("KinWork.rpc.marketing")(function* (input) {
+        return yield* call((people) => Marketing.marketing(people, input));
+      }),
+      "kin.work.contactList": Effect.fn("KinWork.rpc.contactList")(function* (input) {
+        return yield* call((people) => Marketing.contactList(people, input));
+      }),
+      "kin.work.exportContacts": Effect.fn("KinWork.rpc.exportContacts")(function* (input) {
+        return yield* call((people) => Marketing.exportContacts(people, input));
       }),
       "kin.docs.list": Effect.fn("KinDocs.rpc.list")(function* (input) {
         return yield* call((people) => Docs.list(people, input));

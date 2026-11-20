@@ -39,6 +39,7 @@ import { KinWorkToolkit } from "./mcp/tools.ts";
 import * as Clients from "./ownerClients.ts";
 import * as Deals from "./deals.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
+import * as Marketing from "./ownerMarketing.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import * as Docs from "./docs.ts";
@@ -3552,5 +3553,366 @@ it.effect(
       assert.deepInclude(got.deal, { next: null });
       assert.notInclude(JSON.stringify([theirs, got]), "call Ingrid");
       assert.notInclude(JSON.stringify([theirs, got]), stepped.deal.next!.key);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a campaign is a project's category with an audience tag, made, read and changed back",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const fair = yield* Clients.createProject([owner], {
+        orgId,
+        name: "Invented harbour fair",
+        campaign: true,
+        audience: " harbour ",
+        clientRequestId: "fair",
+      });
+      const plain = yield* Clients.createProject([owner], {
+        orgId,
+        name: "Invented site build",
+        clientRequestId: "site",
+      });
+      assert.include(fair, { campaign: true, audience: "harbour" });
+      assert.notProperty(plain, "campaign");
+      assert.notProperty(plain, "audience");
+      const campaigns = yield* Clients.projects([owner], { orgId, campaign: true });
+      assert.deepStrictEqual(
+        campaigns.projects.map((one) => one.key),
+        [fair.key],
+      );
+      // A teammate makes no campaign: projects are the owner level's to make.
+      assert.strictEqual(
+        (yield* Clients.createProject([mate], {
+          orgId,
+          name: "Invented own fair",
+          campaign: true,
+          clientRequestId: "mine",
+        }).pipe(Effect.flip)).reason,
+        "not_allowed",
+      );
+      // The way back: an ordinary project again, its audience kept for if it returns.
+      const back = yield* Clients.updateProject([owner], {
+        orgId,
+        key: fair.key,
+        rev: fair.rev,
+        campaign: false,
+      });
+      assert.notProperty(back, "campaign");
+      assert.lengthOf((yield* Clients.projects([owner], { orgId, campaign: true })).projects, 0);
+      const again = yield* Clients.updateProject([owner], {
+        orgId,
+        key: fair.key,
+        rev: back.rev,
+        campaign: true,
+      });
+      assert.include(again, { campaign: true, audience: "harbour" });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "tags are cleaned once on the server: trimmed, one per spelling in any case, the company's first spelling, at most twenty",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const client = yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Brightwater",
+        prospect: true,
+        tags: ["Harbour", "Clinics"],
+        clientRequestId: "bw",
+      });
+      const contact = yield* Clients.createContact([owner], {
+        orgId,
+        party: client.key,
+        name: "Invented Ingrid",
+        tags: [" harbour ", "HARBOUR", "newsletter", "clinics", "Ünited", "ünited"],
+        clientRequestId: "ingrid",
+      });
+      assert.deepStrictEqual(contact.tags, ["Harbour", "newsletter", "Clinics", "Ünited"]);
+      // A campaign's audience is spelled the company's way too.
+      const fair = yield* Clients.createProject([owner], {
+        orgId,
+        name: "Invented fair",
+        campaign: true,
+        audience: "NEWSLETTER",
+        clientRequestId: "fair",
+      });
+      assert.strictEqual(fair.audience, "newsletter");
+      const many = Array.from({ length: 21 }, (_, at) => `Invented tag ${at}`);
+      const refused = yield* Clients.updateContact([owner], {
+        orgId,
+        key: contact.key,
+        rev: contact.rev,
+        tags: many,
+      }).pipe(Effect.flip);
+      assert.include(refused, { reason: "invalid_state" });
+      assert.include(refused.message, "at most 20 tags");
+      // Twenty-one typed, twenty once repeats in another case fold away.
+      const twenty = yield* Clients.updateContact([owner], {
+        orgId,
+        key: contact.key,
+        rev: contact.rev,
+        tags: [...many.slice(0, 20), "INVENTED TAG 0"],
+      });
+      assert.lengthOf(twenty.tags ?? [], 20);
+      // The way out: empty clears them.
+      const cleared = yield* Clients.updateContact([owner], {
+        orgId,
+        key: contact.key,
+        rev: twenty.rev,
+        tags: [],
+      });
+      assert.notProperty(cleared, "tags");
+      // A teammate with Clients on tags the contacts of a prospect they look after, and no other's.
+      yield* (yield* SqlClient.SqlClient)`UPDATE kin_people SET sees_clients = 1
+        WHERE person_id = ${mateId}`;
+      const theirs = yield* Clients.createParty([mate], {
+        orgId,
+        name: "Invented Corran",
+        prospect: true,
+        contact: { name: "Invented Ola" },
+        clientRequestId: "corran",
+      });
+      const ola = (yield* Clients.party([mate], { orgId, key: theirs.key })).contacts[0]!;
+      const tagged = yield* Clients.updateContact([mate], {
+        orgId,
+        key: ola.key,
+        rev: ola.rev,
+        tags: ["CLINICS", "fair"],
+      });
+      assert.deepStrictEqual(tagged.tags, ["Clinics", "fair"]);
+      const untagged = yield* Clients.updateContact([mate], {
+        orgId,
+        key: ola.key,
+        rev: tagged.rev,
+        tags: ["fair"],
+      });
+      assert.deepStrictEqual(untagged.tags, ["fair"]);
+      assert.include(
+        yield* Clients.updateContact([mate], {
+          orgId,
+          key: contact.key,
+          rev: cleared.rev,
+          tags: ["harbour"],
+        }).pipe(Effect.flip),
+        { reason: "not_allowed" },
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a campaign's results are counted from what each reader sees, never revealing a hidden row, and its lists and export carry only what they may read",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      const fair = yield* Clients.createProject([owner], {
+        orgId,
+        name: "Invented harbour fair",
+        campaign: true,
+        audience: "Harbour",
+        members: [{ _tag: "person", personId: mateId }],
+        clientRequestId: "fair",
+      });
+      const source = `campaign:${fair.key}`;
+      const party = (
+        name: string,
+        input: { prospect?: boolean; sensitive?: boolean; source?: string },
+      ) => Clients.createParty([owner], { orgId, name, clientRequestId: name, ...input });
+      const tallmoor = yield* party("Invented Tallmoor", { prospect: true, source });
+      const hidden = yield* party("Invented Quietbay", { prospect: true, source, sensitive: true });
+      const corran = yield* party("Invented Corran", { source });
+      const other = yield* party("Invented Northgate", { source: "Invented referral" });
+      const deal = (on: string, title: string, minor: number, currency: string) =>
+        Deals.create([owner], {
+          orgId,
+          party: on,
+          title,
+          value: { minor, currency: currency as never },
+          clientRequestId: title,
+        });
+      yield* deal(tallmoor.key, "Invented pilot", 1_000_000, "EUR");
+      yield* deal(tallmoor.key, "Invented support", 500_000, "USD");
+      yield* deal(hidden.key, "Invented quiet deal", 5_000_000, "EUR");
+      yield* deal(other.key, "Invented other deal", 100, "EUR");
+      // A private deal on a client everyone sees stays with the owner level.
+      yield* Deals.create([owner], {
+        orgId,
+        party: tallmoor.key,
+        title: "Invented private deal",
+        value: { minor: 300_000, currency: "EUR" },
+        sensitive: true,
+        clientRequestId: "private-deal",
+      });
+      const won = yield* deal(corran.key, "Invented stand system", 900_000, "EUR");
+      yield* Deals.move([owner], {
+        orgId,
+        key: won.deal.key,
+        rev: won.deal.rev,
+        to: { _tag: "won" },
+      });
+      const contact = (on: string, name: string, tags: ReadonlyArray<string>, extra = {}) =>
+        Clients.createContact([owner], {
+          orgId,
+          party: on,
+          name,
+          tags,
+          clientRequestId: name,
+          ...extra,
+        });
+      yield* contact(tallmoor.key, "=Invented Ingrid", ["harbour"], {
+        role: "@Head of operations",
+        emails: ["ingrid@tallmoor.invalid", "-ops@tallmoor.invalid"],
+        phones: ["+47 900 00 000"],
+      });
+      yield* contact(tallmoor.key, 'Invented Ola, "the buyer"', ["Harbour", "clinics"]);
+      yield* contact(hidden.key, "Invented Hidden", ["harbour"], { email: "h@quietbay.invalid" });
+      yield* contact(other.key, "Invented Nils", ["HARBOUR"]);
+      const gone = yield* contact(other.key, "Invented Gone", ["harbour"]);
+      yield* Clients.updateContact([owner], { orgId, key: gone.key, rev: gone.rev, active: false });
+      // Counted by hand: two open prospects, one client; four open deals in two currencies, never
+      // summed across them; one won; four open contacts carry the tag.
+      const ownerPage = yield* Clients.project([owner], { orgId, key: fair.key });
+      assert.deepStrictEqual(ownerPage.results, {
+        prospects: 2,
+        clients: 1,
+        open: {
+          count: 4,
+          values: [
+            { minor: 6_300_000, currency: "EUR" },
+            { minor: 500_000, currency: "USD" },
+          ],
+        },
+        won: { count: 1, values: [{ minor: 900_000, currency: "EUR" }] },
+        audience: 4,
+      });
+      // A teammate on the campaign without Clients sees the project but none of its results.
+      const mateOff = yield* Clients.project([mate], { orgId, key: fair.key });
+      assert.notProperty(mateOff, "results");
+      // With Clients on, the private prospect, its deal and its contact are in no count.
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${mateId}`;
+      const matePage = yield* Clients.project([mate], { orgId, key: fair.key });
+      assert.deepStrictEqual(matePage.results, {
+        prospects: 1,
+        clients: 1,
+        open: {
+          count: 2,
+          values: [
+            { minor: 1_000_000, currency: "EUR" },
+            { minor: 500_000, currency: "USD" },
+          ],
+        },
+        won: { count: 1, values: [{ minor: 900_000, currency: "EUR" }] },
+        audience: 3,
+      });
+      assert.notInclude(JSON.stringify(matePage), "Quietbay");
+      // Results move with the rows: winning makes a prospect a client.
+      const pilot = (yield* Deals.deals([owner], { orgId, party: tallmoor.key })).deals.find(
+        (one) => one.title === "Invented pilot",
+      )!;
+      yield* Deals.move([owner], { orgId, key: pilot.key, rev: pilot.rev, to: { _tag: "won" } });
+      assert.include((yield* Clients.project([owner], { orgId, key: fair.key })).results, {
+        prospects: 1,
+        clients: 2,
+      });
+      // "Came from" reads the campaign by name, and the Clients filter finds by it and by tag.
+      const fromIt = yield* Clients.parties([owner], { orgId, source });
+      assert.sameMembers(
+        fromIt.parties.map((one) => one.name),
+        ["Invented Tallmoor", "Invented Quietbay", "Invented Corran"],
+      );
+      assert.include(fromIt.parties[0], { source: "Invented harbour fair" });
+      assert.include(fromIt.parties[0]!.campaign, { key: fair.key });
+      assert.sameMembers(
+        (yield* Clients.parties([mate], { orgId, source })).parties.map((one) => one.name),
+        ["Invented Tallmoor", "Invented Corran"],
+      );
+      assert.sameMembers(
+        (yield* Clients.parties([mate], { orgId, tag: "clinics" })).parties.map((one) => one.name),
+        ["Invented Tallmoor"],
+      );
+      // A deal made on the prospect came from the campaign, and reads it by name.
+      assert.strictEqual(pilot.source, "Invented harbour fair");
+      // The audience as a list: the owner's four, the teammate's three.
+      const audience = { orgId, campaign: fair.key };
+      const ownerList = yield* Marketing.contactList([owner], audience);
+      assert.include(ownerList, { total: 4, title: "Invented harbour fair", details: true });
+      const mateList = yield* Marketing.contactList([mate], audience);
+      assert.strictEqual(mateList.total, 3);
+      assert.notInclude(JSON.stringify(mateList), "Hidden");
+      // The export: its columns, a row per contact, and nothing a spreadsheet would run.
+      const file = yield* Marketing.exportContacts([mate], { orgId, tag: "HARBOUR" });
+      assert.strictEqual(file.rows, 3);
+      assert.strictEqual(file.filename, "HARBOUR-contacts.csv");
+      const lines = file.csv.replace(/^﻿/, "").split("\r\n");
+      assert.deepStrictEqual(lines, [
+        "Name,Client,Role,Main email,Other emails,Main phone,Other phones,Tags,Looked after by",
+        "Invented Nils,Invented Northgate,,,,,,Harbour,Owner",
+        "'=Invented Ingrid,Invented Tallmoor,'@Head of operations,ingrid@tallmoor.invalid,'-ops@tallmoor.invalid,'+47 900 00 000,,Harbour,Owner",
+        '"Invented Ola, ""the buyer""",Invented Tallmoor,,,,,,Harbour; clinics,Owner',
+        "",
+      ]);
+      assert.notInclude(file.csv, "quietbay");
+      // A campaign under a private project is no campaign to a teammate who can't see it.
+      yield* Clients.updateProject([owner], {
+        orgId,
+        key: fair.key,
+        rev: (yield* Clients.project([owner], { orgId, key: fair.key })).project.rev,
+        sensitive: true,
+      });
+      assert.include(yield* Marketing.exportContacts([mate], audience).pipe(Effect.flip), {
+        reason: "not_found",
+      });
+      assert.include((yield* Clients.parties([mate], { orgId, text: "Tallmoor" })).parties[0], {
+        source: "Campaign",
+      });
+      assert.notProperty(
+        (yield* Clients.parties([mate], { orgId, text: "Tallmoor" })).parties[0],
+        "campaign",
+      );
+      // Clients off: no list, no export, nothing about tags.
+      yield* sql`UPDATE kin_people SET sees_clients = 0 WHERE person_id = ${mateId}`;
+      for (const input of [
+        { orgId, tag: "harbour" },
+        { orgId, parties: {} },
+      ])
+        assert.include(yield* Marketing.exportContacts([mate], input).pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+      assert.include(yield* Marketing.marketing([mate], { orgId }).pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      // Leading a project for a client gives its people's names, never how to reach them.
+      yield* Clients.createProject([owner], {
+        orgId,
+        name: "Invented Tallmoor rollout",
+        party: tallmoor.key,
+        owner: { _tag: "person", personId: mateId },
+        clientRequestId: "rollout",
+      });
+      const named = yield* Marketing.exportContacts([mate], { orgId, parties: {} });
+      assert.strictEqual(named.rows, 2);
+      assert.notInclude(named.csv, "@tallmoor");
+      assert.notInclude(named.csv, "+47");
+      assert.notInclude(named.csv, "clinics");
+      assert.include(
+        yield* Marketing.contactList([mate], { orgId, tag: "harbour" }).pipe(Effect.flip),
+        {
+          reason: "not_allowed",
+        },
+      );
+      assert.deepStrictEqual(yield* Marketing.marketing([mate], { orgId }), {
+        tags: [],
+        cameFrom: [],
+      });
+      // The owner's choices: the company's tags in its first spellings, and where clients came from.
+      assert.deepStrictEqual(yield* Marketing.marketing([owner], { orgId }), {
+        tags: ["clinics", "Harbour"],
+        cameFrom: [
+          { source, label: "Invented harbour fair", campaign: true },
+          { source: "Invented referral", label: "Invented referral", campaign: false },
+        ],
+      });
     }).pipe(Effect.provide(layer)),
 );

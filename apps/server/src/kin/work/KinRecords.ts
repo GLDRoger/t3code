@@ -106,6 +106,7 @@ import {
   verifyRefs,
 } from "./registers.ts";
 import { contactFields } from "./contactDetails.ts";
+import { cleanTags } from "./tags.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
 import {
   bumpTeamSeqs,
@@ -1257,8 +1258,9 @@ const make = Effect.gen(function* () {
     if (list === "deals" && writer.deal !== true) return yield* dealsOnly;
     const contact = list === "contacts" ? contactFields({}, input.fields ?? {}) : input.fields;
     if (isChatError(contact)) return yield* contact;
+    const tagged = yield* cleanTags(orgId, list, contact).pipe(provideSql);
     const fields = Object.fromEntries(
-      Object.entries(contact ?? {}).filter(
+      Object.entries(tagged ?? {}).filter(
         (entry): entry is [string, FieldValue] => entry[1] !== null,
       ),
     );
@@ -1502,7 +1504,14 @@ const make = Effect.gen(function* () {
             ? contactFields(parseFields(row.fieldsJson), asked.fields)
             : undefined;
         if (isChatError(contact)) return yield* contact;
-        const patch = contact === undefined ? asked : { ...asked, fields: contact };
+        const given = contact === undefined ? asked : { ...asked, fields: contact };
+        const patch =
+          given.fields === undefined
+            ? given
+            : {
+                ...given,
+                fields: yield* cleanTags(orgId, row.registerId, given.fields).pipe(provideSql),
+              };
         if (writer.codingAgentKey !== undefined && !heldBy(row, writer))
           return yield* notFound(key);
         if (writer.teammate === true && writer.actor._tag === "person")

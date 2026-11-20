@@ -1201,12 +1201,16 @@ it.effect(
         "kin.work.updateContact",
         "kin.work.logTouch",
         "kin.work.removeTouch",
+        // Reads of what they see in Clients, refused with it off (`ownerMarketing.ts`, crm tests).
+        "kin.work.marketing",
+        "kin.work.contactList",
+        "kin.work.exportContacts",
       ]);
       const methods = [
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 49);
+      assert.lengthOf(methods, 52);
       for (const method of methods)
         assert.strictEqual(kinRpcAccess(method) === "person", teammate.has(method), method);
     }).pipe(Effect.provide(layer)),

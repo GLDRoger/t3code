@@ -13,6 +13,9 @@ import { page, userEvent } from "vite-plus/test/browser";
 const state = vi.hoisted(() => ({
   clients: [] as Array<unknown>,
   page: null as unknown,
+  filters: [] as Array<unknown>,
+  sees: false,
+  marketing: { tags: [] as Array<string>, cameFrom: [] as Array<unknown> },
 }));
 
 vi.mock(import("./useKinWork"), async (importOriginal) => {
@@ -31,7 +34,13 @@ vi.mock(import("./useKinWork"), async (importOriginal) => {
       moreFailed: false,
       stale: false,
     },
-    list: { setFilter: () => {}, refresh: () => {}, loadMore: async () => {} },
+    list: {
+      setFilter: (next: unknown) => {
+        state.filters.push(next);
+      },
+      refresh: () => {},
+      loadMore: async () => {},
+    },
   });
   return {
     ...(await importOriginal()),
@@ -47,6 +56,14 @@ vi.mock(import("./useKinWork"), async (importOriginal) => {
 vi.mock(import("./KinAttention"), () => ({ KinAttentionSection: () => null }) as never);
 vi.mock(import("./KinWorkPlaceLists"), () => ({ KinWorkPlaceLists: () => null }) as never);
 vi.mock(import("./KinDocsList"), () => ({ KinDocsUnder: () => null }) as never);
+vi.mock(import("./useKinOwnerLevel"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  useKinSeesClients: () => state.sees,
+}));
+vi.mock(import("./KinMarketing"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  useKinMarketing: () => state.marketing as never,
+}));
 
 import "~/index.css";
 import { render } from "../../test/render";
@@ -74,9 +91,22 @@ const row = (key: string, name: string, more: Partial<KinPartyRow> = {}): KinPar
   ...more,
 });
 
-function setup(input: { readonly clients?: ReadonlyArray<KinPartyRow>; readonly page?: unknown }) {
+function setup(input: {
+  readonly clients?: ReadonlyArray<KinPartyRow>;
+  readonly page?: unknown;
+  readonly sees?: boolean;
+}) {
   state.clients = [...(input.clients ?? [])];
   state.page = input.page ?? null;
+  state.filters = [];
+  state.sees = input.sees ?? false;
+  state.marketing = {
+    tags: ["harbour", "clinics"],
+    cameFrom: [
+      { source: "campaign:P-3", label: "Harbour trade fair", campaign: true },
+      { source: "Referral", label: "Referral", campaign: false },
+    ],
+  };
 }
 
 const clientsList = (onAdd: ((start: string) => void) | null = null) => (
@@ -122,6 +152,20 @@ describe("the Clients list", () => {
     expect(late.element().textContent).toContain("Late: Reminder texts copy");
     await expect.element(late.getByText("Late", { exact: true })).toBeVisible();
     expect(late.getByText(/No next step/).elements()).toHaveLength(0);
+  });
+
+  it("filters by where they came from, a campaign among them, and by tag", async () => {
+    setup({ clients: [row("C-1", "Brightwater Clinics", { prospect: true })], sees: true });
+    await using _screen = await render(clientsList());
+    await userEvent.click(page.getByRole("button", { name: "Filter" }));
+    await userEvent.click(page.getByRole("menuitem", { name: /^Came from/ }));
+    await userEvent.click(page.getByRole("menuitemradio", { name: /Harbour trade fair/ }));
+    expect(state.filters.at(-1)).toMatchObject({ cameFrom: "campaign:P-3" });
+    await userEvent.click(page.getByRole("button", { name: "Filter" }));
+    await userEvent.click(page.getByRole("menuitem", { name: /^Tag/ }));
+    await userEvent.click(page.getByRole("menuitemradio", { name: "clinics" }));
+    expect(state.filters.at(-1)).toMatchObject({ tag: "clinics" });
+    await expect.element(page.getByRole("button", { name: "Export list" })).toBeVisible();
   });
 
   it("offers a prospect, not an import, when there are none yet", async () => {

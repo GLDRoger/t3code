@@ -770,6 +770,20 @@ features:
       - apps/server/src/kin/work/deals.test.ts
       - apps/web/src/kin/KinDeals.browser.test.tsx
 
+  - id: marketing-list
+    name: A campaign's results, a tag's list, and Export list
+    tab: clients
+    web: [clients, "?project", dialog:List]
+    phone: [tab:clients, KinProject, KinMarketingList]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      A campaign is a project. Its results, lists and exports hold only what the reader sees in
+      Clients; without Clients there are no results or tag lists, and a project's lead exports names.
+    proof:
+      - apps/server/src/kin/work/crm.test.ts
+      - packages/client-runtime/src/kin/kinMarketing.test.ts
+      - apps/web/src/kin/KinMarketing.browser.test.tsx
+
   - id: project-people
     name: Who is on a project
     tab: clients

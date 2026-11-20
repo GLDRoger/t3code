@@ -1,3 +1,4 @@
+import { KIN_MARKETING, kinCampaignSource } from "@t3tools/client-runtime/kin/kinMarketing";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { useAtomValue } from "@effect/atom-react";
@@ -56,6 +57,7 @@ import { KinWorkHealthWord } from "./KinWorkLists";
 import { KinTasksList } from "./KinTasksList";
 import { KinPlaceLists } from "./KinPlaceLists";
 import { KinDocsUnder } from "./KinDocsList";
+import { KinCampaignResultsSection } from "./KinMarketing";
 import { KinProjectPeopleSection } from "./KinProjectPeopleScreen";
 import { kinClient } from "./state/kinClient";
 import { useKinAskRecord } from "./state/useKinAskRecord";
@@ -326,6 +328,28 @@ function KinProjectBody(
                   }
                 />
               }
+              results={
+                props.page.results === undefined ? null : (
+                  <KinCampaignResultsSection
+                    results={props.page.results}
+                    audience={view.audience}
+                    onOpen={(id) =>
+                      navigation.navigate(
+                        "KinMarketingList",
+                        id === "audience"
+                          ? { environmentId, orgId, title: view.name, campaign: view.key }
+                          : {
+                              environmentId,
+                              orgId,
+                              title: `${KIN_MARKETING.cameFrom}: ${view.name}`,
+                              cameFrom: kinCampaignSource(view.key),
+                              show: id === "prospects" || id === "clients" ? id : "open",
+                            },
+                      )
+                    }
+                  />
+                )
+              }
               docs={
                 <KinDocsUnder
                   environmentId={environmentId}
@@ -390,6 +414,8 @@ function KinProjectSummary(props: {
   readonly docs: ReactNode;
   /** Who is on it, and the ways to change that. */
   readonly people: ReactNode;
+  /** A campaign's results, for a reader with Clients. */
+  readonly results: ReactNode;
 }) {
   const { view } = props;
   const { party } = view;
@@ -414,7 +440,9 @@ function KinProjectSummary(props: {
           )}
         </View>
         <Text textRole="footnote" className="text-foreground-muted">
-          {[party?.title, view.target, view.ledBy].filter((part) => part != null).join(" · ")}
+          {[view.kind, party?.title, view.target, view.ledBy]
+            .filter((part) => part != null)
+            .join(" · ")}
         </Text>
         {view.terms === null ? null : (
           <Text textRole="footnote" className="text-foreground-muted">
@@ -443,6 +471,7 @@ function KinProjectSummary(props: {
           />
         </ListSection>
       )}
+      {props.results}
       <ListSection title={KIN_PROJECT_LEAD.title}>
         {props.onChangeLead === null ? (
           <ListRowLayout label={view.lead.name} />

@@ -931,6 +931,10 @@
       "types": "./src/kin/kinWorkForms.ts",
       "default": "./src/kin/kinWorkForms.ts"
     },
+    "./kin/kinMarketing": {
+      "types": "./src/kin/kinMarketing.ts",
+      "default": "./src/kin/kinMarketing.ts"
+    },
     "./kin/kinDocs": {
       "types": "./src/kin/kinDocs.ts",
       "default": "./src/kin/kinDocs.ts"
