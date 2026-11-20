@@ -1026,6 +1026,10 @@
     "./kin/react/kinImportHooks": {
       "types": "./src/kin/react/kinImportHooks.ts",
       "default": "./src/kin/react/kinImportHooks.ts"
+    },
+    "./kin/react/kinDealsHooks": {
+      "types": "./src/kin/react/kinDealsHooks.ts",
+      "default": "./src/kin/react/kinDealsHooks.ts"
     }
   },
   "scripts": {
