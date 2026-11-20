@@ -65,6 +65,20 @@ export const KIN_BANK = {
       ? "The rest isn't recorded as paid. Kin can't see the bank yet."
       : `The rest isn't recorded as paid. Bank known to ${day}.`,
   fromStatement: "from the bank statement",
+  fromAlert: (name: string) => `bank alert, confirmed by ${name}`,
+  /** Money's quiet line under the known-to one: what the owner's bank alerts add since. */
+  alerts: (input: {
+    readonly account: string | null;
+    readonly since: boolean;
+    readonly in: number;
+    readonly out: number;
+    readonly balance: string | null;
+    readonly day: string;
+  }) =>
+    `${input.account === null ? "" : `${input.account}: `}${input.since ? "Since then, from bank alerts" : "From bank alerts"}: ${input.in} in, ${input.out} out. ${input.balance === null ? `Seen to ${input.day}.` : `About ${input.balance} on ${input.day}.`}`,
+  /** An owed invoice's line while an alert that matches it waits on its card. */
+  alertShows: (day: string, amount: string, party: string | null) =>
+    `A bank alert on ${day} shows ${amount}${party === null ? "" : ` from ${party}`}. Not recorded as paid yet.`,
   recordedBy: (name: string) => `recorded by ${name}`,
   recordedOnWord: (agent: string, person: string) => `recorded by ${agent} on ${person}'s word`,
   recordedHere: "recorded in Kin",
@@ -89,14 +103,40 @@ export const kinBankKnownText = (known: KinBankKnown | undefined, now: Date) =>
       ? KIN_BANK.unseen
       : KIN_BANK.knownTo(kinBankDay(known.through, now));
 
+/** Each account's bank alert line under the known-to one; none from a host that doesn't say. */
+export const kinBankAlertsText = (known: KinBankKnown | undefined, now: Date) => {
+  const alerts = known?.alerts ?? [];
+  return alerts.map((one) =>
+    KIN_BANK.alerts({
+      account: alerts.length > 1 ? one.account : null,
+      since: one.since !== null,
+      in: one.in,
+      out: one.out,
+      balance:
+        one.balance === undefined
+          ? null
+          : kinMoneyText({ minor: one.balance.minor, currency: one.currency }, true),
+      day: kinBankDay(one.balance?.on ?? one.seenThrough, now),
+    }),
+  );
+};
+
 /** An issued invoice's line while some of it is owed: never more certain than the bank. */
 export const kinInvoiceBankText = (
-  item: Pick<KinRecordDetail, "state" | "bankKnown" | "balance" | "amount">,
+  item: Pick<KinRecordDetail, "state" | "bankKnown" | "balance" | "amount" | "bankAlert">,
   now: Date,
 ) => {
+  if (item.state !== "waiting" || item.balance === undefined || item.balance.minor === 0)
+    return null;
+  const alert = item.bankAlert;
+  if (alert !== undefined)
+    return KIN_BANK.alertShows(
+      kinBankDay(alert.day, now),
+      kinMoneyText(alert.amount, true),
+      alert.party,
+    );
   const known = item.bankKnown;
-  if (known === undefined || item.state !== "waiting" || item.balance === undefined) return null;
-  if (item.balance.minor === 0) return null;
+  if (known === undefined) return null;
   const day = known.through === null ? null : kinBankDay(known.through, now);
   return item.amount !== undefined && item.balance.minor < item.amount.minor
     ? KIN_BANK.restNotPaid(day)
@@ -114,6 +154,7 @@ export const kinPaymentSourceText = (
       return KIN_BANK.fromStatement;
     case "person": {
       const person = names.people.get(source.personId) ?? "someone";
+      if (source.bankAlert === true) return KIN_BANK.fromAlert(person);
       return source.agentId === undefined
         ? KIN_BANK.recordedBy(person)
         : KIN_BANK.recordedOnWord(names.agents.get(source.agentId) ?? "an agent", person);

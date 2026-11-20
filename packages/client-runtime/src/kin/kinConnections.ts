@@ -7,6 +7,7 @@ import {
   type KinConnection,
   type KinConnectionAcceptInput,
   type KinConnectionAddInput,
+  type KinBankAlertNotCounted,
   type KinConnectionCall,
   type KinConnectionDetail,
   type KinConnectionId,
@@ -182,6 +183,73 @@ export interface KinConnectionStatus {
 }
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+
+/** A mailbox's bank alerts in Settings: owner level only, and off until a card's Yes. */
+export const KIN_BANK_ALERTS = {
+  title: "Bank alerts",
+  off: "Off. When mail that looks like your bank's alert arrives here, Kin asks you in chat before it counts any.",
+  sender: (address: string, account: string) => `${address} · account ••${account}`,
+  counting: (count: number) => `Counted · ${plural(count, "alert", "alerts")} so far`,
+  stopped: "Stopped: Kin reads no more of this sender's mail, and keeps what it has out of Money.",
+  stop: "Stop counting these",
+  restart: "Count these again",
+  notCountedTitle: "Not counted",
+  notCounted: {
+    unreadable: "Couldn't read this alert",
+    other_account: "It names another account",
+    other_currency: "It's in another currency",
+    future: "Its day hasn't come yet",
+    covered: "A confirmed statement already covers its day",
+    repeat: "Kin already has this alert",
+    failed_check: "It failed your mailbox's sender checks",
+    not_checked: "Your mailbox didn't say the sender was checked",
+  } satisfies Record<KinBankAlertNotCounted, string>,
+  changeFailed: "Couldn't change bank alerts.",
+};
+
+export interface KinBankAlertsView {
+  readonly senders: ReadonlyArray<{
+    readonly id: string;
+    readonly address: string;
+    readonly account: string;
+    readonly label: string;
+    readonly detail: string;
+    readonly counting: boolean;
+    /** The tap that reverses its state. */
+    readonly action: string;
+  }>;
+  readonly notCounted: ReadonlyArray<{ readonly id: string; readonly text: string }>;
+}
+
+/**
+ * What a mail connection's Bank alerts section shows: null for any other service, `off` until a
+ * sender is confirmed on Kin's card.
+ */
+export function kinBankAlertsView(
+  detail: Pick<KinConnectionDetail, "bankAlerts" | "connection">,
+  now: Date,
+): KinBankAlertsView | "off" | null {
+  const preset = detail.connection.preset;
+  if (preset === null || !kinIsOwnerClientService(preset)) return null;
+  const alerts = detail.bankAlerts;
+  if (alerts === undefined || alerts.senders.length === 0) return "off";
+  return {
+    senders: alerts.senders.map((one) => ({
+      id: `${one.address}:${one.account}`,
+      address: one.address,
+      account: one.account,
+      label: KIN_BANK_ALERTS.sender(one.address, one.account),
+      detail: one.counting ? KIN_BANK_ALERTS.counting(one.counted) : KIN_BANK_ALERTS.stopped,
+      counting: one.counting,
+      action: one.counting ? KIN_BANK_ALERTS.stop : KIN_BANK_ALERTS.restart,
+    })),
+    notCounted: alerts.notCounted.map((one, index) => ({
+      id: `${one.at}:${index}`,
+      // @effect-diagnostics-next-line globalDate:off - the shared clock-and-day label takes a Date.
+      text: `${formatKinTime(new Date(one.at), now)} · ${one.subject === "" ? one.address : one.subject}: ${KIN_BANK_ALERTS.notCounted[one.reason]}`,
+    })),
+  };
+}
 
 /** The outside websites visuals may load from: rarely needed, so folded under Advanced. */
 export const KIN_VISUAL_HOSTS = {

@@ -195,6 +195,16 @@ describe("kinInvoiceView", () => {
     expect(bankOf({ bankKnown: { through: "2025-12-31" } })).toBe(
       "The rest isn't recorded as paid. Bank known to Dec 31, 2025.",
     );
+    // A counted bank alert that matches it, while its card waits: what it shows, not paid.
+    const alert = { day: "2026-11-18", amount: { minor: 9_500_000, currency: "INR" } };
+    expect(
+      bankOf({ ...unpaid, bankKnown: seen, bankAlert: { ...alert, party: "BRIGHTWELL LTD" } }),
+    ).toBe(
+      "A bank alert on Nov 18 shows ₹95,000.00 from BRIGHTWELL LTD. Not recorded as paid yet.",
+    );
+    expect(bankOf({ ...unpaid, bankAlert: { ...alert, party: null } })).toBe(
+      "A bank alert on Nov 18 shows ₹95,000.00. Not recorded as paid yet.",
+    );
     // Paid in full, a draft, a void one or an older host: nothing to say.
     for (const patch of [
       { bankKnown: seen, balance: { minor: 0, currency: "INR" }, state: "done" as const },
@@ -215,6 +225,10 @@ describe("kinInvoiceView", () => {
           { ...payment("p4", null), source: { _tag: "agent", agentId: "finance" } },
           { ...payment("p5", null), source: { _tag: "recorded" } },
           payment("p6", null),
+          {
+            ...payment("p7", null),
+            source: { _tag: "person", personId: "rhea", bankAlert: true },
+          },
         ] as never,
       }),
       invoices,
@@ -228,6 +242,7 @@ describe("kinInvoiceView", () => {
       "recorded by Finance",
       "recorded in Kin",
       null,
+      "bank alert, confirmed by Rhea",
     ]);
   });
 

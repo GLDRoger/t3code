@@ -71,13 +71,35 @@ function setup(value: KinCash) {
 
 describe("Money says how far Kin sees the bank", () => {
   it("names the day, and the upload is one tap into the chat where statements are sent", async () => {
-    setup(cash("2026-10-31"));
+    const known = cash("2026-10-31");
+    setup({
+      ...known,
+      bankKnown: {
+        through: "2026-10-31",
+        alerts: [
+          {
+            account: "Invented Bank Account ••1234",
+            currency: "INR",
+            since: "2026-10-31",
+            seenThrough: "2026-11-18",
+            in: 6,
+            out: 14,
+            balance: { minor: 4_10_000_00, on: "2026-11-18", estimate: true },
+          },
+        ],
+      },
+    });
     await using _screen = await render(
       <AppAtomRegistryProvider>
         <KinCashSection {...target} seq={1} rates={null} />
       </AppAtomRegistryProvider>,
     );
     await expect.element(page.getByText("Bank known to Oct 31")).toBeVisible();
+    await expect
+      .element(
+        page.getByText("Since then, from bank alerts: 6 in, 14 out. About ₹4,10,000.00 on Nov 18."),
+      )
+      .toBeVisible();
     await userEvent.click(page.getByRole("button", { name: KIN_BANK.upload }));
     expect(state.asked).toEqual([KIN_BANK.uploadMessage]);
   });

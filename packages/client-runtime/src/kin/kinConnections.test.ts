@@ -16,6 +16,7 @@ import { AsyncResult } from "effect/reactivity";
 import {
   createKinConnectionActions,
   kinAcceptAll,
+  kinBankAlertsView,
   kinConnectionAddCheck,
   kinConnectionDraft,
   kinConnectionStatus,
@@ -192,6 +193,59 @@ describe("kinToolRows", () => {
         connection({ state: "needs_sign_in", lastError: "Sentry's sign-in expired." }),
       ).label,
     ).toBe("Needs sign-in");
+  });
+});
+
+describe("kinBankAlertsView", () => {
+  it("is off on a mailbox until a sender is confirmed, nothing elsewhere, and offers each way back", () => {
+    const now = new Date("2026-11-18T09:00:00Z");
+    const mail = connection({ preset: "google" });
+    expect(kinBankAlertsView({ connection: connection(), bankAlerts: undefined }, now)).toBeNull();
+    expect(kinBankAlertsView({ connection: mail, bankAlerts: undefined }, now)).toBe("off");
+    const view = kinBankAlertsView(
+      {
+        connection: mail,
+        bankAlerts: {
+          senders: [
+            { address: "alerts@harbourtrust.example", account: "4821", counting: true, counted: 6 },
+            {
+              address: "alerts@harbourtrust.example",
+              account: "9050",
+              counting: false,
+              counted: 0,
+            },
+          ],
+          notCounted: [
+            {
+              address: "alerts@harbourtrust.example",
+              at: "2026-11-18T08:00:00.000Z",
+              subject: "Account alert",
+              reason: "failed_check",
+            },
+          ],
+        },
+      },
+      now,
+    );
+    expect(
+      view === "off" || view === null
+        ? view
+        : view.senders.map((one) => [one.label, one.detail, one.action]),
+    ).toEqual([
+      [
+        "alerts@harbourtrust.example · account ••4821",
+        "Counted · 6 alerts so far",
+        "Stop counting these",
+      ],
+      [
+        "alerts@harbourtrust.example · account ••9050",
+        "Stopped: Kin reads no more of this sender's mail, and keeps what it has out of Money.",
+        "Count these again",
+      ],
+    ]);
+    expect(view === "off" || view === null ? view : view.notCounted[0]!.text).toContain(
+      "Account alert: It failed your mailbox's sender checks",
+    );
   });
 });
 

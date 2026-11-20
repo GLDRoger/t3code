@@ -215,6 +215,11 @@ export function KinCashSection(props: Section) {
               )}
             </div>
           )}
+          {view.alerts.map((line) => (
+            <p key={line} className="px-2 text-xs text-muted-foreground">
+              {line}
+            </p>
+          ))}
           {view.currencies.map((one) => (
             <div key={one.currency} className="flex flex-col gap-1 px-2 text-sm">
               <div className="flex items-baseline justify-between gap-3">

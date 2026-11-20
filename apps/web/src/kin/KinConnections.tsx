@@ -10,7 +10,9 @@ import {
   kinConnectionChange,
   kinConnectionDraft,
   kinConnectionProvider,
+  kinBankAlertsView,
   kinConnectionStatus,
+  KIN_BANK_ALERTS,
   kinIsOwnerClientService,
   kinServiceNote,
   kinSuggestedModes,
@@ -586,6 +588,9 @@ function ConnectionRecord(props: {
   const refresh = useAtomCommand(kinClient.connectionRefresh, { reportFailure: false });
   const update = useAtomCommand(kinClient.connectionUpdate, { reportFailure: false });
   const setReach = useAtomCommand(kinClient.connectionSetReach, { reportFailure: false });
+  const setBankAlerts = useAtomCommand(kinClient.connectionSetBankAlerts, {
+    reportFailure: false,
+  });
   const setKey = useAtomCommand(kinClient.connectionSetKey, { reportFailure: false });
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -598,6 +603,8 @@ function ConnectionRecord(props: {
   const rows = kinToolRows(detail?.tools ?? []);
   const suggested = kinSuggestedModes(rows);
   const changed = rows.filter((row) => row.state === "changed");
+  const bankAlerts =
+    detail === null ? null : kinBankAlertsView({ ...detail, connection }, new Date(nowMs));
 
   const run = async (
     key: string,
@@ -835,6 +842,61 @@ function ConnectionRecord(props: {
             </ul>
           )}
         </Section>
+
+        {bankAlerts === null ? null : (
+          <Section title={KIN_BANK_ALERTS.title}>
+            {bankAlerts === "off" ? (
+              <p className="text-xs text-muted-foreground">{KIN_BANK_ALERTS.off}</p>
+            ) : (
+              <>
+                <ul className="flex flex-col gap-2">
+                  {bankAlerts.senders.map((one) => (
+                    <li key={one.id} className="flex items-start justify-between gap-3">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <span className="truncate text-sm">{one.label}</span>
+                        <span className="text-xs text-muted-foreground">{one.detail}</span>
+                      </div>
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        disabled={busy !== null}
+                        onClick={() =>
+                          void run(`alerts:${one.id}`, "change bank alerts", () =>
+                            setBankAlerts({
+                              environmentId,
+                              input: {
+                                ...ref,
+                                address: one.address,
+                                account: one.account,
+                                counting: !one.counting,
+                              },
+                            }),
+                          )
+                        }
+                      >
+                        {one.action}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+                {bankAlerts.notCounted.length === 0 ? null : (
+                  <div className="flex flex-col gap-1">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      {KIN_BANK_ALERTS.notCountedTitle}
+                    </span>
+                    <ul className="flex flex-col gap-1">
+                      {bankAlerts.notCounted.map((one) => (
+                        <li key={one.id} className="text-xs text-muted-foreground">
+                          {one.text}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </>
+            )}
+          </Section>
+        )}
 
         <Section title="Connection">
           <div className="flex items-start justify-between gap-3">

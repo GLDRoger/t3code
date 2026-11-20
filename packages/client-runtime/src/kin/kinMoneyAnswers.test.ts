@@ -239,6 +239,36 @@ describe("kinCashView", () => {
     expect(bank(true, "2026-10-31")).toBe("Bank known to Oct 31");
     expect(bank(true, null)).toBe("Kin can't see the bank yet: upload a statement");
     expect(bank(false, null)).toBeNull();
+    // Bank alerts add a quiet line each, apart from the known-to day; an older host says none.
+    const alertsOf = (known: KinCash["bankKnown"]) =>
+      kinCashView({ ...cash, bankKnown: known }, rates, now).alerts;
+    expect(alertsOf({ through: "2026-10-31" })).toEqual([]);
+    const reach = {
+      account: "Harbour Trust Account ••4821",
+      currency: "INR",
+      since: "2026-10-31",
+      seenThrough: "2026-11-18",
+      in: 6,
+      out: 14,
+    };
+    expect(
+      alertsOf({
+        through: "2026-10-31",
+        alerts: [{ ...reach, balance: { minor: 41_000_000, on: "2026-11-18", estimate: true } }],
+      }),
+    ).toEqual(["Since then, from bank alerts: 6 in, 14 out. About ₹4,10,000.00 on Nov 18."]);
+    expect(
+      alertsOf({
+        through: null,
+        alerts: [
+          { ...reach, since: null },
+          { ...reach, account: "Account ••9050", currency: "USD", in: 1, out: 0 },
+        ],
+      }),
+    ).toEqual([
+      "Harbour Trust Account ••4821: From bank alerts: 6 in, 14 out. Seen to Nov 18.",
+      "Account ••9050: Since then, from bank alerts: 1 in, 0 out. Seen to Nov 18.",
+    ]);
   });
 });
 

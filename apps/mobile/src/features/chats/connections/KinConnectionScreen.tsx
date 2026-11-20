@@ -2,8 +2,10 @@ import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
+  KIN_BANK_ALERTS,
   KIN_CONNECTIONS_COPY as COPY,
   kinAcceptAll,
+  kinBankAlertsView,
   kinCallRow,
   kinConnectionChange,
   kinConnectionStatus,
@@ -79,6 +81,9 @@ function ConnectionRecord(props: {
   const refresh = useAtomCommand(kinClient.connectionRefresh, { reportFailure: false });
   const update = useAtomCommand(kinClient.connectionUpdate, { reportFailure: false });
   const setReach = useAtomCommand(kinClient.connectionSetReach, { reportFailure: false });
+  const setBankAlerts = useAtomCommand(kinClient.connectionSetBankAlerts, {
+    reportFailure: false,
+  });
   const actions = useKinConnectionActions(environmentId, orgId, reload);
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -122,6 +127,7 @@ function ConnectionRecord(props: {
   const rows = kinToolRows(detail.tools);
   const suggested = kinSuggestedModes(rows);
   const changed = rows.filter((row) => row.state === "changed");
+  const bankAlerts = kinBankAlertsView(detail, new Date(nowMs));
   const markTool = (row: KinToolRow, mode: KinConnectionToolMode) => {
     if (busy !== null || mode === row.mode) return;
     void run(`tool:${row.name}`, "change that tool", () =>
@@ -321,6 +327,49 @@ function ConnectionRecord(props: {
               })
             )}
           </ListSection>
+
+          {bankAlerts === null ? null : (
+            <ListSection
+              title={KIN_BANK_ALERTS.title}
+              {...(bankAlerts === "off" ? { footer: KIN_BANK_ALERTS.off } : {})}
+            >
+              {bankAlerts === "off"
+                ? null
+                : [
+                    ...bankAlerts.senders.map((one) => (
+                      <ListActionRow
+                        key={one.id}
+                        label={one.label}
+                        description={one.detail}
+                        detail={one.action}
+                        accessibilityLabel={`${one.action}: ${one.label}`}
+                        disabled={busy !== null}
+                        onPress={() =>
+                          void run(`alerts:${one.id}`, "change bank alerts", () =>
+                            setBankAlerts({
+                              environmentId,
+                              input: {
+                                ...ref,
+                                address: one.address,
+                                account: one.account,
+                                counting: !one.counting,
+                              },
+                            }),
+                          )
+                        }
+                      />
+                    )),
+                    ...bankAlerts.notCounted.map((one) => (
+                      <View key={one.id} className="bg-grouped-card">
+                        <ListRowLayout
+                          label={KIN_BANK_ALERTS.notCountedTitle}
+                          description={one.text}
+                        />
+                      </View>
+                    )),
+                  ]}
+            </ListSection>
+          )}
 
           <ListSection footer={COPY.reachDetail}>
             <ListToggleRow

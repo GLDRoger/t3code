@@ -801,6 +801,12 @@ export function makeKinClient<R, ER>(
       tag: "kin.connections.setReach",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.connectionId },
     }),
+    /** Stops counting a confirmed bank alert sender on a mailbox, or counts it again. */
+    connectionSetBankAlerts: createKinRpcCommand(runtime, {
+      label: "kin:connection:setBankAlerts",
+      tag: "kin.connections.setBankAlerts",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.connectionId },
+    }),
     connectionRemove: createKinRpcCommand(runtime, {
       label: "kin:connection:remove",
       tag: "kin.connections.remove",

@@ -210,6 +210,9 @@ export function KinCashSection(props: Section) {
           ) : view.bank === null ? null : (
             <Plain>{view.bank}</Plain>
           )}
+          {view.alerts.map((line) => (
+            <Plain key={line}>{line}</Plain>
+          ))}
           {view.currencies.map((one) => (
             <View key={one.currency} className="gap-1 bg-grouped-card px-4 py-2.5">
               <View className="flex-row justify-between gap-3">
