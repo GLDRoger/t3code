@@ -3,6 +3,7 @@ import { useKinOpensClients } from "./useKinOwnerLevel";
 import { KIN_DEFAULT_HOME_CURRENCY } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
+import { kinAskRecordDraft } from "@t3tools/client-runtime/kin/kinAskRecord";
 import {
   KIN_FIELD_FILES_MAX,
   KIN_LISTS,
@@ -529,7 +530,9 @@ export function KinListEntry(
   const context = useKinListContext(props, props.directory);
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
   const entry = kinListEntryView(item, def, context);
-  const invoice = kinIsInvoice(item) ? kinInvoiceView(item, def, props.now) : null;
+  const invoice = kinIsInvoice(item)
+    ? kinInvoiceView(item, def, props.now, props.directory.names)
+    : null;
   const quote = item.list === KIN_QUOTES_LIST ? kinQuoteRow(item, null, props.now) : null;
   const money = useKinMoneyActions(props);
   const rates = useKinRates(props, invoice !== null || quote !== null);
@@ -1004,10 +1007,11 @@ export function KinListEntry(
                       >
                         {payment.amount}
                       </span>
-                      <span className="truncate text-xs text-muted-foreground">
+                      <span className="text-xs break-words text-muted-foreground">
                         {[
                           payment.when,
                           payment.note,
+                          payment.source,
                           payment.voided ? KIN_LISTS.entry.takenBack : null,
                         ]
                           .filter((part) => part !== null)
@@ -1066,7 +1070,15 @@ export function KinListEntry(
             <Button
               size="sm"
               variant="outline"
-              onClick={() => agent.ask(`About ${item.key} (${item.title}): `)}
+              onClick={() =>
+                agent.ask(
+                  kinAskRecordDraft({
+                    key: item.key,
+                    title: item.title,
+                    number: item.fields?.number,
+                  }),
+                )
+              }
             >
               <MessageSquareIcon />
               {KIN_LISTS.entry.askChange}

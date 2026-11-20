@@ -510,6 +510,11 @@ describe("bank statements", () => {
       assert.isTrue(
         detail.links.some((link) => link.kind === "record" && link.relation === "evidence"),
       );
+      // Recorded from the statement's line, which reads as where it came from.
+      assert.deepStrictEqual(
+        detail.payments?.map((one) => one.source),
+        [{ _tag: "statement" }],
+      );
       assert.isTrue(
         detail.changes.some((change) => change.fields.some((field) => field.field === "payment")),
       );
@@ -600,13 +605,25 @@ describe("bank statements", () => {
       const { card } = yield* reviewCardOf(result.statement);
       const row = card.matched.find((one) => one.target.key === keys.exact);
       assert.include(row?.target.note, "already recorded");
+      const seen = () =>
+        Effect.gen(function* () {
+          const detail = yield* records.detail((yield* records.get(orgId, keys.exact))!);
+          return [detail.payments?.map((one) => one.source?._tag), detail.bankKnown?.through];
+        });
+      // Before the statement it is the owner's word, and Kin can't see the bank.
+      assert.deepStrictEqual(yield* seen(), [["person"], null]);
       yield* OwnerStatements.apply(people, yield* confirmAll(card));
       const payments = () =>
         sql<{ voided: number | null }>`SELECT voided_at AS voided FROM kin_record_payments p
           JOIN kin_records r ON r.record_id = p.record_id WHERE r.key = ${keys.exact}`;
       assert.deepStrictEqual(yield* payments(), [{ voided: null }]);
+      const through = (yield* seen())[1];
+      assert.isString(through);
+      assert.deepStrictEqual(yield* seen(), [["statement"], through]);
       yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
       assert.deepStrictEqual(yield* payments(), [{ voided: null }]);
+      // Undone, the line no longer backs it: it is the owner's word again.
+      assert.deepStrictEqual(yield* seen(), [["person"], null]);
     }).pipe(Effect.provide(layer)),
   );
 

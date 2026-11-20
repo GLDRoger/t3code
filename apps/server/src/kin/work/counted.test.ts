@@ -15,6 +15,9 @@ const KIN = NodePath.resolve(import.meta.dirname, "..");
 const OWN_READS: Readonly<Record<string, number>> = {
   // The one entry an email attaches, for the card's label.
   "connections/Sending.ts": 1,
+  // Drafts with no amount yet, each priced from its own documents; nothing summed
+  // (`documents.test.ts` pins that only unissued drafts are touched).
+  "gendocs/amounts.ts": 1,
   // A receipt's payment; one entry's payments on its document.
   "gendocs/facts.ts": 2,
   // A receipt's payment; the receipts list a screen shows, void ones marked.
