@@ -1028,6 +1028,34 @@ describe("KinLeadProvision", () => {
         assert.deepStrictEqual(yield* listed, { everyone: false, people: open.slice(0, 2) });
         yield* Provision.allow({ ...on, personId: sam });
         yield* sql`DELETE FROM kin_team_agents`;
+        // Every live agent she may message is hers to start, with no chat yet.
+        const startable = (personId: KinPersonId) =>
+          Effect.map(
+            Provision.messageable({ _tag: "person", orgId: finance.orgId, personId }),
+            (rows) => rows.map((row) => row.agentId),
+          );
+        assert.sameDeepMembers(
+          [...(yield* Provision.messageable(priya))],
+          [
+            { ...finance, name: "Finance" },
+            { ...tech, name: tech.name },
+          ].map(({ orgId, agentId, name }) => ({
+            orgId,
+            agentId,
+            name,
+            intro: "",
+            ownerName: "Owner",
+          })),
+        );
+        yield* Provision.disallow({ ...on, personId: sam });
+        assert.deepStrictEqual(yield* startable(sam), [tech.agentId]);
+        yield* Provision.allow({ ...on, personId: sam });
+        yield* sql`UPDATE kin_agents SET retired_at = '2026-11-10T00:00:00.000Z' WHERE agent_id = ${tech.agentId}`;
+        assert.deepStrictEqual(yield* startable(priyaId), [finance.agentId]);
+        assert.include(yield* chats.createDirect(priya, tech).pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+        yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE agent_id = ${tech.agentId}`;
         // Her chat with it is there once she starts it.
         assert.deepStrictEqual(yield* Provision.contacts(priya), []);
         yield* chats.createDirect(priya, finance);

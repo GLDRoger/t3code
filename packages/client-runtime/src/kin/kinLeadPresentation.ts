@@ -301,9 +301,16 @@ export function kinChatReadOnly(
   );
 }
 
-/** The one line where the composer was, in a chat the viewer can only read. */
-export function kinChatReadOnlyLine(leadName: string | null): string {
-  return `You can read this chat, but you can no longer message ${leadName ?? "this agent"}.`;
+/** The one line where the composer was, in a chat the viewer can only read: with an agent or a person. */
+export function kinChatReadOnlyLine(other: {
+  readonly kind: "agent" | "person";
+  readonly name: string | null;
+}): string {
+  if (other.kind === "person")
+    return other.name === null
+      ? "You can read this chat, but you two can no longer message each other."
+      : `You can read this chat, but you and ${other.name} can no longer message each other.`;
+  return `You can read this chat, but you can no longer message ${other.name ?? "this agent"}.`;
 }
 
 /** The owner's list of agents, and what a teammate is shown of one. */

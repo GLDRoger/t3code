@@ -62,6 +62,7 @@ export const subscribeRefreshes = (
       const view = Effect.all([
         LeadProvision.profiles(person),
         LeadProvision.contacts(person),
+        LeadProvision.messageable(person),
         kind,
       ]).pipe(
         Effect.map((shown) => JSON.stringify(shown)),

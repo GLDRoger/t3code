@@ -253,7 +253,9 @@ function AgentReachBody(props: Parameters<typeof KinAgentReach>[0]) {
         <ReachWaiting state={state} />
       ) : (
         <>
-          <p className="text-sm text-muted-foreground">{KIN_REACH_COPY.agentBody(lead.name)}</p>
+          <p className="text-sm text-muted-foreground">
+            {KIN_REACH_COPY.agentBody(lead.name, view.restricted.length > 0)}
+          </p>
           {view.canMessage.length === 0 ? null : (
             <ul className="flex flex-col gap-1" aria-label={KIN_REACH_COPY.canMessage}>
               {view.canMessage.map((one) => (

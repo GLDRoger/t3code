@@ -582,7 +582,6 @@ function KinWorkItem(
                 orgId={orgId}
                 record={{ key: view.key, title: view.title }}
                 disabled={saving}
-                onOpen={props.onClose}
               />
               {!more ? null : (
                 <Menu>
@@ -739,7 +738,6 @@ function KinWorkItem(
                         key={act.id}
                         size="sm"
                         variant={variant}
-                        onClick={props.onClose}
                         render={
                           <Link
                             to="/kin/$environmentId/$orgId/$chatId"
@@ -858,7 +856,6 @@ function KinWorkItem(
                   orgId={orgId}
                   agentId={view.owner.principal.agentId}
                   name={view.owner.name}
-                  onOpen={props.onClose}
                 />
               </dd>
             ) : null}
@@ -1107,7 +1104,6 @@ export function KinWorkLinks(
     readonly itemKey?: KinRecordKey;
     readonly addLink?: boolean;
     readonly onOpenKey: (key: KinRecordKey) => void;
-    readonly onClose: () => void;
   },
 ) {
   const navigate = useNavigate();
@@ -1136,7 +1132,6 @@ export function KinWorkLinks(
                     environmentId={props.environmentId}
                     orgId={props.orgId}
                     {...(props.itemKey === undefined ? {} : { itemKey: props.itemKey })}
-                    onOpen={props.onClose}
                     onOpenKey={props.onOpenKey}
                   />
                 </li>
@@ -1581,12 +1576,15 @@ export function GiveItems(props: {
   );
 }
 
-/** The owner's chat with the lead that has the task, which is where it reports back. */
+/**
+ * The owner's chat with the lead that has the task, which is where it reports back. This and the
+ * other ways from a task to a chat push over the task without closing it: closing is a history
+ * step back that can land after the push and leave the person in Tasks.
+ */
 function KinWorkLeadChat(
   props: KinWorkTarget & {
     readonly agentId: string;
     readonly name: string;
-    readonly onOpen: () => void;
   },
 ) {
   const { environmentId, orgId } = props;
@@ -1605,7 +1603,6 @@ function KinWorkLeadChat(
     <Button
       size="sm"
       variant="ghost"
-      onClick={props.onOpen}
       render={
         <Link
           to="/kin/$environmentId/$orgId/$chatId"
@@ -1627,7 +1624,6 @@ function KinWorkLink(
   props: KinWorkTarget & {
     readonly link: KinWorkLinkView;
     readonly itemKey?: KinRecordKey;
-    readonly onOpen: () => void;
     readonly onOpenKey: (key: KinRecordKey) => void;
   },
 ) {
@@ -1649,7 +1645,6 @@ function KinWorkLink(
       <Button
         size="xs"
         variant="ghost"
-        onClick={props.onOpen}
         render={<Link to="/$environmentId/$threadId" params={link.thread} />}
       >
         {KIN_WORK_COPY.openThread}
@@ -1662,7 +1657,6 @@ function KinWorkLink(
       <Link
         to="/kin/$environmentId/$orgId/$chatId"
         params={{ environmentId: props.environmentId, orgId: props.orgId, chatId: open.chatId }}
-        onClick={props.onOpen}
         className={`${LINK_ROW} ${LINK_ROW_OPENS}`}
       >
         {content}

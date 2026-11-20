@@ -295,20 +295,25 @@ features:
       - packages/client-runtime/src/kin/kinGroups.test.ts
 
   - id: chat-teammate
-    name: Message a teammate
+    name: Message someone
     tab: chats
-    web: [home, "menu:New chat, group, agent or teammate", dialog:Message a teammate, chat]
-    phone: [tab:chats, KinPeoplePick, KinChat]
+    web: [home, "menu:New chat, group, agent or teammate", dialog:Message someone, chat]
+    phone: [tab:chats, menu:New, KinPeoplePick, KinChat]
     roles: { owner: both, co_owner: both, lead: both, member: both }
     note: >-
-      Two people, no agent. Starting it again opens the same chat. Only those two read it, not
-      the owner or a co-owner, and the chat says so at its top. Also from a teammate's profile.
+      People, then every agent the viewer may message (not retired, not restricted), each with
+      what teammates see about it. A chat between two people: only those two read it, not the
+      owner or a co-owner, and the chat says so at its top. A chat with an agent is the viewer's
+      own, which the workspace's owner can see. Starting either again opens the same chat. A
+      person's chat is also opened from their profile.
     depth_reason: >-
       Picking the teammate is a one-tap list that closes as it opens the chat it made, as making a
       group does; the chat is where the person was going, not a page opened from the picker.
     proof:
       - apps/server/src/kin/chat/KinGroups.test.ts
+      - apps/server/src/kin/lead/KinLeadProvision.test.ts
       - packages/client-runtime/src/kin/kinPeopleChat.test.ts
+      - apps/web/src/kin/KinPeopleChat.browser.test.tsx
       - .agents/skills/verify-kin/scripts/member-messages-teammate.sh
 
   - id: group-details

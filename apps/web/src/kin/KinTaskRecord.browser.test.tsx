@@ -184,7 +184,6 @@ describe("a task's links and its project's note", () => {
           itemKey={target.itemKey}
           addLink
           onOpenKey={() => {}}
-          onClose={() => {}}
         />
       </AppAtomRegistryProvider>,
     );
@@ -212,7 +211,6 @@ describe("a task's links and its project's note", () => {
           itemKey={target.itemKey}
           addLink
           onOpenKey={() => {}}
-          onClose={() => {}}
         />
         <KinProjectNoteSection
           {...target}

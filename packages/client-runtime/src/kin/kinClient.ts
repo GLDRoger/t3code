@@ -1009,6 +1009,12 @@ export function makeKinClient<R, ER>(
       tag: "kin.chats.withPerson",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.personId },
     }),
+    /** The viewer's own direct chat with an agent they may message, made the first time. */
+    chatWithAgent: createKinRpcCommand(runtime, {
+      label: "kin:chat:with-agent",
+      tag: "kin.chats.createDirect",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
+    }),
     groupCreate: createKinRpcCommand(runtime, {
       label: "kin:group:create",
       tag: "kin.groups.create",

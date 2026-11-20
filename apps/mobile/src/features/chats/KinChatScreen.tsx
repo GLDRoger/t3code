@@ -508,7 +508,21 @@ function KinLiveChat(props: {
                 : null
         }
         about={contact === null || contact.intro.trim() === "" ? null : contact.intro.trim()}
-        readOnly={readOnly}
+        readOnly={
+          !readOnly
+            ? null
+            : kinChatReadOnlyLine(
+                pairWith === null
+                  ? {
+                      kind: "agent",
+                      name:
+                        summary === undefined
+                          ? null
+                          : kinDirectAgentName(summary, viewer.agentNames),
+                    }
+                  : { kind: "person", name: pairProfile?.displayName ?? null },
+              )
+        }
         onRetry={retry}
         readHistory={
           state._tag === "ready" && state.connected
@@ -712,8 +726,8 @@ function KinChatPage(props: {
   readonly lead?: { readonly charter: string | null; readonly open: () => void } | null;
   /** What the owner of someone else's lead wrote for the people let message it. */
   readonly about?: string | null;
-  /** The viewer may read this chat and no longer write in it. */
-  readonly readOnly?: boolean;
+  /** The viewer may read this chat and no longer write in it: the line saying so. */
+  readonly readOnly?: string | null;
   readonly retired?: KinRetiredChat | null;
   readonly groupNotice?: string | null;
   /** Opens a group's details; null for any other chat. */
@@ -788,7 +802,7 @@ function KinChatPage(props: {
             direct={props.direct ?? false}
             ownsLead={props.ownsLead ?? false}
             about={props.about ?? null}
-            readOnly={props.readOnly ?? false}
+            readOnly={props.readOnly ?? null}
             retired={props.retired ?? null}
             groupNotice={props.groupNotice ?? null}
             mentionable={props.mentionable}
@@ -966,7 +980,7 @@ function KinChatFeed(props: {
   readonly direct: boolean;
   readonly ownsLead: boolean;
   readonly about: string | null;
-  readonly readOnly: boolean;
+  readonly readOnly: string | null;
   readonly retired: KinRetiredChat | null;
   /** Said over the composer of a group whose answering agent is retired. */
   readonly groupNotice: string | null;
@@ -1510,10 +1524,10 @@ function KinChatFeed(props: {
         />
       )}
     </View>
-  ) : props.readOnly ? (
+  ) : props.readOnly !== null ? (
     <View className="px-6 pt-3" style={{ paddingBottom: composerInset + 12 }}>
       <AppText textRole="footnote" className="text-center text-foreground-muted">
-        {kinChatReadOnlyLine(props.agentName)}
+        {props.readOnly}
       </AppText>
     </View>
   ) : (

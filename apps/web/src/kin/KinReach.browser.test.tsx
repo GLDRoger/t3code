@@ -140,6 +140,13 @@ describe("who can message whom", () => {
     const restricted = page.getByRole("list", { name: "Restricted" });
     await expect.element(restricted.getByText("Dev Malhotra")).toBeVisible();
     await expect.element(canMessage.getByText("Dev Malhotra")).not.toBeInTheDocument();
+    await expect
+      .element(
+        page.getByText(
+          "Everyone in the company can message Finance, except the people under Restricted.",
+        ),
+      )
+      .toBeVisible();
 
     await userEvent.click(page.getByRole("button", { name: "Lift Dev Malhotra and Finance" }));
     await expect
@@ -147,6 +154,9 @@ describe("who can message whom", () => {
       .toHaveTextContent("Dev Malhotra and Finance can message each other again.");
     await expect.element(restricted).not.toBeInTheDocument();
     await expect.element(canMessage.getByText("Dev Malhotra")).toBeVisible();
+    await expect
+      .element(page.getByText("Everyone in the company can message Finance."))
+      .toBeVisible();
     expect(host.sets).toEqual([{ restricted: true }, { restricted: false }]);
   });
 

@@ -192,9 +192,21 @@ export const KinLeadContact = Schema.Struct({
   ownerName: Schema.optional(TrimmedNonEmptyString),
 });
 export type KinLeadContact = typeof KinLeadContact.Type;
+/** A live agent the viewer may message, chat or not yet: what the new-chat picker lists. */
+export const KinLeadMessageable = Schema.Struct({
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  name: TrimmedNonEmptyString,
+  intro: KinLeadIntro,
+  // Who runs the workspace and so can see the viewer's chat with it.
+  ownerName: TrimmedNonEmptyString,
+});
+export type KinLeadMessageable = typeof KinLeadMessageable.Type;
 export const KinLeadsListResult = Schema.Struct({
   leads: Schema.Array(KinLeadProfile),
   contacts: Schema.optional(Schema.Array(KinLeadContact)),
+  // Older hosts leave it out.
+  messageable: Schema.optional(Schema.Array(KinLeadMessageable)),
   // The agent every teammate may message; null when off. Older hosts leave it out.
   teamAgentId: Schema.optional(Schema.NullOr(KinAgentId)),
   // The company chat while it is on, and who answers there by default. Older hosts leave it out.

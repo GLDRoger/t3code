@@ -385,10 +385,17 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
             );
             // An org the session's person isn't in has no leads to show them.
             if (person === undefined)
-              return { leads: [], contacts: [], teamAgentId: null, companyChat: null };
+              return {
+                leads: [],
+                contacts: [],
+                messageable: [],
+                teamAgentId: null,
+                companyChat: null,
+              };
             return yield* Effect.all({
               leads: LeadProvision.profiles(person, { includeRetired: input.includeRetired }),
               contacts: LeadProvision.contacts(person),
+              messageable: LeadProvision.messageable(person),
               teamAgentId: LeadProvision.teamAgent(person.orgId),
               companyChat: companyChatOf(person.orgId),
             }).pipe(Effect.provideContext(kin.value.services.value));
