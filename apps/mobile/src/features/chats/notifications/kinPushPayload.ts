@@ -133,10 +133,11 @@ function linkTarget(data: KinPushData): { environmentId: string; path: string } 
   if (kind === "actions") {
     if (data.pendingActionId !== undefined && data.pendingActionId !== id) return null;
     // MOB-8: open the `KinApproval` route (this link, re-encoded) once it exists. Until then
-    // Review opens the chat holding the card, or the chat list for an approval with no chat.
+    // Review opens the chat holding the card, or Waiting on you for an approval with no chat.
     return {
       environmentId,
-      path: data.chatId === undefined ? "/kin" : kinChatPath(environmentId, orgId, data.chatId),
+      path:
+        data.chatId === undefined ? "/kin/waiting" : kinChatPath(environmentId, orgId, data.chatId),
     };
   }
   return null;
