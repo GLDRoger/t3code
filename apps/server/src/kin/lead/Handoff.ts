@@ -759,6 +759,18 @@ const make = Effect.gen(function* () {
         "No other agent is in this group. Answer it yourself, or take it private with kin_take_private.",
       );
     const target = yield* pick(others, input.to);
+    // Being in one group doesn't carry a request across a restricted pair.
+    if (
+      !(yield* Reach.reaches(
+        ctx.orgId,
+        Reach.person(ask.personId),
+        Reach.agent(target.agentId),
+      ).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+    )
+      return yield* new KinChatError({
+        reason: "not_allowed",
+        message: Reach.restrictedLine(ask.personName, target.name, ask.personName),
+      });
     const { messageId } = ask.message;
     const claimed = yield* sql<{ toAgentId: KinAgentId }>`INSERT INTO kin_handoffs
         (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at, wants_answer)

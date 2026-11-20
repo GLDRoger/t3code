@@ -1263,8 +1263,15 @@ it.effect(
       yield* send(priya, chat.chatId, "hers-3");
       assert.strictEqual((yield* contacts).contacts?.[0]?.chatId, chat.chatId);
 
-      // Settings' list of restricted pairs: two people too, whose own chat turns read-only.
+      // Settings' list of restricted pairs: two people too, whose own chat turns read-only, and
+      // the groups both stay in.
       const theirs = yield* priya["kin.chats.withPerson"]({ ...org, personId: samId });
+      yield* owner["kin.groups.create"]({
+        ...org,
+        title: "Shoot crew",
+        agentIds: [],
+        personIds: [samId, priyaId],
+      });
       const pair = {
         ...org,
         a: { kind: "person" as const, personId: samId },
@@ -1274,8 +1281,9 @@ it.effect(
         (yield* owner["kin.reach.set"]({ ...pair, restricted: true })).limits.map((limit) => [
           limit.one,
           limit.other,
+          limit.groups,
         ]),
-        [[pair.b, pair.a]],
+        [[pair.b, pair.a, ["Shoot crew"]]],
       );
       assert.strictEqual(
         yield* refused(priya["kin.reach.set"]({ ...pair, restricted: false })),

@@ -1042,17 +1042,29 @@ const fromReach = (kind: "agent" | "person", id: string): KinReachParty =>
 /** The restrictions that bind now: one stored before someone became a co-owner binds no one. */
 const reachRows = Effect.fn("KinLeadProvision.reachRows")(
   function* (orgId: KinOrgId) {
+    const sql = yield* SqlClient.SqlClient;
     const limits: Array<KinReachListResult["limits"][number]> = [];
     for (const row of yield* Reach.liveLimits(orgId)) {
       const one = fromReach(row.oneKind, row.oneId);
       const other = fromReach(row.otherKind, row.otherId);
-      if ((yield* Reach.mayReach(orgId, toReach(one), toReach(other))) === "restricted")
-        limits.push({
-          one,
-          other,
-          setBy: row.setBy,
-          setAt: DateTime.formatIso(DateTime.makeUnsafe(row.setAt)),
-        });
+      if ((yield* Reach.mayReach(orgId, toReach(one), toReach(other))) !== "restricted") continue;
+      const memberOf = (kind: "agent" | "person", id: string) =>
+        sql`EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = c.org_id
+          AND m.chat_id = c.chat_id AND m.left_at IS NULL AND m.principal_kind = ${kind}
+          AND (CASE m.principal_kind WHEN 'agent' THEN m.agent_id ELSE m.person_id END) = ${id})`;
+      // Untitled rooms have no name to show.
+      const groups = yield* sql<{ title: string }>`SELECT c.title FROM kin_chats c
+        WHERE c.org_id = ${orgId} AND c.kind IN ('team_group', 'project_group')
+          AND c.archived_at IS NULL AND c.title IS NOT NULL
+          AND ${memberOf(row.oneKind, row.oneId)} AND ${memberOf(row.otherKind, row.otherId)}
+        ORDER BY c.title, c.chat_id`;
+      limits.push({
+        one,
+        other,
+        setBy: row.setBy,
+        setAt: DateTime.formatIso(DateTime.makeUnsafe(row.setAt)),
+        groups: groups.map((group) => group.title),
+      });
     }
     return { limits } satisfies KinReachListResult;
   },

@@ -787,6 +787,22 @@ it.effect(
             request: "Yours.",
             sourceEventId: "mate-event",
           });
+        // Restricted from the Tech lead, Arjun's request isn't handed to it in the group.
+        const pair = (restricted: boolean) =>
+          Reach.setLimit({
+            orgId,
+            by: ctx.owner.personId,
+            a: Reach.person(KinPersonId.make("mate")),
+            b: Reach.agent(tech),
+            restricted,
+          });
+        yield* pair(true);
+        assert.strictEqual(
+          (yield* Effect.flip(pass("Tech lead"))).message,
+          "Arjun and Tech lead can't message each other here, so nothing was sent. Tell Arjun in one line that the owner can lift it. Don't try another way.",
+        );
+        assert.lengthOf(yield* sql`SELECT 1 FROM kin_handoffs WHERE org_id = ${orgId}`, 0);
+        yield* pair(false);
         assert.deepStrictEqual(yield* pass("Tech lead"), { to: "Tech lead", passed: true });
         yield* pass("engineering");
         const events = yield* sql<{ agentId: string; json: string }>`SELECT agent_id AS "agentId",
