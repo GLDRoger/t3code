@@ -1,4 +1,5 @@
 import { KIN_DAILY_LIMIT_STEPS, type KinBudget, type KinBudgetLimits } from "@t3tools/contracts";
+import { kinCount } from "./kinCount.ts";
 
 // What a host that doesn't send its own usual limit means by it; choices scale both.
 const FALLBACK_USUAL = { leadUnits: 2_000_000, workerUnits: 6_000_000 };
@@ -69,8 +70,6 @@ export function kinDailyLimitChoices(budget: KinBudget | null): {
   return { choices: [custom, ...choices], current: custom.value };
 }
 
-const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
-
 /** Work held for the limit, one line per agent: "Finance: 2 messages, 1 task". */
 export function kinDailyLimitWaiting(budget: KinBudget | null): ReadonlyArray<{
   readonly agentId: string;
@@ -79,9 +78,9 @@ export function kinDailyLimitWaiting(budget: KinBudget | null): ReadonlyArray<{
 }> {
   return (budget?.waiting?.agents ?? []).flatMap((agent) => {
     const parts = [
-      agent.requests === 0 ? null : count(agent.requests, "message", "messages"),
-      agent.tasks === 0 ? null : count(agent.tasks, "task", "tasks"),
-      agent.other === 0 ? null : count(agent.other, "other job", "other jobs"),
+      agent.requests === 0 ? null : kinCount(agent.requests, "message", "messages"),
+      agent.tasks === 0 ? null : kinCount(agent.tasks, "task", "tasks"),
+      agent.other === 0 ? null : kinCount(agent.other, "other job", "other jobs"),
     ].filter((part) => part !== null);
     return parts.length === 0
       ? []

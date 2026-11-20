@@ -105,6 +105,11 @@ describe("the Money summary", () => {
     ]);
     expect(view.months[0]).toMatchObject({ month: "2026-11", received: "₹40,000 and $1" });
     expect(kinMoneyView(summary, []).owed.open).toBeNull();
+    // Owing clients past those sent are one row, which loads them.
+    expect(view.clientsMore).toBeNull();
+    expect(
+      kinMoneyView({ ...summary, owed: { ...summary.owed, byClientMore: 12 } }, []).clientsMore,
+    ).toBe("12 more clients");
     // TDS stands on its own, never inside Received.
     expect([view.tdsDeducted, view.yearTdsDeducted]).toEqual([null, null]);
     const withTds = kinMoneyView(

@@ -323,6 +323,8 @@ export const KIN_AGENTS_COPY = {
   explain:
     "An agent looks after one part of the company, such as engineering or finance, and you talk to it in a chat.",
   loadFailed: "Couldn't load your agents.",
+  /** The heading form, for a failure with Retry. */
+  loadFailedTitle: "Couldn't load your agents",
   teammateViewHint: "Optional. Teammates see this and nothing above.",
 } as const;
 

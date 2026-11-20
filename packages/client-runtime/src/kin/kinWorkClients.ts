@@ -43,6 +43,7 @@ import {
   type KinWorkRef,
   type KinWorkRowView,
 } from "./kinWork.ts";
+import { kinCount } from "./kinCount.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -305,9 +306,6 @@ export const KIN_CLIENTS_OLDER_HOST = {
   detail: "Clients and projects come with the next version. Tasks work as before.",
 };
 
-const plural = (count: number, one: string, many = `${one}s`) =>
-  `${count} ${count === 1 ? one : many}`;
-
 // Contact
 
 export const KIN_TOUCH_KINDS = [
@@ -345,7 +343,7 @@ export function kinClientContactLine(
   const at = party.lastContactAt;
   if (at === undefined) return null;
   const days = daysBetween(at ?? party.createdAt, now);
-  const ago = days === 0 ? "" : `, ${plural(days, "day")} ago`;
+  const ago = days === 0 ? "" : `, ${kinCount(days, "day")} ago`;
   if (at === null)
     return `No contact logged since they were added ${formatKinTime(new Date(party.createdAt), now)}${ago}`;
   return `Last contact ${formatKinTime(new Date(at), now)}${ago}${latest === undefined ? "" : `: ${latest.title}`}`;
@@ -1115,7 +1113,7 @@ export function kinWorkTimeline(
 /** "today", "1 day", "9 days": how long something has waited. */
 function waited(since: string, now: Date): string {
   const days = Math.floor((now.getTime() - new Date(since).getTime()) / DAY_MS);
-  return !Number.isFinite(days) || days < 1 ? "since today" : `for ${plural(days, "day")}`;
+  return !Number.isFinite(days) || days < 1 ? "since today" : `for ${kinCount(days, "day")}`;
 }
 
 export interface KinProjectPageView {
@@ -1278,10 +1276,10 @@ export function kinProjectPageView(
       : [
           because.targetPassed ? "The target date has passed." : null,
           because.late > 0
-            ? `${plural(because.late, "task")} ${because.late === 1 ? "is" : "are"} late.`
+            ? `${kinCount(because.late, "task")} ${because.late === 1 ? "is" : "are"} late.`
             : null,
           because.waitingOverAWeek > 0
-            ? `${plural(because.waitingOverAWeek, "task")} ${because.waitingOverAWeek === 1 ? "has" : "have"} waited more than a week.`
+            ? `${kinCount(because.waitingOverAWeek, "task")} ${because.waitingOverAWeek === 1 ? "has" : "have"} waited more than a week.`
             : null,
         ].filter((part) => part !== null);
   const target = kinWorkDueText(

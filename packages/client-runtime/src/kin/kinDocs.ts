@@ -43,6 +43,7 @@ import {
   kinWorkRefused,
   type KinWorkNames,
 } from "./kinWork.ts";
+import { kinCount } from "./kinCount.ts";
 
 export const KIN_DOCS = {
   changesFailed: "Couldn't load the changes",
@@ -174,9 +175,6 @@ export const kinSearchHint = (scope: KinViewerScope) =>
         detail:
           "Tasks, clients, contacts, projects, docs and money you can see, by any words in them.",
       };
-
-const plural = (count: number, one: string, many = `${one}s`) =>
-  `${count} ${count === 1 ? one : many}`;
 
 // When and who
 
@@ -566,7 +564,7 @@ export const kinWhatWeSellAgent = <
 
 export function kinDocsFooter(shown: number, total: number | null, more: boolean): string | null {
   if (!more || total === null) return null;
-  return `Showing ${shown} of ${plural(total, "doc")}`;
+  return `Showing ${shown} of ${kinCount(total, "doc")}`;
 }
 
 /** What the File sheet starts from, and what it sends. */
@@ -769,10 +767,10 @@ export function kinDocDiffSummary(diff: KinDocDiff, sections: number): string {
   const removed = diff.removedSections.length;
   const unchanged = Math.max(sections - changed, 0);
   return [
-    changed > 0 ? `${plural(changed, "section")} changed` : null,
+    changed > 0 ? `${kinCount(changed, "section")} changed` : null,
     removed > 0 ? `${removed} removed` : null,
     `${unchanged} unchanged`,
-    `${plural(diff.additions, "line")} added, ${diff.deletions} removed`,
+    `${kinCount(diff.additions, "line")} added, ${diff.deletions} removed`,
   ]
     .filter(Boolean)
     .join(" · ");

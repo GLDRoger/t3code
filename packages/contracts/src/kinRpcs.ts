@@ -51,6 +51,7 @@ import {
   KinLeadInterruptInput,
   KinLeadInterruptResult,
   KIN_CHAT_RPC_SCOPES,
+  type KinPersonAccess,
 } from "./kinChat.ts";
 import { KinPushRpcs, KIN_PUSH_RPC_SCOPES } from "./kinPush.ts";
 import { KinPeopleRpcs, KIN_PEOPLE_RPC_SCOPES } from "./kinPeople.ts";
@@ -537,6 +538,10 @@ const KIN_RPC_ACCESS = {
 } as const satisfies Record<(typeof KinRpcs)[number]["_tag"], KinRpcAccess>;
 export const kinRpcAccess = (method: string): KinRpcAccess | undefined =>
   (KIN_RPC_ACCESS as Record<string, KinRpcAccess>)[method];
+
+/** What each level means, read the same by the host's gate and a client's controls. */
+export const kinAccessAllows = (kind: KinPersonAccess | null | undefined, access: KinRpcAccess) =>
+  access === "person" || kind === "owner" || (kind === "co_owner" && access === "owner_level");
 
 export const KIN_RPC_AGGREGATES = {
   "kin.people.listInvites": "kin-people",

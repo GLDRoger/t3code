@@ -14,7 +14,9 @@ where you were. What you see in each depends on your place in the team; see
 [Who sees and does what](#who-sees-and-does-what).
 
 Settings has **You** (your profile, notifications and appearance) for everyone, and for the owner and co-owners
-**Company** (Team, Agents, Check-ins, Connections, Memory, Company details, Approvals). On the
+**Company** (Team, Agents, Check-ins, Connections, Deals, Memory, Company details, Approvals, and
+Recommendations for the owner himself). A member with **Can see Clients** has a Company group with
+Deals only, to read the company's deal stages. On the
 computer Kin runs on, **This computer** holds the app's own settings, such as providers and models,
 and how much of each provider's usage your agents have spent.
 
@@ -41,8 +43,10 @@ reaches you, check **Your devices** for any you didn't add.
 A linked device stays signed in for 30 days, then you link it again the same way. You can have 10
 devices at a time. Remove a device from the same list to sign it out at once, along with every
 device linked from it and the coding agent keys made on them. Signing a device out from **Sharing &
-access** does the same. **Leave this team** on a phone only forgets the team on that phone: the
-device stays in your list until you remove it. A device you linked can remove itself and the
+access** does the same. **Leave this team**, or removing the computer, on a phone forgets the team on that phone and asks
+your Kin to stop that team's notifications there. If your Kin doesn't confirm, because the phone is
+offline or Kin doesn't answer, the phone says so, and the notifications keep coming until you
+remove the phone from your list. The device stays in your list until you remove it. A device you linked can remove itself and the
 devices linked from it, but not the device you joined with. The owner can see and remove a
 teammate's devices on the **Team** page.
 
@@ -291,7 +295,8 @@ keys were tied to a device has ended; make a new one.
 
 ## Clients and projects
 
-Clients lists each client and their projects, with when you last spoke to them and what's next.
+Clients has three lists: Clients, Deals and Projects. Clients lists each client and prospect, with
+when you last spoke to them and what's next.
 On a client, add contacts and **Log contact** after a call or meeting. If nothing is logged for a
 while, the client shows up under Needs attention.
 
@@ -313,6 +318,49 @@ who can see the project read it on a task.
 A member sees client names and contacts only when the owner turns on **Can see Clients**, and never
 what a client is charged or owes. With it on, they also find the projects they're on, under their
 clients.
+
+### Deals
+
+A deal is a sale you're working on with a client or prospect: what it's worth, when you expect it
+to close, and who looks after it. It moves through your company's stages (New, In talks, Proposal
+and Deciding until you change them), then is won or lost. Winning a deal with a prospect makes the
+prospect a client. Losing one keeps a one-line reason. A won or lost deal can be reopened; it goes
+back to its last stage, and a client stays a client.
+
+A new deal names its first next step, a follow-up for whoever looks after it, or says there is none
+yet. Kin tells whoever looks after a deal when it has no next step, when it has gone quiet (14 days
+with nothing done on it, unless you change that) and when it's past its expected day. Totals are
+kept per currency and never converted.
+
+The owner and co-owners set the stages and the quiet days in **Settings → Deals**; removing a stage
+moves its open deals to the stage you pick. A member reaches Deals only with **Can see Clients**
+on. They see every deal except private ones and those under a private client, add deals on the
+clients they see, and change the deals they look after. Only the owner and co-owners mark a deal
+private. A deal is handed on only to someone who can see it, and the open next steps its keeper
+held go with it.
+
+To bring deals in from a spreadsheet or another CRM, the owner or a co-owner uses **Import a file**
+in Clients.
+
+### What we hear
+
+When a prospect raises a worry, such as price or timing, an agent notes it on the deal as a short
+label with the words it heard, and the deal lists it under **Concerns raised**. **What we hear**, in
+Deals, counts how many deals raised each concern and how many of those are still open, won or lost,
+so you can see which worries cost you sales. Open a concern to see the deals that raised it. Counts
+cover only the deals you can see.
+
+### Campaigns and marketing lists
+
+A campaign is a project marked **Campaign**. Choose it in **Came from** on a prospect or client,
+and the campaign's page counts the prospects and clients that came from it, their deals and how
+many were won. Give a campaign an **Audience** tag and its list is every contact carrying that tag.
+
+Tags are your company's own words, added to contacts on their client's page; a contact takes up to 20. A tag's list is every contact carrying it, and the Clients list also gives the contacts at the
+clients it shows. A list is worked out again each time you open it, so it's never out of date.
+**Export list** saves it as a CSV file for your mail tool. Lists and results hold only what you can
+see in Clients. Tag lists and campaign results need **Can see Clients**; a project's lead without it
+lists and exports their clients' contacts by name only, with no emails, phone numbers or tags.
 
 ## Money
 
@@ -611,7 +659,7 @@ on the projects they lead.
 | Docs                                                 | All                                 | Company docs with **Can see Docs**, and their projects' docs                     |                                                      |
 | Restore an older version of a doc                    | Yes                                 | No                                                                               |                                                      |
 | Confirm an email, statement or receipt; approve      | Yes                                 | No                                                                               |                                                      |
-| Settings, Check-ins, Connections, Memory, Team       | Yes                                 | No; their own profile only                                                       |                                                      |
+| Settings, Check-ins, Connections, Memory, Team       | Yes                                 | Their own profile, and Deals to read with **Can see Clients**                    |                                                      |
 
 The owner and co-owners edit a member's profile. Only the owner himself edits a co-owner's
 profile, manages co-owners, and sees his own private chats. Agents act with the authority of

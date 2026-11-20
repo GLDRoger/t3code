@@ -30,8 +30,9 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Deals from "../work/deals.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as LeadWork from "../work/leadWork.ts";
-import { formatMoney } from "../work/money.ts";
+import { dayIn, formatMoney } from "../work/money.ts";
 import * as Clients from "../work/ownerClients.ts";
+import { ownerZone } from "../work/recordRows.ts";
 import { PipelineResult, pipelineRead as readPipeline } from "./pipeline.ts";
 import { webPage } from "./read.ts";
 import {
@@ -685,7 +686,10 @@ it.effect(
       assert.include(stepped.changed, "next");
       const page = yield* Deals.page([zoya], { orgId, key: stockKey });
       assert.deepInclude(page.deal.next, { title: "Invented: send the plan" });
-      assert.strictEqual(page.deal.next?.dueAt?.slice(0, 10), "2026-11-27");
+      assert.strictEqual(
+        dayIn(Date.parse(page.deal.next!.dueAt!), yield* ownerZone(orgId)),
+        "2026-11-27",
+      );
       assert.deepStrictEqual(
         page.deal.concerns?.map((concern) => concern.label),
         ["Past failure", "Price"],

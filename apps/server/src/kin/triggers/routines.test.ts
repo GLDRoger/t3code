@@ -9,13 +9,18 @@ import {
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Semaphore from "effect/Semaphore";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as Memory from "../memory/Memory.ts";
+import * as KinRecords from "../work/KinRecords.ts";
+import { dayIn } from "../work/money.ts";
+import { endOfDay, ownerZone, unsetOwnerZone } from "../work/recordRows.ts";
 import * as OwnerTimeZone from "./ownerTimeZone.ts";
 import * as Routines from "./routines.ts";
 import * as TriggerScheduler from "./KinTriggerScheduler.ts";
@@ -275,6 +280,61 @@ it.effect("the owner's time zone reschedules routines from the defaults; only he
       quiet_hours_json: '{"from":"21:00","to":"08:00"}',
     });
   }).pipe(Effect.provide(OwnerTimeZone.layer.pipe(Layer.provideMerge(fixture())))),
+);
+
+// Play-test (Nov 2026): the owner's device set the company's zone to its own, and every all-day
+// day read one later for everyone.
+it.effect(
+  "a new company zone keeps each all-day day, the first one after the host's too; a time stays, a failure keeps the old zone, open Work hears",
+  () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const routines = yield* Routines.KinRoutines;
+      const records = yield* KinRecords.KinRecords;
+      const sql = yield* SqlClient.SqlClient;
+      yield* TestClock.setTime(Date.parse("2026-11-20T12:00:00.000Z"));
+      const me = { _tag: "person", personId: KinPersonId.make("owner-a") } as const;
+      const writer = { actor: me, via: "owner", askedBy: me.personId } as const;
+      // None set yet: the host's zone stood in, and its days are the ones people saw.
+      const host = unsetOwnerZone();
+      const { row: due } = yield* records.create(orgA, writer, {
+        originKey: "due",
+        title: "Invented: send the plan",
+        owner: me,
+        dueAt: endOfDay("2026-11-27", host),
+        dueAllDay: true,
+      });
+      const timed = Date.parse("2026-11-27T09:30:00.000Z");
+      const { row: call } = yield* records.create(orgA, writer, {
+        originKey: "call",
+        title: "Invented: call Meera",
+        owner: me,
+        dueAt: timed,
+      });
+      const work = yield* Stream.toQueue(records.changes(orgA), { capacity: "unbounded" });
+      const first = yield* Queue.take(work);
+      const read = Effect.gen(function* () {
+        const zone = yield* ownerZone(orgA);
+        const at = (yield* records.get(orgA, due.key))!.dueAt!;
+        // Its day, and late only once that day is over where the company now is.
+        return [
+          dayIn(at, zone),
+          at === endOfDay("2026-11-27", zone),
+          (yield* records.get(orgA, call.key))!.dueAt,
+        ];
+      });
+      for (const zone of ["Asia/Kolkata", "America/Bogota", "Pacific/Auckland"]) {
+        yield* routines.setTimeZone(orgA, zone);
+        assert.deepStrictEqual(yield* read, ["2026-11-27", true, timed], zone);
+      }
+      assert.isAbove((yield* Queue.take(work)).seq, first.seq);
+      // A re-anchor that fails takes the zone change with it: the zone and the days agree.
+      yield* sql`CREATE TRIGGER refuse_due BEFORE UPDATE OF due_at ON kin_records
+        BEGIN SELECT RAISE(ABORT, 'refused'); END`;
+      yield* Effect.flip(routines.setTimeZone(orgA, "Asia/Tokyo"));
+      assert.strictEqual(yield* ownerZone(orgA), "Pacific/Auckland");
+      assert.deepStrictEqual(yield* read, ["2026-11-27", true, timed]);
+    }).pipe(Effect.provide(fixture())),
 );
 
 // Walk 6 (Nov 2026): changing the company's quiet hours left what was already held on the old ones.

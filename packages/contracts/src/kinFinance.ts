@@ -229,6 +229,8 @@ export const KinMoneySummary = Schema.Struct({
         oldestOverdueDays: Schema.NullOr(NonNegativeInt),
       }),
     ),
+    /** Owing clients past the first 20 a screen is sent, when there are more; absent otherwise. */
+    byClientMore: Schema.optional(NonNegativeInt),
   }),
   /** Money paid in: tax a client deducted at source settles an invoice but isn't counted here. */
   received: Schema.Struct({ thisMonth: KinMoneyTotals, lastMonth: KinMoneyTotals }),
@@ -275,6 +277,8 @@ export const KinMoneySummaryInput = Schema.Struct({
   upcomingRows: Schema.optional(Schema.Boolean),
   /** One client's page: what is owed is that client's alone, and none to a teammate without Money. */
   party: Schema.optional(KinRecordKey),
+  /** Every owing client in `owed.byClient`, not the first 20 and a count of the rest. */
+  allClients: Schema.optional(Schema.Boolean),
 });
 export type KinMoneySummaryInput = typeof KinMoneySummaryInput.Type;
 

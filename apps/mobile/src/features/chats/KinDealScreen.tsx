@@ -457,7 +457,7 @@ function KinDealBody(
           <ListRowLayout label={KIN_DEALS.lookedAfterBy} detail={kinWorkName(deal.owner, names)} />
         )}
         {deal.state !== "open" ? null : deal.next === null ? (
-          <ListRowLayout label={KIN_DEALS.nextStep} detail={KIN_DEALS.noNextStep} />
+          <ListRowLayout label={KIN_DEALS.nextStep} detail={next?.text ?? KIN_DEALS.noNextStep} />
         ) : (
           <ListRow
             label={KIN_DEALS.nextStep}

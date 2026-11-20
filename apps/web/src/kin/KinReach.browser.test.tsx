@@ -43,6 +43,7 @@ vi.mock("./kinClient", async () => {
   ).pipe(A.keepAlive);
   const may = A.make(() => host.may);
   return {
+    markKinHostKnown: () => {},
     kinClient: {
       reach: () => reach,
       people: () => people,

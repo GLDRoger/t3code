@@ -13,6 +13,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
@@ -28,7 +29,9 @@ import { reholdEveryoneAfter } from "./quietHold.ts";
 import { KIN_DEFAULT_QUIET_HOURS } from "./quietHours.ts";
 import * as OwnerCheck from "./ownerCheck.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
-import { unsetOwnerZone } from "../work/recordRows.ts";
+import { keepAllDayDays } from "../work/allDayZone.ts";
+import { KinRecords } from "../work/KinRecords.ts";
+import { ownerZone, unsetOwnerZone } from "../work/recordRows.ts";
 
 const routines = ["morning_brief", "evening_summary", "owner_check"] as const;
 const iso = (now: number) => DateTime.formatIso(DateTime.makeUnsafe(now));
@@ -127,6 +130,8 @@ const make = Effect.gen(function* () {
   const queue = yield* KinEventQueue.KinEventQueue;
   const ownerCheck = yield* OwnerCheck.OwnerCheck;
   const ticks = yield* Scheduler.Scheduler;
+  // Open Work screens read again once all-day days moved with the zone.
+  const records = yield* Effect.serviceOption(KinRecords);
   const settingsFor = Effect.fn("KinRoutines.settingsFor")(function* (orgId: KinOrgId) {
     const [row] = yield* sql<{
       time_zone: string;
@@ -236,6 +241,9 @@ const make = Effect.gen(function* () {
         .withTransaction(
           Effect.gen(function* () {
             const settings = yield* decodeSettings(input);
+            const before = yield* ownerZone(settings.orgId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
             // Lines already held move with the company's clock, earlier when the new hours allow.
             yield* reholdEveryoneAfter(
               settings.orgId,
@@ -243,7 +251,26 @@ const make = Effect.gen(function* () {
       VALUES (${settings.orgId}, ${settings.timeZone}, ${settings.morningBrief}, ${settings.eveningSummary}, ${settings.dream}, ${settings.fullRebuildWeekday}, ${settings.ownerCheckWeekday}, ${settings.ownerCheck}, ${yield* encodeQuietHours(settings.quietHours)})
       ON CONFLICT (org_id) DO UPDATE SET time_zone = excluded.time_zone, morning_brief = excluded.morning_brief, evening_summary = excluded.evening_summary, dream = excluded.dream, full_rebuild_weekday = excluded.full_rebuild_weekday, owner_check_weekday = excluded.owner_check_weekday, owner_check = excluded.owner_check, quiet_hours_json = excluded.quiet_hours_json RETURNING org_id`,
             ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+            // A day is a calendar day: each all-day date keeps its day in the new zone.
+            const moved = yield* keepAllDayDays(settings.orgId, before, settings.timeZone).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
+            if (moved > 0 && Option.isSome(records))
+              yield* sql.afterCommit(
+                records.value
+                  .announce(settings.orgId)
+                  .pipe(
+                    Effect.catch((cause) =>
+                      Effect.logWarning("Kin work refresh after a zone change failed", { cause }),
+                    ),
+                  ),
+              );
             yield* refresh.touch(settings.orgId, "timeZone");
+            // keepAllDayDays renamed due-keyed pulse facts and moved statements' undo days.
+            if (before !== settings.timeZone) {
+              yield* refresh.touch(settings.orgId, "pulse");
+              yield* refresh.touch(settings.orgId, "moneyStatements");
+            }
             yield* reconcile(settings);
           }),
         )

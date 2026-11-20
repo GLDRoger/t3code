@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { KIN_AGENT_PAGE } from "@t3tools/client-runtime/kin/kinAgentPage";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
+  KIN_AGENTS_COPY,
   KIN_OTHER_PROVIDER_AGENTS,
   kinDomainLabel,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
@@ -26,6 +27,7 @@ import { kinClient } from "./kinClient";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { useKinHost } from "./useKinHost";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
+import { KinLoadFailed, KinWorkRowSkeletons } from "./KinWorkParts";
 import type { KinWorkTarget } from "./useKinWork";
 
 /** The company's agents and the model new ones start on, for the owner and co-owners. */
@@ -130,8 +132,22 @@ function CompanyDefault(props: KinWorkTarget) {
 function AgentRows(props: KinWorkTarget) {
   const { environmentId, orgId } = props;
   const openPage = useOpenKinAgentPage();
-  const leads = Option.getOrNull(AsyncResult.value(useAtomValue(kinClient.agents(props))));
-  if (leads === null) return null;
+  const atom = kinClient.agents(props);
+  const result = useAtomValue(atom);
+  const leads = Option.getOrNull(AsyncResult.value(result));
+  if (leads === null)
+    return AsyncResult.isFailure(result) ? (
+      <KinLoadFailed
+        what={KIN_AGENTS_COPY.loadFailedTitle}
+        cause={result}
+        onRetry={() => appAtomRegistry.refresh(atom)}
+        className="px-4 py-3"
+      />
+    ) : (
+      <div role="status" aria-label="Loading agents">
+        <KinWorkRowSkeletons />
+      </div>
+    );
   const open = (lead: KinLeadProfile) =>
     openPage({ environmentId, orgId, agentId: lead.agentId, chatId: lead.ownerChatId });
   return leads.leads.map((lead) => (

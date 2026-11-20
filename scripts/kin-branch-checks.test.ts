@@ -18,6 +18,8 @@ import {
   checkPeopleChange,
   checkProductName,
   checkSharedCopy,
+  checkKinHookCopies,
+  KIN_HOOK_FILES_IN_BOTH,
   checkMigrations,
   checkSurvival,
   checkT3Footprint,
@@ -28,6 +30,7 @@ import {
   type ApprovedGuard,
   type BranchCommit,
   kinSentences,
+  MIGRATIONS,
   migrationIds,
   supersededIn,
 } from "./kin-branch-checks.ts";
@@ -148,6 +151,55 @@ describe("kin branch checks", () => {
     );
   });
 
+  it("keeps each Kin data hook in one shared factory, by file and hook name", () => {
+    const factory = `export function makeKinDealsHooks(app) {
+  function useKinDeals() {}
+  return { useKinDeals };
+}
+`;
+    const shared = new Map([["packages/client-runtime/src/kin/react/kinDealsHooks.ts", factory]]);
+    const caller = `import { makeKinDealsHooks } from "@t3tools/client-runtime/kin/react/kinDealsHooks";
+export const { useKinDeals } = makeKinDealsHooks(kinHookApp);
+`;
+    // Every listed pair still in both apps, so only the case under test speaks.
+    const listed = (dir: string) =>
+      Object.keys(KIN_HOOK_FILES_IN_BOTH).map((name) => [`${dir}/${name}`, ""] as const);
+    const check = (web: Record<string, string>, phone: Record<string, string>) =>
+      checkKinHookCopies(
+        new Map([...listed("apps/web/src/kin"), ...Object.entries(web)]),
+        new Map([...listed("apps/mobile/src/features/chats/state"), ...Object.entries(phone)]),
+        shared,
+      ).map((problem) => problem.split(":")[1]!.trim().split(" ")[0]);
+    const web = "apps/web/src/kin/";
+    const phone = "apps/mobile/src/features/chats/state/";
+    const changes = "export function useKinWorkChanges() {}\n";
+    assert.deepStrictEqual(
+      check(
+        { [`${web}useKinDeals.ts`]: caller + changes },
+        { [`${phone}useKinDeals.ts`]: caller + changes },
+      ),
+      [],
+    );
+    assert.deepStrictEqual(
+      check(
+        { [`${web}useKinPeople.ts`]: "export function useKinPeople() {}\n" },
+        { [`${phone}useKinPeople.ts`]: "export function useKinPeople() {}\n" },
+      ),
+      [`${web}useKinPeople.ts`, "useKinWorkChanges"],
+    );
+    const both = caller + "export function useKinDealCount() {}\n";
+    assert.deepStrictEqual(
+      check({ [`${web}useKinDeals.ts`]: both }, { [`${phone}useKinDeals.ts`]: both }),
+      ["useKinDealCount", "useKinWorkChanges"],
+    );
+    assert.deepStrictEqual(
+      check({ [`${web}KinDeals.tsx`]: "export function useKinDeals() {}\n" + changes }, {}),
+      [`${web}KinDeals.tsx`],
+    );
+    const gone = checkKinHookCopies(new Map(), new Map(), shared);
+    assert.deepStrictEqual(gone.length, Object.keys(KIN_HOOK_FILES_IN_BOTH).length + 1);
+  });
+
   it("asks a branch people will notice to say what changes for them, and prints what it says", () => {
     const check = (...commits: ReadonlyArray<BranchCommit>) =>
       checkPeopleChange({
@@ -183,7 +235,7 @@ describe("kin branch checks", () => {
         .problems,
       1,
     );
-    // Any one commit may carry the line; every line is printed for whoever merges.
+    // A line on a later commit covers earlier ones; every line is printed for whoever merges.
     const said = check(
       { sha: "d4", message: "fix(kin): one\n\nPeople-change: none", files: [] },
       screen,
@@ -199,6 +251,15 @@ describe("kin branch checks", () => {
       "  d4 none",
       "  e5 the brief's Money title reads Cash",
     ]);
+    // A line speaks for its own commit and earlier ones, not for a screen changed after it.
+    const later = check(screen, {
+      sha: "f6",
+      message: "fix(kin): x\n\nPeople-change: none",
+      files: [],
+    });
+    assert.lengthOf(later.problems, 1);
+    assert.include(later.problems[0], "commits after f6");
+    assert.include(later.problems[0], "apps/web/src/kin/Brief.tsx");
     // The word alone is not a line.
     assert.lengthOf(check({ ...screen, message: "fix: x\n\nPeople-change:" }).problems, 1);
   });
@@ -351,7 +412,12 @@ describe("kin branch checks", () => {
   });
 
   it("refuses more than ten added lines in a T3 file unless a commit says why", () => {
-    const kinOwned = ["apps/server/src/kin/**", "packages/contracts/src/kin*"];
+    const kinOwned = [
+      "apps/server/src/kin/**",
+      "packages/contracts/src/kin*",
+      "**/*.kin.test.ts",
+      "**/*.kin.*.test.tsx",
+    ];
     const t3 = "apps/server/src/server.ts";
     const check = (
       changes: ReadonlyArray<{ file: string; added: number; isNew?: boolean }>,
@@ -368,13 +434,15 @@ describe("kin branch checks", () => {
         { file: "packages/contracts/src/kinHost.ts", added: 40 },
         { file: t3, added: 10 },
         { file: "apps/server/src/brandNew.ts", added: 300, isNew: true },
-        { file: "apps/server/src/server.test.ts", added: 200 },
-        { file: "apps/web/src/components/Sidebar.browser.test.tsx", added: 50 },
+        { file: "apps/server/src/server.kin.test.ts", added: 200 },
+        { file: "apps/web/src/components/Sidebar.kin.browser.test.tsx", added: 50 },
         { file: "apps/web/src/routeTree.gen.ts", added: 120 },
         { file: "pnpm-lock.yaml", added: 500 },
       ]),
       [],
     );
+    // Kin's cases in T3's own test file count as Kin lines in a T3 file.
+    assert.lengthOf(check([{ file: "apps/server/src/server.test.ts", added: 11 }]), 1);
     assert.deepStrictEqual(check([{ file: t3, added: 11 }]), [
       `Kin adds 11 lines to T3's ${t3}. Put the code in a Kin file and reach it through a hook (an import, one list entry, one call). If it truly belongs here, say why in the commit: "T3-file: ${t3}: <why>".`,
     ]);
@@ -442,6 +510,56 @@ describe("kin branch checks", () => {
         (yield* run).map((problem) => problem.split(".")[0]),
         [`Kin adds 11 lines to T3's apps/server/src/server`],
       );
+    }).pipe(
+      Effect.provide(NodeServices.layer),
+      Effect.ensuring(Effect.sync(() => NodeFS.rmSync(root, { recursive: true, force: true }))),
+    );
+  });
+
+  it.effect("checks migrations against the Kin trunk when the ref is upstream's main", () => {
+    const root = NodeFS.realpathSync(
+      NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-kin-trunk-")),
+    );
+    const env = {
+      ...Object.fromEntries(
+        Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
+      ),
+      GIT_CONFIG_GLOBAL: NodeOS.devNull,
+      GIT_CONFIG_NOSYSTEM: "1",
+    };
+    const git = (...args: Array<string>) =>
+      NodeChildProcess.execFileSync(
+        "git",
+        ["-c", "user.name=Rhea", "-c", "user.email=rhea@ambermill.invalid", ...args],
+        { cwd: root, encoding: "utf8", env },
+      ).trim();
+    const migrations = (...ids: ReadonlyArray<string>) => {
+      NodeFS.mkdirSync(NodePath.dirname(NodePath.join(root, MIGRATIONS)), { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(root, MIGRATIONS), loader(...ids));
+      git("add", ".");
+    };
+    return Effect.gen(function* () {
+      git("init", "-q", "-b", "main");
+      NodeFS.writeFileSync(NodePath.join(root, "README.md"), "T3\n");
+      git("add", ".");
+      git("commit", "-q", "-m", "upstream");
+      git("checkout", "-q", "-b", "kin");
+      migrations("1_First");
+      git("commit", "-q", "-m", "feat(kin): first");
+      git("checkout", "-q", "-b", "mine");
+      migrations("1_First", "3_Gap");
+      git("commit", "-q", "-m", "feat(kin): a gap\n\nPeople-change: none");
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const { problems, notes } = yield* kinBranchChecks(root, "main", 14).pipe(
+        Effect.provideService(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make((command) => spawner.spawn(ChildProcess.setEnv(command, env))),
+        ),
+      );
+      assert.deepStrictEqual(problems, [
+        "Kin migration 3_Gap must be 2: the next free number above the base's highest (1), with no gap.",
+      ]);
+      assert.include(notes[0], "ran against kin");
     }).pipe(
       Effect.provide(NodeServices.layer),
       Effect.ensuring(Effect.sync(() => NodeFS.rmSync(root, { recursive: true, force: true }))),

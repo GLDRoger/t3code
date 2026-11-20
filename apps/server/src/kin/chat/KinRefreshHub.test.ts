@@ -348,6 +348,43 @@ describe("KinRefreshHub", () => {
       kin_trigger_settings: ["triggers/routines.ts"],
       kin_visual_hosts: ["chat/KinVisualHosts.ts"],
       kin_money_budgets: ["work/budgets.ts"],
+      kin_github_watch: ["github/GitHubWatch.ts"],
+      kin_github_branch_guards: ["github/branchGuard.ts"],
+      kin_github_owner_uses: [
+        "github/KinGitHubApp.ts",
+        "github/branchGuard.ts",
+        "github/appRepos.ts",
+      ],
+      kin_budget_limits: ["lead/KinBudget.ts"],
+      // A zone change renames due-keyed facts; KinRoutines.configure touches pulse (pinned below).
+      kin_pulse_facts: ["pulse/KinPulse.ts", "work/allDayZone.ts"],
+      // Lists read only rows a company defined (`built_in = 0`). The deals files write the built-in
+      // deals row's stages and pipeline flag, and KinRecords a built-in row and the next number,
+      // which no list read selects.
+      kin_registers: [
+        "work/registers.ts",
+        "work/ownerMoney.ts",
+        "work/companyProfile.ts",
+        "work/importUndo.ts",
+        "work/deals.ts",
+        "work/dealStages.ts",
+        "work/KinRecords.ts",
+      ],
+      // Cash and the outlook read statements once `read`. The other writers set them unreadable,
+      // scanned, a draft or its proof rounds, none of which those reads show.
+      kin_bank_statements: [
+        "work/statements/statementReview.ts",
+        "work/statements/statementApply.ts",
+        "work/ownerStatements.ts",
+        "work/leadStatements.ts",
+        "work/statements/statementReading.ts",
+      ],
+      kin_bank_statement_entries: [
+        "work/statements/statementReview.ts",
+        "work/statements/statementApply.ts",
+        // A zone change moves undo days; KinRoutines.configure touches moneyStatements (below).
+        "work/allDayZone.ts",
+      ],
       // An import's and an undo's own row: each chunk moves `imports`, as does each run's end.
       kin_import_runs: ["work/KinImport.ts", "work/importUndo.ts"],
       // A key's last use, written as the key is admitted, shows at the next read.
@@ -370,6 +407,10 @@ describe("KinRefreshHub", () => {
         if (!writers[match[1]!]!.includes(file)) found.push(`${file}: ${match[1]}`);
     }
     assert.deepStrictEqual(found, []);
+    const routines = NodeFS.readFileSync(NodePath.join(root, "triggers/routines.ts"), "utf8");
+    assert.include(routines, "keepAllDayDays(settings.orgId, before, settings.timeZone)");
+    for (const topic of ["pulse", "moneyStatements"])
+      assert.include(routines, `refresh.touch(settings.orgId, "${topic}")`);
     const briefs = NodeFS.readFileSync(NodePath.join(root, "pulse/checkIns.ts"), "utf8");
     const sets = [...briefs.matchAll(/(?:INSERT INTO|UPDATE|DELETE FROM)\s+kin_people\b([^`]*)`/g)];
     assert.deepStrictEqual(

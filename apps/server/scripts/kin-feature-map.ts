@@ -9,6 +9,7 @@ import {
   type Feature,
   factsOf,
   loadFeatureMap,
+  phoneProofGap,
   readInventory,
 } from "../src/kin/featureMap/featureMap.ts";
 
@@ -52,7 +53,7 @@ const deepestFeatures = [...map.features].sort((a, b) => deepest(b) - deepest(a)
 const lines = [
   "# Kin feature map",
   "",
-  `Generated from \`apps/server/src/kin/featureMap/feature-map.yaml\`. ${map.features.length} features; ${inventory.webRoutes.size} web routes, ${inventory.webParams.size} web panes, ${inventory.phoneScreens.size} phone screens and ${inventory.tools.size} agent tools checked.`,
+  `Generated from \`apps/server/src/kin/featureMap/feature-map.yaml\`. ${map.features.length} features; ${inventory.webRoutes.size} web routes, ${inventory.webParams.size} web panes, ${inventory.phoneScreens.size} phone screens, ${inventory.tools.size} agent tools and ${inventory.rpcs.size} RPCs checked.`,
   "",
   problems.length === 0
     ? "The checker finds no problem."
@@ -70,6 +71,8 @@ const lines = [
   `Deepest paths: ${deepestFeatures.map((f) => `${f.id} (${deepest(f)})`).join(", ")}.`,
   "",
   `No proof (${noProof.length}): ${noProof.map((f) => f.id).join(", ") || "none"}.`,
+  "",
+  `Reached on the phone with no proof under apps/mobile: ${phoneProofGap(map).length} of ${map.features.length}.`,
   "",
   `Some role reaches it on web only (${webOnly.length}): ${webOnly.map((f) => whoOnly(f, "web")).join(", ") || "none"}. On phone only (${phoneOnly.length}): ${phoneOnly.map((f) => whoOnly(f, "phone")).join(", ") || "none"}.`,
   "",

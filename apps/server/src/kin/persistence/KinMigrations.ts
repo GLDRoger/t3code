@@ -153,7 +153,7 @@ import RetireLevelCards from "./migrations/K035_RetireLevelCards.ts";
 
 const table = "kin_sql_migrations";
 const run = Migrator.make({});
-const loader = Migrator.fromRecord({
+const migrations = {
   "1_ChatCore": ChatCore,
   "2_Lead": Lead,
   "3_Triggers": Triggers,
@@ -302,7 +302,16 @@ const loader = Migrator.fromRecord({
   "188_ReachLimits": ReachLimits,
   "189_MorningPages": MorningPages,
   "190_RecordTitleIndex": RecordTitleIndex,
-});
+};
+const loader = Migrator.fromRecord(migrations);
+
+/** Every Kin migration as `[id, name]`, in the order they run. */
+export const kinMigrations = Object.keys(migrations)
+  .map((key) => {
+    const at = key.indexOf("_");
+    return [Number(key.slice(0, at)), key.slice(at + 1)] as const;
+  })
+  .toSorted(([a], [b]) => a - b);
 
 // The Migrator skips every id at or below the latest applied one, so a migration that
 // merged out of order would silently never run. Refuse to start instead.

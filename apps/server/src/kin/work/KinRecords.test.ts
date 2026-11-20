@@ -53,12 +53,14 @@ import { TEAMMATE_WORDS, workEventText } from "../lead/LeadPrompt.ts";
 import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import { readPeople } from "../lead/peopleRead.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { keepAllDayDays } from "./allDayZone.ts";
 import { importWork } from "./importWork.ts";
 import { newCompanyProfileJson } from "./companyProfile.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadDocs from "./leadDocs.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
+import { dayIn } from "./money.ts";
 import { KIN_OWNER_LEVEL, type KinViewer, teamVisible, viewerOfPeople } from "./teamView.ts";
 import { sensitiveShown } from "./sensitiveReads.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
@@ -3612,6 +3614,71 @@ it.effect(
         [
           `Owner added you to ${portal.key} Invented portal.`,
           `Owner made you the lead of ${portal.key} Invented portal.`,
+        ],
+      );
+    }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
+);
+
+// Play-test (Nov 2026): the owner opened Kin where it was the next day, his device stored that
+// zone as the company's, and a due read a day later on Tasks, to the agent, in a hand-over
+// notice and on a Changes line made before.
+it.effect(
+  "a due keeps its day for everyone when the company's zone moves east across midnight",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* mateMayMessage;
+      yield* turn();
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Etc/GMT+5', '08:30', '18:30',
+        '03:00', 0, 1, '09:00', '{"from":"22:00","to":"07:00"}')`;
+      const scope = scopeOf("lead");
+      yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ title: "Invented: send the plan", due: "2026-11-22" }],
+      });
+      yield* LeadWork.update(scope, { key: "W-1", sourceEventId: "ask-event", due: "2026-11-27" });
+      // What `KinRoutines.setTimeZone` writes, in one transaction: the zone, and the days kept.
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Asia/Kolkata' WHERE org_id = ${orgId}`;
+          yield* keepAllDayDays(orgId, "Etc/GMT+5", "Asia/Kolkata");
+        }),
+      );
+      const zone = "Asia/Kolkata";
+      // (a) Tasks.
+      const [task] = (yield* OwnerWork.list([owner], { orgId })).records;
+      assert.strictEqual(dayIn(Date.parse(task!.dueAt!), zone), "2026-11-27");
+      // (b) The agent's work tool.
+      assert.include(yield* LeadWork.get(scope, { key: "W-1" }), {
+        due: "2026-11-27",
+        dueDay: "Fri 27 Nov 2026",
+      });
+      // (c) A hand-over after the move, at 11:30 on the company's clock, outside quiet hours.
+      yield* TestClock.setTime(Date.parse("2026-11-11T06:00:00.000Z"));
+      yield* LeadWork.assign(scope, {
+        sourceEventId: "ask-event",
+        tasks: [{ key: "W-1", to: "Mate", reason: "she has the plan" }],
+      });
+      const [notice] = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+      WHERE chat_id = 'mate-chat' ORDER BY seq DESC LIMIT 1`;
+      assert.include(notice!.body, "W-1 Invented: send the plan, due Fri 27 Nov.");
+      // (d) The Changes line made before the move, on the agent's page and the entry's.
+      const moved = (yield* agentChanges(KIN_OWNER_LEVEL, orgId, lead))
+        .flatMap((change) => (change.kind === "updated" ? change.fields : []))
+        .find((one) => one.field === "due")!;
+      assert.deepStrictEqual(
+        [moved.from, moved.to].map((one) => dayIn(Date.parse(one!), zone)),
+        ["2026-11-22", "2026-11-27"],
+      );
+      const history = (yield* OwnerWork.get([owner], { orgId, key: "W-1" })).changes.flatMap(
+        (change) => change.fields.filter((one) => one.field === "due"),
+      );
+      assert.deepStrictEqual(
+        history.map((one) => [one.from, one.to].map((at) => at && dayIn(Date.parse(at), zone))),
+        [
+          ["2026-11-22", "2026-11-27"],
+          [null, "2026-11-22"],
         ],
       );
     }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),

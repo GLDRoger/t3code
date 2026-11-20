@@ -351,11 +351,37 @@ const make = Effect.gen(function* () {
     : config.directMainPush === true
       ? "direct"
       : "refused";
-  const filesAt = (orgId: KinOrgId, writer: string, commit: string) =>
-    readFiles(orgId, writer, commit).pipe(
+  // A commit's tree and files never change, so the last read per org is kept: a wake-up's
+  // stages and its commit's replay of them all read the same head.
+  const lastFiles = new Map<KinOrgId, { commit: string; files: ReadonlyMap<string, Buffer> }>();
+  const lastTree = new Map<
+    KinOrgId,
+    { commit: string; entries: ReadonlyArray<{ sha: string; relative: string; mode: string }> }
+  >();
+  const filesAt = (orgId: KinOrgId, writer: string, commit: string) => {
+    const kept = lastFiles.get(orgId);
+    if (kept?.commit === commit) return Effect.succeed(kept.files);
+    return readFiles(orgId, writer, commit).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(VcsProcess, vcs),
+      Effect.map((files): ReadonlyMap<string, Buffer> => {
+        lastFiles.set(orgId, { commit, files });
+        return files;
+      }),
     );
+  };
+  const treeAt = (orgId: KinOrgId, writer: string, commit: string) => {
+    const kept = lastTree.get(orgId);
+    if (kept?.commit === commit) return Effect.succeed(kept.entries);
+    return readTree(orgId, writer, commit).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(VcsProcess, vcs),
+      Effect.map((entries) => {
+        lastTree.set(orgId, { commit, entries });
+        return entries;
+      }),
+    );
+  };
   const commitAt = (orgId: KinOrgId, writer: string, commit: string) =>
     readCommit(orgId, writer, commit).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
@@ -657,10 +683,7 @@ const make = Effect.gen(function* () {
     writer: string,
     commit: string,
   ) {
-    const entries = yield* readTree(orgId, writer, commit).pipe(
-      Effect.provideService(FileSystem.FileSystem, fs),
-      Effect.provideService(VcsProcess, vcs),
-    );
+    const entries = yield* treeAt(orgId, writer, commit);
     return new Set(
       entries
         .filter((entry) => ["100644", "100755"].includes(entry.mode))
@@ -701,10 +724,7 @@ const make = Effect.gen(function* () {
           ...(yield* memoryIdentity(config, app)),
         };
         yield* git(orgId, writer, ["read-tree", "--empty"], env);
-        const entries = yield* readTree(orgId, writer, parent).pipe(
-          Effect.provideService(FileSystem.FileSystem, fs),
-          Effect.provideService(VcsProcess, vcs),
-        );
+        const entries = yield* treeAt(orgId, writer, parent);
         const metadata = new Map(entries.map((entry) => [entry.relative, entry]));
         const finalFiles = new Map(parentFiles);
         for (const [file, bytes] of changes) finalFiles.set(file, bytes);
@@ -863,10 +883,7 @@ const make = Effect.gen(function* () {
     const items = [];
     const bodies = new Map<string, string>();
     const regular = new Set(
-      (yield* readTree(orgId, writer, recorded).pipe(
-        Effect.provideService(FileSystem.FileSystem, fs),
-        Effect.provideService(VcsProcess, vcs),
-      ))
+      (yield* treeAt(orgId, writer, recorded))
         .filter((entry) => ["100644", "100755"].includes(entry.mode))
         .map((entry) => entry.relative),
     );
