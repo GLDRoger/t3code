@@ -302,6 +302,8 @@ export const KinRecordChange = Schema.Struct({
   codingAgent: Schema.optional(Schema.String),
 });
 export type KinRecordChange = typeof KinRecordChange.Type;
+/** `codingAgent` as read by a teammate who isn't the key's person: the key's own name is not theirs. */
+export const KIN_CODING_AGENT_UNNAMED = "a coding agent";
 /** The field a change carries when Kin took a question's default: no list field's key has a colon. */
 export const KIN_TAKEN_DEFAULT_FIELD = "kin:default";
 /** The field a hand-over carries for someone who left the team: `person:<id>` in `from`. */

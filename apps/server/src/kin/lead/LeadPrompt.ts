@@ -1178,7 +1178,13 @@ export class KinLeadPrompt extends Context.Service<
         // Owner-only this slice: the teammate view of Work comes with slice 2.
         const work =
           ownerOnly && input.lane !== undefined
-            ? yield* buildWorkSection({ orgId, agentId, chatId: input.lane.chatId, now }).pipe(
+            ? yield* buildWorkSection({
+                orgId,
+                agentId,
+                chatId: input.lane.chatId,
+                now,
+                wakeupId: input.wakeupId,
+              }).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
                 Effect.catch((cause) =>
                   Effect.logWarning("Kin Work section unavailable", cause).pipe(

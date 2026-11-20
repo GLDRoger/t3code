@@ -5,6 +5,7 @@ import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
+import { sensitiveShown } from "../work/sensitiveReads.ts";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { SALES_OUTSIDE_TOOLS } from "../sales/policies.ts";
 
@@ -179,6 +180,24 @@ export const markOutside = Effect.fn("KinOutsideContent.mark")(function* (
     ON CONFLICT (org_id, event_id) DO NOTHING`;
 });
 
+const CODING_AGENT_SOURCE = "coding-agent:";
+/** The stamp for text a person's coding agent wrote through its key, by the key's name. */
+export const codingAgentSource = (name: string) => `${CODING_AGENT_SOURCE}${name}`;
+
+/**
+ * The turn is shown what a person's coding agent wrote: outside-read and sensitive-shown at once,
+ * so the two marks never differ. Before the text reaches the turn.
+ */
+export const codingAgentTextShown = Effect.fn("KinOutsideContent.codingAgentTextShown")(function* (
+  turn: Pick<Turn, "orgId" | "wakeupId">,
+  source: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* Effect.all([markOutside(turn, source), sensitiveShown(turn)], { discard: true }).pipe(
+    sql.withTransaction,
+  );
+});
+
 /** An event an outside-read turn made carries its stamp; a retry or a requeue keeps it. */
 export const stampEvent = Effect.fn("KinOutsideContent.stampEvent")(function* (
   orgId: KinOrgId,
@@ -222,7 +241,10 @@ export const inheritOutside = Effect.fn("KinOutsideContent.inherit")(function* (
           WHERE org_id = ${input.orgId} AND event_id IN ${sql.in(input.eventIds)}
           ORDER BY event_id LIMIT 1`;
   const source = events[0]?.source;
-  if (source !== undefined) yield* markOutside(input, source);
+  if (source === undefined) return;
+  yield* source.startsWith(CODING_AGENT_SOURCE)
+    ? codingAgentTextShown(input, source)
+    : markOutside(input, source);
 });
 
 const PAGES_TURNS = 200;

@@ -13,6 +13,8 @@ import {
   KinPartyRow,
   KinProjectRow,
   type KinRecord,
+  KinRecordChange,
+  KinRecordComment,
   type KinRecordCan,
   type KinWorkListResult,
 } from "./kinWork.ts";
@@ -232,6 +234,46 @@ describe("a campaign and tags on the wire", () => {
         rev: 1,
       }),
     ).toMatchObject({ source: "Invented harbour fair" });
+  });
+});
+
+// As an app from before the mark decodes a change and a note: without `codingAgent`.
+const { codingAgent: _changeMark, ...changeBefore } = KinRecordChange.fields;
+const { codingAgent: _commentMark, ...commentBefore } = KinRecordComment.fields;
+const decodeOlderChange = Schema.decodeUnknownSync(Schema.Struct(changeBefore));
+const decodeOlderComment = Schema.decodeUnknownSync(Schema.Struct(commentBefore));
+const decodeChange = Schema.decodeUnknownSync(KinRecordChange);
+const decodeComment = Schema.decodeUnknownSync(KinRecordComment);
+
+describe("a coding agent's mark on the wire", () => {
+  const by = { _tag: "person", personId: "zoya" };
+  const change = {
+    seq: 5,
+    at: "2026-11-10T15:00:00.000Z",
+    by,
+    via: "owner",
+    kind: "updated",
+    fields: [{ field: "state", from: "open", to: "doing" }],
+    codingAgent: "Invented laptop",
+  };
+  const comment = {
+    commentId: "comment-3",
+    seq: 3,
+    at: "2026-11-10T15:00:00.000Z",
+    by,
+    codingAgent: "Invented laptop",
+    body: "Invented: logo draft checked.",
+    files: [],
+  };
+
+  it("reads as the person's own change and note to an older app, and names the key to a newer one", () => {
+    expect(decodeOlderChange(change)).toMatchObject({ seq: 5, by });
+    expect(decodeOlderComment(comment)).toMatchObject({
+      body: "Invented: logo draft checked.",
+      by,
+    });
+    expect(decodeChange(change).codingAgent).toBe("Invented laptop");
+    expect(decodeComment(comment).codingAgent).toBe("Invented laptop");
   });
 });
 
