@@ -304,6 +304,8 @@ export const KinRecordChange = Schema.Struct({
 export type KinRecordChange = typeof KinRecordChange.Type;
 /** The field a change carries when Kin took a question's default: no list field's key has a colon. */
 export const KIN_TAKEN_DEFAULT_FIELD = "kin:default";
+/** The field a hand-over carries for someone who left the team: `person:<id>` in `from`. */
+export const KIN_LEFT_FIELD = "kin:left";
 
 export const KIN_RECORD_COMMENT_MAX = 4_000;
 export const KIN_RECORD_COMMENT_FILES_MAX = 8;
