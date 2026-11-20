@@ -1116,10 +1116,8 @@ export const KinProjectDetail = Schema.Struct({
     targetPassed: Schema.Boolean,
     late: NonNegativeInt,
     waitingOverAWeek: NonNegativeInt,
-    // Absent from hosts before overdue invoices and contact counted.
+    // Linked to this project only, never guessed from its client. Absent from older hosts.
     overdueInvoices: Schema.optional(NonNegativeInt),
-    /** Of those, the ones naming only its client, whose one open project this is. */
-    overdueInvoicesInferred: Schema.optional(NonNegativeInt),
     /** Its client past their check-in days: since the last contact, or null when none is recorded. */
     noContact: Schema.optional(
       Schema.Struct({ lastContactAt: Schema.NullOr(IsoDateTime), days: NonNegativeInt }),

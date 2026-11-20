@@ -395,8 +395,6 @@ export const GetResult = Schema.Struct({
       waitingOverAWeek: Schema.Number,
       targetPassed: Schema.Boolean,
       overdueInvoices: Schema.optional(Schema.Number),
-      /** Of those, invoices naming only its client, counted here as their one open project. */
-      overdueInvoicesInferred: Schema.optional(Schema.Number),
       /** The client's last contact, or null when none is recorded; only past their check-in days. */
       noContact: Schema.optional(
         Schema.Struct({ lastContactAt: Schema.NullOr(Schema.String), days: Schema.Number }),
@@ -1897,9 +1895,6 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
             targetPassed: project.healthBecause.targetPassed,
             ...(project.healthBecause.overdueInvoices
               ? { overdueInvoices: project.healthBecause.overdueInvoices }
-              : {}),
-            ...(project.healthBecause.overdueInvoicesInferred
-              ? { overdueInvoicesInferred: project.healthBecause.overdueInvoicesInferred }
               : {}),
             ...(project.healthBecause.noContact === undefined
               ? {}

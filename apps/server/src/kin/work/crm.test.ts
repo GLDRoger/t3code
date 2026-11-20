@@ -590,24 +590,28 @@ it.effect("an overdue invoice or a long silence with the client puts a project a
       clientRequestId: "kickoff",
     });
     assert.include(yield* health(build.key), { health: "on_track" });
-    // The deposit names only the client; it falls due on day 3.
+    // The deposit names only the client, the build only its project; both fall due on day 3.
+    const invoice = (title: string, project?: string) => ({
+      list: "invoices" as const,
+      title,
+      client: client.key,
+      ...(project === undefined ? {} : { project }),
+      amount: "50000",
+      state: "waiting" as const,
+      due: "1970-01-03",
+    });
     yield* LeadWork.create(scope, {
       sourceEventId: "ask-event",
       records: [
-        {
-          list: "invoices",
-          title: "Invented VIOM deposit",
-          client: client.key,
-          amount: "50000",
-          state: "waiting",
-          due: "1970-01-03",
-        },
+        invoice("Invented VIOM deposit"),
+        invoice("Invented VIOM build invoice", build.key),
       ],
     });
     yield* TestClock.adjust(4 * DAY);
+    // Never guessed: the deposit isn't the build's, though it's the client's only open project.
     const owed = yield* health(build.key);
     assert.include(owed, { health: "at_risk" });
-    assert.deepInclude(owed.healthBecause, { overdueInvoices: 1, overdueInvoicesInferred: 1 });
+    assert.deepInclude(owed.healthBecause, { overdueInvoices: 1 });
     assert.isUndefined(owed.healthBecause.noContact);
     // Every surface reads the same rule: the list, the Work summary and the lead's own read.
     const listed = yield* Clients.projects([owner], { orgId });
@@ -617,16 +621,13 @@ it.effect("an overdue invoice or a long silence with the client puts a project a
       summary.projects!.find((one) => one.project.key === build.key),
       { health: "at_risk" },
     );
-    // With a second open project the client's invoice is no longer this one's.
+    // Another project for the client doesn't take the build's invoice.
     const second = yield* Clients.createProject([owner], {
       orgId,
       name: "Invented VIOM app",
       party: client.key,
       clientRequestId: "viom-app",
     });
-    const shared = yield* health(build.key);
-    assert.include(shared, { health: "on_track" });
-    assert.deepInclude(shared.healthBecause, { overdueInvoices: 0, overdueInvoicesInferred: 0 });
     assert.include(yield* health(second.key), { health: "on_track" });
     // No contact past the client's check-in days (14 by default) puts both at risk.
     yield* TestClock.adjust(11 * DAY);
@@ -636,6 +637,23 @@ it.effect("an overdue invoice or a long silence with the client puts a project a
       lastContactAt: "1970-01-01T00:00:00.000Z",
       days: 15,
     });
+    // The client's own playbook gives them longer than the company's 14 days.
+    const viom = (yield* Clients.party([owner], { orgId, key: client.key })).party;
+    yield* Docs.create(
+      orgId,
+      { actor: { _tag: "person", personId: ownerId }, via: "owner" },
+      {},
+      {
+        title: "Invented VIOM playbook",
+        body: "# VIOM\n\n```kin\nclient_checkin_days: 30\n```\n",
+        owner: { _tag: "person", personId: ownerId },
+        summary: "Created",
+        originKey: "test:viom-playbook",
+        kind: "playbook",
+        partyId: viom.recordId,
+      },
+    );
+    assert.include(yield* health(second.key), { health: "on_track" });
     // A client nobody has contacted at all: no contact recorded, counted from their adding.
     const silent = yield* Clients.createParty([owner], {
       orgId,

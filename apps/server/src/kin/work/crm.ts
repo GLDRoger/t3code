@@ -64,8 +64,8 @@ import {
   toRecord,
 } from "./recordRows.ts";
 import { contactAll, contactSensitive } from "./contactDetails.ts";
-import { playbookThresholds } from "./playbooks.ts";
-import { daysSince, lastContacts, touchesOf } from "./touches.ts";
+import { playbookClientValues } from "./playbooks.ts";
+import { daysSince, lastContactRows, lastContacts, quietFor, touchesOf } from "./touches.ts";
 
 /**
  * The light CRM's read model: the client page, the project page and their history, computed on
@@ -111,15 +111,6 @@ const healthOf = (
           because.noContact !== undefined
         ? "at_risk"
         : "on_track";
-const HEALTH_RANK = { late: 0, at_risk: 1, on_track: 2 } as const;
-
-/**
- * An invoice `r` is its project's, or, naming only its client, that client's one open project's.
- * Which projects are open is the company's fact, not the viewer's.
- */
-const invoiceProject = (sql: Sql) => sql`COALESCE(r.project_id, (SELECT MIN(o.record_id)
-  FROM kin_records o WHERE o.org_id = r.org_id AND o.register_id = 'projects'
-    AND o.party_id = r.party_id AND o.state = 'open' HAVING COUNT(*) = 1))`;
 
 type PartyRowSql = {
   readonly recordId: string;
@@ -239,7 +230,6 @@ type ProjectRowSql = {
   readonly partyTitle: string | null;
   readonly partyCategory: string | null;
   readonly partySensitive: number | null;
-  readonly partyState: string | null;
   readonly partyCreatedAt: number | null;
   readonly ownerKind: string;
   readonly ownerId: string;
@@ -252,12 +242,13 @@ type ProjectRowSql = {
   readonly late: number | null;
   readonly waitingLong: number | null;
   readonly overdueInvoices: number | null;
-  readonly overdueInferred: number | null;
+  readonly lastContactAt: number | null;
+  readonly quiet: number;
 };
 
 /**
- * Projects with their open and late counts, overdue invoices and their client's last contact, and
- * the health those give: one grouped read, then one for contact.
+ * Projects with their open and late counts, overdue invoices linked to them, their client's last
+ * contact, and the health those give, ranked and paged in one read.
  */
 const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
   orgId: KinOrgId,
@@ -271,18 +262,30 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const filter = sql.and([sql`p.org_id = ${orgId}`, sql`p.register_id = 'projects'`, ...where]);
+  // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- only narrows whose contact is read; WHERE scopes the rows, the touches apply the viewer
+  const clientsOfRows = sql`SELECT p.party_id FROM kin_records p WHERE ${filter} AND p.state = 'open'`;
+  const checkIn = yield* playbookClientValues(orgId, "client_checkin_days");
+  const checkInDays =
+    Object.keys(checkIn.byClient).length === 0
+      ? sql`${checkIn.value}`
+      : sql`COALESCE((SELECT value FROM json_each(${JSON.stringify(checkIn.byClient)})
+          WHERE key = p.party_id), ${checkIn.value})`;
+  // A client's silence, as the client_quiet sense reads it: from the last contact, else their adding.
+  const quiet = sql`(p.state = 'open' AND pa.state = 'open'
+    AND COALESCE(pa.category, 'client') = 'client'
+    AND ${quietFor(sql, sql`COALESCE(lc.at, pa.created_at, ${now})`, now, checkInDays)})`;
   const health = sql`CASE WHEN p.state IN ('done', 'dropped') THEN 3
     WHEN p.due_at < ${now} THEN 0
-    WHEN COALESCE(n.late, 0) + COALESCE(n."waitingLong", 0) + COALESCE(i.overdue, 0) > 0 THEN 1
+    WHEN COALESCE(n.late, 0) + COALESCE(n."waitingLong", 0) + COALESCE(i.overdue, 0) > 0
+      OR ${quiet} THEN 1
     ELSE 2 END`;
   const rows = yield* sql<ProjectRowSql>`
     SELECT p.record_id AS "recordId", p.key, p.title, p.party_id AS "partyId",
       pa.key AS "partyKey", pa.title AS "partyTitle", pa.category AS "partyCategory",
-      pa.sensitive AS "partySensitive", pa.state AS "partyState",
-      pa.created_at AS "partyCreatedAt",
+      pa.sensitive AS "partySensitive", pa.created_at AS "partyCreatedAt",
       p.owner_kind AS "ownerKind", p.owner_id AS "ownerId", p.state, p.due_at AS "dueAt",
       p.due_all_day AS "dueAllDay", p.sensitive, p.rev, n.open, n.late, n."waitingLong",
-      i.overdue AS "overdueInvoices", i.inferred AS "overdueInferred"
+      i.overdue AS "overdueInvoices", lc.at AS "lastContactAt", ${quiet} AS quiet
     FROM kin_records p
     LEFT JOIN kin_records pa ON pa.org_id = p.org_id AND pa.record_id = p.party_id
     LEFT JOIN (
@@ -293,46 +296,34 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
         AND r.state IN ${sql.in(OPEN)} AND r.project_id IS NOT NULL AND ${seen(sql, viewer)}
       GROUP BY r.project_id) n ON n.project_id = p.record_id
     LEFT JOIN (
-      SELECT ${invoiceProject(sql)} AS project_id, COUNT(*) AS overdue,
-        SUM(r.project_id IS NULL) AS inferred
-      FROM kin_records r WHERE r.org_id = ${orgId} AND ${overdueInvoice(sql, now)}
-        AND ${seen(sql, viewer)}
-      GROUP BY 1) i ON i.project_id = p.record_id
+      SELECT r.project_id, COUNT(*) AS overdue
+      FROM kin_records r WHERE r.org_id = ${orgId} AND r.project_id IS NOT NULL
+        AND ${overdueInvoice(sql, now)} AND ${seen(sql, viewer)}
+      GROUP BY r.project_id) i ON i.project_id = p.record_id
+    LEFT JOIN (${lastContactRows(sql, orgId, clientsOfRows, now, viewer)}) lc
+      ON lc."partyId" = p.party_id
     WHERE ${filter}
     ORDER BY ${
       order === "target"
         ? sql`p.state IN ('done', 'dropped'), p.due_at IS NULL, p.due_at, lower(p.title), p.key`
         : sql`${health}, p.due_at IS NULL, p.due_at, lower(p.title), p.key`
     }
-    ${order === "attention" ? sql`` : sql`LIMIT ${limit} OFFSET ${offset}`}`;
-  // A client's silence, as the client_quiet sense reads it: from the last contact, else their adding.
-  const quietOf = (row: ProjectRowSql) =>
-    row.partyId !== null &&
-    row.partyState === "open" &&
-    (row.partyCategory ?? "client") === "client" &&
-    row.state === "open";
-  const partyIds = [...new Set(rows.filter(quietOf).map((row) => row.partyId!))];
-  const last =
-    partyIds.length === 0 ? new Map() : yield* lastContacts(orgId, partyIds, now, viewer);
-  const checkIn = partyIds.length === 0 ? undefined : yield* playbookThresholds(orgId);
-  const noContactOf = (row: ProjectRowSql) => {
-    if (checkIn === undefined || !quietOf(row)) return undefined;
-    const lastAt: number | undefined = last.get(row.partyId!);
-    const days = daysSince(lastAt ?? row.partyCreatedAt ?? now, now);
-    return days < checkIn("client_checkin_days", row.partyId!).value
-      ? undefined
-      : { lastContactAt: lastAt === undefined ? null : iso(lastAt), days };
-  };
-  const counted = rows.map((row) => {
+    LIMIT ${limit} OFFSET ${offset}`;
+  return rows.map((row) => {
     const late = row.late ?? 0;
-    const noContact = noContactOf(row);
+    const noContact =
+      row.quiet !== 1
+        ? undefined
+        : {
+            lastContactAt: row.lastContactAt === null ? null : iso(row.lastContactAt),
+            days: daysSince(row.lastContactAt ?? row.partyCreatedAt ?? now, now),
+          };
     const because = {
       targetPassed:
         row.state !== "done" && row.state !== "dropped" && row.dueAt !== null && row.dueAt < now,
       late,
       waitingOverAWeek: row.waitingLong ?? 0,
       overdueInvoices: row.overdueInvoices ?? 0,
-      overdueInvoicesInferred: row.overdueInferred ?? 0,
       ...(noContact === undefined ? {} : { noContact }),
     } satisfies KinProjectDetail["healthBecause"];
     return {
@@ -361,12 +352,6 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
       because,
     };
   });
-  // Contact isn't in SQL's order, so attention ranks every match before taking its page.
-  const rank = (one: (typeof counted)[number]) =>
-    one.row.health === null ? 3 : HEALTH_RANK[one.row.health];
-  return order === "attention"
-    ? counted.toSorted((a, b) => rank(a) - rank(b)).slice(offset, offset + limit)
-    : counted;
 });
 
 /** Each of these projects' health and why, for the owner, by record id: what the pulse reads. */

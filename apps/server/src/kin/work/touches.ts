@@ -68,13 +68,17 @@ const loggedRows = (sql: Sql) => sql`SELECT t.party_id AS "partyId", t.touch_id 
 const touchUnion = (
   sql: Sql,
   orgId: KinOrgId,
-  partyIds: ReadonlyArray<string> | "all",
+  partyIds: ReadonlyArray<string> | "all" | { readonly within: Statement.Fragment },
   now: number,
   viewer: KinViewer,
 ) => {
   const seen = crmSeenBy(sql, viewer);
   const of = (column: Statement.Fragment) =>
-    partyIds === "all" ? sql`${column} IS NOT NULL` : sql`${column} IN ${sql.in(partyIds)}`;
+    partyIds === "all"
+      ? sql`${column} IS NOT NULL`
+      : "within" in partyIds
+        ? sql`${column} IN (${partyIds.within})`
+        : sql`${column} IN ${sql.in(partyIds)}`;
   // An invoice or quote with no date was sent when it was issued; later edits are not contact.
   const issued = sql`COALESCE(r.date_at, (SELECT n.issued_at FROM kin_issued_numbers n
       WHERE n.org_id = r.org_id AND n.record_id = r.record_id), r.created_at)`;
@@ -152,6 +156,16 @@ const newestContacts = Effect.fn("KinTouches.newest")(function* (
   return new Map(rows.map((row) => [row.partyId, { at: row.at, kind: row.kind }]));
 });
 
+/** Each client's last contact as rows `("partyId", at)`, for the clients a subquery names. */
+export const lastContactRows = (
+  sql: Sql,
+  orgId: KinOrgId,
+  within: Statement.Fragment,
+  now: number,
+  viewer: KinViewer,
+) => sql`SELECT "partyId", MAX(at) AS at
+  FROM (${touchUnion(sql, orgId, { within }, now, viewer)}) GROUP BY "partyId"`;
+
 /** Each client's last contact, epoch ms; clients with none are absent. */
 export const lastContacts = Effect.fn("KinTouches.last")(function* (
   orgId: KinOrgId,
@@ -164,6 +178,9 @@ export const lastContacts = Effect.fn("KinTouches.last")(function* (
 });
 
 export const daysSince = (at: number, now: number) => Math.max(0, Math.floor((now - at) / DAY_MS));
+/** `daysSince(at, now) >= days` in SQL, for days of 1 or more. */
+export const quietFor = (sql: Sql, at: Statement.Fragment, now: number, days: Statement.Fragment) =>
+  sql`${now} - ${at} >= ${DAY_MS} * ${days}`;
 
 /** "No logged contact for 12 days", or null while contact is recent. */
 export const quietLine = (lastAt: number | null, createdAt: number, now: number) => {

@@ -184,7 +184,29 @@ export const playbookThreshold = Effect.fn("KinPlaybooks.threshold")(function* (
  */
 export const playbookThresholds = Effect.fn("KinPlaybooks.thresholds")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = (yield* livePlaybooks(sql, orgId)).map((row) => {
+  return thresholdsOf(yield* livePlaybooks(sql, orgId));
+});
+
+/**
+ * One key's company value and each client playbook's own, from one read: for a query that
+ * compares against it in SQL rather than row by row.
+ */
+export const playbookClientValues = Effect.fn("KinPlaybooks.clientValues")(function* (
+  orgId: KinOrgId,
+  key: PlaybookKey,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* livePlaybooks(sql, orgId);
+  const lookup = thresholdsOf(rows);
+  const clients = new Set(rows.flatMap((row) => (row.partyId === null ? [] : [row.partyId])));
+  return {
+    value: lookup(key).value,
+    byClient: Object.fromEntries([...clients].map((id) => [id, lookup(key, id).value])),
+  };
+});
+
+const thresholdsOf = (playbooks: ReadonlyArray<PlaybookRow>) => {
+  const rows = playbooks.map((row) => {
     const parsed = parseKinBlocks(row.body);
     return { row, values: parsed._tag === "ok" ? parsed.values : undefined };
   });
@@ -211,7 +233,7 @@ export const playbookThresholds = Effect.fn("KinPlaybooks.thresholds")(function*
       }
     );
   };
-});
+};
 
 const INDEX_MAX = 40;
 const LINE_MAX = 160;

@@ -113,14 +113,13 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     done: [],
   };
   for (const project of projects) {
-    // Behind is the project's own health off track, the rule every screen and tool reads.
-    const shown = health.get(project.recordId);
-    const because = shown?.because;
-    const overdue = because?.overdueInvoices ?? 0;
+    // Off track, less an overdue invoice or a quiet client: Overdue and Quiet clients list those.
+    const because = health.get(project.recordId)?.because;
+    const waiting = because?.waitingOverAWeek ?? 0;
     const status =
       project.state === "done"
         ? "done"
-        : shown?.row.health === "late" || shown?.row.health === "at_risk"
+        : because !== undefined && (because.targetPassed || because.late > 0 || waiting > 0)
           ? "behind"
           : project.changes === 0
             ? "quiet"
@@ -131,14 +130,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
         project.done > 0 ? `${project.done} done this week` : null,
         project.state === "done" ? null : `${project.open} open`,
         project.late > 0 ? `${project.late} late` : null,
-        overdue === 0
-          ? null
-          : `${overdue} invoice${overdue === 1 ? "" : "s"} overdue${(because?.overdueInvoicesInferred ?? 0) > 0 ? " (inferred from its client)" : ""}`,
-        because?.noContact === undefined
-          ? null
-          : because.noContact.lastContactAt === null
-            ? "no contact recorded"
-            : `no contact for ${because.noContact.days} days`,
+        waiting > 0 ? `${waiting} waiting over a week` : null,
         project.dueAt === null ? null : `target ${dayIn(project.dueAt, zone)}`,
       ]
         .filter((part) => part !== null)
