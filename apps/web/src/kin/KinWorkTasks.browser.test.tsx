@@ -28,7 +28,7 @@ const host = vi.hoisted(() => ({
   acts: [] as Array<unknown>,
   nudges: [] as Array<unknown>,
   refuse: null as string | null,
-  open: null as unknown,
+  pulse: null as unknown,
 }));
 
 vi.mock(import("./kinClient"), async (importOriginal) => {
@@ -86,13 +86,10 @@ vi.mock(import("./useKinOwnerLevel"), async (importOriginal) => {
     useKinViewerScope: () => KIN_SCOPE_ALL,
   };
 });
-// The host's open list; null is an older host's, where Tasks' own read counts Needs you.
-vi.mock(import("./useKinOpen"), async (importOriginal) => ({
-  ...(await importOriginal()),
-  useKinOpen: () => host.open as never,
-}));
+// The pulse's read, where Tasks finds the deal facts that need you.
 vi.mock(import("./useKinAttention"), async (importOriginal) => ({
   ...(await importOriginal()),
+  useKinAttention: (() => host.pulse) as never,
   useKinAskAbout: () => () => null,
 }));
 vi.mock(import("./useKinWork"), async (importOriginal) => {
@@ -208,7 +205,7 @@ function setup(options: {
   readonly moves: ReadonlyArray<KinWorkRowMove>;
   readonly counts: KinWorkMoveCounts;
   readonly refuse?: string;
-  readonly open?: unknown;
+  readonly pulse?: unknown;
 }) {
   localStorage.clear();
   host.ownerLevel = options.ownerLevel;
@@ -219,7 +216,7 @@ function setup(options: {
   host.acts = [];
   host.nudges = [];
   host.refuse = options.refuse ?? null;
-  host.open = options.open ?? null;
+  host.pulse = options.pulse ?? null;
 }
 
 // Each test its own company, so no test resumes the list another one kept.
@@ -348,34 +345,27 @@ describe("Tasks on the web, by whose move", () => {
 
   it("lists a teammate's deal with no next step under Needs you, with What's next?", async () => {
     const fact = (key: string, actor: unknown, title: string) => ({
-      id: `fact:deal_no_next_step:${key}`,
-      late: false,
-      item: {
-        _tag: "fact",
-        fact: {
-          sense: "deal_no_next_step",
-          family: "work",
-          key: `deal_no_next_step:${key}`,
-          subject: { kind: "record", key, title },
-          scope: { clientKey: "C-1", clientTitle: "Corran Tiles" },
-          since: DateTime.makeUnsafe(Date.UTC(2026, 10, 16)),
-          consequence: `${title} for Corran Tiles has no next step.`,
-          actor,
-          sensitive: false,
-          wake: "sweep",
-          handled: null,
-        },
-      },
+      sense: "deal_no_next_step",
+      family: "work",
+      key: `deal_no_next_step:${key}`,
+      subject: { kind: "record", key, title },
+      scope: { clientKey: "C-1", clientTitle: "Corran Tiles" },
+      since: DateTime.makeUnsafe(Date.UTC(2026, 10, 16)),
+      consequence: `${title} for Corran Tiles has no next step.`,
+      actor,
+      sensitive: false,
+      wake: "sweep",
+      handled: null,
     });
     setup({
       ownerLevel: false,
       records: [bakeryForm],
       moves: [{ key: bakeryForm.key, group: "needsYou" }],
       counts: { needsYou: 1, waiting: 0, rest: 0, doneRecently: 0 },
-      open: {
+      pulse: {
         asOf: DateTime.makeUnsafe(Date.UTC(2026, 10, 18, 9)),
-        counts: { needsYou: 3, waiting: 0 },
-        rows: [
+        total: 2,
+        facts: [
           fact("DL-1", zoya, "Corran rollout"),
           // Rhea's own deal: not Zoya's to answer.
           fact("DL-3", rhea, "Harbourline pilot"),

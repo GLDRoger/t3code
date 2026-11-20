@@ -25,7 +25,6 @@ import {
   type KinGoalsInput,
   type KinBriefsInput,
   type KinCheckInsInput,
-  type KinOpenReadInput,
   type KinPulseListInput,
   type KinMemoryListInput,
   type KinPeopleListInput,
@@ -81,7 +80,6 @@ import { kinReachPairKey } from "./kinReach.ts";
 import type { KinChatState } from "./kinInboxModel.ts";
 import { KIN_MONEY_LIVE_LABEL, kinMoneyLiveStream } from "./kinMoneyStream.ts";
 import { KIN_PULSE_LIVE_LABEL, kinPulseLiveStream } from "./kinPulseStream.ts";
-import { KIN_OPEN_LIVE_LABEL, kinOpenLiveStream } from "./kinOpenStream.ts";
 import {
   createKinDirectoryTrigger,
   createKinRefreshTriggers,
@@ -1233,14 +1231,6 @@ export function makeKinClient<R, ER>(
     }),
     /** Whether the host streams Needs attention; null until its refreshes say. */
     attentionStreamed: kinRefreshOn.serves("pulse"),
-    /** Everything open for the viewer as the host streams it (`kin.open.subscribe`). */
-    openLive: createEnvironmentSubscriptionAtomFamily(runtime, {
-      label: KIN_OPEN_LIVE_LABEL,
-      subscribe: (input: KinOpenReadInput) =>
-        kinOpenLiveStream({ ...input, acceptSenses: KIN_PULSE_LATER_SENSES }),
-    }),
-    /** Whether the host streams the open list; null until its refreshes say. */
-    openStreamed: kinRefreshOn.serves("open"),
     /** Money's parts as the host streams them to the owner level (`useKinMoneyLive`). */
     moneyLive: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: KIN_MONEY_LIVE_LABEL,

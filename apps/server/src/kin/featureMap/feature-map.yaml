@@ -1426,4 +1426,5 @@ unlisted:
   "rpc:kin.work.statementForgetAccount": Served; no client forgets a statement account yet.
   "rpc:kin.people.setOwnerName": Called by the kin-verify seed (scripts/kin-verify/seed.ts); no client calls it.
   "rpc:kin.refreshes.announce": Called by the host CLI (apps/server/src/kin/cli/announce.ts) from the owner's session.
-  "rpc:kin.open.read": Served; clients follow the open list through kin.open.subscribe instead.
+  "rpc:kin.open.read": Served; no client reads the open list (Needs you and Tasks use their own reads).
+  "rpc:kin.open.subscribe": Served; no host lists "open" in its streams, so no client follows it.

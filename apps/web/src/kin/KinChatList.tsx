@@ -59,7 +59,6 @@ import { kinWaitingAskView } from "@t3tools/client-runtime/kin/kinWaitingAsk";
 import { KinStandInLine } from "./KinStandInLine";
 import { kinAccessCopy } from "./kinTeammateMark";
 import { useKinInbox } from "./useKinHost";
-import { useKinOpenWaiting } from "./useKinOpen";
 
 const STATE_COPY: Record<
   Exclude<KinInboxScreenState["_tag"], "ready" | "loading" | "error">,
@@ -88,14 +87,6 @@ export function KinChatList() {
   const params = useParams({ strict: false });
   const openChatId = "chatId" in params ? (params.chatId ?? null) : null;
   const { host, state, retry } = useKinInbox();
-  // Not `kinNewLeadTarget`: offline, the open list's last waiting rows still stand.
-  const org =
-    host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs.me[0] : undefined;
-  const openWaiting = useKinOpenWaiting(
-    host._tag === "host" && org !== undefined
-      ? { environmentId: host.environmentId, orgId: org.orgId }
-      : null,
-  );
   const nowMs = useNowMinuteMs();
   const { isMobile, setOpenMobile } = useSidebar();
   if (state._tag === "loading") {
@@ -138,12 +129,7 @@ export function KinChatList() {
   }
   const directory = kinDirectory(host);
   const inbox = state.inbox.value;
-  const view = selectKinInboxView(
-    inbox,
-    openWaiting === null || org === undefined
-      ? undefined
-      : [...inbox.waiting.filter((item) => item.orgId !== org.orgId), ...openWaiting],
-  );
+  const view = selectKinInboxView(inbox);
   const rows = kinChatListRows(view, directory);
   const liveRows = rows.filter((row) => !row.retired);
   const retiredRows = rows.filter((row) => row.retired);

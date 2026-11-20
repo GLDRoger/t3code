@@ -93,7 +93,6 @@ export type EnvironmentSubscriptionRpcTag =
   | "kin.work.subscribe"
   | "kin.refreshes.subscribe"
   | "kin.pulse.subscribe"
-  | "kin.open.subscribe"
   | "kin.money.subscribe"
   | typeof KIN_PUSH_WS_METHODS.watch;
 

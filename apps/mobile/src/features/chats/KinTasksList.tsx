@@ -95,7 +95,6 @@ import { useKinOpenHit, useKinWorkLink } from "./state/kinWorkLink";
 import { useKinSearch } from "./state/useKinDocs";
 import { useKinAskAgent } from "./state/useKinMoney";
 import { useKinAttention, useKinAttentionHandle } from "./state/useKinAttention";
-import { useKinOpen } from "./state/useKinOpen";
 import { useKinTaskSteps } from "./state/useKinTaskSteps";
 import {
   kinWorkLiveAtom,
@@ -212,17 +211,12 @@ export function KinTasksList(
   );
   const ownerLevel = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, environmentId));
   const { within } = props;
-  const open = useKinOpen({ environmentId, orgId }, within === undefined);
-  const pulse = useKinAttention({ environmentId, orgId }, within === undefined && !open.on);
-  const facts = kinTasksDealFacts(open.on ? open.read : null, { ownerLevel, names, now, pulse });
+  const pulse = useKinAttention({ environmentId, orgId }, within === undefined);
+  const facts = kinTasksDealFacts({ ownerLevel, names, now, pulse });
   const answers = useKinAttentionHandle({ environmentId, orgId });
   const counts = list.counts();
   // The same number the dock's Tasks badge shows (`useKinTasksBadge`).
-  const needsYou = kinNeedsYouCount({
-    open: open.on ? open.read : null,
-    counts,
-    dealFacts: facts.length,
-  });
+  const needsYou = kinNeedsYouCount({ counts, dealFacts: facts.length });
   const groupBy = filter.groupBy ?? "me";
   const searching = within === undefined && filter.text.trim() !== "";
   const items: ReadonlyArray<KinTasksItem<KinRecord>> =
