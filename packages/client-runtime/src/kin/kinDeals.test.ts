@@ -132,6 +132,13 @@ describe("kinDealNext", () => {
     expect(view).toEqual({ tone, text });
   });
 
+  it("says a step the reader isn't shown is not shared, plainly, and nothing of it", () => {
+    expect(kinDealNext(deal(1, { next: null, nextHidden: true }), names, now)).toEqual({
+      tone: "plain",
+      text: "Next step isn't shared with you",
+    });
+  });
+
   it("says nothing of a won or lost deal", () => {
     expect(kinDealNext(deal(1, { state: "lost" }), names, now)).toBeNull();
   });

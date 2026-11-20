@@ -52,6 +52,7 @@ export const KIN_DEALS = {
   moveTo: "Move to…",
   stage: "Stage",
   noNextStep: "No next step",
+  nextHidden: "Next step isn't shared with you",
   noneYet: "None yet",
   mine: "Mine",
   everyone: "Everyone",
@@ -317,14 +318,20 @@ export interface KinDealNextView {
   readonly text: string;
 }
 
-/** An open deal's next step, or that it has none (amber), or that it is late (red). */
+/**
+ * An open deal's next step, or that it has none (amber), or that it is late (red); one the reader
+ * isn't shown reads as such, plainly, for it isn't missing.
+ */
 export function kinDealNext(
-  deal: Pick<KinDealRow, "state" | "next">,
+  deal: Pick<KinDealRow, "state" | "next" | "nextHidden">,
   names: Pick<KinWorkNames, "zone">,
   now: Date,
 ): KinDealNextView | null {
   if (deal.state !== "open") return null;
-  if (deal.next === null) return { tone: "missing", text: KIN_DEALS.noNextStep };
+  if (deal.next === null)
+    return deal.nextHidden === true
+      ? { tone: "plain", text: KIN_DEALS.nextHidden }
+      : { tone: "missing", text: KIN_DEALS.noNextStep };
   if (deal.next.late) return { tone: "late", text: KIN_DEALS.late(deal.next.title) };
   return {
     tone: "plain",

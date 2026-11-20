@@ -96,6 +96,8 @@ export const KinDealRow = Schema.Struct({
   /** Private, by its own label or its client's. */
   sensitive: Schema.Boolean,
   next: Schema.NullOr(KinDealNext),
+  /** With `next` null: it has an open follow-up this reader isn't shown. Absent from older hosts. */
+  nextHidden: Schema.optional(Schema.Boolean),
   quote: Schema.optional(KinDealQuote),
   /** The worries raised on it, in the order they were put; absent from older hosts and when none. */
   concerns: Schema.optional(Schema.Array(KinDealConcern)),
