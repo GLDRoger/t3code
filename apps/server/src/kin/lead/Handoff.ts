@@ -263,6 +263,16 @@ export class KinHandoff extends Context.Service<
       readonly agentId: KinAgentId;
       readonly wakeupId: string;
     }) => Effect.Effect<void>;
+    /**
+     * A wake-up that finished work for a teammate's relayed request (`workFor`) ended: each one
+     * it sent nothing gets one Kin line in their chat with the agent, so none is left unanswered.
+     */
+    readonly workDone: (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+      readonly wakeupId: string;
+      readonly owed: ReadonlyArray<{ readonly eventId: string; readonly personId: KinPersonId }>;
+    }) => Effect.Effect<void>;
   }
 >()("t3/kin/lead/Handoff/KinHandoff") {}
 
@@ -1427,7 +1437,56 @@ const make = Effect.gen(function* () {
     Effect.catchCause((cause) => Effect.logError("Kin hand-off report-back failed", { cause })),
   );
 
-  return KinHandoff.of({ leads, handOff, takePrivate, relay, reportBack });
+  const workDone = Effect.fn("KinHandoff.workDone")(
+    function* (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+      readonly wakeupId: string;
+      readonly owed: ReadonlyArray<{ readonly eventId: string; readonly personId: KinPersonId }>;
+    }) {
+      const prefix = relayPrefix(input.wakeupId);
+      for (const { eventId, personId } of input.owed) {
+        const [direct] = yield* sql<{
+          chatId: KinChatId;
+          name: string;
+        }>`SELECT c.chat_id AS "chatId",
+            l.name FROM kin_chats c JOIN kin_leads l ON l.org_id = c.org_id
+              AND l.agent_id = ${input.agentId}
+          WHERE c.org_id = ${input.orgId} AND c.kind = 'direct' AND c.archived_at IS NULL
+            AND c.direct_key = ${`${personId}:${input.agentId}`}`;
+        if (direct === undefined) continue;
+        const sent = yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${input.orgId}
+            AND chat_id = ${direct.chatId} AND (substr(message_id, 1, ${prefix.length}) = ${prefix}
+              OR substr(client_message_id, 1, ${prefix.length + 5}) = ${`send:${prefix}`})
+          UNION ALL SELECT 1 FROM kin_held_posts WHERE org_id = ${input.orgId}
+            AND chat_id = ${direct.chatId} AND substr(kind, 1, ${prefix.length}) = ${prefix}
+          LIMIT 1`;
+        if (sent.length > 0) continue;
+        if (
+          !(yield* Reach.reaches(
+            input.orgId,
+            Reach.person(personId),
+            Reach.agent(input.agentId),
+          ).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+        )
+          continue;
+        const id = NodeCrypto.createHash("sha256")
+          .update(`${eventId}:${personId}`)
+          .digest("hex")
+          .slice(0, 32);
+        yield* chat.notice({
+          orgId: input.orgId,
+          chatId: direct.chatId,
+          audience: "chat",
+          messageId: KinMessageId.make(`kin-work-done:${id}`),
+          body: `The work ${direct.name} started for your request is finished; the owner's side has the result.`,
+        });
+      }
+    },
+    Effect.catchCause((cause) => Effect.logError("Kin finished-work line failed", { cause })),
+  );
+
+  return KinHandoff.of({ leads, handOff, takePrivate, relay, reportBack, workDone });
 });
 
 export const layer = Layer.effect(KinHandoff, make);

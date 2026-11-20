@@ -4,10 +4,16 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { ownerLevelSql } from "../people/KinAccess.ts";
 
+/** A message that carries someone's words relayed to the chat's person (`KinHandoff.relay`). */
+const relayedSql = (m: string) =>
+  `(${m}.relay_json IS NOT NULL OR substr(${m}.message_id, 1, 10) = 'kin-relay:'
+    OR substr(${m}.client_message_id, 1, 15) = 'send:kin-relay:')`;
+
 /**
- * Who delegated work was for, when the owner side started it answering a teammate's request:
- * the wake-up that ran `runIds` answered an owner-level message that came next after Kin's relay
- * of that teammate's request in the same chat (`KinHandoff.relay`). Read from stored rows only.
+ * Who delegated work was for: the owner side started it in the turn woken by the owner-level
+ * message that came next after Kin's relay of a teammate's request in that chat. The work's run
+ * is that turn's, and the turn's events name the message. A relay its teammate sent answering
+ * words relayed to them is an answer, never a request. Read from stored rows only.
  */
 export const workFor = Effect.fn("KinWorkFor.workFor")(function* (input: {
   readonly orgId: KinOrgId;
@@ -35,5 +41,16 @@ export const workFor = Effect.fn("KinWorkFor.workFor")(function* (input: {
       AND NOT EXISTS (SELECT 1 FROM kin_messages o WHERE o.org_id = m.org_id
         AND o.chat_id = m.chat_id AND o.seq > r.seq AND o.seq < m.seq
         AND (o.author_kind = 'human' OR json_extract(o.relay_json, '$.personId') IS NOT NULL))
+      AND NOT EXISTS (SELECT 1 FROM kin_events te
+        JOIN kin_messages tm ON tm.org_id = te.org_id AND tm.author_kind = 'human'
+          AND tm.message_id = json_extract(te.json, '$.messageId')
+        WHERE te.org_id = r.org_id AND te.tag = 'chat.message' AND te.wakeup_id IS NOT NULL
+          AND te.agent_id = json_extract(r.relay_json, '$.agentId')
+          AND substr(r.message_id, 1, length(te.wakeup_id) + 11) = 'kin-relay:' || te.wakeup_id || ':'
+          AND EXISTS (SELECT 1 FROM kin_messages pr WHERE pr.org_id = tm.org_id
+            AND pr.chat_id = tm.chat_id AND pr.author_kind <> 'human'
+            AND pr.seq = (SELECT MAX(x.seq) FROM kin_messages x WHERE x.org_id = tm.org_id
+              AND x.chat_id = tm.chat_id AND x.seq < tm.seq
+              AND (x.author_kind = 'human' OR ${sql.literal(relayedSql("x"))}))))
     ORDER BY p.person_id`;
 });
