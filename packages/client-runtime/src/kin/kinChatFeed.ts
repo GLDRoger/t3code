@@ -13,6 +13,7 @@ import {
   type KinRecordKey,
   type KinWidget,
   kinIsBrief,
+  kinThreadLinksAsWords,
   kinWhenFormat,
   scanKinDocFences,
 } from "@t3tools/contracts";
@@ -681,7 +682,7 @@ const BARE_URL = /<?(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])>?/g;
 
 /** Markdown read aloud: link text without its address, no markers, one sentence per line. */
 export function kinPlainText(markdown: string): string {
-  return kinPlainTables(markdown)
+  return kinPlainTables(kinThreadLinksAsWords(markdown))
     .split("\n")
     .filter((line) => !/^\s*(```|~~~)/.test(line))
     .map((line) =>
@@ -738,7 +739,7 @@ const imageAsText = (alt: string) => (alt.trim() ? `Image: ${alt.trim()}` : "Ima
  * the native parser) can load or open an agent's image URL.
  */
 export const kinBodyMarkdown = (body: string) =>
-  body
+  kinThreadLinksAsWords(body)
     .replace(MARKDOWN_IMAGE, (_match, alt: string) => imageAsText(alt))
     .replace(HTML_IMAGE, "Image");
 
@@ -759,7 +760,7 @@ export const kinDocMarkdown = (
   body: string,
   src: (id: string) => string = (id) => `${KIN_VISUAL_FILE_SCHEME}${id}`,
 ) =>
-  body
+  kinThreadLinksAsWords(body)
     .replace(MARKDOWN_IMAGE, (_match, alt: string, destination: string | undefined) => {
       const id = destination === undefined ? null : kinDocFileId(destination);
       return id === null ? imageAsText(alt) : `![${alt}](${src(id)})`;

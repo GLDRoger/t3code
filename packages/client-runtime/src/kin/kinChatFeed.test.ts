@@ -781,6 +781,11 @@ describe("message labels", () => {
       "Tech lead, agent. See PR 212 and payments.test.ts. 9:30.",
     ],
     [
+      "no thread address",
+      row({ body: "Reviewed in t3-thread://v2/ab12." }),
+      "Tech lead, agent. Reviewed in. 9:30.",
+    ],
+    [
       "a suggestion says it isn't sent",
       row({ body: "Merge it?", status: "suggested" }),
       "Tech lead, agent. Merge it? 9:30. Suggestion, not sent yet.",
@@ -918,6 +923,19 @@ describe("message images", () => {
     ],
     ["an HTML image", 'a <IMG src="https://attacker.example/p.png"> b', "a Image b"],
     ["a plain link", "[docs](https://example.com)", "[docs](https://example.com)"],
+    [
+      "a thread link",
+      "Read [Dev's review](t3-thread://v2/ab12) first.",
+      "Read Dev's review first.",
+    ],
+    ["a bare thread address", "Notes: see t3-thread://v2/ab12.", "Notes: see."],
+    ["an autolinked thread address", "Done <t3-thread://v2/ab12> today", "Done today"],
+    [
+      "a thread link beside a web link",
+      "[Review](t3-thread://v2/ab12) on [#212](https://example.com/pull/212)",
+      "Review on [#212](https://example.com/pull/212)",
+    ],
+    ["a thread link in code", "`[Review](t3-thread://v2/ab12)`", "`Review`"],
   ])("renders %s as text before parsing", (_name, body, rendered) => {
     expect(kinBodyMarkdown(body)).toBe(rendered);
   });
@@ -928,6 +946,7 @@ describe("message images", () => {
     ["drops any other image", "![x](https://attacker.example/kin-file:ab)", "Image: x"],
     ["drops a reference image", "![x][1]\n\n[1]: kin-file:ab", "Image: x\n\n[1]: kin-file:ab"],
     ["drops an HTML image", '<img src="kin-file:ab">', "Image"],
+    ["reads a thread link as its words", "[Review](t3-thread://v2/ab12)", "Review"],
   ])("a doc's body %s", (_name, body, rendered) => {
     expect(kinDocMarkdown(body)).toBe(rendered);
   });
