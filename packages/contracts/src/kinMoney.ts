@@ -114,7 +114,12 @@ export type KinPaymentReceipt = typeof KinPaymentReceipt.Type;
  */
 export const KinPaymentSource = Schema.Union([
   Schema.TaggedStruct("statement", {}),
-  Schema.TaggedStruct("person", { personId: KinPersonId, agentId: Schema.optionalKey(KinAgentId) }),
+  Schema.TaggedStruct("person", {
+    personId: KinPersonId,
+    agentId: Schema.optionalKey(KinAgentId),
+    /** Their Yes on Kin's card for a bank alert; absent from older hosts. */
+    bankAlert: Schema.optionalKey(Schema.Literal(true)),
+  }),
   Schema.TaggedStruct("agent", { agentId: KinAgentId }),
   Schema.TaggedStruct("recorded", {}),
 ]);
@@ -123,7 +128,30 @@ export type KinPaymentSource = typeof KinPaymentSource.Type;
  * How far Kin sees the bank: the last day of the unbroken run of bank statements the owner
  * confirmed, or null when none is confirmed. Kin can't tell what reached the bank after it.
  */
-export const KinBankKnown = Schema.Struct({ through: Schema.NullOr(KinDay) });
+export const KinBankKnown = Schema.Struct({
+  through: Schema.NullOr(KinDay),
+  /**
+   * Per account, what the owner's bank alerts add after `through`: never complete, so they never
+   * move it. Absent from older hosts and where no alert counts.
+   */
+  alerts: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        account: Schema.String.check(Schema.isMaxLength(200)),
+        currency: Schema.String.check(Schema.isMaxLength(8)),
+        /** The statements' day the alerts count after; null with no statement for it. */
+        since: Schema.NullOr(KinDay),
+        seenThrough: KinDay,
+        in: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+        out: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+        /** The newest alert's stated balance, or an estimate from the last closing balance. */
+        balance: Schema.optional(
+          Schema.Struct({ minor: Schema.Int, on: KinDay, estimate: Schema.Boolean }),
+        ),
+      }),
+    ).check(Schema.isMaxLength(50)),
+  ),
+});
 export type KinBankKnown = typeof KinBankKnown.Type;
 export const KinPayment = Schema.Struct({
   paymentId: TrimmedNonEmptyString,

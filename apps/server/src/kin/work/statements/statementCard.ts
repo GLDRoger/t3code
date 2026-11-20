@@ -37,6 +37,13 @@ export type Review = {
   /** Every row not already explained in Bank transactions. */
   readonly matches: ReadonlyMap<number, RowMatch>;
   readonly missing?: ReadonlyArray<Missing>;
+  /** Bank alerts of its account in its period that it has no line for: never counted. */
+  readonly alertsMissing?: ReadonlyArray<AlertMissing>;
+};
+export type AlertMissing = {
+  readonly day: string;
+  readonly amountMinor: number;
+  readonly direction: "debit" | "credit";
 };
 
 const hash = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
@@ -194,6 +201,17 @@ const missingLine = (missing: ReadonlyArray<Missing>, currency: string) =>
     .join(
       ", ",
     )}${missing.length > 4 ? `, and ${missing.length - 4} more` : ""}. They stay recorded until you undo them.`;
+
+const alertsLine = (alerts: ReadonlyArray<AlertMissing>, currency: string) =>
+  `In an alert, not on the statement: ${alerts
+    .slice(0, 4)
+    .map(
+      (one) =>
+        `${shortDay(one.day)} ${money(one.amountMinor, currency)} ${one.direction === "credit" ? "in" : "out"}`,
+    )
+    .join(
+      ", ",
+    )}${alerts.length > 4 ? `, and ${alerts.length - 4} more` : ""}. Kin keeps ${alerts.length === 1 ? "it" : "them"} out of every figure.`;
 
 export const defaultSelection = (review: Review): KinStatementSelection => ({
   revision: 0,
@@ -392,6 +410,9 @@ export const reviewCard = (
             `${held.size} row${held.size === 1 ? " was" : "s were"} recorded from this statement before; Undo takes ${held.size === 1 ? "it" : "them"} back.`,
           ]),
       ...(missing.length === 0 ? [] : [missingLine(missing, currency)]),
+      ...((review.alertsMissing?.length ?? 0) === 0
+        ? []
+        : [alertsLine(review.alertsMissing!, currency)]),
       ...(fromScan(review)
         ? ["These rows were read from images of a scanned statement: check them against it."]
         : review.source === "agent"

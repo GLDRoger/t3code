@@ -25,6 +25,7 @@ import {
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -70,6 +71,8 @@ import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import { KIN_OWNER_LEVEL } from "../teamView.ts";
 import { queueTap, tellLead } from "./statementWake.ts";
+import { outsideRead, outsideToolAllowed } from "../../lead/OutsideContent.ts";
+import { bankKnown } from "./bankKnown.ts";
 
 // An invented company, Lakeview Studio, with invented clients, invoices and statements.
 // The ids Kin's identity bootstraps, so the server's own layer below knows this owner too.
@@ -625,6 +628,102 @@ describe("bank statements", () => {
       // Undone, the line no longer backs it: it is the owner's word again.
       assert.deepStrictEqual(yield* seen(), [["person"], null]);
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "replaces the bank alerts its period covers on Confirm, keeps an alert's payment, and Undo counts them again",
+    () =>
+      Effect.gen(function* () {
+        const keys = yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        const result = yield* read(1, "hdfc-account.pdf");
+        const [stored] = yield* sql<{ review: string }>`SELECT review_json AS review
+          FROM kin_bank_statements WHERE statement_id = ${result.statement}`;
+        const statement = JSON.parse(stored!.review).statement as {
+          account: string;
+          from: string;
+          rows: ReadonlyArray<{ date: string; amountMinor: number; direction: string }>;
+        };
+        const credit = statement.rows.find(
+          (row) => row.direction === "credit" && row.amountMinor === 11_800_000,
+        )!;
+        const later = DateTime.formatIsoDate(
+          DateTime.makeUnsafe(Date.parse(`${credit.date}T00:00:00Z`) + 86_400_000),
+        );
+        yield* sql`INSERT INTO kin_bank_alert_senders (org_id, connection_id, address, account,
+            currency, state, widget_id, asked_at)
+          VALUES (${orgId}, 'mailbox', 'alerts@lakebank.example', ${statement.account}, 'INR',
+            'counted', 'w-sender', 0)`;
+        const alertAt = (id: string, direction: string, minor: number, day: string) =>
+          sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, address, mail_key,
+              thread_id, subject, received_at, state, account, currency, direction, amount_minor,
+              day, created_at)
+            VALUES (${orgId}, ${id}, 'mailbox', 'alerts@lakebank.example', ${id}, 't', 'Alert', 0,
+              'counted', ${statement.account}, 'INR', ${direction}, ${minor}, ${day}, 0)`;
+        // The statement's credit, a day off as an alert may be; a debit the statement hasn't.
+        yield* alertAt("ba_in", "credit", 11_800_000, later);
+        yield* alertAt("ba_out", "debit", 12_345, statement.from);
+        const paid = yield* records.pay(orgId, owner, keys.exact, {
+          amount: { minor: 11_800_000, currency: "INR" },
+          paidOn: later,
+          originKey: "bank-alert:ba_in",
+        });
+        yield* sql`UPDATE kin_bank_alerts SET pay_state = 'paid', payment_id = ${paid.paymentId}
+          WHERE alert_id = 'ba_in'`;
+        const source = () =>
+          Effect.map(records.get(orgId, keys.exact), (row) =>
+            records
+              .detail(row!)
+              .pipe(Effect.map((detail) => detail.payments?.map((one) => one.source))),
+          ).pipe(Effect.flatten);
+        assert.deepStrictEqual(yield* source(), [
+          { _tag: "person", personId: ownerId, bankAlert: true },
+        ]);
+        // An agent that reads the alert reach may say it, never record money in that turn.
+        yield* turn(2);
+        yield* LeadWork.get(scope, { key: keys.exact });
+        assert.isTrue(yield* outsideRead({ orgId, wakeupId: "wake-2" }));
+        assert.isFalse(
+          yield* outsideToolAllowed(
+            { orgId, agentId: lead, wakeupId: "wake-2" },
+            "payment_record",
+            {},
+          ),
+        );
+        yield* LeadStatements.read(scope, {
+          sourceEventId: "event-2",
+          attachment: "hdfc-account.pdf",
+          refresh: true,
+        });
+        const { card } = yield* reviewCardOf(result.statement);
+        assert.isTrue(
+          card.summary.some((line) => line.startsWith("In an alert, not on the statement: ")),
+        );
+        const applied = yield* OwnerStatements.apply(people, yield* confirmAll(card));
+        const states = () =>
+          sql<{ id: string; state: string }>`SELECT alert_id AS id, state FROM kin_bank_alerts
+            ORDER BY alert_id`;
+        assert.deepStrictEqual(yield* states(), [
+          { id: "ba_in", state: "replaced" },
+          { id: "ba_out", state: "not_on_statement" },
+        ]);
+        assert.includeMembers(applied.card.result!, [
+          "1 bank alert is replaced by this statement's lines.",
+        ]);
+        assert.isTrue(
+          applied.card.result!.some((line) =>
+            line.startsWith("In an alert, not on the statement: 1 ("),
+          ),
+        );
+        assert.deepStrictEqual(yield* source(), [{ _tag: "statement" }]);
+        assert.deepStrictEqual((yield* bankKnown(orgId)).alerts, []);
+        yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
+        assert.deepStrictEqual(yield* states(), [
+          { id: "ba_in", state: "counted" },
+          { id: "ba_out", state: "counted" },
+        ]);
+      }).pipe(Effect.provide(layer)),
   );
 
   // Model money: the same money recorded by hand while the card was open is not paid twice.

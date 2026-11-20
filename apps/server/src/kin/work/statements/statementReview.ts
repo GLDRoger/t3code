@@ -37,6 +37,7 @@ import { homeCurrency } from "../companyProfile.ts";
 import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import { listDef } from "../registers.ts";
+import { alertsNotOn } from "./alertLines.ts";
 import { bankStates, directionOf, findBankList, type KnownRow, knownRows } from "./bankList.ts";
 import type { FileOutcome } from "./statementFiles.ts";
 import { readIsolated } from "./statementReader.ts";
@@ -44,6 +45,7 @@ import { matchRows, type RowMatch, SALARIES, seenOf } from "./statementMatch.ts"
 import {
   defaultSelection,
   type Held,
+  type AlertMissing,
   type Missing,
   type Review,
   reviewCard,
@@ -72,6 +74,7 @@ const StoredReview = Schema.Struct({
   known: Schema.Array(Schema.Tuple([Schema.Number, Schema.Unknown])),
   matches: Schema.Array(Schema.Tuple([Schema.Number, Schema.Unknown])),
   missing: Schema.optional(Schema.Array(Schema.Unknown)),
+  alertsMissing: Schema.optional(Schema.Array(Schema.Unknown)),
 });
 const ReviewJson = Schema.fromJsonString(StoredReview);
 const encodeReview = Schema.encodeEffect(ReviewJson);
@@ -88,6 +91,9 @@ export const reviewOf = (json: string): Review | undefined =>
       ...(stored.missing === undefined || stored.missing.length === 0
         ? {}
         : { missing: stored.missing as ReadonlyArray<Missing> }),
+      ...(stored.alertsMissing === undefined || stored.alertsMissing.length === 0
+        ? {}
+        : { alertsMissing: stored.alertsMissing as ReadonlyArray<AlertMissing> }),
     }),
   });
 const storeReview = (review: Review) =>
@@ -98,6 +104,7 @@ const storeReview = (review: Review) =>
     known: [...review.known.entries()],
     matches: [...review.matches.entries()],
     ...(review.missing === undefined ? {} : { missing: review.missing }),
+    ...(review.alertsMissing === undefined ? {} : { alertsMissing: review.alertsMissing }),
   });
 
 export type StatementRow = {
@@ -437,6 +444,7 @@ export const buildReview = Effect.fn("KinStatements.buildReview")(function* (
           },
         };
   });
+  const alertsMissing = yield* alertsNotOn(orgId, statement);
   return {
     statement,
     format,
@@ -444,6 +452,7 @@ export const buildReview = Effect.fn("KinStatements.buildReview")(function* (
     known,
     matches: new Map(open.map((row, index) => [row.index, judged[index]!])),
     ...(missing.length === 0 ? {} : { missing }),
+    ...(alertsMissing.length === 0 ? {} : { alertsMissing }),
   } satisfies Review;
 });
 
@@ -464,7 +473,7 @@ const ownerOf = Effect.fn("KinStatements.ownerOf")(function* (orgId: KinOrgId, a
 });
 
 /** Posts a card of Kin's own, for the owner alone, waiting on them; the same id twice is one card. */
-const postCard = Effect.fn("KinStatements.postCard")(function* (input: {
+export const postCard = Effect.fn("KinStatements.postCard")(function* (input: {
   readonly orgId: KinOrgId;
   readonly chatId: string;
   readonly agentId: string;

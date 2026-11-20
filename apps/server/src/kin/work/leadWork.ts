@@ -124,7 +124,15 @@ import {
   viewVisible,
 } from "./teamView.ts";
 import { type AssignNotice, movedNotices, tellHolding } from "./assignNotices.ts";
-import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
+import { markOutside } from "../lead/OutsideContent.ts";
+import {
+  ALERT_SOURCE,
+  BankAnswer,
+  bankAnswer,
+  bankKnown,
+  INVOICE_ALERT_NOTE,
+} from "./statements/bankKnown.ts";
+import { invoiceAlert } from "./statements/bankAlerts.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 
@@ -354,6 +362,15 @@ export const GetResult = Schema.Struct({
   ),
   /** An invoice's or client's: how far Kin sees the bank, for whether money arrived. */
   bank: Schema.optional(BankAnswer),
+  /** An owed invoice's: a counted bank alert that matches it, while Kin's card asks the owner. */
+  bankAlert: Schema.optional(
+    Schema.Struct({
+      day: Schema.String,
+      amount: Schema.String,
+      from: Schema.NullOr(Schema.String),
+      note: Schema.String,
+    }),
+  ),
   /**
    * A client's: open Work entries each side owes (counts), and the money it owes on issued
    * invoices, by the rule Money and the pulse use (overdue is past its due day).
@@ -1695,6 +1712,7 @@ const paymentSourceText = (
       return "a confirmed bank statement";
     case "person": {
       const person = name({ _tag: "person", personId: source.personId }) ?? "a person";
+      if (source.bankAlert === true) return `a bank alert, confirmed by ${person}`;
       return source.agentId === undefined
         ? `recorded by ${person}`
         : `recorded by ${name({ _tag: "agent", agentId: source.agentId }) ?? "an agent"} on ${person}'s word`;
@@ -1817,6 +1835,17 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
       ? (yield* goalsNow(lead.orgId, now, { money: true })).goals.find((one) => one.key === row.key)
       : undefined;
   const mailed = yield* mailedFor(lead.orgId, row);
+  const bank = list === "invoices" || page !== undefined ? yield* bankKnown(lead.orgId) : undefined;
+  const alerted =
+    team === undefined &&
+    list === "invoices" &&
+    row.state === "waiting" &&
+    (detail.balance?.minor ?? 0) > 0
+      ? yield* invoiceAlert(lead.orgId, row.recordId)
+      : undefined;
+  // Alerts are the bank's mail: a turn that reads one may not record money itself.
+  if (team === undefined && ((bank?.alerts.length ?? 0) > 0 || alerted !== undefined))
+    yield* markOutside(lead, ALERT_SOURCE);
   return {
     ...withDeal(deals, rowFor(view, row, now)),
     ...(mailed.length === 0 ? {} : { mailed }),
@@ -1865,9 +1894,17 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
               : { source: paymentSourceText(payment.source, name) }),
           })),
         }),
-    ...(list === "invoices" || page !== undefined
-      ? { bank: bankAnswer(yield* bankKnown(lead.orgId)) }
-      : {}),
+    ...(bank === undefined ? {} : { bank: bankAnswer(bank, false, team === undefined) }),
+    ...(alerted === undefined
+      ? {}
+      : {
+          bankAlert: {
+            day: alerted.day,
+            amount: formatMoney(alerted.amount),
+            from: alerted.party,
+            note: INVOICE_ALERT_NOTE,
+          },
+        }),
     notes: detail.notes,
     ...(assignedBy === undefined ? {} : { assignedBy }),
     links: (team === undefined

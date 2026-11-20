@@ -119,7 +119,7 @@ const tokens = (text: string) =>
 const squashed = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, "");
 
 /** How much of a name the narration carries, from 0 to 1. */
-const nameIn = (name: string, narration: string) => {
+export const nameIn = (name: string, narration: string) => {
   const wanted = tokens(name);
   if (wanted.length === 0) return 0;
   const said = new Set(tokens(narration));

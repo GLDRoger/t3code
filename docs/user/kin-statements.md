@@ -60,6 +60,21 @@ A missing month holds that day back, even when later months are in: send the gap
 Once a month has been over for five days without its statement, the morning brief says so once,
 with how many invoices it would confirm. A playbook's `statement_due_days` changes the five days.
 
+## Bank alerts between statements
+
+Most banks mail you when money moves. When mail that looks like your bank's alert reaches a mailbox
+connected to Kin, Kin asks once in chat: **Is <address> your bank's alerts for account ••1234?**
+Nothing counts before you tap **Yes, count these**, and Kin counts only mail that passed your
+mailbox's sender checks. Money then shows, under the bank line, how many alerts came in and out
+since your last statement and, when it can, an estimated balance. Alerts never move the day the
+bank is known to: banks skip some and mail filters catch others.
+
+When an alert shows money that matches an invoice still owed, Kin asks **Did <client> pay
+<invoice>?** Only **Yes, record it** records the payment, on the alert's day. When the statement
+for those days is confirmed, its lines replace the alerts; an alert the statement doesn't have is
+named on its card and kept out of every figure. To stop counting a sender, open Settings,
+Connections, the mailbox, and tap **Stop counting these** under Bank alerts.
+
 ## Reading a statement again
 
 **Read again** on a statement's card reads its file afresh, using a remembered password or asking

@@ -92,6 +92,7 @@ import * as VisualCard from "../widgets/visualCard.ts";
 import * as CardPlans from "../widgets/cardPlans.ts";
 import * as ChoiceCard from "../widgets/choiceCard.ts";
 import { answerByReply, askedForCard } from "../questions/openQuestions.ts";
+import { isAlertCard } from "../work/statements/alertCards.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
@@ -1002,9 +1003,11 @@ const make = Effect.gen(function* () {
         reason: "not_allowed",
         message: "This option runs only from a tap on it.",
       });
-    // A question asked for another chat answers there: its tap starts no turn here.
+    // A question asked for another chat answers there: its tap starts no turn here. Kin's own
+    // bank alert cards are answered by the server alone.
     const runs =
       (sealed?.plan !== undefined && CardPlans.runsItself(sealed.plan)) ||
+      (choice !== null && isAlertCard(widget.widgetId)) ||
       (choice !== null &&
         (yield* askedForCard(identity.orgId, widget.widgetId).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),

@@ -25,6 +25,8 @@ import {
   type KinConnectionSignInStart,
   type KinConnectionSignInStartInput,
   type KinConnectionSetReachInput,
+  type KinConnectionSetBankAlertsInput,
+  KinBankAlertNotCounted,
   type KinConnectionSetSendFrom,
   type KinConnectionSetSendFromInput,
   type KinConnectionSetToolModesInput,
@@ -151,6 +153,7 @@ import { KinRecords, layer as recordsLayer } from "../work/KinRecords.ts";
 import { KinGitHubLogin } from "./GitHubLogin.ts";
 import { textLocale } from "../work/companyProfile.ts";
 import { ownerZone } from "../work/recordRows.ts";
+import { alertSenders, setAlertSender } from "../work/statements/alertSenders.ts";
 
 export const SHARED_CONNECTIONS =
   "I don't use the company's connected services in chats with other people.";
@@ -213,6 +216,7 @@ const notFound = fail("not_found", "Kin couldn't find that connection.");
 const notOwner = fail("not_allowed", "Only the owner or a co-owner manages connections.");
 const isChatError = Schema.is(KinChatError);
 const isGatewayError = Schema.is(KinGatewayError);
+const isNotCounted = Schema.is(KinBankAlertNotCounted);
 const unavailable = fail("unavailable", "Kin is unavailable.");
 // Kin's own refusals pass through; anything else is logged and answered in one plain line.
 const settle = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -313,6 +317,18 @@ export const KinConnectionNoteResult = Schema.Struct({ note: Schema.String });
 
 type People = ReadonlyArray<PersonIdentity>;
 
+/** One message of a confirmed bank sender, as `alertMessages` returns it. */
+export type KinAlertMessage = {
+  /** Its Message-ID, else the vendor's thread and the date. */
+  readonly key: string;
+  readonly threadId: string;
+  readonly fromAddress: string;
+  readonly date: string | null;
+  readonly subject: string;
+  readonly text: string;
+  readonly authResults: ReadonlyArray<string>;
+};
+
 /**
  * What changed at a connection since the last time it was marked seen, as metadata. Subjects,
  * names and summaries are the service's text: whoever shows them to a model quotes them.
@@ -333,6 +349,7 @@ export type KinConnectionActivity =
         readonly from: string | null;
         readonly date: string | null;
         readonly unread: boolean;
+        readonly preview?: string;
       }>;
       readonly calendar: ReadonlyArray<{
         readonly eventId: string;
@@ -561,6 +578,7 @@ export class KinConnections extends Context.Service<
     readonly acceptToolChanges: Owner<KinConnectionAcceptInput, KinConnectionDetail>;
     readonly update: Owner<KinConnectionUpdateInput, KinConnectionDetail>;
     readonly setReach: Owner<KinConnectionSetReachInput, KinConnectionDetail>;
+    readonly setBankAlerts: Owner<KinConnectionSetBankAlertsInput, KinConnectionDetail>;
     readonly remove: Owner<KinConnectionRef, KinConnectionsView>;
     readonly calls: Owner<KinConnectionCallsInput, KinConnectionCalls>;
     readonly signInStart: Owner<KinConnectionSignInStartInput, KinConnectionSignInStart>;
@@ -588,6 +606,17 @@ export class KinConnections extends Context.Service<
       orgId: KinOrgId,
       connectionId: string,
     ) => Effect.Effect<KinConnectionActivity, KinChatError>;
+    /**
+     * Server use only (bank alerts, never an agent tool): the messages of one thread that came from
+     * `address` exactly, with their text and the receiving server's sender checks. Read only where
+     * the owner marked reading a thread Read; mail from anyone else in the thread is never returned.
+     */
+    readonly alertMessages: (
+      orgId: KinOrgId,
+      connectionId: string,
+      threadId: string,
+      address: string,
+    ) => Effect.Effect<ReadonlyArray<KinAlertMessage>, KinChatError>;
     /** Moves the cursor forward to `until` of an `activity` answer once it was handled. */
     readonly activitySeen: (
       orgId: KinOrgId,
@@ -768,11 +797,33 @@ const make = Effect.gen(function* () {
   ) {
     const row = yield* live(orgId, connectionId);
     const tools = yield* toolsOf(orgId, connectionId).pipe(provideSql);
+    const alerts =
+      mailProviderOf(row) === undefined
+        ? undefined
+        : yield* alertSenders(orgId, row.connectionId).pipe(provideSql);
     return {
       connection: yield* withSendState(row, connectionView(row, tools)),
       tools: tools.map((tool) =>
         alwaysAsk(row, tool.name) ? { ...toolView(tool), alwaysAsk: true } : toolView(tool),
       ),
+      ...(alerts === undefined
+        ? {}
+        : {
+            bankAlerts: {
+              senders: alerts.senders.slice(0, 50).map((one) => ({
+                address: one.address,
+                account: one.account,
+                counting: one.state === "counted",
+                counted: one.counted,
+              })),
+              notCounted: alerts.notCounted.map((one) => ({
+                address: one.address,
+                at: DateTime.formatIso(DateTime.makeUnsafe(one.receivedAt)),
+                subject: one.subject,
+                reason: isNotCounted(one.reason) ? one.reason : ("unreadable" as const),
+              })),
+            },
+          }),
     };
   });
   /** A mail sign-in from before Kin sent anything shows "Sign in again to allow sending". */
@@ -1389,6 +1440,27 @@ const make = Effect.gen(function* () {
     }),
   );
 
+  const setBankAlerts = Effect.fn("KinConnections.setBankAlerts")(function* (
+    people: People,
+    input: KinConnectionSetBankAlertsInput,
+  ) {
+    yield* owner(people, input.orgId);
+    const caller = people.find((person) => person.orgId === input.orgId)!;
+    yield* live(input.orgId, input.connectionId);
+    yield* setAlertSender({
+      orgId: input.orgId,
+      connectionId: input.connectionId,
+      address: input.address,
+      account: input.account,
+      counting: input.counting,
+      personId: caller.personId,
+      now: yield* Clock.currentTimeMillis,
+    }).pipe(provideSql);
+    yield* touched(input.orgId);
+    yield* refresh.touch(input.orgId, "moneyStatements");
+    return yield* detail(input.orgId, input.connectionId);
+  }, settle);
+
   const remove = ownerOp("remove", (input: KinConnectionRef) =>
     Effect.gen(function* () {
       yield* live(input.orgId, input.connectionId);
@@ -1818,6 +1890,44 @@ const make = Effect.gen(function* () {
       return { _tag: "github", connectionId: row.connectionId, since, until, deliveries } as const;
     }
     return { _tag: "unsupported", connectionId: row.connectionId } as const;
+  }, settle);
+
+  const alertMessages = Effect.fn("KinConnections.alertMessages")(function* (
+    orgId: KinOrgId,
+    connectionId: string,
+    threadId: string,
+    address: string,
+  ) {
+    const row = yield* live(orgId, connectionId);
+    const provider = mailProviderOf(row);
+    if (provider === undefined || row.pausedAt !== null || row.state !== "active") return [];
+    const reads = (yield* toolsOf(orgId, row.connectionId).pipe(provideSql)).some(
+      (tool) => tool.name === MAIL_TOOL.read && tool.mode === "read" && tool.removedAt === null,
+    );
+    if (!reads) return [];
+    const messages = yield* withSignIn(orgId, row, (force) =>
+      signInOf(orgId, row, force).pipe(
+        Effect.flatMap((secret) =>
+          provider.messages(http, secret.accessToken, mailboxOf(row), threadId),
+        ),
+      ),
+    );
+    const wanted = address.toLowerCase();
+    return messages.flatMap((message): ReadonlyArray<KinAlertMessage> =>
+      message.fromAddress?.toLowerCase() === wanted
+        ? [
+            {
+              key: message.messageId ?? `${message.threadId}:${message.date ?? ""}`,
+              threadId: message.threadId,
+              fromAddress: wanted,
+              date: message.date,
+              subject: message.subject,
+              text: message.body?.text ?? message.preview,
+              authResults: message.authResults,
+            },
+          ]
+        : [],
+    );
   }, settle);
 
   const activitySeen = Effect.fn("KinConnections.activitySeen")(function* (
@@ -3980,6 +4090,7 @@ const make = Effect.gen(function* () {
     acceptToolChanges,
     update,
     setReach,
+    setBankAlerts,
     remove,
     calls,
     signInStart,
@@ -3987,6 +4098,7 @@ const make = Effect.gen(function* () {
     setSignInClient,
     setSendFrom,
     activity,
+    alertMessages,
     activitySeen,
     tools,
     call,

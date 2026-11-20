@@ -2,7 +2,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinChatError, KinOrgId, KinSendTry } from "./kinChat.ts";
 
 /**
@@ -187,9 +187,47 @@ export type KinConnectionsView = typeof KinConnectionsView.Type;
 
 export const KinConnectionRef = Schema.Struct({ orgId: KinOrgId, connectionId: KinConnectionId });
 export type KinConnectionRef = typeof KinConnectionRef.Type;
+/** Why a bank alert from a counted sender wasn't counted. */
+export const KinBankAlertNotCounted = Schema.Literals([
+  "unreadable",
+  "other_account",
+  "other_currency",
+  "future",
+  "covered",
+  "repeat",
+  "failed_check",
+  "not_checked",
+]);
+export type KinBankAlertNotCounted = typeof KinBankAlertNotCounted.Type;
+/**
+ * A mailbox's bank alerts, for the owner level: the senders someone said Yes to on Kin's card,
+ * and the newest of their mail Kin kept without counting. Absent where no sender was confirmed.
+ */
+export const KinConnectionBankAlerts = Schema.Struct({
+  senders: Schema.Array(
+    Schema.Struct({
+      address: Schema.String.check(Schema.isMaxLength(320)),
+      account: Schema.String.check(Schema.isMaxLength(8)),
+      counting: Schema.Boolean,
+      counted: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    }),
+  ).check(Schema.isMaxLength(50)),
+  notCounted: Schema.Array(
+    Schema.Struct({
+      address: Schema.String.check(Schema.isMaxLength(320)),
+      at: IsoDateTime,
+      subject: Schema.String.check(Schema.isMaxLength(300)),
+      reason: KinBankAlertNotCounted,
+    }),
+  ).check(Schema.isMaxLength(20)),
+});
+export type KinConnectionBankAlerts = typeof KinConnectionBankAlerts.Type;
+
 export const KinConnectionDetail = Schema.Struct({
   connection: KinConnection,
   tools: Schema.Array(KinConnectionTool),
+  /** Absent from older hosts, on other services, and until a sender is confirmed. */
+  bankAlerts: Schema.optional(KinConnectionBankAlerts),
   /**
    * `setToolModes` changed nothing: these tools' marks named no digest, or not the current
    * `pinDigest`. `tools` holds their current definitions to show before marking again.
@@ -269,6 +307,16 @@ export const KinConnectionSetReachInput = Schema.Struct({
   reach: KinConnectionReach,
 });
 export type KinConnectionSetReachInput = typeof KinConnectionSetReachInput.Type;
+
+/** Stop counting a confirmed bank alert sender on this mailbox, or count it again. */
+export const KinConnectionSetBankAlertsInput = Schema.Struct({
+  orgId: KinOrgId,
+  connectionId: KinConnectionId,
+  address: Schema.String.check(Schema.isMaxLength(320)),
+  account: Schema.String.check(Schema.isPattern(/^\d{4}$/)),
+  counting: Schema.Boolean,
+});
+export type KinConnectionSetBankAlertsInput = typeof KinConnectionSetBankAlertsInput.Type;
 
 export const KinConnectionCallsInput = Schema.Struct({
   orgId: KinOrgId,
@@ -745,6 +793,11 @@ export const KinConnectionRpcs = [
     success: KinConnectionDetail,
     error: KinError,
   }),
+  Rpc.make("kin.connections.setBankAlerts", {
+    payload: KinConnectionSetBankAlertsInput,
+    success: KinConnectionDetail,
+    error: KinError,
+  }),
   Rpc.make("kin.connections.remove", {
     payload: KinConnectionRef,
     success: KinConnectionsView,
@@ -848,6 +901,7 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.connections.acceptToolChanges": AuthKinChatScope,
   "kin.connections.update": AuthKinChatScope,
   "kin.connections.setReach": AuthKinChatScope,
+  "kin.connections.setBankAlerts": AuthKinChatScope,
   "kin.connections.remove": AuthKinChatScope,
   "kin.connections.calls": AuthKinChatScope,
   "kin.connections.signInStart": AuthKinChatScope,

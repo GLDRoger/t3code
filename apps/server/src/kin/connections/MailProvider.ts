@@ -68,6 +68,8 @@ export type MailActivity = {
     readonly from: string | null;
     readonly date: string | null;
     readonly unread: boolean;
+    /** The vendor's own first lines of the last message, for Kin's plain-code bank-alert test. */
+    readonly preview?: string;
   }>;
   readonly calendar: ReadonlyArray<{
     readonly eventId: string;
@@ -297,6 +299,13 @@ export interface MailProvider {
     since: number,
     cursor: string | null,
   ) => Call<MailActivity>;
+  /** Server use only: a thread's messages with their bodies, as the vendor maps them. */
+  readonly messages: (
+    http: HttpClient.HttpClient,
+    token: string,
+    mailbox: Mailbox,
+    threadId: string,
+  ) => Call<ReadonlyArray<MailMessage>>;
   /** A thread of another account is not found: a reply stays in its own account. */
   readonly replyTarget: (
     http: HttpClient.HttpClient,

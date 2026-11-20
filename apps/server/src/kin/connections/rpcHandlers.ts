@@ -248,6 +248,7 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
       call((c, people) => c.acceptToolChanges(people, input)),
     "kin.connections.update": (input) => call((c, people) => c.update(people, input)),
     "kin.connections.setReach": (input) => call((c, people) => c.setReach(people, input)),
+    "kin.connections.setBankAlerts": (input) => call((c, people) => c.setBankAlerts(people, input)),
     "kin.connections.remove": (input) => call((c, people) => c.remove(people, input)),
     "kin.connections.calls": (input) => call((c, people) => c.calls(people, input)),
     "kin.connections.signInStart": (input) => call((c, people) => c.signInStart(people, input)),

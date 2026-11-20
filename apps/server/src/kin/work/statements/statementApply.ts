@@ -20,6 +20,7 @@ import type { RecordRow } from "../recordRows.ts";
 import { type FieldValue, parseFields } from "../lists.ts";
 import { endOfDay, ownerZone } from "../recordRows.ts";
 import { homeCurrency } from "../companyProfile.ts";
+import { formatMoney } from "../money.ts";
 import { defineList, listDef, PRESETS, presetDefinition } from "../registers.ts";
 import {
   accountLabel,
@@ -30,6 +31,8 @@ import {
   rowFingerprints,
   rowTitle,
 } from "./bankList.ts";
+import { settleAlerts, unsettleAlerts } from "./alertLines.ts";
+import { reaskAfterStatement } from "./bankAlerts.ts";
 import { changeSelection, decisionsOf, reviewCard, rowsOf } from "./statementCard.ts";
 import { SALARIES } from "./statementMatch.ts";
 import {
@@ -577,6 +580,8 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
       yield* sql`UPDATE kin_bank_statements SET applied_at = ${input.now}, applied_by = ${input.personId},
           undone_at = NULL
         WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
+      const alerts = yield* settleAlerts(input.orgId, input.statementId, statement);
+      yield* reaskAfterStatement(input.orgId, alerts.replaced);
       yield* (yield* KinRefreshObserver).touch(input.orgId, "moneyStatements");
       const kept = [...held.keys()].filter((row) => review.matches.has(row)).length;
       const unexplained = yield* unexplainedCount(
@@ -637,6 +642,24 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           ? []
           : [
               `Undo takes back all ${held.size + applying.length} rows this statement recorded: ${held.size} from the earlier confirm and ${applying.length} from this one.`,
+            ]),
+        ...(alerts.replaced.length === 0
+          ? []
+          : [
+              `${alerts.replaced.length} bank alert${alerts.replaced.length === 1 ? " is" : "s are"} replaced by this statement's lines.`,
+            ]),
+        ...(alerts.missing.length === 0
+          ? []
+          : [
+              `In an alert, not on the statement: ${alerts.missing.length} (${alerts.missing
+                .slice(0, 4)
+                .map(
+                  (one) =>
+                    `${one.day} ${formatMoney({ minor: one.amountMinor, currency })} ${one.direction === "credit" ? "in" : "out"}`,
+                )
+                .join(
+                  ", ",
+                )}). Kin keeps ${alerts.missing.length === 1 ? "it" : "them"} out of every figure.`,
             ]),
       ];
       const card =
@@ -828,6 +851,7 @@ export const undoStatement = Effect.fn("KinStatements.undo")(function* (input: {
       yield* sql`UPDATE kin_bank_statements SET applied_at = NULL, applied_by = NULL,
           undone_at = ${input.now}, generation = generation + 1
         WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
+      yield* unsettleAlerts(input.orgId, input.statementId);
       yield* (yield* KinRefreshObserver).touch(input.orgId, "moneyStatements");
       const review = stored.reviewJson === null ? undefined : reviewOf(stored.reviewJson);
       const categories = yield* expenseCategories(input.orgId);

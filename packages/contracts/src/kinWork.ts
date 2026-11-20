@@ -429,6 +429,17 @@ export const KinRecordDetail = Schema.Struct({
   toldWhenBack: Schema.optional(KinDay),
   /** An invoice's: how far Kin sees the bank, for whether it was paid; absent from older hosts. */
   bankKnown: Schema.optional(KinBankKnown),
+  /**
+   * An owed invoice's, for the owner level: a counted bank alert that matches it, while its card
+   * waits. Not recorded as paid. Absent otherwise and from older hosts.
+   */
+  bankAlert: Schema.optional(
+    Schema.Struct({
+      day: KinDay,
+      amount: KinMoney,
+      party: Schema.NullOr(Schema.String.check(Schema.isMaxLength(120))),
+    }),
+  ),
 });
 export type KinRecordDetail = typeof KinRecordDetail.Type;
 export const KIN_RECORD_CHANGES_CAP = 50;

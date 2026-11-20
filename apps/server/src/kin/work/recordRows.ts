@@ -776,6 +776,7 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
 });
 
 type PaymentSourceRow = {
+  readonly originKey: string;
   readonly byKind: string;
   readonly byId: string | null;
   readonly fromBank: number;
@@ -807,7 +808,12 @@ const paymentSourceOf = (row: PaymentSourceRow): KinPaymentSource =>
   row.fromBank === 1
     ? { _tag: "statement" }
     : row.byKind === "person" && row.byId !== null
-      ? { _tag: "person", personId: KinPersonId.make(row.byId) }
+      ? {
+          _tag: "person",
+          personId: KinPersonId.make(row.byId),
+          // Their Yes on Kin's card for a bank alert (`bankAlerts.ts`).
+          ...(row.originKey.startsWith("bank-alert:") ? { bankAlert: true as const } : {}),
+        }
       : row.byKind === "agent" && row.byId !== null
         ? row.wordOf === null
           ? { _tag: "agent", agentId: KinAgentId.make(row.byId) }

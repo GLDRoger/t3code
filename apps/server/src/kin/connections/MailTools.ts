@@ -439,13 +439,14 @@ const activity = Effect.fn("KinMail.activity")(function* (
     mail: found.threads
       .filter((thread) => thread.length > 0)
       .map(threadSummary(context.mailbox))
-      .map(({ threadId, receivedBy, subject, from, date, unread }) => ({
+      .map(({ threadId, receivedBy, subject, from, date, unread, preview }) => ({
         threadId,
         receivedBy,
         subject,
         from,
         date,
         unread,
+        preview,
       })),
     calendar: found.events.map(({ eventId, summary, start, status, updated }) => ({
       eventId,
@@ -481,6 +482,8 @@ export const mailProvider = (vendor: MailVendor): MailProvider => {
       call(vendor, { http, token, mailbox }, tool, args, now),
     activity: (http, token, mailbox, since, cursor) =>
       activity(vendor, { http, token, mailbox }, since, cursor),
+    messages: (http, token, mailbox, threadId) =>
+      vendor.thread({ http, token, mailbox }, threadId, false),
     replyTarget: (http, token, mailbox, threadId) =>
       replyTarget(vendor, { http, token, mailbox }, threadId),
     sendMessage: vendor.sendMessage,

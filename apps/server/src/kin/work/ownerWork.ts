@@ -54,6 +54,7 @@ import {
 import { fieldList, LISTS, type ListName, parseFields } from "./lists.ts";
 import { milestoneLinks } from "./projectSpine.ts";
 import { keyNamedFor, personSeesRecord, sheetExtras } from "./recordComments.ts";
+import { invoiceAlert } from "./statements/bankAlerts.ts";
 import { movePage, nudge as nudgeHolder } from "./workMoves.ts";
 import { isBuiltIn, listDef, unknownList } from "./registers.ts";
 import { type AssignNotice, movedNotices, tellPeople, toldWhenBack } from "./assignNotices.ts";
@@ -721,8 +722,17 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
     row.registerId === "work"
       ? yield* toldWhenBack(detail.orgId, detail.recordId, detail.owner).pipe(workFailure)
       : undefined;
+  // A bank alert is the owner's mail: shown only to the owner level, while it is still owed.
+  const alert =
+    !viewer.teammate &&
+    row.registerId === "invoices" &&
+    detail.state === "waiting" &&
+    (detail.balance?.minor ?? 0) > 0
+      ? yield* invoiceAlert(detail.orgId, detail.recordId).pipe(workFailure)
+      : undefined;
   const extras = {
     ...(back === undefined ? {} : { toldWhenBack: back }),
+    ...(alert === undefined ? {} : { bankAlert: alert }),
     ...(yield* sheetExtras(detail.orgId, viewer, detail).pipe(workFailure)),
     ...(yield* linkedFromOf(
       detail.orgId,

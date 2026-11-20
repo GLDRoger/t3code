@@ -33,6 +33,11 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "work/leadMoney.ts": 1,
   // A new entry's repeats: entries of its exact amount, compared one by one, nothing summed.
   "work/leadWork.ts": 1,
+  // Bank alert lines' own amounts: never entries, kept apart from every entry's figure; their
+  // reach per account, and the one alert a card or an invoice's line names.
+  "work/statements/alertLines.ts": 1,
+  "work/statements/bankAlerts.ts": 2,
+  "work/statements/bankKnown.ts": 1,
   // A statement's own rows, and the entries and recorded payments one row may match.
   "work/statements/bankList.ts": 1,
   "work/statements/statementReview.ts": 4,

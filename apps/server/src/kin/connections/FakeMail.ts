@@ -37,6 +37,8 @@ export type FakeMailMessage = {
   readonly files?: ReadonlyArray<FakeMailFile>;
   readonly unread: boolean;
   readonly sent: boolean;
+  /** The receiving server's Authentication-Results, topmost first. */
+  readonly authResults?: ReadonlyArray<string>;
 };
 
 export type FakeMailFile = {
@@ -278,6 +280,9 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     readonly threadId?: string;
     readonly at: number;
     readonly files?: ReadonlyArray<FakeMailFile>;
+    readonly authResults?: ReadonlyArray<string>;
+    /** The same mail delivered again, as a second mailbox gets it: its Message-ID kept. */
+    readonly messageId?: string;
   }) =>
     edit((state) => {
       const account = state.accounts.find((one) => owns(one, input.to));
@@ -296,7 +301,8 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         cc: input.cc ?? [],
         subject: input.subject,
         at: input.at,
-        messageId: `<${id}@${plain(input.from).split("@")[1] ?? "invented.example"}>`,
+        messageId:
+          input.messageId ?? `<${id}@${plain(input.from).split("@")[1] ?? "invented.example"}>`,
         inReplyTo: last?.messageId ?? null,
         references: last === undefined ? null : [last.references, last.messageId].join(" ").trim(),
         body: input.body,
@@ -304,6 +310,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         files: input.files ?? [],
         unread: true,
         sent: false,
+        ...(input.authResults === undefined ? {} : { authResults: input.authResults }),
       };
       state.messages.push(message);
       return message;
@@ -403,6 +410,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         { name: "Date", value: rfc2822(message.at) },
         { name: "Message-ID", value: message.messageId },
         ...(message.references === null ? [] : [{ name: "References", value: message.references }]),
+        ...(message.authResults ?? []).map((value) => ({ name: "Authentication-Results", value })),
       ],
       ...((message.files ?? []).length === 0
         ? { body: { data: Buffer.from(message.body).toString("base64url") } }
@@ -591,8 +599,10 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     internetMessageId: message.messageId,
     hasAttachments: (message.files ?? []).length > 0,
     body: { contentType: "text", content: message.body },
-    internetMessageHeaders:
-      message.references === null ? [] : [{ name: "References", value: message.references }],
+    internetMessageHeaders: [
+      ...(message.references === null ? [] : [{ name: "References", value: message.references }]),
+      ...(message.authResults ?? []).map((value) => ({ name: "Authentication-Results", value })),
+    ],
   });
   const odata = (filter: string, field: string) =>
     new RegExp(`${field} (?:eq|ge) '?((?:[^']|'')*)'?`).exec(filter)?.[1]?.replaceAll("''", "'");

@@ -92,7 +92,22 @@ export const cash = Effect.fn("KinMoneyAnswers.rpc.cash")(function* (
         estimate: estimate === null ? null : signed(estimate, one.currency),
       };
     }),
-    bankKnown: { through: view.bank.through },
+    bankKnown: {
+      through: view.bank.through,
+      ...(view.bank.alerts.length === 0
+        ? {}
+        : {
+            alerts: view.bank.alerts.slice(0, 50).map((one) => ({
+              account: one.account.slice(0, 200),
+              currency: one.currency,
+              since: one.since,
+              seenThrough: one.seenThrough,
+              in: one.in,
+              out: one.out,
+              ...(one.balance === undefined ? {} : { balance: one.balance }),
+            })),
+          }),
+    },
   };
 }, workFailure);
 

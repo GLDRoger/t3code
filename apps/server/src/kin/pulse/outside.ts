@@ -7,21 +7,31 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import type { KinConnectionActivity, KinConnections } from "../connections/ConnectionsService.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { logTouch } from "../work/touches.ts";
+import {
+  type AlertCandidate,
+  type AlertMailbox,
+  noticeAlerts,
+} from "../work/statements/bankAlerts.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 
 /** What is new at an org's connections since its last check-in, and the cursors that marks. */
 export interface OutsideRead {
   readonly lines: ReadonlyArray<KinPulseOutsideLine>;
+  /** The same mail as the bank alert rules read it: headers and the vendor's first lines. */
+  readonly mail?: ReadonlyArray<AlertCandidate>;
   readonly seen: ReadonlyArray<{
     readonly connectionId: string;
     readonly until: number;
@@ -34,6 +44,8 @@ export interface OutsideSource {
   readonly read: (orgId: KinOrgId) => Effect.Effect<OutsideRead>;
   /** Moves each cursor on, once a check-in carried what came before it. */
   readonly seen: (orgId: KinOrgId, seen: OutsideRead["seen"]) => Effect.Effect<void>;
+  /** A confirmed bank sender's messages of a thread (`noticeAlerts`). */
+  readonly alertMessages?: AlertMailbox;
 }
 
 export const noOutside: OutsideSource = {
@@ -114,6 +126,7 @@ export const fromConnections = (
         AND preset IN ${sql.in([...MAIL_PRESETS, "github"])}
       ORDER BY created_at, connection_id`;
       const lines: Array<KinPulseOutsideLine> = [];
+      const mail: Array<AlertCandidate> = [];
       const seen: Array<{ connectionId: string; until: number; cursor: string | null }> = [];
       for (const row of rows) {
         const activity = yield* connections.activity(orgId, row.connectionId).pipe(
@@ -127,13 +140,24 @@ export const fromConnections = (
         );
         if (activity === undefined || activity._tag === "unsupported") continue;
         lines.push(...linesOf(row.label, activity));
+        if (activity._tag === "mail")
+          for (const one of activity.mail)
+            mail.push({
+              connectionId: row.connectionId,
+              mailbox: activity.account,
+              threadId: one.threadId,
+              from: one.from,
+              subject: one.subject,
+              preview: one.preview ?? "",
+              date: one.date,
+            });
         seen.push({
           connectionId: row.connectionId,
           until: activity.until,
           cursor: activity._tag === "mail" ? activity.cursor : null,
         });
       }
-      return { lines, seen } satisfies OutsideRead;
+      return { lines, mail, seen } satisfies OutsideRead;
     },
     Effect.catch((cause) =>
       Effect.logWarning("Kin pulse outside read failed", { cause }).pipe(
@@ -154,6 +178,8 @@ export const fromConnections = (
           ),
       { discard: true },
     ),
+  alertMessages: (orgId, connectionId, threadId, address) =>
+    connections.alertMessages(orgId, connectionId, threadId, address),
 });
 
 const ADDRESS = /<([^<>\s]+@[^<>\s]+)>|([^\s<>,;"]+@[^\s<>,;"]+)/;
@@ -300,7 +326,17 @@ export const poll = Effect.fn("KinPulseOutside.poll")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
-  const { lines } = yield* source.read(orgId);
+  const read = yield* source.read(orgId);
+  const { lines } = read;
+  // Kin's bank alert cards need the chat; a poll run without one notices none.
+  const repo = yield* Effect.serviceOption(KinChatRepository);
+  const hub = yield* Effect.serviceOption(KinChatHub);
+  if (Option.isSome(repo) && Option.isSome(hub))
+    yield* noticeAlerts(orgId, read.mail ?? [], at, source.alertMessages).pipe(
+      Effect.provideService(KinChatRepository, repo.value),
+      Effect.provideService(KinChatHub, hub.value),
+      Effect.catchCause((cause) => Effect.logWarning("Kin couldn't notice bank alerts", { cause })),
+    );
   const matched = yield* matchLines(orgId, lines);
   if (matched.length === 0) return [];
   const chief = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });

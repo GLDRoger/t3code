@@ -54,6 +54,7 @@ import {
   SHARED_CONNECTIONS,
 } from "./ConnectionsService.ts";
 import * as Connections from "./ConnectionsService.ts";
+import { alertSenderCheck } from "../work/statements/alertText.ts";
 import { guarded } from "./EgressGuard.ts";
 import { type FakeMail, makeFakeMail } from "./FakeMail.ts";
 import * as McpGateway from "./McpGateway.ts";
@@ -2181,5 +2182,59 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.deepStrictEqual(fake.sent().at(-1)?.to, ["ravi@lumen.example"]);
       }),
     ),
+  );
+
+  it.effect(
+    "reads a bank sender's own messages with each vendor's sender checks, and nobody else's",
+    () =>
+      setUp((fake) =>
+        Effect.gen(function* () {
+          const connections = yield* KinConnections;
+          const bank = "alerts@harbourtrust.example";
+          const passed = [
+            "mx.invented.example; dkim=pass header.d=harbourtrust.example; dmarc=pass header.from=harbourtrust.example",
+          ];
+          for (const [service, to] of [
+            ["google", ACCOUNTS],
+            ["microsoft", HELLO],
+          ] as const) {
+            const connection = yield* connect(fake, service, to);
+            yield* TestClock.adjust("1 minute");
+            const real = fake.deliver({
+              to,
+              from: `Harbour Trust <${bank}>`,
+              subject: "Account alert",
+              body: "NZD 50.00 debited from your account ••4821 at CORNER CAFE",
+              at: (yield* Clock.currentTimeMillis) - 1000,
+              authResults: passed,
+            });
+            // The bank's address as the name of another sender, in the same thread.
+            fake.deliver({
+              to,
+              from: `"${bank}" <payouts@elsewhere.example>`,
+              subject: "Account alert",
+              body: "NZD 900.00 credited to your account ••4821",
+              threadId: real.threadId,
+              at: (yield* Clock.currentTimeMillis) - 500,
+              authResults: ["mx.invented.example; dkim=pass header.d=elsewhere.example"],
+            });
+            const activity = yield* connections.activity(orgId, connection);
+            assert.strictEqual(activity._tag, "mail");
+            if (activity._tag !== "mail") return;
+            assert.include(activity.mail[0]?.preview, "NZD");
+            const messages = yield* connections.alertMessages(
+              orgId,
+              connection,
+              real.threadId,
+              bank,
+            );
+            assert.deepStrictEqual(
+              messages.map((one) => [one.fromAddress, one.text.slice(0, 9), one.authResults]),
+              [[bank, "NZD 50.00", passed]],
+            );
+            assert.strictEqual(alertSenderCheck(messages[0]!.authResults, bank), "passed");
+          }
+        }),
+      ),
   );
 });

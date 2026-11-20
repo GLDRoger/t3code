@@ -20,6 +20,7 @@ import { ownerLevel } from "../people/KinAccess.ts";
 import { answerCard } from "../questions/openQuestions.ts";
 import { answerReceiptCard } from "../gendocs/receiptProposals.ts";
 import { receiptDocument } from "../gendocs/receipts.ts";
+import { answerAlertCard } from "./statements/bankAlerts.ts";
 import { answerCurrencyCard } from "./statements/statementReview.ts";
 import * as CardActions from "../widgets/cardActions.ts";
 import { KinRecords } from "./KinRecords.ts";
@@ -65,6 +66,17 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
     code: input.option.label,
     now: input.now,
   });
+  const alerted = yield* answerAlertCard(
+    {
+      orgId: input.orgId,
+      widgetId: input.widget.widgetId,
+      personId: input.personId,
+      label: input.option.label,
+      via: input.via,
+      now: input.now,
+    },
+    yield* KinRecords,
+  );
   const made = yield* answerReceiptCard({
     orgId: input.orgId,
     widgetId: input.widget.widgetId,
@@ -87,7 +99,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   // A cancelled mail's Tasks row stops offering it.
   if (asked?._tag === "declined") yield* sql.afterCommit(tasksReread(input.orgId));
   // An agent's question the owner level answered is a decision; Kin's own cards record elsewhere.
-  if (asked === undefined && made === undefined && currency === undefined)
+  if (asked === undefined && made === undefined && currency === undefined && alerted === undefined)
     yield* saveDecision(input, scope);
   if (made?._tag === "made")
     yield* sql.afterCommit(
@@ -103,6 +115,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
       ),
     );
   if (ran !== undefined) return ran;
+  if (alerted !== undefined) return alerted;
   if (made?._tag === "made") return made.outcome;
   if (made?._tag === "declined")
     return { title: "Not recorded", text: "You said no, so nothing was recorded or numbered." };
