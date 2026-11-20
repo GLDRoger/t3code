@@ -14,7 +14,9 @@ where you were. What you see in each depends on your place in the team; see
 [Who sees and does what](#who-sees-and-does-what).
 
 Settings has **You** (your profile, notifications and appearance) for everyone, and for the owner and co-owners
-**Company** (Team, Agents, Check-ins, Connections, Memory, Company details, Approvals). On the
+**Company** (Team, Agents, Check-ins, Connections, Deals, Memory, Company details, Approvals, and
+Recommendations for the owner). A teammate who can see Clients has **Company** with Deals alone,
+to read the deal stages. On the
 computer Kin runs on, **This computer** holds the app's own settings, such as providers and models,
 and how much of each provider's usage your agents have spent.
 
