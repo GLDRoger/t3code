@@ -348,6 +348,8 @@ describe("KinRefreshHub", () => {
       kin_trigger_settings: ["triggers/routines.ts"],
       kin_visual_hosts: ["chat/KinVisualHosts.ts"],
       kin_money_budgets: ["work/budgets.ts"],
+      // An import's and an undo's own row: each chunk moves `imports`, as does each run's end.
+      kin_import_runs: ["work/KinImport.ts", "work/importUndo.ts"],
       // A key's last use, written as the key is admitted, shows at the next read.
       kin_tasks_keys: ["tasksKey/TasksKeys.ts", "people/KinPeople.ts", "auth/linkedDevices.ts"],
       // A clear stamps open suggestions in the repository; `KinChatService.clear` tells the hub.

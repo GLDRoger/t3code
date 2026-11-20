@@ -1184,14 +1184,17 @@ const make = Effect.gen(function* () {
     seenBy: KinPersonId | undefined,
   ) {
     if (list === "work" || list === "docs" || list === "milestones" || !isBuiltIn(list)) return;
+    // `+key` keeps SQLite off the key index, which walks every key in the company for each name;
+    // it reads the title index instead.
     const [row] = yield* sql<{ key: string; sensitive: number }>`SELECT r.key,
         ${sensitiveNow(sql)} AS sensitive FROM kin_records r
-      WHERE r.org_id = ${orgId} AND r.register_id = ${list} AND r.state NOT IN ${sql.in(CLOSED)}
+      WHERE r.org_id = ${orgId} AND r.register_id = ${list}
+        AND ${list === "contacts" ? sql`r.party_id IS ${partyId}` : sql`1 = 1`}
+        AND r.state NOT IN ${sql.in(CLOSED)}
         AND lower(r.title) = lower(${title}) AND r.record_id IS NOT ${except}
-        AND (${list} != 'contacts' OR r.party_id IS ${partyId})
         AND (${list} != 'clients' OR ${clientFamily(sql, sql`r.category`)} = ${clientFamily(sql, sql`${category ?? "client"}`)})
         AND ${seenBy === undefined ? sql`1 = 1` : crmSees(sql, seenBy)}
-      ORDER BY r.key LIMIT 1`;
+      ORDER BY +r.key LIMIT 1`;
     if (row !== undefined) {
       const error = {
         reason: "conflict" as const,

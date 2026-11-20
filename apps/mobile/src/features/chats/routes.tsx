@@ -12,6 +12,7 @@ import { KinDealNewScreen } from "./KinDealNewScreen";
 import { KinDealScreen } from "./KinDealScreen";
 import { KinDealsConcernScreen } from "./KinDealsConcernScreen";
 import { KinDealStagesScreen } from "./KinDealsSettings";
+import { KinImportScreen } from "./KinImportScreen";
 import { KinRecommendationsScreen } from "./KinRecommendationsScreen";
 import {
   KinConnectionAddScreen,
@@ -228,6 +229,10 @@ export const KIN_SCREENS = {
     screen: KinDealStagesScreen,
     linking: "kin/:environmentId/:orgId/settings/deals",
     options: pageRoute({ title: "Deals" }),
+  }),
+  KinImport: createNativeStackScreen({
+    screen: KinImportScreen,
+    options: pageRoute({ title: "Import a file" }),
   }),
   KinDoc: createNativeStackScreen({
     screen: KinDocScreen,

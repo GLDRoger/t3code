@@ -8,8 +8,10 @@ import { isMacPlatform } from "@t3tools/shared/keybindings";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { KIN_IMPORT } from "@t3tools/client-runtime/kin/kinImport";
 import {
   CalendarDaysIcon,
+  FileUpIcon,
   ContactRoundIcon,
   FileTextIcon,
   FolderKanbanIcon,
@@ -65,6 +67,10 @@ const PLACE: Record<
 export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
   const navigate = useNavigate();
   const shown = useAtomValue(kinShownDestinationsAtom);
+  // The owner level's, as the host has it: the same gate the host applies to the call.
+  const canImport = useAtomValue(
+    kinClient.importApply.permissionAtom(shown?.target.environmentId ?? null),
+  );
   const destinations = shown?.destinations ?? [];
   if (shown === null || destinations.length === 0) return [];
   const { target } = shown;
@@ -109,6 +115,33 @@ export function useKinPlaceRows(): ReadonlyArray<CommandPaletteActionItem> {
                 to: KIN_PLACE_PATH.clients,
                 params: target,
                 search: { tab: "projects" },
+              });
+            },
+          ),
+        ]
+      : []),
+    ...(has("clients") && canImport
+      ? [
+          row(
+            "import",
+            `${KIN_IMPORT.entry}: bring clients, contacts and deals in from a spreadsheet`,
+            FileUpIcon,
+            [
+              "import",
+              "csv",
+              "spreadsheet",
+              "upload",
+              "excel",
+              "crm",
+              "contacts",
+              "deals",
+              "bring in",
+            ],
+            async () => {
+              await navigate({
+                to: KIN_PLACE_PATH.clients,
+                params: target,
+                search: { open: "import" },
               });
             },
           ),

@@ -792,6 +792,22 @@ features:
     note: A new deal names its first next step, or says there is none yet.
     proof: [apps/server/src/kin/work/deals.test.ts]
 
+  - id: import-file
+    name: Bring clients, contacts and deals in from a file
+    tab: clients
+    web: [clients, menu:Add, "?open"]
+    phone: [tab:clients, button:Import a file, KinImport]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      A CSV from a spreadsheet or another CRM: Kin proposes where each column goes, matches clients
+      by contact email, web domain, then name, and asks about close names and unknown stages before
+      anything is written. Earlier imports are listed with Undo. Also in the command palette, and
+      on the host as `kin import`.
+    proof:
+      - apps/server/src/kin/work/importFile.test.ts
+      - packages/client-runtime/src/kin/kinImport.test.ts
+      - apps/web/src/kin/KinImport.browser.test.tsx
+
   - id: deal-edit
     name: Edit a deal
     tab: clients
