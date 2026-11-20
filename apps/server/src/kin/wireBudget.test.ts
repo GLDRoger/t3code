@@ -2,20 +2,26 @@
 import { expect, layer as withLayer } from "@effect/vitest";
 import {
   KIN_REFRESH_TOPICS,
+  KinAgentId,
+  KinChatHistoryResult,
+  KinChatListEvent,
+  KinChatStreamEvent,
   KinMoneyAnswerRpcs,
   KIN_MONEY_PARTS,
   type KinMoneyPart,
-  type KinPersonId,
+  KinPersonId,
   KinFinanceRpcs,
   KinPulseRpcs,
   type KinPulseEvent,
   type KinPulseScreenRead,
   kinPulseApply,
   type KinWorkEvent,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -23,8 +29,24 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
-import type { PersonIdentity } from "./chat/KinIdentity.ts";
+import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
+import { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
+import * as Sqlite from "../persistence/Sqlite.ts";
+import * as ChatHub from "./chat/KinChatHub.ts";
+import * as ChatRepository from "./chat/KinChatRepository.ts";
+import * as ChatService from "./chat/KinChatService.ts";
+import * as Groups from "./chat/KinGroups.ts";
+import {
+  type AgentIdentity,
+  KinIdentity,
+  KinIdentityConfig,
+  type PersonIdentity,
+} from "./chat/KinIdentity.ts";
 import * as RefreshHub from "./chat/KinRefreshHub.ts";
+import { environment } from "./chat/TaskCard.testkit.ts";
+import * as KinEventQueue from "./lead/KinEventQueue.ts";
+import * as KinPersistence from "./persistence/KinPersistence.ts";
+import * as Presence from "./reply/KinPresence.ts";
 import { subscribeRefreshes } from "./chat/refreshes.ts";
 import * as KinPulse from "./pulse/KinPulse.ts";
 import * as Pulse from "./pulse/people.ts";
@@ -442,6 +464,10 @@ const moneyChange = Effect.fn("KinWireBudget.moneyChange")(function* () {
   return measured;
 });
 
+/** The pinned keys of one test: chat's are `chat.`, every other key is the hot reads'. */
+const pinned = (chat: boolean) =>
+  Object.fromEntries(Object.entries(budget).filter(([key]) => key.startsWith("chat.") === chat));
+
 withLayer(layer)("Kin wire budget", (it) => {
   it.effect("hot reads and one change's stream match kinWireBudget.json", () =>
     Effect.gen(function* () {
@@ -478,7 +504,189 @@ withLayer(layer)("Kin wire budget", (it) => {
       expect(
         measured,
         "Set kinWireBudget.json to the measured values. Growth shows in review as that file's diff; say why in the PR.",
-      ).toEqual(budget);
+      ).toEqual(pinned(false));
+    }),
+  );
+});
+
+// Chat on its own layer, without the records and pulse the reads above need.
+const chatLayer = Layer.mergeAll(Groups.layer, ChatService.layer, KinEventQueue.layer).pipe(
+  Layer.provideMerge(
+    KinIdentity.layer.pipe(
+      Layer.provide(
+        Layer.succeed(KinIdentityConfig, {
+          orgName: "Ambermill",
+          ownerHandle: "rhea",
+          ownerDisplayName: "Rhea",
+        }),
+      ),
+    ),
+  ),
+  Layer.provideMerge(Presence.layer),
+  Layer.provideMerge(ChatHub.layer),
+  Layer.provideMerge(ChatRepository.layer),
+  Layer.provideMerge(Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory)),
+  Layer.provideMerge(environment),
+);
+
+const LINES = [
+  "Morning all. The venue wants the final floor plan by Thursday; can we close it today?",
+  "Yes. The plan from Tuesday still has the old stage. I'll draft the change and send it over.",
+  "I spoke to the caterer: numbers are due Friday, and they hold the menu until then.",
+  "Noted. I've put Friday on the guest list task and moved the menu tasting to next week.",
+  "The pricing page copy is ready for a look. Two lines still need a number from Finance.",
+  "Finance says the early bird price stays at the same amount. I've added it to the draft.",
+];
+
+/**
+ * The team room as each kind of person reads it: the chat list's first item, one page of
+ * history, and what their open chat is sent for a task card and for one reaction.
+ */
+const chatBudget = Effect.fn("KinWireBudget.chat")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const repo = yield* ChatRepository.KinChatRepository;
+  const chats = yield* ChatService.KinChatService;
+  const groups = yield* Groups.KinGroups;
+  const identity = yield* KinIdentity;
+  const { owner } = identity;
+  const { orgId: chatOrg } = owner;
+  yield* TestClock.setTime(NOW);
+  const at = "2026-11-01T00:00:00.000Z";
+  const agentId = KinAgentId.make("chief");
+  const threadId = ThreadId.make("chief-thread");
+  yield* repo.insertAgent({
+    orgId: chatOrg,
+    agentId,
+    ownerPersonId: owner.personId,
+    displayName: "Chief of staff",
+    role: "lead",
+    createdAt: at,
+  });
+  yield* identity.registerAgentThread({ orgId: chatOrg, agentId, threadId });
+  const direct = yield* chats.createDirect(owner, { orgId: chatOrg, agentId });
+  yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json,
+      worker_projects_json, owner_chat_id)
+    VALUES (${agentId}, ${chatOrg}, 'Chief of staff', 0, '{}', '[]', ${direct.chatId})`;
+  const teammate = Effect.fn("KinWireBudget.teammate")(function* (
+    id: string,
+    name: string,
+    access: "co_owner" | "member",
+  ) {
+    const personId = KinPersonId.make(id);
+    yield* repo.insertPerson({
+      orgId: chatOrg,
+      personId,
+      handle: id,
+      displayName: name,
+      githubLogin: null,
+      access,
+      createdAt: at,
+    });
+    return { _tag: "person" as const, orgId: chatOrg, personId };
+  });
+  const meera = yield* teammate("meera", "Meera", "co_owner");
+  const zoya = yield* teammate("zoya", "Zoya", "member");
+  const room = yield* groups.create([owner], {
+    orgId: chatOrg,
+    title: "Ambermill launch",
+    agentIds: [agentId],
+    personIds: [meera.personId, zoya.personId],
+  });
+  const lead: AgentIdentity = {
+    _tag: "agent",
+    orgId: chatOrg,
+    agentId,
+    ownerPersonId: owner.personId,
+    threadId,
+    hostPosted: true,
+  };
+  const speakers = [owner, lead, meera, lead, zoya, lead] as const;
+  let last = 0;
+  for (let i = 0; i < 30; i++) {
+    const who = speakers[i % speakers.length]!;
+    const sent = yield* chats.send(who, {
+      chatId: room.chatId,
+      clientMessageId: `wire-budget-chat-${i}`,
+      body: LINES[i % LINES.length]!,
+      ...(who._tag === "agent" ? { intent: "answer" as const } : {}),
+    });
+    last = sent.seq;
+  }
+  const viewers = [
+    ["owner", owner],
+    ["coOwner", meera],
+    ["member", zoya],
+  ] as const;
+  const measured: Record<string, number> = {};
+  const watching = yield* Effect.forEach(viewers, ([name, viewer]) =>
+    Effect.gen(function* () {
+      const inbox = yield* Stream.runHead(chats.subscribeChats([viewer], {})).pipe(
+        Effect.map(Option.getOrThrow),
+      );
+      measured[`chat.${name}.inbox.bytes`] = wireBytes(KinChatListEvent, inbox);
+      const page = yield* chats.history(viewer, {
+        chatId: room.chatId,
+        beforeSeq: last + 1,
+        limit: 50,
+      });
+      measured[`chat.${name}.history.bytes`] = wireBytes(KinChatHistoryResult, page);
+      measured[`chat.${name}.history.rows`] = page.messages.length;
+      const events = yield* Queue.unbounded<KinChatStreamEvent>();
+      yield* chats.subscribe(viewer, { chatId: room.chatId }).pipe(
+        Stream.runForEach((event) => Queue.offer(events, event)),
+        Effect.forkScoped,
+      );
+      const first = yield* Queue.take(events);
+      if (first._tag !== "backlog") return yield* Effect.die(new Error(`${name}: no backlog`));
+      return { name, events };
+    }),
+  );
+  /** Each viewer's stream up to and including the event `done` names. */
+  const heard = Effect.fn("KinWireBudget.heard")(function* (
+    change: string,
+    done: (event: KinChatStreamEvent) => boolean,
+  ) {
+    for (const { name, events } of watching) {
+      const items: Array<KinChatStreamEvent> = [];
+      while (items.length === 0 || !done(items.at(-1)!)) items.push(yield* Queue.take(events));
+      measured[`chat.${name}.${change}.items`] = items.length;
+      measured[`chat.${name}.${change}.bytes`] = items.reduce(
+        (sum, item) => sum + wireBytes(KinChatStreamEvent, item),
+        0,
+      );
+    }
+  });
+  const card = yield* chats
+    .createTaskCard({
+      audience: "chat",
+      orgId: chatOrg,
+      chatId: room.chatId,
+      authorAgentId: agentId,
+      threadId: ThreadId.make("chief-task"),
+      title: "Invented: redraw the floor plan with the new stage",
+      model: "invented-model",
+    })
+    .pipe(
+      Effect.provide(
+        Layer.mock(OrchestratorV2)({ getThreadShell: (id) => Effect.succeed(liveThreadShell(id)) }),
+      ),
+    );
+  yield* heard("messageWithCard", (event) =>
+    event._tag === "widget" ? event.widget.widgetId === card.widgetId : false,
+  );
+  yield* chats.react(owner, { messageId: card.messageId, emoji: "👍", on: true });
+  yield* heard("reaction", (event) => event._tag === "reaction");
+  return measured;
+});
+
+withLayer(chatLayer)("Kin chat wire budget", (it) => {
+  it.effect("the team room's list, history, card and reaction match kinWireBudget.json", () =>
+    Effect.gen(function* () {
+      const measured = yield* Effect.scoped(chatBudget());
+      expect(
+        measured,
+        "Set kinWireBudget.json's chat keys to the measured values; say why in the PR.",
+      ).toEqual(pinned(true));
     }),
   );
 });
