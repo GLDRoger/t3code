@@ -93,7 +93,8 @@ export const KIN_AGENT_PAGE = {
     `${name} is paused. Messages to it wait until you resume it; nothing else wakes it.`,
   pauseDetail: "Pausing lets a reply under way finish. Messages wait until you resume it.",
   teamAgent: "Team agent",
-  teamAgentDetail: "Everyone on the team can message it, and it answers in the company chat.",
+  teamAgentDetail:
+    "Everyone on the team can message it, except anyone you restrict, and it answers in the company chat.",
   writeForMe: "Write one for me",
   writeForMeDetail: "After you create it, the Chief of staff drafts its character with you.",
   characterField: "Character",
