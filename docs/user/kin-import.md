@@ -58,7 +58,7 @@ When the plan reads right, apply it:
 t3 kin import --file ./oldbooks.jsonl --apply
 ```
 
-Running it again is safe. Rows imported before are skipped, and anything you or a lead changed in
+Running it again is safe. Rows imported before are skipped, and anything you or an agent changed in
 Kin since is left alone and listed. If an import stops part way, run it again to finish it. A file
 takes up to 200,000 rows; for more, split it into files with the same `batch` and import them in
 order. Open Kin screens show the imported records after a refresh.
@@ -83,6 +83,6 @@ when nothing came after them, so a corrected file applied again gets the keys th
 ## What an import doesn't do
 
 - It brings no files. Put links to where your documents live in a text field instead.
-- It sends nothing: no notifications, reminders or messages, and no lead is woken, however old or
+- It sends nothing: no notifications, reminders or messages, and no agent is woken, however old or
   overdue the entries are.
 - It doesn't fill your company profile or bank details. Set those in Kin yourself.
