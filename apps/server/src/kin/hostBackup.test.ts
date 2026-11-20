@@ -106,18 +106,32 @@ it.effect("tells the owner once a day while the backup is old, and nothing once 
       (yield* ServerConfig.ServerConfig).stateDir,
       HostBackup.BACKUP_STATUS_FILE,
     );
+    // No backup ever set up: once a week.
     yield* HostBackup.check();
     yield* HostBackup.check();
-    assert.lengthOf(yield* notices, 1);
     yield* TestClock.adjust(24 * HOUR);
     yield* HostBackup.check();
+    assert.lengthOf(yield* notices, 1);
+    yield* TestClock.adjust(6 * 24 * HOUR);
+    yield* HostBackup.check();
     assert.lengthOf(yield* notices, 2);
-    yield* fs.writeFileString(file, status({ ok: true, lastGoodAt: NOW + 24 * HOUR }));
+    // One that worked and has gone old: once a day.
+    const old = status({ ok: false, lastGoodAt: NOW, error: "the volume is not mounted." });
+    yield* fs.writeFileString(file, old);
+    yield* HostBackup.check();
+    yield* HostBackup.check();
+    assert.lengthOf(yield* notices, 3);
+    yield* TestClock.adjust(24 * HOUR);
+    yield* HostBackup.check();
+    assert.lengthOf(yield* notices, 4);
+    yield* fs.writeFileString(file, status({ ok: true, lastGoodAt: NOW + 8 * 24 * HOUR }));
     yield* TestClock.adjust(24 * HOUR);
     yield* HostBackup.check();
     assert.deepStrictEqual(yield* notices, [
       HostBackup.backupProblem(undefined, NOW),
       HostBackup.backupProblem(undefined, NOW),
+      HostBackup.backupProblem(old, NOW + 7 * 24 * HOUR),
+      HostBackup.backupProblem(old, NOW + 8 * 24 * HOUR),
     ]);
   }).pipe(Effect.provide(services)),
 );

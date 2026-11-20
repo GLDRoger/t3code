@@ -20,6 +20,7 @@ export const BACKUP_STATUS_FILE = "kin-backup-status.json";
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
+const WEEK = 7 * DAY;
 const STALE_AFTER = 36 * HOUR;
 const CHECK_EVERY = HOUR;
 
@@ -35,9 +36,14 @@ const decodeStatus = Schema.decodeUnknownOption(BackupStatus);
 const ago = (ms: number) =>
   ms < 2 * DAY ? `${Math.floor(ms / HOUR)} hours ago` : `${Math.floor(ms / DAY)} days ago`;
 
+const statusOf = (statusFile: string | undefined) =>
+  statusFile === undefined ? Option.none() : decodeStatus(statusFile);
+const neverGood = (status: ReturnType<typeof statusOf>) =>
+  Option.isNone(status) || status.value.lastGoodAt === null;
+
 /** What the owner is told about this server's backups, or nothing while the last good one is recent. */
 export const backupProblem = (statusFile: string | undefined, now: number) => {
-  const status = statusFile === undefined ? Option.none() : decodeStatus(statusFile);
+  const status = statusOf(statusFile);
   if (Option.isNone(status) || status.value.lastGoodAt === null) {
     const failed = Option.isSome(status) && status.value.error !== "";
     return `This server has no good backup on record${failed ? `: the last try failed: ${status.value.error}` : "."} Set up or fix the nightly backup (ops/kin/host/README.md, Backups) so a failed disk can't lose the company's data.`;
@@ -49,7 +55,10 @@ export const backupProblem = (statusFile: string | undefined, now: number) => {
   }`;
 };
 
-/** Tells each company's owner, at most once a UTC day, when this host's backup is missing or old. */
+/**
+ * Tells each company's owner when this host's backup is old or failing, at most once a UTC day,
+ * and when none ever worked, at most once a week.
+ */
 export const check = Effect.fn("KinHostBackup.check")(function* () {
   const sql = yield* SqlClient.SqlClient;
   const chat = yield* Chat.KinChatService;
@@ -62,6 +71,9 @@ export const check = Effect.fn("KinHostBackup.check")(function* () {
     .pipe(Effect.option, Effect.map(Option.getOrUndefined));
   const problem = backupProblem(file, now);
   if (problem === undefined) return;
+  const period = neverGood(statusOf(file))
+    ? `week:${Math.floor(now / WEEK)}`
+    : Math.floor(now / DAY);
   // The host's backup covers every company it serves.
   const orgs = yield* sql<{
     orgId: string;
@@ -72,11 +84,11 @@ export const check = Effect.fn("KinHostBackup.check")(function* () {
       NodeSqliteClient.readOnly,
     );
     if (lead === undefined) continue;
-    // A notice with this id already posted makes the call a no-op: one a day at most.
+    // A notice with this id already posted makes the call a no-op: one a period at most.
     yield* chat.notice({
       orgId: org,
       chatId: lead.ownerChatId,
-      messageId: KinMessageId.make(`kin-host:backup:${orgId}:${Math.floor(now / DAY)}`),
+      messageId: KinMessageId.make(`kin-host:backup:${orgId}:${period}`),
       audience: "owner",
       body: problem,
     });

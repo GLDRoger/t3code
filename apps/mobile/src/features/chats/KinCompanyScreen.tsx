@@ -337,7 +337,9 @@ function CompanyTimeZone(props: KinWorkTarget) {
         icon="clock"
         label={kinZoneLabel(zone.timeZone)}
         description={
-          zone.fromHost === true ? KIN_COMPANY.timeZoneFromHost : KIN_COMPANY.timeZoneUse
+          zone.fromHost === true
+            ? KIN_COMPANY.timeZoneFromHost
+            : `${KIN_COMPANY.timeZoneUse} ${KIN_COMPANY.timeZoneFollows}`
         }
       />
     </ListSection>

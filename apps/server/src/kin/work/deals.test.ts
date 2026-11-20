@@ -824,6 +824,7 @@ it.effect(
       // With no step it shows as having none at once; a step added later is its next.
       const bare = yield* Deals.create([zoya], newDeal(corran, "Invented training"));
       assert.isNull(bare.deal.next);
+      assert.isUndefined(bare.deal.nextHidden);
       const stepped = yield* Deals.step([zoya], {
         orgId,
         key: bare.deal.key,
@@ -862,6 +863,30 @@ it.effect(
       const [held] = yield* sql<{ ownerId: string }>`SELECT owner_id AS "ownerId" FROM kin_records
         WHERE register_id = 'work' AND title = 'Invented: send the rollout plan'`;
       assert.strictEqual(held?.ownerId, zoyaId);
+      // The owner's deal whose only step is the owner's: Zoya learns it has one she isn't shown,
+      // and nothing of the step itself; the owner reads it as ever.
+      const signage = yield* Deals.create(
+        [owner],
+        newDeal(corran, "Invented signage", {
+          next: { title: "Invented: send the drawings", dueAt: "2026-11-24", dueAllDay: true },
+        }),
+      );
+      const zoyas = yield* Deals.page([zoya], { orgId, key: signage.deal.key });
+      assert.isNull(zoyas.deal.next);
+      assert.isTrue(zoyas.deal.nextHidden);
+      assert.deepStrictEqual(zoyas.steps, []);
+      const [step] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+        WHERE register_id = 'work' AND title = 'Invented: send the drawings'`;
+      const sent = JSON.stringify(zoyas);
+      for (const hidden of ["Invented: send the drawings", step!.key, "2026-11-24"])
+        assert.notInclude(sent, hidden);
+      const ownersView = yield* Deals.page([owner], { orgId, key: signage.deal.key });
+      assert.strictEqual(ownersView.deal.next?.title, "Invented: send the drawings");
+      assert.isUndefined(ownersView.deal.nextHidden);
+      // Where she sees a step of her own, that is its next step and nothing is said hidden.
+      assert.isUndefined(
+        (yield* Deals.page([zoya], { orgId, key: bare.deal.key })).deal.nextHidden,
+      );
     }).pipe(Effect.provide(layer)),
 );
 

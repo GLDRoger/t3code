@@ -468,7 +468,7 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
           {deal.state === "open" && next !== null ? (
             <>
               <dt className="text-muted-foreground">{KIN_DEALS.nextStep}</dt>
-              <dd>{deal.next?.title ?? KIN_DEALS.noNextStep}</dd>
+              <dd>{deal.next?.title ?? next.text}</dd>
             </>
           ) : null}
           {deal.source === undefined ? null : (
