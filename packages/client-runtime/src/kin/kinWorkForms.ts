@@ -421,11 +421,11 @@ export const kinContactDraftCheck = (
     tooLong(draft.name, NAME_MAX, "the name") ??
     tooLong(draft.role, SHORT_MAX, "the role") ??
     draft.emails.reduce<string | null>(
-      (problem, one) => problem ?? tooLong(one, SHORT_MAX, "each email"),
+      (problem, one) => problem ?? tooLong(one, SHORT_MAX, "the email"),
       null,
     ) ??
     draft.phones.reduce<string | null>(
-      (problem, one) => problem ?? tooLong(one, SHORT_MAX, "each phone number"),
+      (problem, one) => problem ?? tooLong(one, SHORT_MAX, "the phone number"),
       null,
     ) ??
     tooLong(draft.notes, NOTES_MAX, "the notes")

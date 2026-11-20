@@ -604,6 +604,28 @@ export const memberAddsContact = Effect.fn("KinWork.crm.memberAddsContact")(func
     return yield* MEMBER_FIELDS;
   return party;
 });
+/**
+ * A contact a member changes, on their own screen or through their agent: one they see, on a
+ * client they look after; never its label or its client.
+ */
+export const memberChangesContact = Effect.fn("KinWork.crm.memberChangesContact")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  key: string,
+  input: { readonly ownersFields: boolean },
+) {
+  if (!(yield* switchedOn(orgId, viewerOfPeople([personId])))) return yield* ownerOnly;
+  const contact = yield* inList(orgId, key, "contacts").pipe(
+    Effect.mapError(() => notFound(key)),
+  );
+  // A contact labelled itself or through its client is one they never saw.
+  const seen = yield* read(crmVisible(orgId, personId, [contact.recordId]));
+  if (contact.partyId === null || !seen.has(contact.recordId)) return yield* notFound(key);
+  yield* memberParty(personId, orgId, { recordId: contact.partyId }, true).pipe(
+    Effect.mapError((error) => (error.reason === "not_found" ? notFound(key) : error)),
+  );
+  if (input.ownersFields) return yield* MEMBER_FIELDS;
+});
 
 /** With `contact`, the client and its first contact are saved in one transaction, or neither. */
 export const createParty = Effect.fn("KinWork.createParty")(function* (
@@ -808,19 +830,9 @@ export const updateContact = Effect.fn("KinWork.updateContact")(function* (
   const row = yield* asViewer(
     viewer,
     Effect.gen(function* () {
-      if (!(yield* switchedOn(input.orgId, viewerOfPeople([person.personId]))))
-        return yield* ownerOnly;
-      const contact = yield* inList(input.orgId, input.key, "contacts").pipe(
-        Effect.mapError(() => notFound(input.key)),
-      );
-      // A contact labelled itself or through its client is one they never saw.
-      const seen = yield* read(crmVisible(input.orgId, person.personId, [contact.recordId]));
-      if (contact.partyId === null || !seen.has(contact.recordId))
-        return yield* notFound(input.key);
-      yield* memberParty(person.personId, input.orgId, { recordId: contact.partyId }, true).pipe(
-        Effect.mapError((error) => (error.reason === "not_found" ? notFound(input.key) : error)),
-      );
-      if (input.sensitive !== undefined || input.party !== undefined) return yield* MEMBER_FIELDS;
+      yield* memberChangesContact(input.orgId, person.personId, input.key, {
+        ownersFields: input.sensitive !== undefined || input.party !== undefined,
+      });
       return yield* write;
     }),
   );

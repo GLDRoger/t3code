@@ -107,7 +107,7 @@ import {
   sensitiveShown,
   showsSensitive,
 } from "./sensitiveReads.ts";
-import { memberAdds, memberAddsContact } from "./ownerClients.ts";
+import { memberAdds, memberAddsContact, memberChangesContact } from "./ownerClients.ts";
 import {
   crmVisible,
   KIN_OWNER_LEVEL,
@@ -1191,6 +1191,20 @@ export const viewOf = Effect.fn("KinWorkTools.viewOf")(function* (lead: Lead) {
 });
 type View = NonNullable<Effect.Success<ReturnType<typeof viewOf>>>;
 
+/** What a teammate's own Edit contact changes, and the call's own bookkeeping. */
+const CONTACT_CHANGES: ReadonlySet<string> = new Set([
+  "sourceEventId",
+  "expectedRev",
+  "title",
+  "notes",
+  "state",
+  "role",
+  "email",
+  "phone",
+  "emails",
+  "phones",
+]);
+
 /** What only the owner sets in Work: clients, projects, money, list fields, labels, holders. */
 const OWNERS_INPUTS = [
   ...OWNERS_SPINE,
@@ -1253,6 +1267,9 @@ export const viewWriter = (writer: Writer, view: View): Writer => ({
   askedBy: view.askers.length === 1 ? view.askers[0]! : null,
   view: { people: view.people, askers: view.askers },
 });
+
+/** The same writer without its turn's view guard, for a write a member's own rule decided. */
+const unguardedOf = ({ view: _view, ...writer }: Writer): Writer => writer;
 
 /** A row read whole in a shared turn (`viewReadsWhole`). */
 const viewWhole = Effect.fn("KinWorkTools.viewWhole")(function* (
@@ -2374,7 +2391,9 @@ const runUpdate = Effect.fnUntraced(function* (
   input: Change & { readonly key: string },
 ) {
   const { key, ...change } = input;
-  const { result, notices, held } = yield* updateCore(lead, key, change);
+  const sql = yield* SqlClient.SqlClient;
+  // Who may change it is decided in the write's own transaction.
+  const { result, notices, held } = yield* sql.withTransaction(updateCore(lead, key, change));
   return { ...(yield* tell(lead, notices, held)), ...result };
 });
 /** The same change to several entries, all or none. */
@@ -2410,6 +2429,19 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
   if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, before.recordId)))
     return yield* notFound(key);
   if (listOf(before.registerId) === "docs") return yield* isDoc(key);
+  // For a teammate alone in the turn, a contact changes as their own Edit contact changes it.
+  const [only, ...others] = team?.people ?? [];
+  const contactFor =
+    listOf(before.registerId) === "contacts" && others.length === 0 ? only : undefined;
+  if (contactFor !== undefined)
+    yield* memberChangesContact(lead.orgId, contactFor, key, {
+      ownersFields:
+        Object.entries(input).some(
+          ([field, value]) => value !== undefined && !CONTACT_CHANGES.has(field),
+        ) ||
+        input.state === "done" ||
+        input.sensitive !== undefined,
+    });
   yield* explainedHonestly(lead, before, input.state, input.kind ?? input.category);
   const def = yield* listFor(lead, before.registerId);
   const patch: Patch = {
@@ -2470,7 +2502,16 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     ...spine.at,
   };
   const seenBefore = yield* teamPairs(lead.orgId, [before.recordId]);
-  const after = yield* records.update(lead.orgId, writer, key, written, input.expectedRev);
+  // `memberChangesContact` decided it, as their form's own write.
+  const after = yield* records.update(
+    lead.orgId,
+    contactFor === undefined || team === undefined
+      ? writer
+      : { ...unguardedOf(viewWriter(owned, team)), namesSeenBy: contactFor },
+    key,
+    written,
+    input.expectedRev,
+  );
   const seenAfter = new Set(
     (yield* teamPairs(lead.orgId, [after.recordId])).map((p) => p.personId),
   );

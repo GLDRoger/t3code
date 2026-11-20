@@ -38,7 +38,7 @@ export const contactFields = (
   stored: FieldValues,
   given: Readonly<Record<string, FieldValue | null>>,
 ): Readonly<Record<string, FieldValue | null>> | KinChatError => {
-  let out: Record<string, FieldValue | null> = { ...given };
+  const out: Record<string, FieldValue | null> = { ...given };
   for (const kind of KINDS) {
     const list = given[kind.all];
     const one = given[kind.one];
@@ -59,7 +59,8 @@ export const contactFields = (
         reason: "invalid_state",
         message: `A contact has at most ${KIN_CONTACT_DETAILS_MAX} ${kind.noun}.`,
       });
-    out = { ...out, [kind.one]: all[0] ?? null, [kind.all]: all.length > 1 ? all : null };
+    out[kind.one] = all[0] ?? null;
+    out[kind.all] = all.length > 1 ? all : null;
   }
   return out;
 };

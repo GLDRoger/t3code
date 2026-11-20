@@ -2607,6 +2607,50 @@ it.effect(
         emails: ["ingrid@tallmoor.invalid", "ingrid.home@tallmoor.invalid"],
         phones: ["+00 1234 5678", "+00 1234 5679"],
       });
+      // Her agent changes them as her Edit contact does: the main one off makes the next main.
+      const changed = yield* LeadWork.update(scope, {
+        key: ingridRow!.key,
+        sourceEventId: "mate-event",
+        emails: ["ingrid.home@tallmoor.invalid"],
+        phones: ["+00 1234 5678", "+00 1234 5679", "+00 1234 5670"],
+      });
+      assert.includeMembers([...changed.changed], ["email", "emails", "phones"]);
+      assert.deepInclude(
+        (yield* Clients.party([mate], { orgId, key: prospect!.key })).contacts[0],
+        {
+          email: "ingrid.home@tallmoor.invalid",
+          emails: ["ingrid.home@tallmoor.invalid"],
+          phones: ["+00 1234 5678", "+00 1234 5679", "+00 1234 5670"],
+        },
+      );
+      // Not its client or label, and not a contact on a client someone else looks after.
+      const acme = (yield* Clients.parties([owner], { orgId })).parties.find(
+        (one) => one.name === "Invented Acme",
+      );
+      const odd = yield* Clients.createContact([owner], {
+        orgId,
+        party: acme!.key,
+        name: "Invented Oddny",
+        phone: "+00 2",
+        clientRequestId: "odd",
+      });
+      for (const [key, change, message] of [
+        [ingridRow!.key, { client: "Invented Acme" }, "Only the owner or a co-owner sets"],
+        [ingridRow!.key, { sensitive: true as const }, "Only the owner or a co-owner sets"],
+        [odd.key, { phones: ["+00 2", "+00 3"] }, "Only whoever looks after"],
+      ] as const)
+        assert.include(
+          (yield* LeadWork.update(scope, { key, sourceEventId: "mate-event", ...change }).pipe(
+            Effect.flip,
+          )).message,
+          message,
+        );
+      assert.deepStrictEqual(
+        (yield* Clients.party([owner], { orgId, key: acme!.key })).contacts.find(
+          (one) => one.key === odd.key,
+        )?.phones,
+        ["+00 2"],
+      );
       // Not on a client someone else looks after, and never Keep private, as on their form.
       assert.include(
         (yield* refused([
