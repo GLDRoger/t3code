@@ -12,6 +12,7 @@ import {
   countedEntry,
   countedPayment,
   moneyDay,
+  keptEntry,
   overdueFor,
   owedInvoices,
   ownerZone,
@@ -235,6 +236,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id IN ('work', 'milestones', 'invoices', 'projects')
       AND r.state IN ${sql.in(OPEN)} AND r.due_at >= ${now} AND r.due_at < ${now + WEEK_MS}
+      AND (r.register_id <> 'invoices' OR ${keptEntry(sql)})
     ORDER BY r.due_at, r.key
     LIMIT ${CAP}`;
 

@@ -12,7 +12,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
 import { type playbookThreshold, playbookThresholds } from "./playbooks.ts";
-import { iso, issuedNumber } from "./recordRows.ts";
+import { iso, issuedNumber, keptEntry } from "./recordRows.ts";
 import { crmSeenBy, KIN_OWNER_LEVEL, type KinViewer } from "./teamView.ts";
 
 /**
@@ -89,7 +89,8 @@ const touchUnion = (
       json_extract(r.fields_json, '$.number'), ${issued}
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND ${of(sql`r.party_id`)} AND (
-      (r.register_id IN ('invoices', 'quotes') AND r.state IN ('waiting', 'done'))
+      (r.register_id IN ('invoices', 'quotes') AND r.state IN ('waiting', 'done')
+        AND ${keptEntry(sql)})
       OR (r.category = 'meeting' AND r.state != 'dropped' AND r.date_at IS NOT NULL))
       AND ${seen}
     UNION ALL
@@ -99,7 +100,7 @@ const touchUnion = (
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND p.withheld = 0
-      AND ${of(sql`r.party_id`)} AND ${seen}
+      AND ${keptEntry(sql)} AND ${of(sql`r.party_id`)} AND ${seen}
   ) WHERE at <= ${now}`;
 };
 

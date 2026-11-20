@@ -49,6 +49,7 @@ import {
   KinOutlookSection,
   KinQuotesSection,
 } from "./KinMoneyAnswers";
+import { KinMoneySuggested } from "./KinMoneySuggested";
 import { KinSubscriptionsSection } from "./KinSubscriptions";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
@@ -602,6 +603,16 @@ export function KinMoneyArea(props: Shared) {
           )}
         </ListSection>
       </View>
+      {view.suggested.length === 0 ? null : (
+        <KinMoneySuggested
+          {...target}
+          rows={view.suggested}
+          more={view.suggestedMore}
+          onOpenKey={(key) => navigation.navigate("KinWorkItem", { ...target, task: key })}
+          onOpenList={openList}
+          onChanged={money.refresh}
+        />
+      )}
       <KinOutlookSection {...target} seq={seq} rates={rates} />
       <KinCashSection {...target} seq={seq} rates={rates} />
       <View className="gap-2">

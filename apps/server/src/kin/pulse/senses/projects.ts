@@ -4,7 +4,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { fieldList, parseFields } from "../../work/lists.ts";
 import { milestoneRisk, principalOfText, specChangesOf } from "../../work/projectSpine.ts";
 import { KIN_OWNER_LEVEL } from "../../work/teamView.ts";
-import { countedEntry, daysOverdue, type RecordRow, selectRecords } from "../../work/recordRows.ts";
+import { daysOverdue, type RecordRow, selectRecords } from "../../work/recordRows.ts";
 import { DAY_MS, HOUR_MS, thresholds, toMs } from "../thresholds.ts";
 import {
   agentOrOwner,
@@ -184,7 +184,7 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
       ${projectLastMoved(sql)} AS "lastAt"
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'projects' AND r.state = 'open'
-      AND ${countedEntry(sql)} AND EXISTS (SELECT 1 FROM kin_records t WHERE t.org_id = r.org_id
+      AND EXISTS (SELECT 1 FROM kin_records t WHERE t.org_id = r.org_id
         AND t.project_id = r.record_id AND t.register_id IN ('milestones', 'work')
         AND t.state IN ${sql.in(OPEN)}))
     WHERE "lastAt" >= 0 AND "lastAt" <= ${at - DAY_MS}

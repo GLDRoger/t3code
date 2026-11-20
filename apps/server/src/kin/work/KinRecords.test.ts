@@ -799,7 +799,7 @@ const keptForPerson = [
     }),
   ),
   row(
-    "a confirmed send marking a quote Sent is Kin's, not a person's; their own later change is",
+    "a confirmed send marking a quote Sent, and keeping an agent's suggestion, is Kin's, not a person's; their own later change is",
     Effect.gen(function* () {
       const scene = yield* asked();
       yield* scene.sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
@@ -810,6 +810,8 @@ const keptForPerson = [
         originKey: "quote",
         title: "Invented Acme design work",
         owner: { _tag: "person", personId: ownerId },
+        amount: { minor: 300_000_00, currency: "INR" },
+        confirmed: false,
       });
       const ask = yield* scene.say("Mail QT-1 to Invented Acme and mark it accepted once sent");
       yield* scene.wake();
@@ -818,10 +820,25 @@ const keptForPerson = [
         orgId,
         personId: ownerId,
         wakeupId: "wake-1",
-        entryRecordIds: [quote.recordId],
+        attachments: [
+          {
+            key: "DOC-1",
+            recordId: "rec-doc",
+            version: 1,
+            attachmentId: "att-1",
+            sha256: "0",
+            name: "QT-1.pdf",
+            mimeType: "application/pdf",
+            bytes: 1,
+            label: null,
+            entryRecordId: quote.recordId,
+            entryRev: quote.rev,
+          },
+        ],
       });
       const state = Effect.map(scene.records.get(orgId, "QT-1"), (row) => row!.state);
       assert.strictEqual(yield* state, "waiting");
+      assert.strictEqual((yield* scene.records.get(orgId, "QT-1"))!.confirmed, 1);
       const accept = Effect.suspend(() =>
         LeadWork.update(scopeOf(lead), { key: "QT-1", sourceEventId: ask, state: "done" }),
       );

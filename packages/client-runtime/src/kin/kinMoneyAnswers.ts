@@ -24,6 +24,7 @@ import {
   kinMoneyText,
   kinParseMoney,
   kinRecordName,
+  kinSuggestionText,
   kinTotalsLines,
 } from "./kinLists.ts";
 import { kinWorkDueLabel, type KinWorkRef } from "./kinWork.ts";
@@ -553,7 +554,7 @@ export function kinQuoteRow(record: KinRecord, rates: KinRates | null, now: Date
     estimate:
       record.amount === undefined ? null : (kinEstimate(record.amount, rates)?.text ?? null),
     state,
-    stateLabel: KIN_QUOTES.states[state],
+    stateLabel: kinSuggestionText(record, KIN_QUOTES.states[state]),
     when:
       until === null
         ? null
