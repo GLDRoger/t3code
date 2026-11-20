@@ -459,7 +459,21 @@ export function KinChatView(props: {
           teamRoomId={teamRoomId}
           ownsLead={ownedAgentId !== null}
           about={contact === null || contact.intro.trim() === "" ? null : contact.intro}
-          readOnly={readOnly}
+          readOnly={
+            !readOnly
+              ? null
+              : kinChatReadOnlyLine(
+                  pairWith === null
+                    ? {
+                        kind: "agent",
+                        name:
+                          summary === undefined
+                            ? null
+                            : kinDirectAgentName(summary, viewer.agentNames),
+                      }
+                    : { kind: "person", name: pairProfile?.displayName ?? null },
+                )
+          }
           retired={retiredName === null ? null : { name: retiredName, restorable }}
           groupNotice={
             silentAnswerer === null ? null : kinRetiredGroupLine(silentAnswerer, canRestore)
@@ -636,8 +650,8 @@ function KinChatFeed(props: {
   readonly ownsLead: boolean;
   /** What the owner of someone else's lead wrote for the people it talks to. */
   readonly about: string | null;
-  /** The viewer reads this chat and can no longer write in it. */
-  readonly readOnly: boolean;
+  /** The viewer reads this chat and can no longer write in it: the line saying so. */
+  readonly readOnly: string | null;
   /** This direct chat's agent is retired: its history stays, with Restore where the owner may. */
   readonly retired: { readonly name: string; readonly restorable: KinAgentTarget | null } | null;
   /** Said over the composer of a group whose answering agent is retired. */
@@ -1230,9 +1244,9 @@ function KinChatFeed(props: {
               <KinRestoreAgent agent={props.retired.restorable} />
             )}
           </div>
-        ) : props.readOnly ? (
+        ) : props.readOnly !== null ? (
           <p role="status" className="py-3 text-center text-sm text-muted-foreground">
-            {kinChatReadOnlyLine(props.agentName)}
+            {props.readOnly}
           </p>
         ) : (
           <KinComposer

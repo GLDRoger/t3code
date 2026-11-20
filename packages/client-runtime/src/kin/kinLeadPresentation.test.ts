@@ -3,6 +3,7 @@ import { KinAgentId, KinPersonId, ProviderInstanceId } from "@t3tools/contracts"
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  kinChatReadOnlyLine,
   kinDomainLabel,
   kinDomainSlug,
   kinLeadChanges,
@@ -205,5 +206,22 @@ describe("kinWorkingAgents", () => {
 
   it("knows nobody is working before the chat list has loaded", () => {
     expect(kinWorkingAgents(null).size).toBe(0);
+  });
+});
+
+describe("kinChatReadOnlyLine", () => {
+  it("names the agent, or the person in a chat between two people", () => {
+    expect(kinChatReadOnlyLine({ kind: "agent", name: "Finance" })).toBe(
+      "You can read this chat, but you can no longer message Finance.",
+    );
+    expect(kinChatReadOnlyLine({ kind: "agent", name: null })).toBe(
+      "You can read this chat, but you can no longer message this agent.",
+    );
+    expect(kinChatReadOnlyLine({ kind: "person", name: "Zoya Sheikh" })).toBe(
+      "You can read this chat, but you and Zoya Sheikh can no longer message each other.",
+    );
+    expect(kinChatReadOnlyLine({ kind: "person", name: null })).toBe(
+      "You can read this chat, but you two can no longer message each other.",
+    );
   });
 });
