@@ -59,6 +59,25 @@ describe("check:changed", () => {
     );
   });
 
+  it("covers, for each Kin model, exactly the files its README's Covers names, and each exists", () => {
+    const root = NodePath.resolve(import.meta.dirname, "..");
+    for (const [name, covers] of Object.entries(MODEL_COVERS)) {
+      const readme = NodeFS.readFileSync(
+        NodePath.join(root, "verification/kin", name, "README.md"),
+        "utf8",
+      );
+      const block = readme.slice(readme.indexOf("**Covers**")).split(/\n\n(?!- )/)[0]!;
+      const named = [...block.matchAll(/`((?:apps|packages)\/[^`]+)`/g)].flatMap(([, path]) => {
+        const braces = /^(.*)\{([^}]*)\}(.*)$/.exec(path!);
+        return braces === null
+          ? [path!]
+          : braces[2]!.split(",").map((one) => `${braces[1]}${one}${braces[3]}`);
+      });
+      assert.deepStrictEqual([...covers].toSorted(), [...new Set(named)].toSorted(), name);
+      for (const file of covers) assert.isTrue(NodeFS.existsSync(NodePath.join(root, file)), file);
+    }
+  });
+
   it("runs the server tests for the one guide they read and leaves other docs inert", () => {
     const packages = readWorkspace();
     assert.isTrue(
