@@ -2732,3 +2732,66 @@ it.effect(
       assert.strictEqual((yield* Deals.page([owner], { orgId, key })).deal.stage, "deciding");
     }).pipe(Effect.provide(layer)),
 );
+
+it.effect(
+  "an agent reads a deal as its page shows whoever the turn is for: its next step, or that it has none",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* setup("ask-event");
+      const prospect = yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Brightwater",
+        prospect: true,
+        clientRequestId: "brightwater",
+      });
+      // The owner's own follow-up from the deal, not shared with the team.
+      const stepped = yield* Deals.create([owner], {
+        orgId,
+        party: prospect.key,
+        title: "Invented scheduling pilot",
+        clientRequestId: "pilot",
+        stage: "proposal",
+        value: { minor: 2_000_000, currency: "EUR" },
+        expectedOn: "2026-12-15",
+        next: { title: "Invented: call Ingrid", dueAt: "2026-11-24", dueAllDay: true },
+      });
+      const bare = yield* Deals.create([owner], {
+        orgId,
+        party: prospect.key,
+        title: "Invented renewal",
+        clientRequestId: "renewal",
+      });
+      const deals = LeadWork.query(scope, { list: "deals" });
+      const of = (result: Effect.Success<typeof deals>, key: string) =>
+        result.records.find((row) => row.key === key)?.deal;
+      // The owner's own turn: her unshared follow-up is her deal's next step, as on her page.
+      const hers = yield* deals;
+      const pilot = {
+        stage: "Proposal",
+        value: "€20,000.00",
+        expected: "2026-12-15",
+        lookedAfterBy: "owner",
+        next: { key: stepped.deal.next!.key, title: "Invented: call Ingrid", due: "2026-11-24" },
+      };
+      assert.deepStrictEqual(of(hers, stepped.deal.key), pilot);
+      assert.deepInclude(of(hers, bare.deal.key), { stage: "New", next: null });
+      assert.deepStrictEqual(
+        (yield* LeadWork.get(scope, { key: KinRecordKey.make(stepped.deal.key) })).deal,
+        pilot,
+      );
+      // A teammate's turn: the owner's unshared step is not theirs, so the deal has none for
+      // them, and nothing in the read names it.
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${mateId}`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('lead-chat-mate', ${orgId}, 'lead-chat', 'person', ${mateId}, 'member', ${at})`;
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
+      const theirs = yield* deals;
+      assert.deepInclude(of(theirs, stepped.deal.key), { stage: "Proposal", next: null });
+      const got = yield* LeadWork.get(scope, { key: KinRecordKey.make(stepped.deal.key) });
+      assert.deepInclude(got.deal, { next: null });
+      assert.notInclude(JSON.stringify([theirs, got]), "call Ingrid");
+      assert.notInclude(JSON.stringify([theirs, got]), stepped.deal.next!.key);
+    }).pipe(Effect.provide(layer)),
+);

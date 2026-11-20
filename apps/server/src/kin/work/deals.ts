@@ -668,6 +668,30 @@ const dealsOut = Effect.fn("KinDeals.out")(function* (
   return rows.map((row) => dealOf(row, viewer, steps.get(row.recordId), quotes.get(row.recordId)));
 });
 
+/**
+ * These rows' deals as their pages show this viewer, by key, each with its stage's name: what an
+ * agent reads of a deal, by the screen's own function and reader.
+ */
+export const asShown = Effect.fn("KinDeals.asShown")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+  rows: ReadonlyArray<RecordRow>,
+) {
+  const deals = rows.filter((row) => row.registerId === "deals");
+  if (deals.length === 0) return new Map<string, KinDealRow & { readonly stageName: string }>();
+  const { stages } = yield* stagesOf(orgId).pipe(workFailure);
+  const shown = yield* dealsOut(orgId, viewer, deals).pipe(workFailure);
+  return new Map(
+    shown.map((deal) => [
+      deal.key,
+      {
+        ...deal,
+        stageName: stages.find((stage) => stage.id === deal.stage)?.name ?? deal.stage ?? "",
+      },
+    ]),
+  );
+});
+
 /** A reader: the owner level, or a member with the Clients switch on. */
 const dealReader = Effect.fn("KinDeals.reader")(function* (
   people: ReadonlyArray<PersonIdentity>,

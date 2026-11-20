@@ -215,6 +215,28 @@ const Marks = Schema.Struct({
   sensitive: Schema.optional(Schema.Literal(true)),
   sensitiveFields: Schema.optional(Schema.Array(Schema.String)),
 });
+/** A deal as its page shows the turn's people (`Deals.asShown`). */
+const DealShown = Schema.Struct({
+  stage: Schema.String,
+  value: Schema.optional(Schema.String),
+  expected: Schema.optional(Schema.String),
+  lookedAfterBy: Schema.String,
+  next: Schema.NullOr(
+    Schema.Struct({
+      key: Schema.String,
+      title: Schema.String,
+      due: Schema.optional(Schema.String),
+      late: Schema.optional(Schema.Literal(true)),
+    }),
+  ).annotate({ description: "Its soonest open follow-up they see; null when there is none." }),
+  quote: Schema.optional(
+    Schema.Struct({
+      key: Schema.String,
+      title: Schema.String,
+      accepted: Schema.optional(Schema.Literal(true)),
+    }),
+  ),
+});
 const Row = Schema.Struct({
   key: Schema.String,
   title: Schema.String,
@@ -249,6 +271,9 @@ const Row = Schema.Struct({
   date: Schema.optional(Schema.String),
   repeat: Schema.optional(Schema.String),
   fields: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  deal: Schema.optional(DealShown).annotate({
+    description: "A deal's, as its page shows the people this turn is for.",
+  }),
   ...SpineShown,
   ...Marks.fields,
   rev: Schema.Number,
@@ -901,6 +926,57 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
   } as typeof Row.Type;
 };
 
+/** Each deal among `rows` as its page shows the turn's people, by key: what `Row.deal` says. */
+const dealsShown = Effect.fnUntraced(function* (
+  lead: Lead,
+  team: View | undefined,
+  view: Shown,
+  rows: ReadonlyArray<RecordRow>,
+) {
+  const read = yield* Deals.asShown(
+    lead.orgId,
+    team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
+    rows,
+  );
+  return new Map(
+    [...read].map(([key, deal]): [string, typeof DealShown.Type] => [
+      key,
+      {
+        stage: deal.stageName,
+        ...(deal.value === undefined ? {} : { value: formatMoney(deal.value) }),
+        ...(deal.expectedAt === null
+          ? {}
+          : { expected: dayOrTime(deal.expectedAt, deal.expectedAllDay, view.zone) }),
+        lookedAfterBy: view.name(deal.owner) ?? "someone",
+        next:
+          deal.next === null
+            ? null
+            : {
+                key: deal.next.key,
+                title: deal.next.title,
+                ...(deal.next.dueAt === null
+                  ? {}
+                  : { due: dayOrTime(deal.next.dueAt, deal.next.dueAllDay, view.zone) }),
+                ...(deal.next.late ? { late: true as const } : {}),
+              },
+        ...(deal.quote === undefined
+          ? {}
+          : {
+              quote: {
+                key: deal.quote.key,
+                title: deal.quote.title,
+                ...(deal.quote.accepted ? { accepted: true as const } : {}),
+              },
+            }),
+      },
+    ]),
+  );
+});
+const withDeal = <R extends { readonly key: string }>(
+  deals: ReadonlyMap<string, typeof DealShown.Type>,
+  row: R,
+) => ((deal) => (deal === undefined ? row : { ...row, deal }))(deals.get(row.key));
+
 /**
  * A client or project the lead named by key, or by name as typed, among the active ones. In a turn
  * others read, one they may not all see answers exactly as one that doesn't exist. `kind` is the
@@ -1423,11 +1499,12 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
   const next = page.total > shownTo && page.rows.length > 0 ? { next: shownTo } : {};
   const now = yield* Clock.currentTimeMillis;
   const view = yield* viewFor(lead, page.rows);
+  const deals = yield* dealsShown(lead, team, view, page.rows);
   if (team !== undefined) {
     const records = [];
     for (const row of page.rows) {
       const shown = rowFor(view, row, now);
-      records.push((yield* viewWhole(lead, team, row)) ? shown : teamRow(shown));
+      records.push(withDeal(deals, (yield* viewWhole(lead, team, row)) ? shown : teamRow(shown)));
     }
     const shown: typeof QueryResult.Type = {
       asOf: iso(now),
@@ -1455,7 +1532,7 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
   return {
     asOf: iso(now),
     total: page.total,
-    records: page.rows.map((row) => rowFor(view, row, now)),
+    records: page.rows.map((row) => withDeal(deals, rowFor(view, row, now))),
     ...next,
     ...(totals === undefined || totals.total.length === 0
       ? {}
@@ -1656,9 +1733,10 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
           projectNote: { from: `${note.project.key} ${note.project.title}`, text: note.body },
         };
   const whole = team !== undefined && (yield* viewWhole(lead, team, row));
+  const deals = yield* dealsShown(lead, team, view, [row]);
   if (team !== undefined && !whole) {
     const shown: typeof GetResult.Type = {
-      ...teamRow(rowFor(view, row, now)),
+      ...withDeal(deals, teamRow(rowFor(view, row, now))),
       notes: detail.notes,
       ...(assignedBy === undefined ? {} : { assignedBy }),
       links: detail.links.flatMap((link) =>
@@ -1693,7 +1771,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
       : undefined;
   const mailed = yield* mailedFor(lead.orgId, row);
   return {
-    ...rowFor(view, row, now),
+    ...withDeal(deals, rowFor(view, row, now)),
     ...(mailed.length === 0 ? {} : { mailed }),
     ...(goal === undefined ? {} : { progress: goalLine(goal) }),
     ...(specChanged ? { specChanged: true as const } : {}),
