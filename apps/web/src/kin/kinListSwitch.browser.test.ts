@@ -1,6 +1,7 @@
 import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
 import {
   EnvironmentId,
+  KinOrgId,
   type KeybindingCommand,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
@@ -10,7 +11,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import { registerCommands } from "../shortcuts/dispatcher";
 import { primaryServerKeybindingsAtom } from "../state/server";
-import { registerKinListCommands, startKinListTracking } from "./kinListSwitch";
+import { kinDestinationLink, registerKinListCommands, startKinListTracking } from "./kinListSwitch";
 import { kinHostAtom } from "./useKinHost";
 
 const KIN_HOST: KinHost = {
@@ -135,5 +136,23 @@ describe("startKinListTracking", () => {
     stack.defer(startKinListTracking(router, registry));
 
     expect(location.pathname).toBe(row.opens);
+  });
+
+  it("returns Chats to the chat you left only on the host it is on", () => {
+    using stack = new DisposableStack();
+    const registry = stack.adopt(
+      AtomRegistry.make({ initialValues: [[kinHostAtom, KIN_HOST]] }),
+      (made) => made.dispose(),
+    );
+    const { router } = fakeRouter("/kin/kin-host/org-ambermill/chat-rhea");
+    stack.defer(startKinListTracking(router, registry));
+    const on = (host: string) =>
+      kinDestinationLink("chats", {
+        environmentId: EnvironmentId.make(host),
+        orgId: KinOrgId.make("org-ambermill"),
+      });
+
+    expect(on("kin-host")).toMatchObject({ params: { chatId: "chat-rhea" } });
+    expect(on("other-host")).toEqual({ to: "/kin" });
   });
 });
