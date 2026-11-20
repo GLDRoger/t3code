@@ -1,5 +1,6 @@
+// @effect-diagnostics globalDate:off - Fixtures read times as a device in each zone does.
 import { KinChatId, KinMessageId, type KinPromiseFrom } from "@t3tools/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { formatKinTime } from "./kinScreenState.ts";
 import {
