@@ -33,6 +33,7 @@ import {
   KinMoney,
   KinMoneyTotals,
   KinSignedMoney,
+  KinBankKnown,
   KinPayment,
   KinRepeatRule,
 } from "./kinMoney.ts";
@@ -429,6 +430,8 @@ export const KinRecordDetail = Schema.Struct({
    * waits for that; absent otherwise, and from older hosts.
    */
   toldWhenBack: Schema.optional(KinDay),
+  /** An invoice's: how far Kin sees the bank, for whether it was paid; absent from older hosts. */
+  bankKnown: Schema.optional(KinBankKnown),
 });
 export type KinRecordDetail = typeof KinRecordDetail.Type;
 export const KIN_RECORD_CHANGES_CAP = 50;

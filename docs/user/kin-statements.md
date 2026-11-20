@@ -49,6 +49,17 @@ unexplained. If you already keep a list called Bank transactions, Kin uses it an
 already in it. Sending the same statement again, or one that overlaps the last, adds no row
 twice. Bank transactions never count as spending or income in Money.
 
+## How far Kin sees your bank
+
+Kin sees your bank only through the statements you confirm. Money shows the day it sees your bank
+to, such as **Bank known to Oct 31**, with **Upload a statement** to send the next one. An invoice
+still owed says it isn't recorded as paid and where the bank is known to, and each payment says
+whether it came from a statement or who recorded it.
+
+A missing month holds that day back, even when later months are in: send the gap to move it on.
+Once a month has been over for five days without its statement, the morning brief says so once,
+with how many invoices it would confirm. A playbook's `statement_due_days` changes the five days.
+
 ## Reading a statement again
 
 **Read again** on a statement's card reads its file afresh, using a remembered password or asking
