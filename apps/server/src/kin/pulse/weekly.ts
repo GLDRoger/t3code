@@ -16,6 +16,7 @@ import {
   overdueFor,
   owedInvoices,
   ownerZone,
+  recordName,
 } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { DAY_MS } from "./thresholds.ts";
@@ -169,7 +170,9 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     minor: number | null;
     currency: string | null;
     state: string;
-  }>`SELECT r.key, c.title AS client, r.amount_minor AS minor, r.currency, r.state
+    number: unknown;
+  }>`SELECT r.key, c.title AS client, r.amount_minor AS minor, r.currency, r.state,
+      json_extract(r.fields_json, '$.number') AS number
     FROM kin_records r
     LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
     WHERE r.org_id = ${orgId} AND r.register_id = 'quotes' AND r.state IN ('open', 'waiting')
@@ -251,7 +254,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
   })).facts.filter((fact) => fact.sense === "client_cold" || fact.sense === "client_quiet");
 
   const unpaidLine = (one: (typeof owed)[number]) =>
-    `${one.key}${one.partyTitle === null ? "" : ` ${one.partyTitle}`}: ${formatMoney(one.balance)} ${
+    `${recordName(one.key, one.number)}${one.partyTitle === null ? "" : ` ${one.partyTitle}`}: ${formatMoney(one.balance)} ${
       one.dueAt === null
         ? "unpaid, no due date"
         : isOverdue(one)
@@ -269,7 +272,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
       unpaid: owed.map(unpaidLine),
       openQuotes: quotes.map(
         (one) =>
-          `${one.key}${one.client === null ? "" : ` ${one.client}`}${one.minor === null || one.currency === null ? "" : `: ${formatMoney({ minor: one.minor, currency: one.currency })}`}, ${one.state === "open" ? "draft, not sent" : "sent, no answer yet"}`,
+          `${recordName(one.key, one.number)}${one.client === null ? "" : ` ${one.client}`}${one.minor === null || one.currency === null ? "" : `: ${formatMoney({ minor: one.minor, currency: one.currency })}`}, ${one.state === "open" ? "draft, not sent" : "sent, no answer yet"}`,
       ),
       renewalsThisMonth: [
         ...renewals.map((one) => `${one.on} ${one.key} ${one.title} renews`),
