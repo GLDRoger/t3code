@@ -118,6 +118,34 @@ describe("the Money summary", () => {
     expect(withTds.tdsDeducted).toMatchObject({ label: "TDS deducted", lines: ["₹10,000"] });
     expect(withTds.received.lines).toEqual(view.received.lines);
     expect(kinMoneyHeadline(summary)[0]).toBe("₹2,10,000 and $2,500 owed to us");
+    // Past the newest suggestions shown, each list's rest opens on its suggestions only.
+    const suggesting = kinMoneyView(
+      {
+        ...summary,
+        suggested: [
+          {
+            record: { key: "INV-9", rev: 1, title: "Guess", list: "invoices" },
+            listName: "Invoices",
+          },
+        ] as never,
+        suggestedLists: [
+          { list: "invoices", listName: "Invoices", count: 21 },
+          { list: "expenses", listName: "Expenses", count: 1 },
+          { list: "quotes", listName: "Quotes", count: 0 },
+        ] as never,
+      },
+      [list("invoices")],
+    );
+    expect(suggesting.suggestedMore).toEqual([
+      {
+        label: "20 more in Invoices",
+        open: { list: "invoices", filter: expect.objectContaining({ kept: false, show: "all" }) },
+      },
+      {
+        label: "1 more in Expenses",
+        open: { list: "expenses", filter: expect.objectContaining({ kept: false }) },
+      },
+    ]);
   });
 
   it("names and opens the company's own financial year", () => {

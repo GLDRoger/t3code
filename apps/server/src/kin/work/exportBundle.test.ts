@@ -199,7 +199,8 @@ const holdings = (orgId: KinOrgId) =>
       party: string | null;
       project: string | null;
       createdAt: number;
-    }>`SELECT r.register_id AS "registerId", r.title, r.state, r.category,
+      confirmed: number;
+    }>`SELECT r.register_id AS "registerId", r.title, r.state, r.category, r.confirmed,
         r.amount_minor AS "amountMinor", r.due_at AS "dueAt", r.date_at AS "dateAt",
         r.sensitive, r.notes, r.fields_json AS "fieldsJson", p.title AS party,
         j.title AS project, r.created_at AS "createdAt"
@@ -229,6 +230,14 @@ describe("Download everything", () => {
       assert.deepStrictEqual(seeded.problems, []);
       const extended = yield* imports.apply(from, owner, chequeBooks);
       assert.deepStrictEqual(extended.problems, []);
+      // A file without the suggestion field imports as it always did: kept.
+      assert.deepStrictEqual(
+        yield* sql`SELECT DISTINCT confirmed FROM kin_records WHERE org_id = ${from}`,
+        [{ confirmed: 1 }],
+      );
+      // An agent's suggestion nobody kept, with a payment recorded before: it comes back as one.
+      yield* sql`UPDATE kin_records SET confirmed = 0 WHERE org_id = ${from} AND record_id IN
+        (SELECT record_id FROM kin_record_payments WHERE org_id = ${from})`;
 
       // A doc with a picture in it, kept as the host keeps both.
       yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,

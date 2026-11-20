@@ -147,6 +147,13 @@ describe("kinSubscriptions", () => {
           closedAt: day("2026-11-10"),
         }),
         entry("SUB-4", { amount: { minor: 500_00, currency: "INR" } }),
+        // A suggestion nobody kept is no subscription yet: no figure, count or renewal.
+        entry("SUB-5", {
+          amount: { minor: 9_000_00, currency: "INR" },
+          dateAt: day("2026-11-25"),
+          fields: { billing: "Monthly" },
+          confirmed: false,
+        }),
       ],
       context,
       rates,

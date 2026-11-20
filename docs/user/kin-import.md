@@ -62,6 +62,9 @@ lines above it:
   (`2026-04-30`) or times with an offset.
 - An entry whose amount is over a thousand times the largest in its list, or an invoice dated after
   its own due day, is refused as a likely slip. Add `"confirmed":true` to the entry if it is right.
+- `"suggested":true` marks an entry an agent suggested that nobody has kept yet. Download
+  everything writes it, and the entry comes back as a suggestion, in no money figure until you keep
+  it. Without it, an entry comes in kept.
 - An invoice keeps the number it was issued. Kin's own numbering carries on after the highest
   imported number in that year's series.
 - Payments are recorded as **Record payment** records them: an invoice paid in full becomes Paid,

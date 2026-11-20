@@ -57,8 +57,9 @@ const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
       dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
     VALUES (${orgId}, 'Asia/Kolkata', '08:00', '18:00', '02:00', 0, 1, '09:00', '[]')`;
-  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
-    VALUES (${ownerId}, ${orgId}, 'owner', 'Owner', ${at})`;
+  // The import CLI runs only as the org's owner, whose word makes what it writes kept.
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+    VALUES (${ownerId}, ${orgId}, 'owner', 'Owner', ${at}, 'owner')`;
 });
 
 const header = {
