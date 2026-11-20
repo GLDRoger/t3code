@@ -265,9 +265,10 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
       }
       const now = yield* Clock.currentTimeMillis;
       const clock = yield* personClock(orgId, target.id);
-      const named = input.by === undefined ? undefined : namedDue(input.by, now, clock.zone);
+      const named =
+        input.by === undefined ? undefined : namedDue(input.by, now, clock.zone, clock.work);
       if (named !== undefined && "refused" in named) return yield* refuse(named.refused);
-      const dueAt = named?.at ?? defaultDue(now, clock.zone, clock.days);
+      const dueAt = named?.at ?? defaultDue(now, clock.zone, clock.work);
       const by = askedBy(askerName, self.name);
       const detail = `${by}${
         input.detail === undefined || input.detail.trim() === "" ? "" : `\n\n${input.detail}`
@@ -292,7 +293,7 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
             act_at, state, for_chat_id, for_person_id, card_json)
           VALUES (${questionId}, ${orgId}, ${agentId}, ${target.id}, ${direct.chatId}, 'card',
             ${widgetId}, ${card.question}, ${JSON.stringify(options)}, NULL, 0, ${about.join(" ")},
-            ${intent}, ${now}, ${dueAt}, ${raiseAt(dueAt, clock.zone, clock.days)}, 'open',
+            ${intent}, ${now}, ${dueAt}, ${raiseAt(dueAt, clock.zone, clock.work)}, 'open',
             ${here.chatId}, ${asker},
             ${widgetId === null ? heldCard : null})
           ON CONFLICT (question_id) DO NOTHING`.pipe(Effect.asVoid);
