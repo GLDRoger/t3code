@@ -108,6 +108,7 @@ export * from "./kinPush.ts";
 export * from "./kinRpcs.ts";
 export * from "./kinConnections.ts";
 export * from "./kinSocial.ts";
+export * from "./kinPictures.ts";
 
 export * from "./kinPeople.ts";
 export * from "./kinTasksKey.ts";

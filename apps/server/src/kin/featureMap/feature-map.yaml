@@ -1009,6 +1009,18 @@ features:
       - packages/client-runtime/src/kin/kinSocial.test.ts
       - .agents/skills/verify-kin/scripts/social-week.sh
 
+  - id: pictures-service
+    name: A picture service and its monthly limit
+    tab: settings
+    web: [settings, section:Connections, section:Pictures]
+    phone: [SettingsKin, KinConnections]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: One key, kept on the host and never shown again; the count is kept with No limit too.
+    proof:
+      - apps/server/src/kin/pictures/KinPictures.test.ts
+      - apps/server/src/kin/pictures/OpenAiImages.test.ts
+      - packages/client-runtime/src/kin/kinPictures.test.ts
+
   - id: social-connect
     name: Connect social accounts with a profile key
     tab: settings
