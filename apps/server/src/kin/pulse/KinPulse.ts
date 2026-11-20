@@ -571,7 +571,7 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
           moved += 1;
           continue;
         }
-        const reopened = yield* sql`UPDATE kin_pulse_facts SET cleared_at = NULL
+        const reopened = yield* sql`UPDATE kin_pulse_facts SET cleared_at = NULL, woke_at = NULL
           WHERE org_id = ${orgId} AND fact_key = ${fact.key} AND cleared_at IS NOT NULL
           RETURNING fact_key`;
         moved += reopened.length;
@@ -603,10 +603,11 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
             yield* decodeEvent({
               _tag: "pulse",
               orgId,
-              eventId: KinEventId.make(`pulse-${shortHash(`${orgId}\0${fact.key}`)}`),
+              // A fact that comes back wakes anew: `woke_at` keeps a fact from waking twice.
+              eventId: KinEventId.make(`pulse-${shortHash(`${orgId}\0${fact.key}\0${at}`)}`),
               agentId: fact.actor.agentId,
               receivedAt: DateTime.formatIso(iso(at)),
-              dedupeKey: fact.key,
+              dedupeKey: `${fact.key}:${at}`,
               provenance: { _tag: "system" },
               factKeys: [fact.key],
             }),
