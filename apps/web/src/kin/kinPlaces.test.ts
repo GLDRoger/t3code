@@ -6,6 +6,7 @@ import {
   kinPlaceOfWork,
   kinRecordOf,
   kinRecordPlace,
+  kinSearchHitPlace,
   kinSearchOf,
   kinTaskAddress,
   validateKinAgentSearch,
@@ -49,12 +50,42 @@ describe("kinRecordPlace", () => {
     ["project", "P-1", "clients", { project: "P-1" }],
     ["doc", "D-1", "docs", { doc: "D-1" }],
     ["entry", "INV-1", "money", { task: "INV-1" }],
-    // A deal lives with Clients, beside its client.
-    ["entry", "DL-1", "clients", { task: "DL-1" }],
+    // A deal lives on the Clients place's Deals tab.
+    ["entry", "DL-1", "clients", { tab: "deals", task: "DL-1" }],
   ] as const)("opens %s %s where it lives", (kind, key, place, search) => {
-    expect(kinRecordPlace({ _tag: "record", key, kind })).toEqual({
+    expect(kinRecordPlace({ key, kind })).toEqual({
       to: KIN_PLACE_PATH[place],
       search,
+    });
+  });
+});
+
+describe("kinSearchHitPlace", () => {
+  it.each([
+    ["work", "W-1", null, "tasks", { task: "W-1" }],
+    ["work", "DL-1", null, "clients", { tab: "deals", task: "DL-1" }],
+    ["clients", "C-1", null, "clients", { client: "C-1" }],
+    ["projects", "P-1", null, "clients", { project: "P-1" }],
+    ["docs", "D-1", "s2", "docs", { doc: "D-1", section: "s2" }],
+    ["docs", "D-1", null, "docs", { doc: "D-1" }],
+    ["invoices", "INV-1", null, "money", { task: "INV-1" }],
+    ["receipts", "RC-1", null, "money", { task: "RC-1" }],
+  ] as const)(
+    "opens a %s hit %s where a message link to it opens",
+    (kind, key, section, place, search) => {
+      expect(
+        kinSearchHitPlace({ kind, key, section: section === null ? null : { id: section } }),
+      ).toEqual({
+        to: KIN_PLACE_PATH[place],
+        search,
+      });
+    },
+  );
+
+  it("opens a remembered item on the memory page", () => {
+    expect(kinSearchHitPlace({ kind: "memory", key: "M-1", section: null })).toEqual({
+      to: "/kin/$environmentId/$orgId/memory",
+      search: {},
     });
   });
 });

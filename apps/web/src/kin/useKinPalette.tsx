@@ -1,5 +1,4 @@
 import { useAtomValue } from "@effect/atom-react";
-import { kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinSearchHit } from "@t3tools/client-runtime/kin/kinDocs";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import {
@@ -21,6 +20,7 @@ import {
 import { useOpenKinAgentPage, useKinPaletteAgents } from "./kinAgentPageLink";
 import { kinClient } from "./kinClient";
 import { kinListShownAt, kinReturnHref } from "./kinListSwitch";
+import { kinSearchHitPlace } from "./kinPlaces";
 import { kinNewLeadTarget, noKinLeadPermissionAtom, openKinLeadForm } from "./KinNewLeadButton";
 import { useKinChatRows, useKinPlaceRows } from "./kinPaletteRows";
 import { openKinSettings } from "./kinSettingsAddress";
@@ -29,9 +29,6 @@ import { useKinHost } from "./useKinHost";
 import { useKinListSwitch } from "./useKinListSwitch";
 
 type PaletteItem = CommandPaletteActionItem | CommandPaletteSubmenuItem;
-
-// The address says "client"; reading it by name keeps it apart from an RPC client in lint's eyes.
-const KIN_CLIENT_PARAM = "client";
 
 /** What Kin is asked for: nothing for a command filter or a single letter. */
 const kinPaletteQuery = (query: string) => {
@@ -180,48 +177,11 @@ export function useKinPalette(input: {
               .join(" · "),
             icon: <Icon className={ITEM_ICON_CLASS} />,
             run: async () => {
-              const params = {
-                environmentId: kinNewLead.environmentId,
-                orgId: kinNewLead.orgId,
-              };
-              if (hit.kind === "memory") {
-                await navigate({ to: "/kin/$environmentId/$orgId/memory", params });
-                return;
-              }
-              if (kinIsDealKey(raw.key)) {
-                await navigate({
-                  to: "/kin/$environmentId/$orgId/clients",
-                  params,
-                  search: { tab: "deals", task: raw.key },
-                });
-                return;
-              }
-              const money =
-                hit.kind === "invoices" ||
-                hit.kind === "quotes" ||
-                hit.kind === "expenses" ||
-                hit.kind === "receipts";
+              const place = kinSearchHitPlace(hit);
               await navigate({
-                to:
-                  hit.kind === "docs"
-                    ? "/kin/$environmentId/$orgId/docs"
-                    : hit.kind === "clients" || hit.kind === "projects"
-                      ? "/kin/$environmentId/$orgId/clients"
-                      : money
-                        ? "/kin/$environmentId/$orgId/money"
-                        : "/kin/$environmentId/$orgId/tasks",
-                params,
-                search:
-                  hit.kind === "docs"
-                    ? {
-                        doc: raw.key,
-                        ...(hit.section === null ? {} : { section: hit.section.id }),
-                      }
-                    : hit.kind === "clients"
-                      ? { [KIN_CLIENT_PARAM]: raw.key }
-                      : hit.kind === "projects"
-                        ? { project: raw.key }
-                        : { task: raw.key },
+                to: place.to,
+                params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+                search: place.search,
               });
             },
           };

@@ -7,6 +7,7 @@ import {
   KinPersonId,
   KinRecordKey,
   type KinMessageLinkTarget,
+  type KinSearchKind,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
@@ -22,8 +23,10 @@ export const KIN_PLACE_PATH = {
   docs: "/kin/$environmentId/$orgId/docs",
 } as const satisfies Record<KinPlace, string>;
 
-/** The page and search that open a record a message names. */
-export function kinRecordPlace(to: Extract<KinMessageLinkTarget, { readonly _tag: "record" }>) {
+type KinRecordKind = Extract<KinMessageLinkTarget, { readonly _tag: "record" }>["kind"];
+
+/** The page and search that open a record a message names or a search finds. */
+export function kinRecordPlace(to: { readonly kind: KinRecordKind; readonly key: KinRecordKey }) {
   switch (to.kind) {
     case "client":
       return { to: KIN_PLACE_PATH.clients, search: { client: to.key } };
@@ -33,11 +36,40 @@ export function kinRecordPlace(to: Extract<KinMessageLinkTarget, { readonly _tag
       return { to: KIN_PLACE_PATH.docs, search: { doc: to.key } };
     case "entry":
       return kinIsDealKey(to.key)
-        ? { to: KIN_PLACE_PATH.clients, search: { task: to.key } }
+        ? { to: KIN_PLACE_PATH.clients, search: { tab: "deals" as const, task: to.key } }
         : { to: KIN_PLACE_PATH.money, search: { task: to.key } };
     case "task":
       return { to: KIN_PLACE_PATH.tasks, search: { task: to.key } };
   }
+}
+
+const SEARCH_HIT_RECORD: Record<Exclude<KinSearchKind, "memory">, KinRecordKind> = {
+  work: "task",
+  contacts: "task",
+  clients: "client",
+  projects: "project",
+  docs: "doc",
+  invoices: "entry",
+  quotes: "entry",
+  expenses: "entry",
+  receipts: "entry",
+};
+
+/** Where a search hit opens: its record's place, at the doc section found; memory on its page. */
+export function kinSearchHitPlace(hit: {
+  readonly kind: KinSearchKind;
+  readonly key: KinRecordKey;
+  readonly section: { readonly id: string } | null;
+}) {
+  if (hit.kind === "memory")
+    return { to: "/kin/$environmentId/$orgId/memory" as const, search: {} };
+  const place = kinRecordPlace({
+    kind: kinIsDealKey(hit.key) ? "entry" : SEARCH_HIT_RECORD[hit.kind],
+    key: hit.key,
+  });
+  return place.to === KIN_PLACE_PATH.docs && hit.section !== null
+    ? { ...place, search: { ...place.search, section: hit.section.id } }
+    : place;
 }
 
 /** The record open beside a place's list: a client, project, list, the coming dates, the subscriptions, or a doc. */
