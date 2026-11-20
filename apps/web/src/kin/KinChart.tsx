@@ -1,3 +1,4 @@
+import { KIN_CHART_COPY } from "@t3tools/client-runtime/kin/kinChart";
 import type {
   KinChartMark,
   KinChartTone,
@@ -306,7 +307,7 @@ export function KinChart(props: { readonly view: KinChartView }) {
       {asTable ? <KinChartTable view={view} /> : <KinChartFigure view={view} />}
       <div className="flex">
         <Button size="xs" variant="outline" onClick={() => setAsTable(!asTable)}>
-          {asTable ? "Show chart" : "Show as table"}
+          {asTable ? KIN_CHART_COPY.showChart : KIN_CHART_COPY.showTable}
         </Button>
       </div>
     </figure>

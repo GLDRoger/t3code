@@ -199,7 +199,7 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
           </Text>
           {target.runsWorkspace ? (
             <Text textRole="footnote" className="text-center text-foreground-muted">
-              Runs this workspace
+              {KIN_PROFILE_COPY.runsWorkspace}
             </Text>
           ) : null}
         </View>

@@ -1,3 +1,4 @@
+import { KIN_WAITING_TITLE } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { createNativeStackScreen } from "@react-navigation/native-stack";
 
 import { pageRoute, sheetRoute } from "../layout/route-options";
@@ -83,7 +84,7 @@ export const KIN_SCREENS = {
   KinWaiting: createNativeStackScreen({
     screen: KinWaitingScreen,
     linking: "kin/waiting",
-    options: pageRoute({ title: "Waiting on you" }),
+    options: pageRoute({ title: KIN_WAITING_TITLE }),
   }),
   KinMemory: createNativeStackScreen({
     screen: KinMemoryScreen,

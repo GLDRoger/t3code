@@ -886,6 +886,11 @@ export function kinFeedViewer(orgs: KinOrgsListResult | null, orgId: string | nu
 
 /** Words in an open chat and its rows. */
 export const KIN_CHAT_COPY = {
+  back: "Back to chats",
+  loadingEarlier: "Loading earlier messages…",
+  none: "No messages yet",
+  sayHello: (agentName: string) => `Say hello to ${agentName}`,
+  stopAgain: "Try stopping again",
   earlierFailed: "Couldn't load earlier messages.",
   empty: "Messages in this chat show up here.",
   awayHolds: (away: string) => `${away}. Kin holds what can wait until then.`,

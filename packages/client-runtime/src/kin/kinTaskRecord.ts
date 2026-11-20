@@ -31,6 +31,7 @@ import {
 import { kinWorkStatusOffer } from "./kinWorkChanges.ts";
 
 export const KIN_TASK_RECORD = {
+  editBrief: "Edit the brief",
   details: "Details",
   askedBy: "Asked by",
   heldBy: "Held by",
@@ -60,6 +61,7 @@ export const KIN_TASK_RECORD = {
 
 /** A task's note box and its notes, on web and phone. */
 export const KIN_TASK_NOTE_COPY = {
+  removeLabel: "Remove this note",
   send: "Add note",
   sending: "Sending…",
   retry: "Retry",

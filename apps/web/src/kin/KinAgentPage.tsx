@@ -260,7 +260,7 @@ function AgentPageBody(props: {
     setBusy(false);
     setProblem(
       AsyncResult.isFailure(outcome)
-        ? kinFailureText(squashAtomCommandFailure(outcome), "Couldn't change that.")
+        ? kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENT_PAGE.changeFailed)
         : null,
     );
     props.onChanged();
@@ -313,7 +313,7 @@ function AgentPageBody(props: {
         }
       >
         <p className="whitespace-pre-line text-sm text-foreground">
-          {lead.charter.trim() === "" ? "Nothing written yet." : lead.charter}
+          {lead.charter.trim() === "" ? KIN_AGENT_PAGE.charterNone : lead.charter}
         </p>
         {(lead.intro ?? "").trim() === "" ? null : (
           <p className="text-xs text-muted-foreground">Teammates see: {lead.intro}</p>

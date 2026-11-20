@@ -695,6 +695,9 @@ export type KinTeamActions = ReturnType<typeof createKinTeamActions>;
 
 /** A teammate's page. */
 export const KIN_TEAM_COPY = {
+  loading: "Loading your team",
+  saveFailed: "That didn't save.",
+  inviteLinkFor: (name: string) => `Invite link for ${name}`,
   canDo: "What they can do",
   canDoBack: "What they can do when they're back",
   canSee: "What they can see",

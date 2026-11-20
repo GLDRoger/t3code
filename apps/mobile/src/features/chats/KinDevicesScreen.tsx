@@ -195,7 +195,11 @@ export function KinDeviceList(props: {
       >
         {devices === null ? (
           AsyncResult.isFailure(result) ? (
-            <KinLoadFailedRow title="Couldn't load devices" cause={result} onRetry={refresh} />
+            <KinLoadFailedRow
+              title={KIN_DEVICES_COPY.loadFailed}
+              cause={result}
+              onRetry={refresh}
+            />
           ) : (
             <View className="items-center py-6">
               <AppActivityIndicator />

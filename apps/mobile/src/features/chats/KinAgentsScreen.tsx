@@ -136,7 +136,7 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
       ) : agents.length === 0 && retired.length === 0 ? (
         <EmptyState
           variant="plain"
-          title="No agents yet"
+          title={KIN_AGENTS_COPY.noneTitle}
           detail={KIN_AGENTS_COPY.explain}
           {...(add === undefined ? {} : { actionLabel: "New agent", onAction: add })}
         />
@@ -232,7 +232,7 @@ function KinAgentDefaults(props: {
       setBusy(false);
       setProblem(
         AsyncResult.isFailure(outcome)
-          ? kinFailureText(squashAtomCommandFailure(outcome), "Couldn't save that.")
+          ? kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENTS_COPY.saveFailed)
           : null,
       );
       appAtomRegistry.refresh(defaultsAtom);

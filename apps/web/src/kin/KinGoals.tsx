@@ -294,7 +294,7 @@ export function KinGoalSheet(props: {
             id={ids.unit}
             value={draft.unit}
             maxLength={40}
-            placeholder="For example: hires"
+            placeholder={KIN_GOALS.unitPlaceholder}
             autoComplete="off"
             onChange={(event) => edit({ unit: event.target.value })}
           />

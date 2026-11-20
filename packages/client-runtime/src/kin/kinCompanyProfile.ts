@@ -15,6 +15,7 @@ import * as Schema from "effect/Schema";
 /** The company's legal and bank details, as the owner reads and edits them in Settings. */
 
 export const KIN_COMPANY = {
+  loading: "Loading company details",
   title: "Company details",
   summary: "Legal name, tax ids and bank details",
   private:

@@ -407,7 +407,7 @@ function Pause(props: {
             setBusy(false);
             setProblem(
               AsyncResult.isFailure(outcome)
-                ? kinFailureText(squashAtomCommandFailure(outcome), "Couldn't change that.")
+                ? kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENT_PAGE.changeFailed)
                 : null,
             );
             props.onChanged();

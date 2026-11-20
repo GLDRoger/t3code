@@ -297,7 +297,7 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
             disabled={pending !== null}
             onClick={() => void send("undo")}
           >
-            Undo this statement
+            {KIN_STATEMENT_COPY.undo}
           </Button>
           {readAgain}
         </div>
@@ -598,7 +598,7 @@ export const KinStatementPasswordCard = memo(function KinStatementPasswordCard(p
             disabled={pending}
             onClick={() => void forgetIt()}
           >
-            Forget the password
+            {KIN_STATEMENT_COPY.forgetPassword}
           </Button>
         </div>
       ) : null}

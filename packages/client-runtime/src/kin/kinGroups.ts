@@ -235,6 +235,8 @@ export function kinMentionsIn(
 
 /** Making or changing a group: who answers and who can still be added. */
 export const KIN_GROUP_FORM = {
+  newGroup: "New group",
+  addTo: "Add to group",
   addMembers: "Add agents or people",
   nameAnother: "Name another agent with @ in a message to ask it instead.",
   noAgent: "No agent is in this group, so messages here get no answer from one.",

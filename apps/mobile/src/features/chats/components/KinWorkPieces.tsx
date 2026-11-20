@@ -705,7 +705,7 @@ export function KinWorkTextField(props: {
       )}
       {props.moved === undefined ? null : (
         <Text textRole="footnote" className="text-foreground-muted">
-          It now says: {props.moved.trim() || "nothing"}
+          {KIN_WORK_COPY.nowSays(props.moved.trim() || "nothing")}
         </Text>
       )}
     </View>

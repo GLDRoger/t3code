@@ -46,6 +46,10 @@ import {
 import { kinCount } from "./kinCount.ts";
 
 export const KIN_DOCS = {
+  earlierVersions: "Show earlier versions",
+  oldVersion: (version: number, latest: number) =>
+    `You're reading version ${version}. The latest is version ${latest}.`,
+  openLatest: "Open the latest",
   changesFailed: "Couldn't load the changes",
   historyFailed: "Couldn't load the history",
   restoreOffline: "You're offline. Restore it when the connection is back.",

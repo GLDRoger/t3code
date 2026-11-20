@@ -466,6 +466,8 @@ export const kinStatementFailureText = (cause: unknown): string =>
 
 /** A bank statement's review card. */
 export const KIN_STATEMENT_COPY = {
+  undo: "Undo this statement",
+  forgetPassword: "Forget the password",
   takeSuggestions: (rows?: number) =>
     rows === undefined
       ? "Use Kin's suggestions"

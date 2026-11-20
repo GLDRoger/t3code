@@ -72,6 +72,7 @@ export const KIN_WORK_EDIT_CHANGED =
   "This changed while you were looking at it. The latest is shown and your edit is still here. Save again to keep it.";
 
 export const KIN_WORK_COPY = {
+  nowSays: (text: string) => `It now says: ${text}`,
   done: "Mark done",
   reopen: "Reopen",
   status: "Status",

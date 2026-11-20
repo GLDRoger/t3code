@@ -315,6 +315,9 @@ export function kinChatReadOnlyLine(other: {
 
 /** The owner's list of agents, and what a teammate is shown of one. */
 export const KIN_AGENTS_COPY = {
+  saveFailed: "Couldn't save that.",
+  noneTitle: "No agents yet",
+  introLabel: "What teammates see",
   seesIntro: (intro: string) => `They see its name and this: ${intro}`,
   charterExample: "Handles billing questions and invoices.",
   charterLabel: "What it's responsible for",
