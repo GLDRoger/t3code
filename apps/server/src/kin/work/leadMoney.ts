@@ -55,7 +55,7 @@ import { homeCurrency } from "./companyProfile.ts";
 import { dayIn, formatMinor, formatMoney, parseAmount, timeIn } from "./money.ts";
 import { dates, moneySection, moneySummary, ownerLevelStillToInvoice } from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
-import { endOfDay, iso, notFound, ownerZone } from "./recordRows.ts";
+import { endOfDay, iso, isSuggestion, notFound, ownerZone } from "./recordRows.ts";
 import {
   attachCard,
   carryOut,
@@ -355,7 +355,12 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
   const writer = yield* writerFor(lead);
   const before = yield* records.get(lead.orgId, input.key);
   if (before === undefined) return yield* notFound(input.key);
-  if (input.void === undefined && (yield* isUnissuedDraft(lead.orgId, before)))
+  // A suggestion's refusal says who keeps it, which comes before issuing it.
+  if (
+    input.void === undefined &&
+    !isSuggestion(before) &&
+    (yield* isUnissuedDraft(lead.orgId, before))
+  )
     return yield* invalid(
       `${before.key} is a draft, so nothing is owed on it yet. Issue it first with kin_issue, which takes its date as the issue day (else today; set date with record_update first if the owner gave another), then record the payment.`,
     );

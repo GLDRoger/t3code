@@ -27,6 +27,7 @@ import {
   countedEntry,
   fieldDateAt,
   countedPayment,
+  isSuggestion,
   iso,
   moneyDay,
   owedInvoices,
@@ -176,13 +177,19 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
   };
 });
 
+/** A suggestion's own day is no issue day: where its list names the day after a state, "Date". */
+const dayLabel = (def: ListDef, row: RecordRow) =>
+  def.dateLabel === undefined ||
+  (isSuggestion(row) && def.states.some((state) => stateLabel(def, state) === def.dateLabel))
+    ? "Date"
+    : def.dateLabel;
+
 const dateRow = (row: RecordRow, def: ListDef, hit: DateHit, now: number): KinDateRow => ({
   record: toRecord(row, now),
   listName: def.name,
   stateLabel: stateLabel(def, row.state),
   kind: hit.kind,
-  label:
-    hit.field?.label ?? (hit.kind === "due" ? (def.dueLabel ?? "Due") : (def.dateLabel ?? "Date")),
+  label: hit.field?.label ?? (hit.kind === "due" ? (def.dueLabel ?? "Due") : dayLabel(def, row)),
   ...(hit.field === undefined ? {} : { field: hit.field.key }),
   at: iso(hit.at),
   allDay: hit.field?.allDay ?? (hit.kind === "due" ? row.dueAllDay : row.dateAllDay) === 1,

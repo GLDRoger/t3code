@@ -1322,16 +1322,19 @@ const make = Effect.gen(function* () {
         : yield* storedRepeat(orgId, input.repeat, input.dueAt ?? null, input.dateAt ?? null));
     const now = yield* Clock.currentTimeMillis;
     const key = yield* ensureRegister(orgId, def, now);
-    const state =
-      input.state ??
-      startState(def, {
-        dateAt: input.dateAt ?? null,
-        numbered: "number" in fields,
-        now,
-        zone: def.id === "expenses" ? yield* ownerZone(orgId).pipe(provideSql) : "UTC",
-      });
-    const waitingOn = state === "waiting" ? (input.waitingOn ?? null) : null;
     const kept = options.kept ?? (yield* startsKept(orgId, writer, list, input));
+    // Nobody issued, sent or was paid for what nobody kept: it waits as a draft on its own day.
+    const state =
+      !kept && ISSUED_LISTS.has(list)
+        ? "open"
+        : (input.state ??
+          startState(def, {
+            dateAt: input.dateAt ?? null,
+            numbered: "number" in fields,
+            now,
+            zone: def.id === "expenses" ? yield* ownerZone(orgId).pipe(provideSql) : "UTC",
+          }));
+    const waitingOn = state === "waiting" ? (input.waitingOn ?? null) : null;
     const givenAway =
       !(writer.actor._tag === "agent" && samePrincipal(writer.actor, input.owner)) &&
       !(writer.actor._tag === "person" && samePrincipal(writer.actor, input.owner));

@@ -322,32 +322,57 @@ const KIN_MONEY_LISTS: ReadonlySet<string> = new Set([
   "receipts",
   "subscriptions",
 ]);
-export const KIN_SUGGESTION_NOTE = "Not counted in Money until you keep it.";
+export const KIN_SUGGESTION_NOTE = "Not in any Money figure until you keep it.";
+/** A draft invoice kept is still a draft: owed nowhere until it is issued. */
+const KIN_SUGGESTED_DRAFT_NOTE =
+  "Not in any Money figure until you keep it, and not owed until it's issued.";
 /**
  * On a suggestion's own page: the note when Money would count it once kept, and whether Not
  * needed works there, which drops it: a list with no Dropped state offers only Keep.
  */
 export const kinSuggestionKeep = (
-  record: Pick<KinRecord, "list" | "amount">,
+  record: Pick<KinRecord, "list" | "amount"> & Partial<Pick<KinRecord, "state">>,
   def: Pick<KinListDefinition, "states"> | null,
 ) => ({
   note:
-    KIN_MONEY_LISTS.has(record.list ?? "work") || record.amount !== undefined
-      ? KIN_SUGGESTION_NOTE
-      : null,
+    record.list === "invoices" && record.state === "open"
+      ? KIN_SUGGESTED_DRAFT_NOTE
+      : KIN_MONEY_LISTS.has(record.list ?? "work") || record.amount !== undefined
+        ? KIN_SUGGESTION_NOTE
+        : null,
   declines: def === null ? (record.list ?? "work") === "work" : def.states.includes("dropped"),
 });
+/** Lists whose Waiting is issued or sent, which nobody made a suggestion. */
+const KIN_ISSUED_LISTS: ReadonlySet<string> = new Set(["quotes", "invoices"]);
+/**
+ * A state's words for a person, a suggestion's first saying so: "Suggested · Paid", and only
+ * "Suggested" where its state would read issued or sent.
+ */
+export const kinSuggestionText = (
+  record: Pick<KinRecord, "confirmed" | "state" | "list">,
+  label: string,
+) =>
+  !kinSuggestion(record)
+    ? label
+    : record.state === "waiting" && KIN_ISSUED_LISTS.has(record.list ?? "work")
+      ? KIN_SUGGESTED
+      : `${KIN_SUGGESTED} · ${label}`;
+const KIN_DAY = "Date";
+/** The day's label, or the plain one on a suggestion where it names a state, as Issued does. */
+const kinDayLabel = (
+  def: Pick<KinListDefinition, "dateLabel" | "states" | "stateLabels">,
+  suggested: boolean,
+) =>
+  suggested && def.states.some((state) => kinListStateLabel(def, state) === def.dateLabel)
+    ? KIN_DAY
+    : def.dateLabel;
 /** Late as a figure would read it: never for a suggestion in a money list. */
 const kinLateShown = (record: Pick<KinRecord, "late" | "confirmed" | "list">) =>
   record.late && (record.confirmed || !KIN_MONEY_LISTS.has(record.list ?? "work"));
-/** Its state as a person reads it: a suggestion says so first, "Suggested · Paid". */
 const kinSuggestionStateLabel = (
   def: Pick<KinListDefinition, "stateLabels"> | null,
-  record: Pick<KinRecord, "confirmed" | "state">,
-) => {
-  const label = kinListStateLabel(def, record.state);
-  return kinSuggestion(record) ? `${KIN_SUGGESTED} · ${label}` : label;
-};
+  record: Pick<KinRecord, "confirmed" | "state" | "list">,
+) => kinSuggestionText(record, kinListStateLabel(def, record.state));
 
 export interface KinListIndexRow {
   readonly list: KinListId;
@@ -879,7 +904,9 @@ export function kinListColumns(
     text("title", "Entry"),
     text("state", KIN_LISTS.entry.status),
     ...(def.categories.length > 0 ? [text("category", KIN_LISTS.entry.category)] : []),
-    ...(def.dateLabel === undefined ? [] : [text("date", def.dateLabel)]),
+    ...(def.dateLabel === undefined
+      ? []
+      : [text("date", kinDayLabel(def, records.some(kinSuggestion)) ?? def.dateLabel)]),
     ...(def.dueLabel === undefined ? [] : [text("due", def.dueLabel)]),
     ...(records.some((record) => record.party !== undefined)
       ? [text("party", KIN_LISTS.entry.client)]
@@ -1236,7 +1263,12 @@ export function kinListEntryView(
         }
       : null,
     dueLabel: def === null ? (item.dueAt === null ? null : "Due") : (def.dueLabel ?? null),
-    dateLabel: def === null ? (item.dateAt === undefined ? null : "Date") : (def.dateLabel ?? null),
+    dateLabel:
+      def === null
+        ? item.dateAt === undefined
+          ? null
+          : KIN_DAY
+        : (kinDayLabel(def, kinSuggestion(item)) ?? null),
     dueDay: kinWorkAllDay(item.dueAt, item.dueAllDay, names),
     dateDay: kinWorkAllDay(item.dateAt ?? null, item.dateAllDay ?? true, names),
     due,

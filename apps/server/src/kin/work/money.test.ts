@@ -1171,6 +1171,10 @@ describe("invoices", () => {
         yield* OwnerWork.confirm(as("co-owner"), { orgId, key: "INV-2", rev: yield* rev("INV-2") });
         yield* OwnerWork.confirm(people, { orgId, key: "INV-3", rev: yield* rev("INV-3") });
         yield* OwnerWork.decline(people, { orgId, key: "INV-4", rev: yield* rev("INV-4") });
+        // It started as a draft, so kept it is a draft: owed once it is issued.
+        assert.deepStrictEqual((yield* owed).owed, inr(4_720_000));
+        for (const key of ["INV-2", "INV-3"])
+          yield* OwnerMoney.issue(people, { orgId, key: KinRecordKey.make(key) });
         assert.deepStrictEqual(yield* owed, {
           owed: inr(14_160_000),
           overdue: inr(14_160_000),
@@ -2057,6 +2061,7 @@ describe("the owner's taps", () => {
               suggested: true,
             },
             { title: "Invented guessed follow-up", due: "2026-11-10", suggested: true },
+            { title: "Invented kept review", due: "2026-11-25" },
             {
               list: "dates",
               title: "Invented guessed filing",
@@ -2131,7 +2136,12 @@ describe("the owner's taps", () => {
             [...new Set(agenda.rows.map((one) => one.record.key))].toSorted(),
             tasks.records.filter((one) => one.late && !one.confirmed).map((one) => one.key),
           ],
-          [["DT-1", "INV-1", "W-1"], ["W-1"]],
+          [["DT-1", "INV-1", "W-1", "W-2"], ["W-1"]],
+        );
+        // Its day there is no issue day.
+        assert.deepStrictEqual(
+          agenda.rows.filter((one) => one.record.key === "INV-1").map((one) => one.label),
+          ["Date", "Due"],
         );
         // Past Money's newest 20, the rest open as a list; a paid one keeps its Keep.
         yield* LeadWork.create(scope, {
@@ -2508,6 +2518,55 @@ describe("who keeps a suggestion", () => {
         "co-owner": [1, 1, 1, 1],
         mate: [0, 0, 1, 1],
       });
+
+      // Issued, sent or paid as asked, a quote or invoice nobody kept starts as a draft on its day.
+      const issueDay = "2026-12-01";
+      const startedAs = (key: string) =>
+        records
+          .get(orgId, key)
+          .pipe(Effect.map((row) => [row?.confirmed, row?.state, row?.dateAt]));
+      const asked = (list: string, state: string, extra: { suggested?: true } = {}) => ({
+        list,
+        title: `Invented ${list} ${state}${extra.suggested === true ? " suggested" : ""}`,
+        amount: "9,750",
+        state,
+        date: issueDay,
+        ...extra,
+      });
+      const started = [];
+      for (const [by, row] of [
+        [["routine"], asked("invoices", "waiting")],
+        [["routine"], asked("invoices", "done")],
+        [["routine"], asked("quotes", "waiting")],
+        [[ownerId], asked("invoices", "waiting", { suggested: true })],
+        [[ownerId], { ...asked("invoices", "waiting"), title: "Invented owner's invoice" }],
+      ] as const)
+        started.push(yield* startedAs((yield* asAgent(by, [row]))[0]!));
+      for (const [i, state] of (["waiting", "done"] as const).entries()) {
+        const { row } = yield* records.create(orgId, person("mate"), {
+          list: "invoices",
+          originKey: `mate-issued-${i}`,
+          title: `Invented mate invoice ${state}`,
+          owner: { _tag: "person", personId: KinPersonId.make("mate") },
+          amount: { minor: 975_000, currency: "INR" },
+          state,
+          dateAt: Date.parse(`${issueDay}T00:00:00.000Z`),
+        });
+        started.push(yield* startedAs(row.key));
+      }
+      const day = Date.parse(`${issueDay}T00:00:00.000Z`);
+      assert.deepStrictEqual(
+        started.map(([kept, state, dateAt]) => [kept, state, dateAt === null ? null : day]),
+        [
+          [0, "open", day],
+          [0, "open", day],
+          [0, "open", day],
+          [0, "open", day],
+          [1, "waiting", day],
+          [0, "open", day],
+          [0, "open", day],
+        ],
+      );
 
       // Keeping one: confirmed true keeps it only on a turn an owner-level person asked in person.
       const guessed = (title: string) =>
