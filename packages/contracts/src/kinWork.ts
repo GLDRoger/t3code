@@ -308,6 +308,8 @@ export const KIN_CODING_AGENT_UNNAMED = "a coding agent";
 export const KIN_TAKEN_DEFAULT_FIELD = "kin:default";
 /** The field a hand-over carries for someone who left the team: `person:<id>` in `from`. */
 export const KIN_LEFT_FIELD = "kin:left";
+/** The field a deal's hand-over carries for each next step that went with it: the step's key in `to`. */
+export const KIN_DEAL_STEP_FIELD = "kin:step";
 
 export const KIN_RECORD_COMMENT_MAX = 4_000;
 export const KIN_RECORD_COMMENT_FILES_MAX = 8;

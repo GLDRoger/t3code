@@ -96,7 +96,7 @@ import { KinAvatar } from "./KinAvatar";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
-import { useKinAttentionHandle } from "./useKinAttention";
+import { useKinAttention, useKinAttentionHandle } from "./useKinAttention";
 import { useKinOpen } from "./useKinOpen";
 import { useKinTaskSteps, type KinTaskStepStatus } from "./useKinTaskSteps";
 import {
@@ -231,9 +231,11 @@ export function KinWorkTaskList(
   );
   const ownerLevel = useKinOwnerLevel(environmentId);
   const open = useKinOpen({ environmentId, orgId });
+  const pulse = useKinAttention({ environmentId, orgId }, within === undefined && open === null);
+  const facts = kinTasksDealFacts(open, { ownerLevel, names, now, pulse });
   const counts = list.counts();
   // The same number the nav's Tasks count shows (`useKinTasksNeedsYou`).
-  const needsYou = kinNeedsYouCount({ open: open ?? null, counts });
+  const needsYou = kinNeedsYouCount({ open: open ?? null, counts, dealFacts: facts.length });
   const groupBy = filter.groupBy ?? "me";
   const searching = within === undefined && filter.text.trim() !== "";
   const items: ReadonlyArray<KinTasksItem<KinRecord>> =
@@ -245,7 +247,7 @@ export function KinWorkTaskList(
           needsYou,
           ownerLevel,
           names,
-          facts: kinTasksDealFacts(open, { ownerLevel, names, now }),
+          facts,
         })
       : within === undefined && groupBy !== "me" && !searching
         ? kinTasksGroupedBy({ records, groupBy, summary: live.summary, names, now })

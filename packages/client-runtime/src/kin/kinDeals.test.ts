@@ -434,6 +434,22 @@ describe("kinDealChangeText", () => {
     // Taking one off while adding another is still noting them.
     [[{ field: "concerns", from: "Price", to: "Timing" }], "Zoya noted the concerns"],
     [[{ field: "state", from: "dropped", to: "open" }], "Zoya reopened it"],
+    // The next steps its keeper held went with it.
+    [
+      [
+        { field: "owner", from: "person:person-zoya", to: "person:person-rhea" },
+        { field: "kin:step", from: null, to: "W-5 Send revised quote" },
+      ],
+      "Zoya gave it to you, with its next step W-5 Send revised quote",
+    ],
+    [
+      [
+        { field: "owner", from: "person:person-zoya", to: "person:person-rhea" },
+        { field: "kin:step", from: null, to: "W-5" },
+        { field: "kin:step", from: null, to: "W-6" },
+      ],
+      "Zoya gave it to you, with its next steps W-5 and W-6",
+    ],
   ] as const)("%j", (fields, text) => {
     expect(kinDealChangeText(change(fields), names, now)).toBe(text);
   });
