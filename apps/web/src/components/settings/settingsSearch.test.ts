@@ -215,6 +215,8 @@ describe("searchSettings", () => {
     expect(first("working hours", true)?.id).toBe("kin-working-hours");
     expect(first("away", true)?.id).toBe("kin-away");
     expect(first("quiet", false)?.id).not.toBe("kin-quiet-hours");
+    expect(first("legal name", true)?.id).toBe("company-details");
+    expect(first("legal name", false)?.id).not.toBe("company-details");
   });
 
   it("finds keybinding commands by label, command id, and default key", () => {

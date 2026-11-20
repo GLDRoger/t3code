@@ -176,17 +176,7 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
     paths: [
       "/settings/connections",
       "/settings/access",
-      "/settings/approvals",
       ...(isSecretsFeatureEnabled ? (["/settings/secrets"] as const) : []),
-    ],
-  },
-  {
-    heading: msg("Kin"),
-    paths: [
-      "/settings/company",
-      "/settings/check-ins",
-      "/settings/deals",
-      "/settings/kin-connections",
     ],
   },
   {

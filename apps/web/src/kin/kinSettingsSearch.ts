@@ -37,25 +37,6 @@ export const KIN_SETTINGS_CATEGORY_SCOPES: Readonly<
   "/settings/kin-profile": null,
 };
 
-/** Pages that exist only while a connected host runs Kin. */
-export const KIN_ONLY_SETTINGS_PATHS: ReadonlySet<string> = new Set([
-  "/settings/approvals",
-  "/settings/check-ins",
-  "/settings/deals",
-  "/settings/kin-connections",
-  "/settings/kin-profile",
-]);
-
-/** Kin's pages, which Kin's own Settings holds while a host runs Kin. */
-export const KIN_MOVED_SETTINGS_PATHS: ReadonlySet<string> = new Set([
-  "/settings/approvals",
-  "/settings/check-ins",
-  "/settings/company",
-  "/settings/deals",
-  "/settings/kin-connections",
-  "/settings/kin-profile",
-]);
-
 /**
  * Kin's own Profile settings, found from the app's settings search; the address opens Kin's
  * Settings on Profile at the one found. Devices are left out: the owner's are the app's own
@@ -105,30 +86,35 @@ export const KIN_SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "company-details",
+    kinOnly: true,
     title: "Company details",
     to: "/settings/company",
     searchTerms: ["kin legal name address gstin pan tax bank account ifsc upi invoice"],
   },
   {
     id: "kin-connections",
+    kinOnly: true,
     title: "Connections",
     to: "/settings/kin-connections",
     searchTerms: ["kin connected services tools posthog github key agents read"],
   },
   {
     id: "kin-time-zone",
+    kinOnly: true,
     title: "Time zone",
     to: "/settings/company",
     searchTerms: ["kin timezone zone check-ins due dates hours clock"],
   },
   {
     id: "kin-agents",
+    kinOnly: true,
     title: "Agents",
     to: "/settings/company",
     searchTerms: ["kin agents model character personality pause retire new agents default"],
   },
   {
     id: "kin-who-can-message",
+    kinOnly: true,
     title: "Who can message",
     to: "/settings/company",
     searchTerms: [
@@ -137,12 +123,14 @@ export const KIN_SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "kin-daily-limit",
+    kinOnly: true,
     title: "Daily limit",
     to: "/settings/company",
     searchTerms: ["kin budget agents usage spend limit"],
   },
   {
     id: "kin-check-ins",
+    kinOnly: true,
     title: "Check-ins",
     to: "/settings/check-ins",
     searchTerms: ["kin schedule morning afternoon weekly brief routine time run now"],
@@ -150,6 +138,7 @@ export const KIN_SETTINGS_SEARCH_ITEMS = [
   ...KIN_PROFILE_SETTINGS_SEARCH_ITEMS,
   {
     id: "kin-deals",
+    kinOnly: true,
     title: "Deal stages",
     to: "/settings/deals",
     searchTerms: ["kin deals stages pipeline won lost sales prospect"],

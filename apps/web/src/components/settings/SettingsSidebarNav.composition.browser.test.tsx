@@ -4,7 +4,6 @@ import { page, userEvent } from "vite-plus/test/browser";
 import { act, render } from "../../../test/render";
 import { SidebarProvider } from "../ui/sidebar";
 import { SettingsSidebarNav } from "./SettingsSidebarNav";
-import { KIN_ONLY_SETTINGS_PATHS } from "../../kin/kinSettingsSearch";
 import { SETTINGS_NAV_GROUPS, SETTINGS_SECTION_LABELS } from "./settingsSearch";
 
 vi.mock("./useAvailableSettingsSearchItems", () => ({
@@ -77,10 +76,9 @@ it("moves Tab through every settings section", async () => {
   await using _screen = await renderNav();
   await userEvent.click(page.getByRole("combobox", { name: "Search settings" }));
 
-  // Kin: without a Kin host its sections are not in the nav.
-  const sections = SETTINGS_NAV_GROUPS.flatMap((group) => group.paths)
-    .filter((to) => !KIN_ONLY_SETTINGS_PATHS.has(to))
-    .map((to) => SETTINGS_SECTION_LABELS[to]);
+  const sections = SETTINGS_NAV_GROUPS.flatMap((group) => group.paths).map(
+    (to) => SETTINGS_SECTION_LABELS[to],
+  );
   const tabbed: string[] = [];
   for (let step = 0; step < sections.length; step += 1) {
     await userEvent.tab();
