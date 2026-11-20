@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Fixtures build ISO times relative to a fixed clock.
 import type { KinMessage, KinWidget } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
