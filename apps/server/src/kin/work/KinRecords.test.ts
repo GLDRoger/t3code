@@ -3394,7 +3394,10 @@ it.effect(
       yield* sql`UPDATE kin_people SET time_zone = NULL
         WHERE org_id = ${orgId} AND person_id = ${mateId}`;
       // The agent reads the day the owner named, west of UTC too.
-      assert.include(yield* LeadWork.get(scope, { key: "W-2" }), { due: "2026-11-20" });
+      assert.include(yield* LeadWork.get(scope, { key: "W-2" }), {
+        due: "2026-11-20",
+        dueDay: "Fri 20 Nov 2026",
+      });
       // The owner asked, so the owner gave it; the agent only carried it.
       const given = yield* OwnerWork.get([mate], { orgId, key: "W-2" });
       assert.deepInclude(given, {

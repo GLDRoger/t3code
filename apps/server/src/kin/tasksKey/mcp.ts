@@ -30,6 +30,7 @@ const TaskSummary = Schema.Struct({
   title: Schema.String,
   state: KinRecordState,
   due: Schema.NullOr(Schema.String),
+  dueDay: Schema.optional(Schema.String),
   project: Schema.NullOr(Schema.String),
 });
 const TaskDetail = Schema.Struct({

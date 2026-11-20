@@ -80,6 +80,7 @@ import { fieldList, fieldText, isMoney, LISTS, listOf, parseFields, shownField }
 import {
   addUp,
   dayIn,
+  dayWords,
   farAbove,
   formatMoney,
   issuedAfterDue,
@@ -250,12 +251,14 @@ const DealShown = Schema.Struct({
   stage: Schema.String,
   value: Schema.optional(Schema.String),
   expected: Schema.optional(Schema.String),
+  expectedDay: Schema.optional(Schema.String),
   lookedAfterBy: Schema.String,
   next: Schema.NullOr(
     Schema.Struct({
       key: Schema.String,
       title: Schema.String,
       due: Schema.optional(Schema.String),
+      dueDay: Schema.optional(Schema.String),
       late: Schema.optional(Schema.Literal(true)),
     }),
   ).annotate({ description: "Its soonest open follow-up they see; null when there is none." }),
@@ -275,6 +278,7 @@ const Row = Schema.Struct({
   owner: Schema.String,
   waitingOn: Schema.optional(Schema.String),
   due: Schema.optional(Schema.String),
+  dueDay: Schema.optional(Schema.String),
   late: Schema.optional(Schema.Literal(true)),
   suggested: Schema.optional(Schema.Literal(true)),
   working: Schema.optional(Schema.Literal(true)),
@@ -1024,7 +1028,12 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     state: record.state,
     owner: name(record.owner) ?? "someone",
     ...(waitingOn === undefined ? {} : { waitingOn }),
-    ...(record.dueAt === null ? {} : { due: dayOrTime(record.dueAt, record.dueAllDay, view.zone) }),
+    ...(record.dueAt === null
+      ? {}
+      : {
+          due: dayOrTime(record.dueAt, record.dueAllDay, view.zone),
+          dueDay: dayWords(Date.parse(record.dueAt), view.zone),
+        }),
     ...(record.late ? { late: true as const } : {}),
     ...(record.confirmed ? {} : { suggested: true as const }),
     ...(record.working ? { working: true as const } : {}),
@@ -1087,7 +1096,10 @@ const dealsShown = Effect.fnUntraced(function* (
         ...(deal.value === undefined ? {} : { value: formatMoney(deal.value) }),
         ...(deal.expectedAt === null
           ? {}
-          : { expected: dayOrTime(deal.expectedAt, deal.expectedAllDay, view.zone) }),
+          : {
+              expected: dayOrTime(deal.expectedAt, deal.expectedAllDay, view.zone),
+              expectedDay: dayWords(Date.parse(deal.expectedAt), view.zone),
+            }),
         lookedAfterBy: view.name(deal.owner) ?? "someone",
         next:
           deal.next === null
@@ -1097,7 +1109,10 @@ const dealsShown = Effect.fnUntraced(function* (
                 title: deal.next.title,
                 ...(deal.next.dueAt === null
                   ? {}
-                  : { due: dayOrTime(deal.next.dueAt, deal.next.dueAllDay, view.zone) }),
+                  : {
+                      due: dayOrTime(deal.next.dueAt, deal.next.dueAllDay, view.zone),
+                      dueDay: dayWords(Date.parse(deal.next.dueAt), view.zone),
+                    }),
                 ...(deal.next.late ? { late: true as const } : {}),
               },
         ...(deal.quote === undefined
