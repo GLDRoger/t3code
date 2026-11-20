@@ -1034,6 +1034,10 @@
     "./kin/react/kinMoneyHooks": {
       "types": "./src/kin/react/kinMoneyHooks.ts",
       "default": "./src/kin/react/kinMoneyHooks.ts"
+    },
+    "./kin/react/kinWorkHooks": {
+      "types": "./src/kin/react/kinWorkHooks.ts",
+      "default": "./src/kin/react/kinWorkHooks.ts"
     }
   },
   "scripts": {
