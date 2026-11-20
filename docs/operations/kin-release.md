@@ -6,7 +6,7 @@ A Kin release is a commit on `kin` that runs on the host. The release check runs
 
 1. On a clean checkout of the commit you want to ship: `KIN_RELEASE_CHECK_DIR=~/code/kin-lane-a/release-check BOMBADIL=<path to bombadil> node scripts/kin-release-check.ts --full`. Use `--quick` (under 10 minutes) for a small fix.
 2. Read `summary.md` or `report.html` in the folder it prints. NEW findings block the release. STILL PRESENT ones were already there at the last release. FIXED ones are gone.
-3. Deploy: `ssh` to the host, then `sudo -iu kin ~/t3code/ops/kin/host/update.sh`. It backs up the database, switches, checks health, and rolls back by itself. A non-zero exit means the host is on the previous build again. Its last lines say why. The first deploy that brings the Kin name and its check needs the host's clone fast-forwarded first: see [Update](../../ops/kin/host/README.md#update).
+3. Deploy the commit you checked: `ssh` to the host, then `sudo -iu kin ~/t3code/ops/kin/host/update.sh <commit>`; `summary.md` ends with the line when the check passed. It builds that commit even if `kin` has moved on, so a merge after the check doesn't ship unchecked. It backs up the database, switches, checks health, and rolls back by itself. A non-zero exit means the host is on the previous build again. Its last lines say why. The first deploy that brings the Kin name and its check needs the host's clone fast-forwarded first: see [Update](../../ops/kin/host/README.md#update).
 4. Mark it: `node scripts/kin-release-check.ts --mark-released <commit>`, then commit `ops/kin/releases.json` to `kin`.
 
 ## The release check
