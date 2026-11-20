@@ -67,6 +67,8 @@ export const isSteerMessage = (wakeupId: KinWakeupId, messageId: string) =>
   messageId.startsWith(`kin-steer-msg:${wakeupId}:`);
 export const isAdoptedRunMessage = (wakeupId: KinWakeupId, messageId: string) =>
   messageId === rescueMessageId(wakeupId) || isSteerMessage(wakeupId, messageId);
+// A host holds one company: bootstrap makes org `kin-default` and refuses any other. `orgId`
+// stays on every identity and row as a seam; new code needs no per-org loops or maps.
 export type PersonIdentity = {
   readonly _tag: "person";
   readonly orgId: KinOrgId;
