@@ -1243,13 +1243,15 @@ const switchTeamAgent = Effect.fn("KinLeadProvision.switchTeamAgent")(function* 
             set_by = excluded.set_by, set_at = excluded.set_at`
   ).pipe(Effect.mapError(sqlError));
   const people = yield* teammates(orgId);
-  // Everyone keeps messaging the previous one (`Reach`); only the new one's chats are opened.
+  // Everyone keeps messaging the previous one (`Reach`); only the new one's chats are opened,
+  // and none for someone restricted from it: the switch goes on all the same.
   if (next !== null)
     for (const personId of people)
-      yield* chats.createDirect(
-        { _tag: "person", orgId, personId },
-        { orgId, agentId: next.agentId },
-      );
+      if (yield* liveAgain(orgId, Reach.person(personId), Reach.agent(next.agentId)))
+        yield* chats.createDirect(
+          { _tag: "person", orgId, personId },
+          { orgId, agentId: next.agentId },
+        );
   yield* leadsChanged(orgId);
   return nextId;
 });

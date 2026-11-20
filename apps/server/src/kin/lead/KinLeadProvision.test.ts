@@ -1219,7 +1219,24 @@ describe("KinLeadProvision", () => {
 
   it.effect("retiring the team agent without naming the next is refused", () =>
     Effect.gen(function* () {
-      const { chief, ada, orgId, contacts } = yield* teamOf;
+      const { sql, chief, ada, orgId, contacts } = yield* teamOf;
+      // Switching to an agent restricted from Dev goes on: no chat is opened for him.
+      yield* Provision.reachSet({
+        editor: owner,
+        orgId,
+        a: { kind: "person", personId: KinPersonId.make("dev") },
+        b: { kind: "agent", agentId: ada.agentId },
+        restricted: true,
+      });
+      const chatsOfDev = sql`SELECT c.chat_id FROM kin_chats c
+        JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+          AND m.person_id = 'dev' AND m.left_at IS NULL
+        ORDER BY c.chat_id`;
+      const before = yield* chatsOfDev;
+      yield* Provision.setTeamAgent({ editor: owner, orgId, agentId: ada.agentId });
+      assert.strictEqual(yield* Provision.teamAgent(orgId), ada.agentId);
+      assert.deepStrictEqual(yield* chatsOfDev, before);
+      yield* Provision.setTeamAgent({ editor: owner, orgId, agentId: chief.agentId });
       assert.strictEqual(yield* refusal(Provision.retireOnHost(chief.agentId)), "conflict");
       assert.strictEqual(
         yield* refusal(

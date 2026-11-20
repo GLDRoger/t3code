@@ -1245,6 +1245,29 @@ it.effect("with no Team agent, a linked device is told in the person's own direc
     assert.deepStrictEqual(yield* told, [
       { chat_id: direct.chatId, body: KIN_DEVICE_LINKED_NOTICE },
     ]);
+
+    // The Team agent restricted from her: another device, or a replacement invite, still joins.
+    yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+      VALUES (${orgId}, ${tech}, ${owner.personId}, 0)`;
+    yield* Reach.setLimit({
+      orgId,
+      by: owner.personId,
+      a: Reach.person(person.personId),
+      b: Reach.agent(tech),
+      restricted: true,
+    });
+    const phone = yield* service.linkDevice(yield* sessions.verify(mira.accessToken), { orgId });
+    yield* service.accept({ secret: phone.secret, label: "Phone" });
+    assert.lengthOf(yield* told, 2);
+    const replacement = yield* service.createInvite(ownerSession, {
+      orgId,
+      displayName: "Mira",
+      personId: person.personId,
+    });
+    assert.strictEqual(
+      (yield* service.accept({ secret: replacement.secret })).person.personId,
+      person.personId,
+    );
   }).pipe(Effect.provide(teamLayer)),
 );
 
