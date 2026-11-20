@@ -2,7 +2,14 @@
 import "../chat/KinChatService.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { KinAgentId, KinChatError, KinOrgId, KinPersonId, ThreadId } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  KinChatError,
+  KinOrgId,
+  KinPersonId,
+  ThreadId,
+  type KinPartyPage,
+} from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -403,7 +410,7 @@ it.effect(
           ],
           who.personId,
         );
-        const client = yield* Clients.party([who], { orgId, key: corran });
+        const client: KinPartyPage = yield* Clients.party([who], { orgId, key: corran });
         assert.deepStrictEqual(
           client.contract,
           { project: project.key, renewsOn: "2027-03-01", noticeBy: "2026-12-31" },
@@ -414,7 +421,7 @@ it.effect(
       // Within the heads-up (14 days by default) of the notice day the line is amber.
       const contract = Effect.map(
         Clients.party([rhea], { orgId, key: corran }),
-        (page) => page.contract,
+        (page: KinPartyPage) => page.contract,
       );
       yield* TestClock.setTime(Date.UTC(2026, 11, 16, 12));
       assert.isUndefined((yield* contract)?.soon);
