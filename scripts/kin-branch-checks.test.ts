@@ -184,7 +184,7 @@ describe("kin branch checks", () => {
         .problems,
       1,
     );
-    // Any one commit may carry the line; every line is printed for whoever merges.
+    // A line on a later commit covers earlier ones; every line is printed for whoever merges.
     const said = check(
       { sha: "d4", message: "fix(kin): one\n\nPeople-change: none", files: [] },
       screen,
@@ -200,6 +200,15 @@ describe("kin branch checks", () => {
       "  d4 none",
       "  e5 the brief's Money title reads Cash",
     ]);
+    // A line speaks for its own commit and earlier ones, not for a screen changed after it.
+    const later = check(screen, {
+      sha: "f6",
+      message: "fix(kin): x\n\nPeople-change: none",
+      files: [],
+    });
+    assert.lengthOf(later.problems, 1);
+    assert.include(later.problems[0], "commits after f6");
+    assert.include(later.problems[0], "apps/web/src/kin/Brief.tsx");
     // The word alone is not a line.
     assert.lengthOf(check({ ...screen, message: "fix: x\n\nPeople-change:" }).problems, 1);
   });

@@ -298,10 +298,23 @@ export const checkPeopleChange = (input: {
     (file) => !TEST_FILE.test(file),
   );
   const problems: Array<string> = [];
-  const read = changed.filter(readByPeople);
-  if (read.length > 0 && said.length === 0)
+  // Commits are newest first; a line speaks for its own commit and those before it, not later ones.
+  const newestSaid = input.commits.findIndex((commit) =>
+    said.some(({ sha }) => sha === commit.sha),
+  );
+  const read = [
+    ...new Set(
+      input.commits
+        .slice(0, newestSaid === -1 ? undefined : newestSaid)
+        .flatMap((commit) => commit.files),
+    ),
+  ].filter(readByPeople);
+  const files = `${read[0]}${read.length > 1 ? ` and ${read.length - 1} more` : ""}`;
+  if (read.length > 0)
     problems.push(
-      `People-change: this branch changes what a person or an agent reads (${read[0]}${read.length > 1 ? ` and ${read.length - 1} more` : ""}), and no commit says what they will notice.\n` +
+      (newestSaid === -1
+        ? `People-change: this branch changes what a person or an agent reads (${files}), and no commit says what they will notice.\n`
+        : `People-change: commits after ${input.commits[newestSaid]!.sha}, the last with a People-change line, change what a person or an agent reads (${files}), and none says what they will notice.\n`) +
         "Add a line to the last commit message: `People-change: <what a person already had that now looks, reads or works differently, or is gone>`, or `People-change: none`.",
     );
   const approvedItems = new Set(
