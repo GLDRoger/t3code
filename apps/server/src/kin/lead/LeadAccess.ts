@@ -65,8 +65,9 @@ export const recentTurns = Effect.fn("KinLeadAccess.recentTurns")(function* (inp
 });
 
 /**
- * A person's messages and tasks still waiting for the lead in their direct chat never run, nor
- * do those an aborted turn holds, which its finish would otherwise put back on the queue.
+ * A person's messages, tasks and asked reviews still waiting for the lead in their direct chat
+ * never run, nor do those an aborted turn holds, which its finish would otherwise put back on
+ * the queue.
  */
 export const dropQueued = Effect.fn("KinLeadAccess.dropQueued")(function* (
   pair: Pick<Pair, "orgId" | "agentId">,
@@ -77,8 +78,11 @@ export const dropQueued = Effect.fn("KinLeadAccess.dropQueued")(function* (
     WHERE e.org_id = ${pair.orgId} AND e.agent_id = ${pair.agentId}
       AND (e.state = 'queued' OR (e.state = 'claimed' AND EXISTS (SELECT 1 FROM kin_wakeups w
         WHERE w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id AND w.aborted_at IS NOT NULL)))
-      AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction', 'record.changed')
-      AND json_extract(e.json, '$.chatId') = ${chatId}
+      AND ((e.tag IN ('chat.message', 'widget.action', 'chat.reaction', 'record.changed')
+          AND json_extract(e.json, '$.chatId') = ${chatId})
+        OR (e.tag = 'github' AND EXISTS (SELECT 1 FROM kin_chats c WHERE c.org_id = e.org_id
+          AND c.chat_id = ${chatId} AND c.kind = 'direct'
+          AND c.direct_key = json_extract(e.json, '$.askedBy') || ':' || e.agent_id)))
     RETURNING event_id`;
   return dropped.length;
 });

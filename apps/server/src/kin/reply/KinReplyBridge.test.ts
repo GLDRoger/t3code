@@ -53,7 +53,6 @@ import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import { KinGroups } from "../chat/KinGroups.ts";
-import { reviewAskSettled } from "../github/reviewAsk.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity, steerMessageId, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
@@ -405,77 +404,60 @@ it.effect("posts the lead run's plain text to the chat it answers, as one agent 
 );
 
 // A teammate asked for a review in their own chat (`reviewAsk.ts`): the owner reads the agent's
-// line with who asked, and the asker reads the same line in their chat with it, once.
-it.effect(
-  "a review someone asked for: the owner's line names who asked, and the asker gets it once",
-  () =>
-    Effect.gen(function* () {
-      const line =
-        "Reviewed acme/app#7: one blocking bug in the date parser. https://github.com/acme/app/pull/7#pullrequestreview-9";
-      let mateChat: KinChatId | undefined;
-      const { fake, runId, complete, posted, sql, wakeupId, owner, chats } = yield* setup({
-        event: ({ owner }) =>
-          Effect.gen(function* () {
-            const sql = yield* SqlClient.SqlClient;
-            const chats = Context.get(
-              Option.getOrThrow((yield* Kin.KinServer).services),
-              KinChatService,
-            );
-            yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('mate', ${owner.orgId}, 'mate', 'Mate', '1970-01-01T00:00:00.000Z')`.pipe(
-              Effect.orDie,
-            );
-            mateChat = (yield* chats
-              .createDirect(
-                { _tag: "person", orgId: owner.orgId, personId: KinPersonId.make("mate") },
-                { orgId: owner.orgId, agentId },
-              )
-              .pipe(Effect.orDie)).chatId;
-            return (base: WakeupEventBase): KinEvent => ({
-              ...base,
-              _tag: "github",
-              provenance: { _tag: "system" },
-              deliveryId: "poll:review:acme/app#7:abc",
-              dedupeKey: "poll:review:acme/app#7:abc",
-              eventName: "review_request",
-              repo: "acme/app",
-              summary: "review_request on acme/app#7 by mate-gh",
-              trigger: {
-                key: "review:acme/app#7:abc",
-                kind: "review_request",
-                item: "pull",
-                number: 7,
-                url: "https://github.com/acme/app/pull/7",
-                title: "Parse dates",
-                author: "mate-gh",
-                association: "MEMBER",
-                inside: true,
-                text: "",
-              },
-              askedBy: KinPersonId.make("mate"),
-            });
-          }),
-      });
-      fake.items = [text("a", 1, line, runId)];
-      yield* complete;
-      assert.deepStrictEqual(
-        (yield* posted).map((row) => row.body),
-        [`${line} Mate asked for it.`],
-      );
-      yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${owner.orgId} AND wakeup_id = ${wakeupId}`;
-      // As provisioned, the lead has its thread, so the line in the asker's chat is the agent's.
-      yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE agent_id = ${agentId}`;
-      const settled = reviewAskSettled({ orgId: owner.orgId, agentId, wakeupId }).pipe(
-        Effect.provideService(KinChatService, chats),
-      );
-      yield* settled;
-      yield* settled;
-      assert.deepStrictEqual(
-        yield* sql`SELECT body, author_kind AS kind FROM kin_messages
-        WHERE org_id = ${owner.orgId} AND chat_id = ${mateChat!} AND author_kind <> 'human' ORDER BY seq`,
-        [{ body: line, kind: "agent" }],
-      );
-      assert.lengthOf(yield* posted, 1);
-    }).pipe(Effect.provide(layer)),
+// line with who asked. The asker hears from Kin's records, never this line (`askedFor.ts`).
+it.effect("a review someone asked for: the owner's line names who asked", () =>
+  Effect.gen(function* () {
+    const line =
+      "Reviewed acme/app#7: one blocking bug in the date parser. https://github.com/acme/app/pull/7#pullrequestreview-9";
+    const { fake, runId, complete, posted } = yield* setup({
+      event: ({ owner }) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const chats = Context.get(
+            Option.getOrThrow((yield* Kin.KinServer).services),
+            KinChatService,
+          );
+          yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('mate', ${owner.orgId}, 'mate', 'Mate', '1970-01-01T00:00:00.000Z')`.pipe(
+            Effect.orDie,
+          );
+          yield* chats
+            .createDirect(
+              { _tag: "person", orgId: owner.orgId, personId: KinPersonId.make("mate") },
+              { orgId: owner.orgId, agentId },
+            )
+            .pipe(Effect.orDie);
+          return (base: WakeupEventBase): KinEvent => ({
+            ...base,
+            _tag: "github",
+            provenance: { _tag: "system" },
+            deliveryId: "poll:review:acme/app#7:abc",
+            dedupeKey: "poll:review:acme/app#7:abc",
+            eventName: "review_request",
+            repo: "acme/app",
+            summary: "review_request on acme/app#7 by mate-gh",
+            trigger: {
+              key: "review:acme/app#7:abc",
+              kind: "review_request",
+              item: "pull",
+              number: 7,
+              url: "https://github.com/acme/app/pull/7",
+              title: "Parse dates",
+              author: "mate-gh",
+              association: "MEMBER",
+              inside: true,
+              text: "",
+            },
+            askedBy: KinPersonId.make("mate"),
+          });
+        }),
+    });
+    fake.items = [text("a", 1, line, runId)];
+    yield* complete;
+    assert.deepStrictEqual(
+      (yield* posted).map((row) => row.body),
+      [`${line} Mate asked for it.`],
+    );
+  }).pipe(Effect.provide(layer)),
 );
 
 const checkInEvent =

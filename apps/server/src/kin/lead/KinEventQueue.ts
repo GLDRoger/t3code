@@ -31,6 +31,7 @@ import {
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
+import { settleAskedReviews } from "../github/askedFor.ts";
 import * as Reach from "./Reach.ts";
 
 const EventJson = Schema.fromJsonString(KinEvent);
@@ -307,6 +308,10 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const repo = yield* Effect.serviceOption(KinChatRepository);
   const hub = yield* Effect.serviceOption(KinChatHub);
+  const settled = (orgId: KinOrgId, eventIds: ReadonlyArray<string>) =>
+    settleAskedReviews({ repo, hub }, orgId, eventIds).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
   const laneOf = sql.literal(LANE_OF);
   const storedAuthor = sql.literal(STORED_AUTHOR);
   const authorOf = sql.literal(AUTHOR_OF);
@@ -772,6 +777,10 @@ const make = Effect.gen(function* () {
             AND EXISTS (SELECT 1 FROM kin_wakeups WHERE org_id = ${input.orgId}
               AND wakeup_id = ${input.wakeupId} AND status = 'running')
           RETURNING event_id, state`;
+          yield* settled(
+            input.orgId,
+            rows.filter((row) => row.state !== "queued").map((row) => row.event_id),
+          );
           yield* sql`UPDATE kin_wakeups SET status = ${input.countAttempt ? "failed" : "released"}, ended_at = ${now}
           WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND status = 'running'
             AND NOT EXISTS (SELECT 1 FROM kin_events WHERE org_id = ${input.orgId}
@@ -830,19 +839,30 @@ const make = Effect.gen(function* () {
           WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND status = 'running'
           RETURNING wakeup_id`;
           if (closed.length === 0) return none;
+          // A review someone asked for is told how it ended, in this same step.
+          const settle = (ended: ReadonlyArray<{ readonly event_id: string }>) =>
+            settled(
+              input.orgId,
+              ended.map((row) => row.event_id),
+            );
           if (input.status === "completed") {
-            yield* sql`UPDATE kin_events SET state = 'done'
-            WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'`;
+            yield* settle(
+              yield* sql<{ event_id: string }>`UPDATE kin_events SET state = 'done'
+            WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'
+            RETURNING event_id`,
+            );
             return none;
           }
           if (visible !== undefined) {
             // A message whose reply posted is answered, whatever failed after.
             const rows = yield* sql<{
+              event_id: string;
               replied: number;
             }>`UPDATE kin_events SET attempts = attempts + 1,
               state = CASE WHEN replied_at IS NULL THEN 'failed' ELSE 'done' END
             WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'
-            RETURNING replied_at IS NOT NULL AS replied`;
+            RETURNING event_id, replied_at IS NOT NULL AS replied`;
+            yield* settle(rows);
             const replied = rows.filter((row) => row.replied === 1).length;
             return { failedEventIds: [], stranded: rows.length - replied, replied, retried: 0 };
           }
@@ -854,6 +874,7 @@ const make = Effect.gen(function* () {
             wakeup_id = NULL,
             not_before = ${now} + CASE WHEN attempts = 0 THEN ${FIRST_RETRY_MS} ELSE ${LATER_RETRY_MS} END
             WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed' RETURNING event_id, state`;
+          yield* settle(rows.filter((row) => row.state === "failed"));
           return {
             failedEventIds: rows
               .filter((row) => row.state === "failed")
@@ -886,9 +907,12 @@ const make = Effect.gen(function* () {
       `;
           if (unfinished.length === 0) return 0;
           // A message whose reply already posted is done: it is never answered twice.
-          yield* sql`UPDATE kin_events SET state = 'done'
+          yield* settled(
+            orgId,
+            (yield* sql<{ event_id: string }>`UPDATE kin_events SET state = 'done'
         WHERE wakeup_id = ${wakeupId} AND org_id = ${orgId} AND state = 'claimed'
-          AND replied_at IS NOT NULL`;
+          AND replied_at IS NOT NULL RETURNING event_id`).map((row) => row.event_id),
+          );
           const rows = yield* sql`
         UPDATE kin_events SET state = 'queued', wakeup_id = NULL
         WHERE wakeup_id = ${wakeupId} AND org_id = ${orgId} AND state = 'claimed'

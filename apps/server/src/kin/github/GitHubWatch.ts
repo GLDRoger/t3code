@@ -26,6 +26,7 @@ import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { githubClosed } from "../work/githubEntries.ts";
 import { agentPostKeys, signed } from "./agentMark.ts";
+import { UNFINISHED } from "./askedFor.ts";
 import { AGENT_POSTS_FILE, GH_APP_FOLDER } from "./ghSign.ts";
 import {
   decideTriggers,
@@ -369,19 +370,26 @@ const triggerFacts = (
           baseRef: thread.pull.baseRef,
           fork: thread.pull.fork,
           ownersOwn: thread.author.toLowerCase() === ownerLogin.toLowerCase(),
+          headSha: thread.pull.headSha,
           ...(diff === undefined ? {} : { diff }),
         },
       }),
   ...(trigger.kind === "checks" ? { failing: trigger.text.split(", ") } : {}),
 });
 
-/** A PR's diff as the server reads it for a turn with no shell, clipped. */
+/** A PR's diff as the server reads it for a turn with no shell, clipped; at `at`, that head's. */
 export const readDiff = (
   get: (path: string, headers?: Record<string, string>) => Effect.Effect<ApiAnswer>,
   repo: string,
   number: number,
+  at?: { readonly baseRef: string; readonly headSha: string },
 ) =>
-  get(`repos/${repo}/pulls/${number}`, { Accept: "application/vnd.github.diff" }).pipe(
+  get(
+    at === undefined
+      ? `repos/${repo}/pulls/${number}`
+      : `repos/${repo}/compare/${encodeURIComponent(at.baseRef)}...${at.headSha}`,
+    { Accept: "application/vnd.github.diff" },
+  ).pipe(
     Effect.map((answer) =>
       answer.status === 200
         ? answer.text.length <= DIFF_CAP
@@ -391,8 +399,15 @@ export const readDiff = (
     ),
   );
 
-/** A trigger's key as handled for an ask whose turn didn't finish: asking again retries it. */
-export const UNFINISHED = "unfinished";
+/** The head a first review (`review:<repo>#<n>`) read, kept under that head's own key. */
+export const FIRST_REVIEW_HEAD = "head";
+export const headKey = (repo: string, number: number, headSha: string) =>
+  `review:${repo.toLowerCase()}#${number}:${headSha}`;
+/** Whether an ask may claim this head again: nothing ran for it, or its cap's hour is over. */
+export const reclaimable = (row: { readonly outcome: string; readonly at: number }, now: number) =>
+  row.outcome === UNFINISHED ||
+  row.outcome === "stale" ||
+  (row.outcome === "capped" && row.at <= now - HOUR);
 
 /**
  * Stores the trigger once and, when it may, wakes its agent in the same transaction: the watch's
@@ -417,10 +432,29 @@ export const claimTrigger = Effect.fn("KinGitHubWatch.handle")(function* (input:
   const repo = thread.repo.toLowerCase();
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      const [already] = yield* sql<{ outcome: string }>`SELECT outcome FROM kin_github_handled
-        WHERE org_id = ${orgId} AND trigger_key = ${trigger.key}`;
-      const retry = already?.outcome === UNFINISHED && askedBy !== undefined;
+      const [already] = yield* sql<{ outcome: string; at: number }>`SELECT outcome, at
+        FROM kin_github_handled WHERE org_id = ${orgId} AND trigger_key = ${trigger.key}`;
+      const retry = already !== undefined && askedBy !== undefined && reclaimable(already, now);
       if (already !== undefined && !retry) return "seen" as const;
+      // A first review and an ask share one identity per head: whichever came first holds it.
+      const head =
+        trigger.kind === "review" && thread.pull !== undefined
+          ? headKey(thread.repo, thread.number, thread.pull.headSha)
+          : undefined;
+      if (head !== undefined) {
+        const [asked] = yield* sql<{
+          outcome: string;
+          at: number;
+        }>`SELECT outcome, at FROM kin_github_handled
+          WHERE org_id = ${orgId} AND trigger_key = ${head}`;
+        if (asked !== undefined && !reclaimable(asked, now)) {
+          yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id,
+              outcome, at)
+            VALUES (${orgId}, ${trigger.key}, ${repo}, ${thread.number}, ${input.agentId}, 'seen',
+              ${now})`;
+          return "seen" as const;
+        }
+      }
       const [recent] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
         FROM kin_github_handled WHERE org_id = ${orgId} AND repo = ${repo}
           AND number = ${thread.number} AND outcome = 'woke' AND at > ${now - HOUR}`;
@@ -442,6 +476,13 @@ export const claimTrigger = Effect.fn("KinGitHubWatch.handle")(function* (input:
             VALUES (${orgId}, ${trigger.key}, ${repo}, ${thread.number}, ${input.agentId},
               ${outcome}, ${now})`;
       if (outcome !== "woke") return outcome;
+      if (head !== undefined)
+        yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id,
+            outcome, at)
+          VALUES (${orgId}, ${head}, ${repo}, ${thread.number}, ${input.agentId},
+            ${FIRST_REVIEW_HEAD}, ${now})
+          ON CONFLICT (org_id, trigger_key) DO UPDATE SET outcome = excluded.outcome,
+            agent_id = excluded.agent_id, at = excluded.at, review_url = NULL`;
       const facts = triggerFacts(thread, trigger, input.ownerLogin, input.diff);
       const delivery = retry ? `ask:${trigger.key}:${now}` : `poll:${trigger.key}`;
       yield* queue.enqueue(
@@ -894,6 +935,8 @@ const ownerReview = Effect.fn("KinGitHubWatch.review")(
       readonly line: number;
       readonly body: string;
     }>;
+    /** The head the review is of: GitHub places it there even after a later push. */
+    readonly commitId?: string | undefined;
   }) {
     const api = yield* KinGitHubApi;
     const get = (path: string) => api.call({ path });
@@ -917,6 +960,7 @@ const ownerReview = Effect.fn("KinGitHubWatch.review")(
         ? "COMMENT"
         : input.event;
     const body = signed(input.body, input.agentName);
+    const at = input.commitId === undefined ? {} : { commit_id: input.commitId };
     const post = (
       call: KinGitHubApi["Service"]["call"],
       event: "COMMENT" | "REQUEST_CHANGES",
@@ -926,6 +970,7 @@ const ownerReview = Effect.fn("KinGitHubWatch.review")(
         method: "POST",
         path: `repos/${ours.repo}/pulls/${input.number}/reviews`,
         body: {
+          ...at,
           body,
           event,
           // Inline comments carry the marker too, so the watch knows them under either login.
@@ -947,6 +992,7 @@ const ownerReview = Effect.fn("KinGitHubWatch.review")(
         method: "POST",
         path: `repos/${ours.repo}/pulls/${input.number}/reviews`,
         body: {
+          ...at,
           body: signed(
             [input.body, ...input.comments.map((c) => `**${c.path}:${c.line}**\n${c.body}`)].join(
               "\n\n",
@@ -1021,6 +1067,7 @@ export const ownerGitHubReview = Effect.fn("KinGitHubWatch.ownerGitHubReview")(f
       | ReadonlyArray<{ readonly path: string; readonly line: number; readonly body: string }>
       | undefined;
   },
+  commitId?: string,
 ) {
   const api = yield* KinGitHubApi;
   if ((yield* api.connected()) === null) return undefined;
@@ -1039,6 +1086,7 @@ export const ownerGitHubReview = Effect.fn("KinGitHubWatch.ownerGitHubReview")(f
     body: input.body,
     event: input.event ?? "COMMENT",
     comments: input.comments ?? [],
+    commitId,
   });
   return {
     status: "posted" as const,

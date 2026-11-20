@@ -701,6 +701,8 @@ export const KinGithubTrigger = Schema.Struct({
       fork: Schema.Boolean,
       /** The owner's own account opened it: GitHub allows only a comment review. */
       ownersOwn: Schema.Boolean,
+      /** The head commit Kin read; a review someone asked for is posted against it. */
+      headSha: Schema.optional(Schema.String),
       /** For an outside PR, whose turn gets no shell: the diff as the server read it, clipped. */
       diff: Schema.optional(Schema.String),
     }),

@@ -23,6 +23,8 @@ export interface FakeRepo {
   empty?: boolean;
   /** Classic branch protection on the default branch, as GitHub returns it. */
   classic?: Record<string, unknown>;
+  /** Logins GitHub lists as able to read it, besides the user. */
+  collaborators?: string[];
 }
 export interface FakeRuleset {
   id: number;
@@ -137,6 +139,8 @@ export interface FakeWorld {
   seq: number;
   /** A failure every call answers with, such as 401, to show a signed-out login. */
   down: number | null;
+  /** Paths that answer 502 while listed, as GitHub does in a short outage. */
+  failing?: string[];
   /** The seconds GitHub asks between looks; real GitHub says 60. */
   pollInterval?: number;
   repos: FakeRepo[];
@@ -149,6 +153,7 @@ export interface FakeWorld {
     user: string;
     event: string;
     body: string;
+    commit_id?: string;
   }[];
   reactions: { on: string; content: string; by?: string }[];
   checks: Record<string, string[]>;
@@ -617,6 +622,8 @@ export class FakeGitHub {
     const missing: FakeAnswer = { status: 404, headers: {}, body: { message: "Not Found" } };
     if (this.world.down !== null)
       return { status: this.world.down, headers: {}, body: { message: "Bad credentials" } };
+    if (this.world.failing?.includes(path) === true)
+      return { status: 502, headers: {}, body: { message: "Server Error" } };
     const app = this.world.app ?? null;
     const bearer = /^bearer (.+)$/i.exec(headers.authorization ?? "")?.[1];
     const asApp = app !== null && bearer !== undefined && bearer.split(".").length === 3;
@@ -871,6 +878,15 @@ export class FakeGitHub {
         })),
       );
     }
+    const whole = /^repos\/([^/]+\/[^/]+)$/.exec(path);
+    if (method === "GET" && whole !== null) {
+      const repo = this.world.repos.find(
+        (entry) => entry.full_name.toLowerCase() === whole[1]!.toLowerCase(),
+      );
+      return repo === undefined
+        ? missing
+        : ok({ full_name: repo.full_name, private: repo.private });
+    }
     const match = /^repos\/([^/]+\/[^/]+)\/(.*)$/.exec(path);
     if (match === null) return missing;
     const repo = match[1]!;
@@ -879,6 +895,24 @@ export class FakeGitHub {
     const guarded = this.rulesAnswer(method, repo, rest, body, actor, installation !== undefined);
     if (guarded !== undefined) return guarded;
     try {
+      if (method === "GET" && (found = /^collaborators\/([^/]+)$/.exec(rest))) {
+        const login = decodeURIComponent(found[1]!).toLowerCase();
+        const entry = this.world.repos.find(
+          (one) => one.full_name.toLowerCase() === repo.toLowerCase(),
+        );
+        return entry !== undefined &&
+          (login === this.world.user.toLowerCase() ||
+            (entry.collaborators ?? []).some((one) => one.toLowerCase() === login))
+          ? { status: 204, headers: {}, body: null }
+          : missing;
+      }
+      // A head's changes against the base, as a PR's diff reads at that head.
+      if (method === "GET" && (found = /^compare\/[^/]+\.\.\.([^/]+)$/.exec(rest))) {
+        const item = this.world.items.find(
+          (one) => one.repo.toLowerCase() === repo.toLowerCase() && one.head_sha === found![1],
+        );
+        return item === undefined ? missing : ok(item.diff);
+      }
       if (method === "GET" && (found = /^issues\/(\d+)$/.exec(rest)))
         return ok(this.issueJson(this.item(repo, Number(found[1]))));
       // Open pull requests only, as `state=open` asks; each as GitHub lists it, newest first.
@@ -977,6 +1011,7 @@ export class FakeGitHub {
           user: actor,
           event: String(body.event ?? "COMMENT"),
           body: String(body.body ?? ""),
+          ...(typeof body.commit_id === "string" ? { commit_id: body.commit_id } : {}),
         });
         const inlines: ReadonlyArray<Record<string, unknown>> = Array.isArray(body.comments)
           ? body.comments
