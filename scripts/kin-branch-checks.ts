@@ -229,7 +229,6 @@ export const KIN_HOOK_FILES_IN_BOTH: Readonly<Record<string, string>> = {
   "useKinMoneyLive.ts": "web counts its own session as owner level; the phone reads the host",
   "useKinOpen.ts": "the open-list stream, which no host serves yet",
   "useKinOpenChat.ts": "each app opens a chat through its own navigation and draft store",
-  "useKinTaskSteps.ts": "web ignores a second nudge while one is busy or sent; the phone sends it",
 };
 /** Hooks written in both apps' copies of one file, each for a reason; an entry goes with its copy. */
 export const KIN_HOOKS_IN_BOTH: Readonly<Record<string, string>> = {
