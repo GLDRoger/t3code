@@ -404,6 +404,47 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
           onChangeText={(tags) => form.edit({ tags })}
         />
       </ListSection>
+      {editing !== null ? null : (
+        <ListSection
+          title={COPY.party.contact}
+          footer={`${COPY.party.contactHint} ${COPY.contact.detailsHint}`}
+        >
+          <KinWorkTextField
+            label={COPY.party.contactName}
+            value={draft.contactName}
+            disabled={state.saving}
+            maxLength={KIN_WORK_FORM_LIMITS.name}
+            placeholder={COPY.contact.namePlaceholder}
+            onChangeText={(contactName) => form.edit({ contactName })}
+          />
+          <KinWorkTextField
+            label={COPY.contact.role}
+            value={draft.contactRole}
+            disabled={state.saving}
+            maxLength={KIN_WORK_FORM_LIMITS.short}
+            placeholder={COPY.contact.rolePlaceholder}
+            onChangeText={(contactRole) => form.edit({ contactRole })}
+          />
+          <KinWorkTextField
+            label={COPY.contact.email}
+            value={draft.contactEmail}
+            keyboard="email"
+            isPrivate
+            disabled={state.saving}
+            maxLength={KIN_WORK_FORM_LIMITS.short}
+            onChangeText={(contactEmail) => form.edit({ contactEmail })}
+          />
+          <KinWorkTextField
+            label={COPY.contact.phone}
+            value={draft.contactPhone}
+            keyboard="phone"
+            isPrivate
+            disabled={state.saving}
+            maxLength={KIN_WORK_FORM_LIMITS.short}
+            onChangeText={(contactPhone) => form.edit({ contactPhone })}
+          />
+        </ListSection>
+      )}
       {member ? null : (
         <>
           <ListSection>

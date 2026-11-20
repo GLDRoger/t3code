@@ -261,6 +261,10 @@ export function KinClientDialog(
     notes: useId(),
     source: useId(),
     tags: useId(),
+    contactName: useId(),
+    contactRole: useId(),
+    contactEmail: useId(),
+    contactPhone: useId(),
   };
   const kinds: ReadonlyArray<KinClientDraftKind> = !member
     ? ["prospect", "client", "vendor"]
@@ -351,6 +355,56 @@ export function KinClientDialog(
           />
         </Field>
       </div>
+      {editing !== null ? null : (
+        <fieldset className="flex flex-col gap-4">
+          <legend className="mb-1 text-sm font-medium text-foreground">{COPY.party.contact}</legend>
+          <p className="-mt-3 text-xs text-muted-foreground">{COPY.party.contactHint}</p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field id={ids.contactName} label={COPY.party.contactName}>
+              <Input
+                id={ids.contactName}
+                value={draft.contactName}
+                maxLength={KIN_WORK_FORM_LIMITS.name}
+                placeholder={COPY.contact.namePlaceholder}
+                autoComplete="off"
+                aria-invalid={state.problem?.text === COPY.party.contactNameMissing || undefined}
+                onChange={(event) => form.edit({ contactName: event.target.value })}
+              />
+            </Field>
+            <Field id={ids.contactRole} label={COPY.contact.role}>
+              <Input
+                id={ids.contactRole}
+                value={draft.contactRole}
+                maxLength={KIN_WORK_FORM_LIMITS.short}
+                placeholder={COPY.contact.rolePlaceholder}
+                autoComplete="off"
+                onChange={(event) => form.edit({ contactRole: event.target.value })}
+              />
+            </Field>
+            <Field id={ids.contactEmail} label={COPY.contact.email} isPrivate>
+              <Input
+                id={ids.contactEmail}
+                type="email"
+                value={draft.contactEmail}
+                maxLength={KIN_WORK_FORM_LIMITS.short}
+                autoComplete="off"
+                onChange={(event) => form.edit({ contactEmail: event.target.value })}
+              />
+            </Field>
+            <Field id={ids.contactPhone} label={COPY.contact.phone} isPrivate>
+              <Input
+                id={ids.contactPhone}
+                type="tel"
+                value={draft.contactPhone}
+                maxLength={KIN_WORK_FORM_LIMITS.short}
+                autoComplete="off"
+                onChange={(event) => form.edit({ contactPhone: event.target.value })}
+              />
+            </Field>
+          </div>
+          <p className="-mt-2 text-xs text-muted-foreground">{COPY.contact.detailsHint}</p>
+        </fieldset>
+      )}
       {member ? null : (
         <>
           <Field
