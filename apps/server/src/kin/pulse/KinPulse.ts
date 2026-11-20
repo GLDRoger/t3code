@@ -576,8 +576,9 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
   const refreshes = yield* KinRefreshObserver;
-  const ctx = yield* context(orgId, at);
-  const facts = yield* senseIn(ctx);
+  // Sensed from committed rows before the transaction, on a reader: off the writer it needs.
+  const ctx = yield* context(orgId, at).pipe(NodeSqliteClient.readOnly);
+  const facts = yield* senseIn(ctx).pipe(NodeSqliteClient.readOnly);
   // Owner-level screens read Needs attention again only on this topic, so any change to what was
   // sensed moves it: a fact's words or progress, not only a fact coming or going.
   const sensedNow = shortHash(yield* encodeSensed(facts));

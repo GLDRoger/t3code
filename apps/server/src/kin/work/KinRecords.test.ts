@@ -4529,3 +4529,25 @@ it.effect(
       assert.strictEqual(after.turnChanges!.count, 2);
     }).pipe(Effect.provide(receiptLayer)),
 );
+
+it.effect("an announcement reaches screens only once its transaction commits", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const records = yield* KinRecords.KinRecords;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO sqlite_sequence (name, seq) SELECT 'kin_record_changes', 0
+      WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'kin_record_changes')`;
+    const pull = yield* Stream.toPull(records.changes(orgId));
+    const opening = (yield* pull)[0]!.seq;
+    // Screens read on readers: told before the commit, they would read what it undoes.
+    yield* sql
+      .withTransaction(records.announce(orgId).pipe(Effect.andThen(Effect.fail("rolled back"))))
+      .pipe(Effect.flip);
+    yield* sql`UPDATE sqlite_sequence SET seq = seq + 10 WHERE name = 'kin_record_changes'`;
+    yield* records.announce(orgId);
+    assert.deepStrictEqual(
+      (yield* pull).map((tick) => tick.seq),
+      [opening + 11],
+    );
+  }).pipe(Effect.scoped, Effect.provide(layer)),
+);
