@@ -53,7 +53,7 @@ kv as owner web click --name "Add task"    # exact name first; --role option, --
 kv as owner web type --name "What needs doing" "Check the logo files" --enter
 kv as zoya web wait "Check the logo files" # or --gone; 20 s by default
 kv as owner web screenshot /tmp/proof/new-task.png   # refuses any path under ~/.t3
-kv as owner web view --width 390 --dark       # phone width or wide, light or dark, for captures
+kv as owner web view --width 390 --dark       # phone width or wide, light or dark; the size stays until changed
 kv as dev rpc kin.work.list '{"project":"P-1"}'      # orgId is filled in
 kv as meera wire kin.work.create '{"clientRequestId":"x","title":"Plan"}' --watch owner,zoya --find Plan  # what each open page got
 kv tool finance money_summary '{}'                   # one real agent turn, no model
@@ -62,7 +62,8 @@ kv tool chief people_read '{}' --reply "Checked." --hold 12   # stays working 12
 kv mail expire hello@ambermill.example              # its sign-in stops working; --back restores it
 kv mail sent                                          # what the fake mailbox sent
 kv mail deliver --to hello@ambermill.example --from "Anita <anita@orbitdental.example>" --subject "Re: invoice" --body "Paid today"
-kv clock advance 3d                                   # every stored Kin time moves 3 days back
+kv clock set "mon 09:01"                              # now moves forward to then, company zone
+kv clock advance 3d                                   # now moves 3 days forward; nothing restarts
 kv db "select key, state from kin_records where register_id = 'invoices'"
 ```
 
@@ -79,8 +80,12 @@ kv db "select key, state from kin_records where register_id = 'invoices'"
   turn order fails the script. `"$key"` in a later call is the record key an earlier one made.
 - A check-in's reply (Run now) is `<instance>/verify/checkin-reply.md` when that file exists; the
   scripted agent posts it once and deletes it, to show a brief.
-- `clock` stops the server, rewrites stored times in one transaction and starts it again. The
-  server's own clock is untouched; `set-date` moves times so that today reads as that date.
+- `clock set|advance|show` move the instance's now forward only (`DevClock.ts`: Kin's clock and
+  T3's scheduled tasks, on a dev server with `KIN_DEV_CLOCK`); a due slot runs on the next tick.
+  T3's orchestration, which Kin's turns run through, keeps the real clock its worker reads, so a
+  turn starts at once after a move. `mail deliver` stamps mail at the moved now.
+  Kin's screens in kv's browsers follow on their next `web` command. `clock age 3d` is the old
+  move: it stops the server, moves stored times back and starts it again.
 - `db` opens the database read-only. Write through RPCs or tools, never SQL.
 
 ## Lifecycle scripts

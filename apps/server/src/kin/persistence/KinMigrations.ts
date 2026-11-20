@@ -104,6 +104,9 @@ import CardPlans from "./migrations/K180_CardPlans.ts";
 import TasksKeys from "./migrations/K181_TasksKeys.ts";
 import HandoffRoutes from "./migrations/K182_HandoffRoutes.ts";
 import TasksKeyMakers from "./migrations/K183_TasksKeyMakers.ts";
+import Recommendations from "./migrations/K184_Recommendations.ts";
+import AskedFor from "./migrations/K185_AskedFor.ts";
+import TasksKeysWithoutMaker from "./migrations/K186_TasksKeysWithoutMaker.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -288,6 +291,9 @@ const loader = Migrator.fromRecord({
   "181_TasksKeys": TasksKeys,
   "182_HandoffRoutes": HandoffRoutes,
   "183_TasksKeyMakers": TasksKeyMakers,
+  "184_Recommendations": Recommendations,
+  "185_AskedFor": AskedFor,
+  "186_TasksKeysWithoutMaker": TasksKeysWithoutMaker,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

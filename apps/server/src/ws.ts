@@ -257,6 +257,7 @@ import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as TriageService from "./triage/TriageService.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import * as IssueService from "./issue/IssueService.ts";
+import * as ThreadIssueService from "./orchestration-v2/ThreadIssueService.ts";
 import * as IssueTrackerConnections from "./issue/IssueTrackerConnections.ts";
 import * as PullRequestReviewGuideService from "./pullRequest/PullRequestReviewGuideService.ts";
 import { listLinkedPullRequestThreads } from "./pullRequest/linkedThreads.ts";
@@ -739,15 +740,19 @@ type SplitWsRpc = Extract<
 >;
 const isSplitWsRpc = (rpc: ServerWsRpc): rpc is SplitWsRpc =>
   SPLIT_WS_RPC_PREFIXES.some((prefix) => rpc._tag.startsWith(`${prefix}.`));
-// Kin's methods get a group of their own: one group for everything else is too deep to type.
-type KinWsRpc = Extract<ServerWsRpc, { readonly _tag: `kin.${string}` }>;
-type OtherWsRpc = Exclude<ServerWsRpc, SplitWsRpc | KinWsRpc>;
-const isKinWsRpc = (rpc: ServerWsRpc): rpc is KinWsRpc => rpc._tag.startsWith("kin.");
+// Kin's methods get groups of their own (Work's apart): one group is too deep to type.
+type KinWorkWsRpc = Extract<ServerWsRpc, { readonly _tag: `kin.work.${string}` }>;
+type KinWsRpc = Exclude<Extract<ServerWsRpc, { readonly _tag: `kin.${string}` }>, KinWorkWsRpc>;
+type OtherWsRpc = Exclude<ServerWsRpc, SplitWsRpc | KinWsRpc | KinWorkWsRpc>;
+const isKinWorkWsRpc = (rpc: ServerWsRpc): rpc is KinWorkWsRpc => rpc._tag.startsWith("kin.work.");
+const isKinWsRpc = (rpc: ServerWsRpc): rpc is KinWsRpc =>
+  rpc._tag.startsWith("kin.") && !isKinWorkWsRpc(rpc);
 const isOtherWsRpc = (rpc: ServerWsRpc): rpc is OtherWsRpc =>
-  !isSplitWsRpc(rpc) && !isKinWsRpc(rpc);
+  !isSplitWsRpc(rpc) && !isKinWsRpc(rpc) && !isKinWorkWsRpc(rpc);
 const serverWsRpcs = Array.from(ServerWsRpcGroup.requests.values());
 const SplitWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isSplitWsRpc));
 const KinWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isKinWsRpc));
+const KinWorkWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isKinWorkWsRpc));
 const OtherWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isOtherWsRpc));
 function toAuthAccessStreamEvent(
   change: Exclude<
@@ -1496,6 +1501,7 @@ export const layerWsRpc = (
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
       const issues = yield* IssueService.IssueService;
+      const threadIssues = yield* ThreadIssueService.ThreadIssueService;
       const issueTrackers = yield* IssueTrackerConnections.IssueTrackerConnections;
       const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
       const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
@@ -1991,6 +1997,7 @@ export const layerWsRpc = (
         [WS_METHODS.issuesComments]: (input) => issues.comments(input),
         [WS_METHODS.issuesTemplates]: (input) => issues.templates(input),
         [WS_METHODS.issuesCandidates]: (input) => issues.candidates(input),
+        [WS_METHODS.issuesLinkedThreads]: (input) => threadIssues.linkedThreads(input),
         [WS_METHODS.issuesCreate]: (input) => issues.create(input),
         [WS_METHODS.issuesComment]: (input) => issues.comment(input),
         [WS_METHODS.issuesUpdate]: (input) => issues.update(input),
@@ -3617,10 +3624,12 @@ export const layerWsRpc = (
       });
       const splitHandlers: Pick<typeof handlers, SplitWsRpc["_tag"]> = handlers;
       const kinHandlers: Pick<typeof handlers, KinWsRpc["_tag"]> = handlers;
+      const kinWorkHandlers: Pick<typeof handlers, KinWorkWsRpc["_tag"]> = handlers;
       const otherHandlers: Pick<typeof handlers, OtherWsRpc["_tag"]> = handlers;
       return Context.mergeAll(
         yield* SplitWsRpcGroup.toHandlers(splitHandlers),
         yield* KinWsRpcGroup.toHandlers(kinHandlers),
+        yield* KinWorkWsRpcGroup.toHandlers(kinWorkHandlers),
         yield* OtherWsRpcGroup.toHandlers(otherHandlers),
       );
     }),
@@ -3639,6 +3648,7 @@ export const layer = Layer.unwrap(
     const npmRelease = yield* NpmRelease.NpmRelease;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const issues = yield* IssueService.IssueService;
+    const threadIssues = yield* ThreadIssueService.ThreadIssueService;
     const issueTrackers = yield* IssueTrackerConnections.IssueTrackerConnections;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
     const peerLinks = yield* PeerLinks.PeerLinks;
@@ -3730,6 +3740,7 @@ export const layer = Layer.unwrap(
               // Share server-lifetime PR caches so WS mutations invalidate every client's HTTP diffs.
               Layer.provide(Layer.succeed(PullRequestService.PullRequestService, pullRequests)),
               Layer.provide(Layer.succeed(IssueService.IssueService, issues)),
+              Layer.provide(Layer.succeed(ThreadIssueService.ThreadIssueService, threadIssues)),
               Layer.provide(
                 Layer.succeed(IssueTrackerConnections.IssueTrackerConnections, issueTrackers),
               ),

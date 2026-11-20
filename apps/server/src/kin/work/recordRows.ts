@@ -32,7 +32,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
-import { parseFields } from "./lists.ts";
+import { listNameOf, parseFields } from "./lists.ts";
 import { isBuiltIn } from "./registers.ts";
 
 /** The plain rows behind `KinRecords`: reads and the shapes they decode into. No writes here. */
@@ -148,19 +148,28 @@ export const actorOf = (kind: string, id: string | null): Actor =>
 /** Lists whose entries are private only by their own label: a task never inherits one. */
 export const OWN_LABEL_LISTS = ["work", "milestones"] as const;
 
+/** Whether `r`'s client, its project or its project's client is labelled sensitive. */
+const parentLabelled = (sql: SqlClient.SqlClient) => sql`EXISTS (SELECT 1 FROM kin_records s
+    WHERE s.org_id = r.org_id AND s.sensitive = 1 AND s.record_id IN (r.party_id, r.project_id,
+      (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id)))`;
+
 /**
- * Whether `r`'s client, its project or its project's client is labelled sensitive (design 4.9).
+ * Whether `r` inherits a label from its client or project (design 4.9).
  * Tasks and milestones are private only when marked so themselves.
  */
-export const inheritedSensitive = (
-  sql: SqlClient.SqlClient,
-) => sql`(r.register_id NOT IN ${sql.in(OWN_LABEL_LISTS)} AND EXISTS (SELECT 1 FROM kin_records s
-    WHERE s.org_id = r.org_id AND s.sensitive = 1 AND s.record_id IN (r.party_id, r.project_id,
-      (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id))))`;
+export const inheritedSensitive = (sql: SqlClient.SqlClient) =>
+  sql`(r.register_id NOT IN ${sql.in(OWN_LABEL_LISTS)} AND ${parentLabelled(sql)})`;
 
-/** `r`'s own label or one it inherits: the one definition every sensitivity check uses. */
+/** `r`'s own label or one it inherits: the one check every screen and Kin agent uses. */
 export const sensitiveNow = (sql: SqlClient.SqlClient) =>
   sql`(r.sensitive = 1 OR ${inheritedSensitive(sql)})`;
+
+/**
+ * What a coding-agent key never reaches: `r`'s own label, or its client's, project's or project's
+ * client's, tasks included. Screens and Kin's own agents keep `sensitiveNow`.
+ */
+export const keySensitive = (sql: SqlClient.SqlClient) =>
+  sql`(r.sensitive = 1 OR ${parentLabelled(sql)})`;
 
 /**
  * Whether an entry is sensitive now: its own label, or its client's, project's or project's
@@ -401,6 +410,7 @@ export const toRecord = (row: RecordRow, now: number): KinRecord => {
       ? { markedBy: KinPersonId.make(row.markedBy) }
       : {}),
     ...moneyOf(row),
+    ...listNameOf(row.registerId),
   };
 };
 
@@ -498,8 +508,15 @@ export type FieldChange = {
   readonly field: string;
   readonly from: string | null;
   readonly to: string | null;
+  /** What `from` and `to` read as at the change, such as a deal's stage names for their ids. */
+  readonly names?: { readonly from: string | null; readonly to: string | null };
 };
 
+/** SQL for the name of the coding-agent key a `table` row came through; NULL when none did. */
+export const CODING_AGENT_NAME = (table: "kin_record_changes" | "kin_record_comments") =>
+  `CASE WHEN ${table}.coding_agent_key IS NULL THEN NULL
+    ELSE COALESCE((SELECT k.label FROM kin_tasks_keys k WHERE k.org_id = ${table}.org_id
+      AND k.session_id = ${table}.coding_agent_key), 'Coding agent') END`;
 export const parseChanges = (json: string): ReadonlyArray<FieldChange> => {
   try {
     const parsed: unknown = JSON.parse(json);
@@ -508,6 +525,9 @@ export const parseChanges = (json: string): ReadonlyArray<FieldChange> => {
     return [];
   }
 };
+
+/** A history line as stored: its fields keep their `names` until a reader puts them in words. */
+export type StoredChange = KinRecordChange & { readonly fields: ReadonlyArray<FieldChange> };
 
 const changesOf = Effect.fn("KinRecords.changesOf")(function* (
   orgId: KinOrgId,
@@ -519,7 +539,7 @@ const changesOf = Effect.fn("KinRecords.changesOf")(function* (
       actor_id AS "actorId", via, kind, fields_json AS "fieldsJson"
     FROM kin_record_changes WHERE org_id = ${orgId} AND record_id = ${recordId}
     ORDER BY seq DESC LIMIT ${limit}`;
-  return rows.map((row): KinRecordChange => ({
+  return rows.map((row): StoredChange => ({
     seq: row.seq,
     at: iso(row.at),
     by: actorOf(row.actorKind, row.actorId),
@@ -664,8 +684,10 @@ const sentWith = Effect.fn("KinRecords.sentWith")(function* (orgId: KinOrgId, re
     threadId: string | null;
     at: number;
   }>`
-    SELECT json_extract(payload_json, '$.to') AS "to",
-      json_extract(payload_json, '$.subject') AS subject,
+    SELECT COALESCE(json_extract(payload_json, '$.confirmed.to'),
+        json_extract(payload_json, '$.to')) AS "to",
+      COALESCE(json_extract(payload_json, '$.confirmed.subject'),
+        json_extract(payload_json, '$.subject')) AS subject,
       json_extract(result_json, '$.threadId') AS "threadId", done_at AS at
     FROM kin_connection_asks
     WHERE org_id = ${orgId} AND entry_record_id = ${recordId} AND state = 'sent'

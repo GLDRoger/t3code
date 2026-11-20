@@ -29,6 +29,7 @@ import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 import { PLATFORM, approvalsProblem } from "./ApprovalsSettings.logic";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
+import { useSearchableSetting } from "./settingsSearch";
 
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 const dayFormat = new Intl.DateTimeFormat(undefined, {
@@ -98,6 +99,7 @@ function Phones(props: { readonly target: Target }) {
   const now = useNowMinuteMs();
   const canRemove = useAtomValue(kinClient.approverKeyRevoke.permissionAtom(environmentId));
   const removal = useRemove(props.target, keys.refresh);
+  const searchableSetting = useSearchableSetting();
 
   if (keys.data === null)
     return keys.error === null ? (
@@ -134,7 +136,7 @@ function Phones(props: { readonly target: Target }) {
           {removal.problem}
         </p>
       )}
-      <SettingsSection title="Phones that can approve" headerAction={refresh}>
+      <SettingsSection {...searchableSetting("approval-phones")} headerAction={refresh}>
         {phones.length === 0 ? (
           <p className="px-3 py-3 text-sm text-muted-foreground sm:px-4">
             No phone can approve, so nothing that needs approval can happen yet. To set one up, open

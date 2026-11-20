@@ -249,6 +249,9 @@ export async function seed(
       tradeName: "Ambermill",
       address: "4 Example Lane, Bengaluru 560001",
       placeOfSupply: "Karnataka",
+      // Without one, Money asks for the country before anything else.
+      country: "IN",
+      homeCurrency: "INR",
     });
     for (const agent of AGENTS) {
       const created = (await owner.call("kin.lead.create", {

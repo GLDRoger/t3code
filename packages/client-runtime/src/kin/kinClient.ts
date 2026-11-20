@@ -22,6 +22,7 @@ import {
   type KinDocsSubscribeInput,
   type KinBudgetGetInput,
   type KinGoalsInput,
+  type KinBriefsInput,
   type KinCheckInsInput,
   type KinOpenReadInput,
   type KinPulseListInput,
@@ -43,9 +44,13 @@ import {
   type KinConnectionRef,
   type KinConnectionsInput,
   type KinTasksKeysListInput,
+  type KinRecommendationsInput,
   type KinSocialInput,
   type KinGitHubInput,
   type KinProjectPageInput,
+  type KinDealsInput,
+  type KinDealPageInput,
+  type KinDealStagesInput,
   type KinWorkGetInput,
   type KinWorkSubscribeInput,
 } from "@t3tools/contracts";
@@ -61,7 +66,12 @@ import {
   createEnvironmentQueryAtomFamily,
   createEnvironmentSubscriptionAtomFamily,
 } from "../state/runtime.ts";
-import { createKinQueryAtomFamily, createKinRpcCommand, retryKinAccess } from "./kinAccess.ts";
+import {
+  createKinQueryAtomFamily,
+  createKinRpcCommand,
+  refreshKinAccessMe,
+  retryKinAccess,
+} from "./kinAccess.ts";
 import { KIN_DOCS_LABEL, kinDocsLiveStream } from "./kinDocsStream.ts";
 import type { KinChatState } from "./kinInboxModel.ts";
 import { KIN_MONEY_LIVE_LABEL, kinMoneyLiveStream } from "./kinMoneyStream.ts";
@@ -85,6 +95,7 @@ import {
 import { createKinOwnerTimeZoneSync } from "./kinTimeZone.ts";
 import {
   createKinWorkRefreshTriggers,
+  KIN_WORK_DEAL_LISTS,
   KIN_WORK_LABEL,
   KIN_WORK_NOT_TASKS,
   kinDocsListLean,
@@ -253,6 +264,11 @@ export function makeKinClient<R, ER>(
     tag: "kin.tasksKeys.list",
   });
   const readTasksKeys = kinGuardedRead(tasksKeysRead);
+  const recommendationsRead = createKinRpcCommand(runtime, {
+    label: "kin:recommendations:read",
+    tag: "kin.recommendations.list",
+  });
+  const readRecommendations = kinGuardedRead(recommendationsRead);
 
   const memoryRead = createKinRpcCommand(runtime, {
     label: "kin:memory:read",
@@ -279,6 +295,11 @@ export function makeKinClient<R, ER>(
     tag: "kin.checkIns.list",
   });
   const readCheckIns = kinGuardedRead(checkInsRead);
+  const briefsRead = createKinRpcCommand(runtime, {
+    label: "kin:briefs:read",
+    tag: "kin.briefs.list",
+  });
+  const readBriefs = kinGuardedRead(briefsRead);
 
   const workSummaryRead = createKinRpcCommand(runtime, {
     label: "kin:work:summary:read",
@@ -321,6 +342,18 @@ export function makeKinClient<R, ER>(
     tag: "kin.work.project",
   });
   const readWorkProject = kinGuardedRead(workProjectRead);
+  const readWorkDeals = kinGuardedRead(
+    createKinRpcCommand(runtime, { label: "kin:work:deals:read", tag: "kin.work.deals" }),
+  );
+  const readWorkDeal = kinGuardedRead(
+    createKinRpcCommand(runtime, { label: "kin:work:deal:read", tag: "kin.work.deal" }),
+  );
+  const readWorkDealStages = kinGuardedRead(
+    createKinRpcCommand(runtime, {
+      label: "kin:work:deal-stages:read",
+      tag: "kin.work.dealStages",
+    }),
+  );
   const workHistoryRead = createKinRpcCommand(runtime, {
     label: "kin:work:history:read",
     tag: "kin.work.history",
@@ -487,7 +520,8 @@ export function makeKinClient<R, ER>(
       return yield* readLeads(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: kinRefreshOn("leads"),
+    // A lead's In hand line reads its tracked tasks, which move with Work, not with `leads`.
+    refreshTrigger: kinWorkRefreshOn(["work"], kinRefreshOn("leads")),
   });
 
   /** The same list with the owner's retired agents after the live ones. Only the owner asks. */
@@ -581,7 +615,7 @@ export function makeKinClient<R, ER>(
         return yield* readAgentPage(input);
       }),
       staleTimeMs: 30_000,
-      refreshTrigger: kinRefreshOn("leads"),
+      refreshTrigger: kinWorkRefreshOn(["work"], kinRefreshOn("leads")),
     }),
     agentDefaults: createKinQueryAtomFamily(runtime, {
       label: "kin:agent-defaults",
@@ -793,6 +827,12 @@ export function makeKinClient<R, ER>(
       tag: "kin.connections.sendEdited",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.widgetId },
     }),
+    /** A person keeps their edits on a mail card without sending, or puts the agent's draft back. */
+    connectionSaveEdited: createKinRpcCommand(runtime, {
+      label: "kin:connection:saveEdited",
+      tag: "kin.connections.saveEdited",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.widgetId },
+    }),
     /** The owner switches an open send card's From before Confirm. */
     connectionSetSendFrom: createKinRpcCommand(runtime, {
       label: "kin:connection:setSendFrom",
@@ -866,6 +906,31 @@ export function makeKinClient<R, ER>(
       }),
       staleTimeMs: 30_000,
       refreshTrigger: kinRefreshOn("people"),
+    }),
+    /**
+     * What Kin suggested to the owner and what came of each: his alone. Read again when a
+     * suggestion moves, or a setting a done row reads live does: an agent, the limit, a connection.
+     */
+    recommendations: createKinQueryAtomFamily(runtime, {
+      label: "kin:recommendations",
+      execute: Effect.fn("KinClient.recommendations")(function* (input: KinRecommendationsInput) {
+        return yield* readRecommendations(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: (target: {
+        readonly environmentId: EnvironmentId;
+        readonly input: KinRecommendationsInput;
+      }) =>
+        Atom.make(
+          (get) =>
+            `${get(kinRefreshOn("recommendations")(target))}|${get(kinRefreshOn("leads")(target))}|${get(kinRefreshOn("budget")(target))}|${get(kinRefreshOn("connections")(target))}`,
+        ),
+    }),
+    /** Its `permissionAtom` is whether Settings shows Recommendations at all. */
+    recommendationAskAgain: createKinRpcCommand(runtime, {
+      label: "kin:recommendation:ask-again",
+      tag: "kin.recommendations.askAgain",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.recId },
     }),
     /** Makes a key for the caller. The answer carries the secret once; nothing here keeps it. */
     tasksKeyIssue: createKinRpcCommand(runtime, {
@@ -1197,6 +1262,19 @@ export function makeKinClient<R, ER>(
       tag: "kin.checkIns.act",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.scheduleId },
     }),
+    /** The caller's own briefs in the company's time, for Settings; none for who gets none. */
+    briefs: createEnvironmentQueryAtomFamily(runtime, {
+      label: "kin:briefs",
+      execute: Effect.fn("KinClient.briefs")(function* (input: KinBriefsInput) {
+        return yield* readBriefs(input);
+      }),
+      staleTimeMs: 30_000,
+    }),
+    briefSave: createKinRpcCommand(runtime, {
+      label: "kin:briefs:save",
+      tag: "kin.briefs.save",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.kind },
+    }),
     budget: createKinQueryAtomFamily(runtime, {
       label: "kin:budget",
       execute: Effect.fn("KinClient.budget")(function* (input: KinBudgetGetInput) {
@@ -1264,6 +1342,58 @@ export function makeKinClient<R, ER>(
       staleTimeMs: 30_000,
       // Reads again when the host can't say what changed; the screen's watch follows named changes.
       refreshTrigger: kinWorkRefreshOn([]),
+    }),
+    /** Deals under the filters, with the stages and open totals; a client's when `party` is given. */
+    workDeals: createKinQueryAtomFamily(runtime, {
+      label: "kin:work:deals",
+      execute: Effect.fn("KinClient.workDeals")(function* (input: KinDealsInput) {
+        return yield* readWorkDeals(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinWorkRefreshOn(KIN_WORK_DEAL_LISTS),
+    }),
+    /** One deal's page. */
+    workDeal: createKinQueryAtomFamily(runtime, {
+      label: "kin:work:deal",
+      execute: Effect.fn("KinClient.workDeal")(function* (input: KinDealPageInput) {
+        return yield* readWorkDeal(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinWorkRefreshOn(KIN_WORK_DEAL_LISTS),
+    }),
+    /** The company's stages, for Settings → Deals. */
+    workDealStages: createKinQueryAtomFamily(runtime, {
+      label: "kin:work:deal-stages",
+      execute: Effect.fn("KinClient.workDealStages")(function* (input: KinDealStagesInput) {
+        return yield* readWorkDealStages(input);
+      }),
+      staleTimeMs: 60_000,
+      refreshTrigger: kinWorkRefreshOn(["work", "deals"]),
+    }),
+    workDealCreate: createKinRpcCommand(runtime, {
+      label: "kin:work:deal:create",
+      tag: "kin.work.createDeal",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    workDealUpdate: createKinRpcCommand(runtime, {
+      label: "kin:work:deal:update",
+      tag: "kin.work.updateDeal",
+    }),
+    workDealMove: createKinRpcCommand(runtime, {
+      label: "kin:work:deal:move",
+      tag: "kin.work.moveDeal",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
+    workDealStep: createKinRpcCommand(runtime, {
+      label: "kin:work:deal:step",
+      tag: "kin.work.dealStep",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    /** The owner and co-owners only. */
+    workDealStagesSet: createKinRpcCommand(runtime, {
+      label: "kin:work:deal-stages:set",
+      tag: "kin.work.setDealStages",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
     }),
     /** How many clients and open projects there are: the lists' own totals, without their rows. */
     workCounts: createKinQueryAtomFamily(runtime, {
@@ -1454,6 +1584,12 @@ export function makeKinClient<R, ER>(
       label: "kin:docs:restore",
       tag: "kin.docs.restore",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
+    /** Starts What we sell, or brings an archived one back; the same doc however often it is tapped. */
+    docStartWhatWeSell: createKinRpcCommand(runtime, {
+      label: "kin:docs:startWhatWeSell",
+      tag: "kin.docs.startWhatWeSell",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
     }),
     /** One search over tasks, clients, contacts, projects and docs. */
     search: createKinRpcCommand(runtime, {
@@ -1734,10 +1870,27 @@ export function makeKinClient<R, ER>(
     refreshLeads(environmentId, orgId);
   };
 
+  /** After a save in Profile's Briefs or in Check-ins: both read the same rows, so both read again. */
+  const refreshKinBriefs = (environmentId: EnvironmentId, orgId: KinOrgId) => {
+    registry.refresh(kinClient.briefs({ environmentId, input: { orgId } }));
+    registry.refresh(kinClient.checkIns({ environmentId, input: { orgId } }));
+  };
+
   const retryAccess = (environmentId: EnvironmentId) =>
     retryKinAccess(runtime, registry, environmentId);
 
-  return { kinClient, refreshKinAgents, markKinHostKnown, retryKinWorkLive, retryAccess };
+  const refreshAccessMe = (environmentId: EnvironmentId) =>
+    refreshKinAccessMe(runtime, registry, environmentId);
+
+  return {
+    kinClient,
+    refreshKinAgents,
+    refreshKinBriefs,
+    markKinHostKnown,
+    retryKinWorkLive,
+    retryAccess,
+    refreshAccessMe,
+  };
 }
 
 export type KinClient = ReturnType<typeof makeKinClient>["kinClient"];

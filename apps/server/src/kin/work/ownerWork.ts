@@ -4,6 +4,8 @@ import {
   type KinOrgId,
   type KinRecord,
   type KinRecordCan,
+  type KinRecordDetail,
+  type KinPersonId,
   type KinWorkAssignInput,
   type KinWorkConfirmInput,
   type KinWorkCreateInput,
@@ -33,18 +35,25 @@ import { mayActAsOwner } from "../people/KinAccess.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { readableFrom } from "../chat/sharing.ts";
+import {
+  type CodingAgentConnection,
+  connectionEnded,
+  connectionLive,
+  connectionReaches,
+} from "./codingAgent.ts";
 import { summaryGroups } from "./crm.ts";
 import {
   KinRecords,
   requestHashOf,
   type Patch,
+  type QueryInput,
   type Tick,
   type Totals,
   type Writer,
 } from "./KinRecords.ts";
 import { fieldList, LISTS, type ListName, parseFields } from "./lists.ts";
 import { milestoneLinks } from "./projectSpine.ts";
-import { personSeesRecord, sheetExtras } from "./recordComments.ts";
+import { keyNamedFor, personSeesRecord, sheetExtras } from "./recordComments.ts";
 import { movePage, nudge as nudgeHolder } from "./workMoves.ts";
 import { isBuiltIn, listDef, unknownList } from "./registers.ts";
 import { type AssignNotice, movedNotices, tellPeople, toldWhenBack } from "./assignNotices.ts";
@@ -70,6 +79,8 @@ import {
   inProject,
   ledProjects,
   teamCan,
+  taskClients,
+  teamClients,
   teamDetail,
   teamKeys,
   teamRecord,
@@ -87,7 +98,7 @@ import {
  * reads the tasks `teamView.ts` gives them and changes their own, and nothing else here.
  */
 
-const ownerOnly = new KinChatError({
+export const ownerOnly = new KinChatError({
   reason: "not_allowed",
   message: "Only the owner or a co-owner can do that in Work.",
 });
@@ -128,6 +139,39 @@ export const asViewer = Effect.fn("KinWork.asViewer")(function* <A, R>(
   if (!viewer.teammate) return yield* write;
   const sql = yield* SqlClient.SqlClient;
   return yield* sql.withTransaction(write).pipe(workFailure);
+});
+
+/**
+ * In the caller's transaction: the caller as their own screen reads them, and the coding agent's
+ * key still theirs and live. Anything else is the key ended.
+ */
+export const connectionViewer = Effect.fn("KinWork.connectionViewer")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  connection: CodingAgentConnection,
+  orgId: KinOrgId,
+) {
+  const viewer = yield* viewerOf(people, orgId);
+  if (
+    orgId !== connection.orgId ||
+    viewer.person.personId !== connection.personId ||
+    !(yield* connectionLive(connection).pipe(workFailure))
+  )
+    return yield* connectionEnded;
+  return viewer;
+});
+/** A coding agent's call: its checks and its work in one transaction. */
+const throughConnection = Effect.fn("KinWork.throughConnection")(function* <A, R>(
+  people: ReadonlyArray<PersonIdentity>,
+  connection: CodingAgentConnection,
+  orgId: KinOrgId,
+  run: (viewer: Viewer) => Effect.Effect<A, KinChatError, R>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* connectionViewer(people, connection, orgId).pipe(
+    Effect.flatMap(run),
+    sql.withTransaction,
+    workFailure,
+  );
 });
 
 const millis = (value: string, field: string) => {
@@ -250,7 +294,8 @@ const cansOf = Effect.fn("KinWork.cansOf")(function* (
 
 /**
  * A client or project named in Work. To a teammate there is none, save a project they lead (to
- * file under) or, to `read`, one they are on: any other key is answered as one never there.
+ * file under), a client their Clients switch reaches (`teamClients`; the write's `teamGuard`
+ * decides again), or, to `read`, one they are on: any other key is answered as one never there.
  */
 const refId = Effect.fn("KinWork.refId")(function* (
   viewer: Viewer,
@@ -260,9 +305,16 @@ const refId = Effect.fn("KinWork.refId")(function* (
 ) {
   if (key === undefined) return undefined;
   if (viewer.teammate) {
-    if (key === null || list === "clients")
-      return yield* key === null ? ownerOnly : missing(key, list);
+    if (key === null) return list === "clients" ? null : yield* ownerOnly;
     const row = yield* (yield* KinRecords).get(orgId, key);
+    if (list === "clients") {
+      const reached =
+        row !== undefined &&
+        (yield* teamClients(orgId, viewer.person.personId, [row.recordId]).pipe(workFailure)).has(
+          row.recordId,
+        );
+      return reached ? row.recordId : yield* missing(key, list);
+    }
     if (row === undefined || row.registerId !== "projects") return yield* missing(key, list);
     if (!(yield* ledIds(viewer)).has(row.recordId)) return yield* missing(key, list);
     return row.recordId;
@@ -335,11 +387,32 @@ const teamAgent = Effect.fn("KinWork.teamAgent")(function* (
   );
 });
 
+/**
+ * With a coding agent's connection, only what its key reaches: open tasks the person holds and
+ * nothing labelled sensitive, soonest due first, filtered before the page is cut.
+ */
 export const list = Effect.fn("KinWork.list")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinWorkListInput,
+  connection?: CodingAgentConnection,
 ) {
-  const viewer = yield* viewerOf(people, input.orgId);
+  if (connection === undefined) return yield* listAs(yield* viewerOf(people, input.orgId), input);
+  const held: KinWorkListInput = {
+    orgId: input.orgId,
+    owner: { _tag: "person", personId: connection.personId },
+    open: true,
+    ...(input.limit === undefined ? {} : { limit: input.limit }),
+  };
+  return yield* throughConnection(people, connection, input.orgId, (viewer) =>
+    listAs(viewer, held, { order: "dueFirst", withoutSensitive: true }),
+  );
+});
+
+const listAs = Effect.fn("KinWork.listAs")(function* (
+  viewer: Viewer,
+  input: KinWorkListInput,
+  internal: Pick<QueryInput, "order" | "withoutSensitive"> = {},
+) {
   // A task's amount is the owner's, so sums and money filters over tasks are too; a list's
   // entries a teammate sees whole (`personSees`), figures included.
   if (
@@ -359,6 +432,13 @@ export const list = Effect.fn("KinWork.list")(function* (
   const project = yield* filterRef(viewer, input.orgId, input.project, "projects");
   const partyId = party.id;
   const projectId = project.id;
+  // A client's money reaches a teammate only with the Money switch, whichever project they lead.
+  const moneyOff =
+    viewer.teammate &&
+    typeof partyId === "string" &&
+    input.list !== undefined &&
+    !isBuiltIn(input.list) &&
+    !(yield* placesOf(input.orgId, viewer.person.personId).pipe(workFailure)).money;
   const at = cursor.at ?? (yield* Clock.currentTimeMillis);
   const limit = input.limit ?? 50;
   if (
@@ -401,29 +481,34 @@ export const list = Effect.fn("KinWork.list")(function* (
     at,
   };
   const byMove = input.byMove === true && (input.list === undefined || input.list === "work");
-  const page =
-    party.none || project.none
-      ? {
-          rows: [],
-          total: 0,
-          seq: yield* teamSeq(input.orgId, viewer.person.personId).pipe(workFailure),
-          moves: byMove ? [] : undefined,
-          counts: byMove ? { needsYou: 0, waiting: 0, rest: 0, doneRecently: 0 } : undefined,
-        }
-      : byMove
-        ? yield* movePage({
-            orgId: input.orgId,
-            personId: viewer.person.personId,
-            ownerLevel: !viewer.teammate,
-            filter,
-            offset: cursor.offset,
-            limit,
-            at,
-          })
-        : yield* records.query(input.orgId, { ...filter, offset: cursor.offset, limit });
+  const nothing = party.none || project.none || moneyOff;
+  const page = nothing
+    ? {
+        rows: [],
+        total: 0,
+        seq: yield* teamSeq(input.orgId, viewer.person.personId).pipe(workFailure),
+        moves: byMove ? [] : undefined,
+        counts: byMove ? { needsYou: 0, waiting: 0, rest: 0, doneRecently: 0 } : undefined,
+      }
+    : byMove
+      ? yield* movePage({
+          orgId: input.orgId,
+          personId: viewer.person.personId,
+          ownerLevel: !viewer.teammate,
+          filter,
+          offset: cursor.offset,
+          limit,
+          at,
+        })
+      : yield* records.query(input.orgId, {
+          ...filter,
+          ...internal,
+          offset: cursor.offset,
+          limit,
+        });
   // The sums are of every match and the same on each page, so only the first page pays for them.
   const totals =
-    input.totalsBy === undefined || input.cursor !== undefined
+    nothing || input.totalsBy === undefined || input.cursor !== undefined
       ? undefined
       : yield* records.totals(
           input.orgId,
@@ -469,14 +554,63 @@ export const shownRecords = Effect.fn("KinWork.shownRecords")(function* (
         ),
       ]).pipe(workFailure)
     : new Set<string>();
+  const parties = [
+    ...new Set(shown.flatMap(({ record }) => (record.party ? [record.party.recordId] : []))),
+  ];
+  const clients = viewer.teammate
+    ? yield* teamClients(orgId, viewer.person.personId, parties).pipe(workFailure)
+    : new Set<string>();
+  const named = viewer.teammate
+    ? yield* taskClients(orgId, viewer.person.personId, parties).pipe(workFailure)
+    : new Set<string>();
   return shown.map(({ row, record: whole }): KinRecord => {
     // Only the task's own sheet sets a repeat or links, so its rows don't carry the answers.
     const { repeat: _repeat, links: _links, ...rowCan } = can(whole.recordId);
     const record = { ...whole, can: rowCan };
-    if (viewer.teammate && plainTask(row, led)) return teamRecordIn(record, projects);
+    if (viewer.teammate && plainTask(row, led)) return teamRecordIn(record, projects, clients);
+    if (viewer.teammate && row.registerId === "work") return withClient(record, named);
     const fields = isBuiltIn(row.registerId) ? {} : parseFields(row.fieldsJson);
     return Object.keys(fields).length === 0 ? record : { ...record, fields };
   });
+});
+
+/** A client's terms and tax details: the owner level's, now and in its changes. */
+const OWNERS_CLIENT_FIELDS: ReadonlySet<string> = new Set(["terms", "gstin", "placeOfSupply"]);
+
+/** A task read whole, naming its client only while this person may see it (`taskClients`). */
+const withClient = <A extends { readonly party?: { readonly recordId: string } | undefined }>(
+  record: A,
+  named: ReadonlySet<string>,
+) => {
+  if (record.party === undefined || named.has(record.party.recordId)) return record;
+  const { party: _party, ...rest } = record;
+  return rest;
+};
+
+/** A task's sheet read whole: its client, now and in its changes, only where `taskClients` names it. */
+const clientShown = Effect.fn("KinWork.clientShown")(function* (
+  detail: KinRecordDetail,
+  personId: KinPersonId,
+) {
+  const keys = detail.changes.flatMap((change) =>
+    change.fields.flatMap((field) =>
+      field.field === "party" ? [field.from, field.to].filter((one) => one !== null) : [],
+    ),
+  );
+  const named = yield* taskClients(detail.orgId, personId, [
+    ...(detail.party === undefined ? [] : [detail.party.recordId]),
+    ...keys,
+  ]).pipe(workFailure);
+  const shown = (value: string | null) => value === null || named.has(value);
+  return {
+    ...withClient(detail, named),
+    changes: detail.changes.flatMap((change) => {
+      const fields = change.fields.filter(
+        (field) => field.field !== "party" || (shown(field.from) && shown(field.to)),
+      );
+      return change.kind === "updated" && fields.length === 0 ? [] : [{ ...change, fields }];
+    }),
+  };
 });
 
 const listTotals = ({ counted: _counted, groups, ...sums }: Totals) => ({
@@ -496,16 +630,33 @@ const found = Effect.fn("KinWork.found")(function* (
 });
 
 export { found };
+/** With a coding agent's connection, also only an entry its key reaches; any other is unknown. */
 export const get = Effect.fn("KinWork.get")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinWorkGetInput,
+  connection?: CodingAgentConnection,
 ) {
-  const viewer = yield* viewerOf(people, input.orgId);
+  if (connection === undefined) return yield* getAs(yield* viewerOf(people, input.orgId), input);
+  return yield* throughConnection(people, connection, input.orgId, (viewer) =>
+    getAs(viewer, input, connection),
+  );
+});
+
+const getAs = Effect.fn("KinWork.getAs")(function* (
+  viewer: Viewer,
+  input: KinWorkGetInput,
+  connection?: CodingAgentConnection,
+) {
   const records = yield* KinRecords;
   const seq = viewer.teammate
     ? yield* teamSeq(input.orgId, viewer.person.personId).pipe(workFailure)
     : undefined;
   const row = yield* found(input.orgId, input);
+  if (
+    connection !== undefined &&
+    !(yield* connectionReaches(connection, row.recordId).pipe(workFailure))
+  )
+    return yield* notFound("key" in input ? input.key : "with that id");
   const shown = yield* shownTo(
     viewer,
     yield* records.detail(row, KIN_RECORD_CHANGES_CAP),
@@ -602,14 +753,27 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
   };
   const shown =
     whole && row.registerId === "clients"
-      ? unfielded
+      ? {
+          ...unfielded,
+          changes: detail.changes.flatMap((change) => {
+            const fields = change.fields.filter((one) => !OWNERS_CLIENT_FIELDS.has(one.field));
+            return change.kind === "updated" && fields.length === 0 ? [] : [{ ...change, fields }];
+          }),
+        }
       : whole &&
           row.registerId === "contacts" &&
           !(yield* placesOf(detail.orgId, personId).pipe(workFailure)).clients
         ? named()
         : detail;
+  const sheet = yield* teamDetail(
+    whole && row.registerId === "work" ? yield* clientShown(shown, personId) : shown,
+    personId,
+    number,
+    whole,
+  ).pipe(workFailure);
   return {
-    ...(yield* teamDetail(shown, personId, number, whole).pipe(workFailure)),
+    ...sheet,
+    changes: sheet.changes.map((change) => keyNamedFor(viewer, change)),
     ...extras,
     can,
   };
@@ -938,10 +1102,27 @@ export const handOver = Effect.fn("KinWork.handOver")(function* (
   return { keys: moved, kept };
 });
 
+/**
+ * With a coding agent's connection, only a task its key reaches, and only its state (with who it
+ * waits on); the change is marked with the key.
+ */
 export const update = Effect.fn("KinWork.update")(function* (
   people: ReadonlyArray<PersonIdentity>,
-  input: KinWorkUpdateInput,
+  // A coding agent sets a state without a revision, as its key always has.
+  input: Omit<KinWorkUpdateInput, "rev"> & { readonly rev?: number },
+  connection?: CodingAgentConnection,
 ) {
+  if (connection !== undefined) {
+    const { orgId, key, rev, state, waitingOn, ...rest } = input;
+    if (Object.values(rest).some((value) => value !== undefined)) return yield* TEAM_REFUSED;
+    const patch: Patch = {
+      ...(state === undefined ? {} : { state }),
+      ...(waitingOn === undefined ? {} : { waitingOn }),
+    };
+    return yield* throughConnection(people, connection, orgId, (viewer) =>
+      change(viewer, orgId, key, patch, rev, connection),
+    );
+  }
   const viewer = yield* viewerOf(people, input.orgId);
   const { person } = viewer;
   // The rest of a teammate's patch is `teamGuard`'s: a project's lead may set more inside it.
@@ -1203,12 +1384,28 @@ const change = Effect.fn("KinWork.change")(function* (
   key: string,
   patch: Patch,
   rev: number | undefined,
+  connection?: CodingAgentConnection,
 ) {
   const records = yield* KinRecords;
   return yield* asViewer(
     viewer,
     Effect.gen(function* () {
-      const row = yield* records.update(orgId, writerOf(viewer), key, patch, rev);
+      if (connection !== undefined) {
+        const held = yield* records.get(orgId, key);
+        if (
+          held === undefined ||
+          !(yield* connectionReaches(connection, held.recordId).pipe(workFailure))
+        )
+          return yield* notFound(key);
+      }
+      const writer = writerOf(viewer);
+      const row = yield* records.update(
+        orgId,
+        connection === undefined ? writer : { ...writer, codingAgentKey: connection.sessionId },
+        key,
+        patch,
+        rev,
+      );
       const detail = yield* records.detail(row, KIN_RECORD_CHANGES_CAP);
       // A lead may make something of their project private (`teamGuard`), even out of their view.
       return yield* shownTo(viewer, detail, row, row, undefined, patch.sensitive === true);

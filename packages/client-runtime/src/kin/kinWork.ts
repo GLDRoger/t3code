@@ -73,8 +73,15 @@ const PLACE_NOUN: Record<KinWorkPageName, { readonly name: string; readonly plur
   docs: { name: "Docs", plural: true },
 };
 
+/** Clients refused a teammate: their switch is off, the same words as on a client's page. */
+const KIN_CLIENTS_OFF = {
+  title: "Clients isn't on for you",
+  detail: "The owner or a co-owner decides who sees Clients.",
+};
+
 /** The refusal on a work page, naming that page. */
 export const kinWorkOnlyOwner = (place: KinWorkPageName) => {
+  if (place === "clients") return KIN_CLIENTS_OFF;
   const { name, plural } = PLACE_NOUN[place];
   return {
     title: "Only the owner can open this",
@@ -469,32 +476,44 @@ const STATE_LABEL: Record<KinRecordState, string> = {
   dropped: "Dropped",
 };
 
-const dayFormat = kinWhenFormat("day");
-const dayYearFormat = kinWhenFormat("dateYear");
+// A calendar day is held as that day's UTC midnight and written in UTC, so no device zone moves it.
+const dayFormat = kinWhenFormat("day", { zone: "UTC" });
+const dayYearFormat = kinWhenFormat("dateYear", { zone: "UTC" });
 const clockFormat = kinWhenFormat("time");
+/** "12:16 AM" as the clock reads in `zone`, the company's, else this device's. */
+export const kinWorkClock = (date: Date, zone: string | null) => {
+  try {
+    return zone === null ? clockFormat.format(date) : kinWhenFormat("time", { zone }).format(date);
+  } catch {
+    return clockFormat.format(date);
+  }
+};
 
-const startOfDay = (date: Date) =>
-  new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+const civilDay = (year: number, month: number, day: number) =>
+  new Date(Date.UTC(year, month - 1, day));
+const civilDayOf = (day: Date) => day.toISOString().slice(0, 10);
+const daysBetween = (from: Date, to: Date) => Math.round((to.getTime() - from.getTime()) / DAY_MS);
 
 /** "today", "tomorrow", "yesterday", "Fri 14 Nov", or "14 Nov 2027" for another year. */
-function kinWorkDay(date: Date, now: Date): string {
-  const days = Math.round((startOfDay(date) - startOfDay(now)) / DAY_MS);
+function kinWorkDay(day: Date, today: Date): string {
+  const days = daysBetween(today, day);
   if (days === 0) return "today";
   if (days === 1) return "tomorrow";
   if (days === -1) return "yesterday";
-  return date.getFullYear() === now.getFullYear()
-    ? dayFormat.format(date)
-    : dayYearFormat.format(date);
+  return day.getUTCFullYear() === today.getUTCFullYear()
+    ? dayFormat.format(day)
+    : dayYearFormat.format(day);
 }
 
-/** The calendar day `date` falls on in `zone`, as that same day on this device. */
+/** The calendar day `date` falls on in `zone`, the company's, else on this device. */
 function dayInZone(date: Date, zone: string | null): Date {
-  if (zone === null) return date;
+  const local = civilDay(date.getFullYear(), date.getMonth() + 1, date.getDate());
+  if (zone === null) return local;
   try {
     const part = kinWhenParts(date, zone);
-    return new Date(part.year, part.month - 1, part.day);
+    return civilDay(part.year, part.month, part.day);
   } catch {
-    return date;
+    return local;
   }
 }
 
@@ -506,9 +525,9 @@ export const kinWorkDueText = (
   if (record.dueAt === null) return null;
   const due = new Date(record.dueAt);
   if (Number.isNaN(due.getTime())) return null;
-  // An all-day date is a day where the owner is, and so is the today it is counted from.
-  if (record.dueAllDay) return kinWorkDay(dayInZone(due, names.zone), dayInZone(now, names.zone));
-  return `${kinWorkDay(due, now)}, ${clockFormat.format(due)}`;
+  // Due days and times are the owner's, and so is the today they are counted from.
+  const day = kinWorkDay(dayInZone(due, names.zone), dayInZone(now, names.zone));
+  return record.dueAllDay ? day : `${day}, ${kinWorkClock(due, names.zone)}`;
 };
 
 /** Days from today to the due day (0 today, negative past), counted as `kinWorkDueText` says it. */
@@ -520,10 +539,7 @@ export const kinWorkDueDays = (
   if (record.dueAt === null) return null;
   const due = new Date(record.dueAt);
   if (Number.isNaN(due.getTime())) return null;
-  const [day, today] = record.dueAllDay
-    ? [dayInZone(due, names.zone), dayInZone(now, names.zone)]
-    : [due, now];
-  return Math.round((startOfDay(day) - startOfDay(today)) / DAY_MS);
+  return daysBetween(dayInZone(now, names.zone), dayInZone(due, names.zone));
 };
 
 /** Sentences joined for a label, never doubling the stop a title already ends with. */
@@ -534,10 +550,16 @@ const kinSentences = (parts: ReadonlyArray<string>): string =>
     "",
   );
 
-const statusText = (record: KinRecord, names: KinWorkNames): string =>
-  record.state === "waiting" && record.waitingOn !== null
+/** A task's state as the Tasks list says it: "Waiting on Priya"; "Waiting" with no names to hand. */
+export const kinWorkStatusText = (
+  record: Pick<KinRecord, "state" | "waitingOn">,
+  names: KinWorkNames | null,
+): string =>
+  record.state === "waiting" && record.waitingOn !== null && names !== null
     ? `Waiting on ${kinWorkName(record.waitingOn, names, "you")}`
     : STATE_LABEL[record.state];
+const statusText = (record: KinRecord, names: KinWorkNames): string =>
+  kinWorkStatusText(record, names);
 
 export interface KinWorkRowView {
   readonly key: KinRecordKey;
@@ -1090,7 +1112,9 @@ export const kinWorkDueDayText = (text: string | null, now: Date, zone: string |
 const dayFromText = (text: string | null, now: Date, zone: string | null) => {
   if (text === null) return null;
   const date = new Date(text);
-  return Number.isNaN(date.getTime()) ? null : kinWorkDay(dayInZone(date, zone), now);
+  return Number.isNaN(date.getTime())
+    ? null
+    : kinWorkDay(dayInZone(date, zone), dayInZone(now, zone));
 };
 
 const ADDED = {
@@ -1215,9 +1239,13 @@ export function kinWorkChangeText(
   if (sensitive === "true") clauses.push("made it private");
   else if (sensitive === "false") clauses.push("made it not private");
   // Clients keep their kind in the category field.
-  const kind = list === "clients" ? field("category")?.to : undefined;
-  if (kind === "vendor") clauses.push("marked them a vendor");
-  else if (kind === "client") clauses.push("marked them a client");
+  const kind = list === "clients" ? field("category") : undefined;
+  if (kind?.to === "vendor") clauses.push("marked them a vendor");
+  else if (kind?.to === "client") clauses.push("marked them a client");
+  else if (kind?.to === "prospect")
+    clauses.push(
+      kind.from === "client" ? "marked them a prospect again" : "marked them a prospect",
+    );
   const said = clauses.length === 0 ? "updated it" : clauses.join(", ");
   // A change Kin made by taking the default of a question nobody answered.
   return field(KIN_TAKEN_DEFAULT_FIELD) === undefined
@@ -1557,7 +1585,7 @@ export function kinWorkAllDay(at: string | null, allDay: boolean, names: KinWork
   const date = at === null ? null : new Date(at);
   return date === null || !allDay || Number.isNaN(date.getTime())
     ? null
-    : kinWorkDayOf(dayInZone(date, names.zone));
+    : civilDayOf(dayInZone(date, names.zone));
 }
 
 /** What a screen showing one task shows. */
@@ -1766,27 +1794,29 @@ export const kinWorkDayOf = (date: Date) =>
 
 const dayPattern = /^\d{4}-\d{2}-\d{2}$/;
 
-/** A picked day read back for display: "Fri 14 Nov". */
-export function kinWorkDueLabel(day: string, now: Date): string {
+/** A picked day read back for display: "Fri 14 Nov", counted from today in `zone`, the company's. */
+export function kinWorkDueLabel(day: string, now: Date, zone: string | null = null): string {
   const [year, month, date] = day.split("-").map((part) => Number.parseInt(part, 10));
-  const label = kinWorkDay(new Date(year ?? 1970, (month ?? 1) - 1, date ?? 1), now);
+  const label = kinWorkDay(civilDay(year ?? 1970, month ?? 1, date ?? 1), dayInZone(now, zone));
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
-/** The days people actually pick, for a phone where a calendar is a lot of taps. */
+/** The days people actually pick, for a phone where a calendar is a lot of taps; today is `zone`'s. */
 export function kinWorkDueChoices(
   now: Date,
+  zone: string | null = null,
 ): ReadonlyArray<{ readonly label: string; readonly day: string }> {
-  const at = (days: number) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + days);
-  const weekday = now.getDay();
+  const today = dayInZone(now, zone);
+  const at = (days: number) => civilDayOf(new Date(today.getTime() + days * DAY_MS));
+  const weekday = today.getUTCDay();
   const toFriday = 5 - weekday;
   const toMonday = ((8 - weekday) % 7) + (weekday === 1 ? 7 : 0);
   return [
-    { label: "Today", day: kinWorkDayOf(at(0)) },
-    { label: "Tomorrow", day: kinWorkDayOf(at(1)) },
-    ...(toFriday > 1 ? [{ label: "Friday", day: kinWorkDayOf(at(toFriday)) }] : []),
-    ...(toMonday > 1 ? [{ label: "Next Monday", day: kinWorkDayOf(at(toMonday)) }] : []),
-    { label: "In two weeks", day: kinWorkDayOf(at(14)) },
+    { label: "Today", day: at(0) },
+    { label: "Tomorrow", day: at(1) },
+    ...(toFriday > 1 ? [{ label: "Friday", day: at(toFriday) }] : []),
+    ...(toMonday > 1 ? [{ label: "Next Monday", day: at(toMonday) }] : []),
+    { label: "In two weeks", day: at(14) },
   ];
 }
 

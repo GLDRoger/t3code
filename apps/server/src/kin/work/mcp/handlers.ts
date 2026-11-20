@@ -101,6 +101,11 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
       return yield* Money.payment(yield* McpInvocationContext, input);
     }, Effect.mapError(failure)),
   ),
+  deal_stages: McpToolAccess.reads(
+    Effect.fn("KinWorkToolkit.dealStages")(function* (input) {
+      return yield* Work.dealStages(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
   money_summary: McpToolAccess.reads(
     Effect.fn("KinWorkToolkit.money")(function* (input) {
       return yield* Money.money(yield* McpInvocationContext, input);

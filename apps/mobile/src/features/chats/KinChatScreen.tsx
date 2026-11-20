@@ -1,3 +1,4 @@
+import { kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
 import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_PEOPLE_CHAT, kinPeopleChatWith } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { kinAwayLine } from "@t3tools/client-runtime/kin/kinAway";
@@ -34,6 +35,7 @@ import {
   type KinPresence,
   type KinWakeupId,
   KIN_TEAM_ROOM_TEAM_ID,
+  KinOrgId,
   kinWhenFormat,
 } from "@t3tools/contracts";
 import * as Exit from "effect/Exit";
@@ -1386,6 +1388,8 @@ function KinChatFeed(props: {
               const target = { environmentId: props.environmentId, orgId: props.orgId };
               if (open.kind === "project")
                 navigation.navigate("KinProject", { ...target, project: open.key });
+              else if (kinIsDealKey(open.key))
+                navigation.navigate("KinDeal", { ...target, deal: open.key });
               else navigation.navigate("KinWorkItem", { ...target, task: open.key });
             }}
           />
@@ -1492,6 +1496,8 @@ function KinChatFeed(props: {
   const intro =
     showIntro && props.agentName !== null ? (
       <KinIntro
+        environmentId={props.environmentId}
+        orgId={KinOrgId.make(props.orgId)}
         agentName={props.agentName}
         charter={props.charter}
         onSend={sendSample}

@@ -25,3 +25,22 @@ export const ownerOnlyWakeup = Effect.fn("test.ownerOnlyWakeup")(function* (inpu
   yield* sql`INSERT OR IGNORE INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
     VALUES (${`${wakeupId}:brief`}, ${orgId}, ${agentId}, 'routine', 'P2', '{"_tag":"routine"}', 0, 0, 'done', ${wakeupId})`;
 });
+
+/** The run Kin started for a wake-up, as T3 projects it: the wake-up's message, sent by the server. */
+export const wakeupRun = Effect.fn("test.wakeupRun")(function* (input: {
+  readonly threadId: string;
+  readonly runId: string;
+  readonly ordinal: number;
+  readonly wakeupId: string;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const messageId = `kin-wakeup-msg:${input.wakeupId}`;
+  yield* sql`INSERT INTO orchestration_v2_projection_runs (run_id, thread_id, ordinal, provider,
+      status, requested_at, payload_json)
+    VALUES (${input.runId}, ${input.threadId}, ${input.ordinal}, 'codex', 'completed', '',
+      json_object('userMessageId', ${messageId}))`;
+  yield* sql`INSERT INTO orchestration_v2_projection_messages (message_id, thread_id, run_id, role,
+      streaming, created_at, updated_at, payload_json)
+    VALUES (${messageId}, ${input.threadId}, ${input.runId}, 'user', 0, '', '',
+      json_object('createdBy', 'system', 'creationSource', 'server'))`;
+});

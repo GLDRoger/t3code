@@ -7,7 +7,10 @@ import {
   EnvironmentId,
   KinAgentId,
   type KinChatId,
+  KinMemoryItemId,
+  type KinMessageId,
   KinOrgId,
+  type KinWakeupId,
   KinPersonId,
   KinWidgetId,
   ProviderInstanceId,
@@ -16,8 +19,10 @@ import {
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -30,6 +35,7 @@ import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
+import { KinGroups } from "../chat/KinGroups.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
@@ -45,9 +51,12 @@ import * as Team from "../team/KinTeam.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { presetDefinition } from "../work/registers.ts";
+import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as Provision from "../lead/KinLeadProvision.ts";
 import { encodeLeadModel } from "../lead/leadModels.ts";
+import * as AskPerson from "./askPerson.ts";
 import * as Questions from "./openQuestions.ts";
+import { defaultDue } from "./rules.ts";
 
 const providerInstanceId = ProviderInstanceId.make("codex");
 const at = "2026-10-01T00:00:00.000Z";
@@ -631,13 +640,16 @@ it.effect("a restored agent's questions are raised again as open cards, once", (
   ),
 );
 
-// A plain-text question stays open for every agent until the person writes back, and an
-// agent closes a carded one the person answered in words.
-it.effect("questions close on the person's words, and only the asker withdraws one", () =>
+// A plain-text question stays open for every agent until the person writes back. A carded one
+// is answered in words only by its asker, in a turn woken by its person's own message in its chat
+// since its card and its last Undo, never by Kin's copy; the note that says so lets her, and only
+// her, undo it while its asker is here, and it then waits for her with no default.
+it.effect("only the asker takes an answer from the person's own words, and she can undo it", () =>
   Effect.andThen(
     TestClock.setTime(IST_MON_1130),
     Effect.gen(function* () {
-      const { sql, chats, owner, orgId, chatOf, wake } = yield* ambermill;
+      const { sql, chats, owner, orgId, services, chatOf, wake } = yield* ambermill;
+      const repo = Context.get(services, KinChatRepository);
       const text = yield* Questions.recordTextQuestion({
         orgId: KinOrgId.make(orgId),
         agentId: KinAgentId.make("chief"),
@@ -654,39 +666,181 @@ it.effect("questions close on the person's words, and only the asker withdraws o
       });
       assert.strictEqual((yield* questionRow(sql, text!)).state, "answered");
 
-      yield* wake(
-        "finance",
-        yield* chats.send(owner, {
-          chatId: chatOf("finance"),
-          body: "VIOM?",
-          clientMessageId: "m4",
-        }),
-      );
+      const say = (chatId: KinChatId, body: string, who = owner) =>
+        chats.send(who, { chatId, body, clientMessageId: body });
+      const answer = (agent: string) =>
+        callAs(agent, "kin_ask_close", {
+          question: questionId,
+          outcome: "answered",
+          answer: "Draft it",
+        });
+      const refused = Effect.fn("test.refused")(function* (agent: string, why: RegExp) {
+        const result = yield* answer(agent);
+        assert.isFalse(result.ok);
+        assert.match(String(result.value.message), why);
+        assert.strictEqual((yield* questionRow(sql, questionId)).state, "open");
+      });
+      yield* wake("finance", yield* say(chatOf("finance"), "VIOM?"));
       const asked = yield* callAs("finance", "kin_ask", reminderAsk);
       const questionId = asked.value.question as string;
-      // The Chief of staff, in a chat with Rhea too, may mark it answered but not withdraw it.
-      yield* wake(
-        "chief",
-        yield* chats.send(owner, {
-          chatId: chatOf("chief"),
-          body: "Tell Finance: draft it.",
-          clientMessageId: "m5",
-        }),
-      );
+      // The words that woke the turn that asked were written before it.
+      yield* refused("finance", /own message/);
+      // The Chief of staff, in a chat with Rhea too, may neither withdraw it nor answer it.
+      yield* wake("chief", yield* say(chatOf("chief"), "Tell Finance: draft it."));
       const withdraw = yield* callAs("chief", "kin_ask_close", {
         question: questionId,
         outcome: "withdrawn",
       });
       assert.isFalse(withdraw.ok);
-      const answered = yield* callAs("chief", "kin_ask_close", {
-        question: questionId,
-        outcome: "answered",
-        answer: "Draft it",
+      yield* refused("chief", /only Finance records/);
+      // Finance woken by Kin's own event, by Rhea's words in another chat, or by Meera.
+      yield* startAgentWakeup({
+        orgId,
+        agentId: KinAgentId.make("finance"),
+        threadId: ThreadId.make("finance-thread"),
+        event: (base) => ({
+          ...base,
+          _tag: "pulse",
+          provenance: { _tag: "system" },
+          factKeys: [],
+          checkIn: {
+            scheduleId: KinMemoryItemId.make("check-in"),
+            title: "Check-in",
+            what: "Check-in.",
+            slot: "d",
+          },
+        }),
       });
+      yield* refused("finance", /own message/);
+      // A file sent with no words is not words: it takes no answer.
+      const fileOnly = yield* say(chatOf("finance"), "a file, no caption");
+      yield* sql`UPDATE kin_messages SET body = '' WHERE org_id = ${orgId}
+        AND message_id = ${fileOnly.messageId}`;
+      yield* wake("finance", fileOnly);
+      yield* refused("finance", /own message/);
+      const meera = { _tag: "person" as const, orgId, personId: KinPersonId.make("meera") };
+      const group = (yield* Context.get(services, KinGroups).create([owner], {
+        orgId,
+        title: "Collections",
+        agentIds: [KinAgentId.make("finance")],
+        personIds: [meera.personId],
+      })).chatId;
+      const textThere = yield* Questions.recordTextQuestion({
+        orgId: KinOrgId.make(orgId),
+        agentId: KinAgentId.make("finance"),
+        chatId: chatOf("finance"),
+        wakeupId: "w-text-finance",
+        question: "Which month is INV-8 for?",
+        now: yield* Clock.currentTimeMillis,
+      });
+      const inGroup = yield* wake("finance", yield* say(group, "Finance, draft the VIOM one."));
+      yield* refused("finance", /own message/);
+      // Taken private, her group words are Kin's copy in her chat with Finance, known by its
+      // claim's key: they answer neither the text question waiting there nor the card in the turn
+      // they wake there.
+      const taken = yield* callAs("finance", "kin_take_private", {
+        sourceEventId: `event:${inGroup}`,
+      });
+      assert.isTrue(taken.ok, JSON.stringify(taken.value));
+      assert.strictEqual((yield* questionRow(sql, textThere!)).state, "open");
+      const [copy] = yield* sql<{ messageId: KinMessageId }>`SELECT message_id AS "messageId"
+        FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${chatOf("finance")}
+          AND body = 'Finance, draft the VIOM one.'`;
+      yield* wake(
+        "finance",
+        Option.getOrThrow(yield* repo.getMessage({ orgId, messageId: copy!.messageId })),
+      );
+      yield* refused("finance", /own message/);
+      yield* wake("finance", yield* say(group, "Draft it.", meera));
+      yield* refused("finance", /own message/);
+
+      yield* wake("finance", yield* say(chatOf("finance"), "Yes, draft it."));
+      const answered = yield* answer("finance");
       assert.isTrue(answered.ok, JSON.stringify(answered.value));
-      assert.strictEqual((yield* questionRow(sql, questionId)).state, "answered");
-      assert.strictEqual(yield* settle(orgId, TUE_1930), 0);
+      const closed = yield* questionRow(sql, questionId);
+      assert.strictEqual(closed.state, "answered");
       assert.lengthOf(yield* dueEvents(sql, orgId), 0);
+      const [card] = yield* sql<{ widgetId: string }>`SELECT widget_id AS "widgetId"
+        FROM kin_questions WHERE question_id = ${questionId}`;
+      const widget = (id: string) =>
+        repo
+          .getWidget({ orgId, widgetId: KinWidgetId.make(id) })
+          .pipe(Effect.map(Option.getOrThrow));
+      assert.deepInclude((yield* widget(card!.widgetId)).state, {
+        outcome: { title: "Answered", text: "Finance took this from what you wrote: Draft it" },
+      });
+      const [note] = yield* repo.listOpenWaiting({ orgId, personId: owner.personId });
+      assert.match(String(note!.question), /^I took “Draft it” from what you wrote/);
+      const tap = (who: typeof owner, widgetId: string, option: string) =>
+        widget(widgetId).pipe(
+          Effect.flatMap((shown) =>
+            chats.act(who, {
+              widgetId: shown.widgetId,
+              revision: shown.revision,
+              actionId: "choose",
+              value: option,
+              clientActionId: `${who.personId}-${widgetId}-${option}`,
+            }),
+          ),
+        );
+      assert.isTrue(
+        Exit.isFailure(yield* Effect.exit(tap(meera as typeof owner, note!.widgetId!, "option-1"))),
+      );
+      assert.strictEqual((yield* questionRow(sql, questionId)).state, "answered");
+
+      // Her Undo opens it again on its card, waiting for her: no default, nothing at its day.
+      yield* tap(owner, note!.widgetId!, "option-1");
+      assert.deepInclude(yield* questionRow(sql, questionId), { state: "open", answer: null });
+      const reopened = yield* widget(card!.widgetId);
+      assert.isNull(reopened.closedAt);
+      assert.notProperty(reopened.state, "outcome");
+      assert.deepInclude((yield* widget(note!.widgetId!)).state, {
+        outcome: {
+          title: "Undone",
+          text: "“Shall I draft VIOM's payment reminder for INV-8?” is open again, and Finance waits for your answer. What was already done from the first answer stands.",
+          undone: {
+            personId: owner.personId,
+            name: "Rhea Rao",
+            at: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+          },
+        },
+      });
+      const [waiting] = yield* repo.listOpenWaiting({ orgId, personId: owner.personId });
+      assert.strictEqual(waiting!.widgetId, card!.widgetId);
+      assert.deepInclude(waiting!.ask!, { agent: "Finance", default: null });
+      const told = sql<{ json: string }>`SELECT json FROM kin_events
+        WHERE org_id = ${orgId} AND agent_id = 'finance'
+          AND dedupe_key LIKE 'question-answer-undone:%'`;
+      const [undoneEvent] = yield* told;
+      const subject = JSON.parse(undoneEvent!.json).subject;
+      assert.deepInclude(subject, { undone: true, words: true });
+      const toldFinance = Questions.undoneTurnText(KinOrgId.make(orgId), subject);
+      assert.match(String(yield* toldFinance), /open again on its card, waiting for their answer/);
+      // The words it was taken from, retried in the turn they woke, no longer answer it.
+      yield* refused("finance", /own message/);
+      assert.strictEqual(yield* settle(orgId, TUE_1930), 0);
+      assert.strictEqual((yield* questionRow(sql, questionId)).state, "open");
+
+      // Her new words do. Told of the Undo after that, Finance reads it was undone all the same.
+      yield* wake("finance", yield* say(chatOf("finance"), "Draft it after all."));
+      assert.isTrue((yield* answer("finance")).ok);
+      assert.strictEqual(
+        yield* toldFinance,
+        "Your question to Rhea Rao, “Shall I draft VIOM's payment reminder for INV-8?”: Rhea Rao undid the answer you took from their words. It has since been answered: “Draft it”. Don't act on the undone answer, and don't ask again.",
+      );
+      // Finance retired since: her Undo keeps the answer, says why, and leaves nothing waiting.
+      const [second] = yield* repo.listOpenWaiting({ orgId, personId: owner.personId });
+      yield* sql`UPDATE kin_agents SET retired_at = ${TUE_1930_ISO} WHERE agent_id = 'finance'`;
+      yield* tap(owner, second!.widgetId!, "option-1");
+      assert.strictEqual((yield* questionRow(sql, questionId)).state, "answered");
+      assert.deepInclude((yield* widget(second!.widgetId!)).state, {
+        outcome: {
+          title: "Nothing was undone",
+          text: "Finance is no longer here, so the question stays closed and its answer stands as taken. You can raise it with another agent.",
+        },
+      });
+      assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: owner.personId }), 0);
+      assert.lengthOf(yield* told, 1);
     }).pipe(Effect.provide(layer)),
   ),
 );
@@ -748,6 +902,497 @@ it.effect("a taken default is owed until told, and held ones don't crowd out peo
       });
       assert.strictEqual(yield* settle(orgId, second.due), 1);
       assert.lengthOf(yield* told(second.id), 1);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+/**
+ * Ambermill's floor for questions asked of someone outside the chat: Zoya and Arjun are members
+ * too, and Arjun leads the open Monsoon shoot. The Chief of staff is the team agent, so anyone may
+ * message it; only Rhea and Meera may message Finance.
+ */
+const askingTeam = Effect.gen(function* () {
+  const studio = yield* ambermill;
+  const { sql, chats, owner, orgId, services } = studio;
+  for (const [id, name] of [
+    ["zoya", "Zoya Sheikh"],
+    ["arjun", "Arjun Nair"],
+  ] as const)
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES (${id}, ${orgId}, ${id}, ${name}, ${at}, 'member')`;
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+    VALUES (${orgId}, 'projects', 'Projects', 'P', 1, 0) ON CONFLICT DO NOTHING`;
+  yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+      owner_kind, owner_id, created_by_kind, origin_key, created_at, updated_at)
+    VALUES (${orgId}, 'rec_shoot', 'projects', 'P-4', 'Monsoon shoot', 'open', 'person', 'arjun',
+      'person', 'shoot', 0, 0)`;
+  const person = (id: string) => ({
+    _tag: "person" as const,
+    orgId,
+    personId: KinPersonId.make(id),
+  });
+  const chief = KinAgentId.make("chief");
+  /** Someone's own direct chat with the Chief of staff. */
+  const chiefChat = (id: string) =>
+    id === "rhea"
+      ? Effect.succeed(studio.chatOf("chief"))
+      : chats.createDirect(person(id), { orgId, agentId: chief }).pipe(Effect.map((c) => c.chatId));
+  const lead = (agent: string, wakeupId: KinWakeupId) => ({
+    _tag: "agent" as const,
+    orgId,
+    agentId: KinAgentId.make(agent),
+    ownerPersonId: owner.personId,
+    threadId: ThreadId.make(`${agent}-thread`),
+    wakeupId,
+  });
+  const askFor = (
+    agent: string,
+    wakeupId: KinWakeupId,
+    input: Partial<typeof AskPerson.AskPersonInput.Type> & { readonly to: string },
+  ) =>
+    AskPerson.askPerson(
+      lead(agent, wakeupId),
+      {
+        question: "Does the shoot move to Friday?",
+        options: [{ label: "Friday" }, { label: "Keep the date" }],
+        about: ["P-4"],
+        intent: "shoot date",
+        ...input,
+      },
+      { chat: chats, gate: Context.get(services, KinLevelGate) },
+    );
+  /** A turn of `agent`'s woken by `who`'s words in their own chat with it. */
+  const wakeOn = Effect.fn("test.wakeOn")(function* (
+    agent: string,
+    who: string,
+    chatId: KinChatId,
+    body: string,
+  ) {
+    return yield* studio.wake(
+      agent,
+      yield* chats.send(who === "rhea" ? owner : person(who), {
+        chatId,
+        body,
+        clientMessageId: `${who}:${body}`,
+      }),
+    );
+  });
+  const cardOf = (questionId: string) =>
+    sql<{ widgetId: string | null; chatId: string; forChatId: string; forPersonId: string | null }>`
+      SELECT widget_id AS "widgetId", chat_id AS "chatId", for_chat_id AS "forChatId",
+        for_person_id AS "forPersonId" FROM kin_questions WHERE question_id = ${questionId}`.pipe(
+      Effect.map((rows) => rows[0]!),
+    );
+  const widgetOf = (widgetId: string) =>
+    Context.get(services, KinChatRepository)
+      .getWidget({ orgId, widgetId: KinWidgetId.make(widgetId) })
+      .pipe(Effect.map(Option.getOrThrow));
+  /** What Kin itself said in a chat, oldest first. */
+  const kinLines = (chatId: KinChatId) =>
+    sql<{ body: string }>`SELECT body FROM kin_messages WHERE org_id = ${orgId}
+      AND chat_id = ${chatId} AND author_kind = 'system' ORDER BY seq`.pipe(
+      Effect.map((rows) => rows.map((row) => row.body)),
+    );
+  const answeredWakes = sql<{ key: string; origin: string | null }>`SELECT dedupe_key AS key,
+      json_extract(json, '$.origin') AS origin FROM kin_events
+    WHERE org_id = ${orgId} AND dedupe_key LIKE 'question-answered:%' ORDER BY rowid`;
+  return {
+    ...studio,
+    person,
+    chiefChat,
+    askFor,
+    wakeOn,
+    cardOf,
+    widgetOf,
+    kinLines,
+    answeredWakes,
+  };
+});
+
+// Question 1's table: from the owner side anyone who may message the agent; from a teammate's own
+// chat only the owner side or a project's lead; never a group, themselves or an agent.
+it.effect("who may be asked for someone else, and what refuses it", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const { sql, orgId, owner, services, chatOf, chiefChat, askFor, wakeOn, cardOf, widgetOf } =
+        yield* askingTeam;
+      const refused = <A, E extends { readonly message: string }, R>(
+        asking: Effect.Effect<A, E, R>,
+        why: RegExp,
+      ) =>
+        Effect.flip(asking).pipe(
+          Effect.map((error) => {
+            assert.match(error.message, why);
+            assert.match(error.message, /Nothing was asked\.$/);
+          }),
+        );
+      const cards = (chatId: KinChatId) =>
+        sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets
+          WHERE chat_id = ${chatId} AND type = 'choice'`.pipe(Effect.map((rows) => rows[0]!.n));
+
+      // Rhea, in her own chat with the Chief of staff.
+      const rhea = yield* wakeOn("chief", "rhea", chatOf("chief"), "Ask Dev about the shoot.");
+      const toDev = yield* askFor("chief", rhea, { to: "Dev" });
+      assert.deepInclude(toDev, { to: "Dev Malhotra", state: "posted", retry: false });
+      const devChat = yield* chiefChat("dev");
+      const stored = yield* cardOf(toDev.questionId);
+      assert.deepStrictEqual(stored, {
+        widgetId: stored.widgetId,
+        chatId: devChat,
+        forChatId: chatOf("chief"),
+        forPersonId: owner.personId,
+      });
+      const card = yield* widgetOf(stored.widgetId!);
+      assert.deepStrictEqual(card.awaiting, [KinPersonId.make("dev")]);
+      assert.include(card.state, {
+        question: "Does the shoot move to Friday?",
+        detail: "Rhea Rao asks, through Chief of staff.",
+      });
+      // The same call again is a retry: the same question, no second card.
+      assert.deepInclude(yield* askFor("chief", rhea, { to: "Dev" }), {
+        questionId: toDev.questionId,
+        retry: true,
+      });
+      assert.strictEqual(yield* cards(devChat), 1);
+      // Rhea's chat with the agent knows what waits on Dev; Dev's chat lists it as for her.
+      const waits = yield* Questions.askedForSection({
+        orgId: KinOrgId.make(orgId),
+        agentId: KinAgentId.make("chief"),
+        chatId: chatOf("chief"),
+        now: IST_MON_1130,
+      });
+      assert.include(waits!.body, `- ${toDev.questionId}, to Dev Malhotra, today:`);
+      const his = yield* Questions.openQuestionsSection({
+        orgId: KinOrgId.make(orgId),
+        chatId: devChat,
+        ownerOnly: false,
+        now: IST_MON_1130,
+      });
+      assert.include(his!.body, `- ${toDev.questionId}, Chief of staff for Rhea Rao, today:`);
+      // A co-owner is asked in her own chat with the agent, as anyone else.
+      const toMeera = yield* askFor("chief", rhea, { to: "Meera", intent: "shoot budget" });
+      assert.strictEqual(toMeera.state, "posted");
+      yield* refused(
+        askFor("chief", rhea, { to: "Rhea", intent: "x" }),
+        /ask them here with kin_ask/,
+      );
+      yield* refused(askFor("chief", rhea, { to: "Finance" }), /No one called Finance/);
+      // Through Finance, whom Dev may not message, nothing is asked.
+      const viaFinance = yield* wakeOn("finance", "rhea", chatOf("finance"), "Ask Dev.");
+      yield* refused(
+        askFor("finance", viaFinance, { to: "Dev", intent: "y" }),
+        /Dev Malhotra can't message you/,
+      );
+      // The same thing Chief of staff already put to Meera, through Finance: a repeat.
+      yield* refused(
+        askFor("finance", viaFinance, { to: "Meera", intent: "shoot budget", about: [] }),
+        /Chief of staff already asked Meera Shah that/,
+      );
+
+      // Dev, a member, in his own chat with the Chief of staff.
+      const dev = yield* wakeOn("chief", "dev", devChat, "Can someone decide the shoot date?");
+      const toRhea = yield* askFor("chief", dev, { to: "Rhea", intent: "shoot date for dev" });
+      assert.strictEqual(toRhea.state, "posted");
+      const rheaCard = yield* cardOf(toRhea.questionId);
+      assert.deepInclude(rheaCard, {
+        chatId: chatOf("chief"),
+        forChatId: devChat,
+        forPersonId: "dev",
+      });
+      assert.include((yield* widgetOf(rheaCard.widgetId!)).state, {
+        detail: "Dev Malhotra asks, through Chief of staff.",
+      });
+      const toArjun = yield* askFor("chief", dev, { to: "Arjun", intent: "call sheet" });
+      assert.strictEqual(toArjun.state, "posted");
+      yield* refused(
+        askFor("chief", dev, { to: "Zoya", intent: "cover friday" }),
+        /Zoya Sheikh doesn't decide for others/,
+      );
+      // What Arjun may not read never reaches him through the question.
+      yield* refused(
+        askFor("chief", dev, {
+          to: "Arjun",
+          intent: "crew budget",
+          detail: "The crew budget is ₹40,000 in all.",
+        }),
+        /Not for Arjun Nair: “₹40,000” reads as an amount of money/,
+      );
+
+      // At most three asked for others wait on one person, from all agents together.
+      const again = yield* wakeOn("chief", "rhea", chatOf("chief"), "And two more for Dev.");
+      for (const intent of ["lights", "van"])
+        assert.strictEqual((yield* askFor("chief", again, { to: "Dev", intent })).state, "posted");
+      yield* refused(
+        askFor("chief", again, { to: "Dev", intent: "lunch" }),
+        /3 questions asked for others already wait on Dev Malhotra/,
+      );
+      // Neither intent nor records: Kin couldn't tell a repeat, so it isn't asked.
+      yield* refused(askFor("chief", again, { to: "Zoya", intent: "", about: [] }), /intent/);
+
+      // A check-in asks for the owner, as "Chief of staff asks.", one at a time per person.
+      yield* startAgentWakeup({
+        orgId,
+        agentId: KinAgentId.make("chief"),
+        threadId: ThreadId.make("chief-thread"),
+        event: (base) => ({
+          ...base,
+          _tag: "pulse",
+          provenance: { _tag: "system" },
+          factKeys: [],
+          checkIn: {
+            scheduleId: KinMemoryItemId.make("check-in"),
+            title: "Check-in",
+            what: "Check-in.",
+            slot: "d",
+          },
+        }),
+      });
+      const [checkIn] = yield* sql<{ wakeupId: KinWakeupId }>`SELECT wakeup_id AS "wakeupId"
+        FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running'`;
+      const unasked = yield* askFor("chief", checkIn!.wakeupId, { to: "Zoya", intent: "props" });
+      const zoyaCard = yield* cardOf(unasked.questionId);
+      assert.deepInclude(zoyaCard, { forChatId: chatOf("chief"), forPersonId: null });
+      assert.include((yield* widgetOf(zoyaCard.widgetId!)).state, {
+        detail: "Chief of staff asks.",
+      });
+      yield* refused(
+        askFor("chief", checkIn!.wakeupId, { to: "Zoya", intent: "costumes" }),
+        /nobody asked you for/,
+      );
+
+      // A group asks nobody for anyone.
+      const group = (yield* Context.get(services, KinGroups).create([owner], {
+        orgId,
+        title: "Shoot",
+        agentIds: [KinAgentId.make("chief")],
+        personIds: [KinPersonId.make("meera")],
+      })).chatId;
+      const inGroup = yield* wakeOn("chief", "rhea", group, "Ask Zoya about props.");
+      yield* refused(
+        askFor("chief", inGroup, { to: "Zoya", intent: "props again" }),
+        /never a group/,
+      );
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// The tap answers in the asked person's chat and the answer lands in the asker's: Kin's line
+// there, one turn of the asker there, and no turn in the chat of the person who tapped.
+it.effect("a tap on a question asked for someone goes back to the chat that asked, once", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const team = yield* askingTeam;
+      const { sql, chats, orgId, owner, person, chatOf, chiefChat, askFor, wakeOn } = team;
+      const tap = Effect.fn("test.tap")(function* (
+        who: Parameters<typeof chats.act>[0],
+        questionId: string,
+        option: string,
+        clientActionId: string,
+      ) {
+        const card = yield* team.widgetOf((yield* team.cardOf(questionId)).widgetId!);
+        return yield* chats.act(who, {
+          widgetId: card.widgetId,
+          revision: card.revision,
+          actionId: "choose",
+          value: option,
+          clientActionId,
+        });
+      });
+      const turnsIn = (chatId: KinChatId) =>
+        sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_events WHERE org_id = ${orgId}
+          AND tag IN ('chat.message', 'widget.action') AND json_extract(json, '$.chatId') = ${chatId}`.pipe(
+          Effect.map((rows) => rows[0]!.n),
+        );
+
+      const rhea = yield* wakeOn("chief", "rhea", chatOf("chief"), "Ask Dev about the shoot.");
+      const asked = yield* askFor("chief", rhea, { to: "Dev" });
+      const devChat = yield* chiefChat("dev");
+      const before = yield* turnsIn(devChat);
+      // Only the person it waits on answers it: Rhea isn't in Dev's chat with the agent.
+      assert.isTrue(
+        Exit.isFailure(yield* Effect.exit(tap(owner, asked.questionId, "option-1", "rhea-tap"))),
+      );
+      assert.strictEqual((yield* questionRow(sql, asked.questionId)).state, "open");
+
+      const tapped = yield* team.widgetOf((yield* team.cardOf(asked.questionId)).widgetId!);
+      const devTap = {
+        widgetId: tapped.widgetId,
+        revision: tapped.revision,
+        actionId: "choose",
+        value: "option-1",
+        clientActionId: "dev-tap",
+      };
+      yield* chats.act(person("dev"), devTap);
+      assert.deepInclude(yield* questionRow(sql, asked.questionId), {
+        state: "answered",
+        answer: "Friday",
+      });
+      const card = yield* team.widgetOf((yield* team.cardOf(asked.questionId)).widgetId!);
+      assert.deepInclude(card.state, { outcome: { title: "Answered", text: "Sent to Rhea Rao." } });
+      assert.deepStrictEqual(yield* team.kinLines(chatOf("chief")), [
+        "Dev Malhotra answered “Friday” to “Does the shoot move to Friday?”",
+      ]);
+      // One turn of the asker, in her own chat: no origin to cap it, and none in Dev's.
+      assert.deepStrictEqual(yield* team.answeredWakes, [
+        { key: `question-answered:${asked.questionId}`, origin: null },
+      ]);
+      assert.strictEqual(yield* turnsIn(devChat), before);
+      // That turn is told the answer, and that Rhea already heard it.
+      const told = yield* Questions.answeredTurnText(KinOrgId.make(orgId), asked.questionId);
+      assert.include(told!.text, "Dev Malhotra answered your question for Rhea Rao");
+      assert.include(told!.text, "Kin already told Rhea Rao, so don't repeat it.");
+      assert.deepInclude(told!.data, { answer: "Friday", about: ["P-4"] });
+      // The same tap again, or another, adds nothing.
+      yield* chats.act(person("dev"), devTap);
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(tap(person("dev"), asked.questionId, "option-2", "dev-again")),
+        ),
+      );
+      assert.lengthOf(yield* team.kinLines(chatOf("chief")), 1);
+      assert.lengthOf(yield* team.answeredWakes, 1);
+
+      // Its turn would be claimed ahead of Dev's message; this test drives Dev's instead.
+      yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId}
+        AND dedupe_key LIKE 'question-answered:%'`;
+      // Dev asks Rhea: her tap comes back to Dev's chat, and the turn there works at Dev's access.
+      const dev = yield* wakeOn("chief", "dev", devChat, "Can someone decide the shoot date?");
+      const up = yield* askFor("chief", dev, { to: "Rhea", intent: "shoot date for dev" });
+      yield* tap(owner, up.questionId, "option-2", "rhea-answer");
+      assert.deepStrictEqual(yield* team.kinLines(devChat), [
+        "Rhea Rao answered “Keep the date” to “Does the shoot move to Friday?”",
+      ]);
+      const wakes = yield* team.answeredWakes;
+      assert.lengthOf(wakes, 2);
+      assert.deepStrictEqual(JSON.parse(wakes[1]!.origin!), {
+        agentId: "chief",
+        chatId: devChat,
+        personId: "dev",
+      });
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// In words, only from the asked person's own message in her chat; withdrawn, only from the side
+// that asked, and her card says who withdrew it.
+it.effect(
+  "a question asked for someone is answered only by them and withdrawn only by its asker",
+  () =>
+    Effect.andThen(
+      TestClock.setTime(IST_MON_1130),
+      Effect.gen(function* () {
+        const team = yield* askingTeam;
+        const { sql, chatOf, chiefChat, askFor, wakeOn } = team;
+        const close = (outcome: "answered" | "withdrawn", question: string, answer?: string) =>
+          callAs("chief", "kin_ask_close", {
+            question,
+            outcome,
+            ...(answer === undefined ? {} : { answer }),
+          });
+        const rhea = yield* wakeOn("chief", "rhea", chatOf("chief"), "Ask Dev about the shoot.");
+        const first = yield* askFor("chief", rhea, { to: "Dev" });
+        const second = yield* askFor("chief", rhea, { to: "Dev", intent: "van" });
+        // Rhea can't answer for Dev.
+        const forHim = yield* close("answered", first.questionId, "Friday");
+        assert.isFalse(forHim.ok);
+        assert.match(String(forHim.value.message), /own message/);
+
+        const devChat = yield* chiefChat("dev");
+        yield* wakeOn("chief", "dev", devChat, "Friday works for me.");
+        // Dev's own turn doesn't withdraw what was asked for Rhea.
+        const notHis = yield* close("withdrawn", second.questionId);
+        assert.isFalse(notHis.ok);
+        assert.match(String(notHis.value.message), /only that chat, or the owner, withdraws it/);
+        const answered = yield* close("answered", first.questionId, "Friday works");
+        assert.isTrue(answered.ok, JSON.stringify(answered.value));
+        const card = yield* team.widgetOf((yield* team.cardOf(first.questionId)).widgetId!);
+        assert.deepInclude(card.state, {
+          outcome: {
+            title: "Answered",
+            text: "Chief of staff took this from what you wrote: Friday works. Sent to Rhea Rao.",
+          },
+        });
+        assert.deepStrictEqual(yield* team.kinLines(chatOf("chief")), [
+          "Dev Malhotra answered “Friday works” to “Does the shoot move to Friday?”",
+        ]);
+        assert.lengthOf(yield* team.answeredWakes, 1);
+        // Sent on already, it offers Dev no Undo note.
+        const [undo] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_messages
+        WHERE chat_id = ${devChat} AND client_message_id LIKE '%kin-answer-taken:%'`;
+        assert.strictEqual(undo!.n, 0);
+
+        // Rhea's side withdraws the other; Dev's card says she did.
+        yield* wakeOn("chief", "rhea", chatOf("chief"), "Forget the van.");
+        const withdrawn = yield* close("withdrawn", second.questionId);
+        assert.isTrue(withdrawn.ok, JSON.stringify(withdrawn.value));
+        const closed = yield* team.widgetOf((yield* team.cardOf(second.questionId)).widgetId!);
+        assert.deepInclude(closed.state, {
+          outcome: { title: "Withdrawn", text: "Rhea Rao withdrew this question." },
+        });
+        assert.lengthOf(yield* team.answeredWakes, 1);
+      }).pipe(Effect.provide(layer)),
+    ),
+);
+
+// Dev is away: nothing reaches him, and Rhea's chat says when it will. The first pass after he is
+// back posts the card, its day counted from then; at that day it is raised once more, once.
+it.effect("a question asked for someone away waits for them, then is raised once", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const team = yield* askingTeam;
+      const { sql, orgId, chatOf, chiefChat, askFor, wakeOn } = team;
+      const devChat = yield* chiefChat("dev");
+      const cardsFor = (chatId: KinChatId) =>
+        sql<{ question: string; detail: string }>`SELECT json_extract(w.state_json, '$.question')
+            AS question, json_extract(w.state_json, '$.detail') AS detail
+          FROM kin_widgets w WHERE w.chat_id = ${chatId} AND w.type = 'choice' ORDER BY w.rowid`;
+      // Back on Thursday the 19th, on the day stored.
+      yield* sql`UPDATE kin_people SET away_until = '2026-11-19' WHERE person_id = 'dev'`;
+      const rhea = yield* wakeOn("chief", "rhea", chatOf("chief"), "Ask Dev about the shoot.");
+      const asked = yield* askFor("chief", rhea, { to: "Dev" });
+      assert.strictEqual(asked.state, "held");
+      assert.isNull((yield* team.cardOf(asked.questionId)).widgetId);
+      assert.lengthOf(yield* cardsFor(devChat), 0);
+      const [arrives] = yield* team.kinLines(chatOf("chief"));
+      assert.match(arrives!, /^Dev Malhotra is away: it arrives at .+\.$/);
+
+      // Passes while he is away post nothing, and it is never raised before it reached him.
+      assert.strictEqual(yield* settle(orgId, Date.UTC(2026, 10, 18, 6)), 0);
+      assert.lengthOf(yield* cardsFor(devChat), 0);
+      // He is back early: the next pass posts it, due from that minute.
+      yield* sql`UPDATE kin_people SET away_until = NULL WHERE person_id = 'dev'`;
+      const back = Date.UTC(2026, 10, 18, 7);
+      yield* settle(orgId, back);
+      const cards = yield* cardsFor(devChat);
+      assert.deepStrictEqual(cards, [
+        {
+          question: "Does the shoot move to Friday?",
+          detail: "Rhea Rao asks, through Chief of staff.",
+        },
+      ]);
+      const [row] = yield* sql<{ dueAt: number; widgetId: string | null }>`SELECT due_at AS "dueAt",
+          widget_id AS "widgetId" FROM kin_questions WHERE question_id = ${asked.questionId}`;
+      assert.isNotNull(row!.widgetId);
+      assert.strictEqual(row!.dueAt, defaultDue(back, "Asia/Kolkata"));
+      yield* settle(orgId, back + 60_000);
+      assert.lengthOf(yield* cardsFor(devChat), 1);
+
+      // At its day nobody answers for him: it is raised once more, saying still who asks.
+      const raiseAt = Date.UTC(2026, 10, 20, 5);
+      assert.strictEqual(yield* settle(orgId, raiseAt), 1);
+      assert.strictEqual(yield* settle(orgId, raiseAt + 86_400_000), 0);
+      const raised = yield* cardsFor(devChat);
+      assert.lengthOf(raised, 2);
+      assert.strictEqual(raised[1]!.question, "Still open: Does the shoot move to Friday?");
+      assert.match(
+        raised[1]!.detail,
+        /^Rhea Rao asks, through Chief of staff\.\nChief of staff asked /,
+      );
+      assert.strictEqual((yield* questionRow(sql, asked.questionId)).state, "open");
+      assert.lengthOf(yield* team.answeredWakes, 0);
     }).pipe(Effect.provide(layer)),
   ),
 );

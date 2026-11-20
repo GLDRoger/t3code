@@ -375,14 +375,24 @@ export function kinInviteLink(httpBaseUrl: string, secret: string): string {
   return url.toString();
 }
 
-/** A link to this computer's own address opens nowhere else; said beside the link. */
-export function kinInviteLinkLocalOnly(httpBaseUrl: string): boolean {
-  if (!URL.canParse(httpBaseUrl)) return false;
-  return kinIsLocalOnlyHost(new URL(httpBaseUrl).hostname);
-}
-
 export const KIN_INVITE_LOCAL_ONLY_NOTE =
   "This link uses an address that only works on this device, so it won't open on anyone else's. Open Kin at the address your team can reach, then make the link there.";
+
+/**
+ * A link for another device or person: on the host's public address (`kin.access.me`
+ * `publicUrl`) when it has one, else on the address this device reaches Kin at. `note` is said
+ * beside it only when that final link opens nowhere but this machine.
+ */
+export function kinShareLink(
+  address: { readonly publicUrl: string | undefined; readonly httpBaseUrl: string },
+  secret: string,
+): { readonly link: string; readonly note: string | null } {
+  const link = kinInviteLink(address.publicUrl ?? address.httpBaseUrl, secret);
+  return {
+    link,
+    note: kinIsLocalOnlyHost(new URL(link).hostname) ? KIN_INVITE_LOCAL_ONLY_NOTE : null,
+  };
+}
 
 export const KIN_INVITE_PHONE_NOTE =
   'It opens in a browser, or in the phone app: on its first screen they tap "I have a join link".';

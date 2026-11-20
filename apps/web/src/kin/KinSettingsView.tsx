@@ -24,8 +24,10 @@ import {
   ChevronRightIcon,
   CircleUserIcon,
   FingerprintIcon,
+  SlidersHorizontalIcon,
   PaletteIcon,
   PlugIcon,
+  TrendingUpIcon,
   BrainIcon,
   SettingsIcon,
   BotIcon,
@@ -37,7 +39,7 @@ import { useState } from "react";
 import { AppRouteModal, AppRouteModalClose } from "../components/AppRouteModal";
 import { ApprovalsSettings } from "../components/settings/ApprovalsSettings";
 import { SettingsPageContainer, SettingsSection } from "../components/settings/settingsLayout";
-import { searchableSetting } from "../components/settings/settingsSearch";
+import { useSearchableSetting } from "../components/settings/settingsSearch";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
@@ -74,6 +76,7 @@ import { cn } from "../lib/utils";
 import type { ThemePreferenceMode } from "../themePalette";
 import { KinAgentDefaultsSetting } from "./KinAgentsSetting";
 import { KinAvatar } from "./KinAvatar";
+import { KinBriefsSetting } from "./KinBriefs";
 import { withKinAgentPage } from "./kinPlaces";
 import { KinCheckInsSetting } from "./KinCheckIns";
 import { kinClient } from "./kinClient";
@@ -85,16 +88,20 @@ import { KinMemoryView } from "./KinMemoryView";
 import { KinSettingsNotifications } from "./KinNotifications";
 import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
 import { KinProfileBody, useKinMe } from "./KinProfileSheet";
+import { KinRecommendationsSettings } from "./KinRecommendations";
 import {
   closeKinSettings,
   kinSettingsFindIn,
   kinSettingsSectionIn,
   openKinSettings,
+  useKinSettingLanding,
 } from "./kinSettingsAddress";
+import { kinSettingsPageHolding } from "./kinSettingsSearch";
 import { rememberKinTeammate } from "./kinTeammateMark";
 import { KinTeamView } from "./KinTeamView";
 import { useKinHost, useKinWorkingAgents } from "./useKinHost";
-import { useKinOwnerLevel, useKinPlaceReach } from "./useKinOwnerLevel";
+import { useKinOwnerLevel, useKinPlaceReach, useKinSeesClients } from "./useKinOwnerLevel";
+import { KinDealsSetting } from "./KinDealsSetting";
 
 const KIN_SETTINGS_TITLE = "Settings";
 
@@ -106,9 +113,11 @@ const PAGE_ICON: Record<KinSettingsPage, LucideIcon> = {
   agents: BotIcon,
   "check-ins": CalendarCheckIcon,
   connections: PlugIcon,
+  deals: TrendingUpIcon,
   memory: BrainIcon,
   company: Building2Icon,
   approvals: FingerprintIcon,
+  recommendations: SlidersHorizontalIcon,
 };
 
 /**
@@ -134,7 +143,18 @@ interface KinSettingsTarget {
 
 function useKinSettingsGroups(environmentId: EnvironmentId): ReadonlyArray<KinSettingsGroup> {
   const ownerLevel = useKinOwnerLevel(environmentId);
-  return kinSettingsGroups({ ownerLevel, computer: !isChatOnlySession(), notifications: true });
+  const deals = useKinSeesClients(environmentId);
+  // The owner alone, as the host gates `kin.recommendations.*`: a co-owner sees none of it.
+  const recommendations = useAtomValue(
+    kinClient.recommendationAskAgain.permissionAtom(environmentId),
+  );
+  return kinSettingsGroups({
+    ownerLevel,
+    computer: !isChatOnlySession(),
+    notifications: true,
+    recommendations,
+    deals,
+  });
 }
 
 /** The gear on Chats on a narrow window, where there is no sidebar corner for it. */
@@ -163,9 +183,20 @@ export function KinSettingsMoved(props: {
   readonly fallback: React.ReactNode;
 }) {
   const target = kinNewLeadTarget(useKinHost());
+  const hash = useLocation({ select: (location) => location.hash.replace(/^#/, "") });
+  // As the address named it on arrival; the redirect itself takes the hash away.
+  const [found] = useState(hash);
   if (target === null) return props.fallback;
-  return <Navigate to="/kin" search={{ settings: props.page }} replace />;
+  // The hash is the setting a settings search found, so Settings opens at it.
+  const settings = kinSettingsPageHolding(props.page, found);
+  return (
+    <Navigate to="/kin" search={found === "" ? { settings } : { settings, at: found }} replace />
+  );
 }
+
+// A still ring, not the focus outline, so a click marks the row as Enter does; no motion.
+const KIN_FOUND_MARK =
+  "[&_[data-kin-setting-found]]:rounded-xl [&_[data-kin-setting-found]]:outline-none [&_[data-kin-setting-found]]:ring-2 [&_[data-kin-setting-found]]:ring-primary/60 [&_[data-kin-setting-found]]:ring-offset-4 [&_[data-kin-setting-found]]:ring-offset-background";
 
 /** Settings, open over the Kin page on screen while the address names a section. */
 export function KinSettingsModalHost() {
@@ -194,6 +225,7 @@ function KinSettingsModal(props: { readonly target: KinSettingsTarget; readonly 
   const page = kinSettingsPageOf(wanted, groups);
   const waiting = !atIndex && page !== wanted && !known;
   const show = (section: KinSettingsPage | "") => openKinSettings(router.history, section);
+  const landing = useKinSettingLanding();
   return (
     <AppRouteModal label={KIN_SETTINGS_TITLE} onClose={() => closeKinSettings(router.history)}>
       <div className="relative flex min-h-0 flex-1">
@@ -240,7 +272,10 @@ function KinSettingsModal(props: { readonly target: KinSettingsTarget; readonly 
               <AppRouteModalClose />
             </div>
           </header>
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <div
+            ref={landing}
+            className={cn("flex min-h-0 flex-1 flex-col overflow-y-auto", KIN_FOUND_MARK)}
+          >
             {waiting ? null : <KinSettingsPageBody page={page} target={target} />}
           </div>
         </div>
@@ -317,6 +352,7 @@ function KinSettingsPageBody(props: {
   readonly page: KinSettingsPage;
   readonly target: KinSettingsTarget;
 }) {
+  const searchableSetting = useSearchableSetting();
   const { target } = props;
   switch (props.page) {
     case "profile":
@@ -341,6 +377,12 @@ function KinSettingsPageBody(props: {
           <KinConnectionsSettings />
         </SettingsPageContainer>
       );
+    case "deals":
+      return (
+        <SettingsPageContainer>
+          <KinDealsSetting />
+        </SettingsPageContainer>
+      );
     case "memory":
       return <KinSettingsMemory {...target} />;
     case "company":
@@ -355,6 +397,8 @@ function KinSettingsPageBody(props: {
       );
     case "approvals":
       return <ApprovalsSettings />;
+    case "recommendations":
+      return <KinRecommendationsSettings key={target.orgId} {...target} />;
   }
 }
 
@@ -367,6 +411,7 @@ function KinSettingsProfile(props: KinSettingsTarget) {
       ) : (
         <KinProfileBody {...props} personId={me} />
       )}
+      <KinBriefsSetting {...props} />
       {/* A teammate's browser is a chat-only session; the owner's never is. */}
       {isChatOnlySession() ? <KinLeaveTeam /> : null}
     </div>

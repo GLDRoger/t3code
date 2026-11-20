@@ -29,7 +29,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
-import { commentMine } from "../tasksKey/tasks.ts";
+import { commentMine, setStateMine } from "../tasksKey/tasks.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadWork from "./leadWork.ts";
 import * as OwnerClients from "./ownerClients.ts";
@@ -91,6 +91,9 @@ const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Ambermill', ${at})`;
+  // The company's clock, which its days and quiet hours follow, on any host.
+  yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Kolkata', '08:00', '18:00', '02:00',
+      0, 1, '09:00', '{}') ON CONFLICT (org_id) DO UPDATE SET time_zone = 'Asia/Kolkata'`;
   yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
     VALUES (${rheaId}, ${orgId}, 'rhea', 'Rhea', ${at}), (${zoyaId}, ${orgId}, 'zoya', 'Zoya', ${at}),
       (${arjunId}, ${orgId}, 'arjun', 'Arjun', ${at})`;
@@ -440,6 +443,36 @@ it.effect("a mail waiting to be confirmed about an entry shows on the sheet of w
     } as never);
     const hers = yield* OwnerWork.list([zoya], { orgId, byMove: true });
     assert.deepStrictEqual(hers.moves, [{ key: made.key, group: "needsYou" }] as never);
+    // Words a person saved on the card are what its Confirm sends, so the row names those.
+    const edited = {
+      question: "Send this email?",
+      detail: null,
+      options: [
+        { optionId: "yes", label: "Confirm", kind: "yes" },
+        { optionId: "no", label: "Don't send", kind: "no" },
+      ],
+      send: {
+        service: "Mail",
+        action: "email",
+        from: null,
+        to: ["billing@client.invalid"],
+        cc: [],
+        subject: "October invoice, corrected",
+        body: "Invented edit",
+        attachments: [],
+        outcome: null,
+        edited: { personId: rheaId, name: "Rhea" },
+      },
+      answer: null,
+    };
+    yield* sql`UPDATE kin_widgets SET revision = 2, state_json = ${JSON.stringify(edited)}
+      WHERE widget_id = 'card'`;
+    const saved = (yield* OwnerWork.list([rhea], { orgId, byMove: true })).moves?.[0]?.card;
+    assert.deepInclude(saved, {
+      preview: "To billing@client.invalid: October invoice, corrected",
+      revision: 2,
+    } as never);
+    assert.lengthOf(saved?.options ?? [], 2);
     // Once decided, nothing waits.
     yield* sql`UPDATE kin_connection_asks SET state = 'sent'`;
     assert.notProperty(yield* OwnerWork.get([rhea], { orgId, key: made.key }), "waiting");
@@ -625,8 +658,13 @@ it.effect("a person's comment tells who holds the task and who asked for it, onc
     yield* sql`INSERT INTO auth_sessions (session_id, subject, method, scopes, issued_at, expires_at)
       VALUES ('dev-key', 'kin-coding-agent', 'bearer-access-token', '["kin:tasks"]', ${at},
         '2026-12-11T00:00:00.000Z')`;
-    yield* sql`INSERT INTO kin_tasks_keys (session_id, org_id, person_id, label, created_at, expires_at)
-      VALUES ('dev-key', ${orgId}, ${devId}, 'Invented laptop', 0, ${Date.parse("2026-12-11T00:00:00.000Z")})`;
+    // Made on his bound laptop: a key with no recorded device, or a person with none, acts as no one.
+    yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES ('dev-laptop', ${orgId}, ${devId}, 0)`;
+    yield* sql`INSERT INTO kin_tasks_keys (session_id, org_id, person_id, label, created_at, expires_at,
+        made_by_session_id)
+      VALUES ('dev-key', ${orgId}, ${devId}, 'Invented laptop', 0, ${Date.parse("2026-12-11T00:00:00.000Z")},
+        'dev-laptop')`;
     const devKey = { orgId, personId: devId, sessionId: AuthSessionId.make("dev-key") };
     for (const _ of [1, 2])
       yield* commentMine(devKey, { key: made.key, text: "Invented: proofs are in" }).pipe(
@@ -638,6 +676,33 @@ it.effect("a person's comment tells who holds the task and who asked for it, onc
         body: `Dev commented on ${made.key} Invented: print the menus: Invented: proofs are in.`,
       },
     ]);
+    // The key's name is Dev's and the owner's to read, revoked too; anyone else reads a generic.
+    yield* setStateMine(devKey, { key: made.key, state: "doing" }).pipe(Effect.provide(hub));
+    const dev = person(devId);
+    const [keyed] = (yield* Comments.page([dev], {
+      orgId,
+      key: made.key,
+      beforeSeq: 99,
+    })).comments.filter((one) => one.codingAgent !== undefined);
+    yield* Comments.removeOne([dev], { orgId, key: made.key, commentId: keyed!.commentId });
+    yield* sql`UPDATE kin_tasks_keys SET revoked_at = 1 WHERE session_id = 'dev-key'`;
+    for (const [reader, name] of [
+      [rhea, "Invented laptop"],
+      [dev, "Invented laptop"],
+      [zoya, "a coding agent"],
+    ] as const) {
+      const sheet = yield* OwnerWork.get([reader], { orgId, key: made.key });
+      const page = yield* Comments.page([reader], { orgId, key: made.key, beforeSeq: 99 });
+      assert.deepStrictEqual(
+        [
+          sheet.changes.find((one) => one.codingAgent !== undefined)?.codingAgent,
+          ...[sheet.comments, page.comments].map(
+            (comments) => comments?.find((one) => one.commentId === keyed!.commentId)?.codingAgent,
+          ),
+        ],
+        [name, name, name],
+      );
+    }
     // Someone removed from the company is told nothing; the asker still is.
     yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = ${devId}`;
     yield* say(meera, made.key, "Invented: and the gold ink", "second").pipe(Effect.provide(hub));

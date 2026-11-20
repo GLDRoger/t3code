@@ -1,12 +1,10 @@
 import {
-  KIN_INVITE_LOCAL_ONLY_NOTE,
   KIN_INVITE_PHONE_NOTE,
   KIN_TEAMMATE_NAME_MAX,
   KIN_TEAM_ADD_COPY,
-  kinInviteLink,
   kinInviteLinkCopy,
-  kinInviteLinkLocalOnly,
   kinRemovedNamesake,
+  kinShareLink,
   kinTeammateNameCheck,
   type KinMadeInvite,
   type KinTeamActions,
@@ -31,8 +29,9 @@ import {
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
-import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
+import { namedClipboardTarget, useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { usePreparedConnection } from "../state/session";
+import { useKinPublicUrl } from "./useKinOwnerLevel";
 
 /** What the dialog is showing: the name form, or a link the host just made. */
 export type KinInviteDialogState =
@@ -209,11 +208,18 @@ function InviteLink(props: {
 }) {
   const { invite } = props;
   const connection = Option.getOrNull(usePreparedConnection(props.environmentId));
-  const { copyToClipboard, isCopied } = useCopyToClipboard({ target: "invite link" });
+  const publicUrl = useKinPublicUrl(props.environmentId);
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    target: namedClipboardTarget("invite link"),
+  });
   const linkId = useId();
   const copy = kinInviteLinkCopy(invite);
   // The connection can drop while the dialog is up; the link was made, so say how to get another.
-  const link = connection === null ? null : kinInviteLink(connection.httpBaseUrl, invite.secret);
+  const shared =
+    connection === null
+      ? null
+      : kinShareLink({ publicUrl, httpBaseUrl: connection.httpBaseUrl }, invite.secret);
+  const link = shared?.link ?? null;
   return (
     <>
       <DialogHeader>
@@ -221,7 +227,7 @@ function InviteLink(props: {
         <DialogDescription>{copy.detail}</DialogDescription>
       </DialogHeader>
       <DialogPanel>
-        {link === null || connection === null ? (
+        {link === null || shared === null ? (
           <Alert variant="error">
             <AlertDescription>{KIN_TEAM_ADD_COPY.linkDropped(invite.displayName)}</AlertDescription>
           </Alert>
@@ -255,11 +261,11 @@ function InviteLink(props: {
               ) : null}
             </div>
             <p className="text-xs text-muted-foreground">{KIN_INVITE_PHONE_NOTE}</p>
-            {kinInviteLinkLocalOnly(connection.httpBaseUrl) ? (
+            {shared.note === null ? null : (
               <Alert variant="warning">
-                <AlertDescription>{KIN_INVITE_LOCAL_ONLY_NOTE}</AlertDescription>
+                <AlertDescription>{shared.note}</AlertDescription>
               </Alert>
-            ) : null}
+            )}
           </div>
         )}
       </DialogPanel>

@@ -1,3 +1,4 @@
+import { kinNow } from "@t3tools/client-runtime/kin/kinNow";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
@@ -5,6 +6,7 @@ import {
   KIN_TOUCH_KINDS,
   kinLocalDay,
   kinTouchAt,
+  kinTouchNext,
   type KinTouchView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import type { KinRecordKey, KinTouchKind } from "@t3tools/contracts";
@@ -44,13 +46,18 @@ export function KinClientContact(
   const [adding, setAdding] = useState(false);
   const remove = useAtomCommand(kinClient.workTouchRemove, { reportFailure: false });
   const [removing, setRemoving] = useState<string | null>(null);
+  const [refused, setRefused] = useState<string | null>(null);
   const take = async (id: string) => {
     setRemoving(id);
-    await remove({
+    setRefused(null);
+    const result = await remove({
       environmentId: props.environmentId,
       input: { orgId: props.orgId, touchId: id },
     });
     setRemoving(null);
+    // A teammate removes only what they logged; the host says so for anyone else's.
+    if (result._tag !== "Success")
+      setRefused(kinFailureText(squashAtomCommandFailure(result), KIN_CLIENTS.touchFailed));
     props.onChanged();
   };
   return (
@@ -68,6 +75,11 @@ export function KinClientContact(
         ) : undefined
       }
     >
+      {refused === null ? null : (
+        <Alert variant="error">
+          <AlertDescription>{refused}</AlertDescription>
+        </Alert>
+      )}
       {props.touches.length === 0 ? (
         <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noTouches}</p>
       ) : (
@@ -127,17 +139,24 @@ function TouchDialog(
   const log = useAtomCommand(kinClient.workTouchLog, { reportFailure: false });
   const [requestId] = useState(randomUUID);
   const [kind, setKind] = useState<KinTouchKind>("call");
-  const [today] = useState(() => kinLocalDay(new Date()));
+  const [today] = useState(() => kinLocalDay(kinNow()));
   const [day, setDay] = useState(today);
   const [note, setNote] = useState("");
+  const [nextTitle, setNextTitle] = useState("");
+  const [nextDay, setNextDay] = useState("");
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
-  const ids = { note: useId(), day: useId() };
+  const ids = { note: useId(), day: useId(), next: useId(), nextDay: useId() };
   const save = async () => {
     if (saving || note.trim() === "") return;
+    const next = kinTouchNext(nextTitle, nextDay);
+    if (next !== undefined && "problem" in next) {
+      setFailed(next.problem);
+      return;
+    }
     setSaving(true);
     setFailed(null);
-    const at = kinTouchAt(day, new Date());
+    const at = kinTouchAt(day, kinNow());
     const result = await log({
       environmentId: props.environmentId,
       input: {
@@ -146,6 +165,7 @@ function TouchDialog(
         kind,
         note: note.trim(),
         ...(at === undefined ? {} : { at }),
+        ...(next === undefined ? {} : { next }),
         clientRequestId: requestId,
       },
     });
@@ -208,6 +228,29 @@ function TouchDialog(
                   max={today}
                   onChange={(event) => setDay(event.target.value)}
                 />
+              </div>
+              <div className="flex flex-col gap-1.5 sm:flex-row sm:items-end sm:gap-3">
+                <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                  <Label htmlFor={ids.next}>{KIN_CLIENTS.nextStepTitle}</Label>
+                  <Input
+                    id={ids.next}
+                    maxLength={280}
+                    value={nextTitle}
+                    placeholder={KIN_CLIENTS.nextStepPlaceholder}
+                    onChange={(event) => setNextTitle(event.target.value)}
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={ids.nextDay}>{KIN_CLIENTS.nextStepWhen}</Label>
+                  <Input
+                    id={ids.nextDay}
+                    type="date"
+                    value={nextDay}
+                    min={today}
+                    disabled={nextTitle.trim() === ""}
+                    onChange={(event) => setNextDay(event.target.value)}
+                  />
+                </div>
               </div>
               {failed ? (
                 <Alert variant="error">

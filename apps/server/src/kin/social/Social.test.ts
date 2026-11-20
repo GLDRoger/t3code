@@ -677,17 +677,59 @@ const preview: {
     SqlClient.TransactionConnection,
     SqlClient.TransactionConnection.Service
   > | null;
-  rendered: Deferred.Deferred<boolean> | null;
+  rendered: Deferred.Deferred<{ inside: boolean; day: string }> | null;
 } = { transaction: null, rendered: null };
 const probeRenderer = Layer.mock(KinDocRenderer)({
-  sheet: () =>
+  sheet: (input) =>
     Effect.gen(function* () {
       const inside =
         preview.transaction !== null &&
         Option.isSome(yield* Effect.serviceOption(preview.transaction));
-      if (preview.rendered !== null) yield* Deferred.succeed(preview.rendered, inside);
+      if (preview.rendered !== null)
+        yield* Deferred.succeed(preview.rendered, { inside, day: input.day });
       return yield* new KinChatError({ reason: "unavailable", message: "Invented: no preview." });
     }),
+});
+
+it.effect("reads the last week from the company's day a week ago", () => {
+  const { fake, run } = harness();
+  return run(
+    Effect.gen(function* () {
+      yield* setUp;
+      const social = yield* KinSocial;
+      const sql = yield* SqlClient.SqlClient;
+      // 22:00 on Sun 15 Nov at UTC-11: a week back is Sun 8 Nov there, 9 Nov in UTC.
+      yield* at(NOW);
+      yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief,
+        evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check,
+        quiet_hours_json)
+      VALUES (${orgId}, 'Pacific/Pago_Pago', '08:00', '18:00', '02:00', 0, 1, '09:00', '[]')
+      ON CONFLICT (org_id) DO UPDATE SET time_zone = 'Pacific/Pago_Pago'`;
+      const own = yield* connectGroup(fake, { kind: "own" }, OWN);
+      const [ig] = fake.accountsOf(own.made.profileId);
+      fake.addPast([
+        {
+          accountId: ig!.accountId,
+          platform: "instagram",
+          content: "Sunday market stall",
+          publishedAt: "2026-11-08T20:00:00.000Z",
+          mediaType: "image",
+          likes: 12,
+          comments: 1,
+          saves: 0,
+          shares: 0,
+          reach: 300,
+        },
+      ]);
+      const read = (yield* social.read(scope, { group: "our own" })) as {
+        groups: ReadonlyArray<{ posts: ReadonlyArray<{ caption: string }> }>;
+      };
+      assert.deepStrictEqual(
+        read.groups[0]!.posts.map((post) => post.caption),
+        ["Sunday market stall"],
+      );
+    }),
+  );
 });
 
 it.effect(
@@ -740,10 +782,15 @@ it.effect(
         });
         yield* social.week(scope, { group: "Lumen Studio" });
         preview.transaction = sql.transactionService;
-        preview.rendered = yield* Deferred.make<boolean>();
+        preview.rendered = yield* Deferred.make<{ inside: boolean; day: string }>();
+        // 21:00 UTC on the 16th is already the 17th for a company in India.
+        yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Asia/Kolkata' WHERE org_id = ${orgId}`;
+        yield* at(Date.parse("2026-11-16T21:00:00.000Z"));
         const [card] = yield* weekCard;
         yield* tap(card!, "preview", null);
-        assert.isFalse(yield* Deferred.await(preview.rendered), "rendered inside a transaction");
+        const rendered = yield* Deferred.await(preview.rendered);
+        assert.isFalse(rendered.inside, "rendered inside a transaction");
+        assert.strictEqual(rendered.day, "2026-11-17");
       }),
     );
   },

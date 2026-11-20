@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers word due days for React render, outside an Effect runtime.
+import { kinNow } from "./kinNow.ts";
 import type {
   KinAgentId,
   KinChatSummary,
@@ -13,7 +14,7 @@ import { KIN_PROVIDER_FACTS, kinCantDo, kinProviderFacts } from "@t3tools/contra
 import { formatModelSlugName } from "@t3tools/shared/model";
 
 import { formatKinDeferralTime } from "./kinDeferralPresentation.ts";
-import { kinWorkDueText } from "./kinWork.ts";
+import { type KinWorkNames, kinWorkDueText, kinWorkStatusText } from "./kinWork.ts";
 import { kinFailureText } from "./kinAnswers.ts";
 
 export const KIN_LEAD_NAME_MAX = 80;
@@ -137,13 +138,20 @@ const TRACKING_KINDS: Record<KinLeadTracking["kind"], string> = {
   scheduled: "Repeats",
 };
 
-/** The second line under something a lead has in hand: "Reminder, Fri 13 Nov, 9:00". */
+/**
+ * The second line under something a lead has in hand: "Reminder, Fri 13 Nov, 9:00". A waiting task
+ * says so as the Tasks list does ("Waiting on you, due tomorrow").
+ */
 export function kinLeadTrackingDetail(
-  item: Pick<KinLeadTracking, "kind" | "dueAt" | "dueAllDay">,
+  item: Pick<KinLeadTracking, "kind" | "dueAt" | "dueAllDay" | "state" | "waitingOn">,
   timeZone?: string,
-  now: Date = new Date(),
+  now: Date = kinNow(),
+  names: KinWorkNames | null = null,
 ): string {
-  const kind = TRACKING_KINDS[item.kind];
+  const kind =
+    item.kind === "work" && item.state === "waiting"
+      ? kinWorkStatusText({ state: item.state, waitingOn: item.waitingOn ?? null }, names)
+      : TRACKING_KINDS[item.kind];
   const due = item.dueAt === undefined ? Number.NaN : Date.parse(item.dueAt);
   if (Number.isNaN(due)) return kind;
   // A due day has no time: the day where the owner is, as Tasks says it.

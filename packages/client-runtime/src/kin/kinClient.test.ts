@@ -3,11 +3,14 @@ import {
   EnvironmentId,
   KIN_APPROVAL_WS_METHODS,
   KinOrgId,
+  KinRecordKey,
   type AuthSessionState,
+  type KinWorkEvent,
   type KinOrgsListResult,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -201,6 +204,63 @@ describe("makeKinClient", () => {
         );
         yield* settled(registry, keys);
         expect(count(KIN_APPROVAL_WS_METHODS.listKeys)).toBe(2);
+      }),
+    ),
+  );
+
+  it.effect("reads the agents' In hand lines again when a task in Work changes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const asked = yield* Queue.unbounded<void>();
+        const work = yield* Queue.unbounded<KinWorkEvent>();
+        const { kinClient, registry } = yield* setup({
+          "kin.leads.list": () => Queue.offer(asked, undefined).pipe(Effect.as({ leads: [] })),
+          "kin.work.subscribe": () => Stream.fromQueue(work),
+        } as unknown as Answers);
+        yield* settled(registry, kinClient.leads({ environmentId: env, input: { orgId: org } }));
+        yield* Queue.take(asked);
+        yield* Queue.offer(work, {
+          _tag: "counts",
+          seq: 1,
+          asOf: "2026-11-19T05:00:00.000Z",
+          open: 1,
+          doing: 0,
+          waiting: 1,
+          late: 0,
+          dueThisWeek: 0,
+          whole: true,
+          owners: [],
+        });
+        // W-2 moves from waiting on Rhea to doing on another screen: no `leads` move is sent.
+        yield* Queue.offer(work, { _tag: "changed", seq: 2, key: KinRecordKey.make("W-2") });
+        yield* Queue.take(asked);
+      }),
+    ),
+  );
+
+  it.effect("reads Check-ins and Profile's Briefs again after either one saves", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let at = "10:30";
+        const { kinClient, registry, count, refreshKinBriefs } = yield* setup({
+          "kin.checkIns.list": () => Effect.sync(() => ({ checkIns: [{ at }] })),
+          "kin.briefs.list": () => Effect.sync(() => ({ briefs: [{ at }] })),
+        } as unknown as Answers);
+        const input = { environmentId: env, input: { orgId: org } };
+        const both = Effect.all([
+          settled(registry, kinClient.checkIns(input)),
+          settled(registry, kinClient.briefs(input)),
+        ]);
+        yield* both;
+        // Rhea saves 09:30 in Profile → Briefs, then opens Check-ins within the read's 30 seconds.
+        at = "09:30";
+        refreshKinBriefs(env, org);
+        const [checkIns, briefs] = yield* both;
+        expect([checkIns, briefs]).toEqual([
+          Exit.succeed({ checkIns: [{ at: "09:30" }] }),
+          Exit.succeed({ briefs: [{ at: "09:30" }] }),
+        ]);
+        expect([count("kin.checkIns.list"), count("kin.briefs.list")]).toEqual([2, 2]);
       }),
     ),
   );

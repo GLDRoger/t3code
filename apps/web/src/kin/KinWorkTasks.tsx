@@ -9,6 +9,7 @@ import {
   kinTaskGroupedChip,
   kinTaskLine,
   kinTaskStep,
+  kinTaskStepStatusShown,
   kinTasksByMove,
   kinTasksGroupedBy,
   type KinTaskLine,
@@ -444,7 +445,7 @@ export function KinWorkTaskList(
                       quietNoDate: shown !== null,
                     })}
                     step={shown}
-                    status={steps.status[record.key] ?? null}
+                    status={kinTaskStepStatusShown(steps.status[record.key], shown)}
                     saving={changed.pending[item.key] !== undefined}
                     selected={item.key === props.openKey}
                     onOpen={() => props.onOpen(record.key)}
@@ -613,6 +614,9 @@ function KinTaskRow(props: {
             )}
             <span className="line-clamp-2 min-w-0">{step.line}</span>
           </p>
+        )}
+        {step?.kind !== "send" || step.mayHaveGone === null ? null : (
+          <p className="px-2 text-xs font-medium text-destructive-foreground">{step.mayHaveGone}</p>
         )}
         {step === null ? null : status?.kind === "done" ? (
           <p role="status" className="px-2 text-xs font-medium text-foreground">

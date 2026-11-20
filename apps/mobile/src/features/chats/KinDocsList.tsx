@@ -11,15 +11,20 @@ import {
   KIN_DOC_HOMES,
   KIN_DOC_SHELVES,
   KIN_SEARCH,
+  KIN_WHAT_WE_SELL,
   kinDocLibrary,
   kinDocRow,
+  kinDocsPinned,
   kinDocUnfiled,
   kinDocsChip,
   kinDocsFooter,
   kinDocsSameShow,
   kinSearchHit,
   kinSearchNothing,
+  kinWhatWeSellShown,
+  kinWhatWeSellWays,
   type KinDocRowView,
+  type KinWhatWeSellWay,
   type KinDocsShow,
   type KinSearchHitView,
   type KinSearchState,
@@ -55,7 +60,14 @@ import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { kinTabBar, useKinTab } from "./components/KinTab";
 import { KinWorkLoading, KinWorkPrivateMark, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
-import { useKinDocsList, useKinDocsLive, useKinDocsUnder, useKinSearch } from "./state/useKinDocs";
+import {
+  useKinDocsList,
+  useKinDocsLive,
+  useKinDocsUnder,
+  useKinSearch,
+  useKinWhatWeSell,
+  useKinWhatWeSellStart,
+} from "./state/useKinDocs";
 import { useKinAskAgent, useKinLists } from "./state/useKinMoney";
 import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { useKinWorkLink } from "./state/kinWorkLink";
@@ -86,6 +98,11 @@ function KinDocRowButton(props: {
             <Text textRole="body" numberOfLines={1} className="min-w-0 shrink text-foreground">
               {row.title}
             </Text>
+            {row.pinned ? (
+              <Text textRole="footnote" className="font-t3-medium text-accent-foreground">
+                {KIN_WHAT_WE_SELL.pinned}
+              </Text>
+            ) : null}
             {row.private ? <KinWorkPrivateMark label="" /> : null}
           </View>
           <Text textRole="footnote" numberOfLines={2} className="text-foreground-muted">
@@ -114,6 +131,58 @@ function KinDocRowButton(props: {
       </View>
       <View className={cn("h-px bg-border-subtle", props.inset ? "ml-4" : "ml-5")} />
     </>
+  );
+}
+
+const WAY_ICON: Record<KinWhatWeSellWay, "arrow.right" | "doc.text" | "bubble.left"> = {
+  website: "arrow.right",
+  brochure: "doc.text",
+  talk: "bubble.left",
+};
+
+/** No What we sell yet: three ways in, each starting it and opening the sales agent's chat. */
+function KinWhatWeSellEmpty(props: {
+  readonly agent: string;
+  readonly start: (draft: string) => Promise<boolean>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  return (
+    <View className="mx-4 mt-2 gap-2 rounded-2xl bg-grouped-card px-4 py-3.5">
+      <Text textRole="body" accessibilityRole="header" className="font-t3-medium text-foreground">
+        {KIN_WHAT_WE_SELL.empty.title}
+      </Text>
+      <Text textRole="footnote" className="text-foreground-muted">
+        {KIN_WHAT_WE_SELL.empty.detail}
+      </Text>
+      {kinWhatWeSellWays(props.agent).map((way) => (
+        <Pressable
+          key={way.way}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: busy, busy }}
+          disabled={busy}
+          onPress={async () => {
+            setBusy(true);
+            setFailed(false);
+            const started = await props.start(way.draft);
+            setBusy(false);
+            setFailed(!started);
+          }}
+          className="min-h-11 flex-row items-center gap-3 active:opacity-60"
+        >
+          <SymbolView
+            name={WAY_ICON[way.way]}
+            size={16}
+            tintColorClassName="text-foreground-muted"
+            type="monochrome"
+          />
+          <Text textRole="body" className="text-foreground">
+            {way.label}
+          </Text>
+        </Pressable>
+      ))}
+      {failed ? <Notice tone="danger" message={KIN_WHAT_WE_SELL.startFailed} /> : null}
+    </View>
   );
 }
 
@@ -254,6 +323,7 @@ export function KinSearchHits(props: {
 type Item =
   | { readonly type: "group"; readonly id: string; readonly title: string; readonly unfiled?: true }
   | { readonly type: "recent"; readonly id: string; readonly rows: ReadonlyArray<KinDocListRow> }
+  | { readonly type: "whatWeSell"; readonly id: string }
   | {
       readonly type: "doc";
       readonly id: string;
@@ -356,7 +426,16 @@ export function KinDocsList(
   const listRows = (filter.archived ? index.archived : index.active).filter(
     (row) => words === "" || row.name.toLowerCase().includes(words),
   );
-  const library = kinDocLibrary(state.records);
+  // What we sell is read on its own: pinned whatever page holds it, or its empty state's ways in.
+  const pinShown = kinWhatWeSellShown(filter);
+  const pinned = useKinWhatWeSell(props, pinShown);
+  const starter = useKinWhatWeSellStart(props);
+  const pin = pinShown ? (pinned ?? null) : null;
+  const library = kinDocLibrary(state.records, pin);
+  const whatWeSell: ReadonlyArray<Item> =
+    !refused && pinShown && pinned === null && starter !== null
+      ? [{ type: "whatWeSell", id: "what-we-sell" }]
+      : [];
   const shownLists = allLists ? listRows : listRows.slice(0, LISTS_FOLDED);
   const listItems: ReadonlyArray<Item> =
     !everything || listRows.length === 0
@@ -378,7 +457,12 @@ export function KinDocsList(
   const docItems: ReadonlyArray<Item> = refused
     ? []
     : !everything || searching
-      ? state.records.map((row): Item => ({ type: "doc", id: row.recordId, row, bare: false }))
+      ? kinDocsPinned(state.records, searching ? null : pin).map((row): Item => ({
+          type: "doc",
+          id: row.recordId,
+          row,
+          bare: false,
+        }))
       : library.homes.flatMap((home): ReadonlyArray<Item> => [
           {
             type: "group",
@@ -411,7 +495,7 @@ export function KinDocsList(
     everything && !searching && !filter.archived && library.recent.length > 0
       ? [{ type: "recent", id: "recent", rows: library.recent }]
       : [];
-  const items = [...recent, ...listItems, ...docItems, ...playbookItems];
+  const items = [...whatWeSell, ...recent, ...listItems, ...docItems, ...playbookItems];
   // With lists showing, the docs' own loading or failure still needs saying under them.
   const docsPending = listItems.length > 0 && docItems.length === 0;
   const footer = kinDocsFooter(state.records.length, state.total, state.more);
@@ -526,7 +610,16 @@ export function KinDocsList(
           contentContainerStyle={{ paddingBottom: tab === null ? 96 : 32 + tab.bottomClearance }}
           data={items}
           keyExtractor={(item) => item.id}
-          extraData={[state, found, lists.state, allLists, playbooksOpen, canFile]}
+          extraData={[
+            state,
+            found,
+            lists.state,
+            allLists,
+            playbooksOpen,
+            canFile,
+            starter?.agent,
+            pinned,
+          ]}
           estimatedItemSize={72}
           recycleItems
           onEndReached={() => void list.loadMore()}
@@ -645,7 +738,11 @@ export function KinDocsList(
             </>
           }
           renderItem={({ item }) =>
-            item.type === "recent" ? (
+            item.type === "whatWeSell" ? (
+              starter === null ? null : (
+                <KinWhatWeSellEmpty agent={starter.agent} start={starter.start} />
+              )
+            ) : item.type === "recent" ? (
               <KinRecentStrip rows={item.rows} names={names} now={now} onOpen={open} />
             ) : item.type === "list" ? (
               <KinListRowButton

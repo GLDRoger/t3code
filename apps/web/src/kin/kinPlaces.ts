@@ -63,8 +63,8 @@ export interface KinPlaceSearch {
   history?: true;
   /** A dialog open over the place, so Back closes it. */
   open?: KinPlaceDialog;
-  /** The Clients place's Projects tab; its Clients tab is the place with no tab named. */
-  tab?: "projects";
+  /** The Clients place's Deals or Projects tab; its Clients tab is the place with no tab named. */
+  tab?: "deals" | "projects";
   /** Tasks opens narrowed to what this person holds, as their page's "See all in Tasks" asks. */
   person?: KinPersonId;
 }
@@ -115,7 +115,7 @@ export function validateKinPlaceSearch(raw: Record<string, unknown>): KinPlaceSe
     ...(from === undefined ? {} : { from }),
     ...(raw.history === true ? { history: true } : {}),
     ...(raw.open === "new" || raw.open === "search" ? { open: raw.open } : {}),
-    ...(raw.tab === "projects" ? { tab: "projects" } : {}),
+    ...(raw.tab === "projects" || raw.tab === "deals" ? { tab: raw.tab } : {}),
     ...(isPerson(raw.person) ? { person: raw.person } : {}),
   };
 }
@@ -171,7 +171,7 @@ export function kinTaskAddress(place: KinPlace, search: KinPlaceSearch, task: Ki
     to: KIN_PLACE_PATH[place],
     search: {
       ...kinSearchOf(kinRecordOf(search)),
-      ...(place === "clients" && search.tab === "projects" ? { tab: search.tab } : {}),
+      ...(place === "clients" && search.tab !== undefined ? { tab: search.tab } : {}),
       ...(task === null ? {} : { task }),
     },
   };

@@ -1,9 +1,10 @@
-import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_CHECK_INS,
   KIN_WEEKDAYS,
   kinCheckInDraft,
   kinCheckInLine,
+  kinCoveredLine,
   kinCheckInProblem,
   type KinCheckInDraft,
 } from "@t3tools/client-runtime/kin/kinCheckIns";
@@ -14,7 +15,7 @@ import { AsyncResult } from "effect/reactivity";
 import { useId, useState } from "react";
 
 import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
-import { searchableSetting } from "../components/settings/settingsSearch";
+import { useSearchableSetting } from "../components/settings/settingsSearch";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
@@ -30,7 +31,7 @@ import { Textarea } from "../components/ui/textarea";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
-import { kinClient } from "./kinClient";
+import { kinClient, refreshKinBriefs } from "./kinClient";
 import { KIN_DIALOG_PARTS, KIN_SHEET_PARTS } from "./kinOverlayParts";
 import { useKinHost } from "./useKinHost";
 import type { KinWorkTarget } from "./useKinWork";
@@ -45,10 +46,11 @@ export function KinCheckInsSetting(props: { readonly inDialog?: boolean }) {
 }
 
 function CheckIns(props: KinWorkTarget & { readonly inDialog: boolean }) {
+  const searchableSetting = useSearchableSetting();
   const query = { environmentId: props.environmentId, input: { orgId: props.orgId } };
   const atom = kinClient.checkIns(query);
   const result = useAtomValue(atom);
-  const refresh = useAtomRefresh(atom);
+  const refresh = () => refreshKinBriefs(props.environmentId, props.orgId);
   const canRead = useAtomValue(kinClient.checkInSave.permissionAtom(props.environmentId));
   const act = useAtomCommand(kinClient.checkInAct, { reportFailure: false });
   const save = useAtomCommand(kinClient.checkInSave, { reportFailure: false });
@@ -110,9 +112,14 @@ function CheckIns(props: KinWorkTarget & { readonly inDialog: boolean }) {
               </button>
             }
             description={
-              checkIn.on
-                ? kinCheckInLine(checkIn)
-                : `${KIN_CHECK_INS.off} · ${kinCheckInLine(checkIn)}`
+              <>
+                {checkIn.on
+                  ? kinCheckInLine(checkIn)
+                  : `${KIN_CHECK_INS.off} · ${kinCheckInLine(checkIn)}`}
+                {kinCoveredLine(checkIn) === null ? null : (
+                  <span className="block">{kinCoveredLine(checkIn)}</span>
+                )}
+              </>
             }
             control={
               <div className="flex items-center gap-2">
@@ -214,7 +221,11 @@ function CheckInSheet(props: {
         >
           <Parts.Header>
             <Parts.Title>{checkIn === null ? KIN_CHECK_INS.add : KIN_CHECK_INS.edit}</Parts.Title>
-            <Parts.Description>{KIN_CHECK_INS.zone(result.zone)}</Parts.Description>
+            <Parts.Description>
+              {[KIN_CHECK_INS.zone(result.zone), checkIn === null ? null : kinCoveredLine(checkIn)]
+                .filter((line) => line !== null)
+                .join(" ")}
+            </Parts.Description>
           </Parts.Header>
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pb-6">
             <div className="flex flex-col gap-1.5">

@@ -1,5 +1,6 @@
 import {
   KinChatError,
+  KinDealRpcs,
   KinDocsRpcs,
   KinFinanceRpcs,
   KinMoneyAnswerRpcs,
@@ -31,6 +32,7 @@ import * as Open from "../open/people.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import * as Goals from "./goals.ts";
 import * as Clients from "./ownerClients.ts";
+import * as Deals from "./deals.ts";
 import * as Docs from "./ownerDocs.ts";
 import * as Export from "./exportBundle.ts";
 import * as Money from "./ownerMoney.ts";
@@ -41,7 +43,7 @@ import * as Work from "./ownerWork.ts";
 import * as Comments from "./workComments.ts";
 import * as WorkStream from "./workStream.ts";
 
-const group = RpcGroup.make(...KinWorkRpcs, ...KinDocsRpcs);
+const group = RpcGroup.make(...KinWorkRpcs, ...KinDealRpcs, ...KinDocsRpcs);
 const finance = RpcGroup.make(...KinFinanceRpcs);
 const answers = RpcGroup.make(...KinMoneyAnswerRpcs);
 const moneyLive = RpcGroup.make(...KinMoneyLiveRpcs);
@@ -184,6 +186,30 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.createContact": Effect.fn("KinWork.rpc.createContact")(function* (input) {
         return yield* call((people) => Clients.createContact(people, input));
       }),
+      "kin.work.deals": Effect.fn("KinWork.rpc.deals")(function* (input) {
+        return yield* call((people) => Deals.deals(people, input));
+      }),
+      "kin.work.deal": Effect.fn("KinWork.rpc.deal")(function* (input) {
+        return yield* call((people) => Deals.page(people, input));
+      }),
+      "kin.work.createDeal": Effect.fn("KinWork.rpc.createDeal")(function* (input) {
+        return yield* call((people) => Deals.create(people, input));
+      }),
+      "kin.work.updateDeal": Effect.fn("KinWork.rpc.updateDeal")(function* (input) {
+        return yield* call((people) => Deals.update(people, input));
+      }),
+      "kin.work.moveDeal": Effect.fn("KinWork.rpc.moveDeal")(function* (input) {
+        return yield* call((people) => Deals.move(people, input));
+      }),
+      "kin.work.dealStep": Effect.fn("KinWork.rpc.dealStep")(function* (input) {
+        return yield* call((people) => Deals.step(people, input));
+      }),
+      "kin.work.dealStages": Effect.fn("KinWork.rpc.dealStages")(function* (input) {
+        return yield* call((people) => Deals.stages(people, input));
+      }),
+      "kin.work.setDealStages": Effect.fn("KinWork.rpc.setDealStages")(function* (input) {
+        return yield* call((people) => Deals.setStages(people, input));
+      }),
       "kin.work.logTouch": Effect.fn("KinWork.rpc.logTouch")(function* (input) {
         return yield* call((people) => Clients.logTouch(people, input));
       }),
@@ -241,6 +267,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       }),
       "kin.docs.setDefaultRecipe": Effect.fn("KinDocs.rpc.setDefaultRecipe")(function* (input) {
         return yield* call((people) => Docs.setDefaultRecipe(people, input));
+      }),
+      "kin.docs.startWhatWeSell": Effect.fn("KinDocs.rpc.startWhatWeSell")(function* (input) {
+        return yield* call((people) => Docs.startWhatWeSell(people, input));
       }),
       "kin.search": Effect.fn("KinDocs.rpc.search")(function* (input) {
         return yield* call((people) => Docs.search(people, input));
@@ -398,6 +427,21 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       }),
       "kin.checkIns.act": Effect.fn("KinCheckIns.rpc.act")(function* (input) {
         return yield* call((people) => CheckIns.act(people, input));
+      }),
+      "kin.briefs.list": Effect.fn("KinBriefs.rpc.list")(function* (input) {
+        return yield* call((people) => CheckIns.briefs(people, input.orgId));
+      }),
+      "kin.briefs.save": Effect.fn("KinBriefs.rpc.save")(function* (input) {
+        if (Option.isNone(scheduling)) return yield* disabled;
+        const { tasks, launcher, threads } = scheduling.value;
+        return yield* call((people) =>
+          CheckIns.saveBrief(people, input).pipe(
+            Effect.provide(KinSchedules.layer),
+            Effect.provideService(ScheduledTaskService.ScheduledTaskService, tasks),
+            Effect.provideService(ThreadLaunchService.ThreadLaunchService, launcher),
+            Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+          ),
+        );
       }),
     }),
   };

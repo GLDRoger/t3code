@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import { KIN_SCOPE_ALL, type KinViewerScope } from "./kinViewerScope.ts";
 import { KIN_CHECK_CONNECTION, kinFailureText } from "./kinAnswers.ts";
+import { kinIsDealKey } from "./kinDeals.ts";
 import {
   KinDocCardState,
   type KinChatId,
@@ -26,6 +27,7 @@ import {
   type KinWidget,
   type KinWorkActor,
   type KinWorkPrincipal,
+  kinSalesLead,
   kinWhenFormat,
 } from "@t3tools/contracts";
 import { kinDocBlockIndex, kinDocBlocks, kinDocParts } from "@t3tools/shared/kinDocBlocks";
@@ -293,6 +295,8 @@ export interface KinDocRowView {
   readonly key: string;
   readonly title: string;
   readonly line: string;
+  /** What we sell, pinned first in Docs. */
+  readonly pinned: boolean;
   /** "Proposal", or null for one nobody gave a kind. */
   readonly kind: string | null;
   /** "Acme · Website relaunch", "Company", or null when it has no home. */
@@ -309,6 +313,7 @@ export const kinDocUnfiled = (row: Pick<KinDocListRow, "party" | "project" | "co
 
 export function kinDocRow(row: KinDocListRow, names: KinWorkNames, now: Date): KinDocRowView {
   const { text } = kinDocChangeLine(changeOf(row.latest), names, now);
+  const pinned = row.whatWeSell === true;
   const under =
     row.company === true
       ? KIN_DOC_HOMES.company
@@ -320,6 +325,7 @@ export function kinDocRow(row: KinDocListRow, names: KinWorkNames, now: Date): K
     key: row.key,
     title: row.title,
     line: kindLabel === null ? text : `${kindLabel} · ${text}`,
+    pinned,
     kind: kindLabel,
     under: under === "" ? null : under,
     unfiled: kinDocUnfiled(row),
@@ -327,6 +333,7 @@ export function kinDocRow(row: KinDocListRow, names: KinWorkNames, now: Date): K
     archived: row.archived,
     accessibilityLabel: [
       row.title,
+      pinned ? KIN_WHAT_WE_SELL.pinned : null,
       kindLabel,
       under === "" ? KIN_DOC_HOMES.unfiled : under,
       text,
@@ -350,16 +357,23 @@ const RECENT_MAX = 4;
 
 /**
  * Docs by home: each client with its projects' docs, most recently changed client first, then
- * the company's own, then the unfiled. Inside each, latest change first. `recent` is the last
- * few changed, shown above them once there are enough docs for them to be worth a strip.
+ * the company's own, then the unfiled. Inside each, latest change first, What we sell before the
+ * rest (`pinned`, read on its own, as a page may not hold it). `recent` is the last few changed,
+ * shown above them once there are enough docs for them to be worth a strip.
  */
-export function kinDocLibrary(rows: ReadonlyArray<KinDocListRow>): {
+export function kinDocLibrary(
+  rows: ReadonlyArray<KinDocListRow>,
+  pinned: KinDocListRow | null = null,
+): {
   readonly recent: ReadonlyArray<KinDocListRow>;
   readonly homes: ReadonlyArray<KinDocHome>;
   /** The company's playbooks, folded into one row until opened; by title. */
   readonly playbooks: ReadonlyArray<KinDocListRow>;
 } {
-  const latestFirst = [...rows].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const latestFirst = kinDocsPinned(
+    [...rows].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    pinned,
+  );
   const clients = new Map<string, { title: string; rows: Array<KinDocListRow> }>();
   const company: Array<KinDocListRow> = [];
   const unfiled: Array<KinDocListRow> = [];
@@ -377,7 +391,10 @@ export function kinDocLibrary(rows: ReadonlyArray<KinDocListRow>): {
     } else unfiled.push(row);
   }
   return {
-    recent: rows.length > RECENT_MAX * 3 ? latestFirst.slice(0, RECENT_MAX) : [],
+    recent:
+      rows.length > RECENT_MAX * 3
+        ? [...rows].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, RECENT_MAX)
+        : [],
     homes: [
       ...[...clients.entries()].map(([id, held]) => ({
         id: `client:${id}`,
@@ -408,6 +425,15 @@ export function kinDocLibrary(rows: ReadonlyArray<KinDocListRow>): {
     ],
     playbooks: [...playbooks].sort((a, b) => a.title.localeCompare(b.title)),
   };
+}
+
+/** The rows with What we sell first, once: `pinned` as read on its own, else the page's copy. */
+export function kinDocsPinned(
+  rows: ReadonlyArray<KinDocListRow>,
+  pinned: KinDocListRow | null,
+): Array<KinDocListRow> {
+  const pin = pinned ?? rows.find((row) => row.whatWeSell === true) ?? null;
+  return pin === null ? [...rows] : [pin, ...rows.filter((row) => row.recordId !== pin.recordId)];
 }
 
 /** What Docs shows: everything, one kind, a shelf, the unfiled, or the files made from recipes. */
@@ -476,6 +502,67 @@ export const kinDocsQuery = (orgId: KinOrgId, filter: KinDocsFilter) => ({
     ? { home: filter.show._tag }
     : {}),
 });
+
+// What we sell
+
+export const KIN_WHAT_WE_SELL = {
+  title: "What we sell",
+  pinned: "Pinned",
+  empty: {
+    title: "Tell Kin what you sell",
+    detail:
+      "Your agents read this before they answer a customer, judge a prospect or plan a deal. Start from what you already have.",
+  },
+  startFailed: "Couldn't start What we sell.",
+} as const;
+
+export type KinWhatWeSellWay = "website" | "brochure" | "talk";
+
+/** The empty state's three ways in, each opening the sales agent's chat with its first words. */
+export const kinWhatWeSellWays = (
+  agent: string,
+): ReadonlyArray<{
+  readonly way: KinWhatWeSellWay;
+  readonly label: string;
+  readonly draft: string;
+}> => [
+  {
+    way: "website",
+    label: "Send your website",
+    draft: "Here's our website. Read what it says we sell and draft What we sell from it: ",
+  },
+  {
+    way: "brochure",
+    label: "Send a brochure or price list",
+    draft: "Here's our brochure and price list. Draft What we sell from them.",
+  },
+  {
+    way: "talk",
+    label: `Tell ${agent} about it`,
+    draft: "Let's write What we sell together. Ask me what you need, one question at a time.",
+  },
+];
+
+/** The one read that finds What we sell for this viewer, whichever page of Docs holds it. */
+export const kinWhatWeSellQuery = (orgId: KinOrgId) => ({
+  orgId,
+  whatWeSell: true,
+  limit: 1,
+  acceptSlimLatest: true,
+});
+
+/** Docs pins What we sell, or offers to start it, on the current docs, everything or the company's. */
+export const kinWhatWeSellShown = (filter: KinDocsFilter) =>
+  !filter.archived &&
+  filter.text.trim() === "" &&
+  (filter.show._tag === "all" || filter.show._tag === "company");
+
+/** The agent whose chat the ways in open: the one the host makes keeper (`kinSalesLead`). */
+export const kinWhatWeSellAgent = <
+  Lead extends { readonly agentId: string; readonly domain: string; readonly retired?: unknown },
+>(
+  leads: ReadonlyArray<Lead>,
+): Lead | null => kinSalesLead(leads.filter((lead) => lead.retired === undefined)) ?? null;
 
 export function kinDocsFooter(shown: number, total: number | null, more: boolean): string | null {
   if (!more || total === null) return null;
@@ -908,11 +995,12 @@ export function kinSearchHit(hit: KinSearchHit): KinSearchHitView {
       ? null
       : { id: hit.section.id, title: hit.section.title };
   const closed = !hit.closed ? null : hit.kind === "docs" ? "Archived" : "Closed";
+  const kindLabel = hit.kind === "work" && kinIsDealKey(hit.key) ? "Deal" : KIND_LABEL[hit.kind];
   return {
     id: `${hit.recordId}:${hit.section?.id ?? ""}`,
     key: hit.key,
     kind: hit.kind,
-    kindLabel: KIND_LABEL[hit.kind],
+    kindLabel,
     title: hit.title,
     snippet: snippet === "" ? null : snippet,
     section,
@@ -920,7 +1008,7 @@ export function kinSearchHit(hit: KinSearchHit): KinSearchHitView {
     private: hit.sensitive && hit.kind !== "memory",
     closed,
     accessibilityLabel: [
-      `${KIND_LABEL[hit.kind]}: ${hit.title}`,
+      `${kindLabel}: ${hit.title}`,
       section?.title ?? null,
       snippet === "" ? null : snippet,
       hit.sensitive && hit.kind !== "memory" ? "Private" : null,

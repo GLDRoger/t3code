@@ -26,7 +26,7 @@ import {
   KinWidgetId,
 } from "./kinChat.ts";
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
-import { KinRecordId, KinRecordKey, KinRecordState } from "./kinWork.ts";
+import { KinRecordId, KinRecordKey, KinRecordState, KinWorkPrincipal } from "./kinWork.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { ScheduledTaskWebhookDeliveryId } from "./scheduledTask.ts";
 
@@ -74,6 +74,25 @@ export type KinLeadDomain = typeof KinLeadDomain.Type;
 export const KinLeadCharter = Schema.String.check(Schema.isMaxLength(1_000));
 export type KinLeadCharter = typeof KinLeadCharter.Type;
 
+/** Seats that sell, as owners name them. */
+const KIN_SALES_DOMAINS: ReadonlyArray<string> = ["growth", "sales", "business-development"];
+/**
+ * The agent that keeps What we sell: a selling seat's, else the Chief of staff's, else any. By
+ * id, so the host and every client pick the same one whatever order they hold leads in.
+ */
+export const kinSalesLead = <L extends { readonly agentId: string; readonly domain: string }>(
+  leads: ReadonlyArray<L>,
+): L | undefined => {
+  const byId = [...leads].sort((a, b) =>
+    a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0,
+  );
+  return (
+    byId.find((lead) => KIN_SALES_DOMAINS.includes(lead.domain)) ??
+    byId.find((lead) => lead.domain === "chief-of-staff") ??
+    byId[0]
+  );
+};
+
 /** What teammates see about a lead: a line or two the owner writes, shown to people it may talk to. */
 export const KinLeadIntro = Schema.String.check(Schema.isMaxLength(200));
 export type KinLeadIntro = typeof KinLeadIntro.Type;
@@ -116,6 +135,8 @@ export const KinLeadTracking = Schema.Struct({
   // Work entries only: the entry's key and state, so a row opens its entry.
   key: Schema.optional(KinRecordKey),
   state: Schema.optional(KinRecordState),
+  // A waiting Work entry: who it waits on. Absent from older hosts.
+  waitingOn: Schema.optional(KinWorkPrincipal),
 });
 export type KinLeadTracking = typeof KinLeadTracking.Type;
 export const KIN_LEAD_TRACKING_CAP = 20;
@@ -695,11 +716,15 @@ export const KinEvent = Schema.Union([
         person: KinPersonId,
       }),
       // An agent's open question reached its day unanswered: the asker takes its default. With
-      // `undone`, the person put back what Kin's taking it changed.
+      // `undone`, the person put back what Kin's taking it changed; with `words` too, they
+      // instead undid the answer its asker took from their words. With `answered`, the person
+      // asked for another chat answered, and the asker's turn there carries it on.
       Schema.Struct({
         type: Schema.Literal("question"),
         questionId: TrimmedNonEmptyString,
         undone: Schema.optional(Schema.Literal(true)),
+        words: Schema.optional(Schema.Literal(true)),
+        answered: Schema.optional(Schema.Literal(true)),
       }),
       // One run of a scheduled task; `runId` names the fire or Run now tap that started it.
       Schema.Struct({
@@ -756,6 +781,10 @@ export const KinEvent = Schema.Union([
         // The schedule's instruction, the owner's words: what this check-in is for.
         what: Schema.String.check(Schema.isMaxLength(2000)),
         slot: Schema.String.check(Schema.isMaxLength(200)),
+        // The week's figures go on this page: the weekly brief, or the morning one on its day.
+        figures: Schema.optional(Schema.Literal(true)),
+        // A scheduled brief's day in the company's zone ("2026-11-19"); `slot` is the host's.
+        day: Schema.optional(Schema.String.check(Schema.isMaxLength(10))),
       }),
     ),
     // Metadata the server read from connections the owner marked Read: still outside text.
@@ -821,6 +850,13 @@ export const KinBudgetLimits = Schema.Struct({
   teammateUnits: Schema.optional(Schema.NullOr(KinBudgetUnits)),
 });
 export type KinBudgetLimits = typeof KinBudgetLimits.Type;
+/** The daily limits Settings offers, smallest first, as multiples of the host's usual one. */
+export const KIN_DAILY_LIMIT_STEPS = [
+  { times: 0.5, label: "Half the usual" },
+  { times: 1, label: "The usual" },
+  { times: 2, label: "Twice the usual" },
+  { times: 5, label: "Five times the usual" },
+] as const;
 export const KinBudget = Schema.Struct({
   orgId: KinOrgId,
   day: Schema.String.check(

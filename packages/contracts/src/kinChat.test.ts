@@ -218,9 +218,11 @@ const samples = {
   KinReactionEmoji: Kin.KinReactionEmoji.literals,
   KinReaction: [reaction, { ...reaction, emoji: "❤️", removedAt: at }],
   KinChoiceOption: [...choiceOptions, { optionId: "later", label: "Later" }],
+  KinSendTry: [{ tryId: "ask-1", at }],
   KinSendCard: [
     sendCard,
     { ...sendCard, outcome: { state: "failed", reason: "Google refused.", at } },
+    { ...sendCard, mayHaveGone: { tryId: "ask-1", at } },
   ],
   KinChoiceCardState: [
     choice,
@@ -463,7 +465,18 @@ const samples = {
     "limit",
     "floor_not_granted",
     "floor_closed",
-  ].map((reason) => ({ _tag: "KinChatError", reason, message: "Cannot do that" })),
+  ]
+    .map((reason): Record<string, unknown> => ({
+      _tag: "KinChatError",
+      reason,
+      message: "Cannot do that",
+    }))
+    .concat({
+      _tag: "KinChatError",
+      reason: "conflict",
+      message: "Tick first",
+      mayHaveGone: { tryId: "ask-1", at },
+    }),
 } satisfies Record<SchemaName, ReadonlyArray<unknown>>;
 
 const decodeSend = Schema.decodeUnknownSync(Kin.KinMessagesSendInput);

@@ -120,7 +120,8 @@ function makeKinAccess<R, ER>(
       );
     }),
     staleTimeMs: 30_000,
-    // A kind change moves `leads` and `people` for everyone, members included.
+    // A kind change moves `leads` and `people` for everyone, members included; a country chosen
+    // moves the company's money.
     refreshTrigger: (target: {
       readonly environmentId: EnvironmentId;
       readonly input: KinAccessMeInput;
@@ -129,7 +130,8 @@ function makeKinAccess<R, ER>(
       if (trigger === undefined) {
         const leads = refreshes("leads")(target);
         const people = refreshes("people")(target);
-        trigger = Atom.make((get) => `${get(leads)}|${get(people)}`);
+        const company = refreshes("company")(target);
+        trigger = Atom.make((get) => `${get(leads)}|${get(people)}|${get(company)}`);
         triggers.set(`${target.environmentId}:${target.input.orgId}`, trigger);
       }
       return trigger;
@@ -201,6 +203,14 @@ export function kinAccessAtom<R, ER>(
   return kinAccessAtoms(runtime).accessAtom(environmentId);
 }
 
+/** The viewer's kind once the host has answered (null when it refused), undefined until then. */
+export function kinAccessKnownAtom<R, ER>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+  environmentId: EnvironmentId,
+) {
+  return kinAccessAtoms(runtime).knownAtom(environmentId);
+}
+
 /** The viewer's kind, places and the projects they lead, or null until the host has said. */
 export function kinAccessMeAtom<R, ER>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
@@ -224,6 +234,15 @@ export function retryKinAccess<R, ER>(
   environmentId: EnvironmentId,
 ) {
   registry.refresh(createEnvironmentSessionAtoms(runtime).sessionStateAtom(environmentId));
+  kinAccessAtoms(runtime).retryKind(registry, environmentId);
+}
+
+/** Reads `kin.access.me` again: a link about to be shown must carry the host's current address. */
+export function refreshKinAccessMe<R, ER>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+  registry: AtomRegistry.AtomRegistry,
+  environmentId: EnvironmentId,
+) {
   kinAccessAtoms(runtime).retryKind(registry, environmentId);
 }
 

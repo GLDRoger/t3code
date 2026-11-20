@@ -24,7 +24,6 @@ import {
   useSidebar,
 } from "../components/ui/sidebar";
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { cn } from "../lib/utils";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import {
   kinDestinationAt,
@@ -130,54 +129,5 @@ function KinNavList(props: KinWorkTarget) {
         </SidebarMenu>
       </nav>
     </SidebarGroup>
-  );
-}
-
-/**
- * The phone's dock, on a narrow window: on the chat list and the places, not inside a chat or
- * Settings, where the phone has none either.
- */
-export function KinDock(props: KinWorkTarget) {
-  const entries = useKinNavEntries(props);
-  const pathname = useLocation({ select: (location) => location.pathname });
-  const current = kinDestinationAt(pathname);
-  if (entries.length < 2 || current === null) return null;
-  if (current === "chats" && pathname !== "/kin") return null;
-  return (
-    <nav
-      aria-label="Kin"
-      className="grid shrink-0 auto-cols-fr grid-flow-col border-t bg-background pb-(--workspace-safe-bottom) md:hidden"
-    >
-      {entries.map(({ destination, badge }) => {
-        const Icon = ICON[destination];
-        const active = current === destination;
-        return (
-          <Link
-            key={destination}
-            {...kinDestinationLink(destination, props, true)}
-            aria-current={active ? "page" : undefined}
-            data-kin-destination={destination}
-            className={cn(
-              "relative flex h-14 flex-col items-center justify-center gap-0.5 text-2xs font-medium outline-none ring-ring focus-visible:ring-2 focus-visible:ring-inset",
-              active ? "text-foreground" : "text-muted-foreground",
-            )}
-          >
-            <Icon aria-hidden className="size-5" />
-            {KIN_DESTINATION_NAMES[destination]}
-            {badge === null ? null : (
-              <span className="absolute top-1.5 left-[calc(50%+0.5rem)]">
-                <Badge
-                  size="sm"
-                  variant={destination === "tasks" ? "error" : "default"}
-                  aria-label={badgeLabel(destination, badge)}
-                >
-                  {badge}
-                </Badge>
-              </span>
-            )}
-          </Link>
-        );
-      })}
-    </nav>
   );
 }

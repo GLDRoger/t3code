@@ -95,6 +95,13 @@ const LANE_OF = `CASE WHEN e.tag = 'github' AND json_extract(e.json, '$.trigger.
     || ':' || COALESCE(json_extract(e.json, '$.origin.personId'), '')
   ELSE l.owner_chat_id END`;
 
+/**
+ * Event `e` is the morning or weekly brief, whose turn ends as Kin's page (`KinReplyBridge`): it
+ * never shares a turn with someone's message, so its reply is the page and nothing else.
+ */
+const MORNING_PAGE = `(e.tag = 'pulse'
+  AND json_extract(e.json, '$.checkIn.scheduleId') IN ('checkin-morning', 'checkin-weekly'))`;
+
 /** Who asked by event `e`: its stored message (a tap's own tap row) or the server's reaction. */
 const STORED_AUTHOR = `LEFT JOIN kin_messages m ON m.org_id = e.org_id
   AND e.tag IN ('chat.message', 'widget.action') AND m.message_id = json_extract(e.json, '$.messageId')
@@ -604,18 +611,30 @@ const make = Effect.gen(function* () {
                         event_id: string;
                       }>`
                 WITH eligible AS (
-                  SELECT e.event_id, e.priority, e.received_at, ${laneOf} AS lane
+                  SELECT e.event_id, e.priority, e.received_at, ${laneOf} AS lane,
+                    ${sql.literal(MORNING_PAGE)} AS page,
+                    e.tag IN ('chat.message', 'widget.action', 'chat.reaction') AS asked,
+                    MAX(e.queued_at, COALESCE(e.not_before, 0)) AS due
                   FROM kin_events e JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
                   -- Queued before a retirement, it never runs after it.
                   JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
                     AND a.retired_at IS NULL
                   WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId} AND e.state = 'queued'
                     AND (e.not_before IS NULL OR e.not_before <= ${now})
+                ), first AS (
+                  SELECT lane FROM eligible ORDER BY priority, received_at, event_id LIMIT 1
+                ), brief AS (
+                  -- The morning page is a turn of its own. It waits for one turn on the messages
+                  -- already waiting when it came due; then it runs, and later ones wait for it.
+                  SELECT EXISTS (SELECT 1 FROM eligible p WHERE p.lane = (SELECT lane FROM first)
+                    AND p.page = 1 AND NOT EXISTS (SELECT 1 FROM eligible h
+                      WHERE h.lane = p.lane AND h.asked = 1 AND h.received_at <= p.due)) AS alone
                 )
                 UPDATE kin_events SET state = 'claimed', wakeup_id = ${input.wakeupId}, budget_deferred = 0
                 WHERE org_id = ${input.orgId} AND event_id IN (
-                  SELECT event_id FROM eligible
-                  WHERE lane = (SELECT lane FROM eligible ORDER BY priority, received_at, event_id LIMIT 1)
+                  SELECT event_id FROM eligible o
+                  WHERE lane = (SELECT lane FROM first)
+                    AND CASE WHEN (SELECT alone FROM brief) THEN o.asked = 0 ELSE o.page IS NOT 1 END
                   ORDER BY priority, received_at, event_id LIMIT 50
                 ) RETURNING json, priority, received_at, queued_at, event_id`;
                       if (rows.length === 0) return yield* new NoClaimableEvents({});
@@ -680,6 +699,8 @@ const make = Effect.gen(function* () {
               AND w.aborted_at IS NULL
               AND EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = w.org_id
                 AND a.agent_id = w.agent_id AND a.retired_at IS NULL)
+              AND NOT EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = w.org_id
+                AND e.wakeup_id = w.wakeup_id AND ${sql.literal(MORNING_PAGE)})
           ), lane AS (
             SELECT ${laneOf} AS chat_id FROM wakeup w
             JOIN kin_events e ON e.org_id = w.org_id AND e.agent_id = w.agent_id AND e.wakeup_id = w.wakeup_id

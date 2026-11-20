@@ -18,11 +18,13 @@ import * as Schema from "effect/Schema";
 import type * as HttpClient from "effect/http/HttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { chatReaders, keysIn } from "../chat/messageLinks.ts";
 import { readStoredFile } from "../gendocs/brand.ts";
 import type { TextClock } from "../work/companyProfile.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { formatMoney } from "../work/money.ts";
 import { listDef, stateLabel } from "../work/registers.ts";
+import { seenBy } from "../work/teamView.ts";
 import { logTouch } from "../work/touches.ts";
 import { KinGatewayError } from "./McpGateway.ts";
 import { MAIL_TOOL, type Mailbox, type MailProvider } from "./MailProvider.ts";
@@ -224,6 +226,33 @@ const attachmentsOf = Effect.fn("KinSending.attachments")(function* (
   return found;
 });
 
+/**
+ * The task a mail with no document of its own is about: the one open task that the person's
+ * messages waking this turn, with the mail's own words, name by key, among tasks everyone in
+ * the chat may see. `null` when they name none or more than one.
+ */
+export const namedTask = Effect.fn("KinSending.namedTask")(function* (
+  turn: { readonly orgId: KinOrgId; readonly wakeupId: string; readonly chatId: string },
+  words: ReadonlyArray<string>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const asked = yield* sql<{ body: string }>`SELECT m.body FROM kin_events e
+    JOIN kin_messages m ON m.org_id = e.org_id
+      AND m.message_id = json_extract(e.json, '$.messageId')
+    WHERE e.org_id = ${turn.orgId} AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'chat.message'
+      AND m.chat_id = ${turn.chatId} AND m.author_kind = 'human' AND m.status = 'posted'
+    ORDER BY m.seq`;
+  const keys = [...new Set([...asked.map((one) => one.body), ...words].flatMap(keysIn))];
+  if (keys.length === 0) return null;
+  const viewer = yield* chatReaders(turn.orgId, turn.chatId);
+  const tasks = yield* sql<{ recordId: string }>`SELECT r.record_id AS "recordId"
+    FROM kin_records r
+    WHERE r.org_id = ${turn.orgId} AND r.register_id = 'work' AND r.key IN ${sql.in(keys)}
+      AND r.state NOT IN ('done', 'dropped') AND ${seenBy(sql, viewer)}
+    ORDER BY r.record_id LIMIT 2`;
+  return tasks.length === 1 ? tasks[0]!.recordId : null;
+});
+
 /** Whether every attached file is still the version the card showed. */
 export const attachmentsCurrent = Effect.fn("KinSending.current")(function* (
   orgId: KinOrgId,
@@ -243,22 +272,19 @@ export const attachmentsCurrent = Effect.fn("KinSending.current")(function* (
 });
 
 /**
- * Why the mail may not go any more because what it is about was closed since its card: a void
- * invoice, quote or receipt, an archived doc, a dropped entry of any list. `null` when none is.
- * Done (paid, accepted, filed) still goes: a copy of a paid invoice is fair to send.
+ * Why the mail may not go any more because a file it carries, or that file's entry, was closed
+ * since its card: a void invoice, quote or receipt, an archived doc, a dropped entry of any list.
+ * `null` when none is. Done (paid, accepted, filed) still goes: a copy of a paid invoice is fair.
  */
 export const subjectClosed = Effect.fn("KinSending.subjectClosed")(function* (
   orgId: KinOrgId,
   prepared: Prepared,
-  entryRecordId: string | null,
 ) {
   const ids = new Set(
-    [
-      entryRecordId,
-      ...(prepared._tag === "email"
-        ? prepared.attachments.flatMap((one) => [one.recordId, one.entryRecordId])
-        : []),
-    ].filter((id) => id !== null),
+    (prepared._tag === "email"
+      ? prepared.attachments.flatMap((one) => [one.recordId, one.entryRecordId])
+      : []
+    ).filter((id) => id !== null),
   );
   if (ids.size === 0) return null;
   const sql = yield* SqlClient.SqlClient;
@@ -432,7 +458,7 @@ export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (input:
   } satisfies Prepared;
 });
 
-type Email = Extract<Prepared, { readonly _tag: "email" }>;
+export type Email = Extract<Prepared, { readonly _tag: "email" }>;
 /** Addresses a person typed, as stored: trimmed, without empty entries. */
 const typed = (values: ReadonlyArray<string>) =>
   values.map((one) => one.trim()).filter((one) => one !== "");
@@ -473,6 +499,32 @@ export const editedMail = (
   if (edit.body.length > MAX_BODY)
     return `The message is at most ${MAX_BODY.toLocaleString("en-US")} characters.`;
   return { ...mail, to, cc, subject, body: edit.body };
+};
+/** The mail a card shows: a person's saved words over the agent's draft, where they saved some. */
+export const shownMail = (mail: Email, send: KinSendCard | undefined): Email =>
+  send?.edited === undefined
+    ? mail
+    : { ...mail, to: send.to, cc: send.cc, subject: send.subject, body: send.body };
+const Words = Schema.Struct({
+  to: Schema.Array(Schema.String),
+  cc: Schema.Array(Schema.String),
+  subject: Schema.String,
+  body: Schema.String,
+});
+const decodeConfirmed = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ confirmed: Schema.optionalKey(Words) })),
+);
+/** The person's words a Confirm took, kept in the ask's payload beside the agent's draft. */
+export const confirmedWords = (mail: Email): typeof Words.Type => ({
+  to: mail.to,
+  cc: mail.cc,
+  subject: mail.subject,
+  body: mail.body,
+});
+/** What a confirmed ask sends: the words its Confirm took, else the agent's draft. */
+export const confirmedOf = (prepared: Prepared, payload: string): Prepared => {
+  const words = Option.getOrUndefined(decodeConfirmed(payload))?.confirmed;
+  return prepared._tag !== "email" || words === undefined ? prepared : { ...prepared, ...words };
 };
 /** Whether an edit left the words exactly as drawn. */
 export const sameWords = (one: Email, other: Email) =>
@@ -792,6 +844,8 @@ export const markQuotesSent = Effect.fn("KinSending.markQuotesSent")(function* (
   sent: {
     readonly orgId: KinOrgId;
     readonly personId: string;
+    /** The turn whose ask was confirmed: not a person's own edit to `keptForPerson`. */
+    readonly wakeupId: string;
     readonly entryRecordIds: ReadonlyArray<string>;
   },
 ) {
@@ -804,7 +858,11 @@ export const markQuotesSent = Effect.fn("KinSending.markQuotesSent")(function* (
   for (const { key } of drafts)
     yield* records.update(
       sent.orgId,
-      { actor: { _tag: "person", personId: KinPersonId.make(sent.personId) }, via: "owner" },
+      {
+        actor: { _tag: "person", personId: KinPersonId.make(sent.personId) },
+        via: "owner",
+        wakeupId: sent.wakeupId,
+      },
       key,
       { state: "waiting" },
     );
@@ -878,7 +936,9 @@ export const sentMail = Effect.fn("KinSending.sentMail")(function* (input: {
     LIMIT ${SENT_SCAN}`;
   const sent: Array<SentMail> = [];
   for (const row of rows) {
-    const prepared = Option.getOrUndefined(decodeSentPayload(row.payload));
+    const prepared = Option.getOrUndefined(
+      Option.map(decodeSentPayload(row.payload), (one) => confirmedOf(one, row.payload)),
+    );
     if (prepared?._tag !== "email") continue;
     const matches =
       !filtered ||

@@ -92,7 +92,7 @@ function useKinAgentPageCan(environmentId: EnvironmentId) {
 export function KinAgentPageHost() {
   const { agent } = useSearch({ from: "/_chat/kin" });
   const params = useParams({ strict: false });
-  // The bare Chats screen names no place: the link opens on this Kin's own host, as the dock does.
+  // The bare Chats screen names no place: the link opens on this Kin's own host, as the nav does.
   const host = kinNewLeadTarget(useKinHost());
   const environmentId = params.environmentId ?? host?.environmentId;
   const orgId = params.orgId ?? host?.orgId;
@@ -690,6 +690,7 @@ function AgentInHand(props: {
 }) {
   const { lead, environmentId, orgId } = props;
   const retired = lead.retired !== undefined;
+  const names = useKinWorkDirectory({ environmentId, orgId }, true).names;
   return (
     <KinAgentSection title={retired ? "On hold" : KIN_AGENT_PAGE.activity}>
       {lead.tracking.length === 0 ? (
@@ -702,7 +703,9 @@ function AgentInHand(props: {
             // Titles can repeat and items carry no id; the host's order is stable.
             // oxlint-disable-next-line react/no-array-index-key
             <li key={index} className="flex flex-col gap-0.5">
-              <span className="text-xs text-muted-foreground">{kinLeadTrackingDetail(item)}</span>
+              <span className="text-xs text-muted-foreground">
+                {kinLeadTrackingDetail(item, undefined, undefined, names)}
+              </span>
               {item.key === undefined ? (
                 <span className="text-sm text-foreground">{item.title}</span>
               ) : (

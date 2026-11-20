@@ -104,6 +104,7 @@ export const OUTSIDE_TOOLS = {
   doc_restore: "allowed",
   list_define: "allowed",
   payment_record: "allowed",
+  deal_stages: "allowed",
   money_summary: "allowed",
   money_query: "allowed",
   budget_set: "allowed",

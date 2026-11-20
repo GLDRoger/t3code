@@ -63,6 +63,7 @@ import { toPersistenceSqlError, PersistenceSqlError } from "../../persistence/Er
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { publicAddress } from "../publicAddress.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { abortChatTurns } from "../lead/Audience.ts";
 import { closeUngranted } from "../lead/directClose.ts";
@@ -76,7 +77,7 @@ import { accessOf, accessSql, isOwnerHimself, mayActAsOwner, ownerLevel } from "
 import { KIN_DEFAULT_QUIET_HOURS, stillAway, storedWorkHours } from "../triggers/quietHours.ts";
 import { profileSets } from "./profileFields.ts";
 import { reholdAfter, validZone } from "../triggers/quietHold.ts";
-import { companyMoney } from "../work/companyProfile.ts";
+import { companyMoney, countryNeeded } from "../work/companyProfile.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { closeHeldQuestions } from "../questions/openQuestions.ts";
 import { live as liveKey } from "../tasksKey/TasksKeys.ts";
@@ -1322,6 +1323,7 @@ export const make = Effect.gen(function* () {
     );
     if (access === undefined) return yield* missing;
     const places = yield* placesFor(input.orgId, caller.personId);
+    const publicUrl = yield* publicAddress();
     const all = access === "owner" || access === "co_owner";
     return {
       personId: caller.personId,
@@ -1338,6 +1340,13 @@ export const make = Effect.gen(function* () {
         })),
         Effect.provideService(SqlClient.SqlClient, sql),
       )),
+      ...((yield* countryNeeded(input.orgId).pipe(
+        Effect.orElseSucceed(() => false),
+        Effect.provideService(SqlClient.SqlClient, sql),
+      ))
+        ? { countryNeeded: true }
+        : {}),
+      ...(publicUrl === undefined ? {} : { publicUrl }),
     };
   });
   const setPlaces = Effect.fn("KinPeople.setPlaces")(function* (

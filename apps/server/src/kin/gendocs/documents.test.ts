@@ -22,6 +22,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Clock from "effect/Clock";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
@@ -35,6 +36,7 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { countryFirstMessage, newCompanyProfileJson, setProfile } from "../work/companyProfile.ts";
 import * as Docs from "../work/docs.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as LeadMoney from "../work/leadMoney.ts";
@@ -238,22 +240,22 @@ const git = (cwd: string, ...args: ReadonlyArray<string>) =>
     });
   });
 
-/** A turn the owner woke with a message in the lead's direct chat. */
-const turn = (n: number, body: string) =>
+/**
+ * The owner's message `n` in the lead's direct chat, as an event of `wakeupId` stored at
+ * `receivedAt`; with `tap`, their tap on a card instead.
+ */
+const said = (n: number, body: string, wakeupId: string, receivedAt: number, tap = false) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+    const tag = tap ? "widget.action" : "chat.message";
     yield* sql`UPDATE kin_chats SET last_seq = ${n} WHERE chat_id = 'lead-chat'`;
     yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
         author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
       VALUES (${`msg-${n}`}, ${orgId}, 'lead-chat', ${n}, 'human', ${ownerId}, 'lead-chat-owner',
-        'owner', 'text', ${body}, '[]', 'posted', ${at})`;
-    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
-        status, event_ids, audience)
-      VALUES (${`wake-${n}`}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running',
-        ${JSON.stringify([`event-${n}`])}, 'owner_only')`;
+        'owner', ${tap ? "widget_action" : "text"}, ${body}, '[]', 'posted', ${at})`;
     const event = {
-      _tag: "chat.message",
+      _tag: tag,
+      ...(tap ? { actionId: "choose" } : {}),
       orgId,
       agentId: lead,
       eventId: `event-${n}`,
@@ -265,10 +267,34 @@ const turn = (n: number, body: string) =>
     };
     yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
         received_at, queued_at, state, wakeup_id)
-      VALUES (${`event-${n}`}, ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)},
-        0, 0, 'claimed', ${`wake-${n}`})`;
+      VALUES (${`event-${n}`}, ${orgId}, ${lead}, ${tag}, 'P0', ${JSON.stringify(event)},
+        ${receivedAt}, 0, 'claimed', ${wakeupId})`;
     return `event-${n}`;
   });
+
+/** A turn the owner woke with a message in the lead's direct chat. */
+const turn = (n: number, body: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
+        status, event_ids, audience)
+      VALUES (${`wake-${n}`}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running',
+        ${JSON.stringify([`event-${n}`])}, 'owner_only')`;
+    return yield* said(n, body, `wake-${n}`, 0);
+  });
+
+/** The owner's next word in the running turn, at this moment: a message, or with `tap` a tap. */
+const inRunningTurn = (body: string, tap = false) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const [running] = yield* sql<{ wakeupId: string; n: number }>`SELECT w.wakeup_id AS "wakeupId",
+        (SELECT last_seq + 1 FROM kin_chats WHERE chat_id = 'lead-chat') AS n
+      FROM kin_wakeups w WHERE w.status = 'running'`;
+    return yield* said(running!.n, body, running!.wakeupId, yield* Clock.currentTimeMillis, tap);
+  });
+/** The owner says more in the running turn after acting on the screen, so the agent may change it. */
+const askedAgain = (body: string) => Effect.andThen(TestClock.adjust(1_000), inRunningTurn(body));
 
 /** The owner's lead in India's zone, an invoices list, a client in another state, one invoice. */
 const seed = Effect.gen(function* () {
@@ -414,6 +440,7 @@ describe("recipe documents", () => {
         draft: true,
         documents: [{ key: "D-1", title: "Invoice INV-1", version: 1 }],
         sensitive: true,
+        next: 'Filed, with its card in the chat. Call it "Invoice INV-1" in your reply, never by its key.',
       });
       assert.deepStrictEqual(shownCards, ["D-1"], "its doc card is in the chat");
       const { request, data } = rendered.at(-1)!;
@@ -558,10 +585,11 @@ describe("recipe documents", () => {
         "Issued as INV/26-27/001. Its documents couldn't be made: see problems.",
       );
       // F24: a void isn't final for the agent either: undone, it is owed again with its number.
+      const voidIt = yield* askedAgain("Void INV-1, then put it back");
       const issueAs = (more: Partial<typeof LeadDocuments.IssueInput.Type>) =>
         LeadDocuments.issue(scope, {
           entry: KinRecordKey.make("INV-1"),
-          sourceEventId: "event-3",
+          sourceEventId: voidIt,
           ...more,
         });
       assert.strictEqual((yield* issueAs({ void: true })).state, "dropped");
@@ -1033,6 +1061,26 @@ describe("recipe documents", () => {
         [billed.number, (yield* records.get(orgId, "INV-2"))!.amountMinor],
         ["INV/26-27/001", 23_600_000],
       );
+      // The owner's Mark sent: the quote reads Sent with the number it has, or the next one;
+      // pressed again, nothing more and no second number.
+      yield* LeadWork.create(scope, {
+        sourceEventId: yes,
+        records: [{ list: "quotes", title: "Support", client: "Invented Acme", amount: "5,000" }],
+      });
+      const marked = [];
+      for (const key of ["QT-1", "QT-2", "QT-1", "QT-2"]) {
+        const done = yield* OwnerMoney.issue(people, { orgId, key: KinRecordKey.make(key) });
+        marked.push([key, done.number, done.state, (yield* records.get(orgId, key))!.state]);
+      }
+      assert.deepStrictEqual(marked, [
+        ["QT-1", "QT/26-27/001", "waiting", "waiting"],
+        ["QT-2", "QT/26-27/002", "waiting", "waiting"],
+        ["QT-1", "QT/26-27/001", "waiting", "waiting"],
+        ["QT-2", "QT/26-27/002", "waiting", "waiting"],
+      ]);
+      const [numbers] = yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_issued_numbers
+        WHERE org_id = ${orgId} AND register_id = 'quotes'`;
+      assert.strictEqual(numbers!.n, 2);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -1273,6 +1321,8 @@ const agentReceipt = (asked: string, input: ReceiptAsk) =>
     const first = yield* LeadDocuments.receipt(scope, { sourceEventId: asked, ...input });
     if (first.status === "made") return first;
     yield* answerCard(`kin-receipt:${first.proposal}`, "yes");
+    // The tap wakes the agent, as `KinChatService.act` posts it once its writes are made.
+    yield* inRunningTurn("Confirm", true);
     const made = yield* LeadDocuments.receipt(scope, {
       sourceEventId: asked,
       proposal: first.proposal,
@@ -1615,6 +1665,75 @@ describe("receipts", () => {
         );
         yield* answerCard(`kin-receipt:${towardsInvoice.proposal}`, "no");
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("wait for a new company's country before reading an amount they are given", () =>
+    Effect.gen(function* () {
+      const asked = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      // As a company created now starts: its country not chosen (`chat/KinIdentity.test.ts`).
+      yield* sql`UPDATE kin_company_profile SET profile_json = ${yield* newCompanyProfileJson}
+        WHERE org_id = ${orgId}`;
+      const [client] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'clients'`;
+      const advance = () =>
+        LeadDocuments.receipt(scope, {
+          sourceEventId: asked,
+          advance: {
+            client: KinRecordKey.make(client!.key),
+            amount: "500",
+            receivedOn: "2026-11-05",
+          },
+        });
+      const probe = parseRecipe(
+        "---\nname: probe\ntitle: Probe\ndescription: probe\nsensitive: true\noutputs: [a.pdf]\ninputs:\n  fee: {type: money}\n  lines: {type: table, columns: {item: text, price: money}}\n---\nGo.\n",
+      );
+      if ("reason" in probe) return assert.fail(probe.reason);
+      const given = { fee: "500", lines: [{ item: "Invented kit", price: "40" }] };
+      const gathered = (inputs: Record<string, unknown>) =>
+        gatherFacts(orgId, probe, undefined, inputs);
+      const refusal = countryFirstMessage("Owner");
+      // An advance goes on a client already kept: nothing was saved.
+      assert.strictEqual(
+        (yield* Effect.flip(advance())).message,
+        countryFirstMessage("Owner", { saved: true }),
+      );
+      assert.strictEqual((yield* Effect.flip(gathered({ fee: "500" }))).message, refusal);
+      assert.strictEqual((yield* Effect.flip(gathered({ lines: given.lines }))).message, refusal);
+      // Nothing was proposed or put to the owner; a document with no amount given is made.
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_receipt_proposals`, 0);
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_widgets WHERE widget_id LIKE '%kin-receipt%'`,
+        0,
+      );
+      yield* gathered({});
+      // Nor is a table with a money column and no amount in it: text only, a blank price, no rows.
+      yield* gathered({ lines: [{ item: "Invented kit" }, { item: "Invented box", price: null }] });
+      yield* gathered({ lines: [] });
+
+      yield* setProfile(orgId, { _tag: "person", personId: ownerId }, { country: "GB" }, undefined);
+      const proposed = yield* advance();
+      assert.strictEqual(proposed.status, "proposed");
+      const [request] = yield* sql<{ json: string }>`SELECT request_json AS json
+        FROM kin_receipt_proposals`;
+      assert.deepStrictEqual(JSON.parse(request!.json).advance.amount, {
+        minor: 50_000,
+        currency: "GBP",
+      });
+      const facts = yield* gathered(given);
+      const assembled = assembleInputs(probe, given, facts.facts, facts.currency);
+      if ("error" in assembled) return assert.fail(assembled.error.message);
+      assert.deepStrictEqual(
+        [
+          assembled.inputs.fee,
+          (assembled.inputs.lines as ReadonlyArray<{ price: unknown }>)[0]?.price,
+        ],
+        [
+          { minor: 50_000, currency: "GBP" },
+          { minor: 4_000, currency: "GBP" },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("never number a receipt again into money once its payment is taken back", () =>
@@ -2337,6 +2456,15 @@ describe("files the agent makes", () => {
       const made = listed.recipes.find((one) => one.name === "letterhead");
       assert.deepStrictEqual([made?.labelled, made?.files], [true, ["stamp.png"]]);
       assert.isFalse(yield* fs.exists(started.folder!));
+      // An undo that removed the new recipe says so, and so does the redo, so neither reads as failed.
+      const undo = () =>
+        LeadDocuments.undoRecipe(scope, { recipe: "letterhead", sourceEventId: asked });
+      const undone = yield* undo();
+      assert.isTrue(undone.removed);
+      assert.match(undone.next, /^Undone: .*the recipe is gone now/);
+      const redone = yield* undo();
+      assert.isFalse(redone.removed);
+      assert.match(redone.next, /^Undone: the letterhead recipe is back as it was/);
 
       // A sample holding the company's real details is refused, however often it is asked.
       const memo = (yield* writeRecipe("memo", { sourceEventId: asked })).folder!;

@@ -26,6 +26,7 @@ import {
   isAlive,
   ORG,
   processTree,
+  readJson,
   readSeed,
   readState,
   ROOT,
@@ -33,11 +34,13 @@ import {
   startServer,
   stopTree,
   tailLog,
+  writeJson,
   writeSeed,
   writeState,
 } from "./kin-verify/instance.ts";
 import {
   mailDeliver,
+  mailApprove,
   mailExpire,
   fakeSocial,
   mailSentLines,
@@ -74,9 +77,14 @@ const HELP = `kin-verify [--instance <name>] <command>
   tool <agent> --script <file.json>       the same with several calls (and "shell"/"sleep" steps)
   mail sent | mail deliver --to a --from "N <b>" --subject s --body t [--thread id]
   mail expire <address> [--back]          the account's sign-in stops working (or works again)
+  mail signin <address>                   the owner signs that fake account in again, as Settings'
+                                          Sign in again does once the vendor approves (fake mailbox only)
   push sent                               what Kin would have pushed, per person's device (no APNs)
   social profile <name> <platform:handle>... [all-profiles] | social past <profileId> '<json>' | social fail-next <accountId> <reason> | social posts
-  clock advance <90m|12h|3d|2w> | clock set-date <YYYY-MM-DD>
+  clock show                              this instance's now, in the company's zone and UTC
+  clock set "<mon 09:01|tomorrow 09:30|2026-11-23 09:30>"   move now forward to then (company zone)
+  clock advance <90m|12h|3d|2w>           move now forward; nothing restarts
+  clock age <3d>                          move every stored Kin time back instead (restarts)
   db "<select …>"                         read-only SQL on this instance's database
   phone pair [--android] [--as <person>]  deep link that pairs the dev client to this instance
   phone metro [--full-app]                Metro for this checkout, as the Kin app (stopped by down)`;
@@ -100,6 +108,7 @@ function parse(argv: ReadonlyArray<string>): Args {
     "json",
     "dark",
     "light",
+    "back",
   ]);
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index]!;
@@ -336,26 +345,26 @@ async function web(instance: Instance, person: string, args: Args) {
           : null;
       if (width !== undefined || height !== undefined || colorScheme !== null)
         await Web.view(session, {
-          width: Number(width ?? 1280),
-          height: Number(height ?? 900),
+          width: width === undefined ? undefined : Number(width),
+          height: height === undefined ? undefined : Number(height),
           colorScheme,
         });
       console.log(`saved ${await Web.screenshot(session, path, args.flags.has("full"))}`);
       return;
     }
     case "view": {
-      const width = Number(flag(args, "width") ?? "1280");
-      const height = Number(flag(args, "height") ?? "900");
+      const width = flag(args, "width");
+      const height = flag(args, "height");
       const scheme = args.flags.has("dark") ? "dark" : args.flags.has("light") ? "light" : null;
       const zone = flag(args, "zone");
-      await Web.view(session, {
-        width,
-        height,
+      const size = await Web.view(session, {
+        width: width === undefined ? undefined : Number(width),
+        height: height === undefined ? undefined : Number(height),
         colorScheme: scheme,
         ...(zone === undefined ? {} : { zone }),
       });
       console.log(
-        `view ${width}×${height}${scheme === null ? "" : ` ${scheme}`}${zone === undefined ? "" : ` ${zone}`}`,
+        `view ${size.width}×${size.height}${scheme === null ? "" : ` ${scheme}`}${zone === undefined ? "" : ` ${zone}`}`,
       );
       return;
     }
@@ -384,6 +393,33 @@ function pairingUrlFor(instance: Instance, web: string) {
   const token = /^Token: (\S+)/m.exec(out.stdout)?.[1];
   if (token === undefined) throw new VerifyError("t3 pair failed; run `kin-verify doctor`");
   return `${web}/pair#token=${token}`;
+}
+
+/** Sign in again through the owner's own sign-in, with the fake vendor approving in the browser's place. */
+async function mailSignIn(instance: Instance, address: string | undefined) {
+  if (address === undefined) throw new VerifyError("mail signin needs the account's address");
+  const connection = await rpcAs(instance, "owner");
+  try {
+    type View = {
+      connections: Array<{ connectionId: string; accountLabel: string | null; state: string }>;
+    };
+    const find = async () =>
+      ((await connection.call("kin.connections.list", { orgId: ORG })) as View).connections.find(
+        (one) => one.accountLabel?.toLowerCase() === address.toLowerCase(),
+      );
+    const account = await find();
+    if (account === undefined) throw new VerifyError(`no connection for ${address}`);
+    const started = (await connection.call("kin.connections.signInStart", {
+      orgId: ORG,
+      connectionId: account.connectionId,
+      returnTo: "web",
+    })) as { authorizationUrl: string };
+    const response = mailApprove(instance, started.authorizationUrl, address);
+    await connection.call("kin.connections.signInFinish", { orgId: ORG, response });
+    return `${address}: signed in again (was ${account.state}, now ${(await find())?.state})`;
+  } finally {
+    connection.close();
+  }
 }
 
 async function rpc(instance: Instance, person: string, args: Args) {
@@ -487,14 +523,125 @@ async function tool(instance: Instance, args: Args) {
     console.log(args.flags.has("raw") ? JSON.stringify(result) : describeResult(result));
 }
 
+const MINUTE = 60_000;
+// The server's `DevClock.DEV_CLOCK_FILE`, in its state directory.
+const devClockFile = (instance: Instance) => NodePath.join(instance.userdata, "kin-dev-clock.json");
+const readOffset = (instance: Instance) =>
+  readJson<{ offsetMs: number }>(devClockFile(instance))?.offsetMs ?? 0;
+
+function companyZone(instance: Instance) {
+  const db = database(instance);
+  try {
+    const row = db
+      .prepare("SELECT time_zone AS zone FROM kin_trigger_settings WHERE org_id = ?")
+      .get(ORG) as { zone: string | null } | undefined;
+    return row?.zone ?? "UTC";
+  } finally {
+    db.close();
+  }
+}
+
+/** Wall-clock parts of `ms` in `zone`. */
+function partsIn(ms: number, zone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: zone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    weekday: "short",
+    hourCycle: "h23",
+  }).formatToParts(ms);
+  const part = (type: string) => parts.find((one) => one.type === type)!.value;
+  return {
+    date: `${part("year")}-${part("month")}-${part("day")}`,
+    time: `${part("hour")}:${part("minute")}`,
+    weekday: part("weekday").toLowerCase().slice(0, 3),
+  };
+}
+
+/** The instant `date` `time` reads on a wall clock in `zone`. */
+function instantIn(date: string, time: string, zone: string) {
+  const wall = Date.parse(`${date}T${time}:00Z`);
+  let at = wall;
+  for (let pass = 0; pass < 2; pass++) {
+    const seen = partsIn(at, zone);
+    at += wall - Date.parse(`${seen.date}T${seen.time}:00Z`);
+  }
+  return at;
+}
+
+const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+
+/** "2026-11-23 09:30", "tomorrow 09:30", "mon 09:01" or "09:31" (the next one), in `zone`. */
+function parseWhen(text: string, now: number, zone: string) {
+  const match = /^(?:(\S+)\s+)?(\d{1,2}):(\d{2})$/.exec(text.trim().toLowerCase());
+  const day = match?.[1];
+  const weekday =
+    day === undefined || day === "today" || day === "tomorrow" || /^\d{4}-\d{2}-\d{2}$/.test(day)
+      ? undefined
+      : WEEKDAYS.indexOf(day.slice(0, 3));
+  if (match === null || weekday === -1)
+    throw new VerifyError(
+      `clock set "${text}": use "2026-11-23 09:30", "tomorrow 09:30", "mon 09:01" or "09:31"`,
+    );
+  const time = `${match[2]!.padStart(2, "0")}:${match[3]}`;
+  if (day !== undefined && /^\d/.test(day)) return instantIn(day, time, zone);
+  const today = Date.parse(`${partsIn(now, zone).date}T12:00:00Z`);
+  for (let ahead = day === "tomorrow" ? 1 : 0; ahead < 15; ahead++) {
+    const noon = new Date(today + ahead * 86_400_000);
+    if (weekday !== undefined && noon.getUTCDay() !== weekday) continue;
+    const at = instantIn(noon.toISOString().slice(0, 10), time, zone);
+    // The moved clock runs on: the minute it is in now still counts as next.
+    if (day === "today" || day === "tomorrow" || at >= Math.floor(now / MINUTE) * MINUTE) return at;
+  }
+  throw new VerifyError(`clock set "${text}": no such time in the next two weeks`);
+}
+
+function showClock(instance: Instance) {
+  const zone = companyZone(instance);
+  const offsetMs = readOffset(instance);
+  const now = Date.now() + offsetMs;
+  const { date, time, weekday } = partsIn(now, zone);
+  return `clock: ${weekday} ${date} ${time} ${zone} · ${new Date(now).toISOString().slice(0, 16)}Z UTC · moved +${Math.round(offsetMs / MINUTE)}m`;
+}
+
+/**
+ * `set`, `advance` and `show` move the dev server's now forward (Kin's clock, and the Kin
+ * screens of browsers kv drives); `age` moves stored times back and restarts, as before.
+ */
 async function clock(instance: Instance, args: Args) {
   const [action, value] = args.positional;
+  if (action === "show") return console.log(showClock(instance));
+  if (action === "set" || action === "set-date" || action === "advance") {
+    if (value === undefined) throw new VerifyError(`clock ${action} needs a value`);
+    const offsetMs = readOffset(instance);
+    const now = Date.now() + offsetMs;
+    const realMinute = Math.floor(Date.now() / MINUTE) * MINUTE;
+    const next =
+      action === "advance"
+        ? offsetMs + parseDuration(value)
+        : parseWhen(action === "set-date" ? `${value} 00:00` : value, now, companyZone(instance)) -
+          realMinute;
+    // Whole minutes, so the moved clock turns its minutes when the real one does.
+    const rounded = Math.floor(next / MINUTE) * MINUTE;
+    if (Math.floor((rounded + Date.now()) / MINUTE) < Math.floor(now / MINUTE))
+      throw new VerifyError("the clock only moves forward; `kv down --wipe` starts over");
+    // Already in that minute: nothing to move.
+    if (rounded <= offsetMs) return console.log(showClock(instance));
+    writeJson(devClockFile(instance), { offsetMs: rounded });
+    // The server reads the file each second; a moved slot runs on its next tick.
+    await sleep(1_500);
+    console.log(`${showClock(instance)} · browsers follow on their next web command`);
+    return;
+  }
   let ms: number;
-  if (action === "advance" && value !== undefined) ms = parseDuration(value);
-  else if (action === "set-date" && value !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    ms = Date.parse(`${value}T00:00:00`) - new Date(new Date().toDateString()).getTime();
-    if (ms <= 0) throw new VerifyError("set-date only moves forward: give a date after today");
-  } else throw new VerifyError("clock advance <90m|12h|3d|2w> or clock set-date <YYYY-MM-DD>");
+  if (action === "age" && value !== undefined) ms = parseDuration(value);
+  else
+    throw new VerifyError(
+      'clock show | clock set "<mon 09:01|tomorrow 09:30|2026-11-23 09:30>" | clock advance <90m|12h|3d|2w> | clock age <3d>',
+    );
   const state = readState(instance);
   const wasRunning = state !== undefined && isAlive(state.pid);
   if (wasRunning) await stopTree(state.pid);
@@ -647,8 +794,9 @@ async function main() {
           ),
         );
       if (action === "expire") return console.log(mailExpire(instance, rest.slice(1)));
+      if (action === "signin") return console.log(await mailSignIn(instance, args.positional[1]));
       throw new VerifyError(
-        "mail sent | mail deliver --to --from --subject --body [--thread] | mail expire <address> [--back]",
+        "mail sent | mail deliver --to --from --subject --body [--thread] | mail expire <address> [--back] | mail signin <address>",
       );
     }
     case "social":

@@ -37,7 +37,7 @@ const REPLAY_LIMIT = 128;
 /** One viewer's pending change, keyed for `bufferLatestLiveStream`: the latest per entry wins. */
 type Pending = {
   readonly sequence: number;
-  /** An entry's key, or `START`, `RESCAN` or `GAP`. */
+  /** An entry's key, or `START`, `RESCAN`, `PLACES` or `GAP`. */
   readonly key: string;
   readonly list: string | null;
   readonly created: boolean;
@@ -50,6 +50,11 @@ const START = "*start";
 const RESCAN = "*rescan";
 /** Something moved that left no change to replay, such as an undo. */
 const GAP = "*gap";
+/**
+ * This teammate's own places moved: everything they hold is read again (`snapshot-required`),
+ * an open client page included, even where no row or count changed.
+ */
+const PLACES = "*places";
 
 type Out = KinWorkEvent;
 
@@ -117,11 +122,15 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
       ? null
       : ({ _tag: "counts", seq, ...team(), asOf: next.asOf, ...moved } satisfies Out);
   });
-  /** Everything held is dropped: read again from `seq`, with the counts whole. */
-  const restart = Effect.fn("KinWorkStream.restart")(function* () {
+  /**
+   * Everything held is dropped: read again from `seq`, with the counts whole. `gap` is the number
+   * an owner-level announcement took (`KinRecords.announce`); no change row holds it, so the
+   * client's number moves only if it is told this one.
+   */
+  const restart = Effect.fn("KinWorkStream.restart")(function* (gap = 0) {
     seen = viewer.teammate ? yield* teamKeyLists(orgId, own(viewer)).pipe(workFailure) : new Map();
     held = null;
-    const seq = yield* numberNow(viewer);
+    const seq = Math.max(yield* numberNow(viewer), viewer.teammate ? 0 : gap);
     heardFrom(seq);
     const whole = yield* counts(seq);
     return [
@@ -231,6 +240,7 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
         : [];
     return [
       ...rescan,
+      ...(mine ? [{ ...base, sequence, key: PLACES }] : []),
       ...projects,
       ...(tick.key === undefined ? [] : [{ ...base, sequence, key: tick.key }]),
     ];
@@ -246,7 +256,9 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
     }
     const items = all.filter((one) => one.level === level);
     if (items.length === 0) return [];
-    if (items.some((one) => one.key === GAP)) return yield* restart();
+    const gaps = items.filter((one) => one.key === GAP);
+    if (gaps.length > 0) return yield* restart(Math.max(...gaps.map((one) => one.sequence)));
+    if (viewer.teammate && items.some((one) => one.key === PLACES)) return yield* restart();
     const top = Math.max(...items.map((one) => one.sequence));
     const keyed = items.filter((one) => one.key !== RESCAN);
     const place = (one: Pending) =>

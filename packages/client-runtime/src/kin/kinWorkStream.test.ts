@@ -15,6 +15,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import {
+  KIN_WORK_DEAL_LISTS,
   KIN_WORK_NOTHING_NAMED,
   KIN_WORK_READ_TIMEOUT,
   KIN_WORK_RETRY,
@@ -255,6 +256,7 @@ describe("kinWorkListsMoved", () => {
       clients: kinWorkListsMoved(named, ["clients", "projects"]),
       any: kinWorkListsMoved(named, "any"),
       notTasks: kinWorkListsMoved(named, KIN_WORK_NOT_TASKS),
+      deals: kinWorkListsMoved(named, KIN_WORK_DEAL_LISTS),
     });
     // Where things stood when the stream began is not a change.
     expect(moved(heard([{ seq: 4 }]))).toEqual({
@@ -263,15 +265,32 @@ describe("kinWorkListsMoved", () => {
       clients: 0,
       any: 0,
       notTasks: 0,
+      deals: 0,
     });
     const task = heard([{ seq: 4 }, { seq: 5, key: "W-5", list: "work" }]);
-    expect(moved(task)).toEqual({ tasks: 5, money: 0, clients: 0, any: 5, notTasks: 0 });
+    expect(moved(task)).toEqual({
+      tasks: 5,
+      money: 0,
+      clients: 0,
+      any: 5,
+      notTasks: 0,
+      deals: 5,
+    });
     const invoice = heard([
       { seq: 4 },
       { seq: 5, key: "W-5", list: "work" },
       { seq: 6, key: "INV-1", list: "invoices" },
     ]);
-    expect(moved(invoice)).toEqual({ tasks: 5, money: 6, clients: 0, any: 6, notTasks: 6 });
+    expect(moved(invoice)).toEqual({
+      tasks: 5,
+      money: 6,
+      clients: 0,
+      any: 6,
+      notTasks: 6,
+      deals: 5,
+    });
+    // A quote made, accepted or dropped moves a deal of its client: the deal shows it.
+    expect(moved(kinWorkNote(invoice, { seq: 7, key: "QT-3", list: "quotes" })).deals).toBe(7);
     // An older host names no list, and a change while away names nothing: every read moves.
     expect(moved(kinWorkNote(invoice, { seq: 7, key: "W-7" }))).toEqual({
       tasks: 7,
@@ -279,6 +298,7 @@ describe("kinWorkListsMoved", () => {
       clients: 7,
       any: 7,
       notTasks: 7,
+      deals: 7,
     });
     expect(moved(kinWorkNote(invoice, { seq: 8 }))).toEqual({
       tasks: 8,
@@ -286,6 +306,7 @@ describe("kinWorkListsMoved", () => {
       clients: 8,
       any: 8,
       notTasks: 8,
+      deals: 8,
     });
   });
 });

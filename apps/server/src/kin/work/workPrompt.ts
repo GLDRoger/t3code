@@ -5,7 +5,8 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { SILENT_REPLY } from "../reply/classify.ts";
-import { iso } from "./recordRows.ts";
+import { dayIn, timeIn } from "./money.ts";
+import { ownerZone } from "./recordRows.ts";
 
 /**
  * The Work section of a lead's prompt, built by SQL at turn time. Status has one home: counts of
@@ -139,8 +140,9 @@ export const buildWorkSection = Effect.fn("KinWorkPrompt.build")(function* (inpu
     byKey.set(change.key, entry);
   }
   const all = [...byKey.values()];
+  const zone = yield* ownerZone(orgId);
   return {
-    asOf: iso(now),
+    asOf: timeIn(now, zone),
     open: counts?.open ?? 0,
     doing: counts?.doing ?? 0,
     waiting: counts?.waiting ?? 0,
@@ -154,8 +156,8 @@ export const buildWorkSection = Effect.fn("KinWorkPrompt.build")(function* (inpu
         row.dueAt === null
           ? null
           : row.dueAllDay === 1
-            ? iso(row.dueAt).slice(0, 10)
-            : iso(row.dueAt),
+            ? dayIn(row.dueAt, zone)
+            : timeIn(row.dueAt, zone),
       changes: lines.slice(-4),
     })),
     moreChanged: Math.max(0, all.length - CHANGED_CAP),

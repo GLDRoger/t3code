@@ -1,5 +1,6 @@
 import { ACTIVE_RUN_STATUSES } from "../../orchestration-v2/ThreadManagementService.ts";
 import type { McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
+import { wakeupOfRuns } from "./wakeupRuns.ts";
 import {
   KIN_TEAM_ROOM_TEAM_ID,
   KIN_MESSAGE_FIGURES_MAX,
@@ -34,6 +35,7 @@ import {
   KinChatError,
   KinChatHistoryInput,
   type KinChatHistoryResult,
+  kinIsPage,
   ThreadId,
   IsoDateTime,
   NonNegativeInt,
@@ -539,6 +541,8 @@ export class KinChatRepository extends Context.Service<
         readonly wakeupId: KinWakeupId;
         readonly audience: WriteAudience;
         readonly body: string;
+        /** The body ends with the page as stored: Kin's own section goes before it, unshaped. */
+        readonly lead?: true;
       },
     ) => Effect.Effect<KinMessage, RepositoryError>;
     readonly history: (
@@ -610,6 +614,8 @@ export class KinChatRepository extends Context.Service<
         readonly abortedWakeupIds: ReadonlyArray<KinWakeupId>;
         /** Leads whose queued events were dropped. */
         readonly agentIds: ReadonlyArray<KinAgentId>;
+        /** A suggestion of Kin's waiting here ended unanswered (`kin_recommendations`). */
+        readonly endedSuggestion: boolean;
       },
       RepositoryError
     >;
@@ -844,49 +850,14 @@ const make = Effect.gen(function* () {
       },
     ) {
       if (input.caller.subagent === true || input.caller.threadId !== input.threadId) return false;
-      const rows =
-        yield* sql`WITH RECURSIVE ancestors(run_id, thread_id, ordinal, payload_json) AS (
-        SELECT run_id, thread_id, ordinal, payload_json
-        FROM orchestration_v2_projection_runs INDEXED BY orchestration_v2_projection_runs_thread_status_idx
-        WHERE thread_id = ${input.threadId} AND status IN ${sql.in(ACTIVE_RUN_STATUSES)}
-        UNION
-        SELECT p.run_id, p.thread_id, p.ordinal, p.payload_json
-        FROM ancestors child JOIN orchestration_v2_projection_runs p
-          ON p.thread_id = child.thread_id
-          AND (p.run_id = json_extract(child.payload_json, '$.restartContinuationOfRunId')
-            OR p.run_id = json_extract(child.payload_json, '$.usageLimitContinuationOfRunId'))
-        -- Continuation links plus agent/server provenance come only from the restart and usage-limit workers.
-        JOIN orchestration_v2_projection_messages cm
-          ON cm.message_id = json_extract(child.payload_json, '$.userMessageId')
-          AND cm.thread_id = child.thread_id AND cm.run_id = child.run_id
-          AND json_extract(cm.payload_json, '$.createdBy') = 'agent'
-          AND json_extract(cm.payload_json, '$.creationSource') = 'server'
-      )
-      SELECT 1 FROM kin_wakeups w JOIN ancestors root ON root.thread_id = w.thread_id
-      JOIN orchestration_v2_projection_messages m
-        ON m.message_id = json_extract(root.payload_json, '$.userMessageId')
-        AND m.thread_id = root.thread_id AND m.run_id = root.run_id
-      WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
-        AND w.thread_id = ${input.threadId} AND w.status = 'running'
-        AND json_extract(m.payload_json, '$.creationSource') = 'server'
-        AND ((json_extract(m.payload_json, '$.createdBy') = 'system'
-        AND ((json_extract(root.payload_json, '$.userMessageId') = 'kin-wakeup-msg:' || w.wakeup_id
-          AND root.run_id = COALESCE(w.run_id, (
-            SELECT first.run_id FROM orchestration_v2_projection_runs first
-            WHERE first.thread_id = w.thread_id
-              AND json_extract(first.payload_json, '$.userMessageId') = 'kin-wakeup-msg:' || w.wakeup_id
-            ORDER BY first.ordinal LIMIT 1
-          )))
-          -- A late steer or the rescue turn, sent after this wake-up's own run (KinIdentity).
-          OR ((json_extract(root.payload_json, '$.userMessageId') = 'kin-rescue-msg:' || w.wakeup_id
-              OR substr(json_extract(root.payload_json, '$.userMessageId'), 1, length(w.wakeup_id) + 15)
-                = 'kin-steer-msg:' || w.wakeup_id || ':')
-            AND root.ordinal > (SELECT own.ordinal FROM orchestration_v2_projection_runs own
-              WHERE own.thread_id = w.thread_id AND own.run_id = w.run_id))))
-          -- T3's notice that a delegated task finished, in the run this wake-up took over: only
-          -- Kin sets run_id, and only to such a run (TaskWake).
-          OR (json_extract(m.payload_json, '$.createdBy') = 'agent' AND root.run_id = w.run_id))
-        ORDER BY w.wakeup_id LIMIT 1`;
+      const rows = yield* wakeupOfRuns(
+        sql,
+        sql`SELECT run_id, thread_id, ordinal, payload_json
+          FROM orchestration_v2_projection_runs INDEXED BY orchestration_v2_projection_runs_thread_status_idx
+          WHERE thread_id = ${input.threadId} AND status IN ${sql.in(ACTIVE_RUN_STATUSES)}`,
+        sql`w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
+          AND w.thread_id = ${input.threadId} AND w.status = 'running'`,
+      );
       return rows.length > 0;
     },
     Effect.mapError(toRepositoryError("KinChatRepository.hasRunningWakeup")),
@@ -915,8 +886,12 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toRepositoryError("KinChatRepository.wakeupRunning")),
   );
+  // A check-in or routine's own turn reads as a brief. The morning and weekly brief's turn has one
+  // page ("page"): the first text it stores in its owner's chat; all else it stores is ordinary.
   const briefForm = Effect.fn("KinChatRepository.briefForm")(function* (input: {
     orgId: KinOrgId;
+    chatId: KinChatId;
+    messageId: KinMessageId;
     wakeupId?: KinWakeupId | undefined;
     audience: WriteAudience;
     kind: KinMessage["kind"];
@@ -929,15 +904,36 @@ const make = Effect.gen(function* () {
       input.audience === "chat"
     )
       return null;
-    return (yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${input.orgId}
-                AND wakeup_id = ${input.wakeupId}
-                AND ((tag = 'pulse' AND json_extract(json, '$.checkIn') IS NOT NULL)
-                  OR (tag = 'routine' AND json_extract(json, '$.routine') IN ('morning_brief', 'evening_summary')))
-                AND NOT EXISTS (SELECT 1 FROM kin_events m WHERE m.org_id = kin_events.org_id
-                  AND m.wakeup_id = kin_events.wakeup_id AND m.tag = 'chat.message')
-                LIMIT 1`).length > 0
-      ? ("brief" as const)
-      : null;
+    const [brief] = yield* sql<{ page: number; lane: number }>`SELECT
+        json_extract(e.json, '$.checkIn.scheduleId') IN ('checkin-morning', 'checkin-weekly') AS page,
+        EXISTS (SELECT 1 FROM kin_leads l WHERE l.org_id = e.org_id AND l.agent_id = e.agent_id
+          AND l.owner_chat_id = ${input.chatId}) AS lane
+      FROM kin_events e WHERE e.org_id = ${input.orgId} AND e.wakeup_id = ${input.wakeupId}
+        AND ((e.tag = 'pulse' AND json_extract(e.json, '$.checkIn') IS NOT NULL)
+          OR (e.tag = 'routine' AND json_extract(e.json, '$.routine') IN ('morning_brief', 'evening_summary')))
+        AND NOT EXISTS (SELECT 1 FROM kin_events m WHERE m.org_id = e.org_id
+          AND m.wakeup_id = e.wakeup_id AND m.tag = 'chat.message')
+      ORDER BY e.event_id LIMIT 1`;
+    if (brief === undefined) return null;
+    if (brief.page !== 1) return "brief" as const;
+    if (brief.lane !== 1) return null;
+    const earlier = yield* sql`SELECT 1 FROM kin_messages m
+      JOIN kin_wakeups w ON w.org_id = m.org_id AND w.wakeup_id = ${input.wakeupId}
+      WHERE m.org_id = ${input.orgId} AND m.chat_id = ${input.chatId} AND m.author_kind = 'agent'
+        AND m.author_agent_id = w.agent_id AND m.author_thread_id = w.thread_id
+        AND m.created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', w.started_at / 1000.0, 'unixepoch')
+        AND m.kind = 'text' AND m.body <> '' AND m.status = 'posted'
+        AND m.message_id <> ${input.messageId}
+      LIMIT 1`;
+    return earlier.length === 0 ? ("page" as const) : null;
+  });
+  /** The stored form and body: the brief's page, or a card's empty message it joins, opens headed. */
+  const briefed = (form: "page" | "brief" | null, body: string, prior = "") => ({
+    form: form === "page" ? ("brief" as const) : form,
+    body:
+      form === "page" && prior === "" && body !== "" && !kinIsPage(body)
+        ? `## Today\n\n${body}`
+        : body,
   });
   const replyCard = Effect.fn("KinChatRepository.replyCard")(
     function* (input: ReplyScope) {
@@ -1761,7 +1757,9 @@ const make = Effect.gen(function* () {
               message.author.threadId !== input.threadId ||
               message.status !== "posted" ||
               message.kind !== "text" ||
-              !input.body.startsWith(message.body) ||
+              (input.lead === true
+                ? message.form !== "brief" || !input.body.endsWith(message.body)
+                : !input.body.startsWith(message.body)) ||
               (message.widgetId !== null &&
                 message.body === "" &&
                 (yield* replyCard(input)) !== input.messageId) ||
@@ -1781,12 +1779,19 @@ const make = Effect.gen(function* () {
                 message: "Kin wake-up is not running.",
               });
             yield* ownerOnly(input.audience, input);
-            const placed = yield* placeFigures({ ...input, previous: message });
+            if (input.lead === true) {
+              yield* sql`UPDATE kin_messages SET body = ${input.body}
+                WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id = ${input.messageId}`;
+              return yield* requireRecord(messageOne(input));
+            }
+            const kept =
+              message.form === "brief" && message.body !== ""
+                ? message.form
+                : yield* briefForm({ ...input, kind: message.kind, author: message.author });
+            const shaped = briefed(kept, input.body, message.body);
+            const placed = yield* placeFigures({ ...input, body: shaped.body, previous: message });
             const named = yield* named_(input.orgId, input.chatId, placed.body);
-            const form =
-              message.form ??
-              (yield* briefForm({ ...input, kind: message.kind, author: message.author }));
-            yield* sql`UPDATE kin_messages SET body = ${named.body}, form = ${form},
+            yield* sql`UPDATE kin_messages SET body = ${named.body}, form = ${shaped.form},
               embeds_json = ${placed.embeds.length === 0 ? null : yield* encodeEmbeds(placed.embeds)}
               WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id = ${input.messageId}`;
             yield* keepFigures(input, placed.figures);
@@ -1850,7 +1855,9 @@ const make = Effect.gen(function* () {
                     message: "Kin message author identity conflict.",
                   });
                 if (
-                  existing.value.body !== input.body ||
+                  // The brief's page is stored under the heading Kin gave it (`briefed`).
+                  (existing.value.body !== input.body &&
+                    existing.value.body !== `## Today\n\n${input.body}`) ||
                   existing.value.intent !== input.intent ||
                   existing.value.replyTo !== input.replyTo ||
                   existing.value.widgetId !== input.widgetId ||
@@ -1972,21 +1979,22 @@ const make = Effect.gen(function* () {
  WHERE chat_id = ${input.chatId} AND org_id = ${input.orgId} RETURNING last_seq`,
             })(input);
             const seq = (yield* requireRecord(Effect.succeed(allocated))).last_seq;
-            const form = yield* briefForm(input);
+            const { form, body } = briefed(yield* briefForm(input), input.body);
             const placed =
               author._tag === "agent" &&
               input.kind === "text" &&
               input.wakeupId !== undefined &&
               input.placeReplyFigures === true &&
-              input.body !== "" &&
+              body !== "" &&
               input.widgetId === null
                 ? yield* placeFigures({
                     ...input,
+                    body,
                     agentId: author.agentId,
                     threadId: author.threadId,
                     wakeupId: input.wakeupId,
                   })
-                : { body: input.body, embeds: input.embeds ?? [], figures: [] };
+                : { body, embeds: input.embeds ?? [], figures: [] };
             // People read an entry by its name, not Kin's key for it.
             const named =
               author._tag === "agent" && input.kind === "text"
@@ -2157,7 +2165,7 @@ const make = Effect.gen(function* () {
             if (Option.isNone(updated))
               return yield* new KinChatError({
                 reason: "widget_changed",
-                message: "Widget revision changed.",
+                message: "This card changed or was answered. Look at it again.",
               });
             return updated.value;
           }),
@@ -2305,6 +2313,11 @@ const make = Effect.gen(function* () {
         yield* sql`UPDATE kin_questions SET state = 'withdrawn', closed_at = ${input.clearedAtMs}
           WHERE org_id = ${input.orgId} AND state = 'open'
             AND (widget_id IN (${cards}) OR raise_widget_id IN (${cards}))`;
+        // A suggestion whose card goes now ended unanswered here: Settings reads its own row.
+        const ended = yield* sql`UPDATE kin_recommendations SET ended_at = ${input.clearedAtMs}
+          WHERE org_id = ${input.orgId} AND state = 'open' AND ended_at IS NULL
+            AND widget_id IN (${cards})
+          RETURNING rec_id`;
         yield* sql`DELETE FROM kin_card_plans WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
         yield* sql`DELETE FROM kin_widgets WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
         yield* sql`DELETE FROM kin_turn_figures WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
@@ -2327,6 +2340,7 @@ const make = Effect.gen(function* () {
           taskCards,
           abortedWakeupIds: aborted.map((row) => KinWakeupId.make(row.wakeupId)),
           agentIds: [...new Set(dropped.map((row) => KinAgentId.make(row.agentId)))],
+          endedSuggestion: ended.length > 0,
         };
       },
       (effect) => sql.withTransaction(effect),

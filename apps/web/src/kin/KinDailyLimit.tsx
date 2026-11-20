@@ -10,7 +10,7 @@ import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 
 import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
-import { searchableSetting } from "../components/settings/settingsSearch";
+import { useSearchableSetting } from "../components/settings/settingsSearch";
 import {
   Select,
   SelectItem,
@@ -26,6 +26,7 @@ import type { KinWorkTarget } from "./useKinWork";
 
 /** The owner's daily limit, one choice in Settings; nothing shows where there is no Kin to set. */
 export function KinDailyLimitSetting() {
+  const searchableSetting = useSearchableSetting();
   const target = kinNewLeadTarget(useKinHost());
   return target === null ? null : (
     <SettingsSection {...searchableSetting("kin-daily-limit")} hideTitle>

@@ -1,3 +1,4 @@
+import { kinNow } from "@t3tools/client-runtime/kin/kinNow";
 import {
   KIN_GOALS,
   kinGoalDraft,
@@ -5,7 +6,12 @@ import {
   kinGoalsSummary,
   type KinGoalDraft,
 } from "@t3tools/client-runtime/kin/kinAttention";
-import { KIN_GOAL_MEASURES, type KinGoal, type KinGoalMeasure } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  KIN_GOAL_MEASURES,
+  type KinGoal,
+  type KinGoalMeasure,
+} from "@t3tools/contracts";
 import { PlusIcon } from "lucide-react";
 import { useId, useState } from "react";
 
@@ -19,6 +25,7 @@ import {
   SelectValue,
 } from "../components/ui/select";
 import { cn, randomUUID } from "../lib/utils";
+import { KinCountryFirstField } from "./KinCountryFirst";
 import { Field, FormShell } from "./KinWorkForms";
 import { KinWorkSection } from "./KinWorkParts";
 import { useNowMinuteMs } from "./useKinClock";
@@ -64,6 +71,7 @@ export function KinGoals(props: KinWorkTarget & { readonly goals?: Goals }) {
   const sheet =
     editing === null ? null : (
       <KinGoalSheet
+        environmentId={props.environmentId}
         goal={editing === "new" ? null : editing}
         goals={goals}
         onClose={() => setEditing(null)}
@@ -143,13 +151,14 @@ export function KinGoals(props: KinWorkTarget & { readonly goals?: Goals }) {
 
 /** Add or change a goal: what it measures, its target and its dates. */
 export function KinGoalSheet(props: {
+  readonly environmentId: EnvironmentId;
   readonly goal: KinGoal | null;
   readonly goals: Goals;
   readonly onClose: () => void;
 }) {
   const { goal } = props;
   const [requestId] = useState(randomUUID);
-  const [draft, setDraft] = useState<KinGoalDraft>(() => kinGoalDraft(goal, new Date()));
+  const [draft, setDraft] = useState<KinGoalDraft>(() => kinGoalDraft(goal, kinNow()));
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const ids = {
@@ -253,16 +262,22 @@ export function KinGoalSheet(props: {
         </Select>
       </Field>
       <div className="grid grid-cols-2 gap-3">
-        <Field id={ids.target} label={KIN_GOALS.target}>
-          <Input
-            id={ids.target}
-            value={draft.target}
-            maxLength={60}
-            placeholder={KIN_GOALS.targetHint[draft.measure]}
-            autoComplete="off"
-            onChange={(event) => edit({ target: event.target.value })}
-          />
-        </Field>
+        <KinCountryFirstField
+          environmentId={props.environmentId}
+          label={KIN_GOALS.target}
+          money={draft.measure === "revenue_received"}
+        >
+          <Field id={ids.target} label={KIN_GOALS.target}>
+            <Input
+              id={ids.target}
+              value={draft.target}
+              maxLength={60}
+              placeholder={KIN_GOALS.targetHint[draft.measure]}
+              autoComplete="off"
+              onChange={(event) => edit({ target: event.target.value })}
+            />
+          </Field>
+        </KinCountryFirstField>
         {manual ? (
           <Field id={ids.current} label={KIN_GOALS.current}>
             <Input

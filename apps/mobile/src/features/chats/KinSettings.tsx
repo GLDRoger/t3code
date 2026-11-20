@@ -46,10 +46,11 @@ import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { useSettingsPageBack } from "../settings/useSettingsPageBack";
 import { useKinTab } from "./components/KinTab";
+import { KinBriefsSection } from "./KinBriefs";
 import { KinCheckInsSection } from "./KinCheckIns";
 import { useKinIsHome } from "./state/kinHome";
 import { openKinNotificationSettings } from "./notifications/installKinNotifications";
-import { useChatOnlyEnvironments, useKinOwnerLevel } from "./state/kinChatOnly";
+import { useChatOnlyEnvironments, useKinOwnerLevel, useKinSeesClients } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinOpenWaiting } from "./state/useKinOpen";
@@ -59,6 +60,7 @@ import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
 const noSessionAtom = Atom.make(null);
+const noPermissionAtom = Atom.make(false);
 
 const CONNECTION_LABEL: Record<EnvironmentPresentation["connection"]["phase"], string> = {
   connected: "Connected",
@@ -81,16 +83,32 @@ const COMPANY_ROWS: Partial<
   Record<
     KinSettingsPage,
     {
-      readonly icon: "person.2" | "robot" | "brain" | "link" | "doc.text";
-      readonly route: "KinTeam" | "KinAgents" | "KinMemory" | "KinConnections" | "KinCompany";
+      readonly icon:
+        | "person.2"
+        | "robot"
+        | "brain"
+        | "link"
+        | "doc.text"
+        | "slider.horizontal.3"
+        | "target";
+      readonly route:
+        | "KinTeam"
+        | "KinDealStages"
+        | "KinAgents"
+        | "KinMemory"
+        | "KinConnections"
+        | "KinCompany"
+        | "KinRecommendations";
     }
   >
 > = {
   team: { icon: "person.2", route: "KinTeam" },
   agents: { icon: "robot", route: "KinAgents" },
   connections: { icon: "link", route: "KinConnections" },
+  deals: { icon: "target", route: "KinDealStages" },
   memory: { icon: "brain", route: "KinMemory" },
   company: { icon: "doc.text", route: "KinCompany" },
+  recommendations: { icon: "slider.horizontal.3", route: "KinRecommendations" },
 };
 
 export function KinSettings(props: {
@@ -141,10 +159,24 @@ export function KinSettings(props: {
       : null;
   const pages = kinHomeTabs(session, ownerLevel);
   // The same You and Company as web Settings; the phone adds its own rows to each.
+  // The owner alone, as the host gates `kin.recommendations.*`: a co-owner sees none of it.
+  const recommendations = useAtomValue(
+    host._tag === "host"
+      ? kinClient.recommendationAskAgain.permissionAtom(host.environmentId)
+      : noPermissionAtom,
+  );
+  // Deals' stages: the owner level changes them, a teammate with Clients on reads them.
+  const seesClients = useKinSeesClients(host._tag === "host" ? host.environmentId : null);
+  const dealsTarget =
+    host._tag === "host" && orgId !== null && (ownerLevel || seesClients === true)
+      ? { environmentId: host.environmentId, orgId }
+      : null;
   const groups = kinSettingsGroups({
     ownerLevel: company !== null,
     computer: false,
     notifications: true,
+    recommendations,
+    deals: dealsTarget !== null,
   });
   const you = groups[0]!;
   const companyGroup = groups.find((group) => group.id === "company");
@@ -287,6 +319,9 @@ export function KinSettings(props: {
               />
             )}
           </SettingsSection>
+          {host._tag !== "host" || orgId === null ? null : (
+            <KinBriefsSection environmentId={host.environmentId} orgId={orgId} />
+          )}
           {owned.length === 0 ? null : (
             <SettingsSection
               title="Your Kin"
@@ -297,23 +332,26 @@ export function KinSettings(props: {
               ))}
             </SettingsSection>
           )}
+          {companyGroup === undefined || (company ?? dealsTarget) === null ? null : (
+            <SettingsSection title={companyGroup.title}>
+              {companyGroup.pages.map((page) => {
+                const row = COMPANY_ROWS[page];
+                const at = page === "deals" ? dealsTarget : company;
+                if (row === undefined || at === null) return null;
+                if ((page === "team" || page === "memory") && !pages.includes(page)) return null;
+                return (
+                  <SettingsRow
+                    key={page}
+                    icon={row.icon}
+                    label={KIN_SETTINGS_PAGE_TITLES[page]}
+                    onPress={() => navigation.navigate(row.route, at)}
+                  />
+                );
+              })}
+            </SettingsSection>
+          )}
           {company === null ? null : (
             <>
-              <SettingsSection title={companyGroup?.title}>
-                {(companyGroup?.pages ?? []).map((page) => {
-                  const row = COMPANY_ROWS[page];
-                  if (row === undefined) return null;
-                  if ((page === "team" || page === "memory") && !pages.includes(page)) return null;
-                  return (
-                    <SettingsRow
-                      key={page}
-                      icon={row.icon}
-                      label={KIN_SETTINGS_PAGE_TITLES[page]}
-                      onPress={() => navigation.navigate(row.route, company)}
-                    />
-                  );
-                })}
-              </SettingsSection>
               <SettingsSection footer={KIN_TEAM_AGENT_COPY.detail}>
                 <KinTeamAgentRow {...company} />
               </SettingsSection>

@@ -30,6 +30,7 @@ import {
   type KinConnectionToolMode,
   type KinOrgId,
 } from "@t3tools/contracts";
+import { useLocation } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
@@ -38,7 +39,7 @@ import { ChevronLeftIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 
 import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
-import { searchableSetting } from "../components/settings/settingsSearch";
+import { useSearchableSetting } from "../components/settings/settingsSearch";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -77,6 +78,7 @@ import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { KinVisualHosts } from "./KinVisualHosts";
 import { kinClient } from "./kinClient";
 import { OwnerClientSetup, openSignInWindow, SignInWaiting } from "./KinConnectionSignIn";
+import { kinSettingsFindIn } from "./kinSettingsAddress";
 import { useKinHost } from "./useKinHost";
 import { useNowMinuteMs } from "./useKinClock";
 
@@ -112,13 +114,16 @@ export function KinConnectionsSettings() {
 }
 
 function ConnectionsList(props: Target) {
+  const searchableSetting = useSearchableSetting();
   const { environmentId, orgId } = props;
   const listAtom = kinClient.connections({ environmentId, input: { orgId } });
   const result = useAtomValue(listAtom);
   const reload = useAtomRefresh(listAtom);
   const view = Option.getOrNull(AsyncResult.value(result));
   const [adding, setAdding] = useState(false);
-  const [open, setOpen] = useState<KinConnectionId | null>(null);
+  // A link into Settings can name the connection to open at, as a done suggestion does.
+  const named = useLocation({ select: (location) => kinSettingsFindIn(location.searchStr) });
+  const [open, setOpen] = useState<string | null>(named === "" ? null : named);
   const add = useAtomCommand(kinClient.connectionAdd, { reportFailure: false });
   const remove = useAtomCommand(kinClient.connectionRemove, { reportFailure: false });
   const signInStart = useAtomCommand(kinClient.connectionSignInStart, { reportFailure: false });

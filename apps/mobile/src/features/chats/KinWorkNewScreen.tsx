@@ -57,8 +57,12 @@ const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
 
 /** "Friday, Fri, Nov 13"; "Today" needs no date said after it. */
-function dueChoiceLabel(choice: { readonly label: string; readonly day: string }, now: Date) {
-  const day = kinWorkDueLabel(choice.day, now);
+function dueChoiceLabel(
+  choice: { readonly label: string; readonly day: string },
+  now: Date,
+  zone: string | null,
+) {
+  const day = kinWorkDueLabel(choice.day, now, zone);
   return day === choice.label ? day : `${choice.label}, ${day}`;
 }
 
@@ -263,11 +267,11 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                     disabled={saving}
                     onPress={() => setDraft({ ...draft, due: null, repeat: null })}
                   />
-                  {kinWorkDueChoices(opened).map((choice) => (
+                  {kinWorkDueChoices(opened, names.zone).map((choice) => (
                     <Chip
                       key={choice.day}
                       label={choice.label}
-                      accessibilityLabel={dueChoiceLabel(choice, opened)}
+                      accessibilityLabel={dueChoiceLabel(choice, opened, names.zone)}
                       selected={draft.due === choice.day}
                       disabled={saving}
                       onPress={() => setDraft({ ...draft, due: choice.day })}

@@ -91,9 +91,11 @@ export type KinSettingsPage =
   | "agents"
   | "check-ins"
   | "connections"
+  | "deals"
   | "memory"
   | "company"
-  | "approvals";
+  | "approvals"
+  | "recommendations";
 
 const KIN_SETTINGS_PAGES: ReadonlyArray<KinSettingsPage> = [
   "profile",
@@ -103,9 +105,11 @@ const KIN_SETTINGS_PAGES: ReadonlyArray<KinSettingsPage> = [
   "agents",
   "check-ins",
   "connections",
+  "deals",
   "memory",
   "company",
   "approvals",
+  "recommendations",
 ];
 
 export const KIN_SETTINGS_PAGE_TITLES: Readonly<Record<KinSettingsPage, string>> = {
@@ -116,9 +120,11 @@ export const KIN_SETTINGS_PAGE_TITLES: Readonly<Record<KinSettingsPage, string>>
   agents: "Agents",
   "check-ins": "Check-ins",
   connections: "Connections",
+  deals: "Deals",
   memory: "Memory",
   company: "Company details",
   approvals: "Approvals",
+  recommendations: "Recommendations",
 };
 
 export type KinSettingsGroupId = "you" | "company" | "computer";
@@ -139,25 +145,42 @@ export interface KinSettingsGroup {
 /**
  * What Settings holds for this person. Everyone has You; the owner and co-owners add Company; This
  * computer (the app's own settings) shows only where the session can open them. `notifications`
- * says whether this surface has Kin notifications to set.
+ * says whether this surface has Kin notifications to set; `recommendations` whether this is the
+ * owner, who alone sees what Kin suggested.
  */
 export function kinSettingsGroups(input: {
   readonly ownerLevel: boolean;
   readonly computer: boolean;
   readonly notifications: boolean;
+  readonly recommendations: boolean;
+  /** The company's deal stages: the owner level changes them, a teammate with Clients on reads. */
+  readonly deals?: boolean;
 }): ReadonlyArray<KinSettingsGroup> {
   const you: KinSettingsGroup = {
     id: "you",
     title: KIN_SETTINGS_GROUP_TITLES.you,
     pages: ["profile", ...(input.notifications ? (["notifications"] as const) : []), "appearance"],
   };
-  if (!input.ownerLevel) return [you];
+  if (!input.ownerLevel)
+    return input.deals === true
+      ? [you, { id: "company", title: KIN_SETTINGS_GROUP_TITLES.company, pages: ["deals"] }]
+      : [you];
   return [
     you,
     {
       id: "company",
       title: KIN_SETTINGS_GROUP_TITLES.company,
-      pages: ["team", "agents", "check-ins", "connections", "memory", "company", "approvals"],
+      pages: [
+        "team",
+        "agents",
+        "check-ins",
+        "connections",
+        "deals",
+        "memory",
+        "company",
+        "approvals",
+        ...(input.recommendations ? (["recommendations"] as const) : []),
+      ],
     },
     ...(input.computer
       ? [{ id: "computer" as const, title: KIN_SETTINGS_GROUP_TITLES.computer, pages: [] }]
@@ -182,4 +205,5 @@ export const KIN_SETTINGS_MOVED: Readonly<Record<string, KinSettingsPage>> = {
   "check-ins": "check-ins",
   "kin-connections": "connections",
   approvals: "approvals",
+  deals: "deals",
 };

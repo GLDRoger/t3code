@@ -90,6 +90,7 @@ import {
 import { KinInvoiceCurrency } from "./KinMoneyEstimate";
 import { KinNotesVersions } from "./KinConfirm";
 import { KinEntryFilePicker, KinEntryPick, KinEntryText } from "./KinWorkEntryEdit";
+import { KinCountryFirstField } from "./KinCountryFirst";
 import { KinWorkPrivateMark, KinWorkSection as Section } from "./KinWorkParts";
 import { KinWorkShareRow } from "./KinWorkShareRow";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
@@ -196,6 +197,7 @@ function DayMenu(props: {
   readonly text: string | null;
   readonly day: string | null;
   readonly now: Date;
+  readonly zone: string | null;
   readonly disabled: boolean;
   readonly onPick: (day: string | null) => void;
 }) {
@@ -217,7 +219,7 @@ function DayMenu(props: {
         <ChevronDownIcon />
       </MenuTrigger>
       <MenuPopup align="start">
-        {kinWorkDueChoices(props.now).map((choice) => (
+        {kinWorkDueChoices(props.now, props.zone).map((choice) => (
           <MenuItem
             key={choice.day}
             disabled={choice.day === props.day}
@@ -362,6 +364,7 @@ function FieldEdit(
     readonly currency: string;
     readonly busy: boolean;
     readonly now: Date;
+    readonly zone: string | null;
     readonly previewKey: string;
     readonly people: ReadonlyArray<Choice>;
     readonly clients: ReadonlyArray<Ref>;
@@ -377,8 +380,8 @@ function FieldEdit(
   const current = typeof field.value === "string" ? field.value : null;
   switch (field.type) {
     case "text":
-    case "money":
-      return (
+    case "money": {
+      const edit = (
         <KinEntryText
           label={field.label}
           shown={field.text}
@@ -392,6 +395,14 @@ function FieldEdit(
           }}
         />
       );
+      return field.type === "money" ? (
+        <KinCountryFirstField environmentId={props.environmentId} label={field.label}>
+          {edit}
+        </KinCountryFirstField>
+      ) : (
+        edit
+      );
+    }
     case "date":
       return (
         <DayMenu
@@ -399,6 +410,7 @@ function FieldEdit(
           text={field.text}
           day={current}
           now={props.now}
+          zone={props.zone}
           disabled={busy}
           onPick={(day) => void props.onSet(day)}
         />
@@ -595,23 +607,25 @@ export function KinListEntry(
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
         <div className="flex flex-col gap-3">
           {amountEdit !== null && canDraft ? (
-            <div>
-              <KinEntryText
-                headline
-                numeric
-                label={KIN_LISTS.entry.amount}
-                shown={entry.amount}
-                draft={amountEdit.draft}
-                placeholder={KIN_LISTS.entry.amountPlaceholder}
-                disabled={busy}
-                onSave={async (text) => {
-                  const checked = kinAmountCheck(text, amountEdit.currency, amountEdit.received);
-                  return checked.ok
-                    ? changes.edit(item.rev, { amount: checked.value })
-                    : checked.problem;
-                }}
-              />
-            </div>
+            <KinCountryFirstField environmentId={environmentId} label={KIN_LISTS.entry.amount}>
+              <div>
+                <KinEntryText
+                  headline
+                  numeric
+                  label={KIN_LISTS.entry.amount}
+                  shown={entry.amount}
+                  draft={amountEdit.draft}
+                  placeholder={KIN_LISTS.entry.amountPlaceholder}
+                  disabled={busy}
+                  onSave={async (text) => {
+                    const checked = kinAmountCheck(text, amountEdit.currency, amountEdit.received);
+                    return checked.ok
+                      ? changes.edit(item.rev, { amount: checked.value })
+                      : checked.problem;
+                  }}
+                />
+              </div>
+            </KinCountryFirstField>
           ) : entry.amount === null ? null : (
             <p className="text-2xl font-semibold tracking-tight text-foreground tabular-nums">
               {entry.amount}
@@ -755,6 +769,7 @@ export function KinListEntry(
                       text={entry.date}
                       day={entry.dateDay}
                       now={props.now}
+                      zone={names.zone}
                       disabled={busy}
                       onPick={(day) =>
                         void changes.update(
@@ -779,6 +794,7 @@ export function KinListEntry(
                       text={entry.due}
                       day={entry.dueDay}
                       now={props.now}
+                      zone={names.zone}
                       disabled={busy}
                       onPick={(day) =>
                         void changes.update(
@@ -880,6 +896,7 @@ export function KinListEntry(
                           amountEdit?.currency ?? def?.currency ?? KIN_DEFAULT_HOME_CURRENCY
                         }
                         busy={busy}
+                        zone={names.zone}
                         previewKey={previewKey}
                         people={people}
                         clients={clients}
@@ -1092,9 +1109,17 @@ function InvoiceFileDoc(props: {
   const { doc } = props;
   if (doc === null) return null;
   return (
-    <Button size="xs" variant="ghost" onClick={() => props.onOpenDoc(doc.key)}>
+    <Button
+      size="xs"
+      variant="ghost"
+      className="max-w-full"
+      title={`${doc.title} · ${doc.key}`}
+      onClick={() => props.onOpenDoc(doc.key)}
+    >
       <FileTextIcon />
-      {doc.title} · {doc.key}
+      <span className="truncate">
+        {doc.title} · {doc.key}
+      </span>
     </Button>
   );
 }

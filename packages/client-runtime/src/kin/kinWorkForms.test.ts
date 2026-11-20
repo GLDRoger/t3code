@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off - The target hint is read against a fixed local day.
 import { KinChatError, KinRecordKey } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -22,6 +23,7 @@ import {
   kinProjectTargetHint,
   kinTaskProjectMenu,
   kinWorkFormMoved,
+  kinWorkReadState,
   kinWorkSend,
   type KinClientDraft,
   type KinWorkFormState,
@@ -87,6 +89,45 @@ describe("createKinWorkForm", () => {
     ]);
     // A billing address typed away clears it, rather than keeping blank lines.
     expect(kinClientUpdateInput({ address: " \n " })).toEqual({ address: null });
+  });
+
+  it("sends a prospect, where it came from and its tags, and switches prospect and client", () => {
+    const draft = {
+      ...kinClientDraftOf(undefined, "prospect"),
+      name: "Fennick & Daughters",
+      source: " Harbour trade fair ",
+      tags: "clinics, north,, clinics ",
+    };
+    expect(kinClientCreateInput(draft)).toEqual({
+      name: "Fennick & Daughters",
+      prospect: true,
+      source: "Harbour trade fair",
+      tags: ["clinics", "north"],
+    });
+    expect(kinClientDraftCheck({ ...draft, tags: "x".repeat(61) })).toMatch(/each tag/);
+    expect(kinClientUpdateInput({ kind: "client" })).toEqual({ kind: "client", prospect: false });
+    expect(kinClientUpdateInput({ kind: "prospect" })).toEqual({ kind: "client", prospect: true });
+    expect(kinClientUpdateInput({ kind: "vendor" })).toEqual({ kind: "vendor" });
+    // Typed away, both clear.
+    expect(kinClientUpdateInput({ source: " ", tags: "" })).toEqual({ source: null, tags: [] });
+    const stored = kinClientDraftOf({
+      name: "Fennick & Daughters",
+      kind: "client",
+      prospect: true,
+      source: "Harbour trade fair",
+      tags: ["clinics", "north"],
+      terms: null,
+      address: null,
+      gstin: null,
+      placeOfSupply: null,
+      notes: "",
+      sensitive: false,
+    });
+    expect([stored.kind, stored.source, stored.tags]).toEqual([
+      "prospect",
+      "Harbour trade fair",
+      "clinics, north",
+    ]);
   });
 
   it("takes a client's GSTIN and state, the state from the GSTIN, saying when they disagree", () => {
@@ -237,6 +278,26 @@ describe("createKinWorkPageWatch", () => {
     teammate.watch.changed({ changed: { "W-77": 11 }, unnamed: 0 }, teammate.page);
     await Promise.resolve();
     expect([teammate.rereads(), teammate.asked()]).toEqual([1, 1]);
+  });
+});
+
+describe("kinWorkReadState", () => {
+  // A deal page or Deals tab read again after the Clients switch went off.
+  it("shows nothing it held once a read again is refused; any other failure keeps it, stale", () => {
+    const previousSuccess = Option.some(AsyncResult.success("DL-1 Invented pilot"));
+    const after = (reason: KinChatError["reason"]) =>
+      kinWorkReadState(
+        AsyncResult.failure(Cause.fail(new KinChatError({ reason, message: "Invented" })), {
+          previousSuccess,
+        }),
+      );
+    expect(after("not_allowed")).toEqual({ _tag: "refused" });
+    expect(after("not_found")).toEqual({ _tag: "gone" });
+    expect(after("unavailable")).toEqual({
+      _tag: "ready",
+      value: "DL-1 Invented pilot",
+      stale: true,
+    });
   });
 });
 

@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format change dates for React render, outside an Effect runtime.
+import { kinNow } from "./kinNow.ts";
 import {
   type KinAgentPage,
   type KinPersonAccess,
@@ -264,7 +265,7 @@ type Change = NonNullable<KinAgentPage["changed"]>[number];
 export function kinAgentChangeLine(
   change: Change,
   names: ReadonlyMap<string, string>,
-  now: Date = new Date(),
+  now: Date = kinNow(),
 ): string {
   const record = `${change.key} ${change.title}`;
   if (change.kind === "created") return `Added ${record}`;

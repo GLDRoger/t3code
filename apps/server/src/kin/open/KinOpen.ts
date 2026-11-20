@@ -1,4 +1,5 @@
 import {
+  KIN_CHOICE_CARD_TTL_MS,
   KIN_PULSE_URGENT,
   type KinOpenRead,
   type KinOpenRow,
@@ -14,6 +15,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { waitingFor } from "../chat/KinChatService.ts";
+import { carriesEntry } from "../connections/ConnectionRows.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import { screenFacts } from "../pulse/people.ts";
 import { iso } from "../pulse/senses/shared.ts";
@@ -111,12 +113,17 @@ const settledWaiting = Effect.fn("KinOpen.settledWaiting")(function* (
           WHEN EXISTS (SELECT 1 FROM kin_connection_asks ca WHERE ca.org_id = w.org_id
             AND ca.widget_id = w.widget_id AND (ca.state <> 'open' OR EXISTS (SELECT 1
               FROM kin_records e WHERE e.org_id = ca.org_id AND e.record_id = ca.entry_record_id
-                AND e.state = 'dropped')))
+                AND e.state = 'dropped' AND ${carriesEntry(sql, "ca")})))
             THEN 'send_not_open'
           WHEN EXISTS (SELECT 1 FROM kin_questions q WHERE q.org_id = w.org_id
               AND (q.widget_id = w.widget_id OR q.raise_widget_id = w.widget_id))
             AND NOT EXISTS (SELECT 1 FROM kin_questions q WHERE q.org_id = w.org_id
               AND q.state = 'open' AND (q.widget_id = w.widget_id OR q.raise_widget_id = w.widget_id))
+            THEN 'question_settled'
+          -- Kin's suggestion ran out at its time limit, before the sweep closes its card.
+          WHEN EXISTS (SELECT 1 FROM kin_recommendations r WHERE r.org_id = w.org_id
+              AND r.widget_id = w.widget_id AND r.state = 'open'
+              AND r.posted_at <= ${at - KIN_CHOICE_CARD_TTL_MS})
             THEN 'question_settled'
         END AS reason
       FROM kin_waiting w

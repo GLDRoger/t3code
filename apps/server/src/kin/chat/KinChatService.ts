@@ -31,6 +31,7 @@ import {
   KinChoiceCardState,
   type KinChoiceOutcome,
   type KinSendCard,
+  type KinSendTry,
   KinAgentIntent,
   type KinAuthor,
   type KinAgentId,
@@ -90,7 +91,7 @@ import * as ChartCard from "../widgets/chartCard.ts";
 import * as VisualCard from "../widgets/visualCard.ts";
 import * as CardPlans from "../widgets/cardPlans.ts";
 import * as ChoiceCard from "../widgets/choiceCard.ts";
-import { answerByReply } from "../questions/openQuestions.ts";
+import { answerByReply, askedForCard } from "../questions/openQuestions.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
@@ -135,6 +136,8 @@ type SendInput = KinMessagesSendInput & {
   readonly relay?: KinMessageRelay;
   /** A person's words Kin posts again for them (`kin_hand_off`): no reply of theirs here. */
   readonly passedOn?: KinMessageOrigin;
+  /** Their words from a group Kin posts again here (`kin_take_private`): no reply of theirs. */
+  readonly replies?: false;
 };
 type WidgetUpsertInput = {
   readonly chatId: KinChatId;
@@ -146,6 +149,12 @@ type WidgetUpsertInput = {
   readonly awaiting?: ReadonlyArray<KinPersonId> | undefined;
   readonly closed?: boolean | undefined;
 };
+/** After a refused choice tap rolled back, as its own step: a redraw that offers what it lacked. */
+export type ChoiceRefusedHandler = (input: {
+  readonly orgId: KinOrgId;
+  readonly widgetId: KinWidgetId;
+  readonly error: unknown;
+}) => Effect.Effect<void>;
 /**
  * Server work an owner's answer on a choice card carries out, in the tap's own transaction:
  * attached by the layer that has records and documents, which the chat layer sits under.
@@ -160,6 +169,8 @@ export type ChoiceAnswerHandler = (input: {
   readonly plan?: CardPlans.CardPlan;
   readonly via: "tap" | "reaction";
   readonly now: number;
+  /** The try the person's sent-mail tick acknowledges (`KinWidgetsActInput.checkedSent`). */
+  readonly checkedSent?: KinSendTry;
 }) => Effect.Effect<
   KinChoiceOutcome | undefined,
   KinChatError | Repository.RepositoryError | SqlError.SqlError | Schema.SchemaError
@@ -172,8 +183,10 @@ type WaitingInput = Pick<
 export class KinChatService extends Context.Service<
   KinChatService,
   {
+    /** `refused`: after a refused tap on a choice card rolled back, as its own step. */
     readonly attachChoiceAnswers: (
       handler: ChoiceAnswerHandler,
+      refused?: ChoiceRefusedHandler,
     ) => Effect.Effect<void, never, Scope.Scope>;
     readonly notice: (input: {
       readonly messageId: KinMessageId;
@@ -243,6 +256,7 @@ export class KinChatService extends Context.Service<
         readonly chatId: KinChatId;
         readonly messageId: KinMessageId;
         readonly body: string;
+        readonly lead?: true;
       },
     ) => Effect.Effect<KinMessage, ServiceError>;
     /** Whether this person is in the chat whose message carries the stored file. */
@@ -290,6 +304,15 @@ export class KinChatService extends Context.Service<
       readonly widgetId: KinWidgetId;
       readonly outcome?: KinChoiceOutcome;
     }) => Effect.Effect<void, ServiceError>;
+    /**
+     * Server-only: a choice card `closeReplaced` closed with an outcome takes taps again, as it was
+     * asked, from `awaiting`. False when it is not such a card.
+     */
+    readonly reopenClosed: (input: {
+      readonly orgId: KinOrgId;
+      readonly widgetId: KinWidgetId;
+      readonly awaiting: ReadonlyArray<KinPersonId>;
+    }) => Effect.Effect<boolean, ServiceError>;
     /** Server-only: what became of a send card's Confirm: sending, then sent or failed. */
     readonly setSendOutcome: (input: {
       readonly orgId: KinOrgId;
@@ -334,6 +357,10 @@ export class KinChatService extends Context.Service<
       input: ChoiceCard.AskInput & {
         readonly chatId: KinChatId;
         readonly clientMessageId: string;
+        /** For the one person whose chat it is, its words already checked for them (`askTo`). */
+        readonly forChat?: true;
+        /** Kin's own unprompted card: it waits in Needs you but never rings. */
+        readonly silent?: true;
       },
     ) => Effect.Effect<KinWidget, ServiceError>;
     /** A card Kin fills from stored rows, such as a doc card; no tap answers it. */
@@ -516,6 +543,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const refresh = yield* KinRefreshObserver;
   let onChoice: ChoiceAnswerHandler | undefined;
+  let onRefused: ChoiceRefusedHandler | undefined;
   const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     sql
       .withTransaction(effect)
@@ -812,6 +840,7 @@ const make = Effect.gen(function* () {
       readonly passedOn?: KinMessageOrigin | undefined;
       /** False for a tap whose fixed action the server ran: it answers nothing else here. */
       readonly replies?: false;
+      readonly silent?: true | undefined;
     },
   ) {
     // A reply the caller names must be one it may read; a hidden one reads as missing.
@@ -849,6 +878,7 @@ const make = Effect.gen(function* () {
       ...(identity._tag === "person" && input.passedOn !== undefined
         ? { origin: input.passedOn }
         : {}),
+      ...(input.silent === true ? { silent: true as const } : {}),
       status: "posted",
       sentBy: null,
       clientMessageId: input.clientId,
@@ -908,6 +938,24 @@ const make = Effect.gen(function* () {
     }
     return message;
   });
+  /** After a refused tap rolled back: what its card's answers hand on, such as a redraw. */
+  const refusedTap = (caller: PersonCaller, input: KinWidgetsActInput, error: unknown) => {
+    const refused = onRefused;
+    if (refused === undefined || !isKinChatError(error) || error.reason !== "conflict")
+      return Effect.void;
+    return personFor(caller, input).pipe(
+      Effect.flatMap((identity) =>
+        refused({ orgId: identity.orgId, widgetId: input.widgetId, error }),
+      ),
+      Effect.ignore,
+    );
+  };
+  /** `act`'s transaction; a refused tap's card answers then run after its rollback. */
+  const refusedAfter = <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+    caller: PersonCaller,
+    input: KinWidgetsActInput,
+  ) => transaction(effect).pipe(Effect.tapError((error) => refusedTap(caller, input, error)));
   // A tap, or an owner's yes/no reaction mapped to its option: the same checks and compare-and-set.
   const actOn = Effect.fn("KinChatService.actOn")(function* (
     identity: PersonIdentity,
@@ -954,7 +1002,14 @@ const make = Effect.gen(function* () {
         reason: "not_allowed",
         message: "This option runs only from a tap on it.",
       });
-    const runs = sealed?.plan !== undefined && CardPlans.runsItself(sealed.plan);
+    // A question asked for another chat answers there: its tap starts no turn here.
+    const runs =
+      (sealed?.plan !== undefined && CardPlans.runsItself(sealed.plan)) ||
+      (choice !== null &&
+        (yield* askedForCard(identity.orgId, widget.widgetId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(cardTapError),
+        )));
     const body = yield* encodeAction({
       widgetId: request.widgetId,
       revision: request.revision,
@@ -989,7 +1044,7 @@ const make = Effect.gen(function* () {
     if (widget.revision !== request.revision)
       return yield* new KinChatError({
         reason: "widget_changed",
-        message: "Widget revision changed.",
+        message: "This card changed or was answered. Look at it again.",
       });
     if (widget.closedAt !== null && choice?.card.answer == null) return yield* invalidState;
     if (widget.type === "deferral" && request.actionId === "undo") {
@@ -1107,6 +1162,7 @@ const make = Effect.gen(function* () {
             ...(sealed?.plan === undefined ? {} : { plan: sealed.plan }),
             via: reaction === null ? "tap" : "reaction",
             now: yield* Clock.currentTimeMillis,
+            ...(request.checkedSent === undefined ? {} : { checkedSent: request.checkedSent }),
           }).pipe(
             Effect.mapError((cause) =>
               SqlError.isSqlError(cause) || Schema.isSchemaError(cause)
@@ -1386,6 +1442,7 @@ const make = Effect.gen(function* () {
       placeReplyFigures: input.placeReplyFigures,
       relay: toPerson ? input.relay : undefined,
       passedOn: input.passedOn,
+      ...(input.replies === false ? { replies: false as const } : {}),
     });
     // A reply someone waits on doesn't use up the hourly room for unprompted notices.
     if (
@@ -1408,6 +1465,8 @@ const make = Effect.gen(function* () {
       readonly state: Effect.Effect<unknown, KinChatError>;
       /** A stored file the card draws; read under the same rule as the message. */
       readonly file?: string;
+      readonly forChat?: true;
+      readonly silent?: true | undefined;
     },
   ) {
     const member = yield* memberFor(identity, input.chatId);
@@ -1456,6 +1515,8 @@ const make = Effect.gen(function* () {
       floorRunId: authorization.runId,
       clientId: { kind: "send", id: input.clientMessageId },
       publish: false,
+      ...(input.forChat === true ? { forChat: true } : {}),
+      silent: input.silent,
     });
     if (authorization.runId === null && authorization.owed !== true)
       yield* floor.recordNotice(identity, message);
@@ -1482,7 +1543,10 @@ const make = Effect.gen(function* () {
       closedAt: null,
       updatedAt: yield* now,
     };
-    yield* repo.insertWidget({ ...widget, audience: yield* authorAudience(identity) });
+    yield* repo.insertWidget({
+      ...widget,
+      audience: input.forChat === true ? "chat" : yield* authorAudience(identity),
+    });
     if (input.file !== undefined)
       yield* repo.attachCardFile({
         orgId: identity.orgId,
@@ -1688,17 +1752,21 @@ const make = Effect.gen(function* () {
       }
       return { message, waiting };
     }, transaction),
-    attachChoiceAnswers: Effect.fn("KinChatService.attachChoiceAnswers")(function* (handler) {
-      yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          onChoice = handler;
-        }),
-        () =>
+    attachChoiceAnswers: Effect.fn("KinChatService.attachChoiceAnswers")(
+      function* (handler, refused) {
+        yield* Effect.acquireRelease(
           Effect.sync(() => {
-            if (onChoice === handler) onChoice = undefined;
+            onChoice = handler;
+            onRefused = refused;
           }),
-      );
-    }),
+          () =>
+            Effect.sync(() => {
+              if (onChoice === handler) onChoice = undefined;
+              if (onRefused === refused) onRefused = undefined;
+            }),
+        );
+      },
+    ),
     resolveNotice: Effect.fn("KinChatService.resolveNotice")(function* (input) {
       const item = yield* requireRecord(repo.getWaiting(input));
       if (item.reason !== "question" || item.messageId === null) return yield* notAllowed;
@@ -1800,6 +1868,7 @@ const make = Effect.gen(function* () {
       });
       for (const item of cleared.waiting)
         yield* hub.publish({ type: "waiting.updated", orgId: chat.orgId, item });
+      if (cleared.endedSuggestion) yield* refresh.touch(chat.orgId, "recommendations");
       yield* hub.publish({
         type: "chat.cleared",
         orgId: chat.orgId,
@@ -2521,6 +2590,46 @@ const make = Effect.gen(function* () {
       for (const item of yield* repo.waitingForWidget(widget)) yield* resolve(item, "closed");
       yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
     }, transaction),
+    reopenClosed: Effect.fn("KinChatService.reopenClosed")(function* (input) {
+      const existing = yield* repo.getWidget(input);
+      if (Option.isNone(existing) || existing.value.type !== "choice") return false;
+      const card = yield* decodeChoiceCard(existing.value.state).pipe(
+        Effect.mapError(() => invalidState),
+      );
+      if (card.answer !== null || existing.value.closedAt === null || card.outcome === undefined)
+        return false;
+      const { outcome: _outcome, ...asked } = card;
+      const at = yield* now;
+      const widget = yield* repo.updateWidget({
+        ...existing.value,
+        audience: "chat",
+        state: asked,
+        awaiting: input.awaiting,
+        expectedRevision: existing.value.revision,
+        closedAt: null,
+        updatedAt: at,
+      });
+      for (const personId of new Set(widget.awaiting)) {
+        const item: KinWaitingItem = {
+          orgId: input.orgId,
+          chatId: widget.chatId,
+          waitingId: yield* decodeWaitingId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie),
+          personId,
+          messageId: widget.messageId,
+          widgetId: widget.widgetId,
+          reason: "question",
+          createdAt: at,
+          resolvedAt: null,
+          resolution: null,
+        };
+        if (yield* repo.addWaiting(item)) {
+          const added = Option.getOrElse(yield* repo.getWaiting(item), () => item);
+          yield* hub.publish({ type: "waiting.updated", orgId: input.orgId, item: added });
+        }
+      }
+      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
+      return true;
+    }, transaction),
     setSendOutcome: Effect.fn("KinChatService.setSendOutcome")(function* (input) {
       const existing = yield* requireRecord(
         repo.getWidget({ orgId: input.orgId, widgetId: input.widgetId }),
@@ -2753,7 +2862,7 @@ const make = Effect.gen(function* () {
       )
         return yield* notAllowed;
       return yield* actOn(identity, member, widget, request, null);
-    }, transaction),
+    }, refusedAfter),
     canTap: Effect.fn("KinChatService.canTap")(function* (identity, input) {
       yield* tapTarget(identity, input.widgetId);
     }),
@@ -2929,6 +3038,8 @@ const make = Effect.gen(function* () {
             type: "choice",
             intent: "question",
             state: validateState("choice", ChoiceCard.choiceCardState(input)),
+            ...(input.forChat === true ? { forChat: true as const } : {}),
+            silent: input.silent,
           }),
         ),
       transaction,

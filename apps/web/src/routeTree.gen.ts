@@ -40,6 +40,7 @@ import { Route as ChatSettingsProjectsRouteImport } from './routes/_chat.setting
 import { Route as ChatSettingsOpenSourceLicensesRouteImport } from './routes/_chat.settings.open-source-licenses'
 import { Route as ChatSettingsMaintenanceRouteImport } from './routes/_chat.settings.maintenance'
 import { Route as ChatSettingsLabsRouteImport } from './routes/_chat.settings.labs'
+import { Route as ChatSettingsKinProfileRouteImport } from './routes/_chat.settings.kin-profile'
 import { Route as ChatSettingsKinConnectionsRouteImport } from './routes/_chat.settings.kin-connections'
 import { Route as ChatSettingsKeybindingsRouteImport } from './routes/_chat.settings.keybindings'
 import { Route as ChatSettingsIntegrationsRouteImport } from './routes/_chat.settings.integrations'
@@ -47,6 +48,7 @@ import { Route as ChatSettingsGeneralRouteImport } from './routes/_chat.settings
 import { Route as ChatSettingsDiffsRouteImport } from './routes/_chat.settings.diffs'
 import { Route as ChatSettingsDiagnosticsRouteImport } from './routes/_chat.settings.diagnostics'
 import { Route as ChatSettingsDevicesRouteImport } from './routes/_chat.settings.devices'
+import { Route as ChatSettingsDealsRouteImport } from './routes/_chat.settings.deals'
 import { Route as ChatSettingsConnectionsRouteImport } from './routes/_chat.settings.connections'
 import { Route as ChatSettingsCompanyRouteImport } from './routes/_chat.settings.company'
 import { Route as ChatSettingsCheckInsRouteImport } from './routes/_chat.settings.check-ins'
@@ -231,6 +233,11 @@ const ChatSettingsLabsRoute = ChatSettingsLabsRouteImport.update({
   path: '/labs',
   getParentRoute: () => ChatSettingsRoute,
 } as any)
+const ChatSettingsKinProfileRoute = ChatSettingsKinProfileRouteImport.update({
+  id: '/kin-profile',
+  path: '/kin-profile',
+  getParentRoute: () => ChatSettingsRoute,
+} as any)
 const ChatSettingsKinConnectionsRoute =
   ChatSettingsKinConnectionsRouteImport.update({
     id: '/kin-connections',
@@ -266,6 +273,11 @@ const ChatSettingsDiagnosticsRoute = ChatSettingsDiagnosticsRouteImport.update({
 const ChatSettingsDevicesRoute = ChatSettingsDevicesRouteImport.update({
   id: '/devices',
   path: '/devices',
+  getParentRoute: () => ChatSettingsRoute,
+} as any)
+const ChatSettingsDealsRoute = ChatSettingsDealsRouteImport.update({
+  id: '/deals',
+  path: '/deals',
   getParentRoute: () => ChatSettingsRoute,
 } as any)
 const ChatSettingsConnectionsRoute = ChatSettingsConnectionsRouteImport.update({
@@ -436,6 +448,7 @@ export interface FileRoutesByFullPath {
   '/settings/check-ins': typeof ChatSettingsCheckInsRoute
   '/settings/company': typeof ChatSettingsCompanyRoute
   '/settings/connections': typeof ChatSettingsConnectionsRoute
+  '/settings/deals': typeof ChatSettingsDealsRoute
   '/settings/devices': typeof ChatSettingsDevicesRoute
   '/settings/diagnostics': typeof ChatSettingsDiagnosticsRoute
   '/settings/diffs': typeof ChatSettingsDiffsRoute
@@ -443,6 +456,7 @@ export interface FileRoutesByFullPath {
   '/settings/integrations': typeof ChatSettingsIntegrationsRoute
   '/settings/keybindings': typeof ChatSettingsKeybindingsRoute
   '/settings/kin-connections': typeof ChatSettingsKinConnectionsRoute
+  '/settings/kin-profile': typeof ChatSettingsKinProfileRoute
   '/settings/labs': typeof ChatSettingsLabsRoute
   '/settings/maintenance': typeof ChatSettingsMaintenanceRoute
   '/settings/open-source-licenses': typeof ChatSettingsOpenSourceLicensesRoute
@@ -499,6 +513,7 @@ export interface FileRoutesByTo {
   '/settings/check-ins': typeof ChatSettingsCheckInsRoute
   '/settings/company': typeof ChatSettingsCompanyRoute
   '/settings/connections': typeof ChatSettingsConnectionsRoute
+  '/settings/deals': typeof ChatSettingsDealsRoute
   '/settings/devices': typeof ChatSettingsDevicesRoute
   '/settings/diagnostics': typeof ChatSettingsDiagnosticsRoute
   '/settings/diffs': typeof ChatSettingsDiffsRoute
@@ -506,6 +521,7 @@ export interface FileRoutesByTo {
   '/settings/integrations': typeof ChatSettingsIntegrationsRoute
   '/settings/keybindings': typeof ChatSettingsKeybindingsRoute
   '/settings/kin-connections': typeof ChatSettingsKinConnectionsRoute
+  '/settings/kin-profile': typeof ChatSettingsKinProfileRoute
   '/settings/labs': typeof ChatSettingsLabsRoute
   '/settings/maintenance': typeof ChatSettingsMaintenanceRoute
   '/settings/open-source-licenses': typeof ChatSettingsOpenSourceLicensesRoute
@@ -564,6 +580,7 @@ export interface FileRoutesById {
   '/_chat/settings/check-ins': typeof ChatSettingsCheckInsRoute
   '/_chat/settings/company': typeof ChatSettingsCompanyRoute
   '/_chat/settings/connections': typeof ChatSettingsConnectionsRoute
+  '/_chat/settings/deals': typeof ChatSettingsDealsRoute
   '/_chat/settings/devices': typeof ChatSettingsDevicesRoute
   '/_chat/settings/diagnostics': typeof ChatSettingsDiagnosticsRoute
   '/_chat/settings/diffs': typeof ChatSettingsDiffsRoute
@@ -571,6 +588,7 @@ export interface FileRoutesById {
   '/_chat/settings/integrations': typeof ChatSettingsIntegrationsRoute
   '/_chat/settings/keybindings': typeof ChatSettingsKeybindingsRoute
   '/_chat/settings/kin-connections': typeof ChatSettingsKinConnectionsRoute
+  '/_chat/settings/kin-profile': typeof ChatSettingsKinProfileRoute
   '/_chat/settings/labs': typeof ChatSettingsLabsRoute
   '/_chat/settings/maintenance': typeof ChatSettingsMaintenanceRoute
   '/_chat/settings/open-source-licenses': typeof ChatSettingsOpenSourceLicensesRoute
@@ -630,6 +648,7 @@ export interface FileRouteTypes {
     | '/settings/check-ins'
     | '/settings/company'
     | '/settings/connections'
+    | '/settings/deals'
     | '/settings/devices'
     | '/settings/diagnostics'
     | '/settings/diffs'
@@ -637,6 +656,7 @@ export interface FileRouteTypes {
     | '/settings/integrations'
     | '/settings/keybindings'
     | '/settings/kin-connections'
+    | '/settings/kin-profile'
     | '/settings/labs'
     | '/settings/maintenance'
     | '/settings/open-source-licenses'
@@ -693,6 +713,7 @@ export interface FileRouteTypes {
     | '/settings/check-ins'
     | '/settings/company'
     | '/settings/connections'
+    | '/settings/deals'
     | '/settings/devices'
     | '/settings/diagnostics'
     | '/settings/diffs'
@@ -700,6 +721,7 @@ export interface FileRouteTypes {
     | '/settings/integrations'
     | '/settings/keybindings'
     | '/settings/kin-connections'
+    | '/settings/kin-profile'
     | '/settings/labs'
     | '/settings/maintenance'
     | '/settings/open-source-licenses'
@@ -757,6 +779,7 @@ export interface FileRouteTypes {
     | '/_chat/settings/check-ins'
     | '/_chat/settings/company'
     | '/_chat/settings/connections'
+    | '/_chat/settings/deals'
     | '/_chat/settings/devices'
     | '/_chat/settings/diagnostics'
     | '/_chat/settings/diffs'
@@ -764,6 +787,7 @@ export interface FileRouteTypes {
     | '/_chat/settings/integrations'
     | '/_chat/settings/keybindings'
     | '/_chat/settings/kin-connections'
+    | '/_chat/settings/kin-profile'
     | '/_chat/settings/labs'
     | '/_chat/settings/maintenance'
     | '/_chat/settings/open-source-licenses'
@@ -1025,6 +1049,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatSettingsLabsRouteImport
       parentRoute: typeof ChatSettingsRoute
     }
+    '/_chat/settings/kin-profile': {
+      id: '/_chat/settings/kin-profile'
+      path: '/kin-profile'
+      fullPath: '/settings/kin-profile'
+      preLoaderRoute: typeof ChatSettingsKinProfileRouteImport
+      parentRoute: typeof ChatSettingsRoute
+    }
     '/_chat/settings/kin-connections': {
       id: '/_chat/settings/kin-connections'
       path: '/kin-connections'
@@ -1072,6 +1103,13 @@ declare module '@tanstack/react-router' {
       path: '/devices'
       fullPath: '/settings/devices'
       preLoaderRoute: typeof ChatSettingsDevicesRouteImport
+      parentRoute: typeof ChatSettingsRoute
+    }
+    '/_chat/settings/deals': {
+      id: '/_chat/settings/deals'
+      path: '/deals'
+      fullPath: '/settings/deals'
+      preLoaderRoute: typeof ChatSettingsDealsRouteImport
       parentRoute: typeof ChatSettingsRoute
     }
     '/_chat/settings/connections': {
@@ -1331,6 +1369,7 @@ interface ChatSettingsRouteChildren {
   ChatSettingsCheckInsRoute: typeof ChatSettingsCheckInsRoute
   ChatSettingsCompanyRoute: typeof ChatSettingsCompanyRoute
   ChatSettingsConnectionsRoute: typeof ChatSettingsConnectionsRoute
+  ChatSettingsDealsRoute: typeof ChatSettingsDealsRoute
   ChatSettingsDevicesRoute: typeof ChatSettingsDevicesRoute
   ChatSettingsDiagnosticsRoute: typeof ChatSettingsDiagnosticsRoute
   ChatSettingsDiffsRoute: typeof ChatSettingsDiffsRoute
@@ -1338,6 +1377,7 @@ interface ChatSettingsRouteChildren {
   ChatSettingsIntegrationsRoute: typeof ChatSettingsIntegrationsRoute
   ChatSettingsKeybindingsRoute: typeof ChatSettingsKeybindingsRoute
   ChatSettingsKinConnectionsRoute: typeof ChatSettingsKinConnectionsRoute
+  ChatSettingsKinProfileRoute: typeof ChatSettingsKinProfileRoute
   ChatSettingsLabsRoute: typeof ChatSettingsLabsRoute
   ChatSettingsMaintenanceRoute: typeof ChatSettingsMaintenanceRoute
   ChatSettingsOpenSourceLicensesRoute: typeof ChatSettingsOpenSourceLicensesRoute
@@ -1365,6 +1405,7 @@ const ChatSettingsRouteChildren: ChatSettingsRouteChildren = {
   ChatSettingsCheckInsRoute: ChatSettingsCheckInsRoute,
   ChatSettingsCompanyRoute: ChatSettingsCompanyRoute,
   ChatSettingsConnectionsRoute: ChatSettingsConnectionsRoute,
+  ChatSettingsDealsRoute: ChatSettingsDealsRoute,
   ChatSettingsDevicesRoute: ChatSettingsDevicesRoute,
   ChatSettingsDiagnosticsRoute: ChatSettingsDiagnosticsRoute,
   ChatSettingsDiffsRoute: ChatSettingsDiffsRoute,
@@ -1372,6 +1413,7 @@ const ChatSettingsRouteChildren: ChatSettingsRouteChildren = {
   ChatSettingsIntegrationsRoute: ChatSettingsIntegrationsRoute,
   ChatSettingsKeybindingsRoute: ChatSettingsKeybindingsRoute,
   ChatSettingsKinConnectionsRoute: ChatSettingsKinConnectionsRoute,
+  ChatSettingsKinProfileRoute: ChatSettingsKinProfileRoute,
   ChatSettingsLabsRoute: ChatSettingsLabsRoute,
   ChatSettingsMaintenanceRoute: ChatSettingsMaintenanceRoute,
   ChatSettingsOpenSourceLicensesRoute: ChatSettingsOpenSourceLicensesRoute,

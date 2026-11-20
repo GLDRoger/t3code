@@ -111,6 +111,12 @@ export function kinMayEditProfile(input: {
   );
 }
 
+/** A profile lists the person's open tasks, unless it is yours or opened over a screen that does. */
+export const kinProfileShowsTasks = (input: {
+  readonly mine: boolean;
+  readonly overTheirTasks: boolean;
+}): boolean => !input.mine && !input.overTheirTasks;
+
 export interface KinProfileDraft {
   readonly displayName: string;
   readonly tags: string;
@@ -258,10 +264,10 @@ export function kinProfileDraft(
     tags: profile.roleTags.join(", "),
     skills: profile.skills,
     talkStyle: profile.talkStyle ?? "",
-    days: profile.workHours?.days ?? [1, 2, 3, 4, 5],
+    days: profile.workHours?.days ?? [],
     start: profile.workHours?.start ?? "09:00",
     end: profile.workHours?.end ?? "18:00",
-    timeZone: profile.timeZone ?? deviceTimeZone(),
+    timeZone: profile.timeZone ?? "",
   };
 }
 

@@ -1,4 +1,4 @@
-import { type RouterHistory, useLocation, useRouter } from "@tanstack/react-router";
+import { type RouterHistory, useLocation, useNavigate, useRouter } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_DAY_LABELS,
@@ -11,6 +11,7 @@ import {
   kinPersonSeed,
   kinProfileChanges,
   kinProfileDraft,
+  kinProfileShowsTasks,
   kinQuietLine,
   type KinProfileDraft,
   type KinProfileHolding,
@@ -24,6 +25,7 @@ import type {
   KinPersonProfile,
 } from "@t3tools/contracts";
 import { KIN_PEOPLE_CHAT } from "@t3tools/client-runtime/kin/kinPeopleChat";
+import { KIN_PERSON_TASKS } from "@t3tools/client-runtime/kin/kinTasksList";
 import { MessageSquareIcon } from "lucide-react";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -51,10 +53,15 @@ import { KinAvatar } from "./KinAvatar";
 import { KinAwayField } from "./KinAway";
 import { useOpenKinPeopleChat } from "./KinPeopleChat";
 import { kinSettingsSectionIn } from "./kinSettingsAddress";
+import type { KIN_PROFILE_SETTINGS_SEARCH_ITEMS } from "./kinSettingsSearch";
+
+type KinProfileSearchId = (typeof KIN_PROFILE_SETTINGS_SEARCH_ITEMS)[number]["id"];
 import { KinTasksKeysSection } from "./KinTasksKeys";
 import { useKinOwnerLevelKnown } from "./useKinOwnerLevel";
 import { KIN_DIALOG_PARTS, KIN_SHEET_PARTS } from "./kinOverlayParts";
 import { KinMyDevices } from "./KinDevices";
+import { KinPersonTasks } from "./KinPersonTasks";
+import { KIN_PLACE_PATH } from "./kinPlaces";
 import { kinClient } from "./kinClient";
 import { useKinProfiles } from "./kinPictures";
 import { useKinHostAt } from "./useKinHost";
@@ -199,7 +206,9 @@ function KinProfileSheet(props: {
 }) {
   const { environmentId, orgId, personId } = props.target;
   const profile = useKinProfileOf(environmentId, orgId, personId);
+  const navigate = useNavigate();
   const Parts = props.inDialog ? KIN_DIALOG_PARTS : KIN_SHEET_PARTS;
+  const params = { environmentId, orgId };
   return (
     <Parts.Root
       open
@@ -223,6 +232,24 @@ function KinProfileSheet(props: {
         </Parts.Header>
         <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
           <KinProfileBody {...props.target} />
+          {/* Over Settings, the Team page behind it already lists what they hold. Leaving the
+              sheet's address closes it. */}
+          {profile.profile === null ||
+          !kinProfileShowsTasks({ mine: profile.mine, overTheirTasks: props.inDialog }) ? null : (
+            <Field label={KIN_PERSON_TASKS.title}>
+              <KinPersonTasks
+                environmentId={environmentId}
+                orgId={orgId}
+                personId={personId}
+                onOpenTask={(task) =>
+                  void navigate({ to: KIN_PLACE_PATH.tasks, params, search: { task } })
+                }
+                onSeeAll={() =>
+                  void navigate({ to: KIN_PLACE_PATH.tasks, params, search: { person: personId } })
+                }
+              />
+            </Field>
+          )}
         </div>
       </Parts.Popup>
     </Parts.Root>
@@ -342,9 +369,17 @@ export function useKinMe(environmentId: EnvironmentId, orgId: KinOrgId): KinPers
   ).personId;
 }
 
-function Field(props: { readonly label: string; readonly children: React.ReactNode }) {
+function Field(props: {
+  readonly label: string;
+  readonly target?: string | undefined;
+  readonly children: React.ReactNode;
+}) {
   return (
-    <section className="flex flex-col gap-1">
+    <section
+      id={props.target}
+      tabIndex={props.target === undefined ? undefined : -1}
+      className="flex flex-col gap-1"
+    >
       <h3 className="text-xs font-medium text-muted-foreground">{props.label}</h3>
       {props.children}
     </section>
@@ -362,6 +397,8 @@ function KinProfileRead(props: {
 }) {
   const { profile } = props;
   const hours = kinHoursLine(profile.workHours);
+  // Your own settings are where the app's settings search lands.
+  const mineTarget = (id: KinProfileSearchId) => (props.mine ? id : undefined);
   const ownerLevel = useKinOwnerLevelKnown(props.environmentId);
   return (
     <>
@@ -400,7 +437,7 @@ function KinProfileRead(props: {
           )}
         </p>
       </Field>
-      <Field label={KIN_PROFILE_COPY.hoursLabel}>
+      <Field label={KIN_PROFILE_COPY.hoursLabel} target={mineTarget("kin-working-hours")}>
         <p className="text-sm text-foreground">
           {hours === null ? (
             <span className="text-muted-foreground">{KIN_PROFILE_COPY.noHours}</span>
@@ -415,8 +452,9 @@ function KinProfileRead(props: {
         profile={profile}
         mine={props.mine}
         mayEdit={props.mayEdit}
+        target={mineTarget("kin-away")}
       />
-      <Field label={KIN_PROFILE_COPY.quietLabel}>
+      <Field label={KIN_PROFILE_COPY.quietLabel} target={mineTarget("kin-quiet-hours")}>
         <p className="text-sm text-foreground">{kinQuietLine(profile, props.holding)}</p>
       </Field>
       {props.mayEdit ? (

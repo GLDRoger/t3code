@@ -5,14 +5,13 @@ chat list. Agents are contacts like anyone else. You ask them for things in plai
 keep Tasks, Money, Clients and Docs current for you.
 
 Kin has five places: **Chats**, **Tasks**, **Money**, **Clients** and **Docs**. On the phone they
-are the dock; on the web and the desktop app they sit at the top of the sidebar, and become the same
-dock at the bottom of a narrow window. `⌘1` to `⌘5` (`Ctrl` on Windows and Linux) open them.
+are the dock; on the web and the desktop app they sit at the top of the sidebar, which in a narrow
+window slides in from the menu button at the top left. `⌘1` to `⌘5` (`Ctrl` on Windows and Linux)
+open them.
 **Settings** is the gear at the bottom left on the web and the desktop app, and the gear on Chats on
 the phone and in a narrow window. It opens over whatever you're looking at; close it to carry on
 where you were. What you see in each depends on your place in the team; see
 [Who sees and does what](#who-sees-and-does-what).
-For the owner, **Coding** beside the gear on the web and the desktop app opens T3 Code's coding
-threads and pull requests; Kin's places at the top of the sidebar there bring you back.
 
 Settings has **You** (your profile, notifications and appearance) for everyone, and for the owner and co-owners
 **Company** (Team, Agents, Check-ins, Connections, Memory, Company details, Approvals). On the
@@ -124,7 +123,10 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   by then, it goes with that answer and tells you in one line; say "undo it" to reverse. Something
   that would send, post or move money has no such default: it is raised once more the next working
   morning and then waits for you. Another agent won't ask you the same thing while it is open.
-  To change the answer before the day, tap another one.
+  To change the answer before the day, tap another one. You can also answer in words in the chat
+  it asked in: only that agent takes it from what you wrote, the card says so, and Undo beside it
+  opens the question again. It then waits for your answer with no default, and anything already
+  done from the first answer stands.
 - **It remembers.** Ask it to remember something and it keeps it. "Keep this between us" keeps it
   for the owner alone.
 - **It comes back later.** "Remind me Friday at 10" or "check on this in two hours" sets a reminder.
@@ -263,7 +265,8 @@ the figures in the quote or the invoice.
 
 A coding agent key lets your own coding agent, such as Claude Code, Codex or Cursor, read the tasks
 you hold, add notes to them, and set them to to-do, in progress or done. It can't reach anyone
-else's tasks, or any chats, money or files.
+else's tasks, anything labelled sensitive or under a client or project labelled sensitive, or any
+chats, money or files.
 
 To make one, open **Settings → Profile** and choose **Make a
 key** under **Coding agent keys**. Name it for the computer or tool it's for. Kin shows the key, its
@@ -274,7 +277,7 @@ Kin at a different address than the app you made the key in, use that address wi
 Choose **Remove** beside a key to stop it; the coding agent loses access on its next call. The owner
 and co-owners can see and remove a teammate's keys on their profile, and removing someone's access
 ends all of their keys. Removing the device a key was made on ends that key too. A key made before
-this update isn't tied to a device, so remove it here yourself.
+keys were tied to a device has ended; make a new one.
 
 ## Clients and projects
 
@@ -305,6 +308,10 @@ clients.
 
 Money shows what you're owed, what's overdue, who owes you, the next 30 days, cash in the bank and
 each month. **Needs attention** at the top lists overdue invoices and renewals coming up.
+
+A new company chooses its country first: the owner or a co-owner sets it in **Settings → Company
+details**, and its currency follows, with its financial year and tax name where Kin knows them.
+Until then Kin records no money, and agents say so.
 
 Most of the bookkeeping happens by telling an agent: "Acme paid ₹48,250 today", "we spent $120 on
 hosting", "the GST filing is due on the 20th". It records the entry and answers in a line.
@@ -365,7 +372,16 @@ from the account and thread the email is in.
 The card shows exactly what will be sent, from which account, to whom. One **Confirm** sends it
 once. Only the owner or a co-owner can confirm. To fix a mail's words yourself, tap **Edit**:
 change To, Cc, Subject or the message, then **Send edited mail** sends it as you left it, with
-no new draft from the agent. Attached files go as they were.
+no new draft from the agent. **Save** keeps your words on the card without sending, marked as
+edited by you, and its **Confirm** then sends them; leaving the chat or the app with changes saves
+them too. If the card changed meanwhile, your words stay on that device until the page is reloaded
+or the app restarts, and show again on the card for you to check and save. **Discard edits** puts
+the agent's draft back. Attached files go as they were.
+
+If an earlier try at a mail may already have gone (the account gave no clear answer, or Kin
+restarted while sending), every card for that mail says so, in any chat. Check the account's sent
+mail, then tick **I've checked the sent mail** to Confirm. From Tasks, open the card with
+**Review**.
 
 ### GitHub
 
@@ -494,19 +510,45 @@ check-in opens with what worked.
 ## Check-ins and the weekly brief
 
 A check-in is an agent's regular round: it looks over what needs attention and tells you what
-moved. By default the Chief of staff checks in around 9:30 and 15:30 on weekdays, and writes the
-**Weekly brief** around 9:00 on Mondays: the week's figures, then which goal is behind, what matters
-most, and each decision as a plain question.
+moved. By default the Chief of staff sends you a **Morning brief** around 9:30 every day, checks in
+around 15:30 on weekdays, sends an **Evening summary** of the day around 18:30 on weekdays (what got
+done, what moved, what carries to tomorrow), and writes the **Weekly brief** around 9:00 on Mondays.
+On Monday you get one page: whichever of the morning and weekly briefs comes first carries the week's
+figures, written by Kin from its records, and the other isn't sent.
 
 Check-in times are loose: "around 9:30" means near then, not on the minute. When you give an agent
-a plain time it keeps to it; say "around" or "-ish" for a loose one. A check-in with nothing to
-report stays quiet.
+a plain time it keeps to it; say "around" or "-ish" for a loose one. The morning brief comes on a
+quiet day too. The evening summary comes only on a day with something to sum up, and only that
+day; another check-in with nothing to report stays quiet.
+
+The briefs are yours to set under **Settings → Briefs** (in **Profile** on the web): which days the
+morning brief comes and when, and whether and when the afternoon check-in and evening summary come.
+Your quiet hours hold any of them that would land inside them; an evening summary that would reach
+you after its day is over isn't sent.
 
 Owners and co-owners manage them under **Settings → Check-ins**: add one, turn one off, or **Run
 now**. Or say it in a chat: "check in at 11 instead".
 
 **Settings → Company details → Daily limit** caps how much work your agents do each day. Once
 they reach it, only your urgent messages run, on the agent's usual model, until midnight.
+
+## Recommendations
+
+When the same hold-up keeps happening and a setting would end it, Kin suggests the change once, as a
+card in your chat with the Chief of staff, so it waits in Needs you without ringing. Kin suggests:
+
+- letting a teammate message an agent directly, when they keep asking for its work and your cards on it run out;
+- raising the daily limit one step, when it is one of the choices in **Daily limit** and Kin told you on three of the last seven days that it was reached (this can cost more);
+- resuming a connection that has been paused for days while your agents keep being refused on it for that pause, unless something else would still stop it: an error, a sign-in, changes waiting for your look, or no tool switched on;
+- resuming an agent that has been paused for days with work queued for it since, unless Kin is stopped for the whole company.
+
+Nothing changes until you tap the change itself;
+**Not now** keeps it quiet for 30 days, then 90, then for good. Kin suggests at most one thing a day, never in your
+quiet hours, never while Needs you is full, and not in a company's first two weeks.
+
+**Settings → Recommendations**, under Company (the owner only), lists every suggestion and what came of it, with
+**Ask again** for one you put off. A change you made from a suggestion is changed back where it lives: a done row
+opens that place, the agent's page, **Daily limit**, or the connection.
 
 ## Memory
 

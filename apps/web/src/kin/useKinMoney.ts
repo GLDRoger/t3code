@@ -107,13 +107,18 @@ export const kinListsOf = (handle: KinListsHandle): ReadonlyArray<KinListDefinit
 /** The Money summary, kept current by Work's changes (`kinWorkRefreshOn`). */
 export function useKinMoneySummary(
   target: KinWorkTarget,
-  options: { readonly enabled: boolean; readonly use?: KinMoneyUse },
+  options: {
+    readonly enabled: boolean;
+    readonly use?: KinMoneyUse;
+    /** A client's page: the host answers what this viewer may see owed by that client. */
+    readonly party?: KinRecordKey;
+  },
 ) {
   const use = options.use ?? "line";
   const streamed = useKinMoneyLive(target, "summary");
   const read = kinReads.chosen(
     use === "rows" ? null : streamed,
-    kinReads.money(target, use),
+    kinReads.money(target, use, options.party),
     options.enabled,
   );
   const state = kinWorkReadState(useAtomValue(read.atom ?? noMoneyAtom));
@@ -423,6 +428,14 @@ export function useKinRates(target: KinWorkTarget, enabled = true) {
 /** The company's home currency, which a form starts amounts in: every member reads it, rates or not. */
 export function useKinHomeCurrency(target: KinWorkTarget) {
   return useAtomValue(kinAccessMeAtom(connectionAtomRuntime, target.environmentId))?.homeCurrency;
+}
+
+/** Whether the company was made new and its country is not chosen: no money is recorded until it is. */
+export function useKinCountryNeeded(target: Pick<KinWorkTarget, "environmentId">) {
+  return (
+    useAtomValue(kinAccessMeAtom(connectionAtomRuntime, target.environmentId))?.countryNeeded ===
+    true
+  );
 }
 
 /** The company's country, which decides whether forms ask for India's tax fields. */

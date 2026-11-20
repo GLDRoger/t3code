@@ -49,6 +49,7 @@ import * as LeadAccess from "./LeadAccess.ts";
 import { directKey } from "./LeadAccess.ts";
 import { outsideStamp, stampEvent } from "./OutsideContent.ts";
 import { type TeammateAsk, forward, forwardEventId, routeShown } from "./routeCard.ts";
+import { declinedRequests } from "./declinedSection.ts";
 import { type CardDraw, type RoutePlan, sealPlans } from "../widgets/cardPlans.ts";
 import { choiceExpired } from "../widgets/choiceCard.ts";
 import { isHeld, type KinLevelGate } from "./LevelGate.ts";
@@ -265,6 +266,49 @@ export class KinHandoff extends Context.Service<
   }
 >()("t3/kin/lead/Handoff/KinHandoff") {}
 
+/**
+ * A held relay's or question's arrival, said by Kin in the asking chat: every reader's client shows the time
+ * on their own clock, naming the receiver's when it differs. Silent: they just asked.
+ */
+export const arrivesNote = Effect.fn("KinHandoff.arrivesNote")(function* (
+  chat: Pick<KinChatService["Service"], "notice">,
+  ctx: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: string },
+  name: string,
+  held: { readonly at: number; readonly zone: string; readonly why: "quiet" | "off" | "away" },
+  key: string,
+  audience: "owner" | "chat",
+) {
+  const here = yield* turnChat(ctx);
+  if (here === undefined) return;
+  const text = theirTime(held.at, held.zone, yield* textLocale(ctx.orgId));
+  const why =
+    held.why === "away"
+      ? `${name} is away`
+      : held.why === "off"
+        ? `Outside ${name}'s working hours`
+        : `In ${name}'s quiet hours`;
+  yield* chat
+    .notice({
+      orgId: ctx.orgId,
+      chatId: KinChatId.make(here.chatId),
+      messageId: KinMessageId.make(`kin-arrives:${key}`),
+      audience,
+      body: `${why}: it arrives at ${text}.`,
+      silent: true,
+      when: {
+        at: DateTime.formatIso(DateTime.makeUnsafe(held.at)),
+        zone: held.zone,
+        text,
+        of: name,
+      },
+    })
+    .pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Kin couldn't say when a relay arrives", cause),
+      ),
+    );
+});
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const identity = yield* KinIdentity;
@@ -438,11 +482,12 @@ const make = Effect.gen(function* () {
     const directly = `${person} may message ${agent} now, so they can ask it directly.`;
     const confirm = `Anything that would leave the company, such as a mail or a payment, still needs ${owner}'s own Confirm.`;
     const alreadyShown = `Kin has posted a line in this chat telling ${person} it went to ${agent}, who answers them in their chat with it, so don't say that again. If you have nothing to add, write exactly NO_REPLY.${mayNow ? "" : ` ${person} may not message ${agent} now.`}`;
+    const asksOnCard = `The card asks ${owner} to let this request reach ${agent} and to let ${person} message ${agent} from then on. ${confirm} When a yes or a not this time takes effect, Kin posts it in this chat.`;
     const waits = {
       passed: false as const,
       note: mayNow
         ? `${owner} was asked on a card whether to let ${person} message ${agent} and hasn't answered yet, so this request has not gone to ${agent}. ${directly}`
-        : `${person} may not message ${agent}, so ${owner} has been asked on a card whether to let them and hasn't answered yet; nothing has gone to ${agent}. The card asks ${owner} to let this request reach ${agent} and to let ${person} message ${agent} from then on. ${confirm} When a yes or a not this time takes effect, Kin posts it in this chat. Tell ${person} it is with ${owner}, and promise nothing more.`,
+        : `${person} may not message ${agent}, so ${owner} has been asked on a card whether to let them and hasn't answered yet; nothing has gone to ${agent}. ${asksOnCard} Tell ${person} it is with ${owner}, and promise nothing more.`,
     };
     const alreadyAsked = {
       passed: false as const,
@@ -467,6 +512,27 @@ const make = Effect.gen(function* () {
       return {
         by: tap.name,
         on: formatKinWhen(Date.parse(tap.at), "dayTime", clock).replace(/,/g, ""),
+      };
+    });
+    /** Waiting on its own card, after the owner declined an earlier one of theirs for this agent. */
+    const waitsNow = Effect.fnUntraced(function* () {
+      if (mayNow) return waits;
+      const declined = yield* declinedRequests({
+        orgId: ctx.orgId,
+        agentId: ctx.agentId,
+        chatId: ask.message.chatId,
+        now,
+      }).pipe(access);
+      const earlier = declined.find((row) => row.toAgentId === dest.agentId);
+      if (earlier === undefined) return waits;
+      const tap = earlier.widgetId === null ? undefined : yield* decision(earlier.widgetId);
+      const said =
+        tap === undefined
+          ? `The card about an earlier request of ${person}'s for ${agent} was answered not this time`
+          : `${tap.by} said not this time on ${tap.on} to an earlier request of ${person}'s for ${agent}`;
+      return {
+        passed: false as const,
+        note: `${said}. This message is a new request: ${person} may not message ${agent}, so ${owner} has been asked about it on a new card and hasn't answered yet; nothing has gone to ${agent}. ${asksOnCard} Tell ${person} the earlier request was declined and this new one is with ${owner}, and promise nothing more.`,
       };
     });
     /**
@@ -520,7 +586,7 @@ const make = Effect.gen(function* () {
       if (state === "pending" && record.widgetId !== null) {
         const widget = yield* repo.getWidget({ orgId: ctx.orgId, widgetId: record.widgetId });
         if (Option.isSome(widget) && widget.value.closedAt === null) {
-          if (!choiceExpired(widget.value, now)) return waited ? alreadyAsked : waits;
+          if (!choiceExpired(widget.value, now)) return waited ? alreadyAsked : yield* waitsNow();
           return {
             passed: false as const,
             note: `The card asking ${owner} about ${earlier} of ${person}'s for ${agent} expired unanswered, ${notPassed}. Tell ${person} so; ${again}`,
@@ -683,7 +749,7 @@ const make = Effect.gen(function* () {
     yield* sql`UPDATE kin_handoffs SET route_widget_id = ${card.widgetId}
       WHERE org_id = ${ctx.orgId} AND message_id = ${messageId}`;
     yield* stampEvent(ctx.orgId, card.widgetId, outside).pipe(access);
-    return waits;
+    return yield* waitsNow();
   });
 
   /** The owner's card on this teammate and agent that still waits for a tap, if there is one. */
@@ -849,7 +915,8 @@ const make = Effect.gen(function* () {
     const asker = { _tag: "person" as const, orgId: ctx.orgId, personId: ask.personId };
     const direct = yield* chat.createDirect(asker, { orgId: ctx.orgId, agentId: target.agentId });
     // The person's own words, posted as theirs in their own chat: that wakes the lead there at
-    // their access, from stored rows, and carries nothing of the group's chat or this turn.
+    // their access, from stored rows, and carries nothing of the group's chat or this turn. Kin's
+    // copy (its claim's key is its client id), so nothing waiting there takes it as their reply.
     yield* chat.notice({
       orgId: ctx.orgId,
       chatId: direct.chatId,
@@ -863,6 +930,7 @@ const make = Effect.gen(function* () {
       chatId: direct.chatId,
       clientMessageId: key,
       body: ask.message.body,
+      replies: false,
     });
     return { person: ask.personName, agent: target.name, continued: true as const };
   }, guarded("KinHandoff.takePrivate"));
@@ -877,48 +945,6 @@ const make = Effect.gen(function* () {
         message: `${personMiss(name, found)} Nothing was sent.`,
       });
     return { personId: found.item.id, name: found.item.name };
-  });
-
-  /**
-   * A held relay's arrival, said by Kin in the asking chat: every reader's client shows the time
-   * on their own clock, naming the receiver's when it differs. Silent: they just asked.
-   */
-  const arrivesNote = Effect.fn("KinHandoff.arrivesNote")(function* (
-    ctx: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: string },
-    name: string,
-    held: { readonly at: number; readonly zone: string; readonly why: "quiet" | "off" | "away" },
-    key: string,
-    audience: "owner" | "chat",
-  ) {
-    const here = yield* turnChat(ctx);
-    if (here === undefined) return;
-    const text = theirTime(held.at, held.zone, yield* textLocale(ctx.orgId));
-    const why =
-      held.why === "away"
-        ? `${name} is away`
-        : held.why === "off"
-          ? `Outside ${name}'s working hours`
-          : `In ${name}'s quiet hours`;
-    yield* chat
-      .notice({
-        orgId: ctx.orgId,
-        chatId: KinChatId.make(here.chatId),
-        messageId: KinMessageId.make(`kin-arrives:${key}`),
-        audience,
-        body: `${why}: it arrives at ${text}.`,
-        silent: true,
-        when: {
-          at: DateTime.formatIso(DateTime.makeUnsafe(held.at)),
-          zone: held.zone,
-          text,
-          of: name,
-        },
-      })
-      .pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Kin couldn't say when a relay arrives", cause),
-        ),
-      );
   });
 
   const relay = Effect.fn("KinHandoff.relay")(function* (
@@ -985,7 +1011,8 @@ const make = Effect.gen(function* () {
               }),
         },
       );
-      if (isHeld(posted)) yield* arrivesNote(ctx, to.name, posted, messageId, "owner").pipe(access);
+      if (isHeld(posted))
+        yield* arrivesNote(chat, ctx, to.name, posted, messageId, "owner").pipe(access);
       return {
         to: to.name,
         sent: true as const,
@@ -1084,7 +1111,7 @@ const make = Effect.gen(function* () {
             agentId: ctx.agentId,
             relay,
           }).pipe(access);
-          yield* arrivesNote(ctx, to.name, { ...held, at }, messageId, "chat").pipe(access);
+          yield* arrivesNote(chat, ctx, to.name, { ...held, at }, messageId, "chat").pipe(access);
           return {
             to: to.name,
             sent: true as const,
@@ -1438,7 +1465,8 @@ const make = Effect.gen(function* () {
                 AND a.retired_at IS NULL
               WHERE l.org_id = ${input.orgId} AND l.agent_id = ${handoff.fromAgentId}`;
             if (asker === undefined) return;
-            const key = `handoff-back:${handoff.messageId}`;
+            // Keyed by the answer, not the hand-off: one reply to several hand-offs is one relay.
+            const key = `handoff-back:${reply.messageId}:${asker.ownerChatId}`;
             const id = NodeCrypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
             const { message: back } = yield* chat.notice({
               orgId: input.orgId,

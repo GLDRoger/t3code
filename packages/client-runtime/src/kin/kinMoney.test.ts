@@ -7,6 +7,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  kinCompanyCountrySuggestion,
   kinCompanyDraftOf,
   kinCompanyEditSections,
   kinCompanyInput,
@@ -270,5 +271,21 @@ describe("company details", () => {
       ok: true,
       input: { orgId: "org", rev: 0, country: "US" },
     });
+    // A new company still waiting on its country only takes the device's with a tap: saving just
+    // an address saves the address and leaves it waiting.
+    const waiting = { ...(profile as object), country: null, rev: 0 } as never;
+    const fresh = kinCompanyDraftOf(waiting, "IN", true);
+    expect(fresh.country).toBe("");
+    expect(
+      kinCompanyInput("org" as never, waiting, { ...fresh, address: "1 Invented Road" }),
+    ).toEqual({ ok: true, input: { orgId: "org", rev: 0, address: "1 Invented Road" } });
+    const offer = kinCompanyCountrySuggestion(fresh, "IN", true);
+    expect(offer?.label).toBe("Use India?");
+    expect(kinCompanyInput("org" as never, waiting, offer!.accept())).toEqual({
+      ok: true,
+      input: { orgId: "org", rev: 0, country: "IN" },
+    });
+    expect(kinCompanyCountrySuggestion({ ...fresh, country: "GB" }, "IN", true)).toBeNull();
+    expect(kinCompanyCountrySuggestion(kinCompanyDraftOf(unsaved, "IN"), "IN", false)).toBeNull();
   });
 });

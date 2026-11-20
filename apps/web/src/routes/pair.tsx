@@ -63,7 +63,8 @@ function KinAccessEndedGate(props: { readonly children: React.ReactNode }) {
     <StandalonePage>
       <StandalonePageHeader context="Kin" title={copy.title} description={copy.detail} />
       <Button variant="ghost" size="sm" className="mt-6" onClick={() => setPairAnyway(true)}>
-        Pair with a token instead
+        {/* oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated */}
+        {"Pair with a token instead"}
       </Button>
     </StandalonePage>
   );

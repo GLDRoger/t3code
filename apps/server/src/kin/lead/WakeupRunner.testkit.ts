@@ -251,7 +251,8 @@ function parts(options: HarnessOptions) {
             if (options.hold !== undefined) yield* Deferred.await(options.hold);
             if (options.onTurn !== undefined) yield* options.onTurn({ threadId: input.threadId });
             const time = yield* DateTime.now;
-            const id = ProviderTurnId.make(`turn-${input.runOrdinal}`);
+            // Turn ids are unique across threads, as a real provider's are.
+            const id = ProviderTurnId.make(`turn-${input.threadId}-${input.runOrdinal}`);
             if (!options.piUsage)
               yield* PubSub.publish(events, {
                 type: "provider_turn.updated",

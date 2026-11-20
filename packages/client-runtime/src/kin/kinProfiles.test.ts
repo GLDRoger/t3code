@@ -6,6 +6,7 @@ import {
   kinParseRoleTags,
   kinProfileChanges,
   kinProfileDraft,
+  kinProfileShowsTasks,
   kinTimeZoneChoices,
 } from "./kinProfiles.ts";
 
@@ -70,6 +71,31 @@ describe("kinProfiles", () => {
     expect(kinProfileChanges(profile, { ...own, quietFrom: "10pm" }, mine).ok).toBe(false);
     // The owner's switch starts off.
     expect(kinProfileDraft(profile, { isOwner: true }).holdOutside).toBe(false);
+    // Hours and a zone nobody set stay unset through a save that only moved quiet hours.
+    const unset = { ...profile, timeZone: null, workHours: null };
+    const blank = kinProfileDraft(unset, company);
+    expect(
+      kinProfileChanges(unset, { ...blank, quietFrom: "00:00", quietTo: "01:00" }, mine),
+    ).toEqual({ ok: true, changes: { quietHours: { from: "00:00", to: "01:00" } } });
+    expect(kinProfileChanges(unset, { ...blank, days: [1, 2, 3, 4, 5] }, mine)).toEqual({
+      ok: true,
+      changes: { workHours: { days: [1, 2, 3, 4, 5], start: "09:00", end: "18:00" } },
+    });
+    expect(
+      kinProfileChanges(unset, { ...blank, days: [6], timeZone: "Pacific/Auckland" }, mine),
+    ).toEqual({
+      ok: true,
+      changes: {
+        timeZone: "Pacific/Auckland",
+        workHours: { days: [6], start: "09:00", end: "18:00" },
+      },
+    });
+  });
+
+  it("lists a person's tasks once: not on your own, not over a screen that lists them", () => {
+    expect(kinProfileShowsTasks({ mine: false, overTheirTasks: false })).toBe(true);
+    expect(kinProfileShowsTasks({ mine: true, overTheirTasks: false })).toBe(false);
+    expect(kinProfileShowsTasks({ mine: false, overTheirTasks: true })).toBe(false);
   });
 });
 

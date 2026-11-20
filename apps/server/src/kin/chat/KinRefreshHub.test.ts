@@ -26,7 +26,8 @@ import * as RetiredActions from "../approvals/retiredActions.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as Provision from "../lead/KinLeadProvision.ts";
 import * as KinRecords from "../work/KinRecords.ts";
-import { setProfile } from "../work/companyProfile.ts";
+import * as WorkStream from "../work/workStream.ts";
+import { newCompanyProfileJson, setProfile } from "../work/companyProfile.ts";
 import { KinIdentity } from "./KinIdentity.ts";
 import * as RefreshHub from "./KinRefreshHub.ts";
 import { announceRefreshes, subscribeRefreshes } from "./refreshes.ts";
@@ -112,6 +113,10 @@ describe("KinRefreshHub", () => {
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
           VALUES ('priya', ${me.orgId}, 'priya', 'Priya', '2026-11-09T00:00:00.000Z')`;
         const priya = { ...me, personId: KinPersonId.make("priya") };
+        // A company created now, its country not chosen yet.
+        yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+            updated_by_kind, updated_by_id)
+          VALUES (${me.orgId}, ${yield* newCompanyProfileJson}, 1, 0, 'person', ${me.personId})`;
         const { boot } = yield* RefreshHub.KinRefreshHub;
         const ownerSees = yield* Stream.toQueue(subscribeRefreshes([me], { orgId: me.orgId }), {
           capacity: "unbounded",
@@ -126,6 +131,7 @@ describe("KinRefreshHub", () => {
           leads: 0,
           pulse: 0,
           workLists: 0,
+          company: 0,
           boot,
           streams: KIN_STREAMS,
         });
@@ -173,6 +179,7 @@ describe("KinRefreshHub", () => {
           leads: 1,
           pulse: 0,
           workLists: 0,
+          company: 0,
           boot,
           streams: KIN_STREAMS,
         };
@@ -183,7 +190,42 @@ describe("KinRefreshHub", () => {
           capacity: "unbounded",
         });
         assert.deepStrictEqual(yield* Queue.take(again), moved);
+        // The country chosen, her company topic moves once, so her Money step clears.
+        yield* setProfile(
+          me.orgId,
+          { _tag: "person", personId: me.personId },
+          { country: "GB" },
+          undefined,
+        );
+        yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+        assert.deepStrictEqual(yield* Queue.take(priyaSees), { ...moved, company: 1 });
       }).pipe(Effect.scoped, Effect.provide(paired)),
+  );
+
+  it.effect("moves the lists a new company made while waiting when its country is saved", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const { owner: me } = yield* KinIdentity;
+      yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+          updated_by_kind, updated_by_id)
+        VALUES (${me.orgId}, ${yield* newCompanyProfileJson}, 1, 0, 'person', ${me.personId})`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json, rev)
+        VALUES (${me.orgId}, 'expenses', 'Expenses', 'EXP', 0, 0,
+          ${JSON.stringify({ currency: "INR", currencyPending: true })}, 1)`;
+      const { queue, first } = yield* watch(me.orgId);
+      yield* setProfile(
+        me.orgId,
+        { _tag: "person", personId: me.personId },
+        { country: "GB" },
+        undefined,
+      );
+      yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+      assert.deepInclude(yield* Queue.take(queue), {
+        company: (first.company ?? 0) + 1,
+        workLists: (first.workLists ?? 0) + 1,
+      });
+    }).pipe(Effect.scoped, Effect.provide(paired)),
   );
 
   it.effect(
@@ -242,6 +284,17 @@ describe("KinRefreshHub", () => {
         assert.strictEqual(announced.seq, created.seq + 1);
         // Everyone's own number moves too, so a viewer who resumes later reads again.
         assert.deepStrictEqual([...(announced.team?.keys() ?? [])], [me.personId]);
+        // An owner's open Work screens read again only once the number they were told moves.
+        const rows = yield* WorkStream.makeWorkStream([me], { orgId: me.orgId, acceptRows: true });
+        yield* rows.start(created.seq);
+        const told = yield* rows.batch(rows.pendingOf(announced));
+        assert.deepStrictEqual(
+          told.map((event) => [event._tag, event.seq]),
+          [
+            ["snapshot-required", announced.seq],
+            ["counts", announced.seq],
+          ],
+        );
         const someone = { ...me, personId: KinPersonId.make("someone") };
         assert.include(
           yield* announceRefreshes([someone], {
@@ -287,6 +340,12 @@ describe("KinRefreshHub", () => {
       kin_money_budgets: ["work/budgets.ts"],
       // A key's last use, written as the key is admitted, shows at the next read.
       kin_tasks_keys: ["tasksKey/TasksKeys.ts", "people/KinPeople.ts", "auth/linkedDevices.ts"],
+      // A clear stamps open suggestions in the repository; `KinChatService.clear` tells the hub.
+      kin_recommendations: [
+        "chat/KinChatRepository.ts",
+        "recommend/KinRecommend.ts",
+        "recommend/card.ts",
+      ],
     };
     const write = new RegExp(
       `(?:INSERT INTO|UPDATE|DELETE FROM)\\s+(${Object.keys(writers).join("|")})\\b`,

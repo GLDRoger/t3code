@@ -59,12 +59,17 @@ export function useKinTaskSteps(target: KinWorkTarget) {
       );
       if (outcome.status === "ignored") return;
       if (outcome.status === "failed")
-        return mark(key, { kind: "failed", text: outcome.notice.text });
+        return mark(key, {
+          kind: "failed",
+          text: outcome.notice.text,
+          widgetId: step.card.widgetId,
+        });
       const label = step.card.options.find((option) => option.optionId === optionId)?.label;
       mark(key, {
         kind: "done",
         text:
           step.kind === "send" ? KIN_TASKS.sent(step.to) : KIN_TASKS.answered(label ?? optionId),
+        widgetId: step.card.widgetId,
       });
     },
     nudge: async (key: string) => {

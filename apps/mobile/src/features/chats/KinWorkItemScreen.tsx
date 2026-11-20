@@ -754,7 +754,14 @@ function KinWorkItemBody(props: ItemTarget) {
           />
         )}
         {reword !== null && !view.closed ? (
-          <KinWorkDueRow view={view} now={now} disabled={saving} onAct={reword} late={view.late} />
+          <KinWorkDueRow
+            view={view}
+            now={now}
+            zone={names.zone}
+            disabled={saving}
+            onAct={reword}
+            late={view.late}
+          />
         ) : view.due === null ? null : (
           <ListRowLayout
             icon="clock"

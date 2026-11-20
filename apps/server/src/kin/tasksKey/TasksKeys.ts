@@ -6,7 +6,6 @@ import {
   KinChatError,
   type KinOrgId,
   KinPersonId,
-  kinIsLocalOnlyHost,
   type KinTasksKey,
   type KinTasksKeysIssueInput,
   type KinTasksKeysIssueResult,
@@ -22,8 +21,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { EnvironmentAuth, type AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { SessionStore } from "../../auth/SessionStore.ts";
-import { CloudLink } from "../../cloud/CloudLink.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { publicAddress } from "../publicAddress.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { isOwnerHimself, ownerLevel } from "../people/KinAccess.ts";
 import { workFailure } from "../work/recordRows.ts";
@@ -72,9 +71,12 @@ const toKey = (row: KeyRow, canRevoke: boolean): KinTasksKey => ({
   canRevoke,
 });
 
-/** Live: not revoked here or as a T3 session, not expired, and its person not removed. */
+/**
+ * Live: made on a recorded device (so removing it ends the key), not revoked here or as a T3
+ * session, not expired, and its person not removed.
+ */
 export const live = (sql: SqlClient.SqlClient, now: number) =>
-  sql`k.revoked_at IS NULL AND k.expires_at > ${now}
+  sql`k.revoked_at IS NULL AND k.expires_at > ${now} AND k.made_by_session_id IS NOT NULL
     AND EXISTS (SELECT 1 FROM auth_sessions a WHERE a.session_id = k.session_id AND a.revoked_at IS NULL)
     AND EXISTS (SELECT 1 FROM kin_people p WHERE p.org_id = k.org_id AND p.person_id = k.person_id
       AND p.removed_at IS NULL)`;
@@ -109,22 +111,6 @@ const mayRevoke = Effect.fn("KinTasksKeys.mayRevoke")(function* (
   );
 });
 
-/**
- * The address anyone's coding agent can reach this host by: T3 Connect's tunnel while it serves
- * this host. A LAN, tailnet or relay connection gives the host no address of its own to name.
- */
-const publicOrigin = Effect.fn("KinTasksKeys.publicOrigin")(function* () {
-  const cloud = yield* Effect.serviceOption(CloudLink);
-  if (Option.isNone(cloud)) return undefined;
-  const state = yield* cloud.value.linkState().pipe(Effect.option);
-  if (Option.isNone(state)) return undefined;
-  const { linked, linkRevoked, tunnelHostname } = state.value;
-  if (!linked || linkRevoked || tunnelHostname === undefined) return undefined;
-  if (!URL.canParse(`https://${tunnelHostname}`)) return undefined;
-  const url = new URL(`https://${tunnelHostname}`);
-  return kinIsLocalOnlyHost(url.hostname) ? undefined : url.origin;
-});
-
 /** The person signed in on this app session, never a key: who a key is made for and by. */
 const caller = Effect.fn("KinTasksKeys.caller")(function* (
   session: AuthenticatedSession,
@@ -152,7 +138,7 @@ export const issue = Effect.fn("KinTasksKeys.issue")(function* (
   const sql = yield* SqlClient.SqlClient;
   const refresh = yield* KinRefreshObserver;
   const label = input.label ?? "Coding agent";
-  const origin = yield* publicOrigin();
+  const origin = yield* publicAddress();
   return yield* Effect.gen(function* () {
     // Moves only once this commits: a refusal below announces nothing.
     yield* refresh.touch(person.orgId, "people");
@@ -208,7 +194,7 @@ export const list = Effect.fn("KinTasksKeys.list")(function* (
     return yield* missing;
   const now = yield* Clock.currentTimeMillis;
   const canRevoke = yield* mayRevoke(input.orgId, person.personId, whose);
-  const origin = yield* publicOrigin();
+  const origin = yield* publicAddress();
   return {
     keys: (yield* liveKeys(input.orgId, whose, now)).map((row) => toKey(row, canRevoke)),
     ...(origin === undefined ? {} : { origin }),
@@ -280,10 +266,15 @@ export const admit = Effect.fn("KinTasksKeys.admit")(function* (token: string) {
   if (Option.isNone(holder)) return holder;
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
+  const refresh = yield* KinRefreshObserver;
   // Bookkeeping only: a failed write never refuses a key that was verified and is live.
   yield* sql`UPDATE kin_tasks_keys SET last_used_at = ${now}
     WHERE org_id = ${holder.value.orgId} AND session_id = ${session.sessionId}
-      AND (last_used_at IS NULL OR last_used_at <= ${now - LAST_USE_STEP_MS})`.pipe(
+      AND (last_used_at IS NULL OR last_used_at <= ${now - LAST_USE_STEP_MS})
+    RETURNING session_id`.pipe(
+    Effect.flatMap((used) =>
+      used.length === 0 ? Effect.void : refresh.touch(holder.value.orgId, "people"),
+    ),
     Effect.catch((error) =>
       Effect.logWarning("Kin couldn't record a coding agent key's use", error),
     ),
