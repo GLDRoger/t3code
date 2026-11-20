@@ -12,6 +12,8 @@ import type {
   KinWorkUpdateInput,
 } from "@t3tools/contracts";
 
+import * as DateTime from "effect/DateTime";
+
 import type { AtomCommandResult } from "../state/runtime.ts";
 import {
   KIN_WORK_NOTES_MAX,
@@ -312,9 +314,11 @@ function patchOf(record: KinRecord, action: KinWorkAction, names: KinWorkNames):
         ? { dueAt: null, dueAllDay: false, late: false }
         : // Midday where the company is keeps the picked day its day until the host answers.
           {
-            dueAt: new Date(
-              kinZonedDayStart(action.day, names.zone).getTime() + 12 * HOUR_MS,
-            ).toISOString(),
+            dueAt: DateTime.formatIso(
+              DateTime.makeUnsafe(
+                kinZonedDayStart(action.day, names.zone).getTime() + 12 * HOUR_MS,
+              ),
+            ),
             dueAllDay: true,
             late: false,
           };

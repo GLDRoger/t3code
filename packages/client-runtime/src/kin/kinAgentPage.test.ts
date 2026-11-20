@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Fixtures read change lines against a fixed day.
 import {
   type KinAgentChange,
   KinRecordKey,
