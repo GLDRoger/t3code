@@ -84,6 +84,8 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   });
   if (asked !== undefined && asked._tag !== "declined")
     yield* sql.afterCommit(afterTap(sendAsked(input, asked), scope));
+  // A cancelled mail's Tasks row stops offering it.
+  if (asked?._tag === "declined") yield* sql.afterCommit(tasksReread(input.orgId));
   // An agent's question the owner level answered is a decision; Kin's own cards record elsewhere.
   if (asked === undefined && made === undefined && currency === undefined)
     yield* saveDecision(input, scope);

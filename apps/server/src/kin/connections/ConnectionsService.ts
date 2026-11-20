@@ -123,6 +123,7 @@ import { resultText } from "./ResultText.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import {
   attachmentOf,
+  namedTask,
   attachmentsCurrent,
   choiceId,
   editedMail,
@@ -146,7 +147,7 @@ import {
   subjectClosed,
 } from "./Sending.ts";
 import { choiceExpired } from "../widgets/choiceCard.ts";
-import { KinRecords } from "../work/KinRecords.ts";
+import { KinRecords, layer as recordsLayer } from "../work/KinRecords.ts";
 import { KinGitHubLogin } from "./GitHubLogin.ts";
 import { textLocale } from "../work/companyProfile.ts";
 import { ownerZone } from "../work/recordRows.ts";
@@ -160,6 +161,11 @@ export const ASKED =
 /** A call that became a Confirm card because the turn had read outside text. */
 export const DRAFTED =
   "Nothing was sent: this exact action waits on a Confirm card, marked as drafted after outside text, and runs only if the owner or a co-owner taps Confirm there. Tell them once in one short line that it is waiting, and don't ask for it again in words.";
+/** Added to a new card's result when it replaced older cards for the same mail. */
+export const REPLACED = (cards: number) =>
+  cards === 1
+    ? "This card replaced the earlier card for the same mail: that one can't be confirmed now."
+    : `This card replaced ${cards} earlier cards for the same mail: those can't be confirmed now.`;
 /** Added to a new card's result when cards it replaces held people's saved words. */
 export const EDITED_OVER = (names: string, cards = 1) =>
   `${names} had saved their own words on ${cards === 1 ? "the card" : "the cards"} this one replaces: they are quoted below, and your new card doesn't have them. If their changes should stand, draft again starting from their words.`;
@@ -403,7 +409,7 @@ const askBlocked = Effect.fnUntraced(function* (
   )
     return `${row.toolName} changed or was switched off since this card was made, so nothing was sent.`;
   return (
-    (yield* subjectClosed(orgId, prepared, row.entryRecordId)) ??
+    (yield* subjectClosed(orgId, prepared)) ??
     ((yield* attachmentsCurrent(orgId, prepared))
       ? null
       : `The attached document changed since this card was made, so nothing was sent. ${FRESH_BELOW}`)
@@ -735,8 +741,7 @@ const make = Effect.gen(function* () {
     Config.withDefault(DEFAULT_SIGN_IN_ADDRESS),
   );
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
-  // Absent in tests that build connections alone; a sent quote then stays as it was.
-  const records = yield* Effect.serviceOption(KinRecords);
+  const records = yield* KinRecords;
   // GitHub is the owner's own host login (GitHubLogin.ts), not a gateway connection.
   const githubLogin = yield* Effect.serviceOption(KinGitHubLogin);
   const githubAccount = Option.isSome(githubLogin)
@@ -2290,17 +2295,24 @@ const make = Effect.gen(function* () {
     a: { readonly payload: string; readonly entry: string | null },
     b: { readonly payload: string; readonly entry: string | null },
   ) => {
-    if (a.entry !== null && a.entry === b.entry) return true;
     const one = Option.getOrUndefined(decodePrepared(a.payload));
     const other = Option.getOrUndefined(decodePrepared(b.payload));
-    return (
+    const samePeople =
       one?._tag === "email" &&
       other?._tag === "email" &&
-      one.threadId !== null &&
-      one.threadId === other.threadId &&
       one.to.length === other.to.length &&
-      one.to.every((address) => other.to.includes(address))
-    );
+      one.to.every((address) => other.to.includes(address));
+    // A document's mail is one mail whoever it goes to; a task's, one for each set of people.
+    if (a.entry !== null && a.entry === b.entry)
+      return (
+        samePeople ||
+        [one, other].some(
+          (mail) =>
+            mail?._tag === "email" &&
+            mail.attachments.some((file) => file.entryRecordId === a.entry),
+        )
+      );
+    return samePeople && one.threadId !== null && one.threadId === other.threadId;
   };
   /** Narrows to asks that could be the same mail, so no page limit can hide the one that is. */
   const maybeSameMail = (ask: { readonly payload: string; readonly entry: string | null }) =>
@@ -2541,7 +2553,11 @@ const make = Effect.gen(function* () {
       );
     const entryRecordId =
       prepared._tag === "email"
-        ? (prepared.attachments.find((one) => one.entryRecordId !== null)?.entryRecordId ?? null)
+        ? (prepared.attachments.find((one) => one.entryRecordId !== null)?.entryRecordId ??
+          (yield* namedTask({ ...turn, chatId: chat.chatId }, [
+            prepared.subject,
+            prepared.body,
+          ]).pipe(provideSql)))
         : null;
     const now = yield* Clock.currentTimeMillis;
     const replaced: Array<string> = [];
@@ -2666,8 +2682,21 @@ const make = Effect.gen(function* () {
         ),
     );
     if (replaced.length > 0) yield* levelGate.closeReplaced(turn, replaced);
+    // A mail filed under an entry shows on its Tasks row, in place of any card this replaced.
+    if (entryRecordId !== null)
+      yield* sql.afterCommit(
+        records
+          .announce(turn.orgId)
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin couldn't tell Tasks to read again", { cause }),
+            ),
+          ),
+      );
     yield* record(turn, { ...entry, status: "awaiting_approval" });
-    const note = outside === undefined ? ASKED : DRAFTED;
+    const asked = outside === undefined ? ASKED : DRAFTED;
+    const older = new Set(replaced).size;
+    const note = older === 0 ? asked : `${asked} ${REPLACED(older)}`;
     const names = [...new Set(savedOver.map((one) => one.name))].join(" and ");
     return savedOver.length === 0
       ? { note }
@@ -2841,7 +2870,7 @@ const make = Effect.gen(function* () {
       if (connection?.state === "needs_sign_in")
         return yield* fail(
           "unavailable",
-          `${connection.accountLabel ?? connection.label} needs signing in again in Settings › Connections. Nothing was sent; tap Confirm again once it's back.`,
+          `${connection.accountLabel ?? connection.label} needs signing in again in Settings › Connections. Nothing was sent; send it again once it's back.`,
         );
       // A refused Confirm keeps the agent's draft; its card's saved words follow onto a fresh one.
       const reason = yield* askBlocked(input.orgId, row, drafted, connection);
@@ -3247,7 +3276,10 @@ const make = Effect.gen(function* () {
         : from.state === "sent" || from.state === "failed"
           ? stale.row.askId
           : afterOf(from.result);
-    const entry = attachments.find((one) => one.entryRecordId !== null)?.entryRecordId ?? null;
+    // A mail tied to a task by its turn, not by a file, keeps that tie.
+    const entry =
+      attachments.find((one) => one.entryRecordId !== null)?.entryRecordId ??
+      stale.row.entryRecordId;
     yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
         pin_digest, payload_json, agent_id, wakeup_id, chat_id, entry_record_id, proposed_at,
         account, sign_in_gen, outside_from, result_json)
@@ -3333,13 +3365,17 @@ const make = Effect.gen(function* () {
       reason: string | null,
       result: unknown,
       owes = false,
+      /** In the same transaction, only when this call is the one that settled the ask. */
+      settled: Effect.Effect<void> = Effect.void,
     ) {
       const now = yield* Clock.currentTimeMillis;
-      yield* sql`UPDATE kin_connection_asks SET state = ${state}, reason = ${reason},
+      const wrote = yield* sql`UPDATE kin_connection_asks SET state = ${state}, reason = ${reason},
           result_json = ${result === null ? null : toJson(result)}, done_at = ${now},
           owes_card = ${owes ? 1 : 0}
         WHERE org_id = ${orgId} AND ask_id = ${askId} AND state = 'sending'
-          AND (dispatched_at IS NOT NULL) = ${claimed ? 1 : 0}`;
+          AND (dispatched_at IS NOT NULL) = ${claimed ? 1 : 0}
+        RETURNING 1`;
+      if (wrote.length > 0) yield* settled;
       yield* touched(orgId);
       return { state, reason } satisfies AskOutcome;
     });
@@ -3557,21 +3593,25 @@ const make = Effect.gen(function* () {
       );
       return again(failed, row, drafted, after ?? connection);
     }
-    const done = yield* finish(true, "sent", null, sent.success);
-    if (prepared._tag === "email" && Option.isSome(records))
-      yield* markQuotesSent(records.value, {
-        orgId,
-        personId: row.owner,
-        wakeupId: row.wakeupId,
-        entryRecordIds: prepared.attachments.flatMap((one) =>
-          one.entryRecordId === null ? [] : [one.entryRecordId],
-        ),
-      }).pipe(
-        provideSql,
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Kin couldn't mark a sent quote as sent", { cause }),
-        ),
-      );
+    const quotesSent =
+      prepared._tag === "email"
+        ? markQuotesSent(records, {
+            orgId,
+            personId: row.owner,
+            wakeupId: row.wakeupId,
+            entryRecordIds: prepared.attachments.flatMap((one) =>
+              one.entryRecordId === null ? [] : [one.entryRecordId],
+            ),
+          }).pipe(
+            provideSql,
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin couldn't mark a sent quote as sent", { cause }),
+            ),
+          )
+        : Effect.void;
+    const done = yield* sql.withTransaction(
+      finish(true, "sent", null, sent.success, false, quotesSent),
+    );
     if (prepared._tag === "email")
       yield* sentToClient({
         orgId,
@@ -3964,4 +4004,5 @@ const make = Effect.gen(function* () {
 });
 
 /** Needs the guarded gateway and the secret store; built inside Kin's own layers. */
-export const layer = Layer.effect(KinConnections, make);
+// Records are built once per layer graph (by reference), so this is the server's own instance.
+export const layer = Layer.effect(KinConnections, make).pipe(Layer.provide(recordsLayer));

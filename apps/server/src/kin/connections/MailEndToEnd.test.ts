@@ -37,6 +37,8 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { fromConnections, poll } from "../pulse/outside.ts";
+import * as KinRecords from "../work/KinRecords.ts";
+import { presetDefinition } from "../work/registers.ts";
 import { waitingCards } from "../work/recordComments.ts";
 import * as ConnectionSecrets from "./ConnectionSecrets.ts";
 import {
@@ -47,6 +49,7 @@ import {
   type EditCards,
   KinConnections,
   NOT_CHECKED,
+  REPLACED,
   type SaveCards,
   SHARED_CONNECTIONS,
 } from "./ConnectionsService.ts";
@@ -130,8 +133,9 @@ const gateFor = (cards: Array<Card>) =>
     ),
   );
 
+// Records beside connections, as on a running server (`kin/layer.ts`), not under them.
 const layerFor = (fake: FakeMail, cards: Array<Card>) =>
-  Connections.layer.pipe(
+  Layer.merge(Connections.layer, KinRecords.layer).pipe(
     Layer.provide(gateFor(cards)),
     Layer.provide(ConnectionSecrets.layer),
     Layer.provide(McpGateway.layer),
@@ -265,7 +269,7 @@ const docVersion = (version: number) =>
 let wakes = 0;
 /** One running turn of a lead: a person's message in their chat, or the pulse event queued. */
 const wake = (
-  from: { readonly person: KinPersonId } | { readonly eventId: string },
+  from: { readonly person: KinPersonId; readonly says?: string } | { readonly eventId: string },
   agentId: KinAgentId = lead,
 ) =>
   Effect.gen(function* () {
@@ -289,7 +293,7 @@ const wake = (
         created_at)
       VALUES (${messageId}, ${orgId}, ${chatId}, ${wakes}, 'human', ${from.person},
         ${`${chatId}-person`}, ${from.person === owner ? "owner" : "member"}, 'text',
-        'Send Ravi the November invoice.', '[]', 'posted', ${stamp})`;
+        ${from.says ?? "Send Ravi the November invoice."}, '[]', 'posted', ${stamp})`;
     const event = {
       _tag: "chat.message",
       orgId,
@@ -676,7 +680,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           threadId: inbound.threadId,
           body: "Friday works. I'll confirm 11:00 tomorrow.",
         });
-        assert.strictEqual(redrafted.note, `${ASKED} ${EDITED_OVER("Arjun")}`);
+        assert.strictEqual(redrafted.note, `${ASKED} ${REPLACED(1)} ${EDITED_OVER("Arjun")}`);
         assert.include(redrafted.quoted ?? "", theirs);
         const corrected = cards.at(-2)!;
         // The first card is replaced by the time the correction shows, so no tap lands between.
@@ -740,12 +744,19 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           assert.include(found.quoted ?? "", String.raw`\"account\":\"${ACCOUNTS}\"`);
           assert.include(found.quoted ?? "", "Billing contact");
 
+          // An open Tasks list reads again once a mail for an entry is drawn (`KinRecords.announce`).
+          const taken = sql<{ seq: number }>`SELECT seq FROM sqlite_sequence
+            WHERE name = 'kin_record_changes'`.pipe(Effect.map(([row]) => row?.seq ?? 0));
+          // As a host that logged changes before: `announce` takes the number after the last.
+          yield* sql`INSERT INTO sqlite_sequence (name, seq) VALUES ('kin_record_changes', 7)`;
+          const before = yield* taken;
           yield* callTool(ACCOUNTS, "mail_send", {
             to: ["ravi@lumen.example"],
             subject: "Invoice INV/26-27/001",
             body: "Hi Ravi,\n\nThe November invoice is attached.\n\nArjun",
             attachments: ["INV-1"],
           });
+          assert.strictEqual(yield* taken, before + 1);
           const card = cards.at(-1)!;
           // Drafted after the search, which read both accounts: either may be named.
           assert.oneOf(card.question, [
@@ -820,6 +831,183 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           assert.deepInclude(fake.sent()[2], { account: HELLO, threadId: outlookSent.threadId });
         }),
       ),
+  );
+
+  it.effect(
+    "a quote reads as sent once its mail has gone, once, and never on a cancel or a failure",
+    () =>
+      setUp((fake, cards) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const connections = yield* KinConnections;
+          yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+            created_at, definition_json)
+          VALUES (${orgId}, 'quotes', 'Quotes', 'QT', 0, 0,
+            ${JSON.stringify(presetDefinition("quotes", "INR"))})`;
+          yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+            owner_id, created_by_kind, origin_key, created_at, updated_at, party_id, fields_json,
+            amount_minor, currency, state)
+          VALUES (${orgId}, 'rec_qt', 'quotes', 'QT-1', 'Lumen Studio: redesign', 'person',
+            ${owner}, 'person', 'qt', 0, 0, 'rec_lumen', '{}', 5900000, 'INR', 'open')`;
+          yield* sql`UPDATE kin_doc_jobs SET entry_record_id = 'rec_qt' WHERE worker_id = 'job-1'`;
+          const state = sql<{ state: string }>`SELECT state FROM kin_records
+          WHERE record_id = 'rec_qt'`.pipe(Effect.map(([row]) => row!.state));
+          const marks = sql<{ n: number }>`SELECT count(*) AS n FROM kin_record_changes
+          WHERE record_id = 'rec_qt' AND kind = 'updated'`.pipe(Effect.map(([row]) => row!.n));
+          yield* connect(fake, "google", ACCOUNTS);
+          yield* wake({ person: owner });
+          const draft = {
+            to: ["ravi@lumen.example"],
+            subject: "Quote QT-1",
+            body: "Hi Ravi,\n\nThe redesign quote is attached.\n\nArjun",
+            attachments: ["QT-1"],
+          };
+
+          // Cancelled: nothing went, so the quote stays a draft.
+          yield* callTool(ACCOUNTS, "mail_send", draft);
+          yield* tap(cards.at(-1)!.widgetId, owner, false);
+          assert.strictEqual(yield* state, "open");
+
+          // Refused by the mailbox: nothing went, the quote stays a draft.
+          yield* callTool(ACCOUNTS, "mail_send", { ...draft, body: `${draft.body}\n` });
+          fake.failWith(ACCOUNTS, 400);
+          const failed = yield* tap(cards.at(-1)!.widgetId, owner);
+          fake.failWith(ACCOUNTS, null);
+          if (failed === undefined || !("state" in failed) || failed.fresh === undefined)
+            return assert.fail("no fresh card after a failed send");
+          assert.strictEqual(failed.state, "failed");
+          assert.lengthOf(fake.sent(), 0);
+          assert.strictEqual(yield* state, "open");
+
+          // The retry that goes marks it sent, once; a repeat of that send marks nothing more.
+          const retry = yield* connections.freshAsk(orgId, failed.fresh, NOW);
+          if (retry === undefined) return assert.fail("no fresh card");
+          yield* retry.bind("w-retry");
+          yield* stored({ ...cards.at(-1)!, widgetId: "w-retry", send: retry.card.send });
+          assert.deepStrictEqual(yield* tap("w-retry", owner), { state: "sent", reason: null });
+          assert.lengthOf(fake.sent(), 1);
+          assert.strictEqual(yield* state, "waiting");
+          assert.strictEqual(yield* marks, 1);
+          const [went] = yield* sql<{ askId: string }>`SELECT ask_id AS "askId"
+          FROM kin_connection_asks WHERE state = 'sent'`;
+          yield* connections.sendAsk(orgId, went!.askId);
+          assert.strictEqual(yield* marks, 1);
+
+          // Sent edited from the card's editor: marked too.
+          yield* sql`UPDATE kin_records SET state = 'open' WHERE record_id = 'rec_qt'`;
+          yield* callTool(ACCOUNTS, "mail_send", { ...draft, subject: "Quote QT-1, revised" });
+          const card = cards.at(-1)!;
+          yield* stored(card);
+          const edited = yield* sendEdited(cards, card, owner, {
+            to: draft.to,
+            body: "Hi Ravi,\n\nThe revised quote is attached.\n\nArjun",
+          });
+          assert.deepStrictEqual(edited.outcomes, [{ state: "sent", reason: null }]);
+          assert.strictEqual(yield* state, "waiting");
+          assert.strictEqual(yield* marks, 2);
+        }),
+      ),
+  );
+
+  it.effect("a mail about the one open task its turn names shows on that task's row", () =>
+    setUp((fake, cards) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+          VALUES (${orgId}, 'work', 'Work', 'W', 0)`;
+        for (const [n, state] of [
+          [1, "open"],
+          [2, "doing"],
+          [3, "done"],
+        ] as const)
+          yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title,
+              owner_kind, owner_id, created_by_kind, origin_key, created_at, updated_at,
+              fields_json, state)
+            VALUES (${orgId}, ${`rec_w${n}`}, 'work', ${`W-${n}`}, ${`Invented task ${n}`},
+              'person', ${owner}, 'person', ${`w${n}`}, 0, 0, '{}', ${state})`;
+        const entry = sql<{ entry: string | null }>`SELECT entry_record_id AS entry
+          FROM kin_connection_asks ORDER BY rowid DESC LIMIT 1`.pipe(
+          Effect.map(([row]) => row?.entry ?? null),
+        );
+        const row = waitingCards(orgId, owner, [{ recordId: "rec_w1", key: "W-1" }]).pipe(
+          Effect.map((found) => found.get("rec_w1")?.widgetId),
+        );
+        yield* connect(fake, "microsoft", HELLO);
+        const draft = (subject: string, to = "ravi@lumen.example") =>
+          callTool(HELLO, "mail_send", {
+            to: [to],
+            subject,
+            body: "Can both clinics join a dry run?",
+          }).pipe(
+            Effect.map((result) => ({
+              ...cards.findLast((one) => !one.widgetId.startsWith("closed:"))!,
+              note: result.note,
+            })),
+          );
+
+        yield* wake({
+          person: owner,
+          says: "Draft a short mail to Ravi about W-1, for my approval.",
+        });
+        const first = yield* draft("Pilot check");
+        assert.strictEqual(first.note, ASKED);
+        yield* stored(first);
+        assert.strictEqual(yield* entry, "rec_w1");
+        assert.strictEqual(yield* row, first.widgetId);
+
+        // The redraft about the same task replaces it, there and in the chat.
+        yield* wake({ person: owner, says: "Redraft the W-1 mail as one short sentence." });
+        const second = yield* draft("Pilot check, short");
+        assert.strictEqual(second.note, `${ASKED} ${REPLACED(1)}`);
+        yield* stored(second);
+        assert.include(
+          cards.map((one) => one.widgetId),
+          `closed:${first.widgetId}`,
+        );
+        assert.strictEqual(yield* row, second.widgetId);
+
+        // About the same task to other people, it is another mail: both stand.
+        yield* TestClock.adjust("1 minute");
+        yield* wake({ person: owner, says: "Also mail Asha about W-1." });
+        const other = yield* draft("Pilot check", "asha@lumen.example");
+        assert.strictEqual(other.note, ASKED);
+        yield* stored(other);
+        assert.notInclude(
+          cards.map((one) => one.widgetId),
+          `closed:${second.widgetId}`,
+        );
+        assert.strictEqual(yield* row, other.widgetId);
+
+        // A refused send's fresh card stays on the task's row.
+        fake.failWith(HELLO, 400);
+        const failed = yield* tap(other.widgetId, owner);
+        fake.failWith(HELLO, null);
+        if (failed === undefined || !("state" in failed) || failed.fresh === undefined)
+          return assert.fail("no fresh card after a failed send");
+        assert.isDefined(yield* (yield* KinConnections).freshAsk(orgId, failed.fresh, NOW));
+        assert.strictEqual(yield* entry, "rec_w1");
+
+        // No task, or not exactly one open one, ties nothing; the draft's own words count too.
+        for (const [says, subject, tied] of [
+          ["Mail Ravi about W-1 and W-2.", "Two tasks", null],
+          ["Mail Ravi about W-3.", "A done task", null],
+          ["Mail Ravi about W-9.", "No such task", null],
+          ["Mail Ravi the dry-run plan.", "Dry run plan (W-2)", "rec_w2"],
+        ] as const) {
+          yield* wake({ person: owner, says });
+          yield* draft(subject);
+          assert.strictEqual(yield* entry, tied, says);
+        }
+        assert.lengthOf(fake.sent(), 0);
+
+        // Its task dropped since, a mail tied by its turn, not by a file, still goes as before.
+        const plan = cards.findLast((one) => !one.widgetId.startsWith("closed:"))!;
+        yield* stored(plan);
+        yield* sql`UPDATE kin_records SET state = 'dropped' WHERE record_id = 'rec_w2'`;
+        assert.deepStrictEqual(yield* tap(plan.widgetId, owner), { state: "sent", reason: null });
+        assert.lengthOf(fake.sent(), 1);
+      }),
+    ),
   );
 
   it.effect("a co-owner confirms in her own chat; a member can't", () =>
@@ -1183,7 +1371,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           yield* sql`DROP TABLE crowd`;
           yield* wake({ person: owner }, finance);
           assert.deepStrictEqual(yield* reply("Friday works, from Finance.", financeScope), {
-            note: ASKED,
+            note: `${ASKED} ${REPLACED(1)}`,
           });
           const fromFinance = cards.findLast((one) => !one.widgetId.startsWith("closed:"))!;
           assert.strictEqual(fromFinance.chatId, "fin-owner");
@@ -1200,7 +1388,9 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           const ours = "Thanks Ravi, Friday works. Arjun will bring the samples.";
           const again = yield* savedReply(ours);
           yield* wake({ person: coOwner });
-          assert.deepStrictEqual(yield* reply("Friday works, Asha here."), { note: ASKED });
+          assert.deepStrictEqual(yield* reply("Friday works, Asha here."), {
+            note: `${ASKED} ${REPLACED(1)}`,
+          });
           const fromAsha = cards.findLast((one) => !one.widgetId.startsWith("closed:"))!;
           assert.strictEqual(fromAsha.chatId, `cos-${coOwner}`);
           assert.deepStrictEqual(yield* tap(fromAsha.widgetId, coOwner), {
@@ -1221,7 +1411,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           yield* saveEdited(twin, owner, 1, { ...draft, body: "See you Monday at 10." });
           yield* callTool("mail", "mail_search", { query: "from:ravi@lumen.example" });
           const marked = yield* callTool(ACCOUNTS, "mail_send", draft);
-          assert.strictEqual(marked.note, `${DRAFTED} ${EDITED_OVER("Arjun")}`);
+          assert.strictEqual(marked.note, `${DRAFTED} ${REPLACED(1)} ${EDITED_OVER("Arjun")}`);
           assert.include(marked.quoted ?? "", "See you Monday at 10.");
           assert.strictEqual(yield* stateOf(twin), "stale");
           assert.isTrue(closed(twin));
@@ -1248,7 +1438,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             body: "Friday it is. The invoice is attached.",
             attachments: ["INV-1"],
           });
-          assert.strictEqual(both.note, `${ASKED} ${EDITED_OVER("Arjun", 2)}`);
+          assert.strictEqual(both.note, `${ASKED} ${REPLACED(2)} ${EDITED_OVER("Arjun", 2)}`);
           assert.include(both.quoted ?? "", "The November invoice.");
           assert.include(both.quoted ?? "", "Friday it is, at the studio.");
           assert.deepStrictEqual(
@@ -1546,7 +1736,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             { threadId: inbound.threadId, body: "Yes, and the PDF is attached. Finance" },
             financeScope,
           ),
-          { note: ASKED },
+          { note: `${ASKED} ${REPLACED(1)}` },
         );
         const redraft = cards.findLast((one) => !one.widgetId.startsWith("closed:"))!;
         assert.strictEqual(redraft.chatId, "fin-owner");
