@@ -172,7 +172,7 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
         <KinDayField
           label={KIN_DEALS.expected}
           day={expected}
-          names={names}
+          zone={names.zone}
           now={now}
           disabled={saving}
           onPick={setExpected}
@@ -229,7 +229,7 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
           <KinDayField
             label={KIN_WORK_NEW_COPY.dueLabel}
             day={stepDay}
-            names={names}
+            zone={names.zone}
             now={now}
             disabled={saving}
             onPick={setStepDay}

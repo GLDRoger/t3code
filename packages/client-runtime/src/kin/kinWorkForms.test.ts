@@ -341,11 +341,10 @@ describe("kinProjectDraftCheck", () => {
     );
   });
 
-  it("names the year only outside this one, and never labels an impossible day", () => {
-    const now = new Date(2026, 10, 12);
-    expect(kinProjectTargetHint("2026-12-03", now)).not.toMatch(/2026/);
-    expect(kinProjectTargetHint("2027-03-02", now).match(/2027/g)).toHaveLength(1);
-    expect(kinProjectTargetHint("2026-02-30", now)).toBe("Enter a real date.");
+  it("says how to leave the target out while it is out, and nothing once a day is picked", () => {
+    expect(kinProjectTargetHint(null)).toBe("Leave it empty for no target date.");
+    expect(kinProjectTargetHint("2026-12-03")).toBeNull();
+    expect(kinProjectTargetHint("2026-02-30")).toBe("Enter a real date.");
   });
 });
 
@@ -448,7 +447,9 @@ describe("kinContactDraftCheck", () => {
   it("lets an old email or phone stay as saved, and checks it once retyped", () => {
     const saved = { ...contact, emails: ["front desk"], phones: ["ask Mira"] };
     expect(kinContactDraftCheck({ ...saved, name: "Ravi Rao" }, saved)).toBeNull();
-    expect(kinContactDraftCheck({ ...saved, emails: ["ravi@example.com", "front desk"] }, saved)).toBeNull();
+    expect(
+      kinContactDraftCheck({ ...saved, emails: ["ravi@example.com", "front desk"] }, saved),
+    ).toBeNull();
     expect(kinContactDraftCheck({ ...saved, emails: ["front desk 2"] }, saved)).toBe(
       "Enter an email like name@example.com.",
     );
@@ -500,7 +501,9 @@ describe("a contact's several emails and phones", () => {
 
   it("sends one of each as before, several beside the main one, and an edit the whole list", () => {
     const draft = kinContactDraftOf(read);
-    expect(kinContactCreateInput({ ...draft, emails: [" ravi@example.com "], phones: [""] })).toEqual({
+    expect(
+      kinContactCreateInput({ ...draft, emails: [" ravi@example.com "], phones: [""] }),
+    ).toEqual({
       name: "Ravi",
       email: "ravi@example.com",
     });

@@ -575,7 +575,7 @@ function AddStep(
       <KinDayField
         label={KIN_WORK_NEW_COPY.dueLabel}
         day={day}
-        names={props.names}
+        zone={props.names.zone}
         now={props.now}
         disabled={busy}
         onPick={setDay}

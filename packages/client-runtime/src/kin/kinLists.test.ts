@@ -357,6 +357,10 @@ describe("a list by its definition", () => {
     expect(kinListRow(detail, invoices, context).owed).toBe("₹60,000 still owed");
     // Named by its key until it is issued, then by its number.
     expect(kinListRow(detail, invoices, context).line).toMatch(/^EQ-1 · /);
+    // Its due day wraps as one piece, the state before it staying on the first line.
+    const due = kinListRow({ ...detail, dueAt: "2026-12-06", dueAllDay: true }, invoices, context);
+    expect(due.line.split(" · ").at(-1)).toBe("Due\u00a0Sun,\u00a0Dec\u00a06");
+    expect(due.accessibilityLabel).toContain("Due ");
     const numbered = { ...detail, fields: { number: "AM/26-27/004" } };
     expect(kinListRow(numbered, invoices, context).line).toMatch(/^AM\/26-27\/004 · /);
     expect(kinListEntryView(numbered, invoices, context).heading).toBe("AM/26-27/004 · Equipment");

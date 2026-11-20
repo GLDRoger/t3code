@@ -120,7 +120,7 @@ function KinDealEditForm(
         <KinDayField
           label={KIN_DEALS.expected}
           day={draft.expected}
-          names={names}
+          zone={names.zone}
           now={now}
           disabled={saving}
           onPick={(expected) => set({ expected })}

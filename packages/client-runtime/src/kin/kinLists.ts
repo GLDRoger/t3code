@@ -931,6 +931,9 @@ export function kinListColumns(
   ];
 }
 
+/** A day phrase, "Due Sun, Nov 8", that wraps as one piece on a narrow row. */
+const keepTogether = (text: string) => text.replaceAll(" ", "\u00a0");
+
 export function kinListRow(
   record: KinRecord,
   def: KinListDefinition | null,
@@ -990,7 +993,9 @@ export function kinListRow(
     suggested: kinSuggestion(record),
     amount,
     owed,
-    line: parts.join(" · "),
+    line: parts
+      .map((part) => (part === date || part === dueLine ? keepTogether(part) : part))
+      .join(" · "),
     accessibilityLabel: [
       record.title,
       amount,
