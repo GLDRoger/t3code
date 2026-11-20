@@ -17,7 +17,7 @@ import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { logTouch } from "../work/touches.ts";
-import { recordName } from "../work/recordRows.ts";
+import { byNumber, recordName } from "../work/recordRows.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 
 /** What is new at an org's connections since its last check-in, and the cursors that marks. */
@@ -181,6 +181,25 @@ const personToUs = (line: KinPulseOutsideLine, from: string | undefined) => {
 /** First mail from someone Kin doesn't know wakes the Chief of staff, a few a poll at most. */
 const NEW_SENDERS_PER_POLL = 3;
 
+/** Letters, digits and the joins numbers are written with: "INV/26-27/004" is not "004". */
+const numberIn = (number: string, subject: string) =>
+  new RegExp(
+    `(?<![\\p{L}\\p{N}/_.-])${escaped(number)}(?![\\p{L}\\p{N}/_-]|\\.[\\p{L}\\p{N}])`,
+    "u",
+  ).test(subject);
+
+/** The open invoice or quote whose issued number the subject shows, as stored, if only one does. */
+const namedByNumber = Effect.fn("KinPulseOutside.namedByNumber")(function* <
+  Row extends { readonly key: string; readonly number: unknown },
+>(orgId: KinOrgId, money: ReadonlyArray<Row>, subject: string) {
+  for (const row of money) {
+    if (typeof row.number !== "string" || row.number.trim() === "") continue;
+    if (!numberIn(row.number.trim(), subject)) continue;
+    return (yield* byNumber(orgId, row.number))?.key === row.key ? row : undefined;
+  }
+  return undefined;
+});
+
 export interface Matched {
   readonly line: KinPulseOutsideLine;
   /** Money threads go to Finance; client mail and meetings to the Chief of staff. */
@@ -240,9 +259,10 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
     const subject = (line.subject ?? "").toLowerCase();
     if (line.source === "mail") {
       const contact = byEmail.get(addressOf(line.who) ?? "");
-      const named = money.find((row) =>
-        new RegExp(`(^|[^a-z0-9-])${escaped(row.key.toLowerCase())}($|[^a-z0-9])`).test(subject),
-      );
+      const named =
+        money.find((row) =>
+          new RegExp(`(^|[^a-z0-9-])${escaped(row.key.toLowerCase())}($|[^a-z0-9])`).test(subject),
+        ) ?? (yield* namedByNumber(orgId, money, line.subject ?? ""));
       const client = contact?.clientId == null ? {} : { clientId: contact.clientId };
       if (named !== undefined)
         matched.push({
