@@ -598,6 +598,11 @@ now**. Or say it in a chat: "check in at 11 instead".
 **Settings → Company details → Daily limit** caps how much work your agents do each day. Once
 they reach it, only your urgent messages run, on the agent's usual model, until midnight.
 
+**Settings → Company details → Stop all agents** (owners and co-owners) stops every agent at once,
+for everyone: work in progress stops, scheduled work due while they are stopped is skipped, and
+nothing anyone confirms goes out. Messages wait up to a day, and every chat with an agent says the
+agents are stopped. **Resume** starts them again.
+
 ## Recommendations
 
 When the same hold-up keeps happening and a setting would end it, Kin suggests the change once, as a
