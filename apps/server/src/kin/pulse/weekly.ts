@@ -7,6 +7,7 @@ import { sentMail } from "../connections/Sending.ts";
 import { goalLine, goalsNow } from "../work/goals.ts";
 import { homeCurrency } from "../work/companyProfile.ts";
 import { addUp, dayIn, formatMoney } from "../work/money.ts";
+import { projectHealths } from "../work/crm.ts";
 import { playbookThreshold } from "../work/playbooks.ts";
 import {
   countedEntry,
@@ -70,6 +71,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
   );
 
   const projects = yield* sql<{
+    recordId: string;
     key: string;
     title: string;
     state: string;
@@ -79,7 +81,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     late: number;
     done: number;
     changes: number;
-  }>`SELECT p.key, p.title, p.state, p.due_at AS "dueAt", c.title AS client,
+  }>`SELECT p.record_id AS "recordId", p.key, p.title, p.state, p.due_at AS "dueAt", c.title AS client,
       (SELECT COUNT(*) FROM kin_records t WHERE t.org_id = p.org_id
         AND t.project_id = p.record_id AND t.register_id = 'work'
         AND t.state IN ${sql.in(OPEN)}) AS open,
@@ -99,6 +101,11 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
       AND (p.state = 'open' OR (p.state = 'done' AND p.closed_at >= ${weekAgo}))
     ORDER BY p.due_at IS NULL, p.due_at, p.key
     LIMIT ${CAP}`;
+  const health = yield* projectHealths(
+    orgId,
+    now,
+    projects.map((project) => project.recordId),
+  );
   const byStatus: Record<"behind" | "moving" | "quiet" | "done", Array<string>> = {
     behind: [],
     moving: [],
@@ -106,10 +113,14 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     done: [],
   };
   for (const project of projects) {
+    // Behind is the project's own health off track, the rule every screen and tool reads.
+    const shown = health.get(project.recordId);
+    const because = shown?.because;
+    const overdue = because?.overdueInvoices ?? 0;
     const status =
       project.state === "done"
         ? "done"
-        : project.late > 0 || (project.dueAt !== null && project.dueAt < now)
+        : shown?.row.health === "late" || shown?.row.health === "at_risk"
           ? "behind"
           : project.changes === 0
             ? "quiet"
@@ -120,6 +131,14 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
         project.done > 0 ? `${project.done} done this week` : null,
         project.state === "done" ? null : `${project.open} open`,
         project.late > 0 ? `${project.late} late` : null,
+        overdue === 0
+          ? null
+          : `${overdue} invoice${overdue === 1 ? "" : "s"} overdue${(because?.overdueInvoicesInferred ?? 0) > 0 ? " (inferred from its client)" : ""}`,
+        because?.noContact === undefined
+          ? null
+          : because.noContact.lastContactAt === null
+            ? "no contact recorded"
+            : `no contact for ${because.noContact.days} days`,
         project.dueAt === null ? null : `target ${dayIn(project.dueAt, zone)}`,
       ]
         .filter((part) => part !== null)

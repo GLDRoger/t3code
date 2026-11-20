@@ -54,6 +54,7 @@ import {
 import {
   actorOf,
   iso,
+  overdueInvoice,
   parseChanges,
   partyKind,
   principal,
@@ -63,7 +64,8 @@ import {
   toRecord,
 } from "./recordRows.ts";
 import { contactAll, contactSensitive } from "./contactDetails.ts";
-import { lastContacts, touchesOf } from "./touches.ts";
+import { playbookThresholds } from "./playbooks.ts";
+import { daysSince, lastContacts, touchesOf } from "./touches.ts";
 
 /**
  * The light CRM's read model: the client page, the project page and their history, computed on
@@ -95,20 +97,29 @@ export const waitingSince = (sql: Sql, alias: string) => sql`COALESCE((
   ${sql(alias)}.updated_at)`;
 
 /** The rule, applied on read: never stored and never typed by anyone. */
-const healthOf = (input: {
-  readonly state: string;
-  readonly targetAt: number | null;
-  readonly late: number;
-  readonly waitingOverAWeek: number;
-  readonly now: number;
-}): KinProjectHealth | null =>
-  input.state === "done" || input.state === "dropped"
+const healthOf = (
+  state: string,
+  because: KinProjectDetail["healthBecause"],
+): KinProjectHealth | null =>
+  state === "done" || state === "dropped"
     ? null
-    : input.targetAt !== null && input.targetAt < input.now
+    : because.targetPassed
       ? "late"
-      : input.late > 0 || input.waitingOverAWeek > 0
+      : because.late > 0 ||
+          because.waitingOverAWeek > 0 ||
+          (because.overdueInvoices ?? 0) > 0 ||
+          because.noContact !== undefined
         ? "at_risk"
         : "on_track";
+const HEALTH_RANK = { late: 0, at_risk: 1, on_track: 2 } as const;
+
+/**
+ * An invoice `r` is its project's, or, naming only its client, that client's one open project's.
+ * Which projects are open is the company's fact, not the viewer's.
+ */
+const invoiceProject = (sql: Sql) => sql`COALESCE(r.project_id, (SELECT MIN(o.record_id)
+  FROM kin_records o WHERE o.org_id = r.org_id AND o.register_id = 'projects'
+    AND o.party_id = r.party_id AND o.state = 'open' HAVING COUNT(*) = 1))`;
 
 type PartyRowSql = {
   readonly recordId: string;
@@ -228,6 +239,8 @@ type ProjectRowSql = {
   readonly partyTitle: string | null;
   readonly partyCategory: string | null;
   readonly partySensitive: number | null;
+  readonly partyState: string | null;
+  readonly partyCreatedAt: number | null;
   readonly ownerKind: string;
   readonly ownerId: string;
   readonly state: KinProjectState;
@@ -238,9 +251,14 @@ type ProjectRowSql = {
   readonly open: number | null;
   readonly late: number | null;
   readonly waitingLong: number | null;
+  readonly overdueInvoices: number | null;
+  readonly overdueInferred: number | null;
 };
 
-/** Projects with their open and late counts and the health those give, in one grouped read. */
+/**
+ * Projects with their open and late counts, overdue invoices and their client's last contact, and
+ * the health those give: one grouped read, then one for contact.
+ */
 const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
   orgId: KinOrgId,
   now: number,
@@ -255,13 +273,16 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
   const filter = sql.and([sql`p.org_id = ${orgId}`, sql`p.register_id = 'projects'`, ...where]);
   const health = sql`CASE WHEN p.state IN ('done', 'dropped') THEN 3
     WHEN p.due_at < ${now} THEN 0
-    WHEN COALESCE(n.late, 0) + COALESCE(n."waitingLong", 0) > 0 THEN 1 ELSE 2 END`;
+    WHEN COALESCE(n.late, 0) + COALESCE(n."waitingLong", 0) + COALESCE(i.overdue, 0) > 0 THEN 1
+    ELSE 2 END`;
   const rows = yield* sql<ProjectRowSql>`
     SELECT p.record_id AS "recordId", p.key, p.title, p.party_id AS "partyId",
       pa.key AS "partyKey", pa.title AS "partyTitle", pa.category AS "partyCategory",
-      pa.sensitive AS "partySensitive",
+      pa.sensitive AS "partySensitive", pa.state AS "partyState",
+      pa.created_at AS "partyCreatedAt",
       p.owner_kind AS "ownerKind", p.owner_id AS "ownerId", p.state, p.due_at AS "dueAt",
-      p.due_all_day AS "dueAllDay", p.sensitive, p.rev, n.open, n.late, n."waitingLong"
+      p.due_all_day AS "dueAllDay", p.sensitive, p.rev, n.open, n.late, n."waitingLong",
+      i.overdue AS "overdueInvoices", i.inferred AS "overdueInferred"
     FROM kin_records p
     LEFT JOIN kin_records pa ON pa.org_id = p.org_id AND pa.record_id = p.party_id
     LEFT JOIN (
@@ -271,6 +292,12 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
       FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'work'
         AND r.state IN ${sql.in(OPEN)} AND r.project_id IS NOT NULL AND ${seen(sql, viewer)}
       GROUP BY r.project_id) n ON n.project_id = p.record_id
+    LEFT JOIN (
+      SELECT ${invoiceProject(sql)} AS project_id, COUNT(*) AS overdue,
+        SUM(r.project_id IS NULL) AS inferred
+      FROM kin_records r WHERE r.org_id = ${orgId} AND ${overdueInvoice(sql, now)}
+        AND ${seen(sql, viewer)}
+      GROUP BY 1) i ON i.project_id = p.record_id
     WHERE ${filter}
     ORDER BY ${
       order === "target"
@@ -278,9 +305,36 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
         : sql`${health}, p.due_at IS NULL, p.due_at, lower(p.title), p.key`
     }
     LIMIT ${limit} OFFSET ${offset}`;
-  return rows.map((row) => {
+  // A client's silence, as the client_quiet sense reads it: from the last contact, else their adding.
+  const quietOf = (row: ProjectRowSql) =>
+    row.partyId !== null &&
+    row.partyState === "open" &&
+    (row.partyCategory ?? "client") === "client" &&
+    row.state === "open";
+  const partyIds = [...new Set(rows.filter(quietOf).map((row) => row.partyId!))];
+  const last =
+    partyIds.length === 0 ? new Map() : yield* lastContacts(orgId, partyIds, now, viewer);
+  const checkIn = partyIds.length === 0 ? undefined : yield* playbookThresholds(orgId);
+  const noContactOf = (row: ProjectRowSql) => {
+    if (checkIn === undefined || !quietOf(row)) return undefined;
+    const lastAt: number | undefined = last.get(row.partyId!);
+    const days = daysSince(lastAt ?? row.partyCreatedAt ?? now, now);
+    return days < checkIn("client_checkin_days", row.partyId!).value
+      ? undefined
+      : { lastContactAt: lastAt === undefined ? null : iso(lastAt), days };
+  };
+  const counted = rows.map((row) => {
     const late = row.late ?? 0;
-    const waitingOverAWeek = row.waitingLong ?? 0;
+    const noContact = noContactOf(row);
+    const because = {
+      targetPassed:
+        row.state !== "done" && row.state !== "dropped" && row.dueAt !== null && row.dueAt < now,
+      late,
+      waitingOverAWeek: row.waitingLong ?? 0,
+      overdueInvoices: row.overdueInvoices ?? 0,
+      overdueInvoicesInferred: row.overdueInferred ?? 0,
+      ...(noContact === undefined ? {} : { noContact }),
+    } satisfies KinProjectDetail["healthBecause"];
     return {
       row: {
         recordId: KinRecordId.make(row.recordId),
@@ -299,19 +353,38 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
         targetAllDay: row.dueAllDay === 1,
         open: row.open ?? 0,
         late,
-        health: healthOf({ state: row.state, targetAt: row.dueAt, late, waitingOverAWeek, now }),
+        health: healthOf(row.state, because),
         sensitive: row.sensitive === 1,
         sensitiveInherited: row.partySensitive === 1,
         rev: row.rev,
       } satisfies KinProjectRow,
-      because: {
-        targetPassed:
-          row.state !== "done" && row.state !== "dropped" && row.dueAt !== null && row.dueAt < now,
-        late,
-        waitingOverAWeek,
-      },
+      because,
     };
   });
+  // Contact isn't in SQL's order: within the page, health still comes first.
+  const rank = (one: (typeof counted)[number]) =>
+    one.row.health === null ? 3 : HEALTH_RANK[one.row.health];
+  return order === "attention" ? counted.toSorted((a, b) => rank(a) - rank(b)) : counted;
+});
+
+/** Each of these projects' health and why, for the owner, by record id: what the pulse reads. */
+export const projectHealths = Effect.fn("KinCrm.projectHealths")(function* (
+  orgId: KinOrgId,
+  now: number,
+  recordIds: ReadonlyArray<string>,
+) {
+  if (recordIds.length === 0) return new Map<string, (typeof rows)[number]>();
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* projectRowsWhere(
+    orgId,
+    now,
+    [sql`p.record_id IN ${sql.in(recordIds)}`],
+    "target",
+    recordIds.length,
+    0,
+    KIN_OWNER_LEVEL,
+  );
+  return new Map(rows.map((one) => [one.row.recordId as string, one]));
 });
 
 const pageOf = (cursor: string | undefined) => {

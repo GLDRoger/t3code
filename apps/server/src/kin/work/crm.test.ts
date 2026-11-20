@@ -563,6 +563,99 @@ it.effect("project health moves on read as entries go late or wait, with no turn
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("an overdue invoice or a long silence with the client puts a project at risk", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* seed;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(presetDefinition("invoices", "INR"))})`;
+    const client = yield* Clients.createParty([owner], {
+      orgId,
+      name: "Invented VIOM",
+      clientRequestId: "viom",
+    });
+    const build = yield* Clients.createProject([owner], {
+      orgId,
+      name: "Invented VIOM build",
+      party: client.key,
+      clientRequestId: "viom-build",
+    });
+    const health = (key: string) =>
+      Clients.project([owner], { orgId, key }).pipe(Effect.map((page) => page.project));
+    yield* Clients.logTouch([owner], {
+      orgId,
+      party: client.key,
+      kind: "call",
+      clientRequestId: "kickoff",
+    });
+    assert.include(yield* health(build.key), { health: "on_track" });
+    // The deposit names only the client; it falls due on day 3.
+    yield* LeadWork.create(scope, {
+      sourceEventId: "ask-event",
+      records: [
+        {
+          list: "invoices",
+          title: "Invented VIOM deposit",
+          client: client.key,
+          amount: "50000",
+          state: "waiting",
+          due: "1970-01-03",
+        },
+      ],
+    });
+    yield* TestClock.adjust(4 * DAY);
+    const owed = yield* health(build.key);
+    assert.include(owed, { health: "at_risk" });
+    assert.deepInclude(owed.healthBecause, { overdueInvoices: 1, overdueInvoicesInferred: 1 });
+    assert.isUndefined(owed.healthBecause.noContact);
+    // Every surface reads the same rule: the list, the Work summary and the lead's own read.
+    const listed = yield* Clients.projects([owner], { orgId });
+    assert.strictEqual(listed.projects.find((row) => row.key === build.key)?.health, "at_risk");
+    const summary = yield* OwnerWork.summary([owner], { orgId });
+    assert.deepInclude(
+      summary.projects!.find((one) => one.project.key === build.key),
+      { health: "at_risk" },
+    );
+    // With a second open project the client's invoice is no longer this one's.
+    const second = yield* Clients.createProject([owner], {
+      orgId,
+      name: "Invented VIOM app",
+      party: client.key,
+      clientRequestId: "viom-app",
+    });
+    const shared = yield* health(build.key);
+    assert.include(shared, { health: "on_track" });
+    assert.deepInclude(shared.healthBecause, { overdueInvoices: 0, overdueInvoicesInferred: 0 });
+    assert.include(yield* health(second.key), { health: "on_track" });
+    // No contact past the client's check-in days (14 by default) puts both at risk.
+    yield* TestClock.adjust(11 * DAY);
+    const quiet = yield* health(build.key);
+    assert.include(quiet, { health: "at_risk" });
+    assert.deepStrictEqual(quiet.healthBecause.noContact, {
+      lastContactAt: "1970-01-01T00:00:00.000Z",
+      days: 15,
+    });
+    // A client nobody has contacted at all: no contact recorded, counted from their adding.
+    const silent = yield* Clients.createParty([owner], {
+      orgId,
+      name: "Invented Silent Co",
+      clientRequestId: "silent",
+    });
+    const silentBuild = yield* Clients.createProject([owner], {
+      orgId,
+      name: "Invented silent build",
+      party: silent.key,
+      clientRequestId: "silent-build",
+    });
+    assert.include(yield* health(silentBuild.key), { health: "on_track" });
+    yield* TestClock.adjust(14 * DAY);
+    const never = yield* health(silentBuild.key);
+    assert.include(never, { health: "at_risk" });
+    assert.deepStrictEqual(never.healthBecause.noContact, { lastContactAt: null, days: 14 });
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "a row repeating an open entry from another turn is refused by name; a near one is made and said",
   () =>

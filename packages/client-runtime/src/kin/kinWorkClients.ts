@@ -1212,6 +1212,19 @@ function kinMilestoneView(
   };
 }
 
+/** An invoice naming only the client counts here when this is their one open project: say so. */
+const overdueWhy = (because: KinProjectPage["project"]["healthBecause"], client: string) => {
+  const inferred = because.overdueInvoicesInferred ?? 0;
+  const linked = (because.overdueInvoices ?? 0) - inferred;
+  const are = (count: number) => (count === 1 ? "is" : "are");
+  return [
+    linked > 0 ? `${plural(linked, "invoice")} for this project ${are(linked)} overdue.` : null,
+    inferred > 0
+      ? `${plural(inferred, "invoice")} to ${client} ${are(inferred)} overdue (inferred: no project on it, and this is their only open project).`
+      : null,
+  ];
+};
+
 export function kinProjectPageView(
   page: KinProjectPage,
   names: KinWorkNames,
@@ -1220,6 +1233,7 @@ export function kinProjectPageView(
   const { project, counts } = page;
   const ref = { key: project.key, title: project.name };
   const because = project.healthBecause;
+  const client = project.party?.title ?? "the client";
   const why =
     project.health === null
       ? []
@@ -1231,6 +1245,12 @@ export function kinProjectPageView(
           because.waitingOverAWeek > 0
             ? `${plural(because.waitingOverAWeek, "task")} ${because.waitingOverAWeek === 1 ? "has" : "have"} waited more than a week.`
             : null,
+          ...overdueWhy(because, client),
+          because.noContact === undefined
+            ? null
+            : because.noContact.lastContactAt === null
+              ? `No contact recorded with ${client}.`
+              : `No contact with ${client} for ${plural(because.noContact.days, "day")}.`,
         ].filter((part) => part !== null);
   const target = kinWorkDueText(
     { dueAt: project.targetAt, dueAllDay: project.targetAllDay },

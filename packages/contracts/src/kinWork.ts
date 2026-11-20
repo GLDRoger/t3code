@@ -600,7 +600,8 @@ const KinPartyCounts = {
 };
 /**
  * Derived by rule on every read, never stored or typed: `late` once the target date passed,
- * `at_risk` while an entry is late or has waited more than a week, else `on_track`.
+ * `at_risk` while an entry is late or has waited more than a week, an invoice for it is overdue,
+ * or its client has gone past their check-in days without contact, else `on_track`.
  */
 export const KinProjectHealth = Schema.Literals(["on_track", "at_risk", "late"]);
 export type KinProjectHealth = typeof KinProjectHealth.Type;
@@ -1115,6 +1116,14 @@ export const KinProjectDetail = Schema.Struct({
     targetPassed: Schema.Boolean,
     late: NonNegativeInt,
     waitingOverAWeek: NonNegativeInt,
+    // Absent from hosts before overdue invoices and contact counted.
+    overdueInvoices: Schema.optional(NonNegativeInt),
+    /** Of those, the ones naming only its client, whose one open project this is. */
+    overdueInvoicesInferred: Schema.optional(NonNegativeInt),
+    /** Its client past their check-in days: since the last contact, or null when none is recorded. */
+    noContact: Schema.optional(
+      Schema.Struct({ lastContactAt: Schema.NullOr(IsoDateTime), days: NonNegativeInt }),
+    ),
   }),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
