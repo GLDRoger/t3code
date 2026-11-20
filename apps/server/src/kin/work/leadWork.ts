@@ -2136,7 +2136,15 @@ const createRow = Effect.fnUntraced(function* (
   const { view: _view, ...unguarded } = writer;
   const { row: stored, created } =
     pair !== undefined
-      ? { row: yield* keepPairedFiles(lead, writer, pair.key, given, fileKeys), created: false }
+      ? {
+          row: yield* keepPairedFiles(lead, writer, pair.key, given, fileKeys, {
+            receipt: pair.receipt,
+            ...("dateAt" in money && typeof money.dateAt === "number"
+              ? { dateAt: money.dateAt, dateAllDay: money.dateAllDay }
+              : {}),
+          }),
+          created: false,
+        }
       : yield* records.create(
           lead.orgId,
           crmFor === undefined ? writer : { ...unguarded, namesSeenBy: crmFor },
@@ -2439,7 +2447,7 @@ const REPEATS_SHOWN = 5;
  * Open entries a new row repeats, among those this turn may see. The same title, client and due
  * day, or the same party, amount and day, is refused unless `besides` names it; ones near it (the
  * same title in other words or on another day, the same amount within days) are returned, and
- * the entry a paid row is the other document of (`pairedEntry`) as `pair`.
+ * the expense a row is the other document of (`pairedEntry`) as `pair`.
  */
 const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
   lead: Lead,
@@ -2483,7 +2491,7 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
     ORDER BY r.key LIMIT ${REPEAT_CANDIDATES}`;
   // The same row from the same event is a retry, which the write itself returns.
   if (rows.some((one) => one.originKey === row.originKey)) return { alsoOpen: [] };
-  const pair = paid === undefined ? undefined : yield* pairedEntry(lead.orgId, row, rows);
+  const pair = yield* pairedEntry(lead.orgId, team, row);
   if (pair !== undefined) return { pair, alsoOpen: [] };
   const day = (at: number | null) => (at === null ? null : dayIn(at, zone));
   const title = row.title.trim();
@@ -2552,13 +2560,17 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
   };
 });
 
-/** The row's files join the entry it pairs with, which answers for the row as a retry's does. */
+/**
+ * The row's files join the entry it pairs with, which answers for the row as a retry's does. A
+ * receipt also brings its payment: Paid, its day and how it was paid, never back to To pay.
+ */
 const keepPairedFiles = Effect.fn("KinWorkTools.keepPairedFiles")(function* (
   lead: Lead,
   writer: Writer,
   key: string,
   given: FieldValues,
   fileKeys: ReadonlyArray<string>,
+  paid: { readonly receipt: boolean; readonly dateAt?: number; readonly dateAllDay?: boolean },
 ) {
   const records = yield* KinRecords;
   const entry = (yield* records.get(lead.orgId, key))!;
@@ -2570,54 +2582,122 @@ const keepPairedFiles = Effect.fn("KinWorkTools.keepPairedFiles")(function* (
       return more.length === 0 ? [] : [[field, [...theirs, ...more]]];
     }),
   );
-  return Object.keys(added).length === 0
+  const how = paid.receipt
+    ? Object.fromEntries(
+        PAYMENT_FIELDS.flatMap((field) =>
+          given[field] === undefined || shownField(given[field]) === shownField(stored[field])
+            ? []
+            : [[field, given[field]]],
+        ),
+      )
+    : {};
+  const patch = {
+    ...(Object.keys(added).length + Object.keys(how).length === 0
+      ? {}
+      : { fields: { ...added, ...how } }),
+    ...(paid.receipt && entry.state !== "done" ? { state: "done" as const } : {}),
+    ...(paid.receipt && paid.dateAt !== undefined && paid.dateAt !== entry.dateAt
+      ? { dateAt: paid.dateAt, dateAllDay: paid.dateAllDay ?? true }
+      : {}),
+  };
+  return Object.keys(patch).length === 0
     ? entry
-    : yield* records.update(lead.orgId, writer, key, { fields: added }, entry.rev);
+    : yield* records.update(lead.orgId, writer, key, patch, entry.rev);
 });
 
-const filesIn = (fields: FieldValues, keys: ReadonlyArray<string>) =>
-  keys.flatMap((key) => fieldList(fields, key));
+const PAYMENT_FIELDS = ["paidWith", "paidBy"];
+
+/** What a file's name says it is; a name saying both, or neither, says nothing. */
+const documentKind = (name: string | null) => {
+  const words = new Set(fold(name ?? "").split(/[^a-z]+/));
+  const invoice = words.has("invoice");
+  return invoice === words.has("receipt") ? null : invoice ? "invoice" : "receipt";
+};
 
 /**
- * One charge mailed as an invoice and its receipt: the same-amount entry whose file came on the
- * same message as the row's, for the same vendor (the party the query matched, else the vendor
- * field's words). The same amount in another message stays another charge.
+ * One charge mailed as an invoice and its receipt: the one open-or-paid expense of the same
+ * amount and vendor (the party, else the vendor field's words) whose files came on the same
+ * message as the row's, where one side's file names say invoice and the other's receipt. Two
+ * receipts, unnamed files, two such entries or one `besides` names stay separate purchases.
  */
 const pairedEntry = Effect.fn("KinWorkTools.pairedEntry")(function* (
   orgId: KinOrgId,
+  team: View | undefined,
   row: {
+    readonly list: string;
     readonly partyId: string | null;
+    readonly money: KinMoney | undefined;
+    readonly originKey: string;
+    readonly besides: ReadonlyArray<string>;
     readonly fields: FieldValues;
     readonly fileKeys: ReadonlyArray<string>;
   },
-  candidates: ReadonlyArray<{ key: string; title: string; fieldsJson: string }>,
 ) {
-  const files = filesIn(row.fields, row.fileKeys);
+  const files = row.fileKeys.flatMap((key) => fieldList(row.fields, key));
   const vendor = (fields: FieldValues) => {
     const text = fieldText(fields, "vendor");
     return text === null ? null : fold(text);
   };
   const named = vendor(row.fields);
-  if (files.length === 0 || (row.partyId === null && named === null)) return undefined;
+  if (
+    row.list !== "expenses" ||
+    row.money === undefined ||
+    files.length === 0 ||
+    (row.partyId === null && named === null)
+  )
+    return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  const candidates = yield* sql<{
+    key: string;
+    title: string;
+    originKey: string | null;
+    fieldsJson: string;
+  }>`SELECT r.key, r.title, r.origin_key AS "originKey", r.fields_json AS "fieldsJson"
+    FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.party_id IS ${row.partyId}
+      AND r.state != 'dropped' AND r.amount_minor = ${row.money.minor}
+      AND r.currency = ${row.money.currency}
+      AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
+    ORDER BY r.key LIMIT ${REPEAT_CANDIDATES}`;
   const entries = candidates.flatMap((one) => {
     const fields = parseFields(one.fieldsJson);
-    const theirs = filesIn(fields, row.fileKeys);
+    const theirs = row.fileKeys.flatMap((key) => fieldList(fields, key));
     const sameVendor = row.partyId !== null || vendor(fields) === named;
-    return theirs.length > 0 && sameVendor ? [{ ...one, files: theirs }] : [];
+    return theirs.length > 0 &&
+      sameVendor &&
+      !row.besides.includes(one.key) &&
+      one.originKey !== row.originKey
+      ? [{ ...one, files: theirs }]
+      : [];
   });
   if (entries.length === 0) return undefined;
-  const sql = yield* SqlClient.SqlClient;
   const ids = [...new Set([...files, ...entries.flatMap((one) => one.files)])];
   const placed = new Map(
-    (yield* sql<{ id: string; messageId: string }>`SELECT attachment_id AS id,
-        message_id AS "messageId"
-      FROM kin_message_attachments WHERE org_id = ${orgId} AND attachment_id IN ${sql.in(ids)}`).map(
-      (one) => [one.id, one.messageId],
-    ),
+    (yield* sql<{ id: string; messageId: string; name: string | null }>`SELECT
+        a.attachment_id AS id, a.message_id AS "messageId",
+        (SELECT json_extract(j.value, '$.name')
+          FROM json_each(COALESCE(m.attachments_json, '[]')) j
+          WHERE json_extract(j.value, '$.id') = a.attachment_id) AS name
+      FROM kin_message_attachments a
+      JOIN kin_messages m ON m.org_id = a.org_id AND m.message_id = a.message_id
+      WHERE a.org_id = ${orgId} AND a.attachment_id IN ${sql.in(ids)}`).map((one) => [one.id, one]),
   );
-  const messages = new Set(files.flatMap((id) => placed.get(id) ?? []));
-  const found = entries.find((one) => one.files.some((id) => messages.has(placed.get(id) ?? "")));
-  return found === undefined ? undefined : { key: found.key, title: found.title };
+  const kindOf = (ids: ReadonlyArray<string>) => {
+    const kinds = new Set(ids.map((id) => documentKind(placed.get(id)?.name ?? null)));
+    return kinds.size === 1 ? [...kinds][0]! : null;
+  };
+  const messages = new Set(files.flatMap((id) => placed.get(id)?.messageId ?? []));
+  const kind = kindOf(files);
+  const found = entries.filter(
+    (one) =>
+      one.files.some((id) => messages.has(placed.get(id)?.messageId ?? "")) &&
+      // Its files already there is this pair again, as a retry.
+      (files.every((id) => one.files.includes(id)) ||
+        (kind !== null && kindOf(one.files) === (kind === "invoice" ? "receipt" : "invoice"))),
+  );
+  return found.length !== 1
+    ? undefined
+    : { key: found[0]!.key, title: found[0]!.title, receipt: kind === "receipt" };
 });
 
 /** Other open contacts this turn may see with the same email: said, never refused. */
