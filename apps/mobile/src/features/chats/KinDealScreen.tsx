@@ -12,6 +12,7 @@ import {
   kinDealStrip,
   kinDealWithoutConcern,
   kinDealWhen,
+  kinDealChangeWhen,
 } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinMoneyText } from "@t3tools/client-runtime/kin/kinLists";
 import {
@@ -516,7 +517,7 @@ function KinDealBody(
                   {kinDealChangeText(change, names, now)}
                 </Text>
                 <Text textRole="footnote" className="shrink-0 text-foreground-muted">
-                  {kinWorkDueText({ dueAt: change.at, dueAllDay: false }, names, now)}
+                  {kinDealChangeWhen(change, now)}
                 </Text>
               </View>
             ))}

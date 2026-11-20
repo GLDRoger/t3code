@@ -636,6 +636,10 @@ export function kinDealsNothing(filter: KinDealsFilter): {
 }
 
 /** One line of a deal's activity: its moves in the deal's own words, anything else as a task's. */
+/** When a change happened, "today, 8:59 AM", on this device's clock as chat reads it. */
+export const kinDealChangeWhen = (change: Pick<KinRecordChange, "at">, now: Date) =>
+  kinWorkDueText({ dueAt: change.at, dueAllDay: false }, { zone: null }, now);
+
 export function kinDealChangeText(change: KinRecordChange, names: KinWorkNames, now: Date): string {
   const who = kinWorkActorName(change.by, names);
   if (change.kind === "created") return `${who} added this deal`;
