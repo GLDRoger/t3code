@@ -415,7 +415,8 @@ export const KinT3Footprint = Schema.fromJsonString(
 );
 const decodeFootprint = Schema.decodeEffect(KinT3Footprint);
 const MAX_T3_LINES = 10;
-const FOOTPRINT_SKIP = /(?:\.test\.tsx?$|(?:^|\/)routeTree\.gen\.ts$|(?:^|\/)pnpm-lock\.yaml$)/;
+// A T3 test file counts too: Kin's cases go in a sibling `*.kin.test.ts`, which Kin owns.
+const FOOTPRINT_SKIP = /(?:(?:^|\/)routeTree\.gen\.ts$|(?:^|\/)pnpm-lock\.yaml$)/;
 
 export const globPattern = (glob: string) =>
   new RegExp(

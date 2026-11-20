@@ -1,5 +1,8 @@
 {
   "kinOwned": [
+    "**/*.kin.test.ts",
+    "**/*.kin.test.tsx",
+    "**/*.kin.browser.test.tsx",
     "apps/server/src/kin/**",
     "apps/web/src/kin/**",
     "packages/client-runtime/src/kin/**",

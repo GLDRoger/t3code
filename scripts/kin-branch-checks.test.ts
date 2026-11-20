@@ -361,7 +361,12 @@ describe("kin branch checks", () => {
   });
 
   it("refuses more than ten added lines in a T3 file unless a commit says why", () => {
-    const kinOwned = ["apps/server/src/kin/**", "packages/contracts/src/kin*"];
+    const kinOwned = [
+      "apps/server/src/kin/**",
+      "packages/contracts/src/kin*",
+      "**/*.kin.test.ts",
+      "**/*.kin.*.test.tsx",
+    ];
     const t3 = "apps/server/src/server.ts";
     const check = (
       changes: ReadonlyArray<{ file: string; added: number; isNew?: boolean }>,
@@ -378,13 +383,15 @@ describe("kin branch checks", () => {
         { file: "packages/contracts/src/kinHost.ts", added: 40 },
         { file: t3, added: 10 },
         { file: "apps/server/src/brandNew.ts", added: 300, isNew: true },
-        { file: "apps/server/src/server.test.ts", added: 200 },
-        { file: "apps/web/src/components/Sidebar.browser.test.tsx", added: 50 },
+        { file: "apps/server/src/server.kin.test.ts", added: 200 },
+        { file: "apps/web/src/components/Sidebar.kin.browser.test.tsx", added: 50 },
         { file: "apps/web/src/routeTree.gen.ts", added: 120 },
         { file: "pnpm-lock.yaml", added: 500 },
       ]),
       [],
     );
+    // Kin's cases in T3's own test file count as Kin lines in a T3 file.
+    assert.lengthOf(check([{ file: "apps/server/src/server.test.ts", added: 11 }]), 1);
     assert.deepStrictEqual(check([{ file: t3, added: 11 }]), [
       `Kin adds 11 lines to T3's ${t3}. Put the code in a Kin file and reach it through a hook (an import, one list entry, one call). If it truly belongs here, say why in the commit: "T3-file: ${t3}: <why>".`,
     ]);
