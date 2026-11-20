@@ -998,6 +998,19 @@ features:
     roles: { owner: both, co_owner: both, lead: none, member: none }
     proof: [apps/server/src/kin/lead/KinBudget.test.ts]
 
+  - id: company-stop
+    name: Stop every agent for the whole company, and resume
+    tab: settings
+    roles: { owner: none, co_owner: none, lead: none, member: none }
+    note: >-
+      Server only so far: kin.org.pause and kin.org.resume (owner or co-owner, KinStop.pause and
+      KinStop.resume) stop and restart every agent turn, worker and delegated task; kin.org.get
+      tells anyone in the company whether it is stopped. No client reaches it yet; its row belongs
+      in Settings, Company on web and phone.
+    proof:
+      - apps/server/src/kin/lead/KinStop.test.ts
+      - apps/server/src/kin/chat/rpcHandlers.test.ts
+
   - id: recommendations
     name: Recommendations, a setting Kin suggests changing
     tab: settings
