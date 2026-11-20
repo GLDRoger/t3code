@@ -5,6 +5,7 @@ import {
   kinPersonReach,
   kinReachProblem,
   kinReachRows,
+  kinReachShared,
   type KinReachInput,
 } from "@t3tools/client-runtime/kin/kinReach";
 import { KIN_AGENTS_COPY } from "@t3tools/client-runtime/kin/kinLeadPresentation";
@@ -190,12 +191,19 @@ function ReachWaiting(props: { readonly state: KinReachState }) {
 function PersonRow(props: {
   readonly personId: KinPersonId;
   readonly name: string;
+  /** What a restricted pair's shared groups still carry, if any. */
+  readonly detail?: string | null;
   readonly action?: React.ReactNode;
 }) {
   return (
     <li className="flex min-h-9 items-center gap-3">
       <KinAvatar avatar={{ kind: "person", seed: `person:${props.personId}` }} size="sm" />
-      <span className="min-w-0 flex-1 truncate text-sm text-foreground">{props.name}</span>
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="truncate text-sm text-foreground">{props.name}</span>
+        {props.detail == null ? null : (
+          <span className="text-xs text-muted-foreground">{props.detail}</span>
+        )}
+      </span>
       {props.action}
     </li>
   );
@@ -264,6 +272,7 @@ function AgentReachBody(props: Parameters<typeof KinAgentReach>[0]) {
                     key={one.personId}
                     personId={one.personId}
                     name={one.name}
+                    detail={state.input && kinReachShared(state.input, one.party, agent)}
                     action={<LiftButton state={state} pair={pairOf(one)} />}
                   />
                 ))}
@@ -350,31 +359,44 @@ function PersonReachBody(props: Parameters<typeof KinPersonReach>[0]) {
           <p className="text-sm text-muted-foreground">{KIN_AGENTS_COPY.none}</p>
         ) : (
           <ul className="flex flex-col">
-            {view.agents.map((agent) => (
-              <li key={agent.agentId} className="flex items-center gap-2">
-                <AgentLink
-                  environmentId={props.environmentId}
-                  orgId={props.orgId}
-                  agentId={agent.agentId}
-                  name={agent.name}
-                  line={agent.restricted ? KIN_REACH_COPY.restricted : KIN_REACH_COPY.canMessage}
-                  onOpen={props.onOpenAgent}
-                />
-                {agent.restricted ? (
-                  <LiftButton state={state} pair={pairWith(agent)} />
-                ) : (
-                  <Button
-                    size="xs"
-                    variant="ghost"
-                    disabled={state.busy}
-                    aria-label={`${KIN_REACH_COPY.restrict} ${props.name} and ${agent.name}`}
-                    onClick={() => state.restrict(pairWith(agent))}
-                  >
-                    {KIN_REACH_COPY.restrict}
-                  </Button>
-                )}
-              </li>
-            ))}
+            {view.agents.map((agent) => {
+              const shared =
+                agent.restricted && state.input !== null
+                  ? kinReachShared(state.input, self, agent.party)
+                  : null;
+              return (
+                <li key={agent.agentId} className="flex flex-col">
+                  <div className="flex items-center gap-2">
+                    <AgentLink
+                      environmentId={props.environmentId}
+                      orgId={props.orgId}
+                      agentId={agent.agentId}
+                      name={agent.name}
+                      line={
+                        agent.restricted ? KIN_REACH_COPY.restricted : KIN_REACH_COPY.canMessage
+                      }
+                      onOpen={props.onOpenAgent}
+                    />
+                    {agent.restricted ? (
+                      <LiftButton state={state} pair={pairWith(agent)} />
+                    ) : (
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        disabled={state.busy}
+                        aria-label={`${KIN_REACH_COPY.restrict} ${props.name} and ${agent.name}`}
+                        onClick={() => state.restrict(pairWith(agent))}
+                      >
+                        {KIN_REACH_COPY.restrict}
+                      </Button>
+                    )}
+                  </div>
+                  {shared === null ? null : (
+                    <p className="px-1 pb-1.5 text-xs text-muted-foreground">{shared}</p>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </Section>
@@ -393,6 +415,7 @@ function PersonReachBody(props: Parameters<typeof KinPersonReach>[0]) {
                     key={one.personId}
                     personId={one.personId}
                     name={one.name}
+                    detail={state.input && kinReachShared(state.input, self, one.party)}
                     action={<LiftButton state={state} pair={pairWith(one)} />}
                   />
                 ))}

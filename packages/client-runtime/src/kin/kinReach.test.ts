@@ -8,6 +8,7 @@ import {
   kinReachPairKey,
   kinReachProblem,
   kinReachRows,
+  kinReachShared,
   type KinReachInput,
 } from "./kinReach.ts";
 
@@ -92,6 +93,32 @@ describe("who can message whom", () => {
     ]);
     expect(rows[0]!.a).toEqual(person(dev));
     expect(rows[0]!.key).toBe(kinReachPairKey(agent(finance), person(dev)));
+  });
+
+  it("names the groups a restricted pair shares, and what still happens there", () => {
+    const input = ambermill([
+      { one: agent(finance), other: person(dev), setBy: rhea, setAt, groups: ["Shoot crew"] },
+      {
+        one: person(zoya),
+        other: person(dev),
+        setBy: rhea,
+        setAt,
+        groups: ["Shoot crew", "Studio", "Weekend"],
+      },
+      { one: agent(chief), other: person(dev), setBy: rhea, setAt, groups: [] },
+      { one: agent(chief), other: person(arjun), setBy: rhea, setAt },
+    ]);
+    expect(kinReachShared(input, agent(finance), person(dev))).toBe(
+      "In Shoot crew, Dev Malhotra and Finance still see each other's messages, but none of Dev Malhotra's requests there reach Finance.",
+    );
+    // Either side first; a person-to-person pair has no requests to pass.
+    expect(kinReachShared(input, person(dev), person(zoya))).toBe(
+      "In Shoot crew, Studio and Weekend, Zoya Sheikh and Dev Malhotra still see each other's messages.",
+    );
+    // No group shared, a host too old to say, or no such restriction: nothing to say.
+    expect(kinReachShared(input, agent(chief), person(dev))).toBeNull();
+    expect(kinReachShared(input, agent(chief), person(arjun))).toBeNull();
+    expect(kinReachShared(input, agent(finance), person(zoya))).toBeNull();
   });
 
   it("says in the confirm that it holds both ways and leaves the chat to read", () => {

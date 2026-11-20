@@ -7,6 +7,7 @@ import {
   kinPersonReach,
   kinReachProblem,
   kinReachRows,
+  kinReachShared,
   type KinReachInput,
 } from "@t3tools/client-runtime/kin/kinReach";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -242,6 +243,9 @@ function AgentReachBody(props: Parameters<typeof KinAgentReachSection>[0]) {
             render={(one) => (
               <ListRow
                 label={one.name}
+                description={
+                  (state.input && kinReachShared(state.input, one.party, agent)) ?? undefined
+                }
                 leading={
                   <KinAvatar
                     avatar={{ kind: "person", seed: `person:${one.personId}` }}
@@ -311,7 +315,14 @@ function PersonReachBody(props: Parameters<typeof KinPersonReachSections>[0]) {
                   <ListRow
                     label={agent.name}
                     description={
-                      agent.restricted ? KIN_REACH_COPY.restricted : KIN_REACH_COPY.canMessage
+                      agent.restricted
+                        ? [
+                            KIN_REACH_COPY.restricted,
+                            state.input && kinReachShared(state.input, self, agent.party),
+                          ]
+                            .filter(Boolean)
+                            .join("\n")
+                        : KIN_REACH_COPY.canMessage
                     }
                     onPress={() =>
                       navigation.navigate("KinLead", {
@@ -355,6 +366,9 @@ function PersonReachBody(props: Parameters<typeof KinPersonReachSections>[0]) {
                 render={(one) => (
                   <ListRow
                     label={one.name}
+                    description={
+                      (state.input && kinReachShared(state.input, self, one.party)) ?? undefined
+                    }
                     leading={
                       <KinAvatar
                         avatar={{ kind: "person", seed: `person:${one.personId}` }}

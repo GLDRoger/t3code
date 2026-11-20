@@ -110,6 +110,30 @@ export function kinReachRows(input: KinReachInput) {
   });
 }
 
+const listed = (names: ReadonlyArray<string>) =>
+  names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+
+/**
+ * What a restricted pair's shared groups still carry: posts there aren't filtered, but a group
+ * wakes no agent for, and passes no request from, a person restricted from it. Null when they
+ * share none, or the host is too old to say. The host knows a pair's groups only once restricted.
+ */
+export function kinReachShared(
+  input: KinReachInput,
+  a: KinReachParty,
+  b: KinReachParty,
+): string | null {
+  const key = kinReachPairKey(a, b);
+  const limit = input.reach.limits.find((one) => kinReachPairKey(one.one, one.other) === key);
+  if (limit?.groups === undefined || limit.groups.length === 0) return null;
+  const row = kinReachRows({ ...input, reach: { ...input.reach, limits: [limit] } })[0]!;
+  const [first, second] = row.names;
+  const where = `In ${listed(limit.groups)}, ${first} and ${second} still see each other's messages`;
+  return row.b.kind === "agent"
+    ? `${where}, but none of ${first}'s requests there reach ${second}.`
+    : `${where}.`;
+}
+
 /** Why a restriction or a lift didn't happen, in the owner's words. */
 export function kinReachProblem(error: unknown): string {
   const reason =
