@@ -67,7 +67,7 @@ import { cn } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { KinClientContact } from "./KinClientTouches";
-import { KinAttentionSection } from "./KinAttention";
+import { KinAsideNote, KinAttentionSection } from "./KinAttention";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinClientDialog, KinContactDialog, KinProjectDialog } from "./KinWorkForms";
 import { KinWorkPlaceLists } from "./KinWorkPlaceLists";
@@ -754,6 +754,12 @@ function ClientPage(
           {problem === null ? null : (
             <KinWorkProblem problem={problem} onOpenExisting={props.onOpenClient} />
           )}
+          <KinAsideNote
+            environmentId={environmentId}
+            orgId={orgId}
+            record={view.key}
+            names={names}
+          />
         </div>
         <KinAttentionSection
           environmentId={environmentId}

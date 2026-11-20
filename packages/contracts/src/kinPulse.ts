@@ -86,6 +86,33 @@ export const KinPulseHandled = Schema.Struct({
 });
 export type KinPulseHandled = typeof KinPulseHandled.Type;
 
+/**
+ * A record set aside: nothing about it, and for a client or project nothing under it, is told or
+ * asked until `until` (null: until someone lifts it). A teammate's own (`mine`) hides it for them.
+ */
+export const KinPulseAside = Schema.Struct({
+  record: Schema.Struct({
+    key: KinRecordKey,
+    title: Schema.String.check(Schema.isMaxLength(280)),
+  }),
+  /** `all`: the record and everything under it (a client or project); `only`: that record. */
+  covers: Schema.Literals(["all", "only"]),
+  until: Schema.NullOr(CanonicalUtcTimestamp),
+  by: KinPulseHandled.fields.by,
+  /** The person whose word it was, when an agent set it. */
+  onWordOf: Schema.NullOr(KinPersonId),
+  /** Only this reader's own view (a teammate's), not the company's. */
+  mine: Schema.Boolean,
+  at: CanonicalUtcTimestamp,
+  note: Schema.NullOr(Schema.String.check(Schema.isMaxLength(500))),
+  /** Whether this reader may lift it. */
+  liftable: Schema.Boolean,
+  /** This reader set it, or it was set on this reader's word. */
+  byYou: Schema.Boolean,
+  yourWord: Schema.Boolean,
+});
+export type KinPulseAside = typeof KinPulseAside.Type;
+
 export const KinPulseThresholdSource = Schema.Union([
   Schema.TaggedStruct("default", {}),
   Schema.TaggedStruct("playbook", { key: Schema.String, title: Schema.String }),
@@ -129,6 +156,10 @@ export const KinPulseFact = Schema.Struct({
   sensitive: Schema.Boolean,
   wake: KinPulseWake,
   handled: Schema.NullOr(KinPulseHandled),
+  /** A renewal's stage: mentioned ahead (`heads_up`), or inside the days to draft it (`draft`). */
+  stage: Schema.optional(Schema.Literals(["heads_up", "draft"])),
+  /** Set aside with its record, client or project; `handled` then says so for older clients. */
+  aside: Schema.optional(KinPulseAside),
 });
 export type KinPulseFact = typeof KinPulseFact.Type;
 
@@ -159,6 +190,8 @@ export const KinPulseRead = Schema.Struct({
   /** Facts matching, before the cap. */
   total: NonNegativeInt,
   facts: Schema.Array(KinPulseFact),
+  /** With `includeHandled`: what this reader sees set aside, one per record, facts or none. */
+  setAside: Schema.optional(Schema.Array(KinPulseAside)),
 });
 export type KinPulseRead = typeof KinPulseRead.Type;
 
@@ -169,7 +202,13 @@ export const KinPulseScreenRead = Schema.Struct({
 });
 export type KinPulseScreenRead = typeof KinPulseScreenRead.Type;
 
-export const KinPulseHandleAction = Schema.Literals(["got_it", "not_a_problem", "undo"]);
+export const KinPulseHandleAction = Schema.Literals([
+  "got_it",
+  "not_a_problem",
+  "undo",
+  /** Its record set aside (`KinPulseAside`): until `until`, else until lifted. */
+  "set_aside",
+]);
 export type KinPulseHandleAction = typeof KinPulseHandleAction.Type;
 
 // People's side: what needs attention on their screens, and their three answers to it.
@@ -218,6 +257,8 @@ export const KinPulseEvent = Schema.Union([
     removed: Schema.Array(KinPulseFactKey),
     /** Every key in order; absent when it is the held order less `removed`, new ones last. */
     order: Schema.optional(Schema.Array(KinPulseFactKey)),
+    /** Absent: the held list stands. */
+    setAside: Schema.optional(Schema.Array(KinPulseAside)),
     hash: Schema.String,
   }),
 ]);
@@ -232,6 +273,18 @@ export const KinPulseHandleInput = Schema.Struct({
   until: Schema.optional(KinDay),
 });
 export type KinPulseHandleInput = typeof KinPulseHandleInput.Type;
+
+/** `kin.pulse.aside`: set a record aside, or lift the hold on it, as the person asking. */
+export const KinPulseAsideInput = Schema.Struct({
+  orgId: KinOrgId,
+  record: KinRecordKey,
+  action: Schema.Literals(["set", "lift"]),
+  /** For `set`: until the start of this day in the owner's time zone; absent, until lifted. */
+  until: Schema.optional(KinDay),
+});
+export type KinPulseAsideInput = typeof KinPulseAsideInput.Type;
+export const KinPulseAsideResult = Schema.Struct({ aside: Schema.NullOr(KinPulseAside) });
+export type KinPulseAsideResult = typeof KinPulseAsideResult.Type;
 
 // Company goals: a built-in list (`G-1`) whose progress the server computes.
 
@@ -409,6 +462,11 @@ export const KinPulseRpcs = [
     stream: true,
   }),
   Rpc.make("kin.pulse.handle", { payload: KinPulseHandleInput, success: KinPulseFact, error }),
+  Rpc.make("kin.pulse.aside", {
+    payload: KinPulseAsideInput,
+    success: KinPulseAsideResult,
+    error,
+  }),
   Rpc.make("kin.goals.list", { payload: KinGoalsInput, success: KinGoalsResult, error }),
   Rpc.make("kin.goals.save", { payload: KinGoalSaveInput, success: KinGoal, error }),
   Rpc.make("kin.checkIns.list", { payload: KinCheckInsInput, success: KinCheckInsResult, error }),
@@ -426,6 +484,7 @@ export const KIN_PULSE_RPC_SCOPES = {
   "kin.pulse.read": AuthKinChatScope,
   "kin.pulse.subscribe": AuthKinChatScope,
   "kin.pulse.handle": AuthKinChatScope,
+  "kin.pulse.aside": AuthKinChatScope,
   "kin.goals.list": AuthKinChatScope,
   "kin.goals.save": AuthKinChatScope,
   "kin.checkIns.list": AuthKinChatScope,

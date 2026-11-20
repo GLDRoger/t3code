@@ -71,7 +71,7 @@ import {
   useKinWorkHistory,
   type KinWorkTarget,
 } from "./state/useKinWork";
-import { KinAttentionSection } from "./KinAttention";
+import { KinAsideNote, KinAttentionSection } from "./KinAttention";
 import { useKinOpenPlace } from "./state/kinHomeTab";
 import { useKinWorkLink } from "./state/kinWorkLink";
 
@@ -387,6 +387,7 @@ function KinClientBody(
       {problem === null ? null : (
         <KinWorkProblemNotice problem={problem} onDismiss={() => setProblem(null)} />
       )}
+      <KinAsideNote {...target} record={view.key} names={names} />
       <KinAttentionSection
         {...target}
         scope={{ type: "client", key: view.key }}

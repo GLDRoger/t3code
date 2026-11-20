@@ -37,6 +37,7 @@ import {
   sealedOptions,
   takesAsDefault,
 } from "../widgets/cardPlans.ts";
+import { holdNames, holdOverAbout, refusalText } from "../pulse/holds.ts";
 import { choiceCardState } from "../widgets/choiceCard.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { ownerZone } from "../work/recordRows.ts";
@@ -249,6 +250,8 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
   readonly acts?: CardPlan | undefined;
   /** Why that done or drop won't be taken at its day (`untakenAtDay`). */
   readonly held?: "repeats" | "handed_back" | undefined;
+  /** Woken by an owner-level person's own message: they may be asked about what is set aside. */
+  readonly ownerLevelAsked?: boolean | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const wanted = input.default.trim().toLowerCase();
@@ -270,6 +273,11 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
   if (named !== undefined && "refused" in named) return yield* refuse(named.refused);
   const dueAt = named?.at ?? defaultDue(input.now, clock.zone, clock.days);
   const about = normaliseAbout(input.about);
+  if (input.ownerLevelAsked !== true) {
+    const hold = yield* holdOverAbout({ orgId: input.orgId, at: input.now, keys: about, personId });
+    if (hold !== undefined)
+      return yield* refuse(refusalText(hold, yield* holdNames(input.orgId), clock.zone));
+  }
   const untaken: Untaken | undefined =
     unsafeDefault(label, input.question, {
       labels: input.labels,

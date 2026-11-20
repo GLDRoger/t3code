@@ -404,6 +404,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.pulse.handle": Effect.fn("KinPulse.rpc.handle")(function* (input) {
         return yield* call((people) => Pulse.handle(people, input));
       }),
+      "kin.pulse.aside": Effect.fn("KinPulse.rpc.aside")(function* (input) {
+        return yield* call((people) => Pulse.aside(people, input));
+      }),
       "kin.goals.list": Effect.fn("KinGoals.rpc.list")(function* (input) {
         return yield* call((people) => Goals.list(people, input.orgId));
       }),

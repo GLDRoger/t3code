@@ -1,3 +1,4 @@
+import { KinAsideNote } from "./KinAttention";
 import { useKinOpensClients } from "./useKinOwnerLevel";
 import { KIN_DEFAULT_HOME_CURRENCY } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
@@ -603,6 +604,7 @@ export function KinListEntry(
           {invoice?.description == null ? null : (
             <p className="text-sm text-muted-foreground">{invoice.description}</p>
           )}
+          <KinAsideNote {...props} record={item.key} names={props.directory.names} />
         </div>
       </SheetHeader>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">

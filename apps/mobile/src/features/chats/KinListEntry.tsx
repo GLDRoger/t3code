@@ -79,6 +79,7 @@ import {
   KinInvoicePayments,
   KinMoneyActionNotice,
 } from "./KinInvoice";
+import { KinAsideNote } from "./KinAttention";
 import { KinSuggestionKeep } from "./KinMoneySuggested";
 import { KinQuoteActions } from "./KinMoneyAnswers";
 import { KinNotesVersions } from "./KinNotesVersions";
@@ -471,6 +472,7 @@ export function KinListEntryBody(
       {changes.problem === null ? null : (
         <Notice message={changes.problem} tone="danger" onDismiss={changes.dismiss} />
       )}
+      <KinAsideNote environmentId={environmentId} orgId={orgId} record={item.key} names={names} />
       <ListSection>
         {!canChange || quote !== null ? null : (
           <Menu

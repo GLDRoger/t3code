@@ -1,5 +1,4 @@
 import type { KinAgentId, KinOrgId, KinPulseFact } from "@t3tools/contracts";
-import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -34,24 +33,19 @@ export const agentParty = (agentId: KinAgentId) => `agent:${agentId}`;
 
 /**
  * What a told fact is compared on, from its own fields: how many times its threshold has been
- * passed (an invoice crossing another chase interval), who has it in hand, and its due day.
+ * passed (an invoice crossing another chase interval), a renewal's stage, and its due day. Only
+ * open facts are told, so who has one in hand is never part of it.
  */
 export const factSig = (fact: KinPulseFact, at: number, zone: string) => {
   const m = fact.measure;
   const band =
-    m === undefined || DUE_SENSES.has(fact.sense) || m.threshold <= 0
-      ? ""
-      : String(Math.floor(m.value / m.threshold));
-  const until = fact.handled?.until === undefined ? null : fact.handled.until;
-  const held =
-    fact.handled === null
-      ? "open"
-      : until === null
-        ? "settled"
-        : DateTime.toEpochMillis(until) > at
-          ? `held:${fact.handled.by._tag === "agent" ? fact.handled.by.agentId : fact.handled.by.personId}`
-          : "open";
-  return `${band}|${held}|${dueToday(fact, at, zone) ? `due:${dayIn(at, zone)}` : ""}`;
+    fact.stage !== undefined
+      ? fact.stage
+      : m === undefined || DUE_SENSES.has(fact.sense) || m.threshold <= 0
+        ? ""
+        : String(Math.floor(m.value / m.threshold));
+  // "open" stays so rows told before holds left the signature still match.
+  return `${band}|open|${dueToday(fact, at, zone) ? `due:${dayIn(at, zone)}` : ""}`;
 };
 
 /**

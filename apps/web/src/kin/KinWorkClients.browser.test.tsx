@@ -44,7 +44,10 @@ vi.mock(import("./useKinWork"), async (importOriginal) => {
   };
 });
 // The page's other sections read the host on their own; these tests are about its first rows.
-vi.mock(import("./KinAttention"), () => ({ KinAttentionSection: () => null }) as never);
+vi.mock(
+  import("./KinAttention"),
+  () => ({ KinAttentionSection: () => null, KinAsideNote: () => null }) as never,
+);
 vi.mock(import("./KinWorkPlaceLists"), () => ({ KinWorkPlaceLists: () => null }) as never);
 vi.mock(import("./KinDocsList"), () => ({ KinDocsUnder: () => null }) as never);
 
