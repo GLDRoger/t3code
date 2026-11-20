@@ -1,9 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
 import { encodeGrantSigningInput } from "@t3tools/shared/kinGrant";
-import { stableStringify } from "@t3tools/shared/relaySigning";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   kinApprovalFailure,
+  kinChallengeMatchesCard,
   type KinApprovalDeviceCode,
   type KinApprovalFailure,
 } from "@t3tools/client-runtime/kin/kinApprovalPresentation";
@@ -203,31 +203,6 @@ function hostText(cause: unknown) {
   return kinApprovalFailure(cause)?.text ?? "Kin didn't answer. Try again.";
 }
 
-/** The facts a grant binds, as the server records them (approvals spec §5). */
-const signedFacts = (facts: {
-  readonly kind: string;
-  readonly target: unknown;
-  readonly headSha?: string | undefined;
-  readonly base?: string | undefined;
-  readonly mergeMethod?: string | undefined;
-}) =>
-  stableStringify({
-    kind: facts.kind,
-    target: facts.target,
-    headSha: facts.headSha,
-    base: facts.base,
-    mergeMethod: facts.mergeMethod,
-  });
-
-const shownFacts = (action: KinPendingAction) =>
-  signedFacts({
-    kind: action.kind,
-    target: action.target,
-    headSha: action.resolved._tag === "none" ? undefined : action.resolved.headSha,
-    base: action.resolved._tag === "pull_request" ? action.resolved.base : undefined,
-    mergeMethod: action.target._tag === "pull_request" ? action.target.mergeMethod : undefined,
-  });
-
 /**
  * Approve: the host's challenge, checked against the card the owner read, signed by the key
  * after Face ID, then submitted. The phone adds only `jti`, `iat` and `exp` to what the host sent.
@@ -256,13 +231,7 @@ export function useDecidePendingAction() {
           reenrol: true,
         },
       };
-    // What Face ID signs must be what the card showed; a newer head means the owner looks again.
-    if (
-      payload.actionId !== action.id ||
-      payload.revision !== action.revision ||
-      signedFacts(payload) !== shownFacts(action)
-    )
-      return notMatching;
+    if (!kinChallengeMatchesCard(payload, action)) return notMatching;
     const iat = Math.floor(Date.now() / 1000);
     const signingInput = encodeGrantSigningInput(
       { typ: "kin-grant+jws", alg: "ES256", kid: payload.approver.kid },

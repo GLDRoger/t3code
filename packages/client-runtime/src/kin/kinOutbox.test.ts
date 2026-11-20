@@ -80,18 +80,22 @@ function setup(
   extra: { readonly maxEntries?: number; readonly warn?: (message: string) => void } = {},
 ) {
   let id = 0;
+  // Who this phone's session on the host is; undefined until the host has said.
+  let person: string | null | undefined = "person-meera";
   const registry = AtomRegistry.make();
   const outbox = createKinOutbox({
     registry,
     storage: disk.storage,
     send,
+    identity: () => person,
     makeId: () => `client-${++id}`,
     now: () => new Date("2026-11-08T09:00:00.000Z"),
     ...extra,
   });
   const chat = () => registry.get(outbox.chatAtom(ENV, CHAT));
   const full = () => registry.get(outbox.fullAtom(ENV));
-  return { host, disk, outbox, chat, full };
+  const pairAs = (next: string | null | undefined) => void (person = next);
+  return { host, disk, outbox, chat, full, pairAs };
 }
 
 describe("kinOutbox", () => {
@@ -149,6 +153,50 @@ describe("kinOutbox", () => {
     expect(host.rows.size).toBe(1);
     expect(second.chat()[0]?.state).toBe("sent");
     expect(disk.saved()).toEqual([]);
+  });
+
+  it("sends an unsent message only as the person who wrote it, across a re-pair", async () => {
+    const legacy = {
+      environmentId: ENV,
+      chatId: CHAT,
+      clientMessageId: "client-old",
+      body: "Written before authors were kept",
+      createdAt: "2026-11-08T08:00:00.000Z",
+      error: null,
+    };
+    for (const changed of [true, false]) {
+      const { host, disk, outbox, chat, pairAs } = setup(
+        makeHost(),
+        makeStorage(JSON.stringify({ version: 1, entries: [legacy] })),
+      );
+      await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "Meera's draft" });
+      host.setOnline(true);
+      // Re-paired as Dev: nothing goes out until the host says who this session is.
+      pairAs(undefined);
+      await outbox.deliver(ENV);
+      pairAs("person-dev");
+      await outbox.deliver(ENV);
+      expect(host.calls).toEqual([]);
+
+      await outbox.syncIdentity(ENV, "person-dev", changed);
+      await outbox.deliver(ENV);
+      if (changed) {
+        // Dev changed places with Meera: neither her message nor the unowned one is his to send.
+        expect(chat()).toEqual([]);
+        expect(disk.saved()).toEqual([]);
+        expect(host.calls).toEqual([]);
+      } else {
+        // The person never changed, so the unowned one was this session's and is Dev's now.
+        expect(host.calls).toEqual(["client-old"]);
+        expect(chat().map((entry) => [entry.clientMessageId, entry.state])).toEqual([
+          ["client-old", "sent"],
+          ["client-1", "waiting"],
+        ]);
+        pairAs("person-meera");
+        await outbox.deliver(ENV);
+        expect(host.calls).toEqual(["client-old", "client-1"]);
+      }
+    }
   });
 
   it("shows a duplicate ack and the stream's echo as one message", async () => {
