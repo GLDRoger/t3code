@@ -203,7 +203,7 @@ export const KinWorkToolkit = Toolkit.make(
     .annotate(Tool.Meta, deferredMeta),
   Tool.make("dates_query", {
     ...shared,
-    description: `Everything due or dated between two days (inclusive) across every list (filings, renewals, invoices, Work), soonest first. lists narrows it; open false includes done. Read-only. ${data}`,
+    description: `Everything due or dated between two days (inclusive) across every list (filings, renewals, invoices, Work), soonest first. lists narrows it; open false includes done. Read-only. ${data} sensitiveRows (keys, or all) marks confidential dates: keep them out of delegated tasks' briefs, pull requests and chats others read.`,
     parameters: Money.DatesInput,
     success: DatesResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
