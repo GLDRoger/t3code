@@ -543,6 +543,29 @@ const projectOut = (row: RecordRow) =>
     Effect.flatMap(Clock.currentTimeMillis, (now) => Crm.projectDetail(row, now, KIN_OWNER_LEVEL)),
   );
 
+/**
+ * What a member adds in Clients, on their own screen or through their agent: a prospect they look
+ * after, with its name, where it came from, tags and notes. Read inside the write's transaction.
+ */
+export const memberAdds = Effect.fn("KinWork.crm.memberAdds")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  input: {
+    readonly prospect: boolean;
+    readonly owner: KinWorkPrincipal | undefined;
+    /** Terms, tax details, address, Keep private or closing it. */
+    readonly ownersFields: boolean;
+  },
+) {
+  if (!(yield* switchedOn(orgId, viewerOfPeople([personId])))) return yield* ownerOnly;
+  if (!input.prospect) return yield* PROSPECTS_ONLY;
+  if (
+    input.ownersFields ||
+    (input.owner !== undefined && !samePrincipal(input.owner, { _tag: "person", personId }))
+  )
+    return yield* MEMBER_FIELDS;
+});
+
 export const createParty = Effect.fn("KinWork.createParty")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPartyCreateInput,
@@ -569,14 +592,11 @@ export const createParty = Effect.fn("KinWork.createParty")(function* (
   const row = yield* asViewer(
     viewer,
     Effect.gen(function* () {
-      if (!(yield* switchedOn(input.orgId, viewerOfPeople([person.personId]))))
-        return yield* ownerOnly;
-      if (input.prospect !== true || input.kind === "vendor") return yield* PROSPECTS_ONLY;
-      if (
-        defines(input, ["terms", "address", "gstin", "placeOfSupply", "sensitive"]) ||
-        (input.owner !== undefined && !samePrincipal(input.owner, me(person)))
-      )
-        return yield* MEMBER_FIELDS;
+      yield* memberAdds(input.orgId, person.personId, {
+        prospect: input.prospect === true && input.kind !== "vendor",
+        owner: input.owner,
+        ownersFields: defines(input, ["terms", "address", "gstin", "placeOfSupply", "sensitive"]),
+      });
       return yield* stillSeen(person, yield* create, input.name);
     }),
   );

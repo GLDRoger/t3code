@@ -106,7 +106,9 @@ import {
   sensitiveShown,
   showsSensitive,
 } from "./sensitiveReads.ts";
+import { memberAdds } from "./ownerClients.ts";
 import {
+  crmVisible,
   KIN_OWNER_LEVEL,
   TEAM_REFUSED,
   teamChanges,
@@ -1819,11 +1821,33 @@ const createRow = Effect.fnUntraced(function* (
   if (row.amount !== undefined) yield* countryFirst(lead.orgId);
   const def = yield* listFor(lead, row.list ?? "work");
   const list = def.id;
-  // A client or contact is the owner's to look after unless told otherwise.
+  // For a teammate alone in the turn, a prospect is what their own Clients form adds (`memberAdds`).
+  const [only, ...others] = team?.people ?? [];
+  const prospectFor =
+    list === "clients" && categoryOf(list, row).category === "prospect" && others.length === 0
+      ? only
+      : undefined;
+  // A client or contact is the owner's to look after unless told otherwise; theirs, they look after.
   const owner = yield* resolveWho(
     lead,
-    row.owner ?? (list === "clients" || list === "contacts" ? "owner" : "you"),
+    row.owner ??
+      (prospectFor !== undefined
+        ? "me"
+        : list === "clients" || list === "contacts"
+          ? "owner"
+          : "you"),
   ).pipe(asField("owner"));
+  if (prospectFor !== undefined)
+    yield* memberAdds(lead.orgId, prospectFor, {
+      prospect: true,
+      owner,
+      ownersFields:
+        [row.terms, row.address, row.gstin, row.placeOfSupply, row.sensitive].some(
+          (value) => value !== undefined,
+        ) ||
+        row.state === "done" ||
+        row.state === "dropped",
+    });
   const waitingOn =
     row.waitingOn === undefined
       ? undefined
@@ -1910,34 +1934,48 @@ const createRow = Effect.fnUntraced(function* (
     partyId ?? null,
     "dueAt" in due && typeof due.dueAt === "number" ? due.dueAt : undefined,
   );
-  const { row: stored, created } = yield* records.create(lead.orgId, writer, {
-    list,
-    originKey,
-    title: row.title,
-    owner,
-    ...(partyId === undefined ? {} : { partyId }),
-    ...(inProject === undefined ? {} : { projectId: inProject }),
-    ...(row.repo === undefined ? {} : { repo: row.repo }),
-    // Private only when asked, or a money goal; never for what the turn happened to read.
-    ...(row.sensitive === undefined && !(row.measure !== undefined && isMoneyMeasure(row.measure))
-      ? {}
-      : { sensitive: true }),
-    ...(Object.keys(fields).length === 0 ? {} : { fields }),
-    ...(row.state === undefined ? {} : { state: row.state }),
-    ...(waitingOn === undefined ? {} : { waitingOn }),
-    ...due,
-    ...(closedAt === undefined ? {} : { closedAt }),
-    ...money,
-    ...spine.at,
-    ...(row.notes === undefined ? {} : { notes: row.notes }),
-    ...categoryOf(list, row),
-    ...(row.side === undefined ? {} : { side: row.side }),
-    // What the owner asked for is confirmed; what a lead inferred waits for the owner. Only
-    // the owner confirms in Work, so a teammate's task keeps the default.
-    ...(team === undefined ? { confirmed: row.suggested !== true && writer.askedBy !== null } : {}),
-    // Where it was first asked stays the owner's to know.
-    ...(source === undefined || team !== undefined ? {} : { source }),
-  });
+  // `memberAdds` decided it; names clash only with what they see in Clients, as on their form.
+  const { view: _view, ...unguarded } = writer;
+  const { row: stored, created } = yield* records.create(
+    lead.orgId,
+    prospectFor === undefined ? writer : { ...unguarded, namesSeenBy: prospectFor },
+    {
+      list,
+      originKey,
+      title: row.title,
+      owner,
+      ...(partyId === undefined ? {} : { partyId }),
+      ...(inProject === undefined ? {} : { projectId: inProject }),
+      ...(row.repo === undefined ? {} : { repo: row.repo }),
+      // Private only when asked, or a money goal; never for what the turn happened to read.
+      ...(row.sensitive === undefined && !(row.measure !== undefined && isMoneyMeasure(row.measure))
+        ? {}
+        : { sensitive: true }),
+      ...(Object.keys(fields).length === 0 ? {} : { fields }),
+      ...(row.state === undefined ? {} : { state: row.state }),
+      ...(waitingOn === undefined ? {} : { waitingOn }),
+      ...due,
+      ...(closedAt === undefined ? {} : { closedAt }),
+      ...money,
+      ...spine.at,
+      ...(row.notes === undefined ? {} : { notes: row.notes }),
+      ...categoryOf(list, row),
+      ...(row.side === undefined ? {} : { side: row.side }),
+      // What the owner asked for is confirmed; what a lead inferred waits for the owner. Only
+      // the owner confirms in Work, so a teammate's task keeps the default.
+      ...(team === undefined
+        ? { confirmed: row.suggested !== true && writer.askedBy !== null }
+        : {}),
+      // Where it was first asked stays the owner's to know.
+      ...(source === undefined || team !== undefined ? {} : { source }),
+    },
+  );
+  // A retry finds what the first call stored, answered only while they may still see it.
+  if (
+    prospectFor !== undefined &&
+    !(yield* crmVisible(lead.orgId, prospectFor, [stored.recordId])).has(stored.recordId)
+  )
+    return yield* notFound(row.title);
   if (created) notices.push(...movedNotices(undefined, stored));
   const past =
     stored.category === "meeting" &&

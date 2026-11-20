@@ -2103,6 +2103,112 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "a teammate's agent adds the prospect their own form adds, with its next step theirs; never a client",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* setup("ask-event");
+      // The teammate asks in their own chat with the lead: a turn only they are behind.
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('s-mate', ${orgId}, ${mateId}, 0)`;
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${mateId}`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES ('mate-chat', ${orgId}, 'direct', 'mate:lead', 1, ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('mate-chat-mate', ${orgId}, 'mate-chat', 'person', ${mateId}, 'member', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+        VALUES ('mate-chat-lead', ${orgId}, 'mate-chat', 'agent', ${lead}, 'member', ${at})`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+          author_member_id, author_role, kind, body, mentions_json, status, created_at)
+        VALUES ('mate-ask', ${orgId}, 'mate-chat', 1, 'human', ${mateId}, 'mate-chat-mate', 'member',
+          'text', 'Add the invented prospect from the fair and remind me to call Tuesday', '[]', 'posted', ${at})`;
+      const event = {
+        _tag: "chat.message",
+        orgId,
+        agentId: lead,
+        eventId: "mate-event",
+        receivedAt: at,
+        dedupeKey: null,
+        provenance: { _tag: "human", personId: mateId, memberId: "mate-chat-mate" },
+        chatId: "mate-chat",
+        messageId: "mate-ask",
+      };
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+          queued_at, state, wakeup_id)
+        VALUES ('mate-event', ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)}, 0, 0,
+          'claimed', 'wake')`;
+      yield* sql`UPDATE kin_events SET wakeup_id = NULL, state = 'done' WHERE event_id != 'mate-event'`;
+      yield* sql`UPDATE kin_wakeups SET event_ids = '["mate-event"]', audience = 'shared'
+        WHERE wakeup_id = 'wake'`;
+      const me = { _tag: "person" as const, personId: mateId };
+      const refused = (records: Parameters<typeof LeadWork.create>[1]["records"]) =>
+        LeadWork.create(scope, { sourceEventId: "mate-event", records }).pipe(
+          Effect.flip,
+          Effect.map((error) =>
+            isChatError(error)
+              ? { reason: error.reason, message: error.message }
+              : assert.fail(String(error)),
+          ),
+        );
+      const stored = () =>
+        sql<{ key: string }>`SELECT key FROM kin_records
+          WHERE org_id = ${orgId} AND title LIKE 'Invented Tallmoor%' ORDER BY key`;
+
+      // A new client with terms stays the owner's: the refusal says who, and nothing is made.
+      assert.deepStrictEqual(
+        yield* refused([
+          { list: "clients", title: "Invented Tallmoor Freight", terms: "Invented net 30" },
+        ]),
+        { reason: "not_allowed", message: "Only the owner or a co-owner changes that." },
+      );
+      // A prospect is theirs only as their form makes it: no terms, nobody else to look after it.
+      for (const extra of [{ terms: "Invented net 30" }, { owner: "owner" }])
+        assert.include(
+          (yield* refused([
+            { list: "clients", title: "Invented Tallmoor Freight", category: "prospect", ...extra },
+          ])).message,
+          "Only the owner or a co-owner sets a client's terms",
+        );
+      assert.deepStrictEqual(yield* stored(), []);
+
+      // The prospect and its next step, in one call: theirs to look after, the call theirs to make.
+      const made = yield* LeadWork.create(scope, {
+        sourceEventId: "mate-event",
+        records: [
+          {
+            list: "clients",
+            title: "Invented Tallmoor Freight",
+            category: "prospect",
+          },
+          {
+            title: "Invented: call Tallmoor",
+            client: "Invented Tallmoor Freight",
+            owner: "me",
+            due: "1970-01-06",
+          },
+        ],
+      });
+      const [prospect, call] = made.records;
+      const page = yield* Clients.party([mate], { orgId, key: prospect!.key });
+      assert.deepInclude(page.party, { prospect: true, owner: me });
+      const row = (yield* Clients.parties([mate], { orgId, owner: me })).parties.find(
+        (one) => one.key === prospect!.key,
+      );
+      assert.deepInclude(row?.next, { key: call!.key, title: "Invented: call Tallmoor" });
+      const task = yield* OwnerWork.get([mate], { orgId, key: call!.key });
+      assert.deepStrictEqual([task.owner, task.party?.key], [me, prospect!.key]);
+      // Clients switched off, their agent adds no prospect either.
+      yield* sql`UPDATE kin_people SET sees_clients = 0 WHERE person_id = ${mateId}`;
+      assert.include(
+        yield* refused([{ list: "clients", title: "Invented Tallmoor Two", category: "prospect" }]),
+        { reason: "not_allowed" },
+      );
+      assert.lengthOf(yield* stored(), 1);
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("an agent finds a prospect as the client of that name, and calls it a client", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
