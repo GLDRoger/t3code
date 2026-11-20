@@ -4,7 +4,11 @@ import { View } from "react-native";
 
 import { Button } from "../../../components/ui/Button";
 import { EmptyState } from "../../../components/ui/EmptyState";
-import { KIN_INTRO_COUNTRY, KIN_INTRO_PROMPTS } from "@t3tools/client-runtime/kin/kinIntro";
+import {
+  KIN_INTRO_COUNTRY,
+  KIN_INTRO_PROMPTS,
+  KIN_INTRO_START_HINT,
+} from "@t3tools/client-runtime/kin/kinIntro";
 import { kinLeadIntroDetail } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { useKinIsOwnerLevel } from "../state/kinChatOnly";
 import { useKinCountryNeeded } from "../state/useKinMoney";
@@ -64,7 +68,7 @@ export function KinIntro(props: {
                   tone="secondary"
                   size="compact"
                   label={prompt.label}
-                  accessibilityHint="Starts the message for you to finish"
+                  accessibilityHint={KIN_INTRO_START_HINT}
                   onPress={() => props.onStart(prompt.text)}
                 />
               ),

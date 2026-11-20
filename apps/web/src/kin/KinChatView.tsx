@@ -50,6 +50,7 @@ import {
 import {
   KIN_INTRO_COUNTRY,
   KIN_INTRO_PROMPTS,
+  KIN_INTRO_START_HINT,
   kinIntroVisible,
 } from "@t3tools/client-runtime/kin/kinIntro";
 import {
@@ -1339,7 +1340,7 @@ function KinIntro(props: {
               key={prompt.text}
               size="sm"
               variant="outline"
-              title="Starts the message for you to finish"
+              title={KIN_INTRO_START_HINT}
               onClick={() => props.onStart(prompt.text)}
             >
               {prompt.label}
