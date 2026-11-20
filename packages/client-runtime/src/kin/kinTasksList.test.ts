@@ -27,6 +27,7 @@ import {
   kinTaskStepStatusShown,
   kinTasksByMove,
   kinTasksDealFacts,
+  kinTasksDealFactsOf,
   kinTaskFilterProjects,
   kinTasksGroupedBy,
   kinTasksMostUrgent,
@@ -320,10 +321,26 @@ describe("kinTasksDealFacts", () => {
     expect(prospect).toMatchObject({ whatsNext: null, open: { type: "record", key: "C-4" } });
   });
 
-  it("drops a fact once it clears, and has none on a host without the open list", () => {
+  it("drops a fact once it clears, and on a host without the open list reads the pulse's", () => {
     expect(kinTasksDealFacts(open(), { ownerLevel: false, names: asZoya, now })).toEqual([]);
     expect(kinTasksDealFacts(null, { ownerLevel: true, names, now })).toEqual([]);
     expect(kinTasksDealFacts(undefined, { ownerLevel: true, names, now })).toEqual([]);
+    // The same facts as Clients reads them, a handled one left out; none while the list loads.
+    const pulse = {
+      asOf: everything.asOf,
+      total: everything.rows.length - 1,
+      facts: everything.rows.flatMap((row) => (row.item._tag === "fact" ? [row.item.fact] : [])),
+    };
+    expect(keys(kinTasksDealFacts(null, { ownerLevel: false, names: asZoya, now, pulse }))).toEqual(
+      ["deal_no_next_step:DL-1", "deal_quiet:DL-2"],
+    );
+    expect(kinTasksDealFacts(undefined, { ownerLevel: true, names, now, pulse })).toEqual([]);
+    // Needs you counts them beside the tasks, as the badge does.
+    const counts = { needsYou: 3, waiting: 0, rest: 0, doneRecently: 0 };
+    const dealFacts = kinTasksDealFactsOf(null, pulse, { ownerLevel: false, me: asZoya.me }).length;
+    expect(kinNeedsYouCount({ open: null, counts, dealFacts })).toBe(5);
+    expect(kinNeedsYouCount({ open: null, counts: null, dealFacts })).toBeNull();
+    expect(kinNeedsYouCount({ open: everything, counts, dealFacts })).toBe(8);
   });
 
   it("puts them first under Needs you, so it is not all clear", () => {
