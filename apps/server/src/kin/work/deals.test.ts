@@ -931,7 +931,10 @@ it.effect(
         owner: asZoya,
       });
       yield* make(brightwater, "Invented pilot", { value: nok(24_000_000) });
-      const orders = yield* make(corran, "Invented orders app", { value: euros(900_000) });
+      const orders = yield* make(corran, "Invented orders app", {
+        value: euros(900_000),
+        owner: { _tag: "person", personId: arjunId },
+      });
       const old = yield* make(corran, "Invented old win", { value: euros(500_000), owner: asZoya });
       yield* make(corran, "Invented private renewal", { value: euros(100_000), sensitive: true });
       const move = (deal: { key: string; rev: number }, to: KinDealMove) =>
@@ -1050,6 +1053,8 @@ it.effect(
           late: 0,
         },
         { owner: asZoya, open: eur(1, 1_800_000), wonThisMonth: eur(1, 200_000), late: 1 },
+        // Arjun's only deal was lost this month: he keeps his row, at zero.
+        { owner: { _tag: "person", personId: arjunId }, open: none, wonThisMonth: none, late: 0 },
       ]);
 
       // Zoya sells: the team's open and won this month as she sees them, her own row and week.
@@ -1075,7 +1080,7 @@ it.effect(
         "late",
       ])
         assert.notProperty(hers, owners);
-      // Arjun sells and looks after nothing: his own row is zeros, nobody else's shows.
+      // Arjun sells and has nothing open: his own row is zeros, nobody else's shows.
       const his = (yield* Deals.deals([arjun], { orgId })).numbers!;
       assert.deepStrictEqual(his.people, [
         { owner: { _tag: "person", personId: arjunId }, open: none, wonThisMonth: none, late: 0 },
