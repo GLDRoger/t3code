@@ -42,6 +42,7 @@ export const OUTSIDE_TOOLS = {
   kin_widget_upsert: "allowed",
   kin_ask: "allowed",
   kin_ask_close: "allowed",
+  // The question carries the turn's stamp, so the turn its answer wakes reads as outside.
   kin_ask_person: "allowed",
   kin_react: "allowed",
   kin_chart: "allowed",
@@ -184,6 +185,17 @@ export const stampEvent = Effect.fn("KinOutsideContent.stampEvent")(function* (
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
     VALUES (${orgId}, ${eventId}, ${source}) ON CONFLICT (org_id, event_id) DO NOTHING`;
+});
+
+/** The stamp stored under `key`: an event's, or a question's an outside-read turn asked. */
+export const storedStamp = Effect.fn("KinOutsideContent.storedStamp")(function* (
+  orgId: KinOrgId,
+  key: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ source: string }>`SELECT outside_from AS source
+    FROM kin_event_outside WHERE org_id = ${orgId} AND event_id = ${key}`;
+  return row?.source;
 });
 
 /**

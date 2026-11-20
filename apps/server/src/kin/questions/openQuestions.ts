@@ -25,6 +25,7 @@ import type { KinChatService } from "../chat/KinChatService.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { effectiveAudience, turnAsker, turnChat } from "../lead/Audience.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
+import { stampEvent, storedStamp } from "../lead/OutsideContent.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { holdFor } from "../triggers/quietHold.ts";
 import { storedWorkHours } from "../triggers/quietHours.ts";
@@ -490,6 +491,7 @@ const sendBack = Effect.fn("KinQuestions.sendBack")(function* (
       KinEventQueueUnknownEvent: () => Effect.fail(notSentBack),
     }),
   );
+  yield* stampEvent(orgId, event.eventId, yield* storedStamp(orgId, row.questionId));
   return asker === undefined ? "the chat that asked" : yield* personName(orgId, asker);
 });
 const notSentBack = new KinChatError({

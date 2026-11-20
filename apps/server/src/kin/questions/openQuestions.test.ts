@@ -43,6 +43,12 @@ import * as Kin from "../layer.ts";
 import * as KinToolGate from "../mcp/KinToolGate.ts";
 import * as Handoff from "../lead/Handoff.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
+import {
+  inheritOutside,
+  markOutside,
+  outsideStamp,
+  storedStamp,
+} from "../lead/OutsideContent.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import type { KinDecision } from "../memory/MemoryWriter.ts";
 import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
@@ -1276,6 +1282,10 @@ it.effect("a tap on a question asked for someone goes back to the chat that aske
       assert.deepStrictEqual(yield* team.answeredWakes, [
         { key: `question-answered:${asked.questionId}`, origin: null },
       ]);
+      // Asked by a turn that read nothing from outside, it carries no stamp.
+      const [answer] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+        FROM kin_events WHERE dedupe_key = ${`question-answered:${asked.questionId}`}`;
+      assert.isUndefined(yield* storedStamp(KinOrgId.make(orgId), answer!.eventId));
       assert.strictEqual(yield* turnsIn(devChat), before);
       // That turn is told the answer, and that Rhea already heard it.
       const told = yield* Questions.answeredTurnText(KinOrgId.make(orgId), asked.questionId);
@@ -1390,7 +1400,11 @@ it.effect("a question asked for someone away waits for them, then is raised once
       // Back on Thursday the 19th, on the day stored.
       yield* sql`UPDATE kin_people SET away_until = '2026-11-19' WHERE person_id = 'dev'`;
       const rhea = yield* wakeOn("chief", "rhea", chatOf("chief"), "Ask Dev about the shoot.");
+      // Her turn read connected mail first: the question carries that stamp to all it leads to.
+      yield* markOutside({ orgId: KinOrgId.make(orgId), wakeupId: rhea }, "mail-connection");
+      const stampOf = (key: string) => storedStamp(KinOrgId.make(orgId), key);
       const asked = yield* askFor("chief", rhea, { to: "Dev" });
+      assert.strictEqual(yield* stampOf(asked.questionId), "mail-connection");
       assert.strictEqual(asked.state, "held");
       assert.isNull((yield* team.cardOf(asked.questionId)).widgetId);
       assert.lengthOf(yield* cardsFor(devChat), 0);
@@ -1431,6 +1445,22 @@ it.effect("a question asked for someone away waits for them, then is raised once
       );
       assert.strictEqual((yield* questionRow(sql, asked.questionId)).state, "open");
       assert.lengthOf(yield* team.answeredWakes, 0);
+
+      // His tap on the raised card answers it; the turn that answer wakes has read outside text.
+      const card = yield* team.widgetOf((yield* questionRow(sql, asked.questionId)).raiseWidget!);
+      yield* team.chats.act(team.person("dev"), {
+        widgetId: card.widgetId,
+        revision: card.revision,
+        actionId: "choose",
+        value: "option-1",
+        clientActionId: "dev-raised-tap",
+      });
+      const [answered] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+        FROM kin_events WHERE dedupe_key = ${`question-answered:${asked.questionId}`}`;
+      assert.strictEqual(yield* stampOf(answered!.eventId), "mail-connection");
+      const next = { orgId: KinOrgId.make(orgId), wakeupId: "answer-turn" };
+      yield* inheritOutside({ ...next, eventIds: [answered!.eventId] });
+      assert.strictEqual(yield* outsideStamp(next), "mail-connection");
     }).pipe(Effect.provide(layer)),
   ),
 );

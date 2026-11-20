@@ -28,6 +28,7 @@ import {
 } from "../lead/Audience.ts";
 import { arrivesNote } from "../lead/Handoff.ts";
 import type { KinLevelGate } from "../lead/LevelGate.ts";
+import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import * as Reach from "../lead/Reach.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { signedIn } from "../people/signedIn.ts";
@@ -294,6 +295,8 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
         },
         (widget) => store(widget === null ? null : widget.widgetId),
       );
+      // Asked after an outside read, its answer wakes a turn that has read outside text too.
+      yield* stampEvent(orgId, questionId, yield* outsideStamp(turn));
       const joined = yield* signedIn(orgId, target.id);
       if ("_tag" in posted) {
         yield* arrivesNote(
