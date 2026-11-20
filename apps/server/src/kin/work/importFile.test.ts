@@ -606,6 +606,87 @@ describe("bringing a file in", () => {
   );
 
   it.effect(
+    "undo keeps a client or prospect someone logged contact with, and its contacts, and takes the rest",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const file = fileOf(
+          "Company,Status,Contact name,E-mail\nInvented Fenn Bakery,,Ida Lund,ida@fenn.example\nInvented Fenn Bakery,,Ola Lund,ola@fenn.example\nInvented Tarn Optics,Prospect,Per Vik,per@tarn.example\nInvented Moss Hall,,Eva Moss,eva@moss.example\nInvented Sund Yard,,Tor Sund,tor@sund.example\n",
+        );
+        const columns: ReadonlyArray<KinImportTarget> = [
+          "client.name",
+          "client.kind",
+          "contact.name",
+          "contact.email",
+        ];
+        const checked = yield* ImportFile.check([rhea], { orgId, file, mapping: { columns } });
+        yield* ImportFile.apply([rhea], {
+          orgId,
+          file,
+          mapping: { columns },
+          batch: checked.batch,
+        });
+        const keyOf = (title: string) =>
+          sql<{ key: string }>`SELECT key FROM kin_records
+            WHERE org_id = ${orgId} AND title = ${title}`.pipe(Effect.map((rows) => rows[0]?.key));
+        // Each way contact reaches a client: logged and kept, logged then taken back, none.
+        const cases = [
+          { client: "Invented Fenn Bakery", contacts: ["Ida Lund", "Ola Lund"], touch: "logged" },
+          { client: "Invented Tarn Optics", contacts: ["Per Vik"], touch: "removed" },
+          { client: "Invented Moss Hall", contacts: ["Eva Moss"], touch: "none" },
+          { client: "Invented Sund Yard", contacts: ["Tor Sund"], touch: "none" },
+        ] as const;
+        for (const one of cases) {
+          if (one.touch === "none") continue;
+          const logged = yield* Clients.logTouch([rhea], {
+            orgId,
+            party: (yield* keyOf(one.client))!,
+            kind: "email",
+            clientRequestId: one.client,
+          });
+          if (one.touch === "removed")
+            yield* Clients.removeTouch([rhea], { orgId, touchId: logged.id });
+        }
+        // The client is kept by the contact logged with it and by its own contacts, kept with it.
+        const keptWhy = yield* Effect.forEach(
+          cases.filter((one) => one.touch !== "none"),
+          (one) =>
+            Effect.gen(function* () {
+              const contacts = yield* Effect.forEach(one.contacts, keyOf);
+              return [
+                { key: (yield* keyOf(one.client))!, by: [...contacts, "a logged contact"] },
+                ...contacts.map((key) => ({ key: key!, by: ["a logged contact"] })),
+              ];
+            }),
+        );
+
+        const undone = yield* ImportFile.undo([rhea], { orgId, batch: checked.batch });
+        assert.deepStrictEqual(undone.removed, { clients: 2, contacts: 2, deals: 0, other: 0 });
+        assert.deepStrictEqual(
+          undone.kept,
+          keptWhy
+            .flat()
+            .map(({ key, by }) => ({
+              key,
+              reason: `${by.join(", ")} ${by.length === 1 ? "uses" : "use"} it`,
+            }))
+            .toSorted((a, b) => (a.key < b.key ? -1 : 1)),
+        );
+        for (const one of cases)
+          assert.deepStrictEqual(
+            yield* Effect.forEach([one.client, ...one.contacts], keyOf).pipe(
+              Effect.map((keys) => keys.map((key) => key !== undefined)),
+            ),
+            [one.client, ...one.contacts].map(() => one.touch !== "none"),
+            one.client,
+          );
+        const after = yield* ImportFile.runs([rhea], { orgId });
+        assert.strictEqual(after.runs[0]?.undone?.by, ownerId);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
     "puts each contact under the company its own row names, however alike the names and emails",
     () =>
       Effect.gen(function* () {
