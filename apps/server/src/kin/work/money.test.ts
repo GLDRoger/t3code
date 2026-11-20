@@ -1108,7 +1108,15 @@ describe("invoices", () => {
           late: ["INV-1"],
         });
         // The agent reads it as a suggestion, and it waits on a person with the right.
-        assert.include(yield* LeadWork.get(scope, { key: "INV-2" }), { suggested: true });
+        assert.include(yield* LeadWork.get(scope, { key: "INV-2" }), {
+          suggested: true,
+          stateLabel: "Suggested, awaiting the owner",
+        });
+        const section = moneySection(yield* OwnerMoney.money(people, { orgId }), "Asia/Kolkata");
+        assert.deepStrictEqual(
+          [section?.owedToUs, section?.suggestedAwaitingOwner?.entries.map((one) => one.key)],
+          ["₹47,200.00", ["INV-2", "INV-3", "INV-4"]],
+        );
         const waits = "INV-2 is an agent's suggestion awaiting the owner";
         const paid = yield* LeadMoney.payment(scope, {
           sourceEventId: asked,

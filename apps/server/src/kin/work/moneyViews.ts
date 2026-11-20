@@ -446,6 +446,9 @@ const aboutSection = (summary: KinMoneySummary) => {
   return Object.values(section).every((one) => one === undefined) ? {} : { about: section };
 };
 const SECTION_DATES = 10;
+/** What the section says of its suggestions: only what the server guarantees about them. */
+const SUGGESTED_NOTE =
+  "Entries an agent suggested that the owner or a co-owner hasn't confirmed. No figure here counts them: none is owed, due, received or spent until it is confirmed.";
 
 /**
  * The Money summary as a short block for an owner-only prompt, built by code: figures already
@@ -458,8 +461,10 @@ export const moneySection = (summary: KinMoneySummary, zone: string) => {
     summary.received.lastMonth.length === 0 &&
     summary.spent.thisMonth.total.length === 0 &&
     summary.spent.lastMonth.total.length === 0 &&
-    summary.upcoming.length === 0;
+    summary.upcoming.length === 0 &&
+    (summary.suggested ?? []).length === 0;
   if (nothing) return undefined;
+  const suggested = summary.suggested ?? [];
   return {
     asOf: summary.asOf,
     owedToUs: shown(summary.owed.total),
@@ -503,6 +508,22 @@ export const moneySection = (summary: KinMoneySummary, zone: string) => {
     ...(summary.upcomingTotal > SECTION_DATES
       ? { moreDates: summary.upcomingTotal - SECTION_DATES }
       : {}),
+    ...(suggested.length === 0
+      ? {}
+      : {
+          suggestedAwaitingOwner: {
+            note: SUGGESTED_NOTE,
+            entries: suggested.map(({ record, listName }) => ({
+              key: record.key,
+              title: record.title,
+              list: listName,
+              ...(record.amount === undefined ? {} : { amount: formatMoney(record.amount) }),
+              ...(record.party === undefined
+                ? {}
+                : { client: `${record.party.title} (${record.party.key})` }),
+            })),
+          },
+        }),
   };
 };
 

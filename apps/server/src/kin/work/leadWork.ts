@@ -843,6 +843,8 @@ const goalShown = (fields: ReturnType<typeof parseFields>) => {
   return Object.keys(shown).length === 0 ? {} : { fields: shown };
 };
 
+/** A suggestion's money is issued, sent or owed nowhere, so its state reads as this instead. */
+const SUGGESTED_STATE = "Suggested, awaiting the owner";
 const rowFor = (view: Shown, row: RecordRow, now: number) => {
   const { name } = view;
   const record = toRecord(row, now);
@@ -858,7 +860,12 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
   const repos = fieldList(fields, "repos");
   return {
     ...(list === "work" ? {} : { list }),
-    ...(defined ? { listName: def.name, stateLabel: stateLabel(def, row.state) } : {}),
+    ...(defined
+      ? {
+          listName: def.name,
+          stateLabel: isSuggestedMoney(row) ? SUGGESTED_STATE : stateLabel(def, row.state),
+        }
+      : {}),
     key: record.key,
     title: record.title,
     state: record.state,
