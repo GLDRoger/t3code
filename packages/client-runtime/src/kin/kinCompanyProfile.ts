@@ -28,7 +28,8 @@ export const KIN_COMPANY = {
   timeZone: "Time zone",
   timeZoneUse: "Check-ins, due days and your agents' times follow it.",
   /** How it changes: the owner's device sets it once per app run (`createKinOwnerTimeZoneSync`). */
-  timeZoneFollows: "It follows the time zone of the phone or computer the owner last opened Kin on.",
+  timeZoneFollows:
+    "It follows the time zone of the phone or computer the owner last opened Kin on.",
   timeZoneFromHost:
     "None set yet, so Kin uses the computer's. Open Kin on your phone to set yours.",
   empty: "Nothing here yet. Add what goes on your invoices.",
