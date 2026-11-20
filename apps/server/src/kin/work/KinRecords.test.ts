@@ -302,6 +302,11 @@ it.effect('"me" is the one person who asked in the turn, and "you" is the lead i
     assert.deepStrictEqual((yield* give("W-1", "you")).tasks, [
       { key: "W-1", to: "Lead lead (you)" },
     ]);
+    // Names as the tools show them read back, and a real name with parentheses stays a name.
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('sam', ${orgId}, 'sam', 'Sam (other)', ${at})`;
+    for (const to of ["Owner (owner)", "Lead lead (you)", "Lead other (other)", "Sam (other)"])
+      assert.deepStrictEqual((yield* give("W-2", to)).tasks, [{ key: "W-2", to }]);
   }).pipe(Effect.provide(layer)),
 );
 

@@ -1,7 +1,11 @@
+import { assert, it as effectIt } from "@effect/vitest";
 import { KinAgentId, KinPersonId } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
 import { describe, expect, it } from "vite-plus/test";
 
-import { toolName, toolNamer, toolNameOfText } from "./toolNames.ts";
+import * as Sqlite from "../../persistence/Sqlite.ts";
+import { orgOwner, toolName, toolNamer, toolNameOfText } from "./toolNames.ts";
 
 const names = {
   people: new Map([
@@ -40,3 +44,19 @@ describe("toolName", () => {
     expect(toolNameOfText("next week", toolNamer(names, lead))).toBe("next week");
   });
 });
+
+effectIt.effect("orgOwner is the owner KinAccess reads, unset access included", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE kin_people (org_id TEXT, person_id TEXT, access TEXT)`;
+    yield* sql`CREATE TABLE kin_agents (org_id TEXT, agent_id TEXT, owner_person_id TEXT)`;
+    yield* sql`CREATE TABLE kin_leads (org_id TEXT, agent_id TEXT)`;
+    yield* sql`INSERT INTO kin_people VALUES ('o', 'p-zoya', NULL), ('o', 'p-rhea', NULL)`;
+    yield* sql`INSERT INTO kin_agents VALUES ('o', 'a-lead', 'p-rhea')`;
+    yield* sql`INSERT INTO kin_leads VALUES ('o', 'a-lead')`;
+    assert.strictEqual(yield* orgOwner("o"), "p-rhea");
+    // A stored owner comes before one read from an unset row.
+    yield* sql`INSERT INTO kin_people VALUES ('o', 'p-arjun', 'owner')`;
+    assert.strictEqual(yield* orgOwner("o"), "p-arjun");
+  }).pipe(Effect.provide(Sqlite.layerMemory)),
+);

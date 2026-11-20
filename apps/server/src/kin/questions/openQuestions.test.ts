@@ -1142,10 +1142,9 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
       // A co-owner is asked in her own chat with the agent, as anyone else.
       const toMeera = yield* askFor("chief", rhea, { to: "Meera", intent: "shoot budget" });
       assert.strictEqual(toMeera.state, "posted");
-      yield* refused(
-        askFor("chief", rhea, { to: "Rhea", intent: "x" }),
-        /ask them here with kin_ask/,
-      );
+      // Also by her name as a tool shows it.
+      for (const to of ["Rhea", "Rhea Rao (owner)"])
+        yield* refused(askFor("chief", rhea, { to, intent: "x" }), /ask them here with kin_ask/);
       yield* refused(askFor("chief", rhea, { to: "Finance" }), /No one called Finance/);
       // Through Finance, whom Dev may not message, nothing is asked.
       const viaFinance = yield* wakeOn("finance", "rhea", chatOf("finance"), "Ask Dev.");

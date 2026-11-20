@@ -146,8 +146,8 @@ it.effect(
       assert.deepStrictEqual(owner, {
         finished: ["W-6 Beta release to two pilot clinics, done by Rhea (owner)"],
         changed: [
-          "W-1 Design the booking flow screens: now in progress (Zoya)",
-          "W-9 Rhea's own private errand: now in progress (Rhea (owner))",
+          "W-1 Design the booking flow screens: now in progress by Zoya",
+          "W-9 Rhea's own private errand: now in progress by Rhea (owner)",
         ],
         notes: [
           'W-4 Pilot handoff checklist: note by Rhea (owner): "The clinic confirmed the checklist."',
@@ -166,7 +166,7 @@ it.effect(
         agentId: "fin",
       });
       assert.deepStrictEqual(zoya.changed, [
-        "W-1 Design the booking flow screens: now in progress (Zoya)",
+        "W-1 Design the booking flow screens: now in progress by Zoya",
       ]);
       assert.deepStrictEqual(zoya.mail, []);
       const before = yield* dayRecord({
@@ -177,7 +177,7 @@ it.effect(
         agentId: "fin",
       });
       assert.deepStrictEqual(before.changed, [
-        "W-2 Changed yesterday, company time: now in progress (Rhea (owner))",
+        "W-2 Changed yesterday, company time: now in progress by Rhea (owner)",
       ]);
       // A day with nothing in the records says so in one line; one with something, never.
       assert.strictEqual(

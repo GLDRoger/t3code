@@ -140,17 +140,17 @@ export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
         if (!(WORK_LISTS as ReadonlyArray<string>).includes(first.list)) continue;
         if (field.field === "state" && field.to === "done") doneBy = who;
         else if (field.field === "state")
-          moves.push(`now ${STATE_WORDS[field.to ?? ""] ?? field.to} (${who})`);
+          moves.push(`now ${STATE_WORDS[field.to ?? ""] ?? field.to} by ${who}`);
         else if (field.field === "owner")
-          moves.push(`given to ${principalName(field.to)} (${who})`);
+          moves.push(`given to ${principalName(field.to)} by ${who}`);
         else if (field.field === "waitingOn" && field.to !== null)
-          moves.push(`waiting on ${principalName(field.to)} (${who})`);
+          moves.push(`marked waiting on ${principalName(field.to)} by ${who}`);
       }
     }
     // Finished and still done now; one reopened since reads as a change.
     if (doneBy !== undefined && first.state === "done")
       finished.push(`${named}, done by ${doneBy}`);
-    else if (doneBy !== undefined) moves.push(`was done (${doneBy})`);
+    else if (doneBy !== undefined) moves.push(`was done by ${doneBy}`);
     if (moves.length > 0) changed.push(`${named}: ${moves.join(", ")}`);
   }
 

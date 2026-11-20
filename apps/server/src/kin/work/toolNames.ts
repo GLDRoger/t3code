@@ -2,6 +2,7 @@ import type { KinOrgId, KinWorkPrincipal } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { accessSql } from "../people/KinAccess.ts";
 import { principalOfText } from "./projectSpine.ts";
 
 /**
@@ -35,6 +36,17 @@ export const toolName = (who: KinWorkPrincipal, names: ToolNames, reader: ToolRe
   return who.personId === names.owner ? `${name} (owner)` : name;
 };
 
+/**
+ * A name as `toolName` shows it, read back: "Rhea (owner)" is Rhea marked "owner", "Finance (a-1)"
+ * is Finance marked with its id. The mark is the last parenthesis; text without one has none.
+ */
+export const shownName = (
+  text: string,
+): { readonly name: string; readonly mark: string } | null => {
+  const found = /^(.+) \(([^()]+)\)$/.exec(text.trim());
+  return found === null ? null : { name: found[1]!, mark: found[2]! };
+};
+
 /** `toolName` for one reader; nobody named stays undefined, so a field can be left out. */
 export type ToolNamer = <W extends KinWorkPrincipal | null>(
   who: W,
@@ -55,8 +67,9 @@ export const toolNameOfText = (text: string, name: ToolNamer) => {
 /** The org's owner, whom "(owner)" marks to anyone but a lead. */
 export const orgOwner = Effect.fn("KinToolNames.orgOwner")(function* (orgId: KinOrgId | string) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ id: string }>`SELECT person_id AS id FROM kin_people
-    WHERE org_id = ${orgId} AND access = 'owner'`;
+  const [row] = yield* sql<{ id: string }>`SELECT p.person_id AS id FROM kin_people p
+    WHERE p.org_id = ${orgId} AND ${sql.literal(accessSql("p"))} = 'owner'
+    ORDER BY p.access = 'owner' DESC, p.person_id LIMIT 1`;
   return row?.id ?? null;
 });
 

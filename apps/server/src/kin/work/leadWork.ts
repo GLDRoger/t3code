@@ -129,7 +129,7 @@ import {
   viewVisible,
 } from "./teamView.ts";
 import { type AssignNotice, movedNotices, tellHolding } from "./assignNotices.ts";
-import { leadNamer, type ToolNamer } from "./toolNames.ts";
+import { leadNamer, shownName, type ToolNamer } from "./toolNames.ts";
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
@@ -698,12 +698,16 @@ export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (
   shown: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  // A name as `toolName` shows it, "Rhea (owner)" or "Finance (a-1)", reads as its tag.
-  const tag = /^.+ \(([^()]+)\)$/.exec(shown)?.[1];
+  // A name as `toolName` shows it reads back: "Rhea (owner)", "Lead (you)", "Finance (a-1)".
+  const read = shownName(shown);
+  const tag = read?.mark;
   const who = tag === "you" || tag === "owner" ? tag : shown;
   if (tag !== undefined && who === shown) {
+    // "Finance (a-1)" is that agent, unless a person is called exactly that.
     const [agent] = yield* sql<{ id: string }>`SELECT agent_id AS id FROM kin_agents
-      WHERE org_id = ${lead.orgId} AND retired_at IS NULL AND agent_id = ${tag}`;
+      WHERE org_id = ${lead.orgId} AND retired_at IS NULL AND agent_id = ${tag}
+        AND NOT EXISTS (SELECT 1 FROM kin_people WHERE org_id = ${lead.orgId}
+          AND removed_at IS NULL AND trim(display_name) = ${shown.trim()})`;
     if (agent !== undefined)
       return { _tag: "agent", agentId: KinAgentId.make(agent.id) } satisfies KinWorkPrincipal;
   }
@@ -721,8 +725,9 @@ export const resolveWho = Effect.fn("KinWorkTools.resolveWho")(function* (
   }
   const [agent] = yield* sql<{ id: string }>`SELECT agent_id AS id FROM kin_agents
     WHERE org_id = ${lead.orgId} AND retired_at IS NULL
-      AND (agent_id = ${who} OR lower(display_name) = lower(${who}))
-    ORDER BY agent_id = ${who} DESC, agent_id LIMIT 1`;
+      AND (agent_id = ${who} OR lower(display_name) = lower(${who})
+        OR lower(display_name) = lower(${tag === "agent" ? read!.name : who}))
+    ORDER BY agent_id = ${who} DESC, lower(display_name) = lower(${who}) DESC, agent_id LIMIT 1`;
   if (agent !== undefined && agent.id !== who)
     return { _tag: "agent", agentId: KinAgentId.make(agent.id) } satisfies KinWorkPrincipal;
   if (agent === undefined) {

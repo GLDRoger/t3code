@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { matchName, type NameMatch } from "../work/nameMatch.ts";
+import { shownName } from "../work/toolNames.ts";
 
 export type NamedPerson = {
   readonly id: KinPersonId;
@@ -12,7 +13,8 @@ export type NamedPerson = {
 
 /**
  * The person an agent means by what it typed, as clients are found: their id, handle, exact
- * name, a unique start of their name ("Zoya" for Zoya Sheikh) or a unique close spelling.
+ * name, a unique start of their name ("Zoya" for Zoya Sheikh) or a unique close spelling, also
+ * as a tool shows it ("Zoya Sheikh (owner)").
  * Otherwise the several it could be, or the nearest names to offer back.
  */
 export const personNamed = Effect.fn("KinPeople.personNamed")(function* (
@@ -25,7 +27,12 @@ export const personNamed = Effect.fn("KinPeople.personNamed")(function* (
     SELECT person_id AS id, display_name AS name, handle, role_tags_json AS tags
     FROM kin_people WHERE org_id = ${orgId} AND removed_at IS NULL ORDER BY person_id`;
   const people = rows.map((row) => ({ ...row, id: KinPersonId.make(row.id) }));
-  const wanted = typed.trim();
+  // A name copied from a tool, "Rhea (owner)", is Rhea, unless someone is called that exactly.
+  const shown = shownName(typed);
+  const wanted =
+    shown === null || people.some((one) => one.name.trim() === typed.trim())
+      ? typed.trim()
+      : shown.name;
   const handle = wanted.replace(/^@/, "").toLowerCase();
   const exact = people.filter(
     (one) => one.id === wanted || (one.handle !== null && one.handle.toLowerCase() === handle),
