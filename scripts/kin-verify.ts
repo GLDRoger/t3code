@@ -65,6 +65,8 @@ const HELP = `kin-verify [--instance <name>] <command>
   as <person> web click --name "<name>" [--role r] [--nth n] [--within "<card or section name>"]
   as <person> web type [--name "<field>"] "<text>" [--enter]
   as <person> web attach <file> [<file>…]  files in the open chat's composer; then type --enter
+                                          --via "<button name>" picks them through that button's
+                                          file chooser instead, e.g. --via "choose one" on Import
   as <person> web wait "<text>" [--gone] [--timeout <s>]
   as <person> web screenshot <path> [--full] [--width <px>] [--height <px>] [--light|--dark]
   as <person> rpc <method> ['<json>']     a client RPC as that person (orgId is filled in)
@@ -319,7 +321,7 @@ async function web(instance: Instance, person: string, args: Args) {
     }
     case "attach": {
       if (rest.length === 0) throw new VerifyError("attach needs one or more file paths");
-      await Web.attach(session, rest);
+      await Web.attach(session, rest, flag(args, "via"));
       console.log(`attached ${rest.length} file(s)`);
       return;
     }

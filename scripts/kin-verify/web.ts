@@ -383,14 +383,22 @@ export async function click(
 }
 
 /** Puts files in the composer, as the person picking them with "Attach files" would. */
-export async function attach(session: WebSession, paths: ReadonlyArray<string>) {
+export async function attach(
+  session: WebSession,
+  paths: ReadonlyArray<string>,
+  via: string = "Attach files",
+) {
   const { page } = session;
   const files = paths.map((path) => NodePath.resolve(path));
   for (const file of files)
     if (!NodeFS.existsSync(file)) throw new VerifyError(`no file at ${file}`);
-  const button = page.getByRole("button", { name: "Attach files" });
+  const button = page.getByRole("button", { name: via });
   if ((await button.count()) === 0)
-    throw new VerifyError("no Attach files button here; open a chat first");
+    throw new VerifyError(
+      via === "Attach files"
+        ? "no Attach files button here; open a chat first"
+        : `no button named "${via}" here`,
+    );
   const [chooser] = await Promise.all([
     page.waitForEvent("filechooser", { timeout: 10_000 }),
     button.first().click(),
