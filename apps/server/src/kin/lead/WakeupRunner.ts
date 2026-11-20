@@ -21,6 +21,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Random from "effect/Random";
 import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
@@ -270,6 +271,23 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const launch = yield* ThreadLaunchService.ThreadLaunchService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
+  // One subscription to T3's events serves every wait below; each would otherwise open its own.
+  const runActivity = yield* PubSub.unbounded<string>();
+  yield* threads.streamDomainEvents.pipe(
+    Stream.filter(
+      (event) =>
+        event.type === "run.updated" ||
+        (event.type === "provider-turn.updated" && event.payload.completedAt !== null),
+    ),
+    Stream.runForEach((event) => PubSub.publish(runActivity, event.threadId)),
+    Effect.catchCause((cause) =>
+      Effect.logError("Kin run activity watch failed", { cause }).pipe(
+        Effect.andThen(Effect.sleep("1 second")),
+      ),
+    ),
+    Effect.forever,
+    Effect.forkScoped,
+  );
   /** Who each finished-task event's work was for (`WorkFor.workFor`), by event id. */
   const finishedFor = Effect.fn("WakeupRunner.finishedFor")(function* (
     orgId: KinOrgId,
@@ -341,13 +359,8 @@ const make = Effect.gen(function* () {
       threadId: string;
     }>`SELECT thread_id AS "threadId" FROM kin_leads WHERE org_id = ${orgId} AND thread_id IS NOT NULL ORDER BY thread_id`;
     const leadThreads = new Set(rows.map((row) => row.threadId));
-    return yield* threads.streamDomainEvents.pipe(
-      Stream.filter(
-        (event) =>
-          leadThreads.has(event.threadId) &&
-          (event.type === "run.updated" ||
-            (event.type === "provider-turn.updated" && event.payload.completedAt !== null)),
-      ),
+    return yield* Stream.fromPubSub(runActivity).pipe(
+      Stream.filter((threadId) => leadThreads.has(threadId)),
       Stream.runHead,
     );
   });
