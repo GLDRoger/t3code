@@ -414,7 +414,10 @@ export const GetResult = Schema.Struct({
   projectNote: Schema.optional(Schema.Struct({ from: Schema.String, text: Schema.String })),
 });
 /** A deal's next step: a task of ours on its client, linked to the deal, as its page adds one. */
-const DealNext = Schema.Struct({ title: Title, due: Schema.optional(Due) });
+const DealNext = Schema.Struct({ title: Title, due: Schema.optional(Due) }).annotate({
+  description:
+    "A deal's next step, with due as its day: a task of ours on its client, linked to the deal. Only on a deal.",
+});
 const CreateRow = Schema.Struct({
   list: Schema.optional(List),
   title: Title,
@@ -2260,7 +2263,7 @@ const dealRow = Effect.fnUntraced(function* (
   const value = yield* dealValue(def, row.amount, row.currency, undefined);
   const actor = yield* Deals.agentActor(lead.orgId, writer);
   const originKey = `lead:${lead.agentId}:${sourceEventId}:${retryKey(`deals|${party.recordId}|${titleKey(row.title)}`)}`;
-  yield* dealsOpenOn(actor, party.recordId, originKey, row.besides ?? []);
+  yield* dealsOpenOn(actor, party.recordId, party.name, originKey, row.besides ?? []);
   const { row: stored, created } = yield* Deals.createAs(actor, {
     partyKey: party.key,
     title: row.title,
@@ -2287,8 +2290,11 @@ const dealRow = Effect.fnUntraced(function* (
 });
 
 /** The open deals a new one would sit beside, and how to add it anyway. */
-const dealOpenAlready = (open: ReadonlyArray<{ readonly key: string; readonly title: string }>) =>
-  `${open.map((one) => `${one.key} "${one.title}"`).join(", ")} ${open.length === 1 ? "is" : "are"} open for the same client. Use ${open[0]!.key}, or pass besides: [${open.map((one) => `"${one.key}"`).join(", ")}] to add another.`;
+const dealOpenAlready = (
+  client: string,
+  open: ReadonlyArray<{ readonly key: string; readonly title: string }>,
+) =>
+  `${client} already has ${open.length === 1 ? "an open deal" : "open deals"}: ${open.map((one) => `${one.key} "${one.title}"`).join(", ")}. Put what you heard on ${open.length === 1 ? "it" : "the one it belongs to"} with record_update (fields.concerns, next); only if the person says this is separate business, pass besides: [${open.map((one) => `"${one.key}"`).join(", ")}] to open another.`;
 
 const NEXT_IS_A_DEALS = invalid("next is a deal's next step; give a task its own due.");
 
@@ -2305,6 +2311,7 @@ const stepOf = (next: typeof DealNext.Type) =>
 const dealsOpenOn = Effect.fn("KinWorkTools.dealsOpenOn")(function* (
   actor: Deals.DealActor,
   partyId: string,
+  client: string,
   originKey: string,
   besides: ReadonlyArray<string>,
 ) {
@@ -2327,7 +2334,10 @@ const dealsOpenOn = Effect.fn("KinWorkTools.dealsOpenOn")(function* (
   const Refused = open.some((one) => one.sensitive === 1) ? SensitiveRefusal : KinChatError;
   return yield* new Refused({
     reason: "conflict",
-    message: dealOpenAlready(open.map((one) => ({ key: one.key, title: one.title.slice(0, 80) }))),
+    message: dealOpenAlready(
+      client.slice(0, 80),
+      open.map((one) => ({ key: one.key, title: one.title.slice(0, 80) })),
+    ),
   });
 });
 

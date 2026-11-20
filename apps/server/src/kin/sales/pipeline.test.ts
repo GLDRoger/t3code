@@ -610,14 +610,18 @@ it.effect(
       );
       assert.strictEqual(isChatError(twin) ? twin.reason : twin._tag, "conflict");
       const named = [seeded.stock, seeded.phase, seeded.rheas].map((one) => one.deal.key);
-      for (const key of named) assert.include(twin.message, key);
-      assert.include(twin.message, "besides");
+      assert.deepStrictEqual(named, ["DL-1", "DL-4", "DL-6"]);
+      assert.strictEqual(
+        twin.message,
+        'Invented Corran Tiles already has open deals: DL-1 "Invented stock and orders system", DL-4 "Invented phase two", DL-6 "Invented second site". Put what you heard on the one it belongs to with record_update (fields.concerns, next); only if the person says this is separate business, pass besides: ["DL-1", "DL-4", "DL-6"] to open another.',
+      );
       // Brightwater's private pilot is not Zoya's to see, so only its winter campaign is named.
       const brightwater = seeded.winter.deal.party.key;
       const other = yield* create(brightwater, "Invented spring campaign").pipe(Effect.flip);
-      assert.include(other.message, seeded.winter.deal.key);
-      assert.notInclude(other.message, seeded.pilot.deal.key);
-      assert.notInclude(other.message, "pilot");
+      assert.strictEqual(
+        other.message,
+        'Invented Brightwater already has an open deal: DL-5 "Invented winter campaign". Put what you heard on it with record_update (fields.concerns, next); only if the person says this is separate business, pass besides: ["DL-5"] to open another.',
+      );
       // Nothing was written, so the twin is not on her board.
       const titles = (yield* Deals.deals([zoya], { orgId, party: seeded.corran })).deals.map(
         (deal) => deal.title,
