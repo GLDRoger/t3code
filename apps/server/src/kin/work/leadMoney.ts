@@ -53,6 +53,7 @@ import {
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
 import { homeCurrency } from "./companyProfile.ts";
 import { dayIn, formatMinor, formatMoney, parseAmount, timeIn } from "./money.ts";
+import { parseFields } from "./lists.ts";
 import { dates, moneySection, moneySummary, ownerLevelStillToInvoice } from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import {
@@ -61,6 +62,7 @@ import {
   isSuggestion,
   notFound,
   ownerZone,
+  recordName,
   suggestedStateLabel,
 } from "./recordRows.ts";
 import {
@@ -409,7 +411,7 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
         if (earlier.length > 0 && !(same("cash", cash) && same("tds", tds)))
           return yield* new KinChatError({
             reason: "not_allowed",
-            message: `This message already recorded a different payment on ${before.key} for ${paidOn}. Nothing was recorded. To correct it, void the earlier payment and record the right one from the owner's next message.`,
+            message: `This message already recorded a different payment on ${recordName(before.key, parseFields(before.fieldsJson).number)} for ${paidOn}. Nothing was recorded. To correct it, void the earlier payment and record the right one from the owner's next message.`,
           });
         const one = (money: KinMoney | undefined, withheld: boolean) =>
           money === undefined

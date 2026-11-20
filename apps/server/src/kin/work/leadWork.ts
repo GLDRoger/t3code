@@ -85,6 +85,7 @@ import {
 import { latestComments, projectNoteOf } from "./recordComments.ts";
 import {
   endOfDay,
+  byNumber,
   iso,
   isSuggestion,
   notFound,
@@ -92,6 +93,7 @@ import {
   owedInvoices,
   ownerZone,
   principalId,
+  recordName,
   type RecordRow,
   sensitiveNow,
   suggestedStateLabel,
@@ -316,7 +318,9 @@ export const QueryResult = Schema.Struct({
   ),
   sensitive: Schema.optional(Schema.Literal(true)),
 });
-export const GetInput = Schema.Struct({ key: KinRecordKey });
+/** An invoice's or quote's issued number, in whatever shape its company's series gives. */
+const IssuedNumber = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(40));
+export const GetInput = Schema.Struct({ key: Schema.Union([KinRecordKey, IssuedNumber]) });
 export const GetResult = Schema.Struct({
   ...Row.fields,
   /** A goal's progress, counted now. */
@@ -1734,7 +1738,7 @@ const clientOwed = Effect.fnUntraced(function* (
       ).map(formatMoney),
       invoices: invoices.map(
         (one) =>
-          `${one.key}: ${formatMoney(one.balance)} ${
+          `${recordName(one.key, one.number)}: ${formatMoney(one.balance)} ${
             one.dueAt === null
               ? "unpaid, no due date"
               : one.overdue
@@ -1776,11 +1780,19 @@ const linkShown = (link: KinRecordDetail["links"][number]) =>
         target: link.target,
         ...(link.label == null ? {} : { name: link.label }),
       }
-    : { kind: link.kind, relation: link.relation, target: link.label ?? link.target };
+    : {
+        kind: link.kind,
+        relation: link.relation,
+        target:
+          link.record !== undefined && link.number !== undefined
+            ? recordName(link.record.key, link.number)
+            : (link.label ?? link.target),
+      };
 const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.Type) {
   const records = yield* KinRecords;
   const team = yield* viewOf(lead);
-  const row = yield* records.get(lead.orgId, input.key);
+  const row =
+    (yield* records.get(lead.orgId, input.key)) ?? (yield* byNumber(lead.orgId, input.key));
   if (row === undefined) return yield* notFound(input.key);
   if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, row.recordId)))
     return yield* notFound(input.key);

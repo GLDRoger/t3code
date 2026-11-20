@@ -2,6 +2,7 @@ import { KIN_QUOTES_LIST, kinQuoteRow } from "@t3tools/client-runtime/kin/kinMon
 import { useAtomValue } from "@effect/atom-react";
 import { kinAccessMeAtom, kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
+import { kinAskRecordDraft } from "@t3tools/client-runtime/kin/kinAskRecord";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinDatesMonth, kinShiftMonth } from "@t3tools/client-runtime/kin/kinDates";
 import {
@@ -862,7 +863,13 @@ export function KinListEntryBody(
           label={KIN_LISTS.entry.askChange}
           onPress={() => {
             navigation.goBack();
-            agent.ask(`About ${item.key} (${item.title}): `);
+            agent.ask(
+              kinAskRecordDraft({
+                key: item.key,
+                title: item.title,
+                number: item.fields?.number,
+              }),
+            );
           }}
         />
       )}

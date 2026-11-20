@@ -26,7 +26,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 import { textLocale } from "../work/companyProfile.ts";
-import { ownerZone } from "../work/recordRows.ts";
+import { ownerZone, recordName } from "../work/recordRows.ts";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
@@ -1248,7 +1248,7 @@ const make = Effect.gen(function* () {
     const about =
       fact.subject.key === fact.subject.title
         ? fact.subject.title
-        : `${fact.subject.key} ${fact.subject.title}`;
+        : `${recordName(fact.subject.key, fact.subject.number)} ${fact.subject.title}`;
     const body = [
       input.request.replace(/\s+/g, " "),
       `From ${event.checkIn?.title ?? "Kin's facts"}: ${about}: ${fact.consequence} (${fact.key})`,

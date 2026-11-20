@@ -2,6 +2,7 @@ import { useKinOpensClients } from "./useKinOwnerLevel";
 import { KIN_DEFAULT_HOME_CURRENCY } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
+import { kinAskRecordDraft } from "@t3tools/client-runtime/kin/kinAskRecord";
 import {
   KIN_FIELD_FILES_MAX,
   KIN_LISTS,
@@ -1064,7 +1065,15 @@ export function KinListEntry(
             <Button
               size="sm"
               variant="outline"
-              onClick={() => agent.ask(`About ${item.key} (${item.title}): `)}
+              onClick={() =>
+                agent.ask(
+                  kinAskRecordDraft({
+                    key: item.key,
+                    title: item.title,
+                    number: item.fields?.number,
+                  }),
+                )
+              }
             >
               <MessageSquareIcon />
               {KIN_LISTS.entry.askChange}

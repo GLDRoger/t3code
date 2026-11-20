@@ -979,8 +979,13 @@ describe("KinPulse", () => {
         new Map(
           (shown?.byProject ?? []).flatMap((group) => group.facts).map((one) => [one.key, one]),
         );
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/001')
+        WHERE org_id = ${orgId} AND record_id = 'r-INV-1'`;
       const first = yield* section();
       const byKey = rows(first);
+      // Named as the owner's screen names it, with the key its tools take; a draft by its key.
+      assert.match(byKey.get(keys[1]!)!.about, /^AM\/26-27\/001 \(INV-1\) /);
+      assert.match(byKey.get(keys[0]!)!.about, /^INV-5 /);
       assert.deepInclude(byKey.get(keys[0]!), {
         writeTo: { name: "Anita", email: "anita@lumen.example" },
         document: { key: "D-wk-5", file: "INV-5.pdf", draft: true },
@@ -1222,6 +1227,23 @@ describe("KinPulse", () => {
       const euros = yield* weeklyFigures({ orgId, now: at });
       assert.include(euros, "Open quotes:\n- QT-1: €600,000.00, sent, no answer yet");
       assert.notInclude(euros, "₹");
+      // Once issued, an invoice or quote is named by its number, then the key its tools take.
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/001')
+        WHERE org_id = ${orgId} AND record_id = 'r-INV-1'`;
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'Q 2026 7')
+        WHERE org_id = ${orgId} AND record_id = 'r-QT-1'`;
+      yield* insert({
+        id: "INV-9",
+        list: "invoices",
+        state: "waiting",
+        amount: 2_000_00,
+        dueAt: at + 2 * DAY,
+        fields: '{"number":"AM/26-27/002"}',
+      });
+      const named = yield* weeklyFigures({ orgId, now: at });
+      assert.match(named, /^- AM\/26-27\/001 \(INV-1\):.*unpaid, overdue for \d+ days/m);
+      assert.include(named, "Open quotes:\n- Q 2026 7 (QT-1): €600,000.00, sent, no answer yet");
+      assert.include(named, "Invoices not yet due:\n- AM/26-27/002 (INV-9): ₹2,000.00 due");
     }).pipe(Effect.provide(layer)),
   );
 });

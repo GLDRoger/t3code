@@ -8,7 +8,7 @@ import { KinChatService } from "../chat/KinChatService.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { formatMoney } from "../work/money.ts";
-import { countedEntry, type RecordRow } from "../work/recordRows.ts";
+import { countedEntry, type RecordRow, recordName } from "../work/recordRows.ts";
 import { computeData } from "./compute.ts";
 import { gatherFacts } from "./facts.ts";
 import * as Numbers from "./numbering.ts";
@@ -181,7 +181,7 @@ export const reportIssuedWithoutAmount = Effect.fn("KinDocAmounts.report")(funct
     for (const one of rows) {
       const entry = yield* records.get(orgId, one.key);
       if (entry === undefined || entry.amountMinor !== null) continue;
-      const body = `${one.number} (${one.key}) was issued with no amount, so it isn't counted in what you're owed. ${yield* believed(orgId, entry)}`;
+      const body = `${recordName(one.key, one.number)} was issued with no amount, so it isn't counted in what you're owed. ${yield* believed(orgId, entry)}`;
       const [own] =
         one.byKind === "agent"
           ? yield* sql<{ chatId: string }>`SELECT l.owner_chat_id AS "chatId" FROM kin_leads l

@@ -1186,6 +1186,11 @@ describe("invoices", () => {
         });
         const records = yield* KinRecords.KinRecords;
         assert.strictEqual((yield* records.get(orgId, "INV-4"))!.state, "dropped");
+        // An issued invoice is opened by the number on its page too, and named by it.
+        const number = String(JSON.parse((yield* records.get(orgId, "INV-2"))!.fieldsJson).number);
+        assert.strictEqual((yield* LeadWork.get(scope, { key: number })).key, "INV-2");
+        const lines = (yield* LeadWork.get(scope, { key: "C-1" })).owed?.money.invoices ?? [];
+        assert.isTrue(lines.some((line) => line.startsWith(`${number} (INV-2): `)));
         yield* LeadMoney.payment(scope, {
           sourceEventId: asked,
           key: "INV-2",
