@@ -443,6 +443,28 @@ it.live(
           );
         assert.isFalse(toolRead.isError);
         assert.include(JSON.stringify(toolRead), "a-item");
+        // A hit carries enough to choose what to read; the rest of its front matter is a read away.
+        const toolSearch = yield* server
+          .callTool({ name: "memory_search", arguments: { kind: "claim", reviewOverdue: true } })
+          .pipe(
+            Effect.provideService(McpInvocationContext, scope),
+            Effect.provideService(KinIdentity, identity),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+        assert.isFalse(toolSearch.isError);
+        const hits = toolSearch.structuredContent as typeof Lead.SearchResult.Encoded;
+        assert.deepStrictEqual(
+          hits.find((hit) => hit.id === "a-item"),
+          {
+            id: "a-item",
+            kind: "claim",
+            title: "Invented service maintenance",
+            status: "open",
+            due: null,
+            reviewOverdue: true,
+            duplicate: false,
+          },
+        );
         const opened = yield* service.read(scope, { id: KinMemoryItemId.make("a-item") });
         assert.isTrue("head" in opened && opened.reviewOverdue);
         assert.isTrue("head" in opened && opened.misleading);
@@ -1112,9 +1134,6 @@ it.live(
         // The owner's words show only while he can open the message they came from.
         const quotesShown = Effect.gen(function* () {
           const read = whole(yield* service.read(scope, { id: KinMemoryItemId.make("new-claim") }));
-          const found = (yield* service.search(scope, { kind: "claim" })).find(
-            (item) => item.id === "new-claim",
-          );
           // And in the files the lead greps, its checkout.
           const { read: checkout } = yield* memory.prepareWakeup(orgId, "shadow-wakeup", {
             lead: agentId,
@@ -1122,14 +1141,13 @@ it.live(
           const file = yield* fs.readFileString(`${checkout}/claims/new-claim.md`);
           return [
             read.head.quote,
-            found !== undefined && "quote" in found ? found.quote : "none",
             file.includes(`quote: ${quoted.quote}`),
             file.includes("Invented"),
           ];
         });
-        assert.deepStrictEqual(yield* quotesShown, [quoted.quote, quoted.quote, true, true]);
+        assert.deepStrictEqual(yield* quotesShown, [quoted.quote, true, true]);
         yield* sql`UPDATE kin_messages SET status = 'deleted' WHERE message_id = ${message.messageId}`;
-        assert.deepStrictEqual(yield* quotesShown, [undefined, "none", false, true]);
+        assert.deepStrictEqual(yield* quotesShown, [undefined, false, true]);
         yield* sql`UPDATE kin_messages SET status = 'posted' WHERE message_id = ${message.messageId}`;
         const armed = () =>
           sql<{ nextRunAt: number | null }>`SELECT next_run_at AS "nextRunAt" FROM kin_triggers

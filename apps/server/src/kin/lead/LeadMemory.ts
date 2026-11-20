@@ -1,6 +1,7 @@
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import type { KinOrgId, KinAgentId, MemoryTrust } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import * as Struct from "effect/Struct";
 import * as Digest from "effect/crypto/Digest";
 import * as Hex from "effect/encoding/Hex";
 import {
@@ -208,12 +209,17 @@ export const ReadResult = Schema.Union([
   }),
   Schema.Struct({ item: SharedItem }),
 ]);
+/** What the owner's search returns of an item: enough to choose what to read, nothing more. */
+const SearchHit = Schema.Struct({
+  ...Struct.pick(MemoryItemFrontMatter.fields, ["id", "kind", "title", "status", "due"]),
+  reviewOverdue: Schema.Boolean,
+  duplicate: Schema.Boolean,
+});
 export const SearchResult = Schema.Array(
-  Schema.Union([
-    Schema.Struct({ ...MemoryItemHead.fields, duplicate: Schema.Boolean }),
-    Schema.Struct({ ...SharedHead.fields, duplicate: Schema.Boolean }),
-  ]),
+  Schema.Union([SearchHit, Schema.Struct({ ...SharedHead.fields, duplicate: Schema.Boolean })]),
 );
+const reviewOverdue = (head: Pick<MemoryItemHead, "review_by">, now: number) =>
+  head.review_by !== null && memoryDateMillis(head.review_by) < now;
 /** An authority refusal: who is calling, or when. Its reason is never spelled out. */
 const denied = () =>
   new KinChatError({ reason: "not_allowed", message: "Agent operation is not allowed." });
@@ -1103,14 +1109,18 @@ const make = Effect.gen(function* () {
         },
         { lead: ctx.agentId },
       );
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
       const counts = new Map<string, number>();
       for (const item of found) counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
-      return yield* ownersView(
-        ctx,
-        found
-          .map((item) => ({ ...item, duplicate: (counts.get(item.id) ?? 0) > 1 }))
-          .slice(0, input.limit ?? 50),
-      );
+      return found.slice(0, input.limit ?? 50).map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        title: item.title,
+        status: item.status,
+        due: item.due,
+        reviewOverdue: reviewOverdue(item, now),
+        duplicate: (counts.get(item.id) ?? 0) > 1,
+      }));
     }, Effect.mapError(failure)),
     read: Effect.fn("LeadMemory.read")(function* (scope, input) {
       const { ctx, audience } = yield* turn(scope);
@@ -1131,7 +1141,7 @@ const make = Effect.gen(function* () {
       return {
         ...item,
         head: head!,
-        reviewOverdue: item.head.review_by !== null && memoryDateMillis(item.head.review_by) < now,
+        reviewOverdue: reviewOverdue(item.head, now),
         misleading: item.head.invalid_at !== null,
       };
     }, Effect.mapError(failure)),
