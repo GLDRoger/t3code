@@ -30,6 +30,7 @@ import { aborted, effectiveAudience, SESSION_REFUSAL, SHARED_THREAD_PREFIX } fro
 import { markOutside, outsideRead } from "./OutsideContent.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { listedOnSharedThread } from "./SharedTools.ts";
+import { REVIEW_THREAD_PREFIX, REVIEW_TOOLS } from "./outsideReview.ts";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { wakeupOfRuns } from "../chat/wakeupRuns.ts";
 import { isSocialTool } from "../social/mcp.ts";
@@ -226,7 +227,8 @@ const loginConnected = Effect.gen(function* () {
 
 /**
  * What the Kin endpoint lists, per thread so every turn of it sends the same list (prompt cache).
- * Shared threads list only what shared turns may run; T3 tools show only on an owner-only thread.
+ * Shared threads list only what shared turns may run, an outside review's only `REVIEW_TOOLS`; T3
+ * tools show only on an owner-only thread.
  * `KinToolGate` checks each call.
  */
 export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(function* (
@@ -234,7 +236,12 @@ export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(functio
   threadId: ThreadId,
 ) {
   const shared = threadId.startsWith(SHARED_THREAD_PREFIX);
-  if (shared && !listedOnSharedThread(name)) return false;
+  if (
+    threadId.startsWith(REVIEW_THREAD_PREFIX)
+      ? !Object.hasOwn(REVIEW_TOOLS, name)
+      : shared && !listedOnSharedThread(name)
+  )
+    return false;
   if (isKinGitHubTool(name)) return LOGIN_GITHUB_TOOLS.has(name) && (yield* loginConnected);
   if (isSocialTool(name)) return yield* onSocialSeat(threadId);
   if (!isT3Tool(name)) return true;
