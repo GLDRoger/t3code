@@ -23,11 +23,9 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { newCompanyProfileJson, readProfile } from "./companyProfile.ts";
-import { removeChunk } from "./importUndo.ts";
 import { insertComment } from "./recordComments.ts";
 import * as KinImport from "./KinImport.ts";
 import * as KinRecords from "./KinRecords.ts";
-import { searchIndexed } from "./searchIndex.ts";
 
 // Invented org, people and amounts only.
 const orgId = KinOrgId.make("org");
@@ -519,8 +517,13 @@ describe("KinImport", () => {
 
       const again = yield* imports.apply(orgId, ownerId, books());
       assert.deepStrictEqual([again.entries.create, again.payments.create], [5, 1]);
-      // Nothing else took a key after the batch's, so the same rows get the same keys again.
-      assert.deepStrictEqual(yield* keysOf, keys);
+      // A removed entry's key may still be named in memory or a chat, so a list that stays never
+      // gives it again. The invoices list (the last key) went with the undo and is made anew.
+      const fresh = (yield* keysOf).slice(0, 4);
+      assert.deepStrictEqual(
+        fresh.filter((key) => keys.includes(key)),
+        [],
+      );
       const sql = yield* SqlClient.SqlClient;
       assert.deepStrictEqual(
         yield* sql`SELECT action FROM kin_import_runs WHERE batch = 'oldbooks' ORDER BY seq`,
@@ -693,41 +696,41 @@ describe("KinImport", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("an undo keeps a row paid while it runs, deciding inside each chunk", () =>
+  it.effect("an undo that is refused part way takes nothing away, and runs again whole", () =>
     Effect.gen(function* () {
       yield* seed;
       const imports = yield* KinImport.KinImport;
-      const records = yield* KinRecords.KinRecords;
-      yield* imports.apply(orgId, ownerId, books());
-      const may = (yield* recordOf("i2"))!;
-      const welcome = (yield* recordOf("t1"))!;
-      // Planned for removal, then paid in Kin before its chunk is deleted.
-      const removing = new Set([may.recordId, welcome.recordId]);
-      yield* records.pay(orgId, owner, may.key, {
-        amount: { minor: 100, currency: "INR" },
-        paidOn: "2026-11-01",
-        originKey: "owner:during-undo",
-      });
-      const kept = yield* removeChunk(
-        orgId,
-        "oldbooks",
-        [may.recordId, welcome.recordId],
-        removing,
-        {
-          includeChanged: true,
-          indexed: yield* searchIndexed(),
-        },
-      );
-      assert.deepStrictEqual(kept, [may.recordId]);
-      assert.deepStrictEqual([...removing], [welcome.recordId]);
+      const sql = yield* SqlClient.SqlClient;
+      const before = yield* holdings;
+      const tasks = Array.from({ length: 250 }, (_, index) => ({
+        entry: { source: `w${index}`, list: "work", title: `Task ${index}`, client: "c1" },
+      }));
+      yield* imports.apply(orgId, ownerId, linesOf(header, [...rows, ...tasks]));
+      const imported = yield* holdings;
+      const counters = sql`SELECT register_id AS id, next_number AS next FROM kin_registers
+        ORDER BY register_id`;
+      const numbered = yield* counters;
+      // Its client refuses to go, as a busy or full database refuses whatever comes last.
+      yield* sql`CREATE TEMP TRIGGER refuse_c1 BEFORE DELETE ON kin_records
+        WHEN old.origin_key = 'import:oldbooks:client:c1'
+        BEGIN SELECT RAISE(ABORT, 'refused'); END`;
+      const refused = yield* imports
+        .undo(orgId, ownerId, "oldbooks", { apply: true, includeChanged: false })
+        .pipe(Effect.flip);
+      assert.strictEqual(refused.reason, "unavailable");
+      assert.deepStrictEqual(yield* holdings, imported);
+      assert.deepStrictEqual(yield* counters, numbered);
       assert.deepStrictEqual(
-        [
-          (yield* recordOf("i2"))?.key,
-          yield* recordOf("t1"),
-          yield* countOf("kin_record_payments"),
-        ],
-        [may.key, undefined, 2],
+        (yield* runRows).map(([action, finished]) => [action, finished !== null]),
+        [["apply", true]],
       );
+      yield* sql`DROP TRIGGER refuse_c1`;
+      const undone = yield* imports.undo(orgId, ownerId, "oldbooks", {
+        apply: true,
+        includeChanged: false,
+      });
+      assert.strictEqual(undone.removes.entries, 255);
+      assert.deepStrictEqual(yield* holdings, before);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -1085,20 +1088,13 @@ describe("KinImport", () => {
         assert.strictEqual(yield* countOf("kin_records"), 250);
         assert.deepStrictEqual(yield* imports.running(orgId), []);
 
-        // Its undo says how far it is the same way, a hundred records at a time.
+        // Its undo is one step, so the host tells only its end.
         const undone = yield* imports.undo(orgId, ownerId, "oldbooks", {
           apply: true,
           includeChanged: false,
         });
         assert.strictEqual(undone.removes.entries, 250);
-        const undoMoves = yield* Effect.forEach(Array.from({ length: 5 }), () => Queue.take(told));
-        assert.deepStrictEqual(undoMoves, [
-          [["undo", 0]],
-          [["undo", 100]],
-          [["undo", 200]],
-          [["undo", 250]],
-          [],
-        ]);
+        assert.deepStrictEqual(yield* Queue.take(told), []);
         assert.deepStrictEqual(
           (yield* runRows).map(([action, finished]) => [action, finished !== null]),
           [

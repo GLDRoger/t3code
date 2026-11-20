@@ -595,6 +595,62 @@ const uniqueBy = (values: ReadonlyArray<string>, same: (text: string) => string)
   return values.filter((one) => !seen.has(same(one)) && seen.add(same(one)) !== undefined);
 };
 
+const emailKeys = (row: Row) => row.emails.map((email) => `e:${email.toLowerCase()}`);
+const domainKeys = (row: Row) =>
+  row.emails.flatMap((email) => {
+    const domain = domainOf(email);
+    return domain === undefined ? [] : [`d:${domain}`];
+  });
+
+/**
+ * The file's clients: a row is under the client its own row names, folded. A row naming none
+ * joins the one named client its email, else its web domain, is at in the file; else it stands
+ * with the other unnamed rows it shares an email or domain with.
+ */
+const clientGroups = (rows: ReadonlyArray<Row>, leave: (line: number, reason: string) => void) => {
+  const named = groupBy(
+    rows.filter((row) => row.name !== ""),
+    (row) => [`n:${fold(row.name)}`],
+  );
+  const unnamed = groupBy(
+    rows.filter((row) => {
+      if (row.name !== "") return false;
+      if (row.emails.length > 0) return true;
+      if (row.contact !== "" || row.deal !== "" || row.notes !== "")
+        leave(row.line, "This row names no client and no email, so Kin can't tell whose it is.");
+      return false;
+    }),
+    (row) => [...emailKeys(row), ...domainKeys(row)],
+  );
+  const holders = (keysOf: (row: Row) => ReadonlyArray<string>) => {
+    const out = new Map<string, Set<number>>();
+    named.forEach((group, index) => {
+      for (const key of group.flatMap(keysOf)) out.set(key, (out.get(key) ?? new Set()).add(index));
+    });
+    return out;
+  };
+  const byEmail = holders(emailKeys);
+  const byDomain = holders(domainKeys);
+  const alone: Array<Array<Row>> = [];
+  for (const group of unnamed) {
+    const at = (index: Map<string, Set<number>>, keysOf: (row: Row) => ReadonlyArray<string>) =>
+      new Set(group.flatMap(keysOf).flatMap((key) => [...(index.get(key) ?? [])]));
+    const emailAt = at(byEmail, emailKeys);
+    const one = emailAt.size > 0 ? emailAt : at(byDomain, domainKeys);
+    if (one.size === 1) named[[...one][0]!]!.push(...group);
+    else alone.push(group);
+  }
+  return [...named, ...alone]
+    .map((group) => group.toSorted((a, b) => a.line - b.line))
+    .toSorted((a, b) => a[0]!.line - b[0]!.line);
+};
+
+/** Names whose numbers differ are two companies, however close: "Works 001" and "Works 002". */
+const numbersOf = (name: string) =>
+  fold(name)
+    .match(/\p{N}+/gu)
+    ?.join(" ") ?? "";
+
 const resolve = (
   csv: Csv,
   mapping: KinImportMapping,
@@ -700,21 +756,7 @@ const resolve = (
       ).slice(0, 3)
     : [];
 
-  // In the file: rows of one client collapse by contact email, web domain, or folded name.
-  const named = rows.filter((row) => {
-    if (row.name !== "" || row.emails.length > 0) return true;
-    if (row.contact !== "" || row.deal !== "" || row.notes !== "")
-      leave(row.line, "This row names no client and no email, so Kin can't tell whose it is.");
-    return false;
-  });
-  const groups = groupBy(named, (row) => [
-    ...(row.name === "" ? [] : [`n:${fold(row.name)}`]),
-    ...row.emails.map((email) => `e:${email.toLowerCase()}`),
-    ...row.emails.flatMap((email) => {
-      const domain = domainOf(email);
-      return domain === undefined ? [] : [`d:${domain}`];
-    }),
-  ]).toSorted((a, b) => a[0]!.line - b[0]!.line);
+  const groups = clientGroups(rows, leave);
 
   const byEmail = new Map<string, Set<string>>();
   const byDomain = new Map<string, Set<string>>();
@@ -789,7 +831,8 @@ const resolve = (
       (one) => one.toLowerCase(),
     );
     const asked = decisions.clients?.[source];
-    // Rule 1, a contact's email; rule 2, an email's web domain at one client; rule 3, the name.
+    // A named row is matched by its name alone; an email or web domain only asks. A row naming
+    // none: rule 1, a contact's email; rule 2, an email's web domain at one client.
     const emailHits = new Set(
       emails.flatMap((email) => [...(byEmail.get(email.toLowerCase()) ?? [])]),
     );
@@ -799,43 +842,56 @@ const resolve = (
     );
     const domainHits = new Set(domains.flatMap((domain) => [...(byDomain.get(domain) ?? [])]));
     const sameName = name === "" ? [] : (byFolded.get(fold(name)) ?? []);
+    const clientsOf = (ids: ReadonlySet<string>) =>
+      [...ids].flatMap((id) => clientById.get(id) ?? []);
+    const closeNames = () => {
+      const numbers = numbersOf(name);
+      const found = matchName(
+        name,
+        (byFirstWord.get(fold(name).split(" ")[0] ?? "") ?? []).filter(
+          (one) => numbersOf(one.name) === numbers,
+        ),
+      );
+      return found._tag === "found"
+        ? [found.item]
+        : found._tag === "ambiguous"
+          ? found.items.slice(0, 5)
+          : [];
+    };
     const exact =
-      emailHits.size === 1
-        ? {
-            id: [...emailHits][0]!,
-            by: "email" as const,
-            detail: `contact email ${emails.find((email) => byEmail.has(email.toLowerCase())) ?? ""}`,
-          }
-        : emailHits.size === 0 && domainHits.size === 1
+      name !== ""
+        ? sameName.length === 1
+          ? { id: sameName[0]!.recordId, by: "name" as const, detail: "the same name" }
+          : undefined
+        : emailHits.size === 1
           ? {
-              id: [...domainHits][0]!,
-              by: "domain" as const,
-              detail: `web domain ${domains.find((domain) => byDomain.has(domain)) ?? ""}`,
+              id: [...emailHits][0]!,
+              by: "email" as const,
+              detail: `contact email ${emails.find((email) => byEmail.has(email.toLowerCase())) ?? ""}`,
             }
-          : emailHits.size === 0 && domainHits.size === 0 && sameName.length === 1
-            ? { id: sameName[0]!.recordId, by: "name" as const, detail: "the same name" }
+          : emailHits.size === 0 && domainHits.size === 1
+            ? {
+                id: [...domainHits][0]!,
+                by: "domain" as const,
+                detail: `web domain ${domains.find((domain) => byDomain.has(domain)) ?? ""}`,
+              }
             : undefined;
     const near =
       exact !== undefined
         ? []
-        : emailHits.size > 1
-          ? [...emailHits].flatMap((id) => clientById.get(id) ?? [])
-          : domainHits.size > 1
-            ? [...domainHits].flatMap((id) => clientById.get(id) ?? [])
-            : sameName.length > 1
-              ? sameName
-              : (() => {
-                  if (name === "") return [];
-                  const found = matchName(
-                    name,
-                    byFirstWord.get(fold(name).split(" ")[0] ?? "") ?? [],
-                  );
-                  return found._tag === "found"
-                    ? [found.item]
-                    : found._tag === "ambiguous"
-                      ? found.items.slice(0, 5)
-                      : [];
-                })();
+        : name !== ""
+          ? sameName.length > 1
+            ? sameName
+            : emailHits.size > 0
+              ? clientsOf(emailHits).slice(0, 5)
+              : domainHits.size === 1
+                ? clientsOf(domainHits)
+                : closeNames()
+          : emailHits.size > 1
+            ? clientsOf(emailHits)
+            : domainHits.size > 1
+              ? clientsOf(domainHits)
+              : [];
     const lines0 = group.map((row) => row.line);
     let target: { recordId: string; key: string } | "new" | "skip";
     if (exact !== undefined) {
@@ -1202,7 +1258,12 @@ export const check = Effect.fn("KinImportFile.check")(function* (
   return {
     ...base,
     ...resolved.check,
-    will: { ...resolved.check.will, contacts: report.contacts.create, deals: report.deals.create },
+    will: {
+      prospects: report.prospects,
+      clients: report.clients.create - report.prospects,
+      contacts: report.contacts.create,
+      deals: report.deals.create,
+    },
     leftOut: leftOut.slice(0, LISTED),
     more: resolved.check.more + report.more + Math.max(0, leftOut.length - LISTED),
     checked: true,
