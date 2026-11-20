@@ -620,6 +620,11 @@ export class KinGitHubWatch extends Context.Service<
   {
     /** One look at GitHub for the org, when it is due. */
     readonly poll: (orgId: KinOrgId, options?: { readonly force?: boolean }) => Effect.Effect<void>;
+    /**
+     * One issue or PR on a watched repo weighed now, as the poll weighs it; the poll's cursors
+     * stay where they are, so the next poll finds what this claimed already handled.
+     */
+    readonly look: (orgId: KinOrgId, repo: string, number: number) => Effect.Effect<void>;
   }
 >()("t3/kin/github/GitHubWatch/KinGitHubWatch") {}
 
@@ -771,7 +776,7 @@ export const make = Effect.gen(function* () {
     readonly account: { readonly login: string };
     readonly startedAt: number;
     readonly since: number;
-    readonly watched: ReadonlyMap<string, { readonly mentions: boolean }>;
+    readonly watched: ReadonlyMap<string, { readonly repo: string; readonly mentions: boolean }>;
     readonly agents: ReadonlyArray<{ readonly agentId: string; readonly name: string }>;
     readonly bot: string | undefined;
     readonly posts: ReadonlySet<string> | undefined;
@@ -1123,7 +1128,35 @@ export const make = Effect.gen(function* () {
       yield* refresh.touch(orgId, "connections");
   });
 
+  const lookAt = Effect.fn("KinGitHubWatch.lookAt")(function* (
+    orgId: KinOrgId,
+    repo: string,
+    number: number,
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    const account = yield* api.connected();
+    const row = yield* watchRow(orgId);
+    // Only what the poll would read: the same login, a watched repo (never memory), its own context.
+    if (account === null || row === undefined) return;
+    if (row.login?.toLowerCase() !== account.login.toLowerCase()) return;
+    const context = yield* lookContext(orgId, now, account, row);
+    const entry = context.watched.get(repo.toLowerCase());
+    if (entry === undefined) return;
+    yield* weigh(
+      context,
+      { repo: entry.repo, number, reviewRequested: false },
+      { woken: 0, later: false, held: new Set() },
+    );
+  });
+
   return KinGitHubWatch.of({
+    look: Effect.fn("KinGitHubWatch.lookOne")(
+      (orgId: KinOrgId, repo: string, number: number) => lookAt(orgId, repo, number),
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Kin's look at one GitHub thread failed", { cause }),
+      ),
+    ),
     poll: Effect.fn("KinGitHubWatch.look")(
       (orgId: KinOrgId, options?: { readonly force?: boolean }) => poll(orgId, options),
       Effect.asVoid,

@@ -953,6 +953,103 @@ describe("a reviewed PR whose head moves", () => {
   });
 });
 
+describe("one look at one thread", () => {
+  const cursors = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql`SELECT notifications_modified, events_etag, since_at, next_at, checked_at
+      FROM kin_github_watch WHERE org_id = ${orgId}`;
+  });
+
+  it.effect(
+    "claims the key the poll would, moves no cursor, and the poll after adds nothing",
+    () => {
+      const { github, layer } = setup();
+      return Effect.gen(function* () {
+        const watch = yield* GitHubWatch.KinGitHubWatch;
+        const issue = github.openItem({
+          repo: REPO,
+          pull: false,
+          author: "teammate-a",
+          association: "MEMBER",
+          title: "Rename the config",
+        });
+        yield* start(github);
+        github.tick(MINUTE);
+        yield* TestClock.adjust(MINUTE);
+        const id = github.comment({
+          repo: REPO,
+          number: issue,
+          author: "teammate-a",
+          association: "MEMBER",
+          body: "/kin rename it",
+        });
+        const before = yield* cursors;
+        yield* watch.look(orgId, REPO.toUpperCase(), issue);
+        assert.deepStrictEqual(
+          (yield* events).map((trigger) => trigger.key),
+          [`call:${REPO}#${issue}:c${id}`],
+        );
+        assert.deepStrictEqual(yield* cursors, before);
+        yield* look(github);
+        assert.lengthOf(yield* events, 1);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("a push to a reviewed PR is a look that claims nothing until the head is still", () => {
+    const { github, layer } = setup();
+    return Effect.gen(function* () {
+      const watch = yield* GitHubWatch.KinGitHubWatch;
+      const { number } = yield* reviewed(github);
+      const head = github.push({ repo: REPO, number });
+      yield* watch.look(orgId, REPO, number);
+      assert.lengthOf(yield* reReviews, 0);
+      yield* look(github, 5);
+      assert.deepStrictEqual(
+        (yield* reReviews).map((trigger) => trigger.key),
+        [GitHubWatch.headKey(REPO, number, head)],
+      );
+      // Once still, a look claims the same key the poll did: nothing more.
+      yield* watch.look(orgId, REPO, number);
+      assert.lengthOf(yield* reReviews, 1);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("does nothing on a repo not watched, switched off, or Kin's memory", () => {
+    const { github, layer } = setup();
+    return Effect.gen(function* () {
+      const watch = yield* GitHubWatch.KinGitHubWatch;
+      github.addRepo({ full_name: MEMORY_REPO });
+      github.addRepo({ full_name: "someone/elsewhere", push: false });
+      const repos = [REPO, MEMORY_REPO, "invented-co/old-fork", "someone/elsewhere"];
+      const numbers = repos.map((repo) =>
+        github.openItem({
+          repo,
+          pull: false,
+          author: "teammate-a",
+          association: "MEMBER",
+          title: "Rename the config",
+        }),
+      );
+      yield* start(github);
+      yield* setRepo({ orgId, repo: REPO, watched: false }, T0);
+      github.tick(MINUTE);
+      for (const [index, repo] of repos.entries())
+        github.comment({
+          repo,
+          number: numbers[index]!,
+          author: "teammate-a",
+          association: "MEMBER",
+          body: "/kin rename it",
+        });
+      github.world.calls.length = 0;
+      for (const [index, repo] of repos.entries()) yield* watch.look(orgId, repo, numbers[index]!);
+      assert.lengthOf(yield* events, 0);
+      assert.deepStrictEqual(github.world.calls, []);
+    }).pipe(Effect.provide(layer));
+  });
+});
+
 describe("protecting a watched repo's default branch from Kin's App", () => {
   const owner = { _tag: "person" as const, orgId, personId: KinPersonId.make("owner") };
   const OWN_RULES = "invented-co/rules";
