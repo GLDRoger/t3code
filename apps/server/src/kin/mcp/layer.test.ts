@@ -541,10 +541,16 @@ it.effect.each([true, false])(
             description,
             inputSchema,
           }));
+          // A group chat's thread lists what its rules allow of the same tools.
+          const group = [];
+          for (const tool of read)
+            if (yield* visibleOnKinEndpoint(tool.name, ThreadId.make("kin-shared:lead-group")))
+              group.push(tool);
           return {
             names,
             t3: LEAD_T3_TOOLS.filter((name) => names.includes(name)),
             bytes: Buffer.byteLength(JSON.stringify(read), "utf8"),
+            sharedBytes: Buffer.byteLength(JSON.stringify(group), "utf8"),
           };
         });
         const engineering = yield* seatList("engineering");
@@ -626,6 +632,7 @@ it.effect.each([true, false])(
             finance: seats.finance.bytes,
             social: seats.social.bytes,
             support: seats.support.bytes,
+            shared: engineering.sharedBytes,
             engineeringBesideFinanceAndSales: beside.engineering.bytes,
             socialBesideFinanceAndSales: beside.social.bytes,
           },
