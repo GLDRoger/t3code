@@ -131,7 +131,8 @@ const seed = Effect.fn("LeaverTest.seed")(function* (services: Context.Context<S
   const followUp = yield* task("Invented: call Brightwater back", zoya, { partyId });
   const promise = yield* task("Invented: send the revised quote", zoya, { category: "obligation" });
   yield* task("Invented: fix the booking page", { _tag: "person", personId: devId }, {});
-  // 10:00 UTC: everyone is awake, so a notice is posted, not held for the morning.
+  // 10:00 on everyone's own clock, whatever zone the tests run in: a notice is posted, not held.
+  yield* sql`UPDATE kin_people SET time_zone = 'UTC' WHERE org_id = ${orgId}`;
   yield* TestClock.setTime(10 * 60 * 60 * 1000);
   return {
     services,
