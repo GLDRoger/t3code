@@ -111,6 +111,7 @@ import Holds from "./migrations/K187_Holds.ts";
 import ReachLimits from "./migrations/K188_ReachLimits.ts";
 import MorningPages from "./migrations/K189_MorningPages.ts";
 import RecordTitleIndex from "./migrations/K190_RecordTitleIndex.ts";
+import ScheduleOwnerTime from "./migrations/K904_ScheduleOwnerTime.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -302,6 +303,7 @@ const loader = Migrator.fromRecord({
   "188_ReachLimits": ReachLimits,
   "189_MorningPages": MorningPages,
   "190_RecordTitleIndex": RecordTitleIndex,
+  "904_ScheduleOwnerTime": ScheduleOwnerTime,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that
