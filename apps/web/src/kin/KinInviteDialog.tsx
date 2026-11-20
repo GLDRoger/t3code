@@ -135,7 +135,7 @@ function NameForm(props: {
     >
       <DialogHeader>
         <DialogTitle>{KIN_TEAM_ADD_COPY.title}</DialogTitle>
-        <DialogDescription>{KIN_TEAM_ADD_COPY.detail}</DialogDescription>
+        <DialogDescription>{KIN_TEAM_ADD_COPY.detail(false)}</DialogDescription>
       </DialogHeader>
       <DialogPanel>
         <div className="flex flex-col gap-4">

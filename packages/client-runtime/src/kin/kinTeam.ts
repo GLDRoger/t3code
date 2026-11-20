@@ -31,12 +31,22 @@ export const KIN_TEAM_ADD = "Add teammate";
 export const KIN_TEAM_LOAD_FAILED = "Couldn't load your team";
 export const KIN_TEAMMATE_NAME_MAX = 80;
 
+/** What a teammate never sees. Where Kin is the whole app there is no code to name. */
+const kinTeamPrivacy = (kinOnly: boolean) =>
+  kinOnly
+    ? "They see only what you let them, and none of your settings."
+    : "They can't see your code or settings.";
+
+/** Under the list of teammates. */
+export const kinTeamFooter = (kinOnly: boolean) =>
+  `Teammates chat with you and with the agents and groups you add them to. ${kinTeamPrivacy(kinOnly)}`;
+
 export const KIN_TEAM_ADD_COPY = {
   linkDropped: (name: string) =>
     `The connection dropped before the link could be shown. Make a new link for ${name} from Team once you're back online.`,
   title: "Add a teammate",
-  detail:
-    "Kin makes a link for you to send them. Opening it lets them chat with you and with the agents and groups you add them to. They can't see your code or settings.",
+  detail: (kinOnly: boolean) =>
+    `Kin makes a link for you to send them. Opening it lets them chat with you and with the agents and groups you add them to. ${kinTeamPrivacy(kinOnly)}`,
   nameLabel: "Their name",
   namePlaceholder: "Sami Okafor",
   nameHint: "This is how they appear in chats.",

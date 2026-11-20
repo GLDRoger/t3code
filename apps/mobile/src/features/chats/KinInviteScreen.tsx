@@ -14,6 +14,7 @@ import { useState } from "react";
 import { TextInput, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
+import { KIN_ONLY } from "../../lib/kinOnly";
 import { AppText as Text } from "../../components/ui/AppText";
 import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -129,7 +130,7 @@ function KinInviteForm(target: KinTeamTarget) {
           ) : (
             <>
               <Text textRole="body" className="px-2 text-foreground-muted">
-                {KIN_TEAM_ADD_COPY.detail}
+                {KIN_TEAM_ADD_COPY.detail(KIN_ONLY)}
               </Text>
               {problem === null ? null : <ErrorBanner message={problem} />}
               <View className="gap-2">
