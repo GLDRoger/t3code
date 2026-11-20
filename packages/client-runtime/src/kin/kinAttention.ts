@@ -13,7 +13,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { kinMoneyDraft, kinMoneyText } from "./kinLists.ts";
+import { kinMoneyDraft, kinMoneyText, kinRecordName } from "./kinLists.ts";
 import { KIN_NEEDS_YOU_SHOWN, type KinNeedsYouRow } from "./kinWorkHome.ts";
 import { kinFailure } from "./kinAnswers.ts";
 
@@ -206,7 +206,7 @@ function kinAttentionRow(
     title: subject.title,
     detail: kinPlainDates(fact.consequence),
     about:
-      [subject.kind === "record" ? subject.key : null, ...where]
+      [subject.kind === "record" ? kinRecordName(subject.key, subject.number) : null, ...where]
         .filter((part) => part !== null)
         .join(" · ") || null,
     urgent: URGENT.has(fact.sense),
@@ -539,12 +539,6 @@ export const KIN_GOALS = {
     clients_won: "Clients won",
     tasks_done: "Tasks done",
     manual: "A number we update",
-  } satisfies Record<KinGoal["measure"], string>,
-  targetHint: {
-    revenue_received: "40 lakh, ₹40,00,000",
-    clients_won: "5",
-    tasks_done: "40",
-    manual: "2",
   } satisfies Record<KinGoal["measure"], string>,
 } as const;
 

@@ -637,6 +637,9 @@ export const kinRepeatText = (rule: KinRepeatRule): string =>
 export const KIN_WORK_REPEAT = {
   label: "Repeats",
   never: "Doesn't repeat",
+  /** Its menu item, on one line: "Make it repeat", or how it repeats now. */
+  menu: (text: string | null) =>
+    text === null ? "Make it repeat" : `Repeats ${text.toLowerCase()}`,
   stop: "Stop repeating",
   needsDue: "Give it a due date first: the next one is made from it.",
   /** Said once, beside the row: a repeat makes the next task, never the money in it. */
@@ -957,7 +960,6 @@ export const KIN_WORK_HAND_BACK = {
   title: "Hand back this task?",
   detail: (to: string) => `It goes back to ${kinMidSentence(to)} to give to someone else.`,
   reasonLabel: "Why (optional)",
-  reasonPlaceholder: "I'm on the release this week",
   confirm: "Hand back",
   failed: "Couldn't hand it back.",
 } as const;
@@ -1734,31 +1736,26 @@ export const kinWorkDraftFor = (
 export function kinWorkDraftWords(draft: Pick<KinWorkDraft, "party" | "side">): {
   readonly title: string;
   readonly titleLabel: string;
-  readonly titlePlaceholder: string;
 } {
   if (draft.party === null || draft.side === null)
     return {
       title: KIN_WORK_NEW,
       titleLabel: KIN_WORK_NEW_COPY.titleLabel,
-      titlePlaceholder: KIN_WORK_NEW_COPY.titlePlaceholder,
     };
   return draft.side === "theirs"
     ? {
         title: `What ${draft.party.title} owes you`,
         titleLabel: "What they owe",
-        titlePlaceholder: "Send the signed contract",
       }
     : {
         title: `What you owe ${draft.party.title}`,
         titleLabel: "What you owe them",
-        titlePlaceholder: "Send the monthly report",
       };
 }
 
 export const KIN_WORK_NEW_COPY = {
   title: KIN_WORK_NEW,
   titleLabel: "What needs doing",
-  titlePlaceholder: "Send Acme the revised quote",
   ownerLabel: "Give it to",
   dueLabel: "Due",
   noDue: "No date",

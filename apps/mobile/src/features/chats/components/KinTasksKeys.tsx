@@ -111,7 +111,6 @@ export function KinTasksKeysSection(props: {
     Dialog.prompt({
       title: KIN_TASKS_KEYS_COPY.makeTitle,
       message: `${KIN_TASKS_KEYS_COPY.labelLabel} ${KIN_TASKS_KEYS_COPY.labelHint}`,
-      placeholder: KIN_TASKS_KEYS_COPY.labelPlaceholder,
       initialValue: "",
       confirmText: KIN_TASKS_KEYS_COPY.create,
       onConfirm: (value) => void make(value),

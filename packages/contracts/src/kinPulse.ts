@@ -130,6 +130,8 @@ export const KinPulseFact = Schema.Struct({
     key: TrimmedNonEmptyString,
     title: Schema.String.check(Schema.isMaxLength(280)),
     recordId: Schema.optional(KinRecordId),
+    /** A record's issued number (INV/26-27/004), once it has one. */
+    number: Schema.optional(TrimmedNonEmptyString),
   }),
   scope: Schema.Struct({
     projectKey: Schema.optional(Schema.String),

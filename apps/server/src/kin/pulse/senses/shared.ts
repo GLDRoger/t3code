@@ -13,7 +13,7 @@ import * as DateTime from "effect/DateTime";
 import type * as SqlClient from "effect/sql/SqlClient";
 
 import { dayIn } from "../../work/money.ts";
-import { sensitiveNow } from "../../work/recordRows.ts";
+import { issuedNumber, sensitiveNow } from "../../work/recordRows.ts";
 import { DAY_MS, HOUR_MS, type Threshold } from "../thresholds.ts";
 
 /** What every sense reads with: the org, the instant, the owner's zone and who acts by default. */
@@ -57,6 +57,7 @@ export interface EntryRow {
   readonly clientKey: string | null;
   readonly clientTitle: string | null;
   readonly clientId: string | null;
+  readonly number: unknown;
 }
 
 export const entryColumns = (sql: SqlClient.SqlClient) => sql`r.record_id AS "recordId", r.key,
@@ -64,7 +65,7 @@ export const entryColumns = (sql: SqlClient.SqlClient) => sql`r.record_id AS "re
   r.date_at AS "dateAt", r.created_at AS "createdAt", r.updated_at AS "updatedAt",
   r.amount_minor AS "amountMinor", r.currency, ${sensitiveNow(sql)} AS sensitive,
   p.key AS "projectKey", p.title AS "projectTitle", c.key AS "clientKey", c.title AS "clientTitle",
-  c.record_id AS "clientId"`;
+  c.record_id AS "clientId", json_extract(r.fields_json, '$.number') AS "number"`;
 
 export const entryJoins = (sql: SqlClient.SqlClient) => sql`kin_records r
   LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
@@ -75,6 +76,7 @@ export const entrySubject = (row: EntryRow) => ({
   key: row.key,
   title: row.title,
   recordId: KinRecordId.make(row.recordId),
+  ...issuedNumber(row.number),
 });
 
 export const entryScope = (row: EntryRow) => ({

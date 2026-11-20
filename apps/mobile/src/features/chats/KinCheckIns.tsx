@@ -220,7 +220,7 @@ function CheckInForm(
           keyboard="numbers"
           disabled={saving}
           maxLength={5}
-          placeholder="09:30"
+          placeholder="HH:MM"
           hint={invalid === "Set a time such as 09:30." ? invalid : undefined}
           onChangeText={(at) => edit({ at: at.trim() })}
         />

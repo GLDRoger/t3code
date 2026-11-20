@@ -79,7 +79,7 @@ export type KinCompanyDraft = Readonly<Record<KinCompanyFieldId, string>>;
 interface FieldSpec {
   readonly id: KinCompanyFieldId;
   readonly label: string;
-  readonly placeholder: string;
+  readonly placeholder?: string;
   readonly multiline?: true;
   /** Ids written in capitals with no spaces. */
   readonly code?: true;
@@ -96,12 +96,12 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
   {
     title: "Company",
     fields: [
-      { id: "legalName", label: "Legal name", placeholder: "Acme Studio Private Limited" },
-      { id: "tradeName", label: "Trading name", placeholder: "Acme Studio" },
+      { id: "legalName", label: "Legal name" },
+      { id: "tradeName", label: "Trading name" },
       {
         id: "address",
         label: "Registered address",
-        placeholder: "Street, city, state and PIN code",
+        placeholder: "Street, city and postal code",
         multiline: true,
       },
     ],
@@ -112,34 +112,32 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
       {
         id: "country",
         label: "Country",
-        placeholder: "GB",
+        placeholder: "Two-letter code",
         code: true,
         problem: "A country is its two-letter code, like GB, US or IN.",
       },
       {
         id: "financialYearStartMonth",
         label: "Financial year starts in",
-        placeholder: "April",
+        placeholder: "Month",
         problem: "Name the month the year starts in, like January or April.",
       },
       {
         id: "taxName",
         label: "Tax charged",
-        placeholder: "VAT",
+        placeholder: "Name of the tax",
         india: false,
         problem: "Name the tax in 40 characters or fewer, like VAT.",
       },
       {
         id: "taxRate",
         label: "Tax rate, in percent",
-        placeholder: "20",
         india: false,
         problem: "Write the rate as a percent from 0 to 100, like 20 or 7.5.",
       },
       {
         id: "gstin",
         label: "GSTIN",
-        placeholder: "29ABCDE1234F1Z5",
         india: true,
         code: true,
         problem: "A GSTIN is 15 characters, like 29ABCDE1234F1Z5.",
@@ -148,23 +146,20 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
         id: "pan",
         india: true,
         label: "PAN",
-        placeholder: "ABCDE1234F",
         code: true,
         problem: "A PAN is 10 characters, like ABCDE1234F.",
       },
-      { id: "placeOfSupply", india: true, label: "Place of supply", placeholder: "Karnataka" },
+      { id: "placeOfSupply", india: true, label: "Place of supply" },
       {
         id: "sac",
         india: true,
         label: "Usual SAC code",
-        placeholder: "998314",
         problem: "A SAC code is 4 to 8 digits.",
       },
       {
         id: "lutNumber",
         india: true,
         label: "LUT ARN, for exports",
-        placeholder: "AD290426001234X",
         code: true,
         problem: "An LUT ARN is 8 to 20 letters and digits.",
       },
@@ -172,7 +167,7 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
         id: "lutDate",
         india: true,
         label: "LUT filed on",
-        placeholder: "2026-04-01",
+        placeholder: "YYYY-MM-DD",
         problem: "Write the day as YYYY-MM-DD, like 2026-04-01.",
       },
     ],
@@ -180,11 +175,10 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
   {
     title: "Bank",
     fields: [
-      { id: "accountName", label: "Account name", placeholder: "Acme Studio Private Limited" },
+      { id: "accountName", label: "Account name" },
       {
         id: "accountNumber",
         label: "Account number",
-        placeholder: "50200012345678",
         code: true,
         problem: "An account number is 6 to 34 letters and digits.",
       },
@@ -192,17 +186,16 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
         id: "ifsc",
         india: true,
         label: "IFSC",
-        placeholder: "HDFC0001234",
         code: true,
         problem: "An IFSC is 11 characters, like HDFC0001234.",
       },
-      { id: "bankName", label: "Bank", placeholder: "HDFC Bank" },
-      { id: "branch", label: "Branch", placeholder: "Indiranagar, Bengaluru" },
+      { id: "bankName", label: "Bank" },
+      { id: "branch", label: "Branch" },
       {
         id: "upi",
         india: true,
         label: "UPI ID",
-        placeholder: "acme@hdfcbank",
+        placeholder: "name@bank",
         problem: "A UPI ID looks like name@bank.",
       },
     ],

@@ -377,7 +377,6 @@ function KinWorkHandBack(
             id={noteId}
             value={note}
             maxLength={280}
-            placeholder={KIN_WORK_HAND_BACK.reasonPlaceholder}
             onChange={(event) => setNote(event.target.value)}
           />
           {failed ? (
@@ -1183,7 +1182,7 @@ export function KinLinkedGroups(props: {
                   className={`${LINK_ROW} ${LINK_ROW_OPENS}`}
                 >
                   {item.kind === "message" ? null : (
-                    <span className="shrink-0 text-xs text-muted-foreground">{item.key}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">{item.name}</span>
                   )}
                   <span className="min-w-0 flex-1 truncate text-foreground">
                     {item.title ?? KIN_LINKED.message}

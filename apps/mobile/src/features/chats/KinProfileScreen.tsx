@@ -435,7 +435,6 @@ function ProfileForm(props: {
         <Field
           label={KIN_PROFILE_COPY.tagsLabel}
           value={draft.tags}
-          placeholder="tech, ios"
           maxLength={200}
           autoCapitalize="none"
           borderTop
@@ -466,7 +465,6 @@ function ProfileForm(props: {
             value={draft.talkStyle}
             maxLength={KIN_PROFILE_TALK_MAX}
             onChangeText={(talkStyle) => set({ talkStyle })}
-            placeholder={KIN_PROFILE_COPY.talkPlaceholder}
             placeholderTextColorClassName="accent-placeholder"
             textAlignVertical="top"
             className="min-h-20 px-4 py-3 font-sans text-base leading-normal text-foreground"
@@ -493,7 +491,7 @@ function ProfileForm(props: {
         <Field
           label="Starts"
           value={draft.start}
-          placeholder="09:00"
+          placeholder="HH:MM"
           maxLength={5}
           autoCapitalize="none"
           borderTop
@@ -502,7 +500,7 @@ function ProfileForm(props: {
         <Field
           label="Ends"
           value={draft.end}
-          placeholder="18:00"
+          placeholder="HH:MM"
           maxLength={5}
           autoCapitalize="none"
           borderTop
@@ -515,7 +513,7 @@ function ProfileForm(props: {
           <Field
             label="From"
             value={draft.quietFrom}
-            placeholder="22:00"
+            placeholder="HH:MM"
             maxLength={5}
             autoCapitalize="none"
             onChange={(quietFrom) => set({ quietFrom })}
@@ -523,7 +521,7 @@ function ProfileForm(props: {
           <Field
             label="Until"
             value={draft.quietTo}
-            placeholder="07:00"
+            placeholder="HH:MM"
             maxLength={5}
             autoCapitalize="none"
             borderTop

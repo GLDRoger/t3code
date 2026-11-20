@@ -140,6 +140,20 @@ describe("kinAttention", () => {
     });
     expect(project.open.map((row) => row.factKey)).toEqual(["task_late:W-2", "task_due_soon:W-1"]);
     expect(project.open[0]!.about).toBe("W-2");
+    // An issued invoice is named by its number; one without a number yet by its key.
+    const numbered = kinAttention(
+      read([
+        fact("invoice_overdue", "INV-7", {
+          subject: { kind: "record", key: "INV-7", title: "Retainer", number: "AM/26-27/004" },
+        }),
+        fact("invoice_overdue", "INV-8"),
+      ]),
+      { scope: { type: "money" }, names, now },
+    );
+    expect(numbered.open.map((row) => row.about)).toEqual([
+      "AM/26-27/004 · Atlas · Lumen",
+      "INV-8 · Atlas · Lumen",
+    ]);
     expect(project.handled.map((row) => row.handled)).toEqual([
       expect.stringMatching(/^Arjun has it until /),
     ]);
