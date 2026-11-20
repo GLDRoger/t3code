@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { KIN_AGENT_PAGE } from "@t3tools/client-runtime/kin/kinAgentPage";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
+  KIN_AGENTS_COPY,
   KIN_OTHER_PROVIDER_AGENTS,
   kinDomainLabel,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
@@ -137,7 +138,7 @@ function AgentRows(props: KinWorkTarget) {
   if (leads === null)
     return AsyncResult.isFailure(result) ? (
       <KinLoadFailed
-        what="Couldn't load your agents"
+        what={KIN_AGENTS_COPY.loadFailedTitle}
         cause={result}
         onRetry={() => appAtomRegistry.refresh(atom)}
         className="px-4 py-3"

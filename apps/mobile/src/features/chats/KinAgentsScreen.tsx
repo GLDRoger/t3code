@@ -119,7 +119,7 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
       {agents === null ? (
         AsyncResult.isFailure(result) ? (
           <KinLoadFailed
-            title="Couldn't load your agents"
+            title={KIN_AGENTS_COPY.loadFailedTitle}
             cause={result}
             onRetry={() => appAtomRegistry.refresh(atom)}
           />
