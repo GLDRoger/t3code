@@ -15,6 +15,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { kinSentences } from "./kinScreenState.ts";
+import { kinCount } from "./kinCount.ts";
 
 /** What a chat message's approval widget says: which action, and where it stood when drawn. */
 export interface KinApprovalWidgetView {
@@ -106,8 +107,6 @@ const KEY_HARDWARE: Record<"secure_enclave" | "strongbox" | "tee", string> = {
   strongbox: "StrongBox",
   tee: "Secure hardware",
 };
-
-const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 function checksSummary(checks: ReadonlyArray<KinCheckRun>): string {
   if (checks.length === 0) return "None reported";
@@ -223,7 +222,7 @@ function fullView(
     fact(
       "changes",
       "Changes",
-      `${count(resolved.files, "file")}, +${resolved.additions} −${resolved.deletions}`,
+      `${kinCount(resolved.files, "file")}, +${resolved.additions} −${resolved.deletions}`,
     );
     fact("checks", "Checks", checksSummary(resolved.checks));
     checks = resolved.checks

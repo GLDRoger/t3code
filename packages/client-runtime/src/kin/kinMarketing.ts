@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 
 import { KIN_LISTS, kinMoneyText } from "./kinLists.ts";
+import { kinCount } from "./kinCount.ts";
 
 /** Marketing's words and rules, the same on web and phone: campaigns, tags, lists and exports. */
 export const KIN_MARKETING = {
@@ -148,7 +149,7 @@ export function kinCampaignResultRows(
 }
 
 const counting = (n: number, one: string, many: string) =>
-  n === 0 ? [] : [`${n} ${n === 1 ? one : many}`];
+  n === 0 ? [] : [kinCount(n, one, many)];
 
 /** "1 client · 2 deals · 1 won": a campaign's results on their folded line, zeros left out. */
 export function kinCampaignResultsSummary(
