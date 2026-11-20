@@ -13,6 +13,7 @@
     "branding/**",
     "infra/kin-sign-in/**",
     ".agents/skills/verify-kin*/**",
+    ".github/workflows/kin.yml",
     "KIN.md",
     "docs/operations/kin-*",
     "docs/user/kin*",

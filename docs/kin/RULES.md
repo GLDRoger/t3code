@@ -30,7 +30,7 @@ Each rule below is one Kin got wrong more than once. A check now refuses the mis
 
 Inside a file T3 owns, Kin adds only a hook: an import, one entry in a list, or one call to a Kin function. The branch checks fail a branch that adds more than 10 lines to an existing T3 file; Kin's own paths are listed in `scripts/kin-t3-footprint.json`, and new files, test files, `routeTree.gen.ts` and `pnpm-lock.yaml` don't count. Move the code into a Kin file, or, when it truly belongs in T3's file, say why in a commit: `T3-file: <file>: <why>`. An upstream sync passes: its merge commit carries `Sync-upstream:` (the sync steps in [KIN.md](../../KIN.md) write it), and only what the branch adds after that merge counts. A file Kin adds outside its folders goes on the list in the same branch.
 
-Run `node scripts/kin-branch-checks.ts mine/kin` to run the branch checks on their own. It prints every `People-change:` line the branch carries, so whoever merges reads them without opening the commits.
+Run `node scripts/kin-branch-checks.ts mine/kin` to run the branch checks on their own. It prints every `People-change:` line the branch carries, so whoever merges reads them without opening the commits. Given a ref without Kin's files, such as upstream's `main` that plain `check:changed` picks, they run against the closest Kin trunk (`kin`, `<remote>/kin`) and say so. On GitHub, the Kin workflow (`.github/workflows/kin.yml`) runs the branch checks and the models a change touches on every pull request to `kin` and every push to it.
 
 ## Judgment only
 
