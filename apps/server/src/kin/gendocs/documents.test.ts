@@ -532,6 +532,10 @@ describe("recipe documents", () => {
       const turnRef = { orgId, agentId: lead, wakeupId: "wake-3" };
       for (const tool of ["kin_document", "kin_recipes", "kin_issue", "kin_recipe_undo"])
         assert.isFalse(yield* sharedToolAllowed(turnRef, tool, { recipe: "report" }), tool);
+      // So is filing a file the agent made, a screenshot included: a teammate's chat gets no doc.
+      assert.isFalse(
+        yield* sharedToolAllowed(turnRef, "kin_document", { file: "/srv/scratch/run/shot.png" }),
+      );
     }).pipe(Effect.provide(layer)),
   );
 
@@ -2471,6 +2475,25 @@ describe("files the agent makes", () => {
       }).pipe(Effect.flip);
       assert.match(bare.message, /give its full path in file/);
       assert.sameMembers([...new Set(shownCards)], ["D-1"]);
+      // A screenshot a delegated run left in its Scratch folder is filed as an image with its card.
+      const shots = `${config.baseDir}/scratch/review-run/shots`;
+      yield* fs.makeDirectory(shots, { recursive: true });
+      const png = `${shots}/phone-390-save-alert.png`;
+      yield* fs.writeFile(png, Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0));
+      const shot = yield* AgentFiles.fileDocument(scope, {
+        title: "Save alert on a phone",
+        file: png,
+        sourceEventId: "event-3",
+      });
+      const [shotDoc] = shot.documents;
+      assert.include(shownCards, shotDoc!.key);
+      const shotFile = Docs.toVersion(
+        (yield* Docs.versionOf(orgId, (yield* versionsOf(shotDoc!.key)).doc.recordId))!,
+      ).file;
+      assert.deepStrictEqual(
+        [shotFile?.name, shotFile?.mimeType],
+        ["phone-390-save-alert.png", "image/png"],
+      );
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
