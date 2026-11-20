@@ -16,7 +16,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
 import { limitedCommand } from "../../gendocs/render.ts";
-import type { FileOutcome } from "./statementFiles.ts";
+import { type FileOutcome, TOO_LARGE } from "./statementFiles.ts";
 
 /**
  * Reads a statement file in a process of its own. Not a worker thread: the desktop server runs
@@ -43,6 +43,8 @@ const CPU_SECONDS = 60;
 const ADDRESS_SPACE_KIB = 8 * 1024 * 1024;
 // 20,000 rows of 500-character narrations is under 16 MB of JSON; a PDF's page text about as much again.
 const OUTPUT_BYTES = 40 * 1024 * 1024;
+// V8's and C++'s words for an allocation that failed: the heap limit, or the address-space cap.
+const OUT_OF_MEMORY = /heap out of memory|process out of memory|Allocation failed|std::bad_alloc/i;
 
 const Day = Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/));
 const Minor = Schema.Int.check(
@@ -118,8 +120,6 @@ const decodeOutcome = Schema.decodeUnknownOption(Schema.fromJsonString(Outcome))
 
 const DAMAGED =
   "Kin couldn't read this file; it may be damaged. Send the bank's PDF, CSV or Excel download again.";
-export const TOO_LARGE =
-  "Kin couldn't read this file: it is too large to read safely. Send a shorter period, or the bank's CSV or Excel download.";
 const failed = (reason: string): FileOutcome => ({ _tag: "unreadable", reason });
 
 /** Why the parent stopped a reader, when it did. */
@@ -274,7 +274,7 @@ export const runReader = Effect.fn("KinStatements.runReader")(
             code,
             signal: exit,
             stdout: stopped === undefined ? NodeBuffer.Buffer.concat(stdout).toString("utf8") : "",
-            heapExhausted: /heap out of memory|Allocation failed/i.test(stderr),
+            heapExhausted: OUT_OF_MEMORY.test(stderr),
             stopped,
             peakKib,
           }),
@@ -312,7 +312,7 @@ export const runReader = Effect.fn("KinStatements.runReader")(
       stopped: ended.stopped,
       peakKib: ended.peakKib,
     });
-    // A kill nobody here sent is the kernel's: a scope's memory limit or the address-space cap.
+    // A kill nobody here sent is the kernel's: a scope's memory limit.
     if (
       ended.stopped === "memory" ||
       ended.stopped === "output" ||
