@@ -6,6 +6,7 @@ import {
   kinPlaceOfWork,
   kinRecordOf,
   kinRecordPlace,
+  kinSearchDialogPlace,
   kinSearchHitPlace,
   kinSearchOf,
   kinTaskAddress,
@@ -99,6 +100,32 @@ describe("kinSearchHitPlace", () => {
     expect(
       kinSearchHitPlace({ kind: "memory", key: "memory:1", section: null, clientKey: null }),
     ).toBeNull();
+  });
+});
+
+describe("kinSearchDialogPlace", () => {
+  const hit = (kind: "work" | "invoices", key: string) => ({
+    kind,
+    key: KinRecordKey.make(key),
+    section: null,
+    clientKey: null,
+  });
+  const deal = { to: KIN_PLACE_PATH.clients, search: { tab: "deals", task: "DL-1" } };
+
+  it.each([
+    // A deal lands on Clients' Deals tab, as the palette and a message link land it.
+    ["tasks", "clients", hit("work", "DL-1"), deal],
+    ["clients", "clients", hit("work", "DL-1"), deal],
+    ["clients", "projects", hit("work", "DL-1"), deal],
+    ["money", "clients", hit("invoices", "DL-1"), deal],
+    // Already on the Deals tab, it opens there over what is open.
+    ["clients", "deals", hit("work", "DL-1"), null],
+    // A task or a money entry opens over the place searched from.
+    ["tasks", "clients", hit("work", "W-1"), null],
+    ["clients", "clients", hit("work", "W-1"), null],
+    ["tasks", "clients", hit("invoices", "INV-1"), null],
+  ] as const)("from %s (%s tab) a hit %j leaves for %j", (place, tab, found, to) => {
+    expect(kinSearchDialogPlace({ place, tab }, found)).toEqual(to);
   });
 });
 

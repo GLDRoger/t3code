@@ -1,5 +1,6 @@
 import { kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinInMoney } from "@t3tools/client-runtime/kin/kinMoney";
+import type { KinClientsTab } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
   KinAgentId,
   KinDocSectionId,
@@ -73,6 +74,19 @@ export function kinSearchHitPlace(hit: {
   return place.to === KIN_PLACE_PATH.docs && hit.section !== null
     ? { ...place, search: { ...place.search, section: hit.section.id } }
     : place;
+}
+
+/**
+ * Where a place's Search Work sends a hit: a deal to where it lives, unless that is the tab
+ * searched from; null for the rest, which open over the place searched from.
+ */
+export function kinSearchDialogPlace(
+  from: { readonly place: KinPlace; readonly tab: KinClientsTab },
+  hit: Parameters<typeof kinSearchHitPlace>[0],
+) {
+  const home = kinSearchHitPlace(hit);
+  if (home === null || !("tab" in home.search)) return null;
+  return from.place === "clients" && from.tab === home.search.tab ? null : home;
 }
 
 /** The record open beside a place's list: a client, project, list, the coming dates, the subscriptions, or a doc. */
