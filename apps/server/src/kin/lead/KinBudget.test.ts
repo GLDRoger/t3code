@@ -309,12 +309,15 @@ describe("KinBudget", () => {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('member', ${orgId}, 'member', 'Member', '1970-01-01T00:00:00.000Z')`;
       const input = { orgId, limits: { leadUnits: 100, workerUnits: 200 } };
-      assert.include(
-        yield* budget
-          .set([{ _tag: "person", orgId, personId: KinPersonId.make("member") }], input)
-          .pipe(Effect.flip),
-        { reason: "not_allowed" },
-      );
+      // No limit is the owner's to choose, as any limit is.
+      const none = { orgId, limits: { leadUnits: null, workerUnits: null, teammateUnits: null } };
+      for (const asked of [input, none])
+        assert.include(
+          yield* budget
+            .set([{ _tag: "person", orgId, personId: KinPersonId.make("member") }], asked)
+            .pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
       assert.include(yield* budget.set([], input).pipe(Effect.flip), { reason: "not_found" });
       // A teammate's read is refused at the service too, not trimmed.
       assert.include(
@@ -363,23 +366,47 @@ describe("KinBudget", () => {
         workerUnits: null,
         teammateUnits: null,
       });
-      for (const priority of ["P0", "P1", "P2", "P3"] as const)
-        assert.include(yield* budget.admit(orgId, priority, "teammate"), {
-          allowed: true,
-          atLimit: false,
-        });
-      assert.isTrue(yield* budget.admitTask(orgId));
-      assert.strictEqual(yield* budget.promptContext(orgId), "no daily limit");
+      const limited = Budget.teammatesLimited(orgId);
+      // Nothing stops or warns: every priority runs, tasks start, the cap is lifted.
+      const unlimited = Effect.gen(function* () {
+        for (const asker of ["owner", "teammate"] as const)
+          for (const priority of ["P0", "P1", "P2", "P3", "P4"] as const)
+            assert.include(yield* budget.admit(orgId, priority, asker), {
+              allowed: true,
+              atLimit: false,
+              heldBy: null,
+            });
+        assert.isTrue(yield* budget.admitTask(orgId));
+        assert.strictEqual(yield* budget.promptContext(orgId), "no daily limit");
+        assert.isFalse(yield* limited);
+      });
+      yield* unlimited;
       assert.deepStrictEqual(fresh.usual, Budget.USUAL_LIMITS);
+      // Use is still counted and shown, and no limit is ever said to be near.
+      yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids) VALUES (${orgId}, 'unlimited', ${agentId}, 'cheap', 0, 'completed', '[]')`;
+      yield* budget.charge({ orgId, wakeupId: KinWakeupId.make("unlimited"), usage });
+      assert.strictEqual((yield* budget.get(orgId)).leadUnits, 50000055.5);
+      assert.deepStrictEqual(yield* sql`SELECT body FROM kin_messages WHERE org_id = ${orgId}`, []);
       const touched: Array<string> = [];
       const watched = Effect.provideService(KinRefreshObserver, {
         touch: (_org, topic) => Effect.sync(() => void touched.push(topic)),
       });
+      // A limit again restores every stop.
       yield* watched(budget.set(owner, { orgId, limits: { leadUnits: 100, workerUnits: 100 } }));
       assert.isFalse((yield* budget.admit(orgId, "P2")).allowed);
+      assert.isFalse((yield* budget.admit(orgId, "P2", "teammate")).allowed);
+      assert.isFalse(yield* budget.admitTask(orgId));
+      assert.strictEqual(yield* budget.promptContext(orgId), "0% of today left");
+      assert.isTrue(yield* limited);
       yield* watched(budget.set(owner, { orgId, limits: { leadUnits: null, workerUnits: null } }));
-      assert.isTrue((yield* budget.admit(orgId, "P2")).allowed);
+      yield* unlimited;
       assert.deepStrictEqual(touched, ["budget", "budget"]);
+      // Teammates' own limit keeps the cap even with none for the agents.
+      yield* budget.set(owner, {
+        orgId,
+        limits: { leadUnits: null, workerUnits: null, teammateUnits: 5 },
+      });
+      assert.isTrue(yield* limited);
     }).pipe(Effect.provide(layer)),
   );
   it.effect(
@@ -470,12 +497,16 @@ describe("KinBudget", () => {
           until: DateTime.formatIso(DateTime.makeUnsafe(nextReset)),
           agents: [{ agentId, name: "Lead", requests: 1, tasks: 0, other: 0 }],
         });
-        // Raising the limit lets what waited run now.
+        // Removing the limit lets what waited run now: nothing is held, so nothing says so.
         yield* budget.set(owner, {
           orgId,
-          limits: { leadUnits: 1000, workerUnits: 1000, teammateUnits: null },
+          limits: { leadUnits: null, workerUnits: null, teammateUnits: null },
         });
         assert.deepStrictEqual((yield* budget.get(orgId)).waiting?.agents, []);
+        assert.deepStrictEqual(
+          yield* sql`SELECT budget_deferred, not_before FROM kin_events WHERE event_id = 'next'`,
+          [{ budget_deferred: 0, not_before: null }],
+        );
       }).pipe(Effect.provide(layer)),
   );
   it.effect("warns the owner once a day at 80% of a limit they set", () =>

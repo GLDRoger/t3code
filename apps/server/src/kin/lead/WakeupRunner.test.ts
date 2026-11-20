@@ -726,7 +726,7 @@ describe("WakeupRunner", () => {
       ),
   );
   it.effect(
-    "defers P3 until the owner-local reset without attempts and re-admits it after limits rise",
+    "defers P3 until the owner-local reset without attempts and re-admits it after limits rise or go",
     () =>
       Effect.gen(function* () {
         yield* seed;
@@ -737,13 +737,15 @@ describe("WakeupRunner", () => {
         yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'America/New_York', '09:00', '18:00', '02:00', 0, 1, '10:00', '{}')`;
         yield* budget.set(people, { orgId, limits: { leadUnits: 100, workerUnits: 100 } });
         yield* sql`UPDATE kin_budget SET lead_units = 85 WHERE org_id = ${orgId}`;
-        const pending = decodeEvent({
-          ...event("deferred"),
-          receivedAt: "1970-01-01T00:00:00.000Z",
-          _tag: "watchdog",
-          finding: "Check",
-          itemIds: [],
-        });
+        const watchdog = (id: string) =>
+          decodeEvent({
+            ...event(id),
+            receivedAt: "1970-01-01T00:00:00.000Z",
+            _tag: "watchdog",
+            finding: "Check",
+            itemIds: [],
+          });
+        const pending = watchdog("deferred");
         yield* queue.enqueue(pending);
         yield* queue.enqueue(
           decodeEvent({
@@ -768,6 +770,15 @@ describe("WakeupRunner", () => {
             { state: "done", attempts: 0 },
           ],
         );
+        // A limit again holds the next one; no limit runs it at once.
+        yield* budget.set(people, { orgId, limits: { leadUnits: 100, workerUnits: 100 } });
+        yield* queue.enqueue(watchdog("again"));
+        yield* Fiber.join(yield* run());
+        const again = sql`SELECT state FROM kin_events WHERE event_id = 'again'`;
+        assert.deepStrictEqual(yield* again, [{ state: "queued" }]);
+        yield* budget.set(people, { orgId, limits: { leadUnits: null, workerUnits: null } });
+        yield* Fiber.join(yield* run());
+        assert.deepStrictEqual(yield* again, [{ state: "done" }]);
       }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
   );
   it.effect("completes Pi wake-ups with disjoint snapshot counters and no turn ledger", () =>
