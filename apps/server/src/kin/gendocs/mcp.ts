@@ -65,7 +65,8 @@ export const KinDocumentToolkit = Toolkit.make(
   Tool.make("kin_recipes", {
     ...shared,
     description:
-      "List the recipes this company's files are made from: each one's name, what it makes, the list it is for, whether it is numbered or confidential, its inputs (from is agent for the ones you give, else where Kin reads it), the fields Kin computes and its output files. Read-only.",
+      "List the recipes this company's files are made from: each one's name, what it makes, the list it is for, whether it is numbered or confidential, and the inputs you give (agentInputs). Pass recipe to read one in full: every input, the fields Kin computes and its output files. Read-only.",
+    parameters: Documents.RecipesInput,
     success: Documents.RecipesResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_issue", {
@@ -115,8 +116,8 @@ export const handlers = McpToolAccess.toLayer(KinDocumentToolkit, {
     }, Effect.mapError(failure)),
   ),
   kin_recipes: McpToolAccess.reads(
-    Effect.fn("KinDocumentToolkit.recipes")(function* () {
-      return yield* Documents.recipes(yield* McpInvocationContext, {});
+    Effect.fn("KinDocumentToolkit.recipes")(function* (input) {
+      return yield* Documents.recipes(yield* McpInvocationContext, input);
     }, Effect.mapError(failure)),
   ),
   kin_issue: McpToolAccess.actsAsCaller(
