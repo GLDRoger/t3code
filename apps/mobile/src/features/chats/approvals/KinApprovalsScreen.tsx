@@ -30,7 +30,8 @@ import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
 import { useEnvironments } from "../../../state/environments";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
-import { useEnrolApproverKey, useKinApproverKey } from "./useKinApproverKey";
+import type { KinApproverKeyRecord } from "./approverKeyRecord";
+import { enrolApproverKey, useKinApproverKey } from "./useKinApproverKey";
 
 type KinApprovalsParams = { readonly environmentId: string; readonly orgId: string };
 
@@ -99,7 +100,6 @@ function Section(props: {
 function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId }) {
   const { environmentId, orgId } = props;
   const { status, refresh } = useKinApproverKey(environmentId, orgId);
-  const enrol = useEnrolApproverKey();
   const { environments } = useEnvironments();
   const revokeKey = useAtomCommand(kinClient.approverKeyRevoke, { reportFailure: false });
   const canChallenge = useAtomValue(kinClient.keyChallenge.permissionAtom(environmentId));
@@ -129,28 +129,51 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
       </View>
     );
 
-  const start = async (replace: boolean) => {
+  // The Kin a key belongs to, as the person knows it.
+  const kinName = (key: KinApproverKeyRecord) =>
+    key.environmentId !== environmentId
+      ? (environments.find((one) => one.environmentId === key.environmentId)?.label ??
+        "another Kin")
+      : key.orgId === orgId
+        ? "this Kin"
+        : "another company on this computer";
+  const start = async (replace: { readonly confirmed: KinApproverKeyRecord | null } | null) => {
     if (working || !canEnrol) return;
     setWorking(true);
     setProblem(null);
-    const result = await enrol({ environmentId, orgId, replace });
+    const outcome = await enrolApproverKey({ environmentId, orgId, replace });
     setWorking(false);
-    if (result !== null && !result.ok) setProblem(result);
+    refresh();
+    if (outcome._tag === "busy")
+      setProblem({
+        text: "This phone is already being set up. Try again once that finishes.",
+        keyExists: false,
+      });
+    else if (outcome._tag === "changed")
+      setProblem({
+        text: "This phone's approval key changed since you confirmed. Check it, then set up again.",
+        keyExists: false,
+      });
+    else if (outcome._tag === "stopped") {
+      if (outcome.failure !== null) setProblem(outcome.failure);
+    } else if (outcome.cleanup === "pending" && outcome.replaced !== null) {
+      const name = kinName(outcome.replaced);
+      Alert.alert(
+        `${name.charAt(0).toUpperCase()}${name.slice(1)} still lists this phone`,
+        "Kin couldn't remove the old key there yet. It tries again the next time that computer connects; until then it still lists this phone as one that can approve.",
+      );
+    }
   };
   const replaceKey = problem?.keyExists === true || status.staleKey;
   // A phone holds one approval key, so setting up here ends approving where it was before.
   const elsewhere = status.elsewhere;
-  const elsewhereName =
-    elsewhere === null
-      ? null
-      : elsewhere.environmentId === environmentId
-        ? "another company on this computer"
-        : (environments.find((one) => one.environmentId === elsewhere.environmentId)?.label ??
-          "another Kin");
+  const elsewhereName = elsewhere === null ? null : kinName(elsewhere);
   const elsewhereLine =
     elsewhereName === null
       ? null
       : `This phone approves for ${elsewhereName}. A phone holds one approval key, so setting it up here removes it there: anything it approved there that hasn't run yet is cancelled, and that Kin needs another phone to approve.`;
+  // The exact key this dialog is about: setup replaces it only if it is still the one held.
+  const confirmed = status.saved;
   const setUp = () =>
     replaceKey
       ? Alert.alert(
@@ -158,10 +181,10 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
           elsewhereLine ?? "It makes a new approval key. The old one on this phone stops working.",
           [
             { text: "Cancel", style: "cancel" },
-            { text: "Set up again", onPress: () => void start(true) },
+            { text: "Set up again", onPress: () => void start({ confirmed }) },
           ],
         )
-      : void start(false);
+      : void start(null);
 
   const remove = async (key: KinApproverKey) => {
     if (removing !== null) return;

@@ -1,6 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { encodeGrantSigningInput } from "@t3tools/shared/kinGrant";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   kinApprovalFailure,
   kinChallengeMatchesCard,
@@ -26,14 +26,26 @@ import { Platform } from "react-native";
 
 import * as ApprovalKey from "../../../../modules/kin-approval-key";
 import { appAtomRegistry } from "../../../state/atom-registry";
+import { environmentPresentations } from "../../../state/presentation";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 import {
+  addPendingKeyCleanup,
   clearApproverKeyRecord,
   kinApproverKeyRecordAtom,
+  readApproverKeyRecord,
+  readPendingKeyCleanup,
+  removePendingKeyCleanup,
   saveApproverKeyRecord,
   type KinApproverKeyRecord,
 } from "./approverKeyRecord";
+import {
+  createKinApproverKeyCleanup,
+  createKinApproverKeyEnrolment,
+  type KinApproverKeyRef,
+  type KinEnrolOutcome,
+  type KinRevokeAnswer,
+} from "./approverKeyReplace";
 
 /** Where this phone's approval key stands with one host and org, beside the org's other phones. */
 export type KinApproverKeyStatus =
@@ -47,6 +59,8 @@ export type KinApproverKeyStatus =
       readonly staleKey: boolean;
       /** The other host and org this phone's one key approves for, which a new key ends. */
       readonly elsewhere: KinApproverKeyRecord | null;
+      /** The key record this phone holds now, which a replacement must still match. */
+      readonly saved: KinApproverKeyRecord | null;
     } & KinApprovalsListKeysResult);
 
 export function useKinApproverKey(environmentId: EnvironmentId, orgId: KinOrgId) {
@@ -80,6 +94,7 @@ function approverKeyStatus(
     own: own ?? null,
     staleKey: saved !== null && own === undefined,
     elsewhere: saved !== null && here === null ? saved : null,
+    saved,
     ...keys.value,
   };
 }
@@ -108,85 +123,140 @@ const notMatching: KinApprovalOutcome = {
   },
 };
 
-type EnrolResult =
-  | { readonly ok: true }
-  /** `keyExists`: this phone holds a key the host doesn't know; replacing it is the way out. */
-  | { readonly ok: false; readonly text: string; readonly keyExists: boolean };
+/** `keyExists`: this phone holds a key the host doesn't know; replacing it is the way out. */
+export interface KinEnrolFailure {
+  readonly text: string;
+  readonly keyExists: boolean;
+}
+interface EnrolTarget {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+}
 
-// Replacing a key never waits longer than this on the host it was for.
+// A revoke never holds up setup longer than this; one that doesn't answer is asked again later.
 const REVOKE_WAIT_MS = 4_000;
 
-/** Sets up this phone's approval key with a host: challenge, hardware key, attested register. */
-export function useEnrolApproverKey() {
-  const keyChallenge = useAtomCommand(kinClient.keyChallenge, { reportFailure: false });
-  const registerKey = useAtomCommand(kinClient.registerKey, { reportFailure: false });
-  const revokeKey = useAtomCommand(kinClient.approverKeyRevoke, { reportFailure: false });
-  // The host the old key was for drops it, so its list stops naming a phone that can't sign.
-  const revokeOld = async () => {
-    const record = appAtomRegistry.get(kinApproverKeyRecordAtom);
-    const saved = AsyncResult.isSuccess(record) ? record.value : null;
-    if (saved === null) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
-      revokeKey({
-        environmentId: saved.environmentId,
-        input: { orgId: saved.orgId, thumbprint: saved.thumbprint },
-      }),
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, REVOKE_WAIT_MS);
-      }),
-    ]);
-    clearTimeout(timer);
-  };
-  return async (input: {
-    readonly environmentId: EnvironmentId;
-    readonly orgId: KinOrgId;
-    /** Delete the key this phone holds first, after the owner chose to replace it. */
-    readonly replace: boolean;
-  }): Promise<EnrolResult | null> => {
-    const { environmentId, orgId } = input;
-    return orDeviceFailure(async () => {
-      if (input.replace) {
-        await revokeOld();
-        await ApprovalKey.deleteKey();
-        await clearApproverKeyRecord();
-      }
-      const challenge = await keyChallenge({ environmentId, input: {} });
+async function revokeReplaced(ref: KinApproverKeyRef): Promise<KinRevokeAnswer> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const answer = await Promise.race([
+    runAtomCommand(
+      appAtomRegistry,
+      kinClient.approverKeyRevoke,
+      { environmentId: ref.environmentId, input: { orgId: ref.orgId, thumbprint: ref.thumbprint } },
+      { reportFailure: false },
+    ).then((result): KinRevokeAnswer => {
+      if (AsyncResult.isSuccess(result)) return "done";
+      const cause = squashAtomCommandFailure(result);
+      if (!isApprovalError(cause)) return "retry";
+      // Gone already is what was wanted; anything but an outage is that host's lasting answer.
+      return cause.reason === "not_found"
+        ? "done"
+        : cause.reason === "unavailable"
+          ? "retry"
+          : "final";
+    }),
+    new Promise<KinRevokeAnswer>((resolve) => {
+      timer = setTimeout(() => resolve("retry"), REVOKE_WAIT_MS);
+    }),
+  ]);
+  clearTimeout(timer);
+  return answer;
+}
+
+const failure = (text: string, keyExists = false) =>
+  ({ ok: false, failure: { text, keyExists } }) as const;
+
+const enrolment = createKinApproverKeyEnrolment<EnrolTarget, string, KinEnrolFailure>({
+  readRecord: readApproverKeyRecord,
+  begin: (target) =>
+    orDeviceFailure(async () => {
+      const challenge = await runAtomCommand(
+        appAtomRegistry,
+        kinClient.keyChallenge,
+        { environmentId: target.environmentId, input: {} },
+        { reportFailure: false },
+      );
       if (AsyncResult.isFailure(challenge))
-        return { ok: false, text: hostText(squashAtomCommandFailure(challenge)), keyExists: false };
-      if (!AsyncResult.isSuccess(challenge)) return null;
-      const created = await ApprovalKey.createKey(challenge.value.challenge);
-      const registered = await registerKey({
-        environmentId,
-        input: {
-          enrolmentVersion: KIN_APPROVER_ENROLMENT_VERSION,
-          orgId,
-          publicJwk: created.publicJwk,
-          platform: Platform.OS === "android" ? "android" : "ios",
-          challenge: challenge.value.challenge,
-          ...(created.attestation === undefined ? {} : { attestation: created.attestation }),
-          deviceLabel: deviceLabel(),
+        return failure(hostText(squashAtomCommandFailure(challenge)));
+      return { ok: true, value: challenge.value.challenge } as const;
+    }),
+  discardLocal: async () => {
+    await ApprovalKey.deleteKey();
+    await clearApproverKeyRecord();
+  },
+  finish: ({ environmentId, orgId }, challenge) =>
+    orDeviceFailure(async () => {
+      const created = await ApprovalKey.createKey(challenge);
+      const registered = await runAtomCommand(
+        appAtomRegistry,
+        kinClient.registerKey,
+        {
+          environmentId,
+          input: {
+            enrolmentVersion: KIN_APPROVER_ENROLMENT_VERSION,
+            orgId,
+            publicJwk: created.publicJwk,
+            platform: Platform.OS === "android" ? "android" : "ios",
+            challenge,
+            ...(created.attestation === undefined ? {} : { attestation: created.attestation }),
+            deviceLabel: deviceLabel(),
+          },
         },
-      });
+        { reportFailure: false },
+      );
       if (AsyncResult.isFailure(registered)) {
         // The host never took this key, so nothing trusts it: remove it so a retry can make one.
         await ApprovalKey.deleteKey();
-        return {
-          ok: false,
-          text: hostText(squashAtomCommandFailure(registered)),
-          keyExists: false,
-        };
+        return failure(hostText(squashAtomCommandFailure(registered)));
       }
-      if (!AsyncResult.isSuccess(registered)) return null;
       await saveApproverKeyRecord({
         environmentId,
         orgId,
         thumbprint: registered.value.key.thumbprint,
       });
       appAtomRegistry.refresh(kinClient.approverKeys({ environmentId, input: { orgId } }));
-      return { ok: true };
-    });
+      return { ok: true } as const;
+    }),
+  revoke: revokeReplaced,
+  addPending: addPendingKeyCleanup,
+});
+
+/**
+ * Sets up this phone's approval key with a host: challenge, hardware key, attested register. One
+ * setup runs at a time on the phone; `replace` names the key the person confirmed replacing.
+ */
+export function enrolApproverKey(input: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly replace: { readonly confirmed: KinApproverKeyRecord | null } | null;
+}): Promise<KinEnrolOutcome<KinEnrolFailure>> {
+  return enrolment({
+    target: { environmentId: input.environmentId, orgId: input.orgId },
+    replace: input.replace,
+  }).catch((error: unknown) => ({ _tag: "stopped" as const, failure: deviceFailure(error) }));
+}
+
+const isConnected = (environmentId: EnvironmentId) =>
+  appAtomRegistry.get(environmentPresentations.presentationsAtom).get(environmentId)?.connection
+    .phase === "connected";
+
+const cleanup = createKinApproverKeyCleanup({
+  pending: readPendingKeyCleanup,
+  connected: isConnected,
+  revoke: revokeReplaced,
+  removePending: removePendingKeyCleanup,
+});
+
+/** Asks a host again to drop a key this phone replaced, whenever a host connects. */
+export function startApproverKeyCleanup(): () => void {
+  const run = () => {
+    void cleanup().catch((cause: unknown) =>
+      console.warn("Kin approval key cleanup failed", cause),
+    );
   };
+  return appAtomRegistry.subscribe(environmentPresentations.presentationsAtom, run, {
+    immediate: true,
+  });
 }
 
 /** What Settings shows for this phone: its name and, when they differ, its model. */
@@ -197,18 +267,23 @@ function deviceLabel() {
   return (parts.join(" · ") || "Phone").slice(0, 80);
 }
 
-// Outside the hook: the React Compiler can't compile value blocks inside try/catch.
-async function orDeviceFailure(
-  run: () => Promise<EnrolResult | null>,
-): Promise<EnrolResult | null> {
+function deviceFailure(error: unknown): KinEnrolFailure | null {
+  const code = deviceCodeOf(error);
+  const outcome = failedFrom(error, code);
+  return outcome._tag === "canceled"
+    ? null
+    : { text: outcome.failure.text, keyExists: code === "E_KEY_EXISTS" };
+}
+
+// Outside a hook: the React Compiler can't compile value blocks inside try/catch.
+async function orDeviceFailure<A>(
+  run: () => Promise<A>,
+): Promise<A | { readonly ok: false; readonly failure: KinEnrolFailure } | null> {
   try {
     return await run();
   } catch (error) {
-    const code = deviceCodeOf(error);
-    const outcome = failedFrom(error, code);
-    return outcome._tag === "canceled"
-      ? null
-      : { ok: false, text: outcome.failure.text, keyExists: code === "E_KEY_EXISTS" };
+    const failed = deviceFailure(error);
+    return failed === null ? null : { ok: false, failure: failed };
   }
 }
 
