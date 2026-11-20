@@ -100,7 +100,7 @@ features:
     web: [home, section:Waiting on you, chat, card:Choice]
     phone: [tab:chats, KinWaiting, card:Choice]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    tools: [kin_ask, kin_ask_close]
+    tools: [kin_ask, kin_ask_close, kin_ask_person]
     note: >-
       Stored only for a direct chat with one person. A repeat (same intent about a shared record)
       is refused; at its day Kin takes the default once, or raises a question with no safe default

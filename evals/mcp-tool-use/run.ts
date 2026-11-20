@@ -84,6 +84,7 @@ import {
   HANDED_BACK_WORK,
   REPLY_SHAPE,
   SHARED_TURN_LINE,
+  workForText,
 } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { WEEKLY_RULE } from "../../apps/server/src/kin/pulse/weekly.ts";
@@ -1373,7 +1374,8 @@ const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["world"]) 
     .replaceAll("{{STARTED_RULE}}", STARTED_RULE)
     .replaceAll("{{DECLINED_RULE}}", DECLINED_RULE)
     .replaceAll("{{SHARED_TURN}}", SHARED_TURN_LINE)
-    .replaceAll("{{WITHDRAWN_WORK}}", WITHDRAWN_WORK);
+    .replaceAll("{{WITHDRAWN_WORK}}", WITHDRAWN_WORK)
+    .replace(/\{\{WORK_FOR:([^}]+)\}\}/g, (_, names: string) => workForText(names));
 
 export const buildMessages = (sample: Sample) => {
   const { testCase, base, tools } = sample;

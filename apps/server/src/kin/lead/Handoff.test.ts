@@ -945,7 +945,7 @@ it.effect(
         );
         assert.strictEqual(
           (yield* Effect.flip(sideways)).message,
-          "Dev Kulkarni and Chief of staff can't message each other here, so nothing was sent. Tell Zoya Sheikh in one line, and ask the owner if it matters.",
+          "Dev Kulkarni and Chief of staff can't message each other here, so nothing was sent. Tell Zoya Sheikh in one line that the owner can lift it. Don't try another way.",
         );
         yield* restrict(false);
         // Dev never signed in: it waits in his chat, and the result says so.
@@ -1412,7 +1412,7 @@ it.effect(
           {
             reason: "not_allowed",
             message:
-              "Meera and Ops can't message each other here, so nothing was sent. Tell Meera in one line, and ask the owner if it matters.",
+              "Meera and Ops can't message each other here, so nothing was sent. Tell Meera in one line that the owner can lift it. Don't try another way.",
           },
         );
         assert.lengthOf(yield* ownerCard(ctx), 0);

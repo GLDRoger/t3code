@@ -39,7 +39,7 @@ export const restrictedLine = (name: string, agentName: string, asker?: string |
   `${name} and ${agentName} can't message each other here, so nothing was sent. ${
     asker === null
       ? "The owner can lift that."
-      : `${asker === undefined ? "Ask" : `Tell ${asker} in one line, and ask`} the owner if it matters.`
+      : `${asker === undefined ? "The owner can lift it" : `Tell ${asker} in one line that the owner can lift it`}. Don't try another way.`
   }`;
 
 export const UNRESTRICTABLE = "Owners and co-owners can message everyone.";

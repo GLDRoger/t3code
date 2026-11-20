@@ -26,7 +26,7 @@ export type OutsideToolPolicy = "allowed" | "refused" | Condition;
 
 /** The one line a tool refused after outside text answers with. */
 export const OUTSIDE_REFUSAL =
-  "This turn read text from a connected service, so it can't do this now. Offer it to the owner with kin_ask instead; their tap starts it in a fresh turn.";
+  "This turn read text from a connected service, so it can't do this now. Offer it to the owner with kin_ask instead; their tap starts it in a fresh turn. Next time, start the work before you read it.";
 
 const field = (args: unknown, name: string) =>
   Predicate.hasProperty(args, name) ? args[name] : undefined;
@@ -42,6 +42,7 @@ export const OUTSIDE_TOOLS = {
   kin_widget_upsert: "allowed",
   kin_ask: "allowed",
   kin_ask_close: "allowed",
+  kin_ask_person: "allowed",
   kin_react: "allowed",
   kin_chart: "allowed",
   kin_visual: "allowed",

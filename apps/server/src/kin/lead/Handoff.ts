@@ -123,12 +123,11 @@ export const TakePrivateResult = Schema.Struct({
 const RELAY_MAX = 300;
 export const RelayInput = Schema.Struct({
   to: TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
-    description:
-      "The person, by name as people_read gives it. From a teammate's chat: the owner, a co-owner or a project's lead. From the owner's chat: the teammate.",
+    description: "The person, by name as people_read gives it.",
   }),
   text: TrimmedNonEmptyString.check(Schema.isMaxLength(RELAY_MAX)).annotate({
     description:
-      "From a teammate's chat: their request, in their words, with the task key. From the owner's chat: your message to the teammate, written for them.",
+      "The message, written for them, in at most 300 characters: a request in the asker's words with the task key, or the answer back.",
   }),
   sourceEventId: TurnEvent,
   urgent: Schema.optional(

@@ -53,6 +53,18 @@ export const AskPersonInput = Schema.Struct({
   intent: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(120))),
 });
 
+/** What `kin_ask_person` returns: where the question is, and what to tell whoever asked. */
+export const AskPersonResult = Schema.Struct({
+  questionId: KinTrimmedText,
+  to: KinTrimmedText,
+  state: Schema.Literals(["posted", "held"]),
+  at: Schema.optional(Schema.Number),
+  dueAt: Schema.Number,
+  retry: Schema.Boolean,
+  signedIn: Schema.optional(Schema.Boolean),
+  note: KinTrimmedText,
+});
+
 /** What the agent is told when the person has never signed in: it waits, and nobody was alerted. */
 const notSignedIn = (name: string) =>
   `${name} hasn't signed in to Kin yet: it waits in their chat with you and reaches them when they do. Nobody was alerted. Their answer comes back here.`;
