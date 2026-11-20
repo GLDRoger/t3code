@@ -533,6 +533,7 @@ export default defineConfig({
           "packages/contracts/src/kin*.ts",
           "apps/web/src/kin/**",
           "apps/web/src/components/settings/Kin*.tsx",
+          "apps/web/src/components/settings/ApprovalsSettings.tsx",
           "apps/mobile/src/features/chats/**",
         ],
         excludeFiles: [
