@@ -47,6 +47,7 @@
     "evals/mcp-tool-use/appServer.ts",
     "evals/mcp-tool-use/compare.ts",
     "evals/mcp-tool-use/estimate.ts",
+    "evals/mcp-tool-use/kin*",
     "evals/mcp-tool-use/gate.ts",
     "evals/mcp-tool-use/margin.ts",
     "evals/mcp-tool-use/rubric.ts"
