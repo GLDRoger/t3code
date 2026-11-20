@@ -42,7 +42,7 @@ import type { ClosedSubject } from "../open/closeSubject.ts";
 import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
-import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
+import { ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
 import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { companyMoney, countryFirst, homeCurrency } from "./companyProfile.ts";
 import { commentsPage } from "./recordComments.ts";
@@ -201,6 +201,10 @@ export type Fields = {
   readonly dueAt?: number | null;
   readonly dueAllDay?: boolean;
   readonly notes?: string;
+  /**
+   * `false` makes a new entry a suggestion; `true` keeps one, which only `mayKeep` writers do. Who
+   * writes decides the rest (`startsKept`), never this.
+   */
   readonly confirmed?: boolean;
   /** Raised by anyone; lowered only by a person, which the owner-only callers make the owner. */
   readonly sensitive?: boolean;
@@ -229,6 +233,8 @@ export type CreateInput = Fields & {
   readonly requestHash?: string;
   readonly source?: { readonly chatId: KinChatId; readonly messageId: KinMessageId };
   readonly links?: ReadonlyArray<LinkInput>;
+  /** The entry this one is made from, such as a quote's invoice: made from a suggestion, it is one. */
+  readonly from?: string;
   /** When an import says it was made, and closed if it is; otherwise now. */
   readonly createdAt?: number;
   readonly closedAt?: number;
@@ -372,6 +378,10 @@ export type PaymentInput = {
   readonly originKey: string;
 };
 const CLOSED = ["done", "dropped"] as const;
+/** Quotes and invoices: real only on an owner-level person's word (`startsKept`). */
+const ISSUED_LISTS: ReadonlySet<string> = new Set(["quotes", "invoices"]);
+/** Lists whose entries are issued, sent or paid: a suggestion there is none of those. */
+const MONEY_LISTS: ReadonlySet<string> = new Set(["quotes", "invoices", "expenses", "receipts"]);
 const OPEN_KEYS_NAMED = 20;
 /** A retry whose first result was taken back since: answering it with that result would lie. */
 const undoneRetry = (what: string) =>
@@ -1184,6 +1194,37 @@ const make = Effect.gen(function* () {
     } satisfies StoredRepeat;
   });
 
+  /** Who keeps a suggestion: an owner-level person now, or an agent one asked in person. */
+  const mayKeep = Effect.fn("KinRecords.mayKeep")(function* (orgId: KinOrgId, writer: Writer) {
+    if (writer.actor._tag === "person")
+      return yield* ownerLevel(orgId, writer.actor.personId).pipe(provideSql);
+    if (writer.actor._tag === "agent" && writer.wakeupId !== undefined)
+      return yield* ownerLevelAsked(orgId, writer.actor.agentId, writer.wakeupId).pipe(provideSql);
+    return false;
+  });
+
+  /**
+   * Whether a new entry starts kept, from who makes it, in the write's transaction. Made from a
+   * suggestion, or asked to be one, it is one. A quote or invoice is real only on an owner-level
+   * person's word: theirs, or their ask in person of an agent. Anything else starts kept as it
+   * always did, unless its caller asks for less.
+   */
+  const startsKept = Effect.fn("KinRecords.startsKept")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    list: string,
+    input: Pick<CreateInput, "confirmed" | "from">,
+  ) {
+    if (input.confirmed === false) return false;
+    if (input.from !== undefined) {
+      const [source] = yield* sql<{ confirmed: number }>`SELECT confirmed FROM kin_records
+        WHERE org_id = ${orgId} AND record_id = ${input.from}`;
+      if (source !== undefined && isSuggestion(source)) return false;
+    }
+    if (!ISSUED_LISTS.has(list) || writer.actor._tag === "system") return true;
+    return yield* mayKeep(orgId, writer);
+  });
+
   /**
    * One new entry, in the caller's transaction. `wake` is false for the next occurrence of a
    * repeating entry, which is owed later and is nobody's new instruction.
@@ -1197,6 +1238,8 @@ const make = Effect.gen(function* () {
       readonly repeat?: StoredRepeat;
       /** Whose words the copied title and notes are, for an occurrence copied from another. */
       readonly authors?: { readonly title: string | null; readonly notes: string | null };
+      /** Decided for it already, as for an occurrence by whoever closed the one before. */
+      readonly kept?: boolean;
     },
   ) {
     const recordId = recordIdFor(orgId, input.originKey);
@@ -1279,6 +1322,7 @@ const make = Effect.gen(function* () {
         zone: def.id === "expenses" ? yield* ownerZone(orgId).pipe(provideSql) : "UTC",
       });
     const waitingOn = state === "waiting" ? (input.waitingOn ?? null) : null;
+    const kept = options.kept ?? (yield* startsKept(orgId, writer, list, input));
     const givenAway =
       !(writer.actor._tag === "agent" && samePrincipal(writer.actor, input.owner)) &&
       !(writer.actor._tag === "person" && samePrincipal(writer.actor, input.owner));
@@ -1297,7 +1341,7 @@ const make = Effect.gen(function* () {
         ${waitingOn?._tag ?? null}, ${waitingOn === null ? null : principalId(waitingOn)},
         ${input.owner._tag}, ${principalId(input.owner)}, ${input.side ?? "ours"},
         ${input.category ?? null}, ${input.dueAt ?? null}, ${input.dueAllDay === true ? 1 : 0},
-        ${input.sensitive === true || def.sensitive ? 1 : 0}, ${input.confirmed === false ? 0 : 1},
+        ${input.sensitive === true || def.sensitive ? 1 : 0}, ${kept ? 1 : 0},
         ${notes}, 1, ${input.source?.chatId ?? null},
         ${input.source?.messageId ?? null}, ${writer.actor._tag},
         ${writer.actor._tag === "agent" ? writer.actor.agentId : writer.actor._tag === "person" ? writer.actor.personId : null},
@@ -1406,6 +1450,8 @@ const make = Effect.gen(function* () {
       Object.entries(parseFields(row.fieldsJson)).filter(([key]) => !files.has(key)),
     );
     const amount = amountOf(row);
+    // The next one is whoever closed this one's to keep, and a suggestion if this one is.
+    const keptNext = yield* startsKept(orgId, writer, row.registerId, { from: row.recordId });
     yield* insert(
       orgId,
       {
@@ -1430,7 +1476,6 @@ const make = Effect.gen(function* () {
         sensitive: row.sensitive === 1,
         // The next one is seen by whoever saw this one.
         team: row.teamShared === 1,
-        confirmed: row.confirmed === 1,
         partyId: row.partyId,
         projectId: row.projectId,
         repo: row.repo,
@@ -1438,7 +1483,12 @@ const make = Effect.gen(function* () {
         ...(amount === undefined ? {} : { amount }),
         links: [{ kind: "record", target: row.recordId, relation: "relates", label: row.key }],
       },
-      { wake: false, repeat, authors: { title: row.titleBy, notes: row.notesBy } },
+      {
+        wake: false,
+        repeat,
+        authors: { title: row.titleBy, notes: row.notesBy },
+        kept: keptNext,
+      },
     );
   });
 
@@ -1684,6 +1734,26 @@ const make = Effect.gen(function* () {
                 : row.state
             : undefined;
         const state = patch.state ?? settled ?? row.state;
+        // Only who may keep one keeps a suggestion, and only an owner-level person takes it back;
+        // anyone else's `confirmed` changes nothing, so an agent's slip ack stays only that.
+        const keeping =
+          patch.confirmed === true && isSuggestion(row) && (yield* mayKeep(orgId, writer));
+        const unkeeping =
+          patch.confirmed === false &&
+          !isSuggestion(row) &&
+          writer.actor._tag === "person" &&
+          (yield* ownerLevel(orgId, writer.actor.personId).pipe(provideSql));
+        // Until it is kept, a suggestion is issued, sent or paid by nobody; undoing its drop
+        // puts back only what it was.
+        if (
+          isSuggestion(row) &&
+          !keeping &&
+          MONEY_LISTS.has(list) &&
+          row.state !== "dropped" &&
+          state !== row.state &&
+          (state === "waiting" || state === "done")
+        )
+          return yield* invalid(stillSuggestion(row.key));
         // Closing a client or project would strand what points at it: close or move that first.
         if (
           (list === "clients" || list === "projects") &&
@@ -1891,7 +1961,7 @@ const make = Effect.gen(function* () {
           changes.push({ field: "side", from: row.side, to: patch.side });
           set("side", patch.side);
         }
-        if (patch.confirmed !== undefined && (patch.confirmed ? 1 : 0) !== row.confirmed) {
+        if (keeping || unkeeping) {
           changes.push({
             field: "confirmed",
             from: shown(row.confirmed === 1),

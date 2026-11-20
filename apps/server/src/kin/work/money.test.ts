@@ -52,6 +52,7 @@ import { proposalFor } from "./registers.ts";
 import { waitLine } from "./statements/passwordBudget.ts";
 import * as OwnerMoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as OwnerWork from "./ownerWork.ts";
+import * as Quotes from "../gendocs/quotes.ts";
 import { endOfDay } from "./recordRows.ts";
 
 // Invented org, people, amounts and files only; nothing here reads a real database.
@@ -1133,13 +1134,23 @@ describe("invoices", () => {
           key: KinRecordKey.make("INV-2"),
         }).pipe(Effect.flip);
         assert.strictEqual(numbered.message, waits);
-        const byAgent = yield* LeadWork.update(scope, {
-          sourceEventId: asked,
+        // On a turn nobody asked for, an agent's keep is not one.
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+            started_at, status, event_ids, audience)
+          VALUES ('wake-routine', ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running',
+            '["event-routine"]', 'owner_only')`;
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+            received_at, queued_at, state, wakeup_id)
+          VALUES ('event-routine', ${orgId}, ${lead}, 'schedule.fired', 'P0',
+            ${JSON.stringify({ _tag: "schedule.fired" })}, 0, 0, 'claimed', 'wake-routine')`;
+        yield* LeadWork.update(scope, {
+          sourceEventId: "event-routine",
           key: "INV-2",
           confirmed: true,
-        }).pipe(Effect.flip);
-        assert.include(byAgent, { reason: "not_allowed" });
-        assert.strictEqual(byAgent.message, waits);
+        });
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'wake-routine'`;
+        yield* sql`UPDATE kin_wakeups SET status = 'running' WHERE wakeup_id = 'wake-3'`;
         const rev = (key: string) =>
           OwnerWork.list(people, { orgId, list: "invoices" }).pipe(
             Effect.map((page) => page.records.find((one) => one.key === key)!.rev),
@@ -2378,6 +2389,268 @@ describe("the owner's taps", () => {
         WHERE org_id = ${orgId} AND register_id = 'dates'`;
       const loaded = yield* dates();
       assert.deepStrictEqual([loaded.name, loaded.categoryLabels?.tds], ["Key dates", "T DS"]);
+    }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("who keeps a suggestion", () => {
+  // The owner's binding rule: a quote or invoice is real on an owner-level person's word only.
+  it.effect("is decided in the write from who acted, and nothing an agent passes", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES ('co-owner', ${orgId}, 'co', 'Co', ${at}, 'co_owner'),
+          ('mate', ${orgId}, 'mate', 'Mate', ${at}, 'member')`;
+      yield* defined(1, { template: "invoices" });
+      yield* defined(3, { template: "expenses" });
+      yield* defined(5, { template: "quotes" });
+      const records = yield* KinRecords.KinRecords;
+      const person = (id: string): KinRecords.Writer => ({
+        actor: { _tag: "person", personId: KinPersonId.make(id) },
+        via: "owner",
+      });
+      // A turn of the lead woken by these, in order: people's messages, or a routine or reaction.
+      let n = 100;
+      const woken = (...by: ReadonlyArray<string>) =>
+        Effect.gen(function* () {
+          n += 1;
+          const wake = `wake-${n}`;
+          yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+          yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+              started_at, status, event_ids, audience)
+            VALUES (${wake}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running', '[]',
+              'owner_only')`;
+          for (const [i, who] of by.entries()) {
+            const eventId = `event-${n}-${i}`;
+            const message = `msg-${n}-${i}`;
+            const said = who !== "routine" && who !== "reaction";
+            if (said)
+              yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+                  author_person_id, author_member_id, author_role, kind, body, mentions_json,
+                  status, created_at, attachments_json)
+                VALUES (${message}, ${orgId}, 'lead-chat', ${n * 10 + i}, 'human', ${who},
+                  'lead-chat-owner', 'owner', 'text', 'Invoice it', '[]', 'posted', ${at}, '[]')`;
+            const tag = said
+              ? "chat.message"
+              : who === "routine"
+                ? "schedule.fired"
+                : "chat.reaction";
+            yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+                received_at, queued_at, state, wakeup_id)
+              VALUES (${eventId}, ${orgId}, ${lead}, ${tag}, 'P0', ${JSON.stringify({
+                _tag: tag,
+                chatId: "lead-chat",
+                messageId: message,
+                provenance: { _tag: "human", personId: ownerId },
+              })}, 0, 0, 'claimed', ${wake})`;
+          }
+          return `event-${n}-0`;
+        });
+      const kept = (key: string) =>
+        records.get(orgId, key).pipe(Effect.map((row) => row?.confirmed));
+      const AGENTS = [
+        ["owner asked", [ownerId]],
+        ["co-owner asked", ["co-owner"]],
+        ["owner and co-owner asked", [ownerId, "co-owner"]],
+        ["owner and teammate asked", [ownerId, "mate"]],
+        ["teammate asked", ["mate"]],
+        ["nobody asked", ["routine"]],
+        ["owner reacted", ["reaction"]],
+      ] as const;
+      const asAgent = (by: ReadonlyArray<string>, records: ReadonlyArray<object>) =>
+        Effect.gen(function* () {
+          const asked = yield* woken(...by);
+          const made = yield* LeadWork.create(scope, {
+            sourceEventId: asked,
+            records: records as never,
+          });
+          return made.records.map((one) => one.key);
+        });
+      const lists = (title: string) => [
+        { list: "quotes", title: `${title} quote`, amount: "10,000" },
+        { list: "invoices", title: `${title} invoice`, amount: "10,000", state: "open" },
+        { list: "expenses", title: `${title} expense`, amount: "100" },
+        { title: `${title} task` },
+      ];
+      // Each actor against creating each kind: [quote, invoice, expense, task].
+      // A turn a teammate is part of writes in the team view, which this lead chat refuses.
+      const created: Record<string, ReadonlyArray<number | string | undefined>> = {};
+      for (const [name, by] of AGENTS)
+        created[name] = yield* Effect.forEach(lists(name), (one) =>
+          asAgent(by, [one]).pipe(
+            Effect.flatMap(([key]) => kept(key!)),
+            Effect.catchTags({ KinChatError: () => Effect.succeed("refused") }),
+          ),
+        );
+      for (const who of [ownerId, "co-owner", "mate"]) {
+        const keys = [];
+        for (const [i, one] of lists(who).entries()) {
+          const { row } = yield* records.create(orgId, person(who), {
+            ...(one.list === undefined ? {} : { list: one.list }),
+            originKey: `by-${who}-${i}`,
+            title: one.title,
+            owner: { _tag: "person", personId: KinPersonId.make(who) },
+          });
+          keys.push(row.key);
+        }
+        created[who] = yield* Effect.forEach(keys, kept);
+      }
+      assert.deepStrictEqual(created, {
+        "owner asked": [1, 1, 1, 1],
+        "co-owner asked": [1, 1, 1, 1],
+        "owner and co-owner asked": [1, 1, 1, 1],
+        "owner and teammate asked": ["refused", "refused", "refused", "refused"],
+        "teammate asked": ["refused", "refused", "refused", "refused"],
+        "nobody asked": [0, 0, 0, 0],
+        "owner reacted": [0, 0, 0, 0],
+        [ownerId]: [1, 1, 1, 1],
+        "co-owner": [1, 1, 1, 1],
+        mate: [0, 0, 1, 1],
+      });
+
+      // Keeping one: confirmed true keeps it only on a turn an owner-level person asked in person.
+      const guessed = (title: string) =>
+        asAgent(["routine"], [{ list: "invoices", title, amount: "47,200", state: "open" }]).pipe(
+          Effect.map(([key]) => key!),
+        );
+      const keeps: Record<string, number | undefined> = {};
+      for (const [name, by] of AGENTS) {
+        const key = yield* guessed(`Kept by ${name}`);
+        yield* LeadWork.update(scope, {
+          sourceEventId: yield* woken(...by),
+          key,
+          confirmed: true,
+        }).pipe(Effect.catchTags({ KinChatError: () => Effect.void }));
+        keeps[name] = yield* kept(key);
+      }
+      for (const who of [ownerId, "co-owner", "mate"]) {
+        const key = yield* guessed(`Kept by ${who}`);
+        yield* records.update(orgId, person(who), key, { confirmed: true });
+        keeps[who] = yield* kept(key);
+      }
+      assert.deepStrictEqual(keeps, {
+        "owner asked": 1,
+        "co-owner asked": 1,
+        "owner and co-owner asked": 1,
+        "owner and teammate asked": 0,
+        "teammate asked": 0,
+        "nobody asked": 0,
+        "owner reacted": 0,
+        [ownerId]: 1,
+        "co-owner": 1,
+        mate: 0,
+      });
+
+      // Nothing else an agent does keeps one, or takes a person's keep back.
+      const key = yield* guessed("Invented renewal");
+      const routine = () => woken("routine");
+      yield* LeadWork.update(scope, { sourceEventId: yield* routine(), key, amount: null });
+      yield* LeadWork.update(scope, {
+        sourceEventId: yield* routine(),
+        key,
+        amount: "47,200",
+        confirmed: true,
+      });
+      yield* LeadWork.update(scope, { sourceEventId: yield* routine(), key, due: "2026-12-01" });
+      yield* records.update(orgId, person(ownerId), key, { fields: { number: "INV/26-27/090" } });
+      // The owner asking for the same again later makes a new entry; the guess stays a guess.
+      const again = yield* asAgent(
+        [ownerId],
+        [{ list: "invoices", title: "Invented renewal", amount: "47,200", state: "open" }],
+      );
+      const keptOne = (yield* asAgent(
+        [ownerId],
+        [{ list: "invoices", title: "Invented kept", amount: "1,000", state: "open" }],
+      ))[0]!;
+      yield* LeadWork.update(scope, {
+        sourceEventId: yield* woken(ownerId),
+        key: keptOne,
+        confirmed: false,
+      });
+      assert.deepStrictEqual(
+        [yield* kept(key), again[0] !== key, yield* kept(keptOne)],
+        [0, true, 1],
+      );
+
+      // Until it is kept, nobody issues, sends, pays or moves it to issued.
+      const refusal = `${key} is an agent's suggestion awaiting the owner: only the owner or a co-owner can confirm it.`;
+      const quote = (yield* asAgent(
+        ["routine"],
+        [{ list: "quotes", title: "Invented guessed quote", amount: "5,000" }],
+      ))[0]!;
+      const refused = yield* Effect.all([
+        OwnerMoney.issue(people, { orgId, key: KinRecordKey.make(key) }).pipe(Effect.flip),
+        OwnerMoney.issue(people, { orgId, key: KinRecordKey.make(quote) }).pipe(Effect.flip),
+        records
+          .pay(orgId, person(ownerId), key, {
+            amount: { minor: 100, currency: "INR" },
+            paidOn: "2026-11-12",
+            originKey: "paid-a-suggestion",
+          })
+          .pipe(Effect.flip),
+        records.update(orgId, person(ownerId), key, { state: "waiting" }).pipe(Effect.flip),
+        records.update(orgId, person(ownerId), quote, { state: "done" }).pipe(Effect.flip),
+      ]);
+      assert.deepStrictEqual(
+        refused.map((one) => one.message),
+        [refusal, refusal.replace(key, quote), refusal, refusal, refusal.replace(key, quote)],
+      );
+      // Not needed, and its undo, still work.
+      yield* records.update(orgId, person(ownerId), key, { state: "dropped" });
+      yield* records.update(orgId, person(ownerId), key, { state: "open" });
+
+      // Made from another: a suggestion's invoice is one; a kept quote's follows who makes it.
+      const keptQuotes = yield* asAgent(
+        [ownerId],
+        [
+          { list: "quotes", title: "Invented kept quote", amount: "5,000" },
+          { list: "quotes", title: "Invented second kept quote", amount: "6,000" },
+        ],
+      );
+      const fromQuote = (writer: KinRecords.Writer, quoteKey: string) =>
+        Quotes.invoiceFromQuote(orgId, writer, quoteKey).pipe(
+          Effect.flatMap(({ entry }) => kept(entry.key)),
+        );
+      yield* woken("routine");
+      const unasked: KinRecords.Writer = {
+        actor: { _tag: "agent", agentId: lead },
+        via: "lead",
+        wakeupId: `wake-${n}`,
+      };
+      assert.deepStrictEqual(
+        [
+          yield* fromQuote(person(ownerId), quote),
+          yield* fromQuote(person(ownerId), keptQuotes[0]!),
+          yield* fromQuote(unasked, keptQuotes[1]!),
+        ],
+        [0, 1, 0],
+      );
+      // A repeating entry's next one: a suggestion's is one; a kept one's follows who closed it.
+      const repeating = (title: string, by: ReadonlyArray<string>) =>
+        Effect.gen(function* () {
+          const [one] = yield* asAgent(by, [{ title }]);
+          yield* records.update(orgId, system, one!, {
+            dueAt: Date.parse("2026-11-20T12:00:00.000Z"),
+            repeat: { every: "month" },
+          });
+          return one!;
+        });
+      const next = (closed: string, writer: KinRecords.Writer) =>
+        Effect.gen(function* () {
+          const row = (yield* records.get(orgId, closed))!;
+          yield* records.update(orgId, writer, closed, { state: "done" });
+          const [copy] = yield* sql<{ confirmed: number }>`SELECT confirmed FROM kin_records
+            WHERE org_id = ${orgId} AND origin_key = ${`repeat:${row.recordId}`}`;
+          return copy?.confirmed;
+        });
+      assert.deepStrictEqual(
+        [
+          yield* next(yield* repeating("Invented guessed check-in", ["routine"]), person(ownerId)),
+          yield* next(yield* repeating("Invented kept check-in", [ownerId]), person(ownerId)),
+        ],
+        [0, 1],
+      );
     }).pipe(Effect.provide(layer)),
   );
 });

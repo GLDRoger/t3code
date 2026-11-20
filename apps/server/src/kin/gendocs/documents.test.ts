@@ -2200,6 +2200,22 @@ describe("receipts", () => {
         assert.match(yield* setAgainst(nobody.receipt, unbilled), /names no client/);
         assert.match(yield* setAgainst(advance.receipt, forBeta), /another client/);
         assert.match(yield* setAgainst(advance.receipt, unbilled), /another client/);
+        // Nor to an invoice nobody has kept: it owes nothing yet.
+        const guessed = yield* invoiceFor("Guessed job", "1,000", "Invented Acme");
+        yield* sql`UPDATE kin_records SET confirmed = 0 WHERE org_id = ${orgId} AND key = ${guessed}`;
+        assert.match(
+          yield* setAgainst(advance.receipt, guessed),
+          new RegExp(`${guessed} is .*suggestion`),
+        );
+        // Nor from a receipt nobody has kept: its advance is evidence, not money received.
+        yield* sql`UPDATE kin_records SET confirmed = 0
+          WHERE org_id = ${orgId} AND key = ${advance.receipt}`;
+        assert.match(
+          yield* setAgainst(advance.receipt, retainer),
+          new RegExp(`${advance.receipt} is .*suggestion`),
+        );
+        yield* sql`UPDATE kin_records SET confirmed = 1
+          WHERE org_id = ${orgId} AND key = ${advance.receipt}`;
         assert.match(
           yield* setAgainst(advance.receipt, small),
           /has ₹300\.00 left to pay, less than the ₹500\.00 advance/,

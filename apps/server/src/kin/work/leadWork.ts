@@ -42,7 +42,7 @@ import {
 import { resolveLead } from "../lead/LeadMemory.ts";
 import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { heldUntil } from "../triggers/quietHold.ts";
-import { ownerLevelPeople } from "../people/KinAccess.ts";
+import { ownerLevelAsked, ownerLevelPeople } from "../people/KinAccess.ts";
 import { sentMail, SentMailView } from "../connections/Sending.ts";
 import { countryFirst, countryRefusal, homeCurrency, isCountryFirst } from "./companyProfile.ts";
 import { partyPage, projectDetail } from "./crm.ts";
@@ -84,7 +84,6 @@ import {
   endOfDay,
   iso,
   isSuggestion,
-  stillSuggestion,
   notFound,
   owedInvoices,
   ownerZone,
@@ -1918,6 +1917,7 @@ const createRow = Effect.fnUntraced(function* (
     partyId ?? null,
     "dueAt" in due && typeof due.dueAt === "number" ? due.dueAt : undefined,
   );
+  const keeps = yield* ownerLevelAsked(lead.orgId, lead.agentId, lead.wakeupId);
   const { row: stored, created } = yield* records.create(lead.orgId, writer, {
     list,
     originKey,
@@ -1940,9 +1940,9 @@ const createRow = Effect.fnUntraced(function* (
     ...(row.notes === undefined ? {} : { notes: row.notes }),
     ...categoryOf(list, row),
     ...(row.side === undefined ? {} : { side: row.side }),
-    // What the owner asked for is confirmed; what a lead inferred waits for the owner. Only
-    // the owner confirms in Work, so a teammate's task keeps the default.
-    ...(team === undefined ? { confirmed: row.suggested !== true && writer.askedBy !== null } : {}),
+    // What an owner-level person asked for in person is kept; what a lead inferred waits for
+    // Keep. A shared turn's tasks keep the default; its quotes and invoices `KinRecords` decides.
+    ...(team === undefined ? { confirmed: row.suggested !== true && keeps } : {}),
     // Where it was first asked stays the owner's to know.
     ...(source === undefined || team !== undefined ? {} : { source }),
   });
@@ -2317,8 +2317,6 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
   if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, before.recordId)))
     return yield* notFound(key);
   if (listOf(before.registerId) === "docs") return yield* isDoc(key);
-  if (input.confirmed === true && isSuggestion(before))
-    return yield* new KinChatError({ reason: "not_allowed", message: stillSuggestion(before.key) });
   yield* explainedHonestly(lead, before, input.state, input.kind ?? input.category);
   const def = yield* listFor(lead, before.registerId);
   const patch: Patch = {
@@ -2332,7 +2330,8 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     ...(input.notes === undefined ? {} : { notes: input.notes }),
     ...(input.category === undefined ? {} : { category: input.category }),
     ...(input.side === undefined ? {} : { side: input.side }),
-    ...(input.confirmed === undefined ? {} : { confirmed: input.confirmed }),
+    // Keeps a suggestion only on a turn an owner-level person asked in person (`KinRecords`).
+    ...(input.confirmed === true ? { confirmed: true } : {}),
     ...(input.kind === undefined ? {} : { category: input.kind }),
     ...(input.repo === undefined ? {} : { repo: input.repo }),
     ...(input.sensitive === undefined ? {} : { sensitive: true }),

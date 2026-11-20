@@ -45,6 +45,31 @@ export const ownerLevel = Effect.fn("KinAccess.ownerLevel")(function* (
   return kinOwnerLevel(yield* accessOf(orgId, personId));
 });
 
+/**
+ * Whether an owner-level person asked this agent's turn in person: every event that woke it is
+ * a message or a card tap by someone owner-level now, none passed on by another agent. A reaction,
+ * a record change, a brief, a routine, a handoff or a teammate's word among them is no ask. Only
+ * this makes what an agent writes kept (`KinRecords`); `askedBy` keeps naming who asked.
+ */
+export const ownerLevelAsked = Effect.fn("KinAccess.ownerLevelAsked")(function* (
+  orgId: KinOrgId,
+  agentId: string,
+  wakeupId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ direct: number }>`SELECT COALESCE(
+      e.tag IN ('chat.message', 'widget.action') AND json_extract(e.json, '$.origin') IS NULL
+        AND m.author_kind = 'human' AND m.chat_id = json_extract(e.json, '$.chatId')
+        AND ${sql.literal(ownerLevelSql("m.org_id", "m.author_person_id"))}, 0) AS direct
+    FROM kin_events e
+    LEFT JOIN kin_messages m ON m.org_id = e.org_id AND e.tag IN ('chat.message', 'widget.action')
+      AND m.message_id = json_extract(e.json, '$.messageId')
+      AND (m.kind = 'widget_action') = (e.tag = 'widget.action')
+    WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.wakeup_id = ${wakeupId}
+    ORDER BY e.event_id`;
+  return rows.length > 0 && rows.every((row) => row.direct === 1);
+});
+
 /** The org's owner-level people. */
 export const ownerLevelPeople = Effect.fn("KinAccess.ownerLevelPeople")(function* (
   orgId: KinOrgId,

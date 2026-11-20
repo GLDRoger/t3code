@@ -856,24 +856,26 @@ export const markQuotesSent = Effect.fn("KinSending.markQuotesSent")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   if (sent.entryRecordIds.length === 0) return;
-  const drafts = yield* sql<{ key: string }>`SELECT key FROM kin_records
-    WHERE org_id = ${sent.orgId} AND register_id = 'quotes' AND state = 'open'
-      AND record_id IN ${sql.in([...new Set(sent.entryRecordIds)])}
-    ORDER BY key`;
   const writer = {
     actor: { _tag: "person", personId: KinPersonId.make(sent.personId) },
     via: "owner",
     wakeupId: sent.wakeupId,
   } as const;
+  // Kept first: a suggestion is never marked sent while it is one.
+  if (yield* ownerLevel(sent.orgId, KinPersonId.make(sent.personId))) {
+    const suggested = yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
+      WHERE r.org_id = ${sent.orgId} AND NOT ${keptEntry(sql)}
+        AND r.record_id IN ${sql.in([...new Set(sent.entryRecordIds)])}
+      ORDER BY r.key`;
+    for (const { key } of suggested)
+      yield* records.update(sent.orgId, writer, key, { confirmed: true });
+  }
+  const drafts = yield* sql<{ key: string }>`SELECT key FROM kin_records r
+    WHERE org_id = ${sent.orgId} AND register_id = 'quotes' AND state = 'open'
+      AND ${keptEntry(sql)} AND record_id IN ${sql.in([...new Set(sent.entryRecordIds)])}
+    ORDER BY key`;
   for (const { key } of drafts)
     yield* records.update(sent.orgId, writer, key, { state: "waiting" });
-  if (!(yield* ownerLevel(sent.orgId, KinPersonId.make(sent.personId)))) return;
-  const suggested = yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
-    WHERE r.org_id = ${sent.orgId} AND NOT ${keptEntry(sql)}
-      AND r.record_id IN ${sql.in([...new Set(sent.entryRecordIds)])}
-    ORDER BY r.key`;
-  for (const { key } of suggested)
-    yield* records.update(sent.orgId, writer, key, { confirmed: true });
 });
 
 const decodeSentPayload = Schema.decodeUnknownOption(PreparedJson);
