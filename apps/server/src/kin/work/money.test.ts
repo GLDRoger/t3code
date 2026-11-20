@@ -1679,6 +1679,7 @@ describe("invoices", () => {
         yield* seed;
         yield* defined(1, { template: "invoices" });
         yield* defined(3, { template: "quotes" });
+        yield* defined(7, { template: "receipts" });
         const records = yield* KinRecords.KinRecords;
         const owner: KinRecords.Writer = {
           actor: { _tag: "person", personId: ownerId },
@@ -1735,6 +1736,14 @@ describe("invoices", () => {
               state: "waiting",
               repeat: { every: "month" },
             },
+            {
+              list: "receipts",
+              title: "Invented site deposit received",
+              client: "Invented Acme",
+              project: site.key,
+              amount: "30,000",
+              date: "2026-11-12",
+            },
           ],
         });
         const [quote, deposit, monthly] = made.records.map((one) => one.key);
@@ -1748,6 +1757,10 @@ describe("invoices", () => {
           [(yield* records.get(orgId, deposit!))?.projectId, invoiced.projectId, next?.projectId],
           [site.recordId, site.recordId, retainer.recordId],
         );
+        // A receipt is Draft until numbered, yet its money arrived, so it counts.
+        assert.deepStrictEqual((yield* moneyOf(orgId, site.recordId, KIN_OWNER_LEVEL)).received, [
+          { minor: 3_000_000, currency: "INR" },
+        ]);
         // The quote's invoice is a draft until issued, so only the deposit counts so far.
         assert.deepStrictEqual(
           [
