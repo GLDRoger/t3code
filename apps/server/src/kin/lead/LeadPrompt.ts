@@ -76,6 +76,7 @@ import { KIN_OWNER_LEVEL, personSees, viewerOfPeople } from "../work/teamView.ts
 import { promptLine as connectionsLine } from "../connections/ConnectionRows.ts";
 import { companyAccounts } from "../github/githubWatchStore.ts";
 import { inheritOutside } from "./OutsideContent.ts";
+import { alertCardsForModel } from "../work/statements/alertCards.ts";
 import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { groupRules, teamRules } from "./instructions.ts";
@@ -966,14 +967,18 @@ export class KinLeadPrompt extends Context.Service<
           });
           // System rows are Kin's own bookkeeping; they taught leads to recite it. What came of a
           // request it passed on is the exception: no tool result tells the lead that afterwards.
-          const messages = page.messages.filter(
-            (message) =>
-              message.seq >= from &&
-              message.status === "posted" &&
-              (message.author._tag !== "system" || isRouteOutcome(message.messageId)) &&
-              (message.body.trim() !== "" || (message.attachments?.length ?? 0) > 0) &&
-              !quoted.has(message.messageId),
-          );
+          // A tap on a bank alert card reads as one fixed sentence (`alertCardsForModel`).
+          const messages = yield* alertCardsForModel(
+            orgId,
+            page.messages.filter(
+              (message) =>
+                message.seq >= from &&
+                message.status === "posted" &&
+                (message.author._tag !== "system" || isRouteOutcome(message.messageId)) &&
+                (message.body.trim() !== "" || (message.attachments?.length ?? 0) > 0) &&
+                !quoted.has(message.messageId),
+            ),
+          ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
           // Reactions are context: who reacted what, by role, never as instructions.
           const roles = new Map(
             (yield* chat.listMembers({ orgId, chatId })).map((row) => [

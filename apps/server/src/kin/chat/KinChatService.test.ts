@@ -2856,6 +2856,63 @@ describe("KinChatService", () => {
         }
       }).pipe(Effect.provide(layer)),
   );
+  it.effect("hands an agent Kin's bank alert card as one fixed sentence, never its mail", () =>
+    Effect.gen(function* () {
+      const { repo, service, person, agent, chat } = yield* seed();
+      const widgetId = KinWidgetId.make("kin-bank-alert-pay:ba_9");
+      const detail = "A bank alert on 18 Nov shows NZ$9,500.00 from BRIGHTWELL LTD.";
+      const message = yield* repo.insertMessage({
+        orgId: person.orgId,
+        chatId: chat.chatId,
+        audience: "owner",
+        messageId: KinMessageId.make(widgetId),
+        author: { _tag: "system" },
+        kind: "system",
+        body: `Did Brightwell Ltd pay INV-7? ${detail}`,
+        intent: null,
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        clientMessageId: null,
+        createdAt: timestamp,
+        editedAt: null,
+      });
+      yield* repo.insertWidget({
+        orgId: person.orgId,
+        chatId: chat.chatId,
+        messageId: message.messageId,
+        widgetId,
+        widgetClass: "native",
+        type: "choice",
+        state: {
+          question: "Did Brightwell Ltd pay INV-7?",
+          detail,
+          options: [
+            { optionId: "option-1", label: "Brightwell Ltd · INV-7 · NZ$9,500.00" },
+            { optionId: "option-2", label: "No, it's something else" },
+          ],
+          answer: null,
+        },
+        source: null,
+        feed: null,
+        awaiting: [person.personId],
+        pinnedAt: null,
+        closedAt: null,
+        updatedAt: timestamp,
+        audience: "owner",
+      });
+      const read = yield* service.read(agent, { chatId: chat.chatId });
+      assert.match(
+        read.find((one) => one.messageId === widgetId)!.body,
+        /^A bank alert card is waiting for \S+'s answer\.$/,
+      );
+      assert.notInclude(JSON.stringify(read), "BRIGHTWELL");
+      assert.notInclude(JSON.stringify(read), "9,500");
+    }).pipe(Effect.provide(layer)),
+  );
   it.effect(
     "binds a profile card to its change in the card's own commit; only a tap confirms",
     () =>

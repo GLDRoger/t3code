@@ -2053,9 +2053,27 @@ it.effect(
           "The owner didn't pass this request on this time.",
           "2026-11-08T00:01:00.000Z",
         ],
+        // The owner's tap on Kin's bank alert card: its words name no party, amount or day.
+        [
+          "tap",
+          JSON.stringify({
+            text: 'Chose "Brightwell Ltd · INV-7 · NZ$9,500.00" on "Did Brightwell Ltd pay INV-7?"',
+          }),
+          "2026-11-08T00:01:30.000Z",
+        ],
         ["newer", "Also check the docs.", "2026-11-08T00:02:00.000Z"],
         ["now", "Current question", "2026-11-08T00:03:00.000Z"],
       ] as const) {
+        if (id === "tap") {
+          yield* sql`UPDATE kin_chats SET last_seq = last_seq + 1 WHERE org_id = ${orgId} AND chat_id = ${chatId}`;
+          yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+              author_person_id, author_member_id, author_role, kind, body, mentions_json, widget_id,
+              status, created_at)
+            SELECT ${id}, ${orgId}, ${chatId}, last_seq, 'human', ${personId}, ${memberId}, 'owner',
+              'widget_action', ${body}, '[]', 'kin-bank-alert-pay:ba_1', 'posted', ${createdAt}
+            FROM kin_chats WHERE org_id = ${orgId} AND chat_id = ${chatId}`;
+          continue;
+        }
         if (id === "system" || id.startsWith("kin-forward")) {
           yield* sql`UPDATE kin_chats SET last_seq = last_seq + 1 WHERE org_id = ${orgId} AND chat_id = ${chatId}`;
           yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_role,
@@ -2154,6 +2172,7 @@ it.effect(
           "> BEGIN QUOTE: recent chat",
           '> owner "Fixture" Sun 8 Nov 00:00: "Did the release go out?"',
           '> Kin Sun 8 Nov 00:01: "The owner didn\'t pass this request on this time."',
+          '> owner "Fixture" Sun 8 Nov 00:01: "A bank alert card was answered."',
           '> owner "Fixture" Sun 8 Nov 00:02: "Also check the docs."',
           "> END QUOTE",
         ].join("\n"),

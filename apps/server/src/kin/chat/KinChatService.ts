@@ -92,7 +92,7 @@ import * as VisualCard from "../widgets/visualCard.ts";
 import * as CardPlans from "../widgets/cardPlans.ts";
 import * as ChoiceCard from "../widgets/choiceCard.ts";
 import { answerByReply, askedForCard } from "../questions/openQuestions.ts";
-import { isAlertCard } from "../work/statements/alertCards.ts";
+import { alertCardsForModel, isAlertCard } from "../work/statements/alertCards.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
@@ -2420,10 +2420,17 @@ const make = Effect.gen(function* () {
         // Whatever page it asks for, a shared turn sees nothing below the chat's history floor.
         fromHistoryFloor: "sharedTurn" in viewer && viewer.sharedTurn,
       });
-      return (yield* docsForViewer(identity.orgId, viewer, { messages, widgets: [] }).pipe(
+      const shown = (yield* docsForViewer(identity.orgId, viewer, { messages, widgets: [] }).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
         Effect.mapError(toPersistenceSqlError("KinChatService.privateDocs")),
       )).messages;
+      // An agent reads Kin's bank alert cards as one fixed sentence (`alertCardsForModel`).
+      return identity._tag === "agent"
+        ? yield* alertCardsForModel(identity.orgId, shown).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError(toPersistenceSqlError("KinChatService.alertCards")),
+          )
+        : shown;
     }, transaction),
     history: Effect.fn("KinChatService.history")(
       function* (identity, input) {
