@@ -1,4 +1,4 @@
-import type { KinOrgId } from "@t3tools/contracts";
+import type { KinOrgId, KinWorkPrincipal } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -51,4 +51,71 @@ export const githubClosed = Effect.fn("KinGitHubEntries.githubClosed")(function*
       if (match !== null) issues.push({ repo: match[1]!, number: Number(match[2]) });
     }
   return { entries: rows.length, issues };
+});
+
+/** An open issue or a failing workflow, as one Work entry. */
+export interface GitHubOpenItem {
+  /** What the entry stands for, across its episodes: an issue, or a workflow on the default branch. */
+  readonly group: string;
+  /** Idempotent per episode: a workflow that recovers and fails again is a new entry. */
+  readonly originKey: string;
+  readonly title: string;
+  readonly url: string;
+  readonly label: string;
+}
+
+/**
+ * Keeps one open Work entry per item that is open on GitHub now, held by `owner`. An open entry
+ * of `prefix` that `open` doesn't name closes when `closedBy` says what closed it.
+ */
+export const githubOpenWork = Effect.fn("KinGitHubEntries.githubOpenWork")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly repo: string;
+  readonly prefix: string;
+  readonly owner: KinWorkPrincipal;
+  readonly open: ReadonlyArray<GitHubOpenItem>;
+  readonly closedBy: (
+    group: string,
+  ) => { readonly url: string; readonly label: string } | undefined;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const records = yield* KinRecords;
+  const writer: Writer = { actor: { _tag: "system" }, via: "github" };
+  const rows = yield* sql<{ recordId: string; key: string; title: string; originKey: string }>`
+    SELECT record_id AS "recordId", key, title, origin_key AS "originKey" FROM kin_records
+    WHERE org_id = ${input.orgId} AND register_id = 'work'
+      AND substr(origin_key, 1, ${input.prefix.length}) = ${input.prefix}
+      AND state NOT IN ('done', 'dropped')
+    ORDER BY record_id`;
+  const groupOf = (originKey: string) =>
+    input.open.find((item) => originKey === item.group || originKey.startsWith(`${item.group}:`))
+      ?.group;
+  for (const item of input.open) {
+    const row = rows.find((one) => groupOf(one.originKey) === item.group);
+    if (row !== undefined) {
+      if (row.title !== item.title)
+        yield* records.update(input.orgId, writer, row.key, { title: item.title });
+      continue;
+    }
+    yield* records.create(input.orgId, writer, {
+      title: item.title,
+      owner: input.owner,
+      repo: input.repo,
+      originKey: item.originKey,
+      links: [{ kind: "url", target: item.url, relation: "source", label: item.label }],
+    });
+  }
+  for (const row of rows) {
+    if (groupOf(row.originKey) !== undefined) continue;
+    const group = row.originKey.replace(/:run:\d+$/, "");
+    const closed = input.closedBy(group);
+    if (closed === undefined) continue;
+    yield* records.link(input.orgId, writer, row.recordId, {
+      kind: "url",
+      target: closed.url,
+      relation: "evidence",
+      label: closed.label,
+    });
+    yield* records.update(input.orgId, writer, row.key, { state: "done" });
+  }
 });

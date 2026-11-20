@@ -1,9 +1,11 @@
 import {
+  KinAgentId,
   KinChatError,
   KinEvent,
   KinEventId,
   KinOrgId,
   type KinGithubTrigger,
+  type KinWorkPrincipal,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -23,7 +25,7 @@ import { KinServer } from "../KinServer.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { KinRecords } from "../work/KinRecords.ts";
-import { githubClosed } from "../work/githubEntries.ts";
+import { githubClosed, githubOpenWork, type GitHubOpenItem } from "../work/githubEntries.ts";
 import { agentPostKeys, signed } from "./agentMark.ts";
 import { AGENT_POSTS_FILE, GH_APP_FOLDER } from "./ghSign.ts";
 import {
@@ -60,6 +62,9 @@ const THREADS_PER_LOOK = 30;
 /** Replies an agent makes in one issue or PR in an hour before it stops and says so. */
 export const PER_THREAD_HOURLY = 5;
 const DIFF_CAP = 30_000;
+/** How often each watched repo's open issues and default-branch CI are read into Work. */
+const WORK_EVERY_MS = 10 * MINUTE;
+const ISSUE_PAGES = 5;
 
 export const capNote = (count: number) =>
   `I've replied ${count} times here in an hour, so I'm stopping for now; say /kin again to continue.`;
@@ -237,6 +242,25 @@ const CheckRuns = Schema.Struct({
     Schema.Struct({ name: Schema.String, conclusion: Schema.NullOr(Schema.String) }),
   ),
 });
+const ListedIssue = Schema.Struct({
+  number: Schema.Int,
+  title: Schema.String,
+  html_url: Schema.String,
+  pull_request: Schema.optional(Schema.Unknown),
+});
+const WorkflowRuns = Schema.Struct({
+  workflow_runs: Schema.Array(
+    Schema.Struct({
+      id: Schema.Int,
+      name: Schema.NullOr(Schema.String),
+      workflow_id: Schema.Int,
+      conclusion: Schema.NullOr(Schema.String),
+      html_url: Schema.String,
+    }),
+  ),
+});
+const decodeListedIssues = Schema.decodeUnknownOption(Schema.Array(ListedIssue));
+const decodeWorkflowRuns = Schema.decodeUnknownOption(WorkflowRuns);
 const decodeNotifications = Schema.decodeUnknownOption(Schema.Array(Notification));
 const decodeEvents = Schema.decodeUnknownOption(Schema.Array(OwnEvent));
 const decodeRepos = Schema.decodeUnknownOption(Schema.Array(RepoEntry));
@@ -253,6 +277,9 @@ const toJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 
 const FAILED = new Set(["failure", "timed_out", "cancelled", "action_required", "startup_failure"]);
+/** A default-branch run that fails or passes; a cancelled or skipped one says neither. */
+const CI_FAILED = new Set(["failure", "timed_out", "startup_failure"]);
+const CI_PASSED = new Set(["success", "neutral"]);
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const parsed = (text: string) => {
   const at = Date.parse(text);
@@ -289,6 +316,9 @@ export const make = Effect.gen(function* () {
   const fileSystem = yield* Effect.serviceOption(FileSystem.FileSystem);
   /** Orgs whose repos this server has read; the first look after a start reads them again. */
   const reposReadSinceStart = new Set<KinOrgId>();
+  /** When each org's repo was last read into Work, and what GitHub refused there. */
+  const workReadAt = new Map<string, number>();
+  const workRefused = new Map<string, string>();
   /** What agents' shells sent this past week (`ghSign.ts`): their words, signed or not. */
   const agentPosts = Effect.gen(function* () {
     if (Option.isNone(config) || Option.isNone(fileSystem)) return undefined;
@@ -318,6 +348,8 @@ export const make = Effect.gen(function* () {
     account: { readonly login: string; readonly orgs: ReadonlyArray<string> },
     now: number,
   ) {
+    // `affiliation` already keeps to his and his organisations' repos; GitHub may refuse to list
+    // those organisations (403), so an organisation's repo counts without the list.
     const owners = new Set([account.login, ...account.orgs].map((name) => name.toLowerCase()));
     // Only an organisation's owners can put an App on it; unknown when GitHub won't say.
     const memberships = yield* get("user/memberships/orgs?state=active&per_page=100");
@@ -338,7 +370,10 @@ export const make = Effect.gen(function* () {
       const repos = answer.status === 200 ? decodeRepos(answer.body) : Option.none();
       if (Option.isNone(repos)) return answer;
       for (const repo of repos.value)
-        if (repo.permissions?.push !== false && owners.has(repo.owner.login.toLowerCase()))
+        if (
+          repo.permissions?.push !== false &&
+          (repo.owner.type === "Organization" || owners.has(repo.owner.login.toLowerCase()))
+        )
           found.push({
             repo: repo.full_name,
             fork: repo.fork,
@@ -586,6 +621,136 @@ export const make = Effect.gen(function* () {
     });
   });
 
+  /** What GitHub refused, in words for the watch line; undefined when it answered or was away. */
+  const refusedRead = (answer: ApiAnswer, what: string, repo: string) =>
+    answer.status === 401 || answer.status === 403
+      ? `GitHub won't let this login read ${what} on ${repo} (HTTP ${answer.status}), so they can't become tasks. Reconnect GitHub with a login that can read them.`
+      : undefined;
+
+  /** Open issues and failing default-branch CI of one watched repo, kept as Work entries. */
+  const syncRepoWork = Effect.fn("KinGitHubWatch.syncRepoWork")(function* (
+    orgId: KinOrgId,
+    repo: KnownRepo,
+    owner: KinWorkPrincipal,
+  ) {
+    if (Option.isNone(records)) return [];
+    const refused: Array<string> = [];
+    const name = repo.repo.toLowerCase();
+    const keep = (input: Omit<Parameters<typeof githubOpenWork>[0], "orgId" | "repo" | "owner">) =>
+      githubOpenWork({ orgId, repo: repo.repo, owner, ...input }).pipe(
+        Effect.provideService(KinRecords, records.value),
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't keep Work entries of GitHub", { repo: repo.repo, cause }),
+        ),
+      );
+
+    const issues: Array<GitHubOpenItem> = [];
+    let issuesRead = true;
+    let complete = false;
+    for (let page = 1; page <= ISSUE_PAGES; page++) {
+      const answer = yield* get(`repos/${repo.repo}/issues?state=open&per_page=100&page=${page}`);
+      const listed = answer.status === 200 ? decodeListedIssues(answer.body) : Option.none();
+      if (Option.isNone(listed)) {
+        const words = refusedRead(answer, "issues", repo.repo);
+        if (words !== undefined) refused.push(words);
+        issuesRead = false;
+        break;
+      }
+      for (const issue of listed.value)
+        if (issue.pull_request === undefined)
+          issues.push({
+            group: `github:issue:${name}#${issue.number}`,
+            originKey: `github:issue:${name}#${issue.number}`,
+            title: `Issue #${issue.number}: ${issue.title}`,
+            url: issue.html_url,
+            label: `Issue #${issue.number}`,
+          });
+      if (listed.value.length < 100) {
+        complete = true;
+        break;
+      }
+    }
+    const issuePrefix = `github:issue:${name}#`;
+    if (issuesRead)
+      yield* keep({
+        prefix: issuePrefix,
+        open: issues,
+        // Past the pages read, an issue missing from the list may still be open.
+        closedBy: (group) => {
+          if (!complete) return undefined;
+          const number = group.slice(issuePrefix.length);
+          return {
+            url: `https://github.com/${repo.repo}/issues/${number}`,
+            label: `Issue #${number} closed`,
+          };
+        },
+      });
+
+    if (repo.branch === undefined) return refused;
+    const branch = repo.branch;
+    const answer = yield* get(
+      `repos/${repo.repo}/actions/runs?branch=${encodeURIComponent(branch)}&status=completed&exclude_pull_requests=true&per_page=100`,
+    );
+    const runs = answer.status === 200 ? decodeWorkflowRuns(answer.body) : Option.none();
+    if (Option.isNone(runs)) {
+      const words = refusedRead(answer, "GitHub Actions runs", repo.repo);
+      if (words !== undefined) refused.push(words);
+      return refused;
+    }
+    const failing: Array<GitHubOpenItem> = [];
+    const passed = new Map<string, { readonly url: string; readonly label: string }>();
+    const seen = new Set<number>();
+    // Newest first: each workflow's latest finished run says how it stands.
+    for (const run of runs.value.workflow_runs) {
+      if (seen.has(run.workflow_id)) continue;
+      const conclusion = run.conclusion ?? "";
+      if (!CI_FAILED.has(conclusion) && !CI_PASSED.has(conclusion)) continue;
+      seen.add(run.workflow_id);
+      const group = `github:ci:${name}:${run.workflow_id}`;
+      const workflow = run.name ?? `Workflow ${run.workflow_id}`;
+      if (CI_PASSED.has(conclusion))
+        passed.set(group, { url: run.html_url, label: `${workflow} passed on ${branch}` });
+      else
+        failing.push({
+          group,
+          originKey: `${group}:run:${run.id}`,
+          title: `CI failing on ${branch}: ${workflow}`,
+          url: run.html_url,
+          label: `${workflow} failed on ${branch}`,
+        });
+    }
+    yield* keep({
+      prefix: `github:ci:${name}:`,
+      open: failing,
+      closedBy: (group) => passed.get(group),
+    });
+    return refused;
+  });
+
+  /** Each watched repo is read into Work at most every few minutes; returns the watch's problem. */
+  const syncWork = Effect.fn("KinGitHubWatch.syncWork")(function* (
+    orgId: KinOrgId,
+    watched: ReadonlyArray<KnownRepo>,
+    owner: KinWorkPrincipal,
+    now: number,
+  ) {
+    const problems: Array<string> = [];
+    for (const repo of watched) {
+      const at = `${orgId.length}:${orgId}${repo.repo.toLowerCase()}`;
+      const last = workReadAt.get(at);
+      if (last === undefined || now - last >= WORK_EVERY_MS) {
+        workReadAt.set(at, now);
+        const refused = yield* syncRepoWork(orgId, repo, owner);
+        if (refused.length === 0) workRefused.delete(at);
+        else workRefused.set(at, refused.join(" "));
+      }
+      const words = workRefused.get(at);
+      if (words !== undefined) problems.push(words);
+    }
+    return problems.length === 0 ? null : problems.join(" ");
+  });
+
   const poll = Effect.fn("KinGitHubWatch.poll")(function* (
     orgId: KinOrgId,
     options?: { readonly force?: boolean },
@@ -809,18 +974,30 @@ export const make = Effect.gen(function* () {
           VALUES (${orgId}, ${seenKey(comment)}, ${current.repo.toLowerCase()}, ${current.number}, NULL, 'seen', ${now})
           ON CONFLICT DO NOTHING`;
     }
+    const watchedRepos = (yield* knownRepos(orgId)).filter((entry) =>
+      watched.has(entry.repo.toLowerCase()),
+    );
+    const problem =
+      lead === undefined || Option.isNone(records)
+        ? null
+        : yield* syncWork(
+            orgId,
+            watchedRepos,
+            { _tag: "agent", agentId: KinAgentId.make(lead.agentId) },
+            now,
+          );
     const asked = Number(notifications.headers["x-poll-interval"]);
     const interval = asked > 0 ? asked * 1000 : DEFAULT_INTERVAL_MS;
     // With work left over, the cursors stay put: the next look reads the same and handles the rest.
     yield* later
-      ? sql`UPDATE kin_github_watch SET problem = NULL, checked_at = ${now}, next_at = ${now + interval}
+      ? sql`UPDATE kin_github_watch SET problem = ${problem}, checked_at = ${now}, next_at = ${now + interval}
           WHERE org_id = ${orgId}`
-      : sql`UPDATE kin_github_watch SET problem = NULL, checked_at = ${now}, since_at = ${now},
+      : sql`UPDATE kin_github_watch SET problem = ${problem}, checked_at = ${now}, since_at = ${now},
           next_at = ${now + interval},
           notifications_modified = ${notifications.headers["last-modified"] ?? row.notificationsModified},
           events_etag = ${events.status === 200 || events.status === 304 ? (events.headers.etag ?? row.eventsEtag) : row.eventsEtag}
         WHERE org_id = ${orgId}`;
-    if (row.checkedAt === null || row.problem !== null || reposChanged)
+    if (row.checkedAt === null || row.problem !== problem || reposChanged)
       yield* refresh.touch(orgId, "connections");
   });
 

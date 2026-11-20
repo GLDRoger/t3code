@@ -137,6 +137,8 @@ export interface FakeWorld {
   seq: number;
   /** A failure every call answers with, such as 401, to show a signed-out login. */
   down: number | null;
+  /** Paths GitHub refuses this login with 403, as for a token without that permission. */
+  refused?: string[];
   /** The seconds GitHub asks between looks; real GitHub says 60. */
   pollInterval?: number;
   repos: FakeRepo[];
@@ -152,6 +154,16 @@ export interface FakeWorld {
   }[];
   reactions: { on: string; content: string; by?: string }[];
   checks: Record<string, string[]>;
+  /** Finished GitHub Actions runs, newest last. */
+  runs?: {
+    id: number;
+    repo: string;
+    workflow_id: number;
+    name: string;
+    branch: string;
+    conclusion: string;
+    created_at: number;
+  }[];
   notifications: { id: string; repo: string; number: number; reason: string; updated_at: number }[];
   events: { id: string; type: string; repo: string; number: number; created_at: number }[];
   modified: number;
@@ -332,6 +344,30 @@ export class FakeGitHub {
     item.state = "closed";
     item.merged = true;
     this.happened(input.repo, input.number, input.actor, "PullRequestEvent");
+  }
+  close(input: { repo: string; number: number; actor: string }) {
+    this.item(input.repo, input.number).state = "closed";
+    this.happened(input.repo, input.number, input.actor, "IssuesEvent");
+  }
+  /** One finished run of a workflow, on `branch` (default main). */
+  run(input: {
+    repo: string;
+    workflow: number;
+    name: string;
+    conclusion: string;
+    branch?: string;
+  }) {
+    const id = this.next();
+    (this.world.runs ??= []).push({
+      id,
+      repo: input.repo,
+      workflow_id: input.workflow,
+      name: input.name,
+      branch: input.branch ?? "main",
+      conclusion: input.conclusion,
+      created_at: this.world.now,
+    });
+    return id;
   }
   push(input: { repo: string; number: number }) {
     this.item(input.repo, input.number).head_sha = `sha${this.next()}`;
@@ -617,6 +653,12 @@ export class FakeGitHub {
     const missing: FakeAnswer = { status: 404, headers: {}, body: { message: "Not Found" } };
     if (this.world.down !== null)
       return { status: this.world.down, headers: {}, body: { message: "Bad credentials" } };
+    if (this.world.refused?.some((prefix) => path.startsWith(prefix)) === true)
+      return {
+        status: 403,
+        headers: {},
+        body: { message: "Resource not accessible by personal access token" },
+      };
     const app = this.world.app ?? null;
     const bearer = /^bearer (.+)$/i.exec(headers.authorization ?? "")?.[1];
     const asApp = app !== null && bearer !== undefined && bearer.split(".").length === 3;
@@ -879,6 +921,46 @@ export class FakeGitHub {
     const guarded = this.rulesAnswer(method, repo, rest, body, actor, installation !== undefined);
     if (guarded !== undefined) return guarded;
     try {
+      if (method === "GET" && rest === "issues") {
+        const state = url.searchParams.get("state") ?? "open";
+        const page = Number(url.searchParams.get("page") ?? "1");
+        const perPage = Number(url.searchParams.get("per_page") ?? "30");
+        return ok(
+          this.world.items
+            .filter(
+              (item) =>
+                item.repo.toLowerCase() === repo.toLowerCase() &&
+                (state === "all" || item.state === state),
+            )
+            .toSorted((a, b) => b.number - a.number)
+            .slice((page - 1) * perPage, page * perPage)
+            .map((item) => this.issueJson(item)),
+        );
+      }
+      if (method === "GET" && rest === "actions/runs") {
+        const branch = url.searchParams.get("branch");
+        const runs = (this.world.runs ?? [])
+          .filter(
+            (run) =>
+              run.repo.toLowerCase() === repo.toLowerCase() &&
+              (branch === null || run.branch === branch),
+          )
+          .toReversed()
+          .slice(0, Number(url.searchParams.get("per_page") ?? "30"));
+        return ok({
+          total_count: runs.length,
+          workflow_runs: runs.map((run) => ({
+            id: run.id,
+            name: run.name,
+            workflow_id: run.workflow_id,
+            head_branch: run.branch,
+            status: "completed",
+            conclusion: run.conclusion,
+            created_at: iso(run.created_at),
+            html_url: `https://github.com/${run.repo}/actions/runs/${run.id}`,
+          })),
+        });
+      }
       if (method === "GET" && (found = /^issues\/(\d+)$/.exec(rest)))
         return ok(this.issueJson(this.item(repo, Number(found[1]))));
       if (method === "GET" && (found = /^pulls\/(\d+)$/.exec(rest))) {
