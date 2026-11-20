@@ -215,6 +215,7 @@ function KinClientBody(
   const { can } = view;
   // Clients on, or the owner level: what's owed, the contact log, notes and history show.
   const full = can.log;
+  const keepsContacts = can.contacts ?? can.edit;
   const act = (key: KinRecordKey, action: KinWorkAction) => {
     const record = [...page.weOwe.records, ...page.theyOwe.records].find(
       (held) => held.key === key,
@@ -486,7 +487,7 @@ function KinClientBody(
       >
         {view.contacts.length === 0 ? (
           <ListRowLayout
-            label={can.edit ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
+            label={keepsContacts ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
             disabled
           />
         ) : (
@@ -499,7 +500,7 @@ function KinClientBody(
                 navigation.navigate("KinMarketingList", { environmentId, orgId, title: tag, tag })
               }
               onEdit={
-                can.edit
+                keepsContacts
                   ? () =>
                       navigation.navigate("KinContactForm", {
                         environmentId,
@@ -512,7 +513,7 @@ function KinClientBody(
             />
           ))
         )}
-        {can.edit ? (
+        {keepsContacts ? (
           <ListActionRow
             label={KIN_CLIENTS.addContact}
             onPress={() =>

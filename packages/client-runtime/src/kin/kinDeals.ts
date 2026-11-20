@@ -123,6 +123,9 @@ export const KIN_DEALS = {
   removeConcern: (label: string) => `Remove ${label}`,
   concernStands: (open: number, won: number, lost: number) =>
     `${open} open · ${won} won · ${lost} lost`,
+  raisedBy: "The deals that raised it, as you see them.",
+  openConcern: (label: string) => `Deals that raised ${label}`,
+  close: "Close",
 } as const;
 
 /** Under a new deal's next step while Add deal waits on it: a step or None yet. */
@@ -571,6 +574,33 @@ export function kinDealsSection(
   };
 }
 
+/** What a row of What we hear opens: the deals that raised it, under the same whose as its count. */
+export function kinDealsRaisedInput(input: KinDealsInput, concern: string): KinDealsInput {
+  return {
+    orgId: input.orgId,
+    ...(input.owner === undefined ? {} : { owner: input.owner }),
+    concern,
+  };
+}
+
+/** Those deals as rows, each marked with its stage while open, else Won or Lost. */
+export function kinDealsRaised(
+  stages: ReadonlyArray<KinDealStage>,
+  deals: ReadonlyArray<KinDealRow>,
+  names: KinWorkNames,
+  now: Date,
+): ReadonlyArray<KinDealRowView & { readonly pill: string }> {
+  return deals.map((deal) => ({
+    ...kinDealRow(deal, names, now),
+    pill:
+      deal.state === "won"
+        ? KIN_DEALS.won
+        : deal.state === "lost"
+          ? KIN_DEALS.lost
+          : (stages.find((stage) => stage.id === deal.stage)?.name ?? KIN_DEALS.open),
+  }));
+}
+
 /** Why the board shows nothing. */
 export function kinDealsNothing(filter: KinDealsFilter): {
   readonly title: string;
@@ -610,10 +640,31 @@ export function kinDealChangeText(change: KinRecordChange, names: KinWorkNames, 
       ? `${who} put it in ${stage.to}`
       : `${who} moved it ${stage.from} → ${stage.to}`;
   const concerns = field("concerns");
-  if (concerns !== undefined)
-    return concerns.to === null ? `${who} cleared the concerns` : `${who} noted the concerns`;
+  if (concerns !== undefined) {
+    const before = concernLabels(concerns.from);
+    const after = concernLabels(concerns.to);
+    const removed = [...before].filter((label) => !after.has(label));
+    const added = [...after].some((label) => !before.has(label));
+    if (removed.length === 0 || added)
+      return concerns.to === null ? `${who} cleared the concerns` : `${who} noted the concerns`;
+    const shown = removed.slice(0, 3);
+    const rest = removed.length - shown.length;
+    const named =
+      rest > 0
+        ? `${shown.join(", ")} and ${rest} more`
+        : shown.length === 1
+          ? shown[0]!
+          : `${shown.slice(0, -1).join(", ")} and ${shown.at(-1)}`;
+    return `${who} removed ${removed.length === 1 ? "the concern" : "the concerns"} ${named}`;
+  }
   return kinWorkChangeText(change, names, now);
 }
+
+/** A concerns change's labels: the host keeps one a line; a label never holds ": ". */
+const concernLabels = (text: string | null) =>
+  text === null
+    ? new Set<string>()
+    : new Set(text.split("\n").map((item) => item.split(": ")[0]!.trim()));
 
 // Editing a deal
 

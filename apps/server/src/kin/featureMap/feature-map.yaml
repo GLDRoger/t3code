@@ -748,6 +748,20 @@ features:
       - apps/server/src/kin/sales/pipeline.test.ts
       - packages/client-runtime/src/kin/kinDeals.test.ts
 
+  - id: deal-concern-deals
+    name: The deals a concern was raised on
+    tab: clients
+    web: [clients, button:Deals, section:What we hear, dialog:Deals that raised it]
+    phone: [tab:clients, button:Deals, KinDealsConcern]
+    roles: { owner: both, co_owner: both, lead: none, member: both }
+    note: >-
+      A row of What we hear opens the deals that raised it, each with its client and its stage or
+      Won or Lost, under the same who-sees-what and whose filter as the count; one opens its page.
+    proof:
+      - apps/server/src/kin/sales/pipeline.test.ts
+      - packages/client-runtime/src/kin/kinDeals.test.ts
+      - apps/mobile/src/features/chats/state/kinLinkStack.test.ts
+
   - id: deal
     name: A deal
     tab: clients

@@ -303,7 +303,12 @@ const memberPage = Effect.fn("KinWork.crm.memberPage")(function* (
             (one) => one.record === null || shown.has(one.record.recordId),
           ),
         }),
-    can: { edit: looksAfter(row, personId), log: true, owner: false },
+    can: {
+      edit: looksAfter(row, personId),
+      log: true,
+      owner: false,
+      contacts: yield* keepsContacts(row, personId),
+    },
   } satisfies KinPartyPage;
 });
 
@@ -553,22 +558,49 @@ const notTheirs = (key: string) =>
     message: `Only whoever looks after ${key}, the owner or a co-owner changes it.`,
   });
 
+/** Whether they look after an open deal at this client: its people are theirs to keep too. */
+const dealsThere = Effect.fn("KinWork.crm.dealsThere")(function* (
+  row: RecordRow,
+  personId: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [deal] = yield* sql<{ one: number }>`SELECT 1 AS one FROM kin_records
+    WHERE org_id = ${row.orgId} AND register_id = 'deals' AND party_id = ${row.recordId}
+      AND state = 'open' AND owner_kind = 'person' AND owner_id = ${personId}
+    ORDER BY key LIMIT 1`;
+  return deal !== undefined;
+});
+/** Who keeps a client's contacts: whoever looks after it, or after an open deal there. */
+const keepsContacts = Effect.fn("KinWork.crm.keepsContacts")(function* (
+  row: RecordRow,
+  personId: KinPersonId,
+) {
+  return (
+    looksAfter(row, personId) ||
+    (row.category !== "vendor" && (yield* read(dealsThere(row, personId))))
+  );
+});
+
 /**
  * The member's Clients switch and the client they name, read inside the write's transaction: one
- * they see answers; one they don't is no client at all. `theirs` also needs them to look after it.
+ * they see answers; one they don't is no client at all. `theirs` also needs them to look after it,
+ * and `contacts` to keep its contacts (`keepsContacts`).
  */
 const memberParty = Effect.fn("KinWork.crm.memberParty")(function* (
   personId: KinPersonId,
   orgId: KinOrgId,
   ref: { readonly key: string } | { readonly recordId: string },
-  theirs: boolean,
+  theirs: boolean | "contacts",
 ) {
   if (!(yield* switchedOn(orgId, viewerOfPeople([personId])))) return yield* ownerOnly;
   const name = "key" in ref ? ref.key : "with that id";
   const row = yield* found(orgId, ref).pipe(Effect.mapError(() => notFound(name)));
   const reached = yield* read(teamClients(orgId, personId, [row.recordId]));
   if (!reached.has(row.recordId)) return yield* notFound(name);
-  if (theirs && !looksAfter(row, personId)) return yield* notTheirs(row.key);
+  const may =
+    theirs === false ||
+    (theirs === "contacts" ? yield* keepsContacts(row, personId) : looksAfter(row, personId));
+  if (!may) return yield* notTheirs(row.key);
   return row;
 });
 const defines = (input: object, keys: ReadonlyArray<string>) =>
@@ -614,7 +646,7 @@ export const memberAddsContact = Effect.fn("KinWork.crm.memberAddsContact")(func
     readonly ownersFields: boolean;
   },
 ) {
-  const party = yield* memberParty(personId, orgId, input.party, true);
+  const party = yield* memberParty(personId, orgId, input.party, "contacts");
   if (
     input.ownersFields ||
     (input.owner !== undefined && !samePrincipal(input.owner, { _tag: "person", personId }))
@@ -637,7 +669,7 @@ export const memberChangesContact = Effect.fn("KinWork.crm.memberChangesContact"
   // A contact labelled itself or through its client is one they never saw.
   const seen = yield* read(crmVisible(orgId, personId, [contact.recordId]));
   if (contact.partyId === null || !seen.has(contact.recordId)) return yield* notFound(key);
-  yield* memberParty(personId, orgId, { recordId: contact.partyId }, true).pipe(
+  yield* memberParty(personId, orgId, { recordId: contact.partyId }, "contacts").pipe(
     Effect.mapError((error) => (error.reason === "not_found" ? notFound(key) : error)),
   );
   if (input.ownersFields) return yield* MEMBER_FIELDS;

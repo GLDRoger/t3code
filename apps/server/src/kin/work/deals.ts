@@ -271,6 +271,16 @@ const concernsFor = Effect.fn("KinDeals.concernsFor")(function* (
   return stored;
 });
 
+/** A concerns change's labels before and after, one a line, kept on its history line. */
+const concernNames = (row: RecordRow, after: ReadonlyArray<string> | null) => {
+  const labels = (items: ReadonlyArray<string>) =>
+    items.length === 0 ? null : items.map((item) => concernOf(item).label).join("\n");
+  return {
+    from: labels(fieldList(parseFields(row.fieldsJson), "concerns")),
+    to: labels(after ?? []),
+  };
+};
+
 const liveStage = (stages: ReadonlyArray<KinDealStage>, id: string) =>
   stages.some((stage) => stage.id === id) ? Effect.void : Effect.fail(unknownStage(id, stages));
 
@@ -409,12 +419,14 @@ export const updateAs = Effect.fn("KinDeals.update")(function* (
   const records = yield* KinRecords;
   const row = yield* theirDeal(actor, key);
   if (change.sensitive !== undefined && actor.members.length > 0) return yield* OWNERS_LABEL;
+  const concerns = change.concerns === undefined ? undefined : yield* concernsFor(change.concerns);
   const fields: Record<string, FieldValue | null> = {
     ...(change.value === undefined ? {} : { value: change.value }),
     ...(change.source === undefined ? {} : { source: change.source }),
-    ...(change.concerns === undefined ? {} : { concerns: yield* concernsFor(change.concerns) }),
+    ...(concerns === undefined ? {} : { concerns }),
   };
   const patch: Patch = {
+    ...(concerns === undefined ? {} : { names: { concerns: concernNames(row, concerns) } }),
     ...(change.title === undefined ? {} : { title: change.title }),
     ...(change.notes === undefined ? {} : { notes: change.notes }),
     ...(change.dueAt === undefined
@@ -555,7 +567,7 @@ export const moveAs = Effect.fn("KinDeals.move")(function* (
 });
 
 /** A follow-up on a deal, by whoever may change it. A retry makes one. */
-const stepAs = Effect.fn("KinDeals.step")(function* (
+export const stepAs = Effect.fn("KinDeals.step")(function* (
   actor: DealActor,
   key: string,
   step: KinDealStepInput,
@@ -811,6 +823,28 @@ const concernCounts = Effect.fn("KinDeals.concerns")(function* (
     concerns: all.slice(0, KIN_DEAL_CONCERNS_CAP),
     more: all.length > KIN_DEAL_CONCERNS_CAP,
   };
+});
+
+const encodeIdList = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
+const encodeIds = (ids: ReadonlyArray<string>) => encodeIdList(ids).pipe(Effect.orDie);
+/** The deals `where` selects that raised this concern, by folded label as `concernCounts` counts. */
+const raisedIn = Effect.fn("KinDeals.raisedIn")(function* (
+  where: ReadonlyArray<Statement.Fragment>,
+  label: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const folded = foldConcern(label);
+  const rows = yield* sql<{ recordId: string; concerns: string }>`SELECT r.record_id AS "recordId",
+      json_extract(r.fields_json, '$.concerns') AS concerns FROM kin_records r
+    WHERE ${sql.and([...where, sql`json_type(r.fields_json, '$.concerns') = 'array'`])}
+    ORDER BY r.created_at, r.key`;
+  return rows.flatMap((row) =>
+    Option.getOrElse(decodeConcerns(row.concerns), () => []).some(
+      (item) => foldConcern(concernOf(item).label) === folded,
+    )
+      ? [row.recordId]
+      : [],
+  );
 });
 
 /** What `viewer` sees of the company's deals, in one fragment list for the reads below. */
@@ -1234,7 +1268,8 @@ export const deals = Effect.fn("KinDeals.list")(function* (
       reason: "not_found",
       message: `No campaign ${input.campaign.slice(0, 40)}.`,
     });
-  const state = input.state ?? (party === undefined ? "open" : undefined);
+  const state =
+    input.state ?? (party === undefined && input.concern === undefined ? "open" : undefined);
   const stored =
     state === undefined
       ? undefined
@@ -1259,6 +1294,10 @@ export const deals = Effect.fn("KinDeals.list")(function* (
           }`,
         ]),
   ];
+  if (input.concern !== undefined) {
+    const raised = yield* raisedIn(where, input.concern).pipe(workFailure);
+    where.push(sql`r.record_id IN (SELECT value FROM json_each(${yield* encodeIds(raised)}))`);
+  }
   const filtered = stored === undefined ? where : [...where, sql`r.state = ${stored}`];
   const order =
     stored === "open"
@@ -1307,6 +1346,9 @@ export const deals = Effect.fn("KinDeals.list")(function* (
 const MEMBER_FIELDS = new Set(["stage", "value", "source", "lostReason", "concerns"]);
 export const dealSeesField = (field: string) =>
   (teamSeesField(field) && field !== "confirmed") || MEMBER_FIELDS.has(field);
+/** A concerns change by its labels, one a line, where the change kept them. */
+const concernLine = ({ names, ...change }: StoredChange["fields"][number]) =>
+  names === undefined ? change : { ...change, from: names.from, to: names.to };
 /** A deal's own changes, its stages by the names they had then, as far as this viewer reads them. */
 const dealChanges = (
   changes: ReadonlyArray<StoredChange>,
@@ -1317,7 +1359,13 @@ const dealChanges = (
     if (viewer._tag !== "ownerLevel" && change.kind === "linked") return [];
     const fields = change.fields
       .filter((field) => viewer._tag === "ownerLevel" || dealSeesField(field.field))
-      .map((field) => (field.field === "stage" ? stageLine(stages, field) : field));
+      .map((field) =>
+        field.field === "stage"
+          ? stageLine(stages, field)
+          : field.field === "concerns"
+            ? concernLine(field)
+            : field,
+      );
     return change.kind === "updated" && fields.length === 0 ? [] : [{ ...change, fields }];
   });
 

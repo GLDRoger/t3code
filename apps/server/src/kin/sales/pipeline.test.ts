@@ -284,6 +284,20 @@ it.effect(
         (yield* Deals.deals([owner], { orgId, state: "open" })).concerns,
         ownersConcerns,
       );
+      // A row of What we hear opens the deals that raised it, in every state, however typed.
+      const raised = (who: typeof owner, concern: string) =>
+        Deals.deals([who], { orgId, concern }).pipe(
+          Effect.map((result) => result.deals.map((deal) => [deal.title, deal.state])),
+        );
+      assert.deepStrictEqual(yield* raised(owner, "past SYSTEM failed them"), [
+        ["Invented stock and orders system", "open"],
+        ["Invented clinic pilot", "open"],
+        ["Invented phase two", "won"],
+      ]);
+      assert.deepStrictEqual(yield* raised(owner, "Timing"), [
+        ["Invented winter campaign", "lost"],
+      ]);
+      assert.deepStrictEqual(yield* raised(owner, "Invented never heard"), []);
       // Her own open deals: the private pilot is hers, so the read marks the turn's sensitive read.
       const hers = yield* pipelineRead(scope, { view: "mine" });
       assert.strictEqual(hers.answer, mineLine([], "Rhea", 3, false));
@@ -349,8 +363,12 @@ it.effect(
       ];
       const heard = yield* pipelineRead(scope, { view: "concerns" });
       assert.deepStrictEqual(heard.concerns, zoyasConcerns);
-      // Her own Deals tab counts the same, server-side.
+      // Her own Deals tab counts the same, server-side, and opens only the deals she sees.
       assert.deepStrictEqual((yield* Deals.deals([zoya], { orgId })).concerns, zoyasConcerns);
+      assert.deepStrictEqual(yield* raised(zoya, "Past system failed them"), [
+        ["Invented stock and orders system", "open"],
+        ["Invented phase two", "won"],
+      ]);
       const mine = yield* pipelineRead(scope, { view: "mine" });
       assert.deepStrictEqual(
         mine.deals?.map((deal) => [deal.title, deal.next?.title, deal.concerns]),
@@ -389,6 +407,10 @@ it.effect(
       for (const view of ["totals", "mine", "concerns"] as const)
         assert.strictEqual(yield* refusal(pipelineRead(scope, { view })), "not_allowed", view);
       assert.strictEqual(yield* refusal(Deals.deals([zoya], { orgId })), "not_allowed");
+      assert.strictEqual(
+        yield* refusal(Deals.deals([zoya], { orgId, concern: "Timing" })),
+        "not_allowed",
+      );
       // Both tools may run where others read; pipeline_read shapes itself as above.
       assert.isTrue(yield* sharedToolAllowed(turn, "pipeline_read", {}));
       assert.isTrue(yield* sharedToolAllowed(turn, "web_page", {}));
@@ -438,6 +460,17 @@ it.effect("a deal's concerns: short labels, each once, cleared by an empty list"
     assert.deepStrictEqual(left.deal.concerns, [
       { label: "Staff confidence", heard: "they worry" },
     ]);
+    // Activity reads which one went, by its label, whoever looks.
+    for (const who of [owner, zoya]) {
+      const lines = (yield* Deals.page([who], { orgId, key })).changes.flatMap((change) =>
+        change.fields.filter((field) => field.field === "concerns"),
+      );
+      assert.deepStrictEqual(lines[0], {
+        field: "concerns",
+        from: "Staff confidence\nPast system failed",
+        to: "Staff confidence",
+      });
+    }
     // pipeline_read lists the 50 most heard, and says there are more.
     const { pilot, renewal, phase, winter } = seeded;
     for (const [at, one] of [stock, pilot, renewal, phase, winter, rheas].entries()) {
@@ -457,6 +490,237 @@ it.effect("a deal's concerns: short labels, each once, cleared by an empty list"
     assert.strictEqual(heard.answer, concernsLine([], 50, true));
     assert.include(heard.answer, "the 50 most heard");
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "whoever looks after an open deal at a client keeps its contacts, on their screen and through their agent, and nothing else of it; the right goes with the deal",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const seeded = yield* seed;
+      const { corran } = seeded;
+      let n = 0;
+      const outcome = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.as("ok"),
+          Effect.catch((error) => Effect.succeed(isChatError(error) ? error.reason : error._tag)),
+        );
+      const adds = (party: string) =>
+        outcome(
+          Clients.createContact([zoya], {
+            orgId,
+            party,
+            name: `Invented Ingrid ${++n}`,
+            clientRequestId: `ingrid-${n}`,
+          }),
+        );
+      const can = (key: string) =>
+        Clients.party([zoya], { orgId, key }).pipe(Effect.map((page) => page.can));
+      const rev = (key: string) =>
+        Deals.page([owner], { orgId, key }).pipe(Effect.map((page) => page.deal.rev));
+      const move = (key: string, to: Parameters<typeof Deals.move>[1]["to"]) =>
+        Effect.flatMap(rev(key), (at) => Deals.move([owner], { orgId, key, rev: at, to }));
+      const stock = seeded.stock.deal.key;
+      const phase = seeded.phase.deal.key;
+
+      // Corran is Rhea's; Zoya looks after two of its open deals, so its people are hers to keep.
+      assert.strictEqual(yield* adds(corran), "ok");
+      assert.deepStrictEqual(yield* can(corran), {
+        edit: false,
+        log: true,
+        owner: false,
+        contacts: true,
+      });
+      const ingrid = (yield* Clients.party([zoya], { orgId, key: corran })).contacts[0]!;
+      assert.strictEqual(
+        yield* outcome(
+          Clients.updateContact([zoya], {
+            orgId,
+            key: ingrid.key,
+            rev: ingrid.rev,
+            role: "Invented head of operations",
+          }),
+        ),
+        "ok",
+      );
+      // Nothing else of the client opens to her.
+      const party = (yield* Clients.party([owner], { orgId, key: corran })).party;
+      assert.strictEqual(
+        yield* outcome(
+          Clients.updateParty([zoya], { orgId, key: corran, rev: party.rev, name: "x" }),
+        ),
+        "not_allowed",
+      );
+      // Brightwater has no deal of hers.
+      const brightwater = seeded.winter.deal.party.key;
+      assert.strictEqual(yield* adds(brightwater), "not_allowed");
+      assert.deepInclude(yield* can(brightwater), { edit: false, contacts: false });
+
+      // Her agent, in her own turn, as her screen.
+      yield* zoyasTurn;
+      yield* sql`UPDATE kin_messages SET author_person_id = ${zoyaId}, author_member_id = 'lead-chat-zoya'
+        WHERE message_id = 'ask'`;
+      const tomas = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          { list: "contacts", title: "Invented Tomas", client: corran, role: "Warehouse lead" },
+        ],
+      });
+      assert.isTrue(tomas.records[0]!.created);
+      yield* LeadWork.update(scope, {
+        key: KinRecordKey.make(tomas.records[0]!.key),
+        sourceEventId: "ask-event",
+        phone: "+46 8 555 0199",
+      });
+      assert.strictEqual(
+        yield* outcome(
+          LeadWork.create(scope, {
+            sourceEventId: "ask-event",
+            records: [{ list: "contacts", title: "Invented Ola", client: brightwater }],
+          }),
+        ),
+        "not_allowed",
+      );
+
+      // The right is the open deal's: lost, won, or handed to someone else, it goes.
+      yield* move(phase, { _tag: "lost", reason: "Invented: not this year" });
+      assert.strictEqual(yield* adds(corran), "ok");
+      yield* move(stock, { _tag: "won" });
+      assert.strictEqual(yield* adds(corran), "not_allowed");
+      assert.deepInclude(yield* can(corran), { contacts: false });
+      yield* move(stock, { _tag: "reopen" });
+      assert.strictEqual(yield* adds(corran), "ok");
+      yield* Deals.update([owner], {
+        orgId,
+        key: stock,
+        rev: yield* rev(stock),
+        owner: { _tag: "person", personId: ownerId },
+      });
+      assert.strictEqual(yield* adds(corran), "not_allowed");
+      yield* move(phase, { _tag: "reopen" });
+      assert.strictEqual(yield* adds(corran), "ok");
+      // Clients off: no client at all.
+      yield* sql`UPDATE kin_people SET sees_clients = 0 WHERE person_id = ${zoyaId}`;
+      assert.strictEqual(yield* adds(corran), "not_allowed");
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "an agent's debrief lands on the open deal there is: a second one is refused once, naming the open ones the turn sees, and besides opens it on purpose",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const seeded = yield* seed;
+      yield* zoyasTurn;
+      // Zoya tells it about her meeting: the turn is hers.
+      yield* sql`UPDATE kin_messages SET author_person_id = ${zoyaId}, author_member_id = 'lead-chat-zoya'
+        WHERE message_id = 'ask'`;
+      const create = (client: string, title: string, besides?: ReadonlyArray<string>) =>
+        LeadWork.create(scope, {
+          sourceEventId: "ask-event",
+          records: [
+            {
+              list: "deals",
+              title,
+              client,
+              fields: { concerns: ["Past failure: last system failed them twice"] },
+              ...(besides === undefined
+                ? {}
+                : { besides: besides.map((key) => KinRecordKey.make(key)) }),
+            },
+          ],
+        });
+      const twin = yield* create(seeded.corran, "Invented stock for 3 warehouses").pipe(
+        Effect.flip,
+      );
+      assert.strictEqual(isChatError(twin) ? twin.reason : twin._tag, "conflict");
+      const named = [seeded.stock, seeded.phase, seeded.rheas].map((one) => one.deal.key);
+      assert.deepStrictEqual(named, ["DL-1", "DL-4", "DL-6"]);
+      assert.strictEqual(
+        twin.message,
+        'Invented Corran Tiles already has open deals: DL-1 "Invented stock and orders system", DL-4 "Invented phase two", DL-6 "Invented second site". Put what you heard on the one it belongs to with record_update (fields.concerns, next); only if the person says this is separate business, pass besides: ["DL-1", "DL-4", "DL-6"] to open another.',
+      );
+      // Brightwater's private pilot is not Zoya's to see, so only its winter campaign is named.
+      const brightwater = seeded.winter.deal.party.key;
+      const other = yield* create(brightwater, "Invented spring campaign").pipe(Effect.flip);
+      assert.strictEqual(
+        other.message,
+        'Invented Brightwater already has an open deal: DL-5 "Invented winter campaign". Put what you heard on it with record_update (fields.concerns, next); only if the person says this is separate business, pass besides: ["DL-5"] to open another.',
+      );
+      // Nothing was written, so the twin is not on her board.
+      const titles = (yield* Deals.deals([zoya], { orgId, party: seeded.corran })).deals.map(
+        (deal) => deal.title,
+      );
+      assert.notInclude(titles, "Invented stock for 3 warehouses");
+      // A separate piece of business, on purpose: besides names the open ones.
+      const second = yield* create(seeded.corran, "Invented stock for 3 warehouses", named);
+      assert.isTrue(second.records[0]!.created);
+      // The same row again is a retry, never refused by the deal it made.
+      const again = yield* create(seeded.corran, "Invented stock for 3 warehouses", named);
+      assert.deepInclude(again.records[0]!, { key: second.records[0]!.key, created: false });
+      // A prospect with no open deal gets one at once.
+      const fresh = yield* Clients.createParty([zoya], {
+        orgId,
+        name: "Invented Fjord Flooring",
+        prospect: true,
+        clientRequestId: "fjord",
+      });
+      assert.isTrue((yield* create(fresh.key, "Invented first order")).records[0]!.created);
+      // A person's own New deal is not asked: Rhea's form adds a third Corran deal as before.
+      yield* Deals.create([owner], {
+        orgId,
+        party: seeded.corran,
+        title: "Invented third site",
+        clientRequestId: "third",
+      });
+
+      // The next step the notes gave, set by Zoya's agent on the deal she looks after.
+      const stockKey = KinRecordKey.make(seeded.stock.deal.key);
+      const stepped = yield* LeadWork.update(scope, {
+        key: stockKey,
+        sourceEventId: "ask-event",
+        fields: { concerns: ["Past failure: last system failed them twice", "Price"] },
+        next: { title: "Invented: send the plan", due: "2026-11-27" },
+      });
+      assert.include(stepped.changed, "next");
+      const page = yield* Deals.page([zoya], { orgId, key: stockKey });
+      assert.deepInclude(page.deal.next, { title: "Invented: send the plan" });
+      assert.strictEqual(page.deal.next?.dueAt?.slice(0, 10), "2026-11-27");
+      assert.deepStrictEqual(
+        page.deal.concerns?.map((concern) => concern.label),
+        ["Past failure", "Price"],
+      );
+      const step = yield* (yield* KinRecords.KinRecords).get(orgId, page.deal.next!.key);
+      assert.deepInclude(step, { ownerKind: "person", ownerId: zoyaId, side: "ours" });
+      // The same next step again in the turn is the same task.
+      yield* LeadWork.update(scope, {
+        key: stockKey,
+        sourceEventId: "ask-event",
+        next: { title: "Invented: send the plan", due: "2026-11-27" },
+      });
+      assert.lengthOf((yield* Deals.page([zoya], { orgId, key: stockKey })).steps, 2);
+      // Rhea's deal is not Zoya's to change, so its next step is refused too.
+      assert.strictEqual(
+        yield* refusal(
+          LeadWork.update(scope, {
+            key: KinRecordKey.make(seeded.rheas.deal.key),
+            sourceEventId: "ask-event",
+            next: { title: "Invented: call them" },
+          }),
+        ),
+        "not_allowed",
+      );
+      // A next step belongs to a deal; a task has its own due.
+      assert.strictEqual(
+        yield* refusal(
+          LeadWork.create(scope, {
+            sourceEventId: "ask-event",
+            records: [{ title: "Invented: call Ingrid", next: { title: "Invented: again" } }],
+          }),
+        ),
+        "invalid_state",
+      );
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect(

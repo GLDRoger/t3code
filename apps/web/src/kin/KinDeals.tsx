@@ -16,6 +16,8 @@ import {
   kinDealsNothing,
   kinDealsNotRead,
   kinDealsQuery,
+  kinDealsRaised,
+  kinDealsRaisedInput,
   kinDealsSection,
   kinDealStepHint,
   kinDealStageBeside,
@@ -373,6 +375,7 @@ export function KinDealsTab(
   const [problem, setProblem] = useState<string | null>(null);
   const [losing, setLosing] = useState<KinDealRow | null>(null);
   const [said, setSaid] = useState("");
+  const [concern, setConcern] = useState<string | null>(null);
 
   const move = async (deal: KinDealRow, to: KinDealMove) => {
     setPending({ key: deal.key });
@@ -442,8 +445,17 @@ export function KinDealsTab(
           )}
         </div>
         <DealFigures numbers={result.numbers} />
-        <div className="ms-auto">
+        <div className="ms-auto flex flex-wrap items-center justify-end gap-1">
           <DealsFilters filter={filter} directory={props.directory} onFilter={setFilter} />
+          {/* At phone width the page header has no room for it, so it wraps here instead. */}
+          {props.onNew === null ? null : (
+            <span className="sm:hidden">
+              <Button size="sm" onClick={props.onNew}>
+                <PlusIcon />
+                {KIN_DEALS.newDeal}
+              </Button>
+            </span>
+          )}
         </div>
       </div>
       <p className="sr-only" aria-live="polite">
@@ -529,7 +541,19 @@ export function KinDealsTab(
       {result.numbers === undefined ? null : (
         <DealNumbers numbers={result.numbers} names={props.directory.names} onFilter={setFilter} />
       )}
-      <WhatWeHear concerns={result.concerns} />
+      <WhatWeHear concerns={result.concerns} onOpen={setConcern} />
+      {concern === null || query === null ? null : (
+        <ConcernDealsDialog
+          {...props}
+          label={concern}
+          input={kinDealsRaisedInput(query.input, concern)}
+          onOpen={(key) => {
+            setConcern(null);
+            props.onOpen(key);
+          }}
+          onClose={() => setConcern(null)}
+        />
+      )}
       {board ? (
         <p className="px-4 py-2 text-xs text-muted-foreground">{KIN_DEALS.boardHint}</p>
       ) : null}
@@ -702,7 +726,10 @@ function DealNumbers(props: {
 }
 
 /** The concerns raised on the deals shown, counted by Kin; nothing at all until one is raised. */
-function WhatWeHear(props: { readonly concerns: KinDealsResult["concerns"] }) {
+function WhatWeHear(props: {
+  readonly concerns: KinDealsResult["concerns"];
+  readonly onOpen: (label: string) => void;
+}) {
   const rows = kinDealConcernRows(props.concerns);
   if (rows.length === 0) return null;
   return (
@@ -711,17 +738,92 @@ function WhatWeHear(props: { readonly concerns: KinDealsResult["concerns"] }) {
       className="max-h-64 shrink-0 overflow-y-auto border-t border-border px-4 py-3"
     >
       <h2 className="text-xs font-medium text-muted-foreground">{KIN_DEALS.whatWeHear}</h2>
-      <ul className="mt-2 flex flex-col gap-2">
+      <ul className="mt-1 flex flex-col">
         {rows.map((row) => (
-          <li key={row.label} className="flex flex-wrap items-baseline gap-x-3 text-sm">
-            <span className="min-w-0 flex-1 text-foreground">{row.label}</span>
-            <span className="tabular-nums">{row.deals}</span>
-            <span className="text-xs tabular-nums text-muted-foreground">{row.stands}</span>
+          <li key={row.label}>
+            <button
+              type="button"
+              aria-label={`${KIN_DEALS.openConcern(row.label)}: ${row.deals}, ${row.stands}`}
+              onClick={() => props.onOpen(row.label)}
+              className="-mx-2 flex w-[calc(100%+--spacing(4))] flex-wrap items-baseline gap-x-3 rounded-md px-2 py-1 text-start text-sm outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+            >
+              <span className="min-w-0 flex-1 text-foreground">{row.label}</span>
+              <span className="tabular-nums">{row.deals}</span>
+              <span className="text-xs tabular-nums text-muted-foreground">{row.stands}</span>
+            </button>
           </li>
         ))}
       </ul>
       <p className="mt-2 text-xs text-muted-foreground">{KIN_DEALS.whatWeHearHint}</p>
     </section>
+  );
+}
+
+/** The deals one concern was raised on, as the reader sees them; one opens its page. */
+function ConcernDealsDialog(
+  props: KinWorkTarget & {
+    readonly directory: KinWorkDirectory;
+    readonly label: string;
+    readonly input: KinDealsInput;
+    readonly onOpen: (key: KinRecordKey) => void;
+    readonly onClose: () => void;
+  },
+) {
+  const { state, refresh } = useKinDeals(props, props.input);
+  const now = new Date(useNowMinuteMs());
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) props.onClose();
+      }}
+    >
+      <DialogPopup className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{props.label}</DialogTitle>
+          <DialogDescription>{KIN_DEALS.raisedBy}</DialogDescription>
+        </DialogHeader>
+        <DialogPanel>
+          {state._tag === "ready" ? (
+            <ul className="-mx-2 flex flex-col">
+              {kinDealsRaised(
+                state.value.stages,
+                state.value.deals,
+                props.directory.names,
+                now,
+              ).map((row) => (
+                <li key={row.key}>
+                  <DealRowButton
+                    row={row}
+                    pill={row.pill}
+                    selected={false}
+                    onOpen={() => props.onOpen(row.key)}
+                  />
+                </li>
+              ))}
+              {state.value.more === 0 ? null : (
+                <li className="px-2 py-1 text-xs text-muted-foreground">
+                  {KIN_DEALS.more(state.value.more)}
+                </li>
+              )}
+            </ul>
+          ) : state._tag === "loading" ? (
+            <div role="status" aria-label={`Loading ${KIN_DEALS.openConcern(props.label)}`}>
+              <KinWorkRowSkeletons />
+            </div>
+          ) : kinDealsNotRead(state) !== null || state._tag !== "failed" ? (
+            <KinWorkNotice {...(kinDealsNotRead(state) ?? KIN_DEALS.refused)} />
+          ) : (
+            <KinLoadFailed what={KIN_DEALS.loadFailed} cause={state.cause} onRetry={refresh} />
+          )}
+        </DialogPanel>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={props.onClose}>
+            {KIN_DEALS.close}
+          </Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
   );
 }
 

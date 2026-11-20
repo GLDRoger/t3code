@@ -434,7 +434,19 @@ export function KinDealsView(
                 {result.numbers === undefined ? null : (
                   <DealNumbers numbers={result.numbers} names={names} onFilter={setFilter} />
                 )}
-                <WhatWeHear concerns={result.concerns} />
+                <WhatWeHear
+                  concerns={result.concerns}
+                  onOpen={(concern) =>
+                    navigation.navigate("KinDealsConcern", {
+                      environmentId,
+                      orgId,
+                      concern,
+                      ...(query?.input.owner?._tag === "person"
+                        ? { owner: query.input.owner.personId }
+                        : {}),
+                    })
+                  }
+                />
               </>
             )
           }
@@ -604,18 +616,22 @@ function DealNumbers(props: {
 }
 
 /** The concerns raised on the deals shown, counted by Kin; nothing at all until one is raised. */
-function WhatWeHear(props: { readonly concerns: KinDealsResult["concerns"] }) {
+function WhatWeHear(props: {
+  readonly concerns: KinDealsResult["concerns"];
+  readonly onOpen: (label: string) => void;
+}) {
   const rows = kinDealConcernRows(props.concerns);
   if (rows.length === 0) return null;
   return (
     <View className="gap-2 px-4 pt-5">
       <ListSection title={KIN_DEALS.whatWeHear}>
         {rows.map((row) => (
-          <ListRowLayout
+          <ListRow
             key={row.label}
             label={row.label}
             description={row.stands}
             detail={row.deals}
+            onPress={() => props.onOpen(row.label)}
           />
         ))}
       </ListSection>

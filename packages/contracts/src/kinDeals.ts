@@ -185,7 +185,9 @@ export const KinDealsInput = Schema.Struct({
   /** One client's or prospect's deals, open first. */
   party: Schema.optional(KinRecordKey),
   owner: Schema.optional(KinWorkPrincipal),
-  /** Default every state with `party`, open without it. */
+  /** Only the deals that raised this concern, by its label as What we hear counts it. */
+  concern: Schema.optional(KinDealConcern.fields.label),
+  /** Default every state with `party` or `concern`, open without them. */
   state: Schema.optional(KinDealState),
   /** The deals a campaign's results count: those at clients and prospects that came from it. */
   campaign: Schema.optional(KinRecordKey),

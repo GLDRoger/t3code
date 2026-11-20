@@ -1195,6 +1195,8 @@ export const KinPartyCan = Schema.Struct({
   edit: Schema.Boolean,
   log: Schema.Boolean,
   owner: Schema.Boolean,
+  /** Adding and editing its contacts, which looking after an open deal there also gives; absent, as `edit`. */
+  contacts: Schema.optional(Schema.Boolean),
 });
 export type KinPartyCan = typeof KinPartyCan.Type;
 

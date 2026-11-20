@@ -680,6 +680,7 @@ function ClientPage(
   const { can } = view;
   // Clients on, or the owner level: what's owed, the contact log, notes and history show.
   const full = can.log;
+  const keepsContacts = can.contacts ?? can.edit;
   const act = (key: KinRecordKey, action: KinWorkAction) => {
     const record = [...page.weOwe.records, ...page.theyOwe.records].find(
       (held) => held.key === key,
@@ -897,7 +898,7 @@ function ClientPage(
         <KinWorkSection
           title={KIN_CLIENTS.contacts}
           action={
-            can.edit ? (
+            keepsContacts ? (
               <Button
                 size="xs"
                 variant="ghost"
@@ -911,7 +912,7 @@ function ClientPage(
         >
           {view.contacts.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              {can.edit ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
+              {keepsContacts ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
             </p>
           ) : (
             <>
@@ -921,7 +922,9 @@ function ClientPage(
                     <ContactRow
                       contact={contact}
                       onEdit={
-                        can.edit ? () => setDialog({ type: "contact", key: contact.key }) : null
+                        keepsContacts
+                          ? () => setDialog({ type: "contact", key: contact.key })
+                          : null
                       }
                       onTag={setTagList}
                     />
