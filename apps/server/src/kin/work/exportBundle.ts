@@ -470,7 +470,15 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
 
   /** Each entry's comments, oldest first, and the files they hold. */
   const commentRows = Stream.paginate({ key: "", seq: 0 }, (after: { key: string; seq: number }) =>
-    sql<{ key: string; seq: number; at: number; byKind: string; by: string | null; body: string; filesJson: string }>`
+    sql<{
+      key: string;
+      seq: number;
+      at: number;
+      byKind: string;
+      by: string | null;
+      body: string;
+      filesJson: string;
+    }>`
       SELECT r.key, c.seq, c.created_at AS at, c.author_kind AS "byKind",
         p.display_name AS by, c.body, c.files_json AS "filesJson"
       FROM kin_record_comments c
@@ -494,7 +502,9 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
         const last = rows.at(-1);
         return [
           lines,
-          rows.length < PAGE || last === undefined ? Option.none() : Option.some({ key: last.key, seq: last.seq }),
+          rows.length < PAGE || last === undefined
+            ? Option.none()
+            : Option.some({ key: last.key, seq: last.seq }),
         ] as const;
       }),
     ),
@@ -502,25 +512,35 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
 
   /** Contact logged with each client, oldest first. */
   const contactRows = Stream.paginate("", (after: string) =>
-    sql<{ touchId: string; client: string; at: number; kind: string; who: string | null; note: string }>`
+    sql<{
+      touchId: string;
+      client: string;
+      at: number;
+      kind: string;
+      who: string | null;
+      note: string;
+    }>`
       SELECT t.touch_id AS "touchId", r.key AS client, t.at, t.kind, p.display_name AS who, t.note
       FROM kin_client_touches t
       JOIN kin_records r ON r.org_id = t.org_id AND r.record_id = t.party_id
       LEFT JOIN kin_people p ON p.org_id = t.org_id AND p.person_id = t.person_id
       WHERE t.org_id = ${orgId} AND t.removed_at IS NULL AND t.touch_id > ${after}
       ORDER BY t.touch_id LIMIT ${PAGE}`.pipe(
-      Effect.map((rows) => [
-        rows.map((row) =>
-          line({
-            client: row.client,
-            at: iso(row.at),
-            kind: row.kind,
-            ...some("who", row.who),
-            ...some("note", row.note),
-          }),
-        ),
-        rows.length < PAGE ? Option.none() : Option.some(rows.at(-1)!.touchId),
-      ] as const),
+      Effect.map(
+        (rows) =>
+          [
+            rows.map((row) =>
+              line({
+                client: row.client,
+                at: iso(row.at),
+                kind: row.kind,
+                ...some("who", row.who),
+                ...some("note", row.note),
+              }),
+            ),
+            rows.length < PAGE ? Option.none() : Option.some(rows.at(-1)!.touchId),
+          ] as const,
+      ),
     ),
   ).pipe(Stream.flatMap((lines) => Stream.fromIterable(lines)));
 

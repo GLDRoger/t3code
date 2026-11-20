@@ -295,7 +295,7 @@ const decide = Effect.fn("KinImport.undoPlan")(function* (
 export const IMPORT_BUSY =
   "Kin is importing or undoing a file for this company now. Wait for it to finish, then try again.";
 /** An unfinished apply's row is held this long past its last chunk (`$.beat`); past it, its host stopped. */
-export const IMPORT_LEASE_MS = 60_000;
+const IMPORT_LEASE_MS = 60_000;
 export const beating = (beat: number | undefined, now: number) =>
   beat !== undefined && beat > now - IMPORT_LEASE_MS;
 

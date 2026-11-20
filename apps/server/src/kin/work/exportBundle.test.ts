@@ -308,7 +308,7 @@ describe("Download everything", () => {
           `docs/D-1/${ATTACHMENT}.png`,
         ],
       );
-      const said = new Date(NOW).toISOString();
+      const said = "2026-11-12T06:00:00.000Z";
       assert.deepStrictEqual(JSON.parse(zip.get("comments.jsonl")!.toString()), {
         entry: task!.key,
         at: said,
