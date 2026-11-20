@@ -68,6 +68,7 @@ export const KIN_DEALS = {
   lastStage: "Last stage",
   activity: "Activity",
   addStep: "Add a next step",
+  stepNeeded: "Add a next step, or choose None yet.",
   what: "What",
   value: "Value",
   expected: "Expected",
@@ -110,6 +111,11 @@ export const KIN_DEALS = {
   openQuote: (quote: string) => `Open ${quote}`,
   clientStays: "A deal stays with its client. For another, add a new deal.",
 } as const;
+
+/** Under a new deal's next step while Add deal waits on it: a step or None yet. */
+export function kinDealStepHint(step: string, noneYet: boolean) {
+  return noneYet || step.trim() !== "" ? undefined : KIN_DEALS.stepNeeded;
+}
 
 /**
  * What Deals says in place of deals it couldn't read: refused, or a host that has no deals at all

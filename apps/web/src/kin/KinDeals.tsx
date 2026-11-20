@@ -10,6 +10,7 @@ import {
   kinDealsNotRead,
   kinDealsQuery,
   kinDealsSection,
+  kinDealStepHint,
   kinDealStageBeside,
   type KinDealNextView,
   type KinDealRowView,
@@ -815,8 +816,8 @@ export function KinDealNewDialog(
   };
   const money = value.trim() === "" ? null : kinParseMoney(value, home);
   const moneyBad = value.trim() !== "" && money === null;
-  const canSave =
-    party !== null && title.trim() !== "" && !moneyBad && (noneYet || step.trim() !== "");
+  const stepHint = kinDealStepHint(step, noneYet);
+  const canSave = party !== null && title.trim() !== "" && !moneyBad && stepHint === undefined;
   const people = [...props.directory.names.people.entries()].filter(
     ([id]) => id !== props.directory.names.me,
   );
@@ -853,6 +854,7 @@ export function KinDealNewDialog(
       saving={busy}
       canSave={canSave}
       problem={problem === null ? null : { kind: "invalid", text: problem }}
+      waitsOn={stepHint === undefined ? undefined : ids.step}
       onOpenExisting={() => {}}
       onSave={() => void save()}
       onClose={props.onClose}
@@ -943,8 +945,8 @@ export function KinDealNewDialog(
           onChange={(event) => setSource(event.target.value)}
         />
       </Field>
-      <div className="grid grid-cols-[1fr_auto] items-end gap-3">
-        <Field id={ids.step} label={KIN_DEALS.nextStep}>
+      <Field id={ids.step} label={KIN_DEALS.nextStep} hint={stepHint}>
+        <div className="grid grid-cols-[1fr_auto] gap-3">
           <Input
             id={ids.step}
             disabled={noneYet}
@@ -952,16 +954,16 @@ export function KinDealNewDialog(
             value={step}
             onChange={(event) => setStep(event.target.value)}
           />
-        </Field>
-        <Input
-          id={ids.stepDay}
-          type="date"
-          aria-label="Next step's day"
-          disabled={noneYet}
-          value={stepDay}
-          onChange={(event) => setStepDay(event.target.value)}
-        />
-      </div>
+          <Input
+            id={ids.stepDay}
+            type="date"
+            aria-label="Next step's day"
+            disabled={noneYet}
+            value={stepDay}
+            onChange={(event) => setStepDay(event.target.value)}
+          />
+        </div>
+      </Field>
       <div className="flex items-center gap-2">
         <Checkbox
           id={ids.none}
