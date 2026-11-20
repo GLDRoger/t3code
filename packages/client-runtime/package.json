@@ -1038,6 +1038,10 @@
     "./kin/react/kinWorkHooks": {
       "types": "./src/kin/react/kinWorkHooks.ts",
       "default": "./src/kin/react/kinWorkHooks.ts"
+    },
+    "./kin/react/kinDocsHooks": {
+      "types": "./src/kin/react/kinDocsHooks.ts",
+      "default": "./src/kin/react/kinDocsHooks.ts"
     }
   },
   "scripts": {

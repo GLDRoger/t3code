@@ -472,6 +472,6 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
   };
 }
 
-type KinWorkHooks = ReturnType<typeof makeKinWorkHooks>;
+export type KinWorkHooks = ReturnType<typeof makeKinWorkHooks>;
 export type KinWorkDirectory = ReturnType<KinWorkHooks["useKinWorkDirectory"]>;
 export type KinWorkChoices = ReturnType<KinWorkHooks["useKinWorkChoices"]>;
