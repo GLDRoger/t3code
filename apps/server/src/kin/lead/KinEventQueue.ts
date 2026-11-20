@@ -243,9 +243,14 @@ export class KinEventQueue extends Context.Service<
   }
 >()("t3/kin/lead/KinEventQueue") {}
 
-/** A failed start that showed nothing retries soon, so the owner's "trying again" is true. */
+/**
+ * A failed start that showed nothing retries soon, so the owner's "trying again" is true, and
+ * once more a quarter of an hour on, so a provider down for minutes doesn't lose the request.
+ */
 const FIRST_RETRY_MS = 15_000;
 const LATER_RETRY_MS = 60_000;
+const LAST_RETRY_MS = 900_000;
+const RUN_ATTEMPTS = 4;
 
 /**
  * Every passed route to this agent whose wake-up expired, for any reason, settles as stale, and
@@ -853,9 +858,10 @@ const make = Effect.gen(function* () {
             event_id: string;
             state: string;
           }>`UPDATE kin_events SET attempts = attempts + 1,
-            state = CASE WHEN attempts + 1 >= 3 THEN 'failed' ELSE 'queued' END,
+            state = CASE WHEN attempts + 1 >= ${RUN_ATTEMPTS} THEN 'failed' ELSE 'queued' END,
             wakeup_id = NULL,
-            not_before = ${now} + CASE WHEN attempts = 0 THEN ${FIRST_RETRY_MS} ELSE ${LATER_RETRY_MS} END
+            not_before = ${now} + CASE WHEN attempts = 0 THEN ${FIRST_RETRY_MS}
+              WHEN attempts = 1 THEN ${LATER_RETRY_MS} ELSE ${LAST_RETRY_MS} END
             WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed' RETURNING event_id, state`;
           return {
             failedEventIds: rows

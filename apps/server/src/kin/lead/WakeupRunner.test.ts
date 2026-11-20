@@ -854,21 +854,21 @@ describe("WakeupRunner", () => {
       failureCode: undefined,
       mode: "reply",
       owed: true,
-      said: ["retrying", "retrying", "gave_up"],
+      said: ["retrying", "retrying", "retrying", "gave_up"],
     },
     // No retry signs the account in: each try names the fix, and the bridge says it once.
     {
       failureCode: "authentication_failed",
       mode: "reply",
       owed: true,
-      said: ["signin", "signin", "signin"],
+      said: ["signin", "signin", "signin", "signin"],
     },
     // Review 48: an assigned entry or a worker's report owes words too, though nobody wrote.
     {
       failureCode: undefined,
       mode: "notice",
       owed: true,
-      said: ["retrying", "retrying", "gave_up"],
+      said: ["retrying", "retrying", "retrying", "gave_up"],
     },
     // A check-in nobody waits on retries quietly, but never ends silent.
     { failureCode: undefined, mode: "notice", owed: false, said: ["gave_up"] },
@@ -876,7 +876,7 @@ describe("WakeupRunner", () => {
       failureCode: "authentication_failed",
       mode: "notice",
       owed: false,
-      said: ["signin", "signin", "signin"],
+      said: ["signin", "signin", "signin", "signin"],
     },
   ] as const)(
     "tells the owner at once why a failed start stopped or retries ($failureCode, $mode, owed $owed)",
@@ -901,13 +901,13 @@ describe("WakeupRunner", () => {
           yield* seed;
           const sql = yield* SqlClient.SqlClient;
           yield* (yield* KinEventQueue.KinEventQueue).enqueue(laneMessage("asked"));
-          for (const wait of ["15 seconds", "60 seconds", undefined] as const) {
+          for (const wait of ["15 seconds", "60 seconds", "15 minutes", undefined] as const) {
             yield* Fiber.join(yield* run());
             if (wait !== undefined) yield* TestClock.adjust(wait);
           }
           assert.deepStrictEqual(outcomes, [...said]);
           assert.deepStrictEqual(yield* sql`SELECT state, attempts FROM kin_events`, [
-            { state: "failed", attempts: 3 },
+            { state: "failed", attempts: 4 },
           ]);
         }).pipe(
           Effect.provide(
