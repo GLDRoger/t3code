@@ -85,7 +85,7 @@ export interface FakeItem {
   /** When GitHub last changed it: opened, commented on, labelled, pushed to. */
   updated_at?: number;
   /** Each push to the PR: the head it moved from and to, and what it changed. */
-  pushes?: { from: string; to: string; diff: string }[];
+  pushes?: { from: string; to: string; diff: string; force?: boolean }[];
   /** Its timeline's label events, oldest first, as `issues/{n}/events` lists them. */
   labelEvents?: { label: string; actor: string }[];
 }
@@ -114,6 +114,8 @@ export interface FakeApp {
   events?: string[];
   /** Its webhook as `app/hook/config` holds it; the secret is never read back. */
   hook?: { url: string; content_type: string; insecure_ssl: string; secret?: string };
+  /** GitHub applies a hook change but the answer never arrives. */
+  patchLost?: boolean;
   /** What `app/hook/deliveries` lists, newest first. */
   deliveries?: { delivered_at: string; status_code: number }[];
   installations: {
@@ -365,13 +367,18 @@ export class FakeGitHub {
     this.happened(input.repo, input.number, input.actor, "PullRequestEvent");
   }
   /** New commits on a PR's branch: GitHub sends no notification, but the PR's `updated_at` moves. */
-  push(input: { repo: string; number: number; diff?: string }) {
+  push(input: { repo: string; number: number; diff?: string; force?: boolean }) {
     const item = this.item(input.repo, input.number);
     const from = item.head_sha;
     item.head_sha = `sha${this.next()}`;
     item.updated_at = this.world.now;
     const diff = input.diff ?? `diff --git a/CHANGES.md b/CHANGES.md\n+pushed ${item.head_sha}\n`;
-    (item.pushes ??= []).push({ from, to: item.head_sha, diff });
+    (item.pushes ??= []).push({
+      from,
+      to: item.head_sha,
+      diff,
+      ...(input.force === true ? { force: true } : {}),
+    });
     item.diff += diff;
     return item.head_sha;
   }
@@ -727,13 +734,15 @@ export class FakeGitHub {
           events: app.events ?? [],
         });
       if (path === "app/hook/config" && (method === "GET" || method === "PATCH")) {
-        if (method === "PATCH")
+        if (method === "PATCH") {
           app.hook = {
             url: String(body.url ?? ""),
             content_type: String(body.content_type ?? "form"),
             insecure_ssl: String(body.insecure_ssl ?? "0"),
             ...(typeof body.secret === "string" ? { secret: body.secret } : {}),
           };
+          if (app.patchLost === true) return { status: 502, headers: {}, body: null };
+        }
         const hook = app.hook ?? { url: "", content_type: "form", insecure_ssl: "0" };
         return ok({
           url: hook.url,
@@ -1011,21 +1020,39 @@ export class FakeGitHub {
       }
       // A head's changes against the base, as a PR's diff reads at that head; against an earlier
       // head of the PR, what the pushes since it changed.
+      // A three-dot compare, as GitHub's: from where the two meet. After a force-push the old
+      // head isn't an ancestor, so the diff is only what the rewrite added past their meeting.
       if (method === "GET" && (found = /^compare\/([^/]+)\.\.\.([^/]+)$/.exec(rest))) {
         const base = decodeURIComponent(found[1]!);
         const item = this.world.items.find(
           (one) => one.repo.toLowerCase() === repo.toLowerCase() && one.head_sha === found![2],
         );
         if (item === undefined) return missing;
-        const since = (item.pushes ?? []).findIndex((push) => push.from === base);
-        return since < 0
-          ? ok(item.diff)
-          : ok(
-              (item.pushes ?? [])
-                .slice(since)
-                .map((push) => push.diff)
-                .join(""),
-            );
+        const pushes = item.pushes ?? [];
+        const since = pushes.findIndex((push) => push.from === base);
+        const known = since >= 0 || pushes.some((push) => push.to === base);
+        const forced = since >= 0 && pushes.slice(since).some((push) => push.force === true);
+        const status = !known
+          ? "ahead"
+          : base === item.head_sha
+            ? "identical"
+            : forced
+              ? "diverged"
+              : "ahead";
+        if (!(headers.accept ?? "").includes("diff"))
+          return ok({
+            status,
+            ahead_by: Math.max(0, pushes.length - since),
+            behind_by: forced ? 1 : 0,
+          });
+        if (!known) return ok(item.diff);
+        if (forced) return ok(pushes.findLast((push) => push.force === true)!.diff);
+        return ok(
+          pushes
+            .slice(since)
+            .map((push) => push.diff)
+            .join(""),
+        );
       }
       if (method === "GET" && (found = /^issues\/(\d+)$/.exec(rest)))
         return ok(this.issueJson(this.item(repo, Number(found[1]))));

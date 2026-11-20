@@ -33,6 +33,7 @@ import { emptyWorld, FakeGitHub } from "./fakeGitHub.ts";
 import { receive } from "./hookHttp.ts";
 import { KinKeychain } from "./Keychain.ts";
 import { KinGitHubApp, KinGitHubAppConfig, make as makeApp } from "./KinGitHubApp.ts";
+import { writeStoredApp } from "./appStore.ts";
 import { appKeyJson, fakeHttp, installApp } from "./KinGitHubApp.testkit.ts";
 
 const orgId = KinOrgId.make("org-hook");
@@ -66,8 +67,11 @@ const seed = Effect.gen(function* () {
     ])}, 0)`;
 });
 
-/** Kin's App over the fake GitHub as the host's environment names it, its key in a real store. */
-const setup = (options: { readonly app?: boolean } = {}) =>
+/**
+ * Kin's App over the fake GitHub, its key in a real store: one Kin made (Settings' record), or
+ * one the host's environment named (`seeded`).
+ */
+const setup = (options: { readonly app?: boolean; readonly seeded?: boolean } = {}) =>
   Effect.gen(function* () {
     yield* seed;
     yield* TestClock.setTime(T0);
@@ -76,6 +80,15 @@ const setup = (options: { readonly app?: boolean } = {}) =>
     if (options.app !== false) {
       installApp(github, []);
       yield* store.set(AppKey.appKeyName("9001"), new TextEncoder().encode(appKeyJson()));
+      if (options.seeded !== true)
+        yield* writeStoredApp({
+          appId: 9001,
+          slug: github.world.app!.slug,
+          name: github.world.app!.name,
+          owner: "rhea-gh",
+          at: T0,
+          by: "owner",
+        });
     }
     const appKey = yield* AppKey.make.pipe(
       Effect.provideService(KinKeychain, { appSecret: () => Effect.succeedNone }),
@@ -102,7 +115,7 @@ const setup = (options: { readonly app?: boolean } = {}) =>
     );
     const hook = yield* AppHook.make.pipe(Effect.provideService(KinGitHubApp, app));
     const secretText = store
-      .get(AppKey.HOOK_SECRET_NAME)
+      .get(AppKey.hookSecretName("9001"))
       .pipe(Effect.map(Option.map((bytes) => Hex.encode(bytes))));
     return { github, store, app, flow, hook, secretText };
   });
@@ -240,6 +253,48 @@ describe("GitHub's deliveries to Kin's webhook", () => {
         assert.deepStrictEqual(yield* send(some, request), expected, name);
       assert.strictEqual(yield* Queue.take(looks), `${REPO}#4`);
       assert.strictEqual(yield* Queue.size(looks), 0);
+
+      // A caller who didn't sign costs a header check: its body isn't read, nor Kin's secret.
+      let secretReads = 0;
+      const counted = Option.some({
+        ...hook,
+        secret: () => Effect.suspend(() => ((secretReads += 1), hook.secret())),
+      });
+      let pulled = false;
+      const unread = (headers: Record<string, string>) =>
+        HttpServerRequest.fromWeb(
+          new Request(`https://kin.ambermill.example.test${AppHook.KIN_GITHUB_HOOK_ROUTE}`, {
+            method: "POST",
+            headers: { "content-length": String(2 * 1024 * 1024), ...headers },
+            body: new ReadableStream(
+              {
+                pull: () => {
+                  pulled = true;
+                },
+              },
+              // Nothing is pulled until someone reads it.
+              { highWaterMark: 0 },
+            ),
+            duplex: "half",
+          } as RequestInit),
+        );
+      for (const headers of [
+        {},
+        { "x-hub-signature-256": "sha256=abc" },
+        { "x-hub-signature-256": `sha1=${"a".repeat(40)}` },
+      ])
+        assert.deepStrictEqual(
+          yield* send(counted, unread(headers)),
+          refused,
+          JSON.stringify(headers),
+        );
+      // Signed in form but declared too large: 413, still before the secret.
+      assert.deepStrictEqual(
+        yield* send(counted, unread({ "x-hub-signature-256": sign(secret, "x") })),
+        { status: 413, body: "Too Large" },
+      );
+      assert.isFalse(pulled);
+      assert.strictEqual(secretReads, 0);
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
@@ -305,6 +360,32 @@ describe("GitHub's deliveries to Kin's webhook", () => {
   );
 });
 
+describe("looks waiting on deliveries", () => {
+  it.effect("are capped across an hour's turn; past it a delivery is left to the poll", () =>
+    Effect.gen(function* () {
+      const { hook } = yield* setup();
+      const { looks, started, release } = yield* recorder(hook);
+      yield* hook.deliver(REPO, [1]);
+      yield* Deferred.await(started);
+      for (let number = 2; number <= AppHook.LOOKS_PENDING + 50; number++)
+        yield* hook.deliver(REPO, [number]);
+      // A new hour gives the hourly count back, not room in the queue.
+      yield* TestClock.adjust("1 hour");
+      for (let number = 1001; number <= 1050; number++) yield* hook.deliver(REPO, [number]);
+      yield* Deferred.succeed(release, undefined);
+      const seen: Array<string> = [];
+      for (let count = 0; count < AppHook.LOOKS_PENDING; count++)
+        seen.push(yield* Queue.take(looks));
+      assert.deepStrictEqual(
+        seen,
+        Array.from({ length: AppHook.LOOKS_PENDING }, (_, at) => `${REPO}#${at + 1}`),
+      );
+      yield* hook.deliver(REPO, [9999]);
+      assert.strictEqual(yield* Queue.take(looks), `${REPO}#9999`);
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+});
+
 describe("Kin sets the App's webhook up itself", () => {
   it.effect(
     "points it at Kin's address with Kin's secret, and leaves it when it already is",
@@ -334,11 +415,11 @@ describe("Kin sets the App's webhook up itself", () => {
         assert.strictEqual(yield* addressed(hook.ensure()), "set");
         assert.strictEqual(patches(), 1);
 
-        // Pointed elsewhere on GitHub: set again, with the same secret.
+        // Kin's route at an address Kin had before: pointed here again, with the same secret.
         github.world.app!.hook = {
-          url: "https://elsewhere.example.test/hook",
-          content_type: "form",
-          insecure_ssl: "1",
+          url: `https://old.ambermill.example.test${AppHook.KIN_GITHUB_HOOK_ROUTE}`,
+          content_type: "json",
+          insecure_ssl: "0",
         };
         assert.strictEqual(yield* addressed(hook.ensure()), "set");
         assert.strictEqual(patches(), 2);
@@ -348,6 +429,20 @@ describe("Kin sets the App's webhook up itself", () => {
           insecure_ssl: "0",
           secret,
         });
+
+        // Someone else's hook on it: left alone, said once in a fixed line.
+        const theirs = {
+          url: "https://elsewhere.example.test/hook",
+          content_type: "form",
+          insecure_ssl: "1",
+        };
+        github.world.app!.hook = { ...theirs };
+        assert.strictEqual(yield* addressed(hook.ensure()), "elsewhere");
+        assert.deepStrictEqual(github.world.app?.hook, theirs);
+        assert.strictEqual(patches(), 2);
+        yield* addressed(hook.tick());
+        assert.isTrue(lines.some((line) => line.includes("points somewhere else")));
+        github.world.app!.hook = { url: "", content_type: "json", insecure_ssl: "0" };
 
         // GitHub failing: told, never thrown; the tick goes on.
         github.world.failing = ["app/hook/config"];
@@ -371,6 +466,42 @@ describe("Kin sets the App's webhook up itself", () => {
     },
   );
 
+  it.effect(
+    "counts as set only once GitHub took the secret, sent again unchanged until it does",
+    () =>
+      Effect.gen(function* () {
+        const { github, hook, secretText } = yield* setup();
+        const patches = () =>
+          github.world.calls.filter((call) => call === "PATCH app/hook/config").length;
+        // GitHub takes the change but its answer is lost: not set, and the same secret next time.
+        github.world.app!.patchLost = true;
+        assert.strictEqual(yield* addressed(hook.ensure()), "error");
+        const secret = Option.getOrThrow(yield* secretText);
+        assert.strictEqual(github.world.app?.hook?.secret, secret);
+        assert.strictEqual((yield* addressed(hook.instant([owner], orgId)))?.state, "error");
+        github.world.app!.patchLost = false;
+        assert.strictEqual(yield* addressed(hook.ensure()), "set");
+        assert.strictEqual(patches(), 2);
+        assert.deepStrictEqual(yield* secretText, Option.some(secret));
+        assert.strictEqual(github.world.app?.hook?.secret, secret);
+        assert.strictEqual((yield* addressed(hook.instant([owner], orgId)))?.state, "events");
+        assert.strictEqual(yield* addressed(hook.ensure()), "set");
+        assert.strictEqual(patches(), 2);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("an App the host was seeded with keeps its webhook: Kin never reads or writes it", () =>
+    Effect.gen(function* () {
+      const { github, hook } = yield* setup({ seeded: true });
+      github.world.calls.length = 0;
+      assert.strictEqual(yield* addressed(hook.ensure()), "none");
+      yield* addressed(hook.tick());
+      assert.isUndefined(yield* addressed(hook.instant([owner], orgId)));
+      assert.isTrue(Option.isNone(yield* hook.secret()));
+      assert.isFalse(github.world.calls.some((call) => call.includes("app/hook")));
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("the scheduler's tick sets it up once for a new App, and again a day later", () =>
     Effect.gen(function* () {
       const { github, hook } = yield* setup();
@@ -385,25 +516,51 @@ describe("Kin sets the App's webhook up itself", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("disconnecting the App deletes the secret, so its deliveries are refused", () =>
-    Effect.gen(function* () {
-      const { hook, flow, secretText } = yield* setup();
-      yield* addressed(hook.ensure());
-      const secret = Option.getOrThrow(yield* secretText);
-      const body = pullEvent(4);
-      const signed = () =>
-        delivery(body, {
+  it.effect(
+    "the secret is the active App's own: disconnecting deletes it, refuses its deliveries and drops waiting looks",
+    () =>
+      Effect.gen(function* () {
+        const { hook, flow, secretText } = yield* setup();
+        const store = yield* ServerSecretStore.ServerSecretStore;
+        // An empty value is no secret, and is replaced.
+        yield* store.set(AppKey.hookSecretName("9001"), new Uint8Array());
+        assert.isTrue(Option.isNone(yield* hook.secret()));
+        assert.strictEqual(yield* addressed(hook.ensure()), "set");
+        const secret = Option.getOrThrow(yield* secretText);
+        assert.match(secret, /^[0-9a-f]{64}$/);
+        const body = pullEvent(4);
+        const signed = () =>
+          delivery(body, {
+            "x-github-event": "pull_request",
+            "x-hub-signature-256": sign(secret, body),
+          });
+        // Another App's secret verifies nothing.
+        const other = "b2".repeat(32);
+        yield* store.set(AppKey.hookSecretName("9002"), Buffer.from(other, "hex"));
+        const otherSigned = delivery(body, {
           "x-github-event": "pull_request",
-          "x-hub-signature-256": sign(secret, body),
+          "x-hub-signature-256": sign(other, body),
         });
-      assert.strictEqual((yield* send(Option.some(hook), signed())).status, 202);
-      yield* flow.disconnect([owner], orgId);
-      assert.isTrue(Option.isNone(yield* secretText));
-      assert.deepStrictEqual(yield* send(Option.some(hook), signed()), {
-        status: 401,
-        body: "Unauthorized",
-      });
-    }).pipe(Effect.provide(layer)),
+        assert.strictEqual((yield* send(Option.some(hook), otherSigned)).status, 401);
+        // One look runs and one waits when the App is disconnected: the waiting one never runs.
+        const { looks, started, release } = yield* recorder(hook);
+        assert.strictEqual((yield* send(Option.some(hook), signed())).status, 202);
+        yield* Deferred.await(started);
+        yield* hook.deliver(REPO, [5]);
+        yield* flow.disconnect([owner], orgId);
+        yield* Deferred.succeed(release, undefined);
+        assert.strictEqual(yield* Queue.take(looks), `${REPO}#4`);
+        assert.isTrue(Option.isNone(yield* secretText));
+        assert.deepStrictEqual(yield* send(Option.some(hook), signed()), {
+          status: 401,
+          body: "Unauthorized",
+        });
+        // A removal that failed would leave a value under the old App's name: nothing reads it.
+        yield* store.set(AppKey.hookSecretName("9001"), Buffer.from(secret, "hex"));
+        assert.strictEqual((yield* send(Option.some(hook), signed())).status, 401);
+        yield* hook.deliver(REPO, [6]);
+        assert.strictEqual(yield* Queue.size(looks), 0);
+      }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 });
 

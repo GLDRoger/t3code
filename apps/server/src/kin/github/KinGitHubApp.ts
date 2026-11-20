@@ -217,8 +217,21 @@ export class KinGitHubApp extends Context.Service<
       | { readonly source: "seed" }
       | { readonly source: "none" }
     >;
-    /** GitHub's API as the App itself, signed with its key: `app…` paths only. None without one. */
-    readonly asApp?: (request: ApiRequest) => Effect.Effect<ApiAnswer | undefined>;
+    /**
+     * The four calls the App's webhook needs, each one fixed method and path signed as the App
+     * itself; undefined where Kin holds no key for it.
+     */
+    readonly hook?: {
+      readonly config: () => Effect.Effect<ApiAnswer | undefined>;
+      readonly setConfig: (config: {
+        readonly url: string;
+        readonly content_type: "json";
+        readonly insecure_ssl: "0";
+        readonly secret: string;
+      }) => Effect.Effect<ApiAnswer | undefined>;
+      readonly about: () => Effect.Effect<ApiAnswer | undefined>;
+      readonly latestDelivery: () => Effect.Effect<ApiAnswer | undefined>;
+    };
   }
 >()("t3/kin/github/KinGitHubApp") {}
 
@@ -707,14 +720,25 @@ export const make = Effect.gen(function* () {
       : ({ source: "kin", app: app.stored } as const);
   });
 
-  const asApp = Effect.fn("KinGitHubApp.asApp")(function* (input: ApiRequest) {
+  const asApp = Effect.fnUntraced(function* (input: ApiRequest) {
     const appId = yield* appIdNow();
-    if (Option.isNone(appId) || !/^app(\/|$)/.test(input.path)) return undefined;
+    if (Option.isNone(appId)) return undefined;
     const token = yield* jwt(appId.value);
     return token === undefined ? undefined : yield* request(token, input);
   });
+  const hook = {
+    config: Effect.fn("KinGitHubApp.hookConfig")(() => asApp({ path: "app/hook/config" })),
+    setConfig: Effect.fn("KinGitHubApp.setHookConfig")(
+      (config: Parameters<NonNullable<KinGitHubApp["Service"]["hook"]>["setConfig"]>[0]) =>
+        asApp({ method: "PATCH", path: "app/hook/config", body: config }),
+    ),
+    about: Effect.fn("KinGitHubApp.about")(() => asApp({ path: "app" })),
+    latestDelivery: Effect.fn("KinGitHubApp.latestDelivery")(() =>
+      asApp({ path: "app/hook/deliveries?per_page=1" }),
+    ),
+  };
 
-  return KinGitHubApp.of({ state, on, refresh, lookAgain, origin, asApp });
+  return KinGitHubApp.of({ state, on, refresh, lookAgain, origin, hook });
 });
 
 /** Looks once at startup and then every 30 seconds, for as long as Kin runs. */

@@ -15,13 +15,15 @@ import { KIN_GITHUB_HOOK_ROUTE, KinGitHubHook } from "./appHook.ts";
 
 /**
  * The App's webhook: public, so nothing is read before GitHub's signature over the exact bytes
- * checks out, and then only the event's name, the repo and up to three thread numbers. A good
- * delivery is answered at once; the look it asks for runs later, off this request.
+ * checks out, and then only the event's name, the repo and up to three thread numbers; a request
+ * with no well-formed signature isn't read at all. A good delivery is answered at once; the look it
+ * asks for runs later, off this request.
  */
 
 const HOOK_MAX_BODY_BYTES = 1024 * 1024;
 const NUMBERS_MAX = 3;
 const SIGNATURE = { header: "x-hub-signature-256", prefix: "sha256=", encoding: "hex" } as const;
+const SIGNED = /^sha256=[0-9a-f]{64}$/i;
 
 const answer = (status: number, body: string) =>
   HttpServerResponse.text(body, { status, headers: { "cache-control": "no-store" } });
@@ -63,8 +65,16 @@ export const receive = Effect.fn("KinGitHubHook.receive")(function* (
       status: 405,
       headers: { allow: "POST", "cache-control": "no-store" },
     });
-  const length = Number(request.headers["content-length"] ?? "0");
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(request.headers))
+    if (typeof value === "string") headers[name.toLowerCase()] = value;
+  // A caller who didn't sign costs a header check: no body, no secret.
+  if (!SIGNED.test(headers[SIGNATURE.header] ?? "")) return unauthorized();
+  const length = Number(headers["content-length"] ?? "0");
   if (!Number.isFinite(length) || length > HOOK_MAX_BODY_BYTES) return answer(413, "Too Large");
+  if (Option.isNone(hook)) return unauthorized();
+  const secret = yield* hook.value.secret();
+  if (Option.isNone(secret)) return unauthorized();
   // A chunked body has no length: the reader itself is capped.
   const body = yield* request.arrayBuffer.pipe(
     Effect.map((buffer) => new Uint8Array(buffer)),
@@ -73,12 +83,6 @@ export const receive = Effect.fn("KinGitHubHook.receive")(function* (
   );
   if (Option.isNone(body) || body.value.byteLength > HOOK_MAX_BODY_BYTES)
     return answer(413, "Too Large");
-  if (Option.isNone(hook)) return unauthorized();
-  const secret = yield* hook.value.secret();
-  if (Option.isNone(secret)) return unauthorized();
-  const headers: Record<string, string> = {};
-  for (const [name, value] of Object.entries(request.headers))
-    if (typeof value === "string") headers[name.toLowerCase()] = value;
   const verified = yield* verifyWebhookSignature({
     signature: SIGNATURE,
     secret: Redacted.value(secret.value),

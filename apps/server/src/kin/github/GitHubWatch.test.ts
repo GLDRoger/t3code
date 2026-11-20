@@ -40,7 +40,7 @@ import { BOT_EMAIL, BOT_LOGIN, installApp } from "./KinGitHubApp.testkit.ts";
 import * as GitHubWatch from "./GitHubWatch.ts";
 import { headKey } from "./boundReview.ts";
 import * as AppHook from "./appHook.ts";
-import { HOOK_SECRET_NAME } from "./appKey.ts";
+import { hookSecretName } from "./appKey.ts";
 import { receive } from "./hookHttp.ts";
 import {
   isMemoryRepo,
@@ -1005,9 +1005,47 @@ describe("a reviewed PR whose head moves", () => {
         assert.deepStrictEqual(whole.pull?.reReview, { from: head, whole: true });
         assert.include(whole.pull?.diff, "an invented line");
         assert.include(whole.pull?.diff, "+another\n");
+
+        // A force-push GitHub compares fine, but from where the heads meet, not from the head
+        // reviewed: the whole PR at the new head is reviewed again.
+        github.world.failing = [];
+        yield* finishReviews;
+        const rewritten = github.push({ repo: REPO, number, diff: "+rewritten\n", force: true });
+        yield* look(github, 5);
+        const forced = (yield* reReviews).at(-1)!;
+        assert.strictEqual(forced.key, headKey(REPO, number, rewritten));
+        assert.deepStrictEqual(forced.pull?.reReview, { from: next, whole: true });
+        assert.include(forced.pull?.diff, "an invented line");
+        assert.include(github.world.calls, `GET repos/${REPO}/compare/${next}...${rewritten}`);
       }).pipe(Effect.provide(layer));
     },
   );
+
+  it.effect("a quiet repo is listed again within half an hour, so a reopened PR is found", () => {
+    const { github, layer } = setup();
+    return Effect.gen(function* () {
+      const { number } = yield* reviewed(github);
+      const item = github.world.items.find((one) => one.number === number)!;
+      // Closed with no notification: the next list shows none of its reviewed PRs open.
+      item.state = "closed";
+      yield* look(github);
+      const lists = () => github.world.calls.filter((call) => call === `GET repos/${REPO}/pulls`);
+      github.world.calls.length = 0;
+      yield* look(github, 5);
+      assert.lengthOf(lists(), 0);
+      // Reopened and pushed to, with nothing to notify the owner.
+      item.state = "open";
+      const head = github.push({ repo: REPO, number, diff: "+after reopening\n" });
+      yield* look(github, 20);
+      assert.lengthOf(lists(), 0);
+      yield* look(github, 5);
+      assert.lengthOf(lists(), 1);
+      assert.deepStrictEqual(
+        (yield* reReviews).map((trigger) => trigger.key),
+        [headKey(REPO, number, head)],
+      );
+    }).pipe(Effect.provide(layer));
+  });
 
   it.effect("the hourly cap counts re-reviews as it counts every wake", () => {
     const { github, layer } = setup();
@@ -1122,6 +1160,63 @@ describe("one look at one thread", () => {
   });
 
   it.effect(
+    "outsiders' wakes share one hour across looks and the poll; a teammate's are their own",
+    () => {
+      const { github, layer } = setup();
+      return Effect.gen(function* () {
+        const watch = yield* GitHubWatch.KinGitHubWatch;
+        yield* start(github);
+        const extra = 2;
+        const strangers = Array.from(
+          { length: GitHubWatch.OUTSIDE_WAKES_PER_HOUR + extra },
+          (_, n) =>
+            github.openItem({
+              repo: REPO,
+              pull: true,
+              author: `passer-${n}`,
+              association: "NONE",
+              title: `Typo ${n}`,
+            }),
+        );
+        github.tick(MINUTE);
+        yield* TestClock.adjust(MINUTE);
+        for (const number of strangers) yield* watch.look(orgId, REPO, number);
+        const mate = github.openItem({
+          repo: REPO,
+          pull: true,
+          author: "teammate-a",
+          association: "MEMBER",
+          title: "A teammate's change",
+        });
+        yield* watch.look(orgId, REPO, mate);
+        const woke = (number: number, inside: boolean) => `${number}:${inside}`;
+        const kinds = () =>
+          events.pipe(
+            Effect.map((all) =>
+              all
+                .toSorted((a, b) => a.number - b.number)
+                .map((trigger) => woke(trigger.number, trigger.inside)),
+            ),
+          );
+        assert.deepStrictEqual(yield* kinds(), [
+          ...strangers.slice(0, GitHubWatch.OUTSIDE_WAKES_PER_HOUR).map((n) => woke(n, false)),
+          woke(mate, true),
+        ]);
+        // The poll in that hour wakes none of the rest, and posts nothing about it.
+        yield* look(github);
+        assert.lengthOf(yield* events, GitHubWatch.OUTSIDE_WAKES_PER_HOUR + 1);
+        assert.isFalse(github.world.comments.some((comment) => isAgentText(comment.body)));
+        // An hour on, the poll takes them.
+        yield* look(github, 60);
+        assert.deepStrictEqual(yield* kinds(), [
+          ...strangers.map((n) => woke(n, false)),
+          woke(mate, true),
+        ]);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
     "claims the key the poll would, moves no cursor, and the poll after adds nothing",
     () => {
       const { github, layer } = setup();
@@ -1228,10 +1323,29 @@ describe("a delivery from GitHub's webhook", () => {
             on: () => Effect.undefined,
             refresh: () => Effect.void,
             lookAgain: () => Effect.void,
+            // An App Kin made, so its webhook is Kin's.
+            origin: () =>
+              Effect.succeed({
+                source: "kin",
+                app: {
+                  appId: 9001,
+                  slug: "invented-kin",
+                  name: "Invented Kin",
+                  owner: "invented-owner",
+                  at: 0,
+                  by: "owner",
+                },
+              }),
+            hook: {
+              config: () => Effect.undefined,
+              setConfig: () => Effect.undefined,
+              about: () => Effect.undefined,
+              latestDelivery: () => Effect.undefined,
+            },
           }),
         );
         const secret = "a1".repeat(32);
-        yield* store.set(HOOK_SECRET_NAME, Buffer.from(secret, "hex"));
+        yield* store.set(hookSecretName("9001"), Buffer.from(secret, "hex"));
         const done = yield* Queue.unbounded<number>();
         yield* hook
           .serve((org, repo, number) =>

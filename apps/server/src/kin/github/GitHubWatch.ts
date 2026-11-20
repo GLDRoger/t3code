@@ -69,6 +69,8 @@ const STALE_MS = 24 * HOUR;
 /** How long an agent's sent text is known as its own; triggers older than a day are stale anyway. */
 const POSTS_KEPT_MS = 7 * 24 * HOUR;
 export const WAKES_PER_LOOK = 10;
+/** Automatic wakes an hour, per org, for people who can't write to the repo. */
+export const OUTSIDE_WAKES_PER_HOUR = 10;
 const THREADS_PER_LOOK = 30;
 /** Replies an agent makes in one issue or PR in an hour before it stops and says so. */
 export const PER_THREAD_HOURLY = 5;
@@ -78,6 +80,8 @@ const STILL_MS = 5 * MINUTE;
 /** How long after Kin's last review of a repo's PR the watch still lists that repo's PRs. */
 const REVIEWED_KEPT_MS = 30 * 24 * HOUR;
 const LIST_PAGE = 100;
+/** How long a repo whose reviewed PRs were all closed goes unlisted. */
+const IDLE_KEPT_MS = 30 * MINUTE;
 /** How long GitHub's answer on who can write to a repo is used before it is asked again. */
 const PERMISSION_KEPT_MS = 10 * MINUTE;
 
@@ -281,6 +285,7 @@ const decodePull = Schema.decodeUnknownOption(Pull);
 const decodeComments = Schema.decodeUnknownOption(Schema.Array(Comment));
 const decodeChecks = Schema.decodeUnknownOption(CheckRuns);
 const decodePermission = Schema.decodeUnknownOption(Permission);
+const decodeCompare = Schema.decodeUnknownOption(Schema.Struct({ status: Schema.String }));
 const decodeIssueEvents = Schema.decodeUnknownOption(Schema.Array(IssueEvent));
 const decodeOpenPulls = Schema.decodeUnknownOption(
   Schema.Array(
@@ -601,6 +606,15 @@ export const claimTrigger = Effect.fn("KinGitHubWatch.handle")(function* (input:
       // Past the look's cap, it waits for the next look, which reads from the same point.
       if (now - input.happenedAt <= STALE_MS && input.woken >= WAKES_PER_LOOK)
         return "later" as const;
+      // Wakes for people who can't write share one hour across the poll and every look: past
+      // it, unclaimed, for a later look; a teammate's allowance is untouched.
+      const outside = askedBy === undefined && !trigger.inside;
+      if (outside && now - input.happenedAt <= STALE_MS) {
+        const [spent] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
+          FROM kin_github_handled WHERE org_id = ${orgId}
+            AND trigger_key >= 'outside:' AND trigger_key < 'outside;' AND at > ${now - HOUR}`;
+        if ((spent?.count ?? 0) >= OUTSIDE_WAKES_PER_HOUR) return "later" as const;
+      }
       const outcome =
         now - input.happenedAt > STALE_MS
           ? "stale"
@@ -616,6 +630,11 @@ export const claimTrigger = Effect.fn("KinGitHubWatch.handle")(function* (input:
             VALUES (${orgId}, ${trigger.key}, ${repo}, ${thread.number}, ${input.agentId},
               ${outcome}, ${now})`;
       if (outcome !== "woke") return outcome;
+      if (outside)
+        yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id,
+            outcome, at)
+          VALUES (${orgId}, ${`outside:${trigger.key}`}, ${repo}, ${thread.number},
+            ${input.agentId}, 'outside', ${now})`;
       if (head !== undefined)
         yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id,
             outcome, at)
@@ -912,7 +931,7 @@ export const make = Effect.gen(function* () {
   });
 
   /** Watched repos with a PR Kin reviewed lately, but not one whose last list showed none open. */
-  const listedIdle = new Map<string, number>();
+  const listedIdle = new Map<string, { readonly at: number; readonly listedAt: number }>();
   const reviewedRepos = Effect.fn("KinGitHubWatch.reviewedRepos")(function* (
     orgId: KinOrgId,
     now: number,
@@ -925,7 +944,9 @@ export const make = Effect.gen(function* () {
     return rows.flatMap((row) => {
       const entry = watched.get(row.repo);
       const idle = listedIdle.get(`${orgId}:${row.repo}`);
-      return entry === undefined || (idle !== undefined && row.at <= idle) ? [] : [entry.repo];
+      // Quiet for a while only: a PR reopened or pushed with no one told is found again.
+      const quiet = idle !== undefined && row.at <= idle.at && now - idle.listedAt < IDLE_KEPT_MS;
+      return entry === undefined || quiet ? [] : [entry.repo];
     });
   });
 
@@ -952,7 +973,10 @@ export const make = Effect.gen(function* () {
     );
     const listed = open.value.filter((pull) => reviewed.has(pull.number));
     if (listed.length === 0 && open.value.length < LIST_PAGE)
-      listedIdle.set(`${orgId}:${repo.toLowerCase()}`, Math.max(0, ...rows.map((row) => row.at)));
+      listedIdle.set(`${orgId}:${repo.toLowerCase()}`, {
+        at: Math.max(0, ...rows.map((row) => row.at)),
+        listedAt: now,
+      });
     return listed
       .filter(
         (pull) =>
@@ -970,7 +994,15 @@ export const make = Effect.gen(function* () {
   ) {
     if (thread.pull === undefined) return null;
     const { headSha, baseRef } = thread.pull;
-    const since = yield* readDiff(get, thread.repo, thread.number, { baseRef: from, headSha });
+    // A three-dot compare is from where the heads meet: what changed since only when the new
+    // head builds on the reviewed one.
+    const range = yield* get(`repos/${thread.repo}/compare/${from}...${headSha}`);
+    const ahead =
+      range.status === 200 &&
+      Option.exists(decodeCompare(range.body), (found) => found.status === "ahead");
+    const since = ahead
+      ? yield* readDiff(get, thread.repo, thread.number, { baseRef: from, headSha })
+      : undefined;
     if (since !== undefined) return { diff: since, reReview: { from, whole: false } };
     const whole = yield* readDiff(get, thread.repo, thread.number, { baseRef, headSha });
     return whole === undefined ? null : { diff: whole, reReview: { from, whole: true } };

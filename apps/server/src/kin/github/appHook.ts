@@ -14,7 +14,7 @@ import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { publicAddress } from "../publicAddress.ts";
-import { HOOK_SECRET_NAME } from "./appKey.ts";
+import { hookSecretName, hookSetName } from "./appKey.ts";
 import { repoList } from "./githubWatchStore.ts";
 import { appSettingsPage, KinGitHubApp } from "./KinGitHubApp.ts";
 
@@ -41,6 +41,8 @@ export const HOOK_EVENTS = {
 
 /** Looks deliveries may start in an hour, across every org; past it they wait for the poll. */
 export const LOOKS_PER_HOUR = 300;
+/** Looks waiting at once, across every org; past it a delivery is dropped for the poll to find. */
+export const LOOKS_PENDING = 100;
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const ENSURE_EVERY_MS = 24 * HOUR;
@@ -58,6 +60,8 @@ const decodeDeliveries = Schema.decodeUnknownOption(
 
 interface Look {
   readonly key: string;
+  /** The App whose delivery asked for it: a look outlives no Disconnect. */
+  readonly appId: string;
   readonly orgId: KinOrgId;
   readonly repo: string;
   readonly number: number;
@@ -75,7 +79,7 @@ export class KinGitHubHook extends Context.Service<
       look: (orgId: KinOrgId, repo: string, number: number) => Effect.Effect<void>,
     ) => Effect.Effect<never>;
     /** Points the App's webhook at Kin's public address with Kin's own secret, when it doesn't. */
-    readonly ensure: () => Effect.Effect<"set" | "address" | "none" | "error">;
+    readonly ensure: () => Effect.Effect<"set" | "address" | "none" | "elsewhere" | "error">;
     /** The scheduler's tick: `ensure` for a new App or address, and once a day. */
     readonly tick: () => Effect.Effect<void>;
     /** For the owner's Settings: whether GitHub tells Kin at once. */
@@ -100,17 +104,49 @@ export const make = Effect.gen(function* () {
     | { readonly key: string; readonly at: number; readonly value: KinGitHubInstant }
     | undefined;
 
-  const held = store
-    .get(HOOK_SECRET_NAME)
-    .pipe(Effect.orElseSucceed(() => Option.none<Uint8Array>()));
+  /**
+   * The App Kin made, for the hook's key and the owner's settings page. One the host was seeded
+   * with, or adopted from it, may serve something else: Kin never touches its webhook.
+   */
+  const named = Effect.fn("KinGitHubHook.named")(function* () {
+    if (app.hook === undefined || app.origin === undefined) return undefined;
+    const origin = yield* app.origin();
+    if (origin.source !== "kin" || origin.app.at === null) return undefined;
+    const state = yield* app.state();
+    return {
+      id: String(origin.app.appId),
+      page:
+        state._tag === "ok"
+          ? appSettingsPage(state.app.slug, state.app.ownerOrg, state.app.ownerLogin ?? "")
+          : appSettingsPage(origin.app.slug, false, origin.app.owner),
+    };
+  });
+
+  /** The active App's own secret; a zero-length value is no secret. */
+  const held = Effect.fn("KinGitHubHook.held")(function* (appId: string) {
+    const kept = yield* store
+      .get(hookSecretName(appId))
+      .pipe(Effect.orElseSucceed(() => Option.none<Uint8Array>()));
+    return Option.filter(kept, (bytes) => bytes.byteLength > 0);
+  });
+  /** The address GitHub last accepted Kin's secret for. */
+  const confirmed = Effect.fn("KinGitHubHook.confirmed")(function* (appId: string) {
+    const kept = yield* store
+      .get(hookSetName(appId))
+      .pipe(Effect.orElseSucceed(() => Option.none<Uint8Array>()));
+    return Option.getOrUndefined(Option.map(kept, (bytes) => new TextDecoder().decode(bytes)));
+  });
   const secret = Effect.fn("KinGitHubHook.secret")(function* () {
-    return Option.map(yield* held, (bytes) => Redacted.make(Hex.encode(bytes)));
+    const active = yield* named();
+    if (active === undefined) return Option.none<Redacted.Redacted<string>>();
+    return Option.map(yield* held(active.id), (bytes) => Redacted.make(Hex.encode(bytes)));
   });
 
   const offer = (look: Look, now: number) =>
     Effect.suspend(() => {
       const entry = pending.get(look.key);
       if (entry !== undefined && (!entry.running || entry.again)) return Effect.void;
+      if (entry === undefined && pending.size >= LOOKS_PENDING) return Effect.void;
       if (Math.floor(now / HOUR) !== hour) {
         hour = Math.floor(now / HOUR);
         spent = 0;
@@ -127,6 +163,10 @@ export const make = Effect.gen(function* () {
 
   const deliver = Effect.fn("KinGitHubHook.deliver")(
     function* (repo: string, numbers: ReadonlyArray<number>) {
+      // Full before any lookup, so a flood costs nothing more.
+      if (pending.size >= LOOKS_PENDING) return;
+      const active = yield* named();
+      if (active === undefined) return;
       const now = yield* Clock.currentTimeMillis;
       const orgs = yield* sql<{ orgId: string }>`SELECT DISTINCT org_id AS "orgId" FROM kin_leads
         ORDER BY org_id`;
@@ -140,6 +180,7 @@ export const make = Effect.gen(function* () {
           yield* offer(
             {
               key: `${orgId}\u0000${entry.repo.toLowerCase()}#${number}`,
+              appId: active.id,
               orgId,
               repo: entry.repo,
               number,
@@ -161,12 +202,15 @@ export const make = Effect.gen(function* () {
       const next = yield* Queue.take(queue);
       const entry = pending.get(next.key);
       if (entry !== undefined) entry.running = true;
-      yield* look(next.orgId, next.repo, next.number).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Kin's look for a GitHub delivery failed", { cause }),
-        ),
-      );
-      if (entry?.again === true) {
+      // Asked for by an App since disconnected: dropped.
+      const current = yield* named().pipe(Effect.orElseSucceed(() => undefined));
+      if (current?.id === next.appId)
+        yield* look(next.orgId, next.repo, next.number).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin's look for a GitHub delivery failed", { cause }),
+          ),
+        );
+      if (entry?.again === true && current?.id === next.appId) {
         entry.running = false;
         entry.again = false;
         yield* Queue.offer(queue, next);
@@ -174,50 +218,41 @@ export const make = Effect.gen(function* () {
     }).pipe(Effect.forever);
   });
 
-  /** The App as Kin holds it now, for the hook's key and the owner's settings page. */
-  const named = Effect.fn("KinGitHubHook.named")(function* () {
-    const state = yield* app.state();
-    if (state._tag === "ok")
-      return {
-        id: String(state.app.id),
-        page: appSettingsPage(state.app.slug, state.app.ownerOrg, state.app.ownerLogin ?? ""),
-      };
-    const origin = app.origin === undefined ? undefined : yield* app.origin();
-    return origin?.source === "kin"
-      ? {
-          id: String(origin.app.appId),
-          page: appSettingsPage(origin.app.slug, false, origin.app.owner),
-        }
-      : undefined;
-  });
-
   const ensure = Effect.fn("KinGitHubHook.ensure")(function* () {
     status = undefined;
     const address = yield* publicAddress();
     if (address === undefined) return "address" as const;
-    if (app.asApp === undefined || (yield* named()) === undefined) return "none" as const;
+    const active = yield* named();
+    if (active === undefined || app.hook === undefined) return "none" as const;
     const url = `${address}${KIN_GITHUB_HOOK_ROUTE}`;
-    const config = yield* app.asApp({ path: "app/hook/config" });
+    const config = yield* app.hook.config();
     if (config === undefined) return "none" as const;
     const current = config.status === 200 ? decodeHookConfig(config.body) : Option.none();
     if (Option.isNone(current)) return "error" as const;
-    const kept = yield* held;
-    if (Option.isSome(kept) && current.value.url === url) return "set" as const;
+    const now = current.value.url ?? "";
+    // Another address that isn't Kin's own route is someone else's hook: left as it is.
+    if (now !== "" && !now.endsWith(KIN_GITHUB_HOOK_ROUTE)) return "elsewhere" as const;
+    const kept = yield* held(active.id);
+    if (Option.isSome(kept) && now === url && (yield* confirmed(active.id)) === url)
+      return "set" as const;
+    // A PATCH whose answer was lost may have taken: the same secret is sent again, never a new one.
+    // An empty value left behind is no secret: it is replaced.
+    if (Option.isNone(kept)) yield* store.remove(hookSecretName(active.id)).pipe(Effect.ignore);
     const bytes = Option.isSome(kept)
       ? kept
-      : yield* store.getOrCreateRandom(HOOK_SECRET_NAME, 32).pipe(Effect.option);
-    if (Option.isNone(bytes)) return "error" as const;
-    const patched = yield* app.asApp({
-      method: "PATCH",
-      path: "app/hook/config",
-      body: {
-        url,
-        content_type: "json",
-        insecure_ssl: "0",
-        secret: Hex.encode(bytes.value),
-      },
+      : yield* store.getOrCreateRandom(hookSecretName(active.id), 32).pipe(Effect.option);
+    if (Option.isNone(bytes) || bytes.value.byteLength === 0) return "error" as const;
+    const patched = yield* app.hook.setConfig({
+      url,
+      content_type: "json",
+      insecure_ssl: "0",
+      secret: Hex.encode(bytes.value),
     });
-    return patched?.status === 200 ? ("set" as const) : ("error" as const);
+    if (patched?.status !== 200) return "error" as const;
+    const set = yield* store
+      .set(hookSetName(active.id), new TextEncoder().encode(url))
+      .pipe(Effect.option);
+    return Option.isSome(set) ? ("set" as const) : ("error" as const);
   });
 
   const tick = Effect.fn("KinGitHubHook.tick")(function* () {
@@ -230,10 +265,14 @@ export const make = Effect.gen(function* () {
     )
       return;
     const outcome = yield* ensure();
-    ensured = { key, at: now, ok: outcome !== "error" };
-    // Only GitHub's status: the request and answer carry the secret.
+    ensured = { key, at: now, ok: outcome !== "error" && outcome !== "elsewhere" };
+    // Fixed lines: the request and answer carry the secret.
     if (outcome === "error")
       yield* Effect.logWarning("Kin couldn't set up its GitHub App's webhook; it keeps polling.");
+    if (outcome === "elsewhere")
+      yield* Effect.logWarning(
+        "Kin's GitHub App's webhook points somewhere else, so Kin leaves it; it keeps polling.",
+      );
   });
 
   const instant = Effect.fn("KinGitHubHook.instant")(function* (
@@ -250,7 +289,7 @@ export const make = Effect.gen(function* () {
     )
       return undefined;
     const known = yield* named();
-    if (known === undefined || app.asApp === undefined) return undefined;
+    if (known === undefined || app.hook === undefined) return undefined;
     const settingsUrl = `${known.page}/permissions`;
     const address = yield* publicAddress();
     if (address === undefined)
@@ -260,9 +299,9 @@ export const make = Effect.gen(function* () {
     if (status !== undefined && status.key === key && now - status.at < STATUS_KEPT_MS)
       return status.value;
     const [config, about, deliveries] = [
-      yield* app.asApp({ path: "app/hook/config" }),
-      yield* app.asApp({ path: "app" }),
-      yield* app.asApp({ path: "app/hook/deliveries?per_page=1" }),
+      yield* app.hook.config(),
+      yield* app.hook.about(),
+      yield* app.hook.latestDelivery(),
     ];
     const hook = config?.status === 200 ? decodeHookConfig(config.body) : Option.none();
     const events = about?.status === 200 ? decodeAbout(about.body) : Option.none();
@@ -274,10 +313,13 @@ export const make = Effect.gen(function* () {
       deliveries?.status === 200 ? decodeDeliveries(deliveries.body) : Option.none(),
       (list) => Option.fromUndefinedOr(list[0]),
     );
+    const url = `${address}${KIN_GITHUB_HOOK_ROUTE}`;
+    // Set only once GitHub took Kin's secret for this address; until then, an error.
     const set =
       Option.isSome(hook) &&
-      hook.value.url === `${address}${KIN_GITHUB_HOOK_ROUTE}` &&
-      Option.isSome(yield* held);
+      hook.value.url === url &&
+      Option.isSome(yield* held(known.id)) &&
+      (yield* confirmed(known.id)) === url;
     const value: KinGitHubInstant = {
       state: !set || Option.isNone(events) ? "error" : missing.length === 0 ? "on" : "events",
       missing: Option.isSome(events) ? missing : [],

@@ -9,8 +9,10 @@ import { KinKeychain } from "./Keychain.ts";
 
 /** The secret store's name for an App's key: `{"privateKeyPem": …}`, as GitHub's key in JSON. */
 export const appKeyName = (appId: string) => `kin-github-app-${appId}`;
-/** The secret GitHub signs the App's webhook deliveries with (`appHook.ts`); it goes with the App. */
-export const HOOK_SECRET_NAME = "kin-github-app-hook";
+/** The secret GitHub signs one App's webhook deliveries with (`appHook.ts`); it goes with the App. */
+export const hookSecretName = (appId: string) => `kin-github-app-hook-${appId}`;
+/** The hook address GitHub accepted with that secret: set only after its answer said so. */
+export const hookSetName = (appId: string) => `kin-github-app-hook-${appId}-set`;
 
 /**
  * Kin's GitHub App key, kept in the server's secret store like every other Kin secret. Hosts set
@@ -64,7 +66,8 @@ export const make = Effect.gen(function* () {
     }),
     remove: Effect.fn("KinGitHubAppKey.remove")(function* (appId) {
       yield* store.remove(appKeyName(appId)).pipe(Effect.ignore);
-      yield* store.remove(HOOK_SECRET_NAME).pipe(Effect.ignore);
+      yield* store.remove(hookSetName(appId)).pipe(Effect.ignore);
+      yield* store.remove(hookSecretName(appId)).pipe(Effect.ignore);
     }),
   });
 });
