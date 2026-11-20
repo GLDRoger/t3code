@@ -354,6 +354,19 @@ describe("a list by its definition", () => {
     ]);
     expect(entry.payments[0]).toMatchObject({ amount: "₹40,000.00", note: null, voided: false });
     expect(kinListRow(detail, invoices, context).owed).toBe("₹60,000 still owed");
+    // An agent's suggestion is not issued, and takes no payment until it is kept.
+    const suggested = { ...detail, confirmed: false };
+    expect(kinListEntryView(suggested, invoices, context)).toMatchObject({
+      stateLabel: "Suggested",
+      finish: null,
+    });
+    const row = kinListRow(suggested, invoices, context);
+    expect([row.stateLabel, row.cells.state, row.suggested]).toEqual([
+      "Suggested",
+      "Suggested",
+      true,
+    ]);
+    expect(row.line.split(" · ").filter((part) => part === "Suggested")).toHaveLength(1);
   });
 
   it("sends only the names that changed when a list is renamed", () => {

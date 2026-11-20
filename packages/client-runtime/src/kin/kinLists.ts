@@ -305,6 +305,14 @@ export const kinListStateLabel = (
   state: KinRecordState,
 ) => def?.stateLabels[state] ?? STATE_NAMES[state];
 
+export const KIN_SUGGESTED = "Suggested";
+/**
+ * Money an agent suggested that nobody with the right has kept, as the host counts it: it is
+ * owed, issued or sent nowhere, so it reads "Suggested" in place of its state.
+ */
+export const kinSuggestedMoney = (record: Pick<KinRecord, "confirmed" | "amount" | "state">) =>
+  !record.confirmed && record.amount !== undefined && !kinWorkClosed(record.state);
+
 export interface KinListIndexRow {
   readonly list: KinListId;
   readonly name: string;
@@ -848,7 +856,8 @@ export function kinListRow(
 ): KinListRowView {
   const { names, now } = context;
   const closed = kinWorkClosed(record.state);
-  const stateLabel = kinListStateLabel(def, record.state);
+  const money = kinSuggestedMoney(record);
+  const stateLabel = money ? KIN_SUGGESTED : kinListStateLabel(def, record.state);
   const date = whenText(record.dateAt, record.dateAllDay ?? true, names, now);
   const due = whenText(record.dueAt, record.dueAllDay, names, now);
   const amount = record.amount === undefined ? null : kinMoneyText(record.amount);
@@ -870,7 +879,7 @@ export function kinListRow(
     dueLine,
     party,
     record.repeat === undefined ? null : kinRepeatText(record.repeat).toLowerCase(),
-    record.confirmed || closed ? null : "Suggested",
+    record.confirmed || closed || money ? null : KIN_SUGGESTED,
   ].filter((part) => part !== null);
   const cells: Record<string, string> = {
     title: record.title,
@@ -1111,11 +1120,13 @@ export function kinListEntryView(
       ? null
       : { minor: item.amount.minor - item.balance.minor, currency: item.amount.currency };
   const doneLabel = kinListStateLabel(def, "done");
-  const canFinish = !closed && (def === null || def.states.includes("done"));
+  const suggested = kinSuggestedMoney(item);
+  // A suggestion takes no payment until it is kept (the host refuses one).
+  const canFinish = !closed && !suggested && (def === null || def.states.includes("done"));
   return {
     heading: def === null ? item.key : `${item.key} · ${def.name}`,
     state: item.state,
-    stateLabel: kinListStateLabel(def, item.state),
+    stateLabel: suggested ? KIN_SUGGESTED : kinListStateLabel(def, item.state),
     closed,
     late: item.late,
     amount: item.amount === undefined ? null : kinMoneyText(item.amount, true),

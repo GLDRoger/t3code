@@ -4,17 +4,20 @@ import type {
   KinListId,
   KinMoneySummary,
   KinMoneyTotals,
+  KinRecordKey,
 } from "@t3tools/contracts";
 
 import {
   KIN_LIST_DEFAULT_FILTER,
   KIN_MONEY_NOTHING,
+  KIN_SUGGESTED,
   kinCategoryLabel,
   kinFinancialYearLabel,
   kinFinancialYearMonths,
   kinFinancialYearPeriod,
   kinMonthLabel,
   kinMonthPeriod,
+  kinMoneyText,
   kinTotalsLines,
   kinTotalsText,
   type KinListFilter,
@@ -51,6 +54,8 @@ export const KIN_MONEY = {
   rates: "Exchange rates",
   nothingUpcoming: "Nothing is due in the next 30 days.",
   allDates: "All dates",
+  suggested: "Suggested by your agents",
+  suggestedNote: "Not counted in Money until you keep it.",
   lists: "Lists",
   clients: "Clients",
   none: {
@@ -123,8 +128,20 @@ export interface KinMoneyMonthView {
   readonly openSpent: KinListOpen | null;
 }
 
+/** An entry an agent suggested, for the owner to keep or decline where Money shows it. */
+export interface KinMoneySuggestionView {
+  readonly key: KinRecordKey;
+  readonly rev: number;
+  readonly title: string;
+  readonly amount: string | null;
+  /** "INV-2 · Invoices · Suggested · Orbit Dental Care". */
+  readonly line: string;
+}
+
 export interface KinMoneyView {
   readonly empty: boolean;
+  /** Empty for a teammate, and from an older host. */
+  readonly suggested: ReadonlyArray<KinMoneySuggestionView>;
   readonly owed: KinMoneyFigure;
   readonly overdue: KinMoneyFigure;
   readonly clients: ReadonlyArray<KinMoneyClientView>;
@@ -197,9 +214,19 @@ export function kinMoneyView(
     summary.upcomingTotal === 0 &&
     currencies.length === 0 &&
     summary.receivedThisFinancialYear.length === 0 &&
-    summary.spentThisFinancialYear.length === 0;
+    summary.spentThisFinancialYear.length === 0 &&
+    (summary.suggested ?? []).length === 0;
   return {
     empty: nothing && !lists.some((def) => !def.builtIn),
+    suggested: (summary.suggested ?? []).map(({ record, listName }) => ({
+      key: record.key,
+      rev: record.rev,
+      title: record.title,
+      amount: record.amount === undefined ? null : kinMoneyText(record.amount),
+      line: [record.key, listName, KIN_SUGGESTED, record.party?.title ?? null]
+        .filter((part) => part !== null)
+        .join(" · "),
+    })),
     owed: {
       id: "owed",
       label: KIN_MONEY.owed,
