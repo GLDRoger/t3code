@@ -594,6 +594,8 @@ describe("KinBudget", () => {
       const budget = yield* Budget.KinBudget;
       const queue = yield* Queue.KinEventQueue;
       const sql = yield* SqlClient.SqlClient;
+      // The notice is keyed by the company's day, here UTC's, on any host.
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'UTC', '09:00', '18:00', '02:00', 0, 1, '10:00', '{}')`;
       yield* budget.set(owner, { orgId, limits: { leadUnits: 0, workerUnits: 0 } });
       const event = {
         _tag: "chat.message",
