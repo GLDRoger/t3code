@@ -110,7 +110,12 @@ export interface KinLeadPromptInput {
   readonly memoryHead: string;
   readonly budgetContext?: string;
   /** The chat the lead's plain text goes to; see the reply bridge. */
-  readonly lane?: { readonly chatId: KinChatId; readonly mode: "reply" | "notice" };
+  readonly lane?: {
+    readonly chatId: KinChatId;
+    readonly mode: "reply" | "notice";
+    /** A Team-room discussion turn handed on with no person's message: plain text is dropped. */
+    readonly team?: true;
+  };
   /** Server-gathered facts for a brief or summary event, by event id. */
   readonly routineFacts?: ReadonlyMap<string, string>;
   /** Who a finished task's work was for (`workFor`), by its event id. */
@@ -1446,7 +1451,8 @@ export class KinLeadPrompt extends Context.Service<
         // The instructions travel in the session's system prompt (`lead/turn/session.ts`); memory changes per head.
         // Every part is the owner's unless marked `shared`; a shared prompt keeps only those.
         // A Team-room turn says what it asks in its own quote; group-chat lines would contradict it.
-        const inTeamRoom = laneChat?.teamId === KIN_TEAM_ROOM_TEAM_ID;
+        // A person's message in the Team room is answered there like any group's.
+        const inTeamRoom = laneChat?.teamId === KIN_TEAM_ROOM_TEAM_ID && input.lane?.team === true;
         const header: ReadonlyArray<Part> = [
           sharedPart(`Agent name: ${encoded(leadName, true)}`),
           ...(intro === undefined || intro.text.trim() === ""

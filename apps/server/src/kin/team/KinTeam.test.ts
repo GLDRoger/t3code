@@ -243,6 +243,10 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
         clientMessageId: "ask",
       });
       yield* wake("social", ask);
+      // No discussion is open yet: the refusal names the tool that starts one.
+      const none = yield* callAs("social", "team_say", { text: "Hi", intent: "answer" });
+      assert.isFalse(none.ok);
+      assert.include(JSON.stringify(none.value), "No Team-room discussion is open. team_open");
       const opened = yield* callAs("social", "team_open", {
         topic: "Brochure print run",
         question: "How many brochures do we print for the Kochi expo?",
@@ -271,6 +275,10 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
       yield* wake("growth");
       const early = yield* callAs("growth", "team_say", { text: "Hi", intent: "answer" });
       assert.isFalse(early.ok);
+      assert.include(
+        JSON.stringify(early.value),
+        "It isn't your turn in any Team-room discussion.",
+      );
 
       yield* wake("finance");
       const answer = yield* callAs("finance", "team_say", {

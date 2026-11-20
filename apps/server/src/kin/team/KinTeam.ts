@@ -830,12 +830,17 @@ const make = Effect.gen(function* () {
             AND (${input.discussion ?? null} IS NULL OR discussion_id = ${input.discussion ?? null})
           ORDER BY created_at`;
         const all = yield* agents(ctx.orgId);
-        if (mine.length === 0)
+        if (mine.length === 0 && input.discussion === undefined) {
+          const [open] = yield* sql`SELECT 1 FROM kin_discussions
+            WHERE org_id = ${ctx.orgId} AND final = 0 LIMIT 1`;
           return yield* refuse(
-            input.discussion === undefined
-              ? "It isn't your turn in any Team-room discussion. Kin wakes you when it is."
-              : "It isn't your turn in that discussion. Kin wakes you when it is.",
+            open === undefined
+              ? "No Team-room discussion is open. team_open starts one: the question, whose call it is and who joins."
+              : "It isn't your turn in any Team-room discussion. Kin wakes you when it is.",
           );
+        }
+        if (mine.length === 0)
+          return yield* refuse("It isn't your turn in that discussion. Kin wakes you when it is.");
         if (mine.length > 1)
           return yield* refuse(
             `You hold a turn in ${mine.map((m) => m.discussionId).join(" and ")}: say which in discussion.`,

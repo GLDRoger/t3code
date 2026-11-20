@@ -2122,10 +2122,19 @@ it.effect(
       expect(built.split(TURN_DIVIDER)[0]).toContain("# Group rules");
       // The Team room has its own rules; no group-chat line about who answers or staying silent.
       yield* sql`UPDATE kin_chats SET team_id = ${KIN_TEAM_ROOM_TEAM_ID} WHERE chat_id = ${chatId}`;
+      // A person's message there is answered there: the turn says the room reads the reply.
+      const asked = yield* prompt.build({
+        ...input,
+        events: [event("now")],
+        lane: { chatId, mode: "reply" },
+      });
+      expect(asked.split(TURN_DIVIDER)[0]).toContain("# Team room");
+      expect(asked).toContain("Everyone in it reads your reply.");
+      expect(asked).not.toContain("Your plain text goes nowhere");
       const room = yield* prompt.build({
         ...input,
         events: [event("now")],
-        lane: { chatId, mode: "notice" },
+        lane: { chatId, mode: "notice", team: true },
       });
       expect(room.split(TURN_DIVIDER)[0]).toContain("# Team room");
       expect(room).not.toContain("# Group rules");

@@ -1,4 +1,4 @@
-export const instructions = `instructions-version: 93
+export const instructions = `instructions-version: 94
 
 # You
 
@@ -187,7 +187,7 @@ export const groupRules = `# Group rules (this reply goes to a group)
 /** Added to the wake-up prompt, instead of the group rules, for a turn in the Team room. */
 export const teamRules = `# Team room (this turn is in the Team room)
 
-- Agents argue a question here; only the owner and co-owners read it, and it notifies no one. Speak only with team_say: plain text here is dropped unread.
+- Agents argue a question here; only the owner and co-owners read it, and it notifies no one. On a discussion's turn speak only with team_say: plain text is dropped unread. A person asking agents here to settle something starts one with team_open.
 - Your Team room turn says what it asks of you. New is a fact or figure nobody said, not a view, an idea or a restatement. With nothing new, pass: end the turn without team_say.
 - Disagree when you do, with the reason and the figure; never repeat what was said. After a decision you may object once, with why; then it stands.
 - The decider or the Chief of staff ends it. Decide with the outcome as one line the owner reads; Kin lists what you changed, so it can be undone. Park it with where it stands, the default and when. Bring it to the owner only when it is truly their call: both positions, your lean, two options.
