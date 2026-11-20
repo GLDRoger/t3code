@@ -16,6 +16,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { Command, Flag } from "effect/cli";
 
 import * as ProjectionStore from "../src/orchestration-v2/ProjectionStore.ts";
+import { dropKinPrivateRows, KIN_UNCOPIED_TABLES } from "../src/kin/persistence/devCopy.ts";
 import { rebuildMessageSearch } from "../src/orchestration-v2/messageSearchIndex.ts";
 import { runMigrations } from "../src/persistence/Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -220,11 +221,8 @@ const UNCOPIED_TABLES: ReadonlyArray<string> = [
   "kin_connection_tools",
   "kin_connection_calls",
   "kin_connection_cursors",
-  // Bank alerts are read from the owner's mail: their senders, rows and cards never leave home.
-  "kin_bank_alert_senders",
-  "kin_bank_alerts",
+  ...KIN_UNCOPIED_TABLES,
 ];
-const ALERT_CARDS = "kin-bank-alert-%";
 
 const PROVIDER_SESSIONS_TABLE = "orchestration_v2_projection_provider_sessions";
 const FTS5_SHADOW_SUFFIXES = ["_data", "_idx", "_content", "_docsize", "_config"];
@@ -324,16 +322,7 @@ const copySourceSlice = Effect.fn("copyDevDbSourceSlice")(function* (sourcePath:
         yield* sql.unsafe(`INSERT INTO main."${name}" SELECT * FROM src."${name}" ${filter}`)
           .unprepared;
       }
-      // A bank alert card, its taps and whatever waits on it carry the mail's words: none survive.
-      const cardColumns = yield* sql<{ table: string; column: string }>`
-        SELECT m.name AS "table", c.name AS "column"
-        FROM main.sqlite_master m, pragma_table_info(m.name, 'main') c
-        WHERE m.type = 'table' AND substr(m.name, 1, 4) = 'kin_'
-          AND c.name IN ('widget_id', 'message_id')
-        ORDER BY m.name, c.name`;
-      for (const { table, column } of cardColumns)
-        yield* sql.unsafe(`DELETE FROM main."${table}" WHERE "${column}" LIKE '${ALERT_CARDS}'`)
-          .unprepared;
+      yield* dropKinPrivateRows();
       yield* sql`DELETE FROM main.sqlite_sequence`;
       yield* sql`INSERT INTO main.sqlite_sequence SELECT name, seq FROM src.sqlite_sequence`;
       for (const entry of schema) {
