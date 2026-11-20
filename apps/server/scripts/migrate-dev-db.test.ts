@@ -146,6 +146,20 @@ const createFixtureSource = Effect.fn("createMigrateDevDbFixtureSource")(functio
       // Kin's own track adds this table; a connection names one of the owner's outside accounts.
       yield* sql`CREATE TABLE kin_connections (org_id TEXT, connection_id TEXT, label TEXT)`;
       yield* sql`INSERT INTO kin_connections VALUES ('org', 'conn-1', 'PostHog')`;
+      // A bank alert read from the owner's mail, its sender, and Kin's cards about it.
+      yield* sql`CREATE TABLE kin_bank_alert_senders (org_id TEXT, sender_id TEXT, address TEXT)`;
+      yield* sql`INSERT INTO kin_bank_alert_senders VALUES ('org', 'bs-1', 'alerts@bank.example')`;
+      yield* sql`CREATE TABLE kin_bank_alerts (org_id TEXT, alert_id TEXT, party TEXT)`;
+      yield* sql`INSERT INTO kin_bank_alerts VALUES ('org', 'ba-1', 'BRIGHTWELL LTD')`;
+      yield* sql`CREATE TABLE kin_messages (message_id TEXT, widget_id TEXT, body TEXT)`;
+      yield* sql`INSERT INTO kin_messages VALUES
+        ('kin-bank-alert-pay:ba-1', NULL, 'Did Brightwell pay INV-7?'),
+        ('tap-1', 'kin-bank-alert-pay:ba-1', 'Chose INV-7'),
+        ('hello', NULL, 'Hello')`;
+      yield* sql`CREATE TABLE kin_widgets (widget_id TEXT, message_id TEXT, state_json TEXT)`;
+      yield* sql`INSERT INTO kin_widgets VALUES
+        ('kin-bank-alert-pay:ba-1', 'kin-bank-alert-pay:ba-1', '{}'),
+        ('kin-other', 'hello', '{}')`;
     }),
   );
   return databasePath;
@@ -190,6 +204,7 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
             transfers: number;
             links: number;
             connections: number;
+            alerts: number;
           }>`
             SELECT
               (SELECT COUNT(*) FROM auth_sessions) AS auth,
@@ -198,7 +213,10 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
                 (SELECT COUNT(*) FROM scheduled_task_webhook_pending) AS webhooks,
               (SELECT COUNT(*) FROM orchestration_v2_projection_context_transfers) AS transfers,
               (SELECT COUNT(*) FROM peer_environment_links) AS links,
-              (SELECT COUNT(*) FROM kin_connections) AS connections`;
+              (SELECT COUNT(*) FROM kin_connections) AS connections,
+              (SELECT COUNT(*) FROM kin_bank_alert_senders) + (SELECT COUNT(*) FROM kin_bank_alerts)
+                + (SELECT COUNT(*) FROM kin_messages WHERE message_id <> 'hello')
+                + (SELECT COUNT(*) FROM kin_widgets WHERE widget_id <> 'kin-other') AS alerts`;
           return { threads, events, sessions, pullRequest, project, leftovers };
         }),
       );
@@ -246,6 +264,7 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
         transfers: 0,
         links: 0,
         connections: 0,
+        alerts: 0,
       });
     }),
   );
