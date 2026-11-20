@@ -10,9 +10,12 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { CloudLink } from "../../cloud/CloudLink.ts";
 import {
+  PAGE_ENCODED,
   PAGE_NOT_HTTPS,
   PAGE_NOT_TEXT,
+  PAGE_PORT,
   PAGE_REFUSED,
+  PAGE_SELF,
   PAGE_TOO_MANY_REDIRECTS,
   pageStatus,
   pageTooBig,
@@ -219,7 +222,7 @@ it.effect("releases every response it is done with, whichever way the hop ended"
     assert.strictEqual(yield* refusedWith("https://corran.example/file.zip"), PAGE_NOT_TEXT);
     assert.strictEqual(yield* refusedWith("https://corran.example/declared"), pageTooBig(1));
     // A body that still comes compressed is not read.
-    assert.strictEqual(yield* refusedWith("https://corran.example/packed"), PAGE_NOT_TEXT);
+    assert.strictEqual(yield* refusedWith("https://corran.example/packed"), PAGE_ENCODED);
     assert.strictEqual(site.asked.length, 6);
     assert.strictEqual(site.released.count, site.asked.length);
     // Plain bodies only, and nothing that ties the request to Kin's traces.
@@ -271,16 +274,16 @@ it.effect("reads https on its own port only, and never Kin's own public address"
     { KIN_PUBLIC_URL: "https://kin.ambermill.example.test" },
   );
   return Effect.gen(function* () {
-    for (const address of [
-      "https://corran.example:8443/",
-      "https://corran.example:80/",
-      "https://kin.ambermill.example.test/",
-      "https://ambermill.tunnel.example.test/oauth",
-      "https://corran.example/port",
-      "https://corran.example/kin",
-      "https://corran.example/tunnel",
-    ])
-      assert.strictEqual(yield* refusedWith(address), PAGE_REFUSED, address);
+    for (const [address, why] of [
+      ["https://corran.example:8443/", PAGE_PORT],
+      ["https://corran.example:80/", PAGE_PORT],
+      ["https://kin.ambermill.example.test/", PAGE_SELF],
+      ["https://ambermill.tunnel.example.test/oauth", PAGE_SELF],
+      ["https://corran.example/port", PAGE_PORT],
+      ["https://corran.example/kin", PAGE_SELF],
+      ["https://corran.example/tunnel", PAGE_SELF],
+    ] as const)
+      assert.strictEqual(yield* refusedWith(address), why, address);
     // Only the three redirecting pages were asked; none of their targets.
     assert.deepStrictEqual(site.asked, [
       "https://corran.example/port",

@@ -6,7 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { quote } from "../lead/LeadPrompt.ts";
 import { markOutside, outsideRead, pageSeen, rememberPages } from "../lead/OutsideContent.ts";
 import { leadTool, type Lead } from "../work/leadWork.ts";
-import { PAGE_REFUSED, pageLine } from "./text.ts";
+import { PAGE_NOT_GIVEN, pageLine } from "./text.ts";
 import { KinWebPages } from "./webPage.ts";
 
 export const WebPageInput = Schema.Struct({
@@ -52,7 +52,7 @@ const runWebPage = Effect.fnUntraced(function* (lead: Lead, input: typeof WebPag
     !pageSeen(lead, address) &&
     !(yield* personGave(lead, address))
   )
-    return yield* new KinChatError({ reason: "not_allowed", message: PAGE_REFUSED });
+    return yield* new KinChatError({ reason: "not_allowed", message: PAGE_NOT_GIVEN });
   const page = yield* (yield* KinWebPages).read(address);
   yield* markOutside(lead, `web:${new URL(page.url).hostname.slice(0, 120)}`);
   yield* rememberPages(lead, [address, page.url, ...page.links]);
@@ -66,7 +66,7 @@ const runWebPage = Effect.fnUntraced(function* (lead: Lead, input: typeof WebPag
       text: page.text,
     }),
     ...(page.cut ? { cut: true as const } : {}),
-    answer: pageLine(page.title, page.text.length, page.cut),
+    answer: pageLine(page.text.length, page.cut),
   };
 });
 

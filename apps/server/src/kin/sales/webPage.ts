@@ -15,9 +15,12 @@ import { guardedLookup, urlRefusal } from "../connections/EgressGuard.ts";
 import { ownHosts } from "../publicAddress.ts";
 import { clean } from "../connections/ResultText.ts";
 import {
+  PAGE_ENCODED,
   PAGE_NOT_HTTPS,
   PAGE_NOT_TEXT,
+  PAGE_PORT,
   PAGE_REFUSED,
+  PAGE_SELF,
   PAGE_TOO_MANY_REDIRECTS,
   PAGE_UNREACHABLE,
   pageStatus,
@@ -101,7 +104,7 @@ const make = Effect.gen(function* () {
     const type = response.headers["content-type"] ?? "text/html";
     if (!TEXT_TYPES.test(type)) return yield* notRead(PAGE_NOT_TEXT);
     const encoding = (response.headers["content-encoding"] ?? "identity").trim().toLowerCase();
-    if (encoding !== "identity" && encoding !== "") return yield* notRead(PAGE_NOT_TEXT);
+    if (encoding !== "identity" && encoding !== "") return yield* notRead(PAGE_ENCODED);
     const declared = Number(response.headers["content-length"] ?? "0");
     if (declared > PAGE_BYTES) return yield* notRead(pageTooBig(PAGE_MEGABYTES));
     const parts: Array<Uint8Array> = [];
@@ -155,8 +158,8 @@ const make = Effect.gen(function* () {
         if (url.protocol !== "https:") return yield* notRead(PAGE_NOT_HTTPS);
         if (urlRefusal(url) !== undefined) return yield* notRead(PAGE_REFUSED);
         // https on 443 only (the parser drops an explicit 443), and never Kin itself.
-        if (url.port !== "" || self.has(normalizeHostname(url.hostname)))
-          return yield* notRead(PAGE_REFUSED);
+        if (url.port !== "") return yield* notRead(PAGE_PORT);
+        if (self.has(normalizeHostname(url.hostname))) return yield* notRead(PAGE_SELF);
         const answer = yield* hop(url, count >= REDIRECTS_MAX);
         if (answer._tag === "page") return answer.page;
         url = answer.to;

@@ -11,7 +11,7 @@ import { leadTool, type Lead, viewOf } from "../work/leadWork.ts";
 import { dayIn, formatMoney, timeIn } from "../work/money.ts";
 import { iso, ownerZone, workFailure } from "../work/recordRows.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
-import { PIPELINE_MINE_NOBODY, pipelineLine } from "./text.ts";
+import { concernsLine, mineLine, PIPELINE_MINE_NOBODY, totalsLine } from "./text.ts";
 import { KinChatError } from "@t3tools/contracts";
 
 export const PipelineInput = Schema.Struct({
@@ -89,31 +89,35 @@ const runPipeline = Effect.fnUntraced(function* (lead: Lead, input: typeof Pipel
   const team = yield* viewOf(lead);
   if (team !== undefined) yield* Deals.switchedOn(lead.orgId, team.people).pipe(workFailure);
   const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
-  const totals = yield* Deals.pipelineTotals(lead.orgId, viewer).pipe(workFailure);
-  const heard = yield* Deals.pipelineConcerns(lead.orgId, viewer).pipe(workFailure);
-  const concerns = heard.concerns;
   const who = team === undefined ? [] : yield* namesOf(lead, team.people);
-  const base = {
-    asOf: iso(yield* Clock.currentTimeMillis),
-    view: input.view,
-    answer: pipelineLine(
-      who,
-      totals.open.count,
-      totals.stages.filter((stage) => stage.count > 0).length,
-      concerns.length,
-    ),
-  };
+  const base = { asOf: iso(yield* Clock.currentTimeMillis), view: input.view };
+  // Each view counts only its own figures, and its line says only those.
   switch (input.view) {
-    case "totals":
+    case "totals": {
+      const totals = yield* Deals.pipelineTotals(lead.orgId, viewer).pipe(workFailure);
       return {
         ...base,
         stages: totals.stages.map(({ name, ...rest }) => ({ stage: name, ...shownTotals(rest) })),
         open: shownTotals(totals.open),
         won: shownTotals(totals.won),
         lost: shownTotals(totals.lost),
+        answer: totalsLine(who, {
+          open: totals.open.count,
+          stages: totals.stages.filter((stage) => stage.count > 0).length,
+          won: totals.won.count,
+          lost: totals.lost.count,
+        }),
       };
-    case "concerns":
-      return { ...base, concerns, ...(heard.more ? { more: true as const } : {}) };
+    }
+    case "concerns": {
+      const heard = yield* Deals.pipelineConcerns(lead.orgId, viewer).pipe(workFailure);
+      return {
+        ...base,
+        concerns: heard.concerns,
+        ...(heard.more ? { more: true as const } : {}),
+        answer: concernsLine(who, heard.concerns.length, heard.more),
+      };
+    }
     case "mine": {
       const person =
         team === undefined
@@ -157,6 +161,12 @@ const runPipeline = Effect.fnUntraced(function* (lead: Lead, input: typeof Pipel
           ...(deal.sensitive ? { sensitive: true as const } : {}),
         })),
         ...(mine.more ? { more: true as const } : {}),
+        answer: mineLine(
+          who,
+          (yield* namesOf(lead, [person as KinPersonId]))[0] ?? "a teammate",
+          mine.deals.length,
+          mine.more,
+        ),
       };
     }
   }
