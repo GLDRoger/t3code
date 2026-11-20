@@ -3,6 +3,7 @@ import { useNavigation } from "@react-navigation/native";
 import {
   KIN_DEALS,
   KIN_DEALS_STATES,
+  kinDealConcernRows,
   kinDealRow,
   kinDealsByStage,
   kinDealsHeader,
@@ -17,7 +18,7 @@ import {
 import { KIN_WORK_HOME } from "@t3tools/client-runtime/kin/kinWorkHome";
 import { KIN_CLIENTS } from "@t3tools/client-runtime/kin/kinWorkClients";
 import type { KinWorkNames } from "@t3tools/client-runtime/kin/kinWork";
-import type { KinPersonId, KinRecordKey } from "@t3tools/contracts";
+import type { KinDealsResult, KinPersonId, KinRecordKey } from "@t3tools/contracts";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
 
@@ -409,10 +410,15 @@ export function KinDealsView(
             </View>
           }
           ListFooterComponent={
-            result === null || result.more === 0 ? null : (
-              <Text textRole="footnote" className="px-5 py-4 text-foreground-muted">
-                {KIN_DEALS.more(result.more)}
-              </Text>
+            result === null ? null : (
+              <>
+                {result.more === 0 ? null : (
+                  <Text textRole="footnote" className="px-5 py-4 text-foreground-muted">
+                    {KIN_DEALS.more(result.more)}
+                  </Text>
+                )}
+                <WhatWeHear concerns={result.concerns} />
+              </>
             )
           }
           renderItem={({ item }) =>
@@ -445,6 +451,29 @@ export function KinDealsView(
           }
         />
       </ScreenContent>
+    </View>
+  );
+}
+
+/** The concerns raised on the deals shown, counted by Kin; nothing at all until one is raised. */
+function WhatWeHear(props: { readonly concerns: KinDealsResult["concerns"] }) {
+  const rows = kinDealConcernRows(props.concerns);
+  if (rows.length === 0) return null;
+  return (
+    <View className="gap-2 px-4 pt-5">
+      <ListSection title={KIN_DEALS.whatWeHear}>
+        {rows.map((row) => (
+          <ListRowLayout
+            key={row.label}
+            label={row.label}
+            description={row.stands}
+            detail={row.deals}
+          />
+        ))}
+      </ListSection>
+      <Text textRole="footnote" className="px-1 text-foreground-muted">
+        {KIN_DEALS.whatWeHearHint}
+      </Text>
     </View>
   );
 }

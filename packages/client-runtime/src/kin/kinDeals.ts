@@ -109,6 +109,13 @@ export const KIN_DEALS = {
   noQuotes: (party: string) => `No quotes for ${party} to link.`,
   openQuote: (quote: string) => `Open ${quote}`,
   clientStays: "A deal stays with its client. For another, add a new deal.",
+  concernsRaised: "Concerns raised",
+  whatWeHear: "What we hear",
+  whatWeHearHint:
+    "Concerns are the words your team and agents put on deals, counted across the deals you see.",
+  heard: (words: string) => `“${words}”`,
+  concernStands: (open: number, won: number, lost: number) =>
+    `${open} open · ${won} won · ${lost} lost`,
 } as const;
 
 /**
@@ -120,6 +127,15 @@ export function kinDealsNotRead(state: KinWorkReadState<unknown>) {
   if (state._tag === "failed" && Cause.isCause(state.cause) && kinHostLacksCall(state.cause))
     return KIN_DEALS.olderHost;
   return null;
+}
+
+/** One line of What we hear: the concern, how many deals raised it, and how those stand. */
+export function kinDealConcernRows(concerns: KinDealsResult["concerns"]) {
+  return (concerns ?? []).map((concern) => ({
+    label: concern.label,
+    deals: KIN_DEALS.dealCount(concern.deals),
+    stands: KIN_DEALS.concernStands(concern.open, concern.won, concern.lost),
+  }));
 }
 
 /** Settings → Deals. */
@@ -552,6 +568,9 @@ export function kinDealChangeText(change: KinRecordChange, names: KinWorkNames, 
     return stage.from === null
       ? `${who} put it in ${stage.to}`
       : `${who} moved it ${stage.from} → ${stage.to}`;
+  const concerns = field("concerns");
+  if (concerns !== undefined)
+    return concerns.to === null ? `${who} cleared the concerns` : `${who} noted the concerns`;
   return kinWorkChangeText(change, names, now);
 }
 

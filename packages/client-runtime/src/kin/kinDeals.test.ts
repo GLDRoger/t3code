@@ -385,6 +385,11 @@ describe("kinDealChangeText", () => {
       ],
       "Zoya marked it lost: went with someone cheaper",
     ],
+    [
+      [{ field: "concerns", from: null, to: "Staff confidence: half will never manage it" }],
+      "Zoya noted the concerns",
+    ],
+    [[{ field: "concerns", from: "Staff confidence", to: null }], "Zoya cleared the concerns"],
     [[{ field: "state", from: "dropped", to: "open" }], "Zoya reopened it"],
   ] as const)("%j", (fields, text) => {
     expect(kinDealChangeText(change(fields), names, now)).toBe(text);

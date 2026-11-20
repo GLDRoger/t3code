@@ -412,6 +412,20 @@ function KinDealBody(
         </ListSection>
       )}
 
+      {deal.concerns === undefined ? null : (
+        <ListSection title={KIN_DEALS.concernsRaised}>
+          {deal.concerns.map((concern) => (
+            <ListRowLayout
+              key={concern.label}
+              label={concern.label}
+              {...(concern.heard === undefined
+                ? {}
+                : { description: KIN_DEALS.heard(concern.heard) })}
+            />
+          ))}
+        </ListSection>
+      )}
+
       <ListSection title={KIN_DEALS.details}>
         <ListRow
           label={KIN_DEALS.clientField}

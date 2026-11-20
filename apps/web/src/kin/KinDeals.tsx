@@ -1,6 +1,7 @@
 import {
   KIN_DEALS,
   KIN_DEALS_STATES,
+  kinDealConcernRows,
   kinDealDrop,
   kinDealMoves,
   kinDealRow,
@@ -21,6 +22,7 @@ import type {
   KinDealMove,
   KinDealRow,
   KinDealStage,
+  KinDealsResult,
   KinPersonId,
   KinRecordKey,
 } from "@t3tools/contracts";
@@ -514,6 +516,7 @@ export function KinDealsTab(
       {result.more === 0 ? null : (
         <p className="px-4 py-2 text-xs text-muted-foreground">{KIN_DEALS.more(result.more)}</p>
       )}
+      <WhatWeHear concerns={result.concerns} />
       {board ? (
         <p className="px-4 py-2 text-xs text-muted-foreground">{KIN_DEALS.boardHint}</p>
       ) : null}
@@ -530,6 +533,30 @@ export function KinDealsTab(
         />
       )}
     </div>
+  );
+}
+
+/** The concerns raised on the deals shown, counted by Kin; nothing at all until one is raised. */
+function WhatWeHear(props: { readonly concerns: KinDealsResult["concerns"] }) {
+  const rows = kinDealConcernRows(props.concerns);
+  if (rows.length === 0) return null;
+  return (
+    <section
+      aria-label={KIN_DEALS.whatWeHear}
+      className="max-h-64 shrink-0 overflow-y-auto border-t border-border px-4 py-3"
+    >
+      <h2 className="text-xs font-medium text-muted-foreground">{KIN_DEALS.whatWeHear}</h2>
+      <ul className="mt-2 flex flex-col gap-2">
+        {rows.map((row) => (
+          <li key={row.label} className="flex flex-wrap items-baseline gap-x-3 text-sm">
+            <span className="min-w-0 flex-1 text-foreground">{row.label}</span>
+            <span className="tabular-nums">{row.deals}</span>
+            <span className="text-xs tabular-nums text-muted-foreground">{row.stands}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-xs text-muted-foreground">{KIN_DEALS.whatWeHearHint}</p>
+    </section>
   );
 }
 

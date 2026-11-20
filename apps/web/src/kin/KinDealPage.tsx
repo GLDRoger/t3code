@@ -384,6 +384,23 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
         </KinWorkSection>
       )}
 
+      {deal.concerns === undefined ? null : (
+        <KinWorkSection title={KIN_DEALS.concernsRaised}>
+          <ul className="flex flex-col gap-2 text-sm">
+            {deal.concerns.map((concern) => (
+              <li key={concern.label} className="flex flex-col">
+                <span className="text-foreground">{concern.label}</span>
+                {concern.heard === undefined ? null : (
+                  <span className="text-xs text-muted-foreground">
+                    {KIN_DEALS.heard(concern.heard)}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </KinWorkSection>
+      )}
+
       <KinWorkSection title={KIN_DEALS.details}>
         <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
           <dt className="text-muted-foreground">{KIN_DEALS.clientField}</dt>
