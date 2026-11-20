@@ -41,6 +41,7 @@ import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { ListActionRow } from "../../components/ui/ListActionRow";
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -239,19 +240,20 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
         </View>
       </ListSection>
       <ListSection title={KIN_PROFILE_COPY.hoursLabel}>
-        <View className="gap-0.5 px-4 py-3">
+        <View className="px-4 py-3">
           <Text
             textRole="body"
             className={hours === null ? "text-foreground-muted" : "text-foreground"}
           >
             {hours ?? KIN_PROFILE_COPY.noHours}
           </Text>
-          {profile.timeZone === null ? null : (
-            <Text textRole="footnote" className="text-foreground-muted">
-              {kinZoneLabel(profile.timeZone)}
-            </Text>
-          )}
         </View>
+        {profile.timeZone === null ? null : (
+          <ListRowLayout
+            label={KIN_PROFILE_COPY.timeZoneLabel}
+            detail={kinZoneLabel(profile.timeZone)}
+          />
+        )}
       </ListSection>
       <KinAwaySection
         environmentId={target.environmentId}
