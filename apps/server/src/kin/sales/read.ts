@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { quote } from "../lead/LeadPrompt.ts";
+import { quote } from "../lead/quote.ts";
 import { markOutside, outsideRead, pageSeen, rememberPages } from "../lead/OutsideContent.ts";
 import { leadTool, type Lead } from "../work/leadWork.ts";
 import { PAGE_NOT_GIVEN, pageLine } from "./text.ts";

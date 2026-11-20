@@ -11,7 +11,7 @@ import { playbookThreshold } from "../work/playbooks.ts";
 import { accessSql } from "../people/KinAccess.ts";
 import { signedInPeople } from "../people/signedIn.ts";
 import { effectiveAudience } from "./Audience.ts";
-import { quote } from "./LeadPrompt.ts";
+import { quote } from "./quote.ts";
 import { WEEK_MS } from "../durations.ts";
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
