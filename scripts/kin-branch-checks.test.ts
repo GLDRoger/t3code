@@ -28,6 +28,7 @@ import {
   type ApprovedGuard,
   type BranchCommit,
   kinSentences,
+  MIGRATIONS,
   migrationIds,
   supersededIn,
 } from "./kin-branch-checks.ts";
@@ -442,6 +443,56 @@ describe("kin branch checks", () => {
         (yield* run).map((problem) => problem.split(".")[0]),
         [`Kin adds 11 lines to T3's apps/server/src/server`],
       );
+    }).pipe(
+      Effect.provide(NodeServices.layer),
+      Effect.ensuring(Effect.sync(() => NodeFS.rmSync(root, { recursive: true, force: true }))),
+    );
+  });
+
+  it.effect("checks migrations against the Kin trunk when the ref is upstream's main", () => {
+    const root = NodeFS.realpathSync(
+      NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-kin-trunk-")),
+    );
+    const env = {
+      ...Object.fromEntries(
+        Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
+      ),
+      GIT_CONFIG_GLOBAL: NodeOS.devNull,
+      GIT_CONFIG_NOSYSTEM: "1",
+    };
+    const git = (...args: Array<string>) =>
+      NodeChildProcess.execFileSync(
+        "git",
+        ["-c", "user.name=Rhea", "-c", "user.email=rhea@ambermill.invalid", ...args],
+        { cwd: root, encoding: "utf8", env },
+      ).trim();
+    const migrations = (...ids: ReadonlyArray<string>) => {
+      NodeFS.mkdirSync(NodePath.dirname(NodePath.join(root, MIGRATIONS)), { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(root, MIGRATIONS), loader(...ids));
+      git("add", ".");
+    };
+    return Effect.gen(function* () {
+      git("init", "-q", "-b", "main");
+      NodeFS.writeFileSync(NodePath.join(root, "README.md"), "T3\n");
+      git("add", ".");
+      git("commit", "-q", "-m", "upstream");
+      git("checkout", "-q", "-b", "kin");
+      migrations("1_First");
+      git("commit", "-q", "-m", "feat(kin): first");
+      git("checkout", "-q", "-b", "mine");
+      migrations("1_First", "3_Gap");
+      git("commit", "-q", "-m", "feat(kin): a gap\n\nPeople-change: none");
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const { problems, notes } = yield* kinBranchChecks(root, "main", 14).pipe(
+        Effect.provideService(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make((command) => spawner.spawn(ChildProcess.setEnv(command, env))),
+        ),
+      );
+      assert.deepStrictEqual(problems, [
+        "Kin migration 3_Gap must be 2: the next free number above the base's highest (1), with no gap.",
+      ]);
+      assert.include(notes[0], "ran against kin");
     }).pipe(
       Effect.provide(NodeServices.layer),
       Effect.ensuring(Effect.sync(() => NodeFS.rmSync(root, { recursive: true, force: true }))),

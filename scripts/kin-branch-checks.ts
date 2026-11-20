@@ -454,10 +454,47 @@ export const checkT3Footprint = (input: {
     );
 };
 
+/**
+ * Kin's checks read Kin's files at the ref. Upstream's `main` (check:changed's default) has none, so
+ * against it they would skip silently; they run against the closest Kin trunk instead.
+ */
+export const kinTrunk = Effect.fn("kinBranchChecks.kinTrunk")(function* (
+  root: string,
+  ref: string,
+) {
+  const hasKin = (rev: string) =>
+    git(root, ["cat-file", "-e", `${rev}:${MIGRATIONS}`]).pipe(
+      Effect.as(true),
+      Effect.orElseSucceed(() => false),
+    );
+  if (yield* hasKin(ref)) return { ref, note: undefined };
+  let closest: { ref: string; ahead: number } | undefined;
+  for (const trunk of yield* gitLines(root, [
+    "for-each-ref",
+    "--format=%(refname:short)",
+    "refs/heads/kin",
+    "refs/remotes/*/kin",
+  ])) {
+    if (!(yield* hasKin(trunk))) continue;
+    const ahead = Number(
+      (yield* git(root, ["rev-list", "--count", `${trunk}..HEAD`])).toString().trim(),
+    );
+    if (closest === undefined || ahead < closest.ahead) closest = { ref: trunk, ahead };
+  }
+  if (closest === undefined)
+    return yield* Effect.fail(
+      `kin branch: ${ref} has no ${MIGRATIONS}, so the migration and instructions checks can't run against it, and no Kin trunk (kin, <remote>/kin) was found. Pass the Kin branch this one merges into.`,
+    );
+  return {
+    ref: closest.ref,
+    note: `kin branch: ${ref} has no Kin files, so these checks ran against ${closest.ref}.`,
+  };
+});
+
 /** All checks for the branch at `root` against `ref`: problems, or none, and notes to print. */
 export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
   root: string,
-  ref: string,
+  asked: string,
   days: number,
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -468,6 +505,10 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
       Effect.option,
     );
   const onDisk = (file: string) => fs.readFileString(path.join(root, file)).pipe(Effect.option);
+  const trunk = (yield* fs.exists(path.join(root, MIGRATIONS)))
+    ? yield* kinTrunk(root, asked)
+    : { ref: asked, note: undefined };
+  const ref = trunk.ref;
   const mergeBase = (yield* git(root, ["merge-base", "HEAD", ref])).toString().trim();
   // PRs already merged between the ref and head, newest first: a release range, not one branch.
   const prMerges = (yield* gitLines(root, [
@@ -660,7 +701,7 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
       }),
     );
   }
-  return { problems, notes: people.notes };
+  return { problems, notes: [...(trunk.note === undefined ? [] : [trunk.note]), ...people.notes] };
 });
 
 export const kinBranchChecksCommand = Command.make(
