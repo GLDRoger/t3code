@@ -81,6 +81,7 @@ import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { groupRules, teamRules } from "./instructions.ts";
 import { socialRules } from "../social/instructions.ts";
 import { isSocialDomain } from "../social/seat.ts";
+import { salesRulesFor } from "../sales/seat.ts";
 import { buildSeat } from "./seat.ts";
 import {
   answeredTurnText,
@@ -1526,6 +1527,7 @@ export class KinLeadPrompt extends Context.Service<
           ...(charter !== undefined && isSocialDomain(charter.domain)
             ? [ownerPart(socialRules)]
             : []),
+          ...salesRulesFor(charter?.domain).map(sharedPart),
           // Rooms shared with other people and agents.
           ...(laneChat !== undefined && laneChat.kind !== "direct"
             ? [sharedPart(laneChat.teamId === KIN_TEAM_ROOM_TEAM_ID ? teamRules : groupRules)]

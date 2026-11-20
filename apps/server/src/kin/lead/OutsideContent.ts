@@ -6,6 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
+import { SALES_OUTSIDE_TOOLS } from "../sales/policies.ts";
 
 type Turn = {
   readonly orgId: KinOrgId;
@@ -130,6 +131,7 @@ export const OUTSIDE_TOOLS = {
   social_draft: "allowed",
   social_week: "allowed",
   social_pack: "allowed",
+  ...SALES_OUTSIDE_TOOLS,
   // A delegated task, clone or browser is work outside text could steer.
   ...(Object.fromEntries(LEAD_T3_TOOLS.map((name) => [name, "refused" as const])) as Record<
     (typeof LEAD_T3_TOOLS)[number],

@@ -32,7 +32,7 @@ import { answerChoice, refusedChoice, resumeInterruptedSends } from "./work/card
 import { requireRefreshObserver } from "./chat/KinRefreshHub.ts";
 import { KinIdentity, KinNewCompanyCountryUnset } from "./chat/KinIdentity.ts";
 import { seedPlaybooks } from "./work/playbookSeeds.ts";
-import { seedCharacters } from "./lead/characters.ts";
+import { offerNewCharacter, seedCharacters } from "./lead/characters.ts";
 import { closeSubject } from "./open/closeSubject.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
@@ -87,6 +87,12 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
         Effect.provide(services),
         Effect.catchCause((cause) =>
           Effect.logWarning("Kin default characters not written", Cause.pretty(cause)),
+        ),
+      );
+      yield* offerNewCharacter(owner.orgId).pipe(
+        Effect.provide(services),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't offer the new character", Cause.pretty(cause)),
         ),
       );
       yield* DevFakeMail.connectFakeAccounts(owner).pipe(Effect.provide(services));

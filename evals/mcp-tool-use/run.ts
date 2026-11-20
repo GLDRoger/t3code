@@ -73,6 +73,8 @@ import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
 import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
 import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
 import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
+import { KinSalesToolkit } from "../../apps/server/src/kin/sales/mcp.ts";
+import { salesRules as kinSalesRules } from "../../apps/server/src/kin/sales/instructions.ts";
 import { KinPulseToolkit } from "../../apps/server/src/kin/pulse/mcp.ts";
 import {
   MONEY_RULE,
@@ -598,6 +600,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   KinConnectionsToolkit,
   KinPulseToolkit,
   KinSocialToolkit,
+  KinSalesToolkit,
   MessageToolkit,
 ].flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools));
 // McpHttpServer decodes arguments with each tool's JSON codec, which drops undeclared keys.
@@ -690,6 +693,7 @@ const visibleT3Tools = (options: {
               ...Object.keys(KinPulseToolkit.tools),
               ...Object.keys(KinConnectionsToolkit.tools),
               ...(options.kinSocial === true ? Object.keys(KinSocialToolkit.tools) : []),
+              ...Object.keys(KinSalesToolkit.tools),
             ].some((name) => tool.name === `${T3_PREFIX}${name}`))
         : ![
             ...Object.keys(KinChatToolkit.tools),
@@ -700,6 +704,7 @@ const visibleT3Tools = (options: {
             ...Object.keys(KinPulseToolkit.tools),
             ...Object.keys(KinConnectionsToolkit.tools),
             ...Object.keys(KinSocialToolkit.tools),
+            ...Object.keys(KinSalesToolkit.tools),
           ].some((name) => tool.name === `${T3_PREFIX}${name}`)) &&
       (options.links === true || !hiddenWhileLinksOff.has(tool.name)) &&
       (options.forge !== false || !hiddenWithoutForge.has(tool.name)) &&
@@ -886,7 +891,7 @@ export const buildBase = (
   };
   // As Kin plans a session (`lead/turn/session.ts`): its instructions are the whole system prompt
   // and Kin tools load upfront except the few deferred behind ToolSearch. A turn with the owner's
-  // seat (kinSession, not shared) has Claude Code's own tools too; a confined one, none of them.
+  // seat (kinSession, not shared) has Claude Code's own tools too; a confined one, only its web search.
   if (options.kinLead === true) {
     const ownerSeat = options.kinSession === true && options.kinShared !== true;
     const deferredKin = t3.filter((tool) =>
@@ -911,7 +916,8 @@ export const buildBase = (
               ),
               ...nativeDeferred.map((name): ApiTool => ({ name, ...nativeSchema(name) })),
             ]
-          : []),
+          : // A confined Claude session keeps the provider's own web search (`claude.ts`).
+            [{ name: "WebSearch", ...nativeSchema("WebSearch") }]),
         ...(deferredKin.length > 0 ? toolSearch : []),
         ...t3.filter((tool) => !deferredKin.includes(tool)),
       ],
@@ -1368,6 +1374,7 @@ const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["world"]) 
     .replaceAll("{{GROUP_RULES}}", kinGroupRules)
     .replaceAll("{{TEAM_RULES}}", kinTeamRules)
     .replaceAll("{{SOCIAL_RULES}}", kinSocialRules)
+    .replaceAll("{{SALES_RULES}}", kinSalesRules)
     .replaceAll("{{REPLY_SHAPE}}", REPLY_SHAPE)
     .replaceAll("{{HANDED_BACK_WORK}}", HANDED_BACK_WORK)
     .replaceAll("{{STARTED_RULE}}", STARTED_RULE)

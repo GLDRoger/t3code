@@ -58,6 +58,22 @@ export const KinDealCan = Schema.Struct({
 });
 export type KinDealCan = typeof KinDealCan.Type;
 
+/** A worry raised on a deal: a short label in the company's own words, and what was said. */
+export const KinDealConcern = Schema.Struct({
+  label: KinTrimmedText.check(Schema.isMinLength(1), Schema.isMaxLength(80)),
+  heard: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(200))),
+});
+export type KinDealConcern = typeof KinDealConcern.Type;
+/** One concern across the deals the reader sees: how many raised it, and how those stand. */
+export const KinDealConcernCount = Schema.Struct({
+  label: KinDealConcern.fields.label,
+  deals: NonNegativeInt,
+  open: NonNegativeInt,
+  won: NonNegativeInt,
+  lost: NonNegativeInt,
+});
+export type KinDealConcernCount = typeof KinDealConcernCount.Type;
+
 export const KinDealRow = Schema.Struct({
   recordId: KinRecordId,
   key: KinRecordKey,
@@ -81,6 +97,8 @@ export const KinDealRow = Schema.Struct({
   sensitive: Schema.Boolean,
   next: Schema.NullOr(KinDealNext),
   quote: Schema.optional(KinDealQuote),
+  /** The worries raised on it, in the order they were put; absent from older hosts and when none. */
+  concerns: Schema.optional(Schema.Array(KinDealConcern)),
   can: KinDealCan,
   rev: NonNegativeInt,
   createdAt: IsoDateTime,
@@ -116,6 +134,11 @@ export const KinDealsResult = Schema.Struct({
   open: KinDealTotals,
   /** Whether the reader may add a deal (on `party`, when given). */
   canCreate: Schema.Boolean,
+  /**
+   * The concerns raised on the deals the reader sees under these filters, whatever their state,
+   * most deals first; absent from older hosts.
+   */
+  concerns: Schema.optional(Schema.Array(KinDealConcernCount)),
   seq: NonNegativeInt,
   asOf: IsoDateTime,
 });

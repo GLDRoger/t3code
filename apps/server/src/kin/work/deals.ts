@@ -2,6 +2,8 @@ import {
   KinChatError,
   type KinDealAddStepInput,
   type KinDealCan,
+  type KinDealConcern,
+  type KinDealConcernCount,
   type KinDealCreateInput,
   type KinDealMove,
   type KinDealMoveInput,
@@ -30,6 +32,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
@@ -38,7 +41,7 @@ import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
 import { DEFAULT_STAGES, stageLine, stageMove, stagesOf } from "./dealStages.ts";
 import { KinRecords, requestHashOf, type Patch, type Writer } from "./KinRecords.ts";
-import { fieldText, isMoney, parseFields, type FieldValue } from "./lists.ts";
+import { fieldList, fieldText, isMoney, parseFields, type FieldValue } from "./lists.ts";
 import { dueMillis, ownerWriter, viewerOf } from "./ownerWork.ts";
 import {
   byId,
@@ -142,7 +145,7 @@ export const agentActor = Effect.fn("KinDeals.agentActor")(function* (
 });
 
 /** The Clients switch, for each member: off is no deals at all. */
-const switchedOn = Effect.fn("KinDeals.switchedOn")(function* (
+export const switchedOn = Effect.fn("KinDeals.switchedOn")(function* (
   orgId: KinOrgId,
   members: ReadonlyArray<KinPersonId>,
 ) {
@@ -210,6 +213,50 @@ const quoteFor = Effect.fn("KinDeals.quoteFor")(function* (
   return row;
 });
 
+/** A concern as stored: its label, or its label, ": " and what was heard. */
+const concernOf = (item: string): KinDealConcern => {
+  const at = item.indexOf(": ");
+  const label = (at < 0 ? item : item.slice(0, at)).replace(/\s+/g, " ").trim();
+  const heard =
+    at < 0
+      ? ""
+      : item
+          .slice(at + 2)
+          .replace(/\s+/g, " ")
+          .trim();
+  return heard === "" ? { label } : { label, heard };
+};
+/** Two labels that read the same are one concern. */
+const foldConcern = (label: string) =>
+  label.normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
+const CONCERN_LABEL_MAX = 80;
+const CONCERN_HEARD_MAX = 200;
+const CONCERNS_MAX = 10;
+/** The concerns a write gives, as stored; empty or null clears them. */
+const concernsFor = Effect.fn("KinDeals.concernsFor")(function* (
+  items: ReadonlyArray<string> | null,
+) {
+  if (items === null || items.length === 0) return null;
+  if (items.length > CONCERNS_MAX)
+    return yield* invalid(`A deal holds at most ${CONCERNS_MAX} concerns.`);
+  const seen = new Set<string>();
+  const stored: Array<string> = [];
+  for (const item of items) {
+    const concern = concernOf(item);
+    if (concern.label === "" || concern.label.length > CONCERN_LABEL_MAX)
+      return yield* invalid(
+        `A concern is a short label of at most ${CONCERN_LABEL_MAX} characters.`,
+      );
+    if ((concern.heard?.length ?? 0) > CONCERN_HEARD_MAX)
+      return yield* invalid(`What was heard is at most ${CONCERN_HEARD_MAX} characters a concern.`);
+    const folded = foldConcern(concern.label);
+    if (seen.has(folded)) return yield* invalid(`${concern.label} is given twice.`);
+    seen.add(folded);
+    stored.push(concern.heard === undefined ? concern.label : `${concern.label}: ${concern.heard}`);
+  }
+  return stored;
+});
+
 const liveStage = (stages: ReadonlyArray<KinDealStage>, id: string) =>
   stages.some((stage) => stage.id === id) ? Effect.void : Effect.fail(unknownStage(id, stages));
 
@@ -264,6 +311,7 @@ export type DealDraft = {
   readonly notes?: string | undefined;
   readonly quoteKey?: string | undefined;
   readonly next?: KinDealStepInput | undefined;
+  readonly concerns?: ReadonlyArray<string> | undefined;
   readonly originKey: string;
   readonly requestHash?: string | undefined;
 };
@@ -288,10 +336,12 @@ export const createAs = Effect.fn("KinDeals.create")(function* (
       ? undefined
       : yield* quoteFor(actor, draft.quoteKey, party.recordId);
   const source = draft.source ?? fieldText(parseFields(party.fieldsJson), "source") ?? undefined;
+  const concerns = draft.concerns === undefined ? null : yield* concernsFor(draft.concerns);
   const fields: Record<string, FieldValue> = {
     stage,
     ...(draft.value === undefined ? {} : { value: draft.value }),
     ...(source === undefined ? {} : { source }),
+    ...(concerns === null ? {} : { concerns }),
   };
   const { row, created } = yield* records.create(actor.orgId, actor.writer, {
     list: "deals",
@@ -331,6 +381,8 @@ export type DealChange = {
   readonly owner?: KinWorkPrincipal | undefined;
   readonly sensitive?: boolean | undefined;
   readonly quoteKey?: string | null | undefined;
+  /** The whole list as it should stand; null or empty clears it. */
+  readonly concerns?: ReadonlyArray<string> | null | undefined;
 };
 
 /** Changes what a deal says, hands it over or links its quote; never its stage or state. */
@@ -346,6 +398,7 @@ export const updateAs = Effect.fn("KinDeals.update")(function* (
   const fields: Record<string, FieldValue | null> = {
     ...(change.value === undefined ? {} : { value: change.value }),
     ...(change.source === undefined ? {} : { source: change.source }),
+    ...(change.concerns === undefined ? {} : { concerns: yield* concernsFor(change.concerns) }),
   };
   const patch: Patch = {
     ...(change.title === undefined ? {} : { title: change.title }),
@@ -624,6 +677,7 @@ const dealOf = (
   const value = fields.value;
   const source = fieldText(fields, "source");
   const lostReason = fieldText(fields, "lostReason");
+  const concerns = fieldList(fields, "concerns").map(concernOf);
   return {
     recordId: KinRecordId.make(row.recordId),
     key: row.key,
@@ -647,6 +701,7 @@ const dealOf = (
     sensitive: row.sensitive === 1 || row.inheritedSensitive === 1,
     next: steps?.[0] ?? null,
     ...(quote === undefined ? {} : { quote }),
+    ...(concerns.length === 0 ? {} : { concerns }),
     can: canFor(viewer, row),
     rev: row.rev,
     createdAt: iso(row.createdAt),
@@ -690,6 +745,149 @@ export const asShown = Effect.fn("KinDeals.asShown")(function* (
       },
     ]),
   );
+});
+
+const KIN_DEAL_CONCERNS_CAP = 50;
+const decodeConcerns = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
+/**
+ * The concerns raised on the deals `where` selects, by folded label: how many deals raised each
+ * and how many of those are open, won and lost, most deals first. Every deal counts once a label.
+ */
+const concernCounts = Effect.fn("KinDeals.concerns")(function* (
+  where: ReadonlyArray<Statement.Fragment>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ state: string; concerns: string }>`SELECT r.state,
+      json_extract(r.fields_json, '$.concerns') AS concerns FROM kin_records r
+    WHERE ${sql.and([...where, sql`json_type(r.fields_json, '$.concerns') = 'array'`])}
+    ORDER BY r.created_at, r.key`;
+  const counts = new Map<
+    string,
+    { label: string; deals: number; open: number; won: number; lost: number }
+  >();
+  for (const row of rows) {
+    const labels = new Map<string, string>();
+    for (const item of Option.getOrElse(decodeConcerns(row.concerns), () => [])) {
+      const { label } = concernOf(item);
+      if (label !== "" && !labels.has(foldConcern(label))) labels.set(foldConcern(label), label);
+    }
+    for (const [folded, label] of labels) {
+      const count = counts.get(folded) ?? { label, deals: 0, open: 0, won: 0, lost: 0 };
+      count.deals += 1;
+      if (row.state === "done") count.won += 1;
+      else if (row.state === "dropped") count.lost += 1;
+      else count.open += 1;
+      counts.set(folded, count);
+    }
+  }
+  return [...counts.values()]
+    .toSorted((a, b) => b.deals - a.deals || a.label.localeCompare(b.label))
+    .slice(0, KIN_DEAL_CONCERNS_CAP) satisfies ReadonlyArray<KinDealConcernCount>;
+});
+
+/** What `viewer` sees of the company's deals, in one fragment list for the reads below. */
+const pipelineWhere = (sql: SqlClient.SqlClient, orgId: KinOrgId, viewer: KinViewer) => [
+  sql`r.org_id = ${orgId}`,
+  sql`r.register_id = 'deals'`,
+  crmSeenBy(sql, viewer),
+];
+type Summed = {
+  readonly currency: string | null;
+  readonly minor: number | null;
+  readonly count: number;
+};
+/** Rows' counts added, and their values per currency, in currency order. */
+const totalsOf = (rows: ReadonlyArray<Summed>) => {
+  const values = new Map<string, number>();
+  for (const row of rows)
+    if (row.currency !== null && row.minor !== null)
+      values.set(row.currency, (values.get(row.currency) ?? 0) + row.minor);
+  return {
+    count: rows.reduce((sum, row) => sum + row.count, 0),
+    values: [...values]
+      .toSorted(([a], [b]) => a.localeCompare(b))
+      .map(([currency, minor]) => ({ minor, currency: currency as KinMoney["currency"] })),
+  };
+};
+
+/**
+ * The pipeline as `viewer` sees it, counted here: open deals by stage, in the company's order,
+ * and won and lost, each per currency; a deal with no value counts only in its count.
+ */
+export const pipelineTotals = Effect.fn("KinDeals.pipelineTotals")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const where = pipelineWhere(sql, orgId, viewer);
+  const open = yield* sql<Summed & { stage: string | null }>`SELECT
+      json_extract(r.fields_json, '$.stage') AS stage,
+      json_extract(r.fields_json, '$.value.currency') AS currency,
+      SUM(json_extract(r.fields_json, '$.value.minor')) AS minor, COUNT(*) AS count
+    FROM kin_records r WHERE ${sql.and([...where, sql`r.state = 'open'`])}
+    GROUP BY stage, json_extract(r.fields_json, '$.value.currency')
+    ORDER BY stage, json_extract(r.fields_json, '$.value.currency')`;
+  const closed = yield* sql<Summed & { state: string }>`SELECT r.state,
+      json_extract(r.fields_json, '$.value.currency') AS currency,
+      SUM(json_extract(r.fields_json, '$.value.minor')) AS minor, COUNT(*) AS count
+    FROM kin_records r WHERE ${sql.and([...where, sql`r.state IN ('done', 'dropped')`])}
+    GROUP BY r.state, json_extract(r.fields_json, '$.value.currency')
+    ORDER BY r.state, json_extract(r.fields_json, '$.value.currency')`;
+  const { stages } = yield* stagesOf(orgId);
+  const known = new Set(stages.map((stage) => stage.id));
+  const byStage = [
+    ...stages.map((stage) => ({ id: stage.id as string | null, name: stage.name as string })),
+    // An open deal whose stage was removed without a move still counts, under its own id.
+    ...[...new Set(open.map((row) => row.stage))]
+      .filter((id) => id === null || !known.has(id))
+      .map((id) => ({ id, name: id ?? "No stage" })),
+  ].map((stage) => ({
+    name: stage.name,
+    ...totalsOf(open.filter((row) => row.stage === stage.id)),
+  }));
+  return {
+    stages: byStage,
+    open: totalsOf(open),
+    won: totalsOf(closed.filter((row) => row.state === "done")),
+    lost: totalsOf(closed.filter((row) => row.state === "dropped")),
+  };
+});
+
+const PIPELINE_MINE_CAP = 50;
+/** Open deals `person` looks after, as `viewer` sees them, soonest expected first, past the cap counted. */
+export const pipelineMine = Effect.fn("KinDeals.pipelineMine")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+  person: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const where = [
+    ...pipelineWhere(sql, orgId, viewer),
+    sql`r.state = 'open'`,
+    sql`r.owner_kind = 'person' AND r.owner_id = ${person}`,
+  ];
+  const rows = yield* sql<RecordRow>`${selectRecords(sql)} WHERE ${sql.and(where)}
+    ORDER BY r.due_at IS NULL, r.due_at, r.created_at, r.key LIMIT ${PIPELINE_MINE_CAP + 1}`;
+  const shown = rows.slice(0, PIPELINE_MINE_CAP);
+  const deals = yield* asShown(orgId, viewer, shown);
+  return {
+    deals: shown.flatMap((row) => {
+      const deal = deals.get(row.key);
+      return deal === undefined ? [] : [deal];
+    }),
+    more: rows.length > PIPELINE_MINE_CAP,
+  };
+});
+
+/** `concernCounts` over every deal `viewer` sees, whatever its state. */
+export const pipelineConcerns = Effect.fn("KinDeals.pipelineConcerns")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* concernCounts(pipelineWhere(sql, orgId, viewer));
 });
 
 /** A reader: the owner level, or a member with the Clients switch on. */
@@ -772,6 +970,7 @@ export const deals = Effect.fn("KinDeals.list")(function* (
         ),
       },
       canCreate: party === undefined ? true : party.category !== "vendor" && party.state === "open",
+      concerns: yield* concernCounts(where),
     };
   }).pipe(workFailure);
   const now = yield* Clock.currentTimeMillis;
@@ -783,7 +982,7 @@ export const deals = Effect.fn("KinDeals.list")(function* (
 });
 
 /** The history lines a member reads of a deal: what it says and who has it, never its labels. */
-const MEMBER_FIELDS = new Set(["stage", "value", "source", "lostReason"]);
+const MEMBER_FIELDS = new Set(["stage", "value", "source", "lostReason", "concerns"]);
 export const dealSeesField = (field: string) =>
   (teamSeesField(field) && field !== "confirmed") || MEMBER_FIELDS.has(field);
 /** A deal's own changes, its stages by the names they had then, as far as this viewer reads them. */

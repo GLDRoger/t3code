@@ -5,6 +5,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
+import { SALES_SHARED_TOOLS } from "../sales/policies.ts";
 import { aborted, askedIn, askersDirectChat, effectiveAudience, turnChat } from "./Audience.ts";
 
 type Turn = {
@@ -179,6 +180,7 @@ export const SHARED_TOOLS = {
   social_draft: "refused",
   social_week: "refused",
   social_pack: "refused",
+  ...SALES_SHARED_TOOLS,
   // A shell's worth of reach as the owner, on his GitHub login (`AgentSession`).
   ...t3ToolsRefused,
 } satisfies Record<string, SharedToolPolicy>;

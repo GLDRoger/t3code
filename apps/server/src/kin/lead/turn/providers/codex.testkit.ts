@@ -134,6 +134,7 @@ export const codexFake: ProviderFake = {
           config["mcp_servers.chrome.enabled"] !== false ||
           config["skills.include_instructions"] !== false,
         builtins: !(Array.isArray(started.environments) && started.environments.length === 0),
+        webSearch: config["web_search"] !== "disabled",
         shell:
           typeof shellPath !== "string"
             ? undefined

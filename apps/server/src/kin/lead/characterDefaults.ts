@@ -87,7 +87,11 @@ const moneyIn = (money: CharacterMoney) => {
   return (major: number) => formatKinMoney(major * unit, money.homeCurrency);
 };
 
-const growthCharacter = (money: CharacterMoney) => {
+/**
+ * Growth's default before 20 Nov 2026, kept only to tell whether a company's Growth still has it
+ * as Kin wrote it (`characters.ts`). Never seeded again.
+ */
+export const growthCharacterV1 = (money: CharacterMoney) => {
   const m = moneyIn(money);
   return `# Growth
 
@@ -111,6 +115,8 @@ You clash with Finance by design, with Tech lead when you're selling what isn't 
 5. (to the owner) "Respectfully, an email is how we lose Orbit Dental. Call them: five minutes, renewal first, the new site second."
 `;
 };
+
+const growthCharacter = (money: CharacterMoney) => growthCharacterV1(money);
 
 const financeCharacter = (money: CharacterMoney) => {
   const m = moneyIn(money);
@@ -145,17 +151,20 @@ Figure first, then the date, then the verdict: two to four short lines, under 60
 const DOMAIN_ALIASES: Readonly<Record<string, string>> = {
   tech: "engineering",
   "tech-lead": "engineering",
-  marketing: "social",
+  marketing: "growth",
   content: "social",
   sales: "growth",
+  "sales-and-marketing": "growth",
   "business-development": "growth",
   chief: "chief-of-staff",
 };
 
+/** The default seat a domain takes: its own, or the one people commonly mean by it. */
+export const seatOf = (domain: string) =>
+  Object.hasOwn(DEFAULT_CHARACTERS, domain) ? domain : (DOMAIN_ALIASES[domain] ?? domain);
+
 export const defaultCharacterFor = (domain: string, money: CharacterMoney) => {
-  const seat = Object.hasOwn(DEFAULT_CHARACTERS, domain)
-    ? domain
-    : (DOMAIN_ALIASES[domain] ?? domain);
+  const seat = seatOf(domain);
   return seat === "finance"
     ? financeCharacter(money)
     : seat === "growth"

@@ -1,12 +1,28 @@
-import type { KinAgentId, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import {
+  KinChatError,
+  KinChatId,
+  KinMessageId,
+  KinPersonId,
+  KinWidgetId,
+  type KinAgentId,
+  type KinChoiceOutcome,
+  type KinOrgId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import * as Docs from "../work/docs.ts";
 import type { Writer } from "../work/KinRecords.ts";
-import { defaultCharacterFor } from "./characterDefaults.ts";
+import { choiceCardState } from "../widgets/choiceCard.ts";
+import { defaultCharacterFor, growthCharacterV1, seatOf } from "./characterDefaults.ts";
 import { companyMoney } from "../work/companyProfile.ts";
+import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./orgLeads.ts";
 
 /**
  * An agent's character is a doc it owns, filed as the company's and labelled sensitive, so only
@@ -173,4 +189,184 @@ export const setCharacter = Effect.fn("KinCharacters.set")(function* (
     },
   );
   return { outcome: written.created ? ("set" as const) : ("unchanged" as const), key: row.key };
+});
+
+// Growth's new default, offered once to a company that had the old one (`growthCharacterV1`).
+
+/** One card per company, ever: its id carries the org, its message which card and which agent. */
+const CARD = "kin-character-default:growth:2:";
+const cardId = (orgId: KinOrgId) => `${CARD}${orgId}`;
+type CardKind = "use" | "see";
+
+/** A character's text without its heading, which carries the agent's name. */
+const bodyOf = (text: string) => text.replace(/^# .*$/m, "").trim();
+
+/** The company's first live agent on the growth seat, with its character as it stands now. */
+const growthAgent = Effect.fn("KinCharacters.growthAgent")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const domains = new Map(
+    (yield* liveLeads(sql, orgId)).map((lead) => [lead.agentId, lead.domain] as const),
+  );
+  const found = (yield* characters(orgId)).find(
+    (one) => seatOf(domains.get(one.agentId) ?? "") === "growth",
+  );
+  if (found === undefined) return undefined;
+  const money = yield* companyMoney(orgId);
+  return {
+    ...found,
+    asWritten: bodyOf(found.body) === bodyOf(growthCharacterV1(money)),
+    next: (defaultCharacterFor("growth", money) ?? "").replace(/^# .*$/m, `# ${found.name}`),
+  };
+});
+
+const CARD_DETAIL = "Nothing changes until you choose.";
+const cardQuestion = (kind: CardKind, name: string) =>
+  kind === "use"
+    ? `${name} has a new character for sales and marketing, for any kind of customer.`
+    : `You changed ${name}'s character, so it stays as you wrote it.`;
+
+/**
+ * After the new Growth default ships: the owner of a company whose Growth has the old one gets one
+ * card, in the chat Kin's own notices use (`OwnerNotices.ts`). Unchanged since Kin wrote it, it
+ * offers the new one; edited, it says it stays and offers only to show the new text. Kin changes
+ * nothing until the tap, and never posts a second card.
+ */
+export const offerNewCharacter = Effect.fn("KinCharacters.offerNew")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const repo = yield* KinChatRepository;
+  const hub = yield* KinChatHub;
+  const widgetId = KinWidgetId.make(cardId(orgId));
+  if (Option.isSome(yield* repo.getWidget({ orgId, widgetId }))) return false;
+  const agent = yield* growthAgent(orgId);
+  if (agent === undefined || bodyOf(agent.body) === bodyOf(agent.next)) return false;
+  const chat = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
+  if (chat === undefined) return false;
+  const kind: CardKind = agent.asWritten ? "use" : "see";
+  const question = cardQuestion(kind, agent.name);
+  const at = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+  const chatId = KinChatId.make(chat.ownerChatId);
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const message = yield* repo.insertMessage({
+        orgId,
+        chatId,
+        audience: "owner",
+        messageId: KinMessageId.make(`${cardId(orgId)}:${kind}:${agent.agentId}`),
+        author: { _tag: "system" },
+        kind: "system",
+        body: question,
+        intent: null,
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        clientMessageId: null,
+        createdAt: at,
+        editedAt: null,
+      });
+      const widget = {
+        orgId,
+        chatId,
+        messageId: message.messageId,
+        widgetId,
+        widgetClass: "native" as const,
+        type: "choice",
+        state: choiceCardState({
+          question,
+          detail: CARD_DETAIL,
+          options:
+            kind === "use"
+              ? [
+                  { label: "Use the new one", kind: "yes" },
+                  { label: "Keep this one", kind: "no" },
+                ]
+              : [
+                  { label: "See the new one", kind: "yes" },
+                  { label: "Keep mine", kind: "no" },
+                ],
+          // Nothing changes until he taps, however long that takes.
+          untilAnswered: true,
+        }),
+        source: null,
+        feed: null,
+        awaiting: [KinPersonId.make(chat.ownerPersonId)],
+        pinnedAt: null,
+        closedAt: null,
+        updatedAt: at,
+      };
+      yield* repo.insertWidget({ ...widget, audience: "owner" });
+      yield* sql.afterCommit(
+        hub.publish({ type: "message.posted", orgId, message: { ...message, widgetId } }),
+      );
+      yield* sql.afterCommit(
+        hub.publish({ type: "widget.updated", orgId, widget: { ...widget, revision: 1 } }),
+      );
+    }),
+  );
+  return true;
+});
+
+/**
+ * The owner level's tap on that card, in the tap's transaction; `undefined` for any other card.
+ * Use writes the new text as a new version only while the old one still stands, so an edit made
+ * since is never written over; See puts the new text in a draft doc beside it.
+ */
+export const answerCharacterCard = Effect.fn("KinCharacters.answerCard")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly widgetId: string;
+  readonly messageId: string;
+  readonly personId: KinPersonId;
+  readonly yes: boolean;
+}) {
+  if (input.widgetId !== cardId(input.orgId)) return undefined;
+  if (!(yield* ownerLevel(input.orgId, input.personId)))
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: "Only the owner or a co-owner chooses an agent's character.",
+    });
+  const [kind, agentId] = input.messageId.slice(input.widgetId.length + 1).split(":");
+  const agent = yield* growthAgent(input.orgId);
+  if (agent === undefined || agent.agentId !== agentId)
+    return {
+      title: "Nothing changed",
+      text: "That agent is no longer here.",
+    } satisfies KinChoiceOutcome;
+  if (!input.yes)
+    return {
+      title: "Kept",
+      text: `${agent.name} keeps the character it has.`,
+    } satisfies KinChoiceOutcome;
+  if (kind === "use") {
+    if (!agent.asWritten)
+      return yield* new KinChatError({
+        reason: "widget_changed",
+        message: `${agent.name}'s character was changed since this card, so it stays as it is.`,
+      });
+    yield* setCharacter(input.orgId, agent.agentId as KinAgentId, agent.next, input.personId);
+    return {
+      title: "New character",
+      text: `${agent.name} has the new character. The old one stays in its history.`,
+    } satisfies KinChoiceOutcome;
+  }
+  const draft = yield* Docs.create(
+    input.orgId,
+    { actor: { _tag: "person", personId: input.personId }, via: "owner" },
+    {},
+    {
+      title: `${agent.name}'s new character (draft)`,
+      body: agent.next,
+      owner: { _tag: "person", personId: input.personId },
+      summary: "Kin's new default character, to compare",
+      kind: "other",
+      company: true,
+      sensitive: true,
+      originKey: `${cardId(input.orgId)}:draft`,
+    },
+  );
+  return {
+    title: "Draft made",
+    text: `The new one is in Docs as ${draft.row.key}. ${agent.name}'s character is unchanged.`,
+  } satisfies KinChoiceOutcome;
 });
