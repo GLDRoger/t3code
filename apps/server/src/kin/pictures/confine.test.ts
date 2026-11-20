@@ -18,6 +18,7 @@ import {
   killGroup,
   networkFilter,
   probeConfinement,
+  spawnedFor,
 } from "./confine.ts";
 
 describe("networkFilter", () => {
@@ -197,3 +198,51 @@ it.live(
       assert.include(["gone", "Z"], left);
     }).pipe(Effect.scoped),
 );
+
+describe("spawnedFor", () => {
+  it.live("ends the group spawned for its launcher, never a pid the launch wrote down", () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "kin-spawned-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(root, { recursive: true, force: true })),
+      );
+      const exited = (child: NodeChildProcess.ChildProcess) => {
+        const done = Deferred.makeUnsafe<NodeJS.Signals | null>();
+        child.once("exit", (_code, signal) => Deferred.doneUnsafe(done, Effect.succeed(signal)));
+        return done;
+      };
+      // Another process of the same user: what a browser would write down to have signalled.
+      const decoy = NodeChildProcess.spawn("/bin/sleep", ["60"], {
+        detached: true,
+        stdio: "ignore",
+      });
+      const decoyExit = exited(decoy);
+      yield* Effect.addFinalizer(() => Effect.sync(() => killGroup(decoy.pid!)));
+      const launcher = NodePath.join(root, "launch");
+      NodeFS.writeFileSync(
+        launcher,
+        `#!/bin/sh\necho ${decoy.pid} > leader\necho ready\nexec sleep 60\n`,
+        { mode: 0o700 },
+      );
+      const spawned = spawnedFor(launcher);
+      // As Playwright launches a browser: detached, so it leads a group of its own.
+      const child = NodeChildProcess.spawn(launcher, [], {
+        cwd: root,
+        detached: true,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      spawned.close();
+      const childExit = exited(child);
+      assert.strictEqual(yield* firstLine(child), "ready");
+      assert.strictEqual(
+        NodeFS.readFileSync(NodePath.join(root, "leader"), "utf8").trim(),
+        `${decoy.pid}`,
+      );
+      spawned.stop();
+      assert.strictEqual(yield* Deferred.await(childExit), "SIGKILL");
+      // Stopped by this test, not by `stop`: the pid written down was never signalled.
+      decoy.kill("SIGTERM");
+      assert.strictEqual(yield* Deferred.await(decoyExit), "SIGTERM");
+    }).pipe(Effect.scoped),
+  );
+});

@@ -30,10 +30,10 @@ import { kinVisualLibraryPath } from "../visualLibraries.ts";
 import {
   type Confinement,
   confinedArgs,
-  killGroup,
   networkFilter,
   probeConfinement,
   confinedArch,
+  spawnedFor,
 } from "./confine.ts";
 import { KIN_PICTURE_SCALE, KIN_PICTURE_SIZES, type KinPictureSize } from "./sizes.ts";
 
@@ -211,7 +211,7 @@ export const makeLayer = (limits: PictureLimits = PICTURE_LIMITS) =>
         return probed;
       });
 
-      /** A launcher that records its pid (the group's number) and execs into the held browser. */
+      /** A launcher that execs into the held browser, in the scope where the host has one. */
       const launcherFor = Effect.fn("KinPictureRenderer.launcher")(function* (
         executable: string,
         scratch: string,
@@ -240,16 +240,8 @@ export const makeLayer = (limits: PictureLimits = PICTURE_LIMITS) =>
           properties: [`MemoryMax=${limits.memory}`, "MemorySwapMax=0", "TasksMax=256"],
         });
         const launcher = path.join(scratch, "launch");
-        const leader = path.join(scratch, "leader");
-        yield* fs.writeFileString(
-          launcher,
-          agentScopeLauncherScript(launch).replace(
-            "#!/bin/sh\n",
-            `#!/bin/sh\necho $$ > '${leader.replaceAll("'", `'\\''`)}'\n`,
-          ),
-          { mode: 0o700 },
-        );
-        return { launcher, leader, unit: launch.unit };
+        yield* fs.writeFileString(launcher, agentScopeLauncherScript(launch), { mode: 0o700 });
+        return { launcher, unit: launch.unit };
       });
 
       const serve =
@@ -393,13 +385,10 @@ export const makeLayer = (limits: PictureLimits = PICTURE_LIMITS) =>
               const launch = yield* launcherFor(executable.path, scratch, held);
               const size = KIN_PICTURE_SIZES[request.size];
               const blocked: Array<string> = [];
+              // Only the group spawned here is ever signalled, never a pid read from the scratch.
+              const spawned = spawnedFor(launch.launcher);
               const stop = Effect.gen(function* () {
-                const leader = Number(
-                  (yield* fs
-                    .readFileString(launch.leader)
-                    .pipe(Effect.orElseSucceed(() => ""))).trim(),
-                );
-                if (Number.isInteger(leader) && leader > 1) killGroup(leader);
+                spawned.stop();
                 if (launch.unit !== undefined) yield* scopes.stop(launch.unit);
               });
               const context = yield* Effect.tryPromise({
@@ -427,7 +416,10 @@ export const makeLayer = (limits: PictureLimits = PICTURE_LIMITS) =>
                     handleSIGHUP: false,
                     timeout: limits.launchMs,
                   }),
-              }).pipe(Effect.onError(() => stop));
+              }).pipe(
+                Effect.ensuring(Effect.sync(spawned.close)),
+                Effect.onError(() => stop),
+              );
               const shot = yield* shoot(context, request, blocked).pipe(
                 Effect.map((png): Shot => ({ _tag: "shot", png })),
                 Effect.timeoutOption(limits.pageMs),

@@ -1,13 +1,17 @@
 // @effect-diagnostics nodeBuiltinImport:off -- a process group is signalled by number, which Effect's process API can't name.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeDiagnosticsChannel from "node:diagnostics_channel";
+
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Predicate from "effect/Predicate";
 
 import { runCapped } from "../gendocs/render.ts";
 
-// Linux with no root step: setpriv's Landlock rules (read the system and the browser, write one
-// private folder, nothing under any home) and seccomp filter (no socket, no leaving the group)
-// hold every process, so Chrome's own sandbox, which needs the user namespaces Ubuntu's AppArmor
-// withholds, can stay off inside it. Neither needs privilege; children can't drop either.
+// Linux, no root: setpriv's Landlock (read the system and the browser, write one folder, no home)
+// and seccomp (no socket, no leaving the group) hold every process, so Chrome's sandbox, which
+// needs the namespaces Ubuntu's AppArmor withholds, stays off. Children can't drop either. Signals
+// aren't filtered: a compromised browser could signal the Kin user's other processes.
 
 const SETPRIV_PATHS = ["/usr/bin/setpriv", "/bin/setpriv"] as const;
 
@@ -187,4 +191,27 @@ export const killGroup = (leader: number) => {
   } catch {
     // The group is already gone.
   }
+};
+
+/**
+ * The process Node spawns for `file`, caught as Node makes it, until `close`. Playwright starts
+ * it detached, so its pid is its group's number; nothing the browser writes can change which.
+ */
+export const spawnedFor = (file: string) => {
+  const made: Array<NodeChildProcess.ChildProcess> = [];
+  const take = (message: unknown) => {
+    const child = Predicate.hasProperty(message, "process") ? message.process : undefined;
+    if (child instanceof NodeChildProcess.ChildProcess) made.push(child);
+  };
+  NodeDiagnosticsChannel.subscribe("child_process", take);
+  return {
+    close: () => {
+      NodeDiagnosticsChannel.unsubscribe("child_process", take);
+    },
+    /** Ends the group it leads, if it was spawned. */
+    stop: () => {
+      const leader = made.find((child) => child.spawnfile === file)?.pid;
+      if (leader !== undefined && leader > 1) killGroup(leader);
+    },
+  };
 };
