@@ -5,6 +5,7 @@ import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   KIN_DAILY_LIMIT,
+  kinDailyLimitAsks,
   kinDailyLimitChoices,
   kinDailyLimitUsed,
   kinDailyLimitWaiting,
@@ -476,15 +477,23 @@ function KinDailyLimitSection(props: {
           onPressAction={({ nativeEvent }) => {
             const picked = choices.find((choice) => choice.value === nativeEvent.event);
             if (picked === undefined || picked.value === current) return;
-            void set({
-              environmentId: props.environmentId,
-              input: { orgId: props.orgId, limits: picked.limits },
-            }).then((outcome) => {
-              if (AsyncResult.isFailure(outcome))
-                Dialog.alert(
-                  kinFailureText(squashAtomCommandFailure(outcome), KIN_DAILY_LIMIT.failed),
-                );
-              refresh();
+            const choose = () =>
+              void set({
+                environmentId: props.environmentId,
+                input: { orgId: props.orgId, limits: picked.limits },
+              }).then((outcome) => {
+                if (AsyncResult.isFailure(outcome))
+                  Dialog.alert(
+                    kinFailureText(squashAtomCommandFailure(outcome), KIN_DAILY_LIMIT.failed),
+                  );
+                refresh();
+              });
+            if (!kinDailyLimitAsks(picked)) return choose();
+            Dialog.confirm({
+              title: KIN_DAILY_LIMIT.noneAsk.title,
+              message: KIN_DAILY_LIMIT.noneAsk.detail,
+              confirmText: KIN_DAILY_LIMIT.noneAsk.confirm,
+              onConfirm: choose,
             });
           }}
         >
