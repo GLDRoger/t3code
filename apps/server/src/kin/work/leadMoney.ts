@@ -55,7 +55,14 @@ import { homeCurrency } from "./companyProfile.ts";
 import { dayIn, formatMinor, formatMoney, parseAmount, timeIn } from "./money.ts";
 import { dates, moneySection, moneySummary, ownerLevelStillToInvoice } from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
-import { endOfDay, iso, isSuggestion, notFound, ownerZone } from "./recordRows.ts";
+import {
+  endOfDay,
+  iso,
+  isSuggestion,
+  notFound,
+  ownerZone,
+  suggestedStateLabel,
+} from "./recordRows.ts";
 import {
   attachCard,
   carryOut,
@@ -639,7 +646,10 @@ const runDates = Effect.fnUntraced(function* (lead: Lead, input: typeof DatesInp
       key: row.record.key,
       title: row.record.title,
       list: row.listName,
-      state: row.stateLabel,
+      state:
+        row.record.confirmed || row.record.state === "dropped"
+          ? row.stateLabel
+          : suggestedStateLabel(row.record.list ?? "work", row.record.state, row.stateLabel),
       what: row.label,
       on: row.allDay ? dayIn(Date.parse(row.at), zone) : timeIn(Date.parse(row.at), zone),
       ...(row.record.late ? { late: true as const } : {}),

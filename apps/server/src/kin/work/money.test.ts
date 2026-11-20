@@ -1113,7 +1113,7 @@ describe("invoices", () => {
         // The agent reads it as a suggestion, and it waits on a person with the right.
         assert.include(yield* LeadWork.get(scope, { key: "INV-2" }), {
           suggested: true,
-          stateLabel: "Suggested, not kept yet",
+          stateLabel: "Draft, suggested, not kept yet",
         });
         const section = moneySection(yield* OwnerMoney.money(people, { orgId }), "Asia/Kolkata");
         assert.deepStrictEqual(
@@ -2143,6 +2143,17 @@ describe("the owner's taps", () => {
           agenda.rows.filter((one) => one.record.key === "INV-1").map((one) => one.label),
           ["Date", "Due"],
         );
+        const told = yield* LeadMoney.datesQuery(scope, {
+          from: "2026-11-01",
+          to: "2026-11-29",
+        });
+        assert.deepStrictEqual(
+          told.dates.filter((one) => one.key === "INV-1").map((one) => [one.what, one.state]),
+          [
+            ["Date", "Draft, suggested, not kept yet"],
+            ["Due", "Draft, suggested, not kept yet"],
+          ],
+        );
         assert.deepStrictEqual(
           [summary.upcomingTotal, summary.upcoming.map((one) => one.record.key)],
           [1, ["W-2"]],
@@ -2536,6 +2547,19 @@ describe("who keeps a suggestion", () => {
         state,
         date: issueDay,
         ...extra,
+      });
+      // The agent reads what it made: a draft and a suggestion, not what it asked for.
+      const made = yield* LeadWork.create(scope, {
+        sourceEventId: yield* woken("routine"),
+        records: [asked("invoices", "waiting", { suggested: true })].map((one) => ({
+          ...one,
+          title: "Invented told invoice",
+        })) as never,
+      });
+      assert.deepInclude(made.records[0], {
+        state: "open",
+        stateLabel: "Draft, suggested, not kept yet",
+        suggested: true,
       });
       const started = [];
       for (const [by, row] of [

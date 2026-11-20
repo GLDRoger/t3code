@@ -90,6 +90,7 @@ import {
   principalId,
   type RecordRow,
   sensitiveNow,
+  suggestedStateLabel,
   toRecord,
 } from "./recordRows.ts";
 import {
@@ -450,6 +451,10 @@ export const CreateResult = Schema.Struct({
       created: Schema.Boolean,
       /** A meeting whose start has passed: recorded as held, not booked. */
       past: Schema.optional(Schema.Literal(true)),
+      /** On a suggestion only: the state it was stored in, whatever the row asked for. */
+      state: Schema.optional(KinRecordState),
+      stateLabel: Schema.optional(Schema.String),
+      suggested: Schema.optional(Schema.Literal(true)),
       ...Marks.fields,
       /** Open entries close to this one that it was made beside. */
       alsoOpen: Schema.optional(Schema.Array(Near)),
@@ -856,8 +861,6 @@ const goalShown = (fields: ReturnType<typeof parseFields>) => {
   return Object.keys(shown).length === 0 ? {} : { fields: shown };
 };
 
-/** A suggestion's money is issued, sent or owed nowhere, so its state reads as this instead. */
-const SUGGESTED_STATE = "Suggested, not kept yet";
 const rowFor = (view: Shown, row: RecordRow, now: number) => {
   const { name } = view;
   const record = toRecord(row, now);
@@ -878,7 +881,7 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
           listName: def.name,
           stateLabel:
             isSuggestion(row) && row.state !== "dropped"
-              ? SUGGESTED_STATE
+              ? suggestedStateLabel(row.registerId, row.state, stateLabel(def, row.state))
               : stateLabel(def, row.state),
         }
       : {}),
@@ -2037,6 +2040,17 @@ const createRow = Effect.fnUntraced(function* (
     title: stored.title,
     created,
     ...(past ? { past: true as const } : {}),
+    ...(isSuggestion(stored) && stored.state !== "dropped"
+      ? {
+          state: stored.state,
+          stateLabel: suggestedStateLabel(
+            stored.registerId,
+            stored.state,
+            stateLabel(def, stored.state),
+          ),
+          suggested: true as const,
+        }
+      : {}),
     ...marksOf(lists, stored),
     ...(created && alsoOpen.length > 0 ? { alsoOpen } : {}),
     ...(alsoNamed === undefined ? {} : { alsoNamed }),
