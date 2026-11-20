@@ -108,7 +108,8 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
         ? fact.subject.title
         : `${recordName(fact.subject.key, fact.subject.number)} ${fact.subject.title}`,
     consequence: fact.consequence,
-    acts: who(fact.actor),
+    // A renewal's heads-up only mentions it; who drafts it acts from the draft day.
+    ...(fact.stage === "heads_up" ? {} : { acts: who(fact.actor) }),
     ...(fact.measure?.from._tag === "playbook"
       ? { playbook: `${fact.measure.from.title} (${fact.measure.from.key})` }
       : {}),
@@ -165,7 +166,8 @@ const ENDED_WITHIN_MS = 60 * 24 * 60 * 60_000;
 
 /**
  * For facts a check-in tells for the first time since a hold on them ended: "set aside by Finance
- * on Rhea's word on 2026-11-20 until 2026-12-17; that day came" (or "lifted by Rhea on …").
+ * on the owner's word on 2026-11-20 until 2026-12-17; that day came" (or "lifted by Meera on …").
+ * The reading agent's own owner is "the owner", as `acts` has it.
  */
 const asideEnded = Effect.fn("KinLeadPrompt.asideEnded")(function* (
   orgId: KinOrgId,
@@ -183,7 +185,8 @@ const asideEnded = Effect.fn("KinLeadPrompt.asideEnded")(function* (
     WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
   const names = yield* holdNames(orgId);
   const zone = yield* ownerZone(orgId);
-  const name = (id: string | null) => (id === null ? undefined : names.get(id));
+  const name = (id: string | null) =>
+    id === null ? undefined : id === agent?.owner ? "the owner" : names.get(id);
   for (const fact of facts) {
     const hold = holds.find((one) => covers(one, fact));
     if (hold === undefined || hold.endedAt === null || agent === undefined) continue;
