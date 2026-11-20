@@ -563,7 +563,7 @@ describe("statement files", () => {
   });
 
   it("reads an old binary XLS download", async () => {
-    const { statement, format } = await read(fixture("hdfc-account.xls"));
+    const { statement, format } = await read(fixture("invented-account.xls"));
     assert.strictEqual(format, "xls");
     assert.strictEqual(statement.account, "4821");
     assert.deepStrictEqual(
