@@ -76,6 +76,9 @@ export const KIN_LISTS = {
   billed: "Billed",
   sentWaiting: "Sent, waiting",
   accepted: "Accepted",
+  moneyIn: "Money in",
+  moneyOut: "Money out",
+  net: "Net",
   owed: "Still owed",
   received: "Received",
   paidOut: "Paid",
@@ -642,13 +645,16 @@ export const kinListGroupings = (def: KinListDefinition): ReadonlyArray<KinListG
 
 /** One figure over a list: "Still owed" with a line per currency. */
 export interface KinListFigure {
-  readonly id: "total" | "owed" | "received" | "sent" | "accepted";
+  readonly id: "total" | "owed" | "received" | "sent" | "accepted" | "moneyIn" | "moneyOut";
   /** Null for the only figure of a list that isn't paid over time: it needs no name. */
   readonly label: string | null;
   readonly lines: ReadonlyArray<string>;
 }
 
-type Sums = Pick<KinListTotals, "total" | "owed" | "received" | "sent" | "accepted">;
+type Sums = Pick<
+  KinListTotals,
+  "total" | "owed" | "received" | "sent" | "accepted" | "moneyIn" | "moneyOut"
+>;
 
 /**
  * The figures a filter's sums make, the one the filter is about first: what was received in a
@@ -659,6 +665,13 @@ function figuresOf(def: KinListDefinition, sums: Sums): ReadonlyArray<KinListFig
   const some = (totals: KinMoneyTotals) =>
     totals.length === 0 ? [KIN_MONEY_NOTHING] : kinTotalsLines(totals);
   const billed = { id: "total" as const, label: KIN_LISTS.billed, lines: some(sums.total) };
+  // Bank rows: money in and out apart, then the net, never one sum across both.
+  if (sums.moneyIn !== undefined || sums.moneyOut !== undefined)
+    return [
+      { id: "moneyIn", label: KIN_LISTS.moneyIn, lines: some(sums.moneyIn ?? []) },
+      { id: "moneyOut", label: KIN_LISTS.moneyOut, lines: some(sums.moneyOut ?? []) },
+      { id: "total", label: KIN_LISTS.net, lines: some(sums.total) },
+    ];
   // Quotes add up only what is out and what was won; a draft is not money yet.
   if (sums.sent !== undefined || sums.accepted !== undefined)
     return [
@@ -717,11 +730,13 @@ export function kinListHeader(
 ): KinListHeaderView {
   const groups = (totals?.groups ?? []).map((group): KinListGroupView => {
     const figures = figuresOf(def, group);
+    const flows = figures[0]?.id === "moneyIn";
     const base = {
       count: countText(group.count),
-      totals: figures[0]?.lines ?? [],
-      billed:
-        figures.length > 1 && group.total.length > 0
+      totals: (flows ? figures[2] : figures[0])?.lines ?? [],
+      billed: flows
+        ? `${kinTotalsText(group.moneyIn ?? [])} in · ${kinTotalsText(group.moneyOut ?? [])} out`
+        : figures.length > 1 && group.total.length > 0
           ? `${kinTotalsText(group.total)} ${KIN_LISTS.billed.toLowerCase()}`
           : null,
     };
@@ -762,12 +777,12 @@ export function kinListHeader(
     };
   });
   const figures = totals === null ? [] : figuresOf(def, totals);
-  const quotes = figures[0]?.id === "sent";
-  const full = def.amount && totals !== null && !quotes ? kinTotalsLines(totals.total) : [];
+  const apart = figures[0]?.id === "sent" || figures[0]?.id === "moneyIn";
+  const full = def.amount && totals !== null && !apart ? kinTotalsLines(totals.total) : [];
   return {
     figures,
     totals: full,
-    summary: quotes
+    summary: apart
       ? figures.map((figure) => `${figure.label}: ${figure.lines.join(" and ")}`).join(" · ")
       : full.length === 0 || (total ?? 0) < 2
         ? null

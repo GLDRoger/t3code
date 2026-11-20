@@ -963,6 +963,26 @@ describe("bank statements", () => {
       );
       assert.include(lists[0]!.json, '"balance"');
       assert.lengthOf(yield* bankRows, 20);
+      // Money in and out add up apart, in the list's own words for them; the total is their net.
+      const kept = yield* sql<{ minor: number; fields: string }>`SELECT amount_minor AS minor,
+          fields_json AS fields FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'bank_txns' AND state != 'dropped'`;
+      const sum = (direction: string) =>
+        kept.reduce(
+          (total, row) =>
+            total + (JSON.parse(row.fields).direction.toLowerCase() === direction ? row.minor : 0),
+          0,
+        );
+      assert.isAbove(sum("credit") * sum("debit"), 0);
+      const totals = yield* records.totals(orgId, { list: "bank_txns" });
+      assert.deepStrictEqual(
+        [totals.moneyIn, totals.moneyOut, totals.total],
+        [
+          [{ minor: sum("credit"), currency: "INR" }],
+          [{ minor: sum("debit"), currency: "INR" }],
+          [{ minor: sum("credit") - sum("debit"), currency: "INR" }],
+        ],
+      );
     }).pipe(Effect.provide(layer)),
   );
 
