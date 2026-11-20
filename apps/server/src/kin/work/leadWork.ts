@@ -61,6 +61,7 @@ import { FieldInputs, turnFiles, typedFields } from "./leadFields.ts";
 import * as Deals from "./deals.ts";
 import { stagesOf } from "./dealStages.ts";
 import {
+  CreateFrom,
   OWNERS_SPINE,
   ProjectRead,
   SpineInputs,
@@ -71,6 +72,7 @@ import {
   taskSpecChanged,
 } from "./leadSpine.ts";
 import { contactFields, contactSensitive } from "./contactDetails.ts";
+import { checkedFrom, dealFor, dealLink, theirsHolder } from "./promises.ts";
 import { fieldList, fieldText, isMoney, LISTS, listOf, parseFields, shownField } from "./lists.ts";
 import {
   addUp,
@@ -251,6 +253,23 @@ const DealShown = Schema.Struct({
       accepted: Schema.optional(Schema.Literal(true)),
     }),
   ),
+  promises: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        key: Schema.String,
+        title: Schema.String,
+        side: Schema.String,
+        state: Schema.String,
+        owner: Schema.String,
+        due: Schema.optional(Schema.String),
+        late: Schema.optional(Schema.Literal(true)),
+        from: Schema.optional(Schema.String),
+      }),
+    ),
+  ).annotate({
+    description:
+      "record_get only: its promises, ours then theirs, each with whose it is and where it was made.",
+  }),
 });
 const Row = Schema.Struct({
   key: Schema.String,
@@ -458,6 +477,10 @@ const CreateRow = Schema.Struct({
     description: "Keys of open entries this row repeats on purpose, as a refusal named them.",
   }),
   ...SpineInputs,
+  from: Schema.optional(CreateFrom),
+  deal: Schema.optional(
+    KinToolText(40, "An obligation's deal, by key (DL-3): it sits on that deal and its client."),
+  ),
   ...GoalInputs,
 });
 export const CreateInput = Schema.Struct({
@@ -1017,6 +1040,48 @@ const dealsShown = Effect.fnUntraced(function* (
       },
     ]),
   );
+});
+/** A deal read by itself carries its promises, as its page shows them to the turn's people. */
+const withPromises = Effect.fnUntraced(function* (
+  lead: Lead,
+  team: View | undefined,
+  view: Shown,
+  row: RecordRow,
+  deals: ReadonlyMap<string, typeof DealShown.Type>,
+) {
+  const deal = deals.get(row.key);
+  if (deal === undefined || row.registerId !== "deals") return deals;
+  const now = yield* Clock.currentTimeMillis;
+  const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
+  const promises = yield* Deals.promisesOf(lead.orgId, viewer, row, now, []).pipe(workFailure);
+  const fromText = (from: (typeof promises)[number]["from"]) =>
+    from === undefined
+      ? undefined
+      : from.kind === "note"
+        ? from.note
+        : `${from.kind}${from.at === undefined ? "" : ` on ${dayOrTime(from.at, true, view.zone)}`}`;
+  if (promises.length === 0) return deals;
+  return new Map([
+    [
+      row.key,
+      {
+        ...deal,
+        promises: promises.map((one) => {
+          const from = fromText(one.from);
+          return {
+            key: one.key,
+            title: one.title,
+            side: one.side,
+            state: one.state,
+            owner: view.name(one.owner) ?? "someone",
+            ...(one.dueAt === null ? {} : { due: dayOrTime(one.dueAt, one.dueAllDay, view.zone) }),
+            ...(one.late ? { late: true as const } : {}),
+            ...(from === undefined ? {} : { from }),
+          };
+        }),
+      },
+    ],
+  ]);
 });
 const withDeal = <R extends { readonly key: string }>(
   deals: ReadonlyMap<string, typeof DealShown.Type>,
@@ -1820,7 +1885,13 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
           projectNote: { from: `${note.project.key} ${note.project.title}`, text: note.body },
         };
   const whole = team !== undefined && (yield* viewWhole(lead, team, row));
-  const deals = yield* dealsShown(lead, team, view, [row]);
+  const deals = yield* withPromises(
+    lead,
+    team,
+    view,
+    row,
+    yield* dealsShown(lead, team, view, [row]),
+  );
   if (team !== undefined && !whole) {
     const shown: typeof GetResult.Type = {
       ...withDeal(deals, teamRow(rowFor(view, row, now))),
@@ -1999,7 +2070,7 @@ const createRow = Effect.fnUntraced(function* (
   const contactFor = list === "contacts" && row.client !== undefined ? alone : undefined;
   const crmFor = prospectFor ?? contactFor;
   // A client or contact is the owner's to look after unless told otherwise; theirs, they look after.
-  const owner = yield* resolveWho(
+  const named = yield* resolveWho(
     lead,
     row.owner ??
       (crmFor !== undefined ? "me" : list === "clients" || list === "contacts" ? "owner" : "you"),
@@ -2007,7 +2078,7 @@ const createRow = Effect.fnUntraced(function* (
   if (prospectFor !== undefined)
     yield* memberAdds(lead.orgId, prospectFor, {
       prospect: true,
-      owner,
+      owner: named,
       ownersFields:
         [row.terms, row.address, row.gstin, row.placeOfSupply, row.sensitive].some(
           (value) => value !== undefined,
@@ -2025,7 +2096,30 @@ const createRow = Effect.fnUntraced(function* (
     row.client === undefined
       ? undefined
       : yield* refRecord(lead, row.client, "clients", PARTY_KIND[list]);
-  const partyId = party?.recordId;
+  // A promise names its deal and where it was made (`promises.ts`); a plan's `from` is its doc's.
+  const promised = typeof row.from === "string" ? row.from : undefined;
+  if ((row.deal !== undefined || promised !== undefined) && list !== "work")
+    return yield* invalid("Only a Work row has a deal or a promise's from.");
+  const deal =
+    row.deal === undefined
+      ? undefined
+      : yield* dealFor(lead.orgId, row.deal, party?.recordId, team?.people ?? []).pipe(
+          asField("deal"),
+        );
+  const partyId = party?.recordId ?? (deal?.partyId === null ? undefined : deal?.partyId);
+  // What a client owes us is chased by whoever looks after them, unless the row names someone.
+  const holder =
+    row.owner === undefined &&
+    row.side === "theirs" &&
+    row.category === "obligation" &&
+    partyId !== undefined
+      ? yield* theirsHolder(lead.orgId, partyId)
+      : undefined;
+  const owner = holder ?? named;
+  const from =
+    promised === undefined
+      ? undefined
+      : yield* checkedFrom(lead.orgId, partyId, promised).pipe(asField("from"));
   if (contactFor !== undefined && partyId !== undefined)
     yield* memberAddsContact(lead.orgId, contactFor, {
       party: { recordId: partyId },
@@ -2045,7 +2139,13 @@ const createRow = Effect.fnUntraced(function* (
       dateAt: "dateAt" in money ? money.dateAt : undefined,
       dueAt: "dueAt" in due && typeof due.dueAt === "number" ? due.dueAt : undefined,
     });
-  const spine = yield* spineOf(lead, def, row, projectId);
+  const { from: given, ...plain } = row;
+  const spine = yield* spineOf(
+    lead,
+    def,
+    typeof given === "string" || given === undefined ? plain : { ...plain, from: given },
+    projectId,
+  );
   const spineSet = Object.fromEntries(
     Object.entries(spine.fields).filter((entry) => entry[1] !== null),
   );
@@ -2061,6 +2161,7 @@ const createRow = Effect.fnUntraced(function* (
     ...(list === "clients" ? partyWords(row) : {}),
     ...spineSet,
     ...goal,
+    ...(from === undefined ? {} : { from }),
   };
   if (existing !== undefined) {
     const found = yield* records.get(lead.orgId, existing.key);
@@ -2142,6 +2243,7 @@ const createRow = Effect.fnUntraced(function* (
       ...(row.notes === undefined ? {} : { notes: row.notes }),
       ...categoryOf(list, row),
       ...(row.side === undefined ? {} : { side: row.side }),
+      ...(deal === undefined ? {} : { links: [dealLink(deal)] }),
       // What an owner-level person asked for in person is kept; what a lead inferred waits for
       // Keep. A shared turn's tasks keep the default; its quotes and invoices `KinRecords` decides.
       ...(team === undefined ? { confirmed: row.suggested !== true && keeps } : {}),

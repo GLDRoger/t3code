@@ -42,6 +42,14 @@ const From = Schema.NullOr(
   description:
     "The doc and section id (from doc_read's outline) it was written from. Kin flags the task when that section changes; giving it again re-anchors it. null clears.",
 });
+/** A new row's `from`: a plan's doc section, or where a promise was made. */
+export const CreateFrom = Schema.Union([
+  From,
+  KinToolText(
+    280,
+    'Where a promise (an obligation) was made: chat:<message id> for a message in this turn, else a few words ("At the site visit").',
+  ),
+]);
 
 /** What a Work or project row may also carry; rows of other lists refuse them. */
 export const SpineInputs = {
@@ -220,7 +228,8 @@ export const spineShown = (
     milestone: text("milestone"),
     size: text("size"),
     reason: text("reason"),
-    from: doc === undefined ? undefined : `${doc} § ${text("fromSection") ?? ""}`,
+    // A plan's doc section, or where a promise was made as it was given.
+    from: doc === undefined ? text("from") : `${doc} § ${text("fromSection") ?? ""}`,
     attendees: names("attendees"),
     where: text("where"),
     billing: text("billing"),

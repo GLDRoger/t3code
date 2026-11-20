@@ -840,7 +840,7 @@ export const page = Effect.fn("KinDeals.page")(function* (
  * The promises on a deal this viewer reads in Clients, open or done, never dropped: ours, then
  * theirs, each by its day; each with where it was made, as `readers` may follow it.
  */
-const promisesOf = Effect.fn("KinDeals.promises")(function* (
+export const promisesOf = Effect.fn("KinDeals.promises")(function* (
   orgId: KinOrgId,
   viewer: KinViewer,
   deal: RecordRow,
