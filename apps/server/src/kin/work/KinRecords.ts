@@ -44,7 +44,7 @@ import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { teammatesLimited } from "../lead/KinBudget.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import { ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
-import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
+import { codingAgentSource, outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { companyMoney, countryFirst, homeCurrency } from "./companyProfile.ts";
 import { commentsPage } from "./recordComments.ts";
 import { indexRecord } from "./searchIndex.ts";
@@ -955,14 +955,22 @@ const make = Effect.gen(function* () {
             }),
       })
       .pipe(
-        // Given out after an outside read: the receiving lead's turn starts outside-read too.
+        // Given out after an outside read, or by a coding agent: the receiving turn starts marked.
         Effect.tap(({ event }) =>
-          writer.wakeupId === undefined
-            ? Effect.void
-            : outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(
-                Effect.flatMap((source) => stampEvent(orgId, event.eventId, source)),
+          writer.codingAgentKey !== undefined
+            ? sql<{ label: string }>`SELECT label FROM kin_tasks_keys
+                WHERE org_id = ${orgId} AND session_id = ${writer.codingAgentKey}`.pipe(
+                Effect.flatMap(([key]) =>
+                  stampEvent(orgId, event.eventId, codingAgentSource(key?.label ?? "Coding agent")),
+                ),
                 Effect.provideService(SqlClient.SqlClient, sql),
-              ),
+              )
+            : writer.wakeupId === undefined
+              ? Effect.void
+              : outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(
+                  Effect.flatMap((source) => stampEvent(orgId, event.eventId, source)),
+                  Effect.provideService(SqlClient.SqlClient, sql),
+                ),
         ),
         Effect.as(true),
         Effect.catchTags({

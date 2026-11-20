@@ -40,6 +40,7 @@ import {
   turnPeople,
 } from "../lead/Audience.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
+import { codingAgentSource, codingAgentTextShown } from "../lead/OutsideContent.ts";
 import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { heldUntil } from "../triggers/quietHold.ts";
 import { ownerLevelAsked, ownerLevelPeople } from "../people/KinAccess.ts";
@@ -1834,6 +1835,9 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
     by._tag === "system" ? "Kin" : (name(by) ?? "someone");
   const assignedBy = name(detail.assignedBy);
   const said = yield* latestComments(lead.orgId, row.recordId, COMMENTS_SHOWN);
+  const keyed = [...said.comments, ...detail.changes].find((one) => one.codingAgent !== undefined);
+  if (keyed?.codingAgent !== undefined)
+    yield* codingAgentTextShown(lead, codingAgentSource(keyed.codingAgent));
   const comments = {
     ...(said.comments.length === 0
       ? {}
