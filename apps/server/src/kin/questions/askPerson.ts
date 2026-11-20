@@ -22,6 +22,7 @@ import {
   aborted,
   askersDirectChat,
   effectiveAudience,
+  mayReadChat,
   turnAsker,
   turnPeople,
 } from "../lead/Audience.ts";
@@ -201,17 +202,28 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
         };
       }
       const open = yield* openFor(orgId, target.id);
+      // Its wording and asker are quoted only to a turn that may read the card or the chat it is for.
+      const readable = Effect.fn("KinQuestions.askPerson.readable")(function* (
+        row: (typeof open)[number],
+      ) {
+        if (yield* mayReadChat(turn, row.chatId)) return true;
+        return row.forChatId !== null && (yield* mayReadChat(turn, row.forChatId));
+      });
       const repeat = open.find((row) => askedAgain({ intent, about }, row));
       if (repeat !== undefined)
         return yield* refuse(
-          `${repeat.agentName} already asked ${target.name} that: “${repeat.question}”. It waits on ${target.name}; don't ask it again.`,
+          (yield* readable(repeat))
+            ? `${repeat.agentName} already asked ${target.name} that: “${repeat.question}”. It waits on ${target.name}; don't ask it again.`
+            : `${target.name} already has an open question on this; don't ask it again.`,
         );
       const forOthers = open.filter((row) => row.forChatId !== null);
       if (forOthers.length >= ASKED_FOR_PER_PERSON)
         return yield* refuse(
-          `${ASKED_FOR_PER_PERSON} questions asked for others already wait on ${target.name}: ${forOthers
-            .map((row) => `“${row.question}” (${row.agentName})`)
-            .join(", ")}.`,
+          (yield* Effect.forEach(forOthers, readable)).every(Boolean)
+            ? `${ASKED_FOR_PER_PERSON} questions asked for others already wait on ${target.name}: ${forOthers
+                .map((row) => `“${row.question}” (${row.agentName})`)
+                .join(", ")}.`
+            : `${ASKED_FOR_PER_PERSON} questions asked for others already wait on ${target.name}.`,
         );
       if (
         asker === null &&

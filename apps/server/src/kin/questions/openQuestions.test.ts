@@ -1177,6 +1177,28 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
         /nobody asked you for/,
       );
 
+      // Dev's turn may read none of what others asked for: his refusals quote none of it.
+      const devAgain = yield* wakeOn("chief", "dev", devChat, "Ask Meera and Zoya too.");
+      assert.strictEqual(
+        (yield* Effect.flip(
+          askFor("chief", devAgain, { to: "Meera", intent: "shoot budget", about: [] }),
+        )).message,
+        "Meera Shah already has an open question on this; don't ask it again. Nothing was asked.",
+      );
+      assert.strictEqual(
+        (yield* askFor("chief", again, { to: "Zoya", intent: "wardrobe" })).state,
+        "posted",
+      );
+      assert.strictEqual(
+        (yield* Effect.flip(askFor("chief", devAgain, { to: "Zoya", intent: "catering" }))).message,
+        "3 questions asked for others already wait on Zoya Sheikh. Nothing was asked.",
+      );
+      // Rhea's own turn may read every one of them, so hers says which.
+      yield* refused(
+        askFor("chief", again, { to: "Zoya", intent: "catering" }),
+        /wait on Zoya Sheikh: “Does the shoot move to Friday\?” \(Chief of staff\), /,
+      );
+
       // A group asks nobody for anyone.
       const group = (yield* Context.get(services, KinGroups).create([owner], {
         orgId,
