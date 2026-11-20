@@ -43,6 +43,8 @@ const CURRENT_NAMES: Readonly<Record<string, string>> = {
 export const kinZoneName = (zone: string) => CURRENT_NAMES[zone] ?? zone;
 
 const OFFSET_ONLY = /^(GMT|UTC)([+\-\u2212]|$)/;
+// POSIX signs: `Etc/GMT-13` is thirteen hours ahead of UTC.
+const FIXED_OFFSET = /^Etc\/GMT([+-])(\d{1,2})$/;
 
 /**
  * A zone as a person names it, in the platform's words for this device's language: "India
@@ -59,6 +61,8 @@ export function kinZoneLabel(zone: string, locale?: string, at = kinNowMs()): st
       // An engine without this style, or a zone it doesn't know: try the next.
     }
   }
+  const fixed = FIXED_OFFSET.exec(zone);
+  if (fixed !== null) return `GMT${fixed[1] === "-" ? "+" : "-"}${Number(fixed[2])}`;
   return (kinZoneName(zone).split("/").at(-1) ?? zone).replaceAll("_", " ");
 }
 
