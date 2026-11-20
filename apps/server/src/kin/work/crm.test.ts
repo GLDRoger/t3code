@@ -1336,14 +1336,24 @@ it.effect("a teammate gets none of the client calls, and a client change ticks s
     const subscribed = yield* Deferred.make<void>();
     const ticks = yield* records.changes(orgId).pipe(
       Stream.tap(() => Deferred.succeed(subscribed, undefined)),
-      Stream.take(2),
+      Stream.take(3),
       Stream.runCollect,
       Effect.forkChild,
     );
     yield* Deferred.await(subscribed);
     yield* Clients.updateParty([owner], { orgId, key: "C-1", rev: 1, name: "Invented Acme Ltd" });
-    const [, tick] = yield* Fiber.join(ticks);
+    // A logged contact moves its client's page alone, and only for those who see that client.
+    yield* Clients.logTouch([owner], {
+      orgId,
+      party: "C-1",
+      kind: "call",
+      note: "Invented call",
+      clientRequestId: "owner-call",
+    });
+    const [, tick, touched] = yield* Fiber.join(ticks);
     assert.strictEqual(tick?.key, "C-1");
+    assert.include(touched, { key: "C-1", registerId: "clients" });
+    assert.deepStrictEqual([...(touched?.team?.keys() ?? [])], []);
   }).pipe(Effect.provide(layer)),
 );
 
