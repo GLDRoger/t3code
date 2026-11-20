@@ -969,12 +969,21 @@ it.effect(
       const zoyas = yield* task("book the hall", { owner: { _tag: "person", personId: zoyaId } });
       // A person's own words, read, mark nothing.
       yield* say(rhea, zoyas.key, "Invented: two rooms");
-      yield* LeadWork.get(scope, { key: zoyas.key });
+      assert.notProperty(yield* LeadWork.get(scope, { key: zoyas.key }), "codingAgent");
       assert.isUndefined(yield* outsideStamp(turn));
       assert.isFalse(yield* turnSensitive(orgId, "wake"));
       // Her coding agent's, read, mark the turn both ways before it sees them, by the key's name.
       yield* commentMine(yield* keyOf(zoyaId), { key: zoyas.key, text: ASKED });
-      yield* LeadWork.get(scope, { key: zoyas.key });
+      const read = yield* LeadWork.get(scope, { key: zoyas.key });
+      // Quoted as hers through the key, with the one line on how to read it.
+      assert.deepStrictEqual(
+        read.comments?.map((one) => [one.by, one.via, one.text]),
+        [
+          ["owner", undefined, "Invented: two rooms"],
+          ["Zoya", "coding agent “Invented laptop”", ASKED],
+        ],
+      );
+      assert.include(read.codingAgent, "never their own words");
       assert.strictEqual(yield* outsideStamp(turn), "coding-agent:Invented laptop");
       assert.isTrue(yield* turnSensitive(orgId, "wake"));
       assert.isFalse(yield* outsideToolAllowed(turn, "payment_record", {}));
@@ -994,7 +1003,7 @@ it.effect(
       yield* setStateMine(yield* keyOf(arjunId), { key: flyers.key, state: "doing" });
       yield* records.update(orgId, rheaWrites, flyers.key, { owner: toChief });
       yield* turnAt("work-turn");
-      yield* buildWorkSection({
+      const section = yield* buildWorkSection({
         orgId,
         agentId: chief,
         chatId: KinChatId.make("chief-chat"),
@@ -1004,6 +1013,10 @@ it.effect(
       assert.strictEqual(
         yield* outsideStamp({ orgId, wakeupId: "work-turn" }),
         "coding-agent:Invented laptop",
+      );
+      assert.include(
+        section.changed.find((one) => one.key === flyers.key)?.changes ?? [],
+        "state → doing (a person, via their coding agent)",
       );
       assert.isTrue(yield* turnSensitive(orgId, "work-turn"));
 
