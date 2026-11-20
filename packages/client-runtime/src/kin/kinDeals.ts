@@ -39,6 +39,18 @@ import type { KinWorkReadState } from "./kinWorkForms.ts";
 /** A deal's key: the built-in Deals list's fixed prefix. */
 export const kinIsDealKey = (key: string) => key.startsWith("DL-");
 
+/** The deals a list's own search box keeps: its title or client has the words, or its key is typed whole. */
+export function kinDealsMatching(deals: ReadonlyArray<KinDealRow>, text: string) {
+  const folded = text.trim().toLocaleLowerCase();
+  if (folded === "") return deals;
+  return deals.filter(
+    (deal) =>
+      deal.key.toLocaleLowerCase() === folded ||
+      deal.title.toLocaleLowerCase().includes(folded) ||
+      deal.party.title.toLocaleLowerCase().includes(folded),
+  );
+}
+
 /** Every word Deals shows, on the web and the phone alike. */
 export const KIN_DEALS = {
   title: "Deals",

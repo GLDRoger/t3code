@@ -984,17 +984,23 @@ it.effect("a deal is found by its key and its title by whoever sees it, and by n
       newDeal(corran, "Invented scheduling pilot", { owner: asZoya }),
     );
     const kept = yield* Deals.create([owner], newDeal(hush, "Invented confidential pilot"));
-    const found = (who: typeof owner, text: string) =>
-      OwnerDocs.search([who], { orgId, text }).pipe(
+    // The phone's Tasks box asks for what is not a task: clients, contacts, projects, docs, deals.
+    const elsewhere = { kinds: ["clients", "contacts", "projects", "docs"], deals: true } as const;
+    const found = (who: typeof owner, text: string, only: object = {}) =>
+      OwnerDocs.search([who], { orgId, text, ...only }).pipe(
         Effect.map((result) => result.hits.map((hit) => `${hit.key} ${hit.kind}: ${hit.snippet}`)),
       );
     // Its stored fields (a stage id, a value in minor units) are no one's words to show.
     const shown = `${open.deal.key} work: Invented scheduling pilot`;
     for (const text of [open.deal.key, open.deal.key.toLowerCase(), "scheduling pilot"]) {
-      assert.deepStrictEqual(yield* found(owner, text), [shown], `owner: ${text}`);
-      assert.deepStrictEqual(yield* found(zoya, text), [shown], `zoya: ${text}`);
-      // Dev, with Clients off, sees no deals anywhere.
-      assert.deepStrictEqual(yield* found(dev, text), [], `dev: ${text}`);
+      for (const only of [{}, elsewhere]) {
+        assert.deepStrictEqual(yield* found(owner, text, only), [shown], `owner: ${text}`);
+        assert.deepStrictEqual(yield* found(zoya, text, only), [shown], `zoya: ${text}`);
+        // Dev, with Clients off, sees no deals anywhere.
+        assert.deepStrictEqual(yield* found(dev, text, only), [], `dev: ${text}`);
+      }
+      // Docs' own box finds docs alone.
+      assert.deepStrictEqual(yield* found(owner, text, { kinds: ["docs"] }), [], `docs: ${text}`);
     }
     // Under a client kept private, the owner level finds it and a teammate doesn't.
     for (const text of [kept.deal.key, "confidential"]) {

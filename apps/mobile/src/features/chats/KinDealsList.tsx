@@ -12,6 +12,7 @@ import {
   kinDealRow,
   kinDealsByStage,
   kinDealsHeader,
+  kinDealsMatching,
   kinDealsQuery,
   kinDealsNothing,
   kinDealsNotRead,
@@ -145,11 +146,6 @@ type Item =
       readonly note: string | null;
     };
 
-const matches = (text: string, ...parts: ReadonlyArray<string>) => {
-  const folded = text.trim().toLocaleLowerCase();
-  return folded === "" || parts.some((part) => part.toLocaleLowerCase().includes(folded));
-};
-
 /** Which deals and whose, as the bar's one Show menu. */
 function dealsMenu(
   filter: KinDealsFilter,
@@ -241,7 +237,7 @@ export function KinDealsView(
   const rates = useKinRates(props, ownerLevel);
   const now = new Date(useNowMinuteMs());
   const result = state._tag === "ready" ? state.value : null;
-  const deals = (result?.deals ?? []).filter((deal) => matches(text, deal.title, deal.party.title));
+  const deals = kinDealsMatching(result?.deals ?? [], text);
   const items: ReadonlyArray<Item> =
     result === null
       ? []

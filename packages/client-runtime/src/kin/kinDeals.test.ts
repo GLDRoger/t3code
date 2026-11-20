@@ -37,6 +37,7 @@ import {
   kinDealPeopleRows,
   kinDealWeekGroups,
   kinWinRateText,
+  kinDealsMatching,
 } from "./kinDeals.ts";
 import type { KinWorkNames } from "./kinWork.ts";
 
@@ -104,6 +105,19 @@ describe("kinDealsByStage", () => {
     expect(columns[0]?.total).toBe("€21,000");
     // Never one figure across currencies.
     expect(columns[2]?.total).toMatch(/NOK.*·.*€10,000|€10,000.*·.*NOK/);
+  });
+});
+
+describe("kinDealsMatching", () => {
+  it("keeps a deal whose title or client has the words, or whose key is typed whole", () => {
+    const deals = [deal(1), deal(12, { title: "Invented stock system" })];
+    const keys = (text: string) => kinDealsMatching(deals, text).map((one) => one.key);
+    expect(keys("")).toEqual(["DL-1", "DL-12"]);
+    expect(keys(" dl-1 ")).toEqual(["DL-1"]);
+    expect(keys("DL-12")).toEqual(["DL-12"]);
+    expect(keys("stock")).toEqual(["DL-12"]);
+    expect(keys("brightwater")).toEqual(["DL-1", "DL-12"]);
+    expect(keys("DL-9")).toEqual([]);
   });
 });
 

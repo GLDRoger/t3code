@@ -214,10 +214,11 @@ export function useKinDocHistory(
   );
 }
 
-/** One search box: everything this viewer may open (money and memory too), or only the kinds named. */
+/** One search box: everything this viewer may open (money and memory too), or only the kinds named, with deals if asked. */
 export function useKinSearch(
   { environmentId, orgId }: KinWorkTarget,
   kinds: ReadonlyArray<KinSearchKind> | null,
+  deals = false,
 ) {
   const [state, setState] = useState<KinSearchState>(KIN_SEARCH_INITIAL);
   const [search] = useState(() =>
@@ -227,7 +228,13 @@ export function useKinSearch(
       read: ({ text, closed }) =>
         kinClient.search.run(appAtomRegistry, {
           environmentId,
-          input: { orgId, text, closed, ...(kinds === null ? { everything: true } : { kinds }) },
+          input: {
+            orgId,
+            text,
+            closed,
+            ...(kinds === null ? { everything: true } : { kinds }),
+            ...(deals ? { deals: true } : {}),
+          },
         }),
     }),
   );

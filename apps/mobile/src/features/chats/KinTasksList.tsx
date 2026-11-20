@@ -109,7 +109,7 @@ import {
 /** Task lists kept while their screen is away, so coming back reads nothing the stream brought. */
 const kinTaskLists = createKinListKeeper<KinWorkList, KinWorkListState>(Date.now);
 
-/** What the Tasks search finds besides tasks, which the list itself already narrows to. */
+/** What the Tasks search finds besides tasks, which the list itself already narrows to; deals are asked beside them. */
 const ELSEWHERE = ["clients", "contacts", "projects", "docs"] as const;
 
 /** Tasks, a screenful at a time: grouped by whose move, by one of its fields, or one project's. */
@@ -271,7 +271,7 @@ export function KinTasksList(
     : null;
   // The whole company's tasks also find clients, projects and docs, and say what needs you.
   const everywhere = within === undefined;
-  const { state: found, search } = useKinSearch(props, ELSEWHERE);
+  const { state: found, search } = useKinSearch(props, ELSEWHERE, true);
   const steps = useKinTaskSteps({ environmentId, orgId });
   const base = { environmentId: String(environmentId), orgId: String(orgId) };
   const filterMenu = kinWorkFilterMenu({
