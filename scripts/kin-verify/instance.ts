@@ -178,10 +178,8 @@ export function withoutRealModels(base: NodeJS.ProcessEnv, own: string): NodeJS.
   if (base.KIN_VERIFY_REAL_MODELS === "1") return base;
   const stubs = base.KIN_VERIFY_NO_MODELS || own;
   if (stubs === own) writeProviderStubs(stubs);
-  const env = { ...base, PATH: [stubs, base.PATH].filter(Boolean).join(NodePath.delimiter) };
-  delete env.ANTHROPIC_API_KEY;
-  delete env.OPENAI_API_KEY;
-  return env;
+  const { ANTHROPIC_API_KEY: _anthropic, OPENAI_API_KEY: _openai, ...rest } = base;
+  return { ...rest, PATH: [stubs, base.PATH].filter(Boolean).join(NodePath.delimiter) };
 }
 
 function writeProviderStubs(stubs: string) {
