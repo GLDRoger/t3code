@@ -237,6 +237,19 @@ describe("KinEventQueue", () => {
         yield* sql`UPDATE kin_chat_members SET role = 'member'`;
         yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = 'person-lead-a'`;
         yield* queue.enqueue(yield* event("member", "chat.message"));
+        // Their turn in the budget, not the machine window: a person's words start as an owner's do.
+        const said = yield* Effect.scoped(queue.claim(input("member-said"))).pipe(Effect.forkChild);
+        yield* TestClock.adjust("299 millis");
+        assert.deepStrictEqual(
+          yield* sql`SELECT 1 FROM kin_wakeups WHERE wakeup_id = 'member-said'`,
+          [],
+        );
+        yield* TestClock.adjust("1 millis");
+        assert.deepStrictEqual(
+          (yield* Fiber.join(said)).map((entry) => [entry.eventId, entry.priority]),
+          [["member", "P2"]],
+        );
+        yield* finish("member-said");
         const forged = yield* event("forged", "widget.action", "a", "other");
         yield* queue.enqueue({
           ...forged,
@@ -244,7 +257,7 @@ describe("KinEventQueue", () => {
         });
         assert.deepStrictEqual(
           yield* sql`SELECT priority FROM kin_events WHERE state = 'queued' ORDER BY event_id`,
-          [{ priority: "P2" }, { priority: "P2" }],
+          [{ priority: "P2" }],
         );
         yield* sql`UPDATE kin_people SET access = NULL WHERE person_id = 'person-lead-a'`;
         yield* seed("a", "lead-a2");
