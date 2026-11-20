@@ -29,6 +29,7 @@ import { speakerOrder } from "../floor/KinFloor.ts";
 import { KinPresence, queueLabel, syncQueued } from "../reply/KinPresence.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { RETIRED_NOTICE_PREFIX, retiredAgentNotice, retiredNoticeId } from "./Retirement.ts";
+import { teammatesLimited } from "./KinBudget.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
 
@@ -116,7 +117,8 @@ const make = Effect.gen(function* () {
       ...pair,
       now: yield* Clock.currentTimeMillis,
     }).pipe(access);
-    if (used.turns < dailyTurns) return true;
+    if (used.turns < dailyTurns || !(yield* teammatesLimited(message.orgId).pipe(access)))
+      return true;
     // One line per full day of turns: it is said again only once the oldest of them has aged out.
     const messageId = KinMessageId.make(
       `kin-dm-limit-${NodeCrypto.createHash("sha256")
