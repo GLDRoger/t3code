@@ -106,6 +106,7 @@ import { KinStop } from "../lead/KinStop.ts";
 import { isOrgOwner } from "../lead/orgState.ts";
 import { docPageSources } from "../work/docFiles.ts";
 import { turnSensitive } from "../work/sensitiveReads.ts";
+import { PICTURE_DOC_ORIGIN, pictureReader } from "../work/teamView.ts";
 import * as Repository from "./KinChatRepository.ts";
 import type { WriteAudience } from "./KinChatRepository.ts";
 import { KinAttachmentStore } from "./KinAttachmentStore.ts";
@@ -760,6 +761,16 @@ const make = Effect.gen(function* () {
             AND (a.owner_person_id = ${person.personId} OR j.asked_by_person_id = ${person.personId})
           LIMIT 1`;
         if (made.length > 0) return true;
+        // A picture's file is read by whoever reads its doc.
+        const picture = yield* sql<{
+          shared: number;
+        }>`SELECT ${pictureReader(sql, person.personId)} AS shared
+          FROM kin_doc_versions v JOIN kin_records r ON r.org_id = v.org_id AND r.record_id = v.record_id
+          WHERE v.org_id = ${person.orgId} AND v.file_attachment_id = ${attachmentId}
+            AND r.origin_key LIKE ${`${PICTURE_DOC_ORIGIN}%`}
+          LIMIT 1`;
+        if (picture[0] !== undefined)
+          return picture[0].shared === 1 || (yield* ownerLevel(person.orgId, person.personId));
         const shown = yield* sql`SELECT 1 FROM kin_doc_files
           WHERE org_id = ${person.orgId} AND attachment_id = ${attachmentId}
           UNION ALL SELECT 1 FROM kin_company_profile

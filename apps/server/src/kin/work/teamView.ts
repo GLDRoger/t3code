@@ -97,7 +97,10 @@ export const PICTURE_DOC_ORIGIN = "picture:";
  * `r` is a picture whose latest version was made in a turn others read, in a chat this person
  * reads now. A later version made where only the owner reads takes it away again.
  */
-const pictureReader = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
+export const pictureReader = (
+  sql: SqlClient.SqlClient,
+  personId: KinPersonId | Statement.Fragment,
+) =>
   sql`(r.origin_key LIKE ${`${PICTURE_DOC_ORIGIN}%`} AND EXISTS (SELECT 1 FROM kin_doc_versions pv
     JOIN kin_chat_members pm ON pm.org_id = pv.org_id AND pm.chat_id = pv.chat_id
       AND pm.principal_kind = 'person' AND pm.person_id = ${personId} AND pm.left_at IS NULL
