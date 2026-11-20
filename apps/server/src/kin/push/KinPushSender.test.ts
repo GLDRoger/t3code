@@ -1535,6 +1535,18 @@ describe("KinPushDevices", () => {
       assert.deepStrictEqual(yield* tokens(sql), [
         { token: ownerPhone, person_id: owner, session_id: "sess-owner-phone" },
       ]);
+      // But nothing is sent to it: a phone that left offline never renews, so its alerts stop.
+      assert.deepStrictEqual(yield* devices.forPeople(orgId, [owner]), []);
+      // A renewal keeps the session id, and the same row hears again.
+      yield* sql`UPDATE auth_sessions SET expires_at = '2026-12-07T00:00:00.000Z'
+        WHERE session_id = 'sess-owner-phone'`;
+      assert.deepStrictEqual(
+        (yield* devices.forPeople(orgId, [owner])).map((device) => device.token),
+        [ownerPhone],
+      );
+      // A session row that is gone altogether hears nothing either.
+      yield* sql`DELETE FROM auth_sessions WHERE session_id = 'sess-owner-phone'`;
+      assert.deepStrictEqual(yield* devices.forPeople(orgId, [owner]), []);
       yield* sql`ALTER TABLE kin_push_devices RENAME TO kin_push_devices_gone`;
       const broken = yield* Effect.exit(
         devices.unregister(caller("sess-owner-phone", owner), { orgId, token: ownerPhone }),
