@@ -13,10 +13,14 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
+import * as Option from "effect/Option";
+import * as Redacted from "effect/Redacted";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
@@ -24,7 +28,12 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
 import * as AttachmentStore from "../chat/KinAttachmentStore.ts";
+import * as Hub from "../chat/KinChatHub.ts";
+import * as Repository from "../chat/KinChatRepository.ts";
+import * as ChatService from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { environment } from "../chat/TaskCard.testkit.ts";
+import { KinConnectionSecrets } from "../connections/ConnectionSecrets.ts";
 import * as Render from "../gendocs/render.ts";
 import { KinToolchain } from "../gendocs/toolchain.ts";
 import * as Workspace from "../gendocs/workspace.ts";
@@ -32,10 +41,13 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { SHARED_TOOLS, sharedToolAllowed } from "../lead/SharedTools.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import * as Presence from "../reply/KinPresence.ts";
 import * as Docs from "../work/docs.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
+import { makeFakeImageVendor } from "./FakeImageVendor.ts";
+import { GENERATE_SENTENCES, KinPictures, makeLayer as picturesLayer } from "./KinPictures.ts";
 import { makePicture, type PictureInput } from "./picture.ts";
 import { KinPictureRenderer, PICTURE_SENTENCES, type PictureDrawn } from "./renderer.ts";
 
@@ -107,7 +119,31 @@ const toolchain = Layer.succeed(KinToolchain, {
   present: () => Effect.undefined,
   fonts: () => Effect.undefined,
 });
-const layer = Layer.mergeAll(KinRecords.layer, identity, gate, renderer).pipe(
+// The picture service on a fake vendor in memory: no request leaves a test.
+const fake = makeFakeImageVendor();
+const keys = new Map<string, Redacted.Redacted<string>>();
+const secrets = Layer.mock(KinConnectionSecrets)({
+  getPicturesKey: (vendor) => Effect.succeed(Option.fromNullishOr(keys.get(vendor))),
+  setPicturesKey: (vendor, key) => Effect.sync(() => void keys.set(vendor, key)),
+  removePicturesKey: (vendor) => Effect.sync(() => void keys.delete(vendor)),
+});
+const noRequests = FetchHttpClient.layer.pipe(
+  Layer.provide(
+    Layer.succeed(FetchHttpClient.Fetch, () =>
+      Promise.reject(new Error("No request leaves a pictures test.")),
+    ),
+  ),
+);
+const layer = Layer.mergeAll(KinRecords.layer, gate, renderer).pipe(
+  Layer.provideMerge(
+    picturesLayer(fake.vendor).pipe(Layer.provide(Layer.merge(secrets, noRequests))),
+  ),
+  Layer.provideMerge(ChatService.layer),
+  Layer.provideMerge(Presence.layer),
+  Layer.provideMerge(identity),
+  Layer.provideMerge(Hub.layer),
+  Layer.provideMerge(Repository.layer),
+  Layer.provideMerge(environment),
   Layer.provideMerge(Render.layer),
   Layer.provideMerge(AttachmentStore.layer),
   Layer.provideMerge(DocumentText.layer),
@@ -126,6 +162,9 @@ const layer = Layer.mergeAll(KinRecords.layer, identity, gate, renderer).pipe(
 const seed = Effect.gen(function* () {
   placed.length = 0;
   drawing.next = undefined;
+  keys.clear();
+  fake.calls.length = 0;
+  fake.control.mode = "ok";
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Ambermill', ${at})`;
   yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
@@ -354,5 +393,173 @@ describe("kin_picture", () => {
         yield* sql`UPDATE kin_chat_members SET left_at = NULL WHERE member_id = 'lead-chat-meera'`;
         assert.deepStrictEqual([yield* opens(ownerId), yield* opens(meera)], [true, false]);
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "generates from a prompt: each picture is a doc like a drawn one, read by the same people, and a retried call makes and counts nothing again",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* (yield* KinPictures).set([person(ownerId)], {
+          orgId,
+          key: Redacted.make("sk-invented-ambermill"),
+        });
+        yield* turn(1, "meera", "shared");
+        const ask = {
+          title: "Mill at dawn",
+          size: "portrait",
+          prompt: "The Ambermill mill at dawn, mist on the river, warm light",
+          count: 2,
+        } as const;
+        const made = yield* makePicture(scope, ask);
+        assert.deepInclude(made, { doc: "D-1", version: 1 });
+        assert.strictEqual(
+          made.next,
+          "The 2 pictures show under your reply and are in Docs as D-1, D-2. Made at 1024×1536, the picture service's nearest size to portrait (1080×1350).",
+        );
+        assert.deepStrictEqual(
+          placed.map((one) => [one.doc, one.attachment.name, one.attachment.mimeType]),
+          [
+            [{ key: "D-1", version: 1 }, "mill-at-dawn.png", "image/png"],
+            [{ key: "D-2", version: 1 }, "mill-at-dawn-2.png", "image/png"],
+          ],
+        );
+        const [version] = yield* versions("D-1");
+        assert.strictEqual(version?.provenance.audience, "shared");
+        assert.strictEqual(
+          version?.summary,
+          "Picture, 1024×1536, generated by OpenAI (gpt-image-2.5-flare) from: The Ambermill mill at dawn, mist on the river, warm light",
+        );
+        // Asked by Meera, counted to her.
+        const counted = sql<{ count: number; person: string | null }>`SELECT count,
+            person_id AS person FROM kin_picture_counts WHERE org_id = ${orgId} ORDER BY count_id`;
+        assert.deepStrictEqual(yield* counted, [{ count: 2, person: meera }]);
+        // A retried call returns the same, and the service is not asked again.
+        assert.deepStrictEqual(yield* makePicture(scope, ask), made);
+        assert.lengthOf(fake.calls, 1);
+        assert.lengthOf(placed, 2);
+        assert.deepStrictEqual(yield* counted, [{ count: 2, person: meera }]);
+
+        // Rhea and Meera, who is in the chat, open the doc and its file; Dev, outside it, neither.
+        const chats = yield* ChatService.KinChatService;
+        const file = version!.file!.attachmentId;
+        const opens = (who: KinPersonId) =>
+          OwnerDocs.get([person(who)], { orgId, key: "D-1" }).pipe(
+            Effect.as(true),
+            Effect.orElseSucceed(() => false),
+          );
+        assert.deepStrictEqual(
+          [yield* opens(ownerId), yield* opens(meera), yield* opens(dev)],
+          [true, true, false],
+        );
+        assert.deepStrictEqual(
+          [
+            yield* chats.attachmentReadable([person(ownerId)], file),
+            yield* chats.attachmentReadable([person(meera)], file),
+            yield* chats.attachmentReadable([person(dev)], file),
+          ],
+          [true, true, false],
+        );
+
+        // A change in Rhea's own turn is the doc's next version, hers alone again.
+        yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'lead-chat-meera'`;
+        yield* turn(2);
+        const changed = yield* makePicture(scope, {
+          title: "Mill at dawn",
+          size: "portrait",
+          prompt: "The same mill at dawn, with more mist",
+          doc: "D-1",
+        });
+        assert.deepInclude(changed, { doc: "D-1", version: 2 });
+        assert.lengthOf(yield* versions("D-1"), 2);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "passes on the picture service's sentences word for word, filing and counting nothing",
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(at));
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* turn(1);
+        const ask = { title: "Mill", size: "square", prompt: "The mill at dawn" } as const;
+        const refusal = () => Effect.flip(makePicture(scope, ask));
+        assert.include(yield* refusal(), {
+          reason: "unavailable",
+          message: GENERATE_SENTENCES.no_key,
+        });
+        yield* (yield* KinPictures).set([person(ownerId)], {
+          orgId,
+          key: Redacted.make("sk-invented-ambermill"),
+          monthlyLimit: 1,
+        });
+        for (const [mode, reason, message] of [
+          [
+            "refuse",
+            "invalid_state",
+            GENERATE_SENTENCES.refused("The prompt asks for a real person's likeness"),
+          ],
+          ["reject", "unavailable", GENERATE_SENTENCES.key_rejected],
+          ["down", "unavailable", GENERATE_SENTENCES.unavailable],
+        ] as const) {
+          fake.control.mode = mode;
+          assert.include(yield* refusal(), { reason, message });
+        }
+        fake.control.mode = "ok";
+        yield* sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id, count, state, at)
+          VALUES (${orgId}, 'earlier', '2026-11', ${lead}, 1, 'made', 0)`;
+        assert.include(yield* refusal(), {
+          reason: "limit",
+          message:
+            "This month's 1 generated pictures are used. An owner or co-owner can raise the limit in Settings → Connections → Pictures; it resets on 1 Dec.",
+        });
+        assert.lengthOf(fake.calls, 3);
+        assert.deepStrictEqual(placed, []);
+        assert.deepStrictEqual(
+          yield* sql`SELECT key FROM kin_records WHERE org_id = ${orgId} AND register_id = 'docs'`,
+          [],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT count_id FROM kin_picture_counts WHERE org_id = ${orgId} ORDER BY count_id`,
+          [{ count_id: "earlier" }],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("takes html or prompt, never both, and count only with a prompt", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* turn(1);
+      const both = yield* Effect.flip(makePicture(scope, post("48px", { prompt: "The mill" })));
+      const neither = yield* Effect.flip(makePicture(scope, { title: "Mill", size: "square" }));
+      for (const refused of [both, neither])
+        assert.include(refused, {
+          reason: "invalid_state",
+          message:
+            "Give html to draw the picture or prompt to generate it, one of the two, so nothing was made.",
+        });
+      assert.include(yield* Effect.flip(makePicture(scope, post("48px", { count: 2 }))), {
+        message:
+          "count is for a generated picture: a drawn one is one picture, so nothing was made.",
+      });
+      assert.include(
+        yield* Effect.flip(
+          makePicture(scope, {
+            title: "Mill",
+            size: "square",
+            prompt: "The mill",
+            count: 2,
+            doc: "D-1",
+          }),
+        ),
+        {
+          message:
+            "A change makes one picture, the doc's next version: leave count out, so nothing was made.",
+        },
+      );
+      assert.deepStrictEqual([placed, fake.calls], [[], []]);
+    }).pipe(Effect.provide(layer)),
   );
 });

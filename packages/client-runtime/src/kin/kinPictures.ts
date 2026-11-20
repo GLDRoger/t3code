@@ -16,10 +16,10 @@ import { kinFailureText } from "./kinAnswers.ts";
 export const KIN_PICTURES_COPY = {
   title: "Pictures",
   intro:
-    "Agents can make photo-like pictures with a picture service you pay for. Each picture counts toward this month's limit.",
+    "Agents make photo-like pictures with a picture service you pay for, whenever someone asks in a chat, a teammate included. Each one counts toward this month's limit. Without a key, agents still design pictures such as posters, quote cards and infographics.",
   connectTitle: "Connect a picture service",
   connectDetail: (service: string) =>
-    `Paste a ${service} API key. It goes to your Kin's computer and is never shown again.`,
+    `Paste ${/^[aeiou]/i.test(service) ? "an" : "a"} ${service} API key. It goes to your Kin's computer and is never shown again.`,
   keyLabel: "API key",
   keyPlaceholder: "Paste the key",
   openService: (service: string) => `Open ${service}`,

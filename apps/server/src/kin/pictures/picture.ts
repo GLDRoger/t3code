@@ -33,14 +33,20 @@ import { readProfile } from "../work/companyProfile.ts";
 import { turnSensitive } from "../work/sensitiveReads.ts";
 import { KIN_OWNER_LEVEL, PICTURE_DOC_ORIGIN, viewerOfPeople } from "../work/teamView.ts";
 import { visualPage } from "../widgets/visualCard.ts";
+import { KinPictures } from "./KinPictures.ts";
 import { KinPictureRenderer, type PictureBrand, type PictureFile } from "./renderer.ts";
-import { KIN_PICTURE_SCALE, KIN_PICTURE_SIZES, KinPictureSize } from "./sizes.ts";
+import { KinPictureSize, pictureOutput } from "./sizes.ts";
 
-/** What `kin_picture` takes. `doc` names an earlier picture this one is the next version of. */
+/**
+ * What `kin_picture` takes: `html` to draw a page or `prompt` to generate from words, never both.
+ * `doc` names an earlier picture this one is the next version of.
+ */
 export const PictureInput = Schema.Struct({
   title: Schema.String,
   size: KinPictureSize,
-  html: Schema.String,
+  html: Schema.optional(Schema.String),
+  prompt: Schema.optional(Schema.String),
+  count: Schema.optional(Schema.Number),
   doc: Schema.optional(Schema.String),
 });
 export type PictureInput = typeof PictureInput.Type;
@@ -58,7 +64,7 @@ const PAUSED = "Kin is paused by the owner, so nothing new is made until they re
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const sha256 = (value: string | Uint8Array) =>
   NodeCrypto.createHash("sha256").update(value).digest("hex");
-const fileName = (title: string) =>
+const fileName = (title: string, extension: string, index = 0) =>
   `${
     title
       .normalize("NFKD")
@@ -66,7 +72,10 @@ const fileName = (title: string) =>
       .replace(/^-+|-+$/g, "")
       .slice(0, 80)
       .toLowerCase() || "picture"
-  }.png`;
+  }${index === 0 ? "" : `-${index + 1}`}.${extension}`;
+const EXTENSIONS = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" } as const;
+const isPictureType = (mimeType: string): mimeType is keyof typeof EXTENSIONS =>
+  Object.hasOwn(EXTENSIONS, mimeType);
 
 /** The earlier picture `doc` names, as this turn may read it: in one others read, one they all see. */
 const earlierPicture = Effect.fn("KinPictures.earlier")(function* (lead: Lead, key: string) {
@@ -126,41 +135,125 @@ const companyBrand = Effect.fn("KinPictures.brand")(function* (orgId: KinOrgId) 
   } satisfies PictureBrand;
 });
 
-/** `kin_picture`: draws the page, files it as a version of its doc and puts it on the reply. */
+/** One picture, drawn or generated, to file as a version of its doc and put on the reply. */
+type Made = {
+  readonly bytes: Uint8Array;
+  readonly mimeType: keyof typeof EXTENSIONS;
+  /** Already stored by content in the docs' store, for a generated picture. */
+  readonly docFile?: string;
+  readonly width: number;
+  readonly height: number;
+  readonly summary: string;
+  /** What the level gate checks it shows. */
+  readonly seen: string;
+};
+
+const SENTENCE_REASONS = {
+  no_key: "unavailable",
+  limit: "limit",
+  refused: "invalid_state",
+  key_rejected: "unavailable",
+  unavailable: "unavailable",
+} as const;
+
+/** `kin_picture`: draws the page or generates from the prompt, files each as a doc and puts it on the reply. */
 export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: PictureInput) =>
   Effect.gen(function* () {
     yield* admitted(lead, TOOL, input);
     if (yield* isOrgPaused(lead.orgId))
       return yield* new KinChatError({ reason: "not_allowed", message: PAUSED });
+    if ((input.html === undefined) === (input.prompt === undefined))
+      return yield* invalid(
+        "Give html to draw the picture or prompt to generate it, one of the two, so nothing was made.",
+      );
+    if (input.html !== undefined && input.count !== undefined)
+      return yield* invalid(
+        "count is for a generated picture: a drawn one is one picture, so nothing was made.",
+      );
+    if (input.doc !== undefined && (input.count ?? 1) !== 1)
+      return yield* invalid(
+        "A change makes one picture, the doc's next version: leave count out, so nothing was made.",
+      );
     const wakeupId = KinWakeupId.make(lead.wakeupId);
     const lane = yield* laneFor({ orgId: lead.orgId, agentId: lead.agentId, wakeupId });
     if (Option.isNone(lane))
       return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
     const chatId = lane.value.chatId;
-    const page = yield* visualPage({ title: input.title, html: input.html });
     const earlier = input.doc === undefined ? undefined : yield* earlierPicture(lead, input.doc);
-    const files = yield* chatImages(lead.orgId, chatId, kinVisualFileReferences(page.html));
-
-    const drawn = yield* (yield* KinPictureRenderer).render({
-      html: page.html,
-      size: input.size,
-      files,
-      brand: yield* companyBrand(lead.orgId),
-      fonts: yield* (yield* KinToolchain).fonts(),
-    });
-    if (drawn._tag === "refused") return yield* invalid(drawn.reason);
-    if (drawn._tag === "cannotDraw")
-      return yield* new KinChatError({ reason: "unavailable", message: drawn.reason });
-
-    // An identical call in the same turn is a retry: the same doc version and the same image.
+    const team = yield* viewOf(lead);
+    const owned = yield* writerFor(lead);
+    // Not the turn's view guard, which keeps new docs the owner's: who reads a picture is its own
+    // rule (`teamView.pictureReader`), and one it revises was found in the view (`earlierPicture`).
+    const { view: _view, ...writer }: Writer = team === undefined ? owned : viewWriter(owned, team);
+    // An identical call in the same turn is a retry: the same doc versions and the same images.
     const key = sha256(stableStringify(input)).slice(0, 32);
-    const png = drawn.png;
+    const title = input.title.slice(0, 200);
+
+    const pictures: Array<Made> = [];
+    let note: string | null = null;
+    if (input.html !== undefined) {
+      const page = yield* visualPage({ title: input.title, html: input.html });
+      const files = yield* chatImages(lead.orgId, chatId, kinVisualFileReferences(page.html));
+      const drawn = yield* (yield* KinPictureRenderer).render({
+        html: page.html,
+        size: input.size,
+        files,
+        brand: yield* companyBrand(lead.orgId),
+        fonts: yield* (yield* KinToolchain).fonts(),
+      });
+      if (drawn._tag === "refused") return yield* invalid(drawn.reason);
+      if (drawn._tag === "cannotDraw")
+        return yield* new KinChatError({ reason: "unavailable", message: drawn.reason });
+      const size = pictureOutput(input.size);
+      pictures.push({
+        bytes: drawn.png,
+        mimeType: "image/png",
+        width: size.width,
+        height: size.height,
+        summary: `Picture, ${size.width}×${size.height}`,
+        seen: `${page.title}\n${page.html.replace(/<[^>]*>/g, " ")}`,
+      });
+    } else {
+      const prompt = input.prompt ?? "";
+      const generated = yield* (yield* KinPictures).generate({
+        orgId: lead.orgId,
+        agentId: lead.agentId,
+        askedBy: writer.askedBy ?? null,
+        prompt,
+        size: input.size,
+        count: input.count ?? 1,
+        retryKey: `kin-picture:${wakeupId}:${key}`,
+      });
+      // The service's own sentence, word for word: nothing was made, filed or counted.
+      if (generated._tag === "refused")
+        return yield* new KinChatError({
+          reason: SENTENCE_REASONS[generated.reason],
+          message: generated.sentence,
+        });
+      note = generated.note;
+      const fs = yield* FileSystem.FileSystem;
+      const { attachmentsDir } = yield* ServerConfig;
+      for (const file of generated.files) {
+        const path = resolveAttachmentPathById({ attachmentsDir, attachmentId: file.id });
+        const mimeType = file.mimeType;
+        if (path === null || !isPictureType(mimeType))
+          return yield* new KinChatError({
+            reason: "unavailable",
+            message: "Kin can't make pictures right now, so nothing was made.",
+          });
+        pictures.push({
+          bytes: yield* fs.readFile(path),
+          mimeType,
+          docFile: file.id,
+          width: generated.size.width,
+          height: generated.size.height,
+          summary: `Picture, ${generated.size.width}×${generated.size.height}, generated by ${generated.vendor} (${generated.model}) from: ${prompt.trim().slice(0, 300)}`,
+          seen: `${input.title}\n${prompt}`,
+        });
+      }
+    }
+
     const sensitive = yield* turnSensitive(lead.orgId, lead.wakeupId);
-    const docFile = yield* (yield* KinDocRenderer).store(lead.orgId, `pic-${key}`, {
-      sha256: sha256(png),
-      extension: "png",
-      bytes: png,
-    });
     const stores = yield* Effect.serviceOption(KinAttachmentStore);
     if (Option.isNone(stores))
       return yield* new KinChatError({
@@ -168,78 +261,105 @@ export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: Pict
         message: "Attachments are unavailable.",
       });
     const store = stores.value;
-    const chatImage = yield* store.storeImage(png);
-    const name = fileName(page.title);
-    const size = KIN_PICTURE_SIZES[input.size];
-    const team = yield* viewOf(lead);
-    const owned = yield* writerFor(lead);
-    // Not the turn's view guard, which keeps new docs the owner's: who reads a picture is its own
-    // rule (`teamView.pictureReader`), and one it revises was found in the view (`earlierPicture`).
-    const { view: _view, ...writer }: Writer = team === undefined ? owned : viewWriter(owned, team);
     const sql = yield* SqlClient.SqlClient;
     const gate = yield* KinLevelGate;
-    const made = yield* sql
-      .withTransaction(
-        Effect.gen(function* () {
-          yield* admitted(lead, TOOL, input);
-          const filed = yield* Docs.fileVersion(
-            lead.orgId,
-            writer,
-            { audience: yield* effectiveAudience(lead) },
-            {
-              docOrigin: earlier?.originKey ?? `${PICTURE_DOC_ORIGIN}${lead.agentId}:${key}`,
-              originKey: `kin-picture:${lead.wakeupId}:${key}`,
-              title: page.title.slice(0, 200),
-              summary: `Picture, ${size.width * KIN_PICTURE_SCALE}×${size.height * KIN_PICTURE_SCALE}`,
-              owner: { _tag: "agent", agentId: lead.agentId },
-              sensitive,
-              file: {
-                attachmentId: docFile,
-                name,
-                mimeType: "image/png",
-                bytes: png.length,
-                sha256: sha256(png),
-                pages: null,
-                recipe: null,
-                inputsHash: key,
-                workerId: KinWorkerId.make(`pic-${key}`),
-                number: null,
-                draft: false,
+    const renderer = yield* KinDocRenderer;
+    const audience = yield* effectiveAudience(lead);
+    const made: Array<{ readonly file: string; readonly doc: string; readonly version: number }> =
+      [];
+    let placedIn: "reply" | "chat" = "reply";
+    for (const [index, picture] of pictures.entries()) {
+      const one = index === 0 ? key : `${key}-${index + 1}`;
+      const extension = EXTENSIONS[picture.mimeType];
+      const hash = sha256(picture.bytes);
+      const docFile =
+        picture.docFile ??
+        (yield* renderer.store(lead.orgId, `pic-${one}`, {
+          sha256: hash,
+          extension,
+          bytes: picture.bytes,
+        }));
+      const chatImage = yield* store.storeImage(picture.bytes, extension);
+      const name = fileName(input.title, extension, index);
+      const filed = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* admitted(lead, TOOL, input);
+            const filed = yield* Docs.fileVersion(
+              lead.orgId,
+              writer,
+              { audience },
+              {
+                docOrigin: earlier?.originKey ?? `${PICTURE_DOC_ORIGIN}${lead.agentId}:${one}`,
+                originKey: `kin-picture:${lead.wakeupId}:${one}`,
+                title,
+                summary: picture.summary,
+                owner: { _tag: "agent", agentId: lead.agentId },
+                sensitive,
+                file: {
+                  attachmentId: docFile,
+                  name,
+                  mimeType: picture.mimeType,
+                  bytes: picture.bytes.length,
+                  sha256: hash,
+                  pages: null,
+                  recipe: null,
+                  inputsHash: one,
+                  workerId: KinWorkerId.make(`pic-${one}`),
+                  number: null,
+                  draft: false,
+                },
               },
-            },
-          );
-          const placed = yield* gate.picture(
-            { ...lead, wakeupId },
-            {
-              chatId,
-              clientMessageId: `kin-picture:${wakeupId}:${key}`,
-              intent: lane.value.mode === "reply" ? "answer" : "evidence",
-              attachment: {
-                type: "image",
-                id: chatImage,
-                name,
-                mimeType: "image/png",
-                sizeBytes: png.length,
+            );
+            const placed = yield* gate.picture(
+              { ...lead, wakeupId },
+              {
+                chatId,
+                clientMessageId: `kin-picture:${wakeupId}:${one}`,
+                intent: lane.value.mode === "reply" ? "answer" : "evidence",
+                attachment: {
+                  type: "image",
+                  id: chatImage,
+                  name,
+                  mimeType: picture.mimeType,
+                  sizeBytes: picture.bytes.length,
+                },
+                doc: { key: filed.row.key, version: filed.version.version },
+                seen: picture.seen,
               },
-              doc: { key: filed.row.key, version: filed.version.version },
-              seen: `${page.title}\n${page.html.replace(/<[^>]*>/g, " ")}`,
-            },
-          );
-          return { filed, placed };
-        }),
-      )
-      .pipe(Effect.onError(() => store.remove([chatImage])));
-    if (made.placed.attachmentId !== chatImage) yield* store.remove([chatImage]);
-    const doc = made.filed.row.key;
-    const version = made.filed.version.version;
+            );
+            return { filed, placed };
+          }),
+        )
+        .pipe(Effect.onError(() => store.remove([chatImage])));
+      if (filed.placed.attachmentId !== chatImage) yield* store.remove([chatImage]);
+      placedIn = filed.placed.placed === "reply" ? "reply" : "chat";
+      made.push({
+        file: filed.placed.attachmentId,
+        doc: filed.filed.row.key,
+        version: filed.filed.version.version,
+      });
+    }
+    const [first] = made;
+    if (first === undefined)
+      return yield* new KinChatError({
+        reason: "unavailable",
+        message: "Kin can't make pictures right now, so nothing was made.",
+      });
+    const where = placedIn === "reply" ? "under your reply" : "in the chat";
+    const next =
+      made.length === 1
+        ? placedIn === "reply"
+          ? `The picture shows under your reply and is in Docs as ${first.doc}, version ${first.version}.`
+          : `The picture is posted in the chat and is in Docs as ${first.doc}, version ${first.version}.`
+        : `The ${made.length} pictures show ${where} and are in Docs as ${made
+            .map((one) => one.doc)
+            .join(", ")}.`;
     return {
-      files: [made.placed.attachmentId],
-      doc,
-      version,
-      next:
-        made.placed.placed === "reply"
-          ? `The picture shows under your reply and is in Docs as ${doc}, version ${version}.`
-          : `The picture is posted in the chat and is in Docs as ${doc}, version ${version}.`,
+      files: made.map((one) => one.file),
+      doc: first.doc,
+      version: first.version,
+      next: note === null ? next : `${next} ${note}`,
     };
   }),
 );

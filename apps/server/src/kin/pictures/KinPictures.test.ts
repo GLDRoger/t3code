@@ -22,11 +22,11 @@ import {
   KinPictures,
   makeLayer,
   nearestSize,
-  PICTURE_SENTENCES,
-  PICTURE_SIZES,
+  GENERATE_SENTENCES,
   PICTURE_TIMEOUT,
-  type PictureRequest,
+  type GenerateRequest,
 } from "./KinPictures.ts";
+import { KinPictureSize, pictureOutput } from "./sizes.ts";
 
 // Ambermill, on a fake picture service in memory: nothing leaves the process, time is the TestClock.
 const NOW = Date.parse("2026-11-20T09:00:00.000Z");
@@ -115,7 +115,7 @@ const connect = (monthlyLimit?: number | null) =>
       ...(monthlyLimit === undefined ? {} : { monthlyLimit }),
     });
   });
-const ask = (overrides: Partial<PictureRequest> = {}) =>
+const ask = (overrides: Partial<GenerateRequest> = {}) =>
   Effect.gen(function* () {
     const pictures = yield* KinPictures;
     return yield* pictures.generate({
@@ -154,8 +154,8 @@ describe("KinPictures", () => {
     const sizes = makeFakeImageVendor().vendor.sizes;
     assert.deepStrictEqual(
       Object.fromEntries(
-        Object.entries(PICTURE_SIZES).map(([name, size]) => {
-          const near = nearestSize(sizes, size);
+        KinPictureSize.literals.map((name) => {
+          const near = nearestSize(sizes, pictureOutput(name));
           return [name, `${near.width}x${near.height}`];
         }),
       ),
@@ -228,7 +228,7 @@ describe("KinPictures", () => {
         assert.deepStrictEqual(yield* ask(), {
           _tag: "refused",
           reason: "no_key",
-          sentence: PICTURE_SENTENCES.no_key,
+          sentence: GENERATE_SENTENCES.no_key,
         });
         assert.lengthOf(fake.calls, 0);
         yield* connect();
@@ -236,10 +236,10 @@ describe("KinPictures", () => {
           [
             "refuse",
             "refused",
-            PICTURE_SENTENCES.refused("The prompt asks for a real person's likeness"),
+            GENERATE_SENTENCES.refused("The prompt asks for a real person's likeness"),
           ],
-          ["reject", "key_rejected", PICTURE_SENTENCES.key_rejected],
-          ["down", "unavailable", PICTURE_SENTENCES.unavailable],
+          ["reject", "key_rejected", GENERATE_SENTENCES.key_rejected],
+          ["down", "unavailable", GENERATE_SENTENCES.unavailable],
         ] as const;
         for (const [mode, reason, sentence] of cases) {
           fake.control.mode = mode;
@@ -258,7 +258,7 @@ describe("KinPictures", () => {
         assert.deepStrictEqual(yield* Fiber.join(waiting), {
           _tag: "refused",
           reason: "unavailable",
-          sentence: PICTURE_SENTENCES.unavailable,
+          sentence: GENERATE_SENTENCES.unavailable,
         });
         assert.deepStrictEqual(yield* counts, []);
         assert.strictEqual((yield* (yield* KinPictures).get(asOwner, { orgId })).usedThisMonth, 0);
@@ -302,6 +302,45 @@ describe("KinPictures", () => {
         assert.strictEqual((yield* Fiber.join(first))._tag, "made");
         assert.lengthOf(fake.calls, 1);
         assert.strictEqual((yield* (yield* KinPictures).get(asOwner, { orgId })).usedThisMonth, 3);
+      }),
+    );
+  });
+
+  it.effect("a retried request with the same key makes and counts nothing twice", () => {
+    const { fake, run } = harness();
+    return run(
+      Effect.gen(function* () {
+        yield* setUp;
+        yield* connect();
+        const retryKey = "kin-picture:wake-1:cafe";
+        // A failed call frees its key: the retry makes the picture.
+        fake.control.mode = "down";
+        assert.deepInclude(yield* ask({ retryKey }), { reason: "unavailable" });
+        fake.control.mode = "ok";
+        const inCall = yield* Deferred.make<void>();
+        const answer = yield* Deferred.make<void>();
+        fake.control.before = Deferred.succeed(inCall, undefined).pipe(
+          Effect.andThen(Deferred.await(answer)),
+        );
+        const first = yield* Effect.forkChild(ask({ retryKey }));
+        yield* Deferred.await(inCall);
+        // The same call while the first is still with the service waits for it.
+        const meanwhile = yield* Effect.flip(ask({ retryKey }));
+        assert.include(meanwhile, { reason: "unavailable" });
+        assert.match(meanwhile.message, /^Kin is still making this picture/);
+        yield* Deferred.succeed(answer, undefined);
+        const made = yield* Fiber.join(first);
+        assert.strictEqual(made._tag, "made");
+        assert.deepStrictEqual(yield* ask({ retryKey }), made);
+        assert.lengthOf(fake.calls, 2);
+        assert.deepStrictEqual(yield* counts, [
+          { month: "2026-11", count: 1, state: "made", person: "meera" },
+        ]);
+        // The key is one asker's: anyone else's call under it is refused.
+        assert.include(yield* Effect.flip(ask({ retryKey, askedBy: KinPersonId.make("dev") })), {
+          reason: "not_allowed",
+        });
+        assert.lengthOf(fake.calls, 2);
       }),
     );
   });
@@ -411,7 +450,7 @@ describe("KinPictures", () => {
         const off = yield* pictures.set(asOwner, { orgId, disconnect: true });
         assert.deepInclude(off, { connected: false, savedAt: null, monthlyLimit: 20 });
         assert.strictEqual(keys.size, 0);
-        assert.deepInclude(yield* ask(), { sentence: PICTURE_SENTENCES.no_key });
+        assert.deepInclude(yield* ask(), { sentence: GENERATE_SENTENCES.no_key });
         // Back again, the limit chosen before stands.
         assert.deepInclude(yield* connect(), { connected: true, monthlyLimit: 20 });
       }),

@@ -77,14 +77,15 @@ features:
       - .agents/skills/verify-kin/scripts/card-gallery.sh
 
   - id: chat-pictures
-    name: Pictures an agent designs, sent as image files and kept in Docs
+    name: Pictures an agent designs or generates, sent as image files and kept in Docs
     tab: chats
     web: [chat]
     phone: [tab:chats, KinChat]
     roles: { owner: both, co_owner: both, lead: both, member: both }
     note: >-
-      A picture is drawn on the host from one page of HTML at a named size and arrives under the
-      reply as an image; it is also a doc whose versions are each drawing. A teammate's picture is
+      A picture is drawn on the host from one page of HTML at a named size, or generated from a
+      prompt by the picture service and counted toward its monthly limit, and arrives under the
+      reply as an image; it is also a doc whose versions are each picture. A teammate's picture is
       theirs, the owner's and the chat's readers', and no one else's.
     tools: [kin_picture]
     proof:

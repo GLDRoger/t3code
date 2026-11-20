@@ -21,6 +21,12 @@ export const KinPictureSize = Schema.Literals([
 ]);
 export type KinPictureSize = typeof KinPictureSize.Type;
 
+/** A named size in the file's own pixels. */
+export const pictureOutput = (size: KinPictureSize) => ({
+  width: KIN_PICTURE_SIZES[size].width * KIN_PICTURE_SCALE,
+  height: KIN_PICTURE_SIZES[size].height * KIN_PICTURE_SCALE,
+});
+
 const sizeList = Object.entries(KIN_PICTURE_SIZES)
   .map(([name, size]) => `${name} ${size.width}×${size.height}`)
   .join(", ");

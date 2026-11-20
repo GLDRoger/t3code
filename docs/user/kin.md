@@ -118,7 +118,10 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   (from the company profile). It arrives under the reply as a picture you can save, share, attach
   to an email or use in a social post, and it is kept in Docs. Ask for a change ("make the
   headline bigger") and the new one becomes the next version of the same doc. A picture made for a
-  teammate opens for them, the owner and co-owners, and whoever is in that chat.
+  teammate opens for them, the owner and co-owners, and whoever is in that chat. For a photo-like
+  or illustrated picture, an owner or co-owner first connects a picture service under **Settings →
+  Connections → Pictures** with the company's own key and a monthly limit; each generated picture
+  counts toward it, whoever asked. Designed pictures need no key and count toward nothing.
 - **It asks with cards.** A question with choices, a chart, or something to confirm comes as a card
   in the chat. Tapping an answer answers the agent; it is never an approval. An answer with a line
   under it, such as Mark W-4 “Set up the API” done, does exactly that when you tap it, with no

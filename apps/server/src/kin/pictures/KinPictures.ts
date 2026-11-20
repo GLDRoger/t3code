@@ -9,7 +9,7 @@ import {
   KinChatId,
   KinMessageId,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
-  type ChatImageAttachment,
+  ChatImageAttachment,
   type KinAgentId,
   type KinOrgId,
   type KinPersonId,
@@ -25,6 +25,7 @@ import * as Effect from "effect/Effect";
 import * as HttpClient from "effect/http/HttpClient";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinChatService } from "../chat/KinChatService.ts";
@@ -39,19 +40,7 @@ import { textLocale } from "../work/companyProfile.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { ImageVendorError, type KinImageVendor, type PixelSize } from "./ImageVendor.ts";
 import { openAiImages } from "./OpenAiImages.ts";
-
-/** The sizes an agent names, in output pixels, and what each is for. */
-export const PICTURE_SIZES = {
-  square: { width: 1080, height: 1080 },
-  portrait: { width: 1080, height: 1350 },
-  story: { width: 1080, height: 1920 },
-  landscape: { width: 1920, height: 1080 },
-  /** A link or LinkedIn card. */
-  link: { width: 1200, height: 628 },
-  /** A4 portrait. */
-  page: { width: 1588, height: 2246 },
-} as const satisfies Record<string, PixelSize>;
-export type PictureSizeName = keyof typeof PICTURE_SIZES;
+import { KIN_PICTURE_SIZES, type KinPictureSize, pictureOutput } from "./sizes.ts";
 
 /** Generation is slow; past this the vendor counts as down and nothing is counted. */
 export const PICTURE_TIMEOUT = Duration.seconds(120);
@@ -60,19 +49,21 @@ const STALE_RESERVATION_MS = 10 * 60_000;
 const WARN_PERCENT = 80;
 const MAX_PROMPT = 32_000;
 
-export type PictureRequest = {
+export type GenerateRequest = {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
   /** Who asked, when a person did. */
   readonly askedBy: KinPersonId | null;
   readonly prompt: string;
-  readonly size: PictureSizeName;
+  readonly size: KinPictureSize;
   /** 1 to 4. */
   readonly count: number;
+  /** The same key again returns what it made the first time, made and counted once. */
+  readonly retryKey?: string;
 };
 
-export type PictureRefusal = "no_key" | "limit" | "refused" | "key_rejected" | "unavailable";
-export type PictureResult =
+export type GenerateRefusal = "no_key" | "limit" | "refused" | "key_rejected" | "unavailable";
+export type GenerateResult =
   | {
       readonly _tag: "made";
       /** Stored by content, as documents' files are; the vendor's URLs are never kept. */
@@ -83,11 +74,11 @@ export type PictureResult =
       /** What differs from what was asked: the size, or fewer pictures than asked for. */
       readonly note: string | null;
     }
-  | { readonly _tag: "refused"; readonly reason: PictureRefusal; readonly sentence: string };
+  | { readonly _tag: "refused"; readonly reason: GenerateRefusal; readonly sentence: string };
 
 const WHERE = "Settings → Connections → Pictures";
 /** The server's own words for every way a picture isn't made, each saying who can fix it. */
-export const PICTURE_SENTENCES = {
+export const GENERATE_SENTENCES = {
   no_key: `No picture service is connected yet. An owner or co-owner can connect one in ${WHERE}.`,
   limit: (limit: number, resetsOn: string) =>
     `This month's ${limit} generated pictures are used. An owner or co-owner can raise the limit in ${WHERE}; it resets on ${resetsOn}.`,
@@ -97,6 +88,23 @@ export const PICTURE_SENTENCES = {
   unavailable:
     "The picture service didn't answer. Nothing was counted; try again in a few minutes.",
 } as const;
+
+/** What a made generation returned, kept on its count row so a retry returns it again. */
+const MadeJson = Schema.fromJsonString(
+  Schema.Struct({
+    files: Schema.Array(ChatImageAttachment),
+    size: Schema.Struct({ width: Schema.Number, height: Schema.Number }),
+    vendor: Schema.String,
+    model: Schema.String,
+    note: Schema.NullOr(Schema.String),
+  }),
+);
+const decodeMade = Schema.decodeUnknownOption(MadeJson);
+const encodeMade = Schema.encodeSync(MadeJson);
+const stillMaking = new KinChatError({
+  reason: "unavailable",
+  message: "Kin is still making this picture, so nothing new was made. Try again in a minute.",
+});
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const notFound = (message: string) => new KinChatError({ reason: "not_found", message });
@@ -156,7 +164,7 @@ export class KinPictures extends Context.Service<
      * Makes pictures from a prompt, counted against the company's month. Trusted server callers
      * only (the agent tool): the agent and the person are checked against the org, not the caller.
      */
-    readonly generate: (request: PictureRequest) => Effect.Effect<PictureResult, KinChatError>;
+    readonly generate: (request: GenerateRequest) => Effect.Effect<GenerateResult, KinChatError>;
   }
 >()("t3/kin/pictures/KinPictures") {}
 
@@ -278,7 +286,7 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
   );
 
   /** Holds the count before the call: two requests at once can't pass the limit together. */
-  const reserve = Effect.fn("KinPictures.reserve")(function* (request: PictureRequest) {
+  const reserve = Effect.fn("KinPictures.reserve")(function* (request: GenerateRequest) {
     const { now, month, resetsOn } = yield* monthNow(request.orgId);
     return yield* Effect.gen(function* () {
       const agents = yield* sql`SELECT 1 FROM kin_agents WHERE org_id = ${request.orgId}
@@ -293,18 +301,40 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
       const limit = settings?.monthlyLimit ?? null;
       yield* sql`DELETE FROM kin_picture_counts WHERE org_id = ${request.orgId}
         AND state = 'reserved' AND at <= ${now - STALE_RESERVATION_MS}`;
+      const countId =
+        request.retryKey === undefined
+          ? `pic_${NodeCrypto.randomBytes(10).toString("hex")}`
+          : `pic_${NodeCrypto.createHash("sha256").update(request.retryKey).digest("hex").slice(0, 20)}`;
+      const [earlier] = yield* sql<{
+        agentId: string;
+        personId: string | null;
+        made: string | null;
+      }>`SELECT agent_id AS "agentId", person_id AS "personId", made_json AS made
+        FROM kin_picture_counts WHERE org_id = ${request.orgId} AND count_id = ${countId}
+        ORDER BY count_id`;
+      if (earlier !== undefined) {
+        if (earlier.agentId !== request.agentId || earlier.personId !== request.askedBy)
+          return yield* new KinChatError({
+            reason: "not_allowed",
+            message: "This picture was asked for by someone else.",
+          });
+        const made = earlier.made === null ? undefined : decodeMade(earlier.made);
+        if (made === undefined || Option.isNone(made)) return yield* stillMaking;
+        return { _tag: "done" as const, made: made.value };
+      }
       const before = yield* used(request.orgId, month, now);
       const take = limit === null ? request.count : Math.min(request.count, limit - before);
       if (take <= 0)
         return {
           _tag: "full" as const,
-          sentence: PICTURE_SENTENCES.limit(limit ?? 0, yield* dayName(request.orgId, resetsOn)),
+          sentence: GENERATE_SENTENCES.limit(limit ?? 0, yield* dayName(request.orgId, resetsOn)),
         };
-      const countId = `pic_${NodeCrypto.randomBytes(10).toString("hex")}`;
-      yield* sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id, person_id,
-          count, state, at)
+      const inserted = yield* sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id,
+          person_id, count, state, at)
         VALUES (${request.orgId}, ${countId}, ${month}, ${request.agentId}, ${request.askedBy},
-          ${take}, 'reserved', ${now})`;
+          ${take}, 'reserved', ${now})
+        ON CONFLICT (org_id, count_id) DO NOTHING RETURNING count_id`;
+      if (inserted.length === 0) return yield* stillMaking;
       return {
         _tag: "held" as const,
         countId,
@@ -360,26 +390,27 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
 
   const sentenceOf = (error: ImageVendorError) =>
     error.kind === "refused"
-      ? PICTURE_SENTENCES.refused(error.reason?.trim().replace(/[.\s]+$/, "") || null)
-      : PICTURE_SENTENCES[error.kind];
+      ? GENERATE_SENTENCES.refused(error.reason?.trim().replace(/[.\s]+$/, "") || null)
+      : GENERATE_SENTENCES[error.kind];
 
   const generate = Effect.fn("KinPictures.generate")(
-    function* (request: PictureRequest) {
+    function* (request: GenerateRequest) {
       const prompt = request.prompt.trim();
       if (prompt === "" || prompt.length > MAX_PROMPT)
         return yield* invalid(`A picture's prompt is 1 to ${MAX_PROMPT} characters.`);
       if (!Number.isInteger(request.count) || request.count < 1 || request.count > 4)
         return yield* invalid("count is 1 to 4 pictures.");
-      const wanted = PICTURE_SIZES[request.size];
-      if (wanted === undefined)
-        return yield* invalid(`size is one of ${Object.keys(PICTURE_SIZES).join(", ")}.`);
+      if (!Object.hasOwn(KIN_PICTURE_SIZES, request.size))
+        return yield* invalid(`size is one of ${Object.keys(KIN_PICTURE_SIZES).join(", ")}.`);
+      const wanted = pictureOutput(request.size);
       const settings = yield* settingsOf(request.orgId);
       const key = yield* secrets.getPicturesKey(vendor.name);
       if (settings?.keySavedAt == null || Option.isNone(key))
-        return { _tag: "refused", reason: "no_key", sentence: PICTURE_SENTENCES.no_key } as const;
+        return { _tag: "refused", reason: "no_key", sentence: GENERATE_SENTENCES.no_key } as const;
       const held = yield* reserve(request);
       if (held._tag === "full")
         return { _tag: "refused", reason: "limit", sentence: held.sentence } as const;
+      if (held._tag === "done") return { _tag: "made", ...held.made } as const;
       const size = nearestSize(vendor.sizes, wanted);
       const answer = yield* vendor
         .generate(key.value, { model: held.model, prompt, size, count: held.take })
@@ -412,7 +443,7 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
           _tag: "refused",
           reason,
           sentence:
-            answer._tag === "failed" ? sentenceOf(answer.error) : PICTURE_SENTENCES.unavailable,
+            answer._tag === "failed" ? sentenceOf(answer.error) : GENERATE_SENTENCES.unavailable,
         } as const;
       }
       const files = yield* Effect.forEach(images, (image, index) =>
@@ -432,10 +463,6 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
             })),
           ),
       ).pipe(Effect.tapError(() => release(request.orgId, held.countId)));
-      yield* sql`UPDATE kin_picture_counts SET state = 'made', count = ${files.length}
-        WHERE org_id = ${request.orgId} AND count_id = ${held.countId}`.pipe(sql.withTransaction);
-      yield* refreshes.touch(request.orgId, "connections");
-      yield* warnIfNear(request.orgId, held);
       const notes = [
         size.width === wanted.width && size.height === wanted.height
           ? null
@@ -446,14 +473,19 @@ const make = Effect.fn("KinPictures.make")(function* (vendor: KinImageVendor) {
             ? `The picture service made ${files.length} of the ${request.count} asked for; only those were counted.`
             : null,
       ].filter((note) => note !== null);
-      return {
-        _tag: "made",
+      const made = {
         files,
         size,
         vendor: vendor.label,
         model: held.model,
         note: notes.length === 0 ? null : notes.join(" "),
-      } as const;
+      };
+      yield* sql`UPDATE kin_picture_counts SET state = 'made', count = ${files.length},
+          made_json = ${encodeMade(made)}
+        WHERE org_id = ${request.orgId} AND count_id = ${held.countId}`.pipe(sql.withTransaction);
+      yield* refreshes.touch(request.orgId, "connections");
+      yield* warnIfNear(request.orgId, held);
+      return { _tag: "made", ...made } as const;
     },
     Effect.catchTags({
       SqlError: (cause) =>

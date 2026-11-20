@@ -20,6 +20,7 @@ import * as Lead from "../lead/LeadMemory.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { makePicture, PictureInput, PictureResult } from "./picture.ts";
+import { KinPictures } from "./KinPictures.ts";
 import { KinPictureRenderer } from "./renderer.ts";
 import { KIN_PICTURE_PAGE_GUIDE } from "./sizes.ts";
 
@@ -50,6 +51,7 @@ export const KinPictureToolkit = Toolkit.make(
       KinToolchain,
       KinLevelGate,
       KinPictureRenderer,
+      KinPictures,
       SqlClient.SqlClient,
       FileSystem.FileSystem,
       ServerConfig,
