@@ -38,17 +38,15 @@ import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinTriggerService from "./KinTriggerService.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
 import * as Pings from "./pings.ts";
+import { DAY_MS, HOUR_MS, MINUTE_MS } from "../durations.ts";
 
-const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
 const WATCHDOG_EVERY_MS: Readonly<Record<KinWatchdog, number>> = {
-  github_recheck: 10 * MINUTE,
-  stale_review: 30 * MINUTE,
-  promise_overdue: 30 * MINUTE,
-  objective_at_risk: 6 * HOUR,
-  index_freshness: HOUR,
-  trigger_reconcile: 15 * MINUTE,
+  github_recheck: 10 * MINUTE_MS,
+  stale_review: 30 * MINUTE_MS,
+  promise_overdue: 30 * MINUTE_MS,
+  objective_at_risk: 6 * HOUR_MS,
+  index_freshness: HOUR_MS,
+  trigger_reconcile: 15 * MINUTE_MS,
 };
 const READ_TIMEOUT = "30 seconds";
 const PAGE = 100;
@@ -459,7 +457,7 @@ const make = Effect.gen(function* () {
         const state = github.state(link);
         if (state?.kind !== "pull" || state.state !== "open") continue;
         for (const request of state.reviewRequests) {
-          if (now - request.requestedAt < DAY) continue;
+          if (now - request.requestedAt < DAY_MS) continue;
           const [person] = yield* sql<{ personId: string }>`SELECT person_id AS "personId"
             FROM kin_people WHERE org_id = ${orgId} AND lower(github_login) = lower(${request.login})
             ORDER BY person_id`.pipe(NodeSqliteClient.readOnly);
@@ -485,7 +483,10 @@ const make = Effect.gen(function* () {
     const soon = (yield* openItems(orgId)).filter((item) => {
       const due = memoryDateMillis(item.due);
       return (
-        item.kind === "objective" && due > now && due <= now + 3 * DAY && linksOf(item).length > 0
+        item.kind === "objective" &&
+        due > now &&
+        due <= now + 3 * DAY_MS &&
+        linksOf(item).length > 0
       );
     });
     if (soon.length === 0) return;

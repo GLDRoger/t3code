@@ -20,6 +20,7 @@ import {
 } from "./MailProvider.ts";
 import { looksLikeSignInMail, senderCheck, WITHHELD } from "./MailText.ts";
 import type { ListedTool } from "./Pinning.ts";
+import { DAY_MS } from "../durations.ts";
 
 /** Kin's mail tools, arguments, errors, cutting and limits: the same for every mail vendor. */
 
@@ -59,7 +60,6 @@ export const answeredWith = (error: KinGatewayError, status: number) =>
 const MAX_RECIPIENTS = 10;
 const MESSAGE_CHARS = 12_000;
 const PREVIEW_CHARS = 300;
-const DAY_MS = 24 * 60 * 60 * 1000;
 const LINE_BREAK = /[\r\n]/;
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 

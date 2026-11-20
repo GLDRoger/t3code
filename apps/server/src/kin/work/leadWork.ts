@@ -140,6 +140,7 @@ import { type AssignNotice, movedNotices, tellHolding } from "./assignNotices.ts
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
+import { DAY_MS } from "../durations.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -1763,7 +1764,6 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
 });
 export const query = leadTool("KinWorkTools.query", runQuery);
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const TOTALS_BY: Record<NonNullable<typeof QueryInput.Type.groupBy>, TotalsBy> = {
   client: "party",
   project: "project",
@@ -2671,7 +2671,6 @@ const PARTY_KIND: Partial<Record<string, KinPartyKind>> = {
   receipts: "client",
 };
 
-const DAY = 86_400_000;
 const NEAR_DAYS = 3;
 const REPEAT_CANDIDATES = 2000;
 const REPEATS_SHOWN = 5;
@@ -2703,7 +2702,7 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
     paid === undefined
       ? sql`r.state NOT IN ('done', 'dropped')`
       : sql`r.state != 'dropped' AND r.amount_minor = ${paid.minor} AND r.currency = ${paid.currency}
-          AND abs(r.date_at - ${row.dateAt}) <= ${(NEAR_DAYS + 1) * DAY}`;
+          AND abs(r.date_at - ${row.dateAt}) <= ${(NEAR_DAYS + 1) * DAY_MS}`;
   const rows = yield* sql<{
     key: string;
     title: string;
@@ -2734,7 +2733,7 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
     if (
       paid !== undefined &&
       !sameDay &&
-      Math.abs(Date.parse(day(one.dateAt)!) - Date.parse(day(row.dateAt)!)) > NEAR_DAYS * DAY
+      Math.abs(Date.parse(day(one.dateAt)!) - Date.parse(day(row.dateAt)!)) > NEAR_DAYS * DAY_MS
     )
       return [];
     const differs = [

@@ -39,6 +39,7 @@ import type * as Statement from "effect/sql/Statement";
 import { listNameOf, parseFields } from "./lists.ts";
 import { isBuiltIn } from "./registers.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
+import { DAY_MS } from "../durations.ts";
 
 /** The plain rows behind `KinRecords`: reads and the shapes they decode into. No writes here. */
 
@@ -233,8 +234,6 @@ export const countedEntry = (
 export const countedPayment = (sql: SqlClient.SqlClient) =>
   sql`p.voided_at IS NULL AND ${countedEntry(sql)}`;
 
-const DAY = 86_400_000;
-
 /** `termsDays` in SQL, for the forms its test names; null where it finds no days. */
 const termsDaysSql = (sql: SqlClient.SqlClient, terms: Statement.Fragment) => sql`(
   SELECT CASE WHEN days BETWEEN 0 AND 365 THEN days END FROM (
@@ -260,7 +259,7 @@ const termsDaysSql = (sql: SqlClient.SqlClient, terms: Statement.Fragment) => sq
  * Overdue is past it, the same in the pulse, Money, the client page and every brief.
  */
 export const invoiceDue = (sql: SqlClient.SqlClient) => sql`COALESCE(r.due_at,
-  r.date_at + ${DAY} * ${termsDaysSql(
+  r.date_at + ${DAY_MS} * ${termsDaysSql(
     sql,
     sql`(SELECT json_extract(c.fields_json, '$.terms') FROM kin_records c
       WHERE c.org_id = r.org_id AND c.register_id = 'clients' AND c.record_id = COALESCE(r.party_id,
@@ -974,7 +973,7 @@ const calendarDay = (ms: number, zone: string) =>
  * day `dueAt` falls on to today's. Due the 8th, on the 20th that is 12; due today, 0.
  */
 export const daysOverdue = (dueAt: number, now: number, zone: string) =>
-  Math.max(0, Math.round((calendarDay(now, zone) - calendarDay(dueAt, zone)) / DAY));
+  Math.max(0, Math.round((calendarDay(now, zone) - calendarDay(dueAt, zone)) / DAY_MS));
 /** How long an owed invoice is overdue, after "overdue": "for 12 days" counted as `daysOverdue`. */
 export const overdueFor = (dueAt: number, days: number, now: number, zone: string) =>
   days >= 2 && days < 60

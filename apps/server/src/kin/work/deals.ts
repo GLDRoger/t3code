@@ -84,6 +84,7 @@ import {
   viewerOfPeople,
   type KinViewer,
 } from "./teamView.ts";
+import { DAY_MS } from "../durations.ts";
 
 /**
  * KinDeals. Every rule is decided here, in the write's transaction, from stored rows; `KinRecords`
@@ -1030,7 +1031,6 @@ export const pipelineConcerns = Effect.fn("KinDeals.pipelineConcerns")(function*
 
 // Numbers: every figure counted here, in SQL, over the deals the viewer sees (`crmSeenBy`).
 
-const DAY_MS = 86_400_000;
 const WIN_RATE_DAYS = 90;
 const WEEK_ROWS_CAP = 50;
 

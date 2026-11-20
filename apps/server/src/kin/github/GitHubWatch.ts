@@ -36,6 +36,7 @@ import {
 import { checkGuards } from "./branchGuard.ts";
 import { companyRepo, knownRepos, type KnownRepo, repoList, watchRow } from "./githubWatchStore.ts";
 import { gitHubApp } from "./KinGitHubApp.ts";
+import { HOUR_MS, MINUTE_MS } from "../durations.ts";
 
 /**
  * Watches GitHub with the owner's own login: notifications and his own events, both conditional, so
@@ -44,17 +45,15 @@ import { gitHubApp } from "./KinGitHubApp.ts";
  * goes out as its GitHub App where the App is installed (`KinGitHubApp.ts`).
  */
 
-const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
-const DEFAULT_INTERVAL_MS = MINUTE;
-const RETRY_MS = 5 * MINUTE;
-const REPOS_EVERY_MS = 6 * HOUR;
+const DEFAULT_INTERVAL_MS = MINUTE_MS;
+const RETRY_MS = 5 * MINUTE_MS;
+const REPOS_EVERY_MS = 6 * HOUR_MS;
 /** Re-read a little before the last look, so a comment GitHub lists late is still seen. */
-const OVERLAP_MS = 5 * MINUTE;
+const OVERLAP_MS = 5 * MINUTE_MS;
 /** After downtime: older triggers are stored as stale, and one look wakes at most this many. */
-const STALE_MS = 24 * HOUR;
+const STALE_MS = 24 * HOUR_MS;
 /** How long an agent's sent text is known as its own; triggers older than a day are stale anyway. */
-const POSTS_KEPT_MS = 7 * 24 * HOUR;
+const POSTS_KEPT_MS = 7 * 24 * HOUR_MS;
 export const WAKES_PER_LOOK = 10;
 const THREADS_PER_LOOK = 30;
 /** Replies an agent makes in one issue or PR in an hour before it stops and says so. */
@@ -512,7 +511,7 @@ export const make = Effect.gen(function* () {
         if (already !== undefined) return "seen" as const;
         const [recent] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
           FROM kin_github_handled WHERE org_id = ${orgId} AND repo = ${repo}
-            AND number = ${thread.number} AND outcome = 'woke' AND at > ${now - HOUR}`;
+            AND number = ${thread.number} AND outcome = 'woke' AND at > ${now - HOUR_MS}`;
         // Past the look's cap, it waits for the next look, which reads from the same point.
         if (now - input.happenedAt <= STALE_MS && input.woken >= WAKES_PER_LOOK)
           return "later" as const;
@@ -572,7 +571,7 @@ export const make = Effect.gen(function* () {
     agentName: string,
     now: number,
   ) {
-    const key = `capnote:${thread.repo.toLowerCase()}#${thread.number}:${Math.floor(now / HOUR)}`;
+    const key = `capnote:${thread.repo.toLowerCase()}#${thread.number}:${Math.floor(now / HOUR_MS)}`;
     const inserted = yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number,
         agent_id, outcome, at)
       VALUES (${orgId}, ${key}, ${thread.repo.toLowerCase()}, ${thread.number}, NULL, 'note', ${now})

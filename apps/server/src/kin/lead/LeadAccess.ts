@@ -2,6 +2,7 @@ import type { KinAgentId, KinChatId, KinOrgId, KinPersonId } from "@t3tools/cont
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
+import { DAY_MS } from "../durations.ts";
 
 type Pair = {
   readonly orgId: KinOrgId;
@@ -26,7 +27,6 @@ export const teamAgent = Effect.fn("KinLeadAccess.teamAgent")(function* (orgId: 
   return row?.agentId ?? null;
 });
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 /** Lead turns one teammate may ask for in any 24 hours, by message, tap or task, unless configured. */
 const DEFAULT_TEAMMATE_DAILY_TURNS = 50;
 export const dailyTurns = Config.Int("KIN_TEAMMATE_DAILY_TURNS").pipe(

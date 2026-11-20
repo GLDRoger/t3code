@@ -93,6 +93,7 @@ import {
   teamSeq,
   teamVisible,
 } from "./teamView.ts";
+import { DAY_MS, WEEK_MS } from "../durations.ts";
 
 /**
  * What people's clients read and do in Work. The owner reads and does everything; a teammate
@@ -103,7 +104,6 @@ export const ownerOnly = new KinChatError({
   reason: "not_allowed",
   message: "Only the owner or a co-owner can do that in Work.",
 });
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const theOwner = Effect.fn("KinWork.owner")(function* (
   people: ReadonlyArray<PersonIdentity>,
@@ -447,7 +447,6 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
     (yield* listDef(input.orgId, input.list).pipe(workFailure)) === undefined
   )
     return yield* unknownList(input.list);
-  const DAY_MS = 24 * 60 * 60 * 1000;
   const zone =
     input.dateFrom === undefined && input.dateTo === undefined
       ? "UTC"

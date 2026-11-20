@@ -20,10 +20,10 @@ import { coalesced, hashedLive, viewHash } from "../hashedLive.ts";
 import { viewerIn } from "../pulse/people.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import * as KinOpen from "./KinOpen.ts";
+import { HOUR_MS } from "../durations.ts";
 
 /** The open list on people's screens: `KinOpen.compute` as the session's person, each time. */
 
-const HOUR_MS = 3_600_000;
 /** Chat events that can move what waits on someone; their data is never forwarded. */
 const WAITING_EVENTS = new Set(["waiting.updated", "widget.updated", "member.removed"]);
 

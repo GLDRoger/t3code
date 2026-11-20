@@ -14,15 +14,13 @@ import type * as Statement from "effect/sql/Statement";
 import { type playbookThreshold, playbookThresholds } from "./playbooks.ts";
 import { iso, issuedNumber, keptEntry } from "./recordRows.ts";
 import { crmSeenBy, KIN_OWNER_LEVEL, type KinViewer } from "./teamView.ts";
+import { DAY_MS, HOUR_MS } from "../durations.ts";
 
 /**
  * Contact with a client: what someone logged, and what Kin already holds (an invoice or quote
  * issued, a payment received, a meeting entry that has passed), read together on every read.
  * A chat that mentions a client is not contact. Last contact is the newest of these.
  */
-
-const DAY_MS = 24 * 60 * 60 * 1000;
-const HOUR_MS = 60 * 60 * 1000;
 
 type Sql = SqlClient.SqlClient;
 type TouchSql = {

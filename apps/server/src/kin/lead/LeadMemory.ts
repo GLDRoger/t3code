@@ -74,6 +74,7 @@ import { validZone } from "../triggers/quietHold.ts";
 import { stillAway } from "../triggers/quietHours.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { pauseTriggers } from "../triggers/KinTriggerStore.ts";
+import { DAY_MS } from "../durations.ts";
 
 const text = Schema.String.check(Schema.isMaxLength(100_000));
 const date = Schema.String.check(
@@ -246,7 +247,6 @@ const SHARE_NEEDS_OWNER =
 // What a teammate's messages can cause shared turns to save, per person per day.
 const SHARED_WRITES_PER_DAY = 20;
 const SHARED_BYTES_PER_DAY = 20_000;
-const DAY_MS = 24 * 60 * 60 * 1000;
 const busy = () =>
   new KinChatError({
     reason: "unavailable",

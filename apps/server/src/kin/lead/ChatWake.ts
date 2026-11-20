@@ -33,6 +33,7 @@ import { teammatesLimited } from "./KinBudget.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import * as Reach from "./Reach.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
+import { HOUR_MS } from "../durations.ts";
 
 const decodeTap = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
@@ -73,7 +74,6 @@ const CATCH_UP_WINDOW = { hours: 24 } as const;
 const CATCH_UP_LIMIT_PER_ORG = 200;
 /** Kin's line once a teammate's day of turns is used up, and how often it is said again. */
 const LIMIT_ID = "kin-dm-limit-";
-const HOUR_MS = 60 * 60 * 1000;
 
 /**
  * Turns committed human chat posts and widget taps into `chat.message` and `widget.action`
