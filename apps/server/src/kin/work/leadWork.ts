@@ -168,6 +168,15 @@ const Address = KinToolText(500, "A client's billing address, as its invoices sh
 export const Client = KinToolText(200, "A client or vendor: its key (C-3) or exact name.");
 export const Project = KinToolText(200, "A project: its key (P-2) or exact name.");
 const Detail = KinToolText(200);
+/** A client's kind on create; a prospect is a client we haven't sold to yet. */
+const NewPartyKind = Schema.Literals(["client", "vendor", "prospect"]);
+const CameFrom = KinToolText(
+  120,
+  "A client's: where it came from, such as a referral or an event.",
+);
+const PartyTags = Schema.Array(KinToolText(60))
+  .check(Schema.isMaxLength(20))
+  .annotate({ description: "A client's: the company's own words for it." });
 const Terms = KinToolText(4_000);
 const Repos = Schema.Array(KinRepoName).check(Schema.isMaxLength(20));
 
@@ -380,7 +389,9 @@ const CreateRow = Schema.Struct({
   client: Schema.optional(Client),
   project: Schema.optional(Project),
   repo: Schema.optional(KinRepoName),
-  kind: Schema.optional(KinPartyKind),
+  kind: Schema.optional(NewPartyKind),
+  cameFrom: Schema.optional(CameFrom),
+  tags: Schema.optional(PartyTags),
   role: Schema.optional(Detail),
   email: Schema.optional(Detail),
   phone: Schema.optional(Detail),
@@ -1027,6 +1038,15 @@ const fieldsFrom = (row: {
       ["role", "email", "phone", "terms", "repos", "address", "gstin", "placeOfSupply"] as const
     ).flatMap((key) => (row[key] === undefined ? [] : [[key, row[key]]])),
   ) as Record<string, string | ReadonlyArray<string> | null>;
+
+/** Where a client came from and its tags, under the keys Clients stores them by. */
+const partyWords = (row: {
+  readonly cameFrom?: string | undefined;
+  readonly tags?: ReadonlyArray<string> | undefined;
+}): Record<string, string | ReadonlyArray<string>> => ({
+  ...(row.cameFrom === undefined ? {} : { source: row.cameFrom }),
+  ...(row.tags === undefined || row.tags.length === 0 ? {} : { tags: [...new Set(row.tags)] }),
+});
 
 /** A list a lead named, as this org has it. */
 const listFor = Effect.fn("KinWorkTools.list")(function* (lead: Lead, id: string) {
@@ -1883,7 +1903,12 @@ const createRow = Effect.fnUntraced(function* (
   )
     return yield* invalid("A goal needs its measure and target, and due as its date.");
   const goal = yield* goalFields(lead.orgId, row);
-  const fields = { ...fieldsFrom(row), ...spineSet, ...goal };
+  const fields = {
+    ...fieldsFrom(row),
+    ...(list === "clients" ? partyWords(row) : {}),
+    ...spineSet,
+    ...goal,
+  };
   if (existing !== undefined) {
     const found = yield* records.get(lead.orgId, existing.key);
     // The same details again is a retry; new ones are a change, which only record_update makes.

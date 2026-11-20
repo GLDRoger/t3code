@@ -2173,7 +2173,7 @@ it.effect(
       for (const extra of [{ terms: "Invented net 30" }, { owner: "owner" }])
         assert.include(
           (yield* refused([
-            { list: "clients", title: "Invented Tallmoor Freight", category: "prospect", ...extra },
+            { list: "clients", title: "Invented Tallmoor Freight", kind: "prospect", ...extra },
           ])).message,
           "Only the owner or a co-owner sets a client's terms",
         );
@@ -2186,7 +2186,9 @@ it.effect(
           {
             list: "clients",
             title: "Invented Tallmoor Freight",
-            category: "prospect",
+            kind: "prospect",
+            cameFrom: "Invented trade fair",
+            tags: ["invented"],
           },
           {
             title: "Invented: call Tallmoor",
@@ -2198,7 +2200,12 @@ it.effect(
       });
       const [prospect, call] = made.records;
       const page = yield* Clients.party([mate], { orgId, key: prospect!.key });
-      assert.deepInclude(page.party, { prospect: true, owner: me });
+      assert.deepInclude(page.party, {
+        prospect: true,
+        source: "Invented trade fair",
+        tags: ["invented"],
+        owner: me,
+      });
       const row = (yield* Clients.parties([mate], { orgId, owner: me })).parties.find(
         (one) => one.key === prospect!.key,
       );
@@ -2208,7 +2215,7 @@ it.effect(
       // Clients switched off, their agent adds no prospect either.
       yield* sql`UPDATE kin_people SET sees_clients = 0 WHERE person_id = ${mateId}`;
       assert.include(
-        yield* refused([{ list: "clients", title: "Invented Tallmoor Two", category: "prospect" }]),
+        yield* refused([{ list: "clients", title: "Invented Tallmoor Two", kind: "prospect" }]),
         { reason: "not_allowed" },
       );
       assert.lengthOf(yield* stored(), 1);
