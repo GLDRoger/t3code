@@ -77,6 +77,8 @@ import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { KinTeam } from "../team/KinTeam.ts";
 import { KinHandoff } from "./Handoff.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
+import { reviewAskSettled } from "../github/reviewAsk.ts";
 import * as WorkFor from "./workFor.ts";
 
 /** How long one wake-up may run before it is interrupted. */
@@ -168,6 +170,7 @@ const make = Effect.gen(function* () {
   const bridge = yield* Effect.serviceOption(KinReplyBridge);
   const team = yield* Effect.serviceOption(KinTeam);
   const handoff = yield* Effect.serviceOption(KinHandoff);
+  const chat = yield* Effect.serviceOption(KinChatService);
   const endReply = (row: {
     readonly orgId: KinOrgId;
     readonly agentId: KinAgentId;
@@ -191,6 +194,11 @@ const make = Effect.gen(function* () {
       yield* handoff.value.reportBack(row);
       if (owed.length > 0) yield* handoff.value.workDone({ ...row, owed });
     }
+    if (Option.isSome(chat))
+      yield* reviewAskSettled(row).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.provideService(KinChatService, chat.value),
+      );
     if (Option.isNone(bridge) || Option.isNone(lane)) return;
     // Something visible already happened, so a silent retry could repeat it; say so instead.
     // Otherwise the person waiting hears at once that it is retrying, or has stopped. A run

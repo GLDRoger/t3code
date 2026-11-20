@@ -40,7 +40,7 @@ export const dailyTurns = Config.Int("KIN_TEAMMATE_DAILY_TURNS").pipe(
 );
 
 /**
- * The lead turns this person's messages, taps and tasks have asked for in the last 24 hours, in every
+ * The lead turns this person's messages, taps, tasks and asked reviews have asked for in the last 24 hours, in every
  * chat and of every lead they do not own: messages answered in one turn count once, dropped ones
  * not at all.
  * `oldestAt` is when the earliest of them was sent, so the window is known to move on.
@@ -56,9 +56,10 @@ export const recentTurns = Effect.fn("KinLeadAccess.recentTurns")(function* (inp
       MIN(e.received_at) AS "oldestAt"
     FROM kin_events e
     JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
-    WHERE e.org_id = ${input.orgId} AND e.tag IN ('chat.message', 'widget.action', 'record.changed')
-      AND e.state <> 'expired' AND e.received_at > ${input.now - DAY_MS}
-      AND json_extract(e.json, '$.provenance.personId') = ${input.personId}
+    WHERE e.org_id = ${input.orgId} AND e.state <> 'expired' AND e.received_at > ${input.now - DAY_MS}
+      AND ((e.tag IN ('chat.message', 'widget.action', 'record.changed')
+          AND json_extract(e.json, '$.provenance.personId') = ${input.personId})
+        OR (e.tag = 'github' AND json_extract(e.json, '$.askedBy') = ${input.personId}))
       AND a.owner_person_id <> ${input.personId}`;
   return { turns: row?.turns ?? 0, oldestAt: row?.oldestAt ?? null };
 });

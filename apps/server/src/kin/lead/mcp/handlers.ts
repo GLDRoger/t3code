@@ -16,6 +16,7 @@ import { ghApiLayer, ownerGitHubReview } from "../../github/GitHubWatch.ts";
 import { agentsView, gitHubApp } from "../../github/KinGitHubApp.ts";
 import { isMemoryRepo, repoList, setRepo } from "../../github/githubWatchStore.ts";
 import { linkGithubItem } from "../../github/githubLink.ts";
+import { askReview } from "../../github/reviewAsk.ts";
 import { SHARED_REFUSAL } from "../Audience.ts";
 import { toolAdmitted } from "../SharedTools.ts";
 import { laneFor } from "../../reply/replyLane.ts";
@@ -416,6 +417,15 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         reason: "unavailable",
         message: "GitHub isn't connected. The owner connects it in Settings, Connections.",
       });
+    }, Effect.mapError(failure)),
+  ),
+  kin_github_review_ask: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.githubReviewAsk")(function* (input) {
+      const services = Option.getOrThrow((yield* KinServer).services);
+      return yield* askReview(yield* McpInvocationContext, input).pipe(
+        Effect.provide(ghApiLayer),
+        Effect.provideService(KinEventQueue, Context.get(services, KinEventQueue)),
+      );
     }, Effect.mapError(failure)),
   ),
   kin_github_watch: McpToolAccess.actsAsCaller(

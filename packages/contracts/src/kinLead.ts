@@ -745,6 +745,8 @@ export const KinEvent = Schema.Union([
     scheduledTaskId: Schema.optional(ScheduledTaskId),
     webhookDeliveryId: Schema.optional(ScheduledTaskWebhookDeliveryId),
     trigger: Schema.optional(KinGithubTrigger),
+    /** The person who asked for this review in Kin (`kin_github_review_ask`); told its outcome. */
+    askedBy: Schema.optional(KinPersonId),
   }),
   Schema.TaggedStruct("deferral.due", {
     ...EventBase,

@@ -114,6 +114,8 @@ export const SHARED_TOOLS = {
   kin_schedule: "refused",
   kin_cancel: ownReminderCancel,
   kin_github_review: "refused",
+  // Only from the asker's own direct chat with this agent, checked by the service (`askReview`).
+  kin_github_review_ask: "allowed",
   kin_github_link: "refused",
   kin_github_watch: "refused",
   // Work tasks every person behind the turn may see, shaped as their own screens show them.

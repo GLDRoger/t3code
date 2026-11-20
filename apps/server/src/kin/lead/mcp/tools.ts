@@ -19,6 +19,7 @@ import { KIN_VISUAL_PAGE_GUIDE, KIN_VISUAL_TOOL_NAME } from "@t3tools/shared/kin
 import { KinIdentity } from "../../chat/KinIdentity.ts";
 import { KinServer } from "../../KinServer.ts";
 import * as GitHubLink from "../../github/githubLink.ts";
+import * as ReviewAsk from "../../github/reviewAsk.ts";
 import { KinRecords } from "../../work/KinRecords.ts";
 import { MEMORY_RULE } from "../../memory/keeping.ts";
 import * as ChartCard from "../../widgets/chartCard.ts";
@@ -267,6 +268,14 @@ export const KinLeadToolkit = Toolkit.make(
   })
     .annotate(McpSchema.EnabledWhen, enabled)
     .annotate(Tool.Meta, deferredMeta),
+  Tool.make("kin_github_review_ask", {
+    ...prCare,
+    dependencies: [...prCare.dependencies, KinServer],
+    description:
+      "Start the reviews a person asks for in their own chat with you, on the repos Kin watches: their open PRs (omit both), those on repo, or one by repo and number. Kin picks the PRs and starts each review as a GitHub review request would; it posts on the PR, and Kin tells them here when it is done. The result says per PR: started, already reviewed at this head, or why not. Tell them exactly that. Changing code, merging or re-running CI still goes to the owner with kin_relay.",
+    parameters: ReviewAsk.AskInput,
+    success: ReviewAsk.AskResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_github_watch", {
     ...prCare,
     description:

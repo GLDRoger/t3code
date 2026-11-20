@@ -193,7 +193,12 @@ export const leadNameOf = Effect.fn("KinAgentSession.leadNameOf")(
 
 /** Kin's GitHub tools work through the owner's own login, so they show only while it's connected. */
 const isKinGitHubTool = (name: string) => name.startsWith("kin_github_");
-const LOGIN_GITHUB_TOOLS = new Set(["kin_github_review", "kin_github_watch", "kin_github_link"]);
+const LOGIN_GITHUB_TOOLS = new Set([
+  "kin_github_review",
+  "kin_github_review_ask",
+  "kin_github_watch",
+  "kin_github_link",
+]);
 const loginConnected = Effect.gen(function* () {
   const kin = yield* Effect.serviceOption(KinServer);
   if (Option.isNone(kin) || Option.isNone(kin.value.services)) return false;

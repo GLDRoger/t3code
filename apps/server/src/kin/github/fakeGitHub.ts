@@ -881,6 +881,23 @@ export class FakeGitHub {
     try {
       if (method === "GET" && (found = /^issues\/(\d+)$/.exec(rest)))
         return ok(this.issueJson(this.item(repo, Number(found[1]))));
+      // Open pull requests only, as `state=open` asks; each as GitHub lists it, newest first.
+      if (method === "GET" && rest === "pulls")
+        return ok(
+          this.world.items
+            .filter(
+              (item) =>
+                item.pull &&
+                item.state === "open" &&
+                item.repo.toLowerCase() === repo.toLowerCase(),
+            )
+            .toReversed()
+            .map((item) => ({
+              ...this.issueJson(item),
+              draft: item.draft,
+              head: { sha: item.head_sha },
+            })),
+        );
       if (method === "GET" && (found = /^pulls\/(\d+)$/.exec(rest))) {
         const item = this.item(repo, Number(found[1]));
         if (!item.pull) return missing;
@@ -1054,7 +1071,7 @@ const flagValue = (args: ReadonlyArray<string>, ...flags: string[]) => {
 };
 
 /** Runs one `gh` command against the world; returns its exit code and output. */
-const runGh = (world: FakeGitHub, args: ReadonlyArray<string>, stdin: string) => {
+export const runGh = (world: FakeGitHub, args: ReadonlyArray<string>, stdin: string) => {
   const repo = flagValue(args, "--repo", "-R") ?? world.world.repos[0]?.full_name ?? "";
   const body = flagValue(args, "--body", "-b") ?? "";
   if (args[0] === "api") {

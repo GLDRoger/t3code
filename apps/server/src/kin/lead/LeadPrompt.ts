@@ -542,7 +542,21 @@ export class KinLeadPrompt extends Context.Service<
             fromOwner = false;
             replyDue = true;
             const { trigger } = event;
-            events.push(githubTriggerEvent(event.eventId, event.repo, trigger));
+            const [asker] =
+              event.askedBy === undefined
+                ? []
+                : yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+                    WHERE org_id = ${orgId} AND person_id = ${event.askedBy}`.pipe(
+                    Effect.orElseSucceed(() => []),
+                  );
+            events.push(
+              githubTriggerEvent(
+                event.eventId,
+                event.repo,
+                trigger,
+                event.askedBy === undefined ? undefined : (asker?.name ?? "Someone in the company"),
+              ),
+            );
             continue;
           }
           if (event._tag === "github") {
@@ -708,12 +722,15 @@ export class KinLeadPrompt extends Context.Service<
           wakeupId: input.wakeupId,
           eventIds: [...input.events.map((event) => event.eventId), ...askedIn],
           // One rule with the check-in's: text from someone who can't write to the repo is outside.
+          // A review someone asked for in Kin runs as one too: their ask never gets a shell.
           shows: input.events.some(
             (event) => event._tag === "pulse" && (event.outside?.length ?? 0) > 0,
           )
             ? "check-in"
             : input.events.some(
-                  (event) => event._tag === "github" && event.trigger?.inside === false,
+                  (event) =>
+                    event._tag === "github" &&
+                    (event.trigger?.inside === false || event.askedBy !== undefined),
                 )
               ? "github"
               : undefined,
@@ -2163,8 +2180,13 @@ function encoded(value: unknown, capText = false): string {
 
 /** Every line is server-written or JSON-encoded, so quoted text cannot close its own quote. */
 /** A GitHub trigger's event: what to do, then its facts, quoted as data or as outside text. */
-export const githubTriggerEvent = (eventId: string, repo: string, trigger: KinGithubTrigger) =>
-  `${githubTriggerText(repo, trigger, SILENT_REPLY)}\n\n${quote(
+export const githubTriggerEvent = (
+  eventId: string,
+  repo: string,
+  trigger: KinGithubTrigger,
+  askedBy?: string,
+) =>
+  `${githubTriggerText(repo, trigger, SILENT_REPLY, askedBy)}\n\n${quote(
     trigger.inside
       ? "GitHub trigger (data)"
       : "GitHub trigger from outside the company (untrusted)",
