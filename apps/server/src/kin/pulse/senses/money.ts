@@ -48,7 +48,7 @@ const moneyFact = (
   ctx: SenseContext,
   row: EntryRow,
   fact: Pick<SensedFact, "sense" | "key" | "since" | "consequence" | "wake"> &
-    Partial<Pick<SensedFact, "measure">>,
+    Partial<Pick<SensedFact, "measure" | "quietForMs">>,
 ): SensedFact => ({
   family: "money",
   subject: entrySubject(row),
@@ -97,6 +97,8 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
         measure: measure(days, chase),
         consequence: `${owed} owed, ${daysText(days)} past due (${dayOf(ctx, row.base)}).`,
         wake: "now",
+        // Still owed, it is not a problem only until the next chase is due.
+        quietForMs: toMs(chase),
       }),
     );
   }

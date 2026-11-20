@@ -885,6 +885,24 @@ describe("KinPulse", () => {
       const renamed = yield* observed(KinPulse.tick(orgId, at));
       assert.strictEqual(renamed.cleared, 0);
       assert.deepStrictEqual(touched, ["pulse"]);
+      // A handling running out moves it too: the invoice counts again on screens. Budgets and a
+      // goals' pace are sensed as of now, so they would move every tick.
+      yield* sql`DELETE FROM kin_money_budgets WHERE org_id = ${orgId}`;
+      yield* sql`UPDATE kin_records SET state = 'done' WHERE org_id = ${orgId} AND key LIKE 'G-%'`;
+      const fact = keyed((yield* read(at)).facts, "invoice_overdue", "INV-1")[0]!;
+      yield* KinPulse.handle({
+        orgId,
+        at,
+        viewer: { _tag: "owner" },
+        by: { _tag: "agent", agentId: finance },
+        factKey: fact.key,
+        action: "got_it",
+        until: at + 2 * MINUTE,
+      });
+      yield* observed(KinPulse.tick(orgId, at + MINUTE));
+      touched.length = 0;
+      yield* observed(KinPulse.tick(orgId, at + 2 * MINUTE));
+      assert.deepStrictEqual(touched, ["pulse"]);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -927,8 +945,11 @@ describe("KinPulse", () => {
       yield* handle("got_it");
       assert.strictEqual(yield* open(at + KinPulse.GOT_IT_MS - MINUTE), 0);
       assert.strictEqual(yield* open(at + KinPulse.GOT_IT_MS), 1);
+      // Still owed, it is not a problem only until the next chase is due, then counts again.
+      const chase = fact.measure!.threshold * DAY;
       yield* handle("not_a_problem");
-      assert.strictEqual(yield* open(at + 30 * DAY), 0);
+      assert.strictEqual(yield* open(at + chase - MINUTE), 0);
+      assert.strictEqual(yield* open(at + chase), 1);
       yield* handle("undo");
       assert.strictEqual(yield* open(at), 1);
     }).pipe(Effect.provide(layer)),
