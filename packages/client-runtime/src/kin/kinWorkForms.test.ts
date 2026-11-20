@@ -1,5 +1,5 @@
 // @effect-diagnostics globalDate:off - The target hint is read against a fixed local day.
-import { KinChatError, KinRecordKey } from "@t3tools/contracts";
+import { type KinContact, KinChatError, KinRecordId, KinRecordKey } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
@@ -16,8 +16,14 @@ import {
   kinClientDraftWithGstin,
   kinClientGstinNote,
   kinClientUpdateInput,
+  kinContactCreateInput,
+  kinContactDetailAdd,
+  kinContactDetailCanAdd,
+  kinContactDetailRemove,
+  kinContactDetailSet,
   kinContactDraftCheck,
   kinContactDraftOf,
+  kinContactUpdateInput,
   kinProjectDraftCheck,
   kinProjectDraftOf,
   kinProjectTargetHint,
@@ -323,18 +329,18 @@ describe("kinProjectDraftCheck", () => {
 
 describe("a new client's first contact", () => {
   const draft = { ...kinClientDraftOf(undefined, "prospect"), name: "Tallmoor Freight" };
-  const blank = { contactName: "", contactRole: "", contactEmail: "", contactPhone: "" };
+  const blank = { contactName: "", contactRole: "", contactEmails: [""], contactPhones: [""] };
   it.each([
     ["nothing typed", {}, null, undefined],
-    ["spaces only", { contactName: " ", contactPhone: "  " }, null, undefined],
+    ["spaces only", { contactName: " ", contactPhones: ["  ", " "] }, null, undefined],
     ["a name", { contactName: " Ingrid Holm " }, null, { name: "Ingrid Holm" }],
     [
       "everything",
       {
         contactName: "Ingrid Holm",
         contactRole: " Head of buying ",
-        contactEmail: " ingrid@example.com ",
-        contactPhone: "+47 912 34 567",
+        contactEmails: [" ingrid@example.com "],
+        contactPhones: ["+47 912 34 567"],
       },
       null,
       {
@@ -345,14 +351,30 @@ describe("a new client's first contact", () => {
       },
     ],
     [
+      "two of each",
+      {
+        contactName: "Ingrid Holm",
+        contactEmails: ["ingrid@example.com", "", "ingrid.home@example.com"],
+        contactPhones: ["+47 912 34 567", "+47 912 34 568"],
+      },
+      null,
+      {
+        name: "Ingrid Holm",
+        email: "ingrid@example.com",
+        emails: ["ingrid@example.com", "ingrid.home@example.com"],
+        phone: "+47 912 34 567",
+        phones: ["+47 912 34 567", "+47 912 34 568"],
+      },
+    ],
+    [
       "a phone only",
-      { contactPhone: "+47 912 34 567" },
+      { contactPhones: ["+47 912 34 567"] },
       KIN_WORK_FORM_COPY.party.contactNameMissing,
       undefined,
     ],
     [
       "an email only",
-      { contactEmail: "ingrid@example.com" },
+      { contactEmails: ["", "ingrid@example.com"] },
       KIN_WORK_FORM_COPY.party.contactNameMissing,
       undefined,
     ],
@@ -364,13 +386,13 @@ describe("a new client's first contact", () => {
     ],
     [
       "a bad email",
-      { contactName: "Ingrid", contactEmail: "ingrid at tallmoor" },
+      { contactName: "Ingrid", contactEmails: ["ingrid@example.com", "ingrid at tallmoor"] },
       "Enter an email like name@example.com.",
       undefined,
     ],
     [
       "a phone with no digits",
-      { contactName: "Ingrid", contactPhone: "ask reception" },
+      { contactName: "Ingrid", contactPhones: ["ask reception"] },
       "Enter a phone number with digits in it.",
       undefined,
     ],
@@ -388,24 +410,94 @@ describe("a new client's first contact", () => {
 describe("kinContactDraftCheck", () => {
   const contact = { ...kinContactDraftOf(), name: "Ravi" };
   it.each([
-    [{ email: "not-an-email" }, "Enter an email like name@example.com."],
-    [{ phone: "call reception" }, "Enter a phone number with digits in it."],
-    [{ phone: "x12" }, null],
-    [{ phone: "+1 (555) 010-0199 ext. 4" }, null],
-    [{ email: "ravi@example.com", phone: "+91 98450 12345" }, null],
+    [{ emails: ["not-an-email"] }, "Enter an email like name@example.com."],
+    [{ emails: ["ravi@example.com", "not-an-email"] }, "Enter an email like name@example.com."],
+    [{ phones: ["call reception"] }, "Enter a phone number with digits in it."],
+    [{ phones: ["+91 98450 12345", "call reception"] }, "Enter a phone number with digits in it."],
+    [{ phones: ["x12"] }, null],
+    [{ phones: ["+1 (555) 010-0199 ext. 4"] }, null],
+    [{ emails: ["ravi@example.com"], phones: ["+91 98450 12345"] }, null],
+    [{ emails: ["ravi@example.com", ""] }, null],
     [{}, null],
   ])("%o", (details, problem) => {
     expect(kinContactDraftCheck({ ...contact, ...details })).toBe(problem);
   });
 
   it("lets an old email or phone stay as saved, and checks it once retyped", () => {
-    const saved = { ...contact, email: "front desk", phone: "ask Mira" };
+    const saved = { ...contact, emails: ["front desk"], phones: ["ask Mira"] };
     expect(kinContactDraftCheck({ ...saved, name: "Ravi Rao" }, saved)).toBeNull();
-    expect(kinContactDraftCheck({ ...saved, email: "front desk 2" }, saved)).toBe(
+    expect(kinContactDraftCheck({ ...saved, emails: ["ravi@example.com", "front desk"] }, saved)).toBeNull();
+    expect(kinContactDraftCheck({ ...saved, emails: ["front desk 2"] }, saved)).toBe(
       "Enter an email like name@example.com.",
     );
-    expect(kinContactDraftCheck({ ...saved, phone: "ask Ravi" }, saved)).toBe(
+    expect(kinContactDraftCheck({ ...saved, phones: ["ask Ravi"] }, saved)).toBe(
       "Enter a phone number with digits in it.",
     );
+  });
+});
+
+describe("a contact's several emails and phones", () => {
+  const read: KinContact = {
+    recordId: KinRecordId.make("r-CT-1"),
+    key: KinRecordKey.make("CT-1"),
+    party: { recordId: KinRecordId.make("r-C-1"), key: KinRecordKey.make("C-1"), title: "Lumen" },
+    name: "Ravi",
+    role: null,
+    email: "ravi@example.com",
+    phone: "+91 98450 12345",
+    emails: ["ravi@example.com", "ravi.home@example.com"],
+    // An older host sends no list.
+    phones: [],
+    notes: "",
+    active: true,
+    sensitive: false,
+    sensitiveFields: [],
+    rev: 1,
+    updatedAt: "2026-11-20T00:00:00.000Z",
+  };
+
+  it("adds one empty field at a time up to eight, and takes off any but the last one left", () => {
+    let list: ReadonlyArray<string> = [""];
+    for (let at = 0; at < 10; at++) list = kinContactDetailAdd(list);
+    expect(list).toHaveLength(8);
+    expect(kinContactDetailCanAdd(list)).toBe(false);
+    expect(kinContactDetailCanAdd(["a"])).toBe(true);
+    expect(kinContactDetailRemove(["a", "b", "c"], 1)).toEqual(["a", "c"]);
+    expect(kinContactDetailRemove(["a", "b"], 0)).toEqual(["b"]);
+    expect(kinContactDetailRemove(["a"], 0)).toEqual([""]);
+    expect(kinContactDetailSet(["a", "b"], 1, "c")).toEqual(["a", "c"]);
+  });
+
+  it("reads every one, main first, and from an older host that sends only the main one", () => {
+    expect(kinContactDraftOf(read)).toMatchObject({
+      emails: ["ravi@example.com", "ravi.home@example.com"],
+      phones: ["+91 98450 12345"],
+    });
+    expect(kinContactDraftOf()).toMatchObject({ emails: [""], phones: [""] });
+  });
+
+  it("sends one of each as before, several beside the main one, and an edit the whole list", () => {
+    const draft = kinContactDraftOf(read);
+    expect(kinContactCreateInput({ ...draft, emails: [" ravi@example.com "], phones: [""] })).toEqual({
+      name: "Ravi",
+      email: "ravi@example.com",
+    });
+    expect(kinContactCreateInput(draft)).toEqual({
+      name: "Ravi",
+      email: "ravi@example.com",
+      emails: ["ravi@example.com", "ravi.home@example.com"],
+      phone: "+91 98450 12345",
+    });
+    // Emptying the main one makes the next one main; emptying them all clears them.
+    expect(kinContactUpdateInput({ emails: ["", "ravi.home@example.com"] })).toEqual({
+      email: "ravi.home@example.com",
+      emails: ["ravi.home@example.com"],
+    });
+    expect(kinContactUpdateInput({ phones: [""] })).toEqual({ phone: null, phones: [] });
+    expect(kinContactUpdateInput({ emails: ["Ravi@example.com", "ravi@EXAMPLE.com"] })).toEqual({
+      email: "Ravi@example.com",
+      emails: ["Ravi@example.com"],
+    });
+    expect(kinContactUpdateInput({ name: "Ravi Rao" })).toEqual({ name: "Ravi Rao" });
   });
 });

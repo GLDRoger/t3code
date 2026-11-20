@@ -104,6 +104,7 @@ import {
   unknownList,
   verifyRefs,
 } from "./registers.ts";
+import { contactFields } from "./contactDetails.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
 import {
   bumpTeamSeqs,
@@ -1235,8 +1236,10 @@ const make = Effect.gen(function* () {
     if (def.archivedAt !== null)
       return yield* invalid(`${def.name} is archived; the owner can restore it.`);
     const list = def.id;
+    const contact = list === "contacts" ? contactFields({}, input.fields ?? {}) : input.fields;
+    if (isChatError(contact)) return yield* contact;
     const fields = Object.fromEntries(
-      Object.entries(input.fields ?? {}).filter(
+      Object.entries(contact ?? {}).filter(
         (entry): entry is [string, FieldValue] => entry[1] !== null,
       ),
     );
@@ -1467,7 +1470,7 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     writer: Writer,
     key: string,
-    patch: Patch,
+    asked: Patch,
     expectedRev?: number,
     also: ReadonlyArray<FieldChange> = [],
   ) {
@@ -1475,6 +1478,12 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const row = yield* byKey(orgId, key).pipe(provideSql);
         if (row === undefined) return yield* notFound(key);
+        const contact =
+          row.registerId === "contacts" && asked.fields !== undefined
+            ? contactFields(parseFields(row.fieldsJson), asked.fields)
+            : undefined;
+        if (isChatError(contact)) return yield* contact;
+        const patch = contact === undefined ? asked : { ...asked, fields: contact };
         if (writer.codingAgentKey !== undefined && !heldBy(row, writer))
           return yield* notFound(key);
         if (writer.teammate === true && writer.actor._tag === "person")

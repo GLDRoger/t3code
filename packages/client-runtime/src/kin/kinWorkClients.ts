@@ -629,14 +629,22 @@ const SHOW_NOTHING: Record<
   vendors: { title: "No vendors", detail: "Companies you buy from show here." },
 };
 
+export interface KinContactLink {
+  readonly text: string;
+  readonly href: string | null;
+}
+
 export interface KinContactView {
   readonly key: KinRecordKey;
   readonly rev: number;
   readonly name: string;
   readonly role: string | null;
   /** What to show and what a tap opens; `href` is null when it doesn't look like one. */
-  readonly email: { readonly text: string; readonly href: string | null } | null;
-  readonly phone: { readonly text: string; readonly href: string | null } | null;
+  readonly email: KinContactLink | null;
+  readonly phone: KinContactLink | null;
+  /** Every one, main first; the main one is `email` or `phone`. */
+  readonly emails: ReadonlyArray<KinContactLink>;
+  readonly phones: ReadonlyArray<KinContactLink>;
   readonly notes: string | null;
   /** No longer someone to reach there. */
   readonly closed: boolean;
@@ -657,15 +665,29 @@ const phoneHref = (phone: string) => {
   return `tel:${number}${ext === "" ? "" : `;ext=${ext}`}`;
 };
 
+/** An older host sends only the main one. */
+const allOf = (all: ReadonlyArray<string>, one: string | null) =>
+  all.length > 0 ? all : one === null ? [] : [one];
+
 function kinContactView(contact: KinContact): KinContactView {
   const notes = contact.notes.trim();
+  const emails = allOf(contact.emails, contact.email).map((text) => ({
+    text,
+    href: emailHref(text),
+  }));
+  const phones = allOf(contact.phones, contact.phone).map((text) => ({
+    text,
+    href: phoneHref(text),
+  }));
   return {
     key: contact.key,
     rev: contact.rev,
     name: contact.name,
     role: contact.role,
-    email: contact.email === null ? null : { text: contact.email, href: emailHref(contact.email) },
-    phone: contact.phone === null ? null : { text: contact.phone, href: phoneHref(contact.phone) },
+    email: emails[0] ?? null,
+    phone: phones[0] ?? null,
+    emails,
+    phones,
     notes: notes === "" ? null : notes,
     closed: !contact.active,
     accessibilityLabel: [contact.name, contact.role, contact.active ? null : "No longer a contact"]

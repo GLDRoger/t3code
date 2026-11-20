@@ -247,7 +247,7 @@ export const party = Effect.fn("KinWork.party")(function* (
     // Leading a project alone gives its people's names, never how to reach them.
     contacts: page.contacts
       .filter((one) => shown.has(one.recordId))
-      .map((one) => ({ ...one, email: null, phone: null })),
+      .map((one) => ({ ...one, email: null, phone: null, emails: [], phones: [] })),
     projects: page.projects.filter((one) => shown.has(one.recordId)),
     weOwe: none,
     theyOwe: none,
@@ -371,7 +371,16 @@ export const history = Effect.fn("KinWork.history")(function* (
 });
 
 /** What a member reads of a client's history besides what a task says (`teamSeesField`). */
-const CLIENT_LINES = new Set(["address", "source", "tags", "role", "email", "phone"]);
+const CLIENT_LINES = new Set([
+  "address",
+  "source",
+  "tags",
+  "role",
+  "email",
+  "phone",
+  "emails",
+  "phones",
+]);
 
 /**
  * A client's history for a member with the Clients switch on: what they see of it, without terms,
@@ -438,6 +447,13 @@ const partyFields = (input: KinPartyCreateInput | KinPartyUpdateInput) => ({
   address: input.address,
   gstin: input.gstin,
   placeOfSupply: input.placeOfSupply,
+});
+const detailsOf = (input: KinContactCreateInput | KinContactUpdateInput) => ({
+  role: input.role,
+  email: input.email,
+  phone: input.phone,
+  emails: input.emails,
+  phones: input.phones,
 });
 const activeState = (active: boolean | undefined) =>
   active === undefined ? {} : { state: active ? ("open" as const) : ("dropped" as const) };
@@ -740,7 +756,7 @@ const contactIn = Effect.fn("KinWork.crm.contactIn")(function* (
         partyId: party.recordId,
         ...(input.notes === undefined ? {} : { notes: input.notes }),
         ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
-        fields: fieldsOf({ role: input.role, email: input.email, phone: input.phone }),
+        fields: fieldsOf(detailsOf(input)),
       },
       viewer.teammate,
     );
@@ -768,7 +784,7 @@ export const updateContact = Effect.fn("KinWork.updateContact")(function* (
 ) {
   const viewer = yield* viewerOf(people, input.orgId);
   const { person } = viewer;
-  const fields = fieldsOf({ role: input.role, email: input.email, phone: input.phone });
+  const fields = fieldsOf(detailsOf(input));
   const write = Effect.gen(function* () {
     const partyId =
       input.party === undefined

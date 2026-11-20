@@ -809,10 +809,90 @@ it.effect(
         clientRequestId: "c",
       });
       assert.include(contact, { key: "CT-1", phone: "000", email: null, active: true });
+      assert.deepInclude(contact, { emails: [], phones: ["000"] });
+      const records = yield* KinRecords.KinRecords;
+      const storedFields = (key: string) =>
+        records.get(orgId, key).pipe(Effect.map((row) => JSON.parse(row!.fieldsJson)));
+      // One of each is stored as it always was.
+      assert.deepStrictEqual(yield* storedFields("CT-1"), { phone: "000" });
       assert.include(
         yield* Clients.updateContact([owner], { orgId, key: "CT-1", rev: 1, phone: null }),
         { phone: null, rev: 2 },
       );
+      // Several, main first: trimmed, blanks and repeats dropped (emails in any case), and the
+      // list wins over the single field given beside it.
+      const several = yield* Clients.createContact([owner], {
+        orgId,
+        party: "C-1",
+        name: "Invented Bo",
+        email: "ignored@x.invalid",
+        emails: [" bo@x.invalid", "", "Bo@X.invalid", "bo.home@x.invalid"],
+        phones: ["+1 555 0100", "+1 555 0100", " ", "+1 555 0101"],
+        clientRequestId: "bo",
+      });
+      assert.deepInclude(several, {
+        email: "bo@x.invalid",
+        phone: "+1 555 0100",
+        emails: ["bo@x.invalid", "bo.home@x.invalid"],
+        phones: ["+1 555 0100", "+1 555 0101"],
+      });
+      const eight = Array.from({ length: 8 }, (_, at) => `bo${at}@x.invalid`);
+      assert.include(
+        yield* Effect.flip(
+          Clients.updateContact([owner], {
+            orgId,
+            key: several.key,
+            rev: several.rev,
+            emails: [...eight, "bo8@x.invalid"],
+          }),
+        ),
+        { reason: "invalid_state", message: "A contact has at most 8 emails." },
+      );
+      const full = yield* Clients.updateContact([owner], {
+        orgId,
+        key: several.key,
+        rev: several.rev,
+        emails: eight,
+      });
+      assert.deepStrictEqual(full.emails, eight);
+      // Taking the main one off makes the next one main; an older client's single field
+      // replaces the main one and keeps the rest.
+      const promoted = yield* Clients.updateContact([owner], {
+        orgId,
+        key: several.key,
+        rev: full.rev,
+        emails: eight.slice(1, 3),
+        phones: ["+1 555 0101"],
+      });
+      assert.deepInclude(promoted, {
+        email: "bo1@x.invalid",
+        emails: ["bo1@x.invalid", "bo2@x.invalid"],
+        phone: "+1 555 0101",
+        phones: ["+1 555 0101"],
+      });
+      assert.deepStrictEqual(yield* storedFields(several.key), {
+        email: "bo1@x.invalid",
+        emails: ["bo1@x.invalid", "bo2@x.invalid"],
+        phone: "+1 555 0101",
+      });
+      const replaced = yield* Clients.updateContact([owner], {
+        orgId,
+        key: several.key,
+        rev: promoted.rev,
+        email: "bo.new@x.invalid",
+      });
+      assert.deepStrictEqual(replaced.emails, ["bo.new@x.invalid", "bo2@x.invalid"]);
+      const cleared = yield* Clients.updateContact([owner], {
+        orgId,
+        key: several.key,
+        rev: replaced.rev,
+        email: null,
+      });
+      assert.deepInclude(cleared, { email: "bo2@x.invalid", emails: ["bo2@x.invalid"] });
+      assert.deepStrictEqual(yield* storedFields(several.key), {
+        email: "bo2@x.invalid",
+        phone: "+1 555 0101",
+      });
       // An entry for the client: its client, project and side are the owner's to set and clear.
       const entry = yield* OwnerWork.create([owner], {
         orgId,
@@ -1426,8 +1506,26 @@ it.effect(
         party: key,
         name: "Invented Ingrid",
         email: "ingrid@x.invalid",
+        phones: ["+46 8 555 0100", "+46 8 555 0101"],
         clientRequestId: "ingrid",
       });
+      assert.deepInclude(ingrid, {
+        emails: ["ingrid@x.invalid"],
+        phones: ["+46 8 555 0100", "+46 8 555 0101"],
+      });
+      // Several on a client someone else looks after are refused as one always was.
+      assert.strictEqual(
+        yield* refused(
+          Clients.createContact([mate], {
+            orgId,
+            party: "C-1",
+            name: "Invented Ola",
+            emails: ["ola@x.invalid", "ola.home@x.invalid"],
+            clientRequestId: "ola-acme",
+          }),
+        ),
+        "not_allowed",
+      );
       assert.strictEqual(
         yield* refused(
           Clients.createContact([mate], {
@@ -1453,8 +1551,14 @@ it.effect(
           key: ingrid.key,
           rev: ingrid.rev,
           role: "Invented head of operations",
+          emails: ["ingrid.work@x.invalid", "ingrid@x.invalid"],
         }),
-        { role: "Invented head of operations", email: "ingrid@x.invalid" },
+        {
+          role: "Invented head of operations",
+          email: "ingrid.work@x.invalid",
+          emails: ["ingrid.work@x.invalid", "ingrid@x.invalid"],
+          phones: ["+46 8 555 0100", "+46 8 555 0101"],
+        },
       );
       // A private client they don't look after is no client at all to them.
       for (const effect of [
@@ -2245,12 +2349,28 @@ it.effect(
       const byCo = yield* Clients.createParty([co], {
         orgId,
         name: "Invented Fennick Co",
-        contact: { name: "Invented Pia", email: "pia@fennick.invalid" },
+        contact: {
+          name: "Invented Pia",
+          emails: ["pia@fennick.invalid", "pia.home@fennick.invalid"],
+          phones: ["+00 556", "+00 557"],
+        },
         clientRequestId: "fennick",
       });
       assert.deepStrictEqual(yield* contactsOf(co, byCo.key), [
-        ["Invented Pia", null, "pia@fennick.invalid", null],
+        ["Invented Pia", null, "pia@fennick.invalid", "+00 556"],
       ]);
+      assert.deepStrictEqual(
+        (yield* Clients.party([co], { orgId, key: byCo.key })).contacts.map((one) => [
+          one.emails,
+          one.phones,
+        ]),
+        [
+          [
+            ["pia@fennick.invalid", "pia.home@fennick.invalid"],
+            ["+00 556", "+00 557"],
+          ],
+        ],
+      );
       const mine = {
         orgId,
         name: "Invented Tallmoor Freight",
@@ -2454,8 +2574,8 @@ it.effect(
             list: "contacts",
             title: "Invented Ingrid",
             client: "Invented Tallmoor Freight",
-            phone: "+00 1234 5678",
-            email: "ingrid@tallmoor.invalid",
+            phones: ["+00 1234 5678", "+00 1234 5679"],
+            emails: ["ingrid@tallmoor.invalid", "ingrid.home@tallmoor.invalid"],
           },
         ],
       });
@@ -2469,9 +2589,24 @@ it.effect(
       });
       // The person there, as their own form adds them: on the page, with what they typed.
       assert.deepStrictEqual(
-        page.contacts.map((one) => [one.name, one.phone, one.email]),
-        [["Invented Ingrid", "+00 1234 5678", "ingrid@tallmoor.invalid"]],
+        page.contacts.map((one) => [one.name, one.phone, one.email, one.phones, one.emails]),
+        [
+          [
+            "Invented Ingrid",
+            "+00 1234 5678",
+            "ingrid@tallmoor.invalid",
+            ["+00 1234 5678", "+00 1234 5679"],
+            ["ingrid@tallmoor.invalid", "ingrid.home@tallmoor.invalid"],
+          ],
+        ],
       );
+      // Her agent reads them all back, main first, and the same row again is a retry.
+      const [, , ingridRow] = made.records;
+      assert.deepInclude(yield* LeadWork.get(scope, { key: ingridRow!.key }), {
+        email: "ingrid@tallmoor.invalid",
+        emails: ["ingrid@tallmoor.invalid", "ingrid.home@tallmoor.invalid"],
+        phones: ["+00 1234 5678", "+00 1234 5679"],
+      });
       // Not on a client someone else looks after, and never Keep private, as on their form.
       assert.include(
         (yield* refused([

@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
@@ -952,13 +953,23 @@ export const KIN_GST_STATES: Readonly<Record<string, string>> = {
 /** Fields sensitive whatever the entry's own label: contact details and commercial terms. */
 export const KIN_SENSITIVE_FIELDS = {
   clients: ["terms"],
-  contacts: ["email", "phone"],
+  contacts: ["email", "phone", "emails", "phones"],
   projects: ["value"],
 } as const;
 const SensitiveFields = Schema.Array(TrimmedNonEmptyString);
 const Name = KinTrimmedText.check(Schema.isMaxLength(200));
 const Notes = KinText.check(Schema.isMaxLength(4_000));
 const ShortText = KinTrimmedText.check(Schema.isMaxLength(200));
+/** How many emails, and how many phones, one contact takes. */
+export const KIN_CONTACT_DETAILS_MAX = 8;
+/** Every one, main first, trimmed with blanks and repeats dropped; it wins over `email` or `phone`. */
+const ContactDetails = Schema.Array(KinText.check(Schema.isMaxLength(200))).check(
+  Schema.isMaxLength(50),
+);
+/** Every one, main first; read `email` or `phone` from an older host that sends none. */
+const ContactDetailsRead = Schema.Array(KinTrimmedText).pipe(
+  Schema.withDecodingDefaultKey(Effect.succeed([])),
+);
 const RequestId = TrimmedNonEmptyString.check(Schema.isMaxLength(120));
 const Address = KinTrimmedText.check(Schema.isMaxLength(500));
 const PlaceOfSupply = KinTrimmedText.check(Schema.isMaxLength(60));
@@ -1039,6 +1050,8 @@ export const KinContact = Schema.Struct({
   role: Schema.NullOr(KinTrimmedText),
   email: Schema.NullOr(KinTrimmedText),
   phone: Schema.NullOr(KinTrimmedText),
+  emails: ContactDetailsRead,
+  phones: ContactDetailsRead,
   notes: KinText,
   active: Schema.Boolean,
   /** The contact's own label, or its client's. */
@@ -1328,6 +1341,8 @@ export const KinPartyFirstContact = Schema.Struct({
   role: Schema.optional(ShortText),
   email: Schema.optional(ShortText),
   phone: Schema.optional(ShortText),
+  emails: Schema.optional(ContactDetails),
+  phones: Schema.optional(ContactDetails),
 });
 export type KinPartyFirstContact = typeof KinPartyFirstContact.Type;
 /** A new client or vendor. A name another active one already has is refused with its key. */
@@ -1391,6 +1406,8 @@ export const KinContactCreateInput = Schema.Struct({
   role: Schema.optional(ShortText),
   email: Schema.optional(ShortText),
   phone: Schema.optional(ShortText),
+  emails: Schema.optional(ContactDetails),
+  phones: Schema.optional(ContactDetails),
   notes: Schema.optional(Notes),
   sensitive: Schema.optional(Schema.Boolean),
   clientRequestId: RequestId,
@@ -1432,6 +1449,9 @@ export const KinContactUpdateInput = Schema.Struct({
   role: Schema.optional(Schema.NullOr(ShortText)),
   email: Schema.optional(Schema.NullOr(ShortText)),
   phone: Schema.optional(Schema.NullOr(ShortText)),
+  /** The whole list, main first; empty clears it. */
+  emails: Schema.optional(ContactDetails),
+  phones: Schema.optional(ContactDetails),
   notes: Schema.optional(Notes),
   sensitive: Schema.optional(Schema.Boolean),
   active: Schema.optional(Schema.Boolean),

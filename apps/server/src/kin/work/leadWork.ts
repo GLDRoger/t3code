@@ -68,6 +68,7 @@ import {
   spineShown,
   taskSpecChanged,
 } from "./leadSpine.ts";
+import { contactFields, contactSensitive } from "./contactDetails.ts";
 import { fieldList, fieldText, isMoney, LISTS, listOf, parseFields, shownField } from "./lists.ts";
 import {
   addUp,
@@ -168,6 +169,7 @@ const Address = KinToolText(500, "A client's billing address, as its invoices sh
 export const Client = KinToolText(200, "A client or vendor: its key (C-3) or exact name.");
 export const Project = KinToolText(200, "A project: its key (P-2) or exact name.");
 const Detail = KinToolText(200);
+const Details = Schema.Array(Detail).check(Schema.isMaxLength(50));
 /** A client's kind on create; a prospect is a client we haven't sold to yet. */
 const NewPartyKind = Schema.Literals(["client", "vendor", "prospect"]);
 const CameFrom = KinToolText(
@@ -242,6 +244,8 @@ const Row = Schema.Struct({
   role: Schema.optional(Schema.String),
   email: Schema.optional(Schema.String),
   phone: Schema.optional(Schema.String),
+  emails: Schema.optional(Schema.Array(Schema.String)),
+  phones: Schema.optional(Schema.Array(Schema.String)),
   terms: Schema.optional(Schema.String),
   repos: Schema.optional(Schema.Array(Schema.String)),
   address: Schema.optional(Schema.String),
@@ -395,6 +399,8 @@ const CreateRow = Schema.Struct({
   role: Schema.optional(Detail),
   email: Schema.optional(Detail),
   phone: Schema.optional(Detail),
+  emails: Schema.optional(Details),
+  phones: Schema.optional(Details),
   terms: Schema.optional(Terms),
   repos: Schema.optional(Repos),
   address: Schema.optional(Address),
@@ -483,6 +489,8 @@ export const UpdateInput = Schema.Struct({
   role: Schema.optional(Schema.NullOr(Detail)),
   email: Schema.optional(Schema.NullOr(Detail)),
   phone: Schema.optional(Schema.NullOr(Detail)),
+  emails: Schema.optional(Details),
+  phones: Schema.optional(Details),
   terms: Schema.optional(Schema.NullOr(Terms)),
   repos: Schema.optional(Repos),
   address: Schema.optional(Schema.NullOr(Address)),
@@ -723,7 +731,11 @@ const defOf = (lists: Lists, row: RecordRow) => lists.get(row.registerId);
 const marksOf = (lists: Lists, row: RecordRow): typeof Marks.Type => {
   const def = defOf(lists, row);
   const fields = [
-    ...(def === undefined ? [] : sensitiveKeys(def)),
+    ...(def === undefined
+      ? []
+      : def.id === "contacts"
+        ? contactSensitive(sensitiveKeys(def), parseFields(row.fieldsJson))
+        : sensitiveKeys(def)),
     ...(row.amountMinor !== null && def?.amount !== true ? ["amount"] : []),
   ];
   return {
@@ -865,6 +877,10 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     return value === null ? {} : { [key]: value };
   };
   const repos = fieldList(fields, "repos");
+  const several = (key: "emails" | "phones") => {
+    const all = fieldList(fields, key);
+    return all.length === 0 ? {} : { [key]: [...all] };
+  };
   return {
     ...(list === "work" ? {} : { list }),
     ...(defined ? { listName: def.name, stateLabel: stateLabel(def, row.state) } : {}),
@@ -890,6 +906,8 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     ...text("role"),
     ...text("email"),
     ...text("phone"),
+    ...several("emails"),
+    ...several("phones"),
     ...text("terms"),
     ...(repos.length === 0 ? {} : { repos: [...repos] }),
     ...(defined ? {} : { ...text("address"), ...text("gstin"), ...text("placeOfSupply") }),
@@ -1025,6 +1043,8 @@ const fieldsFrom = (row: {
   readonly role?: string | null | undefined;
   readonly email?: string | null | undefined;
   readonly phone?: string | null | undefined;
+  readonly emails?: ReadonlyArray<string> | undefined;
+  readonly phones?: ReadonlyArray<string> | undefined;
   readonly terms?: string | null | undefined;
   readonly repos?: ReadonlyArray<string> | undefined;
   readonly address?: string | null | undefined;
@@ -1033,7 +1053,18 @@ const fieldsFrom = (row: {
 }) =>
   Object.fromEntries(
     (
-      ["role", "email", "phone", "terms", "repos", "address", "gstin", "placeOfSupply"] as const
+      [
+        "role",
+        "email",
+        "phone",
+        "emails",
+        "phones",
+        "terms",
+        "repos",
+        "address",
+        "gstin",
+        "placeOfSupply",
+      ] as const
     ).flatMap((key) => (row[key] === undefined ? [] : [[key, row[key]]])),
   ) as Record<string, string | ReadonlyArray<string> | null>;
 
@@ -1180,6 +1211,8 @@ const OWNERS_INPUTS = [
   "role",
   "email",
   "phone",
+  "emails",
+  "phones",
   "terms",
   "repos",
   "address",
@@ -1915,8 +1948,10 @@ const createRow = Effect.fnUntraced(function* (
     const found = yield* records.get(lead.orgId, existing.key);
     // The same details again is a retry; new ones are a change, which only record_update makes.
     const stored = found === undefined ? {} : parseFields(found.fieldsJson);
+    const given = list === "contacts" ? contactFields({}, fields) : fields;
+    if (isKinChatError(given)) return yield* given;
     const differ = [
-      ...Object.entries(fields).flatMap(([field, value]) =>
+      ...Object.entries(given).flatMap(([field, value]) =>
         value === null || shownField(stored[field]) === shownField(value) ? [] : [field],
       ),
       ...("dueAt" in due && due.dueAt !== found?.dueAt ? ["due"] : []),
@@ -2008,9 +2043,10 @@ const createRow = Effect.fnUntraced(function* (
     stored.category === "meeting" &&
     stored.dateAt !== null &&
     stored.dateAt <= (yield* Clock.currentTimeMillis);
+  const mainEmail = fieldText(parseFields(stored.fieldsJson), "email");
   const sameEmail =
-    list === "contacts" && typeof fields.email === "string"
-      ? yield* emailShared(lead, team, fields.email, stored.recordId)
+    list === "contacts" && mainEmail !== null
+      ? yield* emailShared(lead, team, mainEmail, stored.recordId)
       : undefined;
   const kind =
     list === "clients" ? (stored.category === "vendor" ? "vendor" : "client") : undefined;
@@ -2456,9 +2492,12 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
           ),
         ];
   const lists = yield* allLists(lead.orgId);
+  const mainEmail = fieldText(parseFields(after.fieldsJson), "email");
   const sameEmail =
-    listOf(after.registerId) === "contacts" && typeof input.email === "string"
-      ? yield* emailShared(lead, team, input.email, after.recordId)
+    listOf(after.registerId) === "contacts" &&
+    (input.email !== undefined || input.emails !== undefined) &&
+    mainEmail !== null
+      ? yield* emailShared(lead, team, mainEmail, after.recordId)
       : undefined;
   return {
     result: {

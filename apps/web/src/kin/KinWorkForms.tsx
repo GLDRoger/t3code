@@ -16,6 +16,10 @@ import {
   kinIndiaFields,
   kinClientUpdateInput,
   kinContactCreateInput,
+  kinContactDetailAdd,
+  kinContactDetailCanAdd,
+  kinContactDetailRemove,
+  kinContactDetailSet,
   kinContactDraftCheck,
   kinContactDraftOf,
   kinContactUpdateInput,
@@ -36,6 +40,7 @@ import type {
   KinRecordKey,
   KinWorkPrincipal,
 } from "@t3tools/contracts";
+import { PlusIcon, XIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
@@ -164,6 +169,64 @@ export function Field(props: {
         </p>
       )}
     </div>
+  );
+}
+
+/** A contact's emails or phones: the first is the main one, each after it can be taken off. */
+function ContactDetails(props: {
+  readonly id: string;
+  readonly kind: "email" | "phone";
+  readonly values: ReadonlyArray<string>;
+  readonly moved?: ReadonlyArray<string> | undefined;
+  readonly onChange: (next: ReadonlyArray<string>) => void;
+}) {
+  const { values, onChange } = props;
+  const email = props.kind === "email";
+  const label = email ? COPY.contact.email : COPY.contact.phone;
+  return (
+    <Field id={props.id} label={label} isPrivate moved={props.moved?.join(", ")}>
+      {values.map((value, at) => (
+        // oxlint-disable-next-line react/no-array-index-key -- typed text has no identity besides its place, and blanks repeat
+        <div key={at} className="flex items-center gap-1.5">
+          <div className="min-w-0 flex-1">
+            <Input
+              id={at === 0 ? props.id : undefined}
+              aria-label={at === 0 ? undefined : `${label} ${at + 1}`}
+              type={email ? "email" : "tel"}
+              value={value}
+              maxLength={KIN_WORK_FORM_LIMITS.short}
+              autoComplete="off"
+              autoFocus={at > 0 && value === "" && at === values.length - 1}
+              onChange={(event) => onChange(kinContactDetailSet(values, at, event.target.value))}
+            />
+          </div>
+          {at === 0 ? null : (
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              aria-label={`${email ? COPY.contact.removeEmail : COPY.contact.removePhone}: ${value.trim() || `${label} ${at + 1}`}`}
+              onClick={() => onChange(kinContactDetailRemove(values, at))}
+            >
+              <XIcon />
+            </Button>
+          )}
+        </div>
+      ))}
+      {kinContactDetailCanAdd(values) ? (
+        <div>
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            onClick={() => onChange(kinContactDetailAdd(values))}
+          >
+            <PlusIcon />
+            {email ? COPY.contact.addEmail : COPY.contact.addPhone}
+          </Button>
+        </div>
+      ) : null}
+    </Field>
   );
 }
 
@@ -395,26 +458,18 @@ export function KinClientDialog(
                 onChange={(event) => form.edit({ contactRole: event.target.value })}
               />
             </Field>
-            <Field id={ids.contactEmail} label={COPY.contact.email} isPrivate>
-              <Input
-                id={ids.contactEmail}
-                type="email"
-                value={draft.contactEmail}
-                maxLength={KIN_WORK_FORM_LIMITS.short}
-                autoComplete="off"
-                onChange={(event) => form.edit({ contactEmail: event.target.value })}
-              />
-            </Field>
-            <Field id={ids.contactPhone} label={COPY.contact.phone} isPrivate>
-              <Input
-                id={ids.contactPhone}
-                type="tel"
-                value={draft.contactPhone}
-                maxLength={KIN_WORK_FORM_LIMITS.short}
-                autoComplete="off"
-                onChange={(event) => form.edit({ contactPhone: event.target.value })}
-              />
-            </Field>
+            <ContactDetails
+              id={ids.contactEmail}
+              kind="email"
+              values={draft.contactEmails}
+              onChange={(contactEmails) => form.edit({ contactEmails })}
+            />
+            <ContactDetails
+              id={ids.contactPhone}
+              kind="phone"
+              values={draft.contactPhones}
+              onChange={(contactPhones) => form.edit({ contactPhones })}
+            />
           </div>
           <p className="-mt-2 text-xs text-muted-foreground">{COPY.contact.detailsHint}</p>
         </fieldset>
@@ -685,26 +740,20 @@ export function KinContactDialog(
         />
       </Field>
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field id={ids.email} label={COPY.contact.email} isPrivate moved={moved.email}>
-          <Input
-            id={ids.email}
-            type="email"
-            value={draft.email}
-            maxLength={KIN_WORK_FORM_LIMITS.short}
-            autoComplete="off"
-            onChange={(event) => form.edit({ email: event.target.value })}
-          />
-        </Field>
-        <Field id={ids.phone} label={COPY.contact.phone} isPrivate moved={moved.phone}>
-          <Input
-            id={ids.phone}
-            type="tel"
-            value={draft.phone}
-            maxLength={KIN_WORK_FORM_LIMITS.short}
-            autoComplete="off"
-            onChange={(event) => form.edit({ phone: event.target.value })}
-          />
-        </Field>
+        <ContactDetails
+          id={ids.email}
+          kind="email"
+          values={draft.emails}
+          moved={moved.emails}
+          onChange={(emails) => form.edit({ emails })}
+        />
+        <ContactDetails
+          id={ids.phone}
+          kind="phone"
+          values={draft.phones}
+          moved={moved.phones}
+          onChange={(phones) => form.edit({ phones })}
+        />
       </div>
       <p className="text-xs text-muted-foreground">{COPY.contact.detailsHint}</p>
       <Field id={ids.notes} label={COPY.contact.notes} moved={moved.notes}>
