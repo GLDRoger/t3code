@@ -195,7 +195,7 @@ it.effect(
       const page = yield* Deals.page([owner], { orgId, key: b.deal.key });
       assert.deepInclude(page.changes[0]!.fields[0]!, {
         field: "stage",
-        from: "pilot",
+        from: "Pilot",
         to: "Deciding",
       });
       // A refused removal changes nothing: the stages and the deals stay as they were.
@@ -211,6 +211,31 @@ it.effect(
         "invalid_state",
       );
       assert.strictEqual((yield* Deals.stages([owner], { orgId })).stages.length, 4);
+      // Each move reads in the names its stages had then, through a later rename too.
+      yield* Deals.move([owner], {
+        orgId,
+        key: b.deal.key,
+        rev: page.deal.rev,
+        to: { _tag: "stage", stage: "new" },
+      });
+      yield* Deals.setStages([owner], {
+        orgId,
+        rev: 2,
+        stages: without.map((stage) => (stage.id === "new" ? { ...stage, name: "Fresh" } : stage)),
+      });
+      const later = yield* Deals.page([owner], { orgId, key: b.deal.key });
+      assert.deepStrictEqual(
+        later.changes.slice(0, 2).map((change) => [change.fields[0]!.from, change.fields[0]!.to]),
+        [
+          ["Deciding", "New"],
+          ["Pilot", "Deciding"],
+        ],
+      );
+      // The client's History reads the move the same way.
+      const told = (yield* Clients.history([owner], { orgId, key: corran })).items.find(
+        (item) => item.record.key === b.deal.key && item.fields[0]?.field === "stage",
+      );
+      assert.deepInclude(told!.fields[0]!, { from: "Deciding", to: "New" });
     }).pipe(Effect.provide(layer)),
 );
 

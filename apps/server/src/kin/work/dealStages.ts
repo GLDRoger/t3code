@@ -4,6 +4,8 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import type { FieldChange } from "./recordRows.ts";
+
 /**
  * The company's deal stages, kept in the built-in `deals` register's `definition_json` (whose
  * readers in `registers.ts` read only `built_in = 0` rows). Absent, they are these.
@@ -38,6 +40,32 @@ export const stagesOf = Effect.fn("KinDeals.stagesOf")(function* (orgId: KinOrgI
   return parseStages(row?.json);
 });
 
-/** A stage's name by id, for history lines; an id no longer a stage reads as itself. */
-export const stageName = (stages: ReadonlyArray<KinDealStage>, id: string | null) =>
-  id === null ? null : (stages.find((stage) => stage.id === id)?.name ?? id);
+/**
+ * A stage's name by id. One no longer a stage reads as its default's name, else as itself: a move
+ * keeps its own names (`FieldChange.names`), so only one written before that can need this.
+ */
+const stageName = (stages: ReadonlyArray<KinDealStage>, id: string | null) =>
+  id === null
+    ? null
+    : ((stages.find((stage) => stage.id === id) ?? DEFAULT_STAGES.find((stage) => stage.id === id))
+        ?.name ?? id);
+
+/** A stage change's line in words: the names its stages had at the move, else their names now. */
+export const stageLine = (
+  stages: ReadonlyArray<KinDealStage>,
+  { names, ...change }: FieldChange,
+) => ({
+  ...change,
+  from: names?.from ?? stageName(stages, change.from),
+  to: names?.to ?? stageName(stages, change.to),
+});
+
+/** A move's patch, with the names its stages have now kept on its history line. */
+export const stageMove = (
+  stages: ReadonlyArray<KinDealStage>,
+  from: string | null,
+  to: string,
+) => ({
+  fields: { stage: to },
+  names: { stage: { from: stageName(stages, from), to: stageName(stages, to) } },
+});

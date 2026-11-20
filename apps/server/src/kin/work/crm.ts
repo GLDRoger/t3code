@@ -24,7 +24,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { stageName, stagesOf } from "./dealStages.ts";
+import { stageLine, stagesOf } from "./dealStages.ts";
 import {
   fieldList,
   fieldText,
@@ -621,9 +621,7 @@ export const history = Effect.fn("KinCrm.history")(function* (
       .filter((change) => change.field.trim() !== "")
       // A deal's stage is the company's id; the line reads its name.
       .map((change) =>
-        row.registerId === "deals" && change.field === "stage"
-          ? { ...change, from: stageName(stages, change.from), to: stageName(stages, change.to) }
-          : change,
+        row.registerId === "deals" && change.field === "stage" ? stageLine(stages, change) : change,
       ),
     record: {
       ...ref(row.recordId, row.key, row.title),

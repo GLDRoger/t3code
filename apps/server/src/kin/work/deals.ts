@@ -36,7 +36,7 @@ import type * as Statement from "effect/sql/Statement";
 
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
-import { DEFAULT_STAGES, stageName, stagesOf } from "./dealStages.ts";
+import { DEFAULT_STAGES, stageLine, stageMove, stagesOf } from "./dealStages.ts";
 import { KinRecords, requestHashOf, type Patch, type Writer } from "./KinRecords.ts";
 import { fieldText, isMoney, parseFields, type FieldValue } from "./lists.ts";
 import { dueMillis, ownerWriter, viewerOf } from "./ownerWork.ts";
@@ -50,6 +50,7 @@ import {
   type RecordRow,
   samePrincipal,
   selectRecords,
+  type StoredChange,
   workFailure,
 } from "./recordRows.ts";
 import {
@@ -442,7 +443,7 @@ export const moveAs = Effect.fn("KinDeals.move")(function* (
           `${row.key} is ${row.state === "done" ? "won" : "lost"}. Reopen it to move it.`,
         );
       if (stage === to.stage) return { row, becameClient: false };
-      return { row: yield* update({ fields: { stage: to.stage } }), becameClient: false };
+      return { row: yield* update(stageMove(stages, stage, to.stage)), becameClient: false };
     }
     case "won": {
       if (row.state === "done") return { row, becameClient: false };
@@ -478,6 +479,7 @@ export const moveAs = Effect.fn("KinDeals.move")(function* (
         row: yield* update({
           state: "open",
           fields: { stage: back, ...(row.state === "dropped" ? { lostReason: null } : {}) },
+          names: stageMove(stages, stage, back).names,
         }),
         becameClient: false,
       };
@@ -750,9 +752,9 @@ export const deals = Effect.fn("KinDeals.list")(function* (
 const MEMBER_FIELDS = new Set(["stage", "value", "source", "lostReason"]);
 export const dealSeesField = (field: string) =>
   (teamSeesField(field) && field !== "confirmed") || MEMBER_FIELDS.has(field);
-/** A deal's own changes, its stage ids as names, as far as this viewer reads them. */
+/** A deal's own changes, its stages by the names they had then, as far as this viewer reads them. */
 const dealChanges = (
-  changes: ReadonlyArray<KinRecordChange>,
+  changes: ReadonlyArray<StoredChange>,
   stages: ReadonlyArray<KinDealStage>,
   viewer: KinViewer,
 ) =>
@@ -760,11 +762,7 @@ const dealChanges = (
     if (viewer._tag !== "ownerLevel" && change.kind === "linked") return [];
     const fields = change.fields
       .filter((field) => viewer._tag === "ownerLevel" || dealSeesField(field.field))
-      .map((field) =>
-        field.field === "stage"
-          ? { ...field, from: stageName(stages, field.from), to: stageName(stages, field.to) }
-          : field,
-      );
+      .map((field) => (field.field === "stage" ? stageLine(stages, field) : field));
     return change.kind === "updated" && fields.length === 0 ? [] : [{ ...change, fields }];
   });
 
@@ -997,8 +995,12 @@ export const setStages = Effect.fn("KinDeals.setStages")(function* (
           WHERE org_id = ${input.orgId} AND register_id = 'deals' AND state = 'open'
             AND json_extract(fields_json, '$.stage') = ${gone.id}
           ORDER BY key`;
+        const names = { from: gone.name, to: next.find((stage) => stage.id === to)?.name ?? to };
         for (const { key } of keys)
-          yield* records.update(input.orgId, writer, key, { fields: { stage: to } });
+          yield* records.update(input.orgId, writer, key, {
+            fields: { stage: to },
+            names: { stage: names },
+          });
       }
       yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
         VALUES (${input.orgId}, 'deals', 'Deals', 'DL', 1, ${now})

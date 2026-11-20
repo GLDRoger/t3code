@@ -238,6 +238,8 @@ export type Patch = Partial<Omit<Fields, "owner">> & {
   readonly owner?: KinWorkPrincipal;
   /** The holder gives it back to `owner`, whoever gave it to them, in their own words. */
   readonly handedBack?: { readonly note: string | null };
+  /** What a field's old and new ids read as now, kept on its history line (`FieldChange.names`). */
+  readonly names?: Readonly<Record<string, NonNullable<FieldChange["names"]>>>;
 };
 export type LinkInput = {
   readonly kind: KinRecordLinkKind;
@@ -315,6 +317,9 @@ const encodeFields = Schema.encodeEffect(
         field: Schema.String,
         from: Schema.NullOr(Schema.String),
         to: Schema.NullOr(Schema.String),
+        names: Schema.optional(
+          Schema.Struct({ from: Schema.NullOr(Schema.String), to: Schema.NullOr(Schema.String) }),
+        ),
       }),
     ),
   ),
@@ -1629,7 +1634,8 @@ const make = Effect.gen(function* () {
           const from = shownField(stored[field]);
           const to = shownField(value);
           if (from === to) continue;
-          changes.push({ field, from, to });
+          const names = patch.names?.[field];
+          changes.push({ field, from, to, ...(names === undefined ? {} : { names }) });
           fieldsChanged = true;
           if (value === null) delete merged[field];
           else merged[field] = value;
