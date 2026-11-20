@@ -175,7 +175,7 @@ export const KinLeadToolkit = Toolkit.make(
     ...chat,
     dependencies: [...chat.dependencies, KinChatService],
     description:
-      "Put a tap-to-answer question to one person who isn't in this chat, for whoever you're answering, or for the owner in a check-in: Kin posts it in their direct chat with you, saying who asks, and holds it for their quiet hours or away days. 2-4 options; no default, so only they answer. by: the day you need it, YYYY-MM-DD. Their answer comes back to this chat as Kin's line and wakes you here once. Ask the person who has the answer yourself; don't ask the owner to pass it on. A refusal says why and asked nothing.",
+      "Put a tap-to-answer question to one person who isn't in this chat, when only they can answer it, for whoever you're answering, or for the owner in a check-in: Kin posts it in their direct chat with you, saying who asks, and holds it for their quiet hours or away days. to: their name, as people_read gives it. 2-4 options; no default, so only they answer. by: the day you need it, YYYY-MM-DD; intent or about is required, and Kin refuses what anyone already asked them. Their answer comes back to this chat as Kin's line and wakes you here once. Then say in one line that it's with them. Ask the person who has the answer yourself; don't ask the owner to pass it on. A message to pass on, not a question, is kin_relay. A refusal says why and asked nothing.",
     parameters: AskPerson.AskPersonInput,
     success: AskPerson.AskPersonResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

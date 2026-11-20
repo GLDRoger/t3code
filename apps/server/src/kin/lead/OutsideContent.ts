@@ -44,6 +44,7 @@ export const OUTSIDE_TOOLS = {
   kin_ask: "allowed",
   kin_ask_close: "allowed",
   // The question carries the turn's stamp, so the turn its answer wakes reads as outside.
+  // A question to one person of the company, checked for what they may read; no action rides on it.
   kin_ask_person: "allowed",
   kin_react: "allowed",
   kin_chart: "allowed",
