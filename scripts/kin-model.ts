@@ -138,6 +138,16 @@ export const modelsFor = (files: ReadonlyArray<string>) =>
         file === "scripts/kin-model.ts",
     ),
   );
+/**
+ * Models a change selects through their covered code while their own folder is untouched. TLC
+ * reads only the spec, so their pass says nothing about the change until someone re-confirms it.
+ */
+export const modelsToReconfirm = (files: ReadonlyArray<string>) =>
+  Object.keys(MODEL_COVERS).filter(
+    (name) =>
+      files.some((file) => MODEL_COVERS[name]!.includes(file)) &&
+      !files.some((file) => file.startsWith(`verification/kin/${name}/`)),
+  );
 const MODELS = NodePath.join(ROOT, "verification", "kin");
 
 export type Value = string | number | boolean | Value[] | { [key: string]: Value };

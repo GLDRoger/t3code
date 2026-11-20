@@ -25,7 +25,7 @@ import {
   splitTests,
   type Step,
 } from "./check-changed.ts";
-import { MODEL_COVERS, modelsFor } from "./kin-model.ts";
+import { MODEL_COVERS, modelsFor, modelsToReconfirm } from "./kin-model.ts";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 
 const GiB = 1024 ** 3;
@@ -57,6 +57,15 @@ describe("check:changed", () => {
       modelsFor(["apps/server/src/kin/work/money.ts", "docs/kin/RULES.md"]),
       [],
     );
+  });
+
+  it("asks to re-confirm a model whose covered code changed without it", () => {
+    const queue = "apps/server/src/kin/lead/KinEventQueue.ts";
+    assert.deepStrictEqual(modelsToReconfirm([queue]), ["reply", "checkin"]);
+    assert.deepStrictEqual(modelsToReconfirm([queue, "verification/kin/reply/Reply.tla"]), [
+      "checkin",
+    ]);
+    assert.deepStrictEqual(modelsToReconfirm(["scripts/kin-model.ts"]), []);
   });
 
   it("covers, for each Kin model, exactly the files its README's Covers names, and each exists", () => {
