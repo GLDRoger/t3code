@@ -227,7 +227,7 @@ const setup = Effect.fn("test.setup")(function* (input: {
    * `own-group`: a group the owner owns, with no one else in it yet; `shared-group`: the same,
    * shared with `mate` before the ask, and the wake-up a shared turn begun after.
    */
-  readonly lane?: "direct" | "group" | "own-group" | "shared-group";
+  readonly lane?: "direct" | "group" | "own-group" | "shared-group" | "teammate";
   readonly reaction?: "👍";
   readonly changedFrom?: "👎";
   /** Wakes on this event instead, given the org and the lead's direct chat. */
@@ -277,6 +277,12 @@ const setup = Effect.fn("test.setup")(function* (input: {
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES ('group-owner', ${owner.orgId}, 'group', 'person', ${owner.personId}, 'owner', '1970-01-01T00:00:00.000Z')`;
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at) VALUES ('group-lead', ${owner.orgId}, 'group', 'agent', ${agentId}, 'member', '1970-01-01T00:00:00.000Z')`;
   }
+  // A teammate's own direct chat with the lead: no access row, no group with it.
+  const mate = { _tag: "person" as const, orgId: owner.orgId, personId: KinPersonId.make("mate") };
+  if (input.lane === "teammate") {
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('mate', ${owner.orgId}, 'mate', 'Mate', '1970-01-01T00:00:00.000Z')`;
+    chatId = (yield* chats.createDirect(mate, { orgId: owner.orgId, agentId })).chatId;
+  }
   if (input.lane === "shared-group") {
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at, joined_seq) VALUES ('group-mate', ${owner.orgId}, 'group', 'person', 'mate', 'member', '1970-01-01T00:00:00.000Z', 1)`;
     yield* sql`UPDATE kin_chats SET shared_at = -1, shared_from_seq = 1 WHERE chat_id = 'group'`;
@@ -284,7 +290,11 @@ const setup = Effect.fn("test.setup")(function* (input: {
   const message =
     input.ask === undefined
       ? undefined
-      : yield* chats.send(owner, { chatId, body: input.ask, clientMessageId: "ask" });
+      : yield* chats.send(input.lane === "teammate" ? mate : owner, {
+          chatId,
+          body: input.ask,
+          clientMessageId: "ask",
+        });
   const event =
     input.event === undefined
       ? undefined
@@ -1531,6 +1541,34 @@ it.effect("posts nothing for an L0 lead's reply in a chat its owner didn't place
     );
     assert.strictEqual(fake.rescues, 0);
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  { restricted: false, expected: ["agent:Both reviews are with Rhea's go; I've asked her."] },
+  {
+    restricted: true,
+    expected: ["system:Ada's reply couldn't be posted: you and Ada can't message each other here."],
+  },
+])(
+  "a teammate's direct chat: the reply posts there, or one Kin line says why it couldn't (restricted $restricted)",
+  ({ restricted, expected }) =>
+    Effect.gen(function* () {
+      const { fake, runId, complete, posted, sql, owner } = yield* setup({
+        level: "L0",
+        lane: "teammate",
+        ask: "Can you review the two open pull requests?",
+      });
+      if (restricted)
+        yield* sql`INSERT INTO kin_reach_limits (limit_id, org_id, one_kind, one_id, other_kind,
+            other_id, set_by_person_id, set_at)
+          VALUES ('limit', ${owner.orgId}, 'agent', ${agentId}, 'person', 'mate', ${owner.personId}, 0)`;
+      fake.items = [text("a", 1, "Both reviews are with Rhea's go; I've asked her.", runId)];
+      yield* complete;
+      assert.deepStrictEqual(
+        (yield* posted).map((row) => `${row.authorKind}:${row.body}`),
+        expected,
+      );
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect("posts nothing in a chat where the lead is muted", () =>
