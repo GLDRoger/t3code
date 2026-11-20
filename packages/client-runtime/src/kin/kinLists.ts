@@ -1016,7 +1016,7 @@ export function kinListColumns(
         numeric: field.type === "money",
       })),
     ...(def.amount ? [{ id: "amount", label: KIN_LISTS.entry.amount, numeric: true }] : []),
-    ...(records.some((record) => record.balance !== undefined)
+    ...(records.some((record) => record.balance !== undefined && !kinDraftShowsNoBalance(record))
       ? [{ id: "owed", label: KIN_LISTS.entry.left, numeric: true }]
       : []),
   ];

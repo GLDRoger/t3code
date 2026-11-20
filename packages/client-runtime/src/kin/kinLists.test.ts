@@ -362,6 +362,11 @@ describe("a list by its definition", () => {
     const drafted = { ...billed, state: "open" as const, balance: amount };
     expect(kinListRow(drafted, invoices, context).cells.owed).toBeUndefined();
     expect(kinListEntryView(drafted, invoices, context).finish?.pays).toEqual(amount);
+    // A list of nothing but such drafts has no Left column; one issued invoice brings it back.
+    const columnIds = (rows: ReadonlyArray<KinRecord>) =>
+      kinListColumns(invoices, rows).map((column) => column.id);
+    expect(columnIds([drafted])).not.toContain("owed");
+    expect(columnIds([drafted, billed])).toContain("owed");
     expect(kinListRow(billed, invoices, context).cells.owed).toBe("₹60,000.00");
     expect(
       kinListRow(
