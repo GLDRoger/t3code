@@ -31,6 +31,13 @@ const dueIn = (hours: number) =>
     measure: { value: hours, unit: "hours", threshold: 24, from: { _tag: "default" } },
   });
 
+const held = (agentId: string) => ({
+  by: { _tag: "agent" as const, agentId: KinAgentId.make(agentId) },
+  at: iso(MONDAY),
+  until: iso(MONDAY + DAY),
+  note: null,
+});
+
 describe("what a told fact is compared on", () => {
   it.each([
     { name: "a day older, same chase interval", a: overdue(8), b: overdue(13), same: true },
@@ -38,17 +45,21 @@ describe("what a told fact is compared on", () => {
     { name: "due tomorrow, then due today", a: dueIn(30), b: dueIn(5), same: false },
     { name: "due later today, an hour on", a: dueIn(6), b: dueIn(5), same: true },
     {
-      name: "taken in hand",
-      a: overdue(8),
+      name: "a hold changing hands",
+      a: fact({
+        measure: { value: 8, unit: "days", threshold: 7, from: { _tag: "default" } },
+        handled: held("fin"),
+      }),
       b: fact({
         measure: { value: 8, unit: "days", threshold: 7, from: { _tag: "default" } },
-        handled: {
-          by: { _tag: "agent", agentId: KinAgentId.make("fin") },
-          at: iso(MONDAY),
-          until: iso(MONDAY + DAY),
-          note: null,
-        },
+        handled: held("chief"),
       }),
+      same: true,
+    },
+    {
+      name: "a renewal into the days to draft it",
+      a: fact({ sense: "renewal_due", stage: "heads_up" }),
+      b: fact({ sense: "renewal_due", stage: "draft" }),
       same: false,
     },
   ])("$name", ({ a, b, same }) => {
