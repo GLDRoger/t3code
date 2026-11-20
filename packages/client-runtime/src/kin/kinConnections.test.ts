@@ -198,6 +198,7 @@ describe("kinToolRows", () => {
 
 describe("kinBankAlertsView", () => {
   it("is off on a mailbox until a sender is confirmed, nothing elsewhere, and offers each way back", () => {
+    // @effect-diagnostics-next-line globalDate:off - the view takes the device's clock as a Date.
     const now = new Date("2026-11-18T09:00:00Z");
     const mail = connection({ preset: "google" });
     expect(kinBankAlertsView({ connection: connection(), bankAlerts: undefined }, now)).toBeNull();
@@ -213,6 +214,15 @@ describe("kinBankAlertsView", () => {
               account: "9050",
               counting: false,
               counted: 0,
+            },
+            // A No is taken back only by Ask me again, which counts nothing by itself.
+            {
+              address: "notify@kowhai.example",
+              account: "4821",
+              currency: "NZD",
+              counting: false,
+              counted: 0,
+              declined: true,
             },
           ],
           notCounted: [
@@ -242,7 +252,19 @@ describe("kinBankAlertsView", () => {
         "Stopped: Kin reads no more of this sender's mail, and keeps what it has out of Money.",
         "Count these again",
       ],
+      [
+        "notify@kowhai.example · NZD account ••4821",
+        "You said No: Kin counts none of its mail.",
+        "Ask me again",
+      ],
     ]);
+    expect(view === "off" || view === null ? view : view.senders[2]!.input).toEqual({
+      address: "notify@kowhai.example",
+      account: "4821",
+      currency: "NZD",
+      counting: false,
+      askAgain: true,
+    });
     expect(view === "off" || view === null ? view : view.notCounted[0]!.text).toContain(
       "Account alert: It failed your mailbox's sender checks",
     );

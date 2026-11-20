@@ -2906,7 +2906,7 @@ describe("KinChatService", () => {
       });
       const read = yield* service.read(agent, { chatId: chat.chatId });
       assert.match(
-        read.find((one) => one.messageId === widgetId)!.body,
+        read.find((one) => one.messageId === message.messageId)!.body,
         /^A bank alert card is waiting for \S+'s answer\.$/,
       );
       assert.notInclude(JSON.stringify(read), "BRIGHTWELL");

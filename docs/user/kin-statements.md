@@ -63,17 +63,18 @@ with how many invoices it would confirm. A playbook's `statement_due_days` chang
 ## Bank alerts between statements
 
 Most banks mail you when money moves. When mail that looks like your bank's alert reaches a mailbox
-connected to Kin, Kin asks once in chat: **Is <address> your bank's alerts for account ••1234?**
-Nothing counts before you tap **Yes, count these**, and Kin counts only mail that passed your
-mailbox's sender checks. Money then shows, under the bank line, how many alerts came in and out
-since your last statement and, when it can, an estimated balance. Alerts never move the day the
-bank is known to: banks skip some and mail filters catch others.
+connected to Kin, Kin asks once in chat whether that address is your bank's alerts for the account
+it names, in that currency. Nothing counts before your Yes, and Kin counts only mail your mailbox's
+own service vouched for, never a reply or a forward. Money then shows, under the bank line, how many
+alerts came in and out since that account's last statement and, when it can, an estimated balance.
+Alerts never move the day the bank is known to: banks skip some and mail filters catch others.
 
-When an alert shows money that matches an invoice still owed, Kin asks **Did <client> pay
-<invoice>?** Only **Yes, record it** records the payment, on the alert's day. When the statement
-for those days is confirmed, its lines replace the alerts; an alert the statement doesn't have is
-named on its card and kept out of every figure. To stop counting a sender, open Settings,
-Connections, the mailbox, and tap **Stop counting these** under Bank alerts.
+When an alert shows money that matches an invoice still owed, Kin asks whether that invoice was
+paid, naming the client, the invoice and the amount. Only your tap on one records the payment, on
+the alert's day. Once a confirmed statement covers that day, the statement answers for the money:
+its lines replace the alerts, and an alert the statement doesn't have is named on its card and kept
+out of every figure. Under Bank alerts in Settings, Connections, the mailbox, you can stop counting
+a sender, count it again, or tap **Ask me again** on one you said No to.
 
 ## Reading a statement again
 

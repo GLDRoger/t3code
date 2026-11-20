@@ -97,7 +97,9 @@ describe("Money says how far Kin sees the bank", () => {
     await expect.element(page.getByText("Bank known to Oct 31")).toBeVisible();
     await expect
       .element(
-        page.getByText("Since then, from bank alerts: 6 in, 14 out. About ₹4,10,000.00 on Nov 18."),
+        page.getByText(
+          "Since Oct 31, from bank alerts: 6 in, 14 out. About ₹4,10,000.00 on Nov 18.",
+        ),
       )
       .toBeVisible();
     await userEvent.click(page.getByRole("button", { name: KIN_BANK.upload }));

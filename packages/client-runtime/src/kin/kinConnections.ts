@@ -188,21 +188,29 @@ const plural = (count: number, one: string, many: string) => `${count} ${count =
 export const KIN_BANK_ALERTS = {
   title: "Bank alerts",
   off: "Off. When mail that looks like your bank's alert arrives here, Kin asks you in chat before it counts any.",
-  sender: (address: string, account: string) => `${address} · account ••${account}`,
+  sender: (address: string, account: string, currency?: string) =>
+    `${address} · ${currency === undefined ? "" : `${currency} `}account ••${account}`,
   counting: (count: number) => `Counted · ${plural(count, "alert", "alerts")} so far`,
   stopped: "Stopped: Kin reads no more of this sender's mail, and keeps what it has out of Money.",
+  declined: "You said No: Kin counts none of its mail.",
   stop: "Stop counting these",
   restart: "Count these again",
+  askAgain: "Ask me again",
   notCountedTitle: "Not counted",
   notCounted: {
     unreadable: "Couldn't read this alert",
+    not_moved: "It isn't money that moved",
+    reply: "It's a reply or a forward",
     other_account: "It names another account",
     other_currency: "It's in another currency",
+    not_in_text: "Its reading didn't match the mail",
     future: "Its day hasn't come yet",
+    before_start: "It's from before Kin started counting",
     covered: "A confirmed statement already covers its day",
     repeat: "Kin already has this alert",
     failed_check: "It failed your mailbox's sender checks",
     not_checked: "Your mailbox didn't say the sender was checked",
+    stopped: "Its sender was stopped",
   } satisfies Record<KinBankAlertNotCounted, string>,
   changeFailed: "Couldn't change bank alerts.",
 };
@@ -215,8 +223,15 @@ export interface KinBankAlertsView {
     readonly label: string;
     readonly detail: string;
     readonly counting: boolean;
-    /** The tap that reverses its state. */
+    /** The tap that reverses its state, and what it sends. */
     readonly action: string;
+    readonly input: {
+      readonly address: string;
+      readonly account: string;
+      readonly currency?: string;
+      readonly counting: boolean;
+      readonly askAgain?: true;
+    };
   }>;
   readonly notCounted: ReadonlyArray<{ readonly id: string; readonly text: string }>;
 }
@@ -235,13 +250,28 @@ export function kinBankAlertsView(
   if (alerts === undefined || alerts.senders.length === 0) return "off";
   return {
     senders: alerts.senders.map((one) => ({
-      id: `${one.address}:${one.account}`,
+      id: `${one.address}:${one.account}:${one.currency ?? ""}`,
       address: one.address,
       account: one.account,
-      label: KIN_BANK_ALERTS.sender(one.address, one.account),
-      detail: one.counting ? KIN_BANK_ALERTS.counting(one.counted) : KIN_BANK_ALERTS.stopped,
+      label: KIN_BANK_ALERTS.sender(one.address, one.account, one.currency),
+      detail: one.counting
+        ? KIN_BANK_ALERTS.counting(one.counted)
+        : one.declined === true
+          ? KIN_BANK_ALERTS.declined
+          : KIN_BANK_ALERTS.stopped,
       counting: one.counting,
-      action: one.counting ? KIN_BANK_ALERTS.stop : KIN_BANK_ALERTS.restart,
+      action: one.counting
+        ? KIN_BANK_ALERTS.stop
+        : one.declined === true
+          ? KIN_BANK_ALERTS.askAgain
+          : KIN_BANK_ALERTS.restart,
+      input: {
+        address: one.address,
+        account: one.account,
+        ...(one.currency === undefined ? {} : { currency: one.currency }),
+        counting: !one.counting && one.declined !== true,
+        ...(one.declined === true ? { askAgain: true as const } : {}),
+      },
     })),
     notCounted: alerts.notCounted.map((one, index) => ({
       id: `${one.at}:${index}`,

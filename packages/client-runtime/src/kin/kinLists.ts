@@ -69,13 +69,17 @@ export const KIN_BANK = {
   /** Money's quiet line under the known-to one: what the owner's bank alerts add since. */
   alerts: (input: {
     readonly account: string | null;
-    readonly since: boolean;
+    /** That account's own statements' day the alerts count after; null with none. */
+    readonly since: string | null;
     readonly in: number;
     readonly out: number;
     readonly balance: string | null;
     readonly day: string;
   }) =>
-    `${input.account === null ? "" : `${input.account}: `}${input.since ? "Since then, from bank alerts" : "From bank alerts"}: ${input.in} in, ${input.out} out. ${input.balance === null ? `Seen to ${input.day}.` : `About ${input.balance} on ${input.day}.`}`,
+    `${input.account === null ? "" : `${input.account}: `}${input.since === null ? "From bank alerts" : `Since ${input.since}, from bank alerts`}: ${input.in} in, ${input.out} out. ${input.balance === null ? `Seen to ${input.day}.` : `About ${input.balance} on ${input.day}.`}`,
+  /** A mailbox whose bank alerts stopped counting when it was disconnected. */
+  alertsStopped: (mailbox: string, day: string) =>
+    `${mailbox} is disconnected: alerts stopped on ${day}.`,
   /** An owed invoice's line while an alert that matches it waits on its card. */
   alertShows: (day: string, amount: string, party: string | null) =>
     `A bank alert on ${day} shows ${amount}${party === null ? "" : ` from ${party}`}. Not recorded as paid yet.`,
@@ -106,19 +110,24 @@ export const kinBankKnownText = (known: KinBankKnown | undefined, now: Date) =>
 /** Each account's bank alert line under the known-to one; none from a host that doesn't say. */
 export const kinBankAlertsText = (known: KinBankKnown | undefined, now: Date) => {
   const alerts = known?.alerts ?? [];
-  return alerts.map((one) =>
-    KIN_BANK.alerts({
-      account: alerts.length > 1 ? one.account : null,
-      since: one.since !== null,
-      in: one.in,
-      out: one.out,
-      balance:
-        one.balance === undefined
-          ? null
-          : kinMoneyText({ minor: one.balance.minor, currency: one.currency }, true),
-      day: kinBankDay(one.balance?.on ?? one.seenThrough, now),
-    }),
-  );
+  return [
+    ...alerts.map((one) =>
+      KIN_BANK.alerts({
+        account: one.named === true || alerts.length > 1 ? one.account : null,
+        since: one.since === null ? null : kinBankDay(one.since, now),
+        in: one.in,
+        out: one.out,
+        balance:
+          one.balance === undefined
+            ? null
+            : kinMoneyText({ minor: one.balance.minor, currency: one.currency }, true),
+        day: kinBankDay(one.balance?.on ?? one.seenThrough, now),
+      }),
+    ),
+    ...(known?.alertsStopped ?? []).map((one) =>
+      KIN_BANK.alertsStopped(one.mailbox, kinBankDay(one.on, now)),
+    ),
+  ];
 };
 
 /** An issued invoice's line while some of it is owed: never more certain than the bank. */

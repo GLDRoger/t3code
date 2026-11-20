@@ -348,12 +348,7 @@ function ConnectionRecord(props: {
                           void run(`alerts:${one.id}`, "change bank alerts", () =>
                             setBankAlerts({
                               environmentId,
-                              input: {
-                                ...ref,
-                                address: one.address,
-                                account: one.account,
-                                counting: !one.counting,
-                              },
+                              input: { ...ref, ...one.input },
                             }),
                           )
                         }

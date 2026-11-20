@@ -282,7 +282,19 @@ describe("kinCashView", () => {
         through: "2026-10-31",
         alerts: [{ ...reach, balance: { minor: 41_000_000, on: "2026-11-18", estimate: true } }],
       }),
-    ).toEqual(["Since then, from bank alerts: 6 in, 14 out. About ₹4,10,000.00 on Nov 18."]);
+    ).toEqual(["Since Oct 31, from bank alerts: 6 in, 14 out. About ₹4,10,000.00 on Nov 18."]);
+    // The account is named when the company has another in its statements, and a disconnected
+    // mailbox says its alerts stopped.
+    expect(
+      alertsOf({
+        through: "2026-10-31",
+        alerts: [{ ...reach, since: "2026-10-15", named: true }],
+        alertsStopped: [{ mailbox: "rhea@ambermill.example", on: "2026-11-16" }],
+      }),
+    ).toEqual([
+      "Harbour Trust Account ••4821: Since Oct 15, from bank alerts: 6 in, 14 out. Seen to Nov 18.",
+      "rhea@ambermill.example is disconnected: alerts stopped on Nov 16.",
+    ]);
     expect(
       alertsOf({
         through: null,
@@ -293,7 +305,7 @@ describe("kinCashView", () => {
       }),
     ).toEqual([
       "Harbour Trust Account ••4821: From bank alerts: 6 in, 14 out. Seen to Nov 18.",
-      "Account ••9050: Since then, from bank alerts: 1 in, 0 out. Seen to Nov 18.",
+      "Account ••9050: Since Oct 31, from bank alerts: 1 in, 0 out. Seen to Nov 18.",
     ]);
   });
 });
