@@ -5,6 +5,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
@@ -1317,7 +1318,7 @@ describe("KinGitHubWatch keeps Work entries of GitHub", () => {
       const states = Effect.map(entries, (rows) => rows.map((row) => [row.title, row.state]));
 
       github.close({ repo: REPO, number: reopened, actor: "teammate-a" });
-      const records = yield* KinRecords.KinRecords;
+      const records = Option.getOrThrow(yield* Effect.serviceOption(KinRecords.KinRecords));
       const sql = yield* SqlClient.SqlClient;
       const [aside] = yield* sql<{ key: string }>`SELECT key FROM kin_records
         WHERE org_id = ${orgId} AND title LIKE '%Dark mode'`;
