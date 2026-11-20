@@ -192,37 +192,30 @@ const takesPayments = (sql: SqlClient.SqlClient) =>
       AND json_extract(g.definition_json, '$.payments') = 1))`;
 
 /**
- * The columns every read selects, with the derived ones: an old worker run, the last PR, the client
- * and project as they are now, and the label they lend it. Joins stay inside the entry's org.
+ * A suggestion: an entry nobody with the right has kept, whatever it holds now. Its money is owed,
+ * due, received or spent nowhere until the owner or a co-owner keeps it; as work or a date it is
+ * still there. `KinRecords` alone decides the flag (`keepsAsked`).
  */
-/**
- * An agent's suggestion with an amount: money nobody with the right has said yes to, so it is
- * owed, due, received or spent nowhere until the owner or a co-owner confirms it.
- */
-export const isSuggestedMoney = (row: {
-  readonly confirmed: number;
-  readonly amountMinor: number | null;
-}) => row.confirmed === 0 && row.amountMinor !== null;
-/** The refusal for what waits on a suggestion's confirm; `then` is what it can do after. */
-export const awaitingOwner = (key: string, then?: string) =>
-  `${key} is an agent's suggestion awaiting the owner: only the owner or a co-owner can confirm it${then === undefined ? "" : `, and then it ${then}`}.`;
-/** `isSuggestedMoney` in SQL, for an entry `r`: true for one that isn't. */
-export const notSuggestedMoney = (sql: SqlClient.SqlClient) =>
-  sql`(r.confirmed = 1 OR r.amount_minor IS NULL)`;
+export const isSuggestion = (row: { readonly confirmed: number }) => row.confirmed === 0;
+/** `isSuggestion` in SQL, for an entry `r`: true for one that was kept. */
+export const keptEntry = (sql: SqlClient.SqlClient) => sql`r.confirmed = 1`;
+/** The one refusal for anything done to a suggestion before it is kept, whoever asks. */
+export const stillSuggestion = (key: string) =>
+  `${key} is an agent's suggestion awaiting the owner: only the owner or a co-owner can confirm it.`;
 
 /**
  * The one rule for what a figure, a chart or a file counts: an entry `r` that isn't void, dropped
- * or undone, unless the filter it answers names dropped entries itself, and isn't money an agent
- * only suggested. Every query that adds up or exports amounts uses it or `countedPayment`;
- * `counted.test.ts` finds one that doesn't.
+ * or undone, unless the filter it answers names dropped entries itself, and isn't a suggestion.
+ * Every query that adds up or exports amounts uses it or `countedPayment`; `counted.test.ts` finds
+ * one that doesn't.
  */
 export const countedEntry = (
   sql: SqlClient.SqlClient,
   asked?: ReadonlyArray<KinRecordState> | undefined,
 ) =>
   asked?.includes("dropped") === true
-    ? notSuggestedMoney(sql)
-    : sql`r.state <> 'dropped' AND ${notSuggestedMoney(sql)}`;
+    ? keptEntry(sql)
+    : sql`r.state <> 'dropped' AND ${keptEntry(sql)}`;
 /** A payment `p` not taken back, on an entry `r` that counts. */
 export const countedPayment = (sql: SqlClient.SqlClient) =>
   sql`p.voided_at IS NULL AND ${countedEntry(sql)}`;
@@ -320,6 +313,10 @@ export const termsDays = (terms: string | null | undefined) => {
 /** An entry's money day: its own date, else when it was added. Filters, groups and Money share it. */
 export const moneyDay = (sql: SqlClient.SqlClient) => sql`COALESCE(r.date_at, r.created_at)`;
 
+/**
+ * The columns every read selects, with the derived ones: an old worker run, the last PR, the client
+ * and project as they are now, and the label they lend it. Joins stay inside the entry's org.
+ */
 export const selectRecords = (sql: SqlClient.SqlClient) => sql`
   SELECT r.org_id AS "orgId", r.record_id AS "recordId", r.register_id AS "registerId", r.key,
     r.title, r.state,
@@ -409,7 +406,7 @@ export const toRecord = (row: RecordRow, now: number): KinRecord => {
     side: row.side,
     dueAt: row.dueAt === null ? null : iso(row.dueAt),
     dueAllDay: row.dueAllDay === 1,
-    late: row.dueAt !== null && row.dueAt < now && !isClosed(row.state) && !isSuggestedMoney(row),
+    late: row.dueAt !== null && row.dueAt < now && !isClosed(row.state),
     confirmed: row.confirmed === 1,
     sensitive: row.sensitive === 1,
     working: row.working === 1,
@@ -467,7 +464,8 @@ const moneyOf = (row: RecordRow) => {
     ...(amount === undefined ? {} : { amount }),
     ...(row.dateAt === null ? {} : { dateAt: iso(row.dateAt), dateAllDay: row.dateAllDay === 1 }),
     ...(repeat === undefined ? {} : { repeat: repeat.rule }),
-    ...(amount === undefined || row.takesPayments !== 1
+    // A suggestion owes and has received nothing yet; its old payments are only history.
+    ...(amount === undefined || row.takesPayments !== 1 || isSuggestion(row)
       ? {}
       : {
           balance: { minor: Math.max(amount.minor - row.paid, 0), currency: amount.currency },

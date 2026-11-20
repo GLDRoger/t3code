@@ -223,12 +223,9 @@ layer(testLayer)("money owed", (it) => {
         assert.deepStrictEqual(
           (summary.suggested ?? []).map((one) => one.record.recordId).toSorted(),
           all
-            .flatMap((one, i) =>
-              !one.confirmed && one.amount !== null && one.state !== "dropped" ? [`i${i + 1}`] : [],
-            )
+            .flatMap((one, i) => (!one.confirmed && one.state !== "dropped" ? [`i${i + 1}`] : []))
             .toSorted(),
         );
-        for (const one of summary.suggested ?? []) assert.isFalse(one.record.late);
       }),
   );
 

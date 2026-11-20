@@ -278,7 +278,7 @@ const cansOf = Effect.fn("KinWork.cansOf")(function* (
         mark: edits,
         unmark: edits,
         share: !UNSHARED.has(entry.registerId),
-        confirm: edits && !entry.confirmed && open,
+        confirm: edits && !entry.confirmed && entry.state !== "dropped",
         repeat: entry.registerId === "work",
         links: edits,
       };
@@ -453,6 +453,7 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
     ...(input.dateTo === undefined ? {} : { dateTo: endOfDay(input.dateTo, zone) + 1 }),
     ...(input.paidFrom === undefined ? {} : { paidFrom: input.paidFrom }),
     ...(input.paidTo === undefined ? {} : { paidTo: input.paidTo }),
+    ...(input.kept === undefined ? {} : { kept: input.kept }),
     ...(input.side === undefined ? {} : { side: input.side }),
     ...(partyId === undefined || partyId === null ? {} : { partyId }),
     ...(projectId === undefined || projectId === null ? {} : { projectId }),

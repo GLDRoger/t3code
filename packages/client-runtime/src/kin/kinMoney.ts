@@ -186,7 +186,8 @@ export function kinMoneyView(
   ): KinListOpen | null =>
     def === undefined
       ? null
-      : { list: def.list, filter: { ...KIN_LIST_DEFAULT_FILTER, ...filter } };
+      : // Opened from a figure, the list holds exactly what the figure counted.
+        { list: def.list, filter: { ...KIN_LIST_DEFAULT_FILTER, kept: true, ...filter } };
   // Issued and not yet paid in full: the state the host counts as owed.
   const owing = { show: "waiting" as const };
   // Paid expenses by their own date: what the host counts as spent.

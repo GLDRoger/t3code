@@ -12,7 +12,7 @@ import {
   countedEntry,
   countedPayment,
   moneyDay,
-  notSuggestedMoney,
+  keptEntry,
   owedInvoices,
   ownerZone,
 } from "../work/recordRows.ts";
@@ -225,7 +225,7 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id IN ('work', 'milestones', 'invoices', 'projects')
       AND r.state IN ${sql.in(OPEN)} AND r.due_at >= ${now} AND r.due_at < ${now + WEEK_MS}
-      AND ${notSuggestedMoney(sql)}
+      AND (r.register_id <> 'invoices' OR ${keptEntry(sql)})
     ORDER BY r.due_at, r.key
     LIMIT ${CAP}`;
 

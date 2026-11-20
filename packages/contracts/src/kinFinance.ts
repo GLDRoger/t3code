@@ -248,6 +248,10 @@ export const KinMoneySummary = Schema.Struct({
    * 20: counted in no figure here. Owner-level readers only; absent from older servers.
    */
   suggested: Schema.optional(Schema.Array(Schema.Struct({ record: KinRecord, listName: Label }))),
+  /** Every such suggestion, counted by its list, most first: the rest open from here. */
+  suggestedLists: Schema.optional(
+    Schema.Array(Schema.Struct({ list: KinListId, listName: Label, count: NonNegativeInt })),
+  ),
   /** The last 12 months, oldest first, this month last: money in and out, for a chart. */
   series: Schema.Array(
     Schema.Struct({ month: Schema.String, received: KinMoneyTotals, spent: KinMoneyTotals }),

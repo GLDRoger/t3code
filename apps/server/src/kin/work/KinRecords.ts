@@ -71,9 +71,11 @@ import {
   encodeRepeat,
   type FieldChange,
   type Principal,
-  awaitingOwner,
+  invoiceDue,
   isClosed,
-  isSuggestedMoney,
+  isSuggestion,
+  keptEntry,
+  stillSuggestion,
   latestSeq,
   moneyDay,
   notFound,
@@ -281,6 +283,8 @@ export type QueryInput = {
   /** A payment that still counts was received on a day in `[paidFrom, paidTo]`. */
   readonly paidFrom?: string;
   readonly paidTo?: string;
+  /** `true`: only what a figure counts (`keptEntry`); `false`: suggestions not dropped. */
+  readonly kept?: boolean;
   readonly text?: string;
   readonly keys?: ReadonlyArray<string>;
   /** Closed at or after this time. */
@@ -2212,7 +2216,7 @@ const make = Effect.gen(function* () {
         }
         if (row.state === "dropped")
           return yield* invalid(`${row.key} is void; it takes no payments.`);
-        if (isSuggestedMoney(row)) return yield* invalid(awaitingOwner(row.key, "takes payments"));
+        if (isSuggestion(row)) return yield* invalid(stillSuggestion(row.key));
         const amount = amountOf(row);
         if (amount === undefined)
           return yield* invalid(`${row.key} has no amount yet; set it before recording payments.`);
@@ -2479,7 +2483,10 @@ const make = Effect.gen(function* () {
       where.push(sql`r.state IN ${sql.in(input.states)}`);
     else if (input.open === true) where.push(sql`r.state NOT IN ('done', 'dropped')`);
     else if (input.open === false) where.push(sql`r.state IN ('done', 'dropped')`);
-    if (input.late === true)
+    // As a figure: an invoice falls due by its terms too, as Overdue counts it (`invoiceDue`).
+    if (input.late === true && input.kept === true && input.list === "invoices")
+      where.push(sql`${invoiceDue(sql)} < ${now} AND r.state NOT IN ('done', 'dropped')`);
+    else if (input.late === true)
       where.push(sql`r.due_at < ${now} AND r.state NOT IN ('done', 'dropped')`);
     else if (input.late === false)
       where.push(sql`(r.due_at IS NULL OR r.due_at >= ${now} OR r.state IN ('done', 'dropped'))`);
@@ -2493,6 +2500,8 @@ const make = Effect.gen(function* () {
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL
           AND p.paid_on >= ${input.paidFrom ?? "0000-00-00"}
           AND p.paid_on <= ${input.paidTo ?? "9999-12-31"})`);
+    if (input.kept === true) where.push(countedEntry(sql, input.states));
+    else if (input.kept === false) where.push(sql`NOT ${keptEntry(sql)} AND r.state <> 'dropped'`);
     if (input.side !== undefined) where.push(sql`r.side = ${input.side}`);
     if (input.keys !== undefined && input.keys.length > 0)
       where.push(sql`r.key IN ${sql.in(input.keys)}`);

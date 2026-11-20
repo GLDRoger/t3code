@@ -9,7 +9,7 @@ import {
   kinFieldCheck,
   kinListEntryView,
   kinPaymentCheck,
-  kinSuggestedMoney,
+  kinSuggestion,
   type KinListEntryView,
   type KinListFieldView,
   type KinPaymentDraft,
@@ -730,9 +730,7 @@ export function KinListEntry(
               </Menu>
             </div>
           )}
-          {canChange && kinSuggestedMoney(item) ? (
-            <KinSuggestionKeep {...props} item={item} />
-          ) : null}
+          {canChange && kinSuggestion(item) ? <KinSuggestionKeep {...props} item={item} /> : null}
           {invoice === null ? null : (
             <KinInvoiceActions
               {...props}

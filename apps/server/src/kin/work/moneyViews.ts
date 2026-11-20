@@ -29,15 +29,14 @@ import {
   countedPayment,
   iso,
   moneyDay,
-  notSuggestedMoney,
   owedInvoices,
   ownerZone,
   type RecordRow,
   selectRecords,
   toRecord,
 } from "./recordRows.ts";
-import { parseFields } from "./lists.ts";
-import { allLists, isFieldDate, type ListDef, stateLabel } from "./registers.ts";
+import { LISTS, parseFields } from "./lists.ts";
+import { allLists, isBuiltIn, isFieldDate, type ListDef, stateLabel } from "./registers.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 
 /**
@@ -88,7 +87,7 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
         r.record_id AS id, r.key, r.fields_json AS "fieldsJson" FROM kin_records r
       WHERE r.org_id = ${orgId} AND r.register_id = ${def.id}
         ${input.open === true ? sql`AND r.state NOT IN ('done', 'dropped')` : sql``}
-        AND ${notSuggestedMoney(sql)} AND ${seenBy(sql, input.viewer)}
+        AND ${seenBy(sql, input.viewer)}
         AND (${sql.or(
           fields.map(
             (one) =>
@@ -141,7 +140,6 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
         ? []
         : [sql`r.register_id IN ${sql.in(input.lists)}`]),
       ...(input.open === true ? [sql`r.state NOT IN ('done', 'dropped')`] : []),
-      notSuggestedMoney(sql),
       seenBy(sql, input.viewer),
     ]);
   const hits = sql`SELECT r.record_id AS id, 'due' AS kind, r.due_at AS at, r.key FROM kin_records r
@@ -204,6 +202,8 @@ const monthStart = (month: string, zone: string) =>
   );
 
 const SUGGESTED_CAP = 20;
+/** Lists whose every entry is money, amount or not yet. */
+const MONEY_LISTS = ["quotes", "invoices", "expenses", "receipts", "subscriptions"];
 
 /** The Money tab's figures: owed and overdue by client, received and spent, dates ahead, a year. */
 export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
@@ -337,16 +337,28 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     { from: now, to: now + 30 * DAY_MS, open: true, limit: 50, viewer },
     now,
   );
+  // Suggestions in money lists, and any other with an amount: what Money's figures leave out.
+  const suggestion = sql`r.org_id = ${orgId} AND r.confirmed = 0 AND r.state <> 'dropped'
+    AND (r.register_id IN ${sql.in(MONEY_LISTS)} OR r.amount_minor IS NOT NULL) AND ${seen}`;
   const suggested =
     viewer._tag === "ownerLevel"
-      ? yield* sql<RecordRow & { listName: string }>`SELECT * FROM (${selectRecords(sql)}
-          WHERE r.org_id = ${orgId} AND r.state <> 'dropped' AND NOT ${notSuggestedMoney(sql)}
-            AND ${seen}
-          ORDER BY r.created_at DESC, r.key LIMIT ${SUGGESTED_CAP}) s
-          JOIN (SELECT register_id, name AS "listName" FROM kin_registers
-            WHERE org_id = ${orgId}) g ON g.register_id = s."registerId"
+      ? yield* sql<RecordRow & { listName: string | null }>`SELECT s.*, g.name AS "listName"
+          FROM (${selectRecords(sql)} WHERE ${suggestion}
+            ORDER BY r.created_at DESC, r.key LIMIT ${SUGGESTED_CAP}) s
+          LEFT JOIN kin_registers g ON g.org_id = ${orgId} AND g.register_id = s."registerId"
           ORDER BY s."createdAt" DESC, s.key`
       : [];
+  const suggestedLists =
+    viewer._tag === "ownerLevel"
+      ? yield* sql<{ list: string; listName: string | null; count: number }>`
+          SELECT r.register_id AS list, g.name AS "listName", COUNT(*) AS count
+          FROM kin_records r
+          LEFT JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id
+          WHERE ${suggestion}
+          GROUP BY r.register_id, g.name ORDER BY COUNT(*) DESC, r.register_id`
+      : [];
+  const listNamed = (list: string, name: string | null) =>
+    name ?? (isBuiltIn(list) ? LISTS[list].name : list);
   const owedTotal = addUp(
     owing.map((one) => one.balance),
     home,
@@ -397,7 +409,12 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
       ? {
           suggested: suggested.map((row) => ({
             record: toRecord(row, now),
-            listName: row.listName,
+            listName: listNamed(row.registerId, row.listName),
+          })),
+          suggestedLists: suggestedLists.map((one) => ({
+            list: one.list,
+            listName: listNamed(one.list, one.listName),
+            count: one.count,
           })),
         }
       : {}),
@@ -542,12 +559,13 @@ export const ownerLevelStillToInvoice = Effect.fn("KinMoneyViews.stillToInvoice"
     title: string;
     client: string | null;
     value: string | null;
+    kept: number;
     list: string | null;
     state: string | null;
     minor: number | null;
     currency: string | null;
   }>`SELECT p.key, p.title, c.title AS client, json_extract(p.fields_json, '$.value') AS value,
-      r.register_id AS list, r.state, r.amount_minor AS minor, r.currency
+      p.confirmed AS kept, r.register_id AS list, r.state, r.amount_minor AS minor, r.currency
     FROM kin_records p
     LEFT JOIN kin_records c ON c.org_id = p.org_id AND c.record_id = p.party_id
     LEFT JOIN kin_records r ON r.org_id = p.org_id AND r.project_id = p.record_id
@@ -568,7 +586,8 @@ export const ownerLevelStillToInvoice = Effect.fn("KinMoneyViews.stillToInvoice"
       );
     const accepted = money("quotes", ["done"]);
     const sent = money("quotes", ["waiting"]);
-    const value = first.value === null ? undefined : moneyOf(first.value);
+    // A suggested project's value is nobody's agreement yet.
+    const value = first.value === null || first.kept === 0 ? undefined : moneyOf(first.value);
     const [agreed, basis] =
       accepted.length > 0
         ? [accepted, "accepted quotes"]

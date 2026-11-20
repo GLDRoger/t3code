@@ -354,19 +354,32 @@ describe("a list by its definition", () => {
     ]);
     expect(entry.payments[0]).toMatchObject({ amount: "₹40,000.00", note: null, voided: false });
     expect(kinListRow(detail, invoices, context).owed).toBe("₹60,000 still owed");
-    // An agent's suggestion is not issued, and takes no payment until it is kept.
-    const suggested = { ...detail, confirmed: false };
+    // A suggestion says so before its state, whatever the state, and is paid by nobody until it
+    // is kept; as a deadline it is never overdue in a money list.
+    const suggested = { ...detail, list: "invoices", confirmed: false, late: true };
     expect(kinListEntryView(suggested, invoices, context)).toMatchObject({
-      stateLabel: "Suggested",
+      stateLabel: "Suggested · Waiting",
+      suggested: true,
+      late: false,
       finish: null,
     });
     const row = kinListRow(suggested, invoices, context);
-    expect([row.stateLabel, row.cells.state, row.suggested]).toEqual([
-      "Suggested",
-      "Suggested",
+    expect([row.stateLabel, row.cells.state, row.suggested, row.late]).toEqual([
+      "Suggested · Waiting",
+      "Suggested · Waiting",
       true,
+      false,
     ]);
     expect(row.line.split(" · ").filter((part) => part === "Suggested")).toHaveLength(1);
+    const paid = kinListRow({ ...suggested, state: "done" }, invoices, context);
+    expect([paid.stateLabel, paid.suggested]).toEqual(["Suggested · Paid", true]);
+    expect(kinListRow({ ...suggested, state: "dropped" }, invoices, context).suggested).toBe(false);
+    // Opened from a figure it asks for what the figure counts, and says so with a way back.
+    const counted = { ...KIN_LIST_DEFAULT_FILTER, show: "waiting" as const, kept: true };
+    expect(kinListQuery(orgId, "invoices" as never, counted)).toMatchObject({ kept: true });
+    expect(kinListNarrowings(counted)).toEqual([
+      { id: "kept", label: "Counted in Money", cleared: { ...counted, kept: null } },
+    ]);
   });
 
   it("sends only the names that changed when a list is renamed", () => {

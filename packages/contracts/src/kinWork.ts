@@ -489,6 +489,11 @@ export const KinWorkListInput = Schema.Struct({
   /** A payment was received against it on or after this day, and on or before `paidTo`. */
   paidFrom: Schema.optional(KinDay),
   paidTo: Schema.optional(KinDay),
+  /**
+   * `true`: only entries a figure counts, so a list opened from one matches it. `false`: only
+   * suggestions nobody kept or dropped yet. Ignored by older servers.
+   */
+  kept: Schema.optional(Schema.Boolean),
   /** Also answer `totals` for everything the filter matches, split this way. First page only. */
   totalsBy: Schema.optional(KinListGroupBy),
   /** From the previous page's `nextCursor`. */

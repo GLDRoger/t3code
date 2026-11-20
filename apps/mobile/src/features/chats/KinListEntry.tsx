@@ -15,7 +15,7 @@ import {
   kinListEntryView,
   kinListStateLabel,
   kinPaymentCheck,
-  kinSuggestedMoney,
+  kinSuggestion,
   type KinListEntryView,
   type KinPaymentDraft,
 } from "@t3tools/client-runtime/kin/kinLists";
@@ -446,7 +446,7 @@ export function KinListEntryBody(
           )}
         </View>
       )}
-      {canChange && kinSuggestedMoney(item) ? <KinSuggestionKeep {...props} item={item} /> : null}
+      {canChange && kinSuggestion(item) ? <KinSuggestionKeep {...props} item={item} /> : null}
       {invoice === null ? null : (
         <KinInvoiceActions
           {...props}

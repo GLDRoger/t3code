@@ -24,7 +24,7 @@ import { ownerLevel } from "../people/KinAccess.ts";
 import type { TextClock } from "../work/companyProfile.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { formatMoney } from "../work/money.ts";
-import { notSuggestedMoney } from "../work/recordRows.ts";
+import { keptEntry } from "../work/recordRows.ts";
 import { listDef, stateLabel } from "../work/registers.ts";
 import { seenBy } from "../work/teamView.ts";
 import { logTouch } from "../work/touches.ts";
@@ -869,7 +869,7 @@ export const markQuotesSent = Effect.fn("KinSending.markQuotesSent")(function* (
     yield* records.update(sent.orgId, writer, key, { state: "waiting" });
   if (!(yield* ownerLevel(sent.orgId, KinPersonId.make(sent.personId)))) return;
   const suggested = yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
-    WHERE r.org_id = ${sent.orgId} AND NOT ${notSuggestedMoney(sql)}
+    WHERE r.org_id = ${sent.orgId} AND NOT ${keptEntry(sql)}
       AND r.record_id IN ${sql.in([...new Set(sent.entryRecordIds)])}
     ORDER BY r.key`;
   for (const { key } of suggested)

@@ -52,6 +52,8 @@ export const KIN_LISTS = {
   goneDetail: "It may have been renamed. Open Docs to see the lists there are.",
   title: "Lists",
   search: "Search this list",
+  /** A list opened from a Money figure: only what the figure counted. */
+  kept: "Counted in Money",
   loadFailed: "Couldn't load your lists",
   entriesFailed: "Couldn't load this list",
   none: {
@@ -307,11 +309,30 @@ export const kinListStateLabel = (
 
 export const KIN_SUGGESTED = "Suggested";
 /**
- * Money an agent suggested that nobody with the right has kept, as the host counts it: it is
- * owed, issued or sent nowhere, so it reads "Suggested" in place of its state.
+ * An entry nobody with the right has kept or dropped, whatever its state or amount: it waits on
+ * Keep. The host counts it in no figure.
  */
-export const kinSuggestedMoney = (record: Pick<KinRecord, "confirmed" | "amount" | "state">) =>
-  !record.confirmed && record.amount !== undefined && !kinWorkClosed(record.state);
+export const kinSuggestion = (record: Pick<KinRecord, "confirmed" | "state">) =>
+  !record.confirmed && record.state !== "dropped";
+/** Lists whose every entry is money: a suggestion there is owed, due or overdue nowhere. */
+const KIN_MONEY_LISTS: ReadonlySet<string> = new Set([
+  "quotes",
+  "invoices",
+  "expenses",
+  "receipts",
+  "subscriptions",
+]);
+/** Late as a figure would read it: never for a suggestion in a money list. */
+const kinLateShown = (record: Pick<KinRecord, "late" | "confirmed" | "list">) =>
+  record.late && (record.confirmed || !KIN_MONEY_LISTS.has(record.list ?? "work"));
+/** Its state as a person reads it: a suggestion says so first, "Suggested · Paid". */
+const kinSuggestionStateLabel = (
+  def: Pick<KinListDefinition, "stateLabels"> | null,
+  record: Pick<KinRecord, "confirmed" | "state">,
+) => {
+  const label = kinListStateLabel(def, record.state);
+  return kinSuggestion(record) ? `${KIN_SUGGESTED} · ${label}` : label;
+};
 
 export interface KinListIndexRow {
   readonly list: KinListId;
@@ -368,6 +389,8 @@ export interface KinListFilter {
   readonly paid: KinPeriod | null;
   readonly party: KinWorkRef | null;
   readonly project: KinWorkRef | null;
+  /** `true`: only what Money's figures count, as a figure opens it; `false`: only suggestions. */
+  readonly kept: boolean | null;
   readonly groupBy: KinListGroupBy;
 }
 
@@ -382,6 +405,7 @@ export const KIN_LIST_DEFAULT_FILTER: KinListFilter = {
   paid: null,
   party: null,
   project: null,
+  kept: null,
   groupBy: "none",
 };
 
@@ -400,6 +424,7 @@ export const kinListSameFilter = (a: KinListFilter, b: KinListFilter) =>
   samePeriod(a.paid, b.paid) &&
   a.party?.key === b.party?.key &&
   a.project?.key === b.project?.key &&
+  a.kept === b.kept &&
   a.groupBy === b.groupBy;
 
 export function kinListQuery(
@@ -430,6 +455,7 @@ export function kinListQuery(
         ? {}
         : { party: filter.party.key }),
     ...(filter.project === null ? {} : { project: filter.project.key }),
+    ...(filter.kept === null ? {} : { kept: filter.kept }),
     ...(text === "" ? {} : { text }),
     totalsBy: filter.groupBy,
   };
@@ -530,6 +556,15 @@ export function kinListNarrowings(
     ...(filter.project === null
       ? []
       : [{ id: "project", label: filter.project.title, cleared: { ...filter, project: null } }]),
+    ...(filter.kept === null
+      ? []
+      : [
+          {
+            id: "kept",
+            label: filter.kept ? KIN_LISTS.kept : KIN_SUGGESTED,
+            cleared: { ...filter, kept: null },
+          },
+        ]),
   ];
 }
 
@@ -856,8 +891,8 @@ export function kinListRow(
 ): KinListRowView {
   const { names, now } = context;
   const closed = kinWorkClosed(record.state);
-  const money = kinSuggestedMoney(record);
-  const stateLabel = money ? KIN_SUGGESTED : kinListStateLabel(def, record.state);
+  const stateLabel = kinSuggestionStateLabel(def, record);
+  const late = kinLateShown(record);
   const date = whenText(record.dateAt, record.dateAllDay ?? true, names, now);
   const due = whenText(record.dueAt, record.dueAllDay, names, now);
   const amount = record.amount === undefined ? null : kinMoneyText(record.amount);
@@ -879,7 +914,6 @@ export function kinListRow(
     dueLine,
     party,
     record.repeat === undefined ? null : kinRepeatText(record.repeat).toLowerCase(),
-    record.confirmed || closed || money ? null : KIN_SUGGESTED,
   ].filter((part) => part !== null);
   const cells: Record<string, string> = {
     title: record.title,
@@ -903,8 +937,8 @@ export function kinListRow(
     state: record.state,
     stateLabel,
     closed,
-    late: record.late,
-    suggested: !record.confirmed && !closed,
+    late,
+    suggested: kinSuggestion(record),
     amount,
     owed,
     line: parts.join(" · "),
@@ -913,7 +947,7 @@ export function kinListRow(
       amount,
       owed,
       ...parts.slice(1),
-      record.late ? (def?.list === "quotes" ? KIN_LISTS.expired : KIN_LISTS.late) : null,
+      late ? (def?.list === "quotes" ? KIN_LISTS.expired : KIN_LISTS.late) : null,
     ]
       .filter((part) => part !== null)
       .join(". "),
@@ -922,6 +956,9 @@ export function kinListRow(
 }
 
 // One entry
+
+/** What only a kept entry in a money list may move to: issued or sent, and paid or accepted. */
+const MONEY_MOVES: ReadonlySet<KinRecordState> = new Set(["waiting", "done"]);
 
 export interface KinListFactView {
   readonly id: "category" | "party" | "project" | "owner";
@@ -970,6 +1007,8 @@ export interface KinListEntryView {
   readonly heading: string;
   readonly state: KinRecordState;
   readonly stateLabel: string;
+  /** Nobody kept or dropped it yet: it offers Keep and Not needed, whatever its state. */
+  readonly suggested: boolean;
   readonly closed: boolean;
   readonly late: boolean;
   readonly amount: string | null;
@@ -1120,15 +1159,17 @@ export function kinListEntryView(
       ? null
       : { minor: item.amount.minor - item.balance.minor, currency: item.amount.currency };
   const doneLabel = kinListStateLabel(def, "done");
-  const suggested = kinSuggestedMoney(item);
-  // A suggestion takes no payment until it is kept (the host refuses one).
+  const suggested = kinSuggestion(item);
+  // A suggestion is paid, issued or sent by nobody until it is kept (the host refuses each).
   const canFinish = !closed && !suggested && (def === null || def.states.includes("done"));
+  const moves = suggested && KIN_MONEY_LISTS.has(item.list ?? "work") ? MONEY_MOVES : null;
   return {
     heading: def === null ? item.key : `${item.key} · ${def.name}`,
     state: item.state,
-    stateLabel: suggested ? KIN_SUGGESTED : kinListStateLabel(def, item.state),
+    stateLabel: kinSuggestionStateLabel(def, item),
+    suggested,
     closed,
-    late: item.late,
+    late: kinLateShown(item),
     amount: item.amount === undefined ? null : kinMoneyText(item.amount, true),
     amountEdit:
       def?.amount === true || item.amount !== undefined
@@ -1165,11 +1206,13 @@ export function kinListEntryView(
           .join(" · ") || null,
       voided: payment.voidedAt !== null,
     })),
-    states: (def?.states ?? [item.state]).map((state) => ({
-      state,
-      label: kinListStateLabel(def, state),
-      current: state === item.state,
-    })),
+    states: (def?.states ?? [item.state])
+      .filter((state) => state === item.state || moves === null || !moves.has(state))
+      .map((state) => ({
+        state,
+        label: kinListStateLabel(def, state),
+        current: state === item.state,
+      })),
     finish: canFinish
       ? {
           label: `Mark ${doneLabel.toLowerCase()}`,

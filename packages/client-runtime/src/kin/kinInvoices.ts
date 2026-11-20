@@ -13,7 +13,7 @@ import type {
 } from "@t3tools/contracts";
 
 import { kinWorkDayOfTime, kinWorkDueLabel } from "./kinWork.ts";
-import { kinMoneyText, kinParseMoney, kinSuggestedMoney } from "./kinLists.ts";
+import { kinMoneyText, kinParseMoney, kinSuggestion } from "./kinLists.ts";
 
 /**
  * Invoices and receipts as the owner reads and handles them: an invoice's own number, what came
@@ -243,7 +243,7 @@ export function kinInvoiceView(
     return [{ key: ref.key as KinRecordKey, title: ref.title }];
   });
   return {
-    suggested: kinSuggestedMoney(item),
+    suggested: kinSuggestion(item),
     heading: number ?? item.title,
     description: number === null ? null : description,
     number,
@@ -295,7 +295,7 @@ export function kinInvoiceActions(
     issue: allowed.issue && numbered && !view.void && view.number === null && !view.suggested,
     void: allowed.issue && numbered && !view.void && def?.states.includes("dropped") === true,
     unvoid: allowed.issue && view.void,
-    receipt: allowed.receipt && !view.void,
+    receipt: allowed.receipt && !view.void && view.suggested !== true,
   };
 }
 

@@ -423,6 +423,22 @@ describe("KinPulse", () => {
         VALUES ('held', ${orgId}, ${chief}, 'github', 'P2', '{}', 0, 0, 1)`;
       assert.lengthOf(keyed((yield* read(B)).facts, "work_held", chief), 1);
 
+      // A suggested one on the same day is still a day to know, with no fee of its own, and
+      // stands for no renewal that was kept.
+      yield* insert({
+        id: "DT-3",
+        list: "dates",
+        category: "renewal",
+        projectId: "P-1",
+        amount: 9_999_00,
+        confirmed: 0,
+        dueAt: Date.UTC(2026, 11, 20, 23, 59, 59, 999),
+      });
+      const guessed = (yield* read(B + 40 * DAY)).facts.filter(
+        (fact) => fact.sense === "renewal_due" && fact.scope.projectKey === "P-1",
+      );
+      assert.deepStrictEqual(guessed.map((fact) => fact.subject.key).toSorted(), ["DT-3", "P-1"]);
+      assert.notInclude(guessed.find((fact) => fact.subject.key === "DT-3")!.consequence, "9,999");
       // The same renewal kept in Dates for the project too is one fact, not two.
       yield* insert({
         id: "DT-2",
@@ -434,10 +450,7 @@ describe("KinPulse", () => {
       const renewals = (yield* read(B + 40 * DAY)).facts.filter(
         (fact) => fact.sense === "renewal_due" && fact.scope.projectKey === "P-1",
       );
-      assert.deepStrictEqual(
-        renewals.map((fact) => fact.subject.key),
-        ["DT-2"],
-      );
+      assert.deepStrictEqual(renewals.map((fact) => fact.subject.key).toSorted(), ["DT-2", "DT-3"]);
 
       // V27: our own task under a client is a late task, not something we owe the client.
       yield* insert({ id: "W-15", dueAt: B, partyId: "r-C-2", category: "task" });
@@ -1073,8 +1086,25 @@ describe("KinPulse", () => {
       const people = (yield* read(at, { _tag: "people", people: [mate] })).facts;
       assert.isFalse(people.some((fact) => fact.sense === "goal_behind"));
 
+      // Next week's dues: a suggested task is still due, a suggested invoice is owed nowhere.
+      yield* insert({ id: "W-20", dueAt: at + 3 * DAY, confirmed: 0 });
+      yield* insert({
+        id: "INV-8",
+        list: "invoices",
+        state: "waiting",
+        amount: 5_000_00,
+        dueAt: at + 3 * DAY,
+        confirmed: 0,
+      });
       // The weekly brief leads with goals, then overdue money from the same rows.
       const week = yield* buildWeeklySection({ orgId, now: at });
+      assert.deepStrictEqual(
+        [
+          week.nextWeek.some((line) => line.includes("W-20")),
+          week.nextWeek.some((line) => line.includes("INV-8")),
+        ],
+        [true, false],
+      );
       assert.match(week.goals[0]!, /^G-1 .*₹1,00,000 of ₹10,00,000.*behind$/);
       assert.isTrue(
         week.money.unpaid.some((line) =>

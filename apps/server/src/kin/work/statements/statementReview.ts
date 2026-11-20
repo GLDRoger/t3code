@@ -35,7 +35,7 @@ import { choiceCardState } from "../../widgets/choiceCard.ts";
 import { fieldText, parseFields } from "../lists.ts";
 import { homeCurrency } from "../companyProfile.ts";
 import { dayIn } from "../money.ts";
-import { notSuggestedMoney, ownerZone } from "../recordRows.ts";
+import { keptEntry, ownerZone } from "../recordRows.ts";
 import { listDef } from "../registers.ts";
 import { bankStates, directionOf, findBankList, type KnownRow, knownRows } from "./bankList.ts";
 import type { FileOutcome } from "./statementFiles.ts";
@@ -222,7 +222,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid
     FROM kin_records r LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
     WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND r.state = 'waiting'
-      AND r.amount_minor IS NOT NULL AND ${notSuggestedMoney(sql)} AND NOT EXISTS (SELECT 1 FROM kin_bank_statement_entries e
+      AND r.amount_minor IS NOT NULL AND ${keptEntry(sql)} AND NOT EXISTS (SELECT 1 FROM kin_bank_statement_entries e
         WHERE e.org_id = r.org_id AND e.statement_id = ${statementId ?? ""}
           AND e.target_record_id = r.record_id)
     ORDER BY r.key`;
@@ -253,7 +253,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
         AND e.target_record_id = r.record_id) AS linked
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state IN ('open', 'done')
-      AND r.amount_minor IS NOT NULL
+      AND r.amount_minor IS NOT NULL AND ${keptEntry(sql)}
       AND COALESCE(r.date_at, r.due_at, r.created_at) >= ${Date.parse(`${earliest}T00:00:00Z`) - 60 * 86_400_000}
     ORDER BY r.key`;
   // Recorded on an invoice and not yet any statement's row: a bank row may be that money arriving.
@@ -273,7 +273,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
     WHERE p.org_id = ${orgId} AND r.register_id = 'invoices' AND p.voided_at IS NULL
-      AND p.withheld = 0 AND p.paid_on >= ${dayIn(Date.parse(`${earliest}T00:00:00Z`) - 15 * 86_400_000, "UTC")}
+      AND ${keptEntry(sql)} AND p.withheld = 0 AND p.paid_on >= ${dayIn(Date.parse(`${earliest}T00:00:00Z`) - 15 * 86_400_000, "UTC")}
       AND NOT EXISTS (SELECT 1 FROM kin_bank_statement_entries e
         WHERE e.org_id = p.org_id AND e.payment_id = p.payment_id)
     ORDER BY p.paid_on, p.payment_id`;

@@ -81,10 +81,10 @@ import {
 } from "./money.ts";
 import { latestComments, projectNoteOf } from "./recordComments.ts";
 import {
-  awaitingOwner,
   endOfDay,
   iso,
-  isSuggestedMoney,
+  isSuggestion,
+  stillSuggestion,
   notFound,
   owedInvoices,
   ownerZone,
@@ -863,7 +863,10 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     ...(defined
       ? {
           listName: def.name,
-          stateLabel: isSuggestedMoney(row) ? SUGGESTED_STATE : stateLabel(def, row.state),
+          stateLabel:
+            isSuggestion(row) && row.state !== "dropped"
+              ? SUGGESTED_STATE
+              : stateLabel(def, row.state),
         }
       : {}),
     key: record.key,
@@ -2314,8 +2317,8 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
   if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, before.recordId)))
     return yield* notFound(key);
   if (listOf(before.registerId) === "docs") return yield* isDoc(key);
-  if (input.confirmed === true && isSuggestedMoney(before))
-    return yield* new KinChatError({ reason: "not_allowed", message: awaitingOwner(before.key) });
+  if (input.confirmed === true && isSuggestion(before))
+    return yield* new KinChatError({ reason: "not_allowed", message: stillSuggestion(before.key) });
   yield* explainedHonestly(lead, before, input.state, input.kind ?? input.category);
   const def = yield* listFor(lead, before.registerId);
   const patch: Patch = {
