@@ -101,6 +101,7 @@ import { answerChange } from "../work/companyProfile.ts";
 import { KinRefreshObserver } from "./KinRefreshHub.ts";
 import { docsForViewer } from "./privateDocs.ts";
 import { previewRow } from "./chatRowPreview.ts";
+import { withLinks } from "./messageLinks.ts";
 import * as Hub from "./KinChatHub.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import { effectiveAudience } from "../lead/Audience.ts";
@@ -1344,12 +1345,22 @@ const make = Effect.gen(function* () {
     // A card still asking the owner something is theirs to see.
     return !(widget.value.closedAt === null && (phase === "heads_up" || phase === "asked"));
   });
-  const summary = Effect.fn("KinChatService.summary")(function* (
+  /**
+   * A chat's row with its last message not yet linked. The list passes what it already read: the
+   * viewer's member row (checked readable), the chat and its unread count.
+   */
+  const unlinkedSummary = Effect.fn("KinChatService.unlinkedSummary")(function* (
     identity: PersonIdentity,
     chatId: KinChatId,
+    known?: {
+      readonly member: KinChatMember;
+      readonly chat: KinChat & { readonly lastSeq: number };
+      readonly unread: number | undefined;
+    },
   ): Effect.fn.Return<KinChatSummary, ServiceError> {
-    const member = yield* memberFor(identity, chatId);
-    const chat = yield* requireRecord(repo.getChat({ orgId: identity.orgId, chatId }));
+    const member = known?.member ?? (yield* memberFor(identity, chatId));
+    const chat =
+      known?.chat ?? (yield* requireRecord(repo.getChat({ orgId: identity.orgId, chatId })));
     // Owners' history keeps dismissed messages, which no feed draws; the preview skips them.
     const history = yield* repo.history({
       ...chat,
@@ -1357,6 +1368,7 @@ const make = Effect.gen(function* () {
       limit: PREVIEW_LOOKBACK,
       viewerMemberId: member.memberId,
       receipts: false,
+      links: false,
     });
     let lastMessage: KinMessage | null = null;
     for (const message of history.messages.toReversed()) {
@@ -1405,8 +1417,8 @@ const make = Effect.gen(function* () {
       ...(Option.isSome(author) ? { lastAuthorName: author.value.displayName } : {}),
       // The Team room never counts toward a badge: a quiet "new" dot at most.
       ...(chat.teamId === KIN_TEAM_ROOM_TEAM_ID
-        ? { unread: 0, fresh: (yield* repo.unreadCount(member)) > 0 }
-        : { unread: yield* repo.unreadCount(member) }),
+        ? { unread: 0, fresh: (known?.unread ?? (yield* repo.unreadCount(member))) > 0 }
+        : { unread: known?.unread ?? (yield* repo.unreadCount(member)) }),
       working:
         Option.isSome(presence) &&
         presence.value
@@ -1414,17 +1426,50 @@ const make = Effect.gen(function* () {
           .some((line) => WORKING_PRESENCE.has(line.state)),
     };
   });
+  /** The rows' last messages linked for the viewer: one read of what they may open, for all. */
+  const linkRows = Effect.fn("KinChatService.linkRows")(function* (
+    identity: PersonIdentity,
+    rows: ReadonlyArray<KinChatSummary>,
+  ) {
+    const lasts = rows.flatMap((row) => (row.lastMessage === null ? [] : [row.lastMessage]));
+    const linked = yield* withLinks(identity.orgId, identity, lasts, { receipts: false }).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.mapError(toPersistenceSqlError("KinChatService.linkRows")),
+    );
+    const byId = new Map(linked.map((message) => [message.messageId, message]));
+    return rows.map((row) =>
+      row.lastMessage === null
+        ? row
+        : { ...row, lastMessage: byId.get(row.lastMessage.messageId) ?? row.lastMessage },
+    );
+  });
+  const summary = Effect.fn("KinChatService.summary")(function* (
+    identity: PersonIdentity,
+    chatId: KinChatId,
+  ) {
+    const [row] = yield* linkRows(identity, [yield* unlinkedSummary(identity, chatId)]);
+    return row!;
+  });
   const snapshot = Effect.fn("KinChatService.snapshot")(
     function* (identities: ReadonlyArray<PersonIdentity>) {
       const chats: Array<KinChatSummary> = [];
       const waiting: Array<KinWaitingItem> = [];
       for (const identity of identities) {
+        const unread = yield* repo.unreadCounts(identity);
+        const rows: Array<KinChatSummary> = [];
         for (const member of yield* repo.listMembersByPerson(identity)) {
           if (member.leftAt !== null) continue;
           const chat = yield* requireRecord(repo.getChat(member));
           if (!(yield* roomReadable(identity, chat))) continue;
-          chats.push(yield* summary(identity, member.chatId));
+          rows.push(
+            yield* unlinkedSummary(identity, member.chatId, {
+              member,
+              chat,
+              unread: unread.get(member.chatId),
+            }),
+          );
         }
+        chats.push(...(yield* linkRows(identity, rows)));
         waiting.push(
           ...(yield* waitingFor(identity).pipe(
             Effect.provideService(Repository.KinChatRepository, repo),
