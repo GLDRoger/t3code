@@ -26,6 +26,7 @@ import { EmptyState } from "../../../components/ui/EmptyState";
 import { ErrorBanner } from "../../../components/ui/ErrorBanner";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
+import { useEnvironments } from "../../../state/environments";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 import { useEnrolApproverKey, useKinApproverKey } from "./useKinApproverKey";
@@ -98,6 +99,7 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
   const { environmentId, orgId } = props;
   const { status, refresh } = useKinApproverKey(environmentId, orgId);
   const enrol = useEnrolApproverKey();
+  const { environments } = useEnvironments();
   const revokeKey = useAtomCommand(kinClient.approverKeyRevoke, { reportFailure: false });
   const canChallenge = useAtomValue(kinClient.keyChallenge.permissionAtom(environmentId));
   const canRegister = useAtomValue(kinClient.registerKey.permissionAtom(environmentId));
@@ -135,11 +137,24 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
     if (result !== null && !result.ok) setProblem(result);
   };
   const replaceKey = problem?.keyExists === true || status.staleKey;
+  // A phone holds one approval key, so setting up here ends approving where it was before.
+  const elsewhere = status.elsewhere;
+  const elsewhereName =
+    elsewhere === null
+      ? null
+      : elsewhere.environmentId === environmentId
+        ? "another company on this computer"
+        : (environments.find((one) => one.environmentId === elsewhere.environmentId)?.label ??
+          "another Kin");
+  const elsewhereLine =
+    elsewhereName === null
+      ? null
+      : `This phone approves for ${elsewhereName}. A phone holds one approval key, so setting it up here removes it there: anything it approved there that hasn't run yet is cancelled, and that Kin needs another phone to approve.`;
   const setUp = () =>
     replaceKey
       ? Alert.alert(
           "Set up this phone again?",
-          "It makes a new approval key. The old one on this phone stops working.",
+          elsewhereLine ?? "It makes a new approval key. The old one on this phone stops working.",
           [
             { text: "Cancel", style: "cancel" },
             { text: "Set up again", onPress: () => void start(true) },

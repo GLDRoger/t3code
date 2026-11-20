@@ -45,6 +45,8 @@ export type KinApproverKeyStatus =
       readonly own: KinApproverKey | null;
       /** This phone holds a key the host no longer accepts, so setting up replaces it. */
       readonly staleKey: boolean;
+      /** The other host and org this phone's one key approves for, which a new key ends. */
+      readonly elsewhere: KinApproverKeyRecord | null;
     } & KinApprovalsListKeysResult);
 
 export function useKinApproverKey(environmentId: EnvironmentId, orgId: KinOrgId) {
@@ -77,6 +79,7 @@ function approverKeyStatus(
     _tag: "ready",
     own: own ?? null,
     staleKey: saved !== null && own === undefined,
+    elsewhere: saved !== null && here === null ? saved : null,
     ...keys.value,
   };
 }
@@ -110,10 +113,31 @@ type EnrolResult =
   /** `keyExists`: this phone holds a key the host doesn't know; replacing it is the way out. */
   | { readonly ok: false; readonly text: string; readonly keyExists: boolean };
 
+// Replacing a key never waits longer than this on the host it was for.
+const REVOKE_WAIT_MS = 4_000;
+
 /** Sets up this phone's approval key with a host: challenge, hardware key, attested register. */
 export function useEnrolApproverKey() {
   const keyChallenge = useAtomCommand(kinClient.keyChallenge, { reportFailure: false });
   const registerKey = useAtomCommand(kinClient.registerKey, { reportFailure: false });
+  const revokeKey = useAtomCommand(kinClient.approverKeyRevoke, { reportFailure: false });
+  // The host the old key was for drops it, so its list stops naming a phone that can't sign.
+  const revokeOld = async () => {
+    const record = appAtomRegistry.get(kinApproverKeyRecordAtom);
+    const saved = AsyncResult.isSuccess(record) ? record.value : null;
+    if (saved === null) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      revokeKey({
+        environmentId: saved.environmentId,
+        input: { orgId: saved.orgId, thumbprint: saved.thumbprint },
+      }),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, REVOKE_WAIT_MS);
+      }),
+    ]);
+    clearTimeout(timer);
+  };
   return async (input: {
     readonly environmentId: EnvironmentId;
     readonly orgId: KinOrgId;
@@ -123,6 +147,7 @@ export function useEnrolApproverKey() {
     const { environmentId, orgId } = input;
     return orDeviceFailure(async () => {
       if (input.replace) {
+        await revokeOld();
         await ApprovalKey.deleteKey();
         await clearApproverKeyRecord();
       }
