@@ -12,6 +12,7 @@
     "docs/kin/**",
     "verification/kin/**",
     "scripts/kin*",
+    "scripts/kin*/**",
     "scripts/lib/kin*",
     "branding/**",
     "infra/kin-sign-in/**",
@@ -50,9 +51,12 @@
     "evals/mcp-tool-use/appServer.ts",
     "evals/mcp-tool-use/compare.ts",
     "evals/mcp-tool-use/estimate.ts",
+    "evals/mcp-tool-use/estimate.test.ts",
     "evals/mcp-tool-use/kin*",
     "evals/mcp-tool-use/gate.ts",
+    "evals/mcp-tool-use/gate.test.ts",
     "evals/mcp-tool-use/margin.ts",
+    "evals/mcp-tool-use/margin.test.ts",
     "evals/mcp-tool-use/rubric.ts"
   ]
 }
