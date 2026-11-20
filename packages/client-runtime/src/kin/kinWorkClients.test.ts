@@ -26,6 +26,7 @@ import {
   kinProjectsByClient,
   kinTouchAt,
   kinTouchNext,
+  kinWorkTimeline,
 } from "./kinWorkClients.ts";
 
 describe("kinLastContactLine", () => {
@@ -312,6 +313,40 @@ describe("kinClientPageView", () => {
       log: false,
       owner: false,
     });
+  });
+});
+
+describe("kinWorkTimeline", () => {
+  const now = new Date("2026-11-20T10:00:00.000Z");
+  const rhea = KinPersonId.make("rhea");
+  const zoya = KinPersonId.make("zoya");
+  const own = KinRecordKey.make("C-4");
+  const kindChange = (from: string | null, to: string) =>
+    ({
+      seq: 1,
+      at: "2026-11-20T09:00:00.000Z",
+      by: { _tag: "person", personId: rhea },
+      via: "ui",
+      kind: "updated",
+      fields: [{ field: "category", from, to }],
+      record: { recordId: KinRecordId.make("r-C-4"), key: own, title: "Fennick", list: "clients" },
+    }) as never;
+  it.each([
+    ["prospect", "client", "marked them a client"],
+    ["client", "prospect", "marked them a prospect again"],
+    ["vendor", "prospect", "marked them a prospect"],
+    ["client", "vendor", "marked them a vendor"],
+    ["vendor", "client", "marked them a client"],
+  ] as const)("names a move from %s to %s, both ways", (from, to, said) => {
+    const line = (me: KinPersonId | null) =>
+      kinWorkTimeline(
+        [kindChange(from, to)],
+        { people: new Map([[rhea, "Rhea"]]), agents: new Map(), me, zone: "UTC" },
+        now,
+        own,
+      )[0]?.text;
+    expect(line(rhea)).toBe(`You ${said}`);
+    expect(line(zoya)).toBe(`Rhea ${said}`);
   });
 });
 

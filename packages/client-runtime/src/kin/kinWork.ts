@@ -1221,9 +1221,13 @@ export function kinWorkChangeText(
   if (sensitive === "true") clauses.push("made it private");
   else if (sensitive === "false") clauses.push("made it not private");
   // Clients keep their kind in the category field.
-  const kind = list === "clients" ? field("category")?.to : undefined;
-  if (kind === "vendor") clauses.push("marked them a vendor");
-  else if (kind === "client") clauses.push("marked them a client");
+  const kind = list === "clients" ? field("category") : undefined;
+  if (kind?.to === "vendor") clauses.push("marked them a vendor");
+  else if (kind?.to === "client") clauses.push("marked them a client");
+  else if (kind?.to === "prospect")
+    clauses.push(
+      kind.from === "client" ? "marked them a prospect again" : "marked them a prospect",
+    );
   const said = clauses.length === 0 ? "updated it" : clauses.join(", ");
   // A change Kin made by taking the default of a question nobody answered.
   return field(KIN_TAKEN_DEFAULT_FIELD) === undefined
