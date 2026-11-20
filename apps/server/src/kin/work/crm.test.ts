@@ -319,6 +319,68 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+// The company is UTC+14; the four TZ runs put the server 14, 8.5, 22 and 1 hours from it.
+it.effect("a timed due is told on the company's day and clock, whatever the server's zone", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Etc/GMT-14' WHERE org_id = ${orgId}`;
+    yield* LeadWork.create(scope, {
+      sourceEventId: "ask-event",
+      records: [
+        { list: "projects", title: "Invented booking app" },
+        {
+          list: "milestones",
+          title: "Invented booking flow ready",
+          project: "Invented booking app",
+          due: "2026-12-04T10:16:00.000Z",
+        },
+      ],
+    });
+    const companyClock = "2026-12-05T00:16:00.000+14:00";
+    assert.include(yield* LeadWork.get(scope, { key: "M-1" }), { due: companyClock });
+    const dates = yield* LeadMoney.datesQuery(scope, { from: "2026-12-05", to: "2026-12-05" });
+    assert.deepStrictEqual(
+      dates.dates.map((one) => [one.key, one.on]),
+      [["M-1", companyClock]],
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+// An all-day due is stored as the last millisecond of the company's day, its UTC day the next one
+// west of UTC: the plan names the day the person picked, wherever the company is.
+it.effect.each(["America/Los_Angeles", "Pacific/Auckland"])(
+  "a project's plan names an all-day due on the day picked (%s)",
+  (zone) =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_trigger_settings SET time_zone = ${zone} WHERE org_id = ${orgId}`;
+      yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          { list: "projects", title: "Invented booking app" },
+          {
+            list: "milestones",
+            title: "Invented booking flow ready",
+            project: "Invented booking app",
+            due: "2026-12-04",
+          },
+          { title: "Invented booking screens", milestone: "M-1", due: "2026-12-01" },
+        ],
+      });
+      const plan = (yield* LeadWork.get(scope, { key: "P-1" })).plan!;
+      assert.deepStrictEqual(
+        plan.milestones.map((one) => [one.key, one.due]),
+        [["M-1", "2026-12-04"]],
+      );
+      assert.deepStrictEqual(
+        plan.openTasks.map((one) => [one.key, one.due]),
+        [["W-1", "2026-12-01"]],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("the client page shows both directions, its contacts, projects and one history", () =>
   Effect.gen(function* () {
     yield* seed;

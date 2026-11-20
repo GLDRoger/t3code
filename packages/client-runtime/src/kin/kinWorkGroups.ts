@@ -1,9 +1,10 @@
-// @effect-diagnostics globalDate:off - Pure view helpers compare due times with the reader's local day, outside an Effect runtime.
+// @effect-diagnostics globalDate:off - Pure view helpers compare due times with the company's day, outside an Effect runtime.
 import type { KinRecord, KinRecordKey, KinWorkPrincipal } from "@t3tools/contracts";
 
 import {
   kinWorkAvatar,
   kinWorkClosed,
+  kinWorkDueDays,
   kinWorkName,
   kinWorkPrincipalKey,
   type KinWorkFilter,
@@ -105,17 +106,14 @@ const whereOf = (record: KinRecord, names: KinWorkNames): Where => {
   };
 };
 
-const dayEndMs = (now: Date) =>
-  new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - 1;
-
 /**
  * Why one of your tasks leads "On me": late, then due by the end of today, then handed back to
  * you or stuck waiting.
  */
-function kinWorkMark(record: KinRecord, now: Date): KinWorkMark | null {
+function kinWorkMark(record: KinRecord, names: KinWorkNames, now: Date): KinWorkMark | null {
   if (kinWorkClosed(record.state)) return null;
   if (record.late) return "late";
-  if (record.dueAt !== null && Date.parse(record.dueAt) <= dayEndMs(now)) return "today";
+  if ((kinWorkDueDays(record, names, now) ?? 1) <= 0) return "today";
   if (record.handedBack !== undefined) return "handed_back";
   return record.state === "waiting" ? "stuck" : null;
 }
@@ -178,7 +176,7 @@ export function kinWorkGroups<R extends KinRecord>(
       });
   };
   section("mine", "mine", KIN_WORK_GROUPS.mine, mine.length);
-  const marked = mine.map((record) => ({ record, mark: kinWorkMark(record, now) }));
+  const marked = mine.map((record) => ({ record, mark: kinWorkMark(record, names, now) }));
   marked.sort(
     (a, b) =>
       (a.mark === null ? 3 : MARK_ORDER[a.mark]) - (b.mark === null ? 3 : MARK_ORDER[b.mark]),

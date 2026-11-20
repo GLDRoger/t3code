@@ -196,6 +196,7 @@ function DayRow(props: {
   readonly text: string | null;
   readonly day: string | null;
   readonly now: Date;
+  readonly zone: string | null;
   readonly disabled: boolean;
   readonly onPick: (day: string | null) => void;
   /** Opens the calendar, for a day the menu doesn't offer. */
@@ -208,8 +209,8 @@ function DayRow(props: {
       accessibilityRole="button"
       accessibilityLabel={`${props.label}: ${shown}. Change`}
       actions={[
-        ...kinWorkDueChoices(props.now).map((choice) => {
-          const date = kinWorkDueLabel(choice.day, props.now);
+        ...kinWorkDueChoices(props.now, props.zone).map((choice) => {
+          const date = kinWorkDueLabel(choice.day, props.now, props.zone);
           return {
             id: `${DAY}${choice.day}`,
             title: choice.label,
@@ -502,6 +503,7 @@ export function KinListEntryBody(
             text={entry.date}
             day={entry.dateDay}
             now={props.now}
+            zone={names.zone}
             disabled={busy}
             onOther={() => edit("date")}
             onPick={(day) =>
@@ -524,6 +526,7 @@ export function KinListEntryBody(
             text={entry.due}
             day={entry.dueDay}
             now={props.now}
+            zone={names.zone}
             disabled={busy}
             onOther={() => edit("due")}
             onPick={(day) =>
@@ -707,6 +710,7 @@ export function KinListEntryBody(
                     text={field.text}
                     day={current}
                     now={props.now}
+                    zone={names.zone}
                     disabled={busy}
                     onOther={() => edit(`field:${field.key}`)}
                     onPick={(day) => setField(field.key, day)}

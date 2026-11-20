@@ -75,6 +75,7 @@ import { cn } from "../lib/utils";
 import type { ThemePreferenceMode } from "../themePalette";
 import { KinAgentDefaultsSetting } from "./KinAgentsSetting";
 import { KinAvatar } from "./KinAvatar";
+import { KinBriefsSetting } from "./KinBriefs";
 import { withKinAgentPage } from "./kinPlaces";
 import { KinCheckInsSetting } from "./KinCheckIns";
 import { kinClient } from "./kinClient";
@@ -399,6 +400,7 @@ function KinSettingsProfile(props: KinSettingsTarget) {
       ) : (
         <KinProfileBody {...props} personId={me} />
       )}
+      <KinBriefsSetting {...props} />
       {/* A teammate's browser is a chat-only session; the owner's never is. */}
       {isChatOnlySession() ? <KinLeaveTeam /> : null}
     </div>

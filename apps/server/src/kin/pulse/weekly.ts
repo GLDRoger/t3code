@@ -20,19 +20,25 @@ import * as KinPulse from "./KinPulse.ts";
 import { DAY_MS } from "./thresholds.ts";
 
 export const WEEKLY_RULE =
-  "This is the weekly brief, the owner's one post this morning. Below are the week's figures from these rows: goals, money still to come and overdue, open quotes, renewals this month, cold clients and meetings. Nothing posts them: pick only what matters, in a few short lines: what matters most this week and why, and each decision as what you did or will do and how to stop it. A meeting that already happened is not coming up; a follow-up you set is not a meeting. Each overdue line says what mail went and what waits on a Confirm, as recorded now: never call something sent a draft.";
+  "This is the weekly brief, the owner's one post this morning. Kin writes the week's figures into the page as its own section: goals, money, overdue invoices, open quotes, renewals, cold and quiet clients, projects behind and meetings. Below is the rest of the week, for your judgement: how projects moved, last week's meetings, who is overloaded or free, and what falls due next week. In a few short lines: what matters most this week and why, and each decision as what you did or will do and how to stop it. A meeting that already happened is not coming up; a follow-up you set is not a meeting. An overdue invoice's fact says what mail went and what waits on a Confirm, as recorded now: never call something sent a draft.";
 /** The seeded weekly check-in's schedule (`checkin-<slug>`), which arrives as a pulse event. */
 const WEEKLY_CHECK_IN = "checkin-weekly";
+/** A page the week's figures go on: the weekly brief, or the morning one on its day. */
 export const wantsWeekly = (events: ReadonlyArray<KinEvent>) =>
   events.some(
     (event) =>
       (event._tag === "routine" && event.weekly === true) ||
-      (event._tag === "pulse" && event.checkIn?.scheduleId === WEEKLY_CHECK_IN),
+      (event._tag === "pulse" &&
+        (event.checkIn?.scheduleId === WEEKLY_CHECK_IN || event.checkIn?.figures === true)),
   );
 /** The seeded morning check-in, which carries what the retired morning brief did. */
 const MORNING_CHECK_IN = "checkin-morning";
 export const isMorningCheckIn = (event: KinEvent) =>
   event._tag === "pulse" && event.checkIn?.scheduleId === MORNING_CHECK_IN;
+/** The seeded evening check-in, which carries what the retired evening summary did. */
+const EVENING_CHECK_IN = "checkin-evening";
+export const isEveningCheckIn = (event: KinEvent) =>
+  event._tag === "pulse" && event.checkIn?.scheduleId === EVENING_CHECK_IN;
 const WEEK_MS = 7 * DAY_MS;
 const FREE_HORIZON_MS = 3 * DAY_MS;
 const LATE_OVERLOAD = 3;
@@ -40,12 +46,14 @@ const CAP = 20;
 const OPEN = ["open", "doing", "waiting"] as const;
 
 const RENEWALS_AHEAD_MS = 30 * DAY_MS;
+const NO_OUTCOME = "no outcome noted yet";
+const INVOICE_DUE = " (invoice due)";
 
 /**
  * The week for the owner's weekly brief, counted from Kin's rows: goals first, then projects by
  * how they moved, money in and out and what is overdue, who is overloaded or free, and next week.
  */
-export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (input: {
+const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
   readonly orgId: KinOrgId;
   readonly now: number;
 }) {
@@ -144,8 +152,10 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
         : yield* sql`SELECT 1 FROM kin_connection_asks WHERE org_id = ${orgId}
             AND state = 'open' AND json_extract(payload_json, '$.threadId') = ${thread} LIMIT 1`;
     return [
-      `sent ${first.at.slice(0, 10)} from ${first.from}`,
-      later === undefined ? "no reminder since" : `reminder sent ${later.at.slice(0, 10)}`,
+      `sent ${dayIn(Date.parse(first.at), zone)} from ${first.from}`,
+      later === undefined
+        ? "no reminder since"
+        : `reminder sent ${dayIn(Date.parse(later.at), zone)}`,
       ...(waiting.length > 0 ? ["a reply waits on the owner's Confirm"] : []),
     ].join(", ");
   });
@@ -239,7 +249,15 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
     limit: CAP,
   })).facts.filter((fact) => fact.sense === "client_cold" || fact.sense === "client_quiet");
 
-  return {
+  const unpaidLine = (one: (typeof owed)[number]) =>
+    `${one.key}${one.partyTitle === null ? "" : ` ${one.partyTitle}`}: ${formatMoney(one.balance)} ${
+      one.dueAt === null
+        ? "unpaid, no due date"
+        : isOverdue(one)
+          ? `unpaid, overdue ${formatKinLate(one.dueAt, now, { zone, locale: KIN_TEXT_LOCALE })}; ${overdueMail.get(one.recordId)}`
+          : `due ${dayIn(one.dueAt, zone)}`
+    }`;
+  const section = {
     week: `${dayIn(weekAgo, zone)} to ${dayIn(now, zone)}`,
     goals: goals.map(goalLine),
     projects: Object.fromEntries(Object.entries(byStatus).filter(([, rows]) => rows.length > 0)),
@@ -247,16 +265,7 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
       inThisWeek: totals(received),
       outThisWeek: totals(spent),
       unpaidTotal: totals(owed.map((one) => one.balance)),
-      unpaid: owed.map(
-        (one) =>
-          `${one.key}${one.partyTitle === null ? "" : ` ${one.partyTitle}`}: ${formatMoney(one.balance)} ${
-            one.dueAt === null
-              ? "unpaid, no due date"
-              : isOverdue(one)
-                ? `unpaid, overdue ${formatKinLate(one.dueAt, now, { zone, locale: KIN_TEXT_LOCALE })}; ${overdueMail.get(one.recordId)}`
-                : `due ${dayIn(one.dueAt, zone)}`
-          }`,
-      ),
+      unpaid: owed.map(unpaidLine),
       openQuotes: quotes.map(
         (one) =>
           `${one.key}${one.client === null ? "" : ` ${one.client}`}${one.minor === null || one.currency === null ? "" : `: ${formatMoney({ minor: one.minor, currency: one.currency })}`}, ${one.state === "open" ? "draft, not sent" : "sent, no answer yet"}`,
@@ -271,7 +280,7 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
         .filter((one) => one.at < now)
         .map(
           (one) =>
-            `${when(one.at)} ${one.key} ${one.title}: ${one.state === "done" ? "outcome noted" : "happened, no outcome noted yet"}`,
+            `${when(one.at)} ${one.key} ${one.title}: ${one.state === "done" ? "outcome noted" : `happened, ${NO_OUTCOME}`}`,
         ),
       comingUp: meetings
         .filter((one) => one.at >= now)
@@ -288,7 +297,76 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
     people: { overloaded, free },
     nextWeek: next.map(
       (one) =>
-        `${dayIn(one.dueAt, zone)} ${one.key} ${one.title}${one.list === "milestones" ? " (milestone)" : one.list === "invoices" ? " (invoice due)" : one.list === "projects" ? " (project target)" : ""}`,
+        `${dayIn(one.dueAt, zone)} ${one.key} ${one.title}${one.list === "milestones" ? " (milestone)" : one.list === "invoices" ? INVOICE_DUE : one.list === "projects" ? " (project target)" : ""}`,
     ),
   };
+  return {
+    section,
+    overdue: owed.filter(isOverdue).map(unpaidLine),
+    notYetDue: owed.filter((one) => !isOverdue(one)).map(unpaidLine),
+  };
+});
+
+/** The week for the agent to judge: only what the figures section (`weeklyFigures`) doesn't show. */
+export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly now: number;
+}) {
+  const { section: week } = yield* weekRows(input);
+  return {
+    week: week.week,
+    projects: Object.fromEntries(
+      Object.entries(week.projects).filter(([status]) => status !== "behind"),
+    ),
+    meetingsLastWeek: week.meetings.lastWeek.filter((line) => !line.endsWith(NO_OUTCOME)),
+    people: week.people,
+    nextWeek: week.nextWeek.filter((line) => !line.endsWith(INVOICE_DUE)),
+  };
+});
+
+export const WEEK_FIGURES_TITLE = "The week, from Kin's records";
+
+/**
+ * The week's figures as Kin writes them into the weekly brief's page, one titled section the
+ * agent's words sit around: every figure from the rows, none chosen or retyped by a model.
+ */
+export const weeklyFigures = Effect.fn("KinWeekly.figures")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly now: number;
+}) {
+  const { section: week, overdue, notYetDue } = yield* weekRows(input);
+  const block = (title: string, lines: ReadonlyArray<string>, empty?: string) =>
+    lines.length === 0
+      ? empty === undefined
+        ? []
+        : [`${title}: ${empty}`]
+      : [`${title}:`, ...lines.map((line) => `- ${line}`)];
+  const money = [
+    week.money.inThisWeek.length === 0 ? null : `In this week: ${week.money.inThisWeek.join(", ")}`,
+    week.money.outThisWeek.length === 0
+      ? null
+      : `Out this week: ${week.money.outThisWeek.join(", ")}`,
+    week.money.unpaidTotal.length === 0
+      ? null
+      : `Still to come in: ${week.money.unpaidTotal.join(", ")}`,
+  ].filter((line) => line !== null);
+  const blocks = [
+    block("Goals", week.goals, "none set"),
+    block("Money", money),
+    block("Overdue", overdue, "nothing"),
+    block("Invoices not yet due", notYetDue),
+    block("Open quotes", week.money.openQuotes, "none"),
+    block("Renewals this month", week.money.renewalsThisMonth, "none"),
+    block("Cold clients", week.clients.cold),
+    block("Quiet clients", week.clients.quiet),
+    block("Behind", week.projects.behind ?? []),
+    block(
+      "Meetings with no outcome noted",
+      week.meetings.lastWeek.filter((line) => line.endsWith(NO_OUTCOME)),
+    ),
+    block("Coming up", week.meetings.comingUp),
+  ].filter((lines) => lines.length > 0);
+  return [`## ${WEEK_FIGURES_TITLE}`, week.week, ...blocks.map((lines) => lines.join("\n"))].join(
+    "\n\n",
+  );
 });
