@@ -1209,6 +1209,14 @@ it.effect(
         "kin.work.linkRemove",
         // Its lead too; the service refuses anyone else (`teamGuard`).
         "kin.work.projectPeople",
+        // A member with the Clients switch on; the service checks each call (`memberParty`).
+        "kin.work.history",
+        "kin.work.createParty",
+        "kin.work.updateParty",
+        "kin.work.createContact",
+        "kin.work.updateContact",
+        "kin.work.logTouch",
+        "kin.work.removeTouch",
       ]);
       const methods = [
         ...Object.values(KIN_WORK_WS_METHODS),
@@ -2856,14 +2864,14 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
       `No entry ${client.key} in Work.`,
     ]);
 
-    // Clients on: names and contacts, never terms, the sensitive client or what's owed.
+    // Clients on: names, contacts and the contact log, never terms or the sensitive client.
     yield* places(1, 0, 0);
     const parties = yield* OwnerClients.parties([mate], { orgId });
     assert.deepStrictEqual(
       parties.parties.map((party) => party.name),
       ["Invented Acme"],
     );
-    assert.notProperty(parties.parties[0]!, "lastContactAt");
+    assert.strictEqual(parties.parties[0]!.lastContactAt, null);
     const page = yield* OwnerClients.party([mate], { orgId, key: client.key });
     assert.deepStrictEqual(
       page.contacts.map((one) => [one.name, one.email]),
@@ -2906,6 +2914,10 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
       partyId: client.recordId,
     });
     yield* places(0, 1, 1);
+    assert.notProperty(
+      (yield* OwnerClients.parties([mate], { orgId })).parties[0]!,
+      "lastContactAt",
+    );
     const led = yield* OwnerClients.party([mate], { orgId, key: client.key });
     assert.deepStrictEqual(
       led.contacts.map((one) => [one.name, one.email]),
@@ -3761,6 +3773,8 @@ it.effect(
       yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
         VALUES (${orgId}, ${lead}, ${ownerId}, ${at})`;
       // Midday on the company's clock and hers, so what she is told arrives now.
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'UTC', '08:00', '18:00', '02:00',
+          0, 1, '09:00', '{}') ON CONFLICT (org_id) DO UPDATE SET time_zone = 'UTC'`;
       yield* TestClock.setTime(Date.parse("2026-11-16T12:00:00.000Z"));
       const meeraId = KinPersonId.make("meera");
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)

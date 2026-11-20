@@ -37,7 +37,7 @@ const REPLAY_LIMIT = 128;
 /** One viewer's pending change, keyed for `bufferLatestLiveStream`: the latest per entry wins. */
 type Pending = {
   readonly sequence: number;
-  /** An entry's key, or `START`, `RESCAN` or `GAP`. */
+  /** An entry's key, or `START`, `RESCAN`, `PLACES` or `GAP`. */
   readonly key: string;
   readonly list: string | null;
   readonly created: boolean;
@@ -50,6 +50,11 @@ const START = "*start";
 const RESCAN = "*rescan";
 /** Something moved that left no change to replay, such as an undo. */
 const GAP = "*gap";
+/**
+ * This teammate's own places moved: everything they hold is read again (`snapshot-required`),
+ * an open client page included, even where no row or count changed.
+ */
+const PLACES = "*places";
 
 type Out = KinWorkEvent;
 
@@ -235,6 +240,7 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
         : [];
     return [
       ...rescan,
+      ...(mine ? [{ ...base, sequence, key: PLACES }] : []),
       ...projects,
       ...(tick.key === undefined ? [] : [{ ...base, sequence, key: tick.key }]),
     ];
@@ -252,6 +258,7 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
     if (items.length === 0) return [];
     const gaps = items.filter((one) => one.key === GAP);
     if (gaps.length > 0) return yield* restart(Math.max(...gaps.map((one) => one.sequence)));
+    if (viewer.teammate && items.some((one) => one.key === PLACES)) return yield* restart();
     const top = Math.max(...items.map((one) => one.sequence));
     const keyed = items.filter((one) => one.key !== RESCAN);
     const place = (one: Pending) =>

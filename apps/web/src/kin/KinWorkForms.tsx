@@ -26,6 +26,7 @@ import {
   kinProjectUpdateInput,
   kinWorkFormMoved,
   kinWorkSend,
+  type KinClientDraftKind,
   type KinWorkFormProblem,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type {
@@ -69,6 +70,7 @@ import { KinWorkPrivateMark, KinWorkProblem } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
 import { KinPlaceCombobox } from "./KinPlaceCombobox";
 import { kinHostConnected } from "./useKinHost";
+import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import {
   kinWorkChoicesAtom,
   useKinWorkForm,
@@ -192,16 +194,26 @@ function PrivateSwitch(props: {
 const NO_PLACE = "none";
 const ABROAD = "abroad";
 
-/** A client or vendor, new or being edited. */
+/**
+ * A prospect, client or vendor, new or being edited. A teammate (Clients on) adds prospects and
+ * changes the name, notes, where it came from and tags; terms, tax and Keep private stay the owner
+ * level's, and the host checks the same.
+ */
 export function KinClientDialog(
   props: KinWorkTarget & {
     readonly editing: KinPartyDetail | null;
+    /** What a new one starts as. */
+    readonly start?: KinClientDraftKind;
+    /** Leaves out what only the owner level changes; a teammate's by default. */
+    readonly member?: boolean;
     readonly onSaved: (key: KinRecordKey) => void;
     readonly onOpenExisting: (key: KinRecordKey) => void;
     readonly onClose: () => void;
   },
 ) {
   const { environmentId, orgId, editing } = props;
+  const ownerLevel = useKinOwnerLevel(environmentId);
+  const member = props.member ?? !ownerLevel;
   const create = useAtomCommand(kinClient.workClientCreate, { reportFailure: false });
   const update = useAtomCommand(kinClient.workClientUpdate, { reportFailure: false });
   // One id for the form's life: trying again after a dropped answer never adds a second client.
@@ -209,7 +221,7 @@ export function KinClientDialog(
   const [key] = useState(() => editing?.key ?? null);
   const { state, form } = useKinWorkForm(environmentId, {
     noun: "client",
-    start: kinClientDraftOf(editing ?? undefined),
+    start: kinClientDraftOf(editing ?? undefined, member ? "prospect" : (props.start ?? "client")),
     editing: editing === null ? null : { key: editing.key, rev: editing.rev },
     nameOf: (draft) => draft.name,
     check: kinClientDraftCheck,
@@ -247,7 +259,20 @@ export function KinClientDialog(
     place: useId(),
     country: useId(),
     notes: useId(),
+    source: useId(),
+    tags: useId(),
   };
+  const kinds: ReadonlyArray<KinClientDraftKind> = !member
+    ? ["prospect", "client", "vendor"]
+    : editing !== null && draft.kind !== "vendor"
+      ? ["prospect", "client"]
+      : [];
+  const kindLabel: Record<KinClientDraftKind, string> = {
+    prospect: COPY.party.kindProspect,
+    client: COPY.party.kindClient,
+    vendor: COPY.party.kindVendor,
+  };
+  const newProspect = editing === null && draft.kind === "prospect";
   const india = kinIndiaFields(useKinCompanyCountry(props));
   const gstinNote = kinClientGstinNote(draft);
   const place = draft.abroad ? ABROAD : draft.placeOfSupply || NO_PLACE;
@@ -260,8 +285,14 @@ export function KinClientDialog(
   };
   return (
     <FormShell
-      title={editing === null ? COPY.party.newTitle : COPY.party.editTitle}
-      submit={editing === null ? COPY.party.add : COPY.save}
+      title={
+        editing !== null
+          ? COPY.party.editTitle
+          : newProspect
+            ? COPY.party.prospectTitle
+            : COPY.party.newTitle
+      }
+      submit={editing !== null ? COPY.save : newProspect ? KIN_CLIENTS.addProspect : COPY.party.add}
       saving={state.saving}
       canSave={draft.name.trim() !== ""}
       problem={state.problem}
@@ -280,130 +311,164 @@ export function KinClientDialog(
           onChange={(event) => form.edit({ name: event.target.value })}
         />
       </Field>
-      <div className="flex flex-col gap-1.5">
-        <Label>{COPY.party.kind}</Label>
-        <ToggleGroup
-          aria-label={COPY.party.kind}
-          value={[draft.vendor ? "vendor" : "client"]}
-          onValueChange={(value) => {
-            if (value[0] !== undefined) form.edit({ vendor: value[0] === "vendor" });
-          }}
-        >
-          <Toggle value="client">{COPY.party.kindClient}</Toggle>
-          <Toggle value="vendor">{COPY.party.kindVendor}</Toggle>
-        </ToggleGroup>
+      {kinds.length === 0 ? null : (
+        <div className="flex flex-col gap-1.5">
+          <Label>{COPY.party.kind}</Label>
+          <ToggleGroup
+            aria-label={COPY.party.kind}
+            value={[draft.kind]}
+            onValueChange={(value) => {
+              const kind = kinds.find((one) => one === value[0]);
+              if (kind !== undefined) form.edit({ kind });
+            }}
+          >
+            {kinds.map((kind) => (
+              <Toggle key={kind} value={kind}>
+                {kindLabel[kind]}
+              </Toggle>
+            ))}
+          </ToggleGroup>
+        </div>
+      )}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field id={ids.source} label={COPY.party.source} moved={moved.source}>
+          <Input
+            id={ids.source}
+            value={draft.source}
+            maxLength={120}
+            placeholder={COPY.party.sourcePlaceholder}
+            autoComplete="off"
+            onChange={(event) => form.edit({ source: event.target.value })}
+          />
+        </Field>
+        <Field id={ids.tags} label={COPY.party.tags} moved={moved.tags}>
+          <Input
+            id={ids.tags}
+            value={draft.tags}
+            placeholder={COPY.party.tagsPlaceholder}
+            autoComplete="off"
+            onChange={(event) => form.edit({ tags: event.target.value })}
+          />
+        </Field>
       </div>
-      <Field
-        id={ids.terms}
-        label={COPY.party.terms}
-        isPrivate
-        hint={COPY.party.termsHint}
-        moved={moved.terms}
-      >
-        <Textarea
-          id={ids.terms}
-          rows={2}
-          value={draft.terms}
-          maxLength={KIN_WORK_FORM_LIMITS.notes}
-          placeholder={COPY.party.termsPlaceholder}
-          onChange={(event) => form.edit({ terms: event.target.value })}
-        />
-      </Field>
-      <Field
-        id={ids.address}
-        label={COPY.party.address}
-        hint={COPY.party.addressHint}
-        moved={moved.address}
-      >
-        <Textarea
-          id={ids.address}
-          rows={3}
-          value={draft.address}
-          maxLength={500}
-          placeholder={COPY.party.addressPlaceholder}
-          onChange={(event) => form.edit({ address: event.target.value })}
-        />
-      </Field>
-      {india ? (
+      {member ? null : (
         <>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field
-              id={ids.gstin}
-              label={COPY.party.gstin}
-              hint={COPY.party.gstinHint}
-              moved={moved.gstin}
-            >
-              <Input
-                id={ids.gstin}
-                value={draft.gstin}
-                maxLength={20}
-                placeholder={COPY.party.gstinPlaceholder}
-                autoComplete="off"
-                autoCapitalize="characters"
-                spellCheck={false}
-                onChange={(event) => {
-                  const next = kinClientDraftWithGstin(draft, event.target.value);
-                  form.edit({ gstin: next.gstin, placeOfSupply: next.placeOfSupply });
-                }}
-              />
-            </Field>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor={ids.place}>{COPY.party.place}</Label>
-              <Select
-                value={place}
-                onValueChange={(value) =>
-                  form.edit(
-                    value === ABROAD
-                      ? { abroad: true, placeOfSupply: "" }
-                      : { abroad: false, placeOfSupply: value === NO_PLACE ? "" : String(value) },
-                  )
-                }
-              >
-                <SelectTrigger id={ids.place} className="w-full min-w-0">
-                  <SelectValue>
-                    {draft.abroad
-                      ? COPY.party.placeAbroad
-                      : draft.placeOfSupply || COPY.party.placeNone}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectPopup alignItemWithTrigger={false}>
-                  <SelectItem value={NO_PLACE}>{COPY.party.placeNone}</SelectItem>
-                  {KIN_GST_STATE_NAMES.map((name) => (
-                    <SelectItem key={name} value={name}>
-                      {name}
-                    </SelectItem>
-                  ))}
-                  <SelectItem value={ABROAD}>{COPY.party.placeAbroad}</SelectItem>
-                </SelectPopup>
-              </Select>
-              {moved.placeOfSupply === undefined ? null : (
-                <p className="text-xs text-muted-foreground">
-                  It now says: {moved.placeOfSupply.trim() || COPY.party.placeNone}
-                </p>
+          <Field
+            id={ids.terms}
+            label={COPY.party.terms}
+            isPrivate
+            hint={COPY.party.termsHint}
+            moved={moved.terms}
+          >
+            <Textarea
+              id={ids.terms}
+              rows={2}
+              value={draft.terms}
+              maxLength={KIN_WORK_FORM_LIMITS.notes}
+              placeholder={COPY.party.termsPlaceholder}
+              onChange={(event) => form.edit({ terms: event.target.value })}
+            />
+          </Field>
+          <Field
+            id={ids.address}
+            label={COPY.party.address}
+            hint={COPY.party.addressHint}
+            moved={moved.address}
+          >
+            <Textarea
+              id={ids.address}
+              rows={3}
+              value={draft.address}
+              maxLength={500}
+              placeholder={COPY.party.addressPlaceholder}
+              onChange={(event) => form.edit({ address: event.target.value })}
+            />
+          </Field>
+          {india ? (
+            <>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field
+                  id={ids.gstin}
+                  label={COPY.party.gstin}
+                  hint={COPY.party.gstinHint}
+                  moved={moved.gstin}
+                >
+                  <Input
+                    id={ids.gstin}
+                    value={draft.gstin}
+                    maxLength={20}
+                    placeholder={COPY.party.gstinPlaceholder}
+                    autoComplete="off"
+                    autoCapitalize="characters"
+                    spellCheck={false}
+                    onChange={(event) => {
+                      const next = kinClientDraftWithGstin(draft, event.target.value);
+                      form.edit({ gstin: next.gstin, placeOfSupply: next.placeOfSupply });
+                    }}
+                  />
+                </Field>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={ids.place}>{COPY.party.place}</Label>
+                  <Select
+                    value={place}
+                    onValueChange={(value) =>
+                      form.edit(
+                        value === ABROAD
+                          ? { abroad: true, placeOfSupply: "" }
+                          : {
+                              abroad: false,
+                              placeOfSupply: value === NO_PLACE ? "" : String(value),
+                            },
+                      )
+                    }
+                  >
+                    <SelectTrigger id={ids.place} className="w-full min-w-0">
+                      <SelectValue>
+                        {draft.abroad
+                          ? COPY.party.placeAbroad
+                          : draft.placeOfSupply || COPY.party.placeNone}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectPopup alignItemWithTrigger={false}>
+                      <SelectItem value={NO_PLACE}>{COPY.party.placeNone}</SelectItem>
+                      {KIN_GST_STATE_NAMES.map((name) => (
+                        <SelectItem key={name} value={name}>
+                          {name}
+                        </SelectItem>
+                      ))}
+                      <SelectItem value={ABROAD}>{COPY.party.placeAbroad}</SelectItem>
+                    </SelectPopup>
+                  </Select>
+                  {moved.placeOfSupply === undefined ? null : (
+                    <p className="text-xs text-muted-foreground">
+                      It now says: {moved.placeOfSupply.trim() || COPY.party.placeNone}
+                    </p>
+                  )}
+                </div>
+              </div>
+              {draft.abroad ? (
+                <Field id={ids.country} label={COPY.party.country}>
+                  <Input
+                    id={ids.country}
+                    value={draft.placeOfSupply}
+                    maxLength={60}
+                    placeholder={COPY.party.countryPlaceholder}
+                    autoComplete="off"
+                    onChange={(event) => form.edit({ placeOfSupply: event.target.value })}
+                  />
+                </Field>
+              ) : null}
+              {gstinNote === null ? (
+                <p className="-mt-2 text-xs text-muted-foreground">{COPY.party.placeHint}</p>
+              ) : (
+                <Alert variant="warning">
+                  <AlertDescription>{gstinNote}</AlertDescription>
+                </Alert>
               )}
-            </div>
-          </div>
-          {draft.abroad ? (
-            <Field id={ids.country} label={COPY.party.country}>
-              <Input
-                id={ids.country}
-                value={draft.placeOfSupply}
-                maxLength={60}
-                placeholder={COPY.party.countryPlaceholder}
-                autoComplete="off"
-                onChange={(event) => form.edit({ placeOfSupply: event.target.value })}
-              />
-            </Field>
+            </>
           ) : null}
-          {gstinNote === null ? (
-            <p className="-mt-2 text-xs text-muted-foreground">{COPY.party.placeHint}</p>
-          ) : (
-            <Alert variant="warning">
-              <AlertDescription>{gstinNote}</AlertDescription>
-            </Alert>
-          )}
         </>
-      ) : null}
+      )}
       <Field id={ids.notes} label={COPY.party.notes} moved={moved.notes}>
         <Textarea
           id={ids.notes}
@@ -414,13 +479,17 @@ export function KinClientDialog(
           onChange={(event) => form.edit({ notes: event.target.value })}
         />
       </Field>
-      <PrivateSwitch
-        label={KIN_CLIENTS.privateLabel}
-        note={draft.private ? KIN_CLIENTS.privateOn : KIN_CLIENTS.privateOff}
-        checked={draft.private}
-        disabled={state.saving}
-        onChange={(checked) => form.edit({ private: checked })}
-      />
+      {member ? (
+        <p className="text-xs text-muted-foreground">{COPY.party.memberHint}</p>
+      ) : (
+        <PrivateSwitch
+          label={KIN_CLIENTS.privateLabel}
+          note={draft.private ? KIN_CLIENTS.privateOn : KIN_CLIENTS.privateOff}
+          checked={draft.private}
+          disabled={state.saving}
+          onChange={(checked) => form.edit({ private: checked })}
+        />
+      )}
     </FormShell>
   );
 }

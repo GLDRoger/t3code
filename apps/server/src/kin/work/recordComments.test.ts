@@ -91,6 +91,9 @@ const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Ambermill', ${at})`;
+  // The company's clock, which its days and quiet hours follow, on any host.
+  yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Kolkata', '08:00', '18:00', '02:00',
+      0, 1, '09:00', '{}') ON CONFLICT (org_id) DO UPDATE SET time_zone = 'Asia/Kolkata'`;
   yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
     VALUES (${rheaId}, ${orgId}, 'rhea', 'Rhea', ${at}), (${zoyaId}, ${orgId}, 'zoya', 'Zoya', ${at}),
       (${arjunId}, ${orgId}, 'arjun', 'Arjun', ${at})`;

@@ -15,6 +15,7 @@ import {
   type ThreadSearchScope,
 } from "@t3tools/client-runtime/state/thread-search";
 import {
+  AuthOrchestrationReadScope,
   ProjectSearchContentsError,
   PROJECT_SEARCH_CONTENTS_QUERY_MAX_LENGTH,
   THREAD_SEARCH_QUERY_MAX_LENGTH,
@@ -45,6 +46,7 @@ import { olderSettledThreads, threadFamilies } from "./threads";
 import { isPaginatedBranchesNextPagePending } from "./paginatedBranches";
 import { projectContentSearch, projectEnvironment } from "./projects";
 import { useEnvironmentQuery } from "./query";
+import { useEnvironmentsWithScope } from "./session";
 import { vcsEnvironment } from "./vcs";
 
 const PROJECT_PATH_SEARCH_DEBOUNCE_MS = 120;
@@ -111,7 +113,7 @@ export function useDebouncedValue<A>(value: A, delayMs: number): A {
  * they show so the caller's own ranking finds them.
  */
 export function useThreadSearch(
-  environmentIds: ReadonlyArray<EnvironmentId>,
+  connectedEnvironmentIds: ReadonlyArray<EnvironmentId>,
   query: string,
   scope: ThreadSearchScope = {},
 ): {
@@ -124,6 +126,11 @@ export function useThreadSearch(
   // A pasted wall of text searches by its start rather than failing the request.
   const normalizedQuery = query.trim().slice(0, THREAD_SEARCH_QUERY_MAX_LENGTH).trim();
   const debouncedQuery = useDebouncedValue(normalizedQuery, THREAD_SEARCH_DEBOUNCE_MS);
+  const readable = useEnvironmentsWithScope(
+    connectedEnvironmentIds.map((environmentId) => ({ environmentId })),
+    AuthOrchestrationReadScope,
+  );
+  const environmentIds = connectedEnvironmentIds.filter((id) => readable.has(id));
   const anyOlderSettled = useAtomValue(anyOlderSettledAtom(JSON.stringify(environmentIds)));
   // Messages need a word of three or more letters; older settled titles match from two.
   const canSearch =

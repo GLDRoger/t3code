@@ -1,8 +1,13 @@
-import { useKinViewerScope } from "./useKinOwnerLevel";
+import {
+  useKinClientsStart,
+  useKinOwnerLevel,
+  useKinSeesClients,
+  useKinViewerScope,
+} from "./useKinOwnerLevel";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
-import { useAtomValue } from "@effect/atom-react";
 import {
   kinWorkDraftFor,
+  kinWorkPrincipalKey,
   type KinWorkDraft,
   type KinWorkRef,
   type KinWorkRowView,
@@ -16,12 +21,19 @@ import {
   KIN_PROJECTS,
   KIN_PROJECTS_DEFAULT_FILTER,
   KIN_PROJECT_VIEWS,
+  KIN_CLIENTS_DEFAULT_FILTER,
+  KIN_CLIENTS_SHOW,
+  kinClientsShowChoices,
   kinClientPageView,
   kinClientRow,
+  kinClientsLookedAfterChoices,
+  kinClientsLookedAfterLabel,
   kinClientsNothing,
   kinProjectsByClient,
   kinProjectsNothing,
   kinWorkTimeline,
+  type KinClientNextView,
+  type KinClientRowView,
   type KinContactView,
   type KinOwedView,
   type KinProjectRowView,
@@ -29,6 +41,7 @@ import {
 import {
   KIN_WORK_FORM_COPY,
   kinWorkSend,
+  type KinClientDraftKind,
   type KinWorkFormProblem,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
@@ -52,6 +65,7 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { Switch } from "../components/ui/switch";
 import { cn } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinAvatar } from "./KinAvatar";
 import { KinClientContact } from "./KinClientTouches";
 import { KinAttentionSection } from "./KinAttention";
 import { KinDocsUnder } from "./KinDocsList";
@@ -84,17 +98,18 @@ import {
   type KinWorkTarget,
 } from "./useKinWork";
 
-const ACTIVE = "active";
-const CLOSED = "closed";
+const ANYONE = "anyone";
+const ME = "me";
 
-/** Everyone the company owes something to or is owed by. One Filter picks closed clients. */
+/** Everyone the company sells to, works for or buys from. The Filter picks which, and whose. */
 export function KinWorkClientsList(
   props: KinWorkTarget & {
     readonly live: KinWorkLive;
     readonly stale: boolean;
     readonly directory: KinWorkDirectory;
     readonly onOpen: (key: KinRecordKey) => void;
-    readonly onAdd: (() => void) | null;
+    /** Adds a client, or (from an empty list) a prospect. */
+    readonly onAdd: ((start: KinClientDraftKind) => void) | null;
     /** The client showing beside the list, marked in it. */
     readonly selected?: KinRecordKey | null;
   },
@@ -102,9 +117,42 @@ export function KinWorkClientsList(
   const { names } = props.directory;
   const now = new Date(useNowMinuteMs());
   const scope = useKinViewerScope(props.environmentId);
-  const { state, list } = useKinClientsList(props, props.stale ? null : props.live.seq);
+  const seesClients = useKinSeesClients(props.environmentId);
+  const { state, list } = useKinClientsList(
+    props,
+    props.stale ? null : props.live.seq,
+    useKinClientsStart(props.environmentId),
+  );
   const { filter } = state;
-  const nothing = kinClientsNothing(filter, scope);
+  const nothing = kinClientsNothing(filter, scope, names.me);
+  const mine =
+    filter.lookedAfter !== "anyone" &&
+    filter.lookedAfter._tag === "person" &&
+    filter.lookedAfter.personId === names.me;
+  const someone = kinClientsLookedAfterChoices(names);
+  const shown = KIN_CLIENTS_SHOW.find((one) => one.id === filter.show);
+  const chip = [
+    filter.show === "open" ? null : (shown?.label ?? null),
+    filter.lookedAfter === "anyone"
+      ? null
+      : mine
+        ? KIN_CLIENTS.lookedAfterMe
+        : `${KIN_CLIENTS.lookedAfterBy} ${kinClientsLookedAfterLabel(filter.lookedAfter, names)}`,
+  ]
+    .filter((part) => part !== null)
+    .join(" · ");
+  const lookedAfterValue =
+    filter.lookedAfter === "anyone" ? ANYONE : mine ? ME : kinWorkPrincipalKey(filter.lookedAfter);
+  const pickLookedAfter = (value: string) =>
+    list.setFilter({
+      ...filter,
+      lookedAfter:
+        value === ANYONE || (value === ME && names.me === null)
+          ? "anyone"
+          : value === ME
+            ? { _tag: "person", personId: names.me! }
+            : (someone.find((one) => one.key === value)?.who ?? "anyone"),
+    });
   return (
     <LegendList<KinPartyRow>
       data={state.records}
@@ -131,18 +179,48 @@ export function KinWorkClientsList(
               />
             </div>
             <KinFilter
-              chip={filter.closed ? KIN_CLIENTS.closed : null}
-              onClear={() => list.setFilter({ ...filter, closed: false })}
+              chip={chip === "" ? null : chip}
+              onClear={() => list.setFilter({ ...KIN_CLIENTS_DEFAULT_FILTER, text: filter.text })}
               groups={[
                 {
-                  label: KIN_CLIENTS.title,
-                  value: filter.closed ? CLOSED : ACTIVE,
-                  options: [
-                    { value: ACTIVE, label: KIN_CLIENTS.active },
-                    { value: CLOSED, label: KIN_CLIENTS.closed },
-                  ],
-                  onChange: (value) => list.setFilter({ ...filter, closed: value === CLOSED }),
+                  label: KIN_CLIENTS.show,
+                  value: filter.show,
+                  options: kinClientsShowChoices(seesClients).map((one) => ({
+                    value: one.id,
+                    label: one.label,
+                  })),
+                  onChange: (value) =>
+                    list.setFilter({
+                      ...filter,
+                      show:
+                        kinClientsShowChoices(seesClients).find((one) => one.id === value)?.id ??
+                        "open",
+                    }),
+                  note: KIN_CLIENTS.order,
                 },
+                ...(seesClients
+                  ? [
+                      {
+                        label: KIN_CLIENTS.lookedAfterBy,
+                        value: lookedAfterValue,
+                        options: [
+                          { value: ANYONE, label: KIN_CLIENTS.anyone },
+                          ...(names.me === null ? [] : [{ value: ME, label: KIN_CLIENTS.me }]),
+                        ],
+                        onChange: pickLookedAfter,
+                      },
+                      {
+                        label: KIN_CLIENTS.someone,
+                        value: lookedAfterValue,
+                        options: [
+                          { value: ANYONE, label: KIN_CLIENTS.anyone },
+                          ...someone.map((one) => ({ value: one.key, label: one.name })),
+                        ],
+                        onChange: pickLookedAfter,
+                        long: true,
+                      },
+                    ]
+                  : []),
               ]}
             />
           </div>
@@ -168,9 +246,9 @@ export function KinWorkClientsList(
               {...(nothing.offerNew && props.onAdd !== null
                 ? {
                     action: (
-                      <Button onClick={props.onAdd}>
+                      <Button onClick={() => props.onAdd?.("prospect")}>
                         <PlusIcon />
-                        {KIN_CLIENTS.add}
+                        {KIN_CLIENTS.addProspect}
                       </Button>
                     ),
                   }
@@ -205,9 +283,16 @@ export function KinWorkClientsList(
                   <span className="truncate text-sm text-foreground">{row.name}</span>
                   {row.private ? <KinWorkPrivateMark /> : null}
                 </span>
-                <span className="truncate text-xs text-muted-foreground">{row.line}</span>
+                <KinClientRowLine row={row} />
                 {row.next === null ? null : (
-                  <span className="truncate text-xs text-muted-foreground">{row.next}</span>
+                  <span
+                    className={cn(
+                      "truncate text-xs",
+                      row.noNext ? "text-warning-foreground" : "text-muted-foreground",
+                    )}
+                  >
+                    {row.next}
+                  </span>
                 )}
               </span>
               {row.late ? (
@@ -223,6 +308,19 @@ export function KinWorkClientsList(
       drawDistance={640}
       className={cn("min-h-0 flex-1 overscroll-contain pb-6", state.refreshing && "opacity-70")}
     />
+  );
+}
+
+/** "Prospect · Zoya": the mark in the accent colour, then the rest of the line. */
+function KinClientRowLine(props: { readonly row: KinClientRowView }) {
+  const { mark, line } = props.row;
+  if (mark === null && line === "") return null;
+  return (
+    <span className="truncate text-xs text-muted-foreground">
+      {mark === null ? null : <span className="font-medium text-primary">{mark}</span>}
+      {mark !== null && line !== "" ? " · " : null}
+      {line}
+    </span>
   );
 }
 
@@ -496,7 +594,7 @@ function ClientPage(
   const { environmentId, orgId, page } = props;
   const { names } = props.directory;
   const { state: changed, changes } = props.changes;
-  const canChange = useAtomValue(kinClient.workClientUpdate.permissionAtom(environmentId));
+  const ownerLevel = useKinOwnerLevel(environmentId);
   const update = useAtomCommand(kinClient.workClientUpdate, { reportFailure: false });
   const now = new Date(useNowMinuteMs());
   const [dialog, setDialog] = useState<ClientDialog>(null);
@@ -515,14 +613,22 @@ function ClientPage(
     },
     names,
     now,
+    ownerLevel,
   );
+  const { can } = view;
+  // Clients on, or the owner level: what's owed, the contact log, notes and history show.
+  const full = can.log;
   const act = (key: KinRecordKey, action: KinWorkAction) => {
     const record = [...page.weOwe.records, ...page.theyOwe.records].find(
       (held) => held.key === key,
     );
     if (record !== undefined) void changes.run(kinWorkApplied(record, changed), action, names);
   };
-  const change = async (input: { readonly active?: boolean; readonly sensitive?: boolean }) => {
+  const change = async (input: {
+    readonly active?: boolean;
+    readonly sensitive?: boolean;
+    readonly prospect?: boolean;
+  }) => {
     if (busy) return;
     setBusy(true);
     setProblem(null);
@@ -593,19 +699,28 @@ function ClientPage(
                 <h2 className="truncate text-lg font-medium text-foreground">{view.name}</h2>
                 {view.privacy.private ? <KinWorkPrivateMark /> : null}
               </div>
-              <p className="text-sm text-muted-foreground">{view.line}</p>
+              <p className="text-sm text-muted-foreground">
+                <span className={cn(view.prospect && "font-medium text-primary")}>{view.line}</span>
+              </p>
+              <p className="flex min-w-0 items-center gap-1.5 text-sm text-muted-foreground">
+                {KIN_CLIENTS.lookedAfterBy}
+                <KinAvatar avatar={view.lookedAfter.avatar} size="xs" />
+                <span className="truncate text-foreground">{view.lookedAfter.name}</span>
+              </p>
             </div>
-            {canChange ? (
+            {can.edit || can.owner ? (
               <div className="flex shrink-0 items-center gap-1">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => setDialog({ type: "edit" })}
-                >
-                  <PencilIcon />
-                  {KIN_CLIENTS.edit}
-                </Button>
+                {can.edit ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => setDialog({ type: "edit" })}
+                  >
+                    <PencilIcon />
+                    {KIN_CLIENTS.edit}
+                  </Button>
+                ) : null}
                 <Menu>
                   <MenuTrigger
                     render={
@@ -615,9 +730,16 @@ function ClientPage(
                     <EllipsisIcon />
                   </MenuTrigger>
                   <MenuPopup align="end">
-                    <MenuItem onClick={() => void change({ active: view.closed })}>
-                      {view.closed ? KIN_CLIENTS.reopen : KIN_CLIENTS.close}
-                    </MenuItem>
+                    {can.edit && !view.vendor ? (
+                      <MenuItem onClick={() => void change({ prospect: !view.prospect })}>
+                        {view.prospect ? KIN_CLIENTS.makeClient : KIN_CLIENTS.makeProspect}
+                      </MenuItem>
+                    ) : null}
+                    {can.owner ? (
+                      <MenuItem onClick={() => void change({ active: view.closed })}>
+                        {view.closed ? KIN_CLIENTS.reopen : KIN_CLIENTS.close}
+                      </MenuItem>
+                    ) : null}
                   </MenuPopup>
                 </Menu>
               </div>
@@ -639,8 +761,15 @@ function ClientPage(
             if (to.type === "record") props.onOpenTask(to.key);
           }}
         />
-        {/* What's owed, the contact log, tax, terms, notes and history are the owner's. */}
-        {canChange
+        {view.nextStep === null || !full ? null : (
+          <KinClientNextStep
+            next={view.nextStep.next}
+            onOpen={props.onOpenTask}
+            add={view.closed ? null : addTask("ours", KIN_CLIENTS.addNextStep)}
+          />
+        )}
+        {/* Tax, terms, Keep private and closing stay the owner level's. */}
+        {full
           ? owed(
               KIN_CLIENTS.weOwe,
               view.weOwe,
@@ -651,7 +780,7 @@ function ClientPage(
               </span>,
             )
           : null}
-        {!canChange || view.theyOwe.total === 0
+        {!full || view.theyOwe.total === 0
           ? null
           : owed(
               KIN_CLIENTS.theyOwe,
@@ -659,11 +788,11 @@ function ClientPage(
               KIN_CLIENTS.nothingOwing,
               addTask("theirs", KIN_CLIENTS.addTheyOwe),
             )}
-        {!canChange && view.projects.length === 0 ? null : (
+        {!full && view.projects.length === 0 ? null : (
           <KinWorkSection
             title={KIN_CLIENTS.projects}
             action={
-              canChange && !view.closed ? (
+              can.owner && !view.closed ? (
                 <Button size="xs" variant="ghost" onClick={() => setDialog({ type: "project" })}>
                   <PlusIcon />
                   {KIN_PROJECTS.add}
@@ -687,7 +816,7 @@ function ClientPage(
         <KinWorkSection
           title={KIN_CLIENTS.contacts}
           action={
-            canChange ? (
+            can.edit ? (
               <Button
                 size="xs"
                 variant="ghost"
@@ -701,7 +830,7 @@ function ClientPage(
         >
           {view.contacts.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              {canChange ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
+              {can.edit ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
             </p>
           ) : (
             <>
@@ -711,13 +840,13 @@ function ClientPage(
                     <ContactRow
                       contact={contact}
                       onEdit={
-                        canChange ? () => setDialog({ type: "contact", key: contact.key }) : null
+                        can.edit ? () => setDialog({ type: "contact", key: contact.key }) : null
                       }
                     />
                   </li>
                 ))}
               </ul>
-              {canChange ? (
+              {full ? (
                 <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <KinWorkPrivateMark />
                   {KIN_CLIENTS.detailsPrivate}
@@ -742,7 +871,7 @@ function ClientPage(
           under={{ party: props.clientKey }}
           onOpen={props.onOpenDoc}
         />
-        {view.touches === null || !canChange ? null : (
+        {view.touches === null || !full ? null : (
           <KinClientContact
             environmentId={environmentId}
             orgId={orgId}
@@ -753,18 +882,34 @@ function ClientPage(
             onChanged={props.onRefresh}
           />
         )}
-        {!canChange && view.address === null ? null : (
+        {!full && view.address === null ? null : (
           <KinWorkSection
             title={KIN_CLIENTS.details}
-            fold={{ summary: canChange ? KIN_CLIENTS.detailsSummary : null }}
+            fold={{ summary: can.owner ? KIN_CLIENTS.detailsSummary : null }}
           >
             <div className="flex flex-col gap-6">
+              {!full || view.source === null ? null : (
+                <KinWorkSection title={KIN_CLIENTS.cameFrom}>
+                  <p className="text-sm text-foreground">{view.source}</p>
+                </KinWorkSection>
+              )}
+              {!full || view.tags.length === 0 ? null : (
+                <KinWorkSection title={KIN_CLIENTS.tags}>
+                  <p className="flex flex-wrap gap-1.5">
+                    {view.tags.map((tag) => (
+                      <Badge key={tag} size="sm" variant="outline">
+                        {tag}
+                      </Badge>
+                    ))}
+                  </p>
+                </KinWorkSection>
+              )}
               {view.address === null ? null : (
                 <KinWorkSection title={KIN_WORK_FORM_COPY.party.address}>
                   <p className="whitespace-pre-wrap text-sm text-foreground">{view.address}</p>
                 </KinWorkSection>
               )}
-              {!canChange || (view.vendor && view.tax === null) ? null : (
+              {!can.owner || (view.vendor && view.tax === null) ? null : (
                 <KinWorkSection title={KIN_CLIENTS.tax}>
                   <p
                     className={cn(
@@ -776,23 +921,27 @@ function ClientPage(
                   </p>
                 </KinWorkSection>
               )}
-              {canChange ? (
+              {can.owner ? (
+                <KinWorkSection title={KIN_CLIENTS.terms} action={<KinWorkPrivateMark />}>
+                  {view.terms === null ? (
+                    <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noTerms}</p>
+                  ) : (
+                    <p className="whitespace-pre-wrap text-sm text-foreground">{view.terms}</p>
+                  )}
+                  <p className="text-xs text-muted-foreground">{KIN_CLIENTS.termsPrivate}</p>
+                </KinWorkSection>
+              ) : null}
+              {full ? (
+                <KinWorkSection title={KIN_CLIENTS.notes}>
+                  {view.notes === null ? (
+                    <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noNotes}</p>
+                  ) : (
+                    <p className="whitespace-pre-wrap text-sm text-foreground">{view.notes}</p>
+                  )}
+                </KinWorkSection>
+              ) : null}
+              {can.owner ? (
                 <>
-                  <KinWorkSection title={KIN_CLIENTS.terms} action={<KinWorkPrivateMark />}>
-                    {view.terms === null ? (
-                      <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noTerms}</p>
-                    ) : (
-                      <p className="whitespace-pre-wrap text-sm text-foreground">{view.terms}</p>
-                    )}
-                    <p className="text-xs text-muted-foreground">{KIN_CLIENTS.termsPrivate}</p>
-                  </KinWorkSection>
-                  <KinWorkSection title={KIN_CLIENTS.notes}>
-                    {view.notes === null ? (
-                      <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noNotes}</p>
-                    ) : (
-                      <p className="whitespace-pre-wrap text-sm text-foreground">{view.notes}</p>
-                    )}
-                  </KinWorkSection>
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex min-w-0 flex-col gap-0.5">
                       <Label htmlFor={privateId}>{KIN_CLIENTS.privateLabel}</Label>
@@ -810,7 +959,7 @@ function ClientPage(
             </div>
           </KinWorkSection>
         )}
-        {canChange ? (
+        {full ? (
           <KinWorkSection title={KIN_CLIENTS.history} fold={{ summary: null }}>
             {history.state.loading ? (
               <div role="status" aria-label="Loading history">
@@ -851,6 +1000,7 @@ function ClientPage(
           environmentId={environmentId}
           orgId={orgId}
           editing={page.party}
+          member={!can.owner}
           onSaved={() => {
             setDialog(null);
             props.onRefresh();
@@ -893,6 +1043,38 @@ function ClientPage(
         />
       ) : null}
     </div>
+  );
+}
+
+/** The page's first row: the soonest thing owed them, or that there is none, said in amber. */
+function KinClientNextStep(props: {
+  readonly next: KinClientNextView | null;
+  readonly onOpen: (key: KinRecordKey) => void;
+  readonly add: React.ReactNode;
+}) {
+  const { next } = props;
+  return (
+    <KinWorkSection title={KIN_CLIENTS.nextStep} action={next === null ? props.add : undefined}>
+      {next === null ? (
+        <p className="text-sm text-warning-foreground">{KIN_CLIENTS.noNextStep}</p>
+      ) : (
+        <button
+          type="button"
+          onClick={() => props.onOpen(next.key)}
+          className="-mx-2 flex flex-col gap-0.5 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+        >
+          <span className="text-sm text-foreground">{next.title}</span>
+          <span
+            className={cn(
+              "text-xs",
+              next.late ? "text-destructive-foreground" : "text-muted-foreground",
+            )}
+          >
+            {next.line}
+          </span>
+        </button>
+      )}
+    </KinWorkSection>
   );
 }
 

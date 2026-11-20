@@ -49,7 +49,7 @@ import { partyPage, projectDetail } from "./crm.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { fold, matchName } from "./nameMatch.ts";
 import { lastContacts } from "./touches.ts";
-import { KinRecords, type Patch, type TotalsBy, type Writer } from "./KinRecords.ts";
+import { clientFamily, KinRecords, type Patch, type TotalsBy, type Writer } from "./KinRecords.ts";
 import {
   GOAL_INPUTS,
   GoalInputs,
@@ -107,7 +107,9 @@ import {
   sensitiveShown,
   showsSensitive,
 } from "./sensitiveReads.ts";
+import { memberAdds } from "./ownerClients.ts";
 import {
+  crmVisible,
   KIN_OWNER_LEVEL,
   TEAM_REFUSED,
   teamChanges,
@@ -167,6 +169,15 @@ const Address = KinToolText(500, "A client's billing address, as its invoices sh
 export const Client = KinToolText(200, "A client or vendor: its key (C-3) or exact name.");
 export const Project = KinToolText(200, "A project: its key (P-2) or exact name.");
 const Detail = KinToolText(200);
+/** A client's kind on create; a prospect is a client we haven't sold to yet. */
+const NewPartyKind = Schema.Literals(["client", "vendor", "prospect"]);
+const CameFrom = KinToolText(
+  120,
+  "A client's: where it came from, such as a referral or an event.",
+);
+const PartyTags = Schema.Array(KinToolText(60))
+  .check(Schema.isMaxLength(20))
+  .annotate({ description: "A client's: the company's own words for it." });
 const Terms = KinToolText(4_000);
 const Repos = Schema.Array(KinRepoName).check(Schema.isMaxLength(20));
 
@@ -379,7 +390,9 @@ const CreateRow = Schema.Struct({
   client: Schema.optional(Client),
   project: Schema.optional(Project),
   repo: Schema.optional(KinRepoName),
-  kind: Schema.optional(KinPartyKind),
+  kind: Schema.optional(NewPartyKind),
+  cameFrom: Schema.optional(CameFrom),
+  tags: Schema.optional(PartyTags),
   role: Schema.optional(Detail),
   email: Schema.optional(Detail),
   phone: Schema.optional(Detail),
@@ -936,7 +949,7 @@ export const refRecord = Effect.fn("KinWorkTools.refRecord")(function* (
     partyId: string | null;
   }>`
     SELECT r.record_id AS "recordId", r.key, r.title AS name, r.created_at AS "createdAt",
-      r.state NOT IN ('done', 'dropped') AS active, COALESCE(r.category, 'client') AS kind,
+      r.state NOT IN ('done', 'dropped') AS active, ${clientFamily(sql, sql`r.category`)} AS kind,
       json_extract(r.fields_json, '$.address') AS address, r.party_id AS "partyId"
     FROM kin_records r WHERE r.org_id = ${lead.orgId} AND r.register_id = ${list} AND ${sees}
     ORDER BY r.key LIMIT ${REF_CANDIDATES}`;
@@ -1039,6 +1052,15 @@ const fieldsFrom = (row: {
       ["role", "email", "phone", "terms", "repos", "address", "gstin", "placeOfSupply"] as const
     ).flatMap((key) => (row[key] === undefined ? [] : [[key, row[key]]])),
   ) as Record<string, string | ReadonlyArray<string> | null>;
+
+/** Where a client came from and its tags, under the keys Clients stores them by. */
+const partyWords = (row: {
+  readonly cameFrom?: string | undefined;
+  readonly tags?: ReadonlyArray<string> | undefined;
+}): Record<string, string | ReadonlyArray<string>> => ({
+  ...(row.cameFrom === undefined ? {} : { source: row.cameFrom }),
+  ...(row.tags === undefined || row.tags.length === 0 ? {} : { tags: [...new Set(row.tags)] }),
+});
 
 /** A list a lead named, as this org has it. */
 const listFor = Effect.fn("KinWorkTools.list")(function* (lead: Lead, id: string) {
@@ -1186,12 +1208,16 @@ const ownersInput = (input: object, also: ReadonlyArray<string> = []) =>
   );
 
 /**
- * A row as a teammate's own Work shows it: no client, project, money, list fields or labels. How
- * a task repeats stays, as their screen shows it, so whoever gave it can see what they set.
+ * A row as a teammate's own Work shows it: no client, project, money, list fields or labels, and
+ * never a client's terms or tax details. How a task repeats stays, as their screen shows it, so
+ * whoever gave it can see what they set.
  */
 const teamRow = ({
   client: _client,
   project: _project,
+  terms: _terms,
+  gstin: _gstin,
+  placeOfSupply: _placeOfSupply,
   amount: _amount,
   balance: _balance,
   date: _date,
@@ -1829,11 +1855,33 @@ const createRow = Effect.fnUntraced(function* (
   if (row.amount !== undefined) yield* countryFirst(lead.orgId);
   const def = yield* listFor(lead, row.list ?? "work");
   const list = def.id;
-  // A client or contact is the owner's to look after unless told otherwise.
+  // For a teammate alone in the turn, a prospect is what their own Clients form adds (`memberAdds`).
+  const [only, ...others] = team?.people ?? [];
+  const prospectFor =
+    list === "clients" && categoryOf(list, row).category === "prospect" && others.length === 0
+      ? only
+      : undefined;
+  // A client or contact is the owner's to look after unless told otherwise; theirs, they look after.
   const owner = yield* resolveWho(
     lead,
-    row.owner ?? (list === "clients" || list === "contacts" ? "owner" : "you"),
+    row.owner ??
+      (prospectFor !== undefined
+        ? "me"
+        : list === "clients" || list === "contacts"
+          ? "owner"
+          : "you"),
   ).pipe(asField("owner"));
+  if (prospectFor !== undefined)
+    yield* memberAdds(lead.orgId, prospectFor, {
+      prospect: true,
+      owner,
+      ownersFields:
+        [row.terms, row.address, row.gstin, row.placeOfSupply, row.sensitive].some(
+          (value) => value !== undefined,
+        ) ||
+        row.state === "done" ||
+        row.state === "dropped",
+    });
   const waitingOn =
     row.waitingOn === undefined
       ? undefined
@@ -1869,7 +1917,12 @@ const createRow = Effect.fnUntraced(function* (
   )
     return yield* invalid("A goal needs its measure and target, and due as its date.");
   const goal = yield* goalFields(lead.orgId, row);
-  const fields = { ...fieldsFrom(row), ...spineSet, ...goal };
+  const fields = {
+    ...fieldsFrom(row),
+    ...(list === "clients" ? partyWords(row) : {}),
+    ...spineSet,
+    ...goal,
+  };
   if (existing !== undefined) {
     const found = yield* records.get(lead.orgId, existing.key);
     // The same details again is a retry; new ones are a change, which only record_update makes.
@@ -1921,34 +1974,46 @@ const createRow = Effect.fnUntraced(function* (
     "dueAt" in due && typeof due.dueAt === "number" ? due.dueAt : undefined,
   );
   const keeps = yield* ownerLevelAsked(lead.orgId, lead.agentId, lead.wakeupId);
-  const { row: stored, created } = yield* records.create(lead.orgId, writer, {
-    list,
-    originKey,
-    title: row.title,
-    owner,
-    ...(partyId === undefined ? {} : { partyId }),
-    ...(inProject === undefined ? {} : { projectId: inProject }),
-    ...(row.repo === undefined ? {} : { repo: row.repo }),
-    // Private only when asked, or a money goal; never for what the turn happened to read.
-    ...(row.sensitive === undefined && !(row.measure !== undefined && isMoneyMeasure(row.measure))
-      ? {}
-      : { sensitive: true }),
-    ...(Object.keys(fields).length === 0 ? {} : { fields }),
-    ...(row.state === undefined ? {} : { state: row.state }),
-    ...(waitingOn === undefined ? {} : { waitingOn }),
-    ...due,
-    ...(closedAt === undefined ? {} : { closedAt }),
-    ...money,
-    ...spine.at,
-    ...(row.notes === undefined ? {} : { notes: row.notes }),
-    ...categoryOf(list, row),
-    ...(row.side === undefined ? {} : { side: row.side }),
-    // What an owner-level person asked for in person is kept; what a lead inferred waits for
-    // Keep. A shared turn's tasks keep the default; its quotes and invoices `KinRecords` decides.
-    ...(team === undefined ? { confirmed: row.suggested !== true && keeps } : {}),
-    // Where it was first asked stays the owner's to know.
-    ...(source === undefined || team !== undefined ? {} : { source }),
-  });
+  // `memberAdds` decided it; names clash only with what they see in Clients, as on their form.
+  const { view: _view, ...unguarded } = writer;
+  const { row: stored, created } = yield* records.create(
+    lead.orgId,
+    prospectFor === undefined ? writer : { ...unguarded, namesSeenBy: prospectFor },
+    {
+      list,
+      originKey,
+      title: row.title,
+      owner,
+      ...(partyId === undefined ? {} : { partyId }),
+      ...(inProject === undefined ? {} : { projectId: inProject }),
+      ...(row.repo === undefined ? {} : { repo: row.repo }),
+      // Private only when asked, or a money goal; never for what the turn happened to read.
+      ...(row.sensitive === undefined && !(row.measure !== undefined && isMoneyMeasure(row.measure))
+        ? {}
+        : { sensitive: true }),
+      ...(Object.keys(fields).length === 0 ? {} : { fields }),
+      ...(row.state === undefined ? {} : { state: row.state }),
+      ...(waitingOn === undefined ? {} : { waitingOn }),
+      ...due,
+      ...(closedAt === undefined ? {} : { closedAt }),
+      ...money,
+      ...spine.at,
+      ...(row.notes === undefined ? {} : { notes: row.notes }),
+      ...categoryOf(list, row),
+      ...(row.side === undefined ? {} : { side: row.side }),
+      // What an owner-level person asked for in person is kept; what a lead inferred waits for
+      // Keep. A shared turn's tasks keep the default; its quotes and invoices `KinRecords` decides.
+      ...(team === undefined ? { confirmed: row.suggested !== true && keeps } : {}),
+      // Where it was first asked stays the owner's to know.
+      ...(source === undefined || team !== undefined ? {} : { source }),
+    },
+  );
+  // A retry finds what the first call stored, answered only while they may still see it.
+  if (
+    prospectFor !== undefined &&
+    !(yield* crmVisible(lead.orgId, prospectFor, [stored.recordId])).has(stored.recordId)
+  )
+    return yield* notFound(row.title);
   if (created) notices.push(...movedNotices(undefined, stored));
   const past =
     stored.category === "meeting" &&
@@ -2025,7 +2090,7 @@ const sameNamed = Effect.fn("KinWorkTools.sameNamed")(function* (
     WHERE r.org_id = ${lead.orgId} AND r.register_id = ${list}
       AND r.state NOT IN ('done', 'dropped') AND lower(r.title) = lower(${title})
       AND (${list} != 'contacts' OR r.party_id IS ${partyId})
-      AND (${list} != 'clients' OR COALESCE(r.category, 'client') = ${kind ?? "client"})
+      AND (${list} != 'clients' OR ${clientFamily(sql, sql`r.category`)} = ${clientFamily(sql, sql`${kind ?? "client"}`)})
       AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
     ORDER BY r.key LIMIT 1`;
   return row;

@@ -45,6 +45,7 @@ import { resolveLead } from "../lead/LeadMemory.ts";
 import { markOutside } from "../lead/OutsideContent.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
 import { textLocale } from "../work/companyProfile.ts";
+import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import * as Cards from "./cards.ts";
 import { previewSheet } from "./preview.ts";
@@ -1277,7 +1278,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
                   : null,
               })),
             files,
-            day: iso(yield* Clock.currentTimeMillis).slice(0, 10),
+            day: dayIn(yield* Clock.currentTimeMillis, yield* ownerZone(orgId)),
           }),
         );
     let preview: KinSocialMedia | null = null;

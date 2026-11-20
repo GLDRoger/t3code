@@ -476,6 +476,10 @@ it.effect("an agent-started discussion is capped, held, and told at the owner's 
     TestClock.setTime(Date.UTC(2026, 10, 16, 6)),
     Effect.gen(function* () {
       const { sql, orgId, chatOf, wake } = yield* ambermill;
+      // 06:00 UTC is 11:30 for Ambermill, outside Rhea's quiet hours on any host clock.
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Kolkata', '08:00', '18:00',
+          '02:00', 0, 1, '09:00', '{}')
+        ON CONFLICT (org_id) DO UPDATE SET time_zone = 'Asia/Kolkata'`;
       yield* wake("growth");
       for (const topic of ["Expo stand size", "Kochi hotel"]) {
         const opened = yield* callAs("growth", "team_open", {

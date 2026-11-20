@@ -13,6 +13,7 @@ import type * as Statement from "effect/sql/Statement";
 
 import { type playbookThreshold, playbookThresholds } from "./playbooks.ts";
 import { iso, keptEntry } from "./recordRows.ts";
+import { crmSeenBy, KIN_OWNER_LEVEL, type KinViewer } from "./teamView.ts";
 
 /**
  * Contact with a client: what someone logged, and what Kin already holds (an invoice or quote
@@ -59,13 +60,18 @@ const loggedRows = (sql: Sql) => sql`SELECT t.party_id AS "partyId", t.touch_id 
     LEFT JOIN kin_people lp ON t.logged_by_kind = 'person' AND lp.org_id = t.org_id
       AND lp.person_id = t.logged_by_id`;
 
-/** Every contact with these clients, or all of them, up to `now`, one row each, unordered. */
+/**
+ * Every contact with these clients, or all of them, up to `now`, one row each, unordered. What
+ * Kin read from an entry counts only where `viewer` sees that entry in Clients (`crmSeenBy`).
+ */
 const touchUnion = (
   sql: Sql,
   orgId: KinOrgId,
   partyIds: ReadonlyArray<string> | "all",
   now: number,
+  viewer: KinViewer,
 ) => {
+  const seen = crmSeenBy(sql, viewer);
   const of = (column: Statement.Fragment) =>
     partyIds === "all" ? sql`${column} IS NOT NULL` : sql`${column} IN ${sql.in(partyIds)}`;
   // An invoice or quote with no date was sent when it was issued; later edits are not contact.
@@ -84,13 +90,14 @@ const touchUnion = (
       (r.register_id IN ('invoices', 'quotes') AND r.state IN ('waiting', 'done')
         AND ${keptEntry(sql)})
       OR (r.category = 'meeting' AND r.state != 'dropped' AND r.date_at IS NOT NULL))
+      AND ${seen}
     UNION ALL
     SELECT r.party_id, 'payment:' || p.payment_id, ${paidAt(sql)}, 'payment', r.title, NULL, 0,
       NULL, NULL, r.record_id, r.key, r.title, p.created_at
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND p.withheld = 0
-      AND ${keptEntry(sql)} AND ${of(sql`r.party_id`)}
+      AND ${keptEntry(sql)} AND ${of(sql`r.party_id`)} AND ${seen}
   ) WHERE at <= ${now}`;
 };
 
@@ -117,9 +124,10 @@ export const touchesOf = Effect.fn("KinTouches.of")(function* (
   partyId: string,
   now: number,
   limit: number,
+  viewer: KinViewer = KIN_OWNER_LEVEL,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<TouchSql>`${touchUnion(sql, orgId, [partyId], now)}
+  const rows = yield* sql<TouchSql>`${touchUnion(sql, orgId, [partyId], now, viewer)}
     ORDER BY at DESC, id LIMIT ${limit}`;
   return rows.map(toTouch);
 });
@@ -129,13 +137,14 @@ const newestContacts = Effect.fn("KinTouches.newest")(function* (
   orgId: KinOrgId,
   partyIds: ReadonlyArray<string>,
   now: number,
+  viewer: KinViewer,
 ) {
   if (partyIds.length === 0) return new Map<string, { at: number; kind: TouchSql["kind"] }>();
   const sql = yield* SqlClient.SqlClient;
   // SQLite takes the bare `kind` from the row MAX(at) picks.
   const rows = yield* sql<{ partyId: string; at: number; kind: TouchSql["kind"] }>`SELECT
       "partyId", MAX(at) AS at, kind
-    FROM (${touchUnion(sql, orgId, partyIds, now)}) GROUP BY "partyId" ORDER BY "partyId"`;
+    FROM (${touchUnion(sql, orgId, partyIds, now, viewer)}) GROUP BY "partyId" ORDER BY "partyId"`;
   return new Map(rows.map((row) => [row.partyId, { at: row.at, kind: row.kind }]));
 });
 
@@ -144,8 +153,9 @@ export const lastContacts = Effect.fn("KinTouches.last")(function* (
   orgId: KinOrgId,
   partyIds: ReadonlyArray<string>,
   now: number,
+  viewer: KinViewer = KIN_OWNER_LEVEL,
 ) {
-  const newest = yield* newestContacts(orgId, partyIds, now);
+  const newest = yield* newestContacts(orgId, partyIds, now, viewer);
   return new Map([...newest].map(([partyId, one]) => [partyId, one.at]));
 });
 
@@ -200,6 +210,19 @@ export const logTouch = Effect.fn("KinTouches.log")(function* (
   return toTouch(row!);
 });
 
+/** Who logged a contact still showing, and on which client; undefined for any other id. */
+export const loggedBy = Effect.fn("KinTouches.loggedBy")(function* (
+  orgId: KinOrgId,
+  touchId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ partyId: string; byKind: string; byId: string }>`SELECT
+      party_id AS "partyId", logged_by_kind AS "byKind", logged_by_id AS "byId"
+    FROM kin_client_touches
+    WHERE org_id = ${orgId} AND touch_id = ${touchId} AND removed_at IS NULL`;
+  return row;
+});
+
 /** Only a logged one goes; what Kin knows from its records stays as long as they do. */
 export const removeTouch = Effect.fn("KinTouches.remove")(function* (
   orgId: KinOrgId,
@@ -239,10 +262,10 @@ export type ClientSense = {
 };
 
 /**
- * The client senses, for the pulse, on each client's playbook values: cold after
- * `client_cold_after_days` without contact and no open project, quiet after `client_checkin_days`
- * during one, waiting on us once an obligation we owe them is `reply_owed_hours` past due. Days count
- * from the last contact or the last project we finished for them, else the client's creation.
+ * The client senses on each client's playbook values: cold (`client_cold_after_days`, no open
+ * project), quiet (`client_checkin_days`, during one), waiting on us (`reply_owed_hours` past an
+ * obligation's due). Days count from the last contact or finished project, else its adding. A
+ * prospect is no client yet: never cold or quiet, though what we owe it still waits on us.
  */
 export const clientSenses = Effect.fn("KinTouches.senses")(function* (
   orgId: KinOrgId,
@@ -254,11 +277,13 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
     key: string;
     title: string;
     sensitive: number;
+    prospect: number;
     createdAt: number;
     openProjects: number;
     lastProjectAt: number | null;
     dueAt: number | null;
   }>`SELECT c.record_id AS "partyId", c.key, c.title, c.sensitive, c.created_at AS "createdAt",
+      COALESCE(c.category, 'client') = 'prospect' AS prospect,
       (SELECT MAX(p.closed_at) FROM kin_records p WHERE p.org_id = c.org_id
         AND p.register_id = 'projects' AND p.party_id = c.record_id AND p.state = 'done'
         AND p.closed_at <= ${now}) AS "lastProjectAt",
@@ -270,13 +295,14 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
         AND w.category = 'obligation' AND w.state IN ('open', 'doing', 'waiting') AND w.due_at < ${now}) AS "dueAt"
     FROM kin_records c
     WHERE c.org_id = ${orgId} AND c.register_id = 'clients' AND c.state = 'open'
-      AND COALESCE(c.category, 'client') = 'client'
+      AND COALESCE(c.category, 'client') IN ('client', 'prospect')
     ORDER BY c.key`;
   const lookup = yield* playbookThresholds(orgId);
   const last = yield* newestContacts(
     orgId,
     clients.map((client) => client.partyId),
     now,
+    KIN_OWNER_LEVEL,
   );
   const senses: Array<ClientSense> = [];
   for (const client of clients) {
@@ -306,7 +332,8 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
       episode: `${client.key}:${lastAt ?? "never"}`,
     };
     const limit = (key: ClientLimitKey) => lookup(key, client.partyId);
-    const quiet = client.openProjects > 0 ? limit("client_checkin_days") : undefined;
+    const quiet =
+      client.openProjects > 0 && client.prospect === 0 ? limit("client_checkin_days") : undefined;
     if (quiet !== undefined && days >= quiet.value)
       senses.push({
         ...base,
@@ -314,7 +341,10 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
         since: from + quiet.value * DAY_MS,
         limit: quiet,
       });
-    const cold = client.openProjects === 0 ? limit("client_cold_after_days") : undefined;
+    const cold =
+      client.openProjects === 0 && client.prospect === 0
+        ? limit("client_cold_after_days")
+        : undefined;
     if (cold !== undefined && days >= cold.value)
       senses.push({
         ...base,
@@ -352,7 +382,7 @@ export const touchesBetween = Effect.fn("KinTouches.between")(function* (
   const rows = yield* sql<TouchSql & { clientKey: string; clientName: string }>`
     SELECT u."partyId", u.id, u.at, u.kind, u.note, u.who, u.logged, u."byKind", u."byName",
       u."recordId", u.key, u.title, c.key AS "clientKey", c.title AS "clientName"
-    FROM (${touchUnion(sql, orgId, "all", until)}) u
+    FROM (${touchUnion(sql, orgId, "all", until, KIN_OWNER_LEVEL)}) u
     JOIN kin_records c ON c.org_id = ${orgId} AND c.record_id = u."partyId"
     WHERE (u.at > ${from} OR u.recorded > ${from}) AND u.recorded <= ${until}
     ORDER BY u.at, u.id`;
