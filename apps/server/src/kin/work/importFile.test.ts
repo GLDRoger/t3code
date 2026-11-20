@@ -969,6 +969,19 @@ describe("bringing a file in", () => {
           left.runs.find((one) => one.batch === "cut"),
           cut,
         );
+        // One another process runs, as the command line does, beats on its row: it is going.
+        yield* sql`INSERT INTO kin_import_runs (org_id, batch, action, person_id, started_at,
+            summary_json)
+          VALUES (${orgId}, 'shell', 'apply', ${ownerId}, ${NOW},
+            ${JSON.stringify({ done: 40, rows: 150, file: "shell.jsonl", beat: NOW })})`;
+        assert.deepStrictEqual(
+          (yield* ImportFile.runs([rhea], { orgId })).running?.map((one) => [
+            one.batch,
+            one.file,
+            one.done,
+          ]),
+          [["shell", "shell.jsonl", 40]],
+        );
       }).pipe(Effect.provide(layer)),
   );
 });
