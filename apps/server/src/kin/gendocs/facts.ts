@@ -12,6 +12,7 @@ import { dayIn } from "../work/money.ts";
 import {
   countedEntry,
   countedPayment,
+  isSuggestion,
   fromImport,
   moneyDay,
   notedReceiptNumbers,
@@ -153,7 +154,10 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
     if (source?._tag === "entryPayments") {
       if (entry === undefined) continue;
       sensitiveTables.add(input.name);
-      const paid = yield* entryPayments(orgId, entry, dayIn(entry.dateAt ?? now, zone));
+      // A suggestion's old payments are history, never money a document says was paid.
+      const paid = isSuggestion(entry)
+        ? []
+        : yield* entryPayments(orgId, entry, dayIn(entry.dateAt ?? now, zone));
       tables.set(
         input.name,
         paid

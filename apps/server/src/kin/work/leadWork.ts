@@ -41,7 +41,7 @@ import {
 import { resolveLead } from "../lead/LeadMemory.ts";
 import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { heldUntil } from "../triggers/quietHold.ts";
-import { ownerLevelPeople } from "../people/KinAccess.ts";
+import { ownerLevelAsked, ownerLevelPeople } from "../people/KinAccess.ts";
 import { sentMail, SentMailView } from "../connections/Sending.ts";
 import { countryFirst, countryRefusal, homeCurrency, isCountryFirst } from "./companyProfile.ts";
 import { partyPage, projectDetail } from "./crm.ts";
@@ -86,6 +86,7 @@ import { latestComments, projectNoteOf } from "./recordComments.ts";
 import {
   endOfDay,
   iso,
+  isSuggestion,
   notFound,
   overdueFor,
   owedInvoices,
@@ -93,6 +94,7 @@ import {
   principalId,
   type RecordRow,
   sensitiveNow,
+  suggestedStateLabel,
   toRecord,
   workFailure,
 } from "./recordRows.ts";
@@ -484,6 +486,10 @@ export const CreateResult = Schema.Struct({
       created: Schema.Boolean,
       /** A meeting whose start has passed: recorded as held, not booked. */
       past: Schema.optional(Schema.Literal(true)),
+      /** On a suggestion only: the state it was stored in, whatever the row asked for. */
+      state: Schema.optional(KinRecordState),
+      stateLabel: Schema.optional(Schema.String),
+      suggested: Schema.optional(Schema.Literal(true)),
       ...Marks.fields,
       /** Open entries close to this one that it was made beside. */
       alsoOpen: Schema.optional(Schema.Array(Near)),
@@ -531,7 +537,10 @@ export const UpdateInput = Schema.Struct({
   repeat: Schema.optional(Repeat),
   fields: Schema.optional(FieldInputs),
   sensitive: Schema.optional(Schema.Literal(true)),
-  confirmed: Schema.optional(Schema.Boolean),
+  confirmed: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "true keeps an entry that reads suggested when the owner or a co-owner asked you to in person; it also says an amount far above the rest of its list, or an invoice issued after its due day, is right as given.",
+  }),
   expectedRev: Schema.optional(Schema.Int),
   tell: Tell,
   ...SpineInputs,
@@ -912,7 +921,15 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
   };
   return {
     ...(list === "work" ? {} : { list }),
-    ...(defined ? { listName: def.name, stateLabel: stateLabel(def, row.state) } : {}),
+    ...(defined
+      ? {
+          listName: def.name,
+          stateLabel:
+            isSuggestion(row) && row.state !== "dropped"
+              ? suggestedStateLabel(row.registerId, row.state, stateLabel(def, row.state))
+              : stateLabel(def, row.state),
+        }
+      : {}),
     key: record.key,
     title: record.title,
     state: record.state,
@@ -2097,6 +2114,7 @@ const createRow = Effect.fnUntraced(function* (
     partyId ?? null,
     "dueAt" in due && typeof due.dueAt === "number" ? due.dueAt : undefined,
   );
+  const keeps = yield* ownerLevelAsked(lead.orgId, lead.agentId, lead.wakeupId);
   // `memberAdds` decided it; names clash only with what they see in Clients, as on their form.
   const { view: _view, ...unguarded } = writer;
   const { row: stored, created } = yield* records.create(
@@ -2124,11 +2142,9 @@ const createRow = Effect.fnUntraced(function* (
       ...(row.notes === undefined ? {} : { notes: row.notes }),
       ...categoryOf(list, row),
       ...(row.side === undefined ? {} : { side: row.side }),
-      // What the owner asked for is confirmed; what a lead inferred waits for the owner. Only
-      // the owner confirms in Work, so a teammate's task keeps the default.
-      ...(team === undefined
-        ? { confirmed: row.suggested !== true && writer.askedBy !== null }
-        : {}),
+      // What an owner-level person asked for in person is kept; what a lead inferred waits for
+      // Keep. A shared turn's tasks keep the default; its quotes and invoices `KinRecords` decides.
+      ...(team === undefined ? { confirmed: row.suggested !== true && keeps } : {}),
       // Where it was first asked stays the owner's to know.
       ...(source === undefined || team !== undefined ? {} : { source }),
     },
@@ -2165,6 +2181,17 @@ const createRow = Effect.fnUntraced(function* (
     title: stored.title,
     created,
     ...(past ? { past: true as const } : {}),
+    ...(isSuggestion(stored) && stored.state !== "dropped"
+      ? {
+          state: stored.state,
+          stateLabel: suggestedStateLabel(
+            stored.registerId,
+            stored.state,
+            stateLabel(def, stored.state),
+          ),
+          suggested: true as const,
+        }
+      : {}),
     ...marksOf(lists, stored),
     ...(created && alsoOpen.length > 0 ? { alsoOpen } : {}),
     ...(alsoNamed === undefined ? {} : { alsoNamed }),
@@ -2692,7 +2719,8 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     ...(input.notes === undefined ? {} : { notes: input.notes }),
     ...(input.category === undefined ? {} : { category: input.category }),
     ...(input.side === undefined ? {} : { side: input.side }),
-    ...(input.confirmed === undefined ? {} : { confirmed: input.confirmed }),
+    // Keeps a suggestion only on a turn an owner-level person asked in person (`KinRecords`).
+    ...(input.confirmed === true ? { confirmed: true } : {}),
     ...(input.kind === undefined ? {} : { category: input.kind }),
     ...(input.repo === undefined ? {} : { repo: input.repo }),
     ...(input.sensitive === undefined ? {} : { sensitive: true }),

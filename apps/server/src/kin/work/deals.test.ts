@@ -77,9 +77,10 @@ const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Invented Ambermill', ${at})`;
-  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
-    VALUES (${ownerId}, ${orgId}, 'rhea', 'Rhea', ${at}), (${zoyaId}, ${orgId}, 'zoya', 'Zoya', ${at}),
-      (${devId}, ${orgId}, 'dev', 'Dev', ${at})`;
+  // Rhea owns the org, which makes a quote she writes kept; here no agent row says so.
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+    VALUES (${ownerId}, ${orgId}, 'rhea', 'Rhea', ${at}, 'owner'),
+      (${zoyaId}, ${orgId}, 'zoya', 'Zoya', ${at}, NULL), (${devId}, ${orgId}, 'dev', 'Dev', ${at}, NULL)`;
   yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
     VALUES ('s-zoya', ${orgId}, ${zoyaId}, 0), ('s-dev', ${orgId}, ${devId}, 0)`;
   yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${zoyaId}`;

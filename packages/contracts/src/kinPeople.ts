@@ -69,6 +69,16 @@ export const KinPeopleListResult = Schema.Struct({
   joined: Schema.Array(KinPersonId),
   // Absent from a host older than places.
   places: Schema.optional(Schema.Array(KinPersonPlaces)),
+  // Whose access was removed, for the owner and co-owners; `access`, the owner's alone, is the
+  // level a new link brings them back at. Absent from an older host.
+  removed: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        personId: KinPersonId,
+        access: Schema.optional(Schema.Literals(["co_owner", "member"])),
+      }),
+    ),
+  ),
 });
 export type KinPeopleListResult = typeof KinPeopleListResult.Type;
 

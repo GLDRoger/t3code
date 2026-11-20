@@ -102,7 +102,7 @@ const whatOf = (
       case "team":
         return [to === "true" ? "shared with the team" : "no longer shared with the team"];
       case "confirmed":
-        return [to === "true" ? "confirmed" : "no longer confirmed"];
+        return [to === "true" ? "kept" : "no longer kept"];
       case "payment":
         return [to === null ? "payment taken off" : "payment recorded"];
       default:

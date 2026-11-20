@@ -113,6 +113,7 @@ export function useKinTeam(target: KinTeamTarget) {
           people: heldPeople.people,
           joined: heldPeople.joined,
           places: heldPeople.places,
+          removed: heldPeople.removed,
           invites: heldInvites.invites,
           profiles,
         };
