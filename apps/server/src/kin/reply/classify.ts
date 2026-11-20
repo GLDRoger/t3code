@@ -244,6 +244,7 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)agent_update$/, "Updating an agent"],
   [/(?:^|__|\.)kin_chart$/, "Drawing a chart"],
   [/(?:^|__|\.)kin_visual$/, "Putting a visual together"],
+  [/(?:^|__|\.)kin_picture$/, "Making a picture"],
   [/(?:^|__|\.)kin_schedule$/, "Setting up a schedule"],
   [/(?:^|__|\.)kin_cancel$/, "Cancelling it"],
   [/(?:^|__|\.)kin_github_review$/, "Reviewing a pull request"],

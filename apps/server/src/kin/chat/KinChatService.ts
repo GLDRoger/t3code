@@ -392,6 +392,23 @@ export class KinChatService extends Context.Service<
         readonly intent: "answer" | "evidence";
       },
     ) => Effect.Effect<KinWidget | { readonly figure: string }, ServiceError>;
+    /**
+     * `kin_picture`'s image and its doc's chip, on the turn's reply in that chat, or on a message
+     * of its own outside one. `attachmentId` is the image it carries: a retry's is the earlier one.
+     */
+    readonly picture: (
+      identity: AgentIdentity,
+      input: {
+        readonly chatId: KinChatId;
+        readonly clientMessageId: string;
+        readonly intent: "answer" | "evidence";
+        readonly attachment: KinAttachment;
+        readonly doc: Repository.PictureDoc;
+      },
+    ) => Effect.Effect<
+      { readonly placed: "reply" | "message"; readonly attachmentId: string },
+      ServiceError
+    >;
     readonly replyCard: (
       agent: AgentIdentity,
       chatId: KinChatId,
@@ -476,6 +493,8 @@ const PREVIEW_LOOKBACK = 20;
 const BOOKKEEPING_TEXT = /^(?:(?:Remembered|Forgot|Updated|Replaced|Memory): |Deferred to )/;
 const deferralCardOption = Schema.decodeUnknownOption(KinDeferralCard);
 export const KIN_WAKEUP_MESSAGE_LIMIT = 8;
+/** Pictures one reply carries; a message's images are drawn as one gallery. */
+const KIN_REPLY_PICTURES_MAX = 4;
 export const KIN_WAKEUP_CHAR_LIMIT = 32_000;
 /** A person's mute with no end: it lasts until they unmute. */
 const KIN_MUTED_FOREVER = "9999-12-31T23:59:59.999Z";
@@ -833,6 +852,7 @@ const make = Effect.gen(function* () {
       readonly kind: "text" | "widget_action";
       readonly publish?: boolean;
       readonly placeReplyFigures?: true | undefined;
+      readonly pictureRefs?: ReadonlyArray<Repository.PictureDoc> | undefined;
       readonly floorRunId?: string | null;
       readonly clientId: { readonly kind: "send" | "act"; readonly id: string } | null;
       readonly forChat?: boolean;
@@ -857,6 +877,7 @@ const make = Effect.gen(function* () {
       caller: identity._tag === "agent" ? identity.caller : undefined,
       wakeupId: identity._tag === "agent" ? identity.wakeupId : undefined,
       placeReplyFigures: input.placeReplyFigures,
+      ...(input.pictureRefs === undefined ? {} : { pictureRefs: input.pictureRefs }),
       ...(identity._tag === "agent" && identity.hostPosted === true
         ? { serverPosted: true as const }
         : {}),
@@ -1603,6 +1624,9 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toPersistenceSqlError("KinChatService.figureRows")),
   );
+  const storedPicture = Schema.fromJsonString(Repository.StagedPicture);
+  const encodePicture = Schema.encodeEffect(storedPicture);
+  const decodePicture = Schema.decodeEffect(storedPicture);
   const storedEmbed = Schema.fromJsonString(KinEmbed);
   const decodeEmbed = Schema.decodeEffect(storedEmbed);
   const encodeEmbed = Schema.encodeEffect(storedEmbed);
@@ -1621,14 +1645,15 @@ const make = Effect.gen(function* () {
     );
     const result = (id: string) => ({ figure: `![${title}](${KIN_FIGURE_SCHEME}${id})` });
     if (existing !== undefined) return { ...result(existing.id), kept: false };
+    const figures = rows.filter((row) => row.kind !== "picture");
     if (
-      rows.length >= KIN_MESSAGE_FIGURES_MAX ||
+      figures.length >= KIN_MESSAGE_FIGURES_MAX ||
       (embed._tag === "visual" &&
         rows.filter((row) => row.kind === "visual").length >= KIN_MESSAGE_PAGES_MAX)
     )
       return yield* new KinChatError({
         reason: "limit",
-        message: `This reply already holds ${rows.length} figures; put more into one kin_visual page.`,
+        message: `This reply already holds ${figures.length} figures; put more into one kin_visual page.`,
       });
     const id = `f_${Buffer.from(SecureRandom.randomBytesUnsafe(8)).toString("base64url").slice(0, 10)}`;
     const json = yield* encodeEmbed(embed).pipe(Effect.mapError(cardTapError));
@@ -1640,6 +1665,79 @@ const make = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("KinChatService.stageFigure")),
     );
     return { ...result(id), kept: true };
+  });
+  const stagePicture = Effect.fn("KinChatService.stagePicture")(function* (
+    agent: AgentIdentity & { wakeupId: NonNullable<AgentIdentity["wakeupId"]> },
+    input: Parameters<KinChatService["Service"]["picture"]>[1],
+  ) {
+    const rows = yield* figureRows(agent, input.chatId, false);
+    const earlier = rows.find((row) => row.clientId === input.clientMessageId);
+    if (earlier !== undefined) return earlier.attachmentId ?? input.attachment.id;
+    if (rows.filter((row) => row.kind === "picture").length >= KIN_REPLY_PICTURES_MAX)
+      return yield* new KinChatError({
+        reason: "limit",
+        message: `This reply already holds ${KIN_REPLY_PICTURES_MAX} pictures, so this one wasn't added. Make the next in your next reply.`,
+      });
+    const id = `f_${Buffer.from(SecureRandom.randomBytesUnsafe(8)).toString("base64url").slice(0, 10)}`;
+    const json = yield* encodePicture({ attachment: input.attachment, doc: input.doc }).pipe(
+      Effect.mapError(cardTapError),
+    );
+    yield* sql`INSERT INTO kin_turn_figures
+        (org_id, figure_id, wakeup_id, agent_id, chat_id, kind, embed_json, client_message_id, attachment_id, created_at)
+        VALUES (${agent.orgId}, ${id}, ${agent.wakeupId}, ${agent.agentId}, ${input.chatId},
+          'picture', ${json}, ${input.clientMessageId}, ${input.attachment.id},
+          ${yield* Clock.currentTimeMillis})`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinChatService.stagePicture")),
+    );
+    return input.attachment.id;
+  });
+  /** A picture with no reply to ride on, such as one left when the turn wrote no text. */
+  const postPicture = Effect.fn("KinChatService.postPicture")(function* (
+    identity: AgentIdentity,
+    input: Parameters<KinChatService["Service"]["picture"]>[1],
+  ) {
+    const member = yield* memberFor(identity, input.chatId);
+    yield* canWrite(identity, member);
+    const existing = yield* repo.findClientMessage({
+      orgId: identity.orgId,
+      chatId: input.chatId,
+      memberId: member.memberId,
+      kind: "send",
+      clientId: input.clientMessageId,
+    });
+    if (Option.isSome(existing)) return existing.value.attachments?.[0]?.id ?? input.attachment.id;
+    const chat = yield* requireRecord(repo.getChat(member));
+    const used = yield* repo.wakeupPosts({
+      orgId: identity.orgId,
+      chatId: input.chatId,
+      agentId: identity.agentId,
+      threadId: identity.threadId,
+    });
+    if (used.messages >= KIN_WAKEUP_MESSAGE_LIMIT)
+      return yield* new KinChatError({
+        reason: "limit",
+        message: "This wake-up has posted all it may in this chat.",
+      });
+    const authorization =
+      identity.hostPosted === true
+        ? { runId: null, owed: true }
+        : yield* floor.authorize(identity, chat, input.intent);
+    const message = yield* post(identity, member, {
+      chatId: input.chatId,
+      body: "",
+      attachments: [input.attachment],
+      pictureRefs: [input.doc],
+      intent: input.intent,
+      kind: "text",
+      mentions: [],
+      replyTo: null,
+      widgetId: null,
+      floorRunId: authorization.runId,
+      clientId: { kind: "send", id: input.clientMessageId },
+    });
+    if (authorization.runId === null && authorization.owed !== true)
+      yield* floor.recordNotice(identity, message);
+    return input.attachment.id;
   });
 
   return KinChatService.of({
@@ -3044,6 +3142,17 @@ const make = Effect.gen(function* () {
         ),
       transaction,
     ),
+    picture: Effect.fn("KinChatService.picture")(function* (identity, input) {
+      const member = yield* memberFor(identity, input.chatId);
+      yield* canWrite(identity, member);
+      const wakeupId = yield* figureLane(identity, input.chatId);
+      if (wakeupId !== null)
+        return {
+          placed: "reply" as const,
+          attachmentId: yield* stagePicture({ ...identity, wakeupId }, input),
+        };
+      return { placed: "message" as const, attachmentId: yield* postPicture(identity, input) };
+    }, transaction),
     replyCard: Effect.fn("KinChatService.replyCard")(function* (agent, chatId) {
       return agent.wakeupId === undefined
         ? null
@@ -3052,6 +3161,24 @@ const make = Effect.gen(function* () {
     setChoiceOutcome,
     settleFigures: Effect.fn("KinChatService.settleFigures")(function* (agent, chatId, intent) {
       for (const row of yield* figureRows(agent, chatId, true)) {
+        if (row.kind === "picture") {
+          const picture = yield* decodePicture(row.json).pipe(Effect.mapError(cardTapError));
+          yield* postPicture(agent, {
+            chatId,
+            intent,
+            clientMessageId: `kin-figure:${row.id}`,
+            attachment: picture.attachment,
+            doc: picture.doc,
+          });
+          yield* sql`UPDATE kin_turn_figures SET message_id = (SELECT message_id FROM kin_messages
+              WHERE org_id = ${agent.orgId} AND chat_id = ${chatId}
+                AND client_message_id = ${Repository.storedClientId("send", `kin-figure:${row.id}`)}
+              ORDER BY seq LIMIT 1)
+            WHERE org_id = ${agent.orgId} AND figure_id = ${row.id} AND message_id IS NULL`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinChatService.settleFigures")),
+          );
+          continue;
+        }
         const embed = yield* decodeEmbed(row.json).pipe(Effect.mapError(cardTapError));
         if (embed._tag === "broken") continue;
         const widget = yield* postCard(agent, {

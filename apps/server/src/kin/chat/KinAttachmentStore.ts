@@ -56,6 +56,8 @@ export class KinAttachmentStore extends Context.Service<
     readonly discardPending: (attachments: ReadonlyArray<KinAttachment>) => Effect.Effect<void>;
     /** Keeps a page an agent wrote as a new file of Kin's, never replacing one. */
     readonly storePage: (html: string) => Effect.Effect<string, KinChatError>;
+    /** Keeps a picture Kin drew as a new image file of Kin's, read as any chat image is. */
+    readonly storeImage: (png: Uint8Array) => Effect.Effect<string, KinChatError>;
     /** Deletes Kin's stored files by id, for good; one already gone is not an error. */
     readonly remove: (attachmentIds: ReadonlyArray<string>) => Effect.Effect<void>;
   }
@@ -123,6 +125,26 @@ export const layer = Layer.effect(
           Effect.andThen(fileSystem.writeFileString(filePath, html, { flag: "wx" })),
           Effect.tapError((cause) => Effect.logWarning("Kin could not save a visual.", cause)),
           Effect.mapError(() => refused("The page could not be saved.")),
+        );
+        return attachmentId;
+      }),
+      storeImage: Effect.fn("KinAttachmentStore.storeImage")(function* (png) {
+        // No suffix, as an uploaded image has none: clients and pages read it as a picture.
+        const attachmentId = createAttachmentId(KIN_ATTACHMENT_OWNER);
+        const filePath =
+          attachmentId === null
+            ? null
+            : resolveAttachmentRelativePath({
+                attachmentsDir,
+                relativePath: `${attachmentId}.png`,
+              });
+        if (attachmentId === null || filePath === null)
+          return yield* refused("The picture could not be saved.");
+        const fileSystem = Context.get(context, FileSystem.FileSystem);
+        yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true }).pipe(
+          Effect.andThen(fileSystem.writeFile(filePath, png, { flag: "wx" })),
+          Effect.tapError((cause) => Effect.logWarning("Kin could not save a picture.", cause)),
+          Effect.mapError(() => refused("The picture could not be saved.")),
         );
         return attachmentId;
       }),

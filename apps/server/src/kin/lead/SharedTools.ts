@@ -82,6 +82,9 @@ export const SHARED_TOOLS = {
   // Like a chart, in the sealed frame; its figures are checked against everyone behind the
   // turn (`KinLevelGate.visual`).
   kin_visual: "allowed",
+  // Its page is checked against everyone behind the turn as a visual's is; an earlier picture it
+  // revises is one they all see; its doc carries the turn's audience (`teamView.personSees`).
+  kin_picture: "view",
   kin_chat_read: inAskedChat,
   // Lists only the names of the leads in the asked chat (`KinHandoff.leads`).
   kin_leads: "allowed",

@@ -90,6 +90,21 @@ const projectPerson = (
       AND ((pw.register_id = 'work' AND pw.project_id = ${project})
         OR (pw.register_id = 'projects' AND pw.record_id = ${project}))))`;
 
+/** Every picture's doc (`kin_picture`) has an origin key that starts with this. */
+export const PICTURE_DOC_ORIGIN = "picture:";
+
+/**
+ * `r` is a picture whose latest version was made in a turn others read, in a chat this person
+ * reads now. A later version made where only the owner reads takes it away again.
+ */
+const pictureReader = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
+  sql`(r.origin_key LIKE ${`${PICTURE_DOC_ORIGIN}%`} AND EXISTS (SELECT 1 FROM kin_doc_versions pv
+    JOIN kin_chat_members pm ON pm.org_id = pv.org_id AND pm.chat_id = pv.chat_id
+      AND pm.principal_kind = 'person' AND pm.person_id = ${personId} AND pm.left_at IS NULL
+    WHERE pv.org_id = r.org_id AND pv.record_id = r.record_id AND pv.audience = 'shared'
+      AND pv.version = (SELECT MAX(lv.version) FROM kin_doc_versions lv
+        WHERE lv.org_id = r.org_id AND lv.record_id = r.record_id)))`;
+
 /** `r` is a meeting this person is one of the people at (`fields.attendees`). */
 const attends = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`EXISTS (SELECT 1 FROM json_each(r.fields_json, '$.attendees') a
@@ -113,6 +128,7 @@ export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Sta
     (r.register_id = 'projects' AND ${onProject(sql, personId, sql`r.record_id`)})
     OR (r.register_id IN ('clients', 'contacts') AND ${placeOn(sql, personId, "sees_clients")})
     OR (r.register_id = 'docs' AND r.project_id IS NOT NULL AND ${projectPerson(sql, personId)})
+    OR (r.register_id = 'docs' AND ${pictureReader(sql, personId)})
     OR (r.register_id = 'docs' AND (r.team_shared = 1
       OR json_extract(r.fields_json, '$.home') = 'company')
       AND ${placeOn(sql, personId, "sees_docs")})))
@@ -233,10 +249,12 @@ export const placesOf = Effect.fn("KinTeamView.placesOf")(function* (
     FROM kin_people WHERE org_id = ${orgId} AND person_id = ${personId}`;
   const leads = yield* ledProjects(orgId, personId);
   const lead = leads.length > 0;
-  // Someone on a project reads its docs without the Docs place, so they reach the screen too.
+  // Someone on a project, or in a chat Kin drew a picture in, reads those docs without the Docs
+  // place, so they reach the screen too.
   const [onOne] = yield* sql`SELECT 1 FROM kin_records r
-    WHERE r.org_id = ${orgId} AND r.register_id = 'docs' AND r.project_id IS NOT NULL
-      AND ${projectPerson(sql, personId)} LIMIT 1`;
+    WHERE r.org_id = ${orgId} AND r.register_id = 'docs'
+      AND ((r.project_id IS NOT NULL AND ${projectPerson(sql, personId)})
+        OR ${pictureReader(sql, personId)}) LIMIT 1`;
   return {
     clients: row?.clients === 1,
     docs: row?.docs === 1,

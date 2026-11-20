@@ -1,6 +1,3 @@
-// @effect-diagnostics nodeBuiltinImport:off -- Playwright is a Node library run from its files on disk.
-import * as NodeModule from "node:module";
-
 import { PROVIDER_SEND_TURN_MAX_IMAGE_BYTES } from "@t3tools/contracts";
 import { AgentScope, agentScopeLauncherScript } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -25,6 +22,7 @@ import type { BrowserContext, Route } from "playwright-core";
 
 import { ServerConfig } from "../../config.ts";
 import { PreviewBrowser } from "../../preview/PreviewBrowser.ts";
+import { loadPlaywright } from "../../preview/ServerBrowserContexts.ts";
 import { kinVisualLibraryPath } from "../visualLibraries.ts";
 import {
   type Confinement,
@@ -35,10 +33,6 @@ import {
   confinedArch,
 } from "./confine.ts";
 import { KIN_PICTURE_SCALE, KIN_PICTURE_SIZES, type KinPictureSize } from "./sizes.ts";
-
-const requirePlaywright = NodeModule.createRequire(import.meta.url);
-const loadPlaywright = () =>
-  requirePlaywright("playwright-core") as typeof import("playwright-core");
 
 export const PICTURE_LIMITS = {
   /** From the page's first byte to its picture. */

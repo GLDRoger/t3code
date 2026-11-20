@@ -17,6 +17,7 @@ export const KIN_DEFERRED_TOOLS: ReadonlySet<string> = new Set([
   "kin_github_link",
   "kin_chart",
   "kin_visual",
+  "kin_picture",
   "kin_widget_upsert",
   "doc_rewrite",
   "doc_history",

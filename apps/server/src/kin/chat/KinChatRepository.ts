@@ -26,6 +26,7 @@ import {
   KinMessageWhen,
   KinMessageRef,
   type KinMessageRefInput,
+  KIN_MESSAGE_REFS_CAP,
   KinMessageId,
   KinWidget,
   KinWidgetId,
@@ -115,6 +116,8 @@ type InsertMessage = Omit<KinMessage, "seq" | "authorRole" | "clientMessageId" |
   // The reply bridge posts for a wake-up it resolved itself; its running row is the authority.
   readonly wakeupId?: KinWakeupId | undefined;
   readonly placeReplyFigures?: true | undefined;
+  /** Pictures Kin drew for this agent: each doc version is read here, in the write's transaction. */
+  readonly pictureRefs?: ReadonlyArray<PictureDoc> | undefined;
   // Only Kin itself (worker task cards, a failed send's mail again) posts outside a wake-up.
   readonly serverPosted?: true;
   /** Shown in the chat, but never pushed and never counted as unread or on the badge. */
@@ -190,6 +193,21 @@ const StoredFigure = Schema.Struct({
   attachmentId: Schema.NullOr(Schema.String),
 });
 const decodeFigures = Schema.decodeUnknownEffect(Schema.Array(StoredFigure));
+/** A picture staged for a reply: its chat image and the doc version it was filed as. */
+export const StagedPicture = Schema.Struct({
+  attachment: KinAttachment,
+  doc: Schema.Struct({ key: Schema.String, version: Schema.Number }),
+});
+export type PictureDoc = typeof StagedPicture.Type.doc;
+const decodePictures = Schema.decodeUnknownEffect(
+  Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      picture: Schema.fromJsonString(StagedPicture),
+      attachmentId: Schema.NullOr(Schema.String),
+    }),
+  ),
+);
 type ReplyScope = ChatScope & {
   readonly agentId: KinAgentId;
   readonly threadId: ThreadId;
@@ -959,6 +977,14 @@ const make = Effect.gen(function* () {
       yield* sql`SELECT figure_id AS id, embed_json AS embed, attachment_id AS "attachmentId"
       FROM kin_turn_figures WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}
         AND agent_id = ${input.agentId} AND chat_id = ${input.chatId} AND message_id IS NULL
+        AND kind <> 'picture'
+      ORDER BY created_at, rowid`,
+    );
+    const pictures = yield* decodePictures(
+      yield* sql`SELECT figure_id AS id, embed_json AS picture, attachment_id AS "attachmentId"
+      FROM kin_turn_figures WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}
+        AND agent_id = ${input.agentId} AND chat_id = ${input.chatId} AND message_id IS NULL
+        AND kind = 'picture'
       ORDER BY created_at, rowid`,
     );
     const tail = input.body
@@ -1001,12 +1027,61 @@ const make = Effect.gen(function* () {
     return {
       body,
       embeds: [...existing, ...ordered.map((figure) => figure.embed)],
-      figures: ordered,
+      figures: [...ordered, ...pictures],
+      pictures: pictures.map((one) => one.picture),
     };
   });
+  /** Each picture's doc version as the reply's chip, titled as stored; one that isn't there is none. */
+  const pictureRefsOf = Effect.fn("KinChatRepository.pictureRefsOf")(function* (
+    orgId: KinOrgId,
+    docs: ReadonlyArray<PictureDoc>,
+  ) {
+    const refs: Array<KinMessageRef> = [];
+    for (const doc of docs) {
+      const [row] = yield* sql<{ title: string }>`SELECT v.title FROM kin_records r
+        JOIN kin_doc_versions v ON v.org_id = r.org_id AND v.record_id = r.record_id
+          AND v.version = ${doc.version}
+        WHERE r.org_id = ${orgId} AND r.key = ${doc.key} AND r.register_id = 'docs'
+        ORDER BY r.record_id`;
+      if (row === undefined)
+        return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
+      refs.push({
+        _tag: "doc",
+        key: doc.key,
+        version: doc.version,
+        section: null,
+        title: row.title,
+        sectionTitle: null,
+      });
+    }
+    return refs;
+  });
+  /** The pictures placed on a message: their images and their docs' versions. */
+  const drawnOn = Effect.fn("KinChatRepository.drawnOn")(function* (
+    orgId: KinOrgId,
+    messageId: KinMessageId,
+  ) {
+    const rows = yield* decodePictures(
+      yield* sql`SELECT figure_id AS id, embed_json AS picture, attachment_id AS "attachmentId"
+        FROM kin_turn_figures WHERE org_id = ${orgId} AND message_id = ${messageId}
+          AND kind = 'picture' ORDER BY created_at, rowid`,
+    );
+    return {
+      attachments: new Set(rows.map((row) => row.picture.attachment.id)),
+      refs: new Set(rows.map((row) => `${row.picture.doc.key}@${row.picture.doc.version}`)),
+    };
+  });
+  /** A message's chips with these added once each, up to the cap. */
+  const withRefs = (existing: ReadonlyArray<KinMessageRef>, added: ReadonlyArray<KinMessageRef>) =>
+    [
+      ...existing,
+      ...added.filter(
+        (ref) => !existing.some((one) => one.key === ref.key && one.version === ref.version),
+      ),
+    ].slice(0, KIN_MESSAGE_REFS_CAP);
   const keepFigures = Effect.fn("KinChatRepository.keepFigures")(function* (
     input: ChatScope & { readonly messageId: KinMessageId },
-    figures: ReadonlyArray<typeof StoredFigure.Type>,
+    figures: ReadonlyArray<{ readonly id: string; readonly attachmentId: string | null }>,
   ) {
     for (const figure of figures) {
       yield* sql`UPDATE kin_turn_figures SET message_id = ${input.messageId}
@@ -1794,6 +1869,22 @@ const make = Effect.gen(function* () {
             yield* sql`UPDATE kin_messages SET body = ${named.body}, form = ${shaped.form},
               embeds_json = ${placed.embeds.length === 0 ? null : yield* encodeEmbeds(placed.embeds)}
               WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id = ${input.messageId}`;
+            if (placed.pictures.length > 0) {
+              const attachments = [
+                ...(message.attachments ?? []),
+                ...placed.pictures.map((picture) => picture.attachment),
+              ];
+              const refs = withRefs(
+                message.refs ?? [],
+                yield* pictureRefsOf(
+                  input.orgId,
+                  placed.pictures.map((picture) => picture.doc),
+                ),
+              );
+              yield* sql`UPDATE kin_messages SET attachments_json = ${yield* encodeAttachments(attachments)},
+                refs_json = ${refs.length === 0 ? null : yield* encodeRefs(refs)}
+                WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id = ${input.messageId}`;
+            }
             yield* keepFigures(input, placed.figures);
             yield* keepNames(input.orgId, input.messageId, named.json);
             return yield* requireRecord(messageOne(input));
@@ -1844,6 +1935,14 @@ const make = Effect.gen(function* () {
  AND chat_id = ${input.chatId} AND author_member_id = ${memberId} AND client_message_id = ${clientId}`,
               })(input);
               if (Option.isSome(existing)) {
+                // Pictures placed on a reply since are Kin's, not the retry's to repeat.
+                const drawn = yield* drawnOn(input.orgId, existing.value.messageId);
+                const sent = (existing.value.attachments ?? []).filter(
+                  (attachment) => !drawn.attachments.has(attachment.id),
+                );
+                const pointed = (existing.value.refs ?? []).filter(
+                  (ref) => !drawn.refs.has(`${ref.key}@${ref.version}`),
+                );
                 if (
                   author._tag === "agent" &&
                   (existing.value.author._tag !== "agent" ||
@@ -1862,14 +1961,11 @@ const make = Effect.gen(function* () {
                   existing.value.replyTo !== input.replyTo ||
                   existing.value.widgetId !== input.widgetId ||
                   existing.value.kind !== input.kind ||
-                  (existing.value.attachments?.length ?? 0) !== attachments.length ||
-                  !attachments.every(
-                    (attachment, index) =>
-                      attachment.id === existing.value.attachments?.[index]?.id,
-                  ) ||
+                  sent.length !== attachments.length ||
+                  !attachments.every((attachment, index) => attachment.id === sent[index]?.id) ||
                   existing.value.mentions.length !== input.mentions.length ||
                   !existing.value.mentions.every((id, index) => id === input.mentions[index]) ||
-                  !sameRefs(existing.value.refs ?? [], input.refs ?? [])
+                  !sameRefs(pointed, input.refs ?? [])
                 )
                   return yield* new KinChatError({
                     reason: "not_allowed",
@@ -1967,10 +2063,8 @@ const make = Effect.gen(function* () {
                 });
             }
             yield* ownerOnly(input.audience, input);
-            const refs = yield* resolveRefs(input, author, input.refs ?? []);
+            const asked = yield* resolveRefs(input, author, input.refs ?? []);
             const mentions = yield* encodeMentions(input.mentions);
-            const attachmentsJson =
-              attachments.length === 0 ? null : yield* encodeAttachments(attachments);
             const allocated = yield* SqlSchema.findOneOption({
               Request: Schema.Unknown,
               Result: Schema.Struct({ last_seq: NonNegativeInt }),
@@ -1994,7 +2088,21 @@ const make = Effect.gen(function* () {
                     threadId: author.threadId,
                     wakeupId: input.wakeupId,
                   })
-                : { body, embeds: input.embeds ?? [], figures: [] };
+                : { body, embeds: input.embeds ?? [], figures: [], pictures: [] };
+            // A picture rides on the reply as an image of its own, with its doc's chip.
+            const drawn = author._tag === "agent" ? (input.pictureRefs ?? []) : [];
+            const stored = [
+              ...attachments,
+              ...placed.pictures.map((picture) => picture.attachment),
+            ];
+            const attachmentsJson = stored.length === 0 ? null : yield* encodeAttachments(stored);
+            const refs = withRefs(
+              asked,
+              yield* pictureRefsOf(input.orgId, [
+                ...drawn,
+                ...placed.pictures.map((picture) => picture.doc),
+              ]),
+            );
             // People read an entry by its name, not Kin's key for it.
             const named =
               author._tag === "agent" && input.kind === "text"

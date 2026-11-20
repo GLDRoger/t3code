@@ -11,7 +11,7 @@ import { sandboxDisabled } from "./PreviewBrowserHost.ts";
 
 // Playwright needs its files on disk. createRequire also resolves it from a Node SEA executable.
 const requirePlaywright = NodeModule.createRequire(import.meta.url);
-const loadPlaywright = () =>
+export const loadPlaywright = () =>
   requirePlaywright("playwright-core") as typeof import("playwright-core");
 
 const BADGE_STUB = `if (typeof WorkerNavigator === "function") for (const name of ["setAppBadge", "clearAppBadge"]) WorkerNavigator.prototype[name] = () => Promise.resolve();`;

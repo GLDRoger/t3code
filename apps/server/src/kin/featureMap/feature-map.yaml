@@ -76,6 +76,22 @@ features:
       - packages/client-runtime/src/kin/kinCardPresentation.test.ts
       - .agents/skills/verify-kin/scripts/card-gallery.sh
 
+  - id: chat-pictures
+    name: Pictures an agent designs, sent as image files and kept in Docs
+    tab: chats
+    web: [chat]
+    phone: [tab:chats, KinChat]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      A picture is drawn on the host from one page of HTML at a named size and arrives under the
+      reply as an image; it is also a doc whose versions are each drawing. A teammate's picture is
+      theirs, the owner's and the chat's readers', and no one else's.
+    tools: [kin_picture]
+    proof:
+      - apps/server/src/kin/pictures/picture.test.ts
+      - apps/server/src/kin/pictures/renderer.test.ts
+      - apps/server/src/kin/pictures/confine.test.ts
+
   - id: chat-pages
     name: Long replies as pages, briefs, and names that open what they name
     tab: chats
