@@ -9,6 +9,7 @@ import {
   kinRpcAccess,
   type KinRpcAccess,
 } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -26,6 +27,7 @@ import { makeKinMemoryHandlers } from "./memory/rpcHandlers.ts";
 import { KinServer, type Services } from "./KinServer.ts";
 import { accessOf } from "./people/KinAccess.ts";
 import { makeKinPushHandlers } from "./push/rpcHandlers.ts";
+import { KIN_READ_RPCS, readOnlyStream } from "./readRpcs.ts";
 import { makeKinRecommendHandlers } from "./recommend/rpcHandlers.ts";
 import { makeKinWorkHandlers } from "./work/rpcHandlers.ts";
 import { makeKinTasksKeyHandlers } from "./tasksKey/rpcHandlers.ts";
@@ -107,17 +109,21 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
   const guarded: Record<string, unknown> = {};
   for (const [tag, handler] of Object.entries(handlers)) {
     const check = admits(session, services, kinRpcAccess(tag));
+    const reads = KIN_READ_RPCS.has(tag);
     guarded[tag] = (...args: ReadonlyArray<unknown>) => {
       const result: unknown = Reflect.apply(handler, undefined, args);
-      return Stream.isStream(result)
-        ? Stream.unwrap(Effect.as(check, result))
-        : Effect.andThen(
-            check,
-            Effect.catch(
-              result as Effect.Effect<unknown, EnvironmentAuthorizationError | KinChatError>,
-              personSees,
-            ),
-          );
+      if (Stream.isStream(result)) {
+        const stream = Stream.unwrap(Effect.as(check, result));
+        return reads ? readOnlyStream(stream) : stream;
+      }
+      const effect = Effect.andThen(
+        check,
+        Effect.catch(
+          result as Effect.Effect<unknown, EnvironmentAuthorizationError | KinChatError>,
+          personSees,
+        ),
+      );
+      return reads ? NodeSqliteClient.readOnly(effect) : effect;
     };
   }
   // Every entry keeps its handler's signature; only a refusal is added, typed as the group's error.

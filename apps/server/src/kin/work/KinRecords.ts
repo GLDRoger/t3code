@@ -2868,7 +2868,8 @@ const make = Effect.gen(function* () {
           everyone.map((one) => one.personId),
         ).pipe(provideSql),
       );
-      yield* PubSub.publish(ticks, { orgId, seq, team });
+      // Screens read on readers, which see this only once it commits.
+      yield* sql.afterCommit(PubSub.publish(ticks, { orgId, seq, team }));
     }),
     peopleMoved: Effect.fn("KinRecords.peopleMoved")(function* (orgId, personIds) {
       if (personIds.length === 0) return;
