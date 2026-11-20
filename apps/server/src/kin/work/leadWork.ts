@@ -319,7 +319,9 @@ export const QueryResult = Schema.Struct({
   sensitive: Schema.optional(Schema.Literal(true)),
 });
 /** An invoice's or quote's issued number, in whatever shape its company's series gives. */
-const IssuedNumber = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(40));
+const IssuedNumber = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(40)).annotate({
+  description: "An issued invoice's or quote's number, such as INV/26-27/004.",
+});
 export const GetInput = Schema.Struct({ key: Schema.Union([KinRecordKey, IssuedNumber]) });
 export const GetResult = Schema.Struct({
   ...Row.fields,
