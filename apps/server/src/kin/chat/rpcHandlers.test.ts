@@ -1262,6 +1262,45 @@ it.effect(
       yield* owner["kin.lead.access.grant"]({ ...lead, personId: priyaId });
       yield* send(priya, chat.chatId, "hers-3");
       assert.strictEqual((yield* contacts).contacts?.[0]?.chatId, chat.chatId);
+
+      // Settings' list of restricted pairs: two people too, whose own chat turns read-only.
+      const theirs = yield* priya["kin.chats.withPerson"]({ ...org, personId: samId });
+      const pair = {
+        ...org,
+        a: { kind: "person" as const, personId: samId },
+        b: { kind: "person" as const, personId: priyaId },
+      };
+      assert.deepStrictEqual(
+        (yield* owner["kin.reach.set"]({ ...pair, restricted: true })).limits.map((limit) => [
+          limit.one,
+          limit.other,
+        ]),
+        [[pair.b, pair.a]],
+      );
+      assert.strictEqual(
+        yield* refused(priya["kin.reach.set"]({ ...pair, restricted: false })),
+        unauthorized,
+      );
+      assert.include(yield* send(priya, theirs.chatId, "to-sam").pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      assert.include(
+        yield* sam["kin.chats.withPerson"]({ ...org, personId: priyaId }).pipe(Effect.flip),
+        { reason: "not_allowed" },
+      );
+      assert.deepStrictEqual(
+        (yield* owner["kin.reach.set"]({ ...pair, restricted: false })).limits,
+        [],
+      );
+      yield* send(priya, theirs.chatId, "to-sam-again");
+      assert.deepStrictEqual((yield* owner["kin.reach.list"](org)).limits, []);
+      // The owner is never restricted.
+      yield* owner["kin.reach.set"]({
+        ...pair,
+        a: { kind: "person", personId: person.personId },
+        restricted: true,
+      }).pipe(Effect.flip);
+      assert.deepStrictEqual((yield* owner["kin.reach.list"](org)).limits, []);
     }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 

@@ -61,7 +61,8 @@ export function kinAgentPageCan(viewer: {
 export const KIN_AGENT_PAGE = {
   loadFailed: "Couldn't load this agent",
   ownerLevelOnly: "Only the owner and co-owners see this agent's details.",
-  notTeamAgent: "Not the team agent. Only you and the people you add can message it.",
+  notTeamAgent:
+    "Not the team agent. Everyone in the company can message it, except anyone you remove.",
   modelFailed: "Couldn't change the model.",
   characterFailed: "Couldn't save the character.",
   nothingWaiting: "Nothing is waiting on it.",

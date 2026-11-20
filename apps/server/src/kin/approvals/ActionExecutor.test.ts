@@ -1584,7 +1584,7 @@ describe("KinActionExecutor", () => {
     ]);
     assert.notMatch(
       source("kin/chat/rpcHandlers.ts"),
-      /\bLeadProvision\.(?!create\b|update\b|retire\b|restore\b|setPaused\b|agentDefaults\b|setAgentDefaults\b|profiles\b|contacts\b|access\b|allow\b|disallow\b|teamAgent\b|KinLeadProvisionError\b|ts\b)\w+/,
+      /\bLeadProvision\.(?!create\b|update\b|retire\b|restore\b|setPaused\b|agentDefaults\b|setAgentDefaults\b|profiles\b|contacts\b|access\b|allow\b|disallow\b|reachList\b|reachSet\b|teamAgent\b|KinLeadProvisionError\b|ts\b)\w+/,
     );
     // The refresh stream reads only the caller's own lead list to tell them it moved.
     assert.deepStrictEqual(importers("kin/chat/refreshes.ts"), ["kin/work/rpcHandlers.ts"]);

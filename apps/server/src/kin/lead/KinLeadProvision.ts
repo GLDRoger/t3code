@@ -10,6 +10,8 @@ import {
   type KinLeadAccessResult,
   type KinLeadContact,
   type KinLeadProfile,
+  type KinReachListResult,
+  type KinReachParty,
   KIN_LEAD_TRACKING_CAP,
   KinLeadTracking,
   KinOrgId,
@@ -45,7 +47,7 @@ import {
   ownerLevelSql,
   ownsAgent,
 } from "../people/KinAccess.ts";
-import { closeDirect } from "./directClose.ts";
+import { closeDirect, setPeoplePair } from "./directClose.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { KinStop } from "./KinStop.ts";
@@ -1026,6 +1028,113 @@ export const disallow = Effect.fn("KinLeadProvision.disallow")(function* (
       yield* leadsChanged(lead.orgId);
       yield* closeDirect(yield* closeDeps, lead, input.personId, null);
       return yield* accessRows(lead);
+    }),
+  );
+});
+
+const toReach = (party: KinReachParty): Reach.KinParty =>
+  party.kind === "person" ? Reach.person(party.personId) : Reach.agent(party.agentId);
+const fromReach = (kind: "agent" | "person", id: string): KinReachParty =>
+  kind === "person"
+    ? { kind, personId: KinPersonId.make(id) }
+    : { kind, agentId: KinAgentId.make(id) };
+
+/** The restrictions that bind now: one stored before someone became a co-owner binds no one. */
+const reachRows = Effect.fn("KinLeadProvision.reachRows")(
+  function* (orgId: KinOrgId) {
+    const limits: Array<KinReachListResult["limits"][number]> = [];
+    for (const row of yield* Reach.liveLimits(orgId)) {
+      const one = fromReach(row.oneKind, row.oneId);
+      const other = fromReach(row.otherKind, row.otherId);
+      if ((yield* Reach.mayReach(orgId, toReach(one), toReach(other))) === "restricted")
+        limits.push({
+          one,
+          other,
+          setBy: row.setBy,
+          setAt: DateTime.formatIso(DateTime.makeUnsafe(row.setAt)),
+        });
+    }
+    return { limits } satisfies KinReachListResult;
+  },
+  Effect.mapError(toPersistenceSqlError("KinLeadProvision.reachRows")),
+);
+
+/** The caller, when they are an owner or co-owner of this org. */
+const reachEditor = Effect.fn("KinLeadProvision.reachEditor")(function* (
+  editor: LeadCreator,
+  orgId: KinOrgId,
+) {
+  const person = yield* creatorFor(editor);
+  if (
+    person.orgId !== orgId ||
+    !(yield* ownerLevel(person.orgId, person.personId).pipe(Effect.orElseSucceed(() => false)))
+  )
+    return yield* refuse("not_owner", "Only the owner or a co-owner restricts who messages whom.");
+  return person;
+});
+
+/** Who may not message whom: Settings' list. Owners and co-owners only. */
+export const reachList = Effect.fn("KinLeadProvision.reachList")(function* (input: {
+  readonly editor: LeadCreator;
+  readonly orgId: KinOrgId;
+}) {
+  yield* reachEditor(input.editor, input.orgId);
+  return yield* reachRows(input.orgId);
+});
+
+/**
+ * Restricts a pair of a person and an agent or another person, both ways, or lifts it. A person
+ * and an agent go as the agent page's revoke and grant do; two people's own chat turns read-only
+ * for both, and back.
+ */
+export const reachSet = Effect.fn("KinLeadProvision.reachSet")(function* (input: {
+  readonly editor: LeadCreator;
+  readonly orgId: KinOrgId;
+  readonly a: KinReachParty;
+  readonly b: KinReachParty;
+  readonly restricted: boolean;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const chats = yield* ChatService.KinChatService;
+  return yield* transaction(
+    sql,
+    "KinLeadProvision.reachSet",
+    Effect.gen(function* () {
+      const person = yield* reachEditor(input.editor, input.orgId);
+      const { orgId } = input;
+      const change = yield* Reach.setLimit({
+        orgId,
+        by: person.personId,
+        a: toReach(input.a),
+        b: toReach(input.b),
+        restricted: input.restricted,
+      }).pipe(Effect.mapError(toPersistenceSqlError("KinLeadProvision.reachSet")));
+      yield* limitRefused(change);
+      if (change._tag !== "changed") return yield* reachRows(orgId);
+      const deps = yield* closeDeps;
+      const agent = [input.a, input.b].find((one) => one.kind === "agent");
+      const people = [input.a, input.b].flatMap((one) =>
+        one.kind === "person" ? [one.personId] : [],
+      );
+      if (agent?.kind === "agent" && people[0] !== undefined) {
+        const lead = { orgId, agentId: agent.agentId };
+        if (input.restricted) yield* closeDirect(deps, lead, people[0], null);
+        else {
+          const [had] = yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${orgId}
+            AND kind = 'direct' AND direct_key = ${LeadAccess.directKey(people[0], agent.agentId)}
+            LIMIT 1`.pipe(Effect.mapError(toPersistenceSqlError("KinLeadProvision.reachSet")));
+          if (had !== undefined)
+            yield* chats.createDirect({ _tag: "person", orgId, personId: people[0] }, lead);
+        }
+      } else if (people[0] !== undefined && people[1] !== undefined)
+        yield* setPeoplePair(
+          deps,
+          orgId,
+          [people[0], people[1]],
+          input.restricted ? "guest" : "member",
+        ).pipe(Effect.mapError(toPersistenceSqlError("KinLeadProvision.reachSet")));
+      yield* leadsChanged(orgId);
+      return yield* reachRows(orgId);
     }),
   );
 });
