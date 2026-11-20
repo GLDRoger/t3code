@@ -1106,7 +1106,11 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
       // Rhea, in her own chat with the Chief of staff.
       const rhea = yield* wakeOn("chief", "rhea", chatOf("chief"), "Ask Dev about the shoot.");
       const toDev = yield* askFor("chief", rhea, { to: "Dev" });
-      assert.deepInclude(toDev, { to: "Dev Malhotra", state: "posted" });
+      assert.deepInclude(toDev, {
+        to: "Dev Malhotra",
+        state: "posted",
+        note: "Posted in Dev Malhotra's chat with you; it waits on Dev Malhotra, with no default. If Dev Malhotra answers, Kin posts the answer in this chat and wakes you once to carry on.",
+      });
       const devChat = yield* chiefChat("dev");
       const stored = yield* cardOf(toDev.questionId);
       assert.deepStrictEqual(stored, {
@@ -1436,6 +1440,10 @@ it.effect("a question asked for someone away waits for them, then is raised once
       const rhea = yield* wakeOn("chief", "rhea", chatOf("chief"), "Ask Dev about the shoot.");
       const asked = yield* askFor("chief", rhea, { to: "Dev" });
       assert.strictEqual(asked.state, "held");
+      assert.strictEqual(
+        asked.note,
+        "Dev Malhotra is away until 07:00 their time (Thu 19 Nov); Kin posts it in their chat with you then, and has said so in this chat. If Dev Malhotra answers, Kin posts the answer in this chat and wakes you once to carry on.",
+      );
       assert.isNull((yield* team.cardOf(asked.questionId)).widgetId);
       assert.lengthOf(yield* cardsFor(devChat), 0);
       const [arrives] = yield* team.kinLines(chatOf("chief"));

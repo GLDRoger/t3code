@@ -165,7 +165,8 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_ask_person", {
     ...chat,
     dependencies: [...chat.dependencies, KinServer],
-    description: "Ask one person outside this chat.",
+    description:
+      "Put a tap-to-answer question to one person who isn't in this chat, when only they can answer it and the answer is one of 2-4 choices; you ask for whoever you're answering, or for the owner in a check-in. Kin posts it as a card in their direct chat with you, saying who asks, or holds it for their quiet hours or away days. to: their name, as people_read gives it. No default: only they answer. by: the day it's needed, YYYY-MM-DD; intent or about is required, and Kin refuses what anyone already asked them. From a teammate's chat only the owner, a co-owner or a project's lead may be asked. If they answer, Kin posts the answer in this chat and wakes you once to carry on. Then say in one line that it's with them. A message to pass on, not a question, is kin_relay. A refusal says why; nothing was asked.",
     parameters: AskPerson.AskPersonInput,
     success: AskPerson.AskPersonResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

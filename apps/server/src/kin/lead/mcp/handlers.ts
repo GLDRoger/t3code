@@ -275,6 +275,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         state: asked.state,
         ...("held" in asked ? { arrives: iso(asked.held.at) } : {}),
         by: iso(asked.dueAt),
+        note: AskPerson.askedNote(asked),
       };
     }, Effect.mapError(failure)),
   ),

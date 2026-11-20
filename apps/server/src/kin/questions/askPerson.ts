@@ -26,6 +26,7 @@ import {
   turnPeople,
 } from "../lead/Audience.ts";
 import { arrivesNote } from "../lead/Handoff.ts";
+import { heldUntil } from "../triggers/quietHold.ts";
 import type { KinLevelGate } from "../lead/LevelGate.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
@@ -57,7 +58,26 @@ export const AskPersonResult = Schema.Struct({
   state: Schema.Literals(["posted", "held"]),
   arrives: Schema.optional(KinTrimmedText),
   by: KinTrimmedText,
+  note: KinTrimmedText,
 });
+
+/** What the result tells the agent: only what this call did and what Kin does next. */
+export const askedNote = (asked: {
+  readonly to: string;
+  readonly state: "posted" | "held";
+  readonly held?: {
+    readonly at: number;
+    readonly zone: string;
+    readonly why: "quiet" | "off" | "away";
+  };
+}) => {
+  const back = `If ${asked.to} answers, Kin posts the answer in this chat and wakes you once to carry on.`;
+  if (asked.state === "posted")
+    return `Posted in ${asked.to}'s chat with you; it waits on ${asked.to}, with no default. ${back}`;
+  return asked.held === undefined
+    ? `Held for ${asked.to}'s quiet hours or away days; Kin posts it in their chat with you then. ${back}`
+    : `${heldUntil(asked.to, asked.held)}; Kin posts it in their chat with you then, and has said so in this chat. ${back}`;
+};
 
 /** At most this many questions asked for others wait on one person, from every agent together. */
 const ASKED_FOR_PER_PERSON = 3;
