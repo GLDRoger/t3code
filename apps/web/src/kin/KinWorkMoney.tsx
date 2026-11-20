@@ -447,6 +447,11 @@ function MoneyScreen(props: MoneyProps) {
                     </li>
                   );
                 })}
+                {view.clientsMore === null ? null : (
+                  <li>
+                    <MoreClients more={view.clientsMore} onOpen={props.onOpenList} />
+                  </li>
+                )}
               </ul>
             )}
           </KinWorkSection>
@@ -600,5 +605,22 @@ function MoneyScreen(props: MoneyProps) {
       </div>
       {dialogs}
     </div>
+  );
+}
+
+function MoreClients(props: {
+  readonly more: { readonly label: string; readonly open: KinListOpen | null };
+  readonly onOpen: (open: KinListOpen) => void;
+}) {
+  const { open } = props.more;
+  return (
+    <Button
+      size="xs"
+      variant="ghost"
+      disabled={open === null}
+      onClick={open === null ? undefined : () => props.onOpen(open)}
+    >
+      {props.more.label}
+    </Button>
   );
 }

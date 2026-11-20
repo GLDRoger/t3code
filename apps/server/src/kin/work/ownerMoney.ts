@@ -258,6 +258,9 @@ export const dates = Effect.fn("KinMoney.dates")(function* (
   };
 }, workFailure);
 
+/** Owing clients a screen is sent; the rest are counted, and every invoice is in the list. */
+const SCREEN_CLIENTS = 20;
+
 export const money = Effect.fn("KinMoney.summary")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinMoneySummaryInput,
@@ -271,16 +274,23 @@ export const money = Effect.fn("KinMoney.summary")(function* (
     yield* Clock.currentTimeMillis,
     team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(hidden ? [] : [team]),
   );
+  const { byClient } = summary.owed;
   const shown =
-    input.party === undefined
-      ? summary
-      : {
+    input.party !== undefined
+      ? {
           ...summary,
-          owed: {
-            ...summary.owed,
-            byClient: summary.owed.byClient.filter((one) => one.party?.key === input.party),
-          },
-        };
+          owed: { ...summary.owed, byClient: byClient.filter((one) => one.party?.key === input.party) },
+        }
+      : input.allClients === true || byClient.length <= SCREEN_CLIENTS
+        ? summary
+        : {
+            ...summary,
+            owed: {
+              ...summary.owed,
+              byClient: byClient.slice(0, SCREEN_CLIENTS),
+              byClientMore: byClient.length - SCREEN_CLIENTS,
+            },
+          };
   return input.upcomingRows === false ? { ...shown, upcoming: [] } : shown;
 }, workFailure);
 

@@ -601,6 +601,9 @@ export function KinMoneyArea(props: Shared) {
               );
             })
           )}
+          {view.clientsMore === null ? null : (
+            <MoreClients more={view.clientsMore} onOpen={openList} />
+          )}
         </ListSection>
       </View>
       {view.suggested.length === 0 ? null : (
@@ -722,5 +725,25 @@ function MonthFigure(props: {
         {props.amount}
       </Text>
     </Pressable>
+  );
+}
+
+function MoreClients(props: {
+  readonly more: { readonly label: string; readonly open: KinListOpen | null };
+  readonly onOpen: (open: KinListOpen) => void;
+}) {
+  const { open } = props.more;
+  return (
+    <View className="items-start bg-grouped-card px-4 py-2">
+      <Button
+        tone="text"
+        size="compact"
+        label={props.more.label}
+        disabled={open === null}
+        onPress={() => {
+          if (open !== null) props.onOpen(open);
+        }}
+      />
+    </View>
   );
 }
