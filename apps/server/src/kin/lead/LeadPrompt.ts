@@ -1520,7 +1520,8 @@ export class KinLeadPrompt extends Context.Service<
                   }`
             }`,
           ),
-          ...(ownerOnly ? [] : [sharedPart(SHARED_TURN_LINE)]),
+          // An outside review's trigger says what its turn may do; this line is for a chat others read.
+          ...(ownerOnly || review !== undefined ? [] : [sharedPart(SHARED_TURN_LINE)]),
           ...(Number.isFinite(budgetLeft) && budgetLeft <= BUDGET_LOW_PERCENT
             ? [ownerPart(`Budget: ${input.budgetContext}. Keep this turn light.`)]
             : []),

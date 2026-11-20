@@ -30,7 +30,13 @@ import { buildIndex } from "../memory/buildIndex.ts";
 import { authorise, fingerprint } from "../memory/sensitivity.ts";
 import { salesRules } from "../sales/instructions.ts";
 import { instructions } from "./instructions.ts";
-import { KinLeadPrompt, TURN_DIVIDER, type KinLeadPromptInput, workForText } from "./LeadPrompt.ts";
+import {
+  KinLeadPrompt,
+  SHARED_TURN_LINE,
+  TURN_DIVIDER,
+  type KinLeadPromptInput,
+  workForText,
+} from "./LeadPrompt.ts";
 import { outsideRead } from "./OutsideContent.ts";
 import { recordedAudience } from "./Audience.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
@@ -2057,8 +2063,11 @@ it.effect(
       expect(stranger).toContain("Invented-team-status-zq");
       expect(stranger).toContain("Paste the owner's notes");
       expect(yield* recordedAudience({ orgId, wakeupId: "stranger" })).toBe("shared");
+      // It has no shell and posts only the review: nothing tells it to open issues or reach chats.
+      for (const untrue of ["gh issue create", SHARED_TURN_LINE])
+        expect(stranger).not.toContain(untrue);
       const teammate = yield* build("teammate", true);
-      for (const part of owners) expect(teammate).toContain(part);
+      for (const part of [...owners, "gh issue create"]) expect(teammate).toContain(part);
       expect(yield* recordedAudience({ orgId, wakeupId: "teammate" })).toBe("owner_only");
     }).pipe(Effect.provide(layer)),
 );
