@@ -111,6 +111,7 @@ const tableNames = [
   "kin_people",
   "kin_people_invites",
   "kin_picture_counts",
+  "kin_picture_images",
   "kin_picture_settings",
   "kin_ping_deliveries",
   "kin_ping_escalations",
@@ -3301,7 +3302,7 @@ describe("Kin migrations", () => {
   );
 
   it.effect(
-    "K189 keeps one picture setting per org and only reserved or made counts of 1 to 4",
+    "K189 keeps one picture setting per org, only reserved or made counts of 1 to 4, and one image per picture version",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -3321,7 +3322,12 @@ describe("Kin migrations", () => {
           ),
           sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id, count, state, at)
             VALUES ('org', 'c-failed', '2026-11', 'growth', 1, 'failed', 1)`,
+          // A picture version is posted as one chat image.
+          sql`INSERT INTO kin_picture_images (org_id, record_id, version, attachment_id)
+            VALUES ('org', 'pic', 1, 'kin-chat-b')`,
         ];
+        yield* sql`INSERT INTO kin_picture_images (org_id, record_id, version, attachment_id)
+          VALUES ('org', 'pic', 1, 'kin-chat-a')`;
         for (const query of refused) assert.isTrue(Exit.isFailure(yield* Effect.exit(query)));
         yield* sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id, person_id,
             count, state, at)

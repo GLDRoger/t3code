@@ -551,20 +551,22 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
 });
 export const create = leadTool("KinDocTools.create", runCreate);
 
-/** A doc this turn may read: in one others read, only one they all see, else none at all. */
+/**
+ * A doc this turn may read, and which of its versions: in one others read, only one they all see,
+ * else none at all.
+ */
 const readable = Effect.fn("KinDocTools.readable")(function* (lead: Lead, key: string) {
   const team = yield* viewOf(lead);
-  return yield* Docs.docRow(
-    lead.orgId,
-    { key },
-    team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
-  );
+  const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
+  const row = yield* Docs.docRow(lead.orgId, { key }, viewer);
+  return { row, seen: yield* Docs.versionsSeen(lead.orgId, viewer, row) };
 });
 
 const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput.Type) {
-  const row = yield* readable(lead, input.key);
+  const { row, seen } = yield* readable(lead, input.key);
   const latest = yield* Docs.versionOf(lead.orgId, row.recordId);
-  const version = yield* Docs.versionOf(lead.orgId, row.recordId, input.version);
+  const found = yield* Docs.versionOf(lead.orgId, row.recordId, input.version);
+  const version = found !== undefined && seen(found.version) ? found : undefined;
   if (latest === undefined) return yield* Docs.docNotFound(input.key);
   if (version === undefined)
     return yield* invalid(
@@ -713,7 +715,7 @@ const runSearch = Effect.fnUntraced(function* (lead: Lead, input: typeof SearchI
 export const searchTool = leadTool("KinDocTools.search", runSearch);
 
 const runHistory = Effect.fnUntraced(function* (lead: Lead, input: typeof HistoryInput.Type) {
-  const row = yield* readable(lead, input.key);
+  const { row, seen } = yield* readable(lead, input.key);
   const latest = yield* Docs.versionOf(lead.orgId, row.recordId);
   if (latest === undefined) return yield* Docs.docNotFound(input.key);
   const rows = yield* Docs.history(lead.orgId, row.recordId, {
@@ -724,24 +726,26 @@ const runHistory = Effect.fnUntraced(function* (lead: Lead, input: typeof Histor
   return {
     key: row.key,
     latestVersion: latest.version,
-    versions: rows.map((one) => {
-      const version = Docs.toVersion(one);
-      const sections = version.operations.flatMap((op) =>
-        op.section === undefined ? [] : [op.section],
-      );
-      return {
-        version: version.version,
-        at: version.at,
-        by:
-          version.provenance.by._tag === "system"
-            ? "Kin"
-            : (name(version.provenance.by) ?? "someone"),
-        kind: version.kind,
-        summary: version.summary,
-        ...(version.restoredFrom === null ? {} : { restoredFrom: version.restoredFrom }),
-        ...(sections.length === 0 ? {} : { sections: [...new Set(sections)] }),
-      };
-    }),
+    versions: rows
+      .filter((one) => seen(one.version))
+      .map((one) => {
+        const version = Docs.toVersion(one);
+        const sections = version.operations.flatMap((op) =>
+          op.section === undefined ? [] : [op.section],
+        );
+        return {
+          version: version.version,
+          at: version.at,
+          by:
+            version.provenance.by._tag === "system"
+              ? "Kin"
+              : (name(version.provenance.by) ?? "someone"),
+          kind: version.kind,
+          summary: version.summary,
+          ...(version.restoredFrom === null ? {} : { restoredFrom: version.restoredFrom }),
+          ...(sections.length === 0 ? {} : { sections: [...new Set(sections)] }),
+        };
+      }),
     ...(sensitiveOf(row) ? { sensitive: true as const } : {}),
   };
 });

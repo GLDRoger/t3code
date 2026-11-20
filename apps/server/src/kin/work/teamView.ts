@@ -18,6 +18,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
+import { personReads } from "../chat/sharing.ts";
 import { LISTS } from "./lists.ts";
 import {
   inheritedSensitive,
@@ -94,19 +95,36 @@ const projectPerson = (
 export const PICTURE_DOC_ORIGIN = "picture:";
 
 /**
- * `r` is a picture whose latest version was made in a turn others read, in a chat this person
- * reads now. A later version made where only the owner reads takes it away again.
+ * Version `pv` of a picture was made in a turn others read and posted on a reply this person reads
+ * now: in its chat, from their join on (`personReads`). The one rule for a picture's doc, its
+ * versions, its file and its image in the chat; a doc's labels add to it (`pictureSees`).
  */
-export const pictureReader = (
+export const pictureVersionReader = (
   sql: SqlClient.SqlClient,
   personId: KinPersonId | Statement.Fragment,
 ) =>
+  sql`(pv.audience = 'shared' AND EXISTS (SELECT 1 FROM kin_picture_images pi
+    JOIN kin_message_attachments pa ON pa.org_id = pi.org_id AND pa.attachment_id = pi.attachment_id
+    JOIN kin_messages ON kin_messages.org_id = pa.org_id AND kin_messages.message_id = pa.message_id
+    WHERE pi.org_id = pv.org_id AND pi.record_id = pv.record_id AND pi.version = pv.version
+      AND kin_messages.status <> 'deleted' AND ${personReads(sql, personId)}))`;
+
+/** `r` is a picture whose latest version this person reads; a later owner-only one takes it back. */
+const pictureReader = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`(r.origin_key LIKE ${`${PICTURE_DOC_ORIGIN}%`} AND EXISTS (SELECT 1 FROM kin_doc_versions pv
-    JOIN kin_chat_members pm ON pm.org_id = pv.org_id AND pm.chat_id = pv.chat_id
-      AND pm.principal_kind = 'person' AND pm.person_id = ${personId} AND pm.left_at IS NULL
-    WHERE pv.org_id = r.org_id AND pv.record_id = r.record_id AND pv.audience = 'shared'
+    WHERE pv.org_id = r.org_id AND pv.record_id = r.record_id
       AND pv.version = (SELECT MAX(lv.version) FROM kin_doc_versions lv
-        WHERE lv.org_id = r.org_id AND lv.record_id = r.record_id)))`;
+        WHERE lv.org_id = r.org_id AND lv.record_id = r.record_id)
+      AND ${pictureVersionReader(sql, personId)}))`;
+
+/** Version `pv` of picture doc `r`, its file and its chat image: unlabelled, and its reply read. */
+export const pictureFileReader = (
+  sql: SqlClient.SqlClient,
+  personId: KinPersonId | Statement.Fragment,
+) => sql`(NOT ${sensitiveNow(sql)} AND ${pictureVersionReader(sql, personId)})`;
+
+const isPicture = (sql: SqlClient.SqlClient) =>
+  sql`(r.register_id = 'docs' AND r.origin_key LIKE ${`${PICTURE_DOC_ORIGIN}%`})`;
 
 /** `r` is a meeting this person is one of the people at (`fields.attendees`). */
 const attends = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
@@ -114,12 +132,14 @@ const attends = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fra
     WHERE a.value = 'person:' || ${personId})`;
 
 /**
- * What a non-owner-level person sees everywhere: a task they hold, attend or marked private; unlabelled,
- * what they made, gave or share, their projects with those projects' entries and docs (never a
- * private task), company docs with Docs on, and with Clients on the deals of clients they see.
+ * What a non-owner-level person sees everywhere: a picture by its own rule alone, unlabelled
+ * (`pictureReader`); a task they hold, attend or marked private; unlabelled, what they made, gave
+ * or share, their projects with those projects' entries and docs (never a private task), company
+ * docs with Docs on, and with Clients on the deals of clients they see.
  */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
-  sql`((r.register_id = 'work' AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
+  sql`(CASE WHEN ${isPicture(sql)} THEN (NOT ${sensitiveNow(sql)} AND ${pictureReader(sql, personId)})
+  ELSE ((r.register_id = 'work' AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
       OR ${attends(sql, personId)} OR r.marked_by_person_id = ${personId}
       OR (r.sensitive = 0 AND ((r.created_by_kind = 'person' AND r.created_by_id = ${personId})
         OR r.assigned_by_person_id = ${personId}))))
@@ -131,14 +151,13 @@ export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Sta
     (r.register_id = 'projects' AND ${onProject(sql, personId, sql`r.record_id`)})
     OR (r.register_id IN ('clients', 'contacts') AND ${placeOn(sql, personId, "sees_clients")})
     OR (r.register_id = 'docs' AND r.project_id IS NOT NULL AND ${projectPerson(sql, personId)})
-    OR (r.register_id = 'docs' AND ${pictureReader(sql, personId)})
     OR (r.register_id = 'docs' AND (r.team_shared = 1
       OR json_extract(r.fields_json, '$.home') = 'company')
       AND ${placeOn(sql, personId, "sees_docs")})))
   OR (r.register_id = 'deals' AND NOT ${keySensitive(sql)}
     AND ${placeOn(sql, personId, "sees_clients")})
   OR (r.register_id NOT IN ${sql.in(NOT_LISTS)} AND r.team_shared = 1 AND ${ownLabelOff(sql)}
-    AND NOT ${inheritedSensitive(sql)} AND ${placeOn(sql, personId, "sees_money")}))`;
+    AND NOT ${inheritedSensitive(sql)} AND ${placeOn(sql, personId, "sees_money")})) END)`;
 
 /** `personSees` over another alias of `kin_records`, such as a directory's `c` or `p`. */
 export const personSeesAs = (sql: SqlClient.SqlClient, personId: KinPersonId, alias: string) =>

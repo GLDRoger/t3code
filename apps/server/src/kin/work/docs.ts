@@ -33,7 +33,14 @@ import { fieldText, listOf, parseFields } from "./lists.ts";
 import { guardPlaybook } from "./playbooks.ts";
 import { actorOf, iso, principal, type RecordRow, toRecord, unavailable } from "./recordRows.ts";
 import { indexRecord } from "./searchIndex.ts";
-import { KIN_OWNER_LEVEL, viewerOfPeople, viewVisible, type KinViewer } from "./teamView.ts";
+import {
+  KIN_OWNER_LEVEL,
+  PICTURE_DOC_ORIGIN,
+  pictureVersionReader,
+  viewerOfPeople,
+  viewVisible,
+  type KinViewer,
+} from "./teamView.ts";
 import { SensitiveRefusal } from "./sensitiveReads.ts";
 
 /**
@@ -213,6 +220,29 @@ export const docRow = Effect.fn("KinDocs.row")(function* (
   if (row === undefined || hidden || listOf(row.registerId) !== "docs")
     return yield* docNotFound("key" in ref ? ref.key : "with that id");
   return row;
+});
+
+/**
+ * Which of a doc's versions the viewer reads: every one, but a picture's are each read by who
+ * reads the reply it was posted on (`pictureVersionReader`), so an earlier one may be theirs or not.
+ */
+export const versionsSeen = Effect.fn("KinDocs.versionsSeen")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+  row: Pick<RecordRow, "recordId" | "originKey">,
+) {
+  if (viewer._tag === "ownerLevel" || !row.originKey.startsWith(PICTURE_DOC_ORIGIN))
+    return (_version: number) => true;
+  const sql = yield* SqlClient.SqlClient;
+  const rows =
+    viewer.people.length === 0
+      ? []
+      : yield* sql<{ version: number }>`SELECT pv.version FROM kin_doc_versions pv
+          WHERE pv.org_id = ${orgId} AND pv.record_id = ${row.recordId}
+            AND ${sql.and(viewer.people.map((person) => pictureVersionReader(sql, person)))}
+          ORDER BY pv.version`;
+  const seen = new Set(rows.map((one) => one.version));
+  return (version: number) => seen.has(version);
 });
 
 /** A doc's kind as stored; one stored before kinds, or by no one, is `other`. */

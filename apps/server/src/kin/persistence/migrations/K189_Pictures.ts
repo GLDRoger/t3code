@@ -42,4 +42,16 @@ export default Effect.gen(function* () {
   `;
   yield* sql`CREATE INDEX IF NOT EXISTS kin_picture_counts_month
     ON kin_picture_counts (org_id, month, state)`;
+  // The chat image each picture version was posted as: who reads that reply reads the version.
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS kin_picture_images (
+      org_id TEXT NOT NULL,
+      record_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      attachment_id TEXT NOT NULL,
+      PRIMARY KEY (org_id, record_id, version)
+    )
+  `;
+  yield* sql`CREATE INDEX IF NOT EXISTS kin_picture_images_attachment
+    ON kin_picture_images (org_id, attachment_id)`;
 });

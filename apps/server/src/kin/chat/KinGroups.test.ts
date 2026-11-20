@@ -505,8 +505,18 @@ it.effect(
       assert.isTrue(yield* chats.attachmentReadable([owner], "kin-chat-docfile"));
       for (const who of [priya, sam])
         assert.isFalse(yield* chats.attachmentReadable([who], "kin-chat-docfile"));
-      // A picture's file is read by whoever reads its doc: the chat it was made for, until redrawn
+      // A picture's file is read by whoever reads the reply it was posted on, until redrawn
       // where only the owner reads.
+      const posted = (version: number, image: string) =>
+        Effect.gen(function* () {
+          const reply = yield* say(owner, chatId, "The quote card");
+          yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
+            VALUES (${image}, ${orgId}, ${chatId}, ${reply.messageId})`;
+          yield* sql`INSERT INTO kin_picture_images (org_id, record_id, version, attachment_id)
+            VALUES (${orgId}, 'pic-record', ${version}, ${image})`;
+        });
+      yield* posted(1, "kin-chat-picimg");
+      yield* posted(2, "kin-chat-picimg-2");
       yield* sql`PRAGMA foreign_keys = OFF`;
       yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
           owner_id, created_by_kind, origin_key, created_at, updated_at)

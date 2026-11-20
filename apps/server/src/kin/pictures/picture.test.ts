@@ -85,17 +85,33 @@ const identity = Layer.mock(KinIdentity)({
     }),
 });
 
-// What each picture put on the turn's reply; `KinChatService.test.ts` places it on the message.
+// What each picture put on the turn's reply, posted here as the reply carrying its image;
+// `KinChatService.test.ts` places it on the real reply.
 const placed: Array<Parameters<KinLevelGate["Service"]["picture"]>[1]> = [];
-const gate = Layer.mock(KinLevelGate)({
-  picture: (_agent, input) =>
-    Effect.sync(() => {
-      // A retry carries the image its first call staged, as `KinChatService.picture` answers.
-      const earlier = placed.find((one) => one.clientMessageId === input.clientMessageId);
-      if (earlier === undefined) placed.push(input);
-      return { placed: "reply" as const, attachmentId: (earlier ?? input).attachment.id };
+const gate = Layer.unwrap(
+  Effect.map(SqlClient.SqlClient, (sql) =>
+    Layer.mock(KinLevelGate)({
+      picture: (_agent, input) =>
+        Effect.gen(function* () {
+          // A retry carries the image its first call staged, as `KinChatService.picture` answers.
+          const earlier = placed.find((one) => one.clientMessageId === input.clientMessageId);
+          if (earlier !== undefined)
+            return { placed: "reply" as const, attachmentId: earlier.attachment.id };
+          placed.push(input);
+          const messageId = `reply-${placed.length}`;
+          yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+              author_agent_id, author_owner_person_id, author_thread_id, author_member_id,
+              author_role, kind, body, mentions_json, status, created_at)
+            VALUES (${messageId}, ${orgId}, ${input.chatId}, ${100 + placed.length}, 'agent', ${lead},
+              ${ownerId}, 'lead-thread', ${`${input.chatId}-lead`}, 'member', 'text', 'Here it is.',
+              '[]', 'posted', ${at})`;
+          yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
+            VALUES (${input.attachment.id}, ${orgId}, ${input.chatId}, ${messageId})`;
+          return { placed: "reply" as const, attachmentId: input.attachment.id };
+        }).pipe(Effect.orDie),
     }),
-});
+  ),
+);
 // A 1x1 PNG stands in for the browser's drawing (`renderer.test.ts` draws for real).
 const PNG = Uint8Array.from(
   Buffer.from(
@@ -186,23 +202,36 @@ const seed = Effect.gen(function* () {
     VALUES (${lead}, ${orgId}, 'Kin', 0, 'lead-thread', '{}', '[]', 'lead-chat')`;
 });
 
-/** A running turn woken by Rhea's (or Meera's) message `n` in the lead's chat. */
+/** The team's group chat: Rhea, Meera and the lead. */
+const group = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+    VALUES ('team-chat', ${orgId}, 'team_group', 1, ${at})`;
+  yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+    VALUES ('team-chat-rhea', ${orgId}, 'team-chat', 'person', ${ownerId}, 'owner', ${at}),
+      ('team-chat-meera', ${orgId}, 'team-chat', 'person', ${meera}, 'member', ${at})`;
+  yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+    VALUES ('team-chat-lead', ${orgId}, 'team-chat', 'agent', ${lead}, 'member', ${at})`;
+});
+
+/** A running turn woken by Rhea's (or Meera's) message `n` in the lead's chat, or `chat`. */
 const turn = Effect.fn("KinPicturesTest.turn")(function* (
   n: number,
   from: "rhea" | "meera" = "rhea",
   audience: "owner_only" | "shared" = "owner_only",
+  chat = "lead-chat",
 ) {
   const sql = yield* SqlClient.SqlClient;
   const author = from === "rhea" ? ownerId : meera;
-  const member = `lead-chat-${from}`;
-  if (from === "meera")
+  const member = `${chat}-${from}`;
+  if (from === "meera" && chat === "lead-chat")
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
       VALUES ('lead-chat-meera', ${orgId}, 'lead-chat', 'person', ${meera}, 'member', ${at})
       ON CONFLICT DO NOTHING`;
   yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
   yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
       author_member_id, author_role, kind, body, mentions_json, status, created_at)
-    VALUES (${`ask-${n}`}, ${orgId}, 'lead-chat', ${n}, 'human', ${author}, ${member},
+    VALUES (${`ask-${n}`}, ${orgId}, ${chat}, ${n}, 'human', ${author}, ${member},
       ${from === "rhea" ? "owner" : "member"}, 'text', 'Make a launch post for the mill', '[]',
       'posted', ${at})`;
   yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status,
@@ -217,7 +246,7 @@ const turn = Effect.fn("KinPicturesTest.turn")(function* (
     receivedAt: at,
     dedupeKey: null,
     provenance: { _tag: "human", personId: author, memberId: member },
-    chatId: "lead-chat",
+    chatId: chat,
     messageId: `ask-${n}`,
   };
   yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
@@ -392,6 +421,98 @@ describe("kin_picture", () => {
         yield* makePicture(scope, post("72px", { doc: made.doc }));
         yield* sql`UPDATE kin_chat_members SET left_at = NULL WHERE member_id = 'lead-chat-meera'`;
         assert.deepStrictEqual([yield* opens(ownerId), yield* opens(meera)], [true, false]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "keeps each picture's doc to its chat, and to who reads the reply it came on, its file and image included",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* group;
+        const sql = yield* SqlClient.SqlClient;
+        const chats = yield* ChatService.KinChatService;
+        // The same picture asked for in Rhea's own chat and in the team's is two docs.
+        yield* turn(1);
+        const own = yield* makePicture(scope, post("48px"));
+        yield* turn(2, "meera", "shared", "team-chat");
+        const team = yield* makePicture(scope, post("48px"));
+        assert.notStrictEqual(team.doc, own.doc);
+        // A change to Rhea's own picture, asked for where Meera reads, finds no such doc.
+        assert.include(yield* Effect.flip(makePicture(scope, post("72px", { doc: own.doc }))), {
+          reason: "not_found",
+          message: `No doc ${own.doc}.`,
+        });
+        // Asked for in Rhea's own chat, a change to the team's picture is a new doc of that chat.
+        yield* turn(3);
+        const copy = yield* makePicture(scope, post("72px", { doc: team.doc }));
+        assert.deepInclude(copy, { version: 1 });
+        assert.notInclude([own.doc, team.doc], copy.doc);
+        assert.strictEqual(
+          (yield* versions(copy.doc))[0]?.summary,
+          `Picture, 1080×1080, changed from ${team.doc}`,
+        );
+        assert.lengthOf(yield* versions(team.doc), 1);
+
+        const file = (yield* versions(team.doc))[0]!.file!.attachmentId;
+        const image = team.files[0]!;
+        const reads = (who: KinPersonId) =>
+          Effect.gen(function* () {
+            const doc = yield* OwnerDocs.get([person(who)], { orgId, key: team.doc }).pipe(
+              Effect.as(true),
+              Effect.orElseSucceed(() => false),
+            );
+            return [
+              doc,
+              yield* chats.attachmentReadable([person(who)], file),
+              yield* chats.attachmentReadable([person(who)], image),
+            ];
+          });
+        assert.deepStrictEqual(yield* reads(meera), [true, true, true]);
+        assert.deepStrictEqual(yield* reads(dev), [false, false, false]);
+        // Rhea's own copy is hers: Meera reads neither it nor its file.
+        const copied = (yield* versions(copy.doc))[0]!.file!.attachmentId;
+        assert.isFalse(yield* chats.attachmentReadable([person(meera)], copy.files[0]!));
+        assert.isTrue(yield* chats.attachmentReadable([person(ownerId)], copied));
+        // The team changes it; Dev joins between the two replies, and reads only the second.
+        yield* turn(4, "meera", "shared", "team-chat");
+        // Other bytes, so another file: identical bytes are one file, as a document's are.
+        drawing.next = { _tag: "drawn", png: Uint8Array.of(...PNG, 0), width: 1080, height: 1080 };
+        const second = yield* makePicture(scope, post("72px", { doc: team.doc }));
+        drawing.next = undefined;
+        assert.deepInclude(second, { doc: team.doc, version: 2 });
+        const [joined] = yield* sql<{ seq: number }>`SELECT m.seq FROM kin_messages m
+          JOIN kin_message_attachments a ON a.org_id = m.org_id AND a.message_id = m.message_id
+          WHERE a.attachment_id = ${second.files[0]!}`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at, joined_seq)
+          VALUES ('team-chat-dev', ${orgId}, 'team-chat', 'person', ${dev}, 'member', ${at}, ${joined!.seq})`;
+        const fails = <A, E>(effect: Effect.Effect<A, E>) =>
+          effect.pipe(
+            Effect.as(false),
+            Effect.orElseSucceed(() => true),
+          );
+        const asDev = [person(dev)];
+        assert.deepStrictEqual(
+          [
+            yield* fails(OwnerDocs.get(asDev, { orgId, key: team.doc })),
+            yield* fails(OwnerDocs.get(asDev, { orgId, key: team.doc, version: 1 })),
+            yield* fails(OwnerDocs.diff(asDev, { orgId, key: team.doc, from: 1, to: 2 })),
+            (yield* OwnerDocs.history(asDev, { orgId, key: team.doc })).versions.map(
+              (one) => one.version,
+            ),
+          ],
+          [false, true, true, [2]],
+        );
+        assert.deepStrictEqual(yield* reads(dev), [true, false, false]);
+        assert.isTrue(yield* chats.attachmentReadable(asDev, second.files[0]!));
+        // Marked sensitive, the doc hides its file and its image too, from all but the owner level.
+        yield* sql`UPDATE kin_records SET sensitive = 1 WHERE org_id = ${orgId} AND key = ${team.doc}`;
+        assert.deepStrictEqual(yield* reads(meera), [false, false, false]);
+        assert.deepStrictEqual(yield* reads(ownerId), [true, true, true]);
+        yield* sql`UPDATE kin_records SET sensitive = 0 WHERE org_id = ${orgId} AND key = ${team.doc}`;
+        // Taken out of the chat, Meera reads none of it, a URL she kept included.
+        yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'team-chat-meera'`;
+        assert.deepStrictEqual(yield* reads(meera), [false, false, false]);
       }).pipe(Effect.provide(layer)),
   );
 

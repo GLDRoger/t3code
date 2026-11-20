@@ -106,7 +106,7 @@ import { KinStop } from "../lead/KinStop.ts";
 import { isOrgOwner } from "../lead/orgState.ts";
 import { docPageSources } from "../work/docFiles.ts";
 import { turnSensitive } from "../work/sensitiveReads.ts";
-import { PICTURE_DOC_ORIGIN, pictureReader } from "../work/teamView.ts";
+import { PICTURE_DOC_ORIGIN, pictureFileReader } from "../work/teamView.ts";
 import * as Repository from "./KinChatRepository.ts";
 import type { WriteAudience } from "./KinChatRepository.ts";
 import { KinAttachmentStore } from "./KinAttachmentStore.ts";
@@ -761,16 +761,6 @@ const make = Effect.gen(function* () {
             AND (a.owner_person_id = ${person.personId} OR j.asked_by_person_id = ${person.personId})
           LIMIT 1`;
         if (made.length > 0) return true;
-        // A picture's file is read by whoever reads its doc.
-        const picture = yield* sql<{
-          shared: number;
-        }>`SELECT ${pictureReader(sql, person.personId)} AS shared
-          FROM kin_doc_versions v JOIN kin_records r ON r.org_id = v.org_id AND r.record_id = v.record_id
-          WHERE v.org_id = ${person.orgId} AND v.file_attachment_id = ${attachmentId}
-            AND r.origin_key LIKE ${`${PICTURE_DOC_ORIGIN}%`}
-          LIMIT 1`;
-        if (picture[0] !== undefined)
-          return picture[0].shared === 1 || (yield* ownerLevel(person.orgId, person.personId));
         const shown = yield* sql`SELECT 1 FROM kin_doc_files
           WHERE org_id = ${person.orgId} AND attachment_id = ${attachmentId}
           UNION ALL SELECT 1 FROM kin_company_profile
@@ -783,6 +773,35 @@ const make = Effect.gen(function* () {
       Effect.provideService(SqlClient.SqlClient, sql),
       Effect.map((found) => found.some(Boolean)),
       Effect.mapError(toPersistenceSqlError("KinChatService.docFileReadable")),
+    );
+  /**
+   * A picture version's file or its image in the chat, by the version's own rule
+   * (`pictureFileReader`), or the owner level; undefined when the file is no picture's.
+   */
+  const pictureReadable = (caller: PersonCaller, attachmentId: string) =>
+    Effect.forEach("_tag" in caller ? [caller] : caller, (person) =>
+      Effect.gen(function* () {
+        const rows = yield* sql<{ readable: number }>`SELECT
+            ${pictureFileReader(sql, person.personId)} AS readable
+          FROM kin_doc_versions pv JOIN kin_records r ON r.org_id = pv.org_id AND r.record_id = pv.record_id
+          WHERE pv.org_id = ${person.orgId} AND r.origin_key LIKE ${`${PICTURE_DOC_ORIGIN}%`}
+            AND (pv.record_id, pv.version) IN (SELECT record_id, version FROM kin_doc_versions
+                WHERE org_id = ${person.orgId} AND file_attachment_id = ${attachmentId}
+              UNION SELECT record_id, version FROM kin_picture_images
+                WHERE org_id = ${person.orgId} AND attachment_id = ${attachmentId})
+          ORDER BY pv.record_id, pv.version`;
+        if (rows.length === 0) return undefined;
+        return (
+          rows.some((row) => row.readable === 1) ||
+          (yield* ownerLevel(person.orgId, person.personId))
+        );
+      }),
+    ).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.map((found) =>
+        found.every((one) => one === undefined) ? undefined : found.some((one) => one === true),
+      ),
+      Effect.mapError(toPersistenceSqlError("KinChatService.pictureReadable")),
     );
   /** Whether the member may read the message: nothing from before they joined. */
   const readable = (member: KinChatMember, messageId: string, floorOf?: string) =>
@@ -2426,6 +2445,9 @@ const make = Effect.gen(function* () {
           Effect.mapError(toPersistenceSqlError("KinChatService.attachmentReadable")),
         );
         if (pictures.length > 0) return true;
+        // A picture's file and its image on the reply have one rule, whoever holds the URL.
+        const picture = yield* pictureReadable(caller, attachmentId);
+        if (picture !== undefined) return picture;
         const owner = yield* repo.attachmentChat(attachmentId);
         if (Option.isNone(owner)) return yield* docFileReadable(caller, attachmentId);
         const identity =

@@ -347,7 +347,7 @@ export const KIN_VISUAL_FONTS = [
   { family: "Mukta", weight: 700, file: "Mukta-Bold.ttf" },
 ] as const;
 /** In a page, the company's logo: its file where there is one, an empty picture where not. */
-export const KIN_BRAND_LOGO = "kin-brand:logo";
+const KIN_BRAND_LOGO = "kin-brand:logo";
 /** The company's brand as documents use it; each part absent falls back to the theme. */
 export interface KinVisualBrand {
   readonly primary: string | null;
