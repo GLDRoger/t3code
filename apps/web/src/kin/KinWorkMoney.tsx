@@ -233,6 +233,8 @@ function WaitingMoney(props: MoneyProps) {
 function MoneyScreen(props: MoneyProps) {
   const { names } = props.directory;
   const { state, refresh } = useKinMoneySummary(props, { enabled: true, use: "screen" });
+  const [allClients, setAllClients] = useState(false);
+  const every = useKinMoneySummary(props, { enabled: allClients, use: "allClients" });
   const agent = useKinAskAgent(props);
   const rates = useKinRates(props);
   const goals = useKinGoals(props, { enabled: true, money: true });
@@ -347,6 +349,11 @@ function MoneyScreen(props: MoneyProps) {
   }
   const summary = state.value;
   const view = kinMoneyView(summary, kinListsOf(props.lists));
+  const owing = allClients && every.state._tag === "ready" ? every.state.value.owed : summary.owed;
+  const clients =
+    owing === summary.owed
+      ? view.clients
+      : kinMoneyView({ ...summary, owed: owing }, kinListsOf(props.lists)).clients;
   if (view.empty) {
     const first = !scope.all ? null : agent !== null ? (
       <Button onClick={() => agent.ask(KIN_MONEY.askMessage)}>
@@ -394,7 +401,7 @@ function MoneyScreen(props: MoneyProps) {
       ...summary.spent.thisMonth.total,
       ...summary.receivedThisFinancialYear,
       ...summary.spentThisFinancialYear,
-      ...summary.owed.byClient.flatMap((client) => client.owed),
+      ...owing.byClient.flatMap((client) => client.owed),
     ],
     rates,
   );
@@ -432,7 +439,7 @@ function MoneyScreen(props: MoneyProps) {
               <p className="px-2 text-sm text-muted-foreground">{kinNothingOwed(scope)}</p>
             ) : (
               <ul className="flex flex-col">
-                {view.clients.map((client) => {
+                {clients.map((client) => {
                   const { open } = client;
                   return (
                     <li key={client.key}>
@@ -447,6 +454,20 @@ function MoneyScreen(props: MoneyProps) {
                     </li>
                   );
                 })}
+                {view.clientsMore === null ? null : (
+                  <li>
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      disabled={allClients && every.state._tag === "loading"}
+                      onClick={() => setAllClients(!allClients)}
+                    >
+                      {allClients && owing !== summary.owed
+                        ? KIN_MONEY.clientsFewer
+                        : view.clientsMore}
+                    </Button>
+                  </li>
+                )}
               </ul>
             )}
           </KinWorkSection>

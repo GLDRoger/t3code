@@ -60,6 +60,9 @@ export const KIN_MONEY = {
   suggestedNote: KIN_SUGGESTION_NOTE,
   /** Past the newest shown, the rest of one list's suggestions: "12 more in Invoices". */
   suggestedMore: (count: number, listName: string) => `${count} more in ${listName}`,
+  /** Past the clients a screen is sent, the rest, loaded on a tap. */
+  clientsMore: (count: number) => (count === 1 ? "1 more client" : `${count} more clients`),
+  clientsFewer: "Show fewer",
   lists: "Lists",
   clients: "Clients",
   none: {
@@ -151,6 +154,8 @@ export interface KinMoneyView {
   readonly owed: KinMoneyFigure;
   readonly overdue: KinMoneyFigure;
   readonly clients: ReadonlyArray<KinMoneyClientView>;
+  /** The owing clients past those sent, as one row; null with none, and from an older host. */
+  readonly clientsMore: string | null;
   /** "November 2026". */
   readonly monthLabel: string;
   readonly received: KinMoneyFigure;
@@ -279,6 +284,10 @@ export function kinMoneyView(
           : { party: { key: client.party.key, title: client.party.title } }),
       }),
     })),
+    clientsMore:
+      (summary.owed.byClientMore ?? 0) === 0
+        ? null
+        : KIN_MONEY.clientsMore(summary.owed.byClientMore ?? 0),
     monthLabel: kinMonthLabel(summary.thisMonth),
     received: {
       id: "received",

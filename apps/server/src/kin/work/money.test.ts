@@ -2447,6 +2447,45 @@ describe("the owner's taps", () => {
       assert.deepStrictEqual([loaded.name, loaded.categoryLabels?.tds], ["Key dates", "T DS"]);
     }).pipe(Effect.provide(layer)),
   );
+
+  it.effect("send a screen the first 20 owing clients and a count of the rest", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "invoices" });
+      const asked = yield* turn(5, "The books");
+      const names = Array.from({ length: 22 }, (_, i) => `Invented Client ${i + 1}`);
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: names.map((title) => ({ list: "clients", title })),
+      });
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: names.map((client, i) => ({
+          list: "invoices",
+          title: `Invented invoice ${i + 1}`,
+          client,
+          amount: "10,000",
+          date: "2026-10-01",
+          due: `2026-10-${String(i + 1).padStart(2, "0")}`,
+        })),
+      });
+      const screen = yield* OwnerMoney.money(people, { orgId });
+      const every = yield* OwnerMoney.money(people, { orgId, allClients: true });
+      assert.deepStrictEqual<unknown>(screen.owed, {
+        ...every.owed,
+        byClient: every.owed.byClient.slice(0, 20),
+        byClientMore: 2,
+      });
+      assert.strictEqual(every.owed.byClient.length, 22);
+      assert.notProperty(every.owed, "byClientMore");
+      // A client's own page is sent its line, wherever it falls in the order.
+      const last = every.owed.byClient.at(-1)!.party!;
+      assert.deepStrictEqual(
+        (yield* OwnerMoney.money(people, { orgId, party: last.key })).owed.byClient,
+        [every.owed.byClient.at(-1)],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
 });
 
 describe("who keeps a suggestion", () => {

@@ -186,21 +186,15 @@ const keyAsClient = Layer.mergeAll(
   Layer.effect(
     McpHttpServer.McpClientAuthenticator,
     Effect.gen(function* () {
-      const kin = yield* KinServer;
-      const sessions = yield* Effect.serviceOption(SessionStore);
       const environmentId = yield* (yield* ServerEnvironment).getEnvironmentId;
       return McpHttpServer.McpClientAuthenticator.of({
-        authenticate: Effect.fn("KinTasksKey.authenticate")(function* (request) {
-          if (Option.isNone(kin.services) || Option.isNone(sessions)) return undefined;
-          const holder = yield* admit(parseBearerToken(request) ?? "").pipe(
-            Effect.provideContext(kin.services.value),
-            Effect.provideService(SessionStore, sessions.value),
-            Effect.orElseSucceed(() => Option.none<TasksKeyHolder>()),
-          );
-          if (Option.isNone(holder)) return undefined;
+        // The holder `auth` admitted for this request; with none in front, nobody is.
+        authenticate: Effect.fn("KinTasksKey.authenticate")(function* () {
+          const caller = yield* Effect.serviceOption(TasksKeyCaller);
+          if (Option.isNone(caller)) return undefined;
           return {
             environmentId,
-            requestNamespace: `kin-tasks:${holder.value.sessionId}`,
+            requestNamespace: `kin-tasks:${caller.value.holder.sessionId}`,
             thread: undefined,
             client: undefined,
             capabilities: new Set(),

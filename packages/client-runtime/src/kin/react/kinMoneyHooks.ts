@@ -139,7 +139,7 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
     const use = options.use ?? "line";
     const streamed = useKinMoneyLive(target, "summary");
     const read = kinReads.chosen(
-      use === "rows" ? null : streamed,
+      use === "rows" || use === "allClients" ? null : streamed,
       kinReads.money(target, use, options.party),
       options.enabled,
     );
