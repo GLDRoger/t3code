@@ -2,6 +2,15 @@ import type { KinSettingsPage } from "@t3tools/client-runtime/kin/kinNavigation"
 
 import { KIN_APPROVER_PHONES_TITLE } from "@t3tools/client-runtime/kin/kinApprovalPresentation";
 import { msg } from "gt-react";
+import {
+  Building2Icon,
+  CalendarCheckIcon,
+  CircleUserIcon,
+  FingerprintIcon,
+  PlugIcon,
+  TrendingUpIcon,
+} from "lucide-react";
+import type { ComponentType } from "react";
 
 import type {
   SettingsSearchItem,
@@ -24,6 +33,17 @@ export const KIN_SETTINGS_SECTION_LABELS: Readonly<Record<KinSettingsPath, strin
   "/settings/deals": msg("Deals"),
   "/settings/kin-connections": msg("Connections"),
   "/settings/kin-profile": msg("Profile"),
+};
+
+export const KIN_SETTINGS_SECTION_ICONS: Readonly<
+  Record<KinSettingsPath, ComponentType<{ className?: string }>>
+> = {
+  "/settings/approvals": FingerprintIcon,
+  "/settings/company": Building2Icon,
+  "/settings/check-ins": CalendarCheckIcon,
+  "/settings/deals": TrendingUpIcon,
+  "/settings/kin-connections": PlugIcon,
+  "/settings/kin-profile": CircleUserIcon,
 };
 
 export const KIN_SETTINGS_CATEGORY_SCOPES: Readonly<
