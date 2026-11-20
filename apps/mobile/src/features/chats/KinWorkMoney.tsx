@@ -126,6 +126,7 @@ function AreaFrame(props: {
           {
             id: "receipt",
             title: KIN_WORK_HOME.addReceipt,
+            subtitle: "Numbered, with its PDF",
             icon: "doc.text" as const,
             onPress: () => navigation.navigate("KinReceiptNew", base),
           },
@@ -136,6 +137,7 @@ function AreaFrame(props: {
           {
             id: "budget",
             title: KIN_BUDGETS.add,
+            subtitle: "Kin says when it's near",
             icon: "gauge" as const,
             onPress: () => navigation.navigate("KinBudget", base),
           },
@@ -146,6 +148,7 @@ function AreaFrame(props: {
           {
             id: "goal",
             title: KIN_GOALS.add,
+            subtitle: "Kin follows its progress",
             icon: "flag" as const,
             onPress: () => navigation.navigate("KinGoalForm", base),
           },

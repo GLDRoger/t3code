@@ -1332,17 +1332,17 @@ function KinIntro(props: {
               title={`Sends this to ${props.agentName}`}
               onClick={() => props.onSend(prompt.text)}
             >
-              {prompt.text}
+              {prompt.label}
             </Button>
           ) : (
             <Button
               key={prompt.text}
               size="sm"
               variant="outline"
-              aria-label={`${prompt.text.trimEnd()}, finish it yourself`}
+              title="Starts the message for you to finish"
               onClick={() => props.onStart(prompt.text)}
             >
-              {prompt.text.trimEnd()}…
+              {prompt.label}
             </Button>
           ),
         )}

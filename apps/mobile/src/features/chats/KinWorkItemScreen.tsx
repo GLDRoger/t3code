@@ -473,7 +473,6 @@ function KinWorkItemBody(props: ItemTarget) {
     give: canGive,
     step: step.acts,
   });
-  const repeatShown = view.repeat?.text ?? KIN_WORK_REPEAT.never;
   const dated = view.due !== null;
   const repeats = act !== null && view.can.repeat === true && !view.closed;
   const repeatMenu: ReadonlyArray<AppBarMenuItem> = !repeats
@@ -481,7 +480,7 @@ function KinWorkItemBody(props: ItemTarget) {
     : [
         {
           id: "repeat",
-          title: `${KIN_WORK_REPEAT.label}: ${repeatShown}`,
+          title: KIN_WORK_REPEAT.menu(view.repeat?.text ?? null),
           items: [
             ...(dated
               ? []

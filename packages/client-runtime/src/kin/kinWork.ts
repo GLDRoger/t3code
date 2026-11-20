@@ -637,6 +637,9 @@ export const kinRepeatText = (rule: KinRepeatRule): string =>
 export const KIN_WORK_REPEAT = {
   label: "Repeats",
   never: "Doesn't repeat",
+  /** Its menu item, on one line: "Make it repeat", or how it repeats now. */
+  menu: (text: string | null) =>
+    text === null ? "Make it repeat" : `Repeats ${text.toLowerCase()}`,
   stop: "Stop repeating",
   needsDue: "Give it a due date first: the next one is made from it.",
   /** Said once, beside the row: a repeat makes the next task, never the money in it. */

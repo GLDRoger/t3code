@@ -54,7 +54,7 @@ export function KinIntro(props: {
                   key={prompt.text}
                   tone="secondary"
                   size="compact"
-                  label={prompt.text}
+                  label={prompt.label}
                   accessibilityHint={`Sends this to ${props.agentName}`}
                   onPress={() => props.onSend(prompt.text)}
                 />
@@ -63,8 +63,7 @@ export function KinIntro(props: {
                   key={prompt.text}
                   tone="secondary"
                   size="compact"
-                  label={`${prompt.text.trimEnd()}…`}
-                  accessibilityLabel={prompt.text.trimEnd()}
+                  label={prompt.label}
                   accessibilityHint="Starts the message for you to finish"
                   onPress={() => props.onStart(prompt.text)}
                 />

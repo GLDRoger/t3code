@@ -699,28 +699,31 @@ function AgentInHand(props: {
         </p>
       ) : (
         <ul className="flex flex-col gap-2">
-          {lead.tracking.map((item, index) => (
-            // Titles can repeat and items carry no id; the host's order is stable.
-            // oxlint-disable-next-line react/no-array-index-key
-            <li key={index} className="flex flex-col gap-0.5">
-              <span className="text-xs text-muted-foreground">
-                {kinLeadTrackingDetail(item, undefined, undefined, names)}
-              </span>
-              {item.key === undefined ? (
-                <span className="text-sm text-foreground">{item.title}</span>
-              ) : (
-                <Link
-                  to={KIN_PLACE_PATH.tasks}
-                  params={{ environmentId, orgId }}
-                  search={{ task: item.key }}
-                  onClick={props.onClose}
-                  className="text-sm text-foreground underline-offset-4 hover:underline"
-                >
-                  {item.title}
-                </Link>
-              )}
-            </li>
-          ))}
+          {lead.tracking.map((item, index) => {
+            const detail = kinLeadTrackingDetail(item, undefined, undefined, names);
+            return (
+              // Titles can repeat and items carry no id; the host's order is stable.
+              // oxlint-disable-next-line react/no-array-index-key
+              <li key={index} className="flex flex-col gap-0.5">
+                {detail === null ? null : (
+                  <span className="text-xs text-muted-foreground">{detail}</span>
+                )}
+                {item.key === undefined ? (
+                  <span className="text-sm text-foreground">{item.title}</span>
+                ) : (
+                  <Link
+                    to={KIN_PLACE_PATH.tasks}
+                    params={{ environmentId, orgId }}
+                    search={{ task: item.key }}
+                    onClick={props.onClose}
+                    className="text-sm text-foreground underline-offset-4 hover:underline"
+                  >
+                    {item.title}
+                  </Link>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
     </KinAgentSection>

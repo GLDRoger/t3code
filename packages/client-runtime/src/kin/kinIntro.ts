@@ -1,11 +1,18 @@
 import type { KinMessage } from "@t3tools/contracts";
 
-/** Sample asks on the first-run intro. `send` posts as is; the rest open in the composer. */
-export const KIN_INTRO_PROMPTS: ReadonlyArray<{ readonly text: string; readonly send: boolean }> = [
+/**
+ * Sample asks on the first-run intro, each read whole on its chip (`label`). `send` posts `text`
+ * as is; the rest open `text` in the composer for the owner to finish.
+ */
+export const KIN_INTRO_PROMPTS: ReadonlyArray<{
+  readonly label: string;
+  readonly text: string;
+  readonly send: boolean;
+}> = [
   // Every lead gets these, whatever its domain, so none of them names engineering work.
-  { text: "What can you do?", send: true },
-  { text: "What are you working on?", send: true },
-  { text: "Remind me tomorrow at 9 to ", send: false },
+  { label: "What can you do?", text: "What can you do?", send: true },
+  { label: "What are you working on?", text: "What are you working on?", send: true },
+  { label: "Set a reminder", text: "Remind me tomorrow at 9 to ", send: false },
 ];
 
 /** On the intro while a company made new has no country (`countryNeeded`): opens Company details. */
