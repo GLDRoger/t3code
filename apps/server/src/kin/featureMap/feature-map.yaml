@@ -1207,9 +1207,9 @@ features:
     roles: { owner: both, co_owner: both, lead: both, member: both }
     note: >-
       A person makes a key for their own coding agent (Claude Code, Codex, Cursor) to read the
-      tasks they hold, comment and set state through `/kin/you/mcp`, and nothing else. The key and
-      setup lines show once; at most three live keys, 30 days each. Settings → Profile on the web
-      shows the same section.
+      tasks they hold, comment and set state through `/kin/you/mcp`, and nothing else. The key shows
+      once; the address and the setup lines, with the key left to fill, stay on their own section.
+      At most three live keys, 30 days each. Settings → Profile on the web shows the same section.
     proof:
       - packages/client-runtime/src/kin/kinTasksKeys.test.ts
       - apps/web/src/kin/KinTasksKeys.browser.test.tsx
