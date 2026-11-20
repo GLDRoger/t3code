@@ -1,10 +1,13 @@
 import {
+  AuthKinChatScope,
   KIN_DEVICE_LIMIT,
   KIN_DEVICE_LINK_TTL_MINUTES,
   KinChatError,
   formatKinWhen,
+  type AuthClientSession,
   type KinPersonDevice,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 
 import { kinFailureText } from "./kinAnswers.ts";
@@ -28,7 +31,70 @@ export const KIN_DEVICES_COPY = {
   limit: `You have ${KIN_DEVICE_LIMIT} devices linked, the most Kin allows. Remove one you no longer use, then link the new one.`,
   remove: "Remove",
   ownerFooter: "Removing a device signs it out right away.",
+  ownFooter:
+    "Removing a device signs it out right away. Link a new one from Settings on your Kin's computer.",
+  thisDevice: "This device",
+  connected: "Connected now",
 } as const;
+
+/**
+ * The owner's own phones and browsers: this Kin's pairings, never a teammate's chat-only session
+ * (theirs are under Team). This device first, then the most recently connected.
+ */
+export function kinOwnDevices(
+  sessions: ReadonlyArray<AuthClientSession>,
+): ReadonlyArray<AuthClientSession> {
+  const chatOnly = (session: AuthClientSession) => {
+    const scopes = session.permissions ?? session.scopes;
+    return scopes.length > 0 && scopes.every((scope) => scope === AuthKinChatScope);
+  };
+  const recent = (session: AuthClientSession) =>
+    DateTime.toEpochMillis(session.lastConnectedAt ?? session.issuedAt);
+  return sessions
+    .filter((session) => !chatOnly(session))
+    .sort(
+      (left, right) => Number(right.current) - Number(left.current) || recent(right) - recent(left),
+    );
+}
+
+export const kinOwnDeviceIsPhone = (session: AuthClientSession) =>
+  session.client.deviceType === "mobile";
+
+export function kinOwnDeviceLabel(session: AuthClientSession): string {
+  const { client } = session;
+  if (client.label !== undefined) return client.label;
+  const kind =
+    client.deviceType === "mobile"
+      ? "Phone"
+      : client.deviceType === "tablet"
+        ? "Tablet"
+        : "Computer";
+  return client.browser === undefined ? kind : `${client.browser} on ${client.os ?? kind}`;
+}
+
+// @effect-diagnostics globalDate:off - the shared clock labels take a Date.
+/** "This device · Connected now", "Last connected 9:41". */
+export function kinOwnDeviceLine(session: AuthClientSession, now: Date): string {
+  const when = session.connected
+    ? KIN_DEVICES_COPY.connected
+    : session.lastConnectedAt === null
+      ? `Linked ${formatKinTime(new Date(DateTime.toEpochMillis(session.issuedAt)), now)}`
+      : `Last connected ${formatKinTime(new Date(DateTime.toEpochMillis(session.lastConnectedAt)), now)}`;
+  return session.current ? `${KIN_DEVICES_COPY.thisDevice} · ${when}` : when;
+}
+
+/** The confirmation before one of the owner's own devices is signed out. */
+export function kinRemoveOwnDeviceCopy(session: AuthClientSession): {
+  readonly title: string;
+  readonly detail: string;
+} {
+  return {
+    title: `Remove ${kinOwnDeviceLabel(session)}?`,
+    detail: session.current
+      ? "It's signed out right away. This is the device you're using, so you'll be signed out here and need to pair it again."
+      : "It's signed out right away. Pairing it again needs a new link from your Kin's computer.",
+  };
+}
 
 /** Signed in now: not removed and not run out. A device with no session left is gone too. */
 export function kinActiveDevices(

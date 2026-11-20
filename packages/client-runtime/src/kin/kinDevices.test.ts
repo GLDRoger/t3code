@@ -1,5 +1,11 @@
 // @effect-diagnostics globalDate:off - Fixtures build ISO times relative to a fixed clock.
-import { AuthSessionId, KinInviteId, type KinPersonDevice } from "@t3tools/contracts";
+import {
+  AuthSessionId,
+  KinInviteId,
+  type AuthClientSession,
+  type KinPersonDevice,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -7,6 +13,7 @@ import {
   kinDeviceJustLinked,
   kinDeviceLinkLeft,
   kinDevicesLinkedFrom,
+  kinOwnDevices,
   kinRemoveDeviceCopy,
 } from "./kinDevices.ts";
 
@@ -19,6 +26,37 @@ const device = (id: string, change: Partial<KinPersonDevice> = {}): KinPersonDev
   expiresAt: "2026-12-01T09:00:00.000Z",
   revokedAt: null,
   ...change,
+});
+
+describe("kinOwnDevices", () => {
+  it("lists the owner's pairings, this one first, and never a teammate's chat-only session", () => {
+    const session = (
+      id: string,
+      scopes: AuthClientSession["scopes"],
+      change: Partial<AuthClientSession> = {},
+    ): AuthClientSession => ({
+      sessionId: AuthSessionId.make(id),
+      subject: id,
+      scopes,
+      method: "browser-session-cookie",
+      client: { label: id, deviceType: "mobile" },
+      issuedAt: DateTime.makeUnsafe("2026-11-01T09:00:00.000Z"),
+      expiresAt: DateTime.makeUnsafe("2026-12-01T09:00:00.000Z"),
+      lastConnectedAt: null,
+      connected: false,
+      current: false,
+      ...change,
+    });
+    const sessions = [
+      session("laptop", ["orchestration:read"], {
+        lastConnectedAt: DateTime.makeUnsafe("2026-11-17T09:00:00.000Z"),
+      }),
+      session("meera-phone", ["kin:chat"]),
+      session("meera-phone-new", [], { permissions: ["kin:chat"] }),
+      session("this-phone", ["orchestration:read"], { current: true }),
+    ];
+    expect(kinOwnDevices(sessions).map((one) => one.sessionId)).toEqual(["this-phone", "laptop"]);
+  });
 });
 
 describe("kinActiveDevices", () => {
