@@ -20,4 +20,6 @@ it("finds Kin's own Profile settings only where a host runs Kin", () => {
   expect(first("working hours", true)?.id).toBe("kin-working-hours");
   expect(first("away", true)?.id).toBe("kin-away");
   expect(first("quiet", false)?.id).not.toBe("kin-quiet-hours");
+  expect(first("legal name", true)?.id).toBe("company-details");
+  expect(first("legal name", false)?.id).not.toBe("company-details");
 });

@@ -17,6 +17,9 @@ import * as Schema from "effect/Schema";
 import { kinSentences } from "./kinScreenState.ts";
 import { kinCount } from "./kinCount.ts";
 
+/** The title of the list of phones that may approve, wherever Kin shows or finds it. */
+export const KIN_APPROVER_PHONES_TITLE = "Phones that can approve";
+
 /** What a chat message's approval widget says: which action, and where it stood when drawn. */
 export interface KinApprovalWidgetView {
   readonly actionId: KinActionId;

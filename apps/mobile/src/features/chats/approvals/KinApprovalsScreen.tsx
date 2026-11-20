@@ -1,3 +1,4 @@
+import { KIN_APPROVER_PHONES_TITLE } from "@t3tools/client-runtime/kin/kinApprovalPresentation";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -230,7 +231,7 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
         </Section>
       )}
 
-      <Section title="Phones that can approve">
+      <Section title={KIN_APPROVER_PHONES_TITLE}>
         {status.own === null ? null : problemLine}
         {status.keys.length === 0 ? (
           <Text textRole="footnote" className="text-foreground-secondary">
