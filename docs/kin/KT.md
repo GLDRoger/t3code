@@ -71,7 +71,7 @@ Memory is plain Markdown files with front matter in a private git repo per organ
 
 ## Dreams
 
-Once a night per organization, `DreamRunner` collects the day's originals (journal, chat messages, finished tasks, GitHub events) and runs an isolated lead session in dream mode on a scratch checkout. It merges duplicates, supersedes stale items and lists contradictions, which a second turn on the same model turns into a resolution or a question for the owner. Code checks every change (schema, sources, no deletions, secret scan) before the result goes to a `dream/<date>` branch for the owner to approve. The morning routine uses it for the brief. See the [triggers spec, "Dreaming pipeline"](specs/triggers.md#dreaming-pipeline-one-per-org-per-night).
+Once a night per organization, `DreamRunner` collects the day's originals (journal, chat messages, finished tasks, GitHub events) and runs an isolated lead session in dream mode on a scratch checkout. It merges duplicates, supersedes stale items and lists contradictions, which a second turn on the same model turns into a resolution or a question for the owner. Code checks every change (schema, sources, no deletions, secret scan) before the result goes to a `dream/<date>` branch. Nothing merges that branch yet: no card or PR offers it, and the brief does not read it. The next night's material starts where the last succeeded dream's ended. See the [triggers spec, "Dreaming pipeline"](specs/triggers.md#dreaming-pipeline-one-per-org-per-night).
 
 ## Triggers
 
