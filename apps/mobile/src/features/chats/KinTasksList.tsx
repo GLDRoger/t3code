@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation } from "@react-navigation/native";
 import { kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_MORE_FAILED, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_SEARCH } from "@t3tools/client-runtime/kin/kinDocs";
 import {
   KIN_TASK_GROUP_BY,
@@ -109,7 +109,7 @@ import {
 /** Task lists kept while their screen is away, so coming back reads nothing the stream brought. */
 const kinTaskLists = createKinListKeeper<KinWorkList, KinWorkListState>(Date.now);
 
-/** What the Tasks search finds besides tasks, which the list itself already narrows to. */
+/** What the Tasks search finds besides tasks, which the list itself already narrows to; deals are asked beside them. */
 const ELSEWHERE = ["clients", "contacts", "projects", "docs"] as const;
 
 /** Tasks, a screenful at a time: grouped by whose move, by one of its fields, or one project's. */
@@ -271,7 +271,7 @@ export function KinTasksList(
     : null;
   // The whole company's tasks also find clients, projects and docs, and say what needs you.
   const everywhere = within === undefined;
-  const { state: found, search } = useKinSearch(props, ELSEWHERE);
+  const { state: found, search } = useKinSearch(props, ELSEWHERE, true);
   const steps = useKinTaskSteps({ environmentId, orgId });
   const base = { environmentId: String(environmentId), orgId: String(orgId) };
   const filterMenu = kinWorkFilterMenu({
@@ -406,7 +406,7 @@ export function KinTasksList(
                     cause={listState.failed}
                     onRetry={list.refresh}
                   />
-                ) : (
+                ) : searching && (found.hits?.length ?? 0) > 0 ? null : (
                   <EmptyState
                     variant="plain"
                     title={nothing.title}
@@ -424,7 +424,7 @@ export function KinTasksList(
               {footer === null ? null : (
                 <View className="items-start gap-2 px-5 py-4">
                   <Text textRole="footnote" className="text-foreground-muted">
-                    {listState.moreFailed ? "Couldn't load more." : footer}
+                    {listState.moreFailed ? KIN_MORE_FAILED : footer}
                   </Text>
                   <Button
                     tone="secondary"

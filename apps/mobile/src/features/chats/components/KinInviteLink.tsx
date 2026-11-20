@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  KIN_TEAM_COPY,
   KIN_INVITE_PHONE_NOTE,
   kinInviteLinkCopy,
   kinShareLink,
@@ -56,7 +57,7 @@ export function KinInviteLink(props: {
           <Text
             textRole="body"
             selectable
-            accessibilityLabel={`Invite link for ${invite.displayName}`}
+            accessibilityLabel={KIN_TEAM_COPY.inviteLinkFor(invite.displayName)}
             className="text-foreground"
           >
             {link}

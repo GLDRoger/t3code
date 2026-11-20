@@ -67,6 +67,19 @@ const OUTSIDE_EVERY_MS = 3 * 60_000;
 const READ_CAP = 50;
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 const encodeScope = Schema.encodeEffect(Schema.fromJsonString(KinPulseFact.fields.scope));
+const encodeTickRows = Schema.encodeEffect(
+  Schema.fromJsonString(
+    Schema.Array(
+      Schema.Struct({
+        key: Schema.String,
+        sense: Schema.String,
+        record: Schema.NullOr(Schema.String),
+        scope: Schema.String,
+      }),
+    ),
+  ),
+);
+const encodeKeys = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
 const { handled: _handled, ...sensedFields } = KinPulseFact.fields;
 const encodeSensed = Schema.encodeEffect(
   Schema.fromJsonString(Schema.Array(Schema.Struct(sensedFields))),
@@ -344,9 +357,11 @@ export const read = Effect.fn("KinPulse.read")(function* (input: {
   /** The person reading, for "by you" and "on your word". */
   readonly personId?: string | undefined;
   readonly limit?: number | undefined;
+  /** What a tick already sensed (`lastTick`), instead of sensing again. */
+  readonly sensed?: ReadonlyArray<SensedFact> | undefined;
 }) {
   const { orgId, at, scope } = input;
-  const sensed = yield* sense(orgId, at);
+  const sensed = input.sensed ?? (yield* sense(orgId, at));
   const holds = yield* liveHolds(orgId, at);
   // Before a teammate's view drops the scope it can't name: a hold on that client still counts.
   const asides = new Map(
@@ -405,6 +420,15 @@ const shortHash = (text: string) =>
 
 /** What each org's last tick sensed, hashed: the server's own memory, gone on restart. */
 const lastSensed = new Map<KinOrgId, string>();
+const lastFacts = new Map<
+  KinOrgId,
+  { readonly at: number; readonly facts: ReadonlyArray<SensedFact> }
+>();
+/**
+ * What the org's last tick sensed and when, for screens it moves; none once a person's handling
+ * moved Needs attention since, so their next read senses afresh.
+ */
+export const lastTick = (orgId: KinOrgId) => lastFacts.get(orgId);
 /** Facts that can't wait for the morning: they wake their agent whatever the hour. */
 const URGENT_SENSES = new Set<KinPulseFact["sense"]>(["client_waiting_on_us"]);
 
@@ -552,39 +576,48 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
   const refreshes = yield* KinRefreshObserver;
-  const ctx = yield* context(orgId, at);
-  const facts = yield* senseIn(ctx);
+  // Sensed from committed rows before the transaction, on a reader: off the writer it needs.
+  const ctx = yield* context(orgId, at).pipe(NodeSqliteClient.readOnly);
+  const facts = yield* senseIn(ctx).pipe(NodeSqliteClient.readOnly);
   // Owner-level screens read Needs attention again only on this topic, so any change to what was
   // sensed moves it: a fact's words or progress, not only a fact coming or going.
   const sensedNow = shortHash(yield* encodeSensed(facts));
   const sensedMoved = sensedNow !== lastSensed.get(orgId);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      let moved = 0;
-      for (const fact of facts) {
-        const inserted = yield* sql`INSERT INTO kin_pulse_facts (org_id, fact_key, sense,
-            subject_record_id, scope_json, first_seen_at, last_seen_at)
-          VALUES (${orgId}, ${fact.key}, ${fact.sense}, ${fact.subject.recordId ?? null},
-            ${yield* encodeScope(fact.scope)}, ${at}, ${at})
-          ON CONFLICT (org_id, fact_key) DO NOTHING RETURNING fact_key`;
-        if (inserted.length > 0) {
-          moved += 1;
-          continue;
-        }
-        const reopened = yield* sql`UPDATE kin_pulse_facts SET cleared_at = NULL
-          WHERE org_id = ${orgId} AND fact_key = ${fact.key} AND cleared_at IS NOT NULL
-          RETURNING fact_key`;
-        moved += reopened.length;
-        // Back after it stopped being true: its holder and the check-ins hear of it again.
-        if (reopened.length > 0)
-          yield* sql`DELETE FROM kin_pulse_told WHERE org_id = ${orgId} AND fact_key = ${fact.key}`;
-        yield* sql`UPDATE kin_pulse_facts SET last_seen_at = ${at}
-          WHERE org_id = ${orgId} AND fact_key = ${fact.key}`;
-      }
+      // Set-wise over one JSON array: a tick can sense thousands of facts.
+      const rows = yield* encodeTickRows(
+        yield* Effect.forEach(facts, (fact) =>
+          encodeScope(fact.scope).pipe(
+            Effect.map((scope) => ({
+              key: fact.key,
+              sense: fact.sense,
+              record: fact.subject.recordId ?? null,
+              scope,
+            })),
+          ),
+        ),
+      );
+      const sensedKeys = sql`SELECT json_extract(value, '$.key') FROM json_each(${rows})`;
+      const inserted = yield* sql`INSERT INTO kin_pulse_facts (org_id, fact_key, sense,
+          subject_record_id, scope_json, first_seen_at, last_seen_at)
+        SELECT ${orgId}, json_extract(value, '$.key'), json_extract(value, '$.sense'),
+          json_extract(value, '$.record'), json_extract(value, '$.scope'), ${at}, ${at}
+        FROM json_each(${rows}) WHERE true
+        ON CONFLICT (org_id, fact_key) DO NOTHING RETURNING fact_key`;
+      const reopened = yield* sql<{ key: string }>`UPDATE kin_pulse_facts SET cleared_at = NULL
+        WHERE org_id = ${orgId} AND cleared_at IS NOT NULL AND fact_key IN (${sensedKeys})
+        RETURNING fact_key AS key`;
+      // Back after it stopped being true: its holder and the check-ins hear of it again.
+      if (reopened.length > 0)
+        yield* sql`DELETE FROM kin_pulse_told WHERE org_id = ${orgId}
+          AND fact_key IN (SELECT value FROM json_each(${yield* encodeKeys(reopened.map((row) => row.key))}))`;
+      yield* sql`UPDATE kin_pulse_facts SET last_seen_at = ${at}
+        WHERE org_id = ${orgId} AND fact_key IN (${sensedKeys})`;
       const cleared = yield* sql`UPDATE kin_pulse_facts SET cleared_at = ${at}
         WHERE org_id = ${orgId} AND cleared_at IS NULL AND last_seen_at < ${at}
         RETURNING fact_key`;
-      moved += cleared.length;
+      const moved = inserted.length + reopened.length + cleared.length;
 
       const stored = yield* storedRows(
         orgId,
@@ -638,7 +671,12 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
       });
       const told = yield* tellHolders(ctx, facts, stored, holds);
       if (moved > 0 || sensedMoved) yield* refreshes.touch(orgId, "pulse");
-      yield* sql.afterCommit(Effect.sync(() => lastSensed.set(orgId, sensedNow)));
+      yield* sql.afterCommit(
+        Effect.sync(() => {
+          lastSensed.set(orgId, sensedNow);
+          lastFacts.set(orgId, { at, facts });
+        }),
+      );
       return { facts: facts.length, cleared: cleared.length, woken, told, pages };
     }),
   );
@@ -700,6 +738,7 @@ const holdOn = Effect.fn("KinPulse.holdOn")(function* (input: {
           forPersonId: holding.forPersonId,
           by: input.by,
         });
+  lastFacts.delete(input.orgId);
   yield* (yield* KinRefreshObserver).touch(input.orgId, "pulse");
   return input.action === "set" ? hold : null;
 });
@@ -809,6 +848,7 @@ export const handle = Effect.fn("KinPulse.handle")(function* (input: {
             input.viewer._tag === "owner" ? [""] : input.viewer.people,
           )})`;
       }
+      lastFacts.delete(orgId);
       yield* (yield* KinRefreshObserver).touch(orgId, "pulse");
     }),
   );

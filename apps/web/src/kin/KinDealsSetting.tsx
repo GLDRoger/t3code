@@ -1,4 +1,5 @@
 import {
+  KIN_DEALS,
   KIN_DEAL_QUIET,
   KIN_DEAL_STAGES,
   kinDealQuietProblem,
@@ -57,7 +58,7 @@ export function KinDealStagesSettings(props: KinWorkTarget) {
   if (state._tag !== "ready")
     return (
       <KinLoadFailed
-        what="Stages didn't load"
+        what={KIN_DEALS.stagesFailed}
         cause={state._tag === "failed" ? state.cause : null}
         onRetry={refresh}
       />

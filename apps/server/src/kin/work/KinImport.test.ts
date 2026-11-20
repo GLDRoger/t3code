@@ -24,6 +24,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { newCompanyProfileJson, readProfile } from "./companyProfile.ts";
 import { insertComment } from "./recordComments.ts";
+import { IMPORT_BUSY } from "./importUndo.ts";
 import * as KinImport from "./KinImport.ts";
 import * as KinRecords from "./KinRecords.ts";
 
@@ -1058,17 +1059,23 @@ describe("KinImport", () => {
           ]),
           [["apply", ownerId, "tasks.jsonl", 199, 250]],
         );
-        const busy = KinImport.IMPORT_BUSY;
-        assert.strictEqual(
-          (yield* imports.apply(orgId, ownerId, whole).pipe(Effect.flip)).message,
-          busy,
+        // Refused by this host, and by another on the same database, as the command line is.
+        const elsewhere = Context.get(
+          yield* Layer.build(Layer.fresh(KinImport.layer)),
+          KinImport.KinImport,
         );
-        assert.strictEqual(
-          (yield* imports
-            .undo(orgId, ownerId, "oldbooks", { apply: true, includeChanged: false })
-            .pipe(Effect.flip)).message,
-          busy,
-        );
+        for (const engine of [imports, elsewhere]) {
+          assert.strictEqual(
+            (yield* engine.apply(orgId, ownerId, whole).pipe(Effect.flip)).message,
+            IMPORT_BUSY,
+          );
+          assert.strictEqual(
+            (yield* engine
+              .undo(orgId, ownerId, "oldbooks", { apply: true, includeChanged: false })
+              .pipe(Effect.flip)).message,
+            IMPORT_BUSY,
+          );
+        }
         // The caller goes, as a dropped connection does; the run goes on to its end.
         yield* Fiber.interrupt(caller);
         yield* Deferred.succeed(resume, undefined);

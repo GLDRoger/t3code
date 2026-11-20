@@ -29,6 +29,7 @@ import {
   KinChatId,
   KinKeyThumbprint,
   KinMemberId,
+  type KinChatListEvent,
   KinMessageId,
   KinMessagesSendInput,
   KinOrgId,
@@ -54,6 +55,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Tracer from "effect/Tracer";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { KinKeyNotices } from "../approvals/ExecutionNotices.ts";
@@ -2372,6 +2374,125 @@ describe("KinChatService", () => {
         const row = list.chats.find((candidate) => candidate.chatId === chat.chatId);
         assert.strictEqual(row?.lastMessage?.messageId, hello.messageId);
       }).pipe(Effect.provide(layer)),
+  );
+  it.effect(
+    "sends a page's line for its body to a list that reads previews, whole while an item waits on it",
+    () =>
+      Effect.gen(function* () {
+        const { service, person, agent, chat } = yield* seed();
+        const body = `## Needs you\n- Approve the venue deposit\n\n## Money\n${"- An invented invoice, paid in full.\n".repeat(20)}`;
+        const page = yield* service.notice({
+          audience: "chat",
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          messageId: KinMessageId.make("page"),
+          body,
+        });
+        const rowOf = (event: KinChatListEvent) =>
+          event._tag === "snapshot"
+            ? event.chats.find((row) => row.chatId === chat.chatId)
+            : event._tag === "chat"
+              ? event.chat
+              : undefined;
+        const whole = rowOf(
+          Option.getOrThrow(yield* Stream.runHead(service.subscribeChats([person], {}))),
+        );
+        assert.strictEqual(whole?.lastMessage?.body, body);
+        assert.isUndefined(whole?.lastPreview);
+        const updates = yield* Stream.toQueue(
+          service.subscribeChats([person], { acceptPreview: true }),
+          { capacity: "unbounded" },
+        );
+        const short = rowOf(yield* Queue.take(updates));
+        assert.deepStrictEqual(short?.lastPreview, {
+          gist: "Approve the venue deposit",
+          brief: false,
+        });
+        assert.strictEqual(short?.lastMessage?.body, body.slice(0, 280));
+        // The waiting row shows the message's own words, so it comes whole again.
+        yield* service.addWaiting(agent, {
+          chatId: chat.chatId,
+          personId: person.personId,
+          messageId: page.message.messageId,
+          widgetId: null,
+          reason: "question",
+        });
+        assert.strictEqual((yield* Queue.take(updates))._tag, "waiting");
+        assert.deepStrictEqual(rowOf(yield* Queue.take(updates)), whole);
+      }).pipe(Effect.provide(layer)),
+  );
+  it.effect("builds the chat list in a fixed number of statements, not a few per chat", () =>
+    Effect.gen(function* () {
+      const { repo, service, person } = yield* seed();
+      const statements: Array<string> = [];
+      const tracer = Tracer.make({
+        span(options) {
+          const span = new Tracer.NativeSpan(options);
+          const end = span.end.bind(span);
+          span.end = (endTime, exit) => {
+            end(endTime, exit);
+            const query = span.attributes.get("db.query.text");
+            if (typeof query === "string") statements.push(query);
+          };
+          return span;
+        },
+      });
+      const listed = Effect.fn("test.listed")(function* () {
+        statements.length = 0;
+        const list = Option.getOrThrow(
+          yield* Stream.runHead(service.subscribeChats([person], {})).pipe(
+            Effect.withTracer(tracer),
+          ),
+        );
+        if (list._tag !== "snapshot") return assert.fail("Expected snapshot");
+        return { list, count: statements.length };
+      });
+      const addGroups = Effect.fn("test.addGroups")(function* (from: number, to: number) {
+        for (let index = from; index < to; index += 1) {
+          const chatId = KinChatId.make(`group-${index}`);
+          yield* repo.createChat({
+            orgId: person.orgId,
+            chatId,
+            kind: "project_group",
+            title: `Invented group ${index}`,
+            teamId: null,
+            directKey: null,
+            createdAt: timestamp,
+            lastMessageAt: null,
+            archivedAt: null,
+          });
+          yield* repo.addMember({
+            orgId: person.orgId,
+            chatId,
+            memberId: KinMemberId.make(`group-${index}-rhea`),
+            principal: { _tag: "person", personId: person.personId },
+            role: "owner",
+            joinedAt: timestamp,
+            leftAt: null,
+            mutedUntil: null,
+          });
+          yield* service.send(person, {
+            chatId,
+            body: `Invented note ${index} about the venue`,
+            clientMessageId: `group-${index}`,
+          });
+        }
+      });
+      yield* addGroups(0, 2);
+      const few = yield* listed();
+      yield* addGroups(2, 8);
+      const many = yield* listed();
+      assert.strictEqual(many.list.chats.length, few.list.chats.length + 6);
+      // Per chat: the chat, the viewer's member row, the last messages and their cards.
+      assert.isAtMost(many.count - few.count, 6 * 4);
+      // What a row may link to (every client, project and deal the viewer sees) is read once a list.
+      assert.strictEqual(
+        statements.filter((query) =>
+          query.includes("register_id IN ('clients', 'projects', 'deals')"),
+        ).length,
+        1,
+      );
+    }).pipe(Effect.provide(layer)),
   );
   it.effect("mutes and unmutes a chat for the caller only, live in their list", () =>
     Effect.gen(function* () {

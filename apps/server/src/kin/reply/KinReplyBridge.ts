@@ -36,7 +36,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KIN_VISUAL_CARD_TYPE } from "@t3tools/shared/kinVisual";
 
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
-import { isClaudeThinkingItem } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import {
   KinChatService,
@@ -50,11 +49,13 @@ import {
   rescueMessageId,
   type AgentIdentity,
 } from "../chat/KinIdentity.ts";
+import { isClaudeThinkingItem } from "./claudeThinkingItem.ts";
 import { laneFor, type Lane } from "./replyLane.ts";
 import { AUDIENCE_MOVED, aborted, ownerOnlyChat } from "../lead/Audience.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as Reach from "../lead/Reach.ts";
+import { turnRecords } from "../lead/wakeupRuns.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import {
   CAPTION_PROMPT,
@@ -309,7 +310,10 @@ type AnswerItem = Extract<OrchestrationV2TurnItem, { type: "assistant_message" }
 /** The model's own words. Its reasoning never reaches a chat, even shown as an update. */
 const isAnswer = (item: OrchestrationV2TurnItem) =>
   item.type === "assistant_message" && !isClaudeThinkingItem(item);
-const textOf = (item: AnswerItem, projection?: OrchestrationV2ThreadProjection) =>
+const textOf = (
+  item: AnswerItem,
+  projection?: Pick<OrchestrationV2ThreadProjection, "messages">,
+) =>
   item.textOmitted === true
     ? (projection?.messages.find((message) => message.id === item.messageId)?.text ?? item.text)
     : item.text;
@@ -1004,7 +1008,7 @@ const make = Effect.gen(function* () {
     if (removed > 0) yield* journal(wake, [`Omitted ${removed} unplaced answer figures.`]);
   });
   const settle = Effect.fn("KinReplyBridge.settle")(function* (wake: Wake, rootRunId: RunId) {
-    const projection = yield* threads.getThreadProjection(wake.threadId);
+    const projection = yield* turnRecords(threads, wake.threadId, rootRunId);
     const root = projection.runs.find((run) => run.id === rootRunId);
     if (root === undefined) return;
     // What a run that could not sign in "said" is the provider's, never the lead's.

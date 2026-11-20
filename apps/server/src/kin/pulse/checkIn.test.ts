@@ -993,6 +993,55 @@ describe("pulse check-ins", () => {
         assert.isTrue(saved.every((input) => input.keepWording === true));
       }).pipe(Effect.provide(layer)),
   );
+  it.effect("a check-in set in Settings keeps the owner's time across a clock change", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* companyClock("America/New_York");
+      const host = KinSchedules.hostTimeZone();
+      const weekdays = [1, 2, 3, 4, 5];
+      const JULY = Date.UTC(2026, 6, 13);
+      const DECEMBER = Date.UTC(2026, 11, 14);
+      // Set at 09:00 his time in July; "moved" was changed on T3's screen since.
+      const july = onHostClock("09:00", weekdays, "America/New_York", host, JULY);
+      for (const slug of ["mine", "moved"]) {
+        const at = slug === "moved" ? onHostClock("11:00", weekdays, "UTC", host, JULY) : july;
+        yield* scheduleRow({ slug, at: at.at, days: at.days, source: "kin-settings:check-ins" });
+        yield* sql`UPDATE kin_schedules SET owner_time_json = ${JSON.stringify({
+          at: "09:00",
+          days: weekdays,
+          host: july,
+        })} WHERE schedule_id = ${`checkin-${slug}`}`;
+      }
+      const saved: Array<KinSchedules.SaveInput> = [];
+      const schedules = KinSchedules.KinSchedules.of({
+        save: (input) => Effect.sync(() => void saved.push(input)),
+        cancel: () => Effect.void,
+        applyTaps: () => Effect.void,
+      });
+      yield* TestClock.setTime(JULY);
+      yield* followOwnerZone(orgId, schedules);
+      assert.deepStrictEqual(saved, []);
+      yield* TestClock.setTime(DECEMBER);
+      yield* followOwnerZone(orgId, schedules);
+      assert.deepStrictEqual(
+        saved.map(({ scheduleId, every, ownerTime, keepWording }) => ({
+          scheduleId,
+          every,
+          ownerTime,
+          keepWording,
+        })),
+        [
+          {
+            scheduleId: KinMemoryItemId.make("checkin-mine"),
+            every: onHostClock("09:00", weekdays, "America/New_York", host, DECEMBER),
+            ownerTime: { at: "09:00", days: weekdays },
+            keepWording: true,
+          },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
   it.effect.each([
     { name: "Friday taken off", days: [1, 2, 3, 4] },
     // Like the weekdays a day earlier, as a host clock could put them, but not so here.

@@ -6,7 +6,7 @@ import { validZone } from "../../triggers/quietHold.ts";
 import { stillAway } from "../../triggers/quietHours.ts";
 import { waitingSince } from "../../work/crm.ts";
 import { ownerZone } from "../../work/recordRows.ts";
-import { DAY_MS, threshold, toMs } from "../thresholds.ts";
+import { DAY_MS, thresholds, toMs } from "../thresholds.ts";
 import {
   dayOf,
   daysAgoText,
@@ -55,10 +55,11 @@ export const workSenses = Effect.fn("KinPulse.workSenses")(function* (ctx: Sense
   const sql = yield* SqlClient.SqlClient;
   const { orgId, at } = ctx;
   const facts: Array<SensedFact> = [];
-  const grace = yield* threshold(orgId, "late_grace_hours");
-  const soon = yield* threshold(orgId, "due_soon_hours");
-  const stalled = yield* threshold(orgId, "stalled_after_days");
-  const waiting = yield* threshold(orgId, "waiting_too_long_days");
+  const limits = yield* thresholds(orgId);
+  const grace = limits("late_grace_hours");
+  const soon = limits("due_soon_hours");
+  const stalled = limits("stalled_after_days");
+  const waiting = limits("waiting_too_long_days");
 
   // task_late and theirs_late: an open entry whose due date and grace have passed.
   const late = yield* sql<EntryRow & { side: string }>`SELECT ${entryColumns(sql)}, r.side

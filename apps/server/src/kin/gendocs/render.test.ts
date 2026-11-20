@@ -106,7 +106,7 @@ it.live("stops a child at the time cap and at the output cap, and gives it no en
     assert.strictEqual((yield* run("sleep 86400 & sleep 86400", 200))._tag, "timedOut");
     assert.strictEqual((yield* run("sleep 86400 & head -c 4000 /dev/zero; wait"))._tag, "tooLarge");
     // Processor time is capped too, wherever the host allows it.
-    const limited = Render.limitedCommand("/bin/sh", ["-c", "ulimit -t; while :; do :; done"], {
+    const limited = Render.limitedCommand("/bin/sh", ["-c", "while :; do :; done"], {
       cpuSeconds: 1,
       addressSpaceKiB: undefined,
     });
@@ -117,11 +117,22 @@ it.live("stops a child at the time cap and at the output cap, and gives it no en
       timeoutMs: 10_000,
       maxStdout: 1000,
     });
-    // `ulimit -t` sets the hard limit too, and Linux kills at the hard limit instead of warning.
-    assert.deepStrictEqual(
-      spun._tag === "exited" ? [spun.signal, new TextDecoder().decode(spun.stdout)] : [spun._tag],
-      [(yield* HostProcess.Platform) === "linux" ? "SIGKILL" : "SIGXCPU", "1\n"],
-    );
+    assert.deepStrictEqual(spun._tag === "exited" ? spun.signal : spun._tag, "SIGXCPU");
+    // A child that ignores the signal is still killed at the hard limit, a second later.
+    if ((yield* HostProcess.Platform) === "linux") {
+      const deaf = Render.limitedCommand("/bin/sh", ["-c", "trap '' XCPU; while :; do :; done"], {
+        cpuSeconds: 1,
+        addressSpaceKiB: undefined,
+      });
+      const held = yield* Render.runCapped({
+        ...deaf,
+        env: {},
+        cwd: "/",
+        timeoutMs: 10_000,
+        maxStdout: 1000,
+      });
+      assert.deepStrictEqual(held._tag === "exited" ? held.signal : held._tag, "SIGKILL");
+    }
     const exited = yield* run("printf '%s' \"$HOME$USER$T3CODE_HOME\"; echo broken >&2; exit 3");
     assert.deepStrictEqual(
       exited._tag === "exited"

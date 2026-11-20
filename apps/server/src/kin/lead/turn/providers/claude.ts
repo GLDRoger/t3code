@@ -35,6 +35,24 @@ export const builtinTools = [...new Set(Object.values(capabilities).flat())];
 /** The one built-in a confined session keeps: it runs at Anthropic and opens nothing from here. */
 const CONFINED_SEARCH = "WebSearch";
 
+/**
+ * Built-ins an owner turn can't use: they wait for someone at the screen, or Kin does the job
+ * itself (kin_ask, kin_defer, kin_schedule). A delegated task keeps them for T3 to answer.
+ */
+export const OWNER_SEAT_OFF = [
+  "AskUserQuestion",
+  "EnterPlanMode",
+  "ExitPlanMode",
+  "EnterWorktree",
+  "ExitWorktree",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "ScheduleWakeup",
+  "PushNotification",
+  "RemoteTrigger",
+];
+
 /** What it posts ends with its own signature (`ghSign.ts`), not Claude Code's footer. */
 const NO_PROVIDER_FOOTER = {
   attribution: { commit: "", pr: "", sessionUrl: false },
@@ -93,7 +111,9 @@ const apply = (
             ]),
           ],
         }
-      : {}),
+      : plan.seat === "owner"
+        ? { disallowedTools: [...new Set([...(options.disallowedTools ?? []), ...OWNER_SEAT_OFF])] }
+        : {}),
     ...(loading.mcpServers === undefined ? {} : { mcpServers: loading.mcpServers }),
     // The user's own MCP servers and plugins could hand a lead a shell again.
     strictMcpConfig: true,

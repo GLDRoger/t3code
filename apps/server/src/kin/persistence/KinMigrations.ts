@@ -111,6 +111,9 @@ import Holds from "./migrations/K187_Holds.ts";
 import ReachLimits from "./migrations/K188_ReachLimits.ts";
 import MorningPages from "./migrations/K189_MorningPages.ts";
 import RecordTitleIndex from "./migrations/K190_RecordTitleIndex.ts";
+import HistoryIndexes from "./migrations/K191_HistoryIndexes.ts";
+import RecordOwnerListIndex from "./migrations/K192_RecordOwnerListIndex.ts";
+import ScheduleOwnerTime from "./migrations/K193_ScheduleOwnerTime.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -302,6 +305,9 @@ const migrations = {
   "188_ReachLimits": ReachLimits,
   "189_MorningPages": MorningPages,
   "190_RecordTitleIndex": RecordTitleIndex,
+  "191_HistoryIndexes": HistoryIndexes,
+  "192_RecordOwnerListIndex": RecordOwnerListIndex,
+  "193_ScheduleOwnerTime": ScheduleOwnerTime,
 };
 const loader = Migrator.fromRecord(migrations);
 

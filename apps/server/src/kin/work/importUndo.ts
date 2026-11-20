@@ -292,6 +292,25 @@ const decide = Effect.fn("KinImport.undoPlan")(function* (
   return { report, gone, restoring, lists };
 });
 
+export const IMPORT_BUSY =
+  "Kin is importing or undoing a file for this company now. Wait for it to finish, then try again.";
+/** An unfinished apply's row is held this long past its last chunk (`$.beat`); past it, its host stopped. */
+const IMPORT_LEASE_MS = 60_000;
+export const beating = (beat: number | undefined, now: number) =>
+  beat !== undefined && beat > now - IMPORT_LEASE_MS;
+
+/** In the caller's transaction: refused while any process on this database applies for the org. */
+export const notImporting = Effect.fn("KinImport.notImporting")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const now = yield* Clock.currentTimeMillis;
+  const [held] = yield* sql<{ seq: number }>`SELECT seq FROM kin_import_runs
+    WHERE org_id = ${orgId} AND action = 'apply' AND finished_at IS NULL
+      AND json_extract(summary_json, '$.beat') > ${now - IMPORT_LEASE_MS}
+    ORDER BY seq LIMIT 1`;
+  if (held !== undefined)
+    return yield* new KinChatError({ reason: "conflict", message: IMPORT_BUSY });
+});
+
 /**
  * Takes a batch away, or with `apply` false says what that would do. Applied, it is one
  * transaction that decides again inside it: whatever refuses part way (a busy or full database)
@@ -312,6 +331,7 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
   const writer = { actor: { _tag: "person" as const, personId: owner }, via: "import" as const };
   const { report, lists } = yield* sql.withTransaction(
     Effect.gen(function* () {
+      yield* notImporting(orgId);
       const started = yield* Clock.currentTimeMillis;
       const plan = yield* decide(orgId, batch, options);
       const { gone, restoring, lists } = plan;

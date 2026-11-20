@@ -1035,6 +1035,8 @@ export const KinPartyRow = Schema.Struct({
   /** The campaign it came from, when the reader sees that campaign. */
   campaign: Schema.optional(KinRecordRef),
   tags: Schema.optional(Tags),
+  /** The contact whose name the list's search found, when the client's own name didn't have it. */
+  contact: Schema.optional(KinTrimmedText),
   /** The soonest open entry we owe them. */
   next: Schema.NullOr(
     Schema.Struct({

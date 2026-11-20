@@ -23,6 +23,7 @@ import {
   checkMigrations,
   checkSurvival,
   checkT3Footprint,
+  standingT3Footprint,
   declarationOf,
   explainedT3Files,
   FOOTPRINT,
@@ -121,7 +122,7 @@ describe("kin branch checks", () => {
     );
   });
 
-  it("refuses a sentence of four or more words typed into both Kin clients", () => {
+  it("refuses a sentence of three or more words typed into both Kin clients, or its twin", () => {
     const web = `
       // Comments are not copy: Couldn't load the rates.
       export const Rates = (props: { host: string }) => (
@@ -131,24 +132,35 @@ describe("kin branch checks", () => {
       );
       const done = "Saved.";
       const label = \`Open the chat with \${props.host}\`;
+      const font = "New Computer Modern";
     `;
     const phone = `
       const title = "Couldn't load the rates";
       const fragment = \`\${host}\${unicode === null ? "" : \`(shown as \${unicode})\`}\\n\\nThis visual asks to load from it.\`;
       const done = "Saved.";
       const label = \`Open the chat with \${title}\`;
+      const font = "New Computer Modern";
     `;
     assert.deepStrictEqual(kinSentences(web).toSorted(), [
       "Couldn't load the rates.",
+      "New Computer Modern",
       "Open the chat with",
       "This visual asks to load from",
     ]);
     const said = checkSharedCopy(new Map([["web.tsx", web]]), new Map([["phone.tsx", phone]]));
-    // The same words with different punctuation, and short words, are left alone.
+    // A twin differing only in its full stop counts; short words and a listed one are left alone.
     assert.deepStrictEqual(
-      said.map((problem) => problem.split('"')[1]),
-      ["Open the chat with"],
+      said.map((problem) => problem.split(" is typed")[0]),
+      [
+        'kin copy: "Open the chat with"',
+        'kin copy: "Couldn\'t load the rates." / "Couldn\'t load the rates"',
+      ],
     );
+    const more = checkSharedCopy(
+      new Map([["web.tsx", `const more = "Couldn't load more.";`]]),
+      new Map([["phone.tsx", `const more = "Could not load more";`]]),
+    );
+    assert.strictEqual(more.length, 1);
   });
 
   it("keeps each Kin data hook in one shared factory, by file and hook name", () => {
@@ -452,6 +464,30 @@ export const { useKinDeals } = makeKinDealsHooks(kinHookApp);
     );
     // A line without a reason lets nothing pass.
     assert.lengthOf(check([{ file: t3, added: 11 }], `T3-file: ${t3}:`), 1);
+
+    // What Kin already holds in T3's files is shown, not refused: largest first, tests counted.
+    const standing = (changes: ReadonlyArray<{ file: string; added: number; isNew?: boolean }>) =>
+      standingT3Footprint({
+        from: "803f21f6a5211dd83ca26e02f7382a2396338bee",
+        changes: changes.map((change) => ({ isNew: false, removed: 1, ...change })),
+        kinOwned,
+      });
+    assert.deepStrictEqual(
+      standing([
+        { file: t3, added: 4 },
+        { file: "apps/server/src/kin/lead/deep/Big.ts", added: 900 },
+        { file: "apps/server/src/brandNew.ts", added: 300, isNew: true },
+        { file: "apps/server/src/server.test.ts", added: 30 },
+        { file: "apps/web/src/routeTree.gen.ts", added: 120 },
+        { file: ".repos/effect/packages/effect/src/Effect.ts", added: 80 },
+      ]),
+      [
+        "T3 footprint since upstream 803f21f6a5: Kin adds 34 lines to 2 T3 files (30 of them in 1 test files). Largest:",
+        "  +30 -1 apps/server/src/server.test.ts",
+        `  +4 -1 ${t3}`,
+      ],
+    );
+    assert.deepStrictEqual(standing([{ file: "packages/contracts/src/kinHost.ts", added: 9 }]), []);
   });
 
   it.effect("counts a T3 file's lines only after the branch's last upstream sync", () => {

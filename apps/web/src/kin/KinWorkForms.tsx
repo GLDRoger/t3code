@@ -1,3 +1,4 @@
+import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_MARKETING } from "@t3tools/client-runtime/kin/kinMarketing";
 import {
@@ -176,7 +177,7 @@ export function Field(props: {
       )}
       {props.moved === undefined ? null : (
         <p className="whitespace-pre-wrap text-xs text-muted-foreground">
-          It now says: {props.moved.trim() || "nothing"}
+          {KIN_WORK_COPY.nowSays(props.moved.trim() || "nothing")}
         </p>
       )}
     </div>
@@ -568,7 +569,7 @@ export function KinClientDialog(
                   </Select>
                   {moved.placeOfSupply === undefined ? null : (
                     <p className="text-xs text-muted-foreground">
-                      It now says: {moved.placeOfSupply.trim() || COPY.party.placeNone}
+                      {KIN_WORK_COPY.nowSays(moved.placeOfSupply.trim() || COPY.party.placeNone)}
                     </p>
                   )}
                 </div>
@@ -908,7 +909,7 @@ export function KinProjectDialog(
           />
           {moved.party === undefined ? null : (
             <p className="text-xs text-muted-foreground">
-              It now says: {moved.party?.title ?? COPY.project.noClient}
+              {KIN_WORK_COPY.nowSays(moved.party?.title ?? COPY.project.noClient)}
             </p>
           )}
         </div>

@@ -41,6 +41,7 @@ import { companyMoneyState } from "./companyProfile.ts";
 import { contactAll } from "./contactDetails.ts";
 import { stagesOf } from "./dealStages.ts";
 import { type ImportReport, KinImport } from "./KinImport.ts";
+import { beating } from "./importUndo.ts";
 import { fieldList, fieldText, parseFields } from "./lists.ts";
 import { dayIn, isCurrency } from "./money.ts";
 import { fold, matchName } from "./nameMatch.ts";
@@ -1352,6 +1353,7 @@ const decodeSummary = Schema.decodeUnknownOption(
       file: Schema.optional(Schema.String),
       done: Schema.optional(Schema.Number),
       rows: Schema.optional(Schema.Number),
+      beat: Schema.optional(Schema.Number),
     }),
   ),
 );
@@ -1381,13 +1383,15 @@ export const runs = Effect.fn("KinImportFile.runs")(function* (
       finished_at AS "finishedAt", summary_json AS summary
     FROM kin_import_runs WHERE org_id = ${input.orgId} ORDER BY seq`.pipe(workFailure);
   const live = yield* (yield* KinImport).running(input.orgId);
+  const now = yield* Clock.currentTimeMillis;
   const liveSeqs = new Map(live.flatMap((one) => (one.seq === null ? [] : [[one.seq, one]])));
   const running: Array<KinImportRunning> = [];
   const last = new Map<string, KinImportRuns["runs"][number]>();
   for (const row of rows) {
     const summary = Option.getOrUndefined(decodeSummary(row.summary ?? "{}"));
     const progress = { done: count(summary?.done), of: count(summary?.rows) };
-    if (row.finishedAt === null && liveSeqs.has(row.seq)) {
+    // Another process's run, as the command line's, beats on its row as it goes.
+    if (row.finishedAt === null && (liveSeqs.has(row.seq) || beating(summary?.beat, now))) {
       running.push({
         action: row.action === "undo" ? "undo" : row.action === "check" ? "check" : "apply",
         batch: row.batch,

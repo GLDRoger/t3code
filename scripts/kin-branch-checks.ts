@@ -165,13 +165,13 @@ export const KIN_COPY_DIRS = {
   web: "apps/web/src/kin",
   phone: "apps/mobile/src/features",
 } as const;
-const MIN_WORDS = 4;
+const MIN_WORDS = 3;
 const HOLE = /\$\{(?:[^{}`]|`[^`]*`|\{[^{}]*\})*\}/;
 const TEMPLATE = /`((?:[^`\\$]|\\.|\$(?!\{)|\$\{(?:[^{}`]|`[^`]*`|\{[^{}]*\})*\})*)`/g;
 
 /**
  * The sentences a source file shows people: string literals and JSX text, split at sentence ends,
- * kept when they start with a capital and have four or more words.
+ * kept when they start with a capital and have three or more words.
  */
 export const kinSentences = (source: string) => {
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
@@ -201,25 +201,46 @@ export const kinSentences = (source: string) => {
     );
 };
 
+/** Words typed into both Kin clients on purpose, each for a reason. */
+export const KIN_COPY_IN_BOTH: Readonly<Record<string, string>> = {
+  "New Computer Modern":
+    "a font's name, matched against the brand's font, not words a person reads",
+  "A link in “":
+    "web shows the address in a box under the sentence; the phone's alert writes it into the sentence",
+};
+
+/** One key for a sentence and its drifted twin: end punctuation, capitals, "Could not", "...". */
+const copyKey = (sentence: string) =>
+  sentence
+    .toLowerCase()
+    .replace(/\bcould not\b/g, "couldn't")
+    .replace(/\.\.\./g, "…")
+    .replace(/[.!?:…]+$/, "");
+
 /** A sentence typed into both Kin clients belongs in client-runtime, which both render. */
 export const checkSharedCopy = (
   web: ReadonlyMap<string, string>,
   phone: ReadonlyMap<string, string>,
 ) => {
   const where = (files: ReadonlyMap<string, string>) => {
-    const found = new Map<string, string>();
+    const found = new Map<string, { readonly sentence: string; readonly file: string }>();
     for (const [file, source] of files)
-      for (const sentence of kinSentences(source))
-        if (!found.has(sentence)) found.set(sentence, file);
+      for (const sentence of kinSentences(source)) {
+        const key = copyKey(sentence);
+        if (!(sentence in KIN_COPY_IN_BOTH) && !found.has(key)) found.set(key, { sentence, file });
+      }
     return found;
   };
   const onPhone = where(phone);
-  return [...where(web)]
-    .filter(([sentence]) => onPhone.has(sentence))
-    .map(
-      ([sentence, file]) =>
-        `kin copy: "${sentence}" is typed into ${file} and ${onPhone.get(sentence)}; move it into a client-runtime/src/kin presentation module and render it from both.`,
-    );
+  return [...where(web)].flatMap(([key, { sentence, file }]) => {
+    const twin = onPhone.get(key);
+    if (twin === undefined) return [];
+    const words =
+      twin.sentence === sentence ? `"${sentence}"` : `"${sentence}" / "${twin.sentence}"`;
+    return [
+      `kin copy: ${words} is typed into ${file} and ${twin.file}; move it into a client-runtime/src/kin presentation module and render it from both.`,
+    ];
+  });
 };
 
 export const KIN_SHARED_HOOKS_DIR = "packages/client-runtime/src/kin/react";
@@ -600,6 +621,40 @@ export const kinTrunk = Effect.fn("kinBranchChecks.kinTrunk")(function* (
     note: `kin branch: ${ref} has no Kin files, so these checks ran against ${closest.ref}.`,
   };
 });
+const UPSTREAM_REF = "upstream/main";
+const STANDING_TOP = 10;
+const STANDING_SKIP = /(?:^\.repos\/|(?:^|\/)(?:routeTree\.gen\.ts|pnpm-lock\.yaml)$)/;
+
+/** Every Kin line already inside T3's files since the fork left upstream, largest first. */
+export const standingT3Footprint = (input: {
+  readonly from: string;
+  readonly changes: ReadonlyArray<{
+    readonly file: string;
+    readonly added: number;
+    readonly removed: number;
+    readonly isNew: boolean;
+  }>;
+  readonly kinOwned: ReadonlyArray<string>;
+}) => {
+  const owned = input.kinOwned.map(globPattern);
+  const files = input.changes
+    .filter(
+      ({ file, isNew }) =>
+        !isNew && !STANDING_SKIP.test(file) && !owned.some((pattern) => pattern.test(file)),
+    )
+    .toSorted(
+      (a, b) => b.added + b.removed - (a.added + a.removed) || a.file.localeCompare(b.file),
+    );
+  if (files.length === 0) return [];
+  const sum = (list: typeof files) => list.reduce((total, one) => total + one.added, 0);
+  const tests = files.filter(({ file }) => /\.test\.tsx?$/.test(file));
+  return [
+    `T3 footprint since upstream ${input.from.slice(0, 10)}: Kin adds ${sum(files)} lines to ${files.length} T3 files (${sum(tests)} of them in ${tests.length} test files). Largest:`,
+    ...files
+      .slice(0, STANDING_TOP)
+      .map(({ file, added, removed }) => `  +${added} -${removed} ${file}`),
+  ];
+};
 
 /** All checks for the branch at `root` against `ref`: problems, or none, and notes to print. */
 export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
@@ -816,7 +871,33 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
       }),
     );
   }
-  return { problems, notes: [...(trunk.note === undefined ? [] : [trunk.note]), ...people.notes] };
+  const notes = [...(trunk.note === undefined ? [] : [trunk.note]), ...people.notes];
+  const upstreamBase = yield* git(root, ["merge-base", "HEAD", UPSTREAM_REF]).pipe(
+    Effect.map((out) => out.toString().trim()),
+    Effect.option,
+  );
+  if (footprint !== undefined && Option.isSome(upstreamBase)) {
+    const from = upstreamBase.value;
+    const created = new Set(
+      yield* gitLines(root, ["diff", "--name-only", "--no-renames", "--diff-filter=A", from]),
+    );
+    const changes = (yield* gitLines(root, ["diff", "--numstat", "--no-renames", from]))
+      .map((line) => line.split("\t"))
+      .flatMap(([added = "", removed = "", file]) =>
+        file === undefined
+          ? []
+          : [
+              {
+                file,
+                added: Number(added) || 0,
+                removed: Number(removed) || 0,
+                isNew: created.has(file),
+              },
+            ],
+      );
+    notes.push(...standingT3Footprint({ from, changes, kinOwned: footprint.kinOwned }));
+  }
+  return { problems, notes };
 });
 
 export const kinBranchChecksCommand = Command.make(

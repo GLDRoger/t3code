@@ -15,6 +15,8 @@ import * as Schema from "effect/Schema";
 
 import { kinSentences } from "./kinScreenState.ts";
 
+export const KIN_CHART_COPY = { showTable: "Show as table", showChart: "Show chart" } as const;
+
 /** One of the product's colours; `soft` is the same colour drawn lighter. */
 export interface KinChartTone {
   readonly color: KinChartColor;

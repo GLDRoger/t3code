@@ -1,3 +1,4 @@
+import { KIN_AGENT_PAGE } from "@t3tools/client-runtime/kin/kinAgentPage";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -99,7 +100,7 @@ export function KinLeadSheet(props: {
     const result = await mute({ environmentId, input: { chatId: props.chatId, muted } });
     setMuteProblem(
       AsyncResult.isFailure(result)
-        ? kinFailureText(squashAtomCommandFailure(result), "Couldn't change that.")
+        ? kinFailureText(squashAtomCommandFailure(result), KIN_AGENT_PAGE.changeFailed)
         : null,
     );
     setMuteState(AsyncResult.isFailure(result) ? "failed" : "idle");

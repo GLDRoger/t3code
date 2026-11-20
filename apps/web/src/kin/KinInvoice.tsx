@@ -19,7 +19,7 @@ import {
   type KinLineDraft,
   type KinQuoteRowView,
 } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
-import { kinDefaultTemplate } from "@t3tools/client-runtime/kin/kinTemplates";
+import { KIN_TEMPLATES, kinDefaultTemplate } from "@t3tools/client-runtime/kin/kinTemplates";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type {
   EnvironmentId,
@@ -473,7 +473,7 @@ export function KinMakeDocumentStep(
         ) : recipes.state._tag !== "ready" ? (
           <div className="flex flex-col items-start gap-2">
             <Alert variant="error">
-              <AlertDescription>Couldn't load your templates.</AlertDescription>
+              <AlertDescription>{KIN_TEMPLATES.loadFailed}</AlertDescription>
             </Alert>
             <Button size="sm" variant="outline" onClick={recipes.refresh}>
               Retry

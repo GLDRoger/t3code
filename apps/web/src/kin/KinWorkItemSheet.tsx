@@ -682,7 +682,9 @@ function KinWorkItem(
                 </p>
               )}
               {moved?.title == null ? null : (
-                <p className="text-xs text-muted-foreground">It now says: {moved.title}</p>
+                <p className="text-xs text-muted-foreground">
+                  {KIN_WORK_COPY.nowSays(moved.title)}
+                </p>
               )}
             </div>
             <div className="flex flex-col gap-1.5">
@@ -1017,7 +1019,7 @@ function KinWorkItem(
                   size="xs"
                   variant="ghost"
                   disabled={saving}
-                  aria-label="Edit the brief"
+                  aria-label={KIN_TASK_RECORD.editBrief}
                   onClick={props.onStartEdit}
                 >
                   <PencilIcon />

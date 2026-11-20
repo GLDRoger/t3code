@@ -96,7 +96,7 @@ function CompanyDefault(props: KinWorkTarget) {
     setBusy(false);
     setProblem(
       AsyncResult.isFailure(outcome)
-        ? kinFailureText(squashAtomCommandFailure(outcome), "Couldn't save that.")
+        ? kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENTS_COPY.saveFailed)
         : null,
     );
     appAtomRegistry.refresh(defaultsAtom);

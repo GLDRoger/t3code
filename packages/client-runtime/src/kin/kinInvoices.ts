@@ -28,6 +28,7 @@ import {
  */
 
 export const KIN_INVOICES = {
+  loadFailed: "Couldn't load invoices",
   number: "Invoice number",
   sentTo: (to: string, day: string) =>
     `Sent to ${to} ${/^(today|yesterday)$/.test(day) ? day : `on ${day}`}`,

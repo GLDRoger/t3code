@@ -1336,14 +1336,24 @@ it.effect("a teammate gets none of the client calls, and a client change ticks s
     const subscribed = yield* Deferred.make<void>();
     const ticks = yield* records.changes(orgId).pipe(
       Stream.tap(() => Deferred.succeed(subscribed, undefined)),
-      Stream.take(2),
+      Stream.take(3),
       Stream.runCollect,
       Effect.forkChild,
     );
     yield* Deferred.await(subscribed);
     yield* Clients.updateParty([owner], { orgId, key: "C-1", rev: 1, name: "Invented Acme Ltd" });
-    const [, tick] = yield* Fiber.join(ticks);
+    // A logged contact moves its client's page alone, and only for those who see that client.
+    yield* Clients.logTouch([owner], {
+      orgId,
+      party: "C-1",
+      kind: "call",
+      note: "Invented call",
+      clientRequestId: "owner-call",
+    });
+    const [, tick, touched] = yield* Fiber.join(ticks);
     assert.strictEqual(tick?.key, "C-1");
+    assert.include(touched, { key: "C-1", registerId: "clients" });
+    assert.deepStrictEqual([...(touched?.team?.keys() ?? [])], []);
   }).pipe(Effect.provide(layer)),
 );
 
@@ -4022,6 +4032,23 @@ it.effect(
         (yield* Clients.parties([mate], { orgId, tag: "clinics" })).parties.map((one) => one.name),
         ["Invented Tallmoor"],
       );
+      // A contact's name finds its client, which says which contact; only where its reader sees it.
+      const foundBy = (who: typeof owner, text: string) =>
+        Clients.parties([who], { orgId, text }).pipe(
+          Effect.map((page) => page.parties.map((one) => [one.name, one.contact])),
+        );
+      assert.deepStrictEqual(yield* foundBy(owner, " OLA "), [
+        ["Invented Tallmoor", 'Invented Ola, "the buyer"'],
+      ]);
+      assert.deepStrictEqual(yield* foundBy(mate, "ola"), [
+        ["Invented Tallmoor", 'Invented Ola, "the buyer"'],
+      ]);
+      assert.deepStrictEqual(yield* foundBy(owner, "hidden"), [
+        ["Invented Quietbay", "Invented Hidden"],
+      ]);
+      assert.deepStrictEqual(yield* foundBy(mate, "hidden"), []);
+      assert.deepStrictEqual(yield* foundBy(owner, "gone"), []);
+      assert.deepStrictEqual(yield* foundBy(owner, "tallmoor"), [["Invented Tallmoor", undefined]]);
       // A deal made on the prospect came from the campaign, and reads it by name.
       assert.strictEqual(pilot.source, "Invented harbour fair");
       // The audience as a list: the owner's four, the teammate's three.

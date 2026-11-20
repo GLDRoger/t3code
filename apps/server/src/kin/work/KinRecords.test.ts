@@ -34,6 +34,7 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as DateTime from "effect/DateTime";
@@ -2795,6 +2796,37 @@ it.effect("a teammate's change numbers move only with what they can see, on ever
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("a teammate's Tasks and Search find the projects they lead by its own index", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    // As the server runs: `Sqlite.setup` deletes the planner's statistics at every start.
+    assert.lengthOf(yield* sql`SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat1'`, 0);
+    yield* OwnerWork.create([mate], { orgId, title: "Invented: theirs", clientRequestId: "t" });
+    const asked: Array<readonly [string, ReadonlyArray<unknown>]> = [];
+    const watched = Effect.provideService(Statement.CurrentTransformer, (statement) => {
+      const [text, params] = statement.compile();
+      if (text.includes("lp.register_id = 'projects'")) asked.push([text, params]);
+      return Effect.succeed(statement);
+    });
+    // Tasks' count and page, then Search: each reads through the same visibility.
+    yield* OwnerWork.list([mate], { orgId, open: true }).pipe(watched);
+    const read = asked.length;
+    assert.isAtLeast(read, 2);
+    yield* OwnerDocs.search([mate], { orgId, text: "theirs" }).pipe(watched);
+    assert.isAbove(asked.length, read);
+    for (const [text, params] of asked) {
+      const plan = yield* sql.unsafe<{ detail: string }>(`EXPLAIN QUERY PLAN ${text}`, params);
+      const led = plan.map((row) => row.detail).filter((detail) => /\blp\b/u.test(detail));
+      assert.deepStrictEqual(
+        led.map((detail) => detail.includes("idx_kin_records_owner_list")),
+        led.map(() => true),
+        led.join("\n"),
+      );
+    }
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("a teammate's live changes name only tasks they see, and one hidden from them once", () =>
   Effect.gen(function* () {
     yield* seed;
@@ -4496,4 +4528,26 @@ it.effect(
       // The Undo is the owner's change, never counted in the agent's turn.
       assert.strictEqual(after.turnChanges!.count, 2);
     }).pipe(Effect.provide(receiptLayer)),
+);
+
+it.effect("an announcement reaches screens only once its transaction commits", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const records = yield* KinRecords.KinRecords;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO sqlite_sequence (name, seq) SELECT 'kin_record_changes', 0
+      WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'kin_record_changes')`;
+    const pull = yield* Stream.toPull(records.changes(orgId));
+    const opening = (yield* pull)[0]!.seq;
+    // Screens read on readers: told before the commit, they would read what it undoes.
+    yield* sql
+      .withTransaction(records.announce(orgId).pipe(Effect.andThen(Effect.fail("rolled back"))))
+      .pipe(Effect.flip);
+    yield* sql`UPDATE sqlite_sequence SET seq = seq + 10 WHERE name = 'kin_record_changes'`;
+    yield* records.announce(orgId);
+    assert.deepStrictEqual(
+      (yield* pull).map((tick) => tick.seq),
+      [opening + 11],
+    );
+  }).pipe(Effect.scoped, Effect.provide(layer)),
 );

@@ -1,5 +1,6 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
+  KIN_TEAM_COPY,
   KIN_TEAM_ADD,
   KIN_TEAM_EMPTY,
   KIN_TEAM_LOAD_FAILED,
@@ -135,7 +136,7 @@ function KinTeamBody(target: KinTeamTarget) {
                 className="items-center py-12"
                 accessible
                 accessibilityRole="progressbar"
-                accessibilityLabel="Loading your team"
+                accessibilityLabel={KIN_TEAM_COPY.loading}
               >
                 <AppActivityIndicator />
               </View>

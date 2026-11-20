@@ -1518,10 +1518,14 @@ export const page = Effect.fn("KinDeals.page")(function* (
 const written = Effect.fn("KinDeals.written")(function* <A, E extends { readonly _tag: string }, R>(
   orgId: KinOrgId,
   write: Effect.Effect<A, E, R>,
+  moved?: (result: A) => RecordRow,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const result = yield* sql.withTransaction(write).pipe(workFailure);
-  yield* (yield* KinRecords).announce(orgId);
+  yield* (yield* KinRecords).announce(
+    orgId,
+    moved === undefined ? undefined : [moved(result).recordId],
+  );
   return result;
 });
 const answer = Effect.fn("KinDeals.answer")(function* (
@@ -1563,6 +1567,7 @@ export const create = Effect.fn("KinDeals.rpc.create")(function* (
         requestHash: requestHashOf({ clientRequestId, ...asked }),
       });
     }),
+    (made) => made.row,
   );
   for (const notice of notices)
     yield* tellOnScreen(person, `${notice.row.recordId}:${notice.row.rev}`, [notice]);
@@ -1602,6 +1607,7 @@ export const update = Effect.fn("KinDeals.rpc.update")(function* (
         input.rev,
       );
     }),
+    (made) => made.row,
   );
   yield* tellOnScreen(person, `${row.recordId}:${row.rev}`, notices);
   return yield* answer(input.orgId, viewer, row, false);
@@ -1612,7 +1618,11 @@ export const move = Effect.fn("KinDeals.rpc.move")(function* (
   input: KinDealMoveInput,
 ) {
   const { actor, viewer } = yield* personActor(people, input.orgId);
-  const moved = yield* written(input.orgId, moveAs(actor, input.key, input.to, input.rev));
+  const moved = yield* written(
+    input.orgId,
+    moveAs(actor, input.key, input.to, input.rev),
+    (made) => made.row,
+  );
   return yield* answer(input.orgId, viewer, moved.row, moved.becameClient);
 });
 
@@ -1624,6 +1634,7 @@ export const step = Effect.fn("KinDeals.rpc.step")(function* (
   const row = yield* written(
     input.orgId,
     stepAs(actor, input.key, input.step, `${originOf(actor)}-step:${input.clientRequestId}`),
+    (row) => row,
   );
   return yield* answer(input.orgId, viewer, row, false);
 });

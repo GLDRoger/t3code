@@ -286,7 +286,7 @@ function Frame(props: {
                 {
                   accessibilityLabel: `Ask ${agent.name}`,
                   icon: "bubble.left" as const,
-                  onPress: () => agent.ask("About our subscriptions: "),
+                  onPress: () => agent.ask(KIN_SUBSCRIPTIONS.askAbout),
                 },
                 {
                   accessibilityLabel: KIN_SUBSCRIPTIONS.add,
@@ -331,7 +331,7 @@ function KinSubscriptionsGate(props: KinWorkTarget) {
         {lists.state._tag === "failed" ? (
           <EmptyState
             variant="plain"
-            title="Couldn't load subscriptions"
+            title={KIN_SUBSCRIPTIONS.loadFailed}
             detail={KIN_CHECK_CONNECTION}
             action={<Button tone="secondary" label={KIN_RETRY} onPress={lists.refresh} />}
           />

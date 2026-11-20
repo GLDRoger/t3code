@@ -206,7 +206,7 @@ function PostRow(props: {
           <View className="flex-row flex-wrap gap-2 pt-1">
             {post.url === null ? null : (
               <Button
-                label="See the post"
+                label={KIN_SOCIAL_COPY.seePost}
                 tone="text"
                 size="compact"
                 onPress={() => void Linking.openURL(post.url!)}
@@ -386,7 +386,7 @@ export function KinSocialPackCard(props: {
         />
         {share === null ? null : (
           <Button
-            label="Save the file"
+            label={KIN_SOCIAL_COPY.saveFile}
             icon="square.and.arrow.up"
             tone="outline"
             size="compact"

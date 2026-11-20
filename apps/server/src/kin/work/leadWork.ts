@@ -157,6 +157,7 @@ const Due = Schema.NullOr(
   description:
     "A calendar day in the owner's time zone (2026-11-20), or a time with its offset (2026-11-20T18:00+05:30). null clears it.",
 });
+const WaitingOn = KinToolText(120, "Who it waits on, written as owner is.");
 const Title = KinToolText(280);
 const Notes = Schema.String.check(Schema.isMaxLength(4_000));
 const List = KinListId.annotate({
@@ -449,7 +450,10 @@ export const GetResult = Schema.Struct({
   projectNote: Schema.optional(Schema.Struct({ from: Schema.String, text: Schema.String })),
 });
 /** A deal's next step: a task of ours on its client, linked to the deal, as its page adds one. */
-const DealNext = Schema.Struct({ title: Title, due: Schema.optional(Due) }).annotate({
+const DealNext = Schema.Struct({
+  title: Title,
+  due: Schema.optional(Due.annotate({ description: "Written as due is." })),
+}).annotate({
   description:
     "A deal's next step, with due as its day: a task of ours on its client, linked to the deal. Only on a deal.",
 });
@@ -458,7 +462,7 @@ const CreateRow = Schema.Struct({
   title: Title,
   owner: Schema.optional(Who),
   state: Schema.optional(KinRecordState),
-  waitingOn: Schema.optional(Who),
+  waitingOn: Schema.optional(WaitingOn),
   due: Schema.optional(Due),
   notes: Schema.optional(Notes),
   category: Schema.optional(Category),
@@ -555,7 +559,7 @@ export const UpdateInput = Schema.Struct({
   sourceEventId: TurnEvent,
   title: Schema.optional(Title),
   state: Schema.optional(KinRecordState),
-  waitingOn: Schema.optional(Who),
+  waitingOn: Schema.optional(WaitingOn),
   owner: Schema.optional(Who),
   due: Schema.optional(Due),
   notes: Schema.optional(Notes),

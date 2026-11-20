@@ -97,7 +97,7 @@ function Permitted(props: KinWorkTarget) {
     return (
       <KinWorkFrame title={KIN_COMPANY.title} onBack={back}>
         {state._tag === "loading" ? (
-          <KinWorkLoading label="Loading company details" />
+          <KinWorkLoading label={KIN_COMPANY.loading} />
         ) : (
           <KinLoadFailed
             title={KIN_COMPANY.loadFailed}

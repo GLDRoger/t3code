@@ -677,8 +677,14 @@ export class KinRecords extends Context.Service<
      * list, and the people besides the owner who may see it after that change (`teamView.ts`).
      */
     readonly changes: (orgId: KinOrgId) => Stream.Stream<Tick, KinChatError>;
-    /** Tells `changes` an org's entries moved with no change logged here: an undo, another process. */
-    readonly announce: (orgId: KinOrgId) => Effect.Effect<void, KinChatError>;
+    /**
+     * Tells `changes` an org's entries moved with no change logged here: an undo, another process.
+     * Given the entries that moved, as a contact logged on a client, only those are read again.
+     */
+    readonly announce: (
+      orgId: KinOrgId,
+      recordIds?: ReadonlyArray<string>,
+    ) => Effect.Effect<void, KinChatError>;
     /** Kin's layer attaches `closeSubject`, which sits above chat, for as long as its scope. */
     readonly attachClosing: (closing: Closing) => Effect.Effect<void, never, Scope.Scope>;
     /**
@@ -724,15 +730,18 @@ const make = Effect.gen(function* () {
     def: ListDef,
     now: number,
   ) {
-    // A defined list's register is written when it is defined; a built-in one on first use.
-    if (def.builtIn !== null)
-      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
-        VALUES (${orgId}, ${def.id}, ${def.name}, ${def.prefix}, 1, ${now})
-        ON CONFLICT DO NOTHING`;
-    const [register] = yield* sql<{ next: number; prefix: string }>`
+    const take = sql<{ next: number; prefix: string }>`
       UPDATE kin_registers SET next_number = next_number + 1
       WHERE org_id = ${orgId} AND register_id = ${def.id}
       RETURNING next_number - 1 AS next, key_prefix AS prefix`;
+    let [register] = yield* take;
+    // A defined list's register is written when it is defined; a built-in one on first use.
+    if (register === undefined && def.builtIn !== null) {
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, ${def.id}, ${def.name}, ${def.prefix}, 1, ${now})
+        ON CONFLICT DO NOTHING`;
+      [register] = yield* take;
+    }
     if (register === undefined) return yield* unavailable;
     return `${register.prefix}-${register.next}`;
   });
@@ -2848,7 +2857,19 @@ const make = Effect.gen(function* () {
           }),
       );
     }),
-    announce: Effect.fn("KinRecords.announce")(function* (orgId) {
+    announce: Effect.fn("KinRecords.announce")(function* (orgId, recordIds) {
+      const moved =
+        recordIds === undefined
+          ? undefined
+          : recordIds.length === 0
+            ? []
+            : yield* failed(
+                sql<{ recordId: string; key: string; registerId: string }>`SELECT
+                    record_id AS "recordId", key, register_id AS "registerId" FROM kin_records
+                  WHERE org_id = ${orgId} AND record_id IN ${sql.in([...new Set(recordIds)])}
+                  ORDER BY key`,
+              );
+      if (moved?.length === 0) return;
       // A number no change will take, past every one a client heard: an undo's entries took their
       // changes with them, and clients read again only past what they already hold.
       const [taken] = yield* failed(
@@ -2856,6 +2877,34 @@ const make = Effect.gen(function* () {
           WHERE name = 'kin_record_changes' RETURNING seq`,
       );
       const seq = taken?.seq ?? (yield* failed(latestSeq(orgId).pipe(provideSql)));
+      if (moved !== undefined) {
+        // Only who sees these entries hears of them, each at their own next number.
+        const pairs = yield* failed(
+          teamPairs(
+            orgId,
+            moved.map((one) => one.recordId),
+          ).pipe(provideSql),
+        );
+        const numbers = yield* failed(
+          bumpTeamSeqs(orgId, [...new Set(pairs.map((pair) => pair.personId))]).pipe(provideSql),
+        );
+        for (const one of moved) {
+          const team = new Map<string, number>();
+          for (const pair of pairs) {
+            const number = numbers.get(pair.personId);
+            if (pair.recordId === one.recordId && number !== undefined)
+              team.set(pair.personId, number);
+          }
+          yield* PubSub.publish(ticks, {
+            orgId,
+            seq,
+            key: one.key,
+            registerId: one.registerId,
+            team,
+          });
+        }
+        return;
+      }
       // Anyone's view may have moved, so every teammate's own number moves too: one who resumes
       // later is behind, not told nothing changed.
       const everyone = yield* failed(
@@ -2868,7 +2917,8 @@ const make = Effect.gen(function* () {
           everyone.map((one) => one.personId),
         ).pipe(provideSql),
       );
-      yield* PubSub.publish(ticks, { orgId, seq, team });
+      // Screens read on readers, which see this only once it commits.
+      yield* sql.afterCommit(PubSub.publish(ticks, { orgId, seq, team }));
     }),
     peopleMoved: Effect.fn("KinRecords.peopleMoved")(function* (orgId, personIds) {
       if (personIds.length === 0) return;
