@@ -151,6 +151,8 @@ export const KIN_CLIENTS = {
   noTax: "No GSTIN or state yet. Invoices need one to work out GST.",
   all: "All clients",
   search: "Search clients",
+  /** A client the search found through one of its contacts. */
+  foundContact: (name: string) => `Contact: ${name}`,
   add: "New client",
   loadFailed: "Couldn't load your clients",
   weOwe: "To do for them",
@@ -562,7 +564,7 @@ export interface KinClientRowView {
   readonly name: string;
   /** "Prospect" ahead of the line, in the accent colour; null for a client or a vendor. */
   readonly mark: string | null;
-  /** "Vendor · 2 to do (1 late) · Waiting on 1", or a prospect's "Zoya" after its mark. */
+  /** "Vendor · 2 to do (1 late) · Waiting on 1", or a prospect's "Zoya" after its mark; "Contact: Ola · …" when the search found it through Ola. */
   readonly line: string;
   /** "Next: Monthly report, Fri 14 Nov", or "No next step"; null for a vendor with nothing owed. */
   readonly next: string | null;
@@ -581,6 +583,7 @@ export function kinClientRow(row: KinPartyRow, names: KinWorkNames, now: Date): 
   // A teammate's row comes without counts (and without a contact day): it names, it doesn't count.
   const counted = row.lastContactAt !== undefined;
   const line = [
+    row.contact === undefined ? null : KIN_CLIENTS.foundContact(row.contact),
     row.kind === "vendor" ? KIN_CLIENTS.kindVendor : null,
     prospect && who !== "You" ? who : null,
     !row.active ? KIN_CLIENTS.closed : prospect || !counted ? null : kinOwedLine(row),

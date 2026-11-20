@@ -91,7 +91,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
     readonly scope: KinViewer;
     /** With nothing that has every word, look again for any of them (`widened`). */
     readonly widen?: boolean;
-    /** Deals among `work`, and a deal by its exact key: a person's own search box asks. */
+    /** Deals too, and a deal by its exact key: a person's own search box asks. */
     readonly deals?: boolean;
   },
 ) {
@@ -100,8 +100,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
   const indexed = yield* searchIndexed();
   if (words.length === 0) return { hits: [] as ReadonlyArray<Hit>, indexed, widened: false };
   const kinds = input.kinds === undefined || input.kinds.length === 0 ? KINDS : input.kinds;
-  const registers: ReadonlyArray<string> =
-    input.deals === true && kinds.includes("work") ? [...kinds, "deals"] : kinds;
+  const registers: ReadonlyArray<string> = input.deals === true ? [...kinds, "deals"] : kinds;
   const where = [
     sql`r.org_id = ${orgId}`,
     sql`r.register_id IN ${sql.in(registers)}`,

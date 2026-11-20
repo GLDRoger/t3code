@@ -4032,6 +4032,23 @@ it.effect(
         (yield* Clients.parties([mate], { orgId, tag: "clinics" })).parties.map((one) => one.name),
         ["Invented Tallmoor"],
       );
+      // A contact's name finds its client, which says which contact; only where its reader sees it.
+      const foundBy = (who: typeof owner, text: string) =>
+        Clients.parties([who], { orgId, text }).pipe(
+          Effect.map((page) => page.parties.map((one) => [one.name, one.contact])),
+        );
+      assert.deepStrictEqual(yield* foundBy(owner, " OLA "), [
+        ["Invented Tallmoor", 'Invented Ola, "the buyer"'],
+      ]);
+      assert.deepStrictEqual(yield* foundBy(mate, "ola"), [
+        ["Invented Tallmoor", 'Invented Ola, "the buyer"'],
+      ]);
+      assert.deepStrictEqual(yield* foundBy(owner, "hidden"), [
+        ["Invented Quietbay", "Invented Hidden"],
+      ]);
+      assert.deepStrictEqual(yield* foundBy(mate, "hidden"), []);
+      assert.deepStrictEqual(yield* foundBy(owner, "gone"), []);
+      assert.deepStrictEqual(yield* foundBy(owner, "tallmoor"), [["Invented Tallmoor", undefined]]);
       // A deal made on the prospect came from the campaign, and reads it by name.
       assert.strictEqual(pilot.source, "Invented harbour fair");
       // The audience as a list: the owner's four, the teammate's three.

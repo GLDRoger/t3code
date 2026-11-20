@@ -221,10 +221,11 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
     );
   }
 
-  /** One search box: everything this viewer may open (money and memory too), or only the kinds named. */
+  /** One search box: everything this viewer may open (money and memory too), or only the kinds named, with deals if asked. */
   function useKinSearch(
     { environmentId, orgId }: KinScreenTarget,
     kinds: ReadonlyArray<KinSearchKind> | null,
+    deals = false,
   ) {
     const [state, setState] = useState<KinSearchState>(KIN_SEARCH_INITIAL);
     const [search] = useState(() =>
@@ -234,7 +235,13 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
         read: ({ text, closed }) =>
           kinClient.search.run(registry, {
             environmentId,
-            input: { orgId, text, closed, ...(kinds === null ? { everything: true } : { kinds }) },
+            input: {
+              orgId,
+              text,
+              closed,
+              ...(kinds === null ? { everything: true } : { kinds }),
+              ...(deals ? { deals: true } : {}),
+            },
           }),
       }),
     );

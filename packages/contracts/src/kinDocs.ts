@@ -517,6 +517,8 @@ export const KinSearchInput = Schema.Struct({
   closed: Schema.optional(Schema.Boolean),
   /** Money entries and memory too: a client that can open them asks, so an older one never gets them. */
   everything: Schema.optional(Schema.Literal(true)),
+  /** Deals too, by their words and their key, when `kinds` leaves out `work`. */
+  deals: Schema.optional(Schema.Literal(true)),
   limit: Schema.optional(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(50)),
   ),

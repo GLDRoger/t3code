@@ -384,6 +384,7 @@ export const search = Effect.fn("KinDocs.search")(
             ),
           )
         : [];
+    const deals = input.deals === true || recordKinds.length === 0 || recordKinds.includes("work");
     const found =
       asked.length > 0 && recordKinds.length === 0
         ? { hits: [], indexed: yield* searchIndexed() }
@@ -395,7 +396,7 @@ export const search = Effect.fn("KinDocs.search")(
             limit: limit - memory.length,
             viewer: team === undefined ? "owner" : "team",
             scope: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
-            deals: true,
+            deals,
           });
     return {
       hits: [

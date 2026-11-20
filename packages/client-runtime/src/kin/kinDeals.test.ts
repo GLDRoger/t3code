@@ -10,6 +10,7 @@ import {
   type KinDealNumbers,
   type KinDealRow,
   type KinRecordChange,
+  formatKinWhen,
 } from "@t3tools/contracts";
 
 import {
@@ -37,6 +38,8 @@ import {
   kinDealPeopleRows,
   kinDealWeekGroups,
   kinWinRateText,
+  kinDealsMatching,
+  kinDealChangeWhen,
 } from "./kinDeals.ts";
 import type { KinWorkNames } from "./kinWork.ts";
 
@@ -104,6 +107,19 @@ describe("kinDealsByStage", () => {
     expect(columns[0]?.total).toBe("€21,000");
     // Never one figure across currencies.
     expect(columns[2]?.total).toMatch(/NOK.*·.*€10,000|€10,000.*·.*NOK/);
+  });
+});
+
+describe("kinDealsMatching", () => {
+  it("keeps a deal whose title or client has the words, or whose key is typed whole", () => {
+    const deals = [deal(1), deal(12, { title: "Invented stock system" })];
+    const keys = (text: string) => kinDealsMatching(deals, text).map((one) => one.key);
+    expect(keys("")).toEqual(["DL-1", "DL-12"]);
+    expect(keys(" dl-1 ")).toEqual(["DL-1"]);
+    expect(keys("DL-12")).toEqual(["DL-12"]);
+    expect(keys("stock")).toEqual(["DL-12"]);
+    expect(keys("brightwater")).toEqual(["DL-1", "DL-12"]);
+    expect(keys("DL-9")).toEqual([]);
   });
 });
 
@@ -396,6 +412,19 @@ describe("kinDealStagesProblem", () => {
     [Array.from({ length: 13 }, (_, i) => `S${i}`), "At most 12 stages."],
   ])("%j", (list, problem) => {
     expect(kinDealStagesProblem(list)).toBe(problem);
+  });
+});
+
+describe("kinDealChangeWhen", () => {
+  it("reads when it happened on this device's clock, as chat does, not the company's", () => {
+    const at = "2026-11-19T18:00:00.000Z";
+    const clock = formatKinWhen(Date.parse(at), "time");
+    // `names` keeps Kolkata time, which none of the zones the tests run in shares.
+    expect(clock).not.toBe(formatKinWhen(Date.parse(at), "time", { zone: names.zone! }));
+    expect(kinDealChangeWhen({ at }, new Date(at))).toBe(`today, ${clock}`);
+    expect(kinDealChangeWhen({ at }, new Date(Date.parse(at) + 24 * 60 * 60 * 1000))).toBe(
+      `yesterday, ${clock}`,
+    );
   });
 });
 

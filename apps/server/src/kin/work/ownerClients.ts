@@ -138,6 +138,7 @@ const nameOnly = (row: KinPartyRow): KinPartyRow => ({
   late: 0,
   overdue: 0,
   next: null,
+  ...(row.contact === undefined ? {} : { contact: row.contact }),
   rev: row.rev,
 });
 const unseen = Effect.fn("KinWork.crm.unseen")(function* (

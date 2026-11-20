@@ -12,6 +12,7 @@ import {
   kinDealStrip,
   kinDealWithoutConcern,
   kinDealWhen,
+  kinDealChangeWhen,
 } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinMoneyText } from "@t3tools/client-runtime/kin/kinLists";
 import { kinWorkAssignees, kinWorkDueText, kinWorkName } from "@t3tools/client-runtime/kin/kinWork";
@@ -558,7 +559,7 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
                   {kinDealChangeText(change, names, now)}
                 </span>
                 <span className="shrink-0 text-xs text-muted-foreground">
-                  {kinWorkDueText({ dueAt: change.at, dueAllDay: false }, names, now)}
+                  {kinDealChangeWhen(change, now)}
                 </span>
               </li>
             ))}
