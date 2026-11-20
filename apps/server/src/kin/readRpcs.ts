@@ -23,6 +23,8 @@ const READS = [
   "kin.work.budgets",
   "kin.work.receipts",
   "kin.work.lists",
+  // What a teammate's screens should read again, Money's lists among it.
+  "kin.refreshes.subscribe",
 ] as const satisfies ReadonlyArray<(typeof KinRpcs)[number]["_tag"]>;
 export type KinReadRpc = (typeof READS)[number];
 export const KIN_READ_RPCS: ReadonlySet<string> = new Set(READS);

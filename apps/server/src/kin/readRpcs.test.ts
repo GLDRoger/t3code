@@ -174,6 +174,7 @@ const cases = (
   "kin.work.budgets": { payload: { orgId }, member: false },
   "kin.work.receipts": { payload: { orgId }, member: false },
   "kin.work.lists": { payload: { orgId }, member: false },
+  "kin.refreshes.subscribe": { payload: { orgId }, member: true },
 });
 
 /** An answer, or a stream's first frame. */
