@@ -1,6 +1,11 @@
 import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation } from "@react-navigation/native";
 import {
+  KIN_DEAL_NUMBERS,
+  kinDealFigures,
+  kinDealMonthRows,
+  kinDealPeopleRows,
+  kinDealWeekGroups,
   KIN_DEALS,
   KIN_DEALS_STATES,
   kinDealConcernRows,
@@ -18,7 +23,7 @@ import {
 import { KIN_WORK_HOME } from "@t3tools/client-runtime/kin/kinWorkHome";
 import { KIN_CLIENTS } from "@t3tools/client-runtime/kin/kinWorkClients";
 import type { KinWorkNames } from "@t3tools/client-runtime/kin/kinWork";
-import type { KinDealsResult, KinPersonId, KinRecordKey } from "@t3tools/contracts";
+import type { KinDealNumbers, KinDealsResult, KinPersonId, KinRecordKey } from "@t3tools/contracts";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
 
@@ -29,6 +34,7 @@ import { Button } from "../../components/ui/Button";
 import { Chip } from "../../components/ui/Chip";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListActionRow } from "../../components/ui/ListActionRow";
+import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -37,7 +43,12 @@ import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { kinTabBar, useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinLoadFailed } from "./components/KinLoadFailed";
-import { KinWorkLoading, KinWorkPrivateMark, KinWorkStaleNotice } from "./components/KinWorkPieces";
+import {
+  KinFoldSection,
+  KinWorkLoading,
+  KinWorkPrivateMark,
+  KinWorkStaleNotice,
+} from "./components/KinWorkPieces";
 import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinDeals, useKinDealsStart } from "./state/useKinDeals";
@@ -357,6 +368,7 @@ export function KinDealsView(
                       </Text>
                     )}
                   </View>
+                  <DealFigures numbers={result?.numbers} />
                 </ListSection>
               )}
               {filter.who._tag === "everyone" ? null : (
@@ -419,6 +431,9 @@ export function KinDealsView(
                     {KIN_DEALS.more(result.more)}
                   </Text>
                 )}
+                {result.numbers === undefined ? null : (
+                  <DealNumbers numbers={result.numbers} names={names} onFilter={setFilter} />
+                )}
                 <WhatWeHear concerns={result.concerns} />
               </>
             )
@@ -453,6 +468,137 @@ export function KinDealsView(
           }
         />
       </ScreenContent>
+    </View>
+  );
+}
+
+/** Won this month and this week, under Open: Kin's counts, nothing until a deal exists. */
+function DealFigures(props: { readonly numbers: KinDealNumbers | undefined }) {
+  const figures = kinDealFigures(props.numbers);
+  if (figures === null) return null;
+  return (
+    <>
+      <View
+        accessible
+        accessibilityLabel={[
+          `${figures.won.label}: ${figures.won.count}`,
+          ...figures.won.values,
+        ].join(". ")}
+        className="gap-0.5 bg-grouped-card px-4 py-3"
+      >
+        <Text textRole="footnote" className="text-foreground-muted">
+          {figures.won.label}
+        </Text>
+        {figures.won.values.map((line) => (
+          <Text
+            key={line}
+            textRole="headline"
+            className="font-t3-medium text-foreground tabular-nums"
+          >
+            {line}
+          </Text>
+        ))}
+        <Text textRole="footnote" className="text-foreground-muted">
+          {figures.won.count}
+        </Text>
+      </View>
+      {figures.week === null ? null : (
+        <View
+          accessible
+          accessibilityLabel={`${KIN_DEAL_NUMBERS.thisWeek}: ${figures.week}`}
+          className="gap-0.5 bg-grouped-card px-4 py-3"
+        >
+          <Text textRole="footnote" className="text-foreground-muted">
+            {KIN_DEAL_NUMBERS.thisWeek}
+          </Text>
+          <Text textRole="headline" className="font-t3-medium text-foreground tabular-nums">
+            {figures.week}
+          </Text>
+        </View>
+      )}
+    </>
+  );
+}
+
+/**
+ * The figures' sections, folded as the page's others: this week in deals, each person's (only
+ * their own for a sales person), and the owner level's month. A person's row opens their open
+ * deals through the list's own filter.
+ */
+function DealNumbers(props: {
+  readonly numbers: KinDealNumbers;
+  readonly names: KinWorkNames;
+  readonly onFilter: (filter: KinDealsFilter) => void;
+}) {
+  const figures = kinDealFigures(props.numbers);
+  const groups = kinDealWeekGroups(props.numbers, props.names);
+  const people = kinDealPeopleRows(props.numbers, props.names);
+  const month = kinDealMonthRows(props.numbers);
+  return (
+    <View className="gap-3 px-4 pt-5">
+      {groups.length === 0 ? null : (
+        <KinFoldSection title={KIN_DEAL_NUMBERS.thisWeekInDeals} summary={figures?.week ?? null}>
+          <ListRowLayout label={KIN_DEAL_NUMBERS.since(props.numbers.weekStart)} disabled />
+          {groups.flatMap((group) => [
+            <ListRowLayout key={group.id} label={group.title} disabled />,
+            ...group.rows.map((row) => (
+              <ListRowLayout
+                key={`${group.id}:${row.key}`}
+                label={row.title}
+                {...(row.line === null ? {} : { description: row.line })}
+                {...(row.value === null ? {} : { detail: row.value })}
+              />
+            )),
+            ...(group.more === 0
+              ? []
+              : [
+                  <ListRowLayout
+                    key={`${group.id}:more`}
+                    label={KIN_DEAL_NUMBERS.more(group.more)}
+                    disabled
+                  />,
+                ]),
+          ])}
+        </KinFoldSection>
+      )}
+      {people.length === 0 ? null : (
+        // Only the owner level is sent the rate, and everyone's rows with it.
+        <KinFoldSection
+          title={
+            props.numbers.winRate === undefined ? KIN_DEAL_NUMBERS.yours : KIN_DEAL_NUMBERS.byPerson
+          }
+          summary={null}
+        >
+          {people.map((row) => {
+            const filter = row.filter;
+            const content = {
+              label: row.name,
+              description: `${KIN_DEAL_NUMBERS.wonThisMonth}: ${row.won.join(" · ")} · ${KIN_DEAL_NUMBERS.lateFollowUps}: ${row.late}`,
+              detail: row.open.join(" · "),
+            };
+            return filter === null || row.openCount === 0 ? (
+              <ListRowLayout key={row.id} {...content} />
+            ) : (
+              <ListRow key={row.id} {...content} onPress={() => props.onFilter(filter)} />
+            );
+          })}
+        </KinFoldSection>
+      )}
+      {month.rows.length <= 1 ? null : (
+        <KinFoldSection title={KIN_DEAL_NUMBERS.month} summary={null}>
+          {month.rows.map((row) => (
+            <ListRowLayout key={row.label} label={row.label} detail={row.value} />
+          ))}
+          {month.sources.length === 0
+            ? null
+            : [
+                <ListRowLayout key="sources" label={KIN_DEAL_NUMBERS.sources} disabled />,
+                ...month.sources.map((row) => (
+                  <ListRowLayout key={`source:${row.label}`} label={row.label} detail={row.value} />
+                )),
+              ]}
+        </KinFoldSection>
+      )}
     </View>
   );
 }

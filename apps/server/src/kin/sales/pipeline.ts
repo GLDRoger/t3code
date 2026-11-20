@@ -1,4 +1,9 @@
-import { type KinDealTotals, type KinPersonId } from "@t3tools/contracts";
+import {
+  type KinDealNumbers,
+  type KinDealTotals,
+  type KinPersonId,
+  type KinWorkPrincipal,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -25,6 +30,39 @@ export const PipelineResult = Schema.Struct({
   open: Schema.optional(Totals),
   won: Schema.optional(Totals),
   lost: Schema.optional(Totals),
+  /** The Deals tab's figures, as far as every reader of the turn may see them. */
+  numbers: Schema.optional(
+    Schema.Struct({
+      month: Schema.String,
+      lastMonth: Schema.String,
+      weekStart: Schema.String,
+      wonThisMonth: Totals,
+      wonLastMonth: Schema.optional(Totals),
+      lostThisMonth: Schema.optional(Totals),
+      lostLastMonth: Schema.optional(Totals),
+      winRate90Days: Schema.optional(Schema.Struct({ won: Schema.Number, decided: Schema.Number })),
+      newProspectsBySource: Schema.optional(
+        Schema.Array(Schema.Struct({ source: Schema.String, count: Schema.Number })),
+      ),
+      followUpsLate: Schema.optional(Schema.Number),
+      thisWeek: Schema.optional(
+        Schema.Struct({
+          won: Schema.Number,
+          lost: Schema.Number,
+          new: Schema.Number,
+          moved: Schema.Number,
+        }),
+      ),
+      byPerson: Schema.Array(
+        Schema.Struct({
+          person: Schema.String,
+          open: Totals,
+          wonThisMonth: Totals,
+          followUpsLate: Schema.Number,
+        }),
+      ),
+    }),
+  ),
   deals: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -81,6 +119,55 @@ const namesOf = Effect.fnUntraced(function* (lead: Lead, people: ReadonlyArray<K
   return people.map((person) => names.get(person) ?? "a teammate");
 });
 
+/** Whoever looks after deals, by name. */
+const principalNames = Effect.fnUntraced(function* (lead: Lead) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ kind: string; id: string; name: string }>`SELECT 'person' AS kind,
+      person_id AS id, display_name AS name FROM kin_people WHERE org_id = ${lead.orgId}
+    UNION ALL SELECT 'agent' AS kind, agent_id AS id, display_name AS name FROM kin_agents
+      WHERE org_id = ${lead.orgId}
+    ORDER BY kind, id`;
+  return (owner: KinWorkPrincipal) =>
+    rows.find(
+      (row) =>
+        row.kind === owner._tag &&
+        row.id === (owner._tag === "person" ? owner.personId : owner.agentId),
+    )?.name ?? "someone";
+});
+
+const shownNumbers = (numbers: KinDealNumbers, nameOf: (owner: KinWorkPrincipal) => string) => ({
+  month: numbers.month,
+  lastMonth: numbers.lastMonth,
+  weekStart: numbers.weekStart,
+  wonThisMonth: shownTotals(numbers.wonThisMonth),
+  ...(numbers.wonLastMonth === undefined
+    ? {}
+    : { wonLastMonth: shownTotals(numbers.wonLastMonth) }),
+  ...(numbers.lostThisMonth === undefined
+    ? {}
+    : { lostThisMonth: shownTotals(numbers.lostThisMonth) }),
+  ...(numbers.lostLastMonth === undefined
+    ? {}
+    : { lostLastMonth: shownTotals(numbers.lostLastMonth) }),
+  ...(numbers.winRate === undefined ? {} : { winRate90Days: numbers.winRate }),
+  ...(numbers.sources === undefined
+    ? {}
+    : {
+        newProspectsBySource: numbers.sources.map((one) => ({
+          source: one.source ?? "not said",
+          count: one.count,
+        })),
+      }),
+  ...(numbers.late === undefined ? {} : { followUpsLate: numbers.late }),
+  ...(numbers.week === undefined ? {} : { thisWeek: numbers.week.counts }),
+  byPerson: numbers.people.map((one) => ({
+    person: nameOf(one.owner),
+    open: shownTotals(one.open),
+    wonThisMonth: shownTotals(one.wonThisMonth),
+    followUpsLate: one.late,
+  })),
+});
+
 /**
  * The pipeline as the turn's people see it (shared policy `"view"`): in a turn others read, only
  * deals every one of them sees, and a member without Clients gets none. Kin counts every figure.
@@ -95,8 +182,12 @@ const runPipeline = Effect.fnUntraced(function* (lead: Lead, input: typeof Pipel
   switch (input.view) {
     case "totals": {
       const totals = yield* Deals.pipelineTotals(lead.orgId, viewer).pipe(workFailure);
+      const numbers = yield* Deals.summary(lead.orgId, viewer).pipe(workFailure);
       return {
         ...base,
+        ...(numbers === undefined
+          ? {}
+          : { numbers: shownNumbers(numbers, yield* principalNames(lead)) }),
         stages: totals.stages.map(({ name, ...rest }) => ({ stage: name, ...shownTotals(rest) })),
         open: shownTotals(totals.open),
         won: shownTotals(totals.won),

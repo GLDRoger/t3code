@@ -1,13 +1,17 @@
 import {
   kinOwnerLevel,
   type KinDealMove,
+  type KinDealNumbers,
   type KinDealPage,
+  type KinDealPersonNumbers,
   type KinDealRow,
   type KinDealStage,
   type KinDealState,
   type KinDealsInput,
   type KinDealsResult,
+  type KinDealTotals,
   type KinDealUpdateInput,
+  type KinDealWeekRow,
   type KinMoney,
   type KinOrgId,
   type KinPersonAccess,
@@ -687,5 +691,213 @@ export function kinDealQuoteChoices(
       })),
     ],
     empty: null,
+  };
+}
+
+// The Deals tab's figures: every number counted by the host; these only put them in words.
+
+const MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+/** "November" for `2026-11`. */
+const kinMonthName = (month: string) => MONTHS[Number(month.slice(5, 7)) - 1] ?? month;
+/** "Monday 16 November": the host's week always starts on a Monday. */
+const kinWeekStartName = (day: string) =>
+  `Monday ${Number(day.slice(8, 10))} ${kinMonthName(day.slice(0, 7))}`;
+
+/** Every word the figures show, on the web and the phone alike. */
+export const KIN_DEAL_NUMBERS = {
+  wonIn: (month: string) => `Won in ${kinMonthName(month)}`,
+  lostIn: (month: string) => `Lost in ${kinMonthName(month)}`,
+  thisWeek: "This week",
+  weekLine: (added: number, won: number, lost: number) =>
+    `+${added} new · ${won} won · ${lost} lost`,
+  seeWhatChanged: "See what changed",
+  thisWeekInDeals: "This week in deals",
+  since: (day: string) => `From ${kinWeekStartName(day)}`,
+  group: (label: string, count: number) => `${label} · ${count}`,
+  new: "New",
+  moved: "Moved",
+  more: (n: number) => `${n} more`,
+  byPerson: "By person",
+  yours: "Yours",
+  person: "Looked after by",
+  openValue: "Open",
+  wonThisMonth: "Won this month",
+  lateFollowUps: "Follow-ups late",
+  month: "This month and last",
+  winRate: "Win rate, 90 days",
+  noneDecided: "None decided yet",
+  sources: "New prospects this month",
+  notSaid: "Not said",
+  nothing: "Nothing",
+  openDeals: (name: string) => `Open deals looked after by ${name}`,
+  basis: "Each deal keeps its own currency; figures are added up within a currency only.",
+} as const;
+
+/** With fewer decided than this, the rate is a count: "2 won of 3". */
+const KIN_WIN_RATE_MIN = 5;
+
+/** Totals in words: each currency on its own line, or the count alone with no value. */
+const kinTotalsLines = (totals: KinDealTotals) => ({
+  values: totals.values.map((money) => kinMoneyText(money)),
+  count: KIN_DEALS.dealCount(totals.count),
+});
+
+/** "2 won of 3" for a few; "40% (8 won of 20)" from five decided on. */
+export function kinWinRateText(rate: { readonly won: number; readonly decided: number }) {
+  if (rate.decided === 0) return KIN_DEAL_NUMBERS.noneDecided;
+  const count = `${rate.won} won of ${rate.decided}`;
+  return rate.decided < KIN_WIN_RATE_MIN
+    ? count
+    : `${Math.round((rate.won / rate.decided) * 100)}% (${count})`;
+}
+
+interface KinDealFigure {
+  readonly label: string;
+  readonly values: ReadonlyArray<string>;
+  readonly count: string;
+}
+
+/**
+ * The headline after Open: won this month, then this week in one line. Null when the host sent no
+ * figures (an older host, or no deal yet), so nothing shows.
+ */
+export function kinDealFigures(numbers: KinDealNumbers | undefined) {
+  if (numbers === undefined) return null;
+  const week = numbers.week;
+  return {
+    won: { label: KIN_DEAL_NUMBERS.wonIn(numbers.month), ...kinTotalsLines(numbers.wonThisMonth) },
+    lost:
+      numbers.lostThisMonth === undefined
+        ? null
+        : {
+            label: KIN_DEAL_NUMBERS.lostIn(numbers.month),
+            ...kinTotalsLines(numbers.lostThisMonth),
+          },
+    week:
+      week === undefined
+        ? null
+        : KIN_DEAL_NUMBERS.weekLine(week.counts.new, week.counts.won, week.counts.lost),
+  } satisfies {
+    readonly won: KinDealFigure;
+    readonly lost: KinDealFigure | null;
+    readonly week: string | null;
+  };
+}
+
+interface KinDealWeekLine {
+  readonly key: KinRecordKey;
+  /** "Kestrel Freight: warehouse app". */
+  readonly title: string;
+  readonly value: string | null;
+  /** A move: "In talks → Proposal · Zoya". */
+  readonly line: string | null;
+}
+
+/** "This week in deals": won, lost, new and moved, each with its count and the deals listed. */
+export function kinDealWeekGroups(numbers: KinDealNumbers, names: KinWorkNames) {
+  const week = numbers.week;
+  if (week === undefined) return [];
+  const row = (deal: KinDealWeekRow): KinDealWeekLine => ({
+    key: deal.key,
+    title: deal.party === "" ? deal.title : `${deal.party}: ${deal.title}`,
+    value: deal.value === undefined ? null : kinMoneyText(deal.value),
+    line:
+      deal.from === undefined || deal.to === undefined
+        ? null
+        : `${deal.from} → ${deal.to} · ${kinWorkName(deal.owner, names)}`,
+  });
+  return (
+    [
+      ["won", KIN_DEALS.won, week.won, week.counts.won],
+      ["lost", KIN_DEALS.lost, week.lost, week.counts.lost],
+      ["new", KIN_DEAL_NUMBERS.new, week.new, week.counts.new],
+      ["moved", KIN_DEAL_NUMBERS.moved, week.moved, week.counts.moved],
+    ] as const
+  ).map(([id, label, rows, count]) => ({
+    id,
+    title: KIN_DEAL_NUMBERS.group(label, count),
+    rows: rows.map(row),
+    more: Math.max(0, count - rows.length),
+  }));
+}
+
+interface KinDealPersonRow {
+  readonly id: string;
+  readonly owner: KinDealPersonNumbers["owner"];
+  readonly name: string;
+  readonly open: ReadonlyArray<string>;
+  readonly openCount: number;
+  readonly won: ReadonlyArray<string>;
+  readonly late: number;
+  /** The list's own filter for their open deals, when they are a person. */
+  readonly filter: KinDealsFilter | null;
+}
+
+/** The per-person table: everyone's for the owner level, a sales person's own row. */
+export function kinDealPeopleRows(
+  numbers: KinDealNumbers,
+  names: KinWorkNames,
+): ReadonlyArray<KinDealPersonRow> {
+  return numbers.people.map((one) => ({
+    id: one.owner._tag === "person" ? one.owner.personId : one.owner.agentId,
+    owner: one.owner,
+    name: kinWorkName(one.owner, names),
+    open: one.open.values.length === 0 ? [String(one.open.count)] : kinTotalsLines(one.open).values,
+    openCount: one.open.count,
+    won:
+      one.wonThisMonth.values.length === 0
+        ? [String(one.wonThisMonth.count)]
+        : kinTotalsLines(one.wonThisMonth).values,
+    late: one.late,
+    filter:
+      one.owner._tag !== "person"
+        ? null
+        : one.owner.personId === names.me
+          ? { who: { _tag: "me" }, state: "open" }
+          : { who: { _tag: "person", personId: one.owner.personId }, state: "open" },
+  }));
+}
+
+/** The owner level's month figures: won and lost this month and last, the rate, and sources. */
+export function kinDealMonthRows(numbers: KinDealNumbers) {
+  const totals = (totals: KinDealTotals | undefined) =>
+    totals === undefined
+      ? null
+      : totals.count === 0
+        ? KIN_DEAL_NUMBERS.nothing
+        : [
+            KIN_DEALS.dealCount(totals.count),
+            ...totals.values.map((money) => kinMoneyText(money)),
+          ].join(" · ");
+  const rows = [
+    [KIN_DEAL_NUMBERS.wonIn(numbers.month), totals(numbers.wonThisMonth)],
+    [KIN_DEAL_NUMBERS.wonIn(numbers.lastMonth), totals(numbers.wonLastMonth)],
+    [KIN_DEAL_NUMBERS.lostIn(numbers.month), totals(numbers.lostThisMonth)],
+    [KIN_DEAL_NUMBERS.lostIn(numbers.lastMonth), totals(numbers.lostLastMonth)],
+    [
+      KIN_DEAL_NUMBERS.winRate,
+      numbers.winRate === undefined ? null : kinWinRateText(numbers.winRate),
+    ],
+    [KIN_DEAL_NUMBERS.lateFollowUps, numbers.late === undefined ? null : String(numbers.late)],
+  ] as const;
+  return {
+    rows: rows.flatMap(([label, value]) => (value === null ? [] : [{ label, value }])),
+    sources: (numbers.sources ?? []).map((one) => ({
+      label: one.source ?? KIN_DEAL_NUMBERS.notSaid,
+      value: String(one.count),
+    })),
   };
 }

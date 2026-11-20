@@ -263,6 +263,13 @@ it.effect(
           ["Deciding", 0],
         ],
       );
+      // The tab's figures beside them: every person's row, and the owner level's own figures.
+      assert.deepStrictEqual(
+        totals.numbers?.byPerson.map((one) => one.person),
+        ["Rhea", "Zoya"],
+      );
+      assert.deepStrictEqual(totals.numbers?.winRate90Days, { won: 1, decided: 2 });
+      assert.deepStrictEqual(totals.numbers?.wonThisMonth, totals.won);
       const ownersConcerns = [
         { label: "Past system failed them", deals: 3, open: 2, won: 1, lost: 0 },
         { label: "Price against a spreadsheet", deals: 1, open: 1, won: 0, lost: 0 },
@@ -322,6 +329,19 @@ it.effect(
       );
       assert.deepStrictEqual(theirs.open, { count: 2, values: ["€46,000.00"] });
       assert.deepStrictEqual(theirs.won, { count: 1, values: ["€19,000.00"] });
+      // Her own row and week, the team's as she sees it; nobody else's row, no owner's figure.
+      assert.deepStrictEqual(
+        theirs.numbers?.byPerson.map((one) => one.person),
+        ["Zoya"],
+      );
+      assert.isDefined(theirs.numbers?.thisWeek);
+      for (const owners of [
+        "winRate90Days",
+        "lostThisMonth",
+        "newProspectsBySource",
+        "followUpsLate",
+      ])
+        assert.notProperty(theirs.numbers, owners);
       const zoyasConcerns = [
         { label: "Past system failed them", deals: 2, open: 1, won: 1, lost: 0 },
         { label: "Staff confidence", deals: 1, open: 1, won: 0, lost: 0 },
@@ -357,6 +377,11 @@ it.effect(
         VALUES ('lead-chat-arjun', ${orgId}, 'lead-chat', 'person', 'arjun', 'member', ${at})`;
       const nobody = yield* pipelineRead(scope, { view: "mine" }).pipe(Effect.flip);
       assert.strictEqual(isChatError(nobody) ? nobody.message : "", PIPELINE_MINE_NOBODY);
+      // Two sellers read it: only what both may see, so neither one's own row nor week.
+      const both = (yield* pipelineRead(scope, { view: "totals" })).numbers;
+      assert.deepStrictEqual(both?.byPerson, []);
+      assert.notProperty(both, "thisWeek");
+      assert.deepStrictEqual(both?.wonThisMonth, theirs.numbers?.wonThisMonth);
       yield* sql`DELETE FROM kin_chat_members WHERE member_id = 'lead-chat-arjun'`;
 
       // With Clients off she has no deals at all: refused, not an empty pipeline.

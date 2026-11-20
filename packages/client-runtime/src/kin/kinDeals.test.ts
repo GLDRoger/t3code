@@ -7,6 +7,7 @@ import {
   KinPersonId,
   KinRecordId,
   KinRecordKey,
+  type KinDealNumbers,
   type KinDealRow,
   type KinRecordChange,
 } from "@t3tools/contracts";
@@ -29,6 +30,11 @@ import {
   kinDealStageBeside,
   kinDealStagesProblem,
   kinDealWhen,
+  kinDealFigures,
+  kinDealMonthRows,
+  kinDealPeopleRows,
+  kinDealWeekGroups,
+  kinWinRateText,
 } from "./kinDeals.ts";
 import type { KinWorkNames } from "./kinWork.ts";
 
@@ -393,5 +399,87 @@ describe("kinDealChangeText", () => {
     [[{ field: "state", from: "dropped", to: "open" }], "Zoya reopened it"],
   ] as const)("%j", (fields, text) => {
     expect(kinDealChangeText(change(fields), names, now)).toBe(text);
+  });
+});
+
+describe("the figures", () => {
+  const eur = (count: number, minor: number) => ({
+    count,
+    values: [{ minor, currency: "EUR" }],
+  });
+  const numbers: KinDealNumbers = {
+    month: "2026-11",
+    lastMonth: "2026-10",
+    weekStart: "2026-11-16",
+    open: eur(2, 1_900_000),
+    stages: [],
+    wonThisMonth: eur(1, 200_000),
+    lostThisMonth: { count: 0, values: [] },
+    winRate: { won: 2, decided: 3 },
+    sources: [{ source: null, count: 1 }],
+    week: {
+      won: [],
+      lost: [],
+      new: [],
+      moved: [
+        {
+          key: KinRecordKey.make("DL-1"),
+          title: "warehouse app",
+          party: "Kestrel Freight",
+          owner: { _tag: "person", personId: zoya },
+          value: { minor: 1_800_000, currency: "EUR" },
+          from: "New",
+          to: "Proposal",
+        },
+      ],
+      counts: { won: 0, lost: 0, new: 3, moved: 1 },
+    },
+    people: [
+      {
+        owner: { _tag: "person", personId: zoya },
+        open: eur(1, 1_800_000),
+        wonThisMonth: { count: 0, values: [] },
+        late: 1,
+      },
+    ],
+  };
+
+  it("names the month, says the week in one line, and nothing at all without figures", () => {
+    expect(kinDealFigures(undefined)).toBeNull();
+    const figures = kinDealFigures(numbers)!;
+    expect(figures.won).toEqual({ label: "Won in November", values: ["€2,000"], count: "1 deal" });
+    expect(figures.week).toBe("+3 new · 0 won · 0 lost");
+  });
+
+  it("gives a rate only from five decided deals, a count below that", () => {
+    expect(kinWinRateText({ won: 0, decided: 0 })).toBe("None decided yet");
+    expect(kinWinRateText({ won: 2, decided: 3 })).toBe("2 won of 3");
+    expect(kinWinRateText({ won: 2, decided: 5 })).toBe("40% (2 won of 5)");
+    expect(kinDealMonthRows(numbers).rows).toContainEqual({
+      label: "Win rate, 90 days",
+      value: "2 won of 3",
+    });
+    expect(kinDealMonthRows(numbers).sources).toEqual([{ label: "Not said", value: "1" }]);
+  });
+
+  it("lists a move with its stages and who looks after it, and each person's own filter", () => {
+    const moved = kinDealWeekGroups(numbers, names).find((group) => group.id === "moved")!;
+    expect(moved.title).toBe("Moved · 1");
+    expect(moved.rows[0]).toMatchObject({
+      title: "Kestrel Freight: warehouse app",
+      line: "New → Proposal · Zoya",
+    });
+    expect(kinDealWeekGroups(numbers, names).find((group) => group.id === "new")!.more).toBe(3);
+    expect(kinDealPeopleRows(numbers, names)[0]).toMatchObject({
+      name: "Zoya",
+      open: ["€18,000"],
+      won: ["0"],
+      late: 1,
+      filter: { who: { _tag: "person", personId: zoya }, state: "open" },
+    });
+    expect(kinDealPeopleRows(numbers, { ...names, me: zoya })[0]).toMatchObject({
+      name: "You",
+      filter: { who: { _tag: "me" }, state: "open" },
+    });
   });
 });

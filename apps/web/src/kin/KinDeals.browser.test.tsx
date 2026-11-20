@@ -455,3 +455,109 @@ describe("Settings → Deals", () => {
     expect(page.getByRole("button", { name: "Save stages" }).elements()).toHaveLength(0);
   });
 });
+
+describe("the deals figures", () => {
+  const rhea = KinPersonId.make("person-rhea");
+  const eur = (count: number, minor: number) => ({
+    count,
+    values: [{ minor, currency: "EUR" }],
+  });
+  const numbers = (owner: boolean): NonNullable<KinDealsResult["numbers"]> => ({
+    month: "2026-11",
+    lastMonth: "2026-10",
+    weekStart: "2026-11-16",
+    open: eur(2, 2_100_000),
+    stages: [],
+    wonThisMonth: eur(1, 1_900_000),
+    week: {
+      won: [
+        {
+          key: KinRecordKey.make("DL-9"),
+          title: "warehouse app",
+          party: "Kestrel Freight",
+          owner: { _tag: "person", personId: zoya },
+          value: { minor: 1_900_000, currency: "EUR" },
+        },
+      ],
+      lost: [],
+      new: [],
+      moved: [],
+      counts: { won: 1, lost: 0, new: 3, moved: 0 },
+    },
+    people: [
+      {
+        owner: { _tag: "person", personId: zoya },
+        open: eur(1, 1_800_000),
+        wonThisMonth: eur(1, 1_900_000),
+        late: 1,
+      },
+      ...(owner
+        ? [
+            {
+              owner: { _tag: "person" as const, personId: rhea },
+              open: eur(1, 300_000),
+              wonThisMonth: eur(0, 0),
+              late: 0,
+            },
+          ]
+        : []),
+    ],
+    ...(owner
+      ? {
+          wonLastMonth: eur(0, 0),
+          lostThisMonth: eur(1, 650_000),
+          lostLastMonth: eur(0, 0),
+          winRate: { won: 2, decided: 3 },
+          sources: [{ source: "Harbour trade fair", count: 2 }],
+          late: 1,
+        }
+      : {}),
+  });
+  const withNumbers = (owner: boolean) => {
+    setup({ deals: [deal(1, "Shop fit-out")] });
+    state.deals = { ...(state.deals as KinDealsResult), numbers: numbers(owner) };
+  };
+
+  it("shows the owner won this month and the week, everyone's row folded, and a person's open deals", async () => {
+    await page.viewport(1440, 900);
+    withNumbers(true);
+    await using _screen = await render(board());
+    await expect.element(page.getByLabelText("Won in November: 1 deal")).toBeVisible();
+    await expect.element(page.getByLabelText("This week: +3 new · 1 won · 0 lost")).toBeVisible();
+    // Folded until opened, as the page's other sections.
+    await expect.element(page.getByText("Kestrel Freight: warehouse app")).not.toBeInTheDocument();
+    await userEvent.click(page.getByRole("button", { name: /This week in deals/ }));
+    await expect.element(page.getByText("Kestrel Freight: warehouse app")).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "By person" }));
+    await expect.element(page.getByRole("cell", { name: "You" })).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "This month and last" }));
+    await expect.element(page.getByText("2 won of 3")).toBeVisible();
+    await expect.element(page.getByText("Harbour trade fair")).toBeVisible();
+    // A person's open value opens their open deals through the list's own filter.
+    await expect.element(page.getByRole("button", { name: "Whose deals: Everyone" })).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Open deals looked after by You" }));
+    await expect.element(page.getByRole("button", { name: "Whose deals: Me" })).toBeVisible();
+  });
+
+  it("shows a sales person their own row and the team's totals, and nobody else's", async () => {
+    await page.viewport(1440, 900);
+    withNumbers(false);
+    await using _screen = await render(board());
+    await expect.element(page.getByLabelText("Won in November: 1 deal")).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Yours" }));
+    await expect.element(page.getByRole("cell", { name: "You" })).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "By person" })).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "This month and last" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("shows no figures at all for a company with no deals", async () => {
+    await page.viewport(1440, 900);
+    setup({});
+    await using _screen = await render(board());
+    await expect.element(page.getByText("No deals yet")).toBeVisible();
+    await expect.element(page.getByText(/^Won in/)).not.toBeInTheDocument();
+    await expect.element(page.getByText("This week in deals")).not.toBeInTheDocument();
+  });
+});

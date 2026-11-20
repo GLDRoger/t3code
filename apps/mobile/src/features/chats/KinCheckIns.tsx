@@ -5,6 +5,7 @@ import {
   KIN_WEEKDAYS,
   kinCheckInDraft,
   kinCheckInLine,
+  kinCheckInPipeline,
   kinCoveredLine,
   kinCheckInProblem,
   type KinCheckInDraft,
@@ -24,6 +25,7 @@ import * as Dialog from "../../components/ui/Dialog";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListSection } from "../../components/ui/ListSection";
+import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsRow } from "../settings/components/SettingsRow";
 import { KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
@@ -242,6 +244,16 @@ function CheckInForm(
           />
         ))}
       </ListSection>
+      {checkIn === null || kinCheckInPipeline(checkIn) === null ? null : (
+        <ListSection footer={KIN_CHECK_INS.pipelineDetail}>
+          <ListToggleRow
+            label={KIN_CHECK_INS.pipeline}
+            value={kinCheckInPipeline(checkIn)}
+            disabled={saving}
+            onValueChange={(on) => tap(on ? "numbers_on" : "numbers_off")}
+          />
+        </ListSection>
+      )}
       {checkIn === null ? (
         <ListSection title={KIN_CHECK_INS.agent}>
           {result.agents.map((agent) => (

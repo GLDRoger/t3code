@@ -1,6 +1,11 @@
 import {
+  KIN_DEAL_NUMBERS,
   KIN_DEALS,
   KIN_DEALS_STATES,
+  kinDealFigures,
+  kinDealMonthRows,
+  kinDealPeopleRows,
+  kinDealWeekGroups,
   kinDealConcernRows,
   kinDealDrop,
   kinDealMoves,
@@ -20,6 +25,7 @@ import { kinParseMoney } from "@t3tools/client-runtime/kin/kinLists";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import type {
   KinDealMove,
+  KinDealNumbers,
   KinDealRow,
   KinDealStage,
   KinDealsResult,
@@ -432,6 +438,7 @@ export function KinDealsTab(
             </span>
           )}
         </div>
+        <DealFigures numbers={result.numbers} />
         <div className="ms-auto">
           <DealsFilters filter={filter} directory={props.directory} onFilter={setFilter} />
         </div>
@@ -516,6 +523,9 @@ export function KinDealsTab(
       {result.more === 0 ? null : (
         <p className="px-4 py-2 text-xs text-muted-foreground">{KIN_DEALS.more(result.more)}</p>
       )}
+      {result.numbers === undefined ? null : (
+        <DealNumbers numbers={result.numbers} names={props.directory.names} onFilter={setFilter} />
+      )}
       <WhatWeHear concerns={result.concerns} />
       {board ? (
         <p className="px-4 py-2 text-xs text-muted-foreground">{KIN_DEALS.boardHint}</p>
@@ -531,6 +541,158 @@ export function KinDealsTab(
             setProblem(null);
           }}
         />
+      )}
+    </div>
+  );
+}
+
+/** Won this month and this week, beside Open: Kin's counts, nothing until a deal exists. */
+function DealFigures(props: { readonly numbers: KinDealNumbers | undefined }) {
+  const figures = kinDealFigures(props.numbers);
+  if (figures === null) return null;
+  return (
+    <>
+      <div className="flex flex-col" aria-label={`${figures.won.label}: ${figures.won.count}`}>
+        <span className="text-xs text-muted-foreground">{figures.won.label}</span>
+        {figures.won.values.map((line) => (
+          <span key={line} className="text-lg font-medium tabular-nums">
+            {line}
+          </span>
+        ))}
+        <span className="text-xs text-muted-foreground">{figures.won.count}</span>
+      </div>
+      {figures.week === null ? null : (
+        <div className="flex flex-col" aria-label={`${KIN_DEAL_NUMBERS.thisWeek}: ${figures.week}`}>
+          <span className="text-xs text-muted-foreground">{KIN_DEAL_NUMBERS.thisWeek}</span>
+          <span className="text-sm font-medium tabular-nums">{figures.week}</span>
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * The figures' sections, folded as the page's others: this week in deals, each person's (only
+ * their own for a sales person), and the owner level's month. A person's open value opens their
+ * open deals through the list's own filter.
+ */
+function DealNumbers(props: {
+  readonly numbers: KinDealNumbers;
+  readonly names: KinWorkDirectory["names"];
+  readonly onFilter: (filter: KinDealsFilter) => void;
+}) {
+  const figures = kinDealFigures(props.numbers);
+  const groups = kinDealWeekGroups(props.numbers, props.names);
+  const people = kinDealPeopleRows(props.numbers, props.names);
+  const month = kinDealMonthRows(props.numbers);
+  return (
+    <div
+      aria-label={KIN_DEAL_NUMBERS.thisWeekInDeals}
+      className="flex max-h-80 shrink-0 flex-col gap-1 overflow-y-auto border-t border-border px-2 py-2"
+    >
+      {groups.length === 0 ? null : (
+        <KinWorkSection
+          title={KIN_DEAL_NUMBERS.thisWeekInDeals}
+          fold={{ summary: figures?.week ?? null }}
+        >
+          <p className="px-2 text-xs text-muted-foreground">
+            {KIN_DEAL_NUMBERS.since(props.numbers.weekStart)}
+          </p>
+          {groups.map((group) => (
+            <section key={group.id} aria-label={group.title} className="px-2">
+              <h4 className="text-xs font-medium text-muted-foreground">{group.title}</h4>
+              <ul className="flex flex-col">
+                {group.rows.map((row) => (
+                  <li key={row.key} className="flex items-baseline gap-3 py-0.5 text-sm">
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="truncate text-foreground">{row.title}</span>
+                      {row.line === null ? null : (
+                        <span className="truncate text-xs text-muted-foreground">{row.line}</span>
+                      )}
+                    </span>
+                    {row.value === null ? null : <span className="tabular-nums">{row.value}</span>}
+                  </li>
+                ))}
+              </ul>
+              {group.more === 0 ? null : (
+                <p className="text-xs text-muted-foreground">{KIN_DEAL_NUMBERS.more(group.more)}</p>
+              )}
+            </section>
+          ))}
+        </KinWorkSection>
+      )}
+      {people.length === 0 ? null : (
+        <KinWorkSection
+          // Only the owner level is sent the rate, and everyone's rows with it.
+          title={
+            props.numbers.winRate === undefined ? KIN_DEAL_NUMBERS.yours : KIN_DEAL_NUMBERS.byPerson
+          }
+          fold={{ summary: null }}
+        >
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-muted-foreground">
+                <th className="px-2 py-1 text-start font-medium">{KIN_DEAL_NUMBERS.person}</th>
+                <th className="px-2 py-1 text-end font-medium">{KIN_DEAL_NUMBERS.openValue}</th>
+                <th className="px-2 py-1 text-end font-medium">{KIN_DEAL_NUMBERS.wonThisMonth}</th>
+                <th className="px-2 py-1 text-end font-medium">{KIN_DEAL_NUMBERS.lateFollowUps}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {people.map((row) => {
+                const filter = row.filter;
+                return (
+                  <tr key={row.id}>
+                    <td className="px-2 py-1 text-foreground">{row.name}</td>
+                    <td className="px-2 py-1 text-end tabular-nums">
+                      {filter === null || row.openCount === 0 ? (
+                        row.open.join(" · ")
+                      ) : (
+                        <Button
+                          variant="link"
+                          size="xs"
+                          aria-label={KIN_DEAL_NUMBERS.openDeals(row.name)}
+                          onClick={() => props.onFilter(filter)}
+                        >
+                          {row.open.join(" · ")}
+                        </Button>
+                      )}
+                    </td>
+                    <td className="px-2 py-1 text-end tabular-nums">{row.won.join(" · ")}</td>
+                    <td className="px-2 py-1 text-end tabular-nums">{row.late}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </KinWorkSection>
+      )}
+      {month.rows.length <= 1 ? null : (
+        <KinWorkSection title={KIN_DEAL_NUMBERS.month} fold={{ summary: null }}>
+          <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 px-2 text-sm">
+            {month.rows.map((row) => (
+              <div key={row.label} className="contents">
+                <dt className="text-muted-foreground">{row.label}</dt>
+                <dd className="text-end tabular-nums">{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+          {month.sources.length === 0 ? null : (
+            <>
+              <h4 className="px-2 pt-2 text-xs font-medium text-muted-foreground">
+                {KIN_DEAL_NUMBERS.sources}
+              </h4>
+              <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 px-2 text-sm">
+                {month.sources.map((row) => (
+                  <div key={row.label} className="contents">
+                    <dt className="text-muted-foreground">{row.label}</dt>
+                    <dd className="text-end tabular-nums">{row.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </>
+          )}
+        </KinWorkSection>
       )}
     </div>
   );

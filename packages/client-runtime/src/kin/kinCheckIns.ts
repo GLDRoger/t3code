@@ -22,12 +22,22 @@ export const KIN_CHECK_INS = {
   agent: "Agent",
   time: "Time",
   days: "Days",
+  pipeline: "Add the pipeline to Monday's numbers",
+  pipelineDetail:
+    "Three lines Kin counts: what's open, last week's wins and losses, and late follow-ups.",
   failed: "Couldn't change the check-in.",
   unreadable: "Couldn't load check-ins.",
   newTitle: "Check-in",
   newWhat:
     "Look over what needs attention and what came in since the last check-in, and move what you can.",
 } as const;
+
+/**
+ * The weekly brief's pipeline switch: on or off, or null for a check-in that has none (every
+ * other one, and any from an older host).
+ */
+export const kinCheckInPipeline = (checkIn: Pick<KinCheckIn, "numbers"> | null) =>
+  checkIn?.numbers === undefined ? null : checkIn.numbers.includes("pipeline");
 
 /** Monday first, as a week reads; values are JavaScript's (0 is Sunday). */
 export const KIN_WEEKDAYS = [
