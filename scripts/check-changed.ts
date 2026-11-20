@@ -40,7 +40,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
-import { MIGRATIONS, kinBranchChecks } from "./kin-branch-checks.ts";
+import { MIGRATIONS, SHIPPING_BRANCH, kinBranchChecks } from "./kin-branch-checks.ts";
 import { modelsFor } from "./kin-model.ts";
 
 const GiB = 1024 ** 3;
@@ -199,10 +199,12 @@ export const comparisonBase = Effect.fn("checkChanged.comparisonBase")(function*
 ) {
   const candidates = Option.isSome(explicitRef)
     ? [{ ref: explicitRef.value, rev: explicitRef.value }]
-    : (yield* gitLines(root, ["remote"])).map((name) => ({
-        ref: name + "/main",
-        rev: "refs/remotes/" + name + "/main",
-      }));
+    : (yield* gitLines(root, ["remote"])).flatMap((name) =>
+        ["main", SHIPPING_BRANCH].map((branch) => ({
+          ref: name + "/" + branch,
+          rev: "refs/remotes/" + name + "/" + branch,
+        })),
+      );
   let closest: { ref: string; base: string; ahead: number } | undefined;
   for (const { ref, rev } of candidates) {
     const base = yield* git(root, ["merge-base", "HEAD", rev]).pipe(

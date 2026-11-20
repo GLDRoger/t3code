@@ -14,6 +14,8 @@ import { Argument, Command, Flag } from "effect/cli";
 
 import { git, gitLines } from "./check-changed.ts";
 
+/** The branch the fork ships from; with no ref, check:changed also tries `<remote>/kin`. */
+export const SHIPPING_BRANCH = "kin";
 export const MIGRATIONS = "apps/server/src/kin/persistence/KinMigrations.ts";
 export const INSTRUCTIONS = "apps/server/src/kin/lead/instructions.ts";
 const SURVIVAL_SKIP = /(?:\.test\.|\.ndjson$|pnpm-lock|instructions\.ts$|KinMigrations\.ts$)/;
