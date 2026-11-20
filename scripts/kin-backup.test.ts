@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { describe, expect, it } from "vite-plus/test";
 
 const SCRIPT = NodePath.resolve(import.meta.dirname, "../ops/kin/host/backup.sh");
@@ -45,7 +46,7 @@ function onFakeHost(program: string) {
 
 describe("kin backup.sh", () => {
   // The host is Linux: backup.sh uses GNU tar and date, which macOS lacks.
-  it.skipIf(NodeOS.platform() !== "linux")(
+  it.skipIf(HostProcess.Platform.defaultValue() !== "linux")(
     "records each run's outcome where Kin reads it, keeping the last good time through a failure",
     () => {
       const { out, said } = onFakeHost(String.raw`

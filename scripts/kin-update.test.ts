@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { describe, expect, it } from "vite-plus/test";
 
 const SCRIPT = NodePath.resolve(import.meta.dirname, "../ops/kin/host/update.sh");
@@ -199,7 +200,7 @@ echo "last call $(tail -n1 "$HOME/calls")"`);
   });
 
   // The host is Linux: this path uses bash 4 and GNU df and date, which macOS lacks.
-  it.skipIf(NodeOS.platform() !== "linux")(
+  it.skipIf(HostProcess.Platform.defaultValue() !== "linux")(
     "refuses before stopping anything when a disk it writes to lacks room",
     () => {
       const { out, said } = onFakeHost(`
@@ -228,7 +229,7 @@ space_short $((1024 * 1024))`);
   );
 
   // The host is Linux: this path uses bash 4 and GNU df and date, which macOS lacks.
-  it.skipIf(NodeOS.platform() !== "linux")(
+  it.skipIf(HostProcess.Platform.defaultValue() !== "linux")(
     "keeps 3 update backups while the nightly backup is good and recent, else 10",
     () => {
       const { out } = onFakeHost(`
