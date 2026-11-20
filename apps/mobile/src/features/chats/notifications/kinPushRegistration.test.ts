@@ -1,7 +1,12 @@
-import { EnvironmentId, KinPushError } from "@t3tools/contracts";
+import { EnvironmentId, KinOrgId, KinPersonId, KinPushError } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { createKinPushRefusals, kinPushHost, kinPushPermissionStep } from "./kinPushRegistration";
+import {
+  createKinPushRefusals,
+  kinPushHost,
+  kinPushLeaveOrgs,
+  kinPushPermissionStep,
+} from "./kinPushRegistration";
 
 const env = EnvironmentId.make("env-1");
 const refusal = (reason: KinPushError["reason"]) => new KinPushError({ reason, message: reason });
@@ -54,5 +59,32 @@ describe("kinPushHost", () => {
     const other = EnvironmentId.make("env-2");
     expect(kinPushHost({ ...usual, environmentId: other, standInFor: env })).toBeNull();
     expect(kinPushHost({ ...usual, connected: false })).toBeNull();
+  });
+});
+
+describe("kinPushLeaveOrgs", () => {
+  const me = (orgId: string) => ({
+    orgId: KinOrgId.make(orgId),
+    personId: KinPersonId.make(`p-${orgId}`),
+  });
+  const host = (environmentId: EnvironmentId, orgIds: ReadonlyArray<string>) =>
+    ({
+      _tag: "host",
+      environmentId,
+      connected: true,
+      probe: { _tag: "ready", orgs: { orgs: [], me: orgIds.map(me) } },
+    }) as const;
+
+  it("takes the token back from every org the leaving host names, live or saved", () => {
+    const cached = { orgs: [], me: [me("org-b"), me("org-c")] };
+    expect(kinPushLeaveOrgs(host(env, ["org-a", "org-b"]), env, cached)).toEqual([
+      "org-a",
+      "org-b",
+      "org-c",
+    ]);
+    // A team this phone holds but isn't showing goes by its saved answer only.
+    const other = EnvironmentId.make("env-2");
+    expect(kinPushLeaveOrgs(host(other, ["org-x"]), env, cached)).toEqual(["org-b", "org-c"]);
+    expect(kinPushLeaveOrgs({ _tag: "searching" }, env, null)).toEqual([]);
   });
 });

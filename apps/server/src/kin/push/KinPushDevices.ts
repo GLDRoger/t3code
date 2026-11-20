@@ -103,8 +103,8 @@ const make = Effect.gen(function* () {
 
   // T3 revokes sessions in SessionStore; reading its table keeps auth free of Kin hooks,
   // as ApproverKeys does. Runs before every send. Expired sessions stay: a live socket outlives
-  // the session it registered under. A repaired proof key keeps its pushes; the phone
-  // re-registers on connect anyway (mobile spec).
+  // the session it registered under, and a renewal brings it back; until then it is sent
+  // nothing. A repaired proof key keeps its pushes; the phone re-registers on connect anyway.
   const revoked = revokedBySession(sql, {
     sessionId: sql`kin_push_devices.session_id`,
     proofKey: sql`kin_push_devices.proof_key_thumbprint`,
@@ -187,6 +187,7 @@ const make = Effect.gen(function* () {
     function* (orgId: KinOrgId, people: ReadonlyArray<KinPersonId>) {
       if (people.length === 0) return [];
       yield* reconcileSessions();
+      const now = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
       const rows = yield* sql<{
         token: KinPushToken;
         person_id: KinPersonId;
@@ -194,6 +195,8 @@ const make = Effect.gen(function* () {
         session_id: AuthSessionId;
       }>`SELECT token, person_id, aps_environment, session_id FROM kin_push_devices
         WHERE org_id = ${orgId} AND person_id IN ${sql.in(people)}
+          AND EXISTS (SELECT 1 FROM auth_sessions s
+            WHERE s.session_id = kin_push_devices.session_id AND s.expires_at > ${now})
         ORDER BY person_id, token`;
       return rows.map((row): KinPushDevice => ({
         orgId,

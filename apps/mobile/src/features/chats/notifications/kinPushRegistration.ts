@@ -1,5 +1,10 @@
 import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
-import { KinPushError, type EnvironmentId } from "@t3tools/contracts";
+import {
+  KinPushError,
+  type EnvironmentId,
+  type KinOrgId,
+  type KinOrgsListResult,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 const isKinPushError = Schema.is(KinPushError);
@@ -55,4 +60,20 @@ export function kinPushHost(host: KinHost) {
   return host.probe._tag === "ready"
     ? { environmentId: host.environmentId, orgs: host.probe.orgs }
     : null;
+}
+
+/**
+ * The orgs to take this phone's token back from before it forgets `environmentId`: those its
+ * live answer names, else those its last saved answer did.
+ */
+export function kinPushLeaveOrgs(
+  host: KinHost,
+  environmentId: EnvironmentId,
+  cached: KinOrgsListResult | null,
+): ReadonlyArray<KinOrgId> {
+  const live =
+    host._tag === "host" && host.environmentId === environmentId && host.probe._tag === "ready"
+      ? host.probe.orgs.me
+      : [];
+  return [...new Set([...live, ...(cached?.me ?? [])].map(({ orgId }) => orgId))];
 }
