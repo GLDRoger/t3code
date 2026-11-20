@@ -819,6 +819,10 @@
       "types": "./src/kin/kinStreams.ts",
       "default": "./src/kin/kinStreams.ts"
     },
+    "./kin/kinFeedDisplay": {
+      "types": "./src/kin/kinFeedDisplay.ts",
+      "default": "./src/kin/kinFeedDisplay.ts"
+    },
     "./kin/kinFeedFollow": {
       "types": "./src/kin/kinFeedFollow.ts",
       "default": "./src/kin/kinFeedFollow.ts"
@@ -838,6 +842,10 @@
     "./kin/kinChatFeed": {
       "types": "./src/kin/kinChatFeed.ts",
       "default": "./src/kin/kinChatFeed.ts"
+    },
+    "./kin/kinChatScreen": {
+      "types": "./src/kin/kinChatScreen.ts",
+      "default": "./src/kin/kinChatScreen.ts"
     },
     "./kin/kinCardGroups": {
       "types": "./src/kin/kinCardGroups.ts",
