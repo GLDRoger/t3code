@@ -146,7 +146,7 @@ function KinAwaySheet(props: {
             value={day}
             keyboard="numbers"
             maxLength={10}
-            placeholder="2026-12-31"
+            placeholder="YYYY-MM-DD"
             disabled={props.busy}
             onChangeText={(text) => setDay(text.trim())}
           />

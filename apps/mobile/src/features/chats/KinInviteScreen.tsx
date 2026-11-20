@@ -151,7 +151,6 @@ function KinInviteForm(target: KinTeamTarget) {
                       onChangeText={setName}
                       onSubmitEditing={() => void save()}
                       textAlignVertical="center"
-                      placeholder={KIN_TEAM_ADD_COPY.namePlaceholder}
                       placeholderTextColorClassName="accent-placeholder"
                       className="min-h-8 font-sans text-base text-foreground"
                     />

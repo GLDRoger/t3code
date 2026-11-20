@@ -447,12 +447,6 @@ export const KIN_GOALS = {
     tasks_done: "Tasks done",
     manual: "A number we update",
   } satisfies Record<KinGoal["measure"], string>,
-  targetHint: {
-    revenue_received: "40 lakh, ₹40,00,000",
-    clients_won: "5",
-    tasks_done: "40",
-    manual: "2",
-  } satisfies Record<KinGoal["measure"], string>,
 } as const;
 
 export interface KinGoalView {

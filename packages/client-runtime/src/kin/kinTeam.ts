@@ -48,7 +48,6 @@ export const KIN_TEAM_ADD_COPY = {
   detail: (kinOnly: boolean) =>
     `Kin makes a link for you to send them. Opening it lets them chat with you and with the agents and groups you add them to. ${kinTeamPrivacy(kinOnly)}`,
   nameLabel: "Their name",
-  namePlaceholder: "Sami Okafor",
   nameHint: "This is how they appear in chats.",
   submit: "Make link",
   someoneElse: "Someone else with the same name",

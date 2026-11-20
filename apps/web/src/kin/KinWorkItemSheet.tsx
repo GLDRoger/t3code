@@ -377,7 +377,6 @@ function KinWorkHandBack(
             id={noteId}
             value={note}
             maxLength={280}
-            placeholder={KIN_WORK_HAND_BACK.reasonPlaceholder}
             onChange={(event) => setNote(event.target.value)}
           />
           {failed ? (

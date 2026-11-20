@@ -365,7 +365,6 @@ export function KinBrandForm(
         <KinWorkTextField
           label={KIN_BRAND.footer}
           value={draft.footer}
-          placeholder={KIN_BRAND.footerPlaceholder}
           multiline
           maxLength={300}
           disabled={saving}

@@ -274,7 +274,6 @@ function GroupForm(props: {
                       setProblem(null);
                     }}
                     textAlignVertical="center"
-                    placeholder="Launch week"
                     placeholderTextColorClassName="accent-placeholder"
                     className="min-h-8 font-sans text-base text-foreground"
                   />

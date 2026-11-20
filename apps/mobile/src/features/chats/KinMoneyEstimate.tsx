@@ -270,7 +270,6 @@ function KinRatesForm(
           <KinWorkTextField
             label={`${profile.homeCurrency} for 1 ${draft.currency || "unit"}`}
             value={draft.rate}
-            placeholder="84.25"
             keyboard="numbers"
             disabled={saving}
             onChangeText={(rate) => setDraft({ ...draft, rate })}
@@ -278,7 +277,7 @@ function KinRatesForm(
           <KinWorkTextField
             label={KIN_CURRENCY.asOf}
             value={draft.asOf}
-            placeholder="2026-11-15"
+            placeholder="YYYY-MM-DD"
             keyboard="plain"
             disabled={saving}
             onChangeText={(asOf) => setDraft({ ...draft, asOf })}

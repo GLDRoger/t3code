@@ -609,7 +609,6 @@ function KinProfileForm(props: {
         <Input
           id="kin-profile-tags"
           value={draft.tags}
-          placeholder="tech, ios"
           onChange={(event) => set({ tags: event.target.value })}
         />
         <p className="text-xs text-muted-foreground">{KIN_PROFILE_COPY.tagsHint}</p>
@@ -632,7 +631,6 @@ function KinProfileForm(props: {
             id="kin-profile-talk"
             value={draft.talkStyle}
             maxLength={KIN_PROFILE_TALK_MAX}
-            placeholder={KIN_PROFILE_COPY.talkPlaceholder}
             onChange={(event) => set({ talkStyle: event.target.value })}
           />
           <p className="text-xs text-muted-foreground">{KIN_PROFILE_COPY.talkHint}</p>
@@ -683,7 +681,7 @@ function KinProfileForm(props: {
           id="kin-profile-zone"
           list="kin-profile-zones"
           value={draft.timeZone}
-          placeholder="Asia/Kolkata"
+          placeholder="City or region"
           onChange={(event) => set({ timeZone: event.target.value })}
         />
         <datalist id="kin-profile-zones">

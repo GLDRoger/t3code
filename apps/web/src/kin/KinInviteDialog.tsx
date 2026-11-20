@@ -145,7 +145,6 @@ function NameForm(props: {
               id={nameId}
               value={name}
               maxLength={KIN_TEAMMATE_NAME_MAX}
-              placeholder={KIN_TEAM_ADD_COPY.namePlaceholder}
               autoComplete="off"
               autoFocus
               onChange={(event) => setName(event.target.value)}

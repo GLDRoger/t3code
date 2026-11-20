@@ -171,7 +171,6 @@ export const KIN_CLIENTS = {
   noneLogged: "None logged",
   noTouches: "Nothing logged yet. Log a call, meeting or email here, or tell an agent about it.",
   touchNote: "What happened",
-  touchNotePlaceholder: "Spoke to Asha, they want the revised quote by Friday",
   touchWhen: "When",
   touchKind: "How",
   touchSave: "Log it",

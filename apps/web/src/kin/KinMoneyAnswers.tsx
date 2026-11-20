@@ -674,7 +674,6 @@ export function KinBudgetDialog(
                   id={ids.limit}
                   inputMode="decimal"
                   autoComplete="off"
-                  placeholder={KIN_BUDGETS.limitPlaceholder}
                   value={draft.limit}
                   onChange={(event) => setDraft({ ...draft, limit: event.target.value })}
                 />

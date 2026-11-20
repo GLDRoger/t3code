@@ -368,7 +368,6 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
           autoFocus={editing === null}
           disabled={state.saving}
           maxLength={KIN_WORK_FORM_LIMITS.name}
-          placeholder={COPY.party.namePlaceholder}
           moved={moved.name}
           onChangeText={(name) => form.edit({ name })}
         />
@@ -418,7 +417,6 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
             value={draft.contactName}
             disabled={state.saving}
             maxLength={KIN_WORK_FORM_LIMITS.name}
-            placeholder={COPY.contact.namePlaceholder}
             onChangeText={(contactName) => form.edit({ contactName })}
           />
           <KinWorkTextField
@@ -426,7 +424,6 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
             value={draft.contactRole}
             disabled={state.saving}
             maxLength={KIN_WORK_FORM_LIMITS.short}
-            placeholder={COPY.contact.rolePlaceholder}
             onChangeText={(contactRole) => form.edit({ contactRole })}
           />
           <ContactDetailFields
@@ -480,7 +477,6 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
                   value={draft.gstin}
                   disabled={state.saving}
                   maxLength={20}
-                  placeholder={COPY.party.gstinPlaceholder}
                   hint={COPY.party.gstinHint}
                   moved={moved.gstin}
                   onChangeText={(gstin) => {
@@ -518,7 +514,6 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
                     value={draft.placeOfSupply}
                     disabled={state.saving}
                     maxLength={60}
-                    placeholder={COPY.party.countryPlaceholder}
                     onChangeText={(placeOfSupply) => form.edit({ placeOfSupply })}
                   />
                 ) : null}
@@ -726,7 +721,6 @@ function ContactForm(
           autoFocus={editing === null}
           disabled={busy}
           maxLength={KIN_WORK_FORM_LIMITS.name}
-          placeholder={COPY.contact.namePlaceholder}
           moved={moved.name}
           onChangeText={(name) => form.edit({ name })}
         />
@@ -735,7 +729,6 @@ function ContactForm(
           value={draft.role}
           disabled={busy}
           maxLength={KIN_WORK_FORM_LIMITS.short}
-          placeholder={COPY.contact.rolePlaceholder}
           moved={moved.role}
           onChangeText={(role) => form.edit({ role })}
         />
@@ -1001,7 +994,6 @@ function ProjectForm(
           autoFocus={editing === null}
           disabled={state.saving}
           maxLength={KIN_WORK_FORM_LIMITS.name}
-          placeholder={COPY.project.namePlaceholder}
           moved={moved.name}
           onChangeText={(name) => form.edit({ name })}
         />
@@ -1024,7 +1016,7 @@ function ProjectForm(
           keyboard="numbers"
           disabled={state.saving}
           maxLength={10}
-          placeholder="2026-12-31"
+          placeholder="YYYY-MM-DD"
           hint={kinProjectTargetHint(target, opened)}
           onChangeText={(text) => form.edit({ target: text.trim() === "" ? null : text.trim() })}
         />
@@ -1073,7 +1065,7 @@ function ProjectForm(
           keyboard="numbers"
           disabled={state.saving}
           maxLength={10}
-          placeholder="2026-11-20"
+          placeholder="YYYY-MM-DD"
           onChangeText={(text) => form.edit({ startsOn: text.trim() === "" ? null : text.trim() })}
         />
         {draft.billing === "retainer" || draft.renewsOn !== null ? (
@@ -1083,7 +1075,7 @@ function ProjectForm(
             keyboard="numbers"
             disabled={state.saving}
             maxLength={10}
-            placeholder="2026-12-01"
+            placeholder="YYYY-MM-DD"
             onChangeText={(text) =>
               form.edit({ renewsOn: text.trim() === "" ? null : text.trim() })
             }
@@ -1195,7 +1187,6 @@ function MilestoneForm(props: KinWorkTarget & { readonly project: KinRecordKey }
           autoFocus
           disabled={saving}
           maxLength={KIN_WORK_FORM_LIMITS.name}
-          placeholder={KIN_WORK_FORM_COPY.milestoneExample}
           onChangeText={setName}
         />
         <KinWorkTextField
@@ -1204,7 +1195,7 @@ function MilestoneForm(props: KinWorkTarget & { readonly project: KinRecordKey }
           keyboard="numbers"
           disabled={saving}
           maxLength={10}
-          placeholder="2026-12-31"
+          placeholder="YYYY-MM-DD"
           onChangeText={(text) => setDue(text.trim())}
         />
       </ListSection>

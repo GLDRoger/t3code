@@ -374,7 +374,6 @@ export function KinClientDialog(
           id={ids.name}
           value={draft.name}
           maxLength={KIN_WORK_FORM_LIMITS.name}
-          placeholder={COPY.party.namePlaceholder}
           autoComplete="off"
           autoFocus
           onChange={(event) => form.edit({ name: event.target.value })}
@@ -432,7 +431,6 @@ export function KinClientDialog(
                 id={ids.contactName}
                 value={draft.contactName}
                 maxLength={KIN_WORK_FORM_LIMITS.name}
-                placeholder={COPY.contact.namePlaceholder}
                 autoComplete="off"
                 aria-invalid={nameMissing || undefined}
                 aria-describedby={nameMissing ? `${ids.contactName}-problem` : undefined}
@@ -453,7 +451,6 @@ export function KinClientDialog(
                 id={ids.contactRole}
                 value={draft.contactRole}
                 maxLength={KIN_WORK_FORM_LIMITS.short}
-                placeholder={COPY.contact.rolePlaceholder}
                 autoComplete="off"
                 onChange={(event) => form.edit({ contactRole: event.target.value })}
               />
@@ -520,7 +517,6 @@ export function KinClientDialog(
                     id={ids.gstin}
                     value={draft.gstin}
                     maxLength={20}
-                    placeholder={COPY.party.gstinPlaceholder}
                     autoComplete="off"
                     autoCapitalize="characters"
                     spellCheck={false}
@@ -575,7 +571,6 @@ export function KinClientDialog(
                     id={ids.country}
                     value={draft.placeOfSupply}
                     maxLength={60}
-                    placeholder={COPY.party.countryPlaceholder}
                     autoComplete="off"
                     onChange={(event) => form.edit({ placeOfSupply: event.target.value })}
                   />
@@ -723,7 +718,6 @@ export function KinContactDialog(
           id={ids.name}
           value={draft.name}
           maxLength={KIN_WORK_FORM_LIMITS.name}
-          placeholder={COPY.contact.namePlaceholder}
           autoComplete="off"
           autoFocus
           onChange={(event) => form.edit({ name: event.target.value })}
@@ -734,7 +728,6 @@ export function KinContactDialog(
           id={ids.role}
           value={draft.role}
           maxLength={KIN_WORK_FORM_LIMITS.short}
-          placeholder={COPY.contact.rolePlaceholder}
           autoComplete="off"
           onChange={(event) => form.edit({ role: event.target.value })}
         />
@@ -875,7 +868,6 @@ export function KinProjectDialog(
           id={ids.name}
           value={draft.name}
           maxLength={KIN_WORK_FORM_LIMITS.name}
-          placeholder={COPY.project.namePlaceholder}
           autoComplete="off"
           autoFocus
           onChange={(event) => form.edit({ name: event.target.value })}
@@ -1084,7 +1076,6 @@ export function KinMilestoneDialog(
           id={ids.name}
           value={name}
           maxLength={KIN_WORK_FORM_LIMITS.name}
-          placeholder={KIN_WORK_FORM_COPY.milestoneExample}
           autoComplete="off"
           autoFocus
           onChange={(event) => setName(event.target.value)}

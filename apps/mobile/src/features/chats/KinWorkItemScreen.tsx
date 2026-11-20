@@ -638,7 +638,6 @@ function KinWorkItemBody(props: ItemTarget) {
                 returnKeyType="done"
                 onChangeText={(title) => changes.setEdit({ title })}
                 textAlignVertical="center"
-                placeholder={KIN_WORK_NEW_COPY.titlePlaceholder}
                 placeholderTextColorClassName="accent-placeholder"
                 className="min-h-8 font-sans text-base text-foreground"
               />
