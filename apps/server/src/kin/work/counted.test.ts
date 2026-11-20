@@ -35,8 +35,9 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "work/exportBundle.ts": 2,
   // One settlement's parts, read to check a retry.
   "work/leadMoney.ts": 1,
-  // A new entry's repeats: entries of its exact amount, compared one by one, nothing summed.
-  "work/leadWork.ts": 1,
+  // A new entry's repeats, and the expense it pairs with: entries of its exact amount, compared
+  // one by one, nothing summed.
+  "work/leadWork.ts": 2,
   // A statement's own rows, and the entries and recorded payments one row may match.
   "work/statements/bankList.ts": 1,
   "work/statements/statementReview.ts": 4,
