@@ -23,6 +23,11 @@ import {
   kinImportProgress,
   kinImportReady,
   kinImportRunLine,
+  kinImportRunningByLine,
+  kinImportRunningLine,
+  kinImportRunningOf,
+  kinImportStoppedLines,
+  kinImportWriting,
   kinImportStageChoice,
   kinImportStageLine,
   kinImportStagePick,
@@ -42,7 +47,7 @@ import type {
   KinImportTarget,
   KinImportUndone,
 } from "@t3tools/contracts";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -128,7 +133,8 @@ function Importing(props: KinWorkTarget) {
   const [applied, setApplied] = useState<KinImportApplied | null>(null);
   const [undone, setUndone] = useState<KinImportUndone | null>(null);
   const [busy, setBusy] = useState<Busy | null>(null);
-  const [undoing, setUndoing] = useState(false);
+  const [undoing, setUndoing] = useState<string | null>(null);
+  const writing = useRef(false);
   const [problem, setProblem] = useState<string | null>(null);
   const step = applied !== null ? 3 : checked?.checked === true ? 2 : checked !== null ? 1 : 0;
 
@@ -182,7 +188,9 @@ function Importing(props: KinWorkTarget) {
   };
 
   const importNow = async () => {
-    if (picked === null || checked === null || mapping === null) return;
+    // A second press before the first re-renders would otherwise send the file twice.
+    if (picked === null || checked === null || mapping === null || writing.current) return;
+    writing.current = true;
     setProblem(null);
     setBusy({ doing: "importing", rows: checked.rows });
     const outcome = await host.apply({
@@ -191,16 +199,20 @@ function Importing(props: KinWorkTarget) {
       decisions: kinImportDecisions(choices),
       batch: checked.batch,
     });
+    writing.current = false;
     setBusy(null);
     if (!outcome.ok) return setProblem(outcome.problem);
     setApplied(outcome.value);
   };
 
   const undoBatch = async (batch: string) => {
+    if (writing.current) return;
+    writing.current = true;
     setProblem(null);
-    setUndoing(true);
+    setUndoing(batch);
     const outcome = await host.undo(batch);
-    setUndoing(false);
+    writing.current = false;
+    setUndoing(null);
     if (!outcome.ok) return setProblem(outcome.problem);
     setUndone(outcome.value);
   };
@@ -214,13 +226,36 @@ function Importing(props: KinWorkTarget) {
     setChoices(KIN_IMPORT_NO_CHOICES);
   };
 
+  // The host's own count of each run, live on the imports topic; this screen's own runs first.
+  const running = runs._tag === "ready" ? runs.value.running : undefined;
+  const mine =
+    busy?.doing === "checking"
+      ? kinImportRunningOf(running, "check", checked?.batch ?? null)
+      : busy?.doing === "importing"
+        ? kinImportRunningOf(running, "apply", checked?.batch ?? null)
+        : undoing !== null
+          ? kinImportRunningOf(running, "undo", undoing)
+          : null;
+  const others = (running ?? []).filter((one) => one !== mine);
+  // Someone's import or undo, or this one's from before the screen closed: a second waits for it.
+  const othersWriting = kinImportWriting(others);
+  const mineLine = mine === null ? null : kinImportRunningLine(mine);
   const notices = (
     <>
-      {busy === null && !undoing ? null : (
+      {busy === null && undoing === null ? null : (
         <Notice
-          message={busy === null ? KIN_IMPORT.undoing : kinImportProgress(busy.doing, busy.rows)}
+          message={
+            mineLine ??
+            (busy === null ? KIN_IMPORT.undoing : kinImportProgress(busy.doing, busy.rows))
+          }
         />
       )}
+      {others.map((one) => (
+        <Notice
+          key={`${one.action}:${one.batch}:${one.by}:${one.at}`}
+          message={kinImportRunningByLine(one, nameOf(one.by))}
+        />
+      ))}
       {problem === null ? null : (
         <Notice message={problem} tone="danger" onDismiss={() => setProblem(null)} />
       )}
@@ -233,7 +268,7 @@ function Importing(props: KinWorkTarget) {
       )}
     </>
   );
-  const working = busy !== null || undoing;
+  const working = busy !== null || undoing !== null;
   const back = () => {
     if (step === 2 && checked !== null) setChecked({ ...checked, checked: false });
     else if (step === 1) startOver();
@@ -275,12 +310,15 @@ function Importing(props: KinWorkTarget) {
           ) : (
             runs.value.runs.flatMap((run) => {
               const why = kinImportUndoneLine(run, nameOf);
+              const description = [why, ...kinImportStoppedLines(run)]
+                .filter((line) => line !== null)
+                .join("\n");
               return [
                 <ListRowLayout
                   key={run.batch}
                   icon="doc.text"
                   label={kinImportRunLine(run, nameOf(run.by))}
-                  {...(why === null ? {} : { description: why })}
+                  {...(description === "" ? {} : { description })}
                 />,
                 ...(why === null
                   ? [
@@ -289,7 +327,7 @@ function Importing(props: KinWorkTarget) {
                         icon="arrow.uturn.backward"
                         label={KIN_IMPORT.undo}
                         tone="danger"
-                        disabled={working}
+                        disabled={working || othersWriting}
                         onPress={() => void undoBatch(run.batch)}
                       />,
                     ]
@@ -357,7 +395,7 @@ function Importing(props: KinWorkTarget) {
           label: KIN_IMPORT.import,
           onPress: () => void importNow(),
           loading: busy?.doing === "importing",
-          disabled: working || !kinImportReady(checked, choices),
+          disabled: working || othersWriting || !kinImportReady(checked, choices),
         }}
       >
         {notices}
@@ -545,7 +583,7 @@ function Importing(props: KinWorkTarget) {
                 icon="arrow.uturn.backward"
                 label={KIN_IMPORT.undo}
                 tone="danger"
-                disabled={working}
+                disabled={working || othersWriting}
                 onPress={() => void undoBatch(applied.batch)}
               />
             </ListSection>

@@ -9,6 +9,7 @@ import {
   type KinImportDecisions,
   type KinImportLeftOut,
   type KinImportRun,
+  type KinImportRunning,
   type KinImportTarget,
   type KinImportUndone,
 } from "@t3tools/contracts";
@@ -157,6 +158,49 @@ export const kinImportProgress = (doing: "reading" | "checking" | "importing", r
   doing === "reading"
     ? KIN_IMPORT.reading
     : `${doing === "checking" ? "Checking" : "Importing"} ${plural(rows, "row", "rows")}…`;
+/** How far a check, import or undo is, from the host's own count; null before it has one. */
+export const kinImportRunningLine = (running: KinImportRunning) =>
+  running.of === 0
+    ? null
+    : running.action === "check"
+      ? `Checking ${number(running.done)} of ${plural(running.of, "row", "rows")}`
+      : running.action === "apply"
+        ? `Adding ${number(running.done)} of ${plural(running.of, "row", "rows")}`
+        : `Taking away ${number(running.done)} of ${plural(running.of, "record", "records")}`;
+/** Someone's run, as anyone opening Import sees it: who, which file, how far. */
+export const kinImportRunningByLine = (running: KinImportRunning, by: string) =>
+  [
+    by,
+    running.file ?? running.batch,
+    kinImportRunningLine(running) ??
+      (running.action === "check"
+        ? "Checking…"
+        : running.action === "apply"
+          ? "Importing…"
+          : KIN_IMPORT.undoing),
+  ].join(" · ");
+/** A run of `action` on `batch` going on now, if the host is running one. */
+export const kinImportRunningOf = (
+  running: ReadonlyArray<KinImportRunning> | undefined,
+  action: KinImportRunning["action"],
+  batch: string | null,
+) => (running ?? []).find((one) => one.action === action && one.batch === batch) ?? null;
+/** Whether an import or undo runs now: a second one waits for it. */
+export const kinImportWriting = (running: ReadonlyArray<KinImportRunning> | undefined) =>
+  (running ?? []).some((one) => one.action !== "check");
+/** An import or its undo that stopped part way, and what brings in or takes away the rest. */
+export const kinImportStoppedLines = (run: KinImportRun) => [
+  ...(run.stopped === undefined
+    ? []
+    : [
+        `Stopped after ${number(run.stopped.done)} of ${plural(run.stopped.of, "row", "rows")} when Kin stopped. Import the file again to bring in the rest, or undo what came in.`,
+      ]),
+  ...(run.undoStopped === undefined || run.undone !== null
+    ? []
+    : [
+        `The undo stopped after ${number(run.undoStopped.done)} of ${plural(run.undoStopped.of, "record", "records")} when Kin stopped. Undo it again to take the rest away.`,
+      ]),
+];
 export const kinImportFileLine = (name: string, rows: number) =>
   `${name} · ${plural(rows, "row", "rows")}`;
 export const kinImportCheckButton = (rows: number) => `Check ${plural(rows, "row", "rows")}`;

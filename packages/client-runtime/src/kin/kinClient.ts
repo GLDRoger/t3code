@@ -1420,7 +1420,7 @@ export function makeKinClient<R, ER>(
         return yield* readImportRuns(input);
       }),
       staleTimeMs: 60_000,
-      refreshTrigger: kinWorkRefreshOn(["work", "deals"]),
+      refreshTrigger: kinWorkRefreshOn(["work", "deals"], kinRefreshOn("imports")),
     }),
     /** How many clients and open projects there are: the lists' own totals, without their rows. */
     workCounts: createKinQueryAtomFamily(runtime, {

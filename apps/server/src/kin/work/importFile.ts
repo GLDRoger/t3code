@@ -20,6 +20,7 @@ import {
   type KinImportLeftOut,
   type KinImportMapping,
   type KinImportRuns,
+  type KinImportRunning,
   type KinImportRunsInput,
   type KinImportTarget,
   type KinImportUndoInput,
@@ -1194,7 +1195,9 @@ export const check = Effect.fn("KinImportFile.check")(function* (
       checked: input.mapping !== undefined,
     } satisfies KinImportCheck;
   const imports = yield* KinImport;
-  const report = yield* imports.plan(input.orgId, personId, linesOf(resolved.lines));
+  const report = yield* imports.plan(input.orgId, personId, linesOf(resolved.lines), {
+    file: input.file.name,
+  });
   const leftOut = [...resolved.check.leftOut, ...leftOutOf(report, resolved.lineOf)];
   return {
     ...base,
@@ -1286,12 +1289,19 @@ const decodeSummary = Schema.decodeUnknownOption(
       entries: Schema.optional(Created),
       projects: Schema.optional(Created),
       file: Schema.optional(Schema.String),
+      done: Schema.optional(Schema.Number),
+      rows: Schema.optional(Schema.Number),
     }),
   ),
 );
 const RUNS_SHOWN = 50;
+const count = (value: number | undefined) => Math.max(0, Math.floor(value ?? 0));
 
-/** Each batch's last apply, newest first, and whether an undo came after it. */
+/**
+ * Each batch's last apply, newest first, and whether an undo came after it; then what runs now.
+ * A run with no end whose host isn't running it stopped part way, as when the host restarted:
+ * what its finished chunks made stays, and running it again completes it.
+ */
 export const runs = Effect.fn("KinImportFile.runs")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinImportRunsInput,
@@ -1299,28 +1309,58 @@ export const runs = Effect.fn("KinImportFile.runs")(function* (
   yield* ownerLevel(people, input.orgId);
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
+    seq: number;
     batch: string;
     action: string;
     personId: string;
     startedAt: number;
+    finishedAt: number | null;
     summary: string | null;
-  }>`SELECT batch, action, person_id AS "personId", started_at AS "startedAt",
-      summary_json AS summary
+  }>`SELECT seq, batch, action, person_id AS "personId", started_at AS "startedAt",
+      finished_at AS "finishedAt", summary_json AS summary
     FROM kin_import_runs WHERE org_id = ${input.orgId} ORDER BY seq`.pipe(workFailure);
+  const live = yield* (yield* KinImport).running(input.orgId);
+  const liveSeqs = new Map(live.flatMap((one) => (one.seq === null ? [] : [[one.seq, one]])));
+  const running: Array<KinImportRunning> = live
+    .filter((one) => one.action === "check")
+    .map((one) => ({
+      action: one.action,
+      batch: one.batch,
+      file: one.file,
+      by: one.personId,
+      at: iso(one.startedAt),
+      done: one.done,
+      of: one.of,
+    }));
   const last = new Map<string, KinImportRuns["runs"][number]>();
   for (const row of rows) {
-    const held = last.get(row.batch);
-    if (row.action === "undo") {
-      if (held !== undefined)
-        last.set(row.batch, {
-          ...held,
-          undone: { at: iso(row.startedAt), by: KinPersonId.make(row.personId) },
-        });
+    const summary = Option.getOrUndefined(decodeSummary(row.summary ?? "{}"));
+    const progress = { done: count(summary?.done), of: count(summary?.rows) };
+    if (row.finishedAt === null && liveSeqs.has(row.seq)) {
+      running.push({
+        action: row.action === "undo" ? "undo" : "apply",
+        batch: row.batch,
+        file: summary?.file ?? liveSeqs.get(row.seq)?.file ?? null,
+        by: KinPersonId.make(row.personId),
+        at: iso(row.startedAt),
+        ...progress,
+      });
       continue;
     }
-    const summary = Option.getOrUndefined(decodeSummary(row.summary ?? "{}"));
+    const held = last.get(row.batch);
+    if (row.action === "undo") {
+      if (held === undefined) continue;
+      const { undoStopped: _before, ...rest } = held;
+      last.set(
+        row.batch,
+        row.finishedAt === null
+          ? { ...rest, undoStopped: progress }
+          : { ...rest, undone: { at: iso(row.startedAt), by: KinPersonId.make(row.personId) } },
+      );
+      continue;
+    }
     const created = (part: { readonly create?: number | undefined } | undefined) =>
-      Math.max(0, Math.floor(part?.create ?? 0));
+      count(part?.create);
     last.delete(row.batch);
     last.set(row.batch, {
       batch: row.batch,
@@ -1334,7 +1374,11 @@ export const runs = Effect.fn("KinImportFile.runs")(function* (
         other: created(summary?.entries) + created(summary?.projects),
       },
       undone: null,
+      ...(row.finishedAt === null ? { stopped: progress } : {}),
     });
   }
-  return { runs: [...last.values()].toReversed().slice(0, RUNS_SHOWN) } satisfies KinImportRuns;
+  return {
+    runs: [...last.values()].toReversed().slice(0, RUNS_SHOWN),
+    running: running.toSorted((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)),
+  } satisfies KinImportRuns;
 });

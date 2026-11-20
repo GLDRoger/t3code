@@ -182,4 +182,46 @@ describe("KinImportView", () => {
     expect(host.undo).toHaveBeenCalledWith("fabc");
     await expect.element(screen.getByText("Removed 2 clients.")).toBeVisible();
   });
+
+  it("opened while an import runs, shows whose and how far, holds Undo, and says where one stopped", async () => {
+    setup();
+    state.runs = {
+      runs: [
+        {
+          batch: "fold",
+          file: "old-crm-companies.csv",
+          by: rhea,
+          at: "2026-11-12T09:00:00.000Z",
+          added: { clients: 120, contacts: 0, deals: 0, other: 0 },
+          undone: null,
+          stopped: { done: 300, of: 500 },
+        },
+      ],
+      running: [
+        {
+          action: "apply",
+          batch: "fbig",
+          file: "big-crm.csv",
+          by: rhea,
+          at: "2026-11-12T10:00:00.000Z",
+          done: 31_000,
+          of: 50_000,
+        },
+      ],
+    } satisfies KinImportRuns;
+    await using screen = await render(
+      <KinImportView {...target} directory={names as never} onOpenDeals={() => {}} />,
+    );
+    await expect
+      .element(screen.getByText("Rhea · big-crm.csv · Adding 31,000 of 50,000 rows"))
+      .toBeVisible();
+    await expect
+      .element(
+        screen.getByText(
+          "Stopped after 300 of 500 rows when Kin stopped. Import the file again to bring in the rest, or undo what came in.",
+        ),
+      )
+      .toBeVisible();
+    await expect.element(screen.getByRole("button", { name: "Undo this import" })).toBeDisabled();
+  });
 });

@@ -13,10 +13,13 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
@@ -574,6 +577,75 @@ describe("bringing a file in", () => {
             }),
           ),
           "invalid_state: This isn't the file you checked. Check it again before importing.",
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "shows the owner level a run going on, by whom and how far, and one that stopped where it stopped",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const imports = yield* KinImport.KinImport;
+        const linesFor = (batch: string) => [
+          JSON.stringify({ format: "kin-import", version: 1, batch, source: "Old CRM" }),
+          ...Array.from({ length: 150 }, (_, index) =>
+            JSON.stringify({
+              client: { source: `c${index}`, name: `Invented Firm ${batch} ${index}` },
+            }),
+          ),
+        ];
+        const paused = yield* Deferred.make<void>();
+        const resume = yield* Deferred.make<void>();
+        const progress = (done: number) =>
+          done !== 99
+            ? Effect.void
+            : Deferred.succeed(paused, undefined).pipe(Effect.andThen(Deferred.await(resume)));
+        const going = yield* imports
+          .apply(orgId, ownerId, Stream.fromIterable(linesFor("going")), {
+            progress,
+            file: "old-crm.csv",
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(paused);
+        // A co-owner opening Import sees Rhea's import and how far it is; it isn't listed as done.
+        const mid = yield* ImportFile.runs([meera], { orgId });
+        assert.deepStrictEqual(
+          mid.running?.map((one) => [one.action, one.by, one.file, one.done, one.of]),
+          [["apply", ownerId, "old-crm.csv", 99, 150]],
+        );
+        assert.deepStrictEqual(mid.runs, []);
+        yield* Deferred.succeed(resume, undefined);
+        yield* Fiber.join(going);
+        const after = yield* ImportFile.runs([rhea], { orgId });
+        assert.deepStrictEqual(after.running, []);
+        assert.deepStrictEqual(
+          after.runs.map((one) => [one.batch, one.added.clients, one.stopped]),
+          [["going", 150, undefined]],
+        );
+
+        // Cut off part way, as a restart leaves it: what came in stays, the
+        // run says where it stopped, and importing it again brings the rest.
+        const whole = Stream.fromIterable(linesFor("cut"));
+        let reads = 0;
+        const breaking = Stream.unwrap(
+          Effect.sync(() => {
+            reads += 1;
+            return reads === 1
+              ? whole
+              : Stream.concat(
+                  whole.pipe(Stream.take(120)),
+                  Stream.fail(new KinChatError({ reason: "unavailable", message: "stopped" })),
+                );
+          }),
+        );
+        yield* imports.apply(orgId, ownerId, breaking, { file: "cut.csv" }).pipe(Effect.flip);
+        const cut = (yield* ImportFile.runs([rhea], { orgId })).runs.find(
+          (one) => one.batch === "cut",
+        );
+        assert.deepStrictEqual(
+          [cut?.file, cut?.added.clients, cut?.stopped, cut?.undone],
+          ["cut.csv", 119, { done: 119, of: 150 }, null],
         );
       }).pipe(Effect.provide(layer)),
   );

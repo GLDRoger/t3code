@@ -175,6 +175,8 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
   owner: KinPersonId,
   batch: string,
   options: { readonly apply: boolean; readonly includeChanged: boolean },
+  /** How far it is, for whoever watches; its row's `seq` once it has one. */
+  entry?: { seq: number | null; done: number; of: number },
 ) {
   const sql = yield* SqlClient.SqlClient;
   if (!BATCH.test(batch)) return yield* invalid(`${batch} isn't a batch name.`);
@@ -261,9 +263,12 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
   const payments = keptPaid.reduce((sum, one) => sum + (removing.has(one.id) ? one.n : 0), 0);
 
   // The lists the batch made since it was last undone, and whether anything else is on them.
+  // An undo that never finished (the host stopped) took away only part: it counts as none.
   const runs = yield* sql<{ action: string; lists: string; summary: string | null }>`SELECT
       action, lists_json AS lists, summary_json AS summary
-    FROM kin_import_runs WHERE org_id = ${orgId} AND batch = ${batch} ORDER BY seq`;
+    FROM kin_import_runs WHERE org_id = ${orgId} AND batch = ${batch}
+      AND (action = 'apply' OR finished_at IS NOT NULL)
+    ORDER BY seq`;
   const made = new Set<string>();
   const fills = new Map<string, { key: string; rev: number; fields: ReadonlyArray<string> }>();
   for (const one of runs) {
@@ -325,6 +330,18 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
 
   const records = yield* KinRecords;
   const writer = { actor: { _tag: "person" as const, personId: owner }, via: "import" as const };
+  const refreshes = yield* KinRefreshObserver;
+  const [started] = yield* sql<{ seq: number }>`INSERT INTO kin_import_runs (org_id, batch,
+      action, person_id, started_at, summary_json)
+    VALUES (${orgId}, ${batch}, 'undo', ${owner}, ${yield* Clock.currentTimeMillis},
+      ${encodeJson({ done: 0, rows: gone.length })})
+    RETURNING seq`;
+  const seq = started?.seq ?? null;
+  if (entry !== undefined) {
+    entry.seq = seq;
+    entry.of = gone.length;
+  }
+  yield* refreshes.touch(orgId, "imports");
   let restored = 0;
   const lateFills: Array<string> = [];
   for (const fill of restoring) {
@@ -352,7 +369,6 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
   }
 
   const indexed = yield* searchIndexed();
-  const now = yield* Clock.currentTimeMillis;
   const late: Array<string> = [];
   for (let index = 0; index < gone.length; index += CHUNK) {
     const chunk = gone.slice(index, index + CHUNK).map((one) => one.recordId);
@@ -362,6 +378,11 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
         indexed,
       })),
     );
+    const done = Math.min(gone.length, index + CHUNK);
+    yield* sql`UPDATE kin_import_runs SET summary_json = json_set(summary_json, '$.done', ${done})
+      WHERE seq = ${seq}`;
+    if (entry !== undefined) entry.done = done;
+    yield* refreshes.touch(orgId, "imports");
   }
   const stayed = new Set(late);
   const removed = gone.filter((one) => !stayed.has(one.recordId));
@@ -416,11 +437,10 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
           yield* (yield* KinRefreshObserver).touch(orgId, "workLists");
         }
       const finished = yield* Clock.currentTimeMillis;
-      yield* sql`INSERT INTO kin_import_runs (org_id, batch, action, person_id, started_at,
-          finished_at, lists_json, summary_json)
-        VALUES (${orgId}, ${batch}, 'undo', ${owner}, ${now}, ${finished},
-          ${encodeJson(lists.filter((one) => one.action === "remove").map((one) => one.list))},
-          ${encodeJson({ ...settled.removes, restored, changed: report.changed.length, kept: settled.kept.length, includeChanged: options.includeChanged })})`;
+      yield* sql`UPDATE kin_import_runs SET finished_at = ${finished},
+          lists_json = ${encodeJson(lists.filter((one) => one.action === "remove").map((one) => one.list))},
+          summary_json = ${encodeJson({ ...settled.removes, restored, changed: report.changed.length, kept: settled.kept.length, includeChanged: options.includeChanged })}
+        WHERE seq = ${seq}`;
     }),
   );
   return settled;

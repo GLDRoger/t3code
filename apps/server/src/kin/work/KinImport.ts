@@ -9,10 +9,12 @@ import {
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
@@ -36,7 +38,14 @@ import { type CreateInput, KinRecords, type Writer } from "./KinRecords.ts";
 import { type FieldValue, fieldList, fieldText, parseFields } from "./lists.ts";
 import { dayIn, farAbove, issuedAfterDue, largestIn, parseAmount } from "./money.ts";
 import { companyMoneyState } from "./companyProfile.ts";
-import { byKey, endOfDay, ownerZone, startOfDay, workFailure } from "./recordRows.ts";
+import {
+  byKey,
+  endOfDay,
+  ownerZone,
+  type RecordRow,
+  startOfDay,
+  workFailure,
+} from "./recordRows.ts";
 import { regionOf } from "./region.ts";
 import {
   defineList,
@@ -82,6 +91,10 @@ const decodeRow = Schema.decodeUnknownEffect(Schema.fromJsonString(ImportRow));
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 class Rollback extends Schema.TaggedError<Rollback>()("KinImportRollback", {}) {}
 type Failure = KinChatError | SqlError.SqlError | Schema.SchemaError;
+type Decoded =
+  | { readonly line: number; readonly row: ImportRow }
+  | { readonly line: number; readonly row: undefined; readonly failure: string };
+type Named = { readonly recordId: string; readonly key: string; readonly gstin: unknown };
 
 type Counts = {
   create: number;
@@ -196,8 +209,24 @@ export class KinImport extends Context.Service<
       options: { readonly apply: boolean; readonly includeChanged: boolean },
     ) => Effect.Effect<UndoReport, KinChatError>;
     readonly fromFile: (path: string) => Lines;
+    /** The checks, imports and undos this host is running for the org, oldest first. */
+    readonly running: (orgId: KinOrgId) => Effect.Effect<ReadonlyArray<ImportLive>>;
   }
 >()("t3/kin/work/KinImport") {}
+
+/** A run going on in this host; an import's and an undo's own row is `seq` in `kin_import_runs`. */
+export type ImportLive = {
+  readonly action: "check" | "apply" | "undo";
+  readonly personId: KinPersonId;
+  readonly startedAt: number;
+  batch: string;
+  file: string | null;
+  seq: number | null;
+  done: number;
+  of: number;
+};
+export const IMPORT_BUSY =
+  "Kin is importing or undoing a file for this company now. Wait for it to finish, then try again.";
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -206,6 +235,37 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   // The command line has no session: deals, whose rules are a person's, come in from the screen.
   const identity = yield* Effect.serviceOption(KinIdentity);
+  const scope = yield* Scope.Scope;
+  const live = new Map<KinOrgId, Set<ImportLive>>();
+
+  /**
+   * Runs `work` as `entry`, seen by `running` until it ends. An import or undo is refused while
+   * another runs for the org, and runs on in the host's own scope: a caller that goes away, as a
+   * dropped connection does, stops waiting for it but not it.
+   */
+  const tracked = Effect.fn("KinImport.tracked")(function* <A>(
+    orgId: KinOrgId,
+    entry: ImportLive,
+    work: (entry: ImportLive) => Effect.Effect<A, KinChatError>,
+  ) {
+    const held = live.get(orgId) ?? new Set<ImportLive>();
+    const writes = entry.action !== "check";
+    if (writes && [...held].some((one) => one.action !== "check"))
+      return yield* new KinChatError({ reason: "conflict", message: IMPORT_BUSY });
+    held.add(entry);
+    live.set(orgId, held);
+    const body = work(entry).pipe(
+      Effect.ensuring(
+        Effect.suspend(() => {
+          held.delete(entry);
+          if (held.size === 0 && live.get(orgId) === held) live.delete(orgId);
+          return refreshes.touch(orgId, "imports");
+        }),
+      ),
+    );
+    if (!writes) return yield* body;
+    return yield* Fiber.join(yield* Effect.forkIn(body, scope));
+  });
 
   const run = Effect.fn("KinImport.run")(function* (
     orgId: KinOrgId,
@@ -213,6 +273,7 @@ const make = Effect.gen(function* () {
     lines: Lines,
     keep: boolean,
     options: RunOptions,
+    watched: ImportLive,
   ) {
     const { progress } = options;
     // A first pass, before anything is written: the header, the size, and no line too long.
@@ -242,6 +303,9 @@ const make = Effect.gen(function* () {
         invalid(`The first line isn't a kin-import header: ${error.message.slice(0, 1_000)}`),
       ),
     );
+    watched.batch = doc.batch;
+    watched.file = options.file ?? null;
+    watched.of = scan.rows;
 
     const problems: Array<ImportProblem> = [];
     let more = 0;
@@ -307,11 +371,65 @@ const make = Effect.gen(function* () {
         : undefined;
     });
 
+    // What this chunk's rows point at, read once per chunk inside its transaction and forgotten
+    // when it ends: a plan's chunk is rolled back, and a later chunk reads afresh.
+    const memo = {
+      found: new Map<string, { recordId: string; key: string } | undefined>(),
+      edited: new Set<string>(),
+      /** By `lower(title)`: the first open client by key, as the one-name read below finds it. */
+      named: new Map<string, Named | undefined>(),
+      /** Names as SQLite's `lower` writes them, so the two never disagree. */
+      lowered: new Map<string, string>(),
+      people: new Map<string, string | undefined>(),
+    };
+    const forget = () => {
+      memo.found.clear();
+      memo.edited.clear();
+      memo.named.clear();
+      memo.lowered.clear();
+      memo.people.clear();
+    };
+    /** An open client named `name` but for case, first by key. */
+    const sameNamed = Effect.fn("KinImport.sameNamed")(function* (name: string) {
+      const lower = memo.lowered.get(name);
+      if (lower !== undefined && memo.named.has(lower)) return memo.named.get(lower);
+      const [same] = yield* sql<Named>`SELECT
+          record_id AS "recordId", key, json_extract(fields_json, '$.gstin') AS gstin
+        FROM kin_records WHERE org_id = ${orgId} AND register_id = 'clients'
+          AND state NOT IN ${sql.in(CLOSED)} AND lower(title) = lower(${name})
+          ORDER BY +key LIMIT 1`;
+      return same;
+    });
+    /** A client this chunk made, which the one-name read would find from now on. */
+    const namedNow = (row: RecordRow) => {
+      if (CLOSED.includes(row.state)) return;
+      const lower = memo.lowered.get(row.title);
+      // A title not lowered ahead: every name is read again rather than guessed.
+      if (lower === undefined) return memo.named.clear();
+      if (!memo.named.has(lower)) return;
+      const held = memo.named.get(lower);
+      if (held === undefined || row.key < held.key)
+        memo.named.set(lower, {
+          recordId: row.recordId,
+          key: row.key,
+          gstin: parseFields(row.fieldsJson).gstin ?? null,
+        });
+    };
     const found = Effect.fn("KinImport.found")(function* (originKey: string) {
+      if (memo.found.has(originKey)) return memo.found.get(originKey);
       const [row] = yield* sql<{ recordId: string; key: string }>`SELECT record_id AS "recordId",
           key FROM kin_records WHERE org_id = ${orgId} AND origin_key = ${originKey}`;
+      if (row !== undefined) {
+        const others = yield* sql`SELECT 1 FROM kin_record_changes
+          WHERE org_id = ${orgId} AND record_id = ${row.recordId} AND via <> 'import' LIMIT 1`;
+        if (others.length > 0) memo.edited.add(row.recordId);
+      }
+      memo.found.set(originKey, row);
       return row;
     });
+    const made = (originKey: string, row: { readonly recordId: string; readonly key: string }) => {
+      memo.found.set(originKey, { recordId: row.recordId, key: row.key });
+    };
     const changed: Array<{ source: string; key: string }> = [];
     const clientMatches: Array<ImportReport["clientMatches"][number]> = [];
     const matchedClient = (match: ImportReport["clientMatches"][number]) => {
@@ -326,9 +444,7 @@ const make = Effect.gen(function* () {
     ) {
       const row = yield* found(originOf(kind, source));
       if (row === undefined) return undefined;
-      const others = yield* sql`SELECT 1 FROM kin_record_changes
-        WHERE org_id = ${orgId} AND record_id = ${row.recordId} AND via <> 'import' LIMIT 1`;
-      const edited = others.length > 0;
+      const edited = memo.edited.has(row.recordId);
       if (tally) {
         counts[SECTION[kind]][edited ? "changed" : "unchanged"] += 1;
         if (edited) {
@@ -450,11 +566,13 @@ const make = Effect.gen(function* () {
       personId: string | undefined,
     ) {
       if (personId === undefined || personId === owner) return me;
-      const [person] = yield* sql<{ id: string }>`SELECT person_id AS id FROM kin_people
-        WHERE org_id = ${orgId} AND person_id = ${personId} AND removed_at IS NULL`;
-      return person === undefined
-        ? me
-        : { _tag: "person" as const, personId: KinPersonId.make(person.id) };
+      if (!memo.people.has(personId)) {
+        const [person] = yield* sql<{ id: string }>`SELECT person_id AS id FROM kin_people
+          WHERE org_id = ${orgId} AND person_id = ${personId} AND removed_at IS NULL`;
+        memo.people.set(personId, person?.id);
+      }
+      const id = memo.people.get(personId);
+      return id === undefined ? me : { _tag: "person" as const, personId: KinPersonId.make(id) };
     });
     /** Fills on `key` only what it lacks; a field it has stays as someone typed it. */
     const fill = Effect.fn("KinImport.fill")(function* (
@@ -548,11 +666,7 @@ const make = Effect.gen(function* () {
       }
       const had = yield* existing("client", source, tally);
       if (had !== undefined) return had.recordId;
-      const [same] = yield* sql<{ recordId: string; key: string; gstin: unknown }>`SELECT
-          record_id AS "recordId", key, json_extract(fields_json, '$.gstin') AS gstin
-        FROM kin_records WHERE org_id = ${orgId} AND register_id = 'clients'
-          AND state NOT IN ${sql.in(CLOSED)} AND lower(title) = lower(${spec.name})
-          ORDER BY key LIMIT 1`;
+      const same = yield* sameNamed(spec.name);
       // Two tax ids that differ are two businesses, however alike their names.
       const differs =
         same !== undefined &&
@@ -596,6 +710,8 @@ const make = Effect.gen(function* () {
         () => failed.client.add(source),
       );
       if (created === undefined) return undefined;
+      made(originOf("client", source), created.row);
+      namedNow(created.row);
       if (tally) {
         counts.clients.create += 1;
         if (spec.kind === "prospect") prospects += 1;
@@ -644,6 +760,7 @@ const make = Effect.gen(function* () {
         () => failed.project.add(source),
       );
       if (created === undefined) return undefined;
+      made(originOf("project", source), created.row);
       if (tally) counts.projects.create += 1;
       return created.row.recordId;
     });
@@ -1044,16 +1161,16 @@ const make = Effect.gen(function* () {
       if (made !== undefined) counts.deals.create += 1;
     });
 
-    const rowStep = Effect.fn("KinImport.row")(function* (text: string, line: number) {
-      const decoded = yield* decodeRow(text).pipe(Effect.result);
-      if (decoded._tag === "Failure")
+    const rowStep = Effect.fn("KinImport.row")(function* (decoded: Decoded) {
+      const { line } = decoded;
+      if (decoded.row === undefined)
         return problem(
           line,
           "file",
           null,
-          `This line doesn't fit the format: ${decoded.failure.message.slice(0, 500)}`,
+          `This line doesn't fit the format: ${decoded.failure.slice(0, 500)}`,
         );
-      const one = decoded.success;
+      const one = decoded.row;
       if ("client" in one) {
         if (clients.has(one.client.source))
           return problem(line, "client", one.client.source, "Another client has this source id.");
@@ -1076,6 +1193,79 @@ const make = Effect.gen(function* () {
       return yield* entry(line, one.entry);
     });
 
+    /**
+     * One read per kind for the chunk's rows, in its transaction: what they point at, whether
+     * anyone changed it, and the clients their names already have. A row the chunk didn't name
+     * ahead still reads alone, so nothing depends on this being complete.
+     */
+    const prefetch = Effect.fn("KinImport.prefetch")(function* (chunk: ReadonlyArray<Decoded>) {
+      const origins = new Set<string>();
+      const named: Array<ImportClient> = [];
+      for (const { row: one } of chunk) {
+        if (one === undefined) continue;
+        if ("client" in one) {
+          origins.add(originOf("client", one.client.source));
+          if (one.client.match === undefined) named.push(one.client);
+          continue;
+        }
+        const [kind, spec] =
+          "project" in one
+            ? (["project", one.project] as const)
+            : "contact" in one
+              ? (["contact", one.contact] as const)
+              : "deal" in one
+                ? (["deal", one.deal] as const)
+                : (["entry", one.entry] as const);
+        origins.add(originOf(kind, spec.source));
+        if (spec.client !== undefined) origins.add(originOf("client", spec.client));
+        if ("project" in spec && spec.project !== undefined)
+          origins.add(originOf("project", spec.project));
+      }
+      const asked = [...origins].filter((origin) => !memo.found.has(origin));
+      if (asked.length > 0) {
+        const rows = yield* sql<{ recordId: string; key: string; origin: string }>`SELECT
+            record_id AS "recordId", key, origin_key AS origin FROM kin_records
+          WHERE org_id = ${orgId} AND origin_key IN ${sql.in(asked)} ORDER BY origin_key`;
+        const byOrigin = new Map(rows.map((one) => [one.origin, one]));
+        for (const origin of asked) {
+          const one = byOrigin.get(origin);
+          memo.found.set(
+            origin,
+            one === undefined ? undefined : { recordId: one.recordId, key: one.key },
+          );
+        }
+        if (rows.length > 0) {
+          const edited = yield* sql<{ id: string }>`SELECT DISTINCT record_id AS id
+            FROM kin_record_changes WHERE org_id = ${orgId} AND via <> 'import'
+              AND record_id IN ${sql.in(rows.map((one) => one.recordId))} ORDER BY record_id`;
+          for (const one of edited) memo.edited.add(one.id);
+        }
+      }
+      const names = named
+        .filter((spec) => memo.found.get(originOf("client", spec.source)) === undefined)
+        .flatMap((spec) =>
+          spec.gstin === undefined ? [spec.name] : [spec.name, `${spec.name} (${spec.gstin})`],
+        )
+        .filter((name) => !memo.lowered.has(name));
+      if (names.length === 0) return;
+      const lowered = yield* sql<{ name: string; lower: string }>`SELECT value AS name,
+          lower(value) AS lower FROM json_each(${encodeJson(names)}) ORDER BY key`;
+      for (const one of lowered) memo.lowered.set(one.name, one.lower);
+      const wanted = [...new Set(lowered.map((one) => one.lower))].filter(
+        (lower) => !memo.named.has(lower),
+      );
+      if (wanted.length === 0) return;
+      const same = yield* sql<Named & { lower: string }>`SELECT record_id AS "recordId", key,
+          json_extract(fields_json, '$.gstin') AS gstin, lower(title) AS lower
+        FROM kin_records WHERE org_id = ${orgId} AND register_id = 'clients'
+          AND state NOT IN ${sql.in(CLOSED)} AND lower(title) IN ${sql.in(wanted)}
+        ORDER BY +key`;
+      for (const lower of wanted) memo.named.set(lower, undefined);
+      for (const one of same)
+        if (memo.named.get(one.lower) === undefined)
+          memo.named.set(one.lower, { recordId: one.recordId, key: one.key, gstin: one.gstin });
+    });
+
     const rolledBack = <A, R>(work: Effect.Effect<A, Failure, R>) =>
       sql
         .withTransaction(work.pipe(Effect.andThen(Effect.fail(new Rollback()))))
@@ -1088,14 +1278,17 @@ const make = Effect.gen(function* () {
       if (!keep) return undefined;
       const made = listReport.filter((one) => one.action === "create").map((one) => one.list);
       const [started] = yield* sql<{ seq: number }>`INSERT INTO kin_import_runs (org_id, batch,
-          action, person_id, started_at, lists_json)
-        VALUES (${orgId}, ${doc.batch}, 'apply', ${owner}, ${now}, ${encodeJson(made)})
+          action, person_id, started_at, lists_json, summary_json)
+        VALUES (${orgId}, ${doc.batch}, 'apply', ${owner}, ${now}, ${encodeJson(made)},
+          ${encodeJson({ done: 0, rows: scan.rows, ...(options.file === undefined ? {} : { file: options.file }) })})
         RETURNING seq`;
       return started?.seq;
     });
     const runSeq = keep
       ? yield* sql.withTransaction(begin)
       : yield* rolledBack(begin).pipe(Effect.as(undefined));
+    watched.seq = runSeq ?? null;
+    yield* refreshes.touch(orgId, "imports");
 
     let done = 0;
     yield* lines.pipe(
@@ -1103,22 +1296,49 @@ const make = Effect.gen(function* () {
       Stream.grouped(CHUNK),
       Stream.runForEach((chunk) =>
         Effect.gen(function* () {
+          const decoded: Array<Decoded> = [];
+          for (const [text, index] of chunk)
+            if (index + 1 > scan.headerAt && text.trim() !== "") {
+              const one = yield* decodeRow(text).pipe(Effect.result);
+              decoded.push(
+                one._tag === "Success"
+                  ? { line: index + 1, row: one.success }
+                  : { line: index + 1, row: undefined, failure: one.failure.message },
+              );
+            }
           const work = Effect.gen(function* () {
             if (!keep) yield* defineLists(false);
-            for (const [text, index] of chunk)
-              if (index + 1 > scan.headerAt && text.trim() !== "") yield* rowStep(text, index + 1);
-            // What it filled commits with the fill, so an undo after a crash still empties it.
-            if (runSeq !== undefined && fills.length > fillsWritten) {
-              yield* sql`UPDATE kin_import_runs SET summary_json = ${encodeJson({ filled: fills })}
+            yield* prefetch(decoded);
+            for (const one of decoded) yield* rowStep(one);
+            // What it filled and how far it got commit with the chunk, so an undo after a crash
+            // still empties what it filled, and anyone reading the run sees where it stands.
+            if (runSeq !== undefined) {
+              const fresh = fills.slice(fillsWritten);
+              // Appended, not written whole: a large file's fills would be rewritten every chunk.
+              const summary =
+                fresh.length === 0
+                  ? sql`COALESCE(summary_json, '{}')`
+                  : sql`json_set(COALESCE(summary_json, '{}'), '$.filled', json((
+                      SELECT json_group_array(json(value)) FROM (
+                        SELECT value FROM json_each(COALESCE(summary_json, '{}'), '$.filled')
+                        UNION ALL SELECT value FROM json_each(${encodeJson(fresh)})))))`;
+              yield* sql`UPDATE kin_import_runs
+                SET summary_json = json_set(${summary}, '$.done', ${done + decoded.length},
+                  '$.rows', ${scan.rows}, '$.clients', json(${encodeJson(counts.clients)}),
+                  '$.contacts', json(${encodeJson(counts.contacts)}),
+                  '$.deals', json(${encodeJson(counts.deals)}),
+                  '$.entries', json(${encodeJson(counts.entries)}),
+                  '$.projects', json(${encodeJson(counts.projects)}))
                 WHERE seq = ${runSeq}`;
               fillsWritten = fills.length;
             }
           });
           if (keep) yield* sql.withTransaction(work);
           else yield* rolledBack(work);
-          done += chunk.filter(
-            ([text, index]) => index + 1 > scan.headerAt && text.trim() !== "",
-          ).length;
+          forget();
+          done += decoded.length;
+          watched.done = done;
+          yield* refreshes.touch(orgId, "imports");
           if (progress !== undefined) yield* progress(done, scan.rows);
         }),
       ),
@@ -1181,31 +1401,66 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  const entryFor = Effect.fn("KinImport.entryFor")(function* (
+    action: ImportLive["action"],
+    personId: KinPersonId,
+    batch: string,
+  ) {
+    return {
+      action,
+      personId,
+      startedAt: yield* Clock.currentTimeMillis,
+      batch,
+      file: null,
+      seq: null,
+      done: 0,
+      of: 0,
+    } satisfies ImportLive;
+  });
+
   return KinImport.of({
     plan: Effect.fn("KinImport.plan")(function* (orgId, owner, lines, options) {
-      return yield* run(orgId, owner, lines, false, options ?? {}).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
+      const entry = yield* entryFor("check", owner, "");
+      return yield* tracked(orgId, entry, (one) =>
+        run(orgId, owner, lines, false, options ?? {}, one).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ),
       );
     }),
     apply: Effect.fn("KinImport.apply")(function* (orgId, owner, lines, options) {
-      return yield* run(orgId, owner, lines, true, options ?? {}).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
+      const entry = yield* entryFor("apply", owner, "");
+      return yield* tracked(orgId, entry, (one) =>
+        run(orgId, owner, lines, true, options ?? {}, one).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ),
       );
     }),
     undo: Effect.fn("KinImport.undo.run")(function* (orgId, owner, batch, options) {
-      const undone = yield* undoBatch(orgId, owner, batch, options).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-        Effect.provideService(KinRecords, records),
-      );
-      // An undo deletes entries outright, so no logged change tells anyone it happened.
-      if (undone.applied) {
-        yield* records.announce(orgId);
-        if (undone.removes.clients + undone.removes.projects > 0)
-          yield* refreshes.touch(orgId, "workChoices");
-      }
-      return undone;
+      const work = Effect.fn("KinImport.undo.work")(function* (entry: ImportLive | undefined) {
+        const undone = yield* undoBatch(orgId, owner, batch, options, entry).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(KinRecords, records),
+          Effect.provideService(KinRefreshObserver, refreshes),
+        );
+        // An undo deletes entries outright, so no logged change tells anyone it happened.
+        if (undone.applied) {
+          yield* records.announce(orgId);
+          if (undone.removes.clients + undone.removes.projects > 0)
+            yield* refreshes.touch(orgId, "workChoices");
+        }
+        return undone;
+      });
+      if (!options.apply) return yield* work(undefined);
+      return yield* tracked(orgId, yield* entryFor("undo", owner, batch), work);
     }),
     fromFile,
+    running: Effect.fn("KinImport.running")((orgId) =>
+      Effect.sync(() =>
+        [...(live.get(orgId) ?? [])]
+          .map((one) => ({ ...one }))
+          .toSorted((a, b) => a.startedAt - b.startedAt),
+      ),
+    ),
   });
 });
 

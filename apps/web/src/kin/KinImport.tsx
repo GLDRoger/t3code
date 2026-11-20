@@ -24,13 +24,18 @@ import {
   kinImportProgress,
   kinImportReady,
   kinImportRunLine,
+  kinImportRunningByLine,
+  kinImportRunningLine,
+  kinImportRunningOf,
   kinImportStageChoice,
   kinImportStageLine,
   kinImportStagePick,
+  kinImportStoppedLines,
   kinImportTiles,
   kinImportTooBig,
   kinImportUndoneLine,
   kinImportUndoneLines,
+  kinImportWriting,
   type KinImportChoices,
 } from "@t3tools/client-runtime/kin/kinImport";
 import type { KinWorkNames } from "@t3tools/client-runtime/kin/kinWork";
@@ -127,6 +132,7 @@ export function KinImportView(
   const [problem, setProblem] = useState<string | null>(null);
   const [over, setOver] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const writing = useRef(false);
   const nameOf = (personId: string) => props.directory.people.get(personId) ?? "Someone";
   const step = applied !== null ? 3 : checked?.checked === true ? 2 : checked !== null ? 1 : 0;
 
@@ -168,7 +174,9 @@ export function KinImportView(
   };
 
   const importNow = async () => {
-    if (picked === null || checked === null || mapping === null) return;
+    // A second press before the first re-renders would otherwise send the file twice.
+    if (picked === null || checked === null || mapping === null || writing.current) return;
+    writing.current = true;
     setProblem(null);
     setBusy({ doing: "importing", rows: checked.rows });
     const outcome = await host.apply({
@@ -177,15 +185,19 @@ export function KinImportView(
       decisions: kinImportDecisions(choices),
       batch: checked.batch,
     });
+    writing.current = false;
     setBusy(null);
     if (!outcome.ok) return setProblem(outcome.problem);
     setApplied(outcome.value);
   };
 
   const undoBatch = async (batch: string) => {
+    if (writing.current) return;
+    writing.current = true;
     setProblem(null);
     setUndoing(batch);
     const outcome = await host.undo(batch);
+    writing.current = false;
     setUndoing(null);
     if (!outcome.ok) return setProblem(outcome.problem);
     setUndone(outcome.value);
@@ -200,16 +212,42 @@ export function KinImportView(
     setChoices(KIN_IMPORT_NO_CHOICES);
   };
 
-  const status =
-    busy !== null ? (
-      <p role="status" className="text-sm text-muted-foreground">
-        {kinImportProgress(busy.doing, busy.rows)}
-      </p>
-    ) : undoing !== null ? (
-      <p role="status" className="text-sm text-muted-foreground">
-        {KIN_IMPORT.undoing}
-      </p>
-    ) : null;
+  // The host's own count of each run, live on the imports topic; this screen's own runs first.
+  const running = runs._tag === "ready" ? runs.value.running : undefined;
+  const mine =
+    busy?.doing === "checking"
+      ? kinImportRunningOf(running, "check", checked?.batch ?? null)
+      : busy?.doing === "importing"
+        ? kinImportRunningOf(running, "apply", checked?.batch ?? null)
+        : undoing !== null
+          ? kinImportRunningOf(running, "undo", undoing)
+          : null;
+  const others = (running ?? []).filter((one) => one !== mine);
+  // Someone's import or undo, or this one's from before a reload: a second waits for it.
+  const othersWriting = kinImportWriting(others);
+  const mineLine = mine === null ? null : kinImportRunningLine(mine);
+  const status = (
+    <>
+      {busy !== null ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          {mineLine ?? kinImportProgress(busy.doing, busy.rows)}
+        </p>
+      ) : undoing !== null ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          {mineLine ?? KIN_IMPORT.undoing}
+        </p>
+      ) : null}
+      {others.map((one) => (
+        <p
+          key={`${one.action}:${one.batch}:${one.by}:${one.at}`}
+          role="status"
+          className="text-sm text-muted-foreground"
+        >
+          {kinImportRunningByLine(one, nameOf(one.by))}
+        </p>
+      ))}
+    </>
+  );
   const problemLine =
     problem === null ? null : (
       <p role="alert" className="text-sm text-destructive-foreground">
@@ -246,12 +284,19 @@ export function KinImportView(
                 className="flex flex-wrap items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm"
               >
                 <FileTextIcon className="size-4 text-muted-foreground" aria-hidden />
-                <span className="min-w-0 flex-1">{kinImportRunLine(run, nameOf(run.by))}</span>
+                <span className="min-w-0 flex-1">
+                  {kinImportRunLine(run, nameOf(run.by))}
+                  {kinImportStoppedLines(run).map((line) => (
+                    <span key={line} className="block text-xs text-muted-foreground">
+                      {line}
+                    </span>
+                  ))}
+                </span>
                 {why === null ? (
                   <Button
                     size="xs"
                     variant="outline"
-                    disabled={undoing !== null || busy !== null}
+                    disabled={undoing !== null || busy !== null || othersWriting}
                     onClick={() => void undoBatch(run.batch)}
                   >
                     {KIN_IMPORT.undo}
@@ -579,7 +624,7 @@ export function KinImportView(
             {KIN_IMPORT.back}
           </Button>
           <Button
-            disabled={busy !== null || !kinImportReady(checked, choices)}
+            disabled={busy !== null || othersWriting || !kinImportReady(checked, choices)}
             onClick={() => void importNow()}
           >
             {KIN_IMPORT.import}
@@ -630,7 +675,7 @@ export function KinImportView(
           {undone === null ? (
             <Button
               variant="outline"
-              disabled={undoing !== null}
+              disabled={undoing !== null || othersWriting}
               onClick={() => void undoBatch(applied.batch)}
             >
               {KIN_IMPORT.undo}

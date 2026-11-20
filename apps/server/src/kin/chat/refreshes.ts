@@ -36,6 +36,7 @@ const same = (a: KinRefreshes, b: KinRefreshes) =>
   a.connections === b.connections &&
   a.workLists === b.workLists &&
   a.recommendations === b.recommendations &&
+  a.imports === b.imports &&
   a.boot === b.boot;
 
 /**

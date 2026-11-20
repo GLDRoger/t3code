@@ -224,9 +224,31 @@ export const KinImportRun = Schema.Struct({
     other: NonNegativeInt,
   }),
   undone: Schema.NullOr(Schema.Struct({ at: IsoDateTime, by: KinPersonId })),
+  /**
+   * The import stopped part way, when the host stopped: its first `done` of `of` rows are in, and
+   * importing the file again brings the rest. Absent from older hosts.
+   */
+  stopped: Schema.optional(Schema.Struct({ done: NonNegativeInt, of: NonNegativeInt })),
+  /** An undo of it stopped part way, as above: `done` of `of` records taken away. */
+  undoStopped: Schema.optional(Schema.Struct({ done: NonNegativeInt, of: NonNegativeInt })),
 });
 export type KinImportRun = typeof KinImportRun.Type;
-export const KinImportRuns = Schema.Struct({ runs: Schema.Array(KinImportRun) });
+/** A check, import or undo going on now, and how far it is: rows for the first two, records for an undo. */
+export const KinImportRunning = Schema.Struct({
+  action: Schema.Literals(["check", "apply", "undo"]),
+  batch: Batch,
+  file: Schema.NullOr(Schema.String),
+  by: KinPersonId,
+  at: IsoDateTime,
+  done: NonNegativeInt,
+  of: NonNegativeInt,
+});
+export type KinImportRunning = typeof KinImportRunning.Type;
+export const KinImportRuns = Schema.Struct({
+  runs: Schema.Array(KinImportRun),
+  /** Absent from older hosts. */
+  running: Schema.optional(Schema.Array(KinImportRunning)),
+});
 export type KinImportRuns = typeof KinImportRuns.Type;
 
 const KIN_IMPORT_WS_METHODS = {
