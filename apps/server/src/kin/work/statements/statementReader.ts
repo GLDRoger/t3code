@@ -312,12 +312,12 @@ export const runReader = Effect.fn("KinStatements.runReader")(
       stopped: ended.stopped,
       peakKib: ended.peakKib,
     });
-    // A kill nobody here sent is the kernel's: a scope's memory limit.
+    // A kill nobody here sent is the kernel's: a scope's memory limit or the processor-time cap.
     if (
       ended.stopped === "memory" ||
       ended.stopped === "output" ||
       ended.heapExhausted ||
-      (ended.stopped === undefined && ended.signal === "SIGKILL")
+      (ended.stopped === undefined && (ended.signal === "SIGKILL" || ended.signal === "SIGXCPU"))
     )
       return run(failed(TOO_LARGE));
     if (ended.code !== 0) return run(failed(DAMAGED));
