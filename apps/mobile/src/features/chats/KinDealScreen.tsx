@@ -10,6 +10,7 @@ import {
   kinDealQuoteChoices,
   kinDealStageName,
   kinDealStrip,
+  kinDealWithoutConcern,
   kinDealWhen,
 } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinMoneyText } from "@t3tools/client-runtime/kin/kinLists";
@@ -38,6 +39,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { IconButton } from "../../components/ui/IconButton";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
@@ -411,6 +413,30 @@ function KinDealBody(
             })
           )}
           {deal.can.edit ? <AddStep {...target} deal={deal} names={names} now={now} /> : null}
+        </ListSection>
+      )}
+
+      {deal.concerns === undefined ? null : (
+        <ListSection title={KIN_DEALS.concernsRaised}>
+          {deal.concerns.map((concern) => (
+            <ListRowLayout
+              key={concern.label}
+              label={concern.label}
+              {...(concern.heard === undefined
+                ? {}
+                : { description: KIN_DEALS.heard(concern.heard) })}
+              accessory={
+                deal.can.edit ? (
+                  <IconButton
+                    icon="xmark"
+                    accessibilityLabel={KIN_DEALS.removeConcern(concern.label)}
+                    disabled={busy}
+                    onPress={() => void change(kinDealWithoutConcern(deal, concern.label))}
+                  />
+                ) : null
+              }
+            />
+          ))}
         </ListSection>
       )}
 

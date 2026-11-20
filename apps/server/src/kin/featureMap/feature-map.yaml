@@ -46,6 +46,21 @@ features:
       - apps/server/src/kin/chat/KinChatService.test.ts
       - .agents/skills/verify-kin/scripts/member-attaches-file.sh
 
+  - id: chat-web
+    name: An agent searches the web and reads public pages
+    tab: chats
+    web: [home, chat]
+    phone: [tab:chats, KinChat]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      In a teammate's own chat too: the provider's own web search where it runs at the model's
+      vendor (Claude), and Kin's page reader, which reads only public https addresses. Either
+      marks the turn as having read outside text.
+    tools: [web_page]
+    proof:
+      - apps/server/src/kin/sales/webPage.test.ts
+      - apps/server/src/kin/lead/turn/providers/claude.test.ts
+
   - id: chat-character
     name: Each agent's own voice, and "undo it"
     tab: chats
@@ -711,11 +726,27 @@ features:
       A member reaches Deals only with the Clients place on, and sees every deal but those marked
       private and those under a private client. The web shows a board with Won and Lost at its
       end; at phone width and on the phone, a list by stage. Totals stay per currency.
-    tools: [deal_stages]
+    tools: [deal_stages, pipeline_read]
     proof:
       - apps/server/src/kin/work/deals.test.ts
+      - apps/server/src/kin/sales/pipeline.test.ts
       - packages/client-runtime/src/kin/kinDeals.test.ts
       - apps/web/src/kin/KinDeals.browser.test.tsx
+
+  - id: deal-concerns
+    name: What we hear, the concerns raised on deals
+    tab: clients
+    web: [clients, button:Deals, section:What we hear]
+    phone: [tab:clients, button:Deals, section:What we hear]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      Agents put each worry a prospect raised on its deal as a short label with the words heard;
+      the deal shows them under Concerns raised. What we hear counts, on the server, how many deals
+      raised each and how many of those are open, won and lost, over the deals the reader sees.
+    proof:
+      - apps/server/src/kin/work/deals.test.ts
+      - apps/server/src/kin/sales/pipeline.test.ts
+      - packages/client-runtime/src/kin/kinDeals.test.ts
 
   - id: deal
     name: A deal

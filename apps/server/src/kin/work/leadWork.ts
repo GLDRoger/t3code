@@ -255,6 +255,7 @@ const DealShown = Schema.Struct({
       accepted: Schema.optional(Schema.Literal(true)),
     }),
   ),
+  concerns: Schema.optional(Schema.Array(Schema.String)),
 });
 const Row = Schema.Struct({
   key: Schema.String,
@@ -1025,6 +1026,13 @@ const dealsShown = Effect.fnUntraced(function* (
                 title: deal.quote.title,
                 ...(deal.quote.accepted ? { accepted: true as const } : {}),
               },
+            }),
+        ...(deal.concerns === undefined
+          ? {}
+          : {
+              concerns: deal.concerns.map((concern) =>
+                concern.heard === undefined ? concern.label : `${concern.label}: ${concern.heard}`,
+              ),
             }),
       },
     ]),
@@ -2245,7 +2253,7 @@ const createRow = Effect.fnUntraced(function* (
     ...(sameEmail === undefined ? {} : { sameEmail }),
   };
 });
-const DEAL_FIELDS = ["stage", "source", "lostReason"];
+const DEAL_FIELDS = ["stage", "source", "lostReason", "concerns"];
 const dealFields = (fields: FieldInputs | undefined) => {
   const given = fields ?? {};
   const extra = Object.keys(given).filter((key) => !DEAL_FIELDS.includes(key));
@@ -2258,6 +2266,8 @@ const dealFields = (fields: FieldInputs | undefined) => {
     stage: text("stage"),
     source: text("source"),
     lostReason: text("lostReason"),
+    // A list as given: one concern alone may come as text.
+    concerns: typeof given.concerns === "string" ? [given.concerns] : given.concerns,
   });
 };
 /** A deal's value as the agent wrote it: in the currency named, else the deal's own, else home. */
@@ -2300,6 +2310,9 @@ const dealRow = Effect.fnUntraced(function* (
     ...(owner === undefined ? {} : { owner }),
     ...(row.sensitive === undefined ? {} : { sensitive: true }),
     ...(row.notes === undefined ? {} : { notes: row.notes }),
+    ...(fields.concerns === undefined || fields.concerns === null
+      ? {}
+      : { concerns: fields.concerns }),
     originKey: `lead:${lead.agentId}:${sourceEventId}:${retryKey(`deals|${party.recordId}|${titleKey(row.title)}`)}`,
   });
   return {
@@ -2341,6 +2354,7 @@ const dealUpdate = Effect.fnUntraced(function* (
     ...(value === undefined ? {} : { value }),
     ...(input.due === undefined ? {} : yield* dueOf(lead.orgId, input.due)),
     ...(fields.source === undefined ? {} : { source: fields.source }),
+    ...(fields.concerns === undefined ? {} : { concerns: fields.concerns }),
     ...(input.owner === undefined ? {} : { owner: yield* resolveWho(lead, input.owner) }),
     ...(input.sensitive === undefined ? {} : { sensitive: true }),
   };

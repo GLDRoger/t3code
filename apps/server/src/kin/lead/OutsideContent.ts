@@ -6,6 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
+import { SALES_OUTSIDE_TOOLS } from "../sales/policies.ts";
 
 type Turn = {
   readonly orgId: KinOrgId;
@@ -133,6 +134,7 @@ export const OUTSIDE_TOOLS = {
   social_draft: "allowed",
   social_week: "allowed",
   social_pack: "allowed",
+  ...SALES_OUTSIDE_TOOLS,
   // A delegated task, clone or browser is work outside text could steer.
   ...(Object.fromEntries(LEAD_T3_TOOLS.map((name) => [name, "refused" as const])) as Record<
     (typeof LEAD_T3_TOOLS)[number],
@@ -221,6 +223,45 @@ export const inheritOutside = Effect.fn("KinOutsideContent.inherit")(function* (
   const source = events[0]?.source;
   if (source !== undefined) yield* markOutside(input, source);
 });
+
+const PAGES_TURNS = 200;
+const PAGES_PER_TURN = 2_000;
+/** Per wake-up, the page addresses it was given (`web_page`): the newest 200 turns, 2,000 each. */
+const pagesSeen = new Map<string, Set<string>>();
+const turnKey = (turn: Pick<Turn, "orgId" | "wakeupId">) => `${turn.orgId} ${turn.wakeupId}`;
+const pageKey = (address: string) => {
+  if (!URL.canParse(address)) return undefined;
+  const url = new URL(address);
+  url.hash = "";
+  return url.href;
+};
+
+/** Pages the turn read, and the links they gave, which it may open after outside text. */
+export const rememberPages = (
+  turn: Pick<Turn, "orgId" | "wakeupId">,
+  addresses: ReadonlyArray<string>,
+) =>
+  Effect.sync(() => {
+    const key = turnKey(turn);
+    const seen = pagesSeen.get(key) ?? new Set<string>();
+    pagesSeen.delete(key);
+    pagesSeen.set(key, seen);
+    for (const address of addresses) {
+      if (seen.size >= PAGES_PER_TURN) break;
+      const page = pageKey(address);
+      if (page !== undefined) seen.add(page);
+    }
+    for (const old of pagesSeen.keys()) {
+      if (pagesSeen.size <= PAGES_TURNS) break;
+      pagesSeen.delete(old);
+    }
+  });
+
+/** Whether the turn read this page, or a page it read links to it. */
+export const pageSeen = (turn: Pick<Turn, "orgId" | "wakeupId">, address: string) => {
+  const page = pageKey(address);
+  return page !== undefined && pagesSeen.get(turnKey(turn))?.has(page) === true;
+};
 
 /** Whether `name` may run with these arguments once the turn has read outside text. */
 export const outsideToolAllowed = Effect.fn("KinOutsideContent.allowed")(

@@ -109,7 +109,7 @@ export const LISTS: Record<ListName, List> = {
     noun: "deal",
     states: ["open", "done", "dropped"],
     categories: [],
-    fields: ["stage", "value", "source", "lostReason"],
+    fields: ["stage", "value", "source", "lostReason", "concerns"],
   },
   docs: {
     name: "Docs",

@@ -27,7 +27,7 @@ import { toolDirectories } from "../gendocs/toolchain.ts";
 import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
 import { KinServer } from "../KinServer.ts";
 import { aborted, effectiveAudience, SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "./Audience.ts";
-import { outsideRead } from "./OutsideContent.ts";
+import { markOutside, outsideRead } from "./OutsideContent.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { listedOnSharedThread } from "./SharedTools.ts";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
@@ -123,6 +123,25 @@ export const fullSessionRefusal = Effect.fn("KinAgentSession.fullSessionRefusal"
   },
   Effect.catchCause((cause) =>
     Effect.logWarning("Kin full-session check failed; refusing", { cause }).pipe(
+      Effect.as<string | undefined>(SESSION_REFUSAL.none),
+    ),
+  ),
+);
+
+/**
+ * A confined session's web search: its results are outside text, so the turn it follows is marked
+ * before they reach the model. No such turn, or a failed mark, refuses the search.
+ */
+export const webSearchRefusal = Effect.fn("KinAgentSession.webSearchRefusal")(
+  function* (threadId: ThreadId) {
+    const { turn } = yield* governingTurn(threadId);
+    if (turn === undefined) return SESSION_REFUSAL.none;
+    if (yield* aborted(turn)) return SESSION_REFUSAL.aborted;
+    yield* markOutside(turn, "web search");
+    return undefined;
+  },
+  Effect.catchCause((cause) =>
+    Effect.logWarning("Kin web search check failed; refusing", { cause }).pipe(
       Effect.as<string | undefined>(SESSION_REFUSAL.none),
     ),
   ),
@@ -234,6 +253,9 @@ export const sessionPolicyLayer = Layer.effect(
     return KinAgentSessionPolicy.of({
       refusal: Effect.fn("KinAgentSessionPolicy.refusal")((threadId: ThreadId) =>
         fullSessionRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      ),
+      webSearch: Effect.fn("KinAgentSessionPolicy.webSearch")((threadId: ThreadId) =>
+        webSearchRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       ),
       delegated: Effect.fn("KinAgentSessionPolicy.delegated")((threadId: ThreadId) =>
         delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),

@@ -11,6 +11,11 @@ export class KinAgentSessionPolicy extends Context.Service<
   {
     /** Why the thread's turn refuses built-in tools now (the model reads it); none admits them. */
     readonly refusal: (threadId: ThreadId) => Effect.Effect<string | undefined>;
+    /**
+     * Marks the thread's turn as having read outside text, before a provider's web search runs
+     * in a confined session; why the search may not run, or none when it was marked.
+     */
+    readonly webSearch: (threadId: ThreadId) => Effect.Effect<string | undefined>;
     /** Whether the thread is a task delegated, at any depth, from a lead's thread. */
     readonly delegated: (threadId: ThreadId) => Effect.Effect<boolean>;
     /** First on the session's PATH: the pinned `gh` and Typst. */

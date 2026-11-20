@@ -15,6 +15,7 @@ import type * as SqlError from "effect/sql/SqlError";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
+import { setWeeklyPipeline, weeklyPipelineOf } from "../work/dealStages.ts";
 import { theOwner, viewerOf } from "../work/ownerWork.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { coveredToday } from "./checkIn.ts";
@@ -25,6 +26,7 @@ import { BRIEF_SLUGS, onHostClock } from "./checkInSeeds.ts";
  * the schedules' next pass applies, as a card's are; a new time or a new check-in saves the task now.
  */
 
+const WEEKLY = "checkin-weekly";
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const unread = <A, R>(self: Effect.Effect<A, KinChatError | SqlError.SqlError, R>) =>
   Effect.mapError(self, (error) =>
@@ -48,6 +50,7 @@ const read = Effect.fn("KinCheckIns.read")(function* (orgId: KinOrgId) {
   const host = KinSchedules.hostTimeZone();
   const leads = yield* leadsOf(sql, orgId);
   const rows = yield* KinSchedules.listSchedules(sql, orgId);
+  const pipeline = yield* weeklyPipelineOf(orgId);
   const checkIns = [];
   for (const row of rows) {
     if (row.checkIn !== 1 || row.deletedAt !== null) continue;
@@ -77,6 +80,7 @@ const read = Effect.fn("KinCheckIns.read")(function* (orgId: KinOrgId) {
       on,
       runNowPending: row.runNowAt !== null,
       ...(covered === undefined ? {} : { coveredToday: covered }),
+      ...(row.scheduleId === WEEKLY ? { numbers: pipeline ? ["pipeline" as const] : [] } : {}),
     });
   }
   return {
@@ -161,6 +165,12 @@ export const act = Effect.fn("KinCheckIns.act")(function* (
       break;
     case "remove":
       yield* sql`UPDATE kin_schedules SET deleted_at = ${now}, updated_at = ${now} WHERE ${where}`;
+      break;
+    case "numbers_on":
+    case "numbers_off":
+      if (row.scheduleId !== WEEKLY)
+        return yield* invalid("Only the weekly brief adds the pipeline to its numbers.");
+      yield* setWeeklyPipeline(input.orgId, input.action === "numbers_on", now);
       break;
   }
   return yield* read(input.orgId);

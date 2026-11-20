@@ -5,17 +5,21 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   KinAgentId,
   KinChatError,
+  type KinDealMove,
+  type KinDealNumbers,
   KinOrgId,
   KinPersonId,
   KinRecord,
   KinWorkHistoryItem,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -23,6 +27,9 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { pipelineLines, weeklyFigures } from "../pulse/weekly.ts";
+import { setProfile } from "./companyProfile.ts";
+import { setWeeklyPipeline } from "./dealStages.ts";
 import * as Deals from "./deals.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as Clients from "./ownerClients.ts";
@@ -896,4 +903,217 @@ it.effect("an older client reads a deal as a Work entry, with its true list besi
       listName: "deals",
     });
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "numbers: each figure against a hand count on an invented month, in the company's zone, for each role, and Monday's three lines",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      // The company keeps Auckland time: 1 Nov 01:00 there is still 31 Oct in UTC.
+      yield* TestClock.setTime(Date.parse("2026-10-05T00:00:00.000Z"));
+      const { brightwater, corran } = yield* seed;
+      yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+          dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+        VALUES (${orgId}, 'Pacific/Auckland', '08:00', '18:00', '02:00', 0, 1, '09:00', '[]')`;
+      const arjunId = KinPersonId.make("arjun");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access, sees_clients)
+        VALUES (${arjunId}, ${orgId}, 'arjun', 'Arjun', ${at}, NULL, 1)`;
+      const arjun = { _tag: "person" as const, orgId, personId: arjunId };
+      // A company with no deals sees no figures at all.
+      assert.isUndefined((yield* Deals.deals([owner], { orgId })).numbers);
+
+      const make = (party: string, title: string, extra: object) =>
+        Deals.create([owner], newDeal(party, title, extra)).pipe(Effect.map((made) => made.deal));
+      const nok = (minor: number) => ({ minor, currency: "NOK" });
+      const stock = yield* make(corran, "Invented stock system", {
+        value: euros(1_800_000),
+        owner: asZoya,
+      });
+      yield* make(brightwater, "Invented pilot", { value: nok(24_000_000) });
+      const orders = yield* make(corran, "Invented orders app", { value: euros(900_000) });
+      const old = yield* make(corran, "Invented old win", { value: euros(500_000), owner: asZoya });
+      yield* make(corran, "Invented private renewal", { value: euros(100_000), sensitive: true });
+      const move = (deal: { key: string; rev: number }, to: KinDealMove) =>
+        Deals.move([owner], { orgId, key: deal.key, rev: deal.rev, to }).pipe(
+          Effect.map((done) => done.deal),
+        );
+      // Won last month; lost on 1 Nov in Auckland, which is this month there.
+      yield* TestClock.setTime(Date.parse("2026-10-20T00:00:00.000Z"));
+      yield* move(old, { _tag: "won" });
+      yield* TestClock.setTime(Date.parse("2026-10-31T12:00:00.000Z"));
+      yield* move(orders, { _tag: "lost", reason: "Invented: went cheaper" });
+      // New prospects this month: one from a typed source, one that says nowhere.
+      yield* TestClock.setTime(Date.parse("2026-11-10T00:00:00.000Z"));
+      for (const [name, source] of [
+        ["Invented Halden", "Harbour trade fair"],
+        ["Invented Lumen", undefined],
+      ] as const)
+        yield* Clients.createParty([owner], {
+          orgId,
+          name,
+          clientRequestId: name,
+          prospect: true,
+          ...(source === undefined ? {} : { source }),
+        });
+      // This week (from Monday 16 Nov there): the stock system moves twice, a new deal is won.
+      yield* TestClock.setTime(Date.parse("2026-11-16T00:00:00.000Z"));
+      const talks = yield* move(stock, { _tag: "stage", stage: "in-talks" });
+      yield* TestClock.adjust("1 hour");
+      yield* move(talks, { _tag: "stage", stage: "proposal" });
+      const training = yield* Deals.create(
+        [zoya],
+        newDeal(corran, "Invented training", { value: euros(200_000) }),
+      );
+      yield* move(training.deal, { _tag: "won" });
+      // Its next step's day, 17 Nov, is behind today (18 Nov); the pilot's is today, so not late.
+      yield* Deals.step([zoya], {
+        orgId,
+        key: stock.key,
+        step: {
+          title: "Invented: send the revised proposal",
+          dueAt: "2026-11-17",
+          dueAllDay: true,
+        },
+        clientRequestId: "late",
+      });
+      const pilot = (yield* Deals.deals([owner], { orgId })).deals.find(
+        (deal) => deal.title === "Invented pilot",
+      )!;
+      yield* Deals.step([owner], {
+        orgId,
+        key: pilot.key,
+        step: { title: "Invented: call Ingrid", dueAt: "2026-11-18", dueAllDay: true },
+        clientRequestId: "today",
+      });
+      // Wednesday 18 Nov, 10:00 in Auckland.
+      yield* TestClock.setTime(Date.parse("2026-11-17T21:00:00.000Z"));
+
+      const eur = (count: number, minor: number) => ({
+        count,
+        values: [{ minor, currency: "EUR" }],
+      });
+      const none = { count: 0, values: [] };
+      const rhea: KinDealNumbers = (yield* Deals.deals([owner], { orgId })).numbers!;
+      assert.deepInclude(rhea, {
+        month: "2026-11",
+        lastMonth: "2026-10",
+        weekStart: "2026-11-16",
+        open: {
+          count: 3,
+          values: [
+            { minor: 1_900_000, currency: "EUR" },
+            { minor: 24_000_000, currency: "NOK" },
+          ],
+        },
+        wonThisMonth: eur(1, 200_000),
+        wonLastMonth: eur(1, 500_000),
+        lostThisMonth: eur(1, 900_000),
+        lostLastMonth: none,
+        winRate: { won: 2, decided: 3 },
+        sources: [
+          { source: null, count: 1 },
+          { source: "Harbour trade fair", count: 1 },
+        ],
+        late: 1,
+      });
+      assert.deepStrictEqual(
+        rhea.stages.map((stage) => [stage.name, stage.count]),
+        [
+          ["New", 2],
+          ["In talks", 0],
+          ["Proposal", 1],
+          ["Deciding", 0],
+        ],
+      );
+      assert.deepStrictEqual(rhea.week!.counts, { won: 1, lost: 0, new: 1, moved: 1 });
+      assert.deepInclude(rhea.week!.moved[0]!, {
+        title: "Invented stock system",
+        from: "New",
+        to: "Proposal",
+      });
+      assert.deepStrictEqual(
+        rhea.week!.won.map((row) => row.title),
+        ["Invented training"],
+      );
+      assert.deepStrictEqual(rhea.people, [
+        {
+          owner: { _tag: "person", personId: ownerId },
+          open: {
+            count: 2,
+            values: [
+              { minor: 100_000, currency: "EUR" },
+              { minor: 24_000_000, currency: "NOK" },
+            ],
+          },
+          wonThisMonth: none,
+          late: 0,
+        },
+        { owner: asZoya, open: eur(1, 1_800_000), wonThisMonth: eur(1, 200_000), late: 1 },
+      ]);
+
+      // Zoya sells: the team's open and won this month as she sees them, her own row and week.
+      const hers = (yield* Deals.deals([zoya], { orgId })).numbers!;
+      assert.deepStrictEqual(hers.open, {
+        count: 2,
+        values: [
+          { minor: 1_800_000, currency: "EUR" },
+          { minor: 24_000_000, currency: "NOK" },
+        ],
+      });
+      assert.deepStrictEqual(hers.wonThisMonth, eur(1, 200_000));
+      assert.deepStrictEqual(hers.people, [
+        { owner: asZoya, open: eur(1, 1_800_000), wonThisMonth: eur(1, 200_000), late: 1 },
+      ]);
+      assert.deepStrictEqual(hers.week!.counts, { won: 1, lost: 0, new: 1, moved: 1 });
+      for (const owners of [
+        "wonLastMonth",
+        "lostThisMonth",
+        "lostLastMonth",
+        "winRate",
+        "sources",
+        "late",
+      ])
+        assert.notProperty(hers, owners);
+      // Arjun sells and looks after nothing: his own row is zeros, nobody else's shows.
+      const his = (yield* Deals.deals([arjun], { orgId })).numbers!;
+      assert.deepStrictEqual(his.people, [
+        { owner: { _tag: "person", personId: arjunId }, open: none, wonThisMonth: none, late: 0 },
+      ]);
+      assert.deepStrictEqual(his.week!.counts, { won: 0, lost: 0, new: 0, moved: 0 });
+      // Dev, Clients off: refused, as every deals read is.
+      assert.strictEqual(yield* refusal(Deals.deals([dev], { orgId })), "not_allowed");
+      // A client's own deals carry no figures.
+      assert.isUndefined((yield* Deals.deals([owner], { orgId, party: corran })).numbers);
+
+      // Monday's page: the same while the switch is off, three lines while it is on.
+      const now = yield* Clock.currentTimeMillis;
+      const before = yield* weeklyFigures({ orgId, now });
+      assert.notInclude(before, "Pipeline:");
+      yield* setWeeklyPipeline(orgId, true, now);
+      const lines = yield* pipelineLines(orgId, now - 7 * 86_400_000, now);
+      // Two currencies with no rate: each stands alone. Last week's are all in one: no estimate.
+      assert.deepStrictEqual(lines, [
+        "Pipeline: €19,000 open in 2 deals, and NOK\u00a0240,000 in 1.",
+        "Last week: won 1 for €2,000, lost 0; 1 new deal.",
+        "Follow-ups late: 1 (Zoya 1).",
+      ]);
+      const on = yield* weeklyFigures({ orgId, now });
+      assert.include(on, lines.join("\n"));
+      assert.strictEqual(on.replace(`\n\n${lines.join("\n")}`, ""), before);
+      // Off again: the next Monday is byte for byte what it was.
+      yield* setWeeklyPipeline(orgId, false, now);
+      assert.strictEqual(yield* weeklyFigures({ orgId, now }), before);
+      // With euros at home and a krone rate, the krone line says what it is about, and as of when.
+      yield* setProfile(
+        orgId,
+        { _tag: "person", personId: ownerId },
+        { homeCurrency: "EUR", rates: [{ currency: "NOK", rate: "0.0846", asOf: "2026-11-17" }] },
+        undefined,
+      );
+      assert.strictEqual(
+        (yield* pipelineLines(orgId, now - 7 * 86_400_000, now))[0],
+        "Pipeline: €19,000 open in 2 deals, and NOK\u00a0240,000 in 1 (about €20,304 at your rate of 17 Nov).",
+      );
+    }).pipe(Effect.provide(layer)),
 );
