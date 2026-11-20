@@ -1,4 +1,4 @@
-import type { KinCheckIn } from "@t3tools/contracts";
+import type { KinBrief, KinBriefSaveInput, KinCheckIn, KinCoveringBrief } from "@t3tools/contracts";
 
 import { kinZoneName } from "./kinTimeZone.ts";
 
@@ -57,6 +57,14 @@ export function kinCheckInLine(checkIn: KinCheckIn): string {
   return `${checkIn.around === true ? "Around " : ""}${checkIn.at} · ${kinCheckInDays(checkIn.days)} · ${checkIn.agentName}`;
 }
 
+const COVERED: Record<KinCoveringBrief, string> = {
+  weekly: "The weekly brief covers it today.",
+  morning: "The morning brief covers it today.",
+};
+/** Why a morning or weekly brief isn't sent today, the company's day; null when nothing stopped it. */
+export const kinCoveredLine = (row: { readonly coveredToday?: KinCoveringBrief | undefined }) =>
+  row.coveredToday === undefined ? null : COVERED[row.coveredToday];
+
 export interface KinCheckInDraft {
   readonly scheduleId: KinCheckIn["scheduleId"] | undefined;
   readonly agentId: KinCheckIn["agentId"] | null;
@@ -92,4 +100,49 @@ export function kinCheckInProblem(draft: KinCheckInDraft): string | null {
   if (!CLOCK.test(draft.at)) return "Set a time such as 09:30.";
   if (draft.days.length === 0) return "Pick at least one day.";
   return null;
+}
+
+/** A person's own briefs, under You in Settings: the seeded check-ins they receive. */
+export const KIN_BRIEFS = {
+  title: "Briefs",
+  detail: "When Kin sends you the day's briefs.",
+  titles: {
+    morning: "Morning brief",
+    afternoon: "Afternoon check-in",
+    evening: "Evening summary",
+  },
+  edit: "Change",
+  save: "Save",
+  time: "Time",
+  days: "Days",
+  on: "On",
+  off: "Off",
+  loading: "Loading briefs",
+  failed: "Couldn't change your brief. It stays as it was.",
+} as const;
+
+/** "Around 09:30 · Every day", or "Off · Around 18:30 · Weekdays". */
+export function kinBriefLine(brief: KinBrief): string {
+  const line = `${brief.around ? "Around " : ""}${brief.at} · ${kinCheckInDays(brief.days)}`;
+  return brief.on ? line : `${KIN_BRIEFS.off} · ${line}`;
+}
+
+/** The morning brief comes on the days its person picks; the other two are on or off. */
+export const kinBriefHasDays = (kind: KinBrief["kind"]) => kind === "morning";
+
+/** Null when the brief can be saved as drafted, else what to fix. */
+export function kinBriefProblem(draft: Pick<KinBrief, "at" | "days">): string | null {
+  if (!CLOCK.test(draft.at)) return "Set a time such as 09:30.";
+  if (draft.days.length === 0) return "Pick at least one day.";
+  return null;
+}
+
+/** The save of a brief's form: what it changed from the brief as it opened, and only that. */
+export function kinBriefSave(opened: KinBrief, draft: KinBrief) {
+  const days = (brief: KinBrief) => [...brief.days].sort((a, b) => a - b).join();
+  const changed: Array<NonNullable<KinBriefSaveInput["changed"]>[number]> = [];
+  if (draft.at !== opened.at) changed.push("at");
+  if (days(draft) !== days(opened)) changed.push("days");
+  if (draft.on !== opened.on) changed.push("on");
+  return { kind: draft.kind, at: draft.at, days: draft.days, on: draft.on, changed };
 }

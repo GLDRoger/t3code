@@ -100,6 +100,7 @@ export function KinWorkStatusRow(props: {
 export function KinWorkDueRow(props: {
   readonly view: KinWorkItemView;
   readonly now: Date;
+  readonly zone: string | null;
   readonly disabled: boolean;
   readonly onAct: (action: KinWorkAction) => void;
   /** Past due and still open: drawn in the danger colour. */
@@ -113,8 +114,8 @@ export function KinWorkDueRow(props: {
       accessibilityRole="button"
       accessibilityLabel={`Due: ${due}. Change`}
       actions={[
-        ...kinWorkDueChoices(now).map((choice) => {
-          const date = kinWorkDueLabel(choice.day, now);
+        ...kinWorkDueChoices(now, props.zone).map((choice) => {
+          const date = kinWorkDueLabel(choice.day, now, props.zone);
           return {
             id: `${DUE}${choice.day}`,
             title: choice.label,

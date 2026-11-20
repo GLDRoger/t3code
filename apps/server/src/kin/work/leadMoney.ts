@@ -52,7 +52,7 @@ import {
 } from "./leadWork.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
 import { homeCurrency } from "./companyProfile.ts";
-import { dayIn, formatMinor, formatMoney, parseAmount } from "./money.ts";
+import { dayIn, formatMinor, formatMoney, parseAmount, timeIn } from "./money.ts";
 import { dates, moneySection, moneySummary, ownerLevelStillToInvoice } from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import { endOfDay, iso, notFound, ownerZone } from "./recordRows.ts";
@@ -636,7 +636,7 @@ const runDates = Effect.fnUntraced(function* (lead: Lead, input: typeof DatesInp
       list: row.listName,
       state: row.stateLabel,
       what: row.label,
-      on: row.allDay ? dayIn(Date.parse(row.at), zone) : row.at,
+      on: row.allDay ? dayIn(Date.parse(row.at), zone) : timeIn(Date.parse(row.at), zone),
       ...(row.record.late ? { late: true as const } : {}),
       ...(row.record.amount === undefined
         ? {}

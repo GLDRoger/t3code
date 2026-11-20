@@ -781,6 +781,10 @@ export const KinEvent = Schema.Union([
         // The schedule's instruction, the owner's words: what this check-in is for.
         what: Schema.String.check(Schema.isMaxLength(2000)),
         slot: Schema.String.check(Schema.isMaxLength(200)),
+        // The week's figures go on this page: the weekly brief, or the morning one on its day.
+        figures: Schema.optional(Schema.Literal(true)),
+        // A scheduled brief's day in the company's zone ("2026-11-19"); `slot` is the host's.
+        day: Schema.optional(Schema.String.check(Schema.isMaxLength(10))),
       }),
     ),
     // Metadata the server read from connections the owner marked Read: still outside text.

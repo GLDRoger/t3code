@@ -776,6 +776,7 @@ const unitLayer = (baseDirectory: string) =>
     Layer.provide(Layer.mock(Scan.KinSecretScan)({})),
     Layer.provide(Layer.mock(PurgePush.KinPurgePush)({})),
     Layer.provide(Layer.mock(Vcs.VcsProcess)({})),
+    Layer.provide(Sqlite.layerMemory),
     Layer.provide(NodeServices.layer),
   );
 
@@ -1073,4 +1074,14 @@ it.each([
 ] as const)("rejects authority that does not bind the plan: %s", (_name, tamper) => {
   expect(Purge.purgeRejection(drop, actionFor(drop), grantFor(drop))).toBeUndefined();
   expect(Purge.purgeRejection(drop, ...tamper(actionFor(drop), grantFor(drop)))).toBeDefined();
+});
+
+it.each([
+  ["2026-11-20T03:00:00.000Z", "America/Los_Angeles", "2026-11-19"],
+  ["2026-11-20T12:30:00.000Z", "Pacific/Auckland", "2026-11-21"],
+  ["2026-11-20T12:30:00.000Z", "UTC", "2026-11-20"],
+])("a tombstone is dated on the company's day (%s in %s)", (at, zone, day) => {
+  expect(Purge.purgedNote(Date.parse(at), zone, "act-1")).toBe(
+    `Purged on ${day} by the owner (action act-1).\n`,
+  );
 });

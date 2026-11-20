@@ -3,6 +3,7 @@ import {
   KIN_DOC_CARD,
   KIN_MESSAGE_BODY_MAX_LENGTH,
   KinChatId,
+  kinIsPage,
   kinPageSections,
   kinPageShape,
   KIN_FIGURE_SCHEME,
@@ -73,6 +74,9 @@ import {
 } from "./classify.ts";
 import { KinPresence, syncQueued } from "./KinPresence.ts";
 import { missingCard, NUDGE_PREFIX, relayPrefix, unkeptPromise } from "./promises.ts";
+import { weeklyFigures } from "../pulse/weekly.ts";
+import { dayIn } from "../work/money.ts";
+import { ownerZone } from "../work/recordRows.ts";
 import { flagTextQuestion } from "../questions/openQuestions.ts";
 
 export { rescueMessageId };
@@ -84,6 +88,34 @@ const RESCUE_TIMEOUT_MS = 120_000;
 const OVERFLOW_SUFFIX = "\n\n…more in the agent's thread";
 // Room left for the heading and for entry keys Kin replaces with longer names when it stores.
 const MORNING_HEADROOM = 200;
+/** The morning page Kin posts when the turn wrote none: its one quiet line, under Needs you. */
+export const QUIET_PAGE = "## Needs you\n\nNothing new needs you this morning.";
+const NEEDS_YOU_HEADING = "## Needs you\n";
+const LINE_MAX = 200;
+const hasNeedsYou = (body: string) =>
+  kinPageSections(body).some(({ title }) => title?.trim().toLowerCase() === "needs you");
+/** The page's Needs you: one item per card the turn left waiting on them, within `room`. */
+const needsYouSection = (lines: ReadonlyArray<string>, room: number) => {
+  if (lines.length === 0) return QUIET_PAGE;
+  let section = NEEDS_YOU_HEADING;
+  for (const [index, text] of lines.entries()) {
+    const line = text.length <= LINE_MAX ? text : `${text.slice(0, LINE_MAX - 1).trimEnd()}…`;
+    const next = `${section}\n- ${line}`;
+    if (next.length <= room) section = next;
+    else if (index === 0) section = next.slice(0, Math.max(room, NEEDS_YOU_HEADING.length + 4));
+    else break;
+  }
+  return section;
+};
+/** The text in parts of at most `max` characters, cut between lines. */
+const fitParts = (text: string, max: number) =>
+  text.split("\n").reduce<Array<string>>((parts, line) => {
+    const last = parts.at(-1);
+    if (last !== undefined && last.length + 1 + line.length <= max)
+      parts[parts.length - 1] = `${last}\n${line}`;
+    else parts.push(line.slice(0, max));
+    return parts;
+  }, []);
 
 // Which wake-ups owe words: a message, card tap or reaction asked in its chat (`reply`); an entry
 // someone gave the lead and finished work wait on it too (`owedNotice`). Reminders, briefs and
@@ -380,8 +412,9 @@ const make = Effect.gen(function* () {
         AND author_agent_id = ${wake.agentId} AND author_thread_id = ${wake.threadId}
         AND created_at >= ${iso(wake.startedAt)}
       ORDER BY seq`;
-    const target = normalized(text);
-    return rows.some((row) => normalized(row.body) === target);
+    // As stored: the morning page's first post may have gained its heading (`briefForm`).
+    const targets = [normalized(text), normalized(`## Today\n\n${text}`)];
+    return rows.some((row) => targets.includes(normalized(row.body)));
   });
 
   // The questions on cards this turn posted in the lane: the card asks it, so the reply needn't.
@@ -395,6 +428,23 @@ const make = Effect.gen(function* () {
       ORDER BY m.seq`;
     return rows.flatMap((row) => (row.question === null ? [] : [row.question]));
   });
+
+  // The evening summary is posted on its own day in the company's zone or not at all.
+  const pastItsDay = Effect.fn("KinReplyBridge.pastItsDay")(
+    function* (wake: Wake) {
+      const [row] = yield* sql<{ day: string | null }>`SELECT
+          json_extract(json, '$.checkIn.day') AS day FROM kin_events
+        WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId} AND tag = 'pulse'
+          AND json_extract(json, '$.checkIn.scheduleId') = 'checkin-evening'
+        ORDER BY event_id LIMIT 1`;
+      if (row?.day == null) return false;
+      const zone = yield* ownerZone(wake.orgId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      return dayIn(yield* Clock.currentTimeMillis, zone) !== row.day;
+    },
+    Effect.orElseSucceed(() => false),
+  );
 
   const deliver = Effect.fn("KinReplyBridge.deliver")(function* (
     wake: Wake,
@@ -410,6 +460,8 @@ const make = Effect.gen(function* () {
         why: WITHHELD_ANY,
         moved: false,
       };
+    if (yield* pastItsDay(wake))
+      return { _tag: "withheld" as const, reason: "past_its_day", why: null, moved: false };
     return yield* gate
       .post(
         lead,
@@ -454,8 +506,19 @@ const make = Effect.gen(function* () {
           ? capBody(joined)
           : null;
     if (body === null) return { _tag: "full" as const };
-    const lead = yield* agent(wake);
-    if (lead === undefined)
+    return yield* store(wake, slot, { body }, ordinal);
+  });
+  // Kin's own section put before the page as stored (`settlePage`).
+  const lead = (wake: Wake, slot: Slot, body: string) =>
+    store(wake, slot, { body, lead: true }, -1);
+  const store = Effect.fn("KinReplyBridge.store")(function* (
+    wake: Wake,
+    slot: Slot,
+    input: { readonly body: string; readonly lead?: true },
+    ordinal: number,
+  ) {
+    const author = yield* agent(wake);
+    if (author === undefined)
       return {
         _tag: "withheld" as const,
         reason: "wake-up ended",
@@ -464,8 +527,8 @@ const make = Effect.gen(function* () {
       };
     return yield* gate
       .extend(
-        lead,
-        { chatId: wake.lane.chatId, messageId: slot.messageId, body },
+        author,
+        { chatId: wake.lane.chatId, messageId: slot.messageId, ...input },
         repliedBy(wake, ordinal),
       )
       .pipe(
@@ -493,27 +556,131 @@ const make = Effect.gen(function* () {
         AND agent_id = ${wake.agentId} AND chat_id = ${wake.lane.chatId} AND message_id IS NULL LIMIT 1`;
     return rows.length > 0;
   });
-  // The morning check-in reads as a page with sections however it was written: its reply gets a
-  // heading when it opens with none. Only the bridge's own reply; a tool post stays as written.
-  // The id is the seeded morning check-in's (`pulse/checkIn.ts`).
+  // The seeded brief this wake-up runs alone (`pulse/checkInSeeds.ts`), not a turn someone asked.
+  const briefIn = (wake: Wake, scheduleIds: ReadonlyArray<string>) =>
+    sql<{ figures: number | null }>`SELECT CASE
+        WHEN json_extract(e.json, '$.checkIn.scheduleId') = 'checkin-weekly' THEN 1
+        ELSE json_extract(e.json, '$.checkIn.figures') END AS figures
+      FROM kin_events e WHERE e.org_id = ${wake.orgId}
+      AND e.wakeup_id = ${wake.wakeupId} AND e.tag = 'pulse'
+      AND json_extract(e.json, '$.checkIn.scheduleId') IN ${sql.in(scheduleIds)}
+      AND NOT EXISTS (SELECT 1 FROM kin_events m WHERE m.org_id = e.org_id
+        AND m.wakeup_id = e.wakeup_id AND m.tag = 'chat.message')
+      ORDER BY e.event_id LIMIT 1`.pipe(Effect.map((rows) => rows[0]));
+  // The evening summary reads as a page with sections however it was written: the reply gets a
+  // heading when it opens with none, or with only a label such as "Today:". The morning page's is
+  // `KinChatRepository.briefForm`'s.
   const underMorningHeading = Effect.fn("KinReplyBridge.underMorningHeading")(function* (
     wake: Wake,
     text: string,
   ) {
-    if (
-      wake.posted > 0 ||
-      text.length > KIN_MESSAGE_BODY_MAX_LENGTH - MORNING_HEADROOM ||
-      kinPageSections(text).some(({ title }) => title !== null)
-    )
-      return text;
-    const morning = yield* sql`SELECT 1 FROM kin_events e WHERE e.org_id = ${wake.orgId}
-      AND e.wakeup_id = ${wake.wakeupId} AND e.tag = 'pulse'
-      AND json_extract(e.json, '$.checkIn.scheduleId') = 'checkin-morning'
-      AND NOT EXISTS (SELECT 1 FROM kin_events m WHERE m.org_id = e.org_id
-        AND m.wakeup_id = e.wakeup_id AND m.tag = 'chat.message')
-      LIMIT 1`;
-    return morning.length > 0 ? `## Today\n\n${text}` : text;
+    if (wake.posted > 0 || kinIsPage(text)) return text;
+    if ((yield* briefIn(wake, ["checkin-evening"])) === undefined) return text;
+    const page = `## Today\n\n${text}`;
+    const room = KIN_MESSAGE_BODY_MAX_LENGTH - MORNING_HEADROOM;
+    return page.length <= room
+      ? page
+      : `${page.slice(0, room - OVERFLOW_SUFFIX.length)}${OVERFLOW_SUFFIX}`;
   });
+  // The turn's page: the first text it stored in its chat, by tool or reply (`briefForm`).
+  const pageOf = Effect.fn("KinReplyBridge.pageOf")(function* (wake: Wake) {
+    const [row] = yield* sql<{ messageId: KinMessageId; body: string }>`SELECT
+        message_id AS "messageId", body FROM kin_messages
+      WHERE org_id = ${wake.orgId} AND chat_id = ${wake.lane.chatId} AND author_kind = 'agent'
+        AND author_agent_id = ${wake.agentId} AND author_thread_id = ${wake.threadId}
+        AND created_at >= ${iso(wake.startedAt)} AND kind = 'text' AND body <> ''
+        AND form = 'brief' AND status = 'posted'
+      ORDER BY seq LIMIT 1`;
+    return row === undefined
+      ? undefined
+      : ([...wake.slots.values()].find((slot) => slot.messageId === row.messageId) ?? row);
+  });
+  // Cards this turn raised that wait on the lane's person, as each card itself says it.
+  const waitingOn = Effect.fn("KinReplyBridge.waitingOn")(function* (wake: Wake) {
+    const since = iso(wake.startedAt);
+    const rows = yield* sql<{ line: string | null }>`SELECT line FROM (
+      SELECT w.created_at AS at, w.waiting_id AS id, CASE WHEN w.reason = 'approval' THEN m.body
+          ELSE COALESCE(json_extract(g.state_json, '$.question'), json_extract(g.state_json, '$.title'),
+            NULLIF(m.body, '')) END AS line
+        FROM kin_waiting w
+        JOIN kin_messages m ON m.org_id = w.org_id AND m.message_id = w.message_id
+        LEFT JOIN kin_widgets g ON g.org_id = w.org_id AND g.widget_id = w.widget_id
+        WHERE w.org_id = ${wake.orgId} AND w.resolved_at IS NULL AND w.reason <> 'mention'
+          AND w.person_id IN (SELECT person_id FROM kin_chat_members WHERE org_id = ${wake.orgId}
+            AND chat_id = ${wake.lane.chatId} AND person_id IS NOT NULL AND left_at IS NULL)
+          AND ((m.author_kind = 'agent' AND m.author_agent_id = ${wake.agentId}
+              AND m.author_thread_id = ${wake.threadId} AND m.created_at >= ${since})
+            OR (g.type = 'approval' AND EXISTS (SELECT 1 FROM kin_pending_actions a
+              WHERE a.org_id = w.org_id AND a.action_id = json_extract(g.state_json, '$.actionId')
+                AND a.requested_by_thread_id = ${wake.threadId} AND a.created_at >= ${wake.startedAt})))
+      UNION ALL
+      SELECT created_at, message_id, body FROM kin_messages
+        WHERE org_id = ${wake.orgId} AND status = 'suggested' AND author_kind = 'agent'
+          AND author_agent_id = ${wake.agentId} AND author_thread_id = ${wake.threadId}
+          AND created_at >= ${since})
+      ORDER BY at, id`;
+    return rows.flatMap((row) => {
+      const line = row.line?.split("\n").find((one) => one.trim() !== "");
+      return line === undefined ? [] : [normalized(line)];
+    });
+  });
+  // The morning page is Kin's, whatever a finished turn wrote (`pulse/checkIn.ts`): with no page
+  // of the turn's own, Kin posts one with its quiet line; on the weekly brief's day Kin's figures
+  // go on it, or follow it as ordinary messages when it has no room. A failed turn posts nothing.
+  const settlePage = Effect.fn("KinReplyBridge.settlePage")(
+    function* (wake: Wake, finished: boolean) {
+      if (!finished || wake.withheld !== null) return;
+      const brief = yield* briefIn(wake, ["checkin-morning", "checkin-weekly"]);
+      if (brief === undefined) return;
+      let slot = yield* pageOf(wake);
+      const waiting = slot !== undefined && hasNeedsYou(slot.body) ? [] : yield* waitingOn(wake);
+      if (slot === undefined) {
+        const page = needsYouSection(waiting, KIN_MESSAGE_BODY_MAX_LENGTH - MORNING_HEADROOM);
+        const result = yield* deliver(wake, `kin-page:${wake.wakeupId}`, page, -1);
+        if (result._tag !== "posted") {
+          wake.withheldWhy ??= result.why;
+          wake.withheld ??= result.reason;
+          return;
+        }
+        slot = { messageId: result.messageId, body: result.body };
+        wake.slots.set(-1, slot);
+        wake.posted++;
+        wake.answered = true;
+        wake.replied = true;
+      } else if (!hasNeedsYou(slot.body)) {
+        const room = KIN_MESSAGE_BODY_MAX_LENGTH - slot.body.length - 2;
+        const result = yield* lead(wake, slot, `${needsYouSection(waiting, room)}\n\n${slot.body}`);
+        if (result._tag === "withheld" && result.reason !== "not_found") {
+          wake.withheld = result.reason;
+          return;
+        }
+      }
+      if (brief.figures !== 1) return;
+      const figures = yield* weeklyFigures({
+        orgId: wake.orgId,
+        now: yield* Clock.currentTimeMillis,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      if (slot.body.length + 2 + figures.length <= KIN_MESSAGE_BODY_MAX_LENGTH - MORNING_HEADROOM) {
+        const result = yield* extend(wake, slot, figures, -1);
+        if (result._tag === "posted") return;
+        if (result._tag === "withheld" && result.reason !== "not_found") {
+          wake.withheld = result.reason;
+          return;
+        }
+      }
+      for (const [index, part] of fitParts(
+        figures,
+        KIN_MESSAGE_BODY_MAX_LENGTH - MORNING_HEADROOM,
+      ).entries()) {
+        const result = yield* deliver(wake, `kin-week:${wake.wakeupId}:${index}`, part, -1);
+        if (result._tag === "withheld") {
+          wake.withheld = result.reason;
+          return;
+        }
+      }
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Kin morning page not settled", { cause })),
+  );
   const post = Effect.fn("KinReplyBridge.post")(function* (wake: Wake, segment: Segment) {
     const end = (messageId: KinMessageId | null) =>
       segment.drafting
@@ -1067,6 +1234,7 @@ const make = Effect.gen(function* () {
             yield* post(wake, note);
           }
           yield* flushOverflow(wake);
+          yield* settlePage(wake, input.rescueUntil !== null);
           yield* settleFigures(wake);
           yield* keptPromises(wake);
           // A reply ending on a question to the one person here: stored as open, for every agent.
