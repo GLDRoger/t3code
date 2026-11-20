@@ -8,5 +8,3 @@ packages/source-control-github/schema/** linguist-generated
 packages/issue-tracker-linear/schema/** linguist-generated
 apps/server/schema/** linguist-generated
 **/*.graphql.ts linguist-generated
-# Branches only append Kin migrations; the Migrator and its test fail a number or name taken twice.
-apps/server/src/kin/persistence/KinMigrations.ts merge=union
