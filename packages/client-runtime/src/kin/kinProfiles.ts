@@ -3,6 +3,7 @@ import {
   KIN_PROFILE_SKILLS_MAX,
   KIN_PROFILE_TALK_MAX,
   KIN_ROLE_TAGS_MAX,
+  KinGithubLogin,
   type KinAgentId,
   type KinLeadProfile,
   type KinPersonProfile,
@@ -10,6 +11,9 @@ import {
   type KinWorkHours,
 } from "@t3tools/contracts";
 
+import * as Schema from "effect/Schema";
+
+import { kinFailure } from "./kinAnswers.ts";
 import { kinZoneName } from "./kinTimeZone.ts";
 
 export { KIN_PROFILE_NAME_MAX, KIN_PROFILE_SKILLS_MAX, KIN_PROFILE_TALK_MAX };
@@ -48,6 +52,42 @@ export const KIN_PROFILE_COPY = {
   pictureRemove: "Remove picture",
   pictureFailed: "The picture didn't upload. Try a smaller image.",
 } as const;
+
+export const KIN_GITHUB_LOGIN = {
+  label: "GitHub username",
+  none: "Not set",
+  mineHint: "Kin uses it to find your pull requests when you ask an agent to review them.",
+  theirHint: "Kin uses it to find their pull requests when they ask an agent to review them.",
+  set: "Add GitHub username…",
+  change: "Change",
+  remove: "Remove",
+  save: "Save",
+  saving: "Saving…",
+  invalid:
+    "That isn't a GitHub username. It is 1 to 39 letters, digits and single hyphens, and doesn't start or end with a hyphen.",
+  taken: "That GitHub username is already on file for someone else.",
+  failed: "Couldn't save the GitHub username.",
+} as const;
+
+const isGithubLogin = Schema.is(KinGithubLogin);
+
+/** What was typed, as the host takes it: a username, or null to clear it. A leading @ is dropped. */
+export function kinGithubLoginInput(
+  text: string,
+):
+  | { readonly ok: true; readonly login: string | null }
+  | { readonly ok: false; readonly problem: string } {
+  const typed = text.trim();
+  if (typed === "") return { ok: true, login: null };
+  const login = typed.replace(/^@/, "");
+  return isGithubLogin(login)
+    ? { ok: true, login }
+    : { ok: false, problem: KIN_GITHUB_LOGIN.invalid };
+}
+
+/** Where the row shows, the host refuses a username only when someone else has it, never saying whose. */
+export const kinGithubLoginFailure = (cause: unknown) =>
+  kinFailure(cause, KIN_GITHUB_LOGIN.failed, { refused: KIN_GITHUB_LOGIN.taken }).text;
 
 export const KIN_TEAM_AGENT_COPY = {
   label: "Team agent",

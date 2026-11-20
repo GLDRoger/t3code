@@ -61,6 +61,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinAwaySection, KinHandOverRow } from "./components/KinAway";
+import { KinGithubLoginSection } from "./components/KinGithubLogin";
 import { KinPersonTasks } from "./components/KinPersonTasks";
 import { KinDeviceList } from "./KinDevicesScreen";
 import { KinInviteLink } from "./components/KinInviteLink";
@@ -281,13 +282,21 @@ function KinTeammateDetails(props: {
         </ListSection>
       )}
       {profile === null ? null : (
-        <KinAwaySection
-          environmentId={props.target.environmentId}
-          orgId={props.target.orgId}
-          profile={profile}
-          mine={false}
-          mayEdit={profile.canEdit === true}
-        />
+        <>
+          <KinAwaySection
+            environmentId={props.target.environmentId}
+            orgId={props.target.orgId}
+            profile={profile}
+            mine={false}
+            mayEdit={profile.canEdit === true}
+          />
+          <KinGithubLoginSection
+            environmentId={props.target.environmentId}
+            orgId={props.target.orgId}
+            profile={profile}
+            mine={false}
+          />
+        </>
       )}
       {teammate.personId === null ? null : (
         <KinPersonTasks

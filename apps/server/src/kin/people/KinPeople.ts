@@ -1472,9 +1472,18 @@ export const make = Effect.gen(function* () {
             (yield* mayActOn(reader, orgId, row.personId).pipe(Effect.isSuccess))))
       )
         editable.add(row.personId);
+    const logins = yield* sql<{ personId: string; login: string | null }>`SELECT
+        person_id AS "personId", github_login AS login FROM kin_people
+      WHERE org_id = ${orgId} ORDER BY person_id`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinPeople.githubLogins")),
+    );
+    const login = new Map(logins.map((row) => [row.personId, row.login]));
     const withEdit = <A extends { readonly personId: string }>(profile: A) => ({
       ...profile,
       canEdit: editable.has(profile.personId),
+      ...(editable.has(profile.personId)
+        ? { githubLogin: login.get(profile.personId) ?? null }
+        : {}),
     });
     if (!ownerLevelReader)
       return {

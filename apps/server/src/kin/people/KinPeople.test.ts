@@ -813,11 +813,29 @@ it.effect("GitHub routing logins are unique per org ignoring case", () =>
       personId: member.person.personId,
       githubLogin: "MEMBER",
     });
+    // A profile carries the login only where its reader may change it.
+    const logins = (read: Parameters<typeof service.profiles>[0]) =>
+      service
+        .profiles(read, orgId)
+        .pipe(
+          Effect.map(({ profiles }) =>
+            profiles.map((profile) => [profile.personId, profile.githubLogin]),
+          ),
+        );
+    assert.sameDeepMembers(yield* logins(session), [
+      [identity.owner.personId, undefined],
+      [member.person.personId, "MEMBER"],
+    ]);
+    assert.sameDeepMembers(yield* logins(ownerSession), [
+      [identity.owner.personId, "OwnerLogin"],
+      [member.person.personId, "MEMBER"],
+    ]);
     yield* service.setGithubLogin(session, {
       orgId,
       personId: member.person.personId,
       githubLogin: null,
     });
+    assert.deepInclude(yield* logins(ownerSession), [member.person.personId, null]);
   }).pipe(Effect.provide(layer)),
 );
 

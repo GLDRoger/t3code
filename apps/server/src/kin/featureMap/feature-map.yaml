@@ -1300,6 +1300,34 @@ features:
       - apps/server/src/kin/lead/messagesToPeople.test.ts
       - .agents/skills/verify-kin/scripts/hours-two-zones.sh
 
+  - id: github-username
+    name: Your GitHub username, for finding your pull requests
+    tab: settings
+    web: [home, sheet:Profile, section:GitHub username, dialog:GitHub username]
+    phone: [SettingsKin, KinProfile, section:GitHub username]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      The host sends it only on a profile its reader may change and refuses one another person
+      already has, without saying whose. Settings → Profile on the web shows the same row. Agents
+      can't set it: people_update has no field for it.
+    proof:
+      - packages/client-runtime/src/kin/kinProfiles.test.ts
+      - apps/web/src/kin/KinProfileSheet.browser.test.tsx
+      - apps/server/src/kin/people/KinPeople.test.ts
+
+  - id: teammate-github-username
+    name: Set a teammate's GitHub username
+    tab: settings
+    web: [home, sheet:Profile, section:GitHub username, dialog:GitHub username]
+    phone: [SettingsKin, KinTeam, KinTeammate, section:GitHub username]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      The owner sets anyone's; a co-owner a member's, as with the rest of a profile. Nobody else
+      sees the row on someone else's page.
+    proof:
+      - apps/web/src/kin/KinProfileSheet.browser.test.tsx
+      - apps/server/src/kin/people/KinPeople.test.ts
+
   - id: coding-agent-keys
     name: Coding agent keys for the tasks you hold
     tab: settings
@@ -1349,7 +1377,7 @@ unlisted:
   "web:settings/check-ins": The app's old address; opens Kin's Settings → Check-ins.
   "web:settings/kin-connections": The app's old address; opens Kin's Settings → Connections.
   "web:settings/deals": The app's settings address for Deals; opens Kin's Settings → Deals.
-  "web:settings/kin-profile": Where app Settings search lands for quiet hours, working hours and away; opens Kin's Settings → Profile.
+  "web:settings/kin-profile": Where app Settings search lands for quiet hours, working hours, away and GitHub username; opens Kin's Settings → Profile.
   "web:?v": Picks the version of the open doc; not a screen.
   "web:?tab": Switches the Clients place between its Clients, Deals and Projects lists; not a screen.
   "web:?person": Starts Tasks narrowed to what one person holds, from their page's See all in Tasks; not a screen.
