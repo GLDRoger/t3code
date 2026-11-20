@@ -3,6 +3,7 @@ import {
   KIN_RECORD_CHANGES_CAP,
   KinAgentId,
   KinChatError,
+  KIN_TEAM_ROOM_TEAM_ID,
   KinChatId,
   KinMessageId,
   KinPersonId,
@@ -36,6 +37,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
+import { ownerLevelSql } from "../people/KinAccess.ts";
 import { listNameOf, parseFields } from "./lists.ts";
 import { isBuiltIn } from "./registers.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
@@ -659,6 +661,60 @@ const linksOf = Effect.fn("KinRecords.linksOf")(function* (orgId: KinOrgId, reco
           },
         }),
   }));
+});
+
+/**
+ * A record's chat links as `personId` may follow them, by the rule a chat opens by (an active
+ * member; the Team room only owner-level). A chat they can't open keeps no id or label, only the
+ * agent it was with; a source in one is not theirs.
+ */
+export const chatLinksFor = Effect.fn("KinRecords.chatLinksFor")(function* <
+  A extends {
+    readonly links: ReadonlyArray<KinRecordLink>;
+    readonly source?: KinRecordDetail["source"];
+  },
+>(orgId: KinOrgId, personId: KinPersonId, detail: A) {
+  const chatIds = [
+    ...new Set([
+      ...detail.links.flatMap((link) =>
+        link.kind === "message" && link.chatId !== null ? [link.chatId] : [],
+      ),
+      ...(detail.source?.chatId == null ? [] : [detail.source.chatId]),
+    ]),
+  ];
+  if (chatIds.length === 0) return detail;
+  const sql = yield* SqlClient.SqlClient;
+  // `me` binds the reader once, so the owner-level rule reads trusted column names.
+  const rows = yield* sql<{ chatId: string; open: number; agent: string | null }>`
+    SELECT c.chat_id AS "chatId",
+      EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = c.org_id AND m.chat_id = c.chat_id
+          AND m.principal_kind = 'person' AND m.person_id = me.person_id AND m.left_at IS NULL)
+        AND (c.team_id IS NOT ${KIN_TEAM_ROOM_TEAM_ID}
+          OR ${sql.literal(ownerLevelSql("me.org_id", "me.person_id"))}) AS open,
+      (SELECT CASE WHEN COUNT(DISTINCT a.agent_id) = 1 THEN MIN(a.display_name) END
+        FROM kin_chat_members m JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
+        WHERE m.org_id = c.org_id AND m.chat_id = c.chat_id AND m.principal_kind = 'agent') AS agent
+    FROM kin_chats c, (SELECT ${orgId} AS org_id, ${personId} AS person_id) me
+    WHERE c.org_id = ${orgId} AND c.chat_id IN ${sql.in(chatIds)}
+    ORDER BY c.chat_id`;
+  const chats = new Map(rows.map((row) => [row.chatId, row]));
+  const opens = (chatId: string) => chats.get(chatId)?.open === 1;
+  return {
+    ...detail,
+    links: detail.links.map((link): KinRecordLink =>
+      link.kind !== "message" || link.chatId === null || opens(link.chatId)
+        ? link
+        : {
+            ...link,
+            chatId: null,
+            label: null,
+            closedChat: { agent: chats.get(link.chatId)?.agent ?? null },
+          },
+    ),
+    ...(detail.source?.chatId == null || opens(detail.source.chatId)
+      ? {}
+      : { source: { chatId: null, messageId: null } }),
+  };
 });
 
 export const toDetail = Effect.fn("KinRecords.toDetail")(function* (

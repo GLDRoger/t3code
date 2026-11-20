@@ -29,8 +29,8 @@ import {
   kinLinked,
   kinLinkedRest,
   type KinLinkedGroupName,
-  type KinLinkedItem,
 } from "@t3tools/client-runtime/kin/kinLinked";
+import type { KinNotificationDestination } from "@t3tools/client-runtime/kin/kinNotificationDestination";
 import {
   KIN_TASK_RECORD,
   kinBriefBy,
@@ -1117,10 +1117,10 @@ export function KinWorkLinks(
       // Both panels show the entry's client, project and milestone in their rows already.
       parentsShown
       // A task or list entry opens on this panel; a doc, client or project has its own page.
-      onOpen={(item) =>
-        item.open._tag === "record" && (item.open.kind === "task" || item.open.kind === "entry")
-          ? props.onOpenKey(item.open.key)
-          : void openDestination(navigate, props, item.open)
+      onOpen={(to) =>
+        to._tag === "record" && (to.kind === "task" || to.kind === "entry")
+          ? props.onOpenKey(to.key)
+          : void openDestination(navigate, props, to)
       }
     >
       {rest.length === 0 && props.addLink !== true ? null : (
@@ -1158,7 +1158,7 @@ export function KinLinkedGroups(props: {
   readonly item: Parameters<typeof kinLinked>[0];
   readonly title: string;
   readonly parentsShown: boolean;
-  readonly onOpen: (item: KinLinkedItem) => void;
+  readonly onOpen: (to: KinNotificationDestination) => void;
   readonly children?: React.ReactNode;
 }) {
   const [expanded, setExpanded] = useState<ReadonlySet<KinLinkedGroupName>>(new Set());
@@ -1171,22 +1171,34 @@ export function KinLinkedGroups(props: {
         <div key={group.group} className="flex flex-col">
           <h4 className="px-1 text-xs text-muted-foreground">{KIN_LINKED.group[group.group]}</h4>
           <ul className="flex flex-col">
-            {group.items.map((item) => (
-              <li key={item.key}>
-                <button
-                  type="button"
-                  onClick={() => props.onOpen(item)}
-                  className={`${LINK_ROW} ${LINK_ROW_OPENS}`}
-                >
+            {group.items.map((item) => {
+              const { open } = item;
+              const content = (
+                <>
                   {item.kind === "message" ? null : (
                     <span className="shrink-0 text-xs text-muted-foreground">{item.name}</span>
                   )}
                   <span className="min-w-0 flex-1 truncate text-foreground">
                     {item.title ?? KIN_LINKED.message}
                   </span>
-                </button>
-              </li>
-            ))}
+                </>
+              );
+              return (
+                <li key={item.key}>
+                  {open === null ? (
+                    <div className={LINK_ROW}>{content}</div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => props.onOpen(open)}
+                      className={`${LINK_ROW} ${LINK_ROW_OPENS}`}
+                    >
+                      {content}
+                    </button>
+                  )}
+                </li>
+              );
+            })}
           </ul>
           {group.more === 0 ? null : (
             <div>
