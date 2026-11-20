@@ -337,6 +337,70 @@ const RAW_TEXT_ELEMENTS = [
 ];
 /** The page loads Kin's own files from these paths and nowhere else on Kin. */
 export const KIN_VISUAL_FILE_ROUTE = "/api/assets";
+/** Kin's pinned fonts, public and the same on every host, under the path a page may load from. */
+export const KIN_VISUAL_FONT_ROUTE = `${KIN_VISUAL_FILE_ROUTE}/kin-fonts`;
+/** The files of `KinToolchain`'s pinned fonts a page may name; a test there holds the two together. */
+export const KIN_VISUAL_FONTS = [
+  { family: "Poppins", weight: 400, file: "Poppins-Regular.ttf" },
+  { family: "Poppins", weight: 700, file: "Poppins-Bold.ttf" },
+  { family: "Mukta", weight: 400, file: "Mukta-Regular.ttf" },
+  { family: "Mukta", weight: 700, file: "Mukta-Bold.ttf" },
+] as const;
+/** In a page, the company's logo: its file where there is one, an empty picture where not. */
+export const KIN_BRAND_LOGO = "kin-brand:logo";
+/** The company's brand as documents use it; each part absent falls back to the theme. */
+export interface KinVisualBrand {
+  readonly primary: string | null;
+  readonly secondary: string | null;
+  readonly font: string | null;
+  /** The logo's URL: a `data:` image or a path on Kin. */
+  readonly logo: string | null;
+}
+export interface KinVisualLook {
+  readonly brand?: KinVisualBrand | undefined;
+  /** A picture fills its frame edge to edge on the theme's background, rather than a card's. */
+  readonly picture?: boolean | undefined;
+}
+const BLANK_LOGO =
+  "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxIiBoZWlnaHQ9IjEiLz4=";
+// Fonts only Typst carries are named first, for a host that has them, then the closest stack.
+const FONT_STACKS: Readonly<Record<string, string>> = {
+  Poppins: '"Poppins",var(--font-sans)',
+  Mukta: '"Mukta",var(--font-sans)',
+  "Libertinus Serif": '"Libertinus Serif",Georgia,"Times New Roman",serif',
+  "New Computer Modern": '"New Computer Modern",Georgia,"Times New Roman",serif',
+  "DejaVu Sans Mono": '"DejaVu Sans Mono",var(--font-mono)',
+};
+const BRAND_COLOR = /^#[0-9a-fA-F]{6}$/;
+const BRAND_LOGO_URL =
+  /^(?:data:image\/(?:png|jpeg|svg\+xml);base64,[A-Za-z0-9+/]+={0,2}|\/[A-Za-z0-9_./-]+)$/;
+
+/** The look's own sheet: Kin's fonts, the brand's variables and, for a picture, its frame. */
+function lookSheet(look: KinVisualLook): string {
+  const brand = look.brand;
+  const color = (value: string | null | undefined, fallback: string) =>
+    value != null && BRAND_COLOR.test(value) ? value : fallback;
+  const font = brand?.font != null ? FONT_STACKS[brand.font] : undefined;
+  return (
+    KIN_VISUAL_FONTS.map(
+      (one) =>
+        `@font-face{font-family:"${one.family}";font-weight:${one.weight};font-style:normal;font-display:block;src:url("${KIN_VISUAL_FONT_ROUTE}/${one.file}") format("truetype")}`,
+    ).join("") +
+    `:root{--brand-primary:${color(brand?.primary, "var(--primary)")};--brand-secondary:${color(brand?.secondary, "var(--chart-2)")};--brand-font:${font ?? "var(--font-sans)"}}` +
+    (look.picture === true
+      ? "html{padding:0;background:var(--background);overflow:hidden}body{margin:0}"
+      : "")
+  );
+}
+
+/** `kin-brand:logo` as the brand's logo, or an empty picture: never a load that leaves Kin. */
+function withLogo(html: string, brand: KinVisualBrand | undefined): string {
+  const logo = brand?.logo;
+  return html.replaceAll(
+    KIN_BRAND_LOGO,
+    logo != null && BRAND_LOGO_URL.test(logo) ? logo : BLANK_LOGO,
+  );
+}
 // Sinks and creators the prelude knows; any other method whose name says HTML is closed.
 const KNOWN_HTML_METHODS = [
   "innerHTML",
@@ -462,8 +526,12 @@ const THEME_SHEET = '<style id="t3-theme">';
  * what must not exist with the browser's own parser, so no string reading of ours can disagree.
  * `hosts` are the ones the response's policy allows; the page's own policy repeats them.
  */
-export function kinVisualPageDocument(html: string, hosts: ReadonlyArray<string> = []): string {
-  const page = injectHtmlRenderBootstrap(html);
+export function kinVisualPageDocument(
+  html: string,
+  hosts: ReadonlyArray<string> = [],
+  look: KinVisualLook = {},
+): string {
+  const page = injectHtmlRenderBootstrap(withLogo(html, look.brand));
   const sheet = page.indexOf(THEME_SHEET);
   const close = sheet === -1 ? -1 : page.indexOf("</script>", sheet);
   const themed =
@@ -471,6 +539,7 @@ export function kinVisualPageDocument(html: string, hosts: ReadonlyArray<string>
       ? page
       : page.slice(0, close + "</script>".length) +
         KIN_MARKUP +
+        `<style id="kin-look">${lookSheet(look)}</style>` +
         page.slice(close + "</script>".length);
   const doctype = LEADING_DOCTYPE.exec(themed);
   const at = doctype === null ? 0 : doctype[0].length;

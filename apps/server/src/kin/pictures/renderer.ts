@@ -3,10 +3,13 @@ import { AgentScope, agentScopeLauncherScript } from "@t3tools/shared/AgentScope
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   KIN_VISUAL_FILE_ROUTE,
+  KIN_VISUAL_FONT_ROUTE,
+  KIN_VISUAL_FONTS,
   KIN_VISUAL_LIBRARIES,
   KIN_VISUAL_LIBRARY_ROUTE,
   kinVisualContentSecurityPolicy,
   kinVisualPageDocument,
+  type KinVisualBrand,
   resolveKinVisualFileReferences,
 } from "@t3tools/shared/kinVisual";
 import * as Context from "effect/Context";
@@ -51,6 +54,8 @@ export type PictureLimits = typeof PICTURE_LIMITS;
 const ORIGIN = "https://kin.picture";
 /** Under the files route, the one place the seal lets a page load images and fonts from. */
 const FILE_PATH = `${KIN_VISUAL_FILE_ROUTE}/kin-file/`;
+const LOGO_PATH = `${KIN_VISUAL_FILE_ROUTE}/kin-brand/logo`;
+const FONT_PATH = `${KIN_VISUAL_FONT_ROUTE}/`;
 
 export type PictureFile = {
   readonly id: string;
@@ -62,6 +67,13 @@ export type PictureRequest = {
   readonly size: KinPictureSize;
   /** Chat files the page names as `kin-file:<id>`, already checked to be the turn's to show. */
   readonly files: ReadonlyArray<PictureFile>;
+  /** The company's brand; its logo is drawn as `kin-brand:logo`. */
+  readonly brand?: PictureBrand | undefined;
+  /** The folder of Kin's pinned fonts, when this host has them. */
+  readonly fonts?: string | undefined;
+};
+export type PictureBrand = Omit<KinVisualBrand, "logo"> & {
+  readonly logo: { readonly mimeType: string; readonly bytes: Uint8Array } | null;
 };
 
 export type PictureDrawn =
@@ -268,6 +280,30 @@ export const makeLayer = (limits: PictureLimits = PICTURE_LIMITS) =>
               contentType: file.mimeType,
               body: Buffer.from(file.bytes),
             });
+          const logo = pathname === LOGO_PATH ? request.brand?.logo : undefined;
+          if (logo != null)
+            return route.fulfill({
+              status: 200,
+              contentType: logo.mimeType,
+              body: Buffer.from(logo.bytes),
+            });
+          const font =
+            pathname.startsWith(FONT_PATH) && request.fonts !== undefined
+              ? KIN_VISUAL_FONTS.find((one) => one.file === pathname.slice(FONT_PATH.length))
+              : undefined;
+          const fontBytes =
+            font === undefined
+              ? undefined
+              : await Effect.runPromiseWith(services)(
+                  fs.readFile(path.join(request.fonts!, font.file)).pipe(Effect.option),
+                );
+          if (fontBytes !== undefined && Option.isSome(fontBytes))
+            return route.fulfill({
+              status: 200,
+              contentType: "font/ttf",
+              headers: { "access-control-allow-origin": "*" },
+              body: Buffer.from(fontBytes.value),
+            });
           return route.fulfill({ status: 404, body: "" });
         };
 
@@ -285,6 +321,7 @@ export const makeLayer = (limits: PictureLimits = PICTURE_LIMITS) =>
               if (host !== undefined) blocked.push(host);
             });
             await log.send("Log.enable");
+            const brand = request.brand;
             const page = kinVisualPageDocument(
               resolveKinVisualFileReferences(
                 request.html,
@@ -292,6 +329,14 @@ export const makeLayer = (limits: PictureLimits = PICTURE_LIMITS) =>
                   request.files.map((file) => [file.id, `${FILE_PATH}${file.id}`]),
                 ),
               ),
+              [],
+              {
+                picture: true,
+                brand:
+                  brand === undefined
+                    ? undefined
+                    : { ...brand, logo: brand.logo === null ? null : LOGO_PATH },
+              },
             );
             await tab.route("**/*", serve(request, page, blocked));
             // The page's own limit is the caller's; these only stop Playwright waiting forever.

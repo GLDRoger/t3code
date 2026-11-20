@@ -19,7 +19,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { resolveAttachmentPathById } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { KinAttachmentStore } from "../chat/KinAttachmentStore.ts";
+import { logoFile } from "../gendocs/brand.ts";
 import { KinDocRenderer } from "../gendocs/render.ts";
+import { KinToolchain } from "../gendocs/toolchain.ts";
 import { effectiveAudience } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
@@ -27,10 +29,11 @@ import { laneFor } from "../reply/replyLane.ts";
 import * as Docs from "../work/docs.ts";
 import type { Writer } from "../work/KinRecords.ts";
 import { admitted, type Lead, leadTool, viewOf, viewWriter, writerFor } from "../work/leadWork.ts";
+import { readProfile } from "../work/companyProfile.ts";
 import { turnSensitive } from "../work/sensitiveReads.ts";
 import { KIN_OWNER_LEVEL, PICTURE_DOC_ORIGIN, viewerOfPeople } from "../work/teamView.ts";
 import { visualPage } from "../widgets/visualCard.ts";
-import { KinPictureRenderer, type PictureFile } from "./renderer.ts";
+import { KinPictureRenderer, type PictureBrand, type PictureFile } from "./renderer.ts";
 import { KIN_PICTURE_SCALE, KIN_PICTURE_SIZES, KinPictureSize } from "./sizes.ts";
 
 /** What `kin_picture` takes. `doc` names an earlier picture this one is the next version of. */
@@ -109,6 +112,20 @@ const chatImages = Effect.fn("KinPictures.chatImages")(function* (
   return files;
 });
 
+/** The company's brand for the page; a profile that can't be read is no brand, the theme's look. */
+const companyBrand = Effect.fn("KinPictures.brand")(function* (orgId: KinOrgId) {
+  const profile = yield* readProfile(orgId).pipe(Effect.option);
+  if (Option.isNone(profile)) return undefined;
+  const { brand, logo } = profile.value;
+  const file = logo === null ? null : yield* logoFile(logo).pipe(Effect.orElseSucceed(() => null));
+  return {
+    primary: brand.primaryColor,
+    secondary: brand.secondaryColor,
+    font: brand.font,
+    logo: logo === null || file === null ? null : { mimeType: logo.mimeType, bytes: file.bytes },
+  } satisfies PictureBrand;
+});
+
 /** `kin_picture`: draws the page, files it as a version of its doc and puts it on the reply. */
 export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: PictureInput) =>
   Effect.gen(function* () {
@@ -128,6 +145,8 @@ export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: Pict
       html: page.html,
       size: input.size,
       files,
+      brand: yield* companyBrand(lead.orgId),
+      fonts: yield* (yield* KinToolchain).fonts(),
     });
     if (drawn._tag === "refused") return yield* invalid(drawn.reason);
     if (drawn._tag === "cannotDraw")

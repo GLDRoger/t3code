@@ -8,6 +8,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { chromium } from "playwright-core";
@@ -87,6 +88,13 @@ const withRenderer = <A, E>(
   });
 
 const skipped = `Set ${TEST_BROWSER_ENV} to run this test.`;
+/** A 1x1 PNG, served from memory as a chat's file or the company's logo. */
+const PIXEL = Uint8Array.from(
+  Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
+  ),
+);
 const plain = (body: string) =>
   `<!doctype html><html><head><style>html,body{margin:0}</style></head><body>${body}</body></html>`;
 
@@ -119,13 +127,6 @@ it.live("a picture is drawn at twice each named size", (ctx) =>
 
 it.live("a picture draws with Kin's libraries and the chat's own file", (ctx) =>
   Effect.gen(function* () {
-    // A 1x1 PNG the page shows by its chat id, served from memory.
-    const pixel = Uint8Array.from(
-      Buffer.from(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
-        "base64",
-      ),
-    );
     const drawn = yield* withRenderer({}, (render) =>
       render({
         html: plain(
@@ -133,12 +134,49 @@ it.live("a picture draws with Kin's libraries and the chat's own file", (ctx) =>
           `<img id="i" src="kin-file:kin-photo" width="40" height="40"><script src="/api/kin/visual-lib/6.1.0/echarts.js"></script><div id="c" style="width:500px;height:300px"></div><script>kin.echarts("#c",{xAxis:{data:["Q1","Q2","Q3"]},yAxis:{},series:[{type:"bar",data:[12,30,18]}]});window.addEventListener("load",function(){if(!document.getElementById("i").naturalWidth||!window.echarts)document.body.insertAdjacentHTML("beforeend",'<img src="https://broken.example.com/x.png">')})</script>`,
         ),
         size: "square",
-        files: [{ id: "kin-photo", mimeType: "image/png", bytes: pixel }],
+        files: [{ id: "kin-photo", mimeType: "image/png", bytes: PIXEL }],
       }),
     );
     if (Option.isNone(drawn)) return ctx.skip(skipped);
     assert.strictEqual(drawn.value._tag, "drawn");
   }),
+);
+
+// Any TrueType file stands in for Kin's fetched Poppins: the route serving it is what is tested.
+const STAND_IN_FONTS = [
+  "/System/Library/Fonts/Supplemental/Arial.ttf",
+  "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+];
+
+it.live("a picture draws in the company's colours, font and logo", (ctx) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const fonts = yield* fs.makeTempDirectoryScoped({ prefix: "kin-picture-fonts-" });
+    const font = yield* Effect.findFirst(STAND_IN_FONTS, (file) =>
+      fs.exists(file).pipe(Effect.orElseSucceed(() => false)),
+    );
+    if (Option.isNone(font)) return ctx.skip("No TrueType font on this host to stand in.");
+    yield* fs.copyFile(font.value, `${fonts}/Poppins-Bold.ttf`);
+    const drawn = yield* withRenderer({}, (render) =>
+      render({
+        html: plain(
+          // Should the colour, the font or the logo not arrive, the page reaches outside and is refused.
+          `<img id="l" src="kin-brand:logo" width="40" height="40"><p style="font:700 40px var(--brand-font)">Ambermill</p><div id="b" style="height:20px;background:var(--brand-primary)"></div><script>document.fonts.ready.then(function(){var ok=document.getElementById("l").naturalWidth>0&&getComputedStyle(document.getElementById("b")).backgroundColor==="rgb(31, 111, 92)"&&document.fonts.check("700 40px Poppins");if(!ok)document.body.insertAdjacentHTML("beforeend",'<img src="https://broken.example.com/x.png">')})</script>`,
+        ),
+        size: "square",
+        files: [],
+        fonts,
+        brand: {
+          primary: "#1F6F5C",
+          secondary: null,
+          font: "Poppins",
+          logo: { mimeType: "image/png", bytes: PIXEL },
+        },
+      }),
+    );
+    if (Option.isNone(drawn)) return ctx.skip(skipped);
+    assert.strictEqual(drawn.value._tag, "drawn");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.live("a page that loads from outside is refused, and one that never settles is stopped", (ctx) =>

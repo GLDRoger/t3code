@@ -13,6 +13,7 @@ import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinDocRenderer } from "../gendocs/render.ts";
+import { KinToolchain } from "../gendocs/toolchain.ts";
 import { deferredMeta } from "../lead/deferredTools.ts";
 import * as Lead from "../lead/LeadMemory.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
@@ -44,6 +45,7 @@ export const KinPictureToolkit = Toolkit.make(
       KinIdentity,
       KinRecords,
       KinDocRenderer,
+      KinToolchain,
       KinLevelGate,
       KinPictureRenderer,
       SqlClient.SqlClient,
