@@ -12,7 +12,9 @@ import {
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
@@ -26,6 +28,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinImport from "../work/KinImport.ts";
+import { readOnlyStream } from "../readRpcs.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as KinPulse from "./KinPulse.ts";
 import * as Pulse from "./people.ts";
@@ -48,15 +51,28 @@ const identity = Layer.mock(KinIdentity)({
 const gate = Layer.mock(KinLevelGate)({
   ask: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
 });
-const testLayer = KinImport.layer.pipe(
-  Layer.provideMerge(Layer.mergeAll(KinRecords.layer, identity, gate)),
-  Layer.provideMerge(RefreshHub.layer),
-  Layer.provideMerge(KinEventQueue.layer),
-  Layer.provideMerge(KinPersistence.layer),
-  Layer.provideMerge(Sqlite.layerMemory),
-  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-pulse-people-" })),
-  Layer.provideMerge(NodeServices.layer),
-  Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+const layerOn = <E, R>(database: Layer.Layer<SqlClient.SqlClient, E, R>) =>
+  KinImport.layer.pipe(
+    Layer.provideMerge(Layer.mergeAll(KinRecords.layer, identity, gate)),
+    Layer.provideMerge(RefreshHub.layer),
+    Layer.provideMerge(KinEventQueue.layer),
+    Layer.provideMerge(KinPersistence.layer),
+    Layer.provideMerge(database),
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-pulse-people-" })),
+    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+  );
+const testLayer = layerOn(Sqlite.layerMemory);
+// A file database, so the reader pool runs as it does on a host: in memory there is one connection.
+const fileLayer = layerOn(
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "kin-pulse-streams-" });
+      return Sqlite.layerFromPath(path.join(directory, "state.sqlite"));
+    }),
+  ).pipe(Layer.provide(NodeServices.layer)),
 );
 
 const lateTask = (source: string, title: string) => ({
@@ -92,10 +108,11 @@ const seed = Effect.gen(function* () {
   yield* importTasks("pulse-people", [lateTask("t1", "Invented: send the venue the floor plan")]);
 });
 const page = { orgId, includeHandled: true, limit: 8 } as const;
-const watch = (personId: KinPersonId) =>
+const watch = (personId: KinPersonId, onReader = false) =>
   Effect.gen(function* () {
     const events = yield* Queue.unbounded<KinPulseEvent>();
-    yield* Pulse.subscribe(as(personId), page).pipe(
+    const stream = Pulse.subscribe(as(personId), page);
+    yield* (onReader ? readOnlyStream(stream) : stream).pipe(
       Stream.runForEach((event) => Queue.offer(events, event)),
       Effect.forkScoped,
     );
@@ -159,4 +176,60 @@ it.effect("a screen the pulse moves shows its tick's facts, never an older tick'
       assert.strictEqual(ticked.folded.facts.length, 3);
     }),
   ).pipe(Effect.provide(testLayer)),
+);
+
+// k3's scratch harness saw the tick never finish at 10,000 entries with four screens open.
+it.effect("a tick at ten thousand entries finishes with four Needs attention streams open", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      // Ten thousand open tasks copied from the imported one in one statement; one in 25 late, under the senses' cap.
+      const columns = (yield* sql<{
+        name: string;
+      }>`SELECT name FROM pragma_table_info('kin_records')
+        ORDER BY cid`).map((row) => row.name);
+      const copied: Record<string, string> = {
+        record_id: "'bulk-' || n",
+        key: "'W-' || (n + 100)",
+        origin_key: "'bulk:' || n",
+        title: "'Invented: bulk task ' || n",
+        due_at: `CASE WHEN n % 25 = 0 THEN ${NOW - 2 * 86_400_000} ELSE ${NOW + 30 * 86_400_000} END`,
+      };
+      yield* sql.unsafe(
+        `WITH RECURSIVE bulk(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM bulk
+          WHERE n < 10000)
+        INSERT INTO kin_records (${columns.join(", ")})
+        SELECT ${columns.map((name) => copied[name] ?? `t.${name}`).join(", ")}
+        FROM bulk, kin_records t WHERE t.org_id = ? AND t.origin_key = (SELECT origin_key
+          FROM kin_records WHERE org_id = ? ORDER BY created_at LIMIT 1)`,
+        [orgId, orgId],
+      );
+      yield* sql`UPDATE kin_registers SET next_number = 20000 WHERE org_id = ${orgId}
+        AND register_id = (SELECT register_id FROM kin_records WHERE org_id = ${orgId}
+          AND record_id = 'bulk-1')`;
+      const [count] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records
+        WHERE org_id = ${orgId}`;
+      assert.strictEqual(count!.n, 10_001);
+      const before = yield* KinPulse.tick(orgId, NOW - 60_000);
+      assert.isAtLeast(before.facts, 400);
+      // As the RPC boundary serves them: on the reader pool.
+      const screens = yield* Effect.forEach([ownerId, ownerId, coraId, coraId], (personId) =>
+        watch(personId, true),
+      );
+      const shown = screens[0]!.first.total;
+      assert.isAtLeast(shown, 400);
+      for (const screen of screens) assert.strictEqual(screen.first.total, shown);
+
+      yield* importTasks("pulse-streams", [lateTask("t2", "Invented: book the caterer")]);
+      const ticked = yield* KinPulse.tick(orgId, NOW);
+      assert.strictEqual(ticked.facts, before.facts + 1);
+      yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+      for (const screen of screens) {
+        const { folded, fresh } = yield* screen.next;
+        assert.deepStrictEqual<unknown>(folded, fresh);
+        assert.strictEqual(folded.total, shown + 1);
+      }
+    }),
+  ).pipe(Effect.provide(fileLayer)),
 );
