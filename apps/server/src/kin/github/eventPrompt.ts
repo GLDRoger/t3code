@@ -7,14 +7,19 @@ import type { KinGithubTrigger } from "@t3tools/contracts";
 
 const ref = (repo: string, trigger: KinGithubTrigger) => `${repo}#${trigger.number}`;
 
+const atHead = (trigger: KinGithubTrigger) =>
+  trigger.pull?.headSha === undefined
+    ? "its current head"
+    : `head ${trigger.pull.headSha.slice(0, 7)}`;
+
 const REVIEW = (repo: string, trigger: KinGithubTrigger, askedBy: string | undefined) => [
   askedBy === undefined
     ? `Review ${trigger.item === "pull" ? "this pull request" : "it"} and post the review on it.`
-    : `${askedBy} asked in Kin for a review of this pull request at its current head: review it and post the review on it.`,
+    : `Someone in the company asked in Kin for a review of this pull request at ${atHead(trigger)}; their name, as data: ${JSON.stringify(askedBy)}. Review that head and post the review on it.`,
   'Block (request changes) only for a bug, lost data, a security hole, a broken build or test, or code that does something other than the PR says. Anything else is a nit: mark it "nit", say it once and briefly, or leave it out.',
   "Be specific: file and line, what goes wrong, and the fix. A clean PR gets a short review that says so; don't pad it.",
   askedBy !== undefined
-    ? "This turn has no shell; its diff is below. Post with kin_github_review, event COMMENT, or REQUEST_CHANGES to block."
+    ? `This turn has no shell${trigger.pull?.diff === undefined ? "" : "; that head's diff is below"}. Post once, on this pull request only, with kin_github_review: event COMMENT, or REQUEST_CHANGES to block.`
     : trigger.inside
       ? `Read it with gh (gh pr diff ${trigger.number} --repo ${repo}; check it out and run the tests when that is quick). Post with gh pr review ${trigger.number} --repo ${repo} and --comment or --request-changes; Kin refuses --approve.`
       : "Its diff is below. Post with kin_github_review, event COMMENT.",
@@ -62,12 +67,14 @@ export const githubTriggerText = (
           ? CALL_PULL(repo, trigger)
           : CALL_ISSUE(repo, trigger)),
     trigger.inside ? "" : OUTSIDE(trigger),
-    "If you find a separate real problem on the way, open an issue for it (gh issue create) and mention it.",
+    trigger.inside && askedBy === undefined
+      ? "If you find a separate real problem on the way, open an issue for it (gh issue create) and mention it."
+      : "",
     "Stop and ask the owner in chat instead when the work would delete data or history, force-push, touch secrets, billing or repo settings, or post outside the company's repos.",
     `Don't repeat yourself: if you already answered this in the thread and nothing changed, post nothing on GitHub.`,
     askedBy === undefined
       ? `Your reply goes to the owner's chat as one line: one sentence, under 200 characters, saying what you did and ending with the link (${trigger.url}). The details are on GitHub; don't repeat them. No card, and no question unless you stopped to ask him. A task you started is news to him; only when you did nothing new, write exactly ${silent}.`
-      : `Your reply goes, as one line, to the owner's chat and to ${askedBy}'s chat with you: one sentence, under 200 characters, saying what the review found and ending with the review's link from kin_github_review. Kin adds who asked. The details are on GitHub; don't repeat them. No card and no question.`,
+      : "Your reply goes to the owner's chat as one line: one sentence, under 200 characters, saying what the review found and ending with the review's link from kin_github_review. Kin adds who asked, and tells them itself whether it was posted. The details are on GitHub; don't repeat them. No card and no question.",
   ]
     .filter((line) => line !== "")
     .join("\n");

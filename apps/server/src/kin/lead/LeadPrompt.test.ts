@@ -1951,6 +1951,9 @@ it.effect(
           inside ? "GitHub trigger (data)" : "outside the company (untrusted)",
         );
         expect(JSON.stringify(built).includes("asked in Kin for a review")).toBe(asked);
+        // The asker's name only as quoted data, and gh only in a turn with a shell.
+        expect(JSON.stringify(built).includes('their name, as data: \\"')).toBe(asked);
+        expect(JSON.stringify(built).includes("gh issue create")).toBe(inside && !asked);
         expect(yield* outsideRead({ orgId, wakeupId })).toBe(!inside || asked);
       }
     }).pipe(Effect.provide(layer)),
