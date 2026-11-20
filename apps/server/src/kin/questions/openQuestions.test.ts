@@ -1475,6 +1475,13 @@ it.effect("a question asked for someone away waits for them, then is raised once
       );
       assert.strictEqual((yield* questionRow(sql, asked.questionId)).state, "open");
       assert.lengthOf(yield* team.answeredWakes, 0);
+      // Rhea is told once that it ran past its day; raised again, as a restore does, Kin adds nothing.
+      const runOut =
+        "Dev Malhotra hasn't answered “Does the shoot move to Friday?” by its day; Kin asked Dev Malhotra once more.";
+      assert.deepStrictEqual((yield* team.kinLines(chatOf("chief"))).slice(1), [runOut]);
+      yield* sql`UPDATE kin_questions SET raised_at = NULL WHERE question_id = ${asked.questionId}`;
+      assert.strictEqual(yield* settle(orgId, raiseAt + 2 * 86_400_000), 1);
+      assert.deepStrictEqual((yield* team.kinLines(chatOf("chief"))).slice(1), [runOut]);
     }).pipe(Effect.provide(layer)),
   ),
 );

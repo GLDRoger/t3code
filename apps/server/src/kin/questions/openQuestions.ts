@@ -1426,6 +1426,30 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
     WHERE org_id = ${orgId} AND question_id = ${row.questionId}`;
   if (row.widgetId !== null)
     yield* chat.closeReplaced({ orgId, widgetId: KinWidgetId.make(row.widgetId) });
+  // Keyed on the question, so a reopened one raised again tells the chat that asked nothing more.
+  if (row.forChatId !== null) {
+    const who = yield* personName(orgId, row.personId);
+    yield* chat
+      .notice({
+        orgId,
+        chatId: row.forChatId,
+        messageId: KinMessageId.make(`kin-asked-again:${row.questionId}`),
+        audience: "chat",
+        body: oneLine(
+          `${who} hasn't answered “${row.question}” by its day; Kin asked ${who} once more.`,
+          600,
+        ),
+      })
+      .pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Kin couldn't tell the asker a question ran past its day", {
+            orgId,
+            questionId: row.questionId,
+            cause,
+          }),
+        ),
+      );
+  }
   return true;
 });
 
