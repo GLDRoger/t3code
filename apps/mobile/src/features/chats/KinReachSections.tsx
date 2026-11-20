@@ -202,7 +202,7 @@ function AgentReachBody(props: Parameters<typeof KinAgentReachSection>[0]) {
           <Line text={waiting(state)} />
         ) : (
           <>
-            <Line text={KIN_REACH_COPY.agentBody(lead.name)} />
+            <Line text={KIN_REACH_COPY.agentBody(lead.name, view.restricted.length > 0)} />
             <Rows
               first={false}
               rows={view.canMessage}

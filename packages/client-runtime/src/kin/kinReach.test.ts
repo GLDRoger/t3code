@@ -9,6 +9,7 @@ import {
   kinReachProblem,
   kinReachRows,
   kinReachShared,
+  kinTeamAgentDetail,
   type KinReachInput,
 } from "./kinReach.ts";
 
@@ -50,6 +51,9 @@ describe("who can message whom", () => {
       "Zoya Sheikh",
     ]);
     expect(open.restricted).toEqual([]);
+    expect(KIN_REACH_COPY.agentBody("Finance", open.restricted.length > 0)).toBe(
+      "Everyone in the company can message Finance.",
+    );
 
     const input = ambermill([{ one: agent(finance), other: person(dev), setBy: rhea, setAt }]);
     const shut = kinAgentReach(input, finance);
@@ -57,6 +61,21 @@ describe("who can message whom", () => {
     expect(shut.restricted).toEqual([{ personId: dev, name: "Dev Malhotra", party: person(dev) }]);
     // Another agent's restriction is not this one's.
     expect(kinAgentReach(input, chief).restricted).toEqual([]);
+    // Over a Restricted list, the opening line says so.
+    expect(KIN_REACH_COPY.agentBody("Finance", shut.restricted.length > 0)).toBe(
+      "Everyone in the company can message Finance, except the people under Restricted.",
+    );
+    // So does the Team page's line for the team agent, only while a pair with it is restricted.
+    expect(kinTeamAgentDetail(input.reach, finance)).toBe(
+      "Everyone on your team can chat with this agent, except the people restricted from it under Who can message. It sees only what each person may see.",
+    );
+    for (const teamAgent of [chief, null])
+      expect(kinTeamAgentDetail(input.reach, teamAgent)).toBe(
+        "Everyone on your team can chat with this agent. It sees only what each person may see.",
+      );
+    expect(kinTeamAgentDetail(null, finance)).toBe(
+      "Everyone on your team can chat with this agent. It sees only what each person may see.",
+    );
   });
 
   it("reads a person's agents and the people they can't message, and offers the rest", () => {

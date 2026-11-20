@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 
 import { kinFailureText } from "./kinAnswers.ts";
+import { KIN_TEAM_AGENT_COPY } from "./kinProfiles.ts";
 
 /**
  * Everyone may message everyone, but the pairs an owner or co-owner restricted. What an agent's
@@ -153,7 +154,11 @@ export function kinReachProblem(error: unknown): string {
 
 export const KIN_REACH_COPY = {
   title: "Who can message",
-  agentBody: (agent: string) => `Everyone in the company can message ${agent}.`,
+  /** An agent page's opening line, true over a non-empty Restricted list too. */
+  agentBody: (agent: string, anyRestricted: boolean) =>
+    anyRestricted
+      ? `Everyone in the company can message ${agent}, except the people under Restricted.`
+      : `Everyone in the company can message ${agent}.`,
   restricted: "Restricted",
   canMessage: "Can message",
   lift: "Lift",
@@ -179,3 +184,16 @@ export const KIN_REACH_COPY = {
     "Nobody is restricted: everyone can message everyone. To restrict a pair, open a person above or an agent under Agents.",
   loadFailed: "Couldn't load who can message whom.",
 } as const;
+
+/** The Team page's line for the team agent: "everyone" only while nobody is restricted from it. */
+export function kinTeamAgentDetail(
+  reach: KinReachListResult | null,
+  teamAgentId: KinAgentId | null,
+): string {
+  const restricted =
+    reach !== null &&
+    teamAgentId !== null &&
+    restrictedWith({ reach, people: [], agents: [] }, { kind: "agent", agentId: teamAgentId })
+      .length > 0;
+  return restricted ? KIN_TEAM_AGENT_COPY.detailRestricted : KIN_TEAM_AGENT_COPY.detail;
+}

@@ -53,6 +53,8 @@ export const KIN_TEAM_AGENT_COPY = {
   label: "Team agent",
   off: "Off",
   detail: "Everyone on your team can chat with this agent. It sees only what each person may see.",
+  detailRestricted:
+    "Everyone on your team can chat with this agent, except the people restricted from it under Who can message. It sees only what each person may see.",
   suggested: "Suggested",
   failed: "Couldn't change the team agent.",
 } as const;
