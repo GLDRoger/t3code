@@ -429,9 +429,8 @@ describe("Money's live stream", () => {
       yield* pull;
       let built = 0;
       const insideBuild = (span: Tracer.AnySpan | undefined): boolean =>
-        span !== undefined &&
-        (span.name === "KinMoneyStream.build" ||
-          (span._tag === "Span" && insideBuild(Option.getOrUndefined(span.parent))));
+        span?._tag === "Span" &&
+        (span.name === "KinMoneyStream.build" || insideBuild(Option.getOrUndefined(span.parent)));
       const tracer = Tracer.make({
         span(options) {
           const span = new Tracer.NativeSpan(options);
