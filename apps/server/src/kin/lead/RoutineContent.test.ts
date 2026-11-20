@@ -490,7 +490,7 @@ it.effect("an evening whose only news is in Kin's records is summed up, by the c
       yield* done(Date.parse("2026-11-09T00:32:54.000Z"));
       const facts = yield* content.eveningFacts(orgId, agentId);
       assert.deepStrictEqual(JSON.parse(facts ?? "{}").today, {
-        finished: ["W-6 Beta release to two pilot clinics, done by Owner"],
+        finished: ["W-6 Beta release to two pilot clinics, done by Owner (owner)"],
       });
     }).pipe(Effect.orDie),
   ),

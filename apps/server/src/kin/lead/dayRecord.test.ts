@@ -136,18 +136,26 @@ it.effect(
   () =>
     Effect.gen(function* () {
       yield* seed;
-      const owner = yield* dayRecord({ orgId, from, until, viewer: KIN_OWNER_LEVEL });
+      const owner = yield* dayRecord({
+        orgId,
+        from,
+        until,
+        viewer: KIN_OWNER_LEVEL,
+        agentId: "fin",
+      });
       assert.deepStrictEqual(owner, {
-        finished: ["W-6 Beta release to two pilot clinics, done by Rhea"],
+        finished: ["W-6 Beta release to two pilot clinics, done by Rhea (owner)"],
         changed: [
           "W-1 Design the booking flow screens: now in progress (Zoya)",
-          "W-9 Rhea's own private errand: now in progress (Rhea)",
+          "W-9 Rhea's own private errand: now in progress (Rhea (owner))",
         ],
-        notes: ['W-4 Pilot handoff checklist: note by Rhea: "The clinic confirmed the checklist."'],
+        notes: [
+          'W-4 Pilot handoff checklist: note by Rhea (owner): "The clinic confirmed the checklist."',
+        ],
         made: [
-          "INV-2 Renewal invoice, Orbit Dental (invoice, suggested, not kept yet), by Finance",
+          "INV-2 Renewal invoice, Orbit Dental (invoice, suggested, not kept yet), by Finance (you)",
         ],
-        money: ["₹20,000.00 in on INV-1 Retainer, Orbit Dental, recorded by Rhea"],
+        money: ["₹20,000.00 in on INV-1 Retainer, Orbit Dental, recorded by Rhea (owner)"],
         mail: ['received from C-2 Orbit Dental Care: "Billing contact for INV-1"'],
       });
       const zoya = yield* dayRecord({
@@ -155,6 +163,7 @@ it.effect(
         from,
         until,
         viewer: viewerOfPeople([KinPersonId.make("zoya")]),
+        agentId: "fin",
       });
       assert.deepStrictEqual(zoya.changed, [
         "W-1 Design the booking flow screens: now in progress (Zoya)",
@@ -165,9 +174,10 @@ it.effect(
         from: from - 24 * HOUR,
         until: from,
         viewer: KIN_OWNER_LEVEL,
+        agentId: "fin",
       });
       assert.deepStrictEqual(before.changed, [
-        "W-2 Changed yesterday, company time: now in progress (Rhea)",
+        "W-2 Changed yesterday, company time: now in progress (Rhea (owner))",
       ]);
       // A day with nothing in the records says so in one line; one with something, never.
       assert.strictEqual(
@@ -177,6 +187,7 @@ it.effect(
             from: until,
             until: until + 24 * HOUR,
             viewer: KIN_OWNER_LEVEL,
+            agentId: "fin",
           }),
         ),
         QUIET_DAY,
@@ -199,7 +210,13 @@ it.effect("caps each list with a count of the rest", () =>
             author_id, body, request_hash, created_at)
           VALUES (${orgId}, ${`m${n}`}, 'r-W-1', ${n + 1}, 'person', 'zoya', ${`Step ${n}`},
             ${`hm${n}`}, ${from + HOUR + n})`;
-    const { notes } = yield* dayRecord({ orgId, from, until, viewer: KIN_OWNER_LEVEL });
+    const { notes } = yield* dayRecord({
+      orgId,
+      from,
+      until,
+      viewer: KIN_OWNER_LEVEL,
+      agentId: "fin",
+    });
     assert.lengthOf(notes, 10);
     assert.equal(notes[9], "and 4 more");
   }).pipe(Effect.provide(layer)),

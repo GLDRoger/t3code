@@ -564,6 +564,7 @@ const make = Effect.gen(function* () {
         from: gathered.dayStart,
         until: gathered.dayEnd,
         viewer,
+        agentId,
       }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
       if (routineEmpty(gathered.facts) && dayRecordEmpty(today)) return null;
       return yield* encodeFacts({ ...gathered.facts, today: shownDay(today) });

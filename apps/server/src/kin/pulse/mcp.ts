@@ -34,7 +34,8 @@ import { SHARED_REFUSAL, effectiveAudience, turnPeople } from "../lead/Audience.
 import { type Lead, leadTool } from "../work/leadWork.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
 import { dayIn } from "../work/money.ts";
-import { asideLine, holdNames, subjectText, wordOf } from "./holds.ts";
+import { leadNamer } from "../work/toolNames.ts";
+import { asideLine, subjectText, wordOf } from "./holds.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { nudge } from "./nudge.ts";
 
@@ -132,9 +133,9 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof PulseRead
     withAside: true,
   });
   if (setAside === undefined || setAside.length === 0) return read;
-  const names = yield* holdNames(lead.orgId);
+  const name = yield* leadNamer(lead.orgId, lead.agentId);
   const zone = yield* ownerZone(lead.orgId);
-  return { ...read, held: setAside.map((aside) => asideLine(aside, names, zone)) };
+  return { ...read, held: setAside.map((aside) => asideLine(aside, name, zone)) };
 });
 
 /** An agent sets or lifts a hold only on a person's own word in this turn, never on its own. */

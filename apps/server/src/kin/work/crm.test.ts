@@ -3538,7 +3538,7 @@ it.effect(
         stage: "Proposal",
         value: "€20,000.00",
         expected: "2026-12-15",
-        lookedAfterBy: "owner",
+        lookedAfterBy: "Owner (owner)",
         next: { key: stepped.deal.next!.key, title: "Invented: call Ingrid", due: "2026-11-24" },
       };
       assert.deepStrictEqual(of(hers, stepped.deal.key), pilot);

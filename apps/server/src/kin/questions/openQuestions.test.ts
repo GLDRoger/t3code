@@ -492,7 +492,7 @@ it.effect("no card is raised about what is set aside, but its owner may be asked
       assert.isFalse(refused.ok);
       assert.match(
         String(refused.value.message),
-        /^C-8 Invented C-8 and everything under it is set aside until 2026-11-19, by Finance on Rhea Rao's word \(2026-11-15\)\. Kin won't ask about it before then\.$/,
+        /^C-8 Invented C-8 and everything under it is set aside until 2026-11-19, by Finance \(finance\) on Rhea Rao \(owner\)'s word \(2026-11-15\)\. Kin won't ask about it before then\.$/,
       );
       // Rhea's own message about it: she may be asked.
       yield* wake(

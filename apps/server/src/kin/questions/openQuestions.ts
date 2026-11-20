@@ -37,12 +37,13 @@ import {
   sealedOptions,
   takesAsDefault,
 } from "../widgets/cardPlans.ts";
-import { holdNames, holdOverAbout, refusalText } from "../pulse/holds.ts";
+import { holdOverAbout, refusalText } from "../pulse/holds.ts";
 import { choiceCardState } from "../widgets/choiceCard.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { unreadableBy } from "../work/teamView.ts";
 import { allLists } from "../work/registers.ts";
+import { leadNamer } from "../work/toolNames.ts";
 import {
   dayWord,
   defaultDue,
@@ -276,7 +277,9 @@ export const planAsk = Effect.fn("KinQuestions.planAsk")(function* (input: {
   if (input.ownerLevelAsked !== true) {
     const hold = yield* holdOverAbout({ orgId: input.orgId, at: input.now, keys: about, personId });
     if (hold !== undefined)
-      return yield* refuse(refusalText(hold, yield* holdNames(input.orgId), clock.zone));
+      return yield* refuse(
+        refusalText(hold, yield* leadNamer(input.orgId, input.agentId), clock.zone),
+      );
   }
   const untaken: Untaken | undefined =
     unsafeDefault(label, input.question, {

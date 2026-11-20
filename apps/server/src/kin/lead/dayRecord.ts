@@ -8,6 +8,7 @@ import { sentMail } from "../connections/Sending.ts";
 import { formatMoney } from "../work/money.ts";
 import { countedPayment } from "../work/recordRows.ts";
 import { seenBy, type KinViewer } from "../work/teamView.ts";
+import { leadNamer, toolNameOfText } from "../work/toolNames.ts";
 
 /**
  * What happened in Kin's records between `from` and `until` (the company's day), for the evening
@@ -86,26 +87,16 @@ export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
   readonly from: number;
   readonly until: number;
   readonly viewer: KinViewer;
+  /** The lead the day is read to. */
+  readonly agentId: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, from, until, viewer } = input;
-  const people = yield* sql<{ id: string; name: string }>`SELECT person_id AS id,
-      display_name AS name FROM kin_people WHERE org_id = ${orgId} ORDER BY person_id`;
-  const agents = yield* sql<{ id: string; name: string }>`SELECT agent_id AS id,
-      display_name AS name FROM kin_agents WHERE org_id = ${orgId} ORDER BY agent_id`;
-  const personName = new Map(people.map((one) => [one.id, one.name]));
-  const agentName = new Map(agents.map((one) => [one.id, one.name]));
+  const name = yield* leadNamer(orgId, input.agentId);
+  const principalName = (shown: string | null) =>
+    shown === null ? "nobody" : toolNameOfText(shown, name);
   const nameOf = (kind: string, id: string | null) =>
-    kind === "person"
-      ? (personName.get(id ?? "") ?? "a person")
-      : kind === "agent"
-        ? (agentName.get(id ?? "") ?? "an agent")
-        : "Kin";
-  const principalName = (shown: string | null) => {
-    if (shown === null) return "nobody";
-    const at = shown.indexOf(":");
-    return at < 0 ? shown : nameOf(shown.slice(0, at), shown.slice(at + 1));
-  };
+    id === null || (kind !== "person" && kind !== "agent") ? "Kin" : principalName(`${kind}:${id}`);
 
   const changes = yield* sql<{
     recordId: string;

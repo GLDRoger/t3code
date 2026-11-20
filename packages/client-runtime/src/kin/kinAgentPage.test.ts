@@ -208,6 +208,16 @@ describe("kinAgentChangeLine and kinAgentChangeOffer", () => {
     expect(kinAgentChangeOffer(one)).toEqual(offer);
   });
 
+  it("names a holder as people read names everywhere, never by id", () => {
+    const moved = change({
+      kind: "updated",
+      fields: [{ field: "owner", from: "person:p-gone", to: "agent:a-fin" }],
+    });
+    expect(kinAgentChangeLine(moved, new Map([["a-fin", "Finance"]]))).toBe(
+      "D-3 Invented chase notes: holder a teammate → Finance",
+    );
+  });
+
   it.each([
     ["a link this person just removed", { linkedTo: end, undone: true }, true, C.linkUndone],
     ["a link someone else removed first", { linkedTo: end, undone: true }, false, C.linkGone],

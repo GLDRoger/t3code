@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import { kinNow } from "./kinNow.ts";
 import { kinFailureText } from "./kinAnswers.ts";
+import { kinMidSentence, kinWorkName } from "./kinWork.ts";
 import {
   KIN_MEMORY_CONFIRM_MAX,
   KinChatError,
@@ -17,6 +18,8 @@ import {
   type KinMemorySetVisibilityResult,
   type KinMemoryVisibility,
   type KinOrgId,
+  KinAgentId,
+  KinPersonId,
   kinWhenFormat,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -133,7 +136,9 @@ function originOf(
   const said = quote === null || from.saidAt === null ? null : dayOf(from.saidAt, now);
   const saved = dayOf(from.recordedAt, now);
   if (from.trust === "agent") {
-    const agent = names.agents.get(from.saidBy) ?? "an agent";
+    const agent = kinMidSentence(
+      kinWorkName({ _tag: "agent", agentId: KinAgentId.make(from.saidBy) }, names),
+    );
     const day = said ?? saved;
     return {
       kind: "worked_out",
@@ -148,7 +153,17 @@ function originOf(
   const who =
     from.trust === "owner"
       ? null
-      : (names.people.get(from.saidBy) ?? item.from?.name ?? "a teammate");
+      : kinMidSentence(
+          kinWorkName(
+            { _tag: "person", personId: KinPersonId.make(from.saidBy) },
+            {
+              people:
+                item.from === null
+                  ? names.people
+                  : new Map([[from.saidBy, item.from.name], ...names.people]),
+            },
+          ),
+        );
   // Without their words on screen, only the day it was saved is known.
   return {
     kind: "said",

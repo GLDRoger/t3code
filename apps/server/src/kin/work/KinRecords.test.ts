@@ -252,11 +252,11 @@ it.effect("record_create makes many entries in one call and a retry makes none",
       state: "open",
       due: "2026-11-20",
       owner: "Lead lead (you)",
-      assignedBy: "owner",
+      assignedBy: "Owner (owner)",
     });
     assert.notProperty(got, "suggested");
     assert.deepInclude(got.links, { kind: "message", relation: "source", target: "ask" });
-    assert.include(yield* LeadWork.get(scopeOf(lead), { key: "W-3" }), { owner: "owner" });
+    assert.include(yield* LeadWork.get(scopeOf(lead), { key: "W-3" }), { owner: "Owner (owner)" });
     // Its own entries, and the owner's, wake nobody.
     assert.lengthOf(yield* assignedEvents, 0);
   }).pipe(Effect.provide(layer)),
@@ -277,7 +277,7 @@ it.effect('"me" is the one person who asked in the turn, and "you" is the lead i
         tasks: [{ key, to, reason: "Invented: asked" }],
       });
     // K008: the owner's "give it to me" lands on the owner, not on the lead.
-    assert.deepStrictEqual((yield* give("W-1", "me")).tasks, [{ key: "W-1", to: "owner" }]);
+    assert.deepStrictEqual((yield* give("W-1", "me")).tasks, [{ key: "W-1", to: "Owner (owner)" }]);
     const [mine] = yield* sql<{ kind: string; id: string }>`SELECT owner_kind AS kind,
         owner_id AS id FROM kin_records WHERE key = 'W-1'`;
     assert.deepStrictEqual(mine, { kind: "person", id: ownerId });
