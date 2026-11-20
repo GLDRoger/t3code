@@ -838,6 +838,83 @@ describe("KinGitHubWatch", () => {
     },
   );
 
+  it.effect("a look that reads only some threads keeps its cursors for the rest", () => {
+    const { github, layer } = setup();
+    return Effect.gen(function* () {
+      yield* start(github);
+      const issues = Array.from({ length: 35 }, (_, n) =>
+        github.openItem({
+          repo: REPO,
+          pull: false,
+          author: "teammate-a",
+          association: "MEMBER",
+          title: `Changed ${n + 1}`,
+        }),
+      );
+      github.comment({
+        repo: REPO,
+        number: issues[32]!,
+        author: "teammate-a",
+        association: "MEMBER",
+        body: "/kin take the 33rd",
+      });
+      yield* look(github);
+      yield* look(github);
+      const woke = yield* events;
+      assert.deepStrictEqual(
+        woke.map((trigger) => [trigger.kind, trigger.number]),
+        [["call", issues[32]]],
+      );
+      yield* look(github);
+      yield* look(github);
+      assert.lengthOf(yield* events, 1);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("an agent's open PRs are read again only when their checks or the PR changed", () => {
+    const { github, layer } = setup();
+    return Effect.gen(function* () {
+      yield* start(github);
+      const pulls = Array.from({ length: 5 }, (_, n) =>
+        github.openItem({
+          repo: REPO,
+          pull: true,
+          author: "invented-owner",
+          association: "OWNER",
+          title: `Agent change ${n + 1}`,
+          body: signed(`Closes #${n + 1}`, "Tech lead"),
+        }),
+      );
+      yield* look(github);
+      // Nothing changed: each is asked only what changed, and GitHub says nothing did.
+      github.requests.length = 0;
+      yield* look(github);
+      const about = (number: number) =>
+        github.requests.filter(
+          (one) =>
+            one.call.includes(`/pulls/${number}`) ||
+            one.call.includes(`/issues/${number}`) ||
+            one.call.includes(github.world.items.find((item) => item.number === number)!.head_sha),
+        );
+      for (const number of pulls)
+        assert.isTrue(
+          about(number).every((one) => one.conditional),
+          JSON.stringify(about(number)),
+        );
+      // One PR's checks complete with a failure: that one is read, and its checks wake its agent.
+      github.setChecks({ repo: REPO, number: pulls[2]!, failing: ["lint"] });
+      github.requests.length = 0;
+      yield* look(github);
+      assert.deepStrictEqual(
+        (yield* events).map((trigger) => [trigger.kind, trigger.number]),
+        [["checks", pulls[2]]],
+      );
+      for (const number of pulls.filter((one) => one !== pulls[2]))
+        assert.isTrue(about(number).every((one) => one.conditional));
+      assert.isTrue(about(pulls[2]!).some((one) => !one.conditional));
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("a signed-out login says how to fix it; the repo list counts what is watched", () => {
     const { github, layer } = setup();
     // An open Connections screen is told when its watch line changes, and not on every look.

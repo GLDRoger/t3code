@@ -191,6 +191,7 @@ const problemOf = (answer: ApiAnswer) => {
 const Login = Schema.Struct({ login: Schema.String });
 const Notification = Schema.Struct({
   reason: Schema.String,
+  updated_at: Schema.optional(Schema.String),
   repository: Schema.Struct({ full_name: Schema.String }),
   subject: Schema.Struct({ type: Schema.String, url: Schema.NullOr(Schema.String) }),
 });
@@ -310,6 +311,8 @@ interface Thread {
   readonly repo: string;
   readonly number: number;
   reviewRequested: boolean;
+  /** When GitHub last said something happened on it, where a notification or event says. */
+  activeAt?: number;
 }
 
 /** Reads one issue or PR and what is new on it since `since`. */
@@ -324,9 +327,11 @@ export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
   if (Option.isNone(issue)) return undefined;
   const pull = issue.value.pull_request !== undefined;
   let pullFacts: Option.Option<typeof Pull.Type> = Option.none();
+  let pullTag: string | undefined;
   if (pull) {
     const answer = yield* get(`${base}/pulls/${thread.number}`);
     pullFacts = answer.status === 200 ? decodePull(answer.body) : Option.none();
+    pullTag = answer.headers.etag;
   }
   const comments: ThreadComment[] = [];
   for (const kind of pull ? (["issue", "review"] as const) : (["issue"] as const)) {
@@ -349,6 +354,7 @@ export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
   const facts = Option.getOrUndefined(pullFacts);
   return {
     merged: facts?.merged === true,
+    pullTag,
     thread: {
       repo: thread.repo,
       number: thread.number,
@@ -879,6 +885,32 @@ export const make = Effect.gen(function* () {
     } satisfies LookContext;
   });
 
+  /** Threads read since the org's cursors last moved, with what GitHub said of each then. */
+  const weighed = new Map<KinOrgId, Map<string, number>>();
+  /** Each agent PR's ETag as last read, so an unchanged one costs a conditional call. */
+  const pullTags = new Map<string, string>();
+  /** Whether an agent's open PR changed: its checks first, by the stored ETag, then the PR. */
+  const agentPullMoved = Effect.fn("KinGitHubWatch.agentPullMoved")(function* (pull: {
+    readonly repo: string;
+    readonly number: number;
+    readonly headSha: string;
+    readonly etag: string | null;
+  }) {
+    const checks = yield* get(
+      `repos/${pull.repo}/commits/${pull.headSha}/check-runs?per_page=100`,
+      pull.etag === null ? undefined : { "If-None-Match": pull.etag },
+    );
+    if (checks.status !== 304) return true;
+    const key = `${pull.repo.toLowerCase()}#${pull.number}`;
+    const tag = pullTags.get(key);
+    const answer = yield* get(
+      `repos/${pull.repo}/pulls/${pull.number}`,
+      tag === undefined ? undefined : { "If-None-Match": tag },
+    );
+    if (answer.headers.etag !== undefined) pullTags.set(key, answer.headers.etag);
+    return answer.status !== 304;
+  });
+
   /** Watched repos with a PR Kin reviewed lately, but not one whose last list showed none open. */
   const listedIdle = new Map<string, number>();
   const reviewedRepos = Effect.fn("KinGitHubWatch.reviewedRepos")(function* (
@@ -983,6 +1015,7 @@ export const make = Effect.gen(function* () {
         (by(account.login) &&
           (recorded !== undefined || isAgentsOwn(current.body, current.author, bot, posts))));
     if (kinsPull) {
+      if (read.pullTag !== undefined) pullTags.set(at, read.pullTag);
       const failing = current.open ? yield* failingChecks(orgId, current) : undefined;
       if (!current.open)
         yield* sql`UPDATE kin_github_agent_pulls SET open = 0
@@ -1180,13 +1213,23 @@ export const make = Effect.gen(function* () {
       repos.filter((repo) => repo.watched).map((repo) => [repo.repo.toLowerCase(), repo]),
     );
     const threads = new Map<string, Thread>();
-    const note = (repo: string, number: number, reviewRequested = false) => {
+    const keyOf = (repo: string, number: number) => `${repo.toLowerCase()}#${number}`;
+    const note = (repo: string, number: number, reviewRequested = false, activeAt?: number) => {
       const entry = watched.get(repo.toLowerCase());
       if (entry === undefined) return;
-      const key = `${entry.repo.toLowerCase()}#${number}`;
+      const key = keyOf(entry.repo, number);
       const existing = threads.get(key);
-      if (existing === undefined) threads.set(key, { repo: entry.repo, number, reviewRequested });
-      else existing.reviewRequested ||= reviewRequested;
+      if (existing === undefined)
+        threads.set(key, {
+          repo: entry.repo,
+          number,
+          reviewRequested,
+          ...(activeAt === undefined ? {} : { activeAt }),
+        });
+      else {
+        existing.reviewRequested ||= reviewRequested;
+        if (activeAt !== undefined) existing.activeAt = Math.max(existing.activeAt ?? 0, activeAt);
+      }
     };
     const since = row.sinceAt - OVERLAP_MS;
 
@@ -1204,7 +1247,12 @@ export const make = Effect.gen(function* () {
     )) {
       const number = /\/(?:issues|pulls)\/(\d+)$/.exec(thread.subject.url ?? "")?.[1];
       if (number !== undefined)
-        note(thread.repository.full_name, Number(number), thread.reason === "review_requested");
+        note(
+          thread.repository.full_name,
+          Number(number),
+          thread.reason === "review_requested",
+          thread.updated_at === undefined ? undefined : parsed(thread.updated_at),
+        );
     }
 
     // His own comments and labels never notify him, so his events carry what he does himself.
@@ -1219,13 +1267,20 @@ export const make = Effect.gen(function* () {
       if (parsed(event.created_at) < since) continue;
       const number =
         event.payload.issue?.number ?? event.payload.pull_request?.number ?? event.payload.number;
-      if (number !== undefined) note(event.repo.name, number);
+      if (number !== undefined) note(event.repo.name, number, false, parsed(event.created_at));
     }
 
-    // An agent's open PRs, for checks that fail with nothing else changing on the PR.
-    for (const pull of yield* sql<{ repo: string; number: number }>`SELECT repo, number
+    // An agent's open PRs, for checks that fail with nothing else changing on the PR: each is
+    // read whole only when GitHub says its checks or the PR changed.
+    for (const pull of yield* sql<{
+      repo: string;
+      number: number;
+      headSha: string;
+      etag: string | null;
+    }>`SELECT repo, number, head_sha AS "headSha", checks_etag AS etag
       FROM kin_github_agent_pulls WHERE org_id = ${orgId} AND open = 1 ORDER BY repo, number LIMIT 20`)
-      note(pull.repo, pull.number);
+      if (!threads.has(keyOf(pull.repo, pull.number)) && (yield* agentPullMoved(pull)))
+        note(pull.repo, pull.number);
 
     // New commits notify no one: a reviewed PR's head is read from one list per such repo.
     for (const repo of yield* reviewedRepos(orgId, now, watched))
@@ -1233,9 +1288,24 @@ export const make = Effect.gen(function* () {
 
     const context = yield* lookContext(orgId, now, account, row);
     const tally: Tally = { woken: 0, later: false, held: new Set() };
-    for (const thread of [...threads.values()].slice(0, THREADS_PER_LOOK))
+    // Past the threads one look reads, the rest wait for the next look over the same cursors;
+    // what was read stays read unless GitHub says it changed again.
+    const read = weighed.get(orgId) ?? new Map<string, number>();
+    const due = (thread: Thread) => {
+      const at = read.get(keyOf(thread.repo, thread.number));
+      return at === undefined || (thread.activeAt ?? 0) > at;
+    };
+    const ordered = [...threads.values()].toSorted((a, b) => Number(due(b)) - Number(due(a)));
+    for (const thread of ordered.slice(0, THREADS_PER_LOOK)) {
+      const before = tally.later;
+      tally.later = false;
       yield* weigh(context, thread, tally);
-    const later = tally.later;
+      if (!tally.later) read.set(keyOf(thread.repo, thread.number), thread.activeAt ?? 0);
+      tally.later ||= before;
+    }
+    const later = tally.later || ordered.slice(THREADS_PER_LOOK).some(due);
+    if (later) weighed.set(orgId, read);
+    else weighed.delete(orgId);
     const asked = Number(notifications.headers["x-poll-interval"]);
     const interval = asked > 0 ? asked * 1000 : DEFAULT_INTERVAL_MS;
     // With work left over, the cursors stay put: the next look reads the same and handles the rest.

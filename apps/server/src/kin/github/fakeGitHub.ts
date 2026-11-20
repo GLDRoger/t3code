@@ -209,6 +209,8 @@ const httpDate = (ms: number) => new Date(Math.floor(ms / 1000) * 1000).toUTCStr
 
 export class FakeGitHub {
   readonly world: FakeWorld;
+  /** Every call, and whether it asked only for what changed (an ETag or a date). */
+  readonly requests: Array<{ readonly call: string; readonly conditional: boolean }> = [];
   constructor(world: FakeWorld) {
     this.world = world;
   }
@@ -672,6 +674,11 @@ export class FakeGitHub {
     const url = new URL(rawPath.replace(/^\/?/, "/"), "https://api.github.com");
     const path = url.pathname.replace(/^\//, "");
     this.world.calls.push(`${method} ${path}`);
+    this.requests.push({
+      call: `${method} ${path}`,
+      conditional:
+        headers["if-none-match"] !== undefined || headers["if-modified-since"] !== undefined,
+    });
     const ok = (value: unknown, extra: Record<string, string> = {}): FakeAnswer => ({
       status: method === "POST" ? 201 : 200,
       headers: extra,
@@ -1043,20 +1050,26 @@ export class FakeGitHub {
         const item = this.item(repo, Number(found[1]));
         if (!item.pull) return missing;
         if ((headers.accept ?? "").includes("diff")) return ok(item.diff);
-        return ok({
-          ...this.issueJson(item),
-          draft: item.draft,
-          merged: item.merged,
-          head: {
-            ref: item.head_ref,
-            sha: item.head_sha,
-            repo: { full_name: item.fork ? `someone/${repo.split("/")[1]}` : repo },
+        const etag = `"p${item.updated_at ?? item.created_at}-${item.head_sha}-${item.state}"`;
+        if (headers["if-none-match"] === etag)
+          return { status: 304, headers: { etag }, body: null };
+        return ok(
+          {
+            ...this.issueJson(item),
+            draft: item.draft,
+            merged: item.merged,
+            head: {
+              ref: item.head_ref,
+              sha: item.head_sha,
+              repo: { full_name: item.fork ? `someone/${repo.split("/")[1]}` : repo },
+            },
+            base: { ref: "main" },
+            additions: item.additions,
+            deletions: item.deletions,
+            changed_files: item.changed_files,
           },
-          base: { ref: "main" },
-          additions: item.additions,
-          deletions: item.deletions,
-          changed_files: item.changed_files,
-        });
+          { etag },
+        );
       }
       if (method === "GET" && (found = /^(issues|pulls)\/(\d+)\/comments$/.exec(rest))) {
         const kind = found[1] === "issues" ? "issue" : "review";
