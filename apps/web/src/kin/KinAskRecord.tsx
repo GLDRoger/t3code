@@ -11,14 +11,16 @@ import { ChevronDownIcon, MessageSquareIcon } from "lucide-react";
 
 import { Button } from "../components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
+import { toastManager } from "../components/ui/toast";
 import { kinClient } from "./kinClient";
-import { useKinOpenChat } from "./useKinOpenChat";
+import { useKinOpenAgentChat, useKinOpenChat } from "./useKinOpenChat";
 import type { KinWorkTarget } from "./useKinWork";
 
 /**
- * Ask an agent about a task or project, with the record named in the chat's box. One agent is asked
- * directly; several are picked from a menu. Nothing shows when the viewer can message no agent.
- * The chat is pushed over the task without closing it first, so Back returns to the task.
+ * Ask an agent about a task or project, with the record named in the chat's box: any agent the
+ * viewer may message, its chat made on the pick when they have none. One agent is asked directly;
+ * several are picked from a menu; none shows nothing. The chat is pushed over the task without
+ * closing it first, so Back returns to the task.
  */
 export function KinAskRecord(
   props: KinWorkTarget & {
@@ -28,16 +30,20 @@ export function KinAskRecord(
 ) {
   const { environmentId, orgId } = props;
   const openChat = useKinOpenChat();
+  const openAgentChat = useKinOpenAgentChat();
   const result = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
   const agents = kinAskAgents(Option.getOrNull(AsyncResult.value(result)));
-  const ask = (agent: KinAskAgent) => {
-    openChat(environmentId, orgId, agent.chatId, kinAskRecordDraft(props.record));
+  const ask = async (agent: KinAskAgent) => {
+    const draft = kinAskRecordDraft(props.record);
+    if (agent.chatId !== null) return openChat(environmentId, orgId, agent.chatId, draft);
+    const problem = await openAgentChat(environmentId, orgId, agent.agentId, draft);
+    if (problem !== null) toastManager.add({ type: "error", title: problem });
   };
   const [only] = agents;
   if (only === undefined) return null;
   if (agents.length === 1)
     return (
-      <Button size="sm" variant="outline" disabled={props.disabled} onClick={() => ask(only)}>
+      <Button size="sm" variant="outline" disabled={props.disabled} onClick={() => void ask(only)}>
         <MessageSquareIcon />
         {/* Agent names run to 80 characters; a long one must not push the header off the screen. */}
         <span className="max-w-40 truncate">{KIN_ASK_RECORD.ask(only.name)}</span>
@@ -52,7 +58,7 @@ export function KinAskRecord(
       </MenuTrigger>
       <MenuPopup align="end">
         {agents.map((agent) => (
-          <MenuItem key={agent.agentId} onClick={() => ask(agent)}>
+          <MenuItem key={agent.agentId} onClick={() => void ask(agent)}>
             {agent.name}
           </MenuItem>
         ))}

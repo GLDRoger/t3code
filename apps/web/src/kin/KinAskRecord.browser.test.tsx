@@ -8,31 +8,36 @@ import { appAtomRegistry, AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { KinAskRecord } from "./KinAskRecord";
 import { kinDraftAtom, kinDraftKey } from "./kinDraft";
 
-// Arjun's chats with the two agents he may message.
+const made = vi.hoisted(() => ({ agents: [] as Array<string> }));
+
+// Arjun may message Chief of staff, whom he has a chat with, and Finance, whom he has never messaged.
 vi.mock("./kinClient", async () => {
   const { Atom: A, AsyncResult: R } = await import("effect/reactivity");
+  const agent = (agentId: string, name: string) => ({
+    orgId: "ambermill",
+    agentId,
+    name,
+    intro: "",
+    ownerName: "Rhea",
+  });
   const leads = A.make(
     R.success({
       leads: [],
-      contacts: [
-        {
-          orgId: "ambermill",
-          agentId: "chief",
-          name: "Chief of staff",
-          intro: "",
-          chatId: "arjun-chief",
-        },
-        {
-          orgId: "ambermill",
-          agentId: "finance",
-          name: "Finance",
-          intro: "",
-          chatId: "arjun-finance",
-        },
-      ],
+      contacts: [{ ...agent("chief", "Chief of staff"), chatId: "arjun-chief" }],
+      messageable: [agent("chief", "Chief of staff"), agent("finance", "Finance")],
     }),
   ).pipe(A.keepAlive);
-  return { kinClient: { leads: () => leads } };
+  return {
+    kinClient: {
+      leads: () => leads,
+      chatWithAgent: {
+        run: async (_registry: unknown, { input }: { readonly input: { agentId: string } }) => {
+          made.agents.push(input.agentId);
+          return R.success({ chatId: `arjun-${input.agentId}` });
+        },
+      },
+    },
+  };
 });
 
 const environmentId = EnvironmentId.make("env-1");
@@ -40,7 +45,8 @@ const orgId = KinOrgId.make("ambermill");
 const taskPath = "/kin/env-1/ambermill/tasks?task=W-5";
 
 describe("Ask an agent about a task", () => {
-  it("lands in the picked agent's chat with the draft, and Back returns to the task", async () => {
+  it("makes the chat with an agent never messaged, lands in it with the draft, and Back returns to the task", async () => {
+    made.agents = [];
     await using screen = await render(
       <AppAtomRegistryProvider>
         <KinAskRecord
@@ -61,6 +67,7 @@ describe("Ask an agent about a task", () => {
     await vi.waitFor(() =>
       expect(history.location.pathname).toBe("/kin/env-1/ambermill/arjun-finance"),
     );
+    expect(made.agents).toEqual(["finance"]);
     expect(
       appAtomRegistry.get(
         kinDraftAtom(kinDraftKey(environmentId, orgId, KinChatId.make("arjun-finance"))),

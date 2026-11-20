@@ -69,7 +69,7 @@ export interface KinNewChatAgent {
   readonly intro: string | null;
 }
 
-type KinNewChatLeads = {
+export type KinNewChatLeads = {
   readonly leads: ReadonlyArray<
     Pick<KinLeadsListResult["leads"][number], "agentId" | "name"> & { readonly retired?: unknown }
   >;
@@ -85,8 +85,41 @@ type KinNewChatLeads = {
 };
 
 /**
- * Everyone the viewer can start a chat with: people first, then every agent the host says they
- * may message (an older host: their own live agents and the agents they already have a chat with).
+ * The agents a new chat lists: every one the host says the viewer may message, or on an older host
+ * their own live agents and the agents they already have a chat with.
+ */
+function kinListedAgents(leads: KinNewChatLeads | null) {
+  if (leads === null) return [];
+  const own = new Set(leads.leads.map((lead) => lead.agentId));
+  return (
+    leads.messageable ?? [
+      ...leads.leads
+        .filter((lead) => lead.retired === undefined)
+        .map((lead) => ({ ...lead, intro: "", ownerName: undefined })),
+      ...(leads.contacts ?? []).filter((contact) => !own.has(contact.agentId)),
+    ]
+  );
+}
+
+/** Every agent the viewer may message, in the new-chat list's order and rows. */
+export function kinMessageableAgents(
+  leads: KinNewChatLeads | null,
+): ReadonlyArray<KinNewChatAgent> {
+  return kinListedAgents(leads).map(kinNewChatAgent);
+}
+
+const kinNewChatAgent = (agent: {
+  readonly agentId: KinAgentId;
+  readonly name: string;
+  readonly intro: string;
+}): KinNewChatAgent => ({
+  agentId: agent.agentId,
+  name: agent.name,
+  intro: agent.intro.trim() === "" ? null : agent.intro.trim(),
+});
+
+/**
+ * Everyone the viewer can start a chat with: people first, then every agent they may message.
  * Each kind is headed only when both show. `agentsNote` says who else reads a chat with an agent
  * that isn't the viewer's own.
  */
@@ -95,20 +128,8 @@ export function kinNewChatList<
 >(people: ReadonlyArray<P>, me: KinPersonId | null, leads: KinNewChatLeads | null) {
   const persons = kinMessageablePeople(people, me);
   const own = new Set((leads?.leads ?? []).map((lead) => lead.agentId));
-  const listed =
-    leads === null
-      ? []
-      : (leads.messageable ?? [
-          ...leads.leads
-            .filter((lead) => lead.retired === undefined)
-            .map((lead) => ({ ...lead, intro: "", ownerName: undefined })),
-          ...(leads.contacts ?? []).filter((contact) => !own.has(contact.agentId)),
-        ]);
-  const agents: ReadonlyArray<KinNewChatAgent> = listed.map(({ agentId, name, intro }) => ({
-    agentId,
-    name,
-    intro: intro.trim() === "" ? null : intro.trim(),
-  }));
+  const listed = kinListedAgents(leads);
+  const agents = listed.map(kinNewChatAgent);
   const owners = new Set(
     listed.filter((agent) => !own.has(agent.agentId)).map((agent) => agent.ownerName),
   );

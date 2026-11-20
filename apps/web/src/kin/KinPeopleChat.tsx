@@ -1,7 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_PEOPLE_CHAT,
-  kinAgentChatProblem,
   kinNewChatList,
   kinPeopleChatProblem,
   type KinNewChatAgent,
@@ -9,7 +8,7 @@ import {
 import { kinPersonSeed } from "@t3tools/client-runtime/kin/kinProfiles";
 import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, KinAgentId, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import type { EnvironmentId, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -28,6 +27,7 @@ import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
 import { useKinProfiles } from "./kinPictures";
 import { useKinMe } from "./KinProfileSheet";
+import { useKinOpenAgentChat } from "./useKinOpenChat";
 
 interface KinPeopleChatTarget {
   readonly environmentId: EnvironmentId;
@@ -63,27 +63,6 @@ export function useOpenKinPeopleChat() {
   };
 }
 
-/** Opens the viewer's chat with an agent, made the first time; the problem when it can't. */
-function useOpenKinAgentChat() {
-  const navigate = useNavigate();
-  return async (target: KinPeopleChatTarget & { readonly agentId: KinAgentId }) => {
-    const result = await kinClient.chatWithAgent.run(appAtomRegistry, {
-      environmentId: target.environmentId,
-      input: { orgId: target.orgId, agentId: target.agentId },
-    });
-    if (result._tag !== "Success") return kinAgentChatProblem(squashAtomCommandFailure(result));
-    void navigate({
-      to: "/kin/$environmentId/$orgId/$chatId",
-      params: {
-        environmentId: target.environmentId,
-        orgId: target.orgId,
-        chatId: result.value.chatId,
-      },
-    });
-    return null;
-  };
-}
-
 export function KinPeoplePickerHost() {
   const target = useAtomValue(kinPeoplePickAtom);
   if (target === null) return null;
@@ -104,7 +83,7 @@ function KinPeoplePicker(props: { readonly target: KinPeopleChatTarget }) {
     : Option.getOrNull(AsyncResult.value(leadsResult));
   const list = profiles === null || leads === null ? null : kinNewChatList(profiles, me, leads);
   const openPerson = useOpenKinPeopleChat();
-  const openAgent = useOpenKinAgentChat();
+  const openAgent = useKinOpenAgentChat();
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const close = () => appAtomRegistry.set(kinPeoplePickAtom, null);
@@ -149,7 +128,7 @@ function KinPeoplePicker(props: { readonly target: KinPeopleChatTarget }) {
       <KinAvatar avatar={kinAgentAvatar(agent.agentId)} size="sm" />,
       agent.name,
       agent.intro,
-      () => openAgent({ environmentId, orgId, agentId: agent.agentId }),
+      () => openAgent(environmentId, orgId, agent.agentId),
     );
   return (
     <Dialog
