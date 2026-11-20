@@ -235,6 +235,8 @@ const blockModels = (out: string) => {
     );
   env = {
     ...process.env,
+    // kin-verify puts these first on its server's PATH instead of its own, so they are counted.
+    KIN_VERIFY_NO_MODELS: stubs,
     PATH: [
       stubs,
       NodePath.join(NodeOS.homedir(), ".local/share/vite-plus/fallback-bin"),
