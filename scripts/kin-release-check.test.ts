@@ -11,6 +11,7 @@ import {
   finding,
   firstError,
   gates,
+  lookbookFindings,
   modelsRan,
   run,
   stopChildren,
@@ -99,6 +100,29 @@ describe("kin release check", () => {
       .trim()
       .split("\n");
     assert.deepStrictEqual(listed.toSorted(), files.toSorted());
+  });
+
+  it("makes each look book screen that changed, is new, is missing or wasn't captured a finding", () => {
+    const captured = [
+      "captured 41 screens of 31f384d14f in 540 s at /tmp/lookbook/new",
+      "could not capture money (narrow): Timeout waiting for the Money place",
+    ].join("\n");
+    const compared = [
+      "same 38 · changed 1 · new 1 · missing 1 · /tmp/lookbook/compare/index.html",
+      "changed\ttasks-wide.png",
+      "new\tclients-narrow.png",
+      "missing\tdocs-wide.png",
+    ].join("\n");
+    assert.deepStrictEqual(
+      lookbookFindings(captured, compared).map((one) => [one.check, one.step]),
+      [
+        ["capture", "money (narrow)"],
+        ["changed", "tasks-wide.png"],
+        ["new", "clients-narrow.png"],
+        ["missing", "docs-wide.png"],
+      ],
+    );
+    assert.deepStrictEqual(lookbookFindings("captured 41 screens", "same 41 · changed 0"), []);
   });
 
   it("records a program that can't start as a failed command instead of crashing the check", async () => {

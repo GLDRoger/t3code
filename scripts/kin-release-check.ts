@@ -38,9 +38,18 @@ const PROPERTY_TESTS = [
 ];
 const FUZZ_ROLES = ["owner", "coowner", "lead", "member"];
 const MIGRATE_SCRIPTS = ["relay-owner-to-member", "send-card-once"];
-const STAGES = ["static", "models", "properties", "lifecycle", "migrate", "ui-fuzz"] as const;
+const STAGES = [
+  "static",
+  "models",
+  "properties",
+  "lifecycle",
+  "migrate",
+  "ui-fuzz",
+  "lookbook",
+] as const;
 type Stage = (typeof STAGES)[number];
-const FULL_ONLY: ReadonlyArray<Stage> = ["migrate", "ui-fuzz"];
+const FULL_ONLY: ReadonlyArray<Stage> = ["migrate", "ui-fuzz", "lookbook"];
+const LOOKBOOK = NodePath.join(ROOT, "scripts", "kin-lookbook.ts");
 // The fuzz is random: its findings gate the exit only when they are NEW.
 const NONDETERMINISTIC: ReadonlyArray<Stage> = ["ui-fuzz"];
 
@@ -673,6 +682,50 @@ const uiFuzz = async (ctx: Context): Promise<Finding[] | string> => {
   return found;
 };
 
+/** Each screen the look book could not capture, or that differs from the accepted set. */
+export const lookbookFindings = (captured: string, compared: string) => [
+  ...[...captured.matchAll(/^could not capture (\S+) \((\w+)\): (.*)$/gm)].map(
+    ([, screen, size, error]) => finding("lookbook", "capture", `${screen} (${size})`, "-", error!),
+  ),
+  ...[...compared.matchAll(/^(changed|new|missing)\t(.+)$/gm)].map(([, verdict, screen]) =>
+    finding("lookbook", verdict!, screen!, "-", "differs from the set the owner accepted"),
+  ),
+];
+
+/** The look book against the owner's accepted set; his yes (`kin-lookbook accept`) clears it. */
+const lookbook = async (ctx: Context): Promise<Finding[] | string> => {
+  const accepted =
+    process.env.KIN_LOOKBOOK_ACCEPTED ??
+    NodePath.join(NodeOS.homedir(), ".kin-lookbook", "accepted");
+  if (!NodeFS.existsSync(NodePath.join(accepted, "manifest.json")))
+    return `no accepted look book at ${accepted}`;
+  const shots = NodePath.join(ctx.out, "lookbook");
+  NodeFS.rmSync(shots, { recursive: true, force: true });
+  const captured = await run(ctx.log("lookbook"), process.execPath, [
+    LOOKBOOK,
+    "capture",
+    "--out",
+    NodePath.join(shots, "new"),
+  ]);
+  // Exit 2: some screens failed and are named; anything else non-zero captured nothing.
+  if (captured.code !== 0 && captured.code !== 2)
+    return [finding("lookbook", "capture", "run", "-", firstError(captured.output))];
+  const compared = await run(ctx.log("lookbook"), process.execPath, [
+    LOOKBOOK,
+    "compare",
+    "--accepted",
+    accepted,
+    "--new",
+    NodePath.join(shots, "new"),
+    "--out",
+    NodePath.join(shots, "compare"),
+  ]);
+  const found = lookbookFindings(captured.output, compared.output);
+  if (compared.code > 1 && found.length === 0)
+    found.push(finding("lookbook", "compare", "run", "-", firstError(compared.output)));
+  return found;
+};
+
 const RUNNERS: Record<Stage, (ctx: Context) => Promise<Finding[] | string>> = {
   static: staticChecks,
   models,
@@ -680,6 +733,7 @@ const RUNNERS: Record<Stage, (ctx: Context) => Promise<Finding[] | string>> = {
   lifecycle,
   migrate,
   "ui-fuzz": uiFuzz,
+  lookbook,
 };
 
 const resolveAgainst = (
@@ -991,6 +1045,7 @@ if (import.meta.main) {
       for (const instance of [
         ...lifecycleInstances(lifecycleWorkersOf(values["lifecycle-workers"])),
         "release-migrate",
+        "lookbook",
       ])
         NodeChildProcess.spawnSync(
           process.execPath,

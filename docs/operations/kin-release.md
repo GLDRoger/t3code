@@ -19,10 +19,12 @@ A Kin release is a commit on `kin` that runs on the host. The release check runs
 | `lifecycle`  | every verify-kin lifecycle script (`run-all.sh --list`), shared across parallel instances           | quick |
 | `migrate`    | the last release's company database, started on this build, then `doctor` and two lifecycle scripts | full  |
 | `ui-fuzz`    | Bombadil as owner, co-owner, lead and member, 2 minutes each (`--fuzz-time`)                        | full  |
+| `lookbook`   | the [look book](kin-lookbook.md) captured and compared with the owner's accepted set                | full  |
 
 - Every failure becomes a finding with a fingerprint built from the stage, check, step, role and normalised message, so the same failure matches across runs. `findings.json` holds them.
 - By default a run is compared with the last release in `ops/kin/releases.json`. `--against <commit|findings.json>` picks another. A finding that is not in the baseline is NEW.
 - The exit is non-zero on any finding from a deterministic stage, and on a NEW fuzz finding. A deterministic failure stops the later stages unless you pass `--keep-going`. `--only <stage,…>` runs a subset.
+- `lookbook` makes each changed, new, missing or uncaptured screen a finding, so a release with a screen the owner hasn't seen fails until he accepts the set (`kin-lookbook accept`). It compares with `~/.kin-lookbook/accepted` (or `$KIN_LOOKBOOK_ACCEPTED`) and skips, saying so, on a machine that has none.
 - No model is called. Provider CLIs are stubbed on `PATH` for every stage, and the fuzz runner fails if any agent turn produced a token.
 - `lifecycle` splits the scripts across `--lifecycle-workers N` instances (default: a third of the cores, at most 4), each taking the next script left. A script that needs another's state lives in that script, so order across workers doesn't matter.
 - A `--full` run keeps `<dir>/<commit>/fixture`, the first lifecycle instance's company after its share of the scripts (all of them with `--lifecycle-workers 1`). The next release's `migrate` stage starts the new build on a copy of it. If the last release has no fixture, `migrate` is skipped and says so. Fuzz traces are deleted after summarising, unless you pass `--keep-traces`.
