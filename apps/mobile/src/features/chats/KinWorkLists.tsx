@@ -332,8 +332,13 @@ function KinProjectsGroupHeading(props: {
   );
 }
 
-/** Kept while the app stays open, so Clients opens on the side last chosen. */
-const kinClientsTabAtom = Atom.make<KinClientsTab>("clients").pipe(Atom.keepAlive);
+/**
+ * Kept while the app stays open, so Clients opens on the side last chosen: by each person on each
+ * Kin, so someone signing in after another on this phone starts on their own.
+ */
+const kinClientsTabAtom = Atom.family((_viewer: string) =>
+  Atom.make<KinClientsTab>("clients").pipe(Atom.keepAlive),
+);
 
 type Showing = {
   readonly clients: Omit<KinClientsFilter, "text">;
@@ -441,8 +446,9 @@ function showMenu(
 
 /** Clients, or their projects grouped under them, one segment at a time. */
 export function KinClientsList(props: ListProps & { readonly projects: boolean }) {
+  const remembered = kinClientsTabAtom(`${props.environmentId}:${props.directory.names.me ?? ""}`);
   const [asked, setTab] = useState<KinClientsTab>(() =>
-    props.projects ? "projects" : appAtomRegistry.get(kinClientsTabAtom),
+    props.projects ? "projects" : appAtomRegistry.get(remembered),
   );
   const start = useKinClientsStart(props.environmentId);
   const seesClients = useKinSeesClients(props.environmentId) === true;
@@ -469,7 +475,7 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
         options={kinClientsTabs(seesClients).map((held) => ({ value: held.id, label: held.label }))}
         selected={tab}
         onSelect={(next) => {
-          appAtomRegistry.set(kinClientsTabAtom, next);
+          appAtomRegistry.set(remembered, next);
           setTab(next);
         }}
         role="tab"
