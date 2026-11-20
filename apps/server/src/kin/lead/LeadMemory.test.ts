@@ -377,6 +377,7 @@ it.live(
           "team_say",
           "kin_ask",
           "kin_ask_close",
+          "kin_ask_person",
           "kin_chart",
           "kin_visual",
           "kin_react",

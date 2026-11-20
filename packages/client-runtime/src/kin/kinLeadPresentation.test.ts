@@ -3,10 +3,8 @@ import { KinAgentId, KinPersonId, ProviderInstanceId } from "@t3tools/contracts"
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  KIN_AGENTS_COPY,
   kinDomainLabel,
   kinDomainSlug,
-  kinLeadAccessChanged,
   kinLeadChanges,
   kinLeadDraftCheck,
   kinLeadDraftOf,
@@ -207,35 +205,5 @@ describe("kinWorkingAgents", () => {
 
   it("knows nobody is working before the chat list has loaded", () => {
     expect(kinWorkingAgents(null).size).toBe(0);
-  });
-});
-
-describe("removing a person's access to a lead", () => {
-  // The row's own word from the server; an older server sends none, and nothing is claimed.
-  it.each([
-    [
-      "a co-owner",
-      true,
-      "Meera is a co-owner, so they can still message Finance. This matters only if they stop being one.",
-      "Meera can still message Finance as a co-owner.",
-    ],
-    [
-      "a member",
-      false,
-      "Meera keeps their chat with Finance to read, but can't send it anything more. You can add them back any time.",
-      "Meera can no longer message Finance.",
-    ],
-    [
-      "an older server",
-      undefined,
-      "This removes Meera's own access to Finance. You can add them back any time.",
-      "Removed Meera's own access to Finance.",
-    ],
-  ] as const)("for %s", (_, ownerLevel, dialog, after) => {
-    expect(KIN_AGENTS_COPY.removeAccess("Meera", "Finance", ownerLevel)).toBe(dialog);
-    expect(kinLeadAccessChanged("Meera", "Finance", false, ownerLevel)).toBe(after);
-    expect(kinLeadAccessChanged("Meera", "Finance", true, ownerLevel)).toBe(
-      "Meera can now message Finance.",
-    );
   });
 });

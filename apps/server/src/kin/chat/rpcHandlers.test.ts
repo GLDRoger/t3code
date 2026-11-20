@@ -1092,7 +1092,7 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
 );
 
 it.effect(
-  "a teammate's chat-only session messages only the leads the owner allowed, in a chat outside the owner's list",
+  "a teammate's chat-only session messages any lead not restricted for them, in a chat outside the owner's list",
   () =>
     Effect.gen(function* () {
       const { person, repo, direct } = yield* seed;
@@ -1189,57 +1189,34 @@ it.effect(
         yield* refused(priya["kin.lead.update"]({ ...lead, intro: "Mine now." })),
         unauthorized,
       );
-      // Nothing is hers until the owner says so.
-      assert.deepStrictEqual(yield* priya["kin.leads.list"](org), {
-        leads: [],
-        contacts: [],
-        teamAgentId: null,
-        companyChat: null,
-      });
-      assert.include(yield* priya["kin.chats.createDirect"](lead).pipe(Effect.flip), {
-        reason: "not_allowed",
-      });
-
-      assert.strictEqual(
-        (yield* owner["kin.leads.list"](org)).leads.find((held) => held.agentId === finance.agentId)
-          ?.intro,
-        "Finance questions.",
-      );
+      // Anyone in the company may message any agent: no grant is needed to start.
       yield* owner["kin.lead.update"]({ ...lead, intro: "Handles invoices." });
-      assert.deepStrictEqual(
-        (yield* owner["kin.lead.access.grant"]({ ...lead, personId: priyaId })).people.map(
-          ({ personId, displayName }) => ({ personId, displayName }),
-        ),
-        [{ personId: priyaId, displayName: "Priya" }],
-      );
       const chat = yield* priya["kin.chats.createDirect"](lead);
       // All she is told about it: no charter, domain, model or work, and none of the owner's leads.
       // She is told whose workspace it is, since that person can see the chat.
-      assert.deepStrictEqual(yield* priya["kin.leads.list"](org), {
+      const financeContact = {
+        ...lead,
+        name: "Finance",
+        intro: "Handles invoices.",
+        chatId: chat.chatId,
+        ownerName: "Owner",
+      };
+      const contacts = Effect.map(priya["kin.leads.list"](org), (list) => ({
+        ...list,
+        contacts: list.contacts?.filter((one) => one.agentId === finance.agentId),
+      }));
+      assert.deepStrictEqual(yield* contacts, {
         leads: [],
-        contacts: [
-          {
-            ...lead,
-            name: "Finance",
-            intro: "Handles invoices.",
-            chatId: chat.chatId,
-            ownerName: "Owner",
-          },
-        ],
+        contacts: [financeContact],
         teamAgentId: null,
         companyChat: null,
       });
       assert.strictEqual((yield* priya["kin.chats.createDirect"](lead)).chatId, chat.chatId);
       yield* send(priya, chat.chatId, "hers-1");
       assert.lengthOf((yield* page(priya, chat.chatId)).messages, 1);
+      yield* priya["kin.chats.createDirect"]({ ...org, agentId: growth.agentId });
 
-      // Her access is to that lead, in her own chat: not another lead, the owner's chats with
-      // either, or someone else's chat.
-      for (const attempt of [
-        priya["kin.chats.createDirect"]({ ...org, agentId: growth.agentId }),
-        priya["kin.chats.createDirect"]({ ...org, agentId: KinAgentId.make("lead") }),
-      ])
-        assert.include(yield* attempt.pipe(Effect.flip), { reason: "not_allowed" });
+      // Her own chat: not the owner's chats with either lead, or someone else's chat.
       for (const chatId of [finance.ownerChatId, growth.ownerChatId, direct.chatId]) {
         assert.include(yield* page(priya, chatId).pipe(Effect.flip), { reason: "not_found" });
         assert.include(yield* send(priya, chatId, `into-${chatId}`).pipe(Effect.flip), {
@@ -1250,22 +1227,28 @@ it.effect(
           { reason: "not_found" },
         );
       }
-      // Sam was not allowed, and Priya's chat is not his.
-      assert.include(yield* sam["kin.chats.createDirect"](lead).pipe(Effect.flip), {
-        reason: "not_allowed",
-      });
+      // Sam has a chat of his own with it, and Priya's chat is not his.
+      assert.notStrictEqual((yield* sam["kin.chats.createDirect"](lead)).chatId, chat.chatId);
       assert.include(yield* page(sam, chat.chatId).pipe(Effect.flip), { reason: "not_found" });
       // Nor is it in the owner's Kin chats, though the owner can still see it on the machine.
       assert.include(yield* page(owner, chat.chatId).pipe(Effect.flip), { reason: "not_found" });
       assert.include(yield* send(owner, chat.chatId, "owner-in").pipe(Effect.flip), {
         reason: "not_found",
       });
-      assert.lengthOf((yield* owner["kin.lead.access.list"](lead)).people, 1);
+      const listed = Effect.map(owner["kin.lead.access.list"](lead), (result) =>
+        result.people.map((one) => one.personId),
+      );
+      assert.includeMembers(yield* listed, [priyaId, samId]);
 
-      // Taken away: she reads what was said and can add nothing, and can't start over.
-      assert.deepStrictEqual(
-        yield* owner["kin.lead.access.revoke"]({ ...lead, personId: priyaId }),
-        { everyone: false, people: [] },
+      // Restricted: she reads what was said and can add nothing, and can't start over.
+      const revoked = yield* owner["kin.lead.access.revoke"]({ ...lead, personId: priyaId });
+      assert.notInclude(
+        revoked.people.map((one) => one.personId),
+        priyaId,
+      );
+      assert.include(
+        revoked.people.map((one) => one.personId),
+        samId,
       );
       assert.include(yield* send(priya, chat.chatId, "hers-2").pipe(Effect.flip), {
         reason: "not_allowed",
@@ -1274,16 +1257,78 @@ it.effect(
         reason: "not_allowed",
       });
       assert.lengthOf((yield* page(priya, chat.chatId)).messages, 1);
-      assert.deepStrictEqual(yield* priya["kin.leads.list"](org), {
-        leads: [],
-        contacts: [],
-        teamAgentId: null,
-        companyChat: null,
-      });
-      // Allowed again: the same chat.
+      assert.deepStrictEqual((yield* contacts).contacts, []);
+      // Lifted: the same chat.
       yield* owner["kin.lead.access.grant"]({ ...lead, personId: priyaId });
       yield* send(priya, chat.chatId, "hers-3");
-      assert.strictEqual((yield* priya["kin.leads.list"](org)).contacts?.[0]?.chatId, chat.chatId);
+      assert.strictEqual((yield* contacts).contacts?.[0]?.chatId, chat.chatId);
+
+      // Settings' list of restricted pairs: two people too, whose own chat turns read-only, and
+      // the groups both stay in.
+      const theirs = yield* priya["kin.chats.withPerson"]({ ...org, personId: samId });
+      yield* owner["kin.groups.create"]({
+        ...org,
+        title: "Shoot crew",
+        agentIds: [],
+        personIds: [samId, priyaId],
+      });
+      const pair = {
+        ...org,
+        a: { kind: "person" as const, personId: samId },
+        b: { kind: "person" as const, personId: priyaId },
+      };
+      assert.deepStrictEqual(
+        (yield* owner["kin.reach.set"]({ ...pair, restricted: true })).limits.map((limit) => [
+          limit.one,
+          limit.other,
+          limit.groups,
+        ]),
+        [[pair.b, pair.a, ["Shoot crew"]]],
+      );
+      assert.strictEqual(
+        yield* refused(priya["kin.reach.set"]({ ...pair, restricted: false })),
+        unauthorized,
+      );
+      assert.include(yield* send(priya, theirs.chatId, "to-sam").pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      // Whatever its member rows say, a write between the pair is refused.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_chat_members SET role = 'member' WHERE chat_id = ${theirs.chatId}`;
+      assert.include(yield* send(priya, theirs.chatId, "to-sam-by-rows").pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      assert.include(
+        yield* sam["kin.chats.withPerson"]({ ...org, personId: priyaId }).pipe(Effect.flip),
+        { reason: "not_allowed" },
+      );
+      assert.deepStrictEqual(
+        (yield* owner["kin.reach.set"]({ ...pair, restricted: false })).limits,
+        [],
+      );
+      yield* send(priya, theirs.chatId, "to-sam-again");
+      assert.deepStrictEqual((yield* owner["kin.reach.list"](org)).limits, []);
+      // The owner is never restricted.
+      yield* owner["kin.reach.set"]({
+        ...pair,
+        a: { kind: "person", personId: person.personId },
+        restricted: true,
+      }).pipe(Effect.flip);
+      assert.deepStrictEqual((yield* owner["kin.reach.list"](org)).limits, []);
+      // Lifting one for someone since removed lifts the row and opens no chat.
+      const samFinance = {
+        ...org,
+        a: { kind: "person" as const, personId: samId },
+        b: { kind: "agent" as const, agentId: finance.agentId },
+      };
+      yield* owner["kin.reach.set"]({ ...samFinance, restricted: true });
+      yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = ${samId}`;
+      yield* owner["kin.reach.set"]({ ...samFinance, restricted: false });
+      assert.deepStrictEqual(
+        yield* sql`SELECT 1 AS live FROM kin_reach_limits WHERE other_id = ${samId}
+          AND lifted_at IS NULL`,
+        [],
+      );
     }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 

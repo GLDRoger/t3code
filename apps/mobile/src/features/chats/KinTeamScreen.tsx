@@ -33,6 +33,7 @@ import { useKinOpenCounts } from "./state/useKinProfiles";
 import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { KinGateView } from "./components/KinWorkPieces";
+import { KinReachListSection } from "./KinReachSections";
 
 export type KinTeamParams = { readonly environmentId: string; readonly orgId: string };
 
@@ -176,6 +177,7 @@ function KinTeamBody(target: KinTeamTarget) {
                   <ListActionRow label={KIN_TEAM_ADD} icon="plus" onPress={add} />
                 </View>
               </ListSection>
+              <KinReachListSection environmentId={environmentId} orgId={orgId} />
             </>
           )}
         </ScreenScrollView>

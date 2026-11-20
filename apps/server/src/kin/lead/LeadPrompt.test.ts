@@ -29,7 +29,7 @@ import * as Memory from "../memory/Memory.ts";
 import { buildIndex } from "../memory/buildIndex.ts";
 import { authorise, fingerprint } from "../memory/sensitivity.ts";
 import { instructions } from "./instructions.ts";
-import { KinLeadPrompt, TURN_DIVIDER, type KinLeadPromptInput } from "./LeadPrompt.ts";
+import { KinLeadPrompt, TURN_DIVIDER, type KinLeadPromptInput, workForText } from "./LeadPrompt.ts";
 import { outsideRead } from "./OutsideContent.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { PRESETS } from "../work/registers.ts";
@@ -2580,6 +2580,52 @@ it.effect("a started deferral says what it is for and whom, in a turn the owner 
       ),
     ),
   ),
+);
+
+// Work the owner started on a teammate's relayed request finished, and the asker never heard.
+it.effect(
+  "finished work done for a teammate's request tells the owner's turn to send them the outcome",
+  () =>
+    Effect.gen(function* () {
+      yield* leadWithOwner;
+      const finished = decodeEvent({
+        _tag: "task.finished",
+        orgId,
+        agentId,
+        eventId: "task-finished",
+        receivedAt: timestamp,
+        dedupeKey: "delegated-completion:1",
+        provenance: { _tag: "system" },
+        threadId: "fixture-thread",
+        messageId: "delegated-completion:1",
+        taskIds: ["task-1"],
+        chatId,
+      });
+      yield* stored(input.wakeupId, [finished]);
+      const prompt = yield* KinLeadPrompt;
+      const built = yield* prompt.build({
+        ...input,
+        lane: { chatId, mode: "reply" },
+        events: [finished],
+        workFor: new Map([[finished.eventId, ["Zoya"]]]),
+      });
+      expect(built).toContain(workForText("Zoya"));
+      // Without it, nothing names anyone to tell.
+      const plain = yield* prompt.build({
+        ...input,
+        lane: { chatId, mode: "reply" },
+        events: [finished],
+      });
+      expect(plain).not.toContain("kin_relay, in words they may read");
+    }).pipe(
+      Effect.provide(
+        KinLeadPrompt.layer.pipe(
+          Layer.provideMerge(Layer.merge(repository, markedMemory)),
+          Layer.provideMerge(database),
+          Layer.merge(teamMemory({})),
+        ),
+      ),
+    ),
 );
 
 it.effect(

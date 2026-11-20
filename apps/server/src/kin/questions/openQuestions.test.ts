@@ -43,6 +43,7 @@ import * as Kin from "../layer.ts";
 import * as KinToolGate from "../mcp/KinToolGate.ts";
 import * as Handoff from "../lead/Handoff.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
+import { inheritOutside, markOutside, outsideStamp, storedStamp } from "../lead/OutsideContent.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import type { KinDecision } from "../memory/MemoryWriter.ts";
 import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
@@ -53,9 +54,12 @@ import { KinRecords } from "../work/KinRecords.ts";
 import { presetDefinition } from "../work/registers.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as Provision from "../lead/KinLeadProvision.ts";
+import * as Reach from "../lead/Reach.ts";
 import { encodeLeadModel } from "../lead/leadModels.ts";
 import * as AskPerson from "./askPerson.ts";
 import * as Questions from "./openQuestions.ts";
+import { deliverHeld } from "../triggers/heldDelivery.ts";
+import { holdLine } from "../triggers/quietHold.ts";
 import { defaultDue } from "./rules.ts";
 
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -1103,7 +1107,14 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
       // Rhea, in her own chat with the Chief of staff.
       const rhea = yield* wakeOn("chief", "rhea", chatOf("chief"), "Ask Dev about the shoot.");
       const toDev = yield* askFor("chief", rhea, { to: "Dev" });
-      assert.deepInclude(toDev, { to: "Dev Malhotra", state: "posted", retry: false });
+      // Dev never signed in: it still waits in his chat, and the result says no one was alerted.
+      assert.deepInclude(toDev, {
+        to: "Dev Malhotra",
+        state: "posted",
+        retry: false,
+        signedIn: false,
+        note: "Dev Malhotra hasn't signed in to Kin yet: it waits in their chat with you and reaches them when they do. Nobody was alerted. Their answer comes back here.",
+      });
       const devChat = yield* chiefChat("dev");
       const stored = yield* cardOf(toDev.questionId);
       assert.deepStrictEqual(stored, {
@@ -1147,11 +1158,18 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
         /ask them here with kin_ask/,
       );
       yield* refused(askFor("chief", rhea, { to: "Finance" }), /No one called Finance/);
-      // Through Finance, whom Dev may not message, nothing is asked.
+      // Through Finance, once Rhea restricted Dev and Finance, nothing is asked.
+      yield* Reach.setLimit({
+        orgId: KinOrgId.make(orgId),
+        by: owner.personId,
+        a: Reach.person(KinPersonId.make("dev")),
+        b: Reach.agent(KinAgentId.make("finance")),
+        restricted: true,
+      });
       const viaFinance = yield* wakeOn("finance", "rhea", chatOf("finance"), "Ask Dev.");
-      yield* refused(
-        askFor("finance", viaFinance, { to: "Dev", intent: "y" }),
-        /Dev Malhotra can't message you/,
+      assert.strictEqual(
+        (yield* Effect.flip(askFor("finance", viaFinance, { to: "Dev", intent: "y" }))).message,
+        "Dev Malhotra and Finance can't message each other here, so nothing was sent. The owner can lift that.",
       );
       // The same thing Chief of staff already put to Meera, through Finance: a repeat.
       yield* refused(
@@ -1174,9 +1192,25 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
       });
       const toArjun = yield* askFor("chief", dev, { to: "Arjun", intent: "call sheet" });
       assert.strictEqual(toArjun.state, "posted");
-      yield* refused(
-        askFor("chief", dev, { to: "Zoya", intent: "cover friday" }),
-        /Zoya Sheikh doesn't decide for others/,
+      // Dev and Zoya restricted: no agent asks her for him.
+      const pair = (restricted: boolean) =>
+        Reach.setLimit({
+          orgId: KinOrgId.make(orgId),
+          by: owner.personId,
+          a: Reach.person(KinPersonId.make("dev")),
+          b: Reach.person(KinPersonId.make("zoya")),
+          restricted,
+        });
+      yield* pair(true);
+      assert.strictEqual(
+        (yield* Effect.flip(askFor("chief", dev, { to: "Zoya", intent: "cover friday" }))).message,
+        "Zoya Sheikh and Dev Malhotra can't message each other here, so nothing was sent. Tell Dev Malhotra in one line that the owner can lift it. Don't try another way.",
+      );
+      yield* pair(false);
+      // Anyone in the company, not only someone who decides for him.
+      assert.strictEqual(
+        (yield* askFor("chief", dev, { to: "Zoya", intent: "cover friday" })).state,
+        "posted",
       );
       // What Arjun may not read never reaches him through the question.
       yield* refused(
@@ -1228,6 +1262,28 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
       yield* refused(
         askFor("chief", checkIn!.wakeupId, { to: "Zoya", intent: "costumes" }),
         /nobody asked you for/,
+      );
+
+      // Dev's turn may read none of what others asked for: his refusals quote none of it.
+      const devAgain = yield* wakeOn("chief", "dev", devChat, "Ask Meera and Zoya too.");
+      assert.strictEqual(
+        (yield* Effect.flip(
+          askFor("chief", devAgain, { to: "Meera", intent: "shoot budget", about: [] }),
+        )).message,
+        "Meera Shah already has an open question on this; don't ask it again. Nothing was asked.",
+      );
+      assert.strictEqual(
+        (yield* askFor("chief", again, { to: "Zoya", intent: "wardrobe" })).state,
+        "posted",
+      );
+      assert.strictEqual(
+        (yield* Effect.flip(askFor("chief", devAgain, { to: "Zoya", intent: "catering" }))).message,
+        "3 questions asked for others already wait on Zoya Sheikh. Nothing was asked.",
+      );
+      // Rhea's own turn may read every one of them, so hers says which.
+      yield* refused(
+        askFor("chief", again, { to: "Zoya", intent: "catering" }),
+        /wait on Zoya Sheikh: “Does the shoot move to Friday\?” \(Chief of staff\), /,
       );
 
       // A group asks nobody for anyone.
@@ -1307,6 +1363,10 @@ it.effect("a tap on a question asked for someone goes back to the chat that aske
       assert.deepStrictEqual(yield* team.answeredWakes, [
         { key: `question-answered:${asked.questionId}`, origin: null },
       ]);
+      // Asked by a turn that read nothing from outside, it carries no stamp.
+      const [answer] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+        FROM kin_events WHERE dedupe_key = ${`question-answered:${asked.questionId}`}`;
+      assert.isUndefined(yield* storedStamp(KinOrgId.make(orgId), answer!.eventId));
       assert.strictEqual(yield* turnsIn(devChat), before);
       // That turn is told the answer, and that Rhea already heard it.
       const told = yield* Questions.answeredTurnText(KinOrgId.make(orgId), asked.questionId);
@@ -1407,6 +1467,76 @@ it.effect(
 
 // Dev is away: nothing reaches him, and Rhea's chat says when it will. The first pass after he is
 // back posts the card, its day counted from then; at that day it is raised once more, once.
+// Restricted after it was held or asked: a held relay is dropped and its asker told, a held
+// question or one due to be raised closes, and nothing reaches the pair.
+it.effect("what waits for a pair restricted since goes nowhere, and the asker hears so", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const team = yield* askingTeam;
+      const { sql, orgId, owner, chats, chatOf, chiefChat, askFor, wakeOn } = team;
+      const org = KinOrgId.make(orgId);
+      const devChat = yield* chiefChat("dev");
+      const zoyaChat = yield* chiefChat("zoya");
+      const restrict = (id: string) =>
+        Reach.setLimit({
+          orgId: org,
+          by: owner.personId,
+          a: Reach.person(KinPersonId.make(id)),
+          b: Reach.agent(KinAgentId.make("chief")),
+          restricted: true,
+        });
+      const agentPosts = (chatId: KinChatId) =>
+        sql<{ body: string }>`SELECT body FROM kin_messages WHERE chat_id = ${chatId}
+          AND author_kind = 'agent' ORDER BY seq`;
+      yield* sql`UPDATE kin_people SET away_until = '2026-11-19' WHERE person_id = 'dev'`;
+      const rhea = yield* wakeOn("chief", "rhea", chatOf("chief"), "Ask Dev and Zoya.");
+      yield* holdLine({
+        orgId: org,
+        chatId: devChat,
+        personId: KinPersonId.make("dev"),
+        key: `kin-relay:${rhea}:van`,
+        body: "Is the van booked?",
+        audience: "chat",
+        at: IST_MON_1130,
+        agentId: KinAgentId.make("chief"),
+      });
+      const held = yield* askFor("chief", rhea, { to: "Dev" });
+      assert.strictEqual(held.state, "held");
+      const posted = yield* askFor("chief", rhea, { to: "Zoya", intent: "props" });
+      assert.strictEqual(posted.state, "posted");
+      yield* restrict("dev");
+      yield* restrict("zoya");
+
+      // He is back: what waited for him is due now.
+      yield* sql`UPDATE kin_people SET away_until = NULL WHERE person_id = 'dev'`;
+      assert.strictEqual(yield* deliverHeld(org, chats), 0);
+      assert.deepStrictEqual(yield* agentPosts(devChat), []);
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_held_posts WHERE chat_id = ${devChat}`, 0);
+      yield* settle(orgId, Date.UTC(2026, 10, 20, 5));
+      assert.strictEqual((yield* questionRow(sql, held.questionId)).state, "withdrawn");
+      assert.strictEqual((yield* questionRow(sql, posted.questionId)).state, "withdrawn");
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_widgets WHERE chat_id = ${devChat} AND type = 'choice'`,
+        0,
+      );
+      const card = yield* team.widgetOf((yield* team.cardOf(posted.questionId)).widgetId!);
+      assert.deepInclude(card.state, {
+        outcome: { title: "Closed", text: "You and Chief of staff can't message each other here." },
+      });
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_widgets WHERE chat_id = ${zoyaChat} AND type = 'choice'`,
+        1,
+      );
+      assert.includeMembers(yield* team.kinLines(chatOf("chief")), [
+        "Dev Malhotra and Chief of staff can't message each other here, so nothing was sent.",
+        "“Does the shoot move to Friday?” was closed before Dev Malhotra answered.",
+        "“Does the shoot move to Friday?” was closed before Zoya Sheikh answered.",
+      ]);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
 it.effect("a question asked for someone away waits for them, then is raised once", () =>
   Effect.andThen(
     TestClock.setTime(IST_MON_1130),
@@ -1421,7 +1551,11 @@ it.effect("a question asked for someone away waits for them, then is raised once
       // Back on Thursday the 19th, on the day stored.
       yield* sql`UPDATE kin_people SET away_until = '2026-11-19' WHERE person_id = 'dev'`;
       const rhea = yield* wakeOn("chief", "rhea", chatOf("chief"), "Ask Dev about the shoot.");
+      // Her turn read connected mail first: the question carries that stamp to all it leads to.
+      yield* markOutside({ orgId: KinOrgId.make(orgId), wakeupId: rhea }, "mail-connection");
+      const stampOf = (key: string) => storedStamp(KinOrgId.make(orgId), key);
       const asked = yield* askFor("chief", rhea, { to: "Dev" });
+      assert.strictEqual(yield* stampOf(asked.questionId), "mail-connection");
       assert.strictEqual(asked.state, "held");
       assert.isNull((yield* team.cardOf(asked.questionId)).widgetId);
       assert.lengthOf(yield* cardsFor(devChat), 0);
@@ -1462,6 +1596,22 @@ it.effect("a question asked for someone away waits for them, then is raised once
       );
       assert.strictEqual((yield* questionRow(sql, asked.questionId)).state, "open");
       assert.lengthOf(yield* team.answeredWakes, 0);
+
+      // His tap on the raised card answers it; the turn that answer wakes has read outside text.
+      const card = yield* team.widgetOf((yield* questionRow(sql, asked.questionId)).raiseWidget!);
+      yield* team.chats.act(team.person("dev"), {
+        widgetId: card.widgetId,
+        revision: card.revision,
+        actionId: "choose",
+        value: "option-1",
+        clientActionId: "dev-raised-tap",
+      });
+      const [answered] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+        FROM kin_events WHERE dedupe_key = ${`question-answered:${asked.questionId}`}`;
+      assert.strictEqual(yield* stampOf(answered!.eventId), "mail-connection");
+      const next = { orgId: KinOrgId.make(orgId), wakeupId: "answer-turn" };
+      yield* inheritOutside({ ...next, eventIds: [answered!.eventId] });
+      assert.strictEqual(yield* outsideStamp(next), "mail-connection");
     }).pipe(Effect.provide(layer)),
   ),
 );

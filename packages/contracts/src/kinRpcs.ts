@@ -25,6 +25,9 @@ import {
   KinOrgPauseInput,
   KinOrgResumeInput,
   KinOrgState,
+  KinReachListInput,
+  KinReachListResult,
+  KinReachSetInput,
 } from "./kinLead.ts";
 import { KinApprovalRpcs, KIN_APPROVAL_RPC_SCOPES } from "./kinApprovals.ts";
 import { KinLevelRpcs, KIN_LEVEL_RPC_SCOPES } from "./kinLevels.ts";
@@ -89,6 +92,16 @@ const KinLeadRpcs = [
   Rpc.make("kin.lead.access.revoke", {
     payload: KinLeadAccessChangeInput,
     success: KinLeadAccessResult,
+    error: KinError,
+  }),
+  Rpc.make("kin.reach.list", {
+    payload: KinReachListInput,
+    success: KinReachListResult,
+    error: KinError,
+  }),
+  Rpc.make("kin.reach.set", {
+    payload: KinReachSetInput,
+    success: KinReachListResult,
     error: KinError,
   }),
   Rpc.make("kin.leads.list", {
@@ -233,6 +246,8 @@ export const KIN_RPC_SCOPES = {
   "kin.lead.access.list": AuthKinChatScope,
   "kin.lead.access.grant": AuthKinChatScope,
   "kin.lead.access.revoke": AuthKinChatScope,
+  "kin.reach.list": AuthKinChatScope,
+  "kin.reach.set": AuthKinChatScope,
   "kin.lead.update": AuthKinChatScope,
   "kin.lead.retire": AuthKinChatScope,
   "kin.lead.restore": AuthKinChatScope,
@@ -290,6 +305,8 @@ const KIN_RPC_ACCESS = {
   "kin.lead.access.list": "owner_level",
   "kin.lead.access.grant": "owner_level",
   "kin.lead.access.revoke": "owner_level",
+  "kin.reach.list": "owner_level",
+  "kin.reach.set": "owner_level",
   "kin.leads.list": "person",
   "kin.lead.update": "owner_level",
   "kin.lead.retire": "owner_level",
@@ -567,6 +584,8 @@ export const KIN_RPC_AGGREGATES = {
   "kin.lead.access.list": "kin-chat",
   "kin.lead.access.grant": "kin-chat",
   "kin.lead.access.revoke": "kin-chat",
+  "kin.reach.list": "kin-chat",
+  "kin.reach.set": "kin-chat",
   "kin.orgs.list": "kin-chat",
   "kin.chats.subscribe": "kin-chat",
   "kin.chats.createDirect": "kin-chat",

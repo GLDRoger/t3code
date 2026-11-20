@@ -349,6 +349,39 @@ export const KinLeadAccessResult = Schema.Struct({
 });
 export type KinLeadAccessResult = typeof KinLeadAccessResult.Type;
 
+/** Either side of a pair the owner may restrict: a person, or an agent paired with a person. */
+export const KinReachParty = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("person"), personId: KinPersonId }),
+  Schema.Struct({ kind: Schema.Literal("agent"), agentId: KinAgentId }),
+]);
+export type KinReachParty = typeof KinReachParty.Type;
+/** Everyone may message everyone but the pairs listed. Owners and co-owners read and set them. */
+export const KinReachListInput = Schema.Struct({ orgId: KinOrgId });
+export type KinReachListInput = typeof KinReachListInput.Type;
+export const KinReachListResult = Schema.Struct({
+  limits: Schema.Array(
+    Schema.Struct({
+      one: KinReachParty,
+      other: KinReachParty,
+      setBy: KinPersonId,
+      setAt: Schema.toEncoded(CanonicalUtcTimestamp),
+      /** Groups both are in: a restriction doesn't take either out of one. An older server leaves it out. */
+      groups: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+    }),
+  ),
+  /** The people still in the company who aren't owners or co-owners: who can be restricted. */
+  restrictable: Schema.Array(KinPersonId),
+});
+export type KinReachListResult = typeof KinReachListResult.Type;
+/** Restricts a pair both ways, or lifts it. Owners and co-owners are never restricted. */
+export const KinReachSetInput = Schema.Struct({
+  orgId: KinOrgId,
+  a: KinReachParty,
+  b: KinReachParty,
+  restricted: Schema.Boolean,
+});
+export type KinReachSetInput = typeof KinReachSetInput.Type;
+
 export const MemoryItemKind = Schema.Literals([
   "objective",
   "commitment",

@@ -25,6 +25,8 @@ import type { KinChatService } from "../chat/KinChatService.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { effectiveAudience, turnAsker, turnChat } from "../lead/Audience.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
+import * as Reach from "../lead/Reach.ts";
+import { stampEvent, storedStamp } from "../lead/OutsideContent.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { holdFor } from "../triggers/quietHold.ts";
 import { storedWorkHours } from "../triggers/quietHours.ts";
@@ -498,6 +500,7 @@ const sendBack = Effect.fn("KinQuestions.sendBack")(function* (
       KinEventQueueUnknownEvent: () => Effect.fail(notSentBack),
     }),
   );
+  yield* stampEvent(orgId, event.eventId, yield* storedStamp(orgId, row.questionId));
   return asker === undefined ? "the chat that asked" : yield* personName(orgId, asker);
 });
 const notSentBack = new KinChatError({
@@ -1098,8 +1101,12 @@ const postHeldCard = Effect.fn("KinQuestions.postHeldCard")(function* (
     FROM kin_agents a JOIN kin_leads l ON l.org_id = a.org_id AND l.agent_id = a.agent_id
     WHERE a.org_id = ${orgId} AND a.agent_id = ${row.agentId} AND a.retired_at IS NULL`;
   if (card === undefined || agent === undefined || agent.threadId === null) return;
-  // No longer in that chat, they can't be asked there: the chat it was for is told.
-  if ((yield* personOfChat(orgId, row.chatId)) !== row.personId)
+  // No longer in that chat, or no longer reachable, they can't be asked there: the chat it was
+  // for is told.
+  if (
+    (yield* personOfChat(orgId, row.chatId)) !== row.personId ||
+    (yield* pairRestricted(orgId, row))
+  )
     return yield* withdraw(orgId, [row], () => "", now, chat);
   const widget = yield* chat.ask(
     {
@@ -1128,6 +1135,23 @@ const postHeldCard = Effect.fn("KinQuestions.postHeldCard")(function* (
       due_at = ${dueAt}, act_at = ${raiseAt(dueAt, clock.zone, clock.days)}
     WHERE org_id = ${orgId} AND question_id = ${row.questionId} AND state = 'open'
       AND widget_id IS NULL`;
+});
+
+/** The question's person and its agent, or the person it was asked for, are restricted now. */
+const pairRestricted = Effect.fn("KinQuestions.pairRestricted")(function* (
+  orgId: KinOrgId,
+  row: QuestionRow,
+) {
+  if (
+    (yield* Reach.mayReach(orgId, Reach.person(row.personId), Reach.agent(row.agentId))) ===
+    "restricted"
+  )
+    return true;
+  return (
+    row.forPersonId !== null &&
+    (yield* Reach.mayReach(orgId, Reach.person(row.forPersonId), Reach.person(row.personId))) ===
+      "restricted"
+  );
 });
 
 /** Notices told in one pass; ones held for someone away or in quiet hours don't count. */
@@ -1303,6 +1327,17 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
         chat,
       )) > 0
     );
+  // A pair restricted since it was asked: it closes rather than being raised across it.
+  if (yield* pairRestricted(orgId, row)) {
+    yield* withdraw(
+      orgId,
+      [row],
+      (one) => `You and ${one.agentName} can't message each other here.`,
+      now,
+      chat,
+    );
+    return true;
+  }
   const moved = yield* sql`UPDATE kin_questions SET raised_at = ${now}
     WHERE org_id = ${orgId} AND question_id = ${row.questionId} AND state = 'open'
       AND raised_at IS NULL

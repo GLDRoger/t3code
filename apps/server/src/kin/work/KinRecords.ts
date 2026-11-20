@@ -43,6 +43,7 @@ import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { teammatesLimited } from "../lead/KinBudget.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import * as Reach from "../lead/Reach.ts";
 import { ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
 import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { companyMoney, countryFirst, homeCurrency } from "./companyProfile.ts";
@@ -832,8 +833,8 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Where a teammate's assignment wakes a lead: their direct chat with it, while its owner lets
-   * them message it and they have turns left today, as `ChatWake` admits their messages. Asked
+   * Where a teammate's assignment wakes a lead: their direct chat with it, while they may message
+   * it (`Reach`) and they have turns left today, as `ChatWake` admits their messages. Asked
    * from their own app, a refusal fails the write, so nothing is given away that won't be done.
    */
   const teammateWake = Effect.fn("KinRecords.teammateWake")(function* (
@@ -845,9 +846,11 @@ const make = Effect.gen(function* () {
   ) {
     const own = writer.actor._tag === "person" && writer.actor.personId === personId;
     const refuse = (error: KinChatError) => (own ? Effect.fail(error) : Effect.void);
-    // A co-owner messages every lead and has no daily cap, as the owner does.
+    // A co-owner has no daily cap, as the owner does.
     const level = yield* ownerLevel(orgId, personId).pipe(provideSql);
-    if (!level && !(yield* LeadAccess.allowed({ orgId, agentId, personId }).pipe(provideSql)))
+    if (
+      !(yield* Reach.reaches(orgId, Reach.person(personId), Reach.agent(agentId)).pipe(provideSql))
+    )
       return yield* refuse(
         new KinChatError({
           reason: "not_found",

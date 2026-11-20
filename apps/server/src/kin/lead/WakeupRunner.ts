@@ -5,6 +5,7 @@ import {
   KinLead,
   KinMessageId,
   KinOrgId,
+  type KinPersonId,
   KinWakeupId,
   MessageId,
   ModelSelection,
@@ -76,6 +77,7 @@ import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { KinTeam } from "../team/KinTeam.ts";
 import { KinHandoff } from "./Handoff.ts";
+import * as WorkFor from "./workFor.ts";
 
 /** How long one wake-up may run before it is interrupted. */
 const WAKEUP_DEADLINE_MS = 900_000;
@@ -146,6 +148,9 @@ const RunningRow = Schema.Struct({
 });
 const decodeLead = Schema.decodeUnknownEffect(LeadRow);
 const decodeRunning = Schema.decodeUnknownEffect(RunningRow);
+const decodeTaskIds = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
 const ulid = Effect.gen(function* () {
   const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
   let timestamp = yield* Clock.currentTimeMillis;
@@ -178,10 +183,14 @@ const make = Effect.gen(function* () {
       status === "completed" || Option.isNone(bridge)
         ? Option.none()
         : yield* bridge.value.lane(row);
+    const owed = status !== "completed" || Option.isNone(handoff) ? [] : yield* workOwed(row);
     const finished = yield* queue.finish({ orgId: row.orgId, wakeupId: row.wakeupId, status });
     // A Team-room turn that said nothing passed; a hand-off's answer goes back to who asked.
     if (Option.isSome(team)) yield* team.value.wakeupEnded(row);
-    if (Option.isSome(handoff)) yield* handoff.value.reportBack(row);
+    if (Option.isSome(handoff)) {
+      yield* handoff.value.reportBack(row);
+      if (owed.length > 0) yield* handoff.value.workDone({ ...row, owed });
+    }
     if (Option.isNone(bridge) || Option.isNone(lane)) return;
     // Something visible already happened, so a silent retry could repeat it; say so instead.
     // Otherwise the person waiting hears at once that it is retrying, or has stopped. A run
@@ -261,6 +270,57 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const launch = yield* ThreadLaunchService.ThreadLaunchService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
+  /** Who each finished-task event's work was for (`WorkFor.workFor`), by event id. */
+  const finishedFor = Effect.fn("WakeupRunner.finishedFor")(function* (
+    orgId: KinOrgId,
+    agentId: KinAgentId,
+    events: ReadonlyArray<{
+      readonly eventId: string;
+      readonly threadId: ThreadId;
+      readonly taskIds: ReadonlyArray<string>;
+    }>,
+  ) {
+    const found = new Map<string, ReadonlyArray<{ personId: KinPersonId; name: string }>>();
+    for (const event of events) {
+      const { subagents } = yield* threads.getThreadRecords(event.threadId, ["subagents"]);
+      const runIds = subagents.flatMap((task) =>
+        event.taskIds.includes(task.id) && task.runId !== null ? [task.runId] : [],
+      );
+      const people = yield* WorkFor.workFor({ orgId, agentId, runIds }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      if (people.length > 0) found.set(event.eventId, people);
+    }
+    return found;
+  });
+  /** The people a completed wake-up's finished work was for, each by the event that brought it. */
+  const workOwed = Effect.fn("WakeupRunner.workOwed")(
+    function* (row: typeof RunningRow.Type) {
+      const rows = yield* sql<{ eventId: string; threadId: string; taskIds: string }>`SELECT
+          event_id AS "eventId", json_extract(json, '$.threadId') AS "threadId",
+          json_extract(json, '$.taskIds') AS "taskIds"
+        FROM kin_events WHERE org_id = ${row.orgId} AND agent_id = ${row.agentId}
+          AND wakeup_id = ${row.wakeupId} AND tag = 'task.finished'
+        ORDER BY event_id`;
+      const found = yield* finishedFor(
+        row.orgId,
+        row.agentId,
+        rows.map((one) => ({
+          eventId: one.eventId,
+          threadId: ThreadId.make(one.threadId),
+          taskIds: Option.getOrElse(decodeTaskIds(one.taskIds), () => []),
+        })),
+      );
+      return [...found].flatMap(([eventId, people]) =>
+        people.map((one) => ({ eventId, personId: one.personId })),
+      );
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin finished-work owners unavailable", { cause }).pipe(
+        Effect.as<ReadonlyArray<{ eventId: string; personId: KinPersonId }>>([]),
+      ),
+    ),
+  );
   const settings = yield* ServerSettingsService;
   const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
   const paused = (orgId: KinOrgId) =>
@@ -1031,6 +1091,17 @@ const make = Effect.gen(function* () {
                 return;
               }
             }
+            // Work the owner side started for a teammate's relayed request goes back to them.
+            const workFor = new Map<string, ReadonlyArray<string>>();
+            for (const [eventId, people] of yield* finishedFor(
+              orgId,
+              agentId,
+              events.flatMap((event) => (event._tag === "task.finished" ? [event] : [])),
+            ))
+              workFor.set(
+                eventId,
+                people.map((one) => one.name),
+              );
             const built = yield* prompt.build({
               orgId,
               agentId,
@@ -1039,6 +1110,7 @@ const make = Effect.gen(function* () {
               memoryHead: pinned.head,
               budgetContext,
               routineFacts,
+              workFor,
               ...(lane === undefined ? {} : { lane }),
             });
             // What the people in the chat attached to the messages this turn answers, as text and
@@ -1189,8 +1261,12 @@ const make = Effect.gen(function* () {
             const run = taken ?? sent?.runs.findLast((run) => run.userMessageId === messageId);
             if (run === undefined)
               return yield* new KinWakeupError({ orgId, agentId, cause: "missing_run" });
-            // Anything else this wake-up answers goes into that run as its first steer.
-            if (taken !== undefined && events.some((event) => event._tag !== "task.finished")) {
+            // Anything else this wake-up answers goes into that run as its first steer, and so
+            // does who the finished work was for.
+            if (
+              taken !== undefined &&
+              (workFor.size > 0 || events.some((event) => event._tag !== "task.finished"))
+            ) {
               if (Option.isSome(bridge))
                 yield* bridge.value.steered(orgId, wakeupId, {
                   n: 1,

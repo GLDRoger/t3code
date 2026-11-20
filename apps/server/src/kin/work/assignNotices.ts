@@ -20,11 +20,11 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { turnChat } from "../lead/Audience.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import * as Reach from "../lead/Reach.ts";
 import { awayBackOn, heldUntil, holdFor, holdLine } from "../triggers/quietHold.ts";
 import { textLocale, type TextClock } from "./companyProfile.ts";
 import { parseFields } from "./lists.ts";
 import { byId, isClosed, ownerZone, type RecordRow } from "./recordRows.ts";
-import { ownerLevel } from "../people/KinAccess.ts";
 
 /**
  * What a turn did to one person's task: gave it to them, took it from them, or gave it back; or
@@ -309,7 +309,6 @@ export const tellHolding = Effect.fn("KinAssignNotices.tell")(function* (
       owner_person_id AS owner FROM kin_agents
     WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId}`;
   if (agent === undefined) return { told, waits };
-  const teamAgent = yield* LeadAccess.teamAgent(turn.orgId);
   const fallbackZone = yield* ownerZone(turn.orgId);
   const byPerson = new Map<string, Array<AssignNotice>>();
   for (const notice of notices)
@@ -324,11 +323,8 @@ export const tellHolding = Effect.fn("KinAssignNotices.tell")(function* (
         AND left_at IS NULL LIMIT 1`;
       if (reading.length > 0) continue;
     }
-    const mayMessage =
-      agent.owner === person ||
-      (yield* ownerLevel(turn.orgId, person)) ||
-      (yield* LeadAccess.allowed({ orgId: turn.orgId, agentId: turn.agentId, personId: person }));
-    const via = mayMessage ? turn.agentId : teamAgent;
+    // No agent that may message them carries it: the task is on their own Tasks all the same.
+    const via = yield* Reach.carrierFor(turn.orgId, person, turn.agentId);
     if (via === null) continue;
     const [open] = yield* sql<{ chatId: string }>`SELECT c.chat_id AS "chatId" FROM kin_chats c
       JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id

@@ -76,6 +76,8 @@ export const SHARED_TOOLS = {
   kin_ask: "allowed",
   // Closes a question to the person in the turn's chat; only its asker withdraws one.
   kin_ask_close: "allowed",
+  // Checked against everyone behind the turn, in its own transaction (`askPerson`).
+  kin_ask_person: "allowed",
   kin_react: "allowed",
   // Numbers the agent supplies, which it could have written in that chat as text; it reads nothing.
   kin_chart: "allowed",

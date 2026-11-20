@@ -196,6 +196,12 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
         // Team memory is the owner's call: a co-owner (now Meera) may set it, a member never.
         assert.isTrue(yield* allowed("meera", "kin.memory.setTeamMemory"));
         assert.isFalse(yield* allowed("ravi", "kin.memory.setTeamMemory"));
+        // Who may not message whom is set by owners and co-owners alone.
+        for (const method of ["kin.reach.list", "kin.reach.set"]) {
+          assert.isTrue(yield* allowed("meera", method));
+          assert.isFalse(yield* allowed("ravi", method));
+          assert.isFalse(yield* allowed("stranger", method));
+        }
 
         // The country refusal reaches a person with no name in it (an older phone hides names),
         // worded for who may choose the country now; any other refusal is as it was.

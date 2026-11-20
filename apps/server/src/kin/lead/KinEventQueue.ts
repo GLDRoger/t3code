@@ -31,7 +31,7 @@ import {
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
-import * as LeadAccess from "./LeadAccess.ts";
+import * as Reach from "./Reach.ts";
 
 const EventJson = Schema.fromJsonString(KinEvent);
 const encodeEvent = Schema.encodeEffect(EventJson);
@@ -521,7 +521,7 @@ const make = Effect.gen(function* () {
 
   /**
    * A teammate's request Kin passed on (`routeCard.forward`) starts only while they may still
-   * message the agent and their own message still stands; otherwise it expires. One that expired
+   * message the agent (`Reach`) and their own message still stands; otherwise it expires. One that expired
    * for any reason is told once, in the chat they asked it in.
    */
   const expireStaleRoutes = Effect.fn("KinEventQueue.expireStaleRoutes")(function* (
@@ -543,7 +543,7 @@ const make = Effect.gen(function* () {
       const personId = KinPersonId.make(row.personId);
       if (
         row.live !== 1 ||
-        !(yield* LeadAccess.allowed({ orgId, agentId, personId }).pipe(
+        !(yield* Reach.reaches(orgId, Reach.person(personId), Reach.agent(agentId)).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
         ))
       )

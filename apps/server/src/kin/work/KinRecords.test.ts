@@ -47,6 +47,7 @@ import { turnAudience, turnChat, turnPeople } from "../lead/Audience.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import * as Reach from "../lead/Reach.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { TEAMMATE_WORDS, workEventText } from "../lead/LeadPrompt.ts";
 import { sharedToolAllowed } from "../lead/SharedTools.ts";
@@ -2425,7 +2426,14 @@ it.effect(
       yield* seed;
       yield* mateMayMessage;
       const sql = yield* SqlClient.SqlClient;
-      // An agent its owner doesn't let them message is no agent to them, and nothing is written.
+      // An agent the owner restricted for them is no agent to them, and nothing is written.
+      yield* Reach.setLimit({
+        orgId,
+        by: ownerId,
+        a: Reach.person(mateId),
+        b: Reach.agent(other),
+        restricted: true,
+      });
       assert.deepInclude(
         yield* Effect.flip(
           OwnerWork.create([mate], {
