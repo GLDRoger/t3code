@@ -34,6 +34,7 @@ import {
   type KinRecordChange,
   type KinWorkPrincipal,
   KIN_DEALS_CAP,
+  KIN_DEAL_STEP_FIELD,
   KIN_LEFT_FIELD,
   KIN_RECORD_CHANGES_CAP,
 } from "@t3tools/contracts";
@@ -46,6 +47,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
+import { type AssignNotice, movedNotices } from "./assignNotices.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
 import { campaignsNamed, dealsFromCampaign, sourceShown } from "./crm.ts";
 import { DEFAULT_STAGES, stageLine, stageMove, stagesOf } from "./dealStages.ts";
@@ -55,7 +57,7 @@ import { playbookThreshold } from "./playbooks.ts";
 import { KinRecords, requestHashOf, type Patch, type Writer } from "./KinRecords.ts";
 import { fieldList, fieldText, isMoney, parseFields, type FieldValue } from "./lists.ts";
 import { dayIn, monthOf, shiftMonth } from "./money.ts";
-import { dueMillis, ownerWriter, viewerOf } from "./ownerWork.ts";
+import { dueMillis, ownerWriter, tellOnScreen, viewerOf } from "./ownerWork.ts";
 import {
   byId,
   byKey,
@@ -138,6 +140,7 @@ const personActor = Effect.fn("KinDeals.personActor")(function* (
       person: viewer.person.personId,
     } satisfies DealActor,
     viewer: viewer.teammate ? viewerOfPeople([viewer.person.personId]) : KIN_OWNER_LEVEL,
+    person: viewer.person,
   };
 });
 
@@ -437,13 +440,59 @@ export const updateAs = Effect.fn("KinDeals.update")(function* (
     ...(change.sensitive === undefined ? {} : { sensitive: change.sensitive }),
     ...(Object.keys(fields).length === 0 ? {} : { fields }),
   };
+  const steps =
+    change.owner === undefined ? [] : yield* keepersSteps(actor.orgId, row, change.owner);
   const after =
     Object.keys(patch).length === 0
       ? row
-      : yield* records.update(actor.orgId, actor.writer, row.key, patch, rev);
+      : yield* records.update(
+          actor.orgId,
+          actor.writer,
+          row.key,
+          patch,
+          rev,
+          steps.map((step) => ({
+            field: KIN_DEAL_STEP_FIELD,
+            from: null,
+            to: step.key,
+            names: { from: null, to: `${step.key} ${step.title}` },
+          })),
+        );
   if (change.owner !== undefined) yield* seesItAfter(actor.orgId, after, change.owner);
   if (change.quoteKey !== undefined) yield* relinkQuote(actor, after, change.quoteKey);
-  return after;
+  const notices: Array<AssignNotice> = [];
+  for (const step of steps) {
+    const moved = yield* records.update(actor.orgId, actor.writer, step.key, {
+      owner: change.owner!,
+    });
+    notices.push(...movedNotices(step, moved));
+  }
+  return { row: after, notices };
+});
+
+/**
+ * The deal's open next steps its keeper holds, which go with it to a person who takes it on; one
+ * held by anyone else, or kept private, stays.
+ */
+const keepersSteps = Effect.fn("KinDeals.keepersSteps")(function* (
+  orgId: KinOrgId,
+  deal: RecordRow,
+  to: KinWorkPrincipal,
+) {
+  if (to._tag !== "person" || samePrincipal(to, ownerOf(deal))) return [];
+  const sql = yield* SqlClient.SqlClient;
+  const keys = yield* sql<{ key: string }>`SELECT r.key FROM kin_record_links l
+      JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
+    WHERE l.org_id = ${orgId} AND l.kind = 'record' AND l.target = ${deal.recordId}
+      AND r.register_id = 'work' AND r.state IN ('open', 'doing', 'waiting') AND r.side = 'ours'
+      AND r.sensitive = 0 AND r.owner_kind = ${deal.ownerKind} AND r.owner_id = ${deal.ownerId}
+    GROUP BY r.key ORDER BY r.key`.pipe(workFailure);
+  const steps: Array<RecordRow> = [];
+  for (const { key } of keys) {
+    const step = yield* byKey(orgId, key).pipe(workFailure);
+    if (step !== undefined) steps.push(step);
+  }
+  return steps;
 });
 
 /** Whoever looks after a deal must see it: owner level, or Clients on and in their Clients. */
@@ -1347,12 +1396,22 @@ export const deals = Effect.fn("KinDeals.list")(function* (
 });
 
 /** The history lines a member reads of a deal: what it says and who has it, never its labels. */
-const MEMBER_FIELDS = new Set(["stage", "value", "source", "lostReason", "concerns"]);
+const MEMBER_FIELDS = new Set([
+  "stage",
+  "value",
+  "source",
+  "lostReason",
+  "concerns",
+  KIN_DEAL_STEP_FIELD,
+]);
 export const dealSeesField = (field: string) =>
   (teamSeesField(field) && field !== "confirmed") || MEMBER_FIELDS.has(field);
 /** A concerns change by its labels, one a line, where the change kept them. */
 const concernLine = ({ names, ...change }: StoredChange["fields"][number]) =>
   names === undefined ? change : { ...change, from: names.from, to: names.to };
+/** A step that went with the deal, by key and title; a member, who may not see it, reads its key. */
+const stepLine = ({ names, ...field }: StoredChange["fields"][number], viewer: KinViewer) =>
+  viewer._tag === "ownerLevel" && names !== undefined ? { ...field, to: names.to } : field;
 /** A deal's own changes, its stages by the names they had then, as far as this viewer reads them. */
 const dealChanges = (
   changes: ReadonlyArray<StoredChange>,
@@ -1368,7 +1427,9 @@ const dealChanges = (
           ? stageLine(stages, field)
           : field.field === "concerns"
             ? concernLine(field)
-            : field,
+            : field.field === KIN_DEAL_STEP_FIELD
+              ? stepLine(field, viewer)
+              : field,
       );
     return change.kind === "updated" && fields.length === 0 ? [] : [{ ...change, fields }];
   });
@@ -1458,8 +1519,8 @@ export const update = Effect.fn("KinDeals.rpc.update")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinDealUpdateInput,
 ) {
-  const { actor, viewer } = yield* personActor(people, input.orgId);
-  const row = yield* written(
+  const { actor, viewer, person } = yield* personActor(people, input.orgId);
+  const { row, notices } = yield* written(
     input.orgId,
     Effect.gen(function* () {
       const due = yield* expectedAt(input.orgId, input.expectedOn);
@@ -1488,6 +1549,7 @@ export const update = Effect.fn("KinDeals.rpc.update")(function* (
       );
     }),
   );
+  yield* tellOnScreen(person, `${row.recordId}:${row.rev}`, notices);
   return yield* answer(input.orgId, viewer, row, false);
 });
 

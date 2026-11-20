@@ -1,6 +1,7 @@
 import {
   kinOwnerLevel,
   KIN_DEAL_QUIET_DAYS_MAX,
+  KIN_DEAL_STEP_FIELD,
   type KinDealMove,
   type KinDealNumbers,
   type KinDealPage,
@@ -657,7 +658,14 @@ export function kinDealChangeText(change: KinRecordChange, names: KinWorkNames, 
           : `${shown.slice(0, -1).join(", ")} and ${shown.at(-1)}`;
     return `${who} removed ${removed.length === 1 ? "the concern" : "the concerns"} ${named}`;
   }
-  return kinWorkChangeText(change, names, now);
+  const steps = change.fields.flatMap((held) =>
+    held.field === KIN_DEAL_STEP_FIELD && held.to !== null ? [held.to] : [],
+  );
+  const line = kinWorkChangeText(change, names, now);
+  if (steps.length === 0) return line;
+  const listed =
+    steps.length === 1 ? steps[0]! : `${steps.slice(0, -1).join(", ")} and ${steps.at(-1)}`;
+  return `${line}, with ${steps.length === 1 ? "its next step" : "its next steps"} ${listed}`;
 }
 
 /** A concerns change's labels: the host keeps one a line; a label never holds ": ". */

@@ -23,6 +23,7 @@ import {
   type KinRecordRef,
   type KinWorkPrincipal,
   KIN_CODING_AGENT_UNNAMED,
+  KIN_DEAL_STEP_FIELD,
   KIN_TEXT_LOCALE,
   calendarTimeMillis,
   formatKinWhen,
@@ -2528,6 +2529,7 @@ const dealUpdate = Effect.fnUntraced(function* (
     ...(input.sensitive === undefined ? {} : { sensitive: true }),
   };
   const closing = input.state === "done" || input.state === "dropped";
+  const notices: Array<AssignNotice> = [];
   yield* sql
     .withTransaction(
       Effect.gen(function* () {
@@ -2538,7 +2540,7 @@ const dealUpdate = Effect.fnUntraced(function* (
           return at;
         };
         if (Object.keys(change).length > 0)
-          yield* Deals.updateAs(actor, before.key, change, once());
+          notices.push(...(yield* Deals.updateAs(actor, before.key, change, once())).notices);
         if (fields.stage !== undefined && fields.stage !== null && !closing) {
           if (input.state === "open")
             yield* Deals.moveAs(actor, before.key, { _tag: "reopen" }, once());
@@ -2573,7 +2575,8 @@ const dealUpdate = Effect.fnUntraced(function* (
           ...new Set(
             (yield* records.detail(after, Math.min(after.rev - before.rev, 10))).changes
               .toReversed()
-              .flatMap((one) => one.fields.map((field) => field.field)),
+              .flatMap((one) => one.fields.map((field) => field.field))
+              .filter((field) => field !== KIN_DEAL_STEP_FIELD),
           ),
         ];
   const out: typeof Updated.Type & { readonly noLongerSeenBy?: ReadonlyArray<string> } = {
@@ -2583,7 +2586,7 @@ const dealUpdate = Effect.fnUntraced(function* (
     changed: input.next === undefined ? changed : [...changed, "next"],
     ...marksOf(yield* allLists(lead.orgId), after),
   };
-  return out;
+  return { out, notices };
 });
 
 const orList = (items: ReadonlyArray<string>) =>
@@ -2928,8 +2931,10 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
   if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, before.recordId)))
     return yield* notFound(key);
   if (listOf(before.registerId) === "docs") return yield* isDoc(key);
-  if (before.registerId === "deals")
-    return { result: yield* dealUpdate(lead, writer, before, input), notices: [], held: [] };
+  if (before.registerId === "deals") {
+    const { out, notices } = yield* dealUpdate(lead, writer, before, input);
+    return { result: out, notices, held: [] };
+  }
   if (input.next !== undefined) return yield* NEXT_IS_A_DEALS;
   // For a teammate alone in the turn, a contact changes as their own Edit contact changes it.
   const [only, ...others] = team?.people ?? [];

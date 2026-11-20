@@ -11,7 +11,9 @@ import {
   KinPersonId,
   KinRecord,
   KinWorkHistoryItem,
+  KIN_DEAL_STEP_FIELD,
   KIN_LEFT_FIELD,
+  type KinWorkPrincipal,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -463,6 +465,111 @@ it.effect(
       yield* sql`UPDATE kin_people SET sees_clients = 0 WHERE person_id = ${zoyaId}`;
       assert.strictEqual(yield* refusal(Deals.deals([zoya], { orgId })), "not_allowed");
       assert.isFalse(yield* teamSeesKey(orgId, zoyaId, hers.deal.key));
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a deal's next steps its keeper held go with it to the new keeper, logged on the deal; anyone else's stay",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const { corran } = yield* seed;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id,
+          created_at, retired_at)
+        VALUES ('sales', ${orgId}, 'Sales', 'lead', ${ownerId}, ${at}, NULL)`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES ('sales-chat', ${orgId}, 'direct', ${`${ownerId}:sales`}, 0, ${at})`;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
+          worker_projects_json, owner_chat_id)
+        VALUES ('sales', ${orgId}, 'Sales', 0, 'sales-thread', '{}', '[]', 'sales-chat')`;
+      const person = (personId: KinPersonId) => ({ _tag: "person" as const, personId });
+      const agent = { _tag: "agent" as const, agentId: KinAgentId.make("sales") };
+      const deal = (yield* Deals.create([owner], newDeal(corran, "Invented revised quote"))).deal;
+      const dealRow = (yield* records.get(orgId, deal.key))!;
+      const step = (title: string, holder: KinWorkPrincipal, extra: object = {}) =>
+        records
+          .create(orgId, OwnerWork.ownerWriter(owner), {
+            originKey: title,
+            title,
+            owner: holder,
+            category: "task",
+            side: "ours",
+            partyId: dealRow.partyId,
+            links: [{ kind: "record", target: dealRow.recordId, relation: "relates" }],
+            ...extra,
+          })
+          .pipe(Effect.map(({ row }) => row.key));
+      const theirs = yield* step("Invented: send revised quote", person(ownerId));
+      const devs = yield* step("Invented: Dev's install check", person(devId));
+      const agents = yield* step("Invented: Sales drafts the follow-up", agent);
+      const kept = yield* step("Invented: Rhea's private call", person(ownerId), {
+        sensitive: true,
+      });
+      const finished = yield* step("Invented: first call", person(ownerId));
+      yield* records.update(orgId, OwnerWork.ownerWriter(owner), finished, { state: "done" });
+      const given = yield* Deals.update([owner], {
+        orgId,
+        key: deal.key,
+        rev: deal.rev,
+        owner: asZoya,
+      });
+      const holders = Object.fromEntries(
+        yield* Effect.forEach([theirs, devs, agents, kept, finished], (key) =>
+          records
+            .get(orgId, key)
+            .pipe(Effect.map((row) => [key, `${row!.ownerKind}:${row!.ownerId}`])),
+        ),
+      );
+      assert.deepStrictEqual(holders, {
+        [theirs]: "person:zoya",
+        [devs]: "person:dev",
+        [agents]: "agent:sales",
+        [kept]: "person:owner",
+        [finished]: "person:owner",
+      });
+      // Zoya's deal, its client's row and her page now show the step; Rhea no longer holds it.
+      assert.strictEqual(given.deal.next?.key, theirs);
+      const hers = yield* Deals.page([zoya], { orgId, key: deal.key });
+      assert.include(
+        hers.steps.map((one) => one.key),
+        theirs,
+      );
+      const row = (yield* Clients.parties([zoya], { orgId })).parties.find(
+        (party) => party.key === corran,
+      );
+      assert.strictEqual(row?.next?.title, "Invented: send revised quote");
+      // One line on the deal names it: by title to the owner level, by key to a member.
+      const stepOf = (page: typeof hers) =>
+        page.changes[0]!.fields.filter((field) => field.field === KIN_DEAL_STEP_FIELD);
+      assert.deepStrictEqual(
+        stepOf(yield* Deals.page([owner], { orgId, key: deal.key })).map((field) => field.to),
+        [`${theirs} Invented: send revised quote`],
+      );
+      assert.deepStrictEqual(
+        stepOf(hers).map((field) => field.to),
+        [theirs],
+      );
+      // An agent's hand-over follows the same rule and names the step to whoever takes it.
+      const back = yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const actor = yield* Deals.agentActor(orgId, {
+            actor: agent,
+            via: "lead",
+            askedBy: ownerId,
+          });
+          return yield* Deals.updateAs(actor, deal.key, { owner: person(ownerId) });
+        }),
+      );
+      assert.strictEqual((yield* records.get(orgId, theirs))!.ownerId, ownerId);
+      assert.strictEqual((yield* records.get(orgId, agents))!.ownerKind, "agent");
+      assert.deepStrictEqual(
+        back.notices.map((notice) => [notice.kind, notice.personId, notice.row.key]),
+        [
+          ["given", ownerId, theirs],
+          ["taken", zoyaId, theirs],
+        ],
+      );
     }).pipe(Effect.provide(layer)),
 );
 
