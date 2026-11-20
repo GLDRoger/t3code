@@ -410,7 +410,8 @@ export function KinQuotesSection(
   return <QuotesPeek {...props} />;
 }
 
-const OPEN_QUOTES = { ...KIN_LIST_DEFAULT_FILTER, show: "open" as const };
+// As Money counts them: no suggestion is an open quote until it is kept.
+const OPEN_QUOTES = { ...KIN_LIST_DEFAULT_FILTER, show: "open" as const, kept: true };
 
 function QuotesPeek(
   props: Section & {

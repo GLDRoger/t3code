@@ -49,12 +49,13 @@ import {
   KinOutlookSection,
   KinQuotesSection,
 } from "./KinMoneyAnswers";
+import { KinMoneySuggested } from "./KinMoneySuggested";
 import { KinSubscriptionsSection } from "./KinSubscriptions";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useNowMinuteMs } from "../../lib/clock";
 import { cn } from "../../lib/cn";
-import { useKinTab } from "./components/KinTab";
+import { useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinFoldSection, KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 import { KinChooseCountry } from "./components/KinCountryFirst";
@@ -209,7 +210,7 @@ function AreaFrame(props: {
           contentInsetAdjustmentBehavior="automatic"
           contentContainerStyle={{
             paddingTop: 8,
-            paddingBottom: 32 + (tab?.bottomClearance ?? 0),
+            paddingBottom: kinTabFoot(tab?.bottomClearance ?? 0),
             gap: 20,
           }}
         >
@@ -599,6 +600,16 @@ export function KinMoneyArea(props: Shared) {
           )}
         </ListSection>
       </View>
+      {view.suggested.length === 0 ? null : (
+        <KinMoneySuggested
+          {...target}
+          rows={view.suggested}
+          more={view.suggestedMore}
+          onOpenKey={(key) => navigation.navigate("KinWorkItem", { ...target, task: key })}
+          onOpenList={openList}
+          onChanged={money.refresh}
+        />
+      )}
       <KinOutlookSection {...target} seq={seq} rates={rates} />
       <KinCashSection {...target} seq={seq} rates={rates} />
       <View className="gap-2">

@@ -68,6 +68,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinMemoryChangesPresentation";
 import { kinDocCardLine, KIN_DOCS, type KinDocCardView } from "@t3tools/client-runtime/kin/kinDocs";
 import { kinChoiceDefaultLine } from "@t3tools/client-runtime/kin/kinWaitingAsk";
+import { kinListedModelName } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinPersonId, KinSendTry, KinWidget } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
@@ -114,6 +115,7 @@ import { KinStatementPasswordCard, KinStatementReviewCard } from "./KinStatement
 import { KinVisual } from "./KinVisual";
 import { kinClient } from "./kinClient";
 import { useKinHostAt } from "./useKinHost";
+import { serverEnvironment } from "../state/server";
 
 const CANT_ACT_TEXT = KIN_DEVICE_COPY.cantAct("browser", "answer");
 
@@ -165,6 +167,12 @@ function useWidgetPost(environmentId: EnvironmentId) {
   };
 }
 
+/** A model id as Settings names it on this environment, or null where it has no name. */
+export function useKinModelName(environmentId: EnvironmentId) {
+  const providers = useAtomValue(serverEnvironment.providersValueAtom(environmentId));
+  return (model: string) => kinListedModelName(model, providers);
+}
+
 /**
  * The card for a message's widget, drawn from the shared presentation. Never renders HTML of
  * its own: a visual's page stays in a sealed frame (`KinVisual`).
@@ -178,12 +186,14 @@ export const KinCard = memo(function KinCard(props: {
 }) {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const ownerLevel = useKinOwnerLevelKnown(props.environmentId);
+  const modelName = useKinModelName(props.environmentId);
   const view = kinCardView(
     props.widget,
     props.environmentId,
     (environmentId) => !catalog.isReady || catalog.entries.has(environmentId),
     props.heldFor,
     ownerLevel,
+    modelName,
   );
   switch (view.kind) {
     case "task":
@@ -243,7 +253,7 @@ export const KinCard = memo(function KinCard(props: {
   }
 });
 
-const TONE_CLASSES: Record<KinTaskTone, string> = {
+export const TONE_CLASSES: Record<KinTaskTone, string> = {
   active: "text-foreground",
   attention: "text-warning-foreground",
   done: "text-success-foreground",

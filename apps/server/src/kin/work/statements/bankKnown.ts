@@ -1,10 +1,14 @@
 import type { KinBankKnown, KinOrgId } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { formatMinor } from "../money.ts";
+import { dayIn, formatMinor } from "../money.ts";
+import { ownerZone } from "../recordRows.ts";
+import { openingOf, sameAccounts } from "./bankAccounts.ts";
 
 /**
  * How far Kin sees the bank, computed when read from the statements the owner confirmed. Kin
@@ -28,7 +32,7 @@ const daysBetween = (from: string, to: string) =>
  * same way a statement's do (`alertLines.ts`), so alerts stay the reach past the last pull.
  */
 export interface BankCoverage {
-  /** The account as Kin tells it apart: bank, last four digits and currency. */
+  /** The account as `sameAccounts` tells it apart. */
   readonly account: string;
   readonly label: string;
   readonly currency: string;
@@ -79,15 +83,17 @@ export interface BankKnown extends Omit<KinBankKnown, "alerts"> {
 
 /**
  * Per account, the unbroken run of covered days from its first: a span that starts after the day
- * following the run's end is a gap, and the run stops before it. For the company, the earliest
- * end among accounts kept up; with no coverage at all, null.
+ * following the run's end is a gap, and the run stops before it. No day counts past `today`. For
+ * the company, the earliest end among accounts kept up; with no coverage at all, null.
  */
-export const knownThrough = (coverage: ReadonlyArray<BankCoverage>): BankKnown => {
+export const knownThrough = (coverage: ReadonlyArray<BankCoverage>, today: string): BankKnown => {
   const byAccount = new Map<string, Array<BankCoverage>>();
   for (const span of coverage) {
+    if (span.from > today) continue;
+    const seen = { ...span, through: span.through > today ? today : span.through };
     const spans = byAccount.get(span.account);
-    if (spans === undefined) byAccount.set(span.account, [span]);
-    else spans.push(span);
+    if (spans === undefined) byAccount.set(span.account, [seen]);
+    else spans.push(seen);
   }
   const runs = [...byAccount.values()].map((spans) => {
     const sorted = spans.toSorted((a, b) =>
@@ -136,25 +142,40 @@ export const knownThrough = (coverage: ReadonlyArray<BankCoverage>): BankKnown =
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const dayOr = (value: string | null) => (value !== null && DAY.test(value) ? value : null);
+const RowJson = Schema.fromJsonString(
+  Schema.Struct({
+    index: Schema.Number,
+    date: Schema.String,
+    direction: Schema.Literals(["debit", "credit"]),
+    amountMinor: Schema.Number,
+    balanceMinor: Schema.NullOr(Schema.Number),
+  }),
+);
+const decodeRow = Schema.decodeUnknownOption(RowJson);
 
 /**
- * Coverage from the bank-account statements the owner confirmed and has not undone. A statement
- * whose totals don't check out still counts: its lines were confirmed. Cards never receive what
- * clients pay, so they cover nothing here.
+ * Coverage from the bank-account statements the owner confirmed and has not undone, one account
+ * per `sameAccounts`. A statement whose totals don't check out still counts: its lines were
+ * confirmed. Cards never receive what clients pay, so they cover nothing here.
  */
 const confirmedCoverage = Effect.fn("KinBankKnown.coverage")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
     bank: string | null;
     digits: string | null;
+    accountId: string | null;
     currency: string | null;
     from: string | null;
     to: string | null;
     first: string | null;
     last: string | null;
+    opening: number | null;
     closing: number | null;
+    firstRow: string | null;
+    lastBalance: number | null;
   }>`SELECT json_extract(s.review_json, '$.statement.bank') AS bank,
       json_extract(s.review_json, '$.statement.account') AS digits,
+      json_extract(s.review_json, '$.statement.accountId') AS "accountId",
       json_extract(s.review_json, '$.statement.currency') AS currency,
       json_extract(s.review_json, '$.statement.from') AS "from",
       json_extract(s.review_json, '$.statement.to') AS "to",
@@ -164,34 +185,54 @@ const confirmedCoverage = Effect.fn("KinBankKnown.coverage")(function* (orgId: K
       CASE WHEN json_extract(s.review_json, '$.statement.to') IS NULL
         THEN (SELECT MAX(json_extract(j.value, '$.date'))
           FROM json_each(s.review_json, '$.statement.rows') j) END AS last,
-      COALESCE(json_extract(s.review_json, '$.statement.closingMinor'),
-        (SELECT json_extract(j.value, '$.balanceMinor')
+      json_extract(s.review_json, '$.statement.openingMinor') AS opening,
+      json_extract(s.review_json, '$.statement.closingMinor') AS closing,
+      CASE WHEN json_extract(s.review_json, '$.statement.openingMinor') IS NULL
+        THEN (SELECT j.value FROM json_each(s.review_json, '$.statement.rows') j
+          ORDER BY json_extract(j.value, '$.date'), json_extract(j.value, '$.index') LIMIT 1)
+        END AS "firstRow",
+      CASE WHEN json_extract(s.review_json, '$.statement.closingMinor') IS NULL
+        THEN (SELECT json_extract(j.value, '$.balanceMinor')
           FROM json_each(s.review_json, '$.statement.rows') j
           WHERE json_extract(j.value, '$.balanceMinor') IS NOT NULL
-          ORDER BY json_extract(j.value, '$.date') DESC, CAST(j.key AS INTEGER) DESC
-          LIMIT 1)) AS closing
+          ORDER BY json_extract(j.value, '$.date') DESC, json_extract(j.value, '$.index') DESC
+          LIMIT 1) END AS "lastBalance"
     FROM kin_bank_statements s
     WHERE s.org_id = ${orgId} AND s.status = 'read' AND s.review_json IS NOT NULL
       AND json_valid(s.review_json) AND s.applied_at IS NOT NULL AND s.undone_at IS NULL
       AND json_extract(s.review_json, '$.statement.kind') = 'account'
     ORDER BY s.applied_at, s.statement_id`;
-  return rows.flatMap((row): ReadonlyArray<BankCoverage> => {
+  const reads = rows.flatMap((row) => {
     const ends = dayOr(row.to) ?? dayOr(row.last);
     const starts = dayOr(row.from) ?? dayOr(row.first) ?? ends;
     if (starts === null || ends === null || row.currency === null) return [];
-    const digits = row.digits !== null && /^\d{4}$/.test(row.digits) ? row.digits : null;
-    const label = `${row.bank === null ? "" : `${row.bank} `}Account${digits === null ? "" : ` ••${digits}`}`;
+    const first =
+      row.firstRow === null ? undefined : Option.getOrUndefined(decodeRow(row.firstRow));
     return [
       {
-        account: [(row.bank ?? "").toLowerCase(), digits ?? "", row.currency].join("\u0000"),
-        label,
+        kind: "account" as const,
+        bank: row.bank,
+        digits: row.digits !== null && /^\d{4}$/.test(row.digits) ? row.digits : null,
+        accountId: row.accountId,
         currency: row.currency,
         from: starts < ends ? starts : ends,
-        through: starts < ends ? ends : starts,
-        digits,
-        closingMinor: typeof row.closing === "number" ? row.closing : null,
+        on: starts < ends ? ends : starts,
+        opening: openingOf({ kind: "account", openingMinor: row.opening }, first),
+        closing: row.closing ?? row.lastBalance,
       },
     ];
+  });
+  return sameAccounts(reads).flatMap((account, at): ReadonlyArray<BankCoverage> => {
+    const label = `${account.bank === null ? "" : `${account.bank} `}Account${account.digits === null ? "" : ` ••${account.digits}`}`;
+    return account.reads.map((read) => ({
+      account: `${at}`,
+      label,
+      currency: read.currency,
+      from: read.from,
+      through: read.on,
+      digits: account.digits,
+      closingMinor: read.closing,
+    }));
   });
 });
 
@@ -252,10 +293,14 @@ const alertReach = (
   });
 };
 
-/** The one read every money surface uses: how far Kin sees the bank now. */
-export const bankKnown = Effect.fn("KinBankKnown.read")(function* (orgId: KinOrgId) {
+/**
+ * The one read every money surface uses: how far Kin sees the bank at `at` (now, unless given),
+ * never past that day in the owner's zone.
+ */
+export const bankKnown = Effect.fn("KinBankKnown.read")(function* (orgId: KinOrgId, at?: number) {
   const sql = yield* SqlClient.SqlClient;
-  const known = knownThrough(yield* confirmedCoverage(orgId));
+  const today = dayIn(at ?? (yield* Clock.currentTimeMillis), yield* ownerZone(orgId));
+  const known = knownThrough(yield* confirmedCoverage(orgId), today);
   const alerts = yield* sql<{
     account: string;
     currency: string;

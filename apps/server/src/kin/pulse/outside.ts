@@ -232,14 +232,21 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
     clientId: string | null;
     clientKey: string | null;
     clientTitle: string | null;
-  }>`SELECT lower(json_extract(r.fields_json, '$.email')) AS email, r.key, r.title,
+    main: number;
+  }>`SELECT lower(e.value) AS email, e.key = 'email' AS main, r.key, r.title,
       c.record_id AS "clientId", c.key AS "clientKey", c.title AS "clientTitle"
     FROM kin_records r
+      JOIN (SELECT r2.record_id, 'email' AS key, json_extract(r2.fields_json, '$.email') AS value
+          FROM kin_records r2 WHERE r2.org_id = ${orgId} AND r2.register_id = 'contacts'
+        UNION ALL SELECT r2.record_id, 'emails', j.value
+          FROM kin_records r2, json_each(r2.fields_json, '$.emails') j
+          WHERE r2.org_id = ${orgId} AND r2.register_id = 'contacts') e
+        ON e.record_id = r.record_id
       LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
         AND c.register_id = 'clients'
     WHERE r.org_id = ${orgId} AND r.register_id = 'contacts' AND r.state = 'open'
-      AND json_extract(r.fields_json, '$.email') IS NOT NULL
-    ORDER BY r.key`;
+      AND e.value IS NOT NULL
+    ORDER BY main, r.key`;
   const money = yield* sql<{ key: string; list: string }>`SELECT key, register_id AS list
     FROM kin_records WHERE org_id = ${orgId} AND register_id IN ('invoices', 'quotes')
       AND state IN ('open', 'waiting')
@@ -249,6 +256,7 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
     WHERE org_id = ${orgId} AND state IN ('open', 'doing', 'waiting')
       AND ((register_id = 'work' AND category = 'meeting') OR register_id = 'clients')
     ORDER BY key`;
+  // A contact's main address is matched as before; another one only where no main one has it.
   const byEmail = new Map(contacts.map((row) => [row.email, row]));
   const matched: Array<Matched> = [];
   let newSenders = 0;

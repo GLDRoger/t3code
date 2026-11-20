@@ -666,7 +666,7 @@ export function KinInvoicePayments(
                   >
                     {payment.amount}
                   </span>
-                  <span className="truncate text-xs text-muted-foreground">
+                  <span className="text-xs break-words text-muted-foreground">
                     {[
                       payment.tds ? KIN_INVOICES.tdsDeducted : null,
                       payment.when,

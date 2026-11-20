@@ -1,5 +1,11 @@
 // @effect-diagnostics globalDate:off - Fixtures build days relative to a fixed clock.
-import { KinOrgId, type KinCash, type KinMoneyBudget, type KinRunway } from "@t3tools/contracts";
+import {
+  KinOrgId,
+  type KinCash,
+  type KinMoneyBudget,
+  type KinRecord,
+  type KinRunway,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -12,6 +18,7 @@ import {
   kinCashView,
   kinLinesInput,
   kinQuoteActions,
+  kinQuoteRow,
   kinQuoteState,
   kinQuotesSummary,
   kinRunwayText,
@@ -34,6 +41,25 @@ describe("kinQuoteState", () => {
       at("done", "2026-11-10T18:29:59.999Z"),
       at("dropped", null),
     ]).toEqual(["draft", "sent", "expired", "sent", "accepted", "declined"]);
+    // A quote nobody kept was sent by nobody: it reads Suggested, and says so before Draft.
+    const quote = (state: "open" | "waiting", confirmed: boolean) =>
+      kinQuoteRow(
+        {
+          key: "QT-2",
+          title: "Invented recall dashboard",
+          list: "quotes",
+          state,
+          confirmed,
+          dueAt: "2026-11-30T18:29:59.999Z",
+        } as unknown as KinRecord,
+        null,
+        now,
+      ).stateLabel;
+    expect([quote("waiting", false), quote("open", false), quote("waiting", true)]).toEqual([
+      "Suggested",
+      "Suggested · Draft",
+      "Sent",
+    ]);
   });
 
   it("offers each way in with its way back", () => {

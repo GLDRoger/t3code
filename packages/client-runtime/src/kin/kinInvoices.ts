@@ -18,6 +18,7 @@ import {
   kinMoneyText,
   kinParseMoney,
   kinPaymentSourceText,
+  kinSuggestion,
 } from "./kinLists.ts";
 
 /**
@@ -189,6 +190,8 @@ export interface KinInvoicePaymentView {
 }
 
 export interface KinInvoiceView {
+  /** An agent's suggestion nobody kept: it gets no number until it is. */
+  readonly suggested: boolean;
   /** The heading: its number, else its title. */
   readonly heading: string;
   /** The rest of the title, under the heading. */
@@ -251,6 +254,7 @@ export function kinInvoiceView(
     return [{ key: ref.key as KinRecordKey, title: ref.title }];
   });
   return {
+    suggested: kinSuggestion(item),
     heading: number ?? item.title,
     description: number === null ? null : description,
     number,
@@ -290,7 +294,7 @@ export function kinInvoiceView(
 
 /** What the owner may do on an invoice now, by its state and what this device is allowed. */
 export function kinInvoiceActions(
-  view: Pick<KinInvoiceView, "void" | "number">,
+  view: Pick<KinInvoiceView, "void" | "number"> & { readonly suggested?: boolean },
   def: Pick<KinListDefinition, "numbering" | "states"> | null,
   allowed: {
     readonly render: boolean;
@@ -301,10 +305,10 @@ export function kinInvoiceActions(
   const numbered = def?.numbering !== undefined;
   return {
     make: allowed.render && !view.void,
-    issue: allowed.issue && numbered && !view.void && view.number === null,
+    issue: allowed.issue && numbered && !view.void && view.number === null && !view.suggested,
     void: allowed.issue && numbered && !view.void && def?.states.includes("dropped") === true,
     unvoid: allowed.issue && view.void,
-    receipt: allowed.receipt && !view.void,
+    receipt: allowed.receipt && !view.void && view.suggested !== true,
   };
 }
 

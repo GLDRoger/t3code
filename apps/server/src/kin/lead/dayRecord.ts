@@ -137,7 +137,7 @@ export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
     const created = rows.find((row) => row.kind === "created");
     if (created !== undefined)
       made.push(
-        `${named} (${LIST_WORDS[first.list] ?? first.list}${first.confirmed === 1 ? "" : ", suggested, not confirmed"}), by ${nameOf(created.actorKind, created.actorId)}`,
+        `${named} (${LIST_WORDS[first.list] ?? first.list}${first.confirmed === 1 ? "" : ", suggested, not kept yet"}), by ${nameOf(created.actorKind, created.actorId)}`,
       );
     const moves: Array<string> = [];
     let doneBy: string | undefined;

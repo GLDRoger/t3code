@@ -768,6 +768,9 @@ const make = Effect.gen(function* () {
               dateAt ?? createdAt ?? now,
             );
           yield* payAll(line, due, record.key, record.currency ?? currency);
+          // Lowered once its numbers and payments are in, as it was when they were recorded.
+          if (spec.suggested === true)
+            yield* records.update(orgId, writer, record.key, { confirmed: false });
           // Paid in full, it closed on its last payment's day, not today.
           const last = due
             .map((one) => one.paidOn)

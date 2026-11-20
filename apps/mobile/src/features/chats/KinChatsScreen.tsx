@@ -45,6 +45,7 @@ import { kinJoinedNameAtom } from "./state/kinJoin";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinOpenWaiting } from "./state/useKinOpen";
 import { useKinProfiles } from "./state/useKinProfiles";
+import { kinTabFoot } from "./components/KinTab";
 
 const NO_ENVIRONMENT = EnvironmentId.make("kin:none");
 
@@ -269,7 +270,7 @@ export function KinChatsView(props: {
         contentInsetAdjustmentBehavior="automatic"
         contentContainerStyle={{
           padding: 16,
-          paddingBottom: 16 + (props.bottomClearance ?? 0),
+          paddingBottom: kinTabFoot(props.bottomClearance ?? 0),
           gap: 12,
         }}
       >
@@ -312,7 +313,10 @@ export function KinChatsView(props: {
       renderScrollComponent={NativeScrollView}
       className="flex-1"
       contentInsetAdjustmentBehavior="automatic"
-      contentContainerStyle={{ paddingTop: 4, paddingBottom: 24 + (props.bottomClearance ?? 0) }}
+      contentContainerStyle={{
+        paddingTop: 4,
+        paddingBottom: kinTabFoot(props.bottomClearance ?? 0),
+      }}
       data={rows}
       keyExtractor={(row) => row.chat.chatId}
       estimatedItemSize={64}

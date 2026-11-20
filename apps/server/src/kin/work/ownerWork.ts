@@ -1,4 +1,5 @@
 import {
+  KIN_SENSITIVE_FIELDS,
   KIN_RECORD_CHANGES_CAP,
   KinChatError,
   type KinOrgId,
@@ -283,7 +284,7 @@ const cansOf = Effect.fn("KinWork.cansOf")(function* (
         mark: edits,
         unmark: edits,
         share: !UNSHARED.has(entry.registerId),
-        confirm: edits && !entry.confirmed && open,
+        confirm: edits && !entry.confirmed && entry.state !== "dropped",
         repeat: entry.registerId === "work",
         links: edits,
       };
@@ -473,6 +474,7 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
     ...(input.dateTo === undefined ? {} : { dateTo: endOfDay(input.dateTo, zone) + 1 }),
     ...(input.paidFrom === undefined ? {} : { paidFrom: input.paidFrom }),
     ...(input.paidTo === undefined ? {} : { paidTo: input.paidTo }),
+    ...(input.kept === undefined ? {} : { kept: input.kept }),
     ...(input.side === undefined ? {} : { side: input.side }),
     ...(partyId === undefined || partyId === null ? {} : { partyId }),
     ...(projectId === undefined || projectId === null ? {} : { projectId }),
@@ -576,6 +578,7 @@ export const shownRecords = Effect.fn("KinWork.shownRecords")(function* (
 });
 
 /** A client's terms and tax details: the owner level's, now and in its changes. */
+const CONTACT_DETAILS: ReadonlySet<string> = new Set(KIN_SENSITIVE_FIELDS.contacts);
 const OWNERS_CLIENT_FIELDS: ReadonlySet<string> = new Set(["terms", "gstin", "placeOfSupply"]);
 
 /** A task read whole, naming its client only while this person may see it (`taskClients`). */
@@ -751,13 +754,19 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
   // and phone reach those with the Clients place, not a project's lead alone.
   const { fields: _fields, ...unfielded } = detail;
   const named = () => {
-    const { email: _email, phone: _phone, ...rest } = detail.fields ?? {};
+    const {
+      email: _email,
+      phone: _phone,
+      emails: _emails,
+      phones: _phones,
+      ...rest
+    } = detail.fields ?? {};
     return {
       ...detail,
       fields: rest,
       changes: detail.changes.map((change) => ({
         ...change,
-        fields: change.fields.filter((one) => one.field !== "email" && one.field !== "phone"),
+        fields: change.fields.filter((one) => !CONTACT_DETAILS.has(one.field)),
       })),
     };
   };

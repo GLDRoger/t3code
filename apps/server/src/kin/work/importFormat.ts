@@ -147,6 +147,8 @@ export const ImportEntry = Schema.Struct({
   payments: Schema.optional(Schema.Array(ImportPayment).check(Schema.isMaxLength(500))),
   /** An amount far above the rest of its list, or an invoice issued after its due day, is right. */
   confirmed: Schema.optional(Schema.Boolean),
+  /** An agent's suggestion nobody has kept: restored as one, in no figure until it is kept. */
+  suggested: Schema.optional(Schema.Boolean),
 });
 export type ImportEntry = typeof ImportEntry.Type;
 

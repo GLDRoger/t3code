@@ -1,3 +1,4 @@
+import { kinGroupCardRows, type KinCardGroupRow } from "@t3tools/client-runtime/kin/kinCardGroups";
 import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_PEOPLE_CHAT, kinPeopleChatWith } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { kinAwayLine } from "@t3tools/client-runtime/kin/kinAway";
@@ -597,6 +598,7 @@ const offlineTime = kinWhenFormat("time");
 
 type KinChatRow =
   | KinFeedRow
+  | KinCardGroupRow
   | {
       readonly type: "pending";
       readonly key: string;
@@ -706,11 +708,20 @@ function KinChatFeed(props: {
     : feedRows;
   const lastShownRow = shownRows.at(-1);
   const endsOnOwn = lastShownRow?.type === "message" && lastShownRow.own;
+  const groupedRows = kinGroupCardRows(
+    shownRows,
+    widgets,
+    new Set(
+      streamed.reactions.flatMap((reaction) =>
+        reaction.removedAt === null ? [reaction.messageId] : [],
+      ),
+    ),
+  );
   const rows: ReadonlyArray<KinChatRow> =
     pending.length === 0
-      ? shownRows
+      ? groupedRows
       : [
-          ...shownRows,
+          ...groupedRows,
           ...pending.map((entry, index) => ({
             type: "pending" as const,
             key: `pending:${entry.clientMessageId}`,
@@ -724,7 +735,12 @@ function KinChatFeed(props: {
   const landIndex =
     landOn === null
       ? -1
-      : rows.findIndex((row) => row.type === "message" && row.message.messageId === landOn);
+      : rows.findIndex((row) =>
+          row.type === "message"
+            ? row.message.messageId === landOn
+            : row.type === "cards" &&
+              [row.question, ...row.tasks].some((card) => card?.message.messageId === landOn),
+        );
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the list, outside React, to the message a notification opened, once it has loaded
   useEffect(() => {
     if (landOn === null || landIndex < 0 || landed.current === landOn) return;
@@ -915,50 +931,70 @@ function KinChatFeed(props: {
     return true;
   };
 
+  const renderMessage = (
+    item: Extract<KinFeedRow, { readonly type: "message" }>,
+    group?: Extract<KinChatRow, { readonly type: "cards" }>,
+  ) => {
+    const { message } = item;
+    const shown = display.get(item.key);
+    const widget = message.widgetId === null ? undefined : widgets.get(message.widgetId);
+    const chips = kinReactionChips(
+      streamed.reactions,
+      message.messageId,
+      viewerMemberId,
+      reactorName,
+    );
+    // The host refuses reactions on approval and deferral cards.
+    const reactable =
+      canReact &&
+      message.status === "posted" &&
+      (message.widgetId === null || (widget !== undefined && REACTABLE_WIDGETS.has(widget.type)));
+    return (
+      <KinMessageRow
+        row={item}
+        head={shown?.head ?? null}
+        direct={props.direct}
+        widget={widget}
+        environmentId={props.environmentId}
+        viewerPersonId={props.viewer.personId}
+        firstName={props.viewer.firstName ?? null}
+        heldFor={kinHeldCardAgent(message.author, props.viewer, props.retired?.name ?? null)}
+        orgId={props.orgId}
+        reactions={chips}
+        onReact={
+          reactable
+            ? (emoji: KinReactionEmoji) =>
+                void react({
+                  environmentId: props.environmentId,
+                  input: kinReactionToggle(chips, message.messageId, emoji),
+                })
+            : null
+        }
+        previewKey={previewKey}
+        connected={props.connected}
+        {...(group === undefined
+          ? {}
+          : {
+              group: {
+                question:
+                  group.question?.message.widgetId == null
+                    ? undefined
+                    : widgets.get(group.question.message.widgetId),
+                tasks: group.tasks.map((task) =>
+                  task.message.widgetId === null ? undefined : widgets.get(task.message.widgetId),
+                ),
+              },
+            })}
+      />
+    );
+  };
+
   const renderItem = ({ item }: { readonly item: KinChatRow }) => {
     switch (item.type) {
-      case "message": {
-        const { message } = item;
-        const shown = display.get(item.key);
-        const widget = message.widgetId === null ? undefined : widgets.get(message.widgetId);
-        const chips = kinReactionChips(
-          streamed.reactions,
-          message.messageId,
-          viewerMemberId,
-          reactorName,
-        );
-        // The host refuses reactions on approval and deferral cards.
-        const reactable =
-          canReact &&
-          message.status === "posted" &&
-          (message.widgetId === null ||
-            (widget !== undefined && REACTABLE_WIDGETS.has(widget.type)));
-        return (
-          <KinMessageRow
-            row={item}
-            head={shown?.head ?? null}
-            direct={props.direct}
-            widget={widget}
-            environmentId={props.environmentId}
-            viewerPersonId={props.viewer.personId}
-            firstName={props.viewer.firstName ?? null}
-            heldFor={kinHeldCardAgent(message.author, props.viewer, props.retired?.name ?? null)}
-            orgId={props.orgId}
-            reactions={chips}
-            onReact={
-              reactable
-                ? (emoji: KinReactionEmoji) =>
-                    void react({
-                      environmentId: props.environmentId,
-                      input: kinReactionToggle(chips, message.messageId, emoji),
-                    })
-                : null
-            }
-            previewKey={previewKey}
-            connected={props.connected}
-          />
-        );
-      }
+      case "message":
+        return renderMessage(item);
+      case "cards":
+        return renderMessage(item.first, item);
       case "system": {
         const { retry } = item;
         // An unsent message is already a retry in flight.

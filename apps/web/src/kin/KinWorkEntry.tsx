@@ -9,6 +9,7 @@ import {
   kinFieldCheck,
   kinListEntryView,
   kinPaymentCheck,
+  kinSuggestion,
   type KinListEntryView,
   type KinListFieldView,
   type KinPaymentDraft,
@@ -87,6 +88,7 @@ import {
   KinInvoicePayments,
   KinMoneyActionNotice,
 } from "./KinInvoice";
+import { KinSuggestionKeep } from "./KinMoneySuggested";
 import { KinInvoiceCurrency } from "./KinMoneyEstimate";
 import { KinNotesVersions } from "./KinConfirm";
 import { KinEntryFilePicker, KinEntryPick, KinEntryText } from "./KinWorkEntryEdit";
@@ -733,6 +735,9 @@ export function KinListEntry(
               </Menu>
             </div>
           )}
+          {canChange && kinSuggestion(item) ? (
+            <KinSuggestionKeep {...props} item={item} def={def} />
+          ) : null}
           {invoice === null ? null : (
             <KinInvoiceActions
               {...props}
@@ -1000,7 +1005,7 @@ export function KinListEntry(
                       >
                         {payment.amount}
                       </span>
-                      <span className="truncate text-xs text-muted-foreground">
+                      <span className="text-xs break-words text-muted-foreground">
                         {[
                           payment.when,
                           payment.note,

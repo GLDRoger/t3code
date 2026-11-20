@@ -726,6 +726,31 @@ describe("bank statements", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("pays no invoice an agent only suggested, and says to confirm it first", () =>
+    Effect.gen(function* () {
+      const keys = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const suggested = (on: number) =>
+        sql`UPDATE kin_records SET confirmed = ${on} WHERE key = ${keys.exact}`;
+      // A card read once it was a suggestion offers it for no row.
+      yield* suggested(0);
+      const first = yield* read(1, "hdfc-account.pdf");
+      const { card } = yield* reviewCardOf(first.statement);
+      assert.isFalse(card.matched.some((one) => one.target.key === keys.exact));
+      // A card read before applies nothing on it, and says who can confirm it.
+      yield* suggested(1);
+      const again = yield* read(2, "hdfc-account.pdf");
+      const confirm = yield* confirmAll((yield* reviewCardOf(again.statement)).card);
+      yield* suggested(0);
+      const refused = yield* OwnerStatements.apply(people, confirm).pipe(Effect.flip);
+      assert.include(
+        String(isChatError(refused) ? refused.message : refused),
+        `${keys.exact} is still a suggestion: the owner or a co-owner hasn't kept it. They keep it with Keep on its page, or by asking you to keep it themselves. Nothing changed.`,
+      );
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_record_payments`, 0);
+    }).pipe(Effect.provide(layer)),
+  );
+
   // Model money: the same money recorded by hand while the card was open is not paid twice.
   it.effect("records nothing on an invoice that changed since the card was read", () =>
     Effect.gen(function* () {
