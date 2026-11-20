@@ -228,6 +228,10 @@ export const QueryInput = Schema.Struct({
   offset: Schema.optional(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(100_000)),
   ).annotate({ description: "Skip this many matches: the next a result gave, for its next page." }),
+  summary: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Only total, totals and groups, with keys for the page's matches instead of rows: for how many or how much.",
+  }),
 });
 /** The entry is sensitive, its own label or inherited; these fields are, whatever the label. */
 const Marks = Schema.Struct({
@@ -303,6 +307,8 @@ export const QueryResult = Schema.Struct({
   asOf: Schema.String,
   total: Schema.Number,
   records: Schema.Array(Row),
+  /** A summary's rows, as keys only. */
+  keys: Schema.optional(Schema.Array(Schema.String)),
   /** The offset of the next page, while matches remain past this one. */
   next: Schema.optional(Schema.Number),
   /** Every match's amounts added up, one figure per currency. */
@@ -1597,9 +1603,12 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
   const shownTo = (input.offset ?? 0) + page.rows.length;
   const next = page.total > shownTo && page.rows.length > 0 ? { next: shownTo } : {};
   const now = yield* Clock.currentTimeMillis;
+  const keys = input.summary === true ? { keys: page.rows.map((row) => row.key) } : undefined;
+  if (team !== undefined && keys !== undefined)
+    return { asOf: iso(now), total: page.total, records: [], ...keys, ...next };
   const view = yield* viewFor(lead, page.rows);
-  const deals = yield* dealsShown(lead, team, view, page.rows);
-  if (team !== undefined) {
+  const deals = keys === undefined ? yield* dealsShown(lead, team, view, page.rows) : undefined;
+  if (team !== undefined && deals !== undefined) {
     const records = [];
     for (const row of page.rows) {
       const shown = rowFor(view, row, now);
@@ -1631,7 +1640,9 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
   return {
     asOf: iso(now),
     total: page.total,
-    records: page.rows.map((row) => withDeal(deals, rowFor(view, row, now))),
+    records:
+      deals === undefined ? [] : page.rows.map((row) => withDeal(deals, rowFor(view, row, now))),
+    ...keys,
     ...next,
     ...(totals === undefined || totals.total.length === 0
       ? {}
