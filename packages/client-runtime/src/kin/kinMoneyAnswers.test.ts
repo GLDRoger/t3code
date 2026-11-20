@@ -257,6 +257,14 @@ describe("kinCashView", () => {
       ["INR", null, null],
       ["USD", "$1,000.00", "$950"],
     ]);
+    // How far Kin sees the bank, quietly; an older host says nothing, and with no balance at all
+    // Money's own line already says no statement is confirmed.
+    expect(view.bank).toBeNull();
+    const bank = (known: boolean, through: string | null) =>
+      kinCashView({ ...cash, known, bankKnown: { through } }, rates, now).bank;
+    expect(bank(true, "2026-10-31")).toBe("Bank known to Oct 31");
+    expect(bank(true, null)).toBe("Kin can't see the bank yet: upload a statement");
+    expect(bank(false, null)).toBeNull();
   });
 });
 

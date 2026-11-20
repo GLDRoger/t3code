@@ -938,11 +938,13 @@ describe("KinConnections", () => {
           yield* markRead(custom.connection.connectionId, ["query"]);
 
           assert.isTrue(yield* outsideToolAllowed(turn, "delegate_task", {}));
+          assert.isTrue(yield* outsideToolAllowed(turn, "payment_record", {}));
           // Before any outside text, an open-world tool marked Read runs as the owner set it.
           assert.include((yield* call(posthog, "search_web")).quoted ?? "", "found");
           assert.isTrue(yield* outsideRead(turn));
           assert.isFalse(yield* outsideToolAllowed(turn, "delegate_task", {}));
           assert.isFalse(yield* outsideToolAllowed(turn, "t3_thread_send", {}));
+          assert.isFalse(yield* outsideToolAllowed(turn, "payment_record", {}));
           assert.isFalse(yield* outsideToolAllowed(turn, "not_a_listed_tool", {}));
           assert.isTrue(yield* outsideToolAllowed(turn, "kin_chat_post", {}));
           assert.isTrue(yield* outsideToolAllowed(turn, "kin_document", { recipe: "invoice" }));
