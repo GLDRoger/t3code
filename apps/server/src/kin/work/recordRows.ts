@@ -13,6 +13,7 @@ import {
   type KinFileRef,
   type KinOrgId,
   type KinPayment,
+  type KinPaymentSource,
   type KinPartyKind,
   type KinRecord,
   type KinRecordCategory,
@@ -36,6 +37,7 @@ import type * as Statement from "effect/sql/Statement";
 
 import { listNameOf, parseFields } from "./lists.ts";
 import { isBuiltIn } from "./registers.ts";
+import { bankKnown } from "./statements/bankKnown.ts";
 
 /** The plain rows behind `KinRecords`: reads and the shapes they decode into. No writes here. */
 
@@ -729,10 +731,12 @@ const definedDetail = Effect.fn("KinRecords.definedDetail")(function* (row: Reco
   });
   const payments = row.takesPayments === 1 ? yield* paymentsOf(orgId, row.recordId) : undefined;
   const sent = yield* sentWith(orgId, row.recordId);
+  const bank = row.registerId === "invoices" ? yield* bankKnown(orgId) : undefined;
   return {
     fields,
     ...(files.length === 0 ? {} : { files }),
     ...(payments === undefined ? {} : { payments }),
+    ...(bank === undefined ? {} : { bankKnown: { through: bank.through } }),
     ...(sent.length === 0 ? {} : { sent }),
   };
 });
@@ -770,21 +774,23 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
   recordId: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{
-    paymentId: string;
-    minor: number;
-    currency: string;
-    paidOn: string;
-    note: string;
-    originKey: string;
-    createdAt: number;
-    voidedAt: number | null;
-    withheld: number;
-  }>`SELECT payment_id AS "paymentId", amount_minor AS minor, currency, paid_on AS "paidOn",
-      note, origin_key AS "originKey", created_at AS "createdAt", voided_at AS "voidedAt",
-      withheld
-    FROM kin_record_payments WHERE org_id = ${orgId} AND record_id = ${recordId}
-    ORDER BY paid_on DESC, created_at DESC, payment_id`;
+  const rows = yield* sql<
+    {
+      paymentId: string;
+      minor: number;
+      currency: string;
+      paidOn: string;
+      note: string;
+      originKey: string;
+      createdAt: number;
+      voidedAt: number | null;
+      withheld: number;
+    } & PaymentSourceRow
+  >`SELECT p.payment_id AS "paymentId", p.amount_minor AS minor, p.currency,
+      p.paid_on AS "paidOn", p.note, p.origin_key AS "originKey", p.created_at AS "createdAt",
+      p.voided_at AS "voidedAt", p.withheld, ${paymentSourceColumns(sql)}
+    FROM kin_record_payments p WHERE p.org_id = ${orgId} AND p.record_id = ${recordId}
+    ORDER BY p.paid_on DESC, p.created_at DESC, p.payment_id`;
   const receipts =
     rows.length === 0
       ? []
@@ -816,6 +822,7 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
       recordedAt: iso(payment.createdAt),
       voidedAt: payment.voidedAt === null ? null : iso(payment.voidedAt),
       ...(payment.withheld === 1 ? { withheld: true as const } : {}),
+      source: paymentSourceOf(payment),
       receipt:
         receipt === undefined && noted === undefined
           ? null
@@ -829,6 +836,49 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
     };
   });
 });
+
+type PaymentSourceRow = {
+  readonly byKind: string;
+  readonly byId: string | null;
+  readonly fromBank: number;
+  readonly wordOf: string | null;
+};
+/**
+ * SQL over `kin_record_payments p` for where each payment came from, from what Kin already keeps:
+ * a line of a statement still confirmed made it or was matched to it; else who wrote it. An agent's payment keeps the
+ * turn's event in its origin (`lead:<agent>:<event>:…`), and that event names the person whose
+ * message or tap it was.
+ */
+const paymentSourceColumns = (sql: SqlClient.SqlClient) => sql`p.created_by_kind AS "byKind",
+  p.created_by_id AS "byId",
+  EXISTS (SELECT 1 FROM kin_bank_statement_entries be
+    JOIN kin_bank_statements bs ON bs.org_id = be.org_id AND bs.statement_id = be.statement_id
+    WHERE be.org_id = p.org_id AND bs.applied_at IS NOT NULL AND bs.undone_at IS NULL
+      AND (be.payment_id = p.payment_id OR (be.payment_id IS NULL AND be.action = 'payment'
+        AND be.target_record_id = p.record_id
+        AND json_extract(be.prior_json, '$.matched') = p.payment_id))) AS "fromBank",
+  CASE WHEN p.created_by_kind = 'agent' AND p.created_by_id IS NOT NULL
+      AND substr(p.origin_key, 1, length(p.created_by_id) + 6) = 'lead:' || p.created_by_id || ':'
+    THEN (SELECT json_extract(ev.json, '$.provenance.personId') FROM kin_events ev
+      WHERE ev.event_id = substr(p.origin_key, length(p.created_by_id) + 7,
+          instr(substr(p.origin_key, length(p.created_by_id) + 7), ':') - 1)
+        AND ev.org_id = p.org_id AND ev.agent_id = p.created_by_id
+        AND json_extract(ev.json, '$.provenance._tag') = 'human')
+  END AS "wordOf"`;
+const paymentSourceOf = (row: PaymentSourceRow): KinPaymentSource =>
+  row.fromBank === 1
+    ? { _tag: "statement" }
+    : row.byKind === "person" && row.byId !== null
+      ? { _tag: "person", personId: KinPersonId.make(row.byId) }
+      : row.byKind === "agent" && row.byId !== null
+        ? row.wordOf === null
+          ? { _tag: "agent", agentId: KinAgentId.make(row.byId) }
+          : {
+              _tag: "person",
+              personId: KinPersonId.make(row.wordOf),
+              agentId: KinAgentId.make(row.byId),
+            }
+        : { _tag: "recorded" };
 
 /** Written by an import: only such a payment's note can hold a number another system issued. */
 export const fromImport = (payment: { readonly originKey: string }) =>

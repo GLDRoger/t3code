@@ -17,6 +17,7 @@ import {
   KinRepoName,
   type KinMoney,
   type KinOrgId,
+  type KinPaymentSource,
   type KinRecordDetail,
   type KinWorkPrincipal,
   KIN_TEXT_LOCALE,
@@ -128,6 +129,7 @@ import {
   viewVisible,
 } from "./teamView.ts";
 import { type AssignNotice, movedNotices, tellHolding } from "./assignNotices.ts";
+import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 
@@ -357,9 +359,13 @@ export const GetResult = Schema.Struct({
         /** TDS the client deducted: it settles the invoice, but no cash came in. */
         withheld: Schema.optional(Schema.Literal(true)),
         voided: Schema.optional(Schema.Literal(true)),
+        /** Where it came from: a confirmed bank statement, or who recorded it on whose word. */
+        source: Schema.optional(Schema.String),
       }),
     ),
   ),
+  /** An invoice's or client's: how far Kin sees the bank, for whether money arrived. */
+  bank: Schema.optional(BankAnswer),
   /**
    * A client's: open Work entries each side owes (counts), and the money it owes on issued
    * invoices, by the rule Money and the pulse use (overdue is past its due day).
@@ -1752,6 +1758,27 @@ const clientOwed = Effect.fnUntraced(function* (
   };
 });
 
+/** A payment's source as an agent reads it, in the server's words. */
+const paymentSourceText = (
+  source: KinPaymentSource,
+  name: (who: KinWorkPrincipal | null) => string | undefined,
+) => {
+  switch (source._tag) {
+    case "statement":
+      return "a confirmed bank statement";
+    case "person": {
+      const person = name({ _tag: "person", personId: source.personId }) ?? "a person";
+      return source.agentId === undefined
+        ? `recorded by ${person}`
+        : `recorded by ${name({ _tag: "agent", agentId: source.agentId }) ?? "an agent"} on ${person}'s word`;
+    }
+    case "agent":
+      return `recorded by ${name({ _tag: "agent", agentId: source.agentId }) ?? "an agent"}`;
+    case "recorded":
+      return "recorded in Kin";
+  }
+};
+
 const MAILED_LISTS: ReadonlySet<string> = new Set(["invoices", "quotes", "receipts", "clients"]);
 /** What Kin mailed about a document, or to a client's contacts and with its documents. */
 const mailedFor = Effect.fnUntraced(function* (
@@ -1914,8 +1941,14 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
             ...(payment.note === "" ? {} : { note: payment.note }),
             ...(payment.withheld === true ? { withheld: true as const } : {}),
             ...(payment.voidedAt === null ? {} : { voided: true as const }),
+            ...(payment.source === undefined
+              ? {}
+              : { source: paymentSourceText(payment.source, name) }),
           })),
         }),
+    ...(list === "invoices" || page !== undefined
+      ? { bank: bankAnswer(yield* bankKnown(lead.orgId)) }
+      : {}),
     notes: detail.notes,
     ...(assignedBy === undefined ? {} : { assignedBy }),
     links: (team === undefined
