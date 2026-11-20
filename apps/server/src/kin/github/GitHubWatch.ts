@@ -46,6 +46,7 @@ import {
   type WatchRow,
 } from "./githubWatchStore.ts";
 import { gitHubApp } from "./KinGitHubApp.ts";
+import { KinGitHubHook } from "./appHook.ts";
 
 /**
  * Watches GitHub with the owner's own login: notifications and his own events, both conditional, so
@@ -1277,12 +1278,20 @@ const ownerReview = Effect.fn("KinGitHubWatch.review")(
   }),
 );
 
-/** Every five seconds the scheduler asks; each org is looked at only when its next look is due. */
+/**
+ * Every five seconds the scheduler asks; each org is looked at only when its next look is due.
+ * With the App's webhook (`appHook.ts`), its deliveries' looks run here, and its set-up is kept.
+ */
 const runtimeLayer = Layer.effectDiscard(
   Effect.gen(function* () {
     const watch = yield* KinGitHubWatch;
     const sql = yield* SqlClient.SqlClient;
     const ticks = yield* Scheduler.Scheduler;
+    const hook = yield* Effect.serviceOption(KinGitHubHook);
+    if (Option.isSome(hook)) {
+      yield* hook.value.serve(watch.look).pipe(Effect.forkScoped);
+      yield* ticks.register("kin-github-hook", hook.value.tick());
+    }
     yield* ticks.register(
       "kin-github-watch",
       sql<{ orgId: string }>`SELECT DISTINCT org_id AS "orgId" FROM kin_leads ORDER BY org_id`.pipe(

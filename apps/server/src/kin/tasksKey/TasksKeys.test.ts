@@ -44,6 +44,9 @@ import { TasksKeyAudience } from "./audience.ts";
 import { commentMine, getMine, listMine, setStateMine } from "./tasks.ts";
 import { admitted, layer, layerAt, team } from "./tasksKey.testkit.ts";
 import * as TasksKeys from "./TasksKeys.ts";
+import { KIN_GITHUB_HOOK_ROUTE } from "../github/appHook.ts";
+import * as KinGitHubHookHttp from "../github/hookHttp.ts";
+import { KinServer } from "../KinServer.ts";
 
 const reason = <A, E extends { readonly reason?: string }, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
@@ -930,6 +933,33 @@ const refused = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     Effect.map((result) => result._tag),
   );
 /** The status T3's own auth routes give a bearer POST, as a client would see it. */
+/** A POST to Kin's GitHub webhook with a bearer token and no GitHub signature. */
+const postHook = Effect.fn("test.postHook")(function* (token: string) {
+  const http = yield* HttpRouter.toHttpEffect(
+    KinGitHubHookHttp.layer.pipe(Layer.provide(NodeCrypto.layer)),
+  );
+  const sent = yield* Deferred.make<HttpServerResponse.HttpServerResponse>();
+  yield* HttpEffect.toHandled(http, (_request, response) => Deferred.succeed(sent, response)).pipe(
+    Effect.provideService(
+      HttpServerRequest.HttpServerRequest,
+      HttpServerRequest.fromWeb(
+        new Request(`http://127.0.0.1${KIN_GITHUB_HOOK_ROUTE}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "x-github-event": "issues" },
+          body: "{}",
+        }),
+      ),
+    ),
+    Effect.provideService(KinServer, {
+      taskCardUpdater: Layer.empty,
+      services: Option.none(),
+      subscribeForViewer: Option.none(),
+    }),
+    Effect.exit,
+  );
+  return (yield* Deferred.await(sent)).status;
+});
+
 const post = Effect.fn("test.post")(function* (path: string, token: string) {
   const routes = HttpApiBuilder.layer(AuthRoutes).pipe(
     Layer.provide(AuthHttp.layer),
@@ -1029,6 +1059,9 @@ it.effect("a key is no credential anywhere but its endpoint: every route and cre
       assert.strictEqual(yield* post(path, secret), 401);
       assert.strictEqual(yield* post(path, script), 200);
     }
+    // Kin's routes outside this table: the GitHub App's webhook is public because GitHub calls
+    // it; its own credential is GitHub's signature over the body, so no key or session opens it.
+    for (const token of [secret, script]) assert.strictEqual(yield* postHook(token), 401);
   }).pipe(Effect.scoped, Effect.provide(layer)),
 );
 

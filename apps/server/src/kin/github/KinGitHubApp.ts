@@ -217,6 +217,8 @@ export class KinGitHubApp extends Context.Service<
       | { readonly source: "seed" }
       | { readonly source: "none" }
     >;
+    /** GitHub's API as the App itself, signed with its key: `app…` paths only. None without one. */
+    readonly asApp?: (request: ApiRequest) => Effect.Effect<ApiAnswer | undefined>;
   }
 >()("t3/kin/github/KinGitHubApp") {}
 
@@ -705,7 +707,14 @@ export const make = Effect.gen(function* () {
       : ({ source: "kin", app: app.stored } as const);
   });
 
-  return KinGitHubApp.of({ state, on, refresh, lookAgain, origin });
+  const asApp = Effect.fn("KinGitHubApp.asApp")(function* (input: ApiRequest) {
+    const appId = yield* appIdNow();
+    if (Option.isNone(appId) || !/^app(\/|$)/.test(input.path)) return undefined;
+    const token = yield* jwt(appId.value);
+    return token === undefined ? undefined : yield* request(token, input);
+  });
+
+  return KinGitHubApp.of({ state, on, refresh, lookAgain, origin, asApp });
 });
 
 /** Looks once at startup and then every 30 seconds, for as long as Kin runs. */

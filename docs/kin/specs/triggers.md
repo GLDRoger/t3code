@@ -121,14 +121,17 @@ Defaults: brief 08:30 daily, summary 18:30 Mon–Fri, dream 03:00 daily, full re
 
 ### GitHub: the owner's watch
 
-Kin reads GitHub with the owner's own login, connected from the phone at Settings → Connections → GitHub (`KinGitHubLogin`: `gh auth login` by device code). There is no Kin GitHub identity, App or webhook. Signed out, nothing is watched.
+Kin reads GitHub with the owner's own login, connected from the phone at Settings → Connections → GitHub (`KinGitHubLogin`: `gh auth login` by device code). Signed out, nothing is watched.
 
-**What is watched.** The owner picks repos with `kin_github_watch` (`githubWatchStore.ts`). `KinGitHubWatch` (`GitHubWatch.ts`) looks once a minute per org, on the shared 5-second tick: the owner's notifications and his own events, both conditional, so an unchanged look costs no rate limit. Each look re-reads from a little before the last one, so a comment GitHub lists late is still seen.
+**What is watched.** The owner picks repos with `kin_github_watch` (`githubWatchStore.ts`). `KinGitHubWatch` (`GitHubWatch.ts`) looks once a minute per org, on the shared 5-second tick: the owner's notifications and his own events, both conditional, so an unchanged look costs no rate limit. Each look re-reads from a little before the last one, so a comment GitHub lists late is still seen. New commits notify no one, so for each watched repo with a PR Kin reviewed in the last 30 days the look also lists its open PRs, once.
+
+**Sooner, through the App's webhook.** Where Kin has a public address and an App, it points the App's webhook at `/kin/github/hook` (`appHook.ts`). A delivery whose signature checks out names a repo and up to three threads; Kin queues `KinGitHubWatch.look` for each (one running and one waiting per thread, 300 an hour in all) and keeps nothing else of it. A look weighs one thread exactly as the poll does and never moves the poll's cursors, so a delivery is only a reason to look now: missing, late or repeated ones change nothing the next poll wouldn't find.
 
 **What wakes an agent** is decided by code from GitHub's own data (`githubTriggers.ts`), never from a model:
 
 - a line starting `/kin`, or an agent's name followed by a comma or colon, written by someone who can write to the repo (and, if the owner turns it on for a repo, an @-mention of the owner); quoted lines and code blocks never call;
 - a review requested of the owner's account;
+- new commits on a PR Kin reviewed, once its head has been still for 5 minutes by GitHub's `updated_at`: one re-review, keyed by that head as a requested review is, of what changed since the head Kin reviewed;
 - failing checks or a review on a PR an agent opened.
 
 A call with no name goes to the Tech lead, or whoever leads engineering. Each trigger is stored once, keyed by what it handled, in the same transaction as the `github` event it queues, so a restart or a re-read never handles it twice. After downtime, triggers older than 24 hours are stored as stale, and one look wakes at most 10 agents. An agent stops after 5 replies in one issue or PR in an hour and says so; `/kin` again continues.

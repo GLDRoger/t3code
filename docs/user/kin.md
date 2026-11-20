@@ -461,11 +461,16 @@ settings on GitHub. The section also lists the last few things done as you.
 
 #### When things happen on GitHub
 
-With GitHub connected, Kin checks it about once a minute with your login, so there is no webhook
-to set up. On your repos and your organizations' repos, these start an agent on their own:
+Kin hears at once about repos its GitHub App is on, and about your other watched repos within a
+minute, from its own checks with your login. Kin sets the App's webhook up itself when your Kin has
+a public address; there is nothing to set up. An App made before this needs its events ticked once on
+GitHub: **Settings → Connections → GitHub** says so and links to the page. On your repos and your
+organizations' repos, these start an agent on their own:
 
 - **A teammate opens a pull request**, or marks a draft ready: it is reviewed and the review posted.
   On your own pull requests the review is a comment, since GitHub doesn't let you approve your own.
+- **New commits on a pull request Kin reviewed**: one more review of what changed, five minutes
+  after the last push.
 - **A call in a comment, an issue or a line comment**: a line that starts with `/kin`, or with an
   agent's name and a comma ("Tech lead, rename this"), which goes to that agent. On an issue the
   agent says what it will do, works on a branch and opens a pull request that closes the issue. On a

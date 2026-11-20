@@ -106,6 +106,12 @@ export interface FakeApp {
   /** The account that owns the App; a private App installs only there. Default: the user, public. */
   owner?: string;
   public?: boolean;
+  /** The events ticked on its "Permissions & events" page. */
+  events?: string[];
+  /** Its webhook as `app/hook/config` holds it; the secret is never read back. */
+  hook?: { url: string; content_type: string; insecure_ssl: string; secret?: string };
+  /** What `app/hook/deliveries` lists, newest first. */
+  deliveries?: { delivered_at: string; status_code: number }[];
   installations: {
     id: number;
     account: string;
@@ -671,7 +677,29 @@ export class FakeGitHub {
         : ok({ slug: app.slug, name: app.name, owner: this.ownerJson(app) });
     if (asApp) {
       if (method === "GET" && path === "app")
-        return ok({ slug: app.slug, name: app.name, owner: this.ownerJson(app) });
+        return ok({
+          slug: app.slug,
+          name: app.name,
+          owner: this.ownerJson(app),
+          events: app.events ?? [],
+        });
+      if (path === "app/hook/config" && (method === "GET" || method === "PATCH")) {
+        if (method === "PATCH")
+          app.hook = {
+            url: String(body.url ?? ""),
+            content_type: String(body.content_type ?? "form"),
+            insecure_ssl: String(body.insecure_ssl ?? "0"),
+            ...(typeof body.secret === "string" ? { secret: body.secret } : {}),
+          };
+        const hook = app.hook ?? { url: "", content_type: "form", insecure_ssl: "0" };
+        return ok({
+          url: hook.url,
+          content_type: hook.content_type,
+          insecure_ssl: hook.insecure_ssl,
+          ...(hook.secret === undefined ? {} : { secret: "********" }),
+        });
+      }
+      if (method === "GET" && path === "app/hook/deliveries") return ok(app.deliveries ?? []);
       if (method === "GET" && path === "app/installations")
         return ok(
           app.installations.map((entry) => {
