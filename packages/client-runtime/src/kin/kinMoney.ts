@@ -11,6 +11,7 @@ import {
   KIN_LIST_DEFAULT_FILTER,
   KIN_MONEY_NOTHING,
   KIN_SUGGESTED,
+  KIN_SUGGESTION_NOTE,
   kinCategoryLabel,
   kinFinancialYearLabel,
   kinFinancialYearMonths,
@@ -55,7 +56,9 @@ export const KIN_MONEY = {
   nothingUpcoming: "Nothing is due in the next 30 days.",
   allDates: "All dates",
   suggested: "Suggested by your agents",
-  suggestedNote: "Not counted in Money until you keep it.",
+  suggestedNote: KIN_SUGGESTION_NOTE,
+  /** Past the newest shown, the rest of one list's suggestions: "12 more in Invoices". */
+  suggestedMore: (count: number, listName: string) => `${count} more in ${listName}`,
   lists: "Lists",
   clients: "Clients",
   none: {
@@ -142,6 +145,8 @@ export interface KinMoneyView {
   readonly empty: boolean;
   /** Empty for a teammate, and from an older host. */
   readonly suggested: ReadonlyArray<KinMoneySuggestionView>;
+  /** Each list holding more suggestions than are shown, opened on its suggestions. */
+  readonly suggestedMore: ReadonlyArray<{ readonly label: string; readonly open: KinListOpen }>;
   readonly owed: KinMoneyFigure;
   readonly overdue: KinMoneyFigure;
   readonly clients: ReadonlyArray<KinMoneyClientView>;
@@ -228,6 +233,17 @@ export function kinMoneyView(
         .filter((part) => part !== null)
         .join(" · "),
     })),
+    suggestedMore: (summary.suggestedLists ?? []).flatMap(({ list, listName, count }) => {
+      const shown = (summary.suggested ?? []).filter(({ record }) => record.list === list).length;
+      return count > shown
+        ? [
+            {
+              label: KIN_MONEY.suggestedMore(count - shown, listName),
+              open: { list, filter: { ...KIN_LIST_DEFAULT_FILTER, kept: false } },
+            },
+          ]
+        : [];
+    }),
     owed: {
       id: "owed",
       label: KIN_MONEY.owed,

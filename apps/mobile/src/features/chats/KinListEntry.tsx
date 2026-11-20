@@ -446,7 +446,9 @@ export function KinListEntryBody(
           )}
         </View>
       )}
-      {canChange && kinSuggestion(item) ? <KinSuggestionKeep {...props} item={item} /> : null}
+      {canChange && kinSuggestion(item) ? (
+        <KinSuggestionKeep {...props} item={item} def={def} />
+      ) : null}
       {invoice === null ? null : (
         <KinInvoiceActions
           {...props}

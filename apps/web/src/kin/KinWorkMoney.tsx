@@ -455,7 +455,9 @@ function MoneyScreen(props: MoneyProps) {
           <KinMoneySuggested
             {...props}
             rows={view.suggested}
+            more={view.suggestedMore}
             onOpenKey={props.onOpenKey}
+            onOpenList={props.onOpenList}
             onChanged={refresh}
           />
         )}

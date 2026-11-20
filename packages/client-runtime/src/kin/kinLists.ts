@@ -322,6 +322,21 @@ const KIN_MONEY_LISTS: ReadonlySet<string> = new Set([
   "receipts",
   "subscriptions",
 ]);
+export const KIN_SUGGESTION_NOTE = "Not counted in Money until you keep it.";
+/**
+ * On a suggestion's own page: the note when Money would count it once kept, and whether Not
+ * needed works there, which drops it: a list with no Dropped state offers only Keep.
+ */
+export const kinSuggestionKeep = (
+  record: Pick<KinRecord, "list" | "amount">,
+  def: Pick<KinListDefinition, "states"> | null,
+) => ({
+  note:
+    KIN_MONEY_LISTS.has(record.list ?? "work") || record.amount !== undefined
+      ? KIN_SUGGESTION_NOTE
+      : null,
+  declines: def === null ? (record.list ?? "work") === "work" : def.states.includes("dropped"),
+});
 /** Late as a figure would read it: never for a suggestion in a money list. */
 const kinLateShown = (record: Pick<KinRecord, "late" | "confirmed" | "list">) =>
   record.late && (record.confirmed || !KIN_MONEY_LISTS.has(record.list ?? "work"));

@@ -604,7 +604,9 @@ export function KinMoneyArea(props: Shared) {
         <KinMoneySuggested
           {...target}
           rows={view.suggested}
+          more={view.suggestedMore}
           onOpenKey={(key) => navigation.navigate("KinWorkItem", { ...target, task: key })}
+          onOpenList={openList}
           onChanged={money.refresh}
         />
       )}

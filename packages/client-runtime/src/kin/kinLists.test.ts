@@ -29,6 +29,7 @@ import {
   kinPrincipalValue,
   kinListQuery,
   kinListRow,
+  kinSuggestionKeep,
   kinMoneyText,
   kinPaymentCheck,
   kinPeriodLabel,
@@ -374,6 +375,17 @@ describe("a list by its definition", () => {
     const paid = kinListRow({ ...suggested, state: "done" }, invoices, context);
     expect([paid.stateLabel, paid.suggested]).toEqual(["Suggested · Paid", true]);
     expect(kinListRow({ ...suggested, state: "dropped" }, invoices, context).suggested).toBe(false);
+    // Its page notes Money only where Money would count it, and offers Not needed only where it
+    // can drop it.
+    expect(kinSuggestionKeep(suggested, invoices)).toEqual({
+      note: "Not counted in Money until you keep it.",
+      declines: invoices.states.includes("dropped"),
+    });
+    expect(kinSuggestionKeep({ list: "work" }, null)).toEqual({ note: null, declines: true });
+    expect(kinSuggestionKeep({ list: "leave" as never }, { states: ["open", "done"] })).toEqual({
+      note: null,
+      declines: false,
+    });
     // Opened from a figure it asks for what the figure counts, and says so with a way back.
     const counted = { ...KIN_LIST_DEFAULT_FILTER, show: "waiting" as const, kept: true };
     expect(kinListQuery(orgId, "invoices" as never, counted)).toMatchObject({ kept: true });

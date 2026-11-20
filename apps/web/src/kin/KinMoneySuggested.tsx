@@ -1,7 +1,11 @@
-import { KIN_MONEY, type KinMoneySuggestionView } from "@t3tools/client-runtime/kin/kinMoney";
-import { kinListSend } from "@t3tools/client-runtime/kin/kinLists";
+import {
+  KIN_MONEY,
+  type KinListOpen,
+  type KinMoneySuggestionView,
+} from "@t3tools/client-runtime/kin/kinMoney";
+import { kinListSend, kinSuggestionKeep } from "@t3tools/client-runtime/kin/kinLists";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
-import type { KinRecordKey } from "@t3tools/contracts";
+import type { KinListDefinition, KinRecord, KinRecordKey } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 
@@ -43,19 +47,22 @@ function KeepButtons(props: {
   readonly title: string;
   readonly busy: boolean;
   readonly onKeep: () => void;
-  readonly onDecline: () => void;
+  /** Null where Not needed can't drop it. */
+  readonly onDecline: (() => void) | null;
 }) {
   return (
     <span className="flex shrink-0 items-center gap-1">
-      <Button
-        size="xs"
-        variant="ghost"
-        disabled={props.busy}
-        aria-label={`${KIN_WORK_COPY.decline}: ${props.title}`}
-        onClick={props.onDecline}
-      >
-        {KIN_WORK_COPY.decline}
-      </Button>
+      {props.onDecline === null ? null : (
+        <Button
+          size="xs"
+          variant="ghost"
+          disabled={props.busy}
+          aria-label={`${KIN_WORK_COPY.decline}: ${props.title}`}
+          onClick={props.onDecline}
+        >
+          {KIN_WORK_COPY.decline}
+        </Button>
+      )}
       <Button
         size="xs"
         variant="outline"
@@ -73,7 +80,9 @@ function KeepButtons(props: {
 export function KinMoneySuggested(
   props: KinWorkTarget & {
     readonly rows: ReadonlyArray<KinMoneySuggestionView>;
+    readonly more: ReadonlyArray<{ readonly label: string; readonly open: KinListOpen }>;
     readonly onOpenKey: (key: KinRecordKey) => void;
+    readonly onOpenList: (open: KinListOpen) => void;
     readonly onChanged: () => void;
   },
 ) {
@@ -118,6 +127,13 @@ export function KinMoneySuggested(
             ) : null}
           </li>
         ))}
+        {props.more.map((more) => (
+          <li key={more.open.list}>
+            <Button size="xs" variant="ghost" onClick={() => props.onOpenList(more.open)}>
+              {more.label}
+            </Button>
+          </li>
+        ))}
       </ul>
     </KinWorkSection>
   );
@@ -126,7 +142,8 @@ export function KinMoneySuggested(
 /** On a suggested entry's own page: what it is, and Keep or Not needed beside it. */
 export function KinSuggestionKeep(
   props: KinWorkTarget & {
-    readonly item: { readonly key: KinRecordKey; readonly rev: number; readonly title: string };
+    readonly item: Pick<KinRecord, "key" | "rev" | "title" | "list" | "amount">;
+    readonly def: KinListDefinition | null;
   },
 ) {
   const { environmentId, orgId, item } = props;
@@ -134,15 +151,16 @@ export function KinSuggestionKeep(
     appAtomRegistry.refresh(kinClient.workItem({ environmentId, input: { orgId, key: item.key } })),
   );
   if (!keep.allowed) return null;
+  const { note, declines } = kinSuggestionKeep(item, props.def);
   return (
     <div className="flex flex-col gap-1">
       <div className="flex flex-wrap items-center gap-2">
-        <p className="text-sm text-muted-foreground">{KIN_MONEY.suggestedNote}</p>
+        {note === null ? null : <p className="text-sm text-muted-foreground">{note}</p>}
         <KeepButtons
-          title={props.item.title}
+          title={item.title}
           busy={keep.busy !== null}
-          onKeep={() => void keep.act(props.item, true)}
-          onDecline={() => void keep.act(props.item, false)}
+          onKeep={() => void keep.act(item, true)}
+          onDecline={declines ? () => void keep.act(item, false) : null}
         />
       </div>
       {keep.problem === null ? null : (
