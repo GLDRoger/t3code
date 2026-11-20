@@ -1,7 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { KIN_DEFAULT_HOME_CURRENCY } from "@t3tools/contracts";
 import type { KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
-import { KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
+import { KIN_BANK, KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
 import {
   KIN_BUDGETS,
@@ -57,7 +57,7 @@ import { kinClient } from "./kinClient";
 import { KinPlaceCombobox } from "./KinPlaceCombobox";
 import { KinWorkSection } from "./KinWorkParts";
 import { useNowMinuteMs } from "./useKinClock";
-import { kinListsOf, useKinListEntries, type KinListsHandle } from "./useKinMoney";
+import { kinListsOf, useKinAskAgent, useKinListEntries, type KinListsHandle } from "./useKinMoney";
 import { useKinBudgets, useKinBudgetSet, useKinCash, useKinOutlook } from "./useKinMoneyAnswers";
 import { useKinWorkChoices, type KinWorkTarget } from "./useKinWork";
 
@@ -137,6 +137,7 @@ function Row(props: {
 export function KinCashSection(props: Section) {
   const now = new Date(useNowMinuteMs());
   const { state, refresh } = useKinCash(props, true);
+  const agent = useKinAskAgent(props);
   const [why, setWhy] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
   if (state._tag === "refused" || state._tag === "gone") return null;
@@ -202,6 +203,18 @@ export function KinCashSection(props: Section) {
               </li>
             ))}
           </ul>
+          {view.bank === null && agent === null ? null : (
+            <div className="flex flex-wrap items-center gap-x-2 px-2">
+              {view.bank === null ? null : (
+                <span className="text-xs text-muted-foreground">{view.bank}</span>
+              )}
+              {agent === null ? null : (
+                <Button size="xs" variant="ghost" onClick={() => agent.ask(KIN_BANK.uploadMessage)}>
+                  {KIN_BANK.upload}
+                </Button>
+              )}
+            </div>
+          )}
           {view.currencies.map((one) => (
             <div key={one.currency} className="flex flex-col gap-1 px-2 text-sm">
               <div className="flex items-baseline justify-between gap-3">

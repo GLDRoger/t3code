@@ -30,6 +30,8 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { buildPulseSection } from "./prompt.ts";
+import { screenFacts } from "./people.ts";
+import { factSig } from "./told.ts";
 import { projectLastMoved } from "./senses/projects.ts";
 import { buildWeeklySection, wantsWeekly, WEEK_FIGURES_TITLE, weeklyFigures } from "./weekly.ts";
 
@@ -1026,6 +1028,90 @@ describe("KinPulse", () => {
         (yield* read(at, { _tag: "people", people: [mate] })).facts.map((fact) => fact.sense),
         "holder_removed",
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a missing month's statement is one line for the owner, its count Kin's own", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const statement = (id: string, from: string, to: string, applied: boolean) =>
+        sql`INSERT INTO kin_bank_statements (org_id, statement_id, attachment_id, file_name,
+            chat_id, agent_id, wakeup_id, status, review_json, created_at, read_at, applied_at)
+          VALUES (${orgId}, ${id}, ${`att-${id}`}, 'invented.csv', ${`chat-${finance}`},
+            ${finance}, 'w-old', 'read', ${JSON.stringify({
+              statement: {
+                kind: "account",
+                bank: "Invented Bank",
+                account: "1234",
+                currency: "INR",
+                from,
+                to,
+                rows: [],
+              },
+            })}, 0, 0, ${applied ? 1 : null})`;
+      const missing = (at: number, viewer?: KinPulse.Viewer) =>
+        read(at, viewer).pipe(
+          Effect.map((pulse) => pulse.facts.filter((fact) => fact.sense === "statement_missing")),
+        );
+      // A company that never confirmed a statement has no month to wait on.
+      assert.lengthOf(yield* missing(B + 20 * DAY), 0);
+      yield* statement("st-sep", "2026-09-01", "2026-09-30", true);
+      yield* insert({
+        id: "INV-7",
+        list: "invoices",
+        state: "waiting",
+        amount: 9_000_00,
+        dueAt: B - 5 * DAY,
+      });
+      // October ended on the 31st; five days on by default, it is a line on the 6th.
+      assert.lengthOf(yield* missing(B + 5 * DAY - MINUTE), 0);
+      const [october] = yield* missing(B + 5 * DAY);
+      assert.deepInclude(october!, {
+        key: "statement_missing:2026-10",
+        consequence: "October's statement isn't in yet: 1 invoice can't be confirmed until it is.",
+        family: "money",
+        sensitive: true,
+        wake: "brief",
+        actor: { _tag: "agent", agentId: finance },
+      });
+      // Another unpaid invoice changes its words, never its key or what it is told on: once.
+      yield* insert({
+        id: "INV-8",
+        list: "invoices",
+        state: "waiting",
+        amount: 1_000_00,
+        dueAt: B - 2 * DAY,
+      });
+      const [later] = yield* missing(B + 9 * DAY);
+      assert.strictEqual(
+        later!.consequence,
+        "October's statement isn't in yet: 2 invoices can't be confirmed until it is.",
+      );
+      assert.strictEqual(later!.key, october!.key);
+      assert.strictEqual(
+        factSig(later!, B + 9 * DAY, "UTC"),
+        factSig(october!, B + 5 * DAY, "UTC"),
+      );
+      // A screen of a build that can't read the sense never gets it.
+      assert.lengthOf(screenFacts([october!], undefined), 0);
+      assert.lengthOf(screenFacts([october!], ["statement_missing"]), 1);
+      // A teammate never reads it.
+      assert.lengthOf(yield* missing(B + 9 * DAY, { _tag: "people", people: [mate] }), 0);
+      // Read but not confirmed, October is still missing; confirmed, the line is gone.
+      yield* statement("st-oct", "2026-10-01", "2026-10-31", false);
+      assert.lengthOf(yield* missing(B + 9 * DAY), 1);
+      yield* sql`UPDATE kin_bank_statements SET applied_at = 1 WHERE statement_id = 'st-oct'`;
+      assert.lengthOf(yield* missing(B + 9 * DAY), 0);
+      // The company's playbook sets the days: November's line waits ten after the 30th.
+      yield* insert({ id: "D-3", list: "docs", category: "playbook" });
+      yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind, summary,
+          operations_json, actor_kind, actor_id, via, origin_key, created_at)
+        VALUES (${orgId}, 'r-D-3', 1, ${"# Money\n\n```kin\nstatement_due_days: 10\n```\n"},
+          'Money', 'created', 'Seeded', '[]', 'person', ${owner}, 'owner', 'seed-D-3', 0)`;
+      assert.lengthOf(yield* missing(B + 40 * DAY - MINUTE), 0);
+      const [november] = yield* missing(B + 40 * DAY);
+      assert.strictEqual(november!.key, "statement_missing:2026-11");
     }).pipe(Effect.provide(layer)),
   );
 

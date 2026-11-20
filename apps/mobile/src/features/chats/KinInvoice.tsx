@@ -262,6 +262,11 @@ export function KinInvoiceFigures(props: { readonly invoice: KinInvoiceView }) {
           </Text>
         </View>
       )}
+      {invoice.bank === null ? null : (
+        <Text textRole="footnote" className="w-full text-foreground-muted">
+          {invoice.bank}
+        </Text>
+      )}
     </View>
   );
 }
@@ -295,6 +300,7 @@ export function KinInvoicePayments(
             payment.tds ? KIN_INVOICES.tdsDeducted : null,
             payment.when,
             payment.note,
+            payment.source,
             number === null ? null : `Receipt ${number}`,
             payment.voided ? KIN_INVOICES.takenBack : null,
           ]

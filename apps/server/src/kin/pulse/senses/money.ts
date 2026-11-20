@@ -8,6 +8,7 @@ import { budgetsAnswer, budgetsView } from "../../work/budgets.ts";
 import { formatMoneyPlain } from "../../work/money.ts";
 import { countedEntry, endOfDay, invoiceDue } from "../../work/recordRows.ts";
 import { DAY_MS, type Threshold, threshold, toMs } from "../thresholds.ts";
+import { statementSenses } from "./bank.ts";
 import {
   agentOrOwner,
   dayOf,
@@ -236,5 +237,6 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
       wake: sense === "budget_over" ? "now" : "brief",
     });
   });
+  facts.push(...(yield* statementSenses(ctx)));
   return facts;
 });

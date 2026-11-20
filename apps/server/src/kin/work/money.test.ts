@@ -1084,6 +1084,21 @@ describe("invoices", () => {
         [first.received, first.balance, first.state],
         ["₹40,000.00", "₹60,000.00", "waiting"],
       );
+      // The agent recorded it on the owner's message, and the read says so beside the bank.
+      const read = yield* LeadWork.get(scope, { key: "INV-1" });
+      assert.match(read.payments?.[0]?.source ?? "", /^recorded by .+ \(you\) on owner's word$/);
+      assert.deepStrictEqual(read.bank, {
+        knownThrough: null,
+        note: "No bank statement is confirmed, so Kin can't see what reached the bank.",
+      });
+      const stored = yield* (yield* KinRecords.KinRecords).detail(
+        (yield* (yield* KinRecords.KinRecords).get(orgId, "INV-1"))!,
+      );
+      assert.deepStrictEqual(stored.payments?.[0]?.source, {
+        _tag: "person",
+        personId: ownerId,
+        agentId: lead,
+      });
       const over = yield* LeadMoney.payment(scope, {
         sourceEventId: paid,
         key: "INV-1",
@@ -1749,6 +1764,12 @@ describe("the owner's taps", () => {
           .toSorted(),
         ["1000000 TDS", "4000000", "4000000"],
       );
+      // Each is the owner's own tap, and Kin can't see a bank it has no statement of.
+      assert.deepStrictEqual(
+        settled.payments?.map((payment) => payment.source),
+        [1, 2, 3].map(() => ({ _tag: "person" as const, personId: ownerId })),
+      );
+      assert.deepStrictEqual(settled.bankKnown, { through: null });
     }).pipe(Effect.provide(layer)),
   );
 
@@ -3077,6 +3098,8 @@ describe("money answers", () => {
         });
         const unconfirmed = cashAnswer(yield* cashPosition(orgId, now));
         assert.isFalse(unconfirmed.known);
+        // A statement read but not confirmed says nothing of how far Kin sees the bank.
+        assert.isNull((yield* cashPosition(orgId, now)).bank.through);
         assert.deepStrictEqual(unconfirmed.notOfRecord, [
           {
             account: "HDFC Bank Account ••1234",
@@ -3219,6 +3242,32 @@ describe("money answers", () => {
           },
         });
         assert.deepStrictEqual(dollars?.estimate?.now, "$2,000.00");
+        // Confirmed bank lines, totals off or not, set how far Kin sees each account; undone,
+        // scanned and unconfirmed reads don't. The company sees as far as its earliest account.
+        const { bank } = yield* cashPosition(orgId, now);
+        assert.deepStrictEqual(
+          bank.accounts.map((one) => [one.label, one.from, one.through]),
+          [
+            ["Account ••7777", "2026-11-09", "2026-11-09"],
+            ["Account ••9876", "2026-10-01", "2026-10-01"],
+            ["HDFC Bank Account ••1234", "2026-10-01", "2026-11-08"],
+          ],
+        );
+        assert.strictEqual(bank.through, "2026-10-01");
+        // Every money answer an agent reads says it beside its figures, each account on cash.
+        yield* turn(9, "How much cash do we have, and what is owed?");
+        const seen = {
+          knownThrough: "2026-10-01",
+          note: "The confirmed bank statements cover every day to 2026-10-01 on the accounts Kin has; Kin can't see the bank after that day.",
+        };
+        const asked = yield* LeadMoney.moneyQuery(scope, { view: "cash" });
+        assert.deepInclude(asked.bank, seen);
+        assert.lengthOf((asked.bank?.accounts ?? []) as ReadonlyArray<unknown>, 3);
+        assert.deepStrictEqual(
+          (yield* LeadMoney.moneyQuery(scope, { view: "outlook" })).bank,
+          seen,
+        );
+        assert.deepStrictEqual((yield* LeadMoney.money(scope, {})).bank, seen);
 
         // A second HDFC ••1234 balance Kin can't link to the first is listed apart, and INR has no
         // total, estimate or runway.

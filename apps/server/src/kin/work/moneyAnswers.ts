@@ -18,6 +18,7 @@ import {
   startOfDay,
 } from "./recordRows.ts";
 import { nextDates, repeatsBetween } from "./repeat.ts";
+import { bankKnown } from "./statements/bankKnown.ts";
 import { findBankList } from "./statements/bankList.ts";
 import { reviewOf } from "./statements/statementReview.ts";
 import type { Statement } from "./statements/statementTable.ts";
@@ -266,6 +267,7 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
     accounts,
     notOfRecord,
     byCurrency,
+    bank: yield* bankKnown(orgId),
   };
 });
 export type CashPosition = Effect.Success<ReturnType<typeof cashPosition>>;

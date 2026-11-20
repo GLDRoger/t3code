@@ -9,9 +9,11 @@ import type {
   KinListTotals,
   KinListUpdateInput,
   KinMoney,
+  KinBankKnown,
   KinMoneyTotals,
   KinOrgId,
   KinPayment,
+  KinPaymentSource,
   KinRecord,
   KinRecordDetail,
   KinRecordKey,
@@ -46,6 +48,82 @@ import {
  * Lists an agent set up in chat, as data: any fields, states and categories, with or without
  * amounts, dates, files and repeats. Nothing here knows what a list is for.
  */
+
+/** How far Kin sees the bank, and where a payment came from, as people read it. */
+export const KIN_BANK = {
+  knownTo: (day: string) => `Bank known to ${day}`,
+  unseen: "Kin can't see the bank yet: upload a statement",
+  upload: "Upload a statement",
+  /** The chat it opens starts with this; the statement is attached there, as always. */
+  uploadMessage: "Here is the bank statement: ",
+  notPaid: (day: string | null) =>
+    day === null
+      ? "Not recorded as paid. Kin can't see the bank yet."
+      : `Not recorded as paid. Bank known to ${day}.`,
+  restNotPaid: (day: string | null) =>
+    day === null
+      ? "The rest isn't recorded as paid. Kin can't see the bank yet."
+      : `The rest isn't recorded as paid. Bank known to ${day}.`,
+  fromStatement: "from the bank statement",
+  recordedBy: (name: string) => `recorded by ${name}`,
+  recordedOnWord: (agent: string, person: string) => `recorded by ${agent} on ${person}'s word`,
+  recordedHere: "recorded in Kin",
+};
+
+const bankDayFormat = kinWhenFormat("date", { zone: "UTC" });
+const bankDayYearFormat = kinWhenFormat("dateYear", { zone: "UTC" });
+/** "31 Oct", with its year when it isn't this one. */
+const kinBankDay = (day: string, now: Date) => {
+  const at = new Date(`${day}T00:00:00Z`);
+  if (Number.isNaN(at.getTime())) return day;
+  return day.slice(0, 4) === String(now.getFullYear())
+    ? bankDayFormat.format(at)
+    : bankDayYearFormat.format(at);
+};
+
+/** Money's quiet line: how far Kin sees the bank; null from a host that doesn't say. */
+export const kinBankKnownText = (known: KinBankKnown | undefined, now: Date) =>
+  known === undefined
+    ? null
+    : known.through === null
+      ? KIN_BANK.unseen
+      : KIN_BANK.knownTo(kinBankDay(known.through, now));
+
+/** An issued invoice's line while some of it is owed: never more certain than the bank. */
+export const kinInvoiceBankText = (
+  item: Pick<KinRecordDetail, "state" | "bankKnown" | "balance" | "amount">,
+  now: Date,
+) => {
+  const known = item.bankKnown;
+  if (known === undefined || item.state !== "waiting" || item.balance === undefined) return null;
+  if (item.balance.minor === 0) return null;
+  const day = known.through === null ? null : kinBankDay(known.through, now);
+  return item.amount !== undefined && item.balance.minor < item.amount.minor
+    ? KIN_BANK.restNotPaid(day)
+    : KIN_BANK.notPaid(day);
+};
+
+/** Where a payment came from; null from a host that doesn't say. */
+export const kinPaymentSourceText = (
+  source: KinPaymentSource | undefined,
+  names: Pick<KinWorkNames, "people" | "agents">,
+) => {
+  if (source === undefined) return null;
+  switch (source._tag) {
+    case "statement":
+      return KIN_BANK.fromStatement;
+    case "person": {
+      const person = names.people.get(source.personId) ?? "someone";
+      return source.agentId === undefined
+        ? KIN_BANK.recordedBy(person)
+        : KIN_BANK.recordedOnWord(names.agents.get(source.agentId) ?? "an agent", person);
+    }
+    case "agent":
+      return KIN_BANK.recordedBy(names.agents.get(source.agentId) ?? "an agent");
+    case "recorded":
+      return KIN_BANK.recordedHere;
+  }
+};
 
 export const KIN_LISTS = {
   listGone: "This list isn't here",
@@ -955,6 +1033,8 @@ export interface KinPaymentView {
   readonly when: string;
   readonly note: string | null;
   readonly voided: boolean;
+  /** "from the bank statement", "recorded by Rhea"; null from an older host. */
+  readonly source: string | null;
 }
 
 export interface KinListEntryView {
@@ -1154,6 +1234,7 @@ export function kinListEntryView(
           .filter((part) => part !== null && part !== "")
           .join(" · ") || null,
       voided: payment.voidedAt !== null,
+      source: kinPaymentSourceText(payment.source, names),
     })),
     states: (def?.states ?? [item.state]).map((state) => ({
       state,

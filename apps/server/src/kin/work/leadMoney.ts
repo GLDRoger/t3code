@@ -51,6 +51,7 @@ import {
   writerFor,
 } from "./leadWork.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
+import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
 import { homeCurrency } from "./companyProfile.ts";
 import { dayIn, formatMinor, formatMoney, parseAmount, timeIn } from "./money.ts";
 import { dates, moneySection, moneySummary, ownerLevelStillToInvoice } from "./moneyViews.ts";
@@ -443,6 +444,7 @@ export const MoneyResult = Schema.Struct({
   /** Per open project: what is agreed but not invoiced yet, beside what is owed on invoices. */
   stillToInvoice: Schema.optional(Schema.Unknown),
   nothing: Schema.optional(Schema.Literal(true)),
+  bank: Schema.optional(BankAnswer),
   sensitive: Schema.Literal(true),
 });
 const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
@@ -462,6 +464,7 @@ const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
       ? { nothing: true as const }
       : { summary: section }),
     ...(toInvoice.length === 0 ? {} : { stillToInvoice: toInvoice }),
+    bank: bankAnswer(yield* bankKnown(lead.orgId)),
     sensitive: true as const,
   };
 });
@@ -486,18 +489,21 @@ export const MoneyQueryResult = Schema.Struct({
   asOf: Schema.String,
   view: Schema.String,
   answer: Schema.Unknown,
+  bank: Schema.optional(BankAnswer),
   sensitive: Schema.Literal(true),
 });
 const runMoneyQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof MoneyQueryInput.Type) {
   yield* admitted(lead, "money_query", input);
   const now = yield* Clock.currentTimeMillis;
+  const cash = input.view === "cash" ? yield* cashPosition(lead.orgId, now) : undefined;
   const answer =
-    input.view === "cash"
-      ? cashAnswer(yield* cashPosition(lead.orgId, now))
+    cash !== undefined
+      ? cashAnswer(cash)
       : input.view === "outlook"
         ? outlookAnswer(yield* outlook(lead.orgId, now, input.days))
         : budgetsAnswer(yield* budgetsView(lead.orgId, now, input.month));
-  return { asOf: iso(now), view: input.view, answer, sensitive: true as const };
+  const bank = bankAnswer(cash?.bank ?? (yield* bankKnown(lead.orgId)), cash !== undefined);
+  return { asOf: iso(now), view: input.view, answer, bank, sensitive: true as const };
 });
 export const moneyQuery = leadTool("KinWorkTools.moneyQuery", runMoneyQuery);
 

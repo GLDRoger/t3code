@@ -111,7 +111,7 @@ const inScope = (fact: KinPulseFact, scope: KinAttentionScope) => {
 };
 
 const openOf = (fact: KinPulseFact): KinAttentionOpen =>
-  fact.family === "goals" || fact.subject.kind === "budget"
+  fact.family === "goals" || fact.subject.kind === "budget" || fact.subject.kind === "bank"
     ? { type: "money" }
     : fact.subject.kind === "record"
       ? { type: "record", key: fact.subject.key }
