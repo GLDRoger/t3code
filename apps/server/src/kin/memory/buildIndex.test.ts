@@ -45,6 +45,9 @@ it("matches the bounded index golden, independently of input order, and fades on
     item("overdue", { review_by: "2026-11-07" }),
     item("cancelled-review", { status: "cancelled", review_by: "2026-11-07" }),
     item("invalid-review", { invalid_at: "2026-11-07", review_by: "2026-11-07" }),
+    // Ends only on 2026-12-01: still open now, so reviewed and in Work, not [invalid].
+    item("future-invalid", { invalid_at: "2026-12-01", review_by: "2026-11-07" }),
+    item("future-ended", { kind: "commitment", invalid_at: "2026-12-01" }),
     item("duplicate"),
     item("duplicate", { path: "claims/moved.md", invalid_at: "2026-11-07" }),
     item("misleading", { misleading: true, review_by: "2026-11-07" }),
@@ -56,6 +59,7 @@ it("matches the bounded index golden, independently of input order, and fades on
   const actual = buildIndex(items, reads, now, "Asia/Kolkata");
   expect(buildIndex(items.toReversed(), reads, now, "Asia/Kolkata")).toBe(actual);
   expect(actual).not.toContain("Invented unread");
+  expect(actual).not.toContain("Invented future-ended");
   const large = buildIndex(
     Array.from({ length: 250 }, (_, n) => item(`fixture-${n.toString().padStart(3, "0")}`)),
     {},

@@ -1,7 +1,7 @@
 import type { MemoryItemHead } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { memoryDateMillis, openBy, reviewOverdueBy } from "./frontMatter.ts";
+import { endedBy, memoryDateMillis, openBy, reviewOverdueBy } from "./frontMatter.ts";
 import type { SharedItem } from "./sensitivity.ts";
 
 const week = 7 * 24 * 60 * 60 * 1000;
@@ -107,7 +107,7 @@ export function buildIndex(
     }
     lines.push(
       ...header,
-      `- [${item.kind}] ${oneLine(item.title)} (${oneLine(item.path)})${item.invalid_at !== null ? " [invalid]" : ""}${(counts.get(item.id) ?? 0) > 1 ? " [duplicate id]" : ""}${overdue ? " ⚠ review" : ""}${item.misleading ? " [misleading]" : ""}${audienceNote(item)}`,
+      `- [${item.kind}] ${oneLine(item.title)} (${oneLine(item.path)})${endedBy(item, now) ? " [invalid]" : ""}${(counts.get(item.id) ?? 0) > 1 ? " [duplicate id]" : ""}${overdue ? " ⚠ review" : ""}${item.misleading ? " [misleading]" : ""}${audienceNote(item)}`,
     );
     previousSection = currentSection;
   }

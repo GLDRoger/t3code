@@ -8,6 +8,7 @@ As of 2026-11-08T04:00:00.000Z
 - [deferral] Invented future-ask (deferrals/future-ask.md)
 
 ## Overdue
+- [claim] Invented future-invalid (claims/future-invalid.md) ⚠ review
 - [claim] Invented overdue (claims/overdue.md) ⚠ review
 
 ## Other memory
