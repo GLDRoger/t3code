@@ -85,6 +85,7 @@ import {
 } from "./KinWorkParts";
 import { KinWorkRow } from "./KinWorkTasks";
 import { kinClient } from "./kinClient";
+import { KinClientDeals } from "./KinDeals";
 import { useNowMinuteMs } from "./useKinClock";
 import { kinHostConnected } from "./useKinHost";
 import {
@@ -561,6 +562,8 @@ export function KinWorkClientPage(
     readonly onAddTask: ((draft: KinWorkDraft) => void) | null;
     /** Opens one of the lists agents set up, narrowed to this client. */
     readonly onOpenList: (open: KinListOpen) => void;
+    /** Opens New deal already for this client; null where deals can't be added. */
+    readonly onNewDeal?: ((party: KinWorkRef) => void) | null;
   },
 ) {
   const { state, refresh } = useKinClientPage(props, props.clientKey);
@@ -812,6 +815,19 @@ function ClientPage(
               </ul>
             )}
           </KinWorkSection>
+        )}
+        {view.vendor ? null : (
+          <KinClientDeals
+            {...props}
+            party={{ key: view.key, title: view.name }}
+            closed={view.closed}
+            onOpen={props.onOpenTask}
+            onNew={
+              props.onNewDeal == null
+                ? null
+                : () => props.onNewDeal?.({ key: view.key, title: view.name })
+            }
+          />
         )}
         <KinWorkSection
           title={KIN_CLIENTS.contacts}

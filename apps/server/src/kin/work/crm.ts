@@ -24,6 +24,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { stageLine, stagesOf } from "./dealStages.ts";
 import {
   fieldList,
   fieldText,
@@ -31,6 +32,7 @@ import {
   listOf,
   parseFields,
   sensitiveFields,
+  listNameOf,
   workListOf,
 } from "./lists.ts";
 import {
@@ -609,14 +611,26 @@ export const history = Effect.fn("KinCrm.history")(function* (
       c.fields_json AS "fieldsJson", r.record_id AS "recordId", r.key, r.title,
       r.register_id AS "registerId"
     ${from} ORDER BY c.seq DESC LIMIT ${input.limit}`;
+  const stages = rows.some((row) => row.registerId === "deals")
+    ? (yield* stagesOf(orgId)).stages
+    : [];
   const items = rows.map((row): KinWorkHistoryItem => ({
     seq: row.seq,
     at: iso(row.at),
     by: actorOf(row.actorKind, row.actorId),
     via: row.via,
     kind: row.kind,
-    fields: parseChanges(row.fieldsJson).filter((change) => change.field.trim() !== ""),
-    record: { ...ref(row.recordId, row.key, row.title), list: workListOf(row.registerId) },
+    fields: parseChanges(row.fieldsJson)
+      .filter((change) => change.field.trim() !== "")
+      // A deal's stage is the company's id; the line reads its name.
+      .map((change) =>
+        row.registerId === "deals" && change.field === "stage" ? stageLine(stages, change) : change,
+      ),
+    record: {
+      ...ref(row.recordId, row.key, row.title),
+      list: workListOf(row.registerId),
+      ...listNameOf(row.registerId),
+    },
   }));
   const total =
     input.sinceAt === undefined

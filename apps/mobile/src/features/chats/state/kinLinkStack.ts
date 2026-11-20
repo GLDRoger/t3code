@@ -1,6 +1,12 @@
 /** A task, which opens over the record page under it, and the search sheet, which it takes over. */
 const SHEETS: ReadonlySet<string> = new Set(["KinWorkItem", "KinSearch"]);
-const RECORDS: ReadonlySet<string> = new Set([...SHEETS, "KinClient", "KinProject", "KinDoc"]);
+const RECORDS: ReadonlySet<string> = new Set([
+  ...SHEETS,
+  "KinClient",
+  "KinProject",
+  "KinDoc",
+  "KinDeal",
+]);
 
 /** How many routes stay under a record opened by a link; all of them means it is pushed. */
 export function kinLinkKeeps(routes: ReadonlyArray<string>, name: string): number {

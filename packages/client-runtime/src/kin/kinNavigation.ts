@@ -91,6 +91,7 @@ export type KinSettingsPage =
   | "agents"
   | "check-ins"
   | "connections"
+  | "deals"
   | "memory"
   | "company"
   | "approvals"
@@ -104,6 +105,7 @@ const KIN_SETTINGS_PAGES: ReadonlyArray<KinSettingsPage> = [
   "agents",
   "check-ins",
   "connections",
+  "deals",
   "memory",
   "company",
   "approvals",
@@ -118,6 +120,7 @@ export const KIN_SETTINGS_PAGE_TITLES: Readonly<Record<KinSettingsPage, string>>
   agents: "Agents",
   "check-ins": "Check-ins",
   connections: "Connections",
+  deals: "Deals",
   memory: "Memory",
   company: "Company details",
   approvals: "Approvals",
@@ -150,13 +153,18 @@ export function kinSettingsGroups(input: {
   readonly computer: boolean;
   readonly notifications: boolean;
   readonly recommendations: boolean;
+  /** The company's deal stages: the owner level changes them, a teammate with Clients on reads. */
+  readonly deals?: boolean;
 }): ReadonlyArray<KinSettingsGroup> {
   const you: KinSettingsGroup = {
     id: "you",
     title: KIN_SETTINGS_GROUP_TITLES.you,
     pages: ["profile", ...(input.notifications ? (["notifications"] as const) : []), "appearance"],
   };
-  if (!input.ownerLevel) return [you];
+  if (!input.ownerLevel)
+    return input.deals === true
+      ? [you, { id: "company", title: KIN_SETTINGS_GROUP_TITLES.company, pages: ["deals"] }]
+      : [you];
   return [
     you,
     {
@@ -167,6 +175,7 @@ export function kinSettingsGroups(input: {
         "agents",
         "check-ins",
         "connections",
+        "deals",
         "memory",
         "company",
         "approvals",
@@ -196,4 +205,5 @@ export const KIN_SETTINGS_MOVED: Readonly<Record<string, KinSettingsPage>> = {
   "check-ins": "check-ins",
   "kin-connections": "connections",
   approvals: "approvals",
+  deals: "deals",
 };

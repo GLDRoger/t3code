@@ -28,6 +28,7 @@ import { isSqlError, type SqlError } from "effect/sql/SqlError";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as Crm from "./crm.ts";
+import { dealSeesField } from "./deals.ts";
 import { KinRecords, requestHashOf, type Patch, type Writer } from "./KinRecords.ts";
 import { fieldList, parseFields, type FieldValue, type ListName } from "./lists.ts";
 import {
@@ -414,8 +415,10 @@ const memberHistory = Effect.fn("KinWork.crm.memberHistory")(function* (
     );
     for (const item of items) {
       if (item.kind === "linked") continue;
-      const fields = item.fields.filter(
-        (field) => teamSeesField(field.field) || CLIENT_LINES.has(field.field),
+      const fields = item.fields.filter((field) =>
+        item.record.listName === "deals"
+          ? dealSeesField(field.field)
+          : teamSeesField(field.field) || CLIENT_LINES.has(field.field),
       );
       if (item.kind !== "updated" || fields.length > 0) kept.push({ ...item, fields });
     }

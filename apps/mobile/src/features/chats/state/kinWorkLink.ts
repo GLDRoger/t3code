@@ -1,11 +1,12 @@
 import { CommonActions, StackActions, useNavigation } from "@react-navigation/native";
 import type { KinSearchHitView } from "@t3tools/client-runtime/kin/kinDocs";
+import { kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
 
 import { kinLinkKeeps } from "./kinLinkStack";
 import type { KinWorkTarget } from "./useKinWork";
 
 type Params = ReactNavigation.RootParamList;
-type RecordRoute = "KinWorkItem" | "KinClient" | "KinProject" | "KinDoc";
+type RecordRoute = "KinWorkItem" | "KinClient" | "KinProject" | "KinDoc" | "KinDeal";
 
 /**
  * Opens a task, client, project or doc. Followed from inside one, a page takes the place of
@@ -15,7 +16,7 @@ type RecordRoute = "KinWorkItem" | "KinClient" | "KinProject" | "KinDoc";
  */
 export function useKinWorkLink() {
   const navigation = useNavigation();
-  return <Name extends RecordRoute>(name: Name, params: Params[Name]) => {
+  const go = <Name extends RecordRoute>(name: Name, params: Params[Name]) => {
     const state = navigation.getState();
     const routes = state?.routes ?? [];
     const keep = kinLinkKeeps(
@@ -33,6 +34,14 @@ export function useKinWorkLink() {
         routes: [...routes.slice(0, keep), { name, params }],
       }),
     );
+  };
+  // A deal's key opens the deal, wherever it was followed from.
+  return <Name extends RecordRoute>(name: Name, params: Params[Name]) => {
+    if (name === "KinWorkItem") {
+      const { task, ...rest } = params as Params["KinWorkItem"];
+      if (kinIsDealKey(task)) return go("KinDeal", { ...rest, deal: task });
+    }
+    go(name, params);
   };
 }
 
