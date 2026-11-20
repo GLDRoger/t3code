@@ -34,6 +34,7 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as DateTime from "effect/DateTime";
@@ -2790,6 +2791,34 @@ it.effect("a teammate's change numbers move only with what they can see, on ever
       (yield* OwnerWork.summary([owner], { orgId })).seq,
       yield* records.seq(orgId),
     );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a teammate's reads find the projects they lead by its own index, with no statistics", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    // As the server runs: `Sqlite.setup` deletes the planner's statistics at every start.
+    assert.lengthOf(yield* sql`SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat1'`, 0);
+    yield* OwnerWork.create([mate], { orgId, title: "Invented: theirs", clientRequestId: "t" });
+    const asked: Array<readonly [string, ReadonlyArray<unknown>]> = [];
+    yield* OwnerWork.list([mate], { orgId, open: true }).pipe(
+      Effect.provideService(Statement.CurrentTransformer, (statement) => {
+        const [text, params] = statement.compile();
+        if (text.includes("lp.register_id = 'projects'")) asked.push([text, params]);
+        return Effect.succeed(statement);
+      }),
+    );
+    assert.isNotEmpty(asked);
+    for (const [text, params] of asked) {
+      const plan = yield* sql.unsafe<{ detail: string }>(`EXPLAIN QUERY PLAN ${text}`, params);
+      const led = plan.map((row) => row.detail).filter((detail) => /\blp\b/u.test(detail));
+      assert.deepStrictEqual(
+        led.map((detail) => detail.includes("idx_kin_records_owner_list")),
+        led.map(() => true),
+        led.join("\n"),
+      );
+    }
   }).pipe(Effect.provide(layer)),
 );
 
