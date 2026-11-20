@@ -23,7 +23,6 @@ import * as NodeCrypto from "node:crypto";
 import { storedClientId } from "../chat/KinChatRepository.ts";
 import type { KinChatService } from "../chat/KinChatService.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
-import * as LeadAccess from "../lead/LeadAccess.ts";
 import { effectiveAudience, turnAsker, turnChat } from "../lead/Audience.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import * as Reach from "../lead/Reach.ts";
@@ -479,10 +478,7 @@ const sendBack = Effect.fn("KinQuestions.sendBack")(function* (
     !ownerAsked &&
     (asker === undefined ||
       asker !== row.forPersonId ||
-      !(
-        (yield* ownerLevel(orgId, asker)) ||
-        (yield* LeadAccess.allowed({ orgId, agentId: row.agentId, personId: asker }))
-      ))
+      !(yield* Reach.reaches(orgId, Reach.person(asker), Reach.agent(row.agentId))))
   ) {
     yield* Effect.logInfo("Kin dropped an answer's turn: the chat that asked can't take it", {
       orgId,

@@ -1513,18 +1513,16 @@ it.effect("an answer's turn answers in the chat that asked, or nowhere", () =>
       assert.strictEqual((yield* questionRow(sql, zoya.questionId)).state, "answered");
       // Arjun may still write: his turn waits, in his chat.
       yield* tap(owner, arjun.questionId, "option-1", "rhea-arjun");
-      // The owner names no team agent now, so neither Dev nor Arjun may message it: Arjun's
-      // waiting turn never runs, and Dev's answer, after, starts none. Set as the owner does it,
-      // so its lead rows need a model, and its teammates are those signed in.
-      yield* sql`UPDATE kin_leads SET models_json = ${encodeLeadModel({ instanceId: providerInstanceId, model: "gpt-5.5" })}`;
+      // The owner restricts Dev and Arjun from the agent, so neither may message it: Arjun's
+      // waiting turn never runs, and Dev's answer, after, starts none.
       for (const id of ["dev", "arjun"])
-        yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
-          VALUES (${`${id}-session`}, ${orgId}, ${id}, 0)`;
-      yield* Provision.setTeamAgent({
-        editor: { _tag: "person", personId: owner.personId },
-        orgId,
-        agentId: null,
-      }).pipe(Effect.provideContext(services));
+        yield* Provision.reachSet({
+          editor: { _tag: "person", personId: owner.personId },
+          orgId,
+          a: { kind: "person", personId: KinPersonId.make(id) },
+          b: { kind: "agent", agentId: KinAgentId.make("chief") },
+          restricted: true,
+        }).pipe(Effect.provideContext(services));
       yield* tap(owner, dev.questionId, "option-1", "rhea-dev");
       assert.deepStrictEqual(yield* wakes, [
         { key: `question-answered:${toDev.questionId}`, state: "done", chatId: meeraChat },
