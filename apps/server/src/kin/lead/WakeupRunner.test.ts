@@ -928,7 +928,7 @@ describe("WakeupRunner", () => {
       failureCode: undefined,
       mode: "reply",
       owed: true,
-      said: ["retrying", "retrying", "retrying", "gave_up"],
+      said: ["retrying", "retrying", "retrying_later", "gave_up"],
     },
     // No retry signs the account in: each try names the fix, and the bridge says it once.
     {
@@ -942,7 +942,7 @@ describe("WakeupRunner", () => {
       failureCode: undefined,
       mode: "notice",
       owed: true,
-      said: ["retrying", "retrying", "retrying", "gave_up"],
+      said: ["retrying", "retrying", "retrying_later", "gave_up"],
     },
     // A check-in nobody waits on retries quietly, but never ends silent.
     { failureCode: undefined, mode: "notice", owed: false, said: ["gave_up"] },
