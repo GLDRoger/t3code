@@ -170,6 +170,16 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
       });
       if (!(yield* Reach.reaches(orgId, Reach.person(target.id), Reach.agent(agentId))))
         return yield* unreached;
+      // Whoever it is asked for must reach them too, whichever agent carries it.
+      if (
+        asker !== null &&
+        (yield* Reach.mayReach(orgId, Reach.person(asker), Reach.person(target.id))) ===
+          "restricted"
+      )
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: Reach.restrictedLine(target.name, askerName ?? "they", askerName),
+        });
       const direct = yield* deps.chat
         .createDirect({ _tag: "person", orgId, personId: target.id }, { orgId, agentId })
         .pipe(Effect.mapError(() => unreached));

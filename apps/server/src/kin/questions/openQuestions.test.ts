@@ -43,12 +43,7 @@ import * as Kin from "../layer.ts";
 import * as KinToolGate from "../mcp/KinToolGate.ts";
 import * as Handoff from "../lead/Handoff.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
-import {
-  inheritOutside,
-  markOutside,
-  outsideStamp,
-  storedStamp,
-} from "../lead/OutsideContent.ts";
+import { inheritOutside, markOutside, outsideStamp, storedStamp } from "../lead/OutsideContent.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import type { KinDecision } from "../memory/MemoryWriter.ts";
 import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
@@ -1126,6 +1121,21 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
       });
       const toArjun = yield* askFor("chief", dev, { to: "Arjun", intent: "call sheet" });
       assert.strictEqual(toArjun.state, "posted");
+      // Dev and Zoya restricted: no agent asks her for him.
+      const pair = (restricted: boolean) =>
+        Reach.setLimit({
+          orgId: KinOrgId.make(orgId),
+          by: owner.personId,
+          a: Reach.person(KinPersonId.make("dev")),
+          b: Reach.person(KinPersonId.make("zoya")),
+          restricted,
+        });
+      yield* pair(true);
+      assert.strictEqual(
+        (yield* Effect.flip(askFor("chief", dev, { to: "Zoya", intent: "cover friday" }))).message,
+        "Zoya Sheikh and Dev Malhotra can't message each other here, so nothing was sent. Tell Dev Malhotra in one line that the owner can lift it. Don't try another way.",
+      );
+      yield* pair(false);
       // Anyone in the company, not only someone who decides for him.
       assert.strictEqual(
         (yield* askFor("chief", dev, { to: "Zoya", intent: "cover friday" })).state,

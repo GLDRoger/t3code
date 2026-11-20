@@ -948,6 +948,21 @@ it.effect(
           "Dev Kulkarni and Chief of staff can't message each other here, so nothing was sent. Tell Zoya Sheikh in one line that the owner can lift it. Don't try another way.",
         );
         yield* restrict(false);
+        // Zoya and Dev restricted: no agent carries her words to him.
+        const people = (restricted: boolean) =>
+          Reach.setLimit({
+            orgId,
+            by: owner.personId,
+            a: Reach.person(KinPersonId.make("zoya")),
+            b: Reach.person(KinPersonId.make("dev")),
+            restricted,
+          });
+        yield* people(true);
+        assert.strictEqual(
+          (yield* Effect.flip(sideways)).message,
+          "Dev Kulkarni and Zoya Sheikh can't message each other here, so nothing was sent. Tell Zoya Sheikh in one line that the owner can lift it. Don't try another way.",
+        );
+        yield* people(false);
         // Dev never signed in: it waits in his chat, and the result says so.
         assert.deepStrictEqual(yield* sideways, {
           to: "Dev Kulkarni",

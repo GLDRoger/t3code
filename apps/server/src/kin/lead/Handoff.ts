@@ -894,6 +894,24 @@ const make = Effect.gen(function* () {
             ),
     });
     if (reach !== "allowed") return yield* unreached;
+    // Whoever the words are from must reach them too, whichever agent carries them.
+    const fromRestricted = Effect.fn("KinHandoff.relay.fromRestricted")(function* (
+      from: KinPersonId,
+      name: string | undefined,
+    ) {
+      if (from === to.personId) return;
+      const pair = yield* Reach.mayReach(
+        ctx.orgId,
+        Reach.person(from),
+        Reach.person(to.personId),
+      ).pipe(access);
+      if (pair === "restricted")
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: Reach.restrictedLine(to.name, name ?? "they", name ?? null),
+        });
+    });
+    if (sender !== null) yield* fromRestricted(KinPersonId.make(sender), senderRow?.name);
     const theirChat =
       to.personId === self.owner
         ? self.ownerChatId
@@ -950,6 +968,12 @@ const make = Effect.gen(function* () {
     const asker = askers.length === 1 ? askers[0] : undefined;
     if (asker === undefined)
       return yield* refuse("Only one person's own request can be passed on from here.");
+    if (asker !== sender)
+      yield* fromRestricted(
+        asker,
+        (yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+          WHERE org_id = ${ctx.orgId} AND person_id = ${asker} ORDER BY person_id`)[0]?.name,
+      );
     const original = yield* routedFrom(ctx, input.sourceEventId);
     if (original === "cleared")
       return yield* new KinChatError({
