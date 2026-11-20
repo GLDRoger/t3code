@@ -167,6 +167,13 @@ export const KIN_LISTS = {
 /** How many digits follow the point in `currency`: 2 for rupees, 0 for yen. */
 export const kinMinorDigits = (currency: string) => kinCurrency(currency).decimals;
 
+/**
+ * What a person calls an entry: its issued number (INV/26-27/004), else its key while it has none.
+ * `number` is a ref's own, or an entry's `fields.number`.
+ */
+export const kinRecordName = (key: string, number: unknown) =>
+  typeof number === "string" && number.trim() !== "" ? number.trim() : key;
+
 /** An exact amount: "₹4,20,000", with paise only when there are some unless `paise` keeps them. */
 export const kinMoneyText = (money: KinMoney, paise = false) =>
   formatKinMoney(money.minor, money.currency, { cents: paise ? "always" : "some", minus: "−" });
@@ -863,7 +870,7 @@ export function kinListRow(
     record.party === undefined || record.party.key === within?.party ? null : record.party.title;
   const dueLine = due === null || closed ? null : `${def?.dueLabel ?? "Due"} ${afterLabel(due)}`;
   const parts = [
-    record.key,
+    kinRecordName(record.key, record.fields?.number),
     within?.list === false && def !== null ? def.name : null,
     record.listCategory === undefined ? null : kinCategoryLabel(record.listCategory, def),
     stateLabel,
@@ -1114,7 +1121,10 @@ export function kinListEntryView(
   const doneLabel = kinListStateLabel(def, "done");
   const canFinish = !closed && (def === null || def.states.includes("done"));
   return {
-    heading: def === null ? item.key : `${item.key} · ${def.name}`,
+    heading:
+      def === null
+        ? kinRecordName(item.key, item.fields?.number)
+        : `${kinRecordName(item.key, item.fields?.number)} · ${def.name}`,
     state: item.state,
     stateLabel: kinListStateLabel(def, item.state),
     closed,

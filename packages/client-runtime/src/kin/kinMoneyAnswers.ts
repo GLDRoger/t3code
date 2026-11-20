@@ -19,7 +19,13 @@ import {
 import * as Schema from "effect/Schema";
 
 import { kinEstimate, type KinRates } from "./kinCurrency.ts";
-import { kinCategoryLabel, kinMoneyText, kinParseMoney, kinTotalsLines } from "./kinLists.ts";
+import {
+  kinCategoryLabel,
+  kinMoneyText,
+  kinParseMoney,
+  kinRecordName,
+  kinTotalsLines,
+} from "./kinLists.ts";
 import { kinWorkDueLabel, type KinWorkRef } from "./kinWork.ts";
 
 /**
@@ -539,11 +545,10 @@ export interface KinQuoteRowView {
 
 export function kinQuoteRow(record: KinRecord, rates: KinRates | null, now: Date): KinQuoteRowView {
   const state = kinQuoteState(record, now);
-  const number = record.fields?.number;
   const until = record.dueAt === null ? null : kinWorkDueLabel(record.dueAt.slice(0, 10), now);
   return {
     key: record.key,
-    number: typeof number === "string" && number.trim() !== "" ? number : record.key,
+    number: kinRecordName(record.key, record.fields?.number),
     party: record.party?.title ?? KIN_QUOTES.noClient,
     title: record.title,
     amount: record.amount === undefined ? null : kinMoneyText(record.amount),

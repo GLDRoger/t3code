@@ -354,6 +354,11 @@ describe("a list by its definition", () => {
     ]);
     expect(entry.payments[0]).toMatchObject({ amount: "₹40,000.00", note: null, voided: false });
     expect(kinListRow(detail, invoices, context).owed).toBe("₹60,000 still owed");
+    // Named by its key until it is issued, then by its number.
+    expect(kinListRow(detail, invoices, context).line).toMatch(/^EQ-1 · /);
+    const issued = { ...detail, fields: { number: "AM/26-27/004" } };
+    expect(kinListRow(issued, invoices, context).line).toMatch(/^AM\/26-27\/004 · /);
+    expect(kinListEntryView(issued, invoices, context).heading).toBe("AM/26-27/004 · Equipment");
   });
 
   it("sends only the names that changed when a list is renamed", () => {

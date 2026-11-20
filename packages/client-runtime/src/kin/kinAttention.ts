@@ -12,7 +12,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { kinMoneyDraft, kinMoneyText } from "./kinLists.ts";
+import { kinMoneyDraft, kinMoneyText, kinRecordName } from "./kinLists.ts";
 import { KIN_NEEDS_YOU_SHOWN, type KinNeedsYouRow } from "./kinWorkHome.ts";
 import { kinFailure } from "./kinAnswers.ts";
 
@@ -187,7 +187,7 @@ function kinAttentionRow(
     title: subject.title,
     detail: kinPlainDates(fact.consequence),
     about:
-      [subject.kind === "record" ? subject.key : null, ...where]
+      [subject.kind === "record" ? kinRecordName(subject.key, subject.number) : null, ...where]
         .filter((part) => part !== null)
         .join(" · ") || null,
     urgent: URGENT.has(fact.sense),

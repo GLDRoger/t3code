@@ -1284,14 +1284,14 @@ export function KinLinkedSection(props: {
               <RowPressable
                 key={item.key}
                 accessibilityRole="button"
-                accessibilityLabel={item.kind === "message" ? title : `${item.key}, ${title}`}
+                accessibilityLabel={item.kind === "message" ? title : `${item.name}, ${title}`}
                 onPress={() => props.onOpen(item.open)}
                 className="bg-grouped-card"
               >
                 <View className="min-w-0 flex-row gap-2 px-4 py-3">
                   {item.kind === "message" ? null : (
                     <Text textRole="body" className="text-foreground-muted">
-                      {item.key}
+                      {item.name}
                     </Text>
                   )}
                   <Text

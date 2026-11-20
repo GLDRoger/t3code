@@ -262,6 +262,8 @@ export const KinRecordLink = Schema.Struct({
   createdAt: IsoDateTime,
   /** A `record` link's other end as it is now, to open it by key; absent once it is gone. */
   record: Schema.optional(KinRecordRef),
+  /** That record's issued number (INV/26-27/004), once it has one. */
+  number: Schema.optional(TrimmedNonEmptyString),
   /**
    * A `worker` link's run, as its task card shows it: the thread (in `remoteEnvironmentId` when
    * that is set, else on this host) and the draft pull request Kin opened from it.
@@ -1159,6 +1161,8 @@ export const KinClientTouch = Schema.Struct({
   logged: Schema.Boolean,
   /** The entry it comes from, for Kin's own. */
   record: Schema.NullOr(KinRecordRef),
+  /** That entry's issued number (INV/26-27/004), once it has one. */
+  number: Schema.optional(TrimmedNonEmptyString),
 });
 export type KinClientTouch = typeof KinClientTouch.Type;
 
