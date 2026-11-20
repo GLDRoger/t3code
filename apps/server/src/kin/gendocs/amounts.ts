@@ -1,4 +1,5 @@
-import { KinChatId, KinMessageId, type KinOrgId } from "@t3tools/contracts";
+import { KinChatError, KinChatId, KinMessageId, type KinOrgId } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -7,8 +8,10 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
+import { isMoney, parseFields } from "../work/lists.ts";
 import { formatMoney } from "../work/money.ts";
 import { countedEntry, type RecordRow } from "../work/recordRows.ts";
+import { listDef } from "../work/registers.ts";
 import { computeData } from "./compute.ts";
 import { gatherFacts } from "./facts.ts";
 import * as Numbers from "./numbering.ts";
@@ -31,6 +34,7 @@ export type Documented =
   | { readonly _tag: "figures"; readonly figures: Figures }
   | { readonly _tag: "refused"; readonly reason: string };
 
+const isChatError = Schema.is(KinChatError);
 const decodeGiven = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
 );
@@ -101,6 +105,128 @@ const documented = Effect.fn("KinDocAmounts.documented")(function* (
   return found === undefined
     ? undefined
     : ({ _tag: "figures", figures: found } satisfies Documented);
+});
+
+const recordedTax = (entry: RecordRow) => {
+  const stored = parseFields(entry.fieldsJson).tax;
+  return stored !== undefined && stored !== null && isMoney(stored) ? stored : undefined;
+};
+
+/** The entry without its amount and tax, as its documents read it when they set them. */
+export const unpriced = (entry: RecordRow): RecordRow => {
+  const { tax: _tax, ...fields } = parseFields(entry.fieldsJson);
+  return { ...entry, amountMinor: null, fieldsJson: JSON.stringify(fields) };
+};
+
+/**
+ * Whether the entry's documents set its amount and tax: it isn't issued, and has none yet or holds
+ * what they come to from their own lines. An amount a person typed, billed as it is, stays theirs.
+ */
+export const pricedByDocuments = Effect.fn("KinDocAmounts.pricedByDocuments")(function* (
+  orgId: KinOrgId,
+  entry: RecordRow,
+) {
+  if ((yield* Numbers.issuedNumber(orgId, entry.recordId)) !== undefined) return false;
+  if (entry.amountMinor === null) return true;
+  const now = yield* documented(orgId, unpriced(entry)).pipe(
+    Effect.catchIf(isChatError, () => Effect.undefined),
+  );
+  if (now?._tag !== "figures") return false;
+  const { total, tax } = now.figures;
+  const stored = recordedTax(entry);
+  return (
+    entry.amountMinor === total.minor &&
+    entry.currency === total.currency &&
+    (stored === undefined || (stored.minor === tax.minor && stored.currency === tax.currency))
+  );
+});
+
+/**
+ * Writes what the draft `key`'s documents come to from their lines onto it as its amount and tax,
+ * as issuing would, in the transaction that made one. Unless they `priced` it before, an amount
+ * it holds that they don't come to stays; an issued entry is never touched here.
+ */
+export const priceDraft = Effect.fn("KinDocAmounts.priceDraft")(function* (
+  orgId: KinOrgId,
+  writer: Writer,
+  key: string,
+  priced: boolean,
+) {
+  const records = yield* KinRecords;
+  const row = yield* records.get(orgId, key);
+  if (row === undefined || row.state === "dropped") return;
+  if ((yield* Numbers.issuedNumber(orgId, row.recordId)) !== undefined) return;
+  const def = yield* listDef(orgId, row.registerId);
+  // A receipt's amount is what was received, never its document's.
+  if (def === undefined || !def.amount || def.id === "receipts") return;
+  const now = yield* documented(orgId, unpriced(row)).pipe(
+    Effect.catchIf(isChatError, () => Effect.undefined),
+  );
+  if (now?._tag !== "figures" || now.figures.total.minor === 0) return;
+  const { total, tax } = now.figures;
+  const same = row.amountMinor === total.minor && row.currency === total.currency;
+  if (!priced && row.amountMinor !== null && !same) return;
+  const stored = recordedTax(row);
+  const taxField = def.fields.some((field) => field.key === "tax" && field.type === "money");
+  const patch = {
+    ...(same ? {} : { amount: total }),
+    ...(taxField && (stored?.minor !== tax.minor || stored.currency !== tax.currency)
+      ? { fields: { tax } }
+      : {}),
+  };
+  if (Object.keys(patch).length > 0) yield* records.update(orgId, writer, row.key, patch);
+});
+
+/** Drafts read per page at start, so an org with many is read through, never in one go. */
+const FILL_PAGE = 100;
+
+/**
+ * At start: each draft made before drafts carried their document's figures, with a document and
+ * no amount, gets them now (`priceDraft`); one that can't be worked out is left as it was.
+ */
+export const fillDraftAmounts = Effect.fn("KinDocAmounts.fill")(function* (
+  page: number = FILL_PAGE,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const records = yield* KinRecords;
+  const system: Writer = { actor: { _tag: "system" }, via: "import" };
+  let filled = 0;
+  let after = { orgId: "", recordId: "" };
+  for (;;) {
+    // A startup scan across orgs; each entry is priced within its own org.
+    const rows = yield* sql<{ orgId: KinOrgId; recordId: string; key: string }>`SELECT
+        r.org_id AS "orgId", r.record_id AS "recordId", r.key FROM kin_records r
+      WHERE r.amount_minor IS NULL AND r.state <> 'dropped'
+        AND (r.org_id > ${after.orgId} OR (r.org_id = ${after.orgId} AND r.record_id > ${after.recordId}))
+        AND EXISTS (SELECT 1 FROM kin_doc_jobs j WHERE j.org_id = r.org_id
+          AND j.entry_record_id = r.record_id AND j.given_json IS NOT NULL
+          AND j.recipe IS NOT NULL AND j.outcome_json IS NOT NULL)
+        AND NOT EXISTS (SELECT 1 FROM kin_issued_numbers n
+          WHERE n.org_id = r.org_id AND n.record_id = r.record_id)
+      ORDER BY r.org_id, r.record_id LIMIT ${page}`;
+    for (const one of rows) {
+      const priced = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* priceDraft(one.orgId, system, one.key, true);
+            return (yield* records.get(one.orgId, one.key))?.amountMinor != null;
+          }),
+        )
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin couldn't give a draft its document's amount", {
+              orgId: one.orgId,
+              key: one.key,
+              cause: Cause.pretty(cause),
+            }).pipe(Effect.as(false)),
+          ),
+        );
+      if (priced) filled += 1;
+    }
+    if (rows.length < page) break;
+    after = rows.at(-1)!;
+  }
+  return filled;
 });
 
 /**
