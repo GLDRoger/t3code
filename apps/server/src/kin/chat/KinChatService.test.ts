@@ -29,6 +29,7 @@ import {
   KinChatId,
   KinKeyThumbprint,
   KinMemberId,
+  type KinChatListEvent,
   KinMessageId,
   KinMessagesSendInput,
   KinOrgId,
@@ -2371,6 +2372,52 @@ describe("KinChatService", () => {
         if (list._tag !== "snapshot") return assert.fail("Expected snapshot");
         const row = list.chats.find((candidate) => candidate.chatId === chat.chatId);
         assert.strictEqual(row?.lastMessage?.messageId, hello.messageId);
+      }).pipe(Effect.provide(layer)),
+  );
+  it.effect(
+    "sends a page's line for its body to a list that reads previews, whole while an item waits on it",
+    () =>
+      Effect.gen(function* () {
+        const { service, person, agent, chat } = yield* seed();
+        const body = `## Needs you\n- Approve the venue deposit\n\n## Money\n${"- An invented invoice, paid in full.\n".repeat(20)}`;
+        const page = yield* service.notice({
+          audience: "chat",
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          messageId: KinMessageId.make("page"),
+          body,
+        });
+        const rowOf = (event: KinChatListEvent) =>
+          event._tag === "snapshot"
+            ? event.chats.find((row) => row.chatId === chat.chatId)
+            : event._tag === "chat"
+              ? event.chat
+              : undefined;
+        const whole = rowOf(
+          Option.getOrThrow(yield* Stream.runHead(service.subscribeChats([person], {}))),
+        );
+        assert.strictEqual(whole?.lastMessage?.body, body);
+        assert.isUndefined(whole?.lastPreview);
+        const updates = yield* Stream.toQueue(
+          service.subscribeChats([person], { acceptPreview: true }),
+          { capacity: "unbounded" },
+        );
+        const short = rowOf(yield* Queue.take(updates));
+        assert.deepStrictEqual(short?.lastPreview, {
+          gist: "Approve the venue deposit",
+          brief: false,
+        });
+        assert.strictEqual(short?.lastMessage?.body, body.slice(0, 280));
+        // The waiting row shows the message's own words, so it comes whole again.
+        yield* service.addWaiting(agent, {
+          chatId: chat.chatId,
+          personId: person.personId,
+          messageId: page.message.messageId,
+          widgetId: null,
+          reason: "question",
+        });
+        assert.strictEqual((yield* Queue.take(updates))._tag, "waiting");
+        assert.deepStrictEqual(rowOf(yield* Queue.take(updates)), whole);
       }).pipe(Effect.provide(layer)),
   );
   it.effect("mutes and unmutes a chat for the caller only, live in their list", () =>

@@ -6,6 +6,8 @@ import { expect, layer as withLayer } from "@effect/vitest";
 import {
   KIN_REFRESH_TOPICS,
   KinChatError,
+  KinChatListEvent,
+  KinChatSummary,
   KinDocsEvent,
   KinDocsRpcs,
   KinFinanceRpcs,
@@ -37,6 +39,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
+import { previewRow } from "./chat/chatRowPreview.ts";
 import { KinIdentity, type PersonIdentity } from "./chat/KinIdentity.ts";
 import * as RefreshHub from "./chat/KinRefreshHub.ts";
 import { subscribeRefreshes } from "./chat/refreshes.ts";
@@ -782,6 +785,83 @@ const moneyChange = Effect.fn("KinWireBudget.moneyChange")(function* () {
   return measured;
 });
 
+/**
+ * The chat list at 300 chats whose last message is an agent's 1,500-character page: the
+ * snapshot every app open and reconnect sends, and one chat's row after a message.
+ */
+const chatList = () => {
+  const section = "- An invented invoice for the venue was paid in full today.\n".repeat(25);
+  const body = `## Needs you\n- Approve the venue deposit\n\n## Money\n${section}`.slice(0, 1_500);
+  const decode = Schema.decodeUnknownSync(KinChatSummary);
+  const chat = (i: number) =>
+    decode({
+      orgId,
+      chatId: `chat-${i}`,
+      kind: "direct",
+      title: null,
+      teamId: null,
+      lastSeq: 400,
+      lastMessageAt: created,
+      createdAt: created,
+      archivedAt: null,
+      members: [
+        { principal: { _tag: "person", personId: ownerId }, role: "owner" },
+        { principal: { _tag: "agent", agentId: `agent-${i % 8}` }, role: "member" },
+      ].map((member, m) => ({
+        ...member,
+        orgId,
+        chatId: `chat-${i}`,
+        memberId: `member-${i}-${m}`,
+        joinedAt: created,
+        leftAt: null,
+        mutedUntil: null,
+      })),
+      lastMessage: {
+        orgId,
+        chatId: `chat-${i}`,
+        messageId: `message-${i}`,
+        seq: 400,
+        author: {
+          _tag: "agent",
+          agentId: `agent-${i % 8}`,
+          memberId: `member-${i}-1`,
+          ownerPersonId: ownerId,
+          threadId: `thread-${i % 8}`,
+        },
+        authorRole: "member",
+        kind: "text",
+        body,
+        intent: "answer",
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        createdAt: created,
+        editedAt: null,
+      },
+      unread: i % 4,
+    });
+  const chats = Array.from({ length: 300 }, (_, i) => chat(i));
+  const measured: Record<string, number> = {};
+  for (const [name, row] of [
+    ["whole", (summary: KinChatSummary) => summary],
+    ["preview", (summary: KinChatSummary) => previewRow(summary, () => false)],
+  ] as const) {
+    measured[`chatList.${name}.snapshotBytes`] = wireBytes(KinChatListEvent, {
+      _tag: "snapshot",
+      chats: chats.map(row),
+      waiting: [],
+    });
+    measured[`chatList.${name}.chatBytes`] = wireBytes(KinChatListEvent, {
+      _tag: "chat",
+      chat: row(chats[0]!),
+    });
+  }
+  return measured;
+};
+
 withLayer(layer)("Kin wire budget", (it) => {
   it.effect("hot reads and one change's stream match kinWireBudget.json", () =>
     Effect.gen(function* () {
@@ -813,6 +893,7 @@ withLayer(layer)("Kin wire budget", (it) => {
       Object.assign(measured, yield* reconnect());
       Object.assign(measured, yield* Effect.scoped(attentionMove()));
       Object.assign(measured, yield* Effect.scoped(moneyChange()));
+      Object.assign(measured, chatList());
 
       expect(over, `Unpaged Kin reads over ${UNPAGED_CEILING} bytes: page them.`).toEqual([]);
       expect(

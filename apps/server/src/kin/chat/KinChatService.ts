@@ -100,6 +100,7 @@ import * as SocialCards from "../social/cards.ts";
 import { answerChange } from "../work/companyProfile.ts";
 import { KinRefreshObserver } from "./KinRefreshHub.ts";
 import { docsForViewer } from "./privateDocs.ts";
+import { previewRow } from "./chatRowPreview.ts";
 import * as Hub from "./KinChatHub.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import { effectiveAudience } from "../lead/Audience.ts";
@@ -2221,12 +2222,34 @@ const make = Effect.gen(function* () {
               ),
           );
           const initial = yield* snapshot(viewers);
-          const summaries = new Map(
-            initial.chats.map((chat) => [`${chat.orgId}:${chat.chatId}`, JSON.stringify(chat)]),
-          );
-          const waiting = new Map(
-            initial.waiting.map((item) => [item.waitingId, JSON.stringify(item)]),
-          );
+          // With `acceptPreview`: the open waiting items' messages, and the rows sent short.
+          const open = new Map<string, string>();
+          const short = new Map<string, KinMessageId>();
+          const keyOf = (chat: { orgId: KinOrgId; chatId: KinChatId }) =>
+            `${chat.orgId}:${chat.chatId}`;
+          const rowFor = (chat: KinChatSummary) => {
+            if (input.acceptPreview !== true) return chat;
+            const waited = new Set(open.values());
+            const row = previewRow(chat, (messageId) => waited.has(`${chat.orgId}:${messageId}`));
+            if (row.lastPreview !== undefined && row.lastMessage !== null)
+              short.set(keyOf(row), row.lastMessage.messageId);
+            else short.delete(keyOf(row));
+            return row;
+          };
+          const waiting = new Map<string, string>();
+          /** Whether the item reads differently from when it was last sent. */
+          const heardWaiting = (item: KinWaitingItem) => {
+            if (item.resolvedAt === null && item.messageId !== null)
+              open.set(item.waitingId, `${item.orgId}:${item.messageId}`);
+            else open.delete(item.waitingId);
+            const value = JSON.stringify(item);
+            if (waiting.get(item.waitingId) === value) return false;
+            waiting.set(item.waitingId, value);
+            return true;
+          };
+          for (const item of initial.waiting) heardWaiting(item);
+          const first = { ...initial, chats: initial.chats.map(rowFor) };
+          const summaries = new Map(first.chats.map((chat) => [keyOf(chat), JSON.stringify(chat)]));
           const live = Stream.mergeAll(streams, { concurrency: "unbounded" }).pipe(
             Stream.mapEffect(({ viewer, event }) =>
               Effect.gen(function* (): Effect.fn.Return<KinChatListEvent, ServiceError> {
@@ -2272,22 +2295,40 @@ const make = Effect.gen(function* () {
             Stream.filter(Option.isSome),
             Stream.map((event) => event.value),
           );
+          const changed = (chat: KinChatSummary): ReadonlyArray<KinChatListEvent> => {
+            const row = rowFor(chat);
+            const value = JSON.stringify(row);
+            if (summaries.get(keyOf(row)) === value) return [];
+            summaries.set(keyOf(row), value);
+            return [{ _tag: "chat", chat: row }];
+          };
           return Stream.concat(
-            Stream.succeed(initial),
+            Stream.succeed(first),
             live.pipe(
-              Stream.filter((event) => {
-                if (event._tag === "chat") {
-                  const key = `${event.chat.orgId}:${event.chat.chatId}`;
-                  const value = JSON.stringify(event.chat);
-                  if (summaries.get(key) === value) return false;
-                  summaries.set(key, value);
-                } else if (event._tag === "waiting") {
-                  const value = JSON.stringify(event.item);
-                  if (waiting.get(event.item.waitingId) === value) return false;
-                  waiting.set(event.item.waitingId, value);
-                }
-                return true;
-              }),
+              Stream.mapEffect(
+                // Once per list event: a span each would outnumber the reads they wrap.
+                Effect.fnUntraced(function* (event) {
+                  if (event._tag === "chat") return changed(event.chat);
+                  if (event._tag !== "waiting") return [event];
+                  const { item } = event;
+                  if (!heardWaiting(item)) return [];
+                  const viewer = viewers.find((identity) => identity.orgId === item.orgId);
+                  // A row already sent short is read again once an item waits on its message.
+                  if (
+                    viewer === undefined ||
+                    item.resolvedAt !== null ||
+                    item.messageId === null ||
+                    short.get(keyOf(item)) !== item.messageId
+                  )
+                    return [event];
+                  const again = yield* summary(viewer, item.chatId).pipe(
+                    Effect.map(changed),
+                    Effect.orElseSucceed(() => []),
+                  );
+                  return [event, ...again];
+                }),
+              ),
+              Stream.flattenIterable,
             ),
           );
         }),
