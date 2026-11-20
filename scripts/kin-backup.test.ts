@@ -44,8 +44,11 @@ function onFakeHost(program: string) {
 }
 
 describe("kin backup.sh", () => {
-  it("records each run's outcome where Kin reads it, keeping the last good time through a failure", () => {
-    const { out, said } = onFakeHost(String.raw`
+  // The host is Linux: backup.sh uses GNU tar and date, which macOS lacks.
+  it.skipIf(NodeOS.platform() !== "linux")(
+    "records each run's outcome where Kin reads it, keeping the last good time through a failure",
+    () => {
+      const { out, said } = onFakeHost(String.raw`
 set -u
 mkdir -p "$HOME/.t3/userdata" "$HOME/backup"
 sqlite3 "$HOME/.t3/userdata/statev2.sqlite" "CREATE TABLE notes (body TEXT);"
@@ -61,14 +64,15 @@ sed 's/"ranAt":[0-9]*/"ranAt":<ms>/' "$STATUS" | sed "s/$good/<the good run>/; s
 rm "$STATUS"
 BACKUP_DEVICE=/dev/data backup
 sed 's/[0-9]\{13\}/<ms>/g; s|"error":".*"|"error":<said>|' "$STATUS"`);
-    expect(out, said).toEqual([
-      "status 0",
-      '{"ranAt":<ms>,"ok":true,"lastGoodAt":<ms>,"bytes":<n>,"error":""}',
-      "not in the backup",
-      "status 1",
-      '{"ranAt":<ms>,"ok":false,"lastGoodAt":<the good run>,"bytes":null,"error":"<home>/backup is on /dev/data (/mnt/backup), the same disk as kin\'s data or the root filesystem.\\nMount the backup volume there first."}',
-      "status 1",
-      '{"ranAt":<ms>,"ok":false,"lastGoodAt":null,"bytes":null,"error":<said>}',
-    ]);
-  });
+      expect(out, said).toEqual([
+        "status 0",
+        '{"ranAt":<ms>,"ok":true,"lastGoodAt":<ms>,"bytes":<n>,"error":""}',
+        "not in the backup",
+        "status 1",
+        '{"ranAt":<ms>,"ok":false,"lastGoodAt":<the good run>,"bytes":null,"error":"<home>/backup is on /dev/data (/mnt/backup), the same disk as kin\'s data or the root filesystem.\\nMount the backup volume there first."}',
+        "status 1",
+        '{"ranAt":<ms>,"ok":false,"lastGoodAt":null,"bytes":null,"error":<said>}',
+      ]);
+    },
+  );
 });

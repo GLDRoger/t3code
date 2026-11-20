@@ -198,8 +198,11 @@ echo "last call $(tail -n1 "$HOME/calls")"`);
     );
   });
 
-  it("refuses before stopping anything when a disk it writes to lacks room", () => {
-    const { out, said } = onFakeHost(`
+  // The host is Linux: this path uses bash 4 and GNU df and date, which macOS lacks.
+  it.skipIf(NodeOS.platform() !== "linux")(
+    "refuses before stopping anything when a disk it writes to lacks room",
+    () => {
+      const { out, said } = onFakeHost(`
 NEW="$(build new 149)"
 KIN_DATA_FREE=$((5 * 1024 * 1024 * 1024))
 df() { echo "Filesystem 1-blocks Used Available Capacity Mounted"; echo "/dev/data 0 0 $KIN_DATA_FREE 0% /home"; }
@@ -211,20 +214,24 @@ SPACE_HEADROOM=0
 space_short && echo "room once the headroom fits"
 KIN_DATA_FREE=100
 space_short $((1024 * 1024))`);
-    expect(out, said).toEqual([
-      "status 1",
-      "current old",
-      "stops 0",
-      "room once the headroom fits",
-      "/home has 100 free, and the update needs 1.1M there (the database backup, room to migrate and roll back the database, the new build, and 0 to spare)",
-    ]);
-    expect(said).toMatch(
-      /^update\.sh: not enough disk space: \/home has 5\.0G free, and the update needs 5\.1G there \(the database backup, room to migrate and roll back the database, and 5\.0G to spare\)\. Nothing changed; the server still runs \S+\/old\.$/m,
-    );
-  });
+      expect(out, said).toEqual([
+        "status 1",
+        "current old",
+        "stops 0",
+        "room once the headroom fits",
+        "/home has 100 free, and the update needs 1.1M there (the database backup, room to migrate and roll back the database, the new build, and 0 to spare)",
+      ]);
+      expect(said).toMatch(
+        /^update\.sh: not enough disk space: \/home has 5\.0G free, and the update needs 5\.1G there \(the database backup, room to migrate and roll back the database, and 5\.0G to spare\)\. Nothing changed; the server still runs \S+\/old\.$/m,
+      );
+    },
+  );
 
-  it("keeps 3 update backups while the nightly backup is good and recent, else 10", () => {
-    const { out } = onFakeHost(`
+  // The host is Linux: this path uses bash 4 and GNU df and date, which macOS lacks.
+  it.skipIf(NodeOS.platform() !== "linux")(
+    "keeps 3 update backups while the nightly backup is good and recent, else 10",
+    () => {
+      const { out } = onFakeHost(`
 now=$(date +%s%3N)
 for status in "" '"ok":true,"lastGoodAt":'$((now - 3600000)) '"ok":true,"lastGoodAt":'$((now - 37 * 3600000)) '"ok":false,"lastGoodAt":'$((now - 3600000)); do
   mkdir -p "$BACKUP_DIR" && rm -f "$BACKUP_DIR"/* "$BACKUP_STATUS"
@@ -233,8 +240,9 @@ for status in "" '"ok":true,"lastGoodAt":'$((now - 3600000)) '"ok":true,"lastGoo
   prune_backups
   echo "kept $(ls "$BACKUP_DIR" | wc -l | tr -d ' ')"
 done`);
-    expect(out).toEqual(["kept 10", "kept 3", "kept 10", "kept 10"]);
-  });
+      expect(out).toEqual(["kept 10", "kept 3", "kept 10", "kept 10"]);
+    },
+  );
 
   it("rolls back when the server never answers", () => {
     const { out, said } = onFakeHost(`

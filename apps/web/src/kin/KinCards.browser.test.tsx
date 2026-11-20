@@ -81,6 +81,7 @@ vi.mock(import("./kinClient"), async () => {
   state.canEdit = Atom.make(true).pipe(Atom.keepAlive);
   const canEdit = state.canEdit;
   return {
+    markKinHostKnown: () => {},
     kinClient: {
       widgetAction: { label: "kin:widget:act", permissionAtom: () => allowed },
       connectionSetSendFrom: { label: "kin:connection:setSendFrom", permissionAtom: () => allowed },
