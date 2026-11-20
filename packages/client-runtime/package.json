@@ -1022,6 +1022,10 @@
     "./kin/react/kinMoneyAnswersHooks": {
       "types": "./src/kin/react/kinMoneyAnswersHooks.ts",
       "default": "./src/kin/react/kinMoneyAnswersHooks.ts"
+    },
+    "./kin/react/kinImportHooks": {
+      "types": "./src/kin/react/kinImportHooks.ts",
+      "default": "./src/kin/react/kinImportHooks.ts"
     }
   },
   "scripts": {
