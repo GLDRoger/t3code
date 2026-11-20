@@ -6,6 +6,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { KinChatError, KinOrgId } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -105,7 +106,7 @@ it.live("stops a child at the time cap and at the output cap, and gives it no en
     assert.strictEqual((yield* run("sleep 86400 & sleep 86400", 200))._tag, "timedOut");
     assert.strictEqual((yield* run("sleep 86400 & head -c 4000 /dev/zero; wait"))._tag, "tooLarge");
     // Processor time is capped too, wherever the host allows it.
-    const limited = Render.limitedCommand("/bin/sh", ["-c", "while :; do :; done"], {
+    const limited = Render.limitedCommand("/bin/sh", ["-c", "ulimit -t; while :; do :; done"], {
       cpuSeconds: 1,
       addressSpaceKiB: undefined,
     });
@@ -116,7 +117,11 @@ it.live("stops a child at the time cap and at the output cap, and gives it no en
       timeoutMs: 10_000,
       maxStdout: 1000,
     });
-    assert.deepStrictEqual(spun._tag === "exited" ? spun.signal : spun._tag, "SIGXCPU");
+    // `ulimit -t` sets the hard limit too, and Linux kills at the hard limit instead of warning.
+    assert.deepStrictEqual(
+      spun._tag === "exited" ? [spun.signal, new TextDecoder().decode(spun.stdout)] : [spun._tag],
+      [(yield* HostProcess.Platform) === "linux" ? "SIGKILL" : "SIGXCPU", "1\n"],
+    );
     const exited = yield* run("printf '%s' \"$HOME$USER$T3CODE_HOME\"; echo broken >&2; exit 3");
     assert.deepStrictEqual(
       exited._tag === "exited"
