@@ -271,10 +271,7 @@ it.effect(
         rev: forZoya.deal.rev,
         sensitive: true,
       });
-      const underHush = yield* Deals.create(
-        [owner],
-        newDeal(hush, "Invented clinic system", { owner: asZoya }),
-      );
+      const underHush = yield* Deals.create([owner], newDeal(hush, "Invented clinic system"));
       // She sees the deals of clients she sees; never a private one or one under a private
       // client, even hers.
       const seen = (yield* Deals.deals([zoya], { orgId })).deals.map((deal) => deal.key);
@@ -431,6 +428,128 @@ it.effect(
       yield* sql`UPDATE kin_people SET sees_clients = 0 WHERE person_id = ${zoyaId}`;
       assert.strictEqual(yield* refusal(Deals.deals([zoya], { orgId })), "not_allowed");
       assert.isFalse(yield* teamSeesKey(orgId, zoyaId, hers.deal.key));
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a new deal is looked after only by someone who sees it, whoever makes it: the hand-over's rule",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const { corran, hush } = yield* seed;
+      const meeraId = KinPersonId.make("meera");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES (${meeraId}, ${orgId}, 'meera', 'Meera', ${at}, 'co_owner')`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id,
+          created_at, retired_at)
+        VALUES ('lead', ${orgId}, 'Chief of staff', 'lead', ${ownerId}, ${at}, NULL)`;
+      // Rhea's and Meera's direct chats with it, where a deal given to it is reported.
+      for (const [chat, personId] of [
+        ["lead-chat", ownerId],
+        ["meera-chat", meeraId],
+      ] as const) {
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+          VALUES (${chat}, ${orgId}, 'direct', ${`${personId}:lead`}, 0, ${at})`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, role, joined_at)
+          VALUES (${`${chat}-person`}, ${orgId}, ${chat}, 'person', ${personId}, 'owner', ${at})`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            agent_id, role, joined_at)
+          VALUES (${`${chat}-lead`}, ${orgId}, ${chat}, 'agent', 'lead', 'member', ${at})`;
+      }
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
+          worker_projects_json, owner_chat_id)
+        VALUES ('lead', ${orgId}, 'Chief of staff', 0, 'lead-thread', '{}', '[]', 'lead-chat')`;
+      const meera = { _tag: "person" as const, orgId, personId: meeraId };
+      const person = (personId: KinPersonId) => ({ _tag: "person" as const, personId });
+      const agent = { _tag: "agent" as const, agentId: KinAgentId.make("lead") };
+      const cantSee = (name: string) =>
+        `${name} can't see the new deal: give it to the owner, a co-owner or someone with Clients on who sees its client.`;
+      // What an agent's write goes through, in the turn of these people (none: an owner-only turn).
+      const viaAgent = (people: ReadonlyArray<KinPersonId>) => (draft: Deals.DealDraft) =>
+        Effect.gen(function* () {
+          const actor = yield* Deals.agentActor(orgId, {
+            actor: agent,
+            via: "lead",
+            askedBy: people[0] ?? ownerId,
+            ...(people.length === 0 ? {} : { view: { people, askers: people } }),
+          });
+          yield* sql.withTransaction(Deals.createAs(actor, draft));
+        });
+      const viaApp = (who: typeof owner) => (draft: Deals.DealDraft) =>
+        Effect.asVoid(
+          Deals.create([who], {
+            orgId,
+            party: draft.partyKey,
+            title: draft.title,
+            clientRequestId: draft.originKey,
+            ...(draft.owner === undefined ? {} : { owner: draft.owner }),
+            ...(draft.sensitive === undefined ? {} : { sensitive: draft.sensitive }),
+          }),
+        );
+      type Holder =
+        | "rhea"
+        | "meera"
+        | "zoya"
+        | "dev"
+        | "zoya, private"
+        | "zoya, private client"
+        | "agent";
+      const holders: ReadonlyArray<[Holder, string, object]> = [
+        ["rhea", corran, { owner: person(ownerId) }],
+        ["meera", corran, { owner: person(meeraId) }],
+        ["zoya", corran, { owner: asZoya }],
+        ["dev", corran, { owner: person(devId) }],
+        ["zoya, private", corran, { owner: asZoya, sensitive: true }],
+        ["zoya, private client", hush, { owner: asZoya }],
+        ["agent", corran, { owner: agent }],
+      ];
+      const ownerLevel = {
+        rhea: "made",
+        meera: "made",
+        zoya: "made",
+        dev: cantSee("Dev"),
+        "zoya, private": cantSee("Zoya"),
+        "zoya, private client": cantSee("Zoya"),
+        agent: "made",
+      } as const;
+      // A teammate makes only her own, never kept private, on a client she sees.
+      const teammate = {
+        rhea: "not_allowed",
+        meera: "not_allowed",
+        zoya: "made",
+        dev: "not_allowed",
+        "zoya, private": "not_allowed",
+        "zoya, private client": "not_found",
+        agent: "not_allowed",
+      } as const;
+      const makers = [
+        ["Rhea", viaApp(owner), ownerLevel],
+        ["Meera", viaApp(meera), ownerLevel],
+        ["Zoya", viaApp(zoya), teammate],
+        ["an agent for Rhea", viaAgent([]), ownerLevel],
+        ["an agent for Zoya", viaAgent([zoyaId]), teammate],
+      ] as const;
+      for (const [maker, make, expected] of makers)
+        for (const [holder, party, extra] of holders) {
+          const title = `Invented ${holder} by ${maker}`;
+          const outcome = yield* Effect.result(
+            make({ partyKey: party, title, originKey: title, ...extra }),
+          );
+          const got =
+            outcome._tag === "Success"
+              ? "made"
+              : isChatError(outcome.failure)
+                ? outcome.failure.reason === "invalid_state"
+                  ? outcome.failure.message
+                  : outcome.failure.reason
+                : outcome.failure._tag;
+          assert.strictEqual(got, expected[holder], `${maker} for ${holder}`);
+        }
+      // A refused one left nothing behind.
+      const [{ n } = { n: -1 }] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records
+        WHERE register_id = 'deals' AND title LIKE 'Invented dev by %'`;
+      assert.strictEqual(n, 0);
     }).pipe(Effect.provide(layer)),
 );
 

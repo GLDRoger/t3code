@@ -313,6 +313,8 @@ export const createAs = Effect.fn("KinDeals.create")(function* (
           ],
         }),
   });
+  // Decided on the stored row, so the one rule is a hand-over's; a refusal rolls the write back.
+  yield* seesItAfter(actor.orgId, row, owner, "the new deal");
   if (draft.next !== undefined) yield* addStep(actor, row, draft.next, `${draft.originKey}-next`);
   return { row, created };
 });
@@ -363,11 +365,12 @@ export const updateAs = Effect.fn("KinDeals.update")(function* (
   return after;
 });
 
-/** Whoever a deal is handed to must still see it: owner level, or Clients on and not hidden. */
+/** Whoever looks after a deal must see it: owner level, or Clients on and in their Clients. */
 const seesItAfter = Effect.fn("KinDeals.seesItAfter")(function* (
   orgId: KinOrgId,
   deal: RecordRow,
   to: KinWorkPrincipal,
+  named: string = deal.key,
 ) {
   if (to._tag !== "person") return;
   const { owner } = yield* KinIdentity;
@@ -380,7 +383,7 @@ const seesItAfter = Effect.fn("KinDeals.seesItAfter")(function* (
   const [person] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
     WHERE org_id = ${orgId} AND person_id = ${to.personId}`;
   return yield* invalid(
-    `${person?.name ?? "They"} can't see ${deal.key}: give it to the owner, a co-owner or someone with Clients on who sees its client.`,
+    `${person?.name ?? "They"} can't see ${named}: give it to the owner, a co-owner or someone with Clients on who sees its client.`,
   );
 });
 
