@@ -3610,13 +3610,15 @@ describe("money answers", () => {
       readonly status?: string;
       readonly standing?: "confirmed" | "unconfirmed" | "undone";
       readonly check?: "adds_up" | "off";
+      readonly kind?: "account" | "card";
+      readonly rows?: ReadonlyArray<unknown>;
     },
   ) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const review = {
         statement: {
-          kind: "account",
+          kind: input.kind ?? "account",
           bank: input.bank ?? null,
           account: input.account,
           currency: input.currency,
@@ -3624,7 +3626,7 @@ describe("money answers", () => {
           to: input.to,
           openingMinor: input.opening ?? null,
           closingMinor: input.closing,
-          rows: [],
+          rows: input.rows ?? [],
           check: { status: input.check ?? "adds_up", line: "" },
         },
         format: "csv",
@@ -3696,7 +3698,7 @@ describe("money answers", () => {
 
         yield* defined(4, { template: "expenses" });
         const records = yield* KinRecords.KinRecords;
-        const made = new Map<string, string>();
+        const made = new Map<string, { recordId: string; key: string }>();
         for (const [key, money] of [
           ["flight", { minor: 30_000, currency: "USD" }],
           ["hotel", { minor: 76_800, currency: "EUR" }],
@@ -3711,7 +3713,7 @@ describe("money answers", () => {
             dateAt: on("2026-11-05"),
             originKey: key,
           });
-          made.set(key, row.recordId);
+          made.set(key, row);
         }
         yield* OwnerMoneyAnswers.setBudget(people, {
           orgId,
@@ -3735,8 +3737,8 @@ describe("money answers", () => {
           total: { minor: 112_900, currency: "USD" },
           missing: [],
         });
-        // Once the bank line it was paid from is linked, the hotel counts at the $835.10 that
-        // left the account on its day, not at the owner's one rate.
+        // Once a confirmed card statement matches it to its line, the hotel counts at the $835.10
+        // that line charged, not at the owner's one rate.
         yield* ensureBankList(orgId, now);
         const { row: bank } = yield* records.create(orgId, system, {
           list: "bank_transactions",
@@ -3746,7 +3748,31 @@ describe("money answers", () => {
           dateAt: on("2026-11-06"),
           originKey: "hotel-bank",
         });
-        yield* records.link(orgId, system, made.get("hotel")!, {
+        const hotel = made.get("hotel")!;
+        yield* statement("st_card", {
+          kind: "card",
+          account: "4321",
+          currency: "USD",
+          to: "2026-11-30",
+          closing: 83_510,
+          rows: [
+            {
+              index: 0,
+              date: "2026-11-06",
+              amountMinor: 83_510,
+              direction: "debit",
+              description: "INVENTED HOTEL EUR 768.00",
+              reference: null,
+              balanceMinor: null,
+              foreign: { currency: "EUR", amountMinor: 76_800 },
+            },
+          ],
+        });
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_bank_statement_entries (org_id, statement_id, seq, row_index,
+            bank_record_id, action, target_record_id)
+          VALUES (${orgId}, 'st_card', 1, 0, ${bank.recordId}, 'expense_linked', ${hotel.recordId})`;
+        yield* records.link(orgId, system, hotel.recordId, {
           kind: "record",
           target: bank.recordId,
           relation: "evidence",
@@ -3754,6 +3780,15 @@ describe("money answers", () => {
         assert.deepStrictEqual((yield* OwnerMoney.money(people, { orgId })).about?.spentThisMonth, {
           home: "USD",
           total: { minor: 113_500, currency: "USD" },
+          missing: [],
+        });
+        // Corrected to €800 after the match, the line no longer answers it: back to the rate.
+        yield* records.update(orgId, system, hotel.key, {
+          amount: { minor: 80_000, currency: "EUR" },
+        });
+        assert.deepStrictEqual((yield* OwnerMoney.money(people, { orgId })).about?.spentThisMonth, {
+          home: "USD",
+          total: { minor: 116_400, currency: "USD" },
           missing: [],
         });
         // The euros have a budget of their own now, so the dollar one leaves nothing out.

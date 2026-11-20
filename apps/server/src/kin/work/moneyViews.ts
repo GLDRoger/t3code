@@ -205,8 +205,9 @@ const dateRow = (row: RecordRow, def: ListDef, hit: DateHit, now: number): KinDa
 });
 
 /**
- * What the bank took in `home` for each foreign expense linked to exactly one bank line in it:
- * the actual amount on its day, which beats any rate. `seen` filters the bank lines as `r`.
+ * What the bank took in `home` for each foreign expense a confirmed statement matched to one debit
+ * line, while the line's foreign amount still equals the expense's: an edited expense or an undone
+ * statement falls back to the rates. One line to one expense, both ways. `seen` filters lines as `r`.
  */
 const chargedAtBank = Effect.fn("KinMoneyViews.chargedAtBank")(function* (
   orgId: KinOrgId,
@@ -219,13 +220,32 @@ const chargedAtBank = Effect.fn("KinMoneyViews.chargedAtBank")(function* (
   const bank = yield* findBankList(orgId);
   if (bank === undefined) return new Map<string, number>();
   const rows = yield* sql<{ id: string; minor: number }>`
-    SELECT l.record_id AS id, MAX(r.amount_minor) AS minor
-    FROM kin_record_links l
-    JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.target
-    WHERE l.org_id = ${orgId} AND l.record_id IN ${sql.in(expenseIds)} AND l.kind = 'record'
-      AND l.relation = 'evidence' AND r.register_id = ${bank.id} AND ${countedEntry(sql)}
+    WITH m AS (
+      SELECT e.target_record_id AS id, e.bank_record_id AS bank, e.row_index AS row,
+        s.review_json AS json
+      FROM kin_bank_statement_entries e
+      JOIN kin_bank_statements s ON s.org_id = e.org_id AND s.statement_id = e.statement_id
+      WHERE e.org_id = ${orgId} AND e.action IN ('expense_paid', 'expense_linked')
+        AND s.applied_at IS NOT NULL AND s.undone_at IS NULL
+        AND (e.target_record_id IN ${sql.in(expenseIds)} OR e.bank_record_id IN (
+          SELECT o.bank_record_id FROM kin_bank_statement_entries o
+          WHERE o.org_id = ${orgId} AND o.target_record_id IN ${sql.in(expenseIds)}))
+    )
+    SELECT m.id, MAX(r.amount_minor) AS minor
+    FROM m
+    JOIN kin_records x ON x.org_id = ${orgId} AND x.record_id = m.id
+    JOIN kin_records r ON r.org_id = ${orgId} AND r.record_id = m.bank
+    WHERE m.id IN ${sql.in(expenseIds)}
+      AND (SELECT COUNT(DISTINCT o.bank) FROM m o WHERE o.id = m.id) = 1
+      AND (SELECT COUNT(DISTINCT o.id) FROM m o WHERE o.bank = m.bank) = 1
+      AND EXISTS (SELECT 1 FROM json_each(m.json, '$.statement.rows') w
+        WHERE json_extract(w.value, '$.index') = m.row
+          AND json_extract(w.value, '$.direction') = 'debit'
+          AND json_extract(w.value, '$.foreign.currency') = x.currency
+          AND json_extract(w.value, '$.foreign.amountMinor') = x.amount_minor)
+      AND r.register_id = ${bank.id} AND ${countedEntry(sql)}
       AND r.currency = ${home} AND r.amount_minor IS NOT NULL AND ${seen}
-    GROUP BY l.record_id HAVING COUNT(*) = 1`;
+    GROUP BY m.id`;
   return new Map(rows.map((one) => [one.id, Math.abs(one.minor)]));
 });
 
