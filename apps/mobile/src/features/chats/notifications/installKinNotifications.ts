@@ -22,6 +22,7 @@ import { appAtomRegistry } from "../../../state/atom-registry";
 import { environmentPresentations } from "../../../state/presentation";
 import { requestAgentNotificationPermission } from "../../agent-awareness/notificationPermissions";
 import { resolveApsEnvironment } from "../../agent-awareness/registrationPayload";
+import { startApproverKeyCleanup } from "../approvals/useKinApproverKey";
 import { kinCachedOrgsAtom, kinClient } from "../state/kinClient";
 import { kinHostAtom } from "../state/useKinHost";
 import { KIN_NOTIFICATION_CATEGORIES } from "./kinCategories";
@@ -325,10 +326,13 @@ export function installKinNotifications(navigate: (href: string) => void): () =>
     console.warn("Reading the Kin cold-start notification failed", cause);
   }
   const disposeRegistration = createTokenRegistration();
+  // A replaced approval key whose host didn't answer is asked again when that host connects.
+  const disposeKeyCleanup = startApproverKeyCleanup();
 
   return () => {
     subscription.remove();
     delivery.dispose();
     disposeRegistration();
+    disposeKeyCleanup();
   };
 }
