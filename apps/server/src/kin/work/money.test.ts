@@ -49,6 +49,7 @@ import { moneySection, moneySummary, ownerLevelStillToInvoice } from "./moneyVie
 import { viewerOfPeople } from "./teamView.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
 import { proposalFor } from "./registers.ts";
+import { ensureBankList } from "./statements/bankList.ts";
 import { waitLine } from "./statements/passwordBudget.ts";
 import * as OwnerMoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as OwnerWork from "./ownerWork.ts";
@@ -3695,11 +3696,12 @@ describe("money answers", () => {
 
         yield* defined(4, { template: "expenses" });
         const records = yield* KinRecords.KinRecords;
+        const made = new Map<string, string>();
         for (const [key, money] of [
           ["flight", { minor: 30_000, currency: "USD" }],
           ["hotel", { minor: 76_800, currency: "EUR" }],
-        ] as const)
-          yield* records.create(orgId, system, {
+        ] as const) {
+          const { row } = yield* records.create(orgId, system, {
             list: "expenses",
             title: `Invented ${key}`,
             owner,
@@ -3709,6 +3711,8 @@ describe("money answers", () => {
             dateAt: on("2026-11-05"),
             originKey: key,
           });
+          made.set(key, row.recordId);
+        }
         yield* OwnerMoneyAnswers.setBudget(people, {
           orgId,
           category: "travel",
@@ -3729,6 +3733,27 @@ describe("money answers", () => {
         assert.deepStrictEqual((yield* OwnerMoney.money(people, { orgId })).about?.spentThisMonth, {
           home: "USD",
           total: { minor: 112_900, currency: "USD" },
+          missing: [],
+        });
+        // Once the bank line it was paid from is linked, the hotel counts at the $835.10 that
+        // left the account on its day, not at the owner's one rate.
+        yield* ensureBankList(orgId, now);
+        const { row: bank } = yield* records.create(orgId, system, {
+          list: "bank_transactions",
+          title: "Invented card hotel charge",
+          owner,
+          amount: { minor: 83_510, currency: "USD" },
+          dateAt: on("2026-11-06"),
+          originKey: "hotel-bank",
+        });
+        yield* records.link(orgId, system, made.get("hotel")!, {
+          kind: "record",
+          target: bank.recordId,
+          relation: "evidence",
+        });
+        assert.deepStrictEqual((yield* OwnerMoney.money(people, { orgId })).about?.spentThisMonth, {
+          home: "USD",
+          total: { minor: 113_500, currency: "USD" },
           missing: [],
         });
         // The euros have a budget of their own now, so the dollar one leaves nothing out.

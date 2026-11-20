@@ -38,6 +38,7 @@ import {
   toRecord,
 } from "./recordRows.ts";
 import { LISTS, parseFields } from "./lists.ts";
+import { findBankList } from "./statements/bankList.ts";
 import { allLists, isBuiltIn, isFieldDate, type ListDef, stateLabel } from "./registers.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 
@@ -203,6 +204,31 @@ const dateRow = (row: RecordRow, def: ListDef, hit: DateHit, now: number): KinDa
   allDay: hit.field?.allDay ?? (hit.kind === "due" ? row.dueAllDay : row.dateAllDay) === 1,
 });
 
+/**
+ * What the bank took in `home` for each foreign expense linked to exactly one bank line in it:
+ * the actual amount on its day, which beats any rate. `seen` filters the bank lines as `r`.
+ */
+const chargedAtBank = Effect.fn("KinMoneyViews.chargedAtBank")(function* (
+  orgId: KinOrgId,
+  expenseIds: ReadonlyArray<string>,
+  home: string,
+  seen: ReturnType<typeof seenBy>,
+) {
+  if (expenseIds.length === 0) return new Map<string, number>();
+  const sql = yield* SqlClient.SqlClient;
+  const bank = yield* findBankList(orgId);
+  if (bank === undefined) return new Map<string, number>();
+  const rows = yield* sql<{ id: string; minor: number }>`
+    SELECT l.record_id AS id, MAX(r.amount_minor) AS minor
+    FROM kin_record_links l
+    JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.target
+    WHERE l.org_id = ${orgId} AND l.record_id IN ${sql.in(expenseIds)} AND l.kind = 'record'
+      AND l.relation = 'evidence' AND r.register_id = ${bank.id} AND ${countedEntry(sql)}
+      AND r.currency = ${home} AND r.amount_minor IS NOT NULL AND ${seen}
+    GROUP BY l.record_id HAVING COUNT(*) = 1`;
+  return new Map(rows.map((one) => [one.id, Math.abs(one.minor)]));
+});
+
 /** The first instant of a month (`2026-11`) in `zone`. */
 const monthStart = (month: string, zone: string) =>
   DateTime.toEpochMillis(
@@ -314,22 +340,38 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
 
   // Spent: paid expenses by their date, in the owner's zone.
   const expenses = yield* sql<{
+    id: string;
     minor: number;
     currency: string;
     category: string | null;
     at: number;
-  }>`SELECT r.amount_minor AS minor, r.currency, r.category, ${moneyDay(sql)} AS at
+  }>`SELECT r.record_id AS id, r.amount_minor AS minor, r.currency, r.category,
+      ${moneyDay(sql)} AS at
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND ${countedEntry(sql)} AND ${seen}
       AND r.state = 'done' AND r.amount_minor IS NOT NULL AND ${moneyDay(sql)} >= ${monthStart(monthOf(since), zone)}
     ORDER BY at, category`;
-  const spentRows = expenses.map((one) => ({ ...one, day: dayIn(one.at, zone) }));
+  const charged = yield* chargedAtBank(
+    orgId,
+    expenses.filter((one) => one.currency !== home).map((one) => one.id),
+    home,
+    seen,
+  );
+  const spentRows = expenses.map((one) => {
+    const bank = charged.get(one.id);
+    return {
+      ...one,
+      day: dayIn(one.at, zone),
+      ...(bank === undefined ? {} : { charged: { minor: bank, currency: home } }),
+    };
+  });
   const spentIn = (month: string) => {
     const members = spentRows.filter((one) => monthOf(one.day) === month);
     const categories = new Map<string | null, Array<KinMoney>>();
     for (const one of members)
       categories.set(one.category, [...(categories.get(one.category) ?? []), one]);
     return {
+      members,
       total: addUp(members, home),
       byCategory: [...categories]
         .map(([category, amounts]) => ({
@@ -382,8 +424,10 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     home,
   );
   const received = { thisMonth: receivedIn(thisMonth), lastMonth: receivedIn(lastMonth) };
-  const spent = { thisMonth: spentIn(thisMonth), lastMonth: spentIn(lastMonth) };
-  const about = (totals: ReadonlyArray<KinMoney>) => aboutTotal(totals, home, rates);
+  const { members: thisMonthSpent, ...spentThisMonth } = spentIn(thisMonth);
+  const { members: lastMonthSpent, ...spentLastMonth } = spentIn(lastMonth);
+  const spent = { thisMonth: spentThisMonth, lastMonth: spentLastMonth };
+  const about = (totals: Parameters<typeof aboutTotal>[0]) => aboutTotal(totals, home, rates);
   return {
     asOf: iso(now),
     timeZone: zone,
@@ -443,8 +487,8 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
       overdue: about(overdueTotal),
       receivedThisMonth: about(received.thisMonth),
       receivedLastMonth: about(received.lastMonth),
-      spentThisMonth: about(spent.thisMonth.total),
-      spentLastMonth: about(spent.lastMonth.total),
+      spentThisMonth: about(thisMonthSpent),
+      spentLastMonth: about(lastMonthSpent),
     },
   } satisfies KinMoneySummary;
 });

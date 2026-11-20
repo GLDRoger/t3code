@@ -77,10 +77,11 @@ const RATE = /^(\d+)(?:\.(\d{1,6}))?$/u;
 /**
  * Totals in several currencies as one estimate in `home` at the owner's `rates`, summed exactly
  * and rounded once to a whole unit; currencies with no rate are named in `missing`. Undefined for
- * one currency, or when no currency could be counted. Never fetches or invents a rate.
+ * one currency, or when no currency could be counted. Never fetches or invents a rate. An amount
+ * with `charged`, what its bank line took in `home` on its day, counts at that instead.
  */
 export const aboutTotal = (
-  totals: ReadonlyArray<KinMoney>,
+  totals: ReadonlyArray<KinMoney & { readonly charged?: KinMoney }>,
   home: string,
   rates: ReadonlyArray<KinCurrencyRate>,
 ): KinMoneyAbout | undefined => {
@@ -91,7 +92,8 @@ export const aboutTotal = (
   let sum = 0n;
   let counted = 0;
   const missing: Array<string> = [];
-  for (const money of totals) {
+  for (const one of totals) {
+    const money = one.charged?.currency === home ? one.charged : one;
     if (money.currency === home) {
       sum += BigInt(money.minor) * scale;
       counted += 1;
