@@ -826,16 +826,10 @@ const make = Effect.gen(function* () {
       if (record.retiredAt !== null) return yield* retire(record);
       if (yield* paused(orgId)) return;
       if (record.threadId !== null) {
-        const unfinished = yield* sql`SELECT 1 FROM orchestration_v2_projection_provider_turns
-          WHERE thread_id = ${record.threadId} AND completed_at IS NULL LIMIT 1`;
-        const busy = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
-          WHERE thread_id = ${record.threadId}
-            AND status IN ${sql.in(["queued", ...ThreadManagementService.ACTIVE_RUN_STATUSES])} LIMIT 1`;
-        // A run T3 started for a finished task is the one thing a wake-up claims into: it takes it.
-        const notice = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
-          AND agent_id = ${agentId} AND tag = 'task.finished' AND state = 'queued'
-          AND json_extract(json, '$.threadId') = ${record.threadId} LIMIT 1`;
-        if ((unfinished.length > 0 || busy.length > 0) && notice.length === 0) {
+        const busy = yield* sql`SELECT 1 FROM kin_leads l
+          WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId}
+            AND ${KinEventQueue.leadThreadBusy(sql, "l")}`;
+        if (busy.length > 0) {
           yield* Effect.raceFirst(yield* queue.changes(orgId), threadActivity(orgId)).pipe(
             Effect.timeoutOrElse({ duration: 60_000, orElse: () => Effect.void }),
           );
