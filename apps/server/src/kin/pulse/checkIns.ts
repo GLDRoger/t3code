@@ -130,12 +130,13 @@ export const save = Effect.fn("KinCheckIns.save")(function* (
       KinMemoryItemId.make(`checkin-${now.toString(36)}-${person.personId}`),
     existing: existing !== undefined,
     chatId: existing?.chatId ?? KinChatId.make(lead.chatId),
-    // Not the seed's: a default moved here stays where it was put (`followOwnerZone`).
+    // Not the seed's: it keeps the owner's time it was set at (`followOwnerZone`).
     sourceEvent: `kin-settings:check-ins:${input.orgId}`,
     saidBy: person.personId,
     title: input.title,
     prompt: input.what,
     every,
+    ownerTime: { at: input.at, days: input.days.toSorted((a, b) => a - b) },
     // Seeded ones run somewhere around their time; a new one too, so they don't all land at once.
     around: existing === undefined || existing.looseAt !== null,
     checkIn: true,
@@ -302,12 +303,13 @@ export const saveBrief = Effect.fn("KinBriefs.save")(function* (
       scheduleId: row.scheduleId,
       existing: true,
       chatId: row.chatId,
-      // Not the seed's: a default moved here stays where it was put (`followOwnerZone`).
+      // Not the seed's: it keeps the owner's time it was set at (`followOwnerZone`).
       sourceEvent: `kin-settings:briefs:${input.orgId}`,
       saidBy: person.personId,
       title: task.title,
       prompt: task.prompt,
       every: onHostClock(at, days, zone, KinSchedules.hostTimeZone(), now),
+      ownerTime: { at, days },
       // As it fires now: one made exact on T3's screen stays exact.
       around: brief.around,
       checkIn: true,
