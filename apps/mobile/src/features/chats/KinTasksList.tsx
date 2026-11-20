@@ -14,6 +14,7 @@ import {
   kinTaskStep,
   kinTaskStepStatusShown,
   kinTasksByMove,
+  kinTasksDealFacts,
   kinTasksGroupedBy,
   type KinTasksItem,
 } from "@t3tools/client-runtime/kin/kinTasksList";
@@ -78,15 +79,22 @@ import { connectionAtomRuntime } from "../../connection/runtime";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { KinAttentionItem } from "./KinAttention";
 import { KinSearchHits } from "./KinDocsList";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { kinTabBar, useKinTab, kinTabFoot } from "./components/KinTab";
-import { KinTaskRow, KinTasksAllClear, KinWorkStaleNotice } from "./components/KinWorkPieces";
+import {
+  KinTaskRow,
+  KinTasksAllClear,
+  KinWorkStaleNotice,
+  kinCardCorners,
+} from "./components/KinWorkPieces";
 import { useKinViewerScope } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
 import { useKinOpenHit, useKinWorkLink } from "./state/kinWorkLink";
 import { useKinSearch } from "./state/useKinDocs";
 import { useKinAskAgent } from "./state/useKinMoney";
+import { useKinAttention, useKinAttentionHandle } from "./state/useKinAttention";
 import { useKinOpen } from "./state/useKinOpen";
 import { useKinTaskSteps } from "./state/useKinTaskSteps";
 import {
@@ -205,9 +213,16 @@ export function KinTasksList(
   const ownerLevel = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, environmentId));
   const { within } = props;
   const open = useKinOpen({ environmentId, orgId }, within === undefined);
+  const pulse = useKinAttention({ environmentId, orgId }, within === undefined && !open.on);
+  const facts = kinTasksDealFacts(open.on ? open.read : null, { ownerLevel, names, now, pulse });
+  const answers = useKinAttentionHandle({ environmentId, orgId });
   const counts = list.counts();
   // The same number the dock's Tasks badge shows (`useKinTasksBadge`).
-  const needsYou = kinNeedsYouCount({ open: open.on ? open.read : null, counts });
+  const needsYou = kinNeedsYouCount({
+    open: open.on ? open.read : null,
+    counts,
+    dealFacts: facts.length,
+  });
   const groupBy = filter.groupBy ?? "me";
   const searching = within === undefined && filter.text.trim() !== "";
   const items: ReadonlyArray<KinTasksItem<KinRecord>> =
@@ -219,6 +234,7 @@ export function KinTasksList(
           needsYou,
           ownerLevel,
           names,
+          facts,
         })
       : within === undefined && groupBy !== "me" && !searching
         ? kinTasksGroupedBy({ records, groupBy, summary: live.summary, names, now })
@@ -318,7 +334,7 @@ export function KinTasksList(
           }}
           data={items}
           keyExtractor={(item) => item.key}
-          extraData={[listState, changed, found, steps.status, needsYou]}
+          extraData={[listState, changed, found, steps.status, needsYou, answers.busy]}
           estimatedItemSize={76}
           recycleItems
           onEndReached={() => void list.loadMore()}
@@ -466,6 +482,32 @@ export function KinTasksList(
                   <Text textRole="footnote" className="px-5 pt-2.5 text-foreground-muted">
                     {item.text}
                   </Text>
+                );
+              case "fact":
+                return (
+                  <View
+                    className="mx-4 overflow-hidden border-continuous bg-grouped-card"
+                    style={kinCardCorners(item.first, item.last)}
+                  >
+                    {item.first ? null : <View className="ml-12 h-px bg-border-subtle" />}
+                    <KinAttentionItem
+                      environmentId={environmentId}
+                      orgId={orgId}
+                      row={item.row}
+                      names={names}
+                      handler={answers}
+                      onOpen={(to) =>
+                        to.type === "record"
+                          ? openRecord("KinWorkItem", { ...base, task: to.key })
+                          : undefined
+                      }
+                    />
+                    {answers.problem === null || !item.first ? null : (
+                      <Text className="px-4 py-2 text-sm text-danger-foreground">
+                        {answers.problem}
+                      </Text>
+                    )}
+                  </View>
                 );
               case "task": {
                 const { record } = item;

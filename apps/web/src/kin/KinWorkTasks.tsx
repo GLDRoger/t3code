@@ -11,6 +11,7 @@ import {
   kinTaskStep,
   kinTaskStepStatusShown,
   kinTasksByMove,
+  kinTasksDealFacts,
   kinTasksGroupedBy,
   type KinTaskLine,
   type KinTaskStep,
@@ -90,10 +91,12 @@ import {
   KinLoadFailed,
   KinWorkStaleLine,
 } from "./KinWorkParts";
+import { KinAttentionItem } from "./KinAttention";
 import { KinAvatar } from "./KinAvatar";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
+import { useKinAttention, useKinAttentionHandle } from "./useKinAttention";
 import { useKinOpen } from "./useKinOpen";
 import { useKinTaskSteps, type KinTaskStepStatus } from "./useKinTaskSteps";
 import {
@@ -228,14 +231,24 @@ export function KinWorkTaskList(
   );
   const ownerLevel = useKinOwnerLevel(environmentId);
   const open = useKinOpen({ environmentId, orgId });
+  const pulse = useKinAttention({ environmentId, orgId }, within === undefined && open === null);
+  const facts = kinTasksDealFacts(open, { ownerLevel, names, now, pulse });
   const counts = list.counts();
   // The same number the nav's Tasks count shows (`useKinTasksNeedsYou`).
-  const needsYou = kinNeedsYouCount({ open: open ?? null, counts });
+  const needsYou = kinNeedsYouCount({ open: open ?? null, counts, dealFacts: facts.length });
   const groupBy = filter.groupBy ?? "me";
   const searching = within === undefined && filter.text.trim() !== "";
   const items: ReadonlyArray<KinTasksItem<KinRecord>> =
     within === undefined && kinWorkByMove(filter)
-      ? kinTasksByMove({ records, moves: list.moves(), counts, needsYou, ownerLevel, names })
+      ? kinTasksByMove({
+          records,
+          moves: list.moves(),
+          counts,
+          needsYou,
+          ownerLevel,
+          names,
+          facts,
+        })
       : within === undefined && groupBy !== "me" && !searching
         ? kinTasksGroupedBy({ records, groupBy, summary: live.summary, names, now })
         : records.map((record, index) => ({
@@ -248,6 +261,7 @@ export function KinWorkTaskList(
             last: index === records.length - 1,
           }));
   const steps = useKinTaskSteps({ environmentId, orgId });
+  const answers = useKinAttentionHandle({ environmentId, orgId });
   const act = (key: KinRecordKey, action: KinWorkAction) => {
     const record = records.find((held) => held.key === key);
     if (record !== undefined) void changes.run(record, action, names);
@@ -276,7 +290,7 @@ export function KinWorkTaskList(
         data={items}
         keyExtractor={(item) => item.key}
         getItemType={(item) => item.type}
-        extraData={[listState, changed, steps.status, steps.nudged, needsYou]}
+        extraData={[listState, changed, steps.status, steps.nudged, needsYou, answers.busy]}
         recycleItems
         onEndReached={() => void list.loadMore()}
         onEndReachedThreshold={0.5}
@@ -298,6 +312,11 @@ export function KinWorkTaskList(
             />
             {notice === null || notice.undo !== null ? null : (
               <KinWorkListNotice notice={notice} onDismiss={changes.dismiss} />
+            )}
+            {answers.problem === null ? null : (
+              <p role="alert" className="px-2 text-xs text-destructive-foreground">
+                {answers.problem}
+              </p>
             )}
           </div>
         }
@@ -423,6 +442,18 @@ export function KinWorkTaskList(
                 <p className="mx-auto w-full max-w-3xl px-6 pt-3 text-xs text-muted-foreground">
                   {item.text}
                 </p>
+              );
+            case "fact":
+              return (
+                <ul className="mx-auto w-full max-w-3xl border-b border-border/60 px-4 py-1.5">
+                  <KinAttentionItem
+                    environmentId={environmentId}
+                    orgId={orgId}
+                    row={item.row}
+                    handler={answers}
+                    onOpen={(to) => (to.type === "record" ? props.onOpen(to.key) : undefined)}
+                  />
+                </ul>
               );
             case "task": {
               const { record } = item;

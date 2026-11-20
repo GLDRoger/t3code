@@ -6,7 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { sentMail } from "../connections/Sending.ts";
 import { formatMoney } from "../work/money.ts";
-import { countedPayment } from "../work/recordRows.ts";
+import { countedPayment, recordName } from "../work/recordRows.ts";
 import { seenBy, type KinViewer } from "../work/teamView.ts";
 
 /**
@@ -187,15 +187,17 @@ export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
     currency: string;
     byKind: string;
     byId: string | null;
+    number: unknown;
   }>`SELECT r.key, r.title, r.register_id AS list, p.amount_minor AS minor, p.currency,
-      p.created_by_kind AS "byKind", p.created_by_id AS "byId"
+      p.created_by_kind AS "byKind", p.created_by_id AS "byId",
+      json_extract(r.fields_json, '$.number') AS number
     FROM kin_record_payments p JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND p.created_at >= ${from} AND p.created_at < ${until}
       AND ${countedPayment(sql)} AND ${seenBy(sql, viewer)}
     ORDER BY p.created_at, p.payment_id`;
   const money = payments.map(
     (one) =>
-      `${formatMoney({ minor: one.minor, currency: one.currency })} ${one.list === "invoices" || one.list === "receipts" ? "in on" : "out on"} ${one.key} ${one.title}, recorded by ${nameOf(one.byKind, one.byId)}`,
+      `${formatMoney({ minor: one.minor, currency: one.currency })} ${one.list === "invoices" || one.list === "receipts" ? "in on" : "out on"} ${recordName(one.key, one.number)} ${one.title}, recorded by ${nameOf(one.byKind, one.byId)}`,
   );
 
   // Mail is the owner's: a narrower reader sees none of it here.

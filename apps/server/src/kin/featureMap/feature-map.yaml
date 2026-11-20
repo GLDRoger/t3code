@@ -46,6 +46,21 @@ features:
       - apps/server/src/kin/chat/KinChatService.test.ts
       - .agents/skills/verify-kin/scripts/member-attaches-file.sh
 
+  - id: chat-web
+    name: An agent searches the web and reads public pages
+    tab: chats
+    web: [home, chat]
+    phone: [tab:chats, KinChat]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      In a teammate's own chat too: the provider's own web search where it runs at the model's
+      vendor (Claude), and Kin's page reader, which reads only public https addresses. Either
+      marks the turn as having read outside text.
+    tools: [web_page]
+    proof:
+      - apps/server/src/kin/sales/webPage.test.ts
+      - apps/server/src/kin/lead/turn/providers/claude.test.ts
+
   - id: chat-character
     name: Each agent's own voice, and "undo it"
     tab: chats
@@ -106,7 +121,9 @@ features:
       is refused; at its day Kin takes the default once, or raises a question with no safe default
       once on the next working morning. Text questions close on the person's next message. Only the
       asker records an answer in words, in a turn woken by the person's message in that chat; its
-      note's Undo reopens the question.
+      note's Undo reopens the question. kin_ask_person puts a card with no default in someone
+      else's chat with the agent, saying who asks; their answer comes back to the asking chat as
+      Kin's line and one turn there, and at its day the asker is told once that it is still open.
     proof:
       - apps/server/src/kin/questions/openQuestions.test.ts
       - apps/server/src/kin/questions/rules.test.ts
@@ -717,11 +734,41 @@ features:
       A member reaches Deals only with the Clients place on, and sees every deal but those marked
       private and those under a private client. The web shows a board with Won and Lost at its
       end; at phone width and on the phone, a list by stage. Totals stay per currency.
-    tools: [deal_stages]
+    tools: [deal_stages, pipeline_read]
     proof:
       - apps/server/src/kin/work/deals.test.ts
+      - apps/server/src/kin/sales/pipeline.test.ts
       - packages/client-runtime/src/kin/kinDeals.test.ts
       - apps/web/src/kin/KinDeals.browser.test.tsx
+
+  - id: deal-concerns
+    name: What we hear, the concerns raised on deals
+    tab: clients
+    web: [clients, button:Deals, section:What we hear]
+    phone: [tab:clients, button:Deals, section:What we hear]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      Agents put each worry a prospect raised on its deal as a short label with the words heard;
+      the deal shows them under Concerns raised. What we hear counts, on the server, how many deals
+      raised each and how many of those are open, won and lost, over the deals the reader sees.
+    proof:
+      - apps/server/src/kin/work/deals.test.ts
+      - apps/server/src/kin/sales/pipeline.test.ts
+      - packages/client-runtime/src/kin/kinDeals.test.ts
+
+  - id: deal-concern-deals
+    name: The deals a concern was raised on
+    tab: clients
+    web: [clients, button:Deals, section:What we hear, dialog:Deals that raised it]
+    phone: [tab:clients, button:Deals, KinDealsConcern]
+    roles: { owner: both, co_owner: both, lead: none, member: both }
+    note: >-
+      A row of What we hear opens the deals that raised it, each with its client and its stage or
+      Won or Lost, under the same who-sees-what and whose filter as the count; one opens its page.
+    proof:
+      - apps/server/src/kin/sales/pipeline.test.ts
+      - packages/client-runtime/src/kin/kinDeals.test.ts
+      - apps/mobile/src/features/chats/state/kinLinkStack.test.ts
 
   - id: deal
     name: A deal
@@ -747,6 +794,22 @@ features:
     roles: { owner: both, co_owner: both, lead: both, member: both }
     note: A new deal names its first next step, or says there is none yet.
     proof: [apps/server/src/kin/work/deals.test.ts]
+
+  - id: import-file
+    name: Bring clients, contacts and deals in from a file
+    tab: clients
+    web: [clients, menu:Add, "?open"]
+    phone: [tab:clients, button:Import a file, KinImport]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      A CSV from a spreadsheet or another CRM: Kin proposes where each column goes, matches clients
+      by contact email, web domain, then name, and asks about close names and unknown stages before
+      anything is written. Earlier imports are listed with Undo. Also in the command palette, and
+      on the host as `kin import`.
+    proof:
+      - apps/server/src/kin/work/importFile.test.ts
+      - packages/client-runtime/src/kin/kinImport.test.ts
+      - apps/web/src/kin/KinImport.browser.test.tsx
 
   - id: deal-edit
     name: Edit a deal
@@ -775,6 +838,20 @@ features:
     proof:
       - apps/server/src/kin/work/deals.test.ts
       - apps/web/src/kin/KinDeals.browser.test.tsx
+
+  - id: marketing-list
+    name: A campaign's results, a tag's list, and Export list
+    tab: clients
+    web: [clients, "?project", dialog:List]
+    phone: [tab:clients, KinProject, KinMarketingList]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      A campaign is a project. Its results, lists and exports hold only what the reader sees in
+      Clients; without Clients there are no results or tag lists, and a project's lead exports names.
+    proof:
+      - apps/server/src/kin/work/crm.test.ts
+      - packages/client-runtime/src/kin/kinMarketing.test.ts
+      - apps/web/src/kin/KinMarketing.browser.test.tsx
 
   - id: project-people
     name: Who is on a project
@@ -1224,6 +1301,34 @@ features:
       - apps/server/src/kin/lead/messagesToPeople.test.ts
       - .agents/skills/verify-kin/scripts/hours-two-zones.sh
 
+  - id: github-username
+    name: Your GitHub username, for finding your pull requests
+    tab: settings
+    web: [home, sheet:Profile, section:GitHub username, dialog:GitHub username]
+    phone: [SettingsKin, KinProfile, section:GitHub username]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      The host sends it only on a profile its reader may change and refuses one another person
+      already has, without saying whose. Settings → Profile on the web shows the same row. Agents
+      can't set it: people_update has no field for it.
+    proof:
+      - packages/client-runtime/src/kin/kinProfiles.test.ts
+      - apps/web/src/kin/KinProfileSheet.browser.test.tsx
+      - apps/server/src/kin/people/KinPeople.test.ts
+
+  - id: teammate-github-username
+    name: Set a teammate's GitHub username
+    tab: settings
+    web: [home, sheet:Profile, section:GitHub username, dialog:GitHub username]
+    phone: [SettingsKin, KinTeam, KinTeammate, section:GitHub username]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      The owner sets anyone's; a co-owner a member's, as with the rest of a profile. Nobody else
+      sees the row on someone else's page.
+    proof:
+      - apps/web/src/kin/KinProfileSheet.browser.test.tsx
+      - apps/server/src/kin/people/KinPeople.test.ts
+
   - id: coding-agent-keys
     name: Coding agent keys for the tasks you hold
     tab: settings
@@ -1232,9 +1337,9 @@ features:
     roles: { owner: both, co_owner: both, lead: both, member: both }
     note: >-
       A person makes a key for their own coding agent (Claude Code, Codex, Cursor) to read the
-      tasks they hold, comment and set state through `/kin/you/mcp`, and nothing else. The key and
-      setup lines show once; at most three live keys, 30 days each. Settings → Profile on the web
-      shows the same section.
+      tasks they hold, comment and set state through `/kin/you/mcp`, and nothing else. The key shows
+      once; the address and the setup lines, with the key left to fill, stay on their own section.
+      At most three live keys, 30 days each. Settings → Profile on the web shows the same section.
     proof:
       - packages/client-runtime/src/kin/kinTasksKeys.test.ts
       - apps/web/src/kin/KinTasksKeys.browser.test.tsx
@@ -1273,7 +1378,7 @@ unlisted:
   "web:settings/check-ins": The app's old address; opens Kin's Settings → Check-ins.
   "web:settings/kin-connections": The app's old address; opens Kin's Settings → Connections.
   "web:settings/deals": The app's settings address for Deals; opens Kin's Settings → Deals.
-  "web:settings/kin-profile": Where app Settings search lands for quiet hours, working hours and away; opens Kin's Settings → Profile.
+  "web:settings/kin-profile": Where app Settings search lands for quiet hours, working hours, away and GitHub username; opens Kin's Settings → Profile.
   "web:?v": Picks the version of the open doc; not a screen.
   "web:?tab": Switches the Clients place between its Clients, Deals and Projects lists; not a screen.
   "web:?person": Starts Tasks narrowed to what one person holds, from their page's See all in Tasks; not a screen.

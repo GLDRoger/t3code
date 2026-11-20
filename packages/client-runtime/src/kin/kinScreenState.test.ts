@@ -261,6 +261,16 @@ describe("chat list rows", () => {
     [{ kind: "system", widgetId: "memory-changes:lead:1", body: "Remembered: x" }, "Saved a note"],
     [{ kind: "system", widgetId: "deferral:org:1", body: "Deferred to Fri" }, "Set a reminder"],
     [{ kind: "text", body: "**Fixed** `pay`" }, "Fixed pay"],
+    // Kin's morning page: its first real line under the greeting, never its markup.
+    [
+      {
+        kind: "system",
+        form: "brief",
+        createdAt: new Date(2026, 10, 9, 8).toISOString(),
+        body: "Clients:\n- Follow-ups today: 1.\n- Corran rollout has no next step.",
+      },
+      "Good morning · Follow-ups today: 1.",
+    ],
   ])("never previews a card tap's JSON or Kin's own bookkeeping", (last, preview) => {
     const held = row({ lastMessage: { author: { _tag: "system" }, status: "posted", ...last } });
     expect(kinChatRowView(held, directory).preview).toBe(preview);
@@ -395,6 +405,7 @@ describe("chat list rows", () => {
     ["## Done\n\n- **Merged** [#212](https://x.test) `main`", "Done Merged #212 main"],
     ["*Shipped* the _retry_ fix", "Shipped the retry fix"],
     ["Run:\n```ts\nawait retry()\n```", "Run: await retry()"],
+    ["Reviewed in t3-thread://v2/ab12 and [here](t3-thread://v2/cd34)", "Reviewed in and here"],
     ["2 * 3 * 4 in snake_case_name", "2 * 3 * 4 in snake_case_name"],
     [
       "Due:\n\n| Piece | Owner |\n|---|:--:|\n| Brand guide | Zoya |",

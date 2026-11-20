@@ -4,7 +4,10 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { KinAttachment, KinChatError, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -16,6 +19,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ServerConfig from "../../config.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Numbers from "../gendocs/numbering.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { newCompanyProfileJson, readProfile } from "./companyProfile.ts";
@@ -158,6 +162,42 @@ const companyIn = (country: string, homeCurrency: string, financialYearStartMont
 const linesOf = (first: unknown, rest: ReadonlyArray<unknown>, extra: ReadonlyArray<string> = []) =>
   Stream.fromIterable([JSON.stringify(first), ...rest.map((one) => JSON.stringify(one)), ...extra]);
 const books = () => linesOf(header, rows);
+
+/** Each run's action, end, and how far it said it got. */
+const runRows = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ action: string; finished: number | null; summary: string | null }>`
+    SELECT action, finished_at AS finished, summary_json AS summary FROM kin_import_runs
+    ORDER BY seq`;
+  return rows.map((one) => {
+    const summary = JSON.parse(one.summary ?? "{}") as { done?: number; rows?: number };
+    return [one.action, one.finished, summary.done, summary.rows] as const;
+  });
+});
+/** The engine again, telling each move of the imports topic into a queue with its runs' rows. */
+const watched = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const told = yield* Queue.unbounded<ReadonlyArray<readonly [string, number | undefined]>>();
+  const observer = Layer.succeed(KinRefreshObserver, {
+    touch: (_orgId, topic) =>
+      topic !== "imports"
+        ? Effect.void
+        : sql<{ action: string; summary: string | null }>`SELECT action, summary_json AS summary
+            FROM kin_import_runs WHERE finished_at IS NULL ORDER BY seq`.pipe(
+            Effect.flatMap((rows) =>
+              Queue.offer(
+                told,
+                rows.map((one) => [one.action, JSON.parse(one.summary ?? "{}").done] as const),
+              ),
+            ),
+            Effect.orDie,
+            Effect.asVoid,
+          ),
+  });
+  // Built in the test's scope: the engine's runs live in its layer's scope.
+  const built = yield* Layer.build(Layer.fresh(KinImport.layer).pipe(Layer.provide(observer)));
+  return { imports: Context.get(built, KinImport.KinImport), told };
+});
 
 const countOf = (table: string) =>
   Effect.gen(function* () {
@@ -448,7 +488,14 @@ describe("KinImport", () => {
         apply: false,
         includeChanged: false,
       });
-      assert.deepStrictEqual(plan.removes, { clients: 1, projects: 1, entries: 5, payments: 1 });
+      assert.deepStrictEqual(plan.removes, {
+        clients: 1,
+        projects: 1,
+        entries: 5,
+        payments: 1,
+        contacts: 0,
+        deals: 0,
+      });
       assert.notDeepEqual(yield* holdings, before);
       const work = yield* Stream.toQueue(records.changes(orgId), { capacity: "unbounded" });
       const heard = yield* Queue.take(work);
@@ -522,7 +569,14 @@ describe("KinImport", () => {
       assert.deepStrictEqual(undone.kept, [
         { key: acme.key, reason: `${[may.key, mine.key].toSorted().join(", ")} use it` },
       ]);
-      assert.deepStrictEqual(undone.removes, { clients: 0, projects: 1, entries: 4, payments: 1 });
+      assert.deepStrictEqual(undone.removes, {
+        clients: 0,
+        projects: 1,
+        entries: 4,
+        payments: 1,
+        contacts: 0,
+        deals: 0,
+      });
       assert.deepStrictEqual(
         undone.lists.map((one) => [one.list, one.action, one.entries]),
         [
@@ -624,7 +678,14 @@ describe("KinImport", () => {
           { key: may.key, reason: "a payment recorded in Kin is on it" },
         ].toSorted((a, b) => (a.key < b.key ? -1 : 1)),
       );
-      assert.deepStrictEqual(undone.removes, { clients: 0, projects: 0, entries: 0, payments: 0 });
+      assert.deepStrictEqual(undone.removes, {
+        clients: 0,
+        projects: 0,
+        entries: 0,
+        payments: 0,
+        contacts: 0,
+        deals: 0,
+      });
       assert.deepStrictEqual(
         yield* sql`SELECT origin_key AS "originKey" FROM kin_record_payments ORDER BY origin_key`,
         [{ originKey: "owner:may-part" }],
@@ -823,11 +884,12 @@ describe("KinImport", () => {
           ),
         );
       const seen: Array<number> = [];
-      const plan = yield* imports.plan(orgId, ownerId, many(), (done) =>
-        Effect.sync(() => {
-          seen.push(done);
-        }),
-      );
+      const plan = yield* imports.plan(orgId, ownerId, many(), {
+        progress: (done) =>
+          Effect.sync(() => {
+            seen.push(done);
+          }),
+      });
       assert.deepStrictEqual(
         [plan.rows, plan.entries.create, plan.problems.length],
         [count, count, 0],
@@ -949,9 +1011,134 @@ describe("KinImport", () => {
       const cut = yield* imports.apply(orgId, ownerId, breaking).pipe(Effect.flip);
       assert.strictEqual(cut.message, "cut off");
       assert.strictEqual(yield* countOf("kin_records"), 219);
+      // Its row never finished, as after a restart: it says how far it got, and nothing runs.
+      assert.deepStrictEqual(yield* runRows, [["apply", null, 219, 250]]);
+      assert.deepStrictEqual(yield* imports.running(orgId), []);
       const rerun = yield* imports.apply(orgId, ownerId, whole);
       assert.deepStrictEqual([rerun.entries.unchanged, rerun.entries.create], [219, 31]);
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "says how far it is at each chunk; a second import waits, and one whose caller left finishes",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const { imports, told } = yield* watched;
+        const tasks = Array.from({ length: 250 }, (_, index) => ({
+          entry: { source: `w${index}`, list: "work", title: `Task ${index}`, state: "done" },
+        }));
+        const whole = linesOf({ ...header, lists: [] }, tasks);
+        const paused = yield* Deferred.make<void>();
+        const resume = yield* Deferred.make<void>();
+        const seen: Array<readonly [number, number]> = [];
+        const progress = (done: number, of: number) =>
+          Effect.gen(function* () {
+            seen.push([done, of]);
+            if (done !== 199) return;
+            yield* Deferred.succeed(paused, undefined);
+            yield* Deferred.await(resume);
+          });
+        const caller = yield* imports
+          .apply(orgId, ownerId, whole, { progress, file: "tasks.jsonl" })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(paused);
+        // Mid-run, the run's own row and the host say the same, and who runs it.
+        assert.deepStrictEqual(yield* runRows, [["apply", null, 199, 250]]);
+        assert.deepStrictEqual(
+          (yield* imports.running(orgId)).map((one) => [
+            one.action,
+            one.personId,
+            one.file,
+            one.done,
+            one.of,
+          ]),
+          [["apply", ownerId, "tasks.jsonl", 199, 250]],
+        );
+        const busy = KinImport.IMPORT_BUSY;
+        assert.strictEqual(
+          (yield* imports.apply(orgId, ownerId, whole).pipe(Effect.flip)).message,
+          busy,
+        );
+        assert.strictEqual(
+          (yield* imports
+            .undo(orgId, ownerId, "oldbooks", { apply: true, includeChanged: false })
+            .pipe(Effect.flip)).message,
+          busy,
+        );
+        // The caller goes, as a dropped connection does; the run goes on to its end.
+        yield* Fiber.interrupt(caller);
+        yield* Deferred.succeed(resume, undefined);
+        const moves = yield* Effect.forEach(Array.from({ length: 5 }), () => Queue.take(told));
+        assert.deepStrictEqual(moves, [
+          [["apply", 0]],
+          [["apply", 99]],
+          [["apply", 199]],
+          [["apply", 250]],
+          [],
+        ]);
+        assert.deepStrictEqual(seen, [
+          [99, 250],
+          [199, 250],
+          [250, 250],
+        ]);
+        assert.strictEqual(yield* countOf("kin_records"), 250);
+        assert.deepStrictEqual(yield* imports.running(orgId), []);
+
+        // Its undo says how far it is the same way, a hundred records at a time.
+        const undone = yield* imports.undo(orgId, ownerId, "oldbooks", {
+          apply: true,
+          includeChanged: false,
+        });
+        assert.strictEqual(undone.removes.entries, 250);
+        const undoMoves = yield* Effect.forEach(Array.from({ length: 5 }), () => Queue.take(told));
+        assert.deepStrictEqual(undoMoves, [
+          [["undo", 0]],
+          [["undo", 100]],
+          [["undo", 200]],
+          [["undo", 250]],
+          [],
+        ]);
+        assert.deepStrictEqual(
+          (yield* runRows).map(([action, finished]) => [action, finished !== null]),
+          [
+            ["apply", true],
+            ["undo", true],
+          ],
+        );
+        assert.strictEqual(yield* countOf("kin_records"), 0);
+
+        // A check says how far it is on its own row too, and leaves no row when it ends.
+        const checking = yield* Deferred.make<void>();
+        const checked = yield* Deferred.make<void>();
+        const check = yield* imports
+          .plan(orgId, ownerId, whole, {
+            progress: (done) =>
+              done !== 199
+                ? Effect.void
+                : Deferred.succeed(checking, undefined).pipe(
+                    Effect.andThen(Deferred.await(checked)),
+                  ),
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(checking);
+        assert.deepStrictEqual((yield* runRows).slice(2), [["check", null, 199, 250]]);
+        yield* Deferred.succeed(checked, undefined);
+        yield* Fiber.join(check);
+        assert.deepStrictEqual(
+          (yield* runRows).map(([action]) => action),
+          ["apply", "undo"],
+        );
+        const checkMoves = yield* Effect.forEach(Array.from({ length: 5 }), () => Queue.take(told));
+        assert.deepStrictEqual(checkMoves, [
+          [["check", 0]],
+          [["check", 99]],
+          [["check", 199]],
+          [["check", 250]],
+          [],
+        ]);
+        assert.strictEqual(yield* countOf("kin_records"), 0);
+      }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
   it.each([

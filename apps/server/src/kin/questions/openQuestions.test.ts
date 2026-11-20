@@ -41,6 +41,7 @@ import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
 import * as KinToolGate from "../mcp/KinToolGate.ts";
+import { effectiveAudience, SHARED_REFUSAL } from "../lead/Audience.ts";
 import * as Handoff from "../lead/Handoff.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
 import { inheritOutside, markOutside, outsideStamp, storedStamp } from "../lead/OutsideContent.ts";
@@ -55,7 +56,10 @@ import { presetDefinition } from "../work/registers.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as Provision from "../lead/KinLeadProvision.ts";
 import * as Reach from "../lead/Reach.ts";
+import * as People from "../people/KinPeople.ts";
+import { SessionStore } from "../../auth/SessionStore.ts";
 import { encodeLeadModel } from "../lead/leadModels.ts";
+import { laneFor } from "../reply/replyLane.ts";
 import * as AskPerson from "./askPerson.ts";
 import * as Questions from "./openQuestions.ts";
 import { deliverHeld } from "../triggers/heldDelivery.ts";
@@ -447,6 +451,75 @@ it.effect("a question is asked once, and its default is taken once at its day", 
 
 // A default that sends mail is never taken: at its day nothing happens, the next working
 // morning it is raised once as a fresh card, and then it waits in Waiting on you until tapped.
+it.effect("no card is raised about what is set aside, but its owner may be asked in person", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const { sql, chats, owner, orgId, chatOf, wake } = yield* ambermill;
+      for (const [list, prefix] of [
+        ["clients", "C"],
+        ["invoices", "INV"],
+      ] as const)
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+            created_at)
+          VALUES (${orgId}, ${list}, ${list}, ${prefix}, 1, 0) ON CONFLICT DO NOTHING`;
+      for (const [id, list, key, party] of [
+        ["r-c8", "clients", "C-8", null],
+        ["r-inv8", "invoices", "INV-8", "r-c8"],
+      ] as const)
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+            owner_kind, owner_id, party_id, fields_json, created_by_kind, created_by_id,
+            origin_key, created_at, updated_at)
+          VALUES (${orgId}, ${id}, ${list}, ${key}, ${`Invented ${key}`}, 'open', 'agent',
+            'finance', ${party}, '{}', 'person', ${owner.personId}, ${`origin-${id}`}, 0, 0)`;
+      // Finance set the client aside on Rhea's word until Thursday.
+      yield* sql`INSERT INTO kin_holds (hold_id, org_id, record_id, for_person_id, until_at,
+          set_by_kind, set_by_id, on_word_of, note, set_at)
+        VALUES ('hold-c8', ${orgId}, 'r-c8', NULL, ${IST_MON_1130 + 3 * 86_400_000}, 'agent',
+          'finance', ${owner.personId}, NULL, ${IST_MON_1130 - 86_400_000})`;
+      const ask = (n: number) => callAs("chief", "kin_ask", { ...reminderAsk, intent: `ask ${n}` });
+      const checkIn = startAgentWakeup({
+        orgId,
+        agentId: KinAgentId.make("chief"),
+        threadId: ThreadId.make("chief-thread"),
+        event: (base) => ({
+          ...base,
+          _tag: "pulse",
+          provenance: { _tag: "system" },
+          factKeys: [],
+          checkIn: {
+            scheduleId: KinMemoryItemId.make("check-in"),
+            title: "Check-in",
+            what: "Check-in.",
+            slot: "d",
+          },
+        }),
+      });
+      yield* checkIn;
+      const refused = yield* ask(1);
+      assert.isFalse(refused.ok);
+      assert.match(
+        String(refused.value.message),
+        /^C-8 Invented C-8 and everything under it is set aside until 2026-11-19, by Finance on Rhea Rao's word \(2026-11-15\)\. Kin won't ask about it before then\.$/,
+      );
+      // Rhea's own message about it: she may be asked.
+      yield* wake(
+        "chief",
+        yield* chats.send(owner, {
+          chatId: chatOf("chief"),
+          body: "What about C-8?",
+          clientMessageId: "held-1",
+        }),
+      );
+      assert.isTrue((yield* ask(2)).ok);
+      // Its day come, any turn may ask again.
+      yield* TestClock.setTime(IST_MON_1130 + 3 * 86_400_000);
+      yield* checkIn;
+      assert.isTrue((yield* ask(3)).ok);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
 it.effect("a question with no safe default is raised once, then waits for its answer", () =>
   Effect.andThen(
     TestClock.setTime(IST_MON_1130),
@@ -1000,6 +1073,37 @@ const askingTeam = Effect.gen(function* () {
   const answeredWakes = sql<{ key: string; origin: string | null }>`SELECT dedupe_key AS key,
       json_extract(json, '$.origin') AS origin FROM kin_events
     WHERE org_id = ${orgId} AND dedupe_key LIKE 'question-answered:%' ORDER BY rowid`;
+  /** `who` taps `option` on the card of a question asked for someone. */
+  const tap = Effect.fn("test.tap")(function* (
+    who: Parameters<typeof chats.act>[0],
+    questionId: string,
+    option: string,
+    clientActionId: string,
+  ) {
+    const card = yield* widgetOf((yield* cardOf(questionId)).widgetId!);
+    return yield* chats.act(who, {
+      widgetId: card.widgetId,
+      revision: card.revision,
+      actionId: "choose",
+      value: option,
+      clientActionId,
+    });
+  });
+  /** The Chief of staff's turn on what Kin queued for it, and where that turn answers. */
+  const wakeQueued = Effect.gen(function* () {
+    const wakeupId = yield* startAgentWakeup({
+      orgId,
+      agentId: chief,
+      threadId: ThreadId.make("chief-thread"),
+      queued: true,
+    });
+    const turn = { orgId, agentId: chief, wakeupId };
+    const lane = Option.getOrThrow(yield* laneFor(turn));
+    return {
+      lane: { chatId: lane.chatId, mode: lane.mode },
+      audience: yield* effectiveAudience(turn),
+    };
+  });
   return {
     ...studio,
     person,
@@ -1010,6 +1114,8 @@ const askingTeam = Effect.gen(function* () {
     widgetOf,
     kinLines,
     answeredWakes,
+    tap,
+    wakeQueued,
   };
 });
 
@@ -1059,6 +1165,7 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
       assert.include(card.state, {
         question: "Does the shoot move to Friday?",
         detail: "Rhea Rao asks, through Chief of staff.",
+        askedBy: "Rhea Rao asks, through Chief of staff.",
       });
       // The same call again is a retry: the same question, no second card.
       assert.deepInclude(yield* askFor("chief", rhea, { to: "Dev" }), {
@@ -1120,6 +1227,7 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
       });
       assert.include((yield* widgetOf(rheaCard.widgetId!)).state, {
         detail: "Dev Malhotra asks, through Chief of staff.",
+        askedBy: "Dev Malhotra asks, through Chief of staff.",
       });
       const toArjun = yield* askFor("chief", dev, { to: "Arjun", intent: "call sheet" });
       assert.strictEqual(toArjun.state, "posted");
@@ -1229,6 +1337,15 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
         askFor("chief", inGroup, { to: "Zoya", intent: "props again" }),
         /never a group/,
       );
+      // A group a teammate reads: refused as any group is.
+      const crew = (yield* Context.get(services, KinGroups).create([owner], {
+        orgId,
+        title: "Crew",
+        agentIds: [KinAgentId.make("chief")],
+        personIds: [KinPersonId.make("dev")],
+      })).chatId;
+      const inCrew = yield* wakeOn("chief", "dev", crew, "Ask Rhea about the shoot.");
+      yield* refused(askFor("chief", inCrew, { to: "Rhea", intent: "crew" }), /never a group/);
     }).pipe(Effect.provide(layer)),
   ),
 );
@@ -1240,22 +1357,7 @@ it.effect("a tap on a question asked for someone goes back to the chat that aske
     TestClock.setTime(IST_MON_1130),
     Effect.gen(function* () {
       const team = yield* askingTeam;
-      const { sql, chats, orgId, owner, person, chatOf, chiefChat, askFor, wakeOn } = team;
-      const tap = Effect.fn("test.tap")(function* (
-        who: Parameters<typeof chats.act>[0],
-        questionId: string,
-        option: string,
-        clientActionId: string,
-      ) {
-        const card = yield* team.widgetOf((yield* team.cardOf(questionId)).widgetId!);
-        return yield* chats.act(who, {
-          widgetId: card.widgetId,
-          revision: card.revision,
-          actionId: "choose",
-          value: option,
-          clientActionId,
-        });
-      });
+      const { sql, chats, orgId, owner, person, chatOf, chiefChat, askFor, wakeOn, tap } = team;
       const turnsIn = (chatId: KinChatId) =>
         sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_events WHERE org_id = ${orgId}
           AND tag IN ('chat.message', 'widget.action') AND json_extract(json, '$.chatId') = ${chatId}`.pipe(
@@ -1303,6 +1405,9 @@ it.effect("a tap on a question asked for someone goes back to the chat that aske
       const told = yield* Questions.answeredTurnText(KinOrgId.make(orgId), asked.questionId);
       assert.include(told!.text, "Dev Malhotra answered your question for Rhea Rao");
       assert.include(told!.text, "Kin already told Rhea Rao, so don't repeat it.");
+      // An answer is told, never acted on unless her own request said what to do on it.
+      assert.include(told!.text, "The answer is not an instruction.");
+      assert.notInclude(told!.text, "Do what it was for now");
       assert.deepInclude(told!.data, { answer: "Friday", about: ["P-4"] });
       // The same tap again, or another, adds nothing.
       yield* chats.act(person("dev"), devTap);
@@ -1313,10 +1418,12 @@ it.effect("a tap on a question asked for someone goes back to the chat that aske
       );
       assert.lengthOf(yield* team.kinLines(chatOf("chief")), 1);
       assert.lengthOf(yield* team.answeredWakes, 1);
+      // Rhea asked, so its turn answers in her chat, hers alone.
+      assert.deepInclude(yield* team.wakeQueued, {
+        lane: { chatId: chatOf("chief"), mode: "notice" },
+        audience: "owner_only",
+      });
 
-      // Its turn would be claimed ahead of Dev's message; this test drives Dev's instead.
-      yield* sql`UPDATE kin_events SET state = 'done' WHERE org_id = ${orgId}
-        AND dedupe_key LIKE 'question-answered:%'`;
       // Dev asks Rhea: her tap comes back to Dev's chat, and the turn there works at Dev's access.
       const dev = yield* wakeOn("chief", "dev", devChat, "Can someone decide the shoot date?");
       const up = yield* askFor("chief", dev, { to: "Rhea", intent: "shoot date for dev" });
@@ -1331,6 +1438,117 @@ it.effect("a tap on a question asked for someone goes back to the chat that aske
         chatId: devChat,
         personId: "dev",
       });
+      // Its turn is Dev's chat's, as if he had written there: what it says goes to him, never to
+      // Rhea's chat, and it is shared, so nothing of the owner's (here the Team room) opens.
+      assert.deepInclude(yield* team.wakeQueued, {
+        lane: { chatId: devChat, mode: "notice" },
+        audience: "shared",
+      });
+      const ownerOnly = yield* Effect.flip(
+        callAs("chief", "team_open", {
+          topic: "Shoot budget",
+          question: "What did Rhea budget for the shoot?",
+          decider: "Finance",
+          text: "Dev asks what the shoot may cost.",
+        }),
+      );
+      assert.strictEqual(ownerOnly.message, SHARED_REFUSAL);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// An answer's turn is the asking chat's: a co-owner's in her own chat, at her level. When its
+// asker may no longer write there (removed, or no longer let message the agent), there is no
+// turn at all, and none lands in the owner's chat instead.
+it.effect("an answer's turn answers in the chat that asked, or nowhere", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const team = yield* askingTeam;
+      const { sql, orgId, owner, services, person, chatOf, chiefChat, askFor, wakeOn, tap } = team;
+      const wakes = sql<{ key: string; state: string; chatId: string | null }>`SELECT
+          dedupe_key AS key, state, json_extract(json, '$.chatId') AS "chatId" FROM kin_events
+        WHERE org_id = ${orgId} AND dedupe_key LIKE 'question-answered:%' ORDER BY rowid`;
+
+      // Meera, a co-owner, asks Dev from her own chat: its turn is hers, owner-tier as she is.
+      const meeraChat = yield* chiefChat("meera");
+      const meera = yield* wakeOn("chief", "meera", meeraChat, "Ask Dev about the shoot.");
+      const toDev = yield* askFor("chief", meera, { to: "Dev" });
+      yield* tap(person("dev"), toDev.questionId, "option-1", "dev-tap");
+      assert.deepStrictEqual(yield* team.kinLines(meeraChat), [
+        "Dev Malhotra answered “Friday” to “Does the shoot move to Friday?”",
+      ]);
+      assert.deepInclude(yield* team.wakeQueued, {
+        lane: { chatId: meeraChat, mode: "notice" },
+        audience: "owner_only",
+      });
+
+      // Zoya, Dev and Arjun each ask Rhea something of their own.
+      const askRhea = Effect.fn("test.askRhea")(function* (who: string) {
+        const chatId = yield* chiefChat(who);
+        const turn = yield* wakeOn("chief", who, chatId, "Can Rhea decide this?");
+        return { chatId, ...(yield* askFor("chief", turn, { to: "Rhea", intent: `for ${who}` })) };
+      });
+      const zoya = yield* askRhea("zoya");
+      const dev = yield* askRhea("dev");
+      const arjun = yield* askRhea("arjun");
+      const rheaLines = yield* team.kinLines(chatOf("chief"));
+
+      // Zoya is removed: Rhea's answer still closes her card, and no turn follows anywhere.
+      const people = yield* People.KinPeople.pipe(
+        Effect.provide(
+          People.layer.pipe(
+            Layer.provide(
+              Layer.mock(SessionStore)({ cookieName: "kin", legacyCookieName: undefined }),
+            ),
+            Layer.provide(Layer.succeedContext(services)),
+          ),
+        ),
+      );
+      yield* people.removeAccess(
+        {
+          sessionId: AuthSessionId.make("owner"),
+          subject: "browser",
+          method: "browser-session-cookie",
+          scopes: AuthStandardClientScopes,
+        },
+        { orgId, personId: KinPersonId.make("zoya") },
+      );
+      yield* tap(owner, zoya.questionId, "option-1", "rhea-zoya");
+      assert.strictEqual((yield* questionRow(sql, zoya.questionId)).state, "answered");
+      // Arjun may still write: his turn waits, in his chat.
+      yield* tap(owner, arjun.questionId, "option-1", "rhea-arjun");
+      // The owner restricts Dev and Arjun from the agent, so neither may message it: Arjun's
+      // waiting turn never runs, and Dev's answer, after, starts none.
+      for (const id of ["dev", "arjun"])
+        yield* Provision.reachSet({
+          editor: { _tag: "person", personId: owner.personId },
+          orgId,
+          a: { kind: "person", personId: KinPersonId.make(id) },
+          b: { kind: "agent", agentId: KinAgentId.make("chief") },
+          restricted: true,
+        }).pipe(Effect.provideContext(services));
+      yield* tap(owner, dev.questionId, "option-1", "rhea-dev");
+      assert.deepStrictEqual(yield* wakes, [
+        { key: `question-answered:${toDev.questionId}`, state: "done", chatId: meeraChat },
+        { key: `question-answered:${arjun.questionId}`, state: "expired", chatId: arjun.chatId },
+      ]);
+      // Each asking chat has Kin's answer line, and Rhea's own chat nothing more.
+      for (const asked of [dev, arjun])
+        assert.include(
+          yield* team.kinLines(asked.chatId),
+          "Rhea Rao answered “Friday” to “Does the shoot move to Friday?”",
+        );
+      assert.deepStrictEqual(yield* team.kinLines(chatOf("chief")), rheaLines);
+      // Her cards close as answered, the removed asker's by no name.
+      for (const [asked, text] of [
+        [zoya, "Sent to the chat that asked."],
+        [dev, "Sent to Dev Malhotra."],
+      ] as const)
+        assert.deepInclude(
+          (yield* team.widgetOf((yield* team.cardOf(asked.questionId)).widgetId!)).state,
+          { outcome: { title: "Answered", text } },
+        );
     }).pipe(Effect.provide(layer)),
   ),
 );
@@ -1476,8 +1694,10 @@ it.effect("a question asked for someone away waits for them, then is raised once
       const { sql, orgId, chatOf, chiefChat, askFor, wakeOn } = team;
       const devChat = yield* chiefChat("dev");
       const cardsFor = (chatId: KinChatId) =>
-        sql<{ question: string; detail: string }>`SELECT json_extract(w.state_json, '$.question')
-            AS question, json_extract(w.state_json, '$.detail') AS detail
+        sql<{ askedBy: string | null; question: string; detail: string }>`SELECT
+            json_extract(w.state_json, '$.askedBy') AS "askedBy",
+            json_extract(w.state_json, '$.question') AS question,
+            json_extract(w.state_json, '$.detail') AS detail
           FROM kin_widgets w WHERE w.chat_id = ${chatId} AND w.type = 'choice' ORDER BY w.rowid`;
       // Back on Thursday the 19th, on the day stored.
       yield* sql`UPDATE kin_people SET away_until = '2026-11-19' WHERE person_id = 'dev'`;
@@ -1488,6 +1708,10 @@ it.effect("a question asked for someone away waits for them, then is raised once
       const asked = yield* askFor("chief", rhea, { to: "Dev" });
       assert.strictEqual(yield* stampOf(asked.questionId), "mail-connection");
       assert.strictEqual(asked.state, "held");
+      assert.strictEqual(
+        asked.note,
+        "Dev Malhotra hasn't signed in to Kin yet: it waits in their chat with you and reaches them when they do. Nobody was alerted. Their answer comes back here.",
+      );
       assert.isNull((yield* team.cardOf(asked.questionId)).widgetId);
       assert.lengthOf(yield* cardsFor(devChat), 0);
       const [arrives] = yield* team.kinLines(chatOf("chief"));
@@ -1503,6 +1727,7 @@ it.effect("a question asked for someone away waits for them, then is raised once
       const cards = yield* cardsFor(devChat);
       assert.deepStrictEqual(cards, [
         {
+          askedBy: "Rhea Rao asks, through Chief of staff.",
           question: "Does the shoot move to Friday?",
           detail: "Rhea Rao asks, through Chief of staff.",
         },
@@ -1521,12 +1746,20 @@ it.effect("a question asked for someone away waits for them, then is raised once
       const raised = yield* cardsFor(devChat);
       assert.lengthOf(raised, 2);
       assert.strictEqual(raised[1]!.question, "Still open: Does the shoot move to Friday?");
+      assert.strictEqual(raised[1]!.askedBy, "Rhea Rao asks, through Chief of staff.");
       assert.match(
         raised[1]!.detail,
         /^Rhea Rao asks, through Chief of staff\.\nChief of staff asked /,
       );
       assert.strictEqual((yield* questionRow(sql, asked.questionId)).state, "open");
       assert.lengthOf(yield* team.answeredWakes, 0);
+      // Rhea is told once that it ran past its day; raised again, as a restore does, Kin adds nothing.
+      const runOut =
+        "Dev Malhotra hasn't answered “Does the shoot move to Friday?” by its day; Kin asked Dev Malhotra once more.";
+      assert.deepStrictEqual((yield* team.kinLines(chatOf("chief"))).slice(1), [runOut]);
+      yield* sql`UPDATE kin_questions SET raised_at = NULL WHERE question_id = ${asked.questionId}`;
+      assert.strictEqual(yield* settle(orgId, raiseAt + 2 * 86_400_000), 1);
+      assert.deepStrictEqual((yield* team.kinLines(chatOf("chief"))).slice(1), [runOut]);
 
       // His tap on the raised card answers it; the turn that answer wakes has read outside text.
       const card = yield* team.widgetOf((yield* questionRow(sql, asked.questionId)).raiseWidget!);

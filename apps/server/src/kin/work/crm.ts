@@ -1,10 +1,13 @@
 import {
+  KIN_CAMPAIGN_SOURCE,
   KIN_RECORDS_PAGE_CAP,
   KIN_PROJECT_BILLING,
   isCalendarDay,
   KinChatError,
   KinRecordId,
   type KinBlockedOn,
+  type KinCampaignResults,
+  type KinMoney,
   type KinContact,
   type KinOrgId,
   type KinPartyDetail,
@@ -63,6 +66,7 @@ import {
   toRecord,
 } from "./recordRows.ts";
 import { contactAll, contactSensitive } from "./contactDetails.ts";
+import { spellingsOf } from "./tags.ts";
 import { lastContacts, touchesOf } from "./touches.ts";
 
 /**
@@ -127,6 +131,44 @@ type PartyRowSql = {
   readonly overdue: number | null;
 };
 
+/** The campaigns these sources name that this viewer sees in Clients, by key. */
+export const campaignsNamed = Effect.fn("KinCrm.campaignsNamed")(function* (
+  orgId: KinOrgId,
+  sources: ReadonlyArray<string | null>,
+  viewer: KinViewer,
+) {
+  const keys = [
+    ...new Set(
+      sources.flatMap((source) =>
+        source?.startsWith(KIN_CAMPAIGN_SOURCE) === true
+          ? [source.slice(KIN_CAMPAIGN_SOURCE.length)]
+          : [],
+      ),
+    ),
+  ];
+  if (keys.length === 0) return new Map<string, KinRecordRef>();
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ recordId: string; key: string; title: string }>`
+    SELECT r.record_id AS "recordId", r.key, r.title FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'projects' AND r.key IN ${sql.in(keys)}
+      AND ${crmSeenBy(sql, viewer)}
+    ORDER BY r.key`;
+  return new Map(rows.map((row) => [row.key, ref(row.recordId, row.key, row.title)]));
+});
+
+/** A source as read: a campaign by its name, or the word alone for one this viewer can't see. */
+export const sourceShown = (
+  source: string | null,
+  campaigns: ReadonlyMap<string, KinRecordRef>,
+) => {
+  if (source === null) return {};
+  if (!source.startsWith(KIN_CAMPAIGN_SOURCE)) return { source: titled(source) };
+  const campaign = campaigns.get(source.slice(KIN_CAMPAIGN_SOURCE.length));
+  return campaign === undefined
+    ? { source: titled("Campaign") }
+    : { source: campaign.title, campaign };
+};
+
 /**
  * Clients, prospects and vendors with what each side owes, from one grouped read of the open Work
  * entries `viewer` sees in Clients (`crmSeenBy`): a count or a next step never names work they can't.
@@ -183,6 +225,11 @@ const partyRowsWhere = Effect.fn("KinCrm.partyRows")(function* (
           WHERE n = 1 ORDER BY party_id`;
   const nextBy = new Map(next.map((row) => [row.partyId, row]));
   const last = yield* lastContacts(orgId, ids, now, viewer);
+  const campaigns = yield* campaignsNamed(
+    orgId,
+    rows.map((row) => fieldText(parseFields(row.fieldsJson), "source")),
+    viewer,
+  );
   return rows.map((row): KinPartyRow => {
     const soonest = nextBy.get(row.recordId);
     const fields = parseFields(row.fieldsJson);
@@ -194,7 +241,7 @@ const partyRowsWhere = Effect.fn("KinCrm.partyRows")(function* (
       name: titled(row.title),
       kind: partyKind(row.category),
       ...(row.category === "prospect" ? { prospect: true as const } : {}),
-      ...(source === null ? {} : { source: titled(source) }),
+      ...sourceShown(source, campaigns),
       ...(tags.length === 0 ? {} : { tags: tags.map(titled) }),
       owner: owned(row.ownerKind, row.ownerId),
       active: row.state === "open",
@@ -228,6 +275,7 @@ type ProjectRowSql = {
   readonly partyTitle: string | null;
   readonly partyCategory: string | null;
   readonly partySensitive: number | null;
+  readonly category: string | null;
   readonly ownerKind: string;
   readonly ownerId: string;
   readonly state: KinProjectState;
@@ -259,7 +307,7 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
   const rows = yield* sql<ProjectRowSql>`
     SELECT p.record_id AS "recordId", p.key, p.title, p.party_id AS "partyId",
       pa.key AS "partyKey", pa.title AS "partyTitle", pa.category AS "partyCategory",
-      pa.sensitive AS "partySensitive",
+      pa.sensitive AS "partySensitive", p.category,
       p.owner_kind AS "ownerKind", p.owner_id AS "ownerId", p.state, p.due_at AS "dueAt",
       p.due_all_day AS "dueAllDay", p.sensitive, p.rev, n.open, n.late, n."waitingLong"
     FROM kin_records p
@@ -302,6 +350,7 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
         health: healthOf({ state: row.state, targetAt: row.dueAt, late, waitingOverAWeek, now }),
         sensitive: row.sensitive === 1,
         sensitiveInherited: row.partySensitive === 1,
+        ...(row.category === "campaign" ? { campaign: true as const } : {}),
         rev: row.rev,
       } satisfies KinProjectRow,
       because: {
@@ -334,6 +383,8 @@ export const parties = Effect.fn("KinCrm.parties")(function* (
     readonly owner?: KinWorkPrincipal | undefined;
     readonly active?: boolean | undefined;
     readonly text?: string | undefined;
+    readonly source?: string | undefined;
+    readonly tag?: string | undefined;
     readonly cursor?: string | undefined;
     readonly limit?: number | undefined;
   },
@@ -342,7 +393,37 @@ export const parties = Effect.fn("KinCrm.parties")(function* (
   const sql = yield* SqlClient.SqlClient;
   const offset = yield* pageOf(input.cursor);
   const limit = Math.min(input.limit ?? 50, KIN_RECORDS_PAGE_CAP);
-  const where = [
+  const where = yield* partiesWhere(orgId, input, viewer);
+  const [count] = yield* sql<{ total: number }>`SELECT COUNT(*) AS total FROM kin_records c
+    WHERE ${sql.and([sql`c.org_id = ${orgId}`, sql`c.register_id = 'clients'`, ...where])}`;
+  const rows = yield* partyRowsWhere(orgId, now, where, "attention", limit, offset, viewer);
+  const total = count?.total ?? 0;
+  const next = offset + rows.length;
+  return { rows, total, nextCursor: next < total ? `o:${next}` : null };
+});
+
+/** The Clients filter as SQL over `c`, for the list and for the contacts at what it shows. */
+export const partiesWhere = Effect.fn("KinCrm.partiesWhere")(function* (
+  orgId: KinOrgId,
+  input: {
+    readonly kind?: KinPartyKind | undefined;
+    readonly prospect?: true | undefined;
+    readonly owner?: KinWorkPrincipal | undefined;
+    readonly active?: boolean | undefined;
+    readonly text?: string | undefined;
+    readonly source?: string | undefined;
+    readonly tag?: string | undefined;
+  },
+  viewer: KinViewer,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const spellings =
+    input.tag === undefined ? undefined : yield* spellingsOf(orgId, input.tag, viewer);
+  const contactSeen =
+    viewer._tag === "ownerLevel"
+      ? sql`1 = 1`
+      : sql.and(viewer.people.map((person) => crmSeesAs(sql, person, "ct")));
+  return [
     ...(viewer._tag === "ownerLevel"
       ? []
       : viewer.people.map((person) => crmSeesAs(sql, person, "c"))),
@@ -359,13 +440,20 @@ export const parties = Effect.fn("KinCrm.parties")(function* (
     ...(input.text === undefined || input.text.trim() === ""
       ? []
       : [sql`instr(lower(c.title), ${input.text.trim().toLowerCase()}) > 0`]),
+    ...(input.source === undefined
+      ? []
+      : [sql`json_extract(c.fields_json, '$.source') = ${input.source.trim()}`]),
+    ...(spellings === undefined
+      ? []
+      : [
+          sql`(EXISTS (SELECT 1 FROM json_each(c.fields_json, '$.tags') t
+              WHERE t.value IN ${sql.in(spellings)})
+            OR EXISTS (SELECT 1 FROM kin_records ct, json_each(ct.fields_json, '$.tags') t
+              WHERE ct.org_id = c.org_id AND ct.register_id = 'contacts'
+                AND ct.party_id = c.record_id AND ct.state = 'open' AND ${contactSeen}
+                AND t.value IN ${sql.in(spellings)}))`,
+        ]),
   ];
-  const [count] = yield* sql<{ total: number }>`SELECT COUNT(*) AS total FROM kin_records c
-    WHERE ${sql.and([sql`c.org_id = ${orgId}`, sql`c.register_id = 'clients'`, ...where])}`;
-  const rows = yield* partyRowsWhere(orgId, now, where, "attention", limit, offset, viewer);
-  const total = count?.total ?? 0;
-  const next = offset + rows.length;
-  return { rows, total, nextCursor: next < total ? `o:${next}` : null };
 });
 
 /** Projects: open by default, soonest target first, a page at a time. */
@@ -377,6 +465,7 @@ export const projects = Effect.fn("KinCrm.projects")(function* (
     readonly state?: KinProjectState | undefined;
     readonly text?: string | undefined;
     readonly person?: string | undefined;
+    readonly campaign?: true | undefined;
     readonly cursor?: string | undefined;
     readonly limit?: number | undefined;
   },
@@ -392,6 +481,7 @@ export const projects = Effect.fn("KinCrm.projects")(function* (
       : viewer.people.map((person) => personSeesAs(sql, person, "p"))),
     sql`p.state = ${input.state ?? "open"}`,
     ...(input.partyId === undefined ? [] : [sql`p.party_id = ${input.partyId}`]),
+    ...(input.campaign === true ? [sql`p.category = 'campaign'`] : []),
     ...(input.text === undefined || input.text.trim() === ""
       ? []
       : [sql`instr(lower(p.title), ${input.text.trim().toLowerCase()}) > 0`]),
@@ -465,6 +555,9 @@ export const toContact = (row: RecordRow): KinContact => {
     phone: text("phone"),
     emails: contactAll(fields, "email"),
     phones: contactAll(fields, "phone"),
+    ...(fieldList(fields, "tags").length === 0
+      ? {}
+      : { tags: fieldList(fields, "tags").map(titled) }),
     notes: row.notes,
     active: row.state === "open",
     sensitive: row.sensitive === 1 || row.inheritedSensitive === 1,
@@ -545,6 +638,10 @@ export const projectDetail = Effect.fn("KinCrm.projectDetail")(function* (
       const who = principalOfText(text);
       return who === null ? [] : [who];
     }),
+    // A campaign turned off keeps its audience for when it returns; its form shows the kept one.
+    ...(row.category === "campaign" || fieldText(fields, "audience") !== null
+      ? { audience: fieldText(fields, "audience") as KinProjectDetail["audience"] }
+      : {}),
     healthBecause: counted!.because,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
@@ -789,4 +886,73 @@ export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
     seq,
     asOf: iso(now),
   } satisfies KinProjectPage;
+});
+
+type Counted = {
+  readonly currency: string | null;
+  readonly minor: number | null;
+  readonly count: number;
+};
+const countedOf = (rows: ReadonlyArray<Counted>) => ({
+  count: rows.reduce((sum, row) => sum + row.count, 0),
+  values: rows.flatMap((row) =>
+    row.currency === null || row.minor === null
+      ? []
+      : [{ minor: row.minor, currency: row.currency as KinMoney["currency"] }],
+  ),
+});
+
+/** Deals at the clients and prospects that came from this campaign, as the viewer sees them. */
+export const dealsFromCampaign = (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  key: string,
+  viewer: KinViewer,
+) =>
+  // Its client must be seen too; `crmSeenBy` reads `r`, which inside names the client.
+  sql`r.party_id IN (SELECT r.record_id FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'clients'
+      AND json_extract(r.fields_json, '$.source') = ${`${KIN_CAMPAIGN_SOURCE}${key}`}
+      AND ${crmSeenBy(sql, viewer)})`;
+
+/**
+ * A campaign's results, counted from what this viewer reads in Clients (`crmSeenBy`) over every
+ * row: one hidden from them is left out of every count, so no count says it is there.
+ */
+export const campaignResults = Effect.fn("KinCrm.campaignResults")(function* (
+  orgId: KinOrgId,
+  campaign: RecordRow,
+  viewer: KinViewer,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const source = `${KIN_CAMPAIGN_SOURCE}${campaign.key}`;
+  const [parties] = yield* sql<{ prospects: number | null; clients: number | null }>`
+    SELECT SUM(r.category = 'prospect') AS prospects, SUM(r.category = 'client') AS clients
+    FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'clients'
+      AND r.state = 'open' AND json_extract(r.fields_json, '$.source') = ${source}
+      AND ${crmSeenBy(sql, viewer)}`;
+  const fromIt = dealsFromCampaign(sql, orgId, campaign.key, viewer);
+  const deals = (state: "open" | "done") => sql<Counted>`
+    SELECT json_extract(r.fields_json, '$.value.currency') AS currency,
+      SUM(json_extract(r.fields_json, '$.value.minor')) AS minor, COUNT(*) AS count
+    FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'deals'
+      AND r.state = ${state} AND ${fromIt} AND ${crmSeenBy(sql, viewer)}
+    GROUP BY json_extract(r.fields_json, '$.value.currency') ORDER BY currency`;
+  const audience = fieldText(parseFields(campaign.fieldsJson), "audience");
+  const spellings = audience === null ? [] : yield* spellingsOf(orgId, audience, viewer);
+  const [people] =
+    spellings.length === 0
+      ? [{ n: 0 }]
+      : yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records r
+          WHERE r.org_id = ${orgId} AND r.register_id = 'contacts' AND r.state = 'open'
+            AND EXISTS (SELECT 1 FROM json_each(r.fields_json, '$.tags') t
+              WHERE t.value IN ${sql.in(spellings)})
+            AND ${crmSeenBy(sql, viewer)}`;
+  return {
+    prospects: parties?.prospects ?? 0,
+    clients: parties?.clients ?? 0,
+    open: countedOf(yield* deals("open")),
+    won: countedOf(yield* deals("done")),
+    audience: people?.n ?? 0,
+  } satisfies KinCampaignResults;
 });

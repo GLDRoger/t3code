@@ -41,6 +41,7 @@ import * as Docs from "../work/docs.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as LeadMoney from "../work/leadMoney.ts";
 import * as LeadWork from "../work/leadWork.ts";
+import { outlook } from "../work/moneyAnswers.ts";
 import { moneySection, moneySummary } from "../work/moneyViews.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
 import * as OwnerMoney from "../work/ownerMoney.ts";
@@ -531,6 +532,10 @@ describe("recipe documents", () => {
       const turnRef = { orgId, agentId: lead, wakeupId: "wake-3" };
       for (const tool of ["kin_document", "kin_recipes", "kin_issue", "kin_recipe_undo"])
         assert.isFalse(yield* sharedToolAllowed(turnRef, tool, { recipe: "report" }), tool);
+      // So is filing a file the agent made, a screenshot included: a teammate's chat gets no doc.
+      assert.isFalse(
+        yield* sharedToolAllowed(turnRef, "kin_document", { file: "/srv/scratch/run/shot.png" }),
+      );
     }).pipe(Effect.provide(layer)),
   );
 
@@ -904,6 +909,138 @@ describe("recipe documents", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("give a draft the amount and tax its lines come to, owed by nobody until issued", () =>
+    Effect.gen(function* () {
+      const work = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const now = Date.parse("2026-11-12T06:00:00.000Z");
+      const figures = (key: string) =>
+        Effect.map(records.get(orgId, key), (row) => [
+          row!.amountMinor,
+          row!.currency,
+          JSON.parse(row!.fieldsJson).tax?.minor ?? null,
+        ]);
+      // A moment apart, as made again later: the latest of a doc's renders is what it shows.
+      const make = (entry: string, inputs: Record<string, unknown>) =>
+        Effect.andThen(
+          TestClock.adjust(1_000),
+          LeadDocuments.make(scope, invoice({ entry, title: `Invoice ${entry}`, inputs })),
+        );
+      const line = (rate: string, quantity = "1") => [{ description: "Design", quantity, rate }];
+      yield* LeadWork.create(scope, {
+        sourceEventId: work,
+        records: [
+          { list: "clients", title: "Invented Local", placeOfSupply: "Karnataka" },
+          { list: "clients", title: "Invented Abroad", placeOfSupply: "United Kingdom" },
+        ],
+      });
+      yield* LeadWork.create(scope, {
+        sourceEventId: work,
+        records: [
+          { list: "invoices", title: "Across states", client: "Invented Acme", state: "open" },
+          { list: "invoices", title: "Same state", client: "Invented Local", state: "open" },
+          { list: "invoices", title: "Export", client: "Invented Abroad", state: "open" },
+          { list: "invoices", title: "Typed", client: "Invented Acme", amount: "5,900" },
+        ],
+      });
+      // Its document's total and tax, the moment it is made: one tax line, two, or none.
+      yield* make("INV-2", { lines: line("₹25,000") });
+      yield* make("INV-3", { lines: line("₹10,000", "2") });
+      yield* make("INV-4", { lines: line("₹1,000"), exportUnderLut: true });
+      assert.deepStrictEqual(
+        [yield* figures("INV-2"), yield* figures("INV-3"), yield* figures("INV-4")],
+        [
+          [2_950_000, "INR", 450_000],
+          [2_360_000, "INR", 360_000],
+          [100_000, "INR", 0],
+        ],
+      );
+      // New lines price it again, and its history says what moved.
+      yield* make("INV-2", { lines: line("₹30,000") });
+      assert.deepStrictEqual(yield* figures("INV-2"), [3_540_000, "INR", 540_000]);
+      const history = (yield* records.detail((yield* records.get(orgId, "INV-2"))!)).changes;
+      assert.deepStrictEqual(
+        history.flatMap((change) => change.fields.filter((one) => one.field === "amount")),
+        [
+          { field: "amount", from: "₹29,500.00", to: "₹35,400.00" },
+          { field: "amount", from: null, to: "₹29,500.00" },
+        ],
+      );
+      // A typed amount stays as typed: billed as it is, or refused against lines it isn't.
+      assert.deepStrictEqual(yield* figures("INV-1"), [100_001, "INR", null]);
+      yield* make("INV-1", { billTo: "9 Invented Road, Pune" });
+      assert.deepStrictEqual(yield* figures("INV-1"), [100_001, "INR", null]);
+      assert.match(
+        (yield* make("INV-5", { lines: line("₹1,000") }).pipe(Effect.flip)).message,
+        /the lines come to ₹1,180\.00 with tax, but the entry is recorded at ₹5,900\.00/,
+      );
+      assert.deepStrictEqual(yield* figures("INV-5"), [590_000, "INR", null]);
+      // Lines that come to what was typed give it its tax, and from then on price it.
+      yield* make("INV-5", { lines: line("₹5,000") });
+      assert.deepStrictEqual(yield* figures("INV-5"), [590_000, "INR", 90_000]);
+      yield* make("INV-5", { lines: line("₹6,000") });
+      assert.deepStrictEqual(yield* figures("INV-5"), [708_000, "INR", 108_000]);
+
+      // A suggestion takes its document's amount too, and counts in nothing until a person keeps it.
+      const suggested = yield* records.create(
+        orgId,
+        { actor: { _tag: "agent", agentId: lead }, via: "lead" },
+        {
+          list: "invoices",
+          title: "Suggested",
+          originKey: "suggested-invoice",
+          owner: { _tag: "agent", agentId: lead },
+          confirmed: false,
+          partyId: (yield* records.get(orgId, "INV-2"))!.partyId,
+        },
+      );
+      yield* make(suggested.row.key, { lines: line("₹2,000") });
+      const kept = (yield* records.get(orgId, suggested.row.key))!;
+      assert.deepStrictEqual([kept.amountMinor, kept.confirmed], [236_000, 0]);
+      // An agent reads the same amount and tax, still a suggestion.
+      const read = yield* LeadWork.get(scope, { key: kept.key });
+      assert.deepStrictEqual(
+        [read.amount, read.fields, read.stateLabel, read.suggested],
+        [
+          "₹2,360.00",
+          { tax: "₹360.00" },
+          "Draft, suggested: waits for the owner or a co-owner to keep it",
+          true,
+        ],
+      );
+      // Drafts and a suggestion, priced, are owed by nobody: in no Money or outlook figure.
+      const summary = yield* moneySummary(orgId, now, KIN_OWNER_LEVEL);
+      assert.deepStrictEqual([summary.owed.total, summary.owed.overdue], [[], []]);
+      const ahead = yield* outlook(orgId, now);
+      assert.deepStrictEqual(ahead.incoming, []);
+
+      // A draft from before drafts took their document's figures gets them at start, once.
+      yield* sql`UPDATE kin_records SET amount_minor = NULL, currency = NULL,
+          fields_json = json_remove(fields_json, '$.tax')
+        WHERE org_id = ${orgId} AND key IN ('INV-3', 'INV-4')`;
+      assert.strictEqual(yield* Amounts.fillDraftAmounts(1), 2);
+      assert.deepStrictEqual(
+        [yield* figures("INV-3"), yield* figures("INV-4")],
+        [
+          [2_360_000, "INR", 360_000],
+          [100_000, "INR", 0],
+        ],
+      );
+      assert.strictEqual(yield* Amounts.fillDraftAmounts(), 0);
+
+      // Issued, its figures stay what they were issued with, whatever its document says later.
+      yield* LeadDocuments.issue(scope, { entry: KinRecordKey.make("INV-2"), sourceEventId: work });
+      const issued = yield* figures("INV-2");
+      assert.deepStrictEqual(issued, [3_540_000, "INR", 540_000]);
+      yield* make("INV-2", { lines: line("₹40,000") }).pipe(Effect.ignore);
+      yield* sql`UPDATE kin_records SET amount_minor = NULL WHERE org_id = ${orgId} AND key = 'INV-2'`;
+      assert.strictEqual(yield* Amounts.fillDraftAmounts(), 0);
+      yield* sql`UPDATE kin_records SET amount_minor = 3540000 WHERE org_id = ${orgId} AND key = 'INV-2'`;
+      assert.deepStrictEqual(yield* figures("INV-2"), issued);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("are issued only with the amount the document asks for, and only when it says it", () =>
     Effect.gen(function* () {
       const work = yield* seed;
@@ -990,6 +1127,18 @@ describe("recipe documents", () => {
         [quote.draft, latestData().tax.total.text, latestData().validText],
         [true, "₹2,36,000.00", "12 Dec 2026"],
       );
+      // A draft quote carries what its document comes to, and is issued with exactly that.
+      const priced = Effect.map(records.get(orgId, "QT-1"), (row) => [
+        row!.amountMinor,
+        row!.currency,
+        JSON.parse(row!.fieldsJson).tax,
+      ]);
+      const draftQuote = yield* priced;
+      assert.deepStrictEqual(draftQuote, [
+        23_600_000,
+        "INR",
+        { minor: 3_600_000, currency: "INR" },
+      ]);
       const issued = yield* LeadDocuments.issue(scope, {
         entry: KinRecordKey.make("QT-1"),
         sourceEventId: yes,
@@ -1000,6 +1149,7 @@ describe("recipe documents", () => {
         // Numbered, a quote is still a draft: it reads Sent only once it went out.
         ["QT/26-27/001", "open", 23_600_000, "QT/26-27/001"],
       );
+      assert.deepStrictEqual(yield* priced, draftQuote);
       // A quote is no money owed.
       const money = yield* moneySummary(
         orgId,
@@ -2330,6 +2480,25 @@ describe("files the agent makes", () => {
       }).pipe(Effect.flip);
       assert.match(bare.message, /give its full path in file/);
       assert.sameMembers([...new Set(shownCards)], ["D-1"]);
+      // A screenshot a delegated run left in its Scratch folder is filed as an image with its card.
+      const shots = `${config.baseDir}/scratch/review-run/shots`;
+      yield* fs.makeDirectory(shots, { recursive: true });
+      const png = `${shots}/phone-390-save-alert.png`;
+      yield* fs.writeFile(png, Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0));
+      const shot = yield* AgentFiles.fileDocument(scope, {
+        title: "Save alert on a phone",
+        file: png,
+        sourceEventId: "event-3",
+      });
+      const [shotDoc] = shot.documents;
+      assert.include(shownCards, shotDoc!.key);
+      const shotFile = Docs.toVersion(
+        (yield* Docs.versionOf(orgId, (yield* versionsOf(shotDoc!.key)).doc.recordId))!,
+      ).file;
+      assert.deepStrictEqual(
+        [shotFile?.name, shotFile?.mimeType],
+        ["phone-390-save-alert.png", "image/png"],
+      );
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 

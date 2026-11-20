@@ -334,6 +334,8 @@ describe("KinRefreshHub", () => {
         "chat/KinChatRepository.ts",
         "lead/peopleUpdate.ts",
         "lead/awaySet.ts",
+        // A person's own morning page setting, pinned below: no people screen reads it.
+        "pulse/checkIns.ts",
       ],
       // A sign-out's cascade (auth/linkedDevices.ts) runs in the session store, below Kin's hub,
       // and returns the companies it changed: the session store tells the hub after commit.
@@ -346,6 +348,8 @@ describe("KinRefreshHub", () => {
       kin_trigger_settings: ["triggers/routines.ts"],
       kin_visual_hosts: ["chat/KinVisualHosts.ts"],
       kin_money_budgets: ["work/budgets.ts"],
+      // An import's and an undo's own row: each chunk moves `imports`, as does each run's end.
+      kin_import_runs: ["work/KinImport.ts", "work/importUndo.ts"],
       // A key's last use, written as the key is admitted, shows at the next read.
       kin_tasks_keys: ["tasksKey/TasksKeys.ts", "people/KinPeople.ts", "auth/linkedDevices.ts"],
       // A clear stamps open suggestions in the repository; `KinChatService.clear` tells the hub.
@@ -366,5 +370,20 @@ describe("KinRefreshHub", () => {
         if (!writers[match[1]!]!.includes(file)) found.push(`${file}: ${match[1]}`);
     }
     assert.deepStrictEqual(found, []);
+    const briefs = NodeFS.readFileSync(NodePath.join(root, "pulse/checkIns.ts"), "utf8");
+    const sets = [...briefs.matchAll(/(?:INSERT INTO|UPDATE|DELETE FROM)\s+kin_people\b([^`]*)`/g)];
+    assert.deepStrictEqual(
+      sets.map((one) =>
+        /^ SET morning_json = \$\{morningJson\(\{[^}]*\}\)\}\s+WHERE /.test(one[1]!),
+      ),
+      [true],
+    );
+    const readers = NodeFS.readdirSync(root, { recursive: true, encoding: "utf8" }).filter(
+      (file) =>
+        file.endsWith(".ts") &&
+        !/\.test\.ts$|migrations\//.test(file) &&
+        NodeFS.readFileSync(NodePath.join(root, file), "utf8").includes("morning_json"),
+    );
+    assert.deepStrictEqual(readers.toSorted(), ["pulse/checkIns.ts", "pulse/personMorning.ts"]);
   });
 });

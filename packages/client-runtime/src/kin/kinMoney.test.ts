@@ -262,6 +262,14 @@ describe("company details", () => {
     expect(fields(kinCompanyEditSections(uk, ukDraft))).not.toContain("gstin");
     expect(fields(kinCompanyEditSections(uk, ukDraft))).toContain("taxRate");
     for (const id of india) expect(fields(kinCompanyEditSections(uk, ukDraft))).not.toContain(id);
+    // The LUT's day reads as a day, as it does everywhere else, and is still edited as stored.
+    const filed = { ...(profile as object), lutDate: "2026-04-01" } as never;
+    expect(
+      kinCompanyRead(filed)
+        .flatMap((one) => one.rows)
+        .find((row) => row.id === "lutDate")?.value,
+    ).toBe("Apr 1, 2026");
+    expect(kinCompanyDraftOf(filed).lutDate).toBe("2026-04-01");
     // An IFSC kept from before shows only while the company is in India.
     expect(kinCompanyRead(uk).flatMap((one) => one.rows.map((row) => row.id))).not.toContain(
       "ifsc",

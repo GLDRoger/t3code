@@ -283,6 +283,8 @@ export const KinTurnChange = Schema.Struct({
   key: KinRefKey,
   // Absent from an older host.
   kind: Schema.optional(KinRecordLinkKind),
+  /** A contact's client, whose page lists it, when this reader sees it; absent from an older host. */
+  party: Schema.optional(KinRefKey),
   title: Schema.String,
   what: Schema.String,
   change: Schema.Struct({ agentId: KinAgentId, seq: PositiveInt }),
@@ -497,6 +499,16 @@ export type KinSendCard = typeof KinSendCard.Type;
 export const KinChoiceCardState = Schema.Struct({
   question: KinTrimmedText.check(Schema.isMaxLength(240)),
   detail: Schema.NullOr(KinText.check(Schema.isMaxLength(2000))),
+  /**
+   * Asked for someone else: who asks, and through which agent, as the card's first line, above
+   * the question. `detail` opens with the same line for older clients.
+   */
+  askedBy: Schema.optionalKey(KinTrimmedText.check(Schema.isMaxLength(500))),
+  /**
+   * What holds only until someone answers, such as "Until someone chooses, …": shown while the
+   * card is open, never once it is settled. `detail` opens with it for older clients.
+   */
+  whileOpen: Schema.optionalKey(KinTrimmedText.check(Schema.isMaxLength(600))),
   // An agent's kin_ask offers at most four; Kin's own cards, such as a statement's currency, up to eight.
   options: Schema.Array(KinChoiceOption).check(Schema.isMinLength(2), Schema.isMaxLength(8)),
   /** A picture of what is asked about, such as a new logo: a file in this card's chat. */

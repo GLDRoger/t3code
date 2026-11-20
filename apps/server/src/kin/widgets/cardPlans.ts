@@ -169,6 +169,19 @@ const AnsweredPlan = Schema.Struct({
   closedAt: Schema.Number,
 });
 export type AnsweredPlan = typeof AnsweredPlan.Type;
+/**
+ * Kin's own card when someone who looked after clients left (`people/leaver.ts`): give it all to
+ * one person, or leave it as it is. Bound to that removal by its instant. Never drawn by an agent.
+ */
+const LeaverPlan = Schema.Struct({
+  kind: Schema.Literal("leaver"),
+  personId: Schema.String,
+  personName: Schema.String,
+  removedAt: Schema.Number,
+  /** Who takes it all; null is "Leave them as they are". */
+  to: Schema.NullOr(Schema.Struct({ personId: Schema.String, name: Schema.String })),
+});
+export type LeaverPlan = typeof LeaverPlan.Type;
 export const CardPlan = Schema.Union([
   RecordPlan,
   StartPlan,
@@ -178,6 +191,7 @@ export const CardPlan = Schema.Union([
   TakenPlan,
   RecommendPlan,
   AnsweredPlan,
+  LeaverPlan,
 ]);
 export type CardPlan = typeof CardPlan.Type;
 const PlanJson = Schema.fromJsonString(CardPlan);

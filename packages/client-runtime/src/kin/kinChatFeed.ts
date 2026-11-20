@@ -12,6 +12,8 @@ import {
   type KinPersonId,
   type KinRecordKey,
   type KinWidget,
+  kinIsBrief,
+  kinThreadLinksAsWords,
   kinWhenFormat,
   scanKinDocFences,
 } from "@t3tools/contracts";
@@ -525,12 +527,14 @@ export function buildKinFeedRows(
       previousAuthor = null;
       return;
     }
-    // Host cards (memory changes, routines) arrive as system messages carrying a widget, and a
-    // worker's screenshots as one carrying files: both draw as messages, not a line.
+    // Host cards (memory changes, routines) arrive as system messages carrying a widget, a
+    // worker's screenshots as one carrying files, and Kin's own page as a brief: all draw as
+    // messages, not a line.
     if (
       isSystem(message) &&
       message.widgetId === null &&
-      (message.attachments ?? []).length === 0
+      (message.attachments ?? []).length === 0 &&
+      !kinIsBrief(message.body, message.form)
     ) {
       const notice = retryNotice(message);
       const retry = notice ? lastOwnText : null;
@@ -678,7 +682,7 @@ const BARE_URL = /<?(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])>?/g;
 
 /** Markdown read aloud: link text without its address, no markers, one sentence per line. */
 export function kinPlainText(markdown: string): string {
-  return kinPlainTables(markdown)
+  return kinPlainTables(kinThreadLinksAsWords(markdown))
     .split("\n")
     .filter((line) => !/^\s*(```|~~~)/.test(line))
     .map((line) =>
@@ -735,7 +739,7 @@ const imageAsText = (alt: string) => (alt.trim() ? `Image: ${alt.trim()}` : "Ima
  * the native parser) can load or open an agent's image URL.
  */
 export const kinBodyMarkdown = (body: string) =>
-  body
+  kinThreadLinksAsWords(body)
     .replace(MARKDOWN_IMAGE, (_match, alt: string) => imageAsText(alt))
     .replace(HTML_IMAGE, "Image");
 
@@ -756,7 +760,7 @@ export const kinDocMarkdown = (
   body: string,
   src: (id: string) => string = (id) => `${KIN_VISUAL_FILE_SCHEME}${id}`,
 ) =>
-  body
+  kinThreadLinksAsWords(body)
     .replace(MARKDOWN_IMAGE, (_match, alt: string, destination: string | undefined) => {
       const id = destination === undefined ? null : kinDocFileId(destination);
       return id === null ? imageAsText(alt) : `![${alt}](${src(id)})`;

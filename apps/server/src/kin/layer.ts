@@ -23,6 +23,7 @@ import * as ExecutionNotices from "./chat/executionNotices.ts";
 import * as KinPush from "./push/layer.ts";
 import * as LevelControl from "./levels/LevelControl.ts";
 import * as MemoryChanges from "./memory/MemoryChanges.ts";
+import * as KinImport from "./work/KinImport.ts";
 import * as KinRecords from "./work/KinRecords.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 import { KinChatService } from "./chat/KinChatService.ts";
@@ -32,7 +33,7 @@ import { answerChoice, refusedChoice, resumeInterruptedSends } from "./work/card
 import { requireRefreshObserver } from "./chat/KinRefreshHub.ts";
 import { KinIdentity, KinNewCompanyCountryUnset } from "./chat/KinIdentity.ts";
 import { seedPlaybooks } from "./work/playbookSeeds.ts";
-import { seedCharacters } from "./lead/characters.ts";
+import { offerNewCharacter, seedCharacters } from "./lead/characters.ts";
 import { closeSubject } from "./open/closeSubject.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
@@ -90,6 +91,12 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           Effect.logWarning("Kin default characters not written", Cause.pretty(cause)),
         ),
       );
+      yield* offerNewCharacter(owner.orgId).pipe(
+        Effect.provide(services),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't offer the new character", Cause.pretty(cause)),
+        ),
+      );
       yield* DevFakeMail.connectFakeAccounts(owner).pipe(Effect.provide(services));
       const hub = yield* KinChatHub;
       const scope = yield* Effect.scope;
@@ -136,7 +143,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
               KinPush.layer,
               LevelControl.layer,
               MemoryChanges.layer,
-              KinRecords.layer,
+              KinImport.layer.pipe(Layer.provideMerge(KinRecords.layer)),
               Render.layer.pipe(
                 Layer.provideMerge(Workspace.layer),
                 Layer.provide(

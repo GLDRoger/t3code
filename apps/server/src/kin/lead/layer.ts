@@ -1,4 +1,5 @@
 import * as SocialMcp from "../social/mcp.ts";
+import * as SalesMcp from "../sales/mcp.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as DeferralFlow from "../triggers/deferralFlow.ts";
@@ -56,7 +57,7 @@ import * as KinRecommend from "../recommend/KinRecommend.ts";
 import * as OpenShadow from "../open/shadow.ts";
 import { handlers as pulseHandlers, KinPulseToolkit } from "../pulse/mcp.ts";
 import { importWork } from "../work/importWork.ts";
-import { reportIssuedWithoutAmount } from "../gendocs/amounts.ts";
+import { fillDraftAmounts, reportIssuedWithoutAmount } from "../gendocs/amounts.ts";
 import { countedEntry } from "../work/recordRows.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
@@ -289,6 +290,7 @@ const memoryPullRequests = Layer.unwrap(
 
 const registration = Layer.mergeAll(
   SocialMcp.registration,
+  SalesMcp.registration,
   McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers),
   McpHttpServer.toolkitRegistration(KinWorkToolkit, workHandlers),
   McpHttpServer.toolkitRegistration(KinDocsToolkit, docHandlers),
@@ -388,6 +390,25 @@ const issuedAmounts = Layer.effectDiscard(
     forkParked,
   ),
 );
+// At every start: a draft with a document and no amount takes its document's (`gendocs/amounts.ts`).
+const draftAmounts = Layer.effectDiscard(
+  fillDraftAmounts().pipe(
+    Effect.tap((filled) =>
+      filled === 0
+        ? Effect.void
+        : Effect.logInfo("Kin gave drafts their documents' amounts", { filled }),
+    ),
+    Effect.catchCause((cause) =>
+      Effect.logWarning(
+        "Kin couldn't give drafts their documents' amounts; the next start tries again",
+        {
+          cause: Cause.pretty(cause),
+        },
+      ),
+    ),
+    forkParked,
+  ),
+);
 const production = withServices(
   Layer.mergeAll(
     runner,
@@ -397,6 +418,7 @@ const production = withServices(
     DelegatedTasks.layer,
     workImport,
     issuedAmounts,
+    draftAmounts,
   ).pipe(
     Layer.provideMerge(documents),
     Layer.provideMerge(Team.layer),

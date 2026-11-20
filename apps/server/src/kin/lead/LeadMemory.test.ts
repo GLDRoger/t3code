@@ -791,11 +791,47 @@ it.live(
           item: { ...input.item, id: KinMemoryItemId.make(id), title: `Invented ${id}`, body },
         });
         yield* service.write(scope, noted("amount-claim", "Invented retainer is $4,000 a month"));
+        const linked = (id: string, body: string, links: ReadonlyArray<string>) => {
+          const write = noted(id, body);
+          return { ...write, item: { ...write.item, links } };
+        };
         yield* service.write(
           scope,
-          noted("vault-claim", "The deploy key is in the vault under invented/deploy"),
+          linked("vault-claim", "The deploy key is in the vault under invented/deploy", [
+            "topic:launch",
+          ]),
         );
-        yield* service.write(scope, noted("status-claim", "Invented launch is on track"));
+        // A second thing said about one subject: the refusal lists what is there and the moves.
+        const status = linked("status-claim", "Invented launch is on track", [
+          "topic:launch",
+          "topic:plan",
+        ]);
+        assert.strictEqual(
+          (yield* service.write(scope, status).pipe(Effect.flip)).message,
+          'Open items of the same kind share a link with it: vault-claim "Invented vault-claim". If it says the same, there is nothing to save; if it replaces one, supersede that id; if it is a different matter, send the same write again with besides: ["vault-claim"].',
+        );
+        assert.strictEqual(
+          (yield* service
+            .write(scope, { ...status, besides: [KinMemoryItemId.make("a-item")] })
+            .pipe(Effect.flip)).message,
+          "Memory write refused: besides names only open items of the same kind that share a link with it.",
+        );
+        assert.strictEqual(
+          (yield* service
+            .write(scope, {
+              ...quoted,
+              item: { ...quoted.item, id: KinMemoryItemId.make("a-item"), sensitive: true },
+            })
+            .pipe(Effect.flip)).message,
+          "Memory item a-item already exists. Update it, or leave out `id` to make a new item.",
+        );
+        assert.deepStrictEqual(
+          yield* service.write(scope, {
+            ...status,
+            besides: [KinMemoryItemId.make("vault-claim")],
+          }),
+          { itemId: "status-claim" },
+        );
         // A turn that was shown something sensitive writes for the owner alone, whatever it says.
         yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
           VALUES (${orgId}, 'fixture-wakeup', 0)`;
@@ -1328,6 +1364,33 @@ it.live(
           for (const hidden of ["a-item", "team-item", "Invented service maintenance"])
             assert.notInclude(message, hidden);
         }
+        // What it can see is listed with the moves; one item it can't makes it the fixed refusal,
+        // and naming one it can't in `besides` is refused the same way.
+        const topic = (
+          id: string,
+          links: ReadonlyArray<string>,
+          besides?: ReadonlyArray<string>,
+        ) => ({
+          ...said,
+          item: { ...said.item, id: KinMemoryItemId.make(id), links },
+          ...(besides === undefined
+            ? {}
+            : { besides: besides.map((id) => KinMemoryItemId.make(id)) }),
+        });
+        assert.include(
+          yield* refusal(service.write(scope, topic("plan-claim", ["topic:plan"]))),
+          'status-claim "Invented status-claim". If it says the same',
+        );
+        for (const attempt of [
+          topic("launch-claim", ["topic:launch"]),
+          topic("launch-claim", ["topic:launch"], ["status-claim"]),
+          topic("launch-claim", ["topic:launch"], ["status-claim", "vault-claim"]),
+        ])
+          assert.strictEqual(yield* refusal(service.write(scope, attempt)), ordinary);
+        assert.deepStrictEqual(
+          yield* service.write(scope, topic("plan-claim", ["topic:plan"], ["status-claim"])),
+          { itemId: "plan-claim" },
+        );
         // A teammate's messages cause at most so much to be saved a day, counted from stored rows.
         const now = yield* Clock.currentTimeMillis;
         for (let index = 0; index < 20; index++)

@@ -44,10 +44,25 @@ export function kinAskAgents(
 }
 
 /**
- * What an Ask about a task or a project starts with in the agent's composer: its key, which the
- * agent looks it up by, and its name, so the person sees what they are asking about.
+ * An entry as an Ask names it to an agent: an issued invoice's or quote's number, as the person
+ * sees it, then the key the agent's tools take, "INV/26-27/004 (INV-1)"; else the key alone.
  */
-export function kinAskRecordDraft(record: { readonly key: string; readonly title: string }) {
+export function kinAskName(key: string, number: unknown) {
+  return typeof number === "string" && number.trim() !== "" ? `${number.trim()} (${key})` : key;
+}
+
+/**
+ * What an Ask about an entry starts with in the agent's composer: its name for the agent, and its
+ * title, so the person sees what they are asking about. A numbered name already ends in the
+ * bracketed key, so its title follows bare, as Needs attention's Ask has it.
+ */
+export function kinAskRecordDraft(record: {
+  readonly key: string;
+  readonly title: string;
+  readonly number?: unknown;
+}) {
+  const name = kinAskName(record.key, record.number);
   const title = record.title.trim();
-  return title === "" ? `About ${record.key}: ` : `About ${record.key} (${title}): `;
+  if (title === "") return `About ${name}: `;
+  return name === record.key ? `About ${name} (${title}): ` : `About ${name} ${title}: `;
 }

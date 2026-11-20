@@ -5,6 +5,8 @@ import {
   KIN_WEEKDAYS,
   kinBriefHasDays,
   kinBriefLine,
+  kinBriefTitle,
+  kinBriefTurnsOff,
   kinCoveredLine,
   kinBriefProblem,
   kinBriefSave,
@@ -26,7 +28,8 @@ import { KIN_DIALOG_PARTS } from "./kinOverlayParts";
 
 /**
  * The briefs this person receives, their own to set: when the morning brief comes, and whether
- * and when the afternoon check-in and evening summary do. Nothing shows for who receives none.
+ * and when the afternoon check-in and evening summary do, or a teammate's own morning page.
+ * Nothing shows for who receives none.
  */
 export function KinBriefsSetting(props: {
   readonly environmentId: EnvironmentId;
@@ -75,7 +78,7 @@ export function KinBriefsSetting(props: {
         value.briefs.map((brief) => (
           <SettingsRow
             key={brief.kind}
-            title={KIN_BRIEFS.titles[brief.kind]}
+            title={kinBriefTitle(brief)}
             description={
               <>
                 {kinBriefLine(brief)}
@@ -90,19 +93,19 @@ export function KinBriefsSetting(props: {
                   size="xs"
                   variant="outline"
                   disabled={busy === brief.kind}
-                  aria-label={`${KIN_BRIEFS.edit}: ${KIN_BRIEFS.titles[brief.kind]}`}
+                  aria-label={`${KIN_BRIEFS.edit}: ${kinBriefTitle(brief)}`}
                   onClick={() => setEditing(brief)}
                 >
                   {KIN_BRIEFS.edit}
                 </Button>
-                {kinBriefHasDays(brief.kind) ? null : (
+                {kinBriefTurnsOff(brief) ? (
                   <Switch
-                    aria-label={`${KIN_BRIEFS.titles[brief.kind]}: ${brief.on ? KIN_BRIEFS.on : KIN_BRIEFS.off}`}
+                    aria-label={`${kinBriefTitle(brief)}: ${brief.on ? KIN_BRIEFS.on : KIN_BRIEFS.off}`}
                     checked={brief.on}
                     disabled={busy === brief.kind}
                     onCheckedChange={(on) => void change(brief, { ...brief, on })}
                   />
-                )}
+                ) : null}
               </div>
             }
           />
@@ -155,7 +158,7 @@ function BriefDialog(props: {
           }}
         >
           <Parts.Header>
-            <Parts.Title>{KIN_BRIEFS.titles[draft.kind]}</Parts.Title>
+            <Parts.Title>{kinBriefTitle(draft)}</Parts.Title>
             <Parts.Description>
               {[KIN_CHECK_INS.zone(props.zone), kinCoveredLine(draft)]
                 .filter((line) => line !== null)

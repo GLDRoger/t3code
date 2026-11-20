@@ -1,5 +1,6 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
+  KIN_CODING_AGENT_UNNAMED,
   kinWorkMove,
   type KinWorkMoveGroup,
   KIN_RECORD_COMMENT_FILES_MAX,
@@ -546,6 +547,14 @@ function beforeAfter(change: KinRecordChange, names: KinWorkNames, now: Date) {
   return { before: null, after: null };
 }
 
+/** "coding agent “Work laptop”": the kind is Kin's word and the name the key's, quoted, so none poses as Kin. */
+const codingAgentVia = (name: string | undefined) =>
+  name === undefined
+    ? null
+    : name === KIN_CODING_AGENT_UNNAMED
+      ? KIN_CODING_AGENT_UNNAMED
+      : `coding agent “${name}”`;
+
 function changeLine(change: KinRecordChange, names: KinWorkNames, now: Date): KinActivityLine {
   const full = kinWorkChangeText(change, names, now, "work", "brief");
   const actor = kinWorkActorName(change.by, names);
@@ -568,7 +577,7 @@ function changeLine(change: KinRecordChange, names: KinWorkNames, now: Date): Ki
       asker !== undefined
         ? actor
         : named && change.by._tag === "person"
-          ? (change.codingAgent ?? null)
+          ? codingAgentVia(change.codingAgent)
           : null,
     comment: null,
   };
@@ -584,7 +593,7 @@ function commentLine(comment: KinRecordComment, names: KinWorkNames, now: Date):
     when: formatKinTime(new Date(comment.at), now),
     before: null,
     after: null,
-    via: comment.by._tag === "person" ? (comment.codingAgent ?? null) : null,
+    via: comment.by._tag === "person" ? codingAgentVia(comment.codingAgent) : null,
     comment: {
       commentId: comment.commentId,
       body: comment.body,

@@ -927,6 +927,10 @@
       "types": "./src/kin/kinDeals.ts",
       "default": "./src/kin/kinDeals.ts"
     },
+    "./kin/kinImport": {
+      "types": "./src/kin/kinImport.ts",
+      "default": "./src/kin/kinImport.ts"
+    },
     "./kin/kinWorkClients": {
       "types": "./src/kin/kinWorkClients.ts",
       "default": "./src/kin/kinWorkClients.ts"
@@ -934,6 +938,10 @@
     "./kin/kinWorkForms": {
       "types": "./src/kin/kinWorkForms.ts",
       "default": "./src/kin/kinWorkForms.ts"
+    },
+    "./kin/kinMarketing": {
+      "types": "./src/kin/kinMarketing.ts",
+      "default": "./src/kin/kinMarketing.ts"
     },
     "./kin/kinDocs": {
       "types": "./src/kin/kinDocs.ts",

@@ -210,7 +210,9 @@ describe("the top of Tasks", () => {
     agentId: null,
     askDraft: "",
     handled: null,
+    record: null,
     money: false,
+    whatsNext: null,
   });
   // More than the block shows before "See all": the rest must stay in the list.
   const attention = [

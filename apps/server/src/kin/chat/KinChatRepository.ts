@@ -1979,7 +1979,10 @@ const make = Effect.gen(function* () {
  WHERE chat_id = ${input.chatId} AND org_id = ${input.orgId} RETURNING last_seq`,
             })(input);
             const seq = (yield* requireRecord(Effect.succeed(allocated))).last_seq;
-            const { form, body } = briefed(yield* briefForm(input), input.body);
+            const { form, body } =
+              author._tag === "system" && input.form === "brief"
+                ? { form: "brief" as const, body: input.body }
+                : briefed(yield* briefForm(input), input.body);
             const placed =
               author._tag === "agent" &&
               input.kind === "text" &&

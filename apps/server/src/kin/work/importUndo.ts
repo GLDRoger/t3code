@@ -7,6 +7,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { KinRecords } from "./KinRecords.ts";
 import { workFailure } from "./recordRows.ts";
 import { searchIndexed } from "./searchIndex.ts";
 
@@ -16,6 +17,22 @@ const BATCH = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeLists = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(Schema.String)));
+const decodeFills = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      filled: Schema.optional(
+        Schema.Array(
+          Schema.Struct({
+            recordId: Schema.String,
+            key: Schema.String,
+            rev: Schema.Number,
+            fields: Schema.Array(Schema.String),
+          }),
+        ),
+      ),
+    }),
+  ),
+);
 
 export type UndoReport = {
   readonly batch: string;
@@ -26,7 +43,11 @@ export type UndoReport = {
     readonly projects: number;
     readonly entries: number;
     readonly payments: number;
+    readonly contacts: number;
+    readonly deals: number;
   };
+  /** Fields the batch filled on records Kin had, emptied again. */
+  readonly restored: number;
   /** Keys imported, then changed by someone; kept unless asked to include them. */
   readonly changed: ReadonlyArray<string>;
   /** Imported rows kept because something outside the batch uses or paid them, and what. */
@@ -53,7 +74,9 @@ const kinNumbered = (sql: SqlClient.SqlClient, orgId: KinOrgId, ids: Statement.F
           AND json_extract(f.value, '$.field') = 'number')
     ORDER BY n.record_id`;
 /** Entries go before the projects and clients they point at, so a late keep strands nothing. */
-const ORDER: Record<string, number> = { entry: 0, project: 1, client: 2 };
+const ORDER: Record<string, number> = { entry: 0, deal: 0, contact: 0, project: 1, client: 2 };
+const changedSinceFilled = (fields: ReadonlyArray<string>) =>
+  `it changed since the import filled in its ${fields.join(", ")}, so they stay`;
 
 const batchRange = (sql: SqlClient.SqlClient, batch: string) => {
   // `;` sorts right after `:`, so the range is every key with this batch's prefix.
@@ -152,6 +175,8 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
   owner: KinPersonId,
   batch: string,
   options: { readonly apply: boolean; readonly includeChanged: boolean },
+  /** How far it is, for whoever watches; its row's `seq` once it has one. */
+  entry?: { seq: number | null; done: number; of: number },
 ) {
   const sql = yield* SqlClient.SqlClient;
   if (!BATCH.test(batch)) return yield* invalid(`${batch} isn't a batch name.`);
@@ -238,13 +263,41 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
   const payments = keptPaid.reduce((sum, one) => sum + (removing.has(one.id) ? one.n : 0), 0);
 
   // The lists the batch made since it was last undone, and whether anything else is on them.
-  const runs = yield* sql<{ action: string; lists: string }>`SELECT action, lists_json AS lists
-    FROM kin_import_runs WHERE org_id = ${orgId} AND batch = ${batch} ORDER BY seq`;
+  // An undo that never finished (the host stopped) took away only part: it counts as none.
+  const runs = yield* sql<{ action: string; lists: string; summary: string | null }>`SELECT
+      action, lists_json AS lists, summary_json AS summary
+    FROM kin_import_runs WHERE org_id = ${orgId} AND batch = ${batch}
+      AND (action = 'apply' OR (action = 'undo' AND finished_at IS NOT NULL))
+    ORDER BY seq`;
   const made = new Set<string>();
+  const fills = new Map<string, { key: string; rev: number; fields: ReadonlyArray<string> }>();
   for (const one of runs) {
-    if (one.action === "undo") made.clear();
-    else for (const list of Option.getOrElse(decodeLists(one.lists), () => [])) made.add(list);
+    if (one.action === "undo") {
+      made.clear();
+      fills.clear();
+    } else {
+      for (const list of Option.getOrElse(decodeLists(one.lists), () => [])) made.add(list);
+      const filled = Option.getOrUndefined(decodeFills(one.summary ?? "{}"))?.filled ?? [];
+      for (const fill of filled) fills.set(fill.recordId, fill);
+    }
   }
+  // A filled record emptied again only as the import left it: any change since keeps it whole.
+  const filledNow =
+    fills.size === 0
+      ? []
+      : yield* sql<{ id: string; rev: number }>`SELECT
+      record_id AS id, rev FROM kin_records
+    WHERE org_id = ${orgId} AND record_id IN ${sql.in([...fills.keys()])} ORDER BY record_id`;
+  const restoring = filledNow.flatMap((one) => {
+    const fill = fills.get(one.id);
+    return fill !== undefined && fill.rev === one.rev ? [{ recordId: one.id, ...fill }] : [];
+  });
+  const changedFills = filledNow.flatMap((one) => {
+    const fill = fills.get(one.id);
+    return fill !== undefined && fill.rev !== one.rev
+      ? [{ key: fill.key, reason: changedSinceFilled(fill.fields) }]
+      : [];
+  });
   const lists: Array<UndoReport["lists"][number]> = [];
   for (const list of made) {
     const [held] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records
@@ -262,18 +315,60 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
       projects: gone.filter((one) => kindOf(one.originKey) === "project").length,
       entries: gone.filter((one) => kindOf(one.originKey) === "entry").length,
       payments,
+      contacts: gone.filter((one) => kindOf(one.originKey) === "contact").length,
+      deals: gone.filter((one) => kindOf(one.originKey) === "deal").length,
     },
+    restored: restoring.length,
     changed: rows
       .filter((one) => edited.has(one.recordId))
       .map((one) => one.key)
       .slice(0, MAX_LISTED),
-    kept: kept.slice(0, MAX_LISTED),
+    kept: [...kept, ...changedFills].slice(0, MAX_LISTED),
     lists,
   };
   if (!options.apply) return report;
 
+  const records = yield* KinRecords;
+  const writer = { actor: { _tag: "person" as const, personId: owner }, via: "import" as const };
+  const refreshes = yield* KinRefreshObserver;
+  const [started] = yield* sql<{ seq: number }>`INSERT INTO kin_import_runs (org_id, batch,
+      action, person_id, started_at, summary_json)
+    VALUES (${orgId}, ${batch}, 'undo', ${owner}, ${yield* Clock.currentTimeMillis},
+      ${encodeJson({ done: 0, rows: gone.length })})
+    RETURNING seq`;
+  const seq = started?.seq ?? null;
+  if (entry !== undefined) {
+    entry.seq = seq;
+    entry.of = gone.length;
+  }
+  yield* refreshes.touch(orgId, "imports");
+  let restored = 0;
+  const lateFills: Array<string> = [];
+  for (const fill of restoring) {
+    const fields: Record<string, null> = {};
+    for (const name of fill.fields) {
+      if (name === "notes") continue;
+      fields[name] = null;
+      if (name === "email" || name === "phone") fields[`${name}s`] = null;
+    }
+    // Its rev is checked as it writes: a change made while the undo runs keeps it.
+    const done = yield* records
+      .update(
+        orgId,
+        writer,
+        fill.key,
+        {
+          ...(Object.keys(fields).length === 0 ? {} : { fields }),
+          ...(fill.fields.includes("notes") ? { notes: "" } : {}),
+        },
+        fill.rev,
+      )
+      .pipe(Effect.as(true), Effect.catchTags({ KinChatError: () => Effect.succeed(false) }));
+    if (done) restored += 1;
+    else lateFills.push(fill.key);
+  }
+
   const indexed = yield* searchIndexed();
-  const now = yield* Clock.currentTimeMillis;
   const late: Array<string> = [];
   for (let index = 0; index < gone.length; index += CHUNK) {
     const chunk = gone.slice(index, index + CHUNK).map((one) => one.recordId);
@@ -283,12 +378,17 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
         indexed,
       })),
     );
+    const done = Math.min(gone.length, index + CHUNK);
+    yield* sql`UPDATE kin_import_runs SET summary_json = json_set(summary_json, '$.done', ${done})
+      WHERE seq = ${seq}`;
+    if (entry !== undefined) entry.done = done;
+    yield* refreshes.touch(orgId, "imports");
   }
   const stayed = new Set(late);
   const removed = gone.filter((one) => !stayed.has(one.recordId));
   const final: UndoReport =
     late.length === 0
-      ? report
+      ? { ...report, restored }
       : {
           ...report,
           removes: {
@@ -296,13 +396,26 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
             projects: removed.filter((one) => kindOf(one.originKey) === "project").length,
             entries: removed.filter((one) => kindOf(one.originKey) === "entry").length,
             payments: keptPaid.reduce((sum, one) => sum + (stayed.has(one.id) ? 0 : one.n), 0),
+            contacts: removed.filter((one) => kindOf(one.originKey) === "contact").length,
+            deals: removed.filter((one) => kindOf(one.originKey) === "deal").length,
           },
+          restored,
           kept: [
             ...report.kept,
             ...late.map((id) => ({
               key: keyOf.get(id) ?? id,
               reason: "it changed while the undo ran",
             })),
+          ].slice(0, MAX_LISTED),
+        };
+  const settled: UndoReport =
+    lateFills.length === 0
+      ? final
+      : {
+          ...final,
+          kept: [
+            ...final.kept,
+            ...lateFills.map((key) => ({ key, reason: "it changed while the undo ran" })),
           ].slice(0, MAX_LISTED),
         };
   const touched = [...new Set(gone.map((one) => one.registerId))];
@@ -324,12 +437,11 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
           yield* (yield* KinRefreshObserver).touch(orgId, "workLists");
         }
       const finished = yield* Clock.currentTimeMillis;
-      yield* sql`INSERT INTO kin_import_runs (org_id, batch, action, person_id, started_at,
-          finished_at, lists_json, summary_json)
-        VALUES (${orgId}, ${batch}, 'undo', ${owner}, ${now}, ${finished},
-          ${encodeJson(lists.filter((one) => one.action === "remove").map((one) => one.list))},
-          ${encodeJson({ ...final.removes, changed: report.changed.length, kept: kept.length + late.length, includeChanged: options.includeChanged })})`;
+      yield* sql`UPDATE kin_import_runs SET finished_at = ${finished},
+          lists_json = ${encodeJson(lists.filter((one) => one.action === "remove").map((one) => one.list))},
+          summary_json = ${encodeJson({ ...settled.removes, restored, changed: report.changed.length, kept: settled.kept.length, includeChanged: options.includeChanged })}
+        WHERE seq = ${seq}`;
     }),
   );
-  return final;
+  return settled;
 }, workFailure);

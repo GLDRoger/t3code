@@ -36,6 +36,7 @@ import { readPeople } from "../peopleRead.ts";
 import { updatePeople } from "../peopleUpdate.ts";
 import { setAway } from "../awaySet.ts";
 import { updateAgent } from "../agentUpdate.ts";
+import { wordOf } from "../../pulse/holds.ts";
 import { KinLeadToolkit } from "./tools.ts";
 
 const isKinChatError = Schema.is(KinChatError);
@@ -206,6 +207,9 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           defaultPlan === undefined
             ? undefined
             : yield* CardActions.untakenAtDay(lead.orgId, defaultPlan),
+        ownerLevelAsked:
+          (yield* wordOf({ orgId: lead.orgId, agentId: lead.agentId, wakeupId }))?.ownerLevel ===
+          true,
       });
       // Drawn again inside the card's transaction: what was checked is what is stored.
       const recheck = drawAll.pipe(
