@@ -29,6 +29,7 @@ import { Button } from "../../components/ui/Button";
 import { Chip } from "../../components/ui/Chip";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListActionRow } from "../../components/ui/ListActionRow";
+import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -419,7 +420,19 @@ export function KinDealsView(
                     {KIN_DEALS.more(result.more)}
                   </Text>
                 )}
-                <WhatWeHear concerns={result.concerns} />
+                <WhatWeHear
+                  concerns={result.concerns}
+                  onOpen={(concern) =>
+                    navigation.navigate("KinDealsConcern", {
+                      environmentId,
+                      orgId,
+                      concern,
+                      ...(query?.input.owner?._tag === "person"
+                        ? { owner: query.input.owner.personId }
+                        : {}),
+                    })
+                  }
+                />
               </>
             )
           }
@@ -458,18 +471,22 @@ export function KinDealsView(
 }
 
 /** The concerns raised on the deals shown, counted by Kin; nothing at all until one is raised. */
-function WhatWeHear(props: { readonly concerns: KinDealsResult["concerns"] }) {
+function WhatWeHear(props: {
+  readonly concerns: KinDealsResult["concerns"];
+  readonly onOpen: (label: string) => void;
+}) {
   const rows = kinDealConcernRows(props.concerns);
   if (rows.length === 0) return null;
   return (
     <View className="gap-2 px-4 pt-5">
       <ListSection title={KIN_DEALS.whatWeHear}>
         {rows.map((row) => (
-          <ListRowLayout
+          <ListRow
             key={row.label}
             label={row.label}
             description={row.stands}
             detail={row.deals}
+            onPress={() => props.onOpen(row.label)}
           />
         ))}
       </ListSection>

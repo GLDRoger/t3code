@@ -462,10 +462,13 @@ export function KinPlaceView({
             </Button>
           ) : place === "clients" && tab === "deals" ? (
             addDeal === null ? null : (
-              <Button size="sm" onClick={() => addDeal(null)}>
-                <PlusIcon />
-                {KIN_DEALS.newDeal}
-              </Button>
+              // Below phone width the Deals tab's own header carries it.
+              <span className="max-sm:hidden">
+                <Button size="sm" onClick={() => addDeal(null)}>
+                  <PlusIcon />
+                  {KIN_DEALS.newDeal}
+                </Button>
+              </span>
             )
           ) : place === "clients" && addClient !== null && addProject !== null ? (
             <Menu>

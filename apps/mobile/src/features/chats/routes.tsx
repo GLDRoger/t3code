@@ -10,6 +10,7 @@ import { KinCompanyScreen } from "./KinCompanyScreen";
 import { KinDealEditScreen } from "./KinDealEditScreen";
 import { KinDealNewScreen } from "./KinDealNewScreen";
 import { KinDealScreen } from "./KinDealScreen";
+import { KinDealsConcernScreen } from "./KinDealsConcernScreen";
 import { KinDealStagesScreen } from "./KinDealsSettings";
 import { KinRecommendationsScreen } from "./KinRecommendationsScreen";
 import {
@@ -217,6 +218,10 @@ export const KIN_SCREENS = {
   KinDealEdit: createNativeStackScreen({
     screen: KinDealEditScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinDealsConcern: createNativeStackScreen({
+    screen: KinDealsConcernScreen,
+    options: sheetRoute({ detent: 0.75 }),
   }),
   KinDealStages: createNativeStackScreen({
     screen: KinDealStagesScreen,
