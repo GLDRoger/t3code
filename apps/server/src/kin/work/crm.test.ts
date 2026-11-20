@@ -324,8 +324,7 @@ it.effect("a timed due is told on the company's day and clock, whatever the serv
   Effect.gen(function* () {
     yield* seed;
     const sql = yield* SqlClient.SqlClient;
-    yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Etc/GMT-14', '08:30', '18:30',
-      '03:00', 0, 1, '09:00', '[]')`;
+    yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Etc/GMT-14' WHERE org_id = ${orgId}`;
     yield* LeadWork.create(scope, {
       sourceEventId: "ask-event",
       records: [
@@ -356,8 +355,7 @@ it.effect.each(["America/Los_Angeles", "Pacific/Auckland"])(
     Effect.gen(function* () {
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, ${zone}, '08:30', '18:30',
-        '03:00', 0, 1, '09:00', '[]')`;
+      yield* sql`UPDATE kin_trigger_settings SET time_zone = ${zone} WHERE org_id = ${orgId}`;
       yield* LeadWork.create(scope, {
         sourceEventId: "ask-event",
         records: [
