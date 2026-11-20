@@ -277,6 +277,8 @@ export function KinClientDialog(
     vendor: COPY.party.kindVendor,
   };
   const newProspect = editing === null && draft.kind === "prospect";
+  // Said on the field itself: on the owner's long form the problem line sits below the fold.
+  const nameMissing = state.problem?.text === COPY.party.contactNameMissing;
   const india = kinIndiaFields(useKinCompanyCountry(props));
   const gstinNote = kinClientGstinNote(draft);
   const place = draft.abroad ? ABROAD : draft.placeOfSupply || NO_PLACE;
@@ -299,7 +301,7 @@ export function KinClientDialog(
       submit={editing !== null ? COPY.save : newProspect ? KIN_CLIENTS.addProspect : COPY.party.add}
       saving={state.saving}
       canSave={draft.name.trim() !== ""}
-      problem={state.problem}
+      problem={nameMissing ? null : state.problem}
       onOpenExisting={props.onOpenExisting}
       onSave={() => void save()}
       onClose={props.onClose}
@@ -357,8 +359,10 @@ export function KinClientDialog(
       </div>
       {editing !== null ? null : (
         <fieldset className="flex flex-col gap-4">
-          <legend className="mb-1 text-sm font-medium text-foreground">{COPY.party.contact}</legend>
-          <p className="-mt-3 text-xs text-muted-foreground">{COPY.party.contactHint}</p>
+          <legend className="mb-1 text-base/4.5 font-medium text-foreground sm:text-sm/4">
+            {COPY.party.contact}
+          </legend>
+          <p className="text-xs text-muted-foreground">{COPY.party.contactHint}</p>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field id={ids.contactName} label={COPY.party.contactName}>
               <Input
@@ -367,9 +371,19 @@ export function KinClientDialog(
                 maxLength={KIN_WORK_FORM_LIMITS.name}
                 placeholder={COPY.contact.namePlaceholder}
                 autoComplete="off"
-                aria-invalid={state.problem?.text === COPY.party.contactNameMissing || undefined}
+                aria-invalid={nameMissing || undefined}
+                aria-describedby={nameMissing ? `${ids.contactName}-problem` : undefined}
                 onChange={(event) => form.edit({ contactName: event.target.value })}
               />
+              {nameMissing ? (
+                <p
+                  id={`${ids.contactName}-problem`}
+                  role="alert"
+                  className="text-xs text-destructive-foreground"
+                >
+                  {COPY.party.contactNameMissing}
+                </p>
+              ) : null}
             </Field>
             <Field id={ids.contactRole} label={COPY.contact.role}>
               <Input
