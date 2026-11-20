@@ -333,7 +333,7 @@ export const cashAnswer = (cash: CashPosition) => {
         accounts: one.accounts,
         ...(one.total === null
           ? {
-              totalWithheld: `Kin can't tell apart balances with the same bank and last four digits, so ${one.currency} has no total. A statement that opens on another's closing balance links them.`,
+              totalWithheld: `Kin can't tell apart balances that may be one account's, so ${one.currency} has no total. A statement that opens on another's closing balance links them.`,
             }
           : { totalOfTheseAccounts: formatMinor(one.total, one.currency) }),
         recordedSince: {
