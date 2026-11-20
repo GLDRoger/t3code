@@ -40,6 +40,7 @@ const HOLDS: Readonly<Record<string, KinSettingsPage>> = {
   "kin-quiet-hours": "profile",
   "kin-working-hours": "profile",
   "kin-away": "profile",
+  "kin-github-username": "profile",
 };
 
 const kinEntries = () =>

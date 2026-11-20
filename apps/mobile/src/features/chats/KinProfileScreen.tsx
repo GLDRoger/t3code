@@ -53,6 +53,7 @@ import { pickKinPicture } from "./state/kinPicture";
 import { useKinHostAt } from "./state/useKinHost";
 import { useKinProfiles } from "./state/useKinProfiles";
 import { KinAwaySection } from "./components/KinAway";
+import { KinGithubLoginSection } from "./components/KinGithubLogin";
 import { KinPersonTasks } from "./components/KinPersonTasks";
 import { KinTasksKeysSection } from "./components/KinTasksKeys";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
@@ -261,6 +262,12 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
         profile={profile}
         mine={target.mine}
         mayEdit={target.mayEdit}
+      />
+      <KinGithubLoginSection
+        environmentId={target.environmentId}
+        orgId={target.orgId}
+        profile={profile}
+        mine={target.mine}
       />
       {kinProfileShowsTasks({
         mine: target.mine,
