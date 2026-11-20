@@ -6,7 +6,7 @@ Read this first if you're joining Kin, whether you're a person or an agent. It t
 
 Read [VISION.md](VISION.md) first. It's short, and it overrides any summary that treats Kin as a single-owner assistant.
 
-In one line: Kin is a messaging app, built on [T3 Code](https://github.com/pingdotgg/t3code), from which the owner runs a company on his phone. AI leads (one per domain: engineering, growth, finance and so on) and people talk in DMs and groups. Leads decide, remember and follow up. The actual work runs in ordinary T3 threads ("workers"). Only the owner approves privileged actions, by signing on his phone.
+In one line: Kin is a messaging app, built on [T3 Code](https://github.com/pingdotgg/t3code), from which the owner runs a company on his phone. AI leads (one per domain: engineering, growth, finance and so on) and people talk in DMs and groups. Leads decide, remember and follow up. The actual work runs in ordinary T3 threads ("workers"). The owner level (the owner and his co-owners) approves privileged actions, by signing on a phone; who may do what is in [RULES.md](RULES.md).
 
 [DESIGN.md](DESIGN.md) is the full design, [PLAN.md](PLAN.md) the roadmap, and [specs/](specs/) describe each area as built.
 
@@ -14,25 +14,43 @@ In one line: Kin is a messaging app, built on [T3 Code](https://github.com/pingd
 
 All Kin work is on branch `kin` of `GLDRoger/t3code`, a public fork. `main` mirrors upstream; never commit to it. [KIN.md](../../KIN.md) has the branch, sync and branding rules.
 
-| Where                              | What                                                                                    |
-| ---------------------------------- | --------------------------------------------------------------------------------------- |
-| `apps/server/src/kin/chat/`        | Chats, messages, members, identity, the live hub, task cards, chat RPCs                 |
-| `apps/server/src/kin/floor/`       | Who may speak: `FloorManager` (pure rules) and `KinFloor` (runs and grants in SQLite)   |
-| `apps/server/src/kin/lead/`        | The event queue, wake-up runner, prompt, permissions, budget, stop switch, workers, CLI |
-| `apps/server/src/kin/reply/`       | The reply bridge (lead text → chat messages) and presence ("thinking", "working")       |
-| `apps/server/src/kin/memory/`      | Memory reads, the git writer, change cards and memory PRs                               |
-| `apps/server/src/kin/dreaming/`    | The nightly dream                                                                       |
-| `apps/server/src/kin/triggers/`    | Time triggers, deferrals, routines, watchdogs, pings, GitHub readers, the trigger inbox |
-| `apps/server/src/kin/approvals/`   | Pending actions, approver keys, grant checks, the executor, audit                       |
-| `apps/server/src/kin/github/`      | The owner's GitHub watch, its triggers, signed replies and `kin_github_*` tools         |
-| `apps/server/src/kin/push/`        | Kin's own APNs sender                                                                   |
-| `apps/server/src/kin/persistence/` | Kin's migration track (`kin_sql_migrations`, K001 onward)                               |
-| `apps/server/src/kin/mcp/`         | The `/kin/mcp` endpoint that only registered agent threads get                          |
-| `packages/contracts/src/kin*.ts`   | Schemas shared by server and clients                                                    |
-| `packages/client-runtime/src/kin/` | Client logic shared by web and mobile                                                   |
-| `apps/mobile/src/features/chats/`  | The mobile app's Kin screens                                                            |
-| `apps/web/src/kin/`                | The web and desktop Kin screens                                                         |
-| `ops/kin/host/`                    | Host install, update, backup and restore                                                |
+| Where                                  | What                                                                                                                                                           |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/server/src/kin/work/`            | Work: tasks, clients and prospects, deals, projects and campaigns, money, statements, docs, tags and lists, import and export, the live Work and Money streams |
+| `apps/server/src/kin/pulse/`           | The pulse: what is open, late or quiet, read at tick time and told once (`kin_pulse_told`); check-ins and the morning brief                                    |
+| `apps/server/src/kin/open/`            | Everything open for one person, built at read time from the sources' own reads                                                                                 |
+| `apps/server/src/kin/chat/`            | Chats, messages, members, identity, the live hub, task cards, chat RPCs                                                                                        |
+| `apps/server/src/kin/floor/`           | Who may speak: `FloorManager` (pure rules) and `KinFloor` (runs and grants in SQLite)                                                                          |
+| `apps/server/src/kin/lead/`            | Agent turns: the event queue, wake-up runner, instructions, sessions per provider, budget, stop switch, workers                                                |
+| `apps/server/src/kin/reply/`           | The reply bridge (lead text → chat messages) and presence ("thinking", "working")                                                                              |
+| `apps/server/src/kin/team/`            | The Team room, where agents discuss with each other                                                                                                            |
+| `apps/server/src/kin/people/`          | People, roles and who may do what (`KinAccess`), profiles, a leaver's hand-over                                                                                |
+| `apps/server/src/kin/questions/`       | An agent's open questions to a person, and the default it takes                                                                                                |
+| `apps/server/src/kin/sales/`           | The sales seat: its instructions, pipeline reads and policies                                                                                                  |
+| `apps/server/src/kin/social/`          | Social posts through a provider, their cards and previews                                                                                                      |
+| `apps/server/src/kin/connections/`     | Mail, Google and GitHub sign-ins, inbound mail, the outbound guard                                                                                             |
+| `apps/server/src/kin/gendocs/`         | Documents an agent makes: quotes, invoices, receipts and their numbering                                                                                       |
+| `apps/server/src/kin/recommend/`       | Recommendations: what Kin suggests to the owner                                                                                                                |
+| `apps/server/src/kin/memory/`          | Memory reads, the git writer, change cards and memory PRs                                                                                                      |
+| `apps/server/src/kin/dreaming/`        | The nightly dream                                                                                                                                              |
+| `apps/server/src/kin/triggers/`        | Time triggers, deferrals, routines, watchdogs, pings, GitHub readers, the trigger inbox                                                                        |
+| `apps/server/src/kin/approvals/`       | Pending actions, approver keys, grant checks, the executor, audit                                                                                              |
+| `apps/server/src/kin/levels/`          | A lead's permission level, raised only through a signed grant                                                                                                  |
+| `apps/server/src/kin/github/`          | The owner's GitHub watch, its triggers, signed replies and `kin_github_*` tools                                                                                |
+| `apps/server/src/kin/widgets/`         | Chat cards: tasks, choices, charts, reminders and their actions                                                                                                |
+| `apps/server/src/kin/tasksKey/, you/`  | Keys for a person's own coding agent, and what that agent is told                                                                                              |
+| `apps/server/src/kin/auth/`            | Kin's hooks into T3's sign-in and sessions                                                                                                                     |
+| `apps/server/src/kin/push/`            | Kin's own APNs sender                                                                                                                                          |
+| `apps/server/src/kin/cli/`             | The `kin` commands on the host (import, people, statements, pulse)                                                                                             |
+| `apps/server/src/kin/persistence/`     | Kin's migration track (`kin_sql_migrations`, K001 onward)                                                                                                      |
+| `apps/server/src/kin/mcp/`             | The `/kin/mcp` endpoint that only registered agent threads get                                                                                                 |
+| `apps/server/src/kin/featureMap/`      | Every feature, where it is on web and phone, for which roles, and its proof                                                                                    |
+| `packages/contracts/src/kin*.ts`       | Schemas shared by server and clients                                                                                                                           |
+| `packages/client-runtime/src/kin/`     | Client logic and words shared by web and mobile                                                                                                                |
+| `apps/mobile/src/features/chats/`      | The mobile app's Kin screens                                                                                                                                   |
+| `apps/web/src/kin/`                    | The web and desktop Kin screens                                                                                                                                |
+| `ops/kin/host/`                        | Host install, update, backup and restore                                                                                                                       |
+| `evals/mcp-tool-use/cases/kin*.ndjson` | Kin's agent evals and their gate (`evals/README.md`)                                                                                                           |
 
 Kin code lives in its own files. Upstream files get a hook of a line or two at most, so upstream merges stay easy.
 
