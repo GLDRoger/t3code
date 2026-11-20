@@ -1143,6 +1143,25 @@ const week = Effect.fn("KinDeals.week")(function* (
   };
 });
 
+/** Each source by what it reads as, a campaign by its name: two that read the same are one row. */
+const sourcesShown = (
+  rows: ReadonlyArray<{ source: string | null; count: number }>,
+  campaigns: ReadonlyMap<string, KinRecordRef>,
+) => {
+  const out: Array<{ source: string | null; count: number }> = [];
+  for (const row of rows) {
+    const source =
+      row.source?.startsWith(KIN_CAMPAIGN_SOURCE) === true
+        ? (campaigns.get(row.source.slice(KIN_CAMPAIGN_SOURCE.length))?.title ??
+          "A campaign that was removed")
+        : row.source;
+    const same = out.find((one) => one.source === source);
+    if (same === undefined) out.push({ source, count: row.count });
+    else same.count += row.count;
+  }
+  return out.toSorted((a, b) => b.count - a.count);
+};
+
 const ownerKey = (kind: string, id: string) => `${kind}\0${id}`;
 
 /**
@@ -1228,6 +1247,11 @@ export const summary = Effect.fn("KinDeals.summary")(function* (
     GROUP BY json_extract(r.fields_json, '$.source')
     ORDER BY COUNT(*) DESC, source`;
   const count = (state: string) => decided.find((row) => row.state === state)?.count ?? 0;
+  const campaigns = yield* campaignsNamed(
+    orgId,
+    sources.map((row) => row.source),
+    viewer,
+  );
   return {
     ...base,
     wonLastMonth: totalsOf(
@@ -1238,7 +1262,7 @@ export const summary = Effect.fn("KinDeals.summary")(function* (
       yield* sumsOf([...where, closedIn(sql, "dropped", days.lastMonthAt, days.monthAt)]),
     ),
     winRate: { won: count("done"), decided: count("done") + count("dropped") },
-    sources,
+    sources: sourcesShown(sources, campaigns),
     late: late.reduce((sum, row) => sum + row.count, 0),
     week: yield* week(orgId, where, days.weekAt, now + 1),
   } satisfies KinDealNumbers;

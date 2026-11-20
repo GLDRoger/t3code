@@ -1054,11 +1054,21 @@ it.effect(
       yield* move(old, { _tag: "won" });
       yield* TestClock.setTime(Date.parse("2026-10-31T12:00:00.000Z"));
       yield* move(orders, { _tag: "lost", reason: "Invented: went cheaper" });
-      // New prospects this month: one from a typed source, one that says nowhere.
+      // New prospects this month: one from a typed source, one that says nowhere, one from a
+      // campaign renamed since, and one from a campaign no longer there.
       yield* TestClock.setTime(Date.parse("2026-11-10T00:00:00.000Z"));
+      const expo = yield* Clients.createProject([owner], {
+        orgId,
+        name: "Invented Fenvale fair",
+        campaign: true,
+        clientRequestId: "expo",
+      });
       for (const [name, source] of [
         ["Invented Halden", "Harbour trade fair"],
         ["Invented Lumen", undefined],
+        ["Invented Fenvale Mills", `campaign:${expo.key}`],
+        ["Invented Gone Bay", `campaign:${expo.key}`],
+        ["Invented Gone Ridge", `campaign:${expo.key}`],
       ] as const)
         yield* Clients.createParty([owner], {
           orgId,
@@ -1067,6 +1077,17 @@ it.effect(
           prospect: true,
           ...(source === undefined ? {} : { source }),
         });
+      yield* (yield* KinRecords.KinRecords).update(orgId, OwnerWork.ownerWriter(owner), expo.key, {
+        title: "Invented Fenvale Expo",
+      });
+      // Two campaigns gone read as one row.
+      for (const [title, key] of [
+        ["Invented Gone Bay", "P-998"],
+        ["Invented Gone Ridge", "P-999"],
+      ])
+        yield* sql`UPDATE kin_records
+          SET fields_json = json_set(fields_json, '$.source', ${`campaign:${key}`})
+          WHERE org_id = ${orgId} AND title = ${title}`;
       // This week (from Monday 16 Nov there): the stock system moves twice, a new deal is won.
       yield* TestClock.setTime(Date.parse("2026-11-16T00:00:00.000Z"));
       const talks = yield* move(stock, { _tag: "stage", stage: "in-talks" });
@@ -1123,8 +1144,10 @@ it.effect(
         lostLastMonth: none,
         winRate: { won: 2, decided: 3 },
         sources: [
+          { source: "A campaign that was removed", count: 2 },
           { source: null, count: 1 },
           { source: "Harbour trade fair", count: 1 },
+          { source: "Invented Fenvale Expo", count: 1 },
         ],
         late: 1,
       });
