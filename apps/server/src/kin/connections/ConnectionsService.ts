@@ -3597,12 +3597,12 @@ const make = Effect.gen(function* () {
       prepared._tag === "email"
         ? markQuotesSent(records, {
             orgId,
-            personId: row.owner,
+            personId: row.decidedBy ?? row.owner,
             wakeupId: row.wakeupId,
-            entryRecordIds: prepared.attachments.flatMap((one) =>
-              one.entryRecordId === null ? [] : [one.entryRecordId],
-            ),
+            attachments: prepared.attachments,
           }).pipe(
+            // Its own savepoint: a keep that fails leaves the mail recorded as sent and keeps nothing.
+            sql.withTransaction,
             provideSql,
             Effect.catchCause((cause) =>
               Effect.logWarning("Kin couldn't mark a sent quote as sent", { cause }),

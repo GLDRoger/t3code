@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { KinOrgId } from "@t3tools/contracts";
 import * as Arbitrary from "effect/Arbitrary";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -13,7 +14,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { moneySummary } from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL } from "./teamView.ts";
-import { owedInvoices, termsDays } from "./recordRows.ts";
+import { daysOverdue, endOfDay, owedInvoices, startOfDay, termsDays } from "./recordRows.ts";
 
 // Invented org, clients, invoices and payments only.
 const orgId = KinOrgId.make("org");
@@ -47,6 +48,8 @@ const invoice = Arbitrary.all({
   payments: Arbitrary.array(Arbitrary.all({ share: int(1, 100), voided: flag }), {
     maxLength: 4,
   }),
+  /** False for one an agent suggested and nobody confirmed. */
+  confirmed: flag,
 });
 type Invoice = typeof invoice extends Arbitrary.Arbitrary<infer A> ? A : never;
 const invoices = Arbitrary.array(invoice, { maxLength: 8 });
@@ -70,6 +73,7 @@ const undated = (party: Invoice["party"], dateAt: number): Invoice => ({
   dueAt: null,
   dateAt,
   payments: [],
+  confirmed: true,
 });
 type Terms = typeof terms extends Arbitrary.Arbitrary<infer A> ? A : never;
 
@@ -88,7 +92,7 @@ const paymentsOf = (one: Invoice) => {
 /** What each invoice still owes, written from the rules rather than the query. */
 const expected = (all: ReadonlyArray<Invoice>, given: Terms) =>
   all.flatMap((one, i) => {
-    if (one.state !== "waiting" || one.amount === null) return [];
+    if (one.state !== "waiting" || one.amount === null || !one.confirmed) return [];
     const paid = paymentsOf(one)
       .filter((p) => !p.voided)
       .reduce((sum, p) => sum + p.minor, 0);
@@ -144,7 +148,8 @@ const install = (all: ReadonlyArray<Invoice>, given: Terms) =>
       yield* row(id, "invoices", `Invoice ${i + 1}`);
       yield* sql`UPDATE kin_records SET state = ${one.state}, amount_minor = ${one.amount},
           currency = ${one.amount === null ? null : one.currency}, party_id = ${one.party},
-          due_at = ${one.dueAt}, date_at = ${one.dateAt}, sensitive = 1
+          due_at = ${one.dueAt}, date_at = ${one.dateAt}, sensitive = 1,
+          confirmed = ${one.confirmed ? 1 : 0}
         WHERE org_id = ${orgId} AND record_id = ${id}`;
       for (const [j, p] of paymentsOf(one).entries())
         yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor,
@@ -215,6 +220,13 @@ layer(testLayer)("money owed", (it) => {
           );
           assert.strictEqual(client.invoices, mine.length);
         }
+        // What no figure counts is listed on its own, for the owner to keep or decline.
+        assert.deepStrictEqual(
+          (summary.suggested ?? []).map((one) => one.record.recordId).toSorted(),
+          all
+            .flatMap((one, i) => (!one.confirmed && one.state !== "dropped" ? [`i${i + 1}`] : []))
+            .toSorted(),
+        );
       }),
   );
 
@@ -247,5 +259,37 @@ layer(testLayer)("money owed", (it) => {
         const given = one === undefined || one.dueAt === null ? undefined : (one.dueAt - NOW) / DAY;
         assert.strictEqual(given, termsDays(text), text);
       }),
+  );
+
+  it.effect.prop(
+    "days overdue are whole calendar days in the company's zone, wherever the server's clock is",
+    [
+      pick(["UTC", "Pacific/Auckland", "America/Los_Angeles", "Asia/Kolkata"]),
+      int(0, 400),
+      int(0, 60),
+      // Under 23 hours, so a day that loses one to daylight saving still holds it.
+      int(0, 23 * 3_600_000 - 1),
+    ],
+    ([zone, from, late, into]) =>
+      Effect.sync(() => {
+        const day = (offset: number) =>
+          DateTime.formatIsoDate(DateTime.makeUnsafe(Date.UTC(2026, 0, 1) + offset * DAY));
+        const now = startOfDay(day(from + late), zone) + into;
+        assert.strictEqual(daysOverdue(endOfDay(day(from), zone), now, zone), late);
+      }),
+  );
+
+  it.effect("an invoice due the 8th is 12 days overdue on the 20th, and due today is none", () =>
+    Effect.sync(() => {
+      const now = Date.parse("2026-11-20T10:38:00.000+05:30");
+      assert.strictEqual(
+        daysOverdue(endOfDay("2026-11-08", "Asia/Kolkata"), now, "Asia/Kolkata"),
+        12,
+      );
+      assert.strictEqual(
+        daysOverdue(endOfDay("2026-11-20", "Asia/Kolkata"), now, "Asia/Kolkata"),
+        0,
+      );
+    }),
   );
 });

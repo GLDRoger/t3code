@@ -6,7 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { budgetsAnswer, budgetsView } from "../../work/budgets.ts";
 import { formatMoneyPlain } from "../../work/money.ts";
-import { countedEntry, endOfDay, invoiceDue } from "../../work/recordRows.ts";
+import { countedEntry, daysOverdue, endOfDay, invoiceDue } from "../../work/recordRows.ts";
 import { DAY_MS, type Threshold, threshold, toMs } from "../thresholds.ts";
 import {
   agentOrOwner,
@@ -83,7 +83,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
   for (const row of invoices) {
     const chase = yield* forClient("chase_invoice_after_days", row.clientId);
     if (row.base > at - toMs(chase)) continue;
-    const days = elapsed(row.base, at, "days");
+    const days = daysOverdue(row.base, at, ctx.zone);
     const owed = formatMoneyPlain({ minor: row.amountMinor! - row.paid, currency: row.currency! });
     facts.push(
       moneyFact(ctx, row, {
@@ -124,15 +124,15 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
   }
 
   // retainer_due: a repeating invoice's next one is still a draft as its day comes up.
-  const drafts = yield* sql<EntryRow & { goesOut: number }>`SELECT * FROM (
-    SELECT ${entryColumns(sql)}, COALESCE(r.date_at, r.due_at) AS "goesOut"
+  const drafts = yield* sql<EntryRow & { goesOut: number; kept: number }>`SELECT * FROM (
+    SELECT ${entryColumns(sql)}, COALESCE(r.date_at, r.due_at) AS "goesOut", r.confirmed AS kept
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND r.state = 'open'
       AND r.repeat_json IS NOT NULL)
     WHERE "goesOut" IS NOT NULL AND "goesOut" <= ${at + toMs(retainer)}
     ORDER BY "goesOut", key LIMIT ${SENSE_CAP}`;
   for (const row of drafts) {
-    const amount = amountText(row);
+    const amount = row.kept === 1 ? amountText(row) : undefined;
     const days = elapsed(at, row.goesOut, "days");
     facts.push(
       moneyFact(ctx, row, {
@@ -140,7 +140,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
         key: `retainer_due:${row.key}:on=${row.goesOut}`,
         since: iso(row.goesOut - toMs(retainer)),
         measure: measure(days, retainer),
-        consequence: `Repeating invoice${amount === undefined ? "" : ` for ${amount}`} goes out ${dayOf(ctx, row.goesOut)}${row.goesOut < at ? ", already passed" : ""}; it is still a draft.`,
+        consequence: `Repeating invoice${amount === undefined ? "" : ` for ${amount}`} goes out ${dayOf(ctx, row.goesOut)}${row.goesOut < at ? ", already passed" : ""}; it is still a draft${row.kept === 1 ? "" : " that waits on Keep"}.`,
         wake: "sweep",
       }),
     );
@@ -148,20 +148,27 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
 
   // renewal_due: a renewal in Dates or Subscriptions, or an open project's renews-on day, coming
   // up within the heads-up or passed and still open. One renewal is one fact.
-  const listed = yield* sql<EntryRow>`SELECT ${entryColumns(sql)} FROM ${entryJoins(sql)}
+  const listed = yield* sql<EntryRow & { kept: number }>`SELECT ${entryColumns(sql)},
+      r.confirmed AS kept
+    FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId}
       AND ((r.register_id = 'dates' AND r.category = 'renewal') OR r.register_id = 'subscriptions')
       AND r.state IN ('open', 'doing', 'waiting') AND r.due_at IS NOT NULL
       AND r.due_at <= ${at + RENEWAL_WIDEST_MS}
     ORDER BY r.due_at, r.key LIMIT ${SENSE_CAP}`;
-  const projects = yield* sql<EntryRow & { renewsOn: string; value: string | null }>`SELECT
+  const projects = yield* sql<
+    EntryRow & { renewsOn: string; value: string | null; kept: number }
+  >`SELECT
       ${entryColumns(sql)}, json_extract(r.fields_json, '$.renewsOn') AS "renewsOn",
-      json_extract(r.fields_json, '$.value') AS value
+      json_extract(r.fields_json, '$.value') AS value, r.confirmed AS kept
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'projects' AND r.state = 'open'
       AND json_extract(r.fields_json, '$.renewsOn') IS NOT NULL
     ORDER BY "renewsOn", r.key LIMIT ${SENSE_CAP}`;
-  const renewals: Array<EntryRow> = [...listed];
+  // A suggested renewal is still a day to know, but its fee is nobody's yet.
+  const renewals: Array<EntryRow> = listed.map((row) =>
+    row.kept === 1 ? row : { ...row, amountMinor: null, currency: null },
+  );
   for (const project of projects) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(project.renewsOn)) continue;
     const dueAt = endOfDay(project.renewsOn, ctx.zone);
@@ -171,6 +178,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
     if (
       listed.some(
         (row) =>
+          row.kept === 1 &&
           dayOf(ctx, row.dueAt!) === day &&
           (row.projectKey === project.key ||
             (row.projectKey === null &&
@@ -179,7 +187,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
       )
     )
       continue;
-    const value = projectValue(project.value);
+    const value = project.kept === 1 ? projectValue(project.value) : undefined;
     renewals.push({
       ...project,
       dueAt,

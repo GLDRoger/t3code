@@ -835,6 +835,10 @@
       "types": "./src/kin/kinChatFeed.ts",
       "default": "./src/kin/kinChatFeed.ts"
     },
+    "./kin/kinCardGroups": {
+      "types": "./src/kin/kinCardGroups.ts",
+      "default": "./src/kin/kinCardGroups.ts"
+    },
     "./kin/kinCardPresentation": {
       "types": "./src/kin/kinCardPresentation.ts",
       "default": "./src/kin/kinCardPresentation.ts"

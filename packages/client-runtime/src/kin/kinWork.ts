@@ -1220,7 +1220,7 @@ export function kinWorkChangeText(
   if (field("notes") !== undefined) clauses.push(`changed the ${notesWord}`);
   if (field("confirmed")?.to === "true") clauses.push("kept it");
   if (field("terms") !== undefined) clauses.push("changed the terms");
-  if (["role", "email", "phone"].some((name) => field(name) !== undefined))
+  if (["role", "email", "phone", "emails", "phones"].some((name) => field(name) !== undefined))
     clauses.push("changed their details");
   if (field("repos") !== undefined) clauses.push("changed its repos");
   const repeat = field("repeat");

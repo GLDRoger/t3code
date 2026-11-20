@@ -126,6 +126,24 @@ export const heldWork = Effect.fn("KinBudget.waiting")(function* (orgId: KinOrgI
   };
 });
 
+/**
+ * Whether teammates' turns have any daily limit: their own, else the agents'. With none, the
+ * per-teammate turn cap (`LeadAccess.dailyTurns`) is lifted too; with any, it stays.
+ */
+export const teammatesLimited = Effect.fn("KinBudget.teammatesLimited")(function* (
+  orgId: KinOrgId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [stored] = yield* sql<{ limits: string }>`SELECT limits_json AS limits
+    FROM kin_budget_limits WHERE org_id = ${orgId}`;
+  if (stored === undefined) return false;
+  // Unreadable limits keep the cap, as they would keep a limit.
+  return yield* decodeStoredLimits(stored.limits).pipe(
+    Effect.map((limits) => (limits.teammateUnits ?? limits.leadUnits) !== null),
+    Effect.orElseSucceed(() => true),
+  );
+});
+
 export class KinBudget extends Context.Service<
   KinBudget,
   {

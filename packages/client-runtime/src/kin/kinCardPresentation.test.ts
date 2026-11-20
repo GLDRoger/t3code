@@ -45,6 +45,7 @@ import {
   kinSendEditWarned,
   kinThreadDate,
 } from "./kinChoicePresentation.ts";
+import { kinListedModelName } from "./kinLeadPresentation.ts";
 import { formatKinTime } from "./kinScreenState.ts";
 import { kinCardStatusAfter, kinDeferralCountdown } from "./kinDeferralPresentation.ts";
 import { kinMemoryUndoFailureText } from "./kinMemoryChangesPresentation.ts";
@@ -55,7 +56,7 @@ const taskState = (overrides: Record<string, unknown> = {}) => ({
   threadId: "thread-1",
   remoteEnvironmentId: null,
   title: "Fix the payments test",
-  model: "GPT-6.1 Sol",
+  model: "gpt-6.1-sol",
   status: "working",
   pullRequests: [],
   lastError: null,
@@ -87,8 +88,11 @@ const known =
   (id: EnvironmentId) =>
     ids.includes(id);
 const HOST = "env-home" as EnvironmentId;
+// The name Settings shows for a model; an id no provider lists has none.
+const PROVIDERS = [{ models: [{ slug: "gpt-6.1-sol", name: "GPT-6.1 Sol" }] }];
+const modelName = (model: string) => kinListedModelName(model, PROVIDERS);
 const task = (w: KinWidget, isKnown = known("env-home", "env-vps", "env-other")) => {
-  const view = kinCardView(w, HOST, isKnown);
+  const view = kinCardView(w, HOST, isKnown, null, undefined, modelName);
   if (view.kind !== "task") throw new Error(`expected a task card, got ${view.kind}`);
   return view.task;
 };
@@ -199,6 +203,11 @@ describe("kinCardView", () => {
       "a title that ends a question",
       { title: "Why is CI red?", model: null },
       "Task: Why is CI red? Working. Opens the thread.",
+    ],
+    [
+      "a model Settings has no name for, shown as nothing rather than its raw id",
+      { model: "claude-sonnet-5-5" },
+      "Task: Fix the payments test. Working. Opens the thread.",
     ],
     [
       "an error that trails off",
@@ -959,7 +968,7 @@ describe("reminder and scheduled task cards", () => {
       "delete",
     ]);
     expect(kinScheduledTaskCardView(scheduled({}), "UTC")!.lines[0]).toBe(
-      "Weekdays at 8:00 (Asia/Kolkata).",
+      "Weekdays at 8:00 (India Standard Time).",
     );
     expect(kinScheduledTaskCardView(scheduled({}), "Asia/Calcutta")!.lines[0]).toBe(
       "Weekdays at 8:00.",

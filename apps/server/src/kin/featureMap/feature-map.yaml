@@ -967,11 +967,13 @@ features:
     name: Check-ins, an agent's regular round
     tab: settings
     web: [settings, section:Check-ins, sheet:Add check-in]
-    phone: [SettingsKin, KinCheckInForm]
+    phone: [SettingsKin, section:Briefs, KinCheckInForm]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
     note: >-
       Settings is a modal, so on web the form opens as a dialog over it; on the phone, a sheet.
+      On the phone check-ins sit in Briefs after the person's own briefs, each listed once; a
+      brief's sheet opens its check-in's for Run now, Remove and its words.
       A check-in tells only what the owner hasn't been told; on the weekly brief's day the morning
       check-in is the brief; one in quiet hours (22:00 to 07:00 unless set) waits for their end.
     proof:
@@ -991,7 +993,7 @@ features:
     note: >-
       Under You, for the person the briefs are sent to (today the owner): the morning brief's days
       and time, and the afternoon check-in's and evening summary's time and on or off. These are the
-      seeded check-ins, the same rows the chat moves and Check-ins lists. The morning brief comes on a
+      seeded check-ins, the same rows the chat moves and web's Check-ins lists. The morning brief comes on a
       quiet day too, always as a page; the evening summary only on a day with something to sum up.
       On Monday one page carries Kin's own figures, the first of the morning and weekly briefs.
     proof:

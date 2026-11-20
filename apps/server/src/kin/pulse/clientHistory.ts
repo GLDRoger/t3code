@@ -47,7 +47,7 @@ export const clientHistory = Effect.fn("KinPulse.clientHistory")(function* (
       json_extract(r.fields_json, '$.renewsOn') AS "renewsOn"
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id IN ('projects', 'quotes', 'invoices')
-      AND ${countedEntry(sql, ["dropped"])}
+      AND (r.register_id = 'projects' OR ${countedEntry(sql, ["dropped"])})
       AND (r.party_id = ${partyId} OR r.project_id IN (SELECT p.record_id FROM kin_records p
         WHERE p.org_id = r.org_id AND p.register_id = 'projects' AND p.party_id = ${partyId}))
     ORDER BY COALESCE(r.closed_at, r.date_at, r.created_at) DESC, r.key
