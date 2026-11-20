@@ -907,8 +907,9 @@ const ownedLead = Effect.fn("KinLeadProvision.ownedLead")(function* (input: {
 });
 
 /**
- * The teammates who may message the agent now, since they were added or last let back. Owners
- * and co-owners message every agent and are never restricted, so they aren't listed.
+ * Everyone who may message the agent now, since they were added or last let back; owners and
+ * co-owners marked, as they are never restricted. `everyone` (the team agent, as older phones
+ * read it) only while no one is restricted from it, so those phones list who can and may lift.
  */
 const accessRows = Effect.fn("KinLeadProvision.accessRows")(function* (lead: LeadSummary) {
   const sql = yield* SqlClient.SqlClient;
@@ -918,18 +919,18 @@ const accessRows = Effect.fn("KinLeadProvision.accessRows")(function* (lead: Lea
     createdAt: string;
     lifted: number | null;
     ownerLevel: number;
+    restricted: number;
   }>`
     SELECT p.person_id AS "personId", p.display_name AS "displayName", p.created_at AS "createdAt",
       (SELECT MAX(rl.lifted_at) FROM kin_reach_limits rl WHERE rl.org_id = p.org_id
         AND rl.one_kind = 'agent' AND rl.one_id = ag.agent_id AND rl.other_kind = 'person'
         AND rl.other_id = p.person_id) AS lifted,
-      ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))} AS "ownerLevel"
+      (${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))}
+        OR p.person_id = ag.owner_person_id) AS "ownerLevel",
+      ${sql.literal(Reach.restrictedSql("p.org_id", "ag.agent_id", "p.person_id"))} AS restricted
     FROM kin_people p
     JOIN kin_agents ag ON ag.org_id = p.org_id AND ag.agent_id = ${lead.agentId}
     WHERE p.org_id = ${lead.orgId} AND p.removed_at IS NULL
-      AND p.person_id IS NOT ag.owner_person_id
-      AND NOT ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))}
-      AND NOT ${sql.literal(Reach.restrictedSql("p.org_id", "ag.agent_id", "p.person_id"))}
     ORDER BY p.created_at, p.person_id`.pipe(
     Effect.mapError(toPersistenceSqlError("KinLeadProvision.accessRows")),
   );
@@ -937,14 +938,16 @@ const accessRows = Effect.fn("KinLeadProvision.accessRows")(function* (lead: Lea
     Effect.mapError(toPersistenceSqlError("KinLeadProvision.accessRows")),
   );
   return {
-    everyone: team === lead.agentId,
-    people: rows.map((row) => ({
-      personId: row.personId,
-      displayName: row.displayName as KinLeadAccessResult["people"][number]["displayName"],
-      since:
-        row.lifted === null ? row.createdAt : DateTime.formatIso(DateTime.makeUnsafe(row.lifted)),
-      ownerLevel: row.ownerLevel === 1,
-    })),
+    everyone: team === lead.agentId && rows.every((row) => row.restricted === 0),
+    people: rows
+      .filter((row) => row.restricted === 0)
+      .map((row) => ({
+        personId: row.personId,
+        displayName: row.displayName as KinLeadAccessResult["people"][number]["displayName"],
+        since:
+          row.lifted === null ? row.createdAt : DateTime.formatIso(DateTime.makeUnsafe(row.lifted)),
+        ownerLevel: row.ownerLevel === 1,
+      })),
   } satisfies KinLeadAccessResult;
 });
 

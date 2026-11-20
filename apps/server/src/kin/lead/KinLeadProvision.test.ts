@@ -965,13 +965,23 @@ describe("KinLeadProvision", () => {
         const sam = KinPersonId.make("sam");
         const listed = Effect.map(Provision.access(on), (result) => ({
           everyone: result.everyone,
-          people: result.people.map((row) => row.personId),
+          people: result.people.map((row) => [row.personId, row.ownerLevel]),
         }));
-        assert.deepStrictEqual(yield* listed, { everyone: false, people: [priyaId, sam] });
+        // The owner is listed as never restricted, so no phone offers to add him.
+        const open = [
+          [finance.ownerPersonId, true],
+          [priyaId, false],
+          [sam, false],
+        ];
+        assert.deepStrictEqual(yield* listed, { everyone: false, people: open });
         // The team agent is everyone's, and its list says so.
         yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
           VALUES (${finance.orgId}, ${finance.agentId}, ${finance.ownerPersonId}, 0)`;
-        assert.deepStrictEqual(yield* listed, { everyone: true, people: [priyaId, sam] });
+        assert.deepStrictEqual(yield* listed, { everyone: true, people: open });
+        // With someone restricted from it, older phones get the list: who can, and who to add back.
+        yield* Provision.disallow({ ...on, personId: sam });
+        assert.deepStrictEqual(yield* listed, { everyone: false, people: open.slice(0, 2) });
+        yield* Provision.allow({ ...on, personId: sam });
         yield* sql`DELETE FROM kin_team_agents`;
         // Her chat with it is there once she starts it.
         assert.deepStrictEqual(yield* Provision.contacts(priya), []);
@@ -1061,9 +1071,15 @@ describe("KinLeadProvision", () => {
         );
 
         // Restricted before she wrote anything: the chat leaves her list, both ways. Sam owns
-        // an agent now, so he is owner-level and not listed.
-        assert.deepStrictEqual(yield* listed, { everyone: false, people: [priyaId] });
-        assert.deepStrictEqual((yield* Provision.disallow(her)).people, []);
+        // an agent now, so he is owner-level and listed as never restricted.
+        assert.deepStrictEqual(yield* listed, {
+          everyone: false,
+          people: [open[0], [priyaId, false], [sam, true]],
+        });
+        assert.deepStrictEqual(
+          (yield* Provision.disallow(her)).people.map((row) => row.personId),
+          [finance.ownerPersonId, sam],
+        );
         assert.isTrue(
           (yield* Provision.contacts(priya)).every((one) => one.agentId !== finance.agentId),
         );
@@ -1116,8 +1132,8 @@ describe("KinLeadProvision", () => {
         // A co-owner is never restricted: refused, and nothing is dropped or closed.
         yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${priyaId}`;
         assert.deepStrictEqual(
-          (yield* Provision.access(on)).people.map((row) => row.personId),
-          [],
+          (yield* Provision.access(on)).people.map((row) => [row.personId, row.ownerLevel]),
+          [open[0], [priyaId, true], [sam, true]],
         );
         yield* queue("co-owner-waits");
         assert.strictEqual(yield* refusal(Provision.disallow(her)), "conflict");
