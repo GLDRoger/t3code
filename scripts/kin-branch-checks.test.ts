@@ -18,6 +18,8 @@ import {
   checkPeopleChange,
   checkProductName,
   checkSharedCopy,
+  checkKinHookCopies,
+  KIN_HOOK_FILES_IN_BOTH,
   checkMigrations,
   checkSurvival,
   checkT3Footprint,
@@ -147,6 +149,55 @@ describe("kin branch checks", () => {
       said.map((problem) => problem.split('"')[1]),
       ["Open the chat with"],
     );
+  });
+
+  it("keeps each Kin data hook in one shared factory, by file and hook name", () => {
+    const factory = `export function makeKinDealsHooks(app) {
+  function useKinDeals() {}
+  return { useKinDeals };
+}
+`;
+    const shared = new Map([["packages/client-runtime/src/kin/react/kinDealsHooks.ts", factory]]);
+    const caller = `import { makeKinDealsHooks } from "@t3tools/client-runtime/kin/react/kinDealsHooks";
+export const { useKinDeals } = makeKinDealsHooks(kinHookApp);
+`;
+    // Every listed pair still in both apps, so only the case under test speaks.
+    const listed = (dir: string) =>
+      Object.keys(KIN_HOOK_FILES_IN_BOTH).map((name) => [`${dir}/${name}`, ""] as const);
+    const check = (web: Record<string, string>, phone: Record<string, string>) =>
+      checkKinHookCopies(
+        new Map([...listed("apps/web/src/kin"), ...Object.entries(web)]),
+        new Map([...listed("apps/mobile/src/features/chats/state"), ...Object.entries(phone)]),
+        shared,
+      ).map((problem) => problem.split(":")[1]!.trim().split(" ")[0]);
+    const web = "apps/web/src/kin/";
+    const phone = "apps/mobile/src/features/chats/state/";
+    const changes = "export function useKinWorkChanges() {}\n";
+    assert.deepStrictEqual(
+      check(
+        { [`${web}useKinDeals.ts`]: caller + changes },
+        { [`${phone}useKinDeals.ts`]: caller + changes },
+      ),
+      [],
+    );
+    assert.deepStrictEqual(
+      check(
+        { [`${web}useKinPeople.ts`]: "export function useKinPeople() {}\n" },
+        { [`${phone}useKinPeople.ts`]: "export function useKinPeople() {}\n" },
+      ),
+      [`${web}useKinPeople.ts`, "useKinWorkChanges"],
+    );
+    const both = caller + "export function useKinDealCount() {}\n";
+    assert.deepStrictEqual(
+      check({ [`${web}useKinDeals.ts`]: both }, { [`${phone}useKinDeals.ts`]: both }),
+      ["useKinDealCount", "useKinWorkChanges"],
+    );
+    assert.deepStrictEqual(
+      check({ [`${web}KinDeals.tsx`]: "export function useKinDeals() {}\n" + changes }, {}),
+      [`${web}KinDeals.tsx`],
+    );
+    const gone = checkKinHookCopies(new Map(), new Map(), shared);
+    assert.deepStrictEqual(gone.length, Object.keys(KIN_HOOK_FILES_IN_BOTH).length + 1);
   });
 
   it("asks a branch people will notice to say what changes for them, and prints what it says", () => {

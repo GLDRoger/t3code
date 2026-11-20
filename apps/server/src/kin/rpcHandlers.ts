@@ -6,6 +6,7 @@ import {
   KinRpcs,
   kinOwnerLevel,
   authScopeRequiredResponse,
+  kinAccessAllows,
   kinRpcAccess,
   type KinRpcAccess,
 } from "@t3tools/contracts";
@@ -62,8 +63,7 @@ export const admits = Effect.fn("KinRpc.admits")(function* (
   if (access === "person") return;
   if (Option.isNone(services)) return yield* unavailable;
   const kind = yield* kindOf(session, services.value).pipe(Effect.mapError(() => unavailable));
-  if (kind === "owner") return;
-  if (kind === "co_owner" && access === "owner_level") return;
+  if (kinAccessAllows(kind, access ?? "org_owner")) return;
   return yield* access === "org_owner" && kind === "co_owner" ? ownerOnly : refused;
 });
 

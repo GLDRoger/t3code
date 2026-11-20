@@ -386,7 +386,7 @@ features:
     tools: [records_query, record_get]
     proof:
       - packages/client-runtime/src/kin/kinWorkList.test.ts
-      - packages/client-runtime/src/kin/kinWorkGroups.test.ts
+      - packages/client-runtime/src/kin/kinTasksList.test.ts
       - .agents/skills/verify-kin/scripts/assign-member-sees.sh
       - .agents/skills/verify-kin/scripts/member-sees-agent-name.sh
 

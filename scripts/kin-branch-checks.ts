@@ -222,6 +222,102 @@ export const checkSharedCopy = (
     );
 };
 
+export const KIN_SHARED_HOOKS_DIR = "packages/client-runtime/src/kin/react";
+/** Hook files still in both apps, each for a reason; an entry goes when its pair does. */
+export const KIN_HOOK_FILES_IN_BOTH: Readonly<Record<string, string>> = {
+  "useKinHost.ts": "each app finds its host through its own connection and pairing",
+  "useKinMoneyLive.ts": "web counts its own session as owner level; the phone reads the host",
+  "useKinOpen.ts": "the open-list stream, which no host serves yet",
+  "useKinOpenChat.ts": "each app opens a chat through its own navigation and draft store",
+  "useKinTaskSteps.ts": "web ignores a second nudge while one is busy or sent; the phone sends it",
+};
+/** Hooks written in both apps' copies of one file, each for a reason; an entry goes with its copy. */
+export const KIN_HOOKS_IN_BOTH: Readonly<Record<string, string>> = {
+  useKinWorkChanges:
+    "the phone keeps the host's answers for every screen of a task and can open editing; web does neither",
+};
+
+const hookFileName = (file: string) => /\/(use[A-Z]\w*\.tsx?)$/.exec(file)?.[1];
+const callsSharedHooks = (source: string) =>
+  /from "@t3tools\/client-runtime\/kin\/react\/\w+"/.test(source) &&
+  /\bmakeKin\w*Hooks\(/.test(source);
+const declaredHooks = (source: string) =>
+  new Set(
+    [...source.matchAll(/^export (?:async )?(?:function|const) (use[A-Z]\w*)\b/gm)].map(
+      (match) => match[1]!,
+    ),
+  );
+/** What the shared factories hand back: the names in each `makeKin…Hooks` return. */
+export const sharedHookNames = (shared: ReadonlyMap<string, string>) =>
+  new Set(
+    [...shared.values()].flatMap((source) =>
+      [...source.matchAll(/^ {2}return \{([^}]*)\};\n\}/gm)].flatMap((match) =>
+        match[1]!
+          .split(",")
+          .map((name) => name.trim())
+          .filter((name) => /^use[A-Z]/.test(name)),
+      ),
+    ),
+  );
+
+/**
+ * A Kin data hook is written once, in client-runtime's kin/react factories. Fails on a hook file
+ * named the same in both apps that doesn't call a factory, a hook written in both apps' copies of
+ * one file, or an app writing a hook a factory already hands back. Name-based, never look-alike.
+ */
+export const checkKinHookCopies = (
+  web: ReadonlyMap<string, string>,
+  phone: ReadonlyMap<string, string>,
+  shared: ReadonlyMap<string, string>,
+) => {
+  const problems: Array<string> = [];
+  const byName = (files: ReadonlyMap<string, string>) => {
+    const named = new Map<string, { readonly file: string; readonly source: string }>();
+    for (const [file, source] of files) {
+      const name = hookFileName(file);
+      if (name !== undefined) named.set(name, { file, source });
+    }
+    return named;
+  };
+  const [onWeb, onPhone] = [byName(web), byName(phone)];
+  const both = [...onWeb.keys()].filter((name) => onPhone.has(name)).toSorted();
+  for (const name of both) {
+    const [a, b] = [onWeb.get(name)!, onPhone.get(name)!];
+    if (name in KIN_HOOK_FILES_IN_BOTH) continue;
+    if (!callsSharedHooks(a.source) || !callsSharedHooks(b.source)) {
+      problems.push(
+        `kin hooks: ${a.file} and ${b.file} are one hook file in both apps; write it once in ${KIN_SHARED_HOOKS_DIR} as a makeKin…Hooks factory and call it from both.`,
+      );
+      continue;
+    }
+    const twice = [...declaredHooks(a.source)].filter((hook) => declaredHooks(b.source).has(hook));
+    for (const hook of twice.filter((hook) => !(hook in KIN_HOOKS_IN_BOTH)))
+      problems.push(
+        `kin hooks: ${hook} is written in both ${a.file} and ${b.file}; move it into the factory they call.`,
+      );
+  }
+  // A checkout without the shared factories (a fixture) has no Kin hooks to list.
+  for (const name of shared.size === 0 ? [] : Object.keys(KIN_HOOK_FILES_IN_BOTH))
+    if (!both.includes(name))
+      problems.push(
+        `kin hooks: ${name} is no longer in both apps; take it out of KIN_HOOK_FILES_IN_BOTH.`,
+      );
+  const declaredAnywhere = new Set(
+    [...web.values(), ...phone.values()].flatMap((source) => [...declaredHooks(source)]),
+  );
+  for (const hook of shared.size === 0 ? [] : Object.keys(KIN_HOOKS_IN_BOTH))
+    if (!declaredAnywhere.has(hook))
+      problems.push(`kin hooks: ${hook} is gone; take it out of KIN_HOOKS_IN_BOTH.`);
+  const shipped = sharedHookNames(shared);
+  for (const [file, source] of [...web, ...phone])
+    for (const hook of declaredHooks(source))
+      if (shipped.has(hook))
+        problems.push(
+          `kin hooks: ${file} writes ${hook}, which ${KIN_SHARED_HOOKS_DIR} already hands back; use the shared one.`,
+        );
+  return problems;
+};
+
 const PEOPLE_READ = [
   "apps/web/src/kin/",
   "apps/web/src/components/sidebar/",
@@ -574,8 +670,13 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
     }
     return files;
   });
+  const [webFiles, phoneFiles] = [
+    yield* copyFiles(KIN_COPY_DIRS.web),
+    yield* copyFiles(KIN_COPY_DIRS.phone),
+  ];
+  problems.push(...checkSharedCopy(webFiles, phoneFiles));
   problems.push(
-    ...checkSharedCopy(yield* copyFiles(KIN_COPY_DIRS.web), yield* copyFiles(KIN_COPY_DIRS.phone)),
+    ...checkKinHookCopies(webFiles, phoneFiles, yield* copyFiles(KIN_SHARED_HOOKS_DIR)),
   );
   const named = new Map<string, string>();
   for (const dir of KIN_NAME_DIRS) for (const entry of yield* copyFiles(dir)) named.set(...entry);

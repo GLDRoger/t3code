@@ -919,10 +919,6 @@
       "types": "./src/kin/kinWorkList.ts",
       "default": "./src/kin/kinWorkList.ts"
     },
-    "./kin/kinWorkGroups": {
-      "types": "./src/kin/kinWorkGroups.ts",
-      "default": "./src/kin/kinWorkGroups.ts"
-    },
     "./kin/kinDeals": {
       "types": "./src/kin/kinDeals.ts",
       "default": "./src/kin/kinDeals.ts"
@@ -1010,6 +1006,38 @@
     "./kin/kinRecommendations": {
       "types": "./src/kin/kinRecommendations.ts",
       "default": "./src/kin/kinRecommendations.ts"
+    },
+    "./kin/react/kinHookApp": {
+      "types": "./src/kin/react/kinHookApp.ts",
+      "default": "./src/kin/react/kinHookApp.ts"
+    },
+    "./kin/react/kinAttentionHooks": {
+      "types": "./src/kin/react/kinAttentionHooks.ts",
+      "default": "./src/kin/react/kinAttentionHooks.ts"
+    },
+    "./kin/react/kinMoneyAnswersHooks": {
+      "types": "./src/kin/react/kinMoneyAnswersHooks.ts",
+      "default": "./src/kin/react/kinMoneyAnswersHooks.ts"
+    },
+    "./kin/react/kinImportHooks": {
+      "types": "./src/kin/react/kinImportHooks.ts",
+      "default": "./src/kin/react/kinImportHooks.ts"
+    },
+    "./kin/react/kinDealsHooks": {
+      "types": "./src/kin/react/kinDealsHooks.ts",
+      "default": "./src/kin/react/kinDealsHooks.ts"
+    },
+    "./kin/react/kinMoneyHooks": {
+      "types": "./src/kin/react/kinMoneyHooks.ts",
+      "default": "./src/kin/react/kinMoneyHooks.ts"
+    },
+    "./kin/react/kinWorkHooks": {
+      "types": "./src/kin/react/kinWorkHooks.ts",
+      "default": "./src/kin/react/kinWorkHooks.ts"
+    },
+    "./kin/react/kinDocsHooks": {
+      "types": "./src/kin/react/kinDocsHooks.ts",
+      "default": "./src/kin/react/kinDocsHooks.ts"
     }
   },
   "scripts": {
@@ -1043,9 +1071,16 @@
     "unified": "catalog:"
   },
   "devDependencies": {
+    "@effect/atom-react": "catalog:",
     "@effect/vitest": "catalog:",
     "@types/mdast": "^4.0.4",
+    "@types/react": "catalog:",
     "@types/three": "0.180.0",
+    "react": "catalog:",
     "vite-plus": "catalog:"
+  },
+  "peerDependencies": {
+    "@effect/atom-react": "catalog:",
+    "react": "catalog:"
   }
 }
