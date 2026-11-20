@@ -967,6 +967,8 @@ export interface KinSearchHitView {
   readonly snippet: string | null;
   /** The doc section the words are in, to open it there. */
   readonly section: { readonly id: string; readonly title: string } | null;
+  /** A contact's client, whose page opens for it; null for anything else or from an older host. */
+  readonly client: string | null;
   readonly private: boolean;
   /** "Closed" for an entry, "Archived" for a doc; null while it is live. */
   readonly closed: string | null;
@@ -1004,6 +1006,7 @@ export function kinSearchHit(hit: KinSearchHit): KinSearchHitView {
     title: hit.title,
     snippet: snippet === "" ? null : snippet,
     section,
+    client: hit.client ?? null,
     // Everything memory keeps is the owner level's; only an entry's own label reads as private.
     private: hit.sensitive && hit.kind !== "memory",
     closed,

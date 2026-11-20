@@ -140,6 +140,11 @@ describe("kinSearchHit", () => {
     ).toBeNull();
     // A deal comes back among entries, under its own name, so an older app opens it as one.
     expect(kinSearchHit({ ...hitInput, key: "DL-4", kind: "work" }).kindLabel).toBe("Deal");
+    // A contact carries its client, whose page opens for it; an older host sends none.
+    expect(hit.client).toBeNull();
+    expect(kinSearchHit({ ...hitInput, key: "CT-2", kind: "contacts", client: "C-1" }).client).toBe(
+      "C-1",
+    );
   });
 });
 

@@ -532,6 +532,8 @@ export const KinSearchHit = Schema.Struct({
   snippet: KinText,
   /** For a doc, the section the match is in, to open it there. */
   section: Schema.optional(Schema.Struct({ id: KinDocSectionId, title: KinText })),
+  /** For a contact, which has no page of its own, its client's key, to open that client's page. */
+  client: Schema.optional(KinRecordKey),
   sensitive: Schema.Boolean,
   closed: Schema.Boolean,
   updatedAt: IsoDateTime,

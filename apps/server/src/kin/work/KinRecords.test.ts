@@ -2945,6 +2945,14 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
     );
     assert.isNull(page.party.terms);
     assert.notInclude(JSON.stringify(page), "net 30");
+    // Search finds the contact with its client, whose page opens for it.
+    assert.deepStrictEqual(
+      (yield* OwnerDocs.search([mate], { orgId, text: "Priya" })).hits.map((hit) => [
+        hit.key,
+        "client" in hit ? hit.client : undefined,
+      ]),
+      [[priya.row.key, client.key]],
+    );
     assert.include(yield* Effect.flip(OwnerDocs.list([mate], { orgId })), {
       reason: "not_allowed",
     });
