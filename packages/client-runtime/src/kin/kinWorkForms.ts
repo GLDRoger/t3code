@@ -23,13 +23,7 @@ import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { kinFailureText } from "./kinAnswers.ts";
-import {
-  isKinChatError,
-  kinWorkFailuresOf,
-  kinWorkRefused,
-  type KinWorkRef,
-  kinWorkDueLabel,
-} from "./kinWork.ts";
+import { isKinChatError, kinWorkFailuresOf, kinWorkRefused, type KinWorkRef } from "./kinWork.ts";
 import { kinMoneyDraft, kinParseMoney } from "./kinLists.ts";
 import { kinContactEmailOk, kinContactPhoneOk, KIN_PROJECTS } from "./kinWorkClients.ts";
 import { KIN_WORK_OFFLINE_CHANGE } from "./kinWorkChanges.ts";
@@ -531,11 +525,10 @@ const reposOf = (text: string) =>
 
 const NOT_A_DAY = "Enter a real date.";
 
-/** What the target field says under itself while the owner types a day. */
-export const kinProjectTargetHint = (target: string, now: Date): string => {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(target))
-    return `A day as year-month-day. Leave it empty for ${KIN_PROJECTS.noTarget.toLowerCase()}.`;
-  return kinRealDay(target) ? kinWorkDueLabel(target, now) : NOT_A_DAY;
+/** What the target field says under itself; the picked day is on the field, so then nothing. */
+export const kinProjectTargetHint = (target: string | null): string | null => {
+  if (target === null) return `Leave it empty for ${KIN_PROJECTS.noTarget.toLowerCase()}.`;
+  return kinRealDay(target) ? null : NOT_A_DAY;
 };
 
 export const kinProjectDraftCheck = (draft: KinProjectDraft): string | null => {

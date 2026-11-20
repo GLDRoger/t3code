@@ -9,8 +9,8 @@ describe("kinAskRecordDraft", () => {
     ["a record with no name", { key: "P-4", title: "  " }, "About P-4: "],
     [
       "an issued invoice",
-      { key: "INV-1", title: "Retainer", number: "INV/26-27/004" },
-      "About INV/26-27/004 (INV-1) (Retainer): ",
+      { key: "INV-1", title: "Retainer, Orbit Dental Care", number: "INV/26-27/004" },
+      "About INV/26-27/004 (INV-1) Retainer, Orbit Dental Care: ",
     ],
     ["a draft invoice", { key: "INV-2", title: "Retainer" }, "About INV-2 (Retainer): "],
     ["an issued quote", { key: "Q-3", title: "", number: "2026-17" }, "About 2026-17 (Q-3): "],

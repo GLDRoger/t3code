@@ -225,6 +225,7 @@ function Profile(
                 ) : (
                   <Input
                     {...shared}
+                    type={field.day ? "date" : undefined}
                     autoComplete="off"
                     spellCheck={false}
                     autoCapitalize={field.code ? "characters" : undefined}

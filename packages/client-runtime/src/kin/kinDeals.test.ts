@@ -28,6 +28,7 @@ import {
   kinDealsStartFilter,
   kinDealStageBeside,
   kinDealStagesProblem,
+  kinDealStepHint,
   kinDealWhen,
 } from "./kinDeals.ts";
 import type { KinWorkNames } from "./kinWork.ts";
@@ -155,6 +156,17 @@ describe("moves", () => {
     expect(kinDealDrop(deal(1), "won")).toEqual({ _tag: "won" });
     expect(kinDealDrop(deal(1), "lost")).toBe("lost");
     expect(kinDealDrop(deal(1, { state: "won" }), "new")).toBeNull();
+  });
+});
+
+describe("kinDealStepHint", () => {
+  it.each([
+    ["no step yet", "", false, KIN_DEALS.stepNeeded],
+    ["only spaces", "  ", false, KIN_DEALS.stepNeeded],
+    ["a step", "Call Rhea", false, undefined],
+    ["None yet", "", true, undefined],
+  ])("%s", (_name, step, noneYet, expected) => {
+    expect(kinDealStepHint(step, noneYet)).toBe(expected);
   });
 });
 

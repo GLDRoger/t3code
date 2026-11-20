@@ -24,7 +24,7 @@ import * as KinPulse from "./KinPulse.ts";
 import { deliverHeld } from "../triggers/heldDelivery.ts";
 import { holdIfQuiet } from "../triggers/quietHold.ts";
 import { inHoursAt, nudge } from "./nudge.ts";
-import { type OutsideRead, type OutsideSource, poll } from "./outside.ts";
+import { matchLines, type OutsideRead, type OutsideSource, poll } from "./outside.ts";
 
 // Invented company, people, mail and calendar only; nothing here reads a real database or service.
 const orgId = KinOrgId.make("org");
@@ -676,6 +676,42 @@ describe("pulse check-ins", () => {
           ["t1:a", null],
         ],
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("mail naming an issued number is matched to that entry, only where one shows it", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at) VALUES (${orgId}, 'quotes', 'quotes', 'Q', 1, 0)`;
+      yield* record({
+        key: "INV-1",
+        list: "invoices",
+        title: "Retainer",
+        state: "waiting",
+        fields: '{"number":"INV/26-27/004"}',
+      });
+      yield* record({
+        key: "INV-2",
+        list: "invoices",
+        title: "Audit",
+        fields: '{"number":"2026-17"}',
+      });
+      yield* record({ key: "Q-1", list: "quotes", title: "Audit", fields: '{"number":"2026-17"}' });
+      const matched = (subject: string) =>
+        matchLines(orgId, [mail("m", "accounts@other.example", subject)]).pipe(
+          Effect.map((found) => found.map((match) => match.line.matched)),
+        );
+      const inv1 = ["invoice INV/26-27/004 (INV-1)"];
+      assert.deepStrictEqual(yield* matched("Invoice INV/26-27/004"), inv1);
+      assert.deepStrictEqual(yield* matched("Re: Invoice INV/26-27/004 paid."), inv1);
+      assert.deepStrictEqual(yield* matched("Re: INV-1 for the retainer"), inv1);
+      assert.deepStrictEqual(yield* matched("Invoice INV/26-27/0041"), []);
+      assert.deepStrictEqual(yield* matched("Invoice XINV/26-27/004"), []);
+      assert.deepStrictEqual(yield* matched("Invoice inv/26-27/004"), []);
+      // The invoice and the quote both show 2026-17: neither is guessed.
+      assert.deepStrictEqual(yield* matched("Re: 2026-17"), []);
     }).pipe(Effect.provide(layer)),
   );
 

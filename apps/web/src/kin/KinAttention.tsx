@@ -96,6 +96,7 @@ export function KinAttentionItem(
   const opens = row.open.type !== "none";
   const [asideOpen, setAsideOpen] = useState(false);
   const record = row.record;
+  const line = row.about === null ? row.detail : `${row.detail.replace(/\.$/, "")} · ${row.about}`;
   const body = (
     <>
       <CircleAlertIcon
@@ -109,11 +110,11 @@ export function KinAttentionItem(
         <span className="truncate text-sm text-foreground">{row.title}</span>
         <span
           className={cn(
-            "line-clamp-2 text-xs",
+            "line-clamp-2 text-xs wrap-break-word",
             row.urgent ? "text-destructive-foreground" : "text-muted-foreground",
           )}
         >
-          {row.about === null ? row.detail : `${row.detail.replace(/\.$/, "")} · ${row.about}`}
+          {line}
         </span>
       </span>
     </>
@@ -123,6 +124,7 @@ export function KinAttentionItem(
       {opens ? (
         <button
           type="button"
+          aria-label={`${row.title}, ${line}`}
           onClick={() => props.onOpen(row.open)}
           className="flex min-w-0 flex-1 items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring focus-visible:ring-2 focus-visible:ring-inset"
         >

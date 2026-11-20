@@ -97,6 +97,8 @@ export function FormShell(props: {
   readonly onClose: () => void;
   /** Something else the form can do, on the far side from Save. */
   readonly aside?: React.ReactNode;
+  /** The field whose hint says why Save waits, read with the button. */
+  readonly waitsOn?: string | undefined;
   readonly children: React.ReactNode;
 }) {
   return (
@@ -134,6 +136,9 @@ export function FormShell(props: {
               type="submit"
               disabled={!props.canSave || props.saving}
               aria-busy={props.saving}
+              aria-describedby={
+                props.waitsOn === undefined ? undefined : fieldHintId(props.waitsOn)
+              }
             >
               {props.submit}
             </Button>
@@ -144,12 +149,14 @@ export function FormShell(props: {
   );
 }
 
+const fieldHintId = (id: string) => `${id}-hint`;
+
 /** One labelled field, with what someone else changed it to while the owner was typing. */
 export function Field(props: {
   readonly id: string;
   readonly label: string;
   readonly isPrivate?: boolean;
-  readonly hint?: string;
+  readonly hint?: string | undefined;
   readonly moved?: string | undefined;
   readonly children: React.ReactNode;
 }) {
@@ -161,7 +168,9 @@ export function Field(props: {
       </div>
       {props.children}
       {props.hint === undefined ? null : (
-        <p className="text-xs text-muted-foreground">{props.hint}</p>
+        <p id={fieldHintId(props.id)} className="text-xs text-muted-foreground">
+          {props.hint}
+        </p>
       )}
       {props.moved === undefined ? null : (
         <p className="whitespace-pre-wrap text-xs text-muted-foreground">

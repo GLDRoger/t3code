@@ -10,6 +10,7 @@ import {
   type KinPulseScreenRead,
   type KinRecordKey,
   formatKinWhen,
+  kinWhenParts,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -610,9 +611,20 @@ export function kinGoalsSummary(views: ReadonlyArray<Pick<KinGoalView, "status">
     .join(", ");
 }
 
-/** A goal as its edit sheet starts: the figures as a person would type them. */
-export function kinGoalDraft(goal: KinGoal | null, now: Date) {
-  const today = dayOf(now);
+/** Today on `zone`'s calendar, the company's, else on this device. */
+const todayIn = (now: Date, zone: string | null) => {
+  if (zone === null) return dayOf(now);
+  try {
+    return kinWhenParts(now, zone).isoDay;
+  } catch {
+    return dayOf(now);
+  }
+};
+
+/** A goal as its edit sheet starts: the figures as a person would type them, days in `zone`. */
+export function kinGoalDraft(goal: KinGoal | null, now: Date, zone: string | null = null) {
+  const today = todayIn(now, zone);
+  const [year, month, date] = today.split("-").map(Number);
   if (goal === null)
     return {
       title: "",
@@ -621,7 +633,7 @@ export function kinGoalDraft(goal: KinGoal | null, now: Date) {
       current: "",
       unit: "",
       startsOn: today,
-      dueOn: dayOf(new Date(now.getFullYear(), now.getMonth() + 3, now.getDate())),
+      dueOn: dayOf(new Date(year ?? 1970, (month ?? 1) - 1 + 3, date ?? 1)),
     };
   return {
     title: goal.title,

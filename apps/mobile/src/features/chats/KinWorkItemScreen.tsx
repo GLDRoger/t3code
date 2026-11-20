@@ -774,6 +774,7 @@ function KinWorkItemBody(props: ItemTarget) {
               icon="folder"
               label={KIN_WORK_NEW_COPY.projectLabel}
               detail={view.project.title}
+              detailEllipsizeMode="tail"
               onPress={openProject}
             />
           )
@@ -798,6 +799,7 @@ function KinWorkItemBody(props: ItemTarget) {
               icon="person.2"
               label={KIN_WORK_NEW_COPY.clientLabel}
               detail={view.party.title}
+              detailEllipsizeMode="tail"
               {...(view.side === "theirs" ? { description: KIN_WORK_NEW_COPY.sideTheirs } : {})}
               onPress={openParty}
             />
@@ -806,6 +808,7 @@ function KinWorkItemBody(props: ItemTarget) {
               icon="person.2"
               label={KIN_WORK_NEW_COPY.clientLabel}
               detail={view.party.title}
+              detailEllipsizeMode="tail"
               {...(view.side === "theirs" ? { description: KIN_WORK_NEW_COPY.sideTheirs } : {})}
             />
           )

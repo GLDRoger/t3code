@@ -636,7 +636,7 @@ export function KinWorkTextField(props: {
   readonly multiline?: boolean;
   readonly autoFocus?: boolean;
   readonly isPrivate?: boolean;
-  readonly hint?: string;
+  readonly hint?: string | undefined;
   readonly moved?: string | undefined;
   readonly keyboard?: "email" | "phone" | "numbers" | "plain";
   /** Takes this field off, beside its label. */
