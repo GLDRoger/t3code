@@ -360,6 +360,48 @@ it.effect("a check-in passes a fact to the agent who acts on it, once, in Kin's 
           AND to_agent_id = ${tech}`,
         1,
       );
+
+      // Play-test 3: a second fact passed in the same turn, both answered in one reply of the
+      // Tech lead's wake-up. One answer comes back as one relay, and wakes the asker once.
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+          owner_kind, owner_id, due_at, fields_json, created_by_kind, created_by_id, origin_key,
+          created_at, updated_at)
+        VALUES (${orgId}, 'r-w2', 'work', 'W-2', 'Invented changelog', 'open', 'agent',
+          ${tech}, ${-2 * 86_400_000}, '{}', 'person', ${ctx.owner.personId}, 'origin-w2',
+          ${-30 * 86_400_000}, ${-30 * 86_400_000})`;
+      const second = (yield* KinPulse.read({ orgId, at: 0, viewer: { _tag: "owner" } })).facts.find(
+        (fact) => fact.sense === "task_late" && fact.subject.key === "W-2",
+      )!.key;
+      assert.deepStrictEqual(yield* pass(second), { to: "Tech lead", passed: true });
+      yield* sql`UPDATE kin_events SET wakeup_id = 'tech-wake', state = 'claimed'
+        WHERE org_id = ${orgId} AND agent_id = ${tech} AND dedupe_key LIKE 'handoff:%'`;
+      const [member] = yield* sql<{ id: string }>`SELECT member_id AS id FROM kin_chat_members
+        WHERE org_id = ${orgId} AND chat_id = ${ctx.techChat} AND agent_id = ${tech}`;
+      yield* sql`UPDATE kin_chats SET last_seq = last_seq + 1
+        WHERE org_id = ${orgId} AND chat_id = ${ctx.techChat}`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_agent_id, author_owner_person_id, author_thread_id, author_member_id,
+          author_role, kind, body, mentions_json, status, created_at)
+        SELECT 'tech-both', ${orgId}, ${ctx.techChat}, last_seq, 'agent', ${tech},
+          ${ctx.owner.personId}, 'tech-thread', ${member!.id}, 'member', 'text',
+          'Both notes ship today.', '[]', 'posted', ${at}
+        FROM kin_chats WHERE org_id = ${orgId} AND chat_id = ${ctx.techChat}`;
+      const done = { orgId, agentId: tech, wakeupId: "tech-wake" };
+      yield* handoff.reportBack(done);
+      yield* handoff.reportBack(done);
+      const back = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+        WHERE org_id = ${orgId} AND chat_id = ${ctx.chiefChat} AND relay_json IS NOT NULL`;
+      assert.deepStrictEqual(back, [{ body: "Both notes ship today." }]);
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND agent_id = ${chief}
+          AND dedupe_key LIKE 'handoff-back:%'`,
+        1,
+      );
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_handoffs WHERE org_id = ${orgId}
+          AND reply_message_id = 'tech-both'`,
+        2,
+      );
     }),
   ),
 );

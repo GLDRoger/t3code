@@ -27,6 +27,7 @@ import {
   KinRecordId,
   ScheduledTaskId,
   ScheduledTaskWebhookDeliveryId,
+  kinIsBrief,
   type KinEvent,
   type KinMessage,
   type OrchestrationV2DomainEvent,
@@ -73,6 +74,7 @@ import {
 } from "./classify.ts";
 import { KinPresence } from "./KinPresence.ts";
 import * as ReplyBridge from "./KinReplyBridge.ts";
+import { WEEK_FIGURES_TITLE } from "../pulse/weekly.ts";
 
 const threadId = ThreadId.make("lead-thread");
 const agentId = KinAgentId.make("lead");
@@ -391,42 +393,296 @@ it.effect("posts the lead run's plain text to the chat it answers, as one agent 
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect.each([
-  ["checkin-morning", "One client has gone quiet. A reminder is drafted.", true],
-  ["checkin-morning", "## Needs you\nOne card waits.", false],
-  ["checkin-afternoon", "One client has gone quiet. A reminder is drafted.", false],
-] as const)(
-  "the morning check-in's reply opens under a heading when written with none (%s, %s)",
-  ([scheduleId, written, headed]) =>
-    Effect.gen(function* () {
-      const { fake, runId, complete, sql, chatId } = yield* setup({
-        event: () =>
-          Effect.succeed((base) => ({
-            ...base,
-            _tag: "pulse",
-            provenance: { _tag: "system" },
-            factKeys: [],
-            checkIn: {
-              scheduleId: KinMemoryItemId.make(scheduleId),
-              title: "Check-in",
-              what: "Look.",
-              slot: "s",
-            },
-          })),
-      });
-      fake.items = [text("a", 1, written, runId), text("b", 2, "Nothing else today.", runId)];
-      yield* complete;
-      assert.deepStrictEqual(
-        yield* sql`SELECT body, form FROM kin_messages
-          WHERE chat_id = ${chatId} AND author_kind = 'agent' ORDER BY seq`,
-        [
-          {
-            body: `${headed ? "## Today\n\n" : ""}${written}\n\nNothing else today.`,
-            form: "brief",
-          },
-        ],
+const checkInEvent =
+  (
+    scheduleId: string,
+    more: { readonly figures?: true; readonly day?: string; readonly factKeys?: string[] } = {},
+  ) =>
+  () =>
+    Effect.succeed((base: WakeupEventBase): KinEvent => ({
+      ...base,
+      _tag: "pulse",
+      provenance: { _tag: "system" },
+      factKeys: more.factKeys ?? [],
+      checkIn: {
+        scheduleId: KinMemoryItemId.make(scheduleId),
+        title: "Check-in",
+        what: "Look.",
+        slot: "s",
+        ...(more.figures === undefined ? {} : { figures: more.figures }),
+        ...(more.day === undefined ? {} : { day: more.day }),
+      },
+    }));
+
+const LONG = "One quote waits on your answer. ".repeat(490);
+it.effect.each<{
+  readonly name: string;
+  readonly scheduleId: string;
+  readonly written: ReadonlyArray<string>;
+  readonly stored: ReadonlyArray<string>;
+  /** Posted with a tool before the turn's reply. */
+  readonly posted?: string;
+  /** A question card the turn raises for the owner before its reply. */
+  readonly asks?: string;
+  readonly failed?: true;
+  /** The evening summary's own day; the test clock's, in the company's UTC, is 1970-01-01. */
+  readonly day?: string;
+}>([
+  {
+    name: "plain prose",
+    scheduleId: "checkin-morning",
+    written: ["One client has gone quiet. A reminder is drafted.", "Nothing else today."],
+    stored: [
+      `${ReplyBridge.QUIET_PAGE}\n\n## Today\n\nOne client has gone quiet. A reminder is drafted.\n\nNothing else today.`,
+    ],
+  },
+  {
+    name: "headed",
+    scheduleId: "checkin-morning",
+    written: ["## Needs you\nOne card waits.", "Nothing else today."],
+    stored: ["## Needs you\nOne card waits.\n\nNothing else today."],
+  },
+  {
+    name: "a bare label",
+    scheduleId: "checkin-morning",
+    written: ["Today:\nNothing needs you."],
+    stored: [`${ReplyBridge.QUIET_PAGE}\n\n## Today\n\nToday:\nNothing needs you.`],
+  },
+  {
+    name: "NO_REPLY",
+    scheduleId: "checkin-morning",
+    written: ["NO_REPLY"],
+    stored: [ReplyBridge.QUIET_PAGE],
+  },
+  {
+    name: "a quiet morning, silence",
+    scheduleId: "checkin-morning",
+    written: [],
+    stored: [ReplyBridge.QUIET_PAGE],
+  },
+  {
+    name: "a page posted with a tool, then a different reply",
+    scheduleId: "checkin-morning",
+    posted: "## Needs you\nOne card waits.",
+    written: ["## Coming up\nA call at 11:00."],
+    stored: ["## Needs you\nOne card waits.", "## Coming up\nA call at 11:00."],
+  },
+  {
+    name: "prose posted with a tool, then a page",
+    scheduleId: "checkin-morning",
+    posted: "Drafting the reminders now.",
+    written: ["## Needs you\nTwo reminders wait on your Confirm."],
+    stored: [
+      `${ReplyBridge.QUIET_PAGE}\n\n## Today\n\nDrafting the reminders now.`,
+      "## Needs you\nTwo reminders wait on your Confirm.",
+    ],
+  },
+  {
+    name: "prose posted with a tool, then the same words again",
+    scheduleId: "checkin-morning",
+    posted: "One client has gone quiet.",
+    written: ["One client has gone quiet."],
+    stored: [`${ReplyBridge.QUIET_PAGE}\n\n## Today\n\nOne client has gone quiet.`],
+  },
+  {
+    name: "sections but no Needs you, and a card raised",
+    scheduleId: "checkin-morning",
+    asks: "Orbit Dental's retainer renews on 29 Nov. Where should it go?",
+    written: ["## Clients\n- Orbit Dental has had no contact.\n\n## Coming up\n- M-1 on 5 Dec."],
+    stored: [
+      "## Needs you\n\n- Orbit Dental's retainer renews on 29 Nov. Where should it go?\n\n## Clients\n- Orbit Dental has had no contact.\n\n## Coming up\n- M-1 on 5 Dec.",
+    ],
+  },
+  {
+    name: "sections but no Needs you, and no card",
+    scheduleId: "checkin-morning",
+    written: ["## Clients\n- Orbit Dental has had no contact.\n\n## Coming up\n- M-1 on 5 Dec."],
+    stored: [
+      `${ReplyBridge.QUIET_PAGE}\n\n## Clients\n- Orbit Dental has had no contact.\n\n## Coming up\n- M-1 on 5 Dec.`,
+    ],
+  },
+  {
+    name: "a card raised and nothing written",
+    scheduleId: "checkin-morning",
+    asks: "Orbit Dental's retainer renews on 29 Nov. Where should it go?",
+    written: [],
+    stored: ["## Needs you\n\n- Orbit Dental's retainer renews on 29 Nov. Where should it go?"],
+  },
+  {
+    name: "its own Needs you and a card raised",
+    scheduleId: "checkin-morning",
+    asks: "Orbit Dental's retainer renews on 29 Nov. Where should it go?",
+    written: [
+      "## Needs you\n- Orbit Dental's renewal, on the card below.\n\n## Coming up\n- M-1 on 5 Dec.",
+    ],
+    stored: [
+      "## Needs you\n- Orbit Dental's renewal, on the card below.\n\n## Coming up\n- M-1 on 5 Dec.",
+    ],
+  },
+  {
+    name: "a failed turn on a morning with facts",
+    scheduleId: "checkin-morning",
+    written: [],
+    failed: true,
+    stored: [],
+  },
+  {
+    name: "an afternoon check-in",
+    scheduleId: "checkin-afternoon",
+    written: ["One client has gone quiet. A reminder is drafted."],
+    stored: ["One client has gone quiet. A reminder is drafted."],
+  },
+  {
+    name: "an afternoon NO_REPLY",
+    scheduleId: "checkin-afternoon",
+    written: ["NO_REPLY"],
+    stored: [],
+  },
+  {
+    name: "the evening summary",
+    scheduleId: "checkin-evening",
+    written: ["Nothing moved today."],
+    day: "1970-01-01",
+    stored: ["## Today\n\nNothing moved today."],
+  },
+  {
+    name: "the evening summary, its day over by the time it would post",
+    scheduleId: "checkin-evening",
+    written: ["Nothing moved today."],
+    day: "1969-12-31",
+    stored: [],
+  },
+])("the morning brief's turn ends as one page whatever it wrote ($name)", (row) =>
+  Effect.gen(function* () {
+    const {
+      fake,
+      runId,
+      complete,
+      sql,
+      chatId,
+      bridge,
+      owner,
+      wakeupId,
+      projectId,
+      identity,
+      chats,
+    } = yield* setup({
+      event: checkInEvent(row.scheduleId, {
+        ...(row.day === undefined ? {} : { day: row.day }),
+        ...(row.failed === undefined ? {} : { factKeys: ["invoice:INV-7:overdue"] }),
+      }),
+    });
+    yield* sql`INSERT INTO kin_trigger_settings VALUES (${owner.orgId}, 'UTC', '08:30', '18:30',
+      '03:00', 0, 1, '09:00', '[]')`;
+    if (row.posted !== undefined) {
+      const lead = Option.getOrThrow(
+        yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId }),
       );
-    }).pipe(Effect.provide(layer)),
+      const post = chats.send(lead, {
+        chatId,
+        body: row.posted,
+        clientMessageId: "posted-now",
+        intent: "evidence",
+      });
+      const first = yield* post;
+      // A retry of it, word for word, is the same message, under the heading it was given.
+      assert.strictEqual((yield* post).messageId, first.messageId);
+    }
+    if (row.asks !== undefined)
+      yield* chats.ask(
+        Option.getOrThrow(yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId })),
+        {
+          chatId,
+          clientMessageId: "orbit-renewal",
+          question: row.asks,
+          options: [
+            { label: "Renew", kind: "yes" },
+            { label: "Let it lapse", kind: "no" },
+          ],
+        },
+      );
+    fake.items = row.written.map((body, index) => text(`t${index}`, index + 1, body, runId));
+    yield* row.failed === undefined
+      ? complete
+      : bridge.complete({
+          orgId: owner.orgId,
+          wakeupId,
+          projectId,
+          rootRunId: runId,
+          rescueUntil: null,
+        });
+    // A card's own message has no words.
+    const rows = yield* sql<{ body: string; form: string | null }>`SELECT body, form
+      FROM kin_messages WHERE chat_id = ${chatId} AND author_kind = 'agent' AND body <> ''
+      ORDER BY seq`;
+    assert.deepStrictEqual(
+      rows.map((one) => one.body),
+      row.stored,
+    );
+    // As the clients draw it: the first a page under the greeting, never a bubble; all after it
+    // ordinary messages under it.
+    if (row.scheduleId === "checkin-morning")
+      assert.deepStrictEqual(
+        rows.map((one) => kinIsBrief(one.body, one.form)),
+        rows.map((_, index) => index === 0),
+      );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  {
+    name: "the weekly brief",
+    scheduleId: "checkin-weekly",
+    written: ["## Needs you\nOne quote waits on your answer.", "The rest can wait."],
+    words: "## Needs you\nOne quote waits on your answer.\n\nThe rest can wait.",
+  },
+  {
+    name: "the weekly brief, NO_REPLY",
+    scheduleId: "checkin-weekly",
+    written: ["NO_REPLY"],
+    words: ReplyBridge.QUIET_PAGE,
+  },
+  {
+    name: "the morning brief on its day, silence",
+    scheduleId: "checkin-morning",
+    written: [],
+    words: ReplyBridge.QUIET_PAGE,
+  },
+  {
+    name: "a page with no room left",
+    scheduleId: "checkin-weekly",
+    written: [`## Needs you\n${LONG}`],
+    words: `## Needs you\n${LONG}`.trim(),
+  },
+])("the week's figures are Kin's own section of that page, whatever it wrote ($name)", (row) =>
+  Effect.gen(function* () {
+    const { fake, runId, complete, sql, chatId } = yield* setup({
+      event: checkInEvent(
+        row.scheduleId,
+        row.scheduleId === "checkin-morning" ? { figures: true } : {},
+      ),
+    });
+    fake.items = row.written.map((body, index) => text(`t${index}`, index + 1, body, runId));
+    yield* complete;
+    const rows = yield* sql<{ body: string; form: string | null }>`SELECT body, form
+      FROM kin_messages WHERE chat_id = ${chatId} AND author_kind = 'agent' ORDER BY seq`;
+    const figures = `## ${WEEK_FIGURES_TITLE}`;
+    // Joined when it fits, else following as its own message: never cut.
+    const bodies = rows.map((one) => one.body);
+    const [page, after] =
+      bodies.length === 1
+        ? bodies[0]!.split(`\n\n${figures}`)
+        : [bodies[0]!, bodies[1]!.slice(figures.length)];
+    assert.strictEqual(page, row.words);
+    assert.include(after, "Goals: none set");
+    assert.lengthOf(bodies.join("\n").split(WEEK_FIGURES_TITLE), 2);
+    assert.lengthOf(bodies, row.words.length > 15_000 ? 2 : 1);
+    // One page: figures that follow it are ordinary messages, with no greeting of their own.
+    assert.deepStrictEqual(
+      rows.map((one) => kinIsBrief(one.body, one.form)),
+      rows.map((_, index) => index === 0),
+    );
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect.each(["choice", "intervening item", "doc"] as const)(
@@ -1317,6 +1573,12 @@ it.effect.each([
     question: "Mark QT-1 accepted and draft the 30% advance invoice?",
     reply: "Want me to mark QT-1 as accepted and draft the advance invoice (30%)?",
     expected: [],
+  },
+  // The line break before the dropped question stays, so a heading keeps its own line.
+  {
+    reply:
+      "## Needs you\n\nShould I take it over? Tech has been quiet for a day.\n\n## Work\n\n- W-1",
+    expected: ["## Needs you\n\nTech has been quiet for a day.\n\n## Work\n\n- W-1"],
   },
 ])("a reply doesn't repeat the question its card asks ($reply)", ({ question, reply, expected }) =>
   Effect.gen(function* () {

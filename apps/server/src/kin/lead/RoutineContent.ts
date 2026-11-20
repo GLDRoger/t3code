@@ -3,6 +3,7 @@ import {
   KinEvent,
   KinMessageId,
   KinOrgId,
+  KinPersonId,
   KinRoutineCard,
   KinWidgetId,
   type KinAgentId,
@@ -29,9 +30,13 @@ import * as Chat from "../chat/KinChatService.ts";
 import { memoryDateMillis } from "../memory/frontMatter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
+import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { deferralWidgetId } from "../triggers/deferrals.ts";
+import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
+import { dayRecord, dayRecordEmpty, shownDay } from "./dayRecord.ts";
 import {
   renderRoutine,
+  routineEmpty,
   type EveningFacts,
   type MorningFacts,
   type RoutineGithubGap,
@@ -101,6 +106,14 @@ export class KinRoutineContent extends Context.Service<
     ) => Effect.Effect<KinWidget | null, KinRoutineContentError>;
     /** The morning brief's sections as JSON, for the morning check-in; null with no live lead. */
     readonly morningFacts: (
+      orgId: KinOrgId,
+      agentId: KinAgentId,
+    ) => Effect.Effect<string | null, KinRoutineContentError>;
+    /**
+     * The evening summary's sections as JSON, for the evening check-in; null with no live lead or
+     * nothing to sum up today.
+     */
+    readonly eveningFacts: (
       orgId: KinOrgId,
       agentId: KinAgentId,
     ) => Effect.Effect<string | null, KinRoutineContentError>;
@@ -332,7 +345,7 @@ const make = Effect.gen(function* () {
         yesterdayUnits: yield* budgetUnits(dayOf(dayStart - 1)),
         pastReview,
       };
-      return { day, dayLabel, timeLabel, facts };
+      return { day, dayLabel, timeLabel, facts, dayStart, dayEnd };
     }
 
     const done = (yield* taskCards(sql, orgId, dayStart)).flatMap(
@@ -390,7 +403,7 @@ const make = Effect.gen(function* () {
       failedWakeups: failed?.n ?? 0,
       failedDreams: dreams?.n ?? 0,
     };
-    return { day, dayLabel, timeLabel, facts };
+    return { day, dayLabel, timeLabel, facts, dayStart, dayEnd };
   });
 
   const prepare = Effect.fn("KinRoutineContent.prepare")(
@@ -535,7 +548,41 @@ const make = Effect.gen(function* () {
       ),
   );
 
-  return KinRoutineContent.of({ prepare, post, morningFacts });
+  const eveningFacts = Effect.fn("KinRoutineContent.eveningFacts")(
+    function* (orgId: KinOrgId, agentId: KinAgentId) {
+      const owner = yield* lead(orgId, agentId);
+      if (owner === undefined) return null;
+      const gathered = yield* gather(orgId, { routine: "evening_summary", agentId }, owner);
+      if (gathered.facts.routine !== "evening_summary") return null;
+      const viewer = (yield* ownerLevelPeople(orgId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      )).has(owner.personId)
+        ? KIN_OWNER_LEVEL
+        : viewerOfPeople([KinPersonId.make(owner.personId)]);
+      const today = yield* dayRecord({
+        orgId,
+        from: gathered.dayStart,
+        until: gathered.dayEnd,
+        viewer,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      if (routineEmpty(gathered.facts) && dayRecordEmpty(today)) return null;
+      return yield* encodeFacts({ ...gathered.facts, today: shownDay(today) });
+    },
+    (effect, orgId) =>
+      effect.pipe(
+        Effect.mapError(
+          (cause) =>
+            new KinRoutineContentError({
+              orgId,
+              cause: isSqlError(cause)
+                ? toPersistenceSqlError("KinRoutineContent.eveningFacts")(cause)
+                : cause,
+            }),
+        ),
+      ),
+  );
+
+  return KinRoutineContent.of({ prepare, post, morningFacts, eveningFacts });
 });
 
 export const layer = Layer.effect(KinRoutineContent, make).pipe(Layer.provide(MemoryCache.layer));

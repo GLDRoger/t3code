@@ -691,6 +691,47 @@ const probeRenderer = Layer.mock(KinDocRenderer)({
     }),
 });
 
+it.effect("reads the last week from the company's day a week ago", () => {
+  const { fake, run } = harness();
+  return run(
+    Effect.gen(function* () {
+      yield* setUp;
+      const social = yield* KinSocial;
+      const sql = yield* SqlClient.SqlClient;
+      // 22:00 on Sun 15 Nov at UTC-11: a week back is Sun 8 Nov there, 9 Nov in UTC.
+      yield* at(NOW);
+      yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief,
+        evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check,
+        quiet_hours_json)
+      VALUES (${orgId}, 'Pacific/Pago_Pago', '08:00', '18:00', '02:00', 0, 1, '09:00', '[]')
+      ON CONFLICT (org_id) DO UPDATE SET time_zone = 'Pacific/Pago_Pago'`;
+      const own = yield* connectGroup(fake, { kind: "own" }, OWN);
+      const [ig] = fake.accountsOf(own.made.profileId);
+      fake.addPast([
+        {
+          accountId: ig!.accountId,
+          platform: "instagram",
+          content: "Sunday market stall",
+          publishedAt: "2026-11-08T20:00:00.000Z",
+          mediaType: "image",
+          likes: 12,
+          comments: 1,
+          saves: 0,
+          shares: 0,
+          reach: 300,
+        },
+      ]);
+      const read = (yield* social.read(scope, { group: "our own" })) as {
+        groups: ReadonlyArray<{ posts: ReadonlyArray<{ caption: string }> }>;
+      };
+      assert.deepStrictEqual(
+        read.groups[0]!.posts.map((post) => post.caption),
+        ["Sunday market stall"],
+      );
+    }),
+  );
+});
+
 it.effect(
   "shows best times on this summer's clock and renders a preview outside a transaction",
   () => {

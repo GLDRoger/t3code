@@ -68,7 +68,9 @@ import * as RoutineContent from "./RoutineContent.ts";
 import * as LeadDelivery from "./LeadDelivery.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
-import { isMorningCheckIn } from "../pulse/weekly.ts";
+import { isEveningCheckIn, isMorningCheckIn } from "../pulse/weekly.ts";
+import { dayIn } from "../work/money.ts";
+import { ownerZone } from "../work/recordRows.ts";
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
@@ -988,10 +990,41 @@ const make = Effect.gen(function* () {
                 );
                 if (facts !== null) routineFacts.set(event.eventId, facts);
               }
+            // The evening check-in carries the retired evening summary's sections as facts. One
+            // past its own day in the company's zone, or with nothing to sum up, is not sent, and
+            // what it marked told is untold again.
+            const dropped = new Set<string>();
+            if (Option.isSome(routineContent))
+              for (const event of events.filter(isEveningCheckIn)) {
+                const day = event._tag === "pulse" ? event.checkIn?.day : undefined;
+                const today =
+                  day === undefined
+                    ? undefined
+                    : dayIn(
+                        yield* Clock.currentTimeMillis,
+                        yield* ownerZone(orgId).pipe(provideSql),
+                      );
+                const facts =
+                  day !== today
+                    ? null
+                    : yield* routineContent.value.eveningFacts(orgId, agentId).pipe(
+                        Effect.catch((error) =>
+                          Effect.logWarning("Kin evening facts unavailable", {
+                            cause: error.cause,
+                          }).pipe(Effect.as("")),
+                        ),
+                      );
+                if (facts === null) {
+                  dropped.add(event.eventId);
+                  yield* sql`DELETE FROM kin_pulse_told
+                    WHERE org_id = ${orgId} AND event_id = ${event.eventId}`;
+                } else if (facts !== "") routineFacts.set(event.eventId, facts);
+              }
             if (Option.isSome(routineContent)) {
               events = events.filter(
                 (event) =>
-                  !RoutineContent.isRoutineContent(event) || routineFacts.has(event.eventId),
+                  !dropped.has(event.eventId) &&
+                  (!RoutineContent.isRoutineContent(event) || routineFacts.has(event.eventId)),
               );
               if (events.length === 0) {
                 yield* queue.finish({ orgId, wakeupId, status: "completed" });

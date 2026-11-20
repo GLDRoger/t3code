@@ -11,6 +11,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { characterForTurn, characters, colleagueLine } from "./characters.ts";
 import { validZone } from "../triggers/quietHold.ts";
 import { stillAway, storedWorkHours, workingAt } from "../triggers/quietHours.ts";
+import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { describeHours, loads } from "./peopleRead.ts";
 
@@ -58,6 +59,15 @@ export type Seat = {
  * Who this agent is and who it works with, compactly, for every turn. A turn others read gets the
  * character's voice without its examples (they may carry figures), and no loads, focus or seat.
  */
+/** The day a stamp falls on in the company's zone; a bare day is already one. */
+const companyDay = (stamp: string, zone: string) => {
+  const at = /^\d{4}-\d{2}-\d{2}$/.test(stamp) ? Number.NaN : Date.parse(stamp);
+  return Number.isFinite(at) ? dayIn(at, zone) : stamp.slice(0, 10);
+};
+/** The lead's own positions, each with the company's day it took it. */
+export const positionsLine = (positions: ReadonlyArray<MemoryItemHead>, zone: string) =>
+  `- Your positions: ${positions.map((item) => `${JSON.stringify(clip(item.title, 100))} (${companyDay(item.recorded_at, zone)})`).join("; ")}.`;
+
 export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
@@ -163,10 +173,7 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
         `- Standing permissions from the owner: ${permissions.map((item) => JSON.stringify(clip(item.title, 100))).join("; ")}.`,
       );
     const positions = linked(memory, [`position:${self}`]);
-    if (positions.length > 0)
-      seat.push(
-        `- Your positions: ${positions.map((item) => `${JSON.stringify(clip(item.title, 100))} (${item.recorded_at.slice(0, 10)})`).join("; ")}.`,
-      );
+    if (positions.length > 0) seat.push(positionsLine(positions, yield* ownerZone(orgId)));
   }
   return { character, colleagues, seat, team } satisfies Seat;
 });

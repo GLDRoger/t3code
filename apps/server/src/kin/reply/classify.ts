@@ -153,12 +153,18 @@ export const withoutAsked = (text: string, questions: ReadonlyArray<string>) => 
   const parts = text.split(SENTENCE_BREAK);
   const kept: Array<string> = [];
   let dropped = false;
+  // The widest break since the last kept sentence: a dropped one never joins two lines.
+  let gap = "";
   for (let index = 0; index < parts.length; index += 2) {
     const sentence = parts[index]!;
+    const before = parts[index - 1] ?? "";
+    if (before.split("\n").length >= gap.split("\n").length) gap = before;
     if (wanted.has(comparable(sentence)) || earlier.some((words) => restates(sentence, words)))
       dropped = true;
-    else if (sentence.trim() !== "")
-      kept.push(`${kept.length === 0 ? "" : (parts[index - 1] ?? "")}${sentence}`);
+    else if (sentence.trim() !== "") {
+      kept.push(`${kept.length === 0 ? "" : gap}${sentence}`);
+      gap = "";
+    }
   }
   return dropped ? kept.join("").trim() : text;
 };
