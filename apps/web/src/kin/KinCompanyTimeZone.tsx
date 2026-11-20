@@ -1,6 +1,6 @@
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
-import { kinSameTimeZone, kinZoneName } from "@t3tools/client-runtime/kin/kinTimeZone";
+import { kinSameTimeZone, kinZoneLabel } from "@t3tools/client-runtime/kin/kinTimeZone";
 import { useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -50,8 +50,8 @@ function CompanyTimeZone(props: KinWorkTarget) {
     state === "failed"
       ? problem
       : zone.fromHost === true
-        ? `None set yet, so Kin uses this computer's: ${kinZoneName(zone.timeZone)}. Check-ins, due days and times follow it.`
-        : `${kinZoneName(zone.timeZone)}. Check-ins, due days and times follow it.`;
+        ? `None set yet, so Kin uses this computer's: ${kinZoneLabel(zone.timeZone)}. Check-ins, due days and times follow it.`
+        : `${kinZoneLabel(zone.timeZone)}. Check-ins, due days and times follow it.`;
   const offer =
     browserZone !== null &&
     (zone.fromHost === true || !kinSameTimeZone(browserZone, zone.timeZone));
@@ -77,7 +77,7 @@ function CompanyTimeZone(props: KinWorkTarget) {
               );
             }}
           >
-            Use {kinZoneName(browserZone)}
+            Use {kinZoneLabel(browserZone)}
           </Button>
         ) : null
       }

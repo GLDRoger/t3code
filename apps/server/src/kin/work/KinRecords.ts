@@ -41,6 +41,7 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import type { ClosedSubject } from "../open/closeSubject.ts";
 import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
+import { teammatesLimited } from "../lead/KinBudget.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
@@ -859,7 +860,7 @@ const make = Effect.gen(function* () {
     const used = level
       ? { turns: 0 }
       : yield* LeadAccess.recentTurns({ orgId, personId, now }).pipe(provideSql);
-    if (used.turns >= dailyTurns)
+    if (used.turns >= dailyTurns && (yield* teammatesLimited(orgId).pipe(provideSql)))
       return yield* refuse(
         new KinChatError({
           reason: "not_allowed",

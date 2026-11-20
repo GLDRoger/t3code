@@ -44,7 +44,7 @@ import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { appAtomRegistry } from "../../state/atom-registry";
-import { kinTabBar, useKinTab } from "./components/KinTab";
+import { kinTabBar, useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinWorkLoading, KinWorkPrivateMark, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 import { useKinAskAgent } from "./state/useKinMoney";
@@ -229,7 +229,9 @@ function NamedList(props: {
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
           // The search field, or the dock, floats over the foot of the list.
-          contentContainerStyle={{ paddingBottom: tab === null ? 96 : 32 + tab.bottomClearance }}
+          contentContainerStyle={{
+            paddingBottom: tab === null ? 96 : kinTabFoot(tab.bottomClearance),
+          }}
           data={items}
           keyExtractor={(item) => item.id}
           getItemType={(item) => item.type}
