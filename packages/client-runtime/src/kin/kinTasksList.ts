@@ -13,6 +13,7 @@ import {
   type KinWorkSummary,
 } from "@t3tools/contracts";
 
+import { KIN_DEAL_SENSES, kinAttention, type KinAttentionRow } from "./kinAttention.ts";
 import { kinMayHaveGoneLine } from "./kinChoicePresentation.ts";
 import { kinLateWords } from "./kinTaskRecord.ts";
 import {
@@ -240,6 +241,14 @@ export type KinTasksItem<R extends KinRecord> =
       readonly project: { readonly key: string; readonly title: string } | null;
     }
   | { readonly type: "clear"; readonly key: string }
+  /** A deal or prospect that stopped moving, with the client page's answers to it. */
+  | {
+      readonly type: "fact";
+      readonly key: string;
+      readonly row: KinAttentionRow;
+      readonly first: boolean;
+      readonly last: boolean;
+    }
   | {
       readonly type: "task";
       readonly key: string;
@@ -322,6 +331,8 @@ function pushTasks<R extends KinRecord>(
   items: Array<KinTasksItem<R>>,
   rows: ReadonlyArray<{ readonly record: R; readonly move: KinWorkRowMove | null }>,
   inProject: boolean,
+  /** Rows already lead this group's card. */
+  after = false,
 ) {
   rows.forEach(({ record, move }, index) =>
     items.push({
@@ -330,10 +341,41 @@ function pushTasks<R extends KinRecord>(
       record,
       move,
       inProject,
-      first: index === 0,
+      first: index === 0 && !after,
       last: index === rows.length - 1,
     }),
   );
+}
+
+/**
+ * The deal and prospect facts that are the reader's to answer, from the host's open list: their
+ * own, and for the owner and a co-owner also those that fall to the owner. A fact that clears
+ * leaves the open list, so its row goes with it; a host without the open list has none.
+ */
+export function kinTasksDealFacts(
+  open: KinOpenRead | null | undefined,
+  input: { readonly ownerLevel: boolean; readonly names: KinWorkNames; readonly now: Date },
+): ReadonlyArray<KinAttentionRow> {
+  if (open == null) return [];
+  const { names, ownerLevel } = input;
+  const facts = open.rows.flatMap((row) => {
+    if (row.item._tag !== "fact") return [];
+    const { fact } = row.item;
+    const actor = fact.actor;
+    const theirs =
+      (actor._tag === "person" && actor.personId === names.me) ||
+      (actor._tag === "owner" && ownerLevel);
+    return KIN_DEAL_SENSES.has(fact.sense) && theirs ? [fact] : [];
+  });
+  if (facts.length === 0) return [];
+  return kinAttention(
+    { asOf: open.asOf, total: facts.length, facts },
+    {
+      scope: { type: "all" },
+      names: new Map([...names.agents, ...names.people]),
+      now: input.now,
+    },
+  ).open;
 }
 
 /**
@@ -350,8 +392,11 @@ export function kinTasksByMove<R extends KinRecord>(input: {
   readonly needsYou: number | null;
   readonly ownerLevel: boolean;
   readonly names: KinWorkNames;
+  /** Deal and prospect facts (`kinTasksDealFacts`), first under Needs you. */
+  readonly facts?: ReadonlyArray<KinAttentionRow>;
 }): ReadonlyArray<KinTasksItem<R>> {
   const { records, moves, counts, names, ownerLevel } = input;
+  const facts = input.facts ?? [];
   const fromHost = moves.size > 0 || counts !== null;
   const placed = new Map<KinWorkMoveGroup, Array<{ record: R; move: KinWorkRowMove | null }>>(
     KIN_WORK_MOVE_GROUPS.map((group) => [group, []]),
@@ -377,8 +422,22 @@ export function kinTasksByMove<R extends KinRecord>(input: {
       aside: null,
       project: null,
     });
-    if (group === "needsYou" && rows.length === 0) {
-      if ((counts?.needsYou ?? 0) === 0) items.push({ type: "clear", key: "clear" });
+    if (group === "needsYou") {
+      facts.forEach((row, index) =>
+        items.push({
+          type: "fact",
+          key: row.factKey,
+          row,
+          first: index === 0,
+          last: index === facts.length - 1 && rows.length === 0,
+        }),
+      );
+      if (rows.length === 0) {
+        if (facts.length === 0 && (counts?.needsYou ?? 0) === 0)
+          items.push({ type: "clear", key: "clear" });
+        continue;
+      }
+      pushTasks(items, rows, false, facts.length > 0);
       continue;
     }
     pushTasks(items, rows, false);

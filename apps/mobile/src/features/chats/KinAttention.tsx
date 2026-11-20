@@ -73,7 +73,7 @@ function KinSetAsidePicker(props: {
 }
 
 /** One row: tapping it opens the thing itself; its menu holds the answers to it. */
-function KinAttentionItem(
+export function KinAttentionItem(
   props: KinWorkTarget & {
     readonly row: KinAttentionRow;
     readonly names: KinWorkNames;

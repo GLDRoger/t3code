@@ -284,6 +284,14 @@ const LEAD_TONE = {
 
 const groupRadius = Platform.OS === "android" ? MOBILE_SHAPE.group.android : MOBILE_SHAPE.group.ios;
 
+/** A row's corners in its group's card: rounded at the card's ends. */
+export const kinCardCorners = (first: boolean, last: boolean) => ({
+  borderTopLeftRadius: first ? groupRadius : 0,
+  borderTopRightRadius: first ? groupRadius : 0,
+  borderBottomLeftRadius: last ? groupRadius : 0,
+  borderBottomRightRadius: last ? groupRadius : 0,
+});
+
 /**
  * One task on Tasks, inside its group's card: the circle that marks it done, the title on at most
  * two lines, who has it and one coloured word, and its one step with that step's buttons.
@@ -313,12 +321,7 @@ export function KinTaskRow(props: {
   return (
     <View
       className="mx-4 overflow-hidden border-continuous bg-grouped-card"
-      style={{
-        borderTopLeftRadius: props.first ? groupRadius : 0,
-        borderTopRightRadius: props.first ? groupRadius : 0,
-        borderBottomLeftRadius: props.last ? groupRadius : 0,
-        borderBottomRightRadius: props.last ? groupRadius : 0,
-      }}
+      style={kinCardCorners(props.first, props.last)}
     >
       {props.first ? null : <View className="ml-12 h-px bg-border-subtle" />}
       <View className={cn("flex-row items-start", props.saving && "opacity-60")}>

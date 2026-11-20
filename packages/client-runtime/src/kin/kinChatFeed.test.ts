@@ -46,6 +46,7 @@ import {
 } from "./kinChatFeed.ts";
 import type { KinHost } from "./kinHost.ts";
 import { KIN_SLOW_START_AFTER_MS, kinPresenceLine, kinPresenceNeedsClock } from "./kinLive.ts";
+import { kinMessageLayout, kinPageHead, kinPageView } from "./kinMessagePage.ts";
 import { kinSentences } from "./kinScreenState.ts";
 import {
   applyKinChatEvent,
@@ -366,6 +367,24 @@ describe("rows", () => {
       type: "message",
       message: { body: "Screenshots from Test PR 7", attachments: [{ name: "01-home.png" }] },
     });
+  });
+
+  it("draws Kin's morning page as a page under the greeting, never as a notice line", () => {
+    const page = agentMessage(3, {
+      kind: "system",
+      author: { _tag: "system" },
+      form: "brief",
+      createdAt: localIso(2, 8),
+      body: "Clients:\n- Follow-ups today: 1.\n- Corran rollout for Corran Tiles has no next step.",
+    });
+    const rows = messageRows([agentMessage(1), page], viewer, new Set());
+    const row = rows.find((one) => "message" in one && one.message.seq === 3);
+    expect(row).toMatchObject({ type: "message", authorLabel: "Kin" });
+    expect(kinMessageLayout(page)).toBe("page");
+    expect(kinPageHead(page, "Zoya")?.greeting).toBe("Good morning, Zoya");
+    expect(kinPageView(page.body, true).sections.map((section) => section.title)).toEqual([
+      "Clients",
+    ]);
   });
 
   it("draws one agent's words in another's chat by who sent or answered them, and opens Team-room runs", () => {

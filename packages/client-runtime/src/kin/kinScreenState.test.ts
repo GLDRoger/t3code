@@ -261,6 +261,16 @@ describe("chat list rows", () => {
     [{ kind: "system", widgetId: "memory-changes:lead:1", body: "Remembered: x" }, "Saved a note"],
     [{ kind: "system", widgetId: "deferral:org:1", body: "Deferred to Fri" }, "Set a reminder"],
     [{ kind: "text", body: "**Fixed** `pay`" }, "Fixed pay"],
+    // Kin's morning page: its first real line under the greeting, never its markup.
+    [
+      {
+        kind: "system",
+        form: "brief",
+        createdAt: new Date(2026, 10, 9, 8).toISOString(),
+        body: "Clients:\n- Follow-ups today: 1.\n- Corran rollout has no next step.",
+      },
+      "Good morning · Follow-ups today: 1.",
+    ],
   ])("never previews a card tap's JSON or Kin's own bookkeeping", (last, preview) => {
     const held = row({ lastMessage: { author: { _tag: "system" }, status: "posted", ...last } });
     expect(kinChatRowView(held, directory).preview).toBe(preview);
