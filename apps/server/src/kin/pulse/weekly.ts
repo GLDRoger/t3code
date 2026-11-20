@@ -1,4 +1,4 @@
-import { formatKinLate, formatKinWhen, KIN_TEXT_LOCALE } from "@t3tools/contracts";
+import { formatKinWhen, KIN_TEXT_LOCALE } from "@t3tools/contracts";
 import type { KinEvent, KinMoney, KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -12,6 +12,7 @@ import {
   countedEntry,
   countedPayment,
   moneyDay,
+  overdueFor,
   owedInvoices,
   ownerZone,
 } from "../work/recordRows.ts";
@@ -252,7 +253,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
       one.dueAt === null
         ? "unpaid, no due date"
         : isOverdue(one)
-          ? `unpaid, overdue ${formatKinLate(one.dueAt, now, { zone, locale: KIN_TEXT_LOCALE })}; ${overdueMail.get(one.recordId)}`
+          ? `unpaid, overdue ${overdueFor(one.dueAt, one.daysOverdue, now, zone)}; ${overdueMail.get(one.recordId)}`
           : `due ${dayIn(one.dueAt, zone)}`
     }`;
   const section = {

@@ -3,6 +3,7 @@ import type { Atom, AtomRegistry } from "effect/reactivity";
 
 import type * as EnvironmentRegistry from "../connection/registry.ts";
 import { createKinRpcCommand } from "./kinAccess.ts";
+import { kinNowMs } from "./kinNow.ts";
 
 /** Whether two zone names are one zone: `Asia/Calcutta` is `Asia/Kolkata`. */
 export const kinSameTimeZone = (a: string, b: string) => {
@@ -32,6 +33,26 @@ const CURRENT_NAMES: Readonly<Record<string, string>> = {
 
 /** A zone as profiles name it: "Asia/Kolkata", never the old "Asia/Calcutta". */
 export const kinZoneName = (zone: string) => CURRENT_NAMES[zone] ?? zone;
+
+const OFFSET_ONLY = /^(GMT|UTC)([+\-\u2212]|$)/;
+
+/**
+ * A zone as a person names it, in the platform's words for this device's language: "India
+ * Standard Time", "Pacific Time". Never the id; "Kolkata" where the platform has no name for it.
+ */
+export function kinZoneLabel(zone: string, locale?: string, at = kinNowMs()): string {
+  for (const style of ["longGeneric", "long"] as const) {
+    try {
+      const name = new Intl.DateTimeFormat(locale, { timeZone: zone, timeZoneName: style })
+        .formatToParts(at)
+        .find((part) => part.type === "timeZoneName")?.value;
+      if (name !== undefined && name !== "" && !OFFSET_ONLY.test(name)) return name;
+    } catch {
+      // An engine without this style, or a zone it doesn't know: try the next.
+    }
+  }
+  return (kinZoneName(zone).split("/").at(-1) ?? zone).replaceAll("_", " ");
+}
 
 /**
  * The owner's own device keeps the company's zone: once per app run and org, when none was set

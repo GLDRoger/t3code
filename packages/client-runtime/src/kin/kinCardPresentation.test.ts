@@ -968,7 +968,7 @@ describe("reminder and scheduled task cards", () => {
       "delete",
     ]);
     expect(kinScheduledTaskCardView(scheduled({}), "UTC")!.lines[0]).toBe(
-      "Weekdays at 8:00 (Asia/Kolkata).",
+      "Weekdays at 8:00 (India Standard Time).",
     );
     expect(kinScheduledTaskCardView(scheduled({}), "Asia/Calcutta")!.lines[0]).toBe(
       "Weekdays at 8:00.",

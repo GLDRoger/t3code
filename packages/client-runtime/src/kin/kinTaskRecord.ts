@@ -7,6 +7,7 @@ import {
   type KinProjectNote,
   type KinRecordChange,
   type KinRecordComment,
+  type KinRecord,
   type KinRecordDetail,
   type KinRecordWaiting,
   type KinWorkPrincipal,
@@ -20,14 +21,13 @@ import {
   kinWorkAvatar,
   kinWorkChangeText,
   kinWorkDueDayText,
+  kinWorkDueDays,
   kinWorkDueText,
   kinWorkName,
   type KinWorkItemView,
   type KinWorkNames,
 } from "./kinWork.ts";
 import { kinWorkStatusOffer } from "./kinWorkChanges.ts";
-
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const KIN_TASK_RECORD = {
   details: "Details",
@@ -170,9 +170,16 @@ function kinLatestComment(
   return null;
 }
 
-/** How late something due at `dueAt` is: "3 days late", "1 day late", or "Late" the same day. */
-export function kinLateWords(dueAt: string, now: Date): string {
-  const days = Math.floor((now.getTime() - new Date(dueAt).getTime()) / DAY_MS);
+/**
+ * How late a task is, in whole calendar days in the company's zone as Money counts days overdue:
+ * "3 days late", "1 day late", or "Late" the same day.
+ */
+export function kinLateWords(
+  record: Pick<KinRecord, "dueAt" | "dueAllDay">,
+  names: Pick<KinWorkNames, "zone">,
+  now: Date,
+): string {
+  const days = -(kinWorkDueDays(record, names, now) ?? 0);
   return days >= 2 ? `${days} days late` : days === 1 ? "1 day late" : "Late";
 }
 
@@ -226,7 +233,7 @@ export function kinRecordChip(
   if (item.state === "done") return { tone: "done", label: "Done" };
   if (item.state === "dropped") return { tone: "plain", label: "Dropped" };
   if (item.late && item.dueAt !== null)
-    return { tone: "late", label: kinLateWords(item.dueAt, now) };
+    return { tone: "late", label: kinLateWords(item, names, now) };
   const handedToMe = item.handedBack !== undefined && isMe(item.owner, names);
   // Tasks' Needs you and this chip read one rule; a plain task of your own says its status.
   const move = kinRecordMove(item, names, view.can.confirm);

@@ -80,7 +80,7 @@ import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { KinSearchHits } from "./KinDocsList";
 import { KinLoadFailed } from "./components/KinLoadFailed";
-import { kinTabBar, useKinTab } from "./components/KinTab";
+import { kinTabBar, useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinTaskRow, KinTasksAllClear, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { useKinViewerScope } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
@@ -313,7 +313,9 @@ export function KinTasksList(
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
           // The search field, or the dock, floats over the foot of the list.
-          contentContainerStyle={{ paddingBottom: tab === null ? 96 : 32 + tab.bottomClearance }}
+          contentContainerStyle={{
+            paddingBottom: tab === null ? 96 : kinTabFoot(tab.bottomClearance),
+          }}
           data={items}
           keyExtractor={(item) => item.key}
           extraData={[listState, changed, found, steps.status, needsYou]}
