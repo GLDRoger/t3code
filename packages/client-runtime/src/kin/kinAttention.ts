@@ -4,6 +4,7 @@ import {
   KIN_PULSE_URGENT,
   kinPulseFactRecord,
   type KinGoal,
+  type KinPulseAside,
   type KinPulseFact,
   type KinPulseScope,
   type KinPulseScreenRead,
@@ -31,6 +32,12 @@ export const KIN_ATTENTION = {
   snoozeTomorrow: "Snooze until tomorrow",
   snoozeMonday: "Snooze until Monday",
   snoozeWeek: "Snooze for a week",
+  setAside: "Set aside until…",
+  setAsideTitle: "Set aside until",
+  setAsideDay: "Until this day",
+  untilLifted: "Until I lift it",
+  setAsideSave: "Set aside",
+  cancel: "Cancel",
   failed: "Couldn't save that.",
 } as const;
 
@@ -58,6 +65,18 @@ export interface KinAttentionRow {
   readonly handled: string | null;
   /** About money: Tasks counts these in one row that opens Money, which lists them. */
   readonly money: boolean;
+  /** The record it is about, which "Set aside until…" holds; null when it is not a record. */
+  readonly record: KinRecordKey | null;
+}
+
+/** A record set aside, one row in Handled whatever it covers, with its Undo when it is yours. */
+export interface KinAsideRow {
+  readonly id: string;
+  readonly record: KinRecordKey;
+  readonly title: string;
+  /** "Set aside until 17 Dec · by Finance, on your word". */
+  readonly detail: string;
+  readonly liftable: boolean;
 }
 
 /** Which facts a screen is about: the whole company, one project, one client, or Money. */
@@ -196,7 +215,50 @@ function kinAttentionRow(
     askDraft: `About ${label}: ${fact.consequence} `,
     handled: handledText(fact, input.names, input.now),
     money: fact.family === "money",
+    record: subject.kind === "record" ? subject.key : null,
   };
+}
+
+/** How a hold reads: until when, who set it and on whose word. */
+function kinAsideText(aside: KinPulseAside, names: ReadonlyMap<string, string>, now: Date): string {
+  const until =
+    aside.until === null
+      ? "Set aside until lifted"
+      : `Set aside until ${dayLabel(aside.until, now)}`;
+  const setBy =
+    aside.by._tag === "agent"
+      ? (names.get(aside.by.agentId) ?? "an agent")
+      : (names.get(aside.by.personId) ?? "someone");
+  const by = aside.byYou ? "by you" : `by ${setBy}`;
+  const word = aside.yourWord
+    ? ", on your word"
+    : aside.onWordOf === null ||
+        aside.onWordOf === (aside.by._tag === "person" ? aside.by.personId : null)
+      ? ""
+      : `, on ${names.get(aside.onWordOf) ?? "someone"}'s word`;
+  return `${until} · ${by}${word}`;
+}
+
+const asideRow = (
+  aside: KinPulseAside,
+  names: ReadonlyMap<string, string>,
+  now: Date,
+): KinAsideRow => ({
+  id: `aside:${aside.record.key}`,
+  record: aside.record.key,
+  title: aside.record.title,
+  detail: kinAsideText(aside, names, now),
+  liftable: aside.liftable,
+});
+
+/** The hold on this record itself, for one quiet line on its own page; null when none. */
+export function kinAsideOf(
+  read: KinPulseScreenRead | null,
+  key: KinRecordKey,
+  input: { readonly names: ReadonlyMap<string, string>; readonly now: Date },
+): KinAsideRow | null {
+  const aside = read?.setAside?.find((one) => one.record.key === key);
+  return aside === undefined ? null : asideRow(aside, input.names, input.now);
 }
 
 /**
@@ -213,16 +275,42 @@ export function kinAttention(
 ): {
   readonly open: ReadonlyArray<KinAttentionRow>;
   readonly handled: ReadonlyArray<KinAttentionRow>;
+  /** What is set aside here, one row per record; a fact under one is not in `handled`. */
+  readonly asides: ReadonlyArray<KinAsideRow>;
+  /** The facts those cover: not drawn, but what they are about is answered. */
+  readonly held: ReadonlyArray<KinAttentionRow>;
 } {
-  if (read === null) return { open: [], handled: [] };
+  if (read === null) return { open: [], handled: [], asides: [], held: [] };
   const facts = read.facts.filter((fact) => inScope(fact, input.scope));
+  const covering = new Set(facts.flatMap((fact) => (fact.aside ? [fact.aside.record.key] : [])));
+  const scopeKey =
+    input.scope.type === "client" || input.scope.type === "project" ? input.scope.key : null;
+  const asides = (read.setAside ?? [])
+    .filter(
+      (aside) =>
+        input.scope.type === "all" ||
+        aside.record.key === scopeKey ||
+        covering.has(aside.record.key),
+    )
+    .map((aside) => asideRow(aside, input.names, input.now));
   const rows = (list: ReadonlyArray<KinPulseFact>) =>
     [...list]
       .sort((a, b) => Number(URGENT.has(b.sense)) - Number(URGENT.has(a.sense)))
       .map((fact) => kinAttentionRow(fact, input));
+  // An older host sends no list of holds: its held facts stay rows of their own.
+  const listed = new Set((read.setAside ?? []).map((aside) => aside.record.key));
   return {
     open: rows(facts.filter((fact) => fact.handled === null)),
-    handled: rows(facts.filter((fact) => fact.handled !== null)),
+    handled: rows(
+      facts.filter(
+        (fact) =>
+          fact.handled !== null && (fact.aside === undefined || !listed.has(fact.aside.record.key)),
+      ),
+    ),
+    asides,
+    held: rows(
+      facts.filter((fact) => fact.aside !== undefined && listed.has(fact.aside.record.key)),
+    ),
   };
 }
 
@@ -318,11 +406,11 @@ export const kinAttentionBadge = (count: number) =>
  */
 export function kinNeedsYouBeside(
   rows: ReadonlyArray<KinNeedsYouRow>,
-  { open, handled }: ReturnType<typeof kinAttention>,
+  { open, handled, held }: ReturnType<typeof kinAttention>,
   read?: KinPulseScreenRead | null,
 ): ReadonlyArray<KinNeedsYouRow> {
   // Something already answered stays answered here too, not back as a plain row.
-  const attention = [...open, ...handled];
+  const attention = [...open, ...handled, ...held];
   const outline = read?.outline;
   const covered = new Set<string>(
     outline?.records ??
@@ -419,6 +507,11 @@ export function kinSnoozeDays(now: Date) {
     { label: KIN_ATTENTION.snoozeMonday, until: dayOf(plusDays(now, toMonday)) },
     { label: KIN_ATTENTION.snoozeWeek, until: dayOf(plusDays(now, 7)) },
   ] as const;
+}
+
+/** "Set aside until…": the first day it may be set to (tomorrow) and the day it starts on. */
+export function kinSetAsideDays(now: Date) {
+  return { min: dayOf(plusDays(now, 1)), initial: dayOf(plusDays(now, 30)) } as const;
 }
 
 // Goals

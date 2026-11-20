@@ -45,6 +45,7 @@ import {
   SelectValue,
 } from "../components/ui/select";
 import { randomUUID } from "../lib/utils";
+import { KinAsideNote } from "./KinAttention";
 import { kinClient } from "./kinClient";
 import { KinDealLostDialog, KinDealMoveMenu, KinDealNextLine } from "./KinDeals";
 import { Field, FormShell } from "./KinWorkForms";
@@ -176,6 +177,12 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
           )}
           {when === null ? null : <span className="text-sm text-muted-foreground">{when}</span>}
         </p>
+        <KinAsideNote
+          environmentId={props.environmentId}
+          orgId={orgId}
+          record={deal.key}
+          names={names}
+        />
       </div>
 
       {deal.state !== "open" ? null : (
