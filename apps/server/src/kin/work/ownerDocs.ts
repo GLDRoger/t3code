@@ -59,6 +59,7 @@ import { searchIndexed } from "./searchIndex.ts";
 import {
   clientMoneySeen,
   KIN_OWNER_LEVEL,
+  PICTURE_DOC_ORIGIN,
   placesOf,
   seenBy,
   teamSeq,
@@ -191,8 +192,10 @@ const listWhere = Effect.fn("KinDocs.listWhere")(function* (
     ...(input.files === undefined
       ? []
       : [
-          sql`${input.files ? sql`` : sql`NOT `}EXISTS (SELECT 1 FROM kin_doc_versions f
-              WHERE f.org_id = r.org_id AND f.record_id = r.record_id AND f.body_kind = 'file')`,
+          // A picture is a file with no other record to live on, so it stays on the shelf.
+          sql`(${input.files ? sql`` : sql`NOT `}EXISTS (SELECT 1 FROM kin_doc_versions f
+              WHERE f.org_id = r.org_id AND f.record_id = r.record_id AND f.body_kind = 'file')
+            OR r.origin_key LIKE ${`${PICTURE_DOC_ORIGIN}%`})`,
         ]),
     ...(text === ""
       ? []

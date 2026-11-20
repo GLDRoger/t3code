@@ -329,8 +329,9 @@ describe("kin_picture", () => {
         const made = yield* makePicture(scope, post("48px"));
         const [version] = yield* versions(made.doc);
         assert.strictEqual(version?.provenance.audience, "shared");
+        // The shelf Docs opens on, which leaves recipe files to their records.
         const opens = (who: KinPersonId) =>
-          OwnerDocs.list([person(who)], { orgId }).pipe(
+          OwnerDocs.list([person(who)], { orgId, archived: false, files: false }).pipe(
             Effect.map((page) => page.docs.some((doc) => doc.key === made.doc)),
             Effect.orElseSucceed(() => false),
           );
