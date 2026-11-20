@@ -70,6 +70,7 @@ import {
   spineShown,
   taskSpecChanged,
 } from "./leadSpine.ts";
+import { contactFields, contactSensitive } from "./contactDetails.ts";
 import { fieldList, fieldText, isMoney, LISTS, listOf, parseFields, shownField } from "./lists.ts";
 import {
   addUp,
@@ -110,7 +111,7 @@ import {
   sensitiveShown,
   showsSensitive,
 } from "./sensitiveReads.ts";
-import { memberAdds } from "./ownerClients.ts";
+import { memberAdds, memberAddsContact, memberChangesContact } from "./ownerClients.ts";
 import {
   crmVisible,
   KIN_OWNER_LEVEL,
@@ -172,6 +173,7 @@ const Address = KinToolText(500, "A client's billing address, as its invoices sh
 export const Client = KinToolText(200, "A client or vendor: its key (C-3) or exact name.");
 export const Project = KinToolText(200, "A project: its key (P-2) or exact name.");
 const Detail = KinToolText(200);
+const Details = Schema.Array(Detail).check(Schema.isMaxLength(50));
 /** A client's kind on create; a prospect is a client we haven't sold to yet. */
 const NewPartyKind = Schema.Literals(["client", "vendor", "prospect"]);
 const CameFrom = KinToolText(
@@ -268,6 +270,8 @@ const Row = Schema.Struct({
   role: Schema.optional(Schema.String),
   email: Schema.optional(Schema.String),
   phone: Schema.optional(Schema.String),
+  emails: Schema.optional(Schema.Array(Schema.String)),
+  phones: Schema.optional(Schema.Array(Schema.String)),
   terms: Schema.optional(Schema.String),
   repos: Schema.optional(Schema.Array(Schema.String)),
   address: Schema.optional(Schema.String),
@@ -424,6 +428,8 @@ const CreateRow = Schema.Struct({
   role: Schema.optional(Detail),
   email: Schema.optional(Detail),
   phone: Schema.optional(Detail),
+  emails: Schema.optional(Details),
+  phones: Schema.optional(Details),
   terms: Schema.optional(Terms),
   repos: Schema.optional(Repos),
   address: Schema.optional(Address),
@@ -512,6 +518,8 @@ export const UpdateInput = Schema.Struct({
   role: Schema.optional(Schema.NullOr(Detail)),
   email: Schema.optional(Schema.NullOr(Detail)),
   phone: Schema.optional(Schema.NullOr(Detail)),
+  emails: Schema.optional(Details),
+  phones: Schema.optional(Details),
   terms: Schema.optional(Schema.NullOr(Terms)),
   repos: Schema.optional(Repos),
   address: Schema.optional(Schema.NullOr(Address)),
@@ -752,7 +760,11 @@ const defOf = (lists: Lists, row: RecordRow) => lists.get(row.registerId);
 const marksOf = (lists: Lists, row: RecordRow): typeof Marks.Type => {
   const def = defOf(lists, row);
   const fields = [
-    ...(def === undefined ? [] : sensitiveKeys(def)),
+    ...(def === undefined
+      ? []
+      : def.id === "contacts"
+        ? contactSensitive(sensitiveKeys(def), parseFields(row.fieldsJson))
+        : sensitiveKeys(def)),
     ...(row.amountMinor !== null && def?.amount !== true ? ["amount"] : []),
   ];
   return {
@@ -894,6 +906,10 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     return value === null ? {} : { [key]: value };
   };
   const repos = fieldList(fields, "repos");
+  const several = (key: "emails" | "phones") => {
+    const all = fieldList(fields, key);
+    return all.length === 0 ? {} : { [key]: [...all] };
+  };
   return {
     ...(list === "work" ? {} : { list }),
     ...(defined ? { listName: def.name, stateLabel: stateLabel(def, row.state) } : {}),
@@ -919,6 +935,8 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     ...text("role"),
     ...text("email"),
     ...text("phone"),
+    ...several("emails"),
+    ...several("phones"),
     ...text("terms"),
     ...(repos.length === 0 ? {} : { repos: [...repos] }),
     ...(defined ? {} : { ...text("address"), ...text("gstin"), ...text("placeOfSupply") }),
@@ -1105,6 +1123,8 @@ const fieldsFrom = (row: {
   readonly role?: string | null | undefined;
   readonly email?: string | null | undefined;
   readonly phone?: string | null | undefined;
+  readonly emails?: ReadonlyArray<string> | undefined;
+  readonly phones?: ReadonlyArray<string> | undefined;
   readonly terms?: string | null | undefined;
   readonly repos?: ReadonlyArray<string> | undefined;
   readonly address?: string | null | undefined;
@@ -1113,7 +1133,18 @@ const fieldsFrom = (row: {
 }) =>
   Object.fromEntries(
     (
-      ["role", "email", "phone", "terms", "repos", "address", "gstin", "placeOfSupply"] as const
+      [
+        "role",
+        "email",
+        "phone",
+        "emails",
+        "phones",
+        "terms",
+        "repos",
+        "address",
+        "gstin",
+        "placeOfSupply",
+      ] as const
     ).flatMap((key) => (row[key] === undefined ? [] : [[key, row[key]]])),
   ) as Record<string, string | ReadonlyArray<string> | null>;
 
@@ -1240,6 +1271,20 @@ export const viewOf = Effect.fn("KinWorkTools.viewOf")(function* (lead: Lead) {
 });
 type View = NonNullable<Effect.Success<ReturnType<typeof viewOf>>>;
 
+/** What a teammate's own Edit contact changes, and the call's own bookkeeping. */
+const CONTACT_CHANGES: ReadonlySet<string> = new Set([
+  "sourceEventId",
+  "expectedRev",
+  "title",
+  "notes",
+  "state",
+  "role",
+  "email",
+  "phone",
+  "emails",
+  "phones",
+]);
+
 /** What only the owner sets in Work: clients, projects, money, list fields, labels, holders. */
 const OWNERS_INPUTS = [
   ...OWNERS_SPINE,
@@ -1260,6 +1305,8 @@ const OWNERS_INPUTS = [
   "role",
   "email",
   "phone",
+  "emails",
+  "phones",
   "terms",
   "repos",
   "address",
@@ -1300,6 +1347,9 @@ export const viewWriter = (writer: Writer, view: View): Writer => ({
   askedBy: view.askers.length === 1 ? view.askers[0]! : null,
   view: { people: view.people, askers: view.askers },
 });
+
+/** The same writer without its turn's view guard, for a write a member's own rule decided. */
+const unguardedOf = ({ view: _view, ...writer }: Writer): Writer => writer;
 
 /** A row read whole in a shared turn (`viewReadsWhole`). */
 const viewWhole = Effect.fn("KinWorkTools.viewWhole")(function* (
@@ -1923,21 +1973,19 @@ const createRow = Effect.fnUntraced(function* (
   const list = def.id;
   // A deal's rules are `deals.ts`'s, whoever writes it.
   if (list === "deals") return yield* dealRow(lead, sourceEventId, writer, def, lists, row);
-  // For a teammate alone in the turn, a prospect is what their own Clients form adds (`memberAdds`).
+  // For a teammate alone in the turn, a prospect or a contact is what their own Clients form adds
+  // (`memberAdds`, `memberAddsContact`).
   const [only, ...others] = team?.people ?? [];
+  const alone = others.length === 0 ? only : undefined;
   const prospectFor =
-    list === "clients" && categoryOf(list, row).category === "prospect" && others.length === 0
-      ? only
-      : undefined;
+    list === "clients" && categoryOf(list, row).category === "prospect" ? alone : undefined;
+  const contactFor = list === "contacts" && row.client !== undefined ? alone : undefined;
+  const crmFor = prospectFor ?? contactFor;
   // A client or contact is the owner's to look after unless told otherwise; theirs, they look after.
   const owner = yield* resolveWho(
     lead,
     row.owner ??
-      (prospectFor !== undefined
-        ? "me"
-        : list === "clients" || list === "contacts"
-          ? "owner"
-          : "you"),
+      (crmFor !== undefined ? "me" : list === "clients" || list === "contacts" ? "owner" : "you"),
   ).pipe(asField("owner"));
   if (prospectFor !== undefined)
     yield* memberAdds(lead.orgId, prospectFor, {
@@ -1961,6 +2009,12 @@ const createRow = Effect.fnUntraced(function* (
       ? undefined
       : yield* refRecord(lead, row.client, "clients", PARTY_KIND[list]);
   const partyId = party?.recordId;
+  if (contactFor !== undefined && partyId !== undefined)
+    yield* memberAddsContact(lead.orgId, contactFor, {
+      party: { recordId: partyId },
+      owner,
+      ownersFields: row.sensitive !== undefined || row.state === "done" || row.state === "dropped",
+    });
   const projectId = yield* refOrNull(lead, row.project, "projects");
   // Setting up a client twice finds the one that is there instead of making another.
   const existing =
@@ -1995,8 +2049,10 @@ const createRow = Effect.fnUntraced(function* (
     const found = yield* records.get(lead.orgId, existing.key);
     // The same details again is a retry; new ones are a change, which only record_update makes.
     const stored = found === undefined ? {} : parseFields(found.fieldsJson);
+    const given = list === "contacts" ? contactFields({}, fields) : fields;
+    if (isKinChatError(given)) return yield* given;
     const differ = [
-      ...Object.entries(fields).flatMap(([field, value]) =>
+      ...Object.entries(given).flatMap(([field, value]) =>
         value === null || shownField(stored[field]) === shownField(value) ? [] : [field],
       ),
       ...("dueAt" in due && due.dueAt !== found?.dueAt ? ["due"] : []),
@@ -2045,7 +2101,7 @@ const createRow = Effect.fnUntraced(function* (
   const { view: _view, ...unguarded } = writer;
   const { row: stored, created } = yield* records.create(
     lead.orgId,
-    prospectFor === undefined ? writer : { ...unguarded, namesSeenBy: prospectFor },
+    crmFor === undefined ? writer : { ...unguarded, namesSeenBy: crmFor },
     {
       list,
       originKey,
@@ -2079,8 +2135,8 @@ const createRow = Effect.fnUntraced(function* (
   );
   // A retry finds what the first call stored, answered only while they may still see it.
   if (
-    prospectFor !== undefined &&
-    !(yield* crmVisible(lead.orgId, prospectFor, [stored.recordId])).has(stored.recordId)
+    crmFor !== undefined &&
+    !(yield* crmVisible(lead.orgId, crmFor, [stored.recordId])).has(stored.recordId)
   )
     return yield* notFound(row.title);
   if (created) notices.push(...movedNotices(undefined, stored));
@@ -2088,9 +2144,10 @@ const createRow = Effect.fnUntraced(function* (
     stored.category === "meeting" &&
     stored.dateAt !== null &&
     stored.dateAt <= (yield* Clock.currentTimeMillis);
+  const mainEmail = fieldText(parseFields(stored.fieldsJson), "email");
   const sameEmail =
-    list === "contacts" && typeof fields.email === "string"
-      ? yield* emailShared(lead, team, fields.email, stored.recordId)
+    list === "contacts" && mainEmail !== null
+      ? yield* emailShared(lead, team, mainEmail, stored.recordId)
       : undefined;
   const kind =
     list === "clients" ? (stored.category === "vendor" ? "vendor" : "client") : undefined;
@@ -2569,7 +2626,9 @@ const runUpdate = Effect.fnUntraced(function* (
   input: Change & { readonly key: string },
 ) {
   const { key, ...change } = input;
-  const { result, notices, held } = yield* updateCore(lead, key, change);
+  const sql = yield* SqlClient.SqlClient;
+  // Who may change it is decided in the write's own transaction.
+  const { result, notices, held } = yield* sql.withTransaction(updateCore(lead, key, change));
   return { ...(yield* tell(lead, notices, held)), ...result };
 });
 /** The same change to several entries, all or none. */
@@ -2607,6 +2666,19 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
   if (listOf(before.registerId) === "docs") return yield* isDoc(key);
   if (before.registerId === "deals")
     return { result: yield* dealUpdate(lead, writer, before, input), notices: [], held: [] };
+  // For a teammate alone in the turn, a contact changes as their own Edit contact changes it.
+  const [only, ...others] = team?.people ?? [];
+  const contactFor =
+    listOf(before.registerId) === "contacts" && others.length === 0 ? only : undefined;
+  if (contactFor !== undefined)
+    yield* memberChangesContact(lead.orgId, contactFor, key, {
+      ownersFields:
+        Object.entries(input).some(
+          ([field, value]) => value !== undefined && !CONTACT_CHANGES.has(field),
+        ) ||
+        input.state === "done" ||
+        input.sensitive !== undefined,
+    });
   yield* explainedHonestly(lead, before, input.state, input.kind ?? input.category);
   const def = yield* listFor(lead, before.registerId);
   const patch: Patch = {
@@ -2667,7 +2739,16 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     ...spine.at,
   };
   const seenBefore = yield* teamPairs(lead.orgId, [before.recordId]);
-  const after = yield* records.update(lead.orgId, writer, key, written, input.expectedRev);
+  // `memberChangesContact` decided it, as their form's own write.
+  const after = yield* records.update(
+    lead.orgId,
+    contactFor === undefined || team === undefined
+      ? writer
+      : { ...unguardedOf(viewWriter(owned, team)), namesSeenBy: contactFor },
+    key,
+    written,
+    input.expectedRev,
+  );
   const seenAfter = new Set(
     (yield* teamPairs(lead.orgId, [after.recordId])).map((p) => p.personId),
   );
@@ -2689,9 +2770,12 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
           ),
         ];
   const lists = yield* allLists(lead.orgId);
+  const mainEmail = fieldText(parseFields(after.fieldsJson), "email");
   const sameEmail =
-    listOf(after.registerId) === "contacts" && typeof input.email === "string"
-      ? yield* emailShared(lead, team, input.email, after.recordId)
+    listOf(after.registerId) === "contacts" &&
+    (input.email !== undefined || input.emails !== undefined) &&
+    mainEmail !== null
+      ? yield* emailShared(lead, team, mainEmail, after.recordId)
       : undefined;
   return {
     result: {
