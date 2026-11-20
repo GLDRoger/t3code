@@ -791,7 +791,7 @@ function AgentChanged(props: {
                   onClick={props.onClose}
                   className="text-sm break-words text-foreground underline-offset-4 hover:underline"
                 >
-                  {kinAgentChangeLine(change, names)}
+                  {kinAgentChangeLine(change, names, undefined, directory.zone)}
                 </Link>
                 <div className="flex flex-wrap items-center gap-2">
                   {offer.kind === "undo" && canUndo ? (

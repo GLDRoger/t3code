@@ -124,6 +124,12 @@ describe("what a lead has in hand", () => {
     expect(kinLeadTrackingDetail(day, "UTC", new Date("2026-11-18T09:00:00.000Z"))).toBe(
       "Working on it now, due Fri, Nov 27",
     );
+    // Given no zone, the company's from `names`, never this device's: Friday in Honolulu.
+    const honolulu = { people: new Map(), agents: new Map(), me: null, zone: "Pacific/Honolulu" };
+    const friday = { ...day, dueAt: "2026-11-28T09:59:59.999Z" };
+    expect(
+      kinLeadTrackingDetail(friday, undefined, new Date("2026-11-18T09:00:00.000Z"), honolulu),
+    ).toBe("Working on it now, due Fri, Nov 27");
   });
 
   it("says a waiting task is waiting, as the Tasks list does, never that it is under way", () => {

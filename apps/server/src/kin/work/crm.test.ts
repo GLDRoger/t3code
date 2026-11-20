@@ -3181,7 +3181,15 @@ it.effect(
       const first = (yield* LeadWork.get(scope, { key: "P-1" })).plan!;
       // A milestone brings its project; its tasks count towards it.
       assert.deepStrictEqual(first.milestones, [
-        { key: "M-1", title: "Invented beta", state: "open", due: "1970-01-20", done: 0, total: 2 },
+        {
+          key: "M-1",
+          title: "Invented beta",
+          state: "open",
+          due: "1970-01-20",
+          dueDay: "Tue 20 Jan 1970",
+          done: 0,
+          total: 2,
+        },
       ]);
       assert.include(
         first.people.find((one) => one.name === "Mate"),
@@ -3545,8 +3553,14 @@ it.effect(
         stage: "Proposal",
         value: "€20,000.00",
         expected: "2026-12-15",
+        expectedDay: "Tue 15 Dec 2026",
         lookedAfterBy: "owner",
-        next: { key: stepped.deal.next!.key, title: "Invented: call Ingrid", due: "2026-11-24" },
+        next: {
+          key: stepped.deal.next!.key,
+          title: "Invented: call Ingrid",
+          due: "2026-11-24",
+          dueDay: "Tue 24 Nov 2026",
+        },
       };
       assert.deepStrictEqual(of(hers, stepped.deal.key), pilot);
       assert.deepInclude(of(hers, bare.deal.key), { stage: "New", next: null });

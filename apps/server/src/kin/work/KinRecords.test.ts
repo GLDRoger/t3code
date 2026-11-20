@@ -3357,6 +3357,9 @@ it.effect(
       yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'America/Los_Angeles', '08:30',
           '18:30', '03:00', 0, 1, '09:00', '{"from":"22:00","to":"07:00"}')
         ON CONFLICT (org_id) DO UPDATE SET time_zone = 'America/Los_Angeles'`;
+      // Her own clock is a day ahead: a due day is still the company's, not hers.
+      yield* sql`UPDATE kin_people SET time_zone = 'Pacific/Auckland'
+        WHERE org_id = ${orgId} AND person_id = ${mateId}`;
       const scope = scopeOf("lead");
       // G03: the owner's turn has seen a price; what it writes is still not private for that.
       yield* sensitiveShown({ orgId, wakeupId: "wake" });
@@ -3388,8 +3391,13 @@ it.effect(
       assert.lengthOf(told, 1);
       assert.include(told[0]!.body, "gave you 3 tasks");
       assert.include(told[0]!.body, "W-2 Invented: fix the login screen, due Fri 20 Nov. Why: iOS");
+      yield* sql`UPDATE kin_people SET time_zone = NULL
+        WHERE org_id = ${orgId} AND person_id = ${mateId}`;
       // The agent reads the day the owner named, west of UTC too.
-      assert.include(yield* LeadWork.get(scope, { key: "W-2" }), { due: "2026-11-20" });
+      assert.include(yield* LeadWork.get(scope, { key: "W-2" }), {
+        due: "2026-11-20",
+        dueDay: "Fri 20 Nov 2026",
+      });
       // The owner asked, so the owner gave it; the agent only carried it.
       const given = yield* OwnerWork.get([mate], { orgId, key: "W-2" });
       assert.deepInclude(given, {

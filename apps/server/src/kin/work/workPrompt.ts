@@ -6,7 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { codingAgentSource, codingAgentTextShown } from "../lead/OutsideContent.ts";
 import { SILENT_REPLY } from "../reply/classify.ts";
-import { dayIn, timeIn } from "./money.ts";
+import { dayIn, dayWords, timeIn } from "./money.ts";
 import { ownerZone } from "./recordRows.ts";
 
 /**
@@ -36,6 +36,7 @@ export type WorkSection = {
     readonly title: string;
     readonly state: string;
     readonly due: string | null;
+    readonly dueDay?: string;
     readonly changes: ReadonlyArray<string>;
   }>;
   readonly moreChanged: number;
@@ -170,6 +171,7 @@ export const buildWorkSection = Effect.fn("KinWorkPrompt.build")(function* (inpu
           : row.dueAllDay === 1
             ? dayIn(row.dueAt, zone)
             : timeIn(row.dueAt, zone),
+      ...(row.dueAt === null ? {} : { dueDay: dayWords(row.dueAt, zone) }),
       changes: lines.slice(-4),
     })),
     moreChanged: Math.max(0, all.length - CHANGED_CAP),

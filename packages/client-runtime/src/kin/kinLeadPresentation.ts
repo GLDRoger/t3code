@@ -156,7 +156,7 @@ export function kinLeadTrackingDetail(
   // A due day has no time: the day where the owner is, as Tasks says it.
   const when =
     item.dueAllDay === true && item.dueAt !== undefined
-      ? `due ${kinWorkDueText({ dueAt: item.dueAt, dueAllDay: true }, { zone: timeZone ?? null }, now)}`
+      ? `due ${kinWorkDueText({ dueAt: item.dueAt, dueAllDay: true }, { zone: timeZone ?? names?.zone ?? null }, now)}`
       : formatKinDeferralTime(due, timeZone);
   return kind === null ? when : `${kind}, ${when}`;
 }
