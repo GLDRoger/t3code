@@ -2138,10 +2138,14 @@ describe("the owner's taps", () => {
           ],
           [["DT-1", "INV-1", "W-1", "W-2"], ["W-1"]],
         );
-        // Its day there is no issue day.
+        // Its day there is no issue day; Money's coming-up count is of kept entries' dates only.
         assert.deepStrictEqual(
           agenda.rows.filter((one) => one.record.key === "INV-1").map((one) => one.label),
           ["Date", "Due"],
+        );
+        assert.deepStrictEqual(
+          [summary.upcomingTotal, summary.upcoming.map((one) => one.record.key)],
+          [1, ["W-2"]],
         );
         // Past Money's newest 20, the rest open as a list; a paid one keeps its Keep.
         yield* LeadWork.create(scope, {

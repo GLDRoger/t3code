@@ -29,6 +29,7 @@ import {
   countedPayment,
   isSuggestion,
   iso,
+  keptEntry,
   moneyDay,
   owedInvoices,
   ownerZone,
@@ -70,6 +71,7 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
     readonly to: number;
     readonly lists?: ReadonlyArray<string> | undefined;
     readonly open?: boolean | undefined;
+    readonly kept?: boolean | undefined;
     readonly viewer: KinViewer;
   },
 ) {
@@ -88,6 +90,7 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
         r.record_id AS id, r.key, r.fields_json AS "fieldsJson" FROM kin_records r
       WHERE r.org_id = ${orgId} AND r.register_id = ${def.id}
         ${input.open === true ? sql`AND r.state NOT IN ('done', 'dropped')` : sql``}
+        ${input.kept === true ? sql`AND ${keptEntry(sql)}` : sql``}
         AND ${seenBy(sql, input.viewer)}
         AND (${sql.or(
           fields.map(
@@ -125,6 +128,8 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
     readonly to: number;
     readonly lists?: ReadonlyArray<string> | undefined;
     readonly open?: boolean | undefined;
+    /** Only entries someone kept, as a figure counts them. */
+    readonly kept?: boolean | undefined;
     readonly offset?: number | undefined;
     readonly limit?: number | undefined;
     readonly viewer: KinViewer;
@@ -141,6 +146,7 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
         ? []
         : [sql`r.register_id IN ${sql.in(input.lists)}`]),
       ...(input.open === true ? [sql`r.state NOT IN ('done', 'dropped')`] : []),
+      ...(input.kept === true ? [keptEntry(sql)] : []),
       seenBy(sql, input.viewer),
     ]);
   const hits = sql`SELECT r.record_id AS id, 'due' AS kind, r.due_at AS at, r.key FROM kin_records r
@@ -341,7 +347,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
 
   const upcoming = yield* dates(
     orgId,
-    { from: now, to: now + 30 * DAY_MS, open: true, limit: 50, viewer },
+    { from: now, to: now + 30 * DAY_MS, open: true, kept: true, limit: 50, viewer },
     now,
   );
   // Suggestions in money lists, and any other with an amount: what Money's figures leave out.
