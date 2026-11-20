@@ -4,6 +4,7 @@ import {
   type KinChatMembersResult,
   type KinChatSummary,
   type KinLeadsListResult,
+  type KinMessage,
 } from "@t3tools/contracts";
 
 import {
@@ -184,12 +185,7 @@ export type KinChatRow =
 /** Where a chat's writing area stands: a retired agent's Restore line, a read-only line, or open. */
 export type KinComposerState = "retired" | "read-only" | "open";
 
-/**
- * What a chat's feed shows and in what order, where it scrolls, and whether the person may write.
- * The stream's messages, then earlier pages, then the outbox: acked sends join the messages,
- * the rest follow them as pending rows. Repeated notices collapse to their last copy.
- */
-export function kinChatFeedView(input: {
+type KinChatFeedInput = {
   readonly chatId: KinChatId;
   readonly live: KinChatState;
   /** Pages read before the stream's window. */
@@ -204,14 +200,20 @@ export function kinChatFeedView(input: {
   readonly teamRoomId: KinChatId | null;
   readonly direct: boolean;
   readonly formatTime: (iso: string) => string;
-  readonly follow: KinFeedFollow;
   /** A message a notification opened the chat on. */
   readonly landOn: string | null;
   readonly ownsLead: boolean;
   readonly agentName: string | null;
   readonly retired: boolean;
   readonly readOnly: boolean;
-}) {
+};
+
+/**
+ * What a chat's feed shows and in what order, and whether the person may write; scrolling does
+ * not change it. The stream's messages, then earlier pages, then the outbox: acked sends join the
+ * messages, the rest follow them as pending rows. Repeated notices collapse to their last copy.
+ */
+export function kinChatFeedRows(input: KinChatFeedInput) {
   const { live } = input;
   const streamed = mergeKinFeed(live, input.earlier);
   const { acked, pending, echoed } = splitKinOutbox(input.outbox, streamed.messages);
@@ -266,7 +268,6 @@ export function kinChatFeedView(input: {
             : row.type === "cards" &&
               [row.question, ...row.tasks].some((card) => card?.message.messageId === landOn),
         );
-  const followsEnd = kinFollowsEnd(input.follow);
   const earlierPage = kinEarlierPage(input.chatId, messages, input.exhausted, live.clearedSeq);
   const showIntro = kinIntroVisible({
     // Nobody is there to greet in a retired agent's chat.
@@ -289,13 +290,12 @@ export function kinChatFeedView(input: {
     /** Outbox entries the stream now carries, for the outbox to forget. */
     echoed,
     pending,
+    /** Before notices collapse and cards group: every message row the feed draws. */
+    feedRows,
     rows,
     display,
     /** The row to bring into view for `landOn`; -1 until it has loaded. */
     landIndex,
-    /** The list keeps to its end as rows arrive; otherwise it holds what is in view. */
-    followsEnd,
-    unseen: followsEnd ? 0 : kinUnseenCount(messages, input.follow.seenSeq, input.viewer.personId),
     latestSeq: latestKinSeq(messages),
     earlierPage,
     showIntro,
@@ -303,5 +303,25 @@ export function kinChatFeedView(input: {
     empty: rows.length === 0 && earlierPage === null && !live.needsHistoryReload,
     composer,
   };
+}
+
+/** Where the feed scrolls, apart from its rows, so a scroll recomputes only this. */
+export function kinChatFeedFollow(
+  messages: ReadonlyArray<KinMessage>,
+  follow: KinFeedFollow,
+  viewerPersonId: KinFeedViewer["personId"],
+) {
+  const followsEnd = kinFollowsEnd(follow);
+  return {
+    /** The list keeps to its end as rows arrive; otherwise it holds what is in view. */
+    followsEnd,
+    unseen: followsEnd ? 0 : kinUnseenCount(messages, follow.seenSeq, viewerPersonId),
+  };
+}
+
+/** A chat's feed rows and where it scrolls, as one view. */
+export function kinChatFeedView(input: KinChatFeedInput & { readonly follow: KinFeedFollow }) {
+  const rows = kinChatFeedRows(input);
+  return { ...rows, ...kinChatFeedFollow(rows.messages, input.follow, input.viewer.personId) };
 }
 export type KinChatFeedView = ReturnType<typeof kinChatFeedView>;
