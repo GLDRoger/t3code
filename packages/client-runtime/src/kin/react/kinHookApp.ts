@@ -1,11 +1,11 @@
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, KinMoneyPart } from "@t3tools/contracts";
 import type { Atom, AtomRegistry } from "effect/reactivity";
 import { useEffect, useRef } from "react";
 
 import type * as EnvironmentRegistry from "../../connection/registry.ts";
 import type { AtomCommand, AtomCommandOptions, AtomCommandResult } from "../../state/runtime.ts";
 import type { KinClient } from "../kinClient.ts";
-import type { KinScreenReads } from "../kinScreenReads.ts";
+import type { KinMoneyLiveRead, KinScreenReads, KinScreenTarget } from "../kinScreenReads.ts";
 
 /** What Kin's shared data hooks take from the app that renders them. */
 export interface KinHookApp<R, ER> {
@@ -19,6 +19,12 @@ export interface KinHookApp<R, ER> {
   ) => (value: W) => Promise<AtomCommandResult<A, E>>;
   readonly kinHostConnected: (environmentId: EnvironmentId) => boolean;
 }
+
+/** The app's `useKinMoneyLive`: `part` from Money's stream where this viewer reads it. */
+export type KinUseMoneyLive = <P extends KinMoneyPart>(
+  target: KinScreenTarget,
+  part: P,
+) => KinMoneyLiveRead<P> | null | undefined;
 
 /** Reads again when Work says something changed; `seq` is null while that isn't known. */
 export function useRereadOnChange(seq: number | null, reread: () => void) {

@@ -5,7 +5,6 @@ import type {
   KinDay,
   KinGoalSaveInput,
   KinGoalsResult,
-  KinMoneyPart,
   KinOrgId,
   KinPulseHandleAction,
   KinPulseScreenRead,
@@ -24,13 +23,9 @@ import {
   type KinAttentionScope,
   KIN_GOALS,
 } from "../kinAttention.ts";
-import {
-  kinAskAboutAgent,
-  type KinMoneyLiveRead,
-  type KinScreenTarget,
-} from "../kinScreenReads.ts";
+import { kinAskAboutAgent, type KinScreenTarget } from "../kinScreenReads.ts";
 import { kinWorkReadState } from "../kinWorkForms.ts";
-import { type KinHookApp, useRereadOnChange } from "./kinHookApp.ts";
+import { type KinHookApp, type KinUseMoneyLive, useRereadOnChange } from "./kinHookApp.ts";
 
 /** The app's own hooks these read through, so each app keeps its navigation and access rules. */
 export interface KinAttentionUses {
@@ -40,10 +35,7 @@ export interface KinAttentionUses {
     chatId: KinChatId,
     draft?: string,
   ) => void;
-  readonly useKinMoneyLive: <P extends KinMoneyPart>(
-    target: KinScreenTarget,
-    part: P,
-  ) => KinMoneyLiveRead<P> | null | undefined;
+  readonly useKinMoneyLive: KinUseMoneyLive;
   readonly kinWorkLiveAtom: (
     target: KinScreenTarget,
   ) => Atom.Atom<AsyncResult.AsyncResult<{ readonly seq: number }, unknown>>;

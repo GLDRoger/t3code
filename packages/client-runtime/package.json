@@ -1018,6 +1018,10 @@
     "./kin/react/kinAttentionHooks": {
       "types": "./src/kin/react/kinAttentionHooks.ts",
       "default": "./src/kin/react/kinAttentionHooks.ts"
+    },
+    "./kin/react/kinMoneyAnswersHooks": {
+      "types": "./src/kin/react/kinMoneyAnswersHooks.ts",
+      "default": "./src/kin/react/kinMoneyAnswersHooks.ts"
     }
   },
   "scripts": {
