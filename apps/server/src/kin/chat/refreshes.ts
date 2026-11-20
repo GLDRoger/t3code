@@ -37,13 +37,14 @@ const same = (a: KinRefreshes, b: KinRefreshes) =>
   a.workLists === b.workLists &&
   a.recommendations === b.recommendations &&
   a.imports === b.imports &&
+  a.stop === b.stop &&
   a.boot === b.boot;
 
 /**
- * The revisions this viewer may see, by their kind at each change. Owner-level people read every
- * topic but the owner's own recommendations. A member reads the time zone, profiles, Needs
- * attention, their lead list and work lists (moved only when what those show them changed) and,
- * while a new company waits on its country, the company topic, moved when it is chosen.
+ * The revisions this viewer may see. Owner-level people read every topic but the owner's own
+ * recommendations. A member reads the time zone, profiles, Needs attention, the stop switch, their
+ * lead list and work lists (moved only when what those show them changed) and, while a new company
+ * waits on its country, the company topic.
  */
 export const subscribeRefreshes = (
   people: ReadonlyArray<PersonIdentity>,
@@ -116,6 +117,7 @@ export const subscribeRefreshes = (
               leads,
               pulse: now.pulse,
               workLists: lists,
+              stop: now.stop,
               // Only a company that waited on its country: no other gains a byte.
               ...(waited ? { company } : {}),
               boot: hub.boot,
