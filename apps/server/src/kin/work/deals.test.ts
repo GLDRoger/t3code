@@ -260,19 +260,26 @@ it.effect(
         [owner],
         newDeal(corran, "Invented private renewal", { sensitive: true }),
       );
-      const keptForZoya = yield* Deals.create(
+      // One she looks after that the owner then keeps private leaves her Clients (`crmSees`).
+      const forZoya = yield* Deals.create(
         [owner],
-        newDeal(corran, "Invented private, Zoya's", { sensitive: true, owner: asZoya }),
+        newDeal(corran, "Invented private, Zoya's", { owner: asZoya }),
       );
+      const keptForZoya = yield* Deals.update([owner], {
+        orgId,
+        key: forZoya.deal.key,
+        rev: forZoya.deal.rev,
+        sensitive: true,
+      });
       const underHush = yield* Deals.create(
         [owner],
         newDeal(hush, "Invented clinic system", { owner: asZoya }),
       );
-      // She sees deals of clients she sees, and a private one she looks after; never one under a
-      // private client, even hers.
+      // She sees the deals of clients she sees; never a private one or one under a private
+      // client, even hers.
       const seen = (yield* Deals.deals([zoya], { orgId })).deals.map((deal) => deal.key);
-      assert.sameMembers(seen, [hers.deal.key, rheas.deal.key, keptForZoya.deal.key]);
-      for (const key of [hidden.deal.key, underHush.deal.key]) {
+      assert.sameMembers(seen, [hers.deal.key, rheas.deal.key]);
+      for (const key of [hidden.deal.key, underHush.deal.key, keptForZoya.deal.key]) {
         assert.strictEqual(yield* refusal(Deals.page([zoya], { orgId, key })), "not_found");
         assert.isFalse(yield* teamSeesKey(orgId, zoyaId, key));
       }
@@ -423,7 +430,7 @@ it.effect(
       const sql = yield* SqlClient.SqlClient;
       yield* sql`UPDATE kin_people SET sees_clients = 0 WHERE person_id = ${zoyaId}`;
       assert.strictEqual(yield* refusal(Deals.deals([zoya], { orgId })), "not_allowed");
-      assert.isFalse(yield* teamSeesKey(orgId, zoyaId, keptForZoya.deal.key));
+      assert.isFalse(yield* teamSeesKey(orgId, zoyaId, hers.deal.key));
     }).pipe(Effect.provide(layer)),
 );
 
@@ -563,6 +570,24 @@ it.effect(
         clientRequestId: "book",
       });
       assert.strictEqual(stepped.deal.next?.title, "Invented: book the call");
+      // The owner's own follow-up, not shared with the team, is his deal's next step and not hers,
+      // as on the client's row (`crmSees`).
+      const rheas = yield* Deals.step([owner], {
+        orgId,
+        key: bare.deal.key,
+        step: { title: "Invented: owner's call", dueAt: "2026-11-12", dueAllDay: true },
+        clientRequestId: "owners",
+      });
+      assert.strictEqual(rheas.deal.next?.title, "Invented: owner's call");
+      const forZoya = yield* Deals.page([zoya], { orgId, key: bare.deal.key });
+      assert.notInclude(
+        forZoya.steps.map((step) => step.title),
+        "Invented: owner's call",
+      );
+      const row = (yield* Clients.parties([zoya], { orgId })).parties.find(
+        (party) => party.key === corran,
+      );
+      assert.notStrictEqual(row?.next?.title, "Invented: owner's call");
     }).pipe(Effect.provide(layer)),
 );
 

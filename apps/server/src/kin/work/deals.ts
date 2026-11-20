@@ -53,13 +53,13 @@ import {
   workFailure,
 } from "./recordRows.ts";
 import {
+  crmSeenBy,
+  crmVisible,
   KIN_OWNER_LEVEL,
   placesOf,
-  seenBy,
   teamClients,
   teamSeesField,
   teamSeq,
-  teamVisible,
   viewerOfPeople,
   type KinViewer,
 } from "./teamView.ts";
@@ -155,7 +155,7 @@ const dealIn = Effect.fn("KinDeals.dealIn")(function* (actor: DealActor, key: st
   const row = yield* byKey(actor.orgId, key);
   if (row === undefined || row.registerId !== "deals") return yield* notADeal(key);
   for (const personId of actor.members)
-    if (!(yield* teamVisible(actor.orgId, personId, [row.recordId])).has(row.recordId))
+    if (!(yield* crmVisible(actor.orgId, personId, [row.recordId])).has(row.recordId))
       return yield* notADeal(key);
   return row;
 });
@@ -202,7 +202,7 @@ const quoteFor = Effect.fn("KinDeals.quoteFor")(function* (
   });
   if (row === undefined || row.registerId !== "quotes") return yield* missing;
   for (const personId of actor.members)
-    if (!(yield* teamVisible(actor.orgId, personId, [row.recordId])).has(row.recordId))
+    if (!(yield* crmVisible(actor.orgId, personId, [row.recordId])).has(row.recordId))
       return yield* missing;
   if (row.partyId !== null && row.partyId !== partyId)
     return yield* invalid(`${row.key} is another client's quote.`);
@@ -374,7 +374,7 @@ const seesItAfter = Effect.fn("KinDeals.seesItAfter")(function* (
   if (yield* mayActAsOwner(orgId, to.personId, owner).pipe(workFailure)) return;
   const sees =
     (yield* placesOf(orgId, to.personId)).clients &&
-    (yield* teamVisible(orgId, to.personId, [deal.recordId])).has(deal.recordId);
+    (yield* crmVisible(orgId, to.personId, [deal.recordId])).has(deal.recordId);
   if (sees) return;
   const sql = yield* SqlClient.SqlClient;
   const [person] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
@@ -508,7 +508,7 @@ const canFor = (viewer: KinViewer, row: RecordRow): KinDealCan => {
     : NOTHING_CAN;
 };
 
-/** Open follow-ups linked to these deals, soonest first, private ones only for who holds them. */
+/** Open follow-ups linked to these deals that this viewer reads in Clients (`crmSeenBy`), soonest first. */
 const stepsFor = Effect.fn("KinDeals.steps")(function* (
   orgId: KinOrgId,
   viewer: KinViewer,
@@ -518,23 +518,19 @@ const stepsFor = Effect.fn("KinDeals.steps")(function* (
   const out = new Map<string, Array<KinDealNext>>();
   if (dealIds.length === 0) return out;
   const sql = yield* SqlClient.SqlClient;
-  const held =
-    viewer._tag === "ownerLevel"
-      ? sql`1 = 1`
-      : sql`(w.sensitive = 0 OR (w.owner_kind = 'person' AND w.owner_id IN ${sql.in(viewer.people)}))`;
   const rows = yield* sql<{
     dealId: string;
     key: string;
     title: string;
     dueAt: number | null;
     dueAllDay: number;
-  }>`SELECT l.target AS "dealId", w.key, w.title, w.due_at AS "dueAt",
-      w.due_all_day AS "dueAllDay"
-    FROM kin_record_links l JOIN kin_records w ON w.org_id = l.org_id AND w.record_id = l.record_id
+  }>`SELECT l.target AS "dealId", r.key, r.title, r.due_at AS "dueAt",
+      r.due_all_day AS "dueAllDay"
+    FROM kin_record_links l JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
     WHERE l.org_id = ${orgId} AND l.kind = 'record' AND l.target IN ${sql.in([...dealIds])}
-      AND w.register_id = 'work' AND w.state NOT IN ('done', 'dropped') AND w.side = 'ours'
-      AND ${held}
-    ORDER BY w.due_at IS NULL, w.due_at, w.created_at, w.key`;
+      AND r.register_id = 'work' AND r.state NOT IN ('done', 'dropped') AND r.side = 'ours'
+      AND ${crmSeenBy(sql, viewer)}
+    ORDER BY r.due_at IS NULL, r.due_at, r.created_at, r.key`;
   for (const row of rows) {
     const steps = out.get(row.dealId) ?? [];
     if (steps.some((step) => step.key === row.key)) continue;
@@ -568,7 +564,7 @@ const quotesFor = Effect.fn("KinDeals.quotes")(function* (
   }>`SELECT l.record_id AS "dealId", r.record_id AS "recordId", r.key, r.title, r.state
     FROM kin_record_links l JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.target
     WHERE l.org_id = ${orgId} AND l.kind = 'record' AND l.record_id IN ${sql.in([...dealIds])}
-      AND r.register_id = 'quotes' AND ${seenBy(sql, viewer)}
+      AND r.register_id = 'quotes' AND ${crmSeenBy(sql, viewer)}
     ORDER BY l.created_at DESC, r.key`;
   for (const row of rows)
     if (!out.has(row.dealId))
@@ -592,7 +588,7 @@ const quoteChoices = Effect.fn("KinDeals.quoteChoices")(function* (
   const rows = yield* sql<{ recordId: string; key: string; title: string; state: string }>`SELECT
       r.record_id AS "recordId", r.key, r.title, r.state FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'quotes' AND r.party_id = ${deal.partyId}
-      AND ${seenBy(sql, viewer)}
+      AND ${crmSeenBy(sql, viewer)}
     ORDER BY r.created_at DESC, r.key LIMIT ${KIN_DEAL_QUOTES_CAP}`;
   return rows.map((row): KinDealQuote => ({
     recordId: KinRecordId.make(row.recordId),
@@ -696,7 +692,7 @@ export const deals = Effect.fn("KinDeals.list")(function* (
   const where: Array<Statement.Fragment> = [
     sql`r.org_id = ${input.orgId}`,
     sql`r.register_id = 'deals'`,
-    seenBy(sql, viewer),
+    crmSeenBy(sql, viewer),
     ...(party === undefined ? [] : [sql`r.party_id = ${party.recordId}`]),
     ...(input.owner === undefined
       ? []

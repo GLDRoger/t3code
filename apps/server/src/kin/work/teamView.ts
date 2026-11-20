@@ -116,9 +116,8 @@ export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Sta
     OR (r.register_id = 'docs' AND (r.team_shared = 1
       OR json_extract(r.fields_json, '$.home') = 'company')
       AND ${placeOn(sql, personId, "sees_docs")})))
-  OR (r.register_id = 'deals' AND NOT ${inheritedSensitive(sql)}
-    AND ${placeOn(sql, personId, "sees_clients")}
-    AND (r.sensitive = 0 OR (r.owner_kind = 'person' AND r.owner_id = ${personId})))
+  OR (r.register_id = 'deals' AND NOT ${keySensitive(sql)}
+    AND ${placeOn(sql, personId, "sees_clients")})
   OR (r.register_id NOT IN ${sql.in(NOT_LISTS)} AND r.team_shared = 1 AND ${ownLabelOff(sql)}
     AND NOT ${inheritedSensitive(sql)} AND ${placeOn(sql, personId, "sees_money")}))`;
 
