@@ -66,7 +66,7 @@ import { type RowRead, threePageStatement } from "./statementPdf.testkit.ts";
 import { gatherFacts } from "../../gendocs/facts.ts";
 import { parseRecipe, sourceOf } from "../../gendocs/recipe.ts";
 import { STARTER_FILES } from "../../gendocs/starter.ts";
-import { dayIn } from "../money.ts";
+import { dayIn, formatMoney } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import { KIN_OWNER_LEVEL } from "../teamView.ts";
 import { queueTap, tellLead } from "./statementWake.ts";
@@ -1002,6 +1002,24 @@ describe("bank statements", () => {
           [{ minor: sum("credit") + sum("debit"), currency: "INR" }],
         ],
       );
+      // Agents get in, out and net for the bank list, and never the plain sum to quote.
+      const asked = yield* LeadWork.query(scope, { list: "bank_txns", groupBy: "state" });
+      const flows = (one: { moneyIn?: unknown; moneyOut?: unknown; net?: unknown }) => [
+        one.moneyIn,
+        one.moneyOut,
+        one.net,
+      ];
+      assert.notProperty(asked, "totals");
+      assert.deepStrictEqual(flows(asked), [
+        [formatMoney({ minor: sum("credit"), currency: "INR" })],
+        [formatMoney({ minor: sum("debit"), currency: "INR" })],
+        [formatMoney({ minor: sum("credit") - sum("debit"), currency: "INR" })],
+      ]);
+      assert.isNotEmpty(asked.groups);
+      for (const group of asked.groups ?? []) {
+        assert.notProperty(group, "totals");
+        assert.isTrue(flows(group).every(Array.isArray));
+      }
       // An owner's own list with a Direction field is no bank list: its total is the plain sum.
       yield* defineList(
         orgId,
