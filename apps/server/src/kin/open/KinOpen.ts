@@ -18,7 +18,7 @@ import { waitingFor } from "../chat/KinChatService.ts";
 import { carriesEntry } from "../connections/ConnectionRows.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import { screenFacts } from "../pulse/people.ts";
-import { iso } from "../pulse/senses/shared.ts";
+import { iso, type SensedFact } from "../pulse/senses/shared.ts";
 import { validZone } from "../triggers/quietHold.ts";
 import { dayIn } from "../work/money.ts";
 import { moneyViewer } from "../work/ownerMoney.ts";
@@ -169,11 +169,14 @@ export const sources = Effect.fn("KinOpen.sources")(function* (input: {
   readonly viewer: OpenViewer;
   readonly at: number;
   readonly acceptSenses?: ReadonlyArray<string> | undefined;
+  /** What a tick already sensed (`KinPulse.lastTick`), instead of sensing again. */
+  readonly sensed?: ReadonlyArray<SensedFact> | undefined;
 }) {
   const { orgId, viewer, at } = input;
   const pulse = yield* KinPulse.read({
     orgId,
     at,
+    sensed: input.sensed,
     viewer: viewer.ownerLevel ? { _tag: "owner" } : { _tag: "people", people: [viewer.personId] },
     includeHandled: true,
     limit: FACT_CAP,
@@ -266,6 +269,7 @@ export const compute = Effect.fn("KinOpen.compute")(function* (input: {
   readonly viewer: OpenViewer;
   readonly at: number;
   readonly acceptSenses?: ReadonlyArray<string> | undefined;
+  readonly sensed?: ReadonlyArray<SensedFact> | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const from = yield* sql.withTransaction(sources(input)).pipe(NodeSqliteClient.readOnly);
