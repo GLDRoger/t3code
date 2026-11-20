@@ -547,7 +547,7 @@ export type KinCompanyProfileInput = typeof KinCompanyProfileInput.Type;
 export const KIN_EXPORT_ROUTE = "/api/kin/export";
 /** What that zip holds and leaves out: Settings, the zip's README and the user guide say it in these words. */
 export const KIN_EXPORT_HOLDS =
-  "Your clients, contacts, projects, every list with its entries and their payments, each doc as it reads now, and the files entries and docs hold, in one zip. Kin's import makes the clients, contacts, projects and entries again; the docs and files are there to keep.";
+  "Your clients, contacts, projects, every list with its entries and their payments, each entry's comments, the contact logged with each client, each doc as it reads now, and the files entries, comments and docs hold, in one zip. Kin's import makes the clients, contacts, projects and entries again; the comments, logged contact, docs and files are there to keep.";
 export const KIN_EXPORT_LEAVES =
   "It is not a full backup. Not in it: memory, which stays in your memory repository; chats; people and their access; agents and their characters; check-ins and reminders; connections, social accounts and their posts; budgets, bank statements and company details; settings; project repos and members; and who holds each entry, how it repeats and its history. Keys, tokens, sign-in sessions, pairing codes and bank details never leave.";
 export const KinExportLinkInput = Schema.Struct({ orgId: KinOrgId });
