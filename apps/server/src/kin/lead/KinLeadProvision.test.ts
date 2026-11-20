@@ -1134,6 +1134,26 @@ describe("KinLeadProvision", () => {
         yield* Provision.disallow(her);
         assert.include(yield* member(contact.chatId), { role: "guest", leftAt: null });
         assert.include(yield* say("restricted").pipe(Effect.flip), { reason: "not_allowed" });
+        // Settings' list: the pair that binds, and only she may still be restricted.
+        const reach = yield* Provision.reachList({ editor: owner, orgId: finance.orgId });
+        assert.deepStrictEqual(reach.restrictable, [priyaId]);
+        assert.deepStrictEqual(
+          reach.limits.map(({ one, other }) => [one, other]),
+          [
+            [
+              { kind: "agent", agentId: finance.agentId },
+              { kind: "person", personId: priyaId },
+            ],
+          ],
+        );
+        yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${priyaId}`;
+        assert.deepStrictEqual(
+          yield* Provision.reachList({ editor: owner, orgId: finance.orgId }),
+          {
+            limits: [],
+            restrictable: [],
+          },
+        );
       }).pipe(Effect.provide(paired)),
   );
 

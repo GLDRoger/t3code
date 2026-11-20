@@ -31,7 +31,7 @@ import {
   type KinPeopleListDevicesInput,
   type KinAgentDefaultsInput,
   type KinAgentPageInput,
-  type KinLeadAccessInput,
+  type KinReachListInput,
   type KinLeadsListInput,
   type KinOrgsListInput,
   type KinOrgsListResult,
@@ -73,6 +73,7 @@ import {
   retryKinAccess,
 } from "./kinAccess.ts";
 import { KIN_DOCS_LABEL, kinDocsLiveStream } from "./kinDocsStream.ts";
+import { kinReachPairKey } from "./kinReach.ts";
 import type { KinChatState } from "./kinInboxModel.ts";
 import { KIN_MONEY_LIVE_LABEL, kinMoneyLiveStream } from "./kinMoneyStream.ts";
 import { KIN_PULSE_LIVE_LABEL, kinPulseLiveStream } from "./kinPulseStream.ts";
@@ -179,11 +180,11 @@ export function makeKinClient<R, ER>(
     tag: "kin.leads.list",
   });
 
-  const leadAccessRead = createKinRpcCommand(runtime, {
-    label: "kin:lead-access:read",
-    tag: "kin.lead.access.list",
+  const reachRead = createKinRpcCommand(runtime, {
+    label: "kin:reach:read",
+    tag: "kin.reach.list",
   });
-  const readLeadAccess = kinGuardedRead(leadAccessRead);
+  const readReach = kinGuardedRead(reachRead);
 
   const agentPageRead = createKinRpcCommand(runtime, {
     label: "kin:agent-page:read",
@@ -645,14 +646,19 @@ export function makeKinClient<R, ER>(
       tag: "kin.lead.resume",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
     }),
-    /** Who besides the owner may message one of the owner's leads. */
-    leadAccess: createKinQueryAtomFamily(runtime, {
-      label: "kin:lead-access",
-      execute: Effect.fn("KinClient.leadAccess")(function* (input: KinLeadAccessInput) {
-        return yield* readLeadAccess(input);
+    /** The pairs restricted from messaging each other, and who may be. Owners and co-owners. */
+    reach: createKinQueryAtomFamily(runtime, {
+      label: "kin:reach",
+      execute: Effect.fn("KinClient.reach")(function* (input: KinReachListInput) {
+        return yield* readReach(input);
       }),
       staleTimeMs: 30_000,
       refreshTrigger: kinRefreshOn("leads"),
+    }),
+    reachSet: createKinRpcCommand(runtime, {
+      label: "kin:reach:set",
+      tag: "kin.reach.set",
+      concurrency: { mode: "singleFlight", key: ({ input }) => kinReachPairKey(input.a, input.b) },
     }),
     /** The owner's connections to outside services, live on the host's `connections` topic. */
     connections: createKinQueryAtomFamily(runtime, {
@@ -857,22 +863,6 @@ export function makeKinClient<R, ER>(
       label: "kin:visual-hosts:remove",
       tag: "kin.visuals.hosts.remove",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.host}` },
-    }),
-    leadAllow: createKinRpcCommand(runtime, {
-      label: "kin:lead-access:allow",
-      tag: "kin.lead.access.grant",
-      concurrency: {
-        mode: "singleFlight",
-        key: ({ input }) => `${input.agentId}:${input.personId}`,
-      },
-    }),
-    leadDisallow: createKinRpcCommand(runtime, {
-      label: "kin:lead-access:disallow",
-      tag: "kin.lead.access.revoke",
-      concurrency: {
-        mode: "singleFlight",
-        key: ({ input }) => `${input.agentId}:${input.personId}`,
-      },
     }),
     chatMembers,
     /** The people of the org, for choosing who joins a group or may message a lead. */

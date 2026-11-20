@@ -1054,7 +1054,16 @@ const reachRows = Effect.fn("KinLeadProvision.reachRows")(
           setAt: DateTime.formatIso(DateTime.makeUnsafe(row.setAt)),
         });
     }
-    return { limits } satisfies KinReachListResult;
+    const sql = yield* SqlClient.SqlClient;
+    const restrictable = yield* sql<{ personId: KinPersonId }>`
+      SELECT p.person_id AS "personId" FROM kin_people p
+      WHERE p.org_id = ${orgId} AND p.removed_at IS NULL
+        AND NOT ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))}
+      ORDER BY p.created_at, p.person_id`;
+    return {
+      limits,
+      restrictable: restrictable.map((row) => row.personId),
+    } satisfies KinReachListResult;
   },
   Effect.mapError(toPersistenceSqlError("KinLeadProvision.reachRows")),
 );

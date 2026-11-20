@@ -787,6 +787,10 @@
       "types": "./src/kin/kinIntro.ts",
       "default": "./src/kin/kinIntro.ts"
     },
+    "./kin/kinReach": {
+      "types": "./src/kin/kinReach.ts",
+      "default": "./src/kin/kinReach.ts"
+    },
     "./kin/kinLeadPresentation": {
       "types": "./src/kin/kinLeadPresentation.ts",
       "default": "./src/kin/kinLeadPresentation.ts"

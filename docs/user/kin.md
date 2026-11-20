@@ -73,7 +73,7 @@ doesn't send it for you and won't show it again. Make the link from the address 
 reach Kin, not from `localhost`, or it won't open on anyone else's device.
 
 Each teammate starts as a **Member**. Open them under **Settings → Team** to make them a **Co-owner**, to
-turn on what they can see (Money, Clients, Docs), to choose which agents they can message, or to
+turn on what they can see (Money, Clients, Docs), to restrict who they can message, or to
 **Remove access**.
 
 Removing access signs them out everywhere and changes nothing else. Their open tasks stay in their
@@ -188,6 +188,13 @@ approval can happen.
 Anyone can message anyone else on the team: **New → Message a teammate**, or **Message** on their
 profile. It is a chat for the two of you, with no agent. Only you and they can read it, not the owner
 or a co-owner, and the chat says so at its top. Starting it again opens the same chat.
+
+Everyone can message every agent and everyone else, unless the owner or a co-owner restricts a pair.
+Restrict a person and an agent from either one's page (**Who can message** on the agent, or the
+agent's row on the person), and two people from the person's page with **Restrict messaging
+with…**. A restriction holds both ways; their chat stays, to read only, until you **Lift** it.
+**Settings → Team → Who can message** lists every restriction. Owners and co-owners can't be
+restricted.
 
 ## Group chats and the company chat
 

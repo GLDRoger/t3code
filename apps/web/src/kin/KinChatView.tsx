@@ -412,7 +412,6 @@ export function KinChatView(props: {
           avatar={avatar}
           environmentId={environmentId}
           chatId={chatId}
-          personId={viewer.personId}
           muted={muted}
           activeAgents={activeAgents}
           ownsChat={

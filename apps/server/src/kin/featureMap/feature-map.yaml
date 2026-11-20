@@ -1152,6 +1152,25 @@ features:
       - apps/server/src/kin/people/KinPeople.test.ts
       - .agents/skills/verify-kin/scripts/remove-and-bring-back.sh
 
+  - id: who-can-message
+    name: Who can message whom, restricted pairs and lifting them
+    tab: settings
+    web: [settings, section:Team, section:Who can message]
+    phone: [SettingsKin, KinTeam]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      Everyone can message every agent and every teammate. The owner or a co-owner restricts a pair
+      both ways: on an agent's page ("Who can message", Restrict someone), on a person's page (each
+      agent's Restrict, and Restrict messaging with… for a person), with a confirm; Lift needs none.
+      Settings, Team lists every restriction with who set it and when. Owners and co-owners are
+      never restricted. A restricted teammate's chat turns read-only, live.
+      Web: apps/web/src/kin/KinReach.tsx; phone: apps/mobile/src/features/chats/KinReachSections.tsx.
+    proof:
+      - packages/client-runtime/src/kin/kinReach.test.ts
+      - apps/web/src/kin/KinReach.browser.test.tsx
+      - apps/server/src/kin/lead/Reach.test.ts
+      - apps/server/src/kin/lead/KinLeadProvision.test.ts
+
   - id: linked-devices
     name: Link and remove your own devices
     tab: settings

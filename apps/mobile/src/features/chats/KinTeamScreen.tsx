@@ -31,6 +31,7 @@ import { useKinOpenCounts } from "./state/useKinProfiles";
 import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { KinGateView } from "./components/KinWorkPieces";
+import { KinReachListSection } from "./KinReachSections";
 
 export type KinTeamParams = { readonly environmentId: string; readonly orgId: string };
 
@@ -153,7 +154,7 @@ function KinTeamBody(target: KinTeamTarget) {
           ) : (
             <>
               {team.edits.problem === null ? null : <ErrorBanner message={team.edits.problem} />}
-              <ListSection footer="Teammates chat with you and with the agents and groups you add them to. They can't see your code or settings.">
+              <ListSection footer="Teammates chat with you, your agents and the groups you add them to. They can't see your code or settings.">
                 {rows.map((row, index) => (
                   <View
                     key={row.key}
@@ -174,6 +175,7 @@ function KinTeamBody(target: KinTeamTarget) {
                   <ListActionRow label={KIN_TEAM_ADD} icon="plus" onPress={add} />
                 </View>
               </ListSection>
+              <KinReachListSection environmentId={environmentId} orgId={orgId} />
             </>
           )}
         </ScreenScrollView>

@@ -34,6 +34,7 @@ export const KIN_PROFILE_SETTINGS_SEARCH_ITEMS = [
 // A found Kin setting that Kin's Settings keeps on another page than its app address names.
 const KIN_SETTING_ELSEWHERE: Readonly<Record<string, KinSettingsPage>> = {
   "kin-agents": "agents",
+  "kin-who-can-message": "team",
 };
 
 /** The page of Kin's Settings that holds the setting `target`, reached from an address for `page`. */

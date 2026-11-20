@@ -1403,6 +1403,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["kin agents model character personality pause retire new agents default"],
   },
   {
+    id: "kin-who-can-message",
+    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
+    title: "Who can message",
+    to: "/settings/company",
+    searchTerms: [
+      "kin restrict restricted restriction message messaging who can message lift block",
+    ],
+  },
+  {
     id: "kin-daily-limit",
     // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
     title: "Daily limit",

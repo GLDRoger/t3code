@@ -72,7 +72,6 @@ export function KinLeadSheet(props: {
   readonly avatar: KinAvatarView;
   readonly environmentId: EnvironmentId;
   readonly chatId: KinChatId;
-  readonly personId: string | null;
   readonly muted: boolean;
   /** The viewer is the one person in this chat, so it is theirs to clear. */
   readonly ownsChat: boolean;
@@ -150,7 +149,6 @@ export function KinLeadSheet(props: {
               environmentId={environmentId}
               orgId={about.lead.orgId}
               agentId={about.lead.agentId}
-              personId={props.personId}
               activeAgents={props.activeAgents}
               onClose={() => props.onOpenChange(false)}
               onOpenSettings={(section) => {

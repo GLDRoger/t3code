@@ -367,6 +367,8 @@ export const KinReachListResult = Schema.Struct({
       setAt: Schema.toEncoded(CanonicalUtcTimestamp),
     }),
   ),
+  /** The people still in the company who aren't owners or co-owners: who can be restricted. */
+  restrictable: Schema.Array(KinPersonId),
 });
 export type KinReachListResult = typeof KinReachListResult.Type;
 /** Restricts a pair both ways, or lifts it. Owners and co-owners are never restricted. */

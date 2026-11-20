@@ -3,10 +3,8 @@ import { kinNow } from "./kinNow.ts";
 import type {
   KinAgentId,
   KinChatSummary,
-  KinLeadAccessResult,
   KinLeadProfile,
   KinLeadTracking,
-  KinPerson,
   ModelSelection,
   ServerProviderModel,
 } from "@t3tools/contracts";
@@ -269,30 +267,6 @@ export function kinLeadSaveProblem(error: unknown, creating: boolean): string {
   }
 }
 
-/** The people of the org the owner could still let message a lead, by name. */
-export function kinLeadAccessCandidates(
-  people: ReadonlyArray<Pick<KinPerson, "personId" | "displayName">>,
-  allowed: KinLeadAccessResult["people"],
-  ownerPersonId: string | null,
-): ReadonlyArray<Pick<KinPerson, "personId" | "displayName">> {
-  const taken = new Set<string>(allowed.map((person) => person.personId));
-  return people
-    .filter((person) => person.personId !== ownerPersonId && !taken.has(person.personId))
-    .sort((a, b) => a.displayName.localeCompare(b.displayName));
-}
-
-/** The team agent's "Who can message": everyone, so no one is added or removed there. */
-export const KIN_LEAD_EVERYONE = "Everyone on the team. This is the team agent.";
-
-/** Whether this person may message the lead, by the server's answer; null while it loads. */
-export function kinLeadMessageable(
-  access: KinLeadAccessResult | null,
-  personId: string,
-): boolean | null {
-  if (access === null) return null;
-  return access.everyone === true || access.people.some((one) => one.personId === personId);
-}
-
 /** A teammate's card for someone else's agent: what its owner wrote under What teammates see. */
 export function kinLeadContactAbout(contact: { readonly name: string; readonly intro: string }) {
   const intro = contact.intro.trim();
@@ -304,37 +278,6 @@ export function kinLeadOwnerSeesLine(ownerName: string | undefined): string {
   return ownerName === undefined
     ? "Whoever runs this workspace can see chats with agents."
     : `${ownerName} runs this workspace and can see chats with agents.`;
-}
-
-/**
- * Said once after the owner changes who can message a lead. `ownerLevel` is the server's word on
- * the person removed (a co-owner messages every lead); without it, nothing is claimed either way.
- */
-export function kinLeadAccessChanged(
-  person: string,
-  lead: string,
-  allowed: boolean,
-  ownerLevel?: boolean,
-): string {
-  if (allowed) return `${person} can now message ${lead}.`;
-  if (ownerLevel === undefined) return `Removed ${person}'s own access to ${lead}.`;
-  return ownerLevel
-    ? `${person} can still message ${lead} as a co-owner.`
-    : `${person} can no longer message ${lead}.`;
-}
-
-/** Why changing who can message a lead was refused, in the owner's terms. */
-export function kinLeadAccessProblem(error: unknown): string {
-  const reason =
-    typeof error === "object" && error !== null && "reason" in error ? error.reason : null;
-  switch (reason) {
-    case "not_allowed":
-      return "Only the person who set up this agent can choose who messages it.";
-    case "not_found":
-      return "That person or this agent is no longer here.";
-    default:
-      return kinFailureText(error, "Couldn't change that.");
-  }
 }
 
 /**
@@ -362,24 +305,15 @@ export function kinChatReadOnlyLine(leadName: string | null): string {
 
 /** The owner's list of agents, and what a teammate is shown of one. */
 export const KIN_AGENTS_COPY = {
-  accessFailed: "Couldn't load who can message it.",
   seesIntro: (intro: string) => `They see its name and this: ${intro}`,
   charterExample: "Handles billing questions and invoices.",
   charterLabel: "What it's responsible for",
-  removeAccess: (person: string, agent: string, ownerLevel?: boolean) =>
-    ownerLevel === undefined
-      ? `This removes ${person}'s own access to ${agent}. You can add them back any time.`
-      : ownerLevel
-        ? `${person} is a co-owner, so they can still message ${agent}. This matters only if they stop being one.`
-        : `${person} keeps their chat with ${agent} to read, but can't send it anything more. You can add them back any time.`,
-  /** Under "Who can message" with nobody added: owner-level people message every agent. */
-  onlyOwners: "Only the owner and co-owners.",
   nameOnly: "They see its name only. Add what teammates see when you edit this agent.",
   none: "You have no agents yet.",
   explain:
     "An agent looks after one part of the company, such as engineering or finance, and you talk to it in a chat.",
   loadFailed: "Couldn't load your agents.",
-  teammateViewHint: "Optional. People you let message this agent see this and nothing above.",
+  teammateViewHint: "Optional. Teammates see this and nothing above.",
 } as const;
 
 /**
