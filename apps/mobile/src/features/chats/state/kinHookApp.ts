@@ -1,6 +1,7 @@
 import type { KinHookApp } from "@t3tools/client-runtime/kin/react/kinHookApp";
 
 import { connectionAtomRuntime } from "../../../connection/runtime";
+import { uuidv4 } from "../../../lib/uuid";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient, kinReads } from "./kinClient";
@@ -14,4 +15,5 @@ export const kinHookApp = {
   runtime: connectionAtomRuntime,
   useAtomCommand,
   kinHostConnected,
+  newId: uuidv4,
 } satisfies KinHookApp<never, unknown>;

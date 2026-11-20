@@ -1,4 +1,4 @@
-import type { EnvironmentId, KinMoneyPart } from "@t3tools/contracts";
+import type { EnvironmentId, KinChatId, KinMoneyPart, KinOrgId } from "@t3tools/contracts";
 import type { Atom, AtomRegistry } from "effect/reactivity";
 import { useEffect, useRef } from "react";
 
@@ -18,7 +18,17 @@ export interface KinHookApp<R, ER> {
     options?: string | AtomCommandOptions,
   ) => (value: W) => Promise<AtomCommandResult<A, E>>;
   readonly kinHostConnected: (environmentId: EnvironmentId) => boolean;
+  /** A fresh id for a request the host must see once. */
+  readonly newId: () => string;
 }
+
+/** The app's `useKinOpenChat`: opens a Kin chat, with `draft` ready in its box when given. */
+export type KinUseOpenChat = () => (
+  environmentId: EnvironmentId,
+  orgId: KinOrgId,
+  chatId: KinChatId,
+  draft?: string,
+) => void;
 
 /** The app's `useKinMoneyLive`: `part` from Money's stream where this viewer reads it. */
 export type KinUseMoneyLive = <P extends KinMoneyPart>(

@@ -1030,6 +1030,10 @@
     "./kin/react/kinDealsHooks": {
       "types": "./src/kin/react/kinDealsHooks.ts",
       "default": "./src/kin/react/kinDealsHooks.ts"
+    },
+    "./kin/react/kinMoneyHooks": {
+      "types": "./src/kin/react/kinMoneyHooks.ts",
+      "default": "./src/kin/react/kinMoneyHooks.ts"
     }
   },
   "scripts": {

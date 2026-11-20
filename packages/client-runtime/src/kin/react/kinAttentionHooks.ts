@@ -1,11 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
 import type {
-  EnvironmentId,
-  KinChatId,
   KinDay,
   KinGoalSaveInput,
   KinGoalsResult,
-  KinOrgId,
   KinPulseHandleAction,
   KinPulseScreenRead,
   KinRecordKey,
@@ -25,16 +22,16 @@ import {
 } from "../kinAttention.ts";
 import { kinAskAboutAgent, type KinScreenTarget } from "../kinScreenReads.ts";
 import { kinWorkReadState } from "../kinWorkForms.ts";
-import { type KinHookApp, type KinUseMoneyLive, useRereadOnChange } from "./kinHookApp.ts";
+import {
+  type KinHookApp,
+  type KinUseMoneyLive,
+  type KinUseOpenChat,
+  useRereadOnChange,
+} from "./kinHookApp.ts";
 
 /** The app's own hooks these read through, so each app keeps its navigation and access rules. */
 export interface KinAttentionUses {
-  readonly useKinOpenChat: () => (
-    environmentId: EnvironmentId,
-    orgId: KinOrgId,
-    chatId: KinChatId,
-    draft?: string,
-  ) => void;
+  readonly useKinOpenChat: KinUseOpenChat;
   readonly useKinMoneyLive: KinUseMoneyLive;
   readonly kinWorkLiveAtom: (
     target: KinScreenTarget,
