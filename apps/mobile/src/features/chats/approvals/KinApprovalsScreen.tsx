@@ -30,7 +30,7 @@ import { useEnvironments } from "../../../state/environments";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 import type { KinApproverKeyRecord } from "./approverKeyRecord";
-import { useEnrolApproverKey, useKinApproverKey } from "./useKinApproverKey";
+import { enrolApproverKey, useKinApproverKey } from "./useKinApproverKey";
 
 type KinApprovalsParams = { readonly environmentId: string; readonly orgId: string };
 
@@ -99,7 +99,6 @@ function Section(props: {
 function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId }) {
   const { environmentId, orgId } = props;
   const { status, refresh } = useKinApproverKey(environmentId, orgId);
-  const enrol = useEnrolApproverKey();
   const { environments } = useEnvironments();
   const revokeKey = useAtomCommand(kinClient.approverKeyRevoke, { reportFailure: false });
   const canChallenge = useAtomValue(kinClient.keyChallenge.permissionAtom(environmentId));
@@ -141,7 +140,7 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
     if (working || !canEnrol) return;
     setWorking(true);
     setProblem(null);
-    const outcome = await enrol({ environmentId, orgId, replace });
+    const outcome = await enrolApproverKey({ environmentId, orgId, replace });
     setWorking(false);
     refresh();
     if (outcome._tag === "busy")

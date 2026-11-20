@@ -225,16 +225,15 @@ const enrolment = createKinApproverKeyEnrolment<EnrolTarget, string, KinEnrolFai
  * Sets up this phone's approval key with a host: challenge, hardware key, attested register. One
  * setup runs at a time on the phone; `replace` names the key the person confirmed replacing.
  */
-export function useEnrolApproverKey() {
-  return (input: {
-    readonly environmentId: EnvironmentId;
-    readonly orgId: KinOrgId;
-    readonly replace: { readonly confirmed: KinApproverKeyRecord | null } | null;
-  }): Promise<KinEnrolOutcome<KinEnrolFailure>> =>
-    enrolment({
-      target: { environmentId: input.environmentId, orgId: input.orgId },
-      replace: input.replace,
-    }).catch((error: unknown) => ({ _tag: "stopped" as const, failure: deviceFailure(error) }));
+export function enrolApproverKey(input: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly replace: { readonly confirmed: KinApproverKeyRecord | null } | null;
+}): Promise<KinEnrolOutcome<KinEnrolFailure>> {
+  return enrolment({
+    target: { environmentId: input.environmentId, orgId: input.orgId },
+    replace: input.replace,
+  }).catch((error: unknown) => ({ _tag: "stopped" as const, failure: deviceFailure(error) }));
 }
 
 const isConnected = (environmentId: EnvironmentId) =>

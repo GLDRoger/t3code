@@ -97,7 +97,7 @@ export function createKinPushFence() {
     },
     fence: async (environmentId: EnvironmentId) => {
       fenced.add(environmentId);
-      await Promise.allSettled([...(inFlight.get(environmentId) ?? [])]);
+      await Promise.allSettled(inFlight.get(environmentId) ?? []);
     },
     release: (environmentId: EnvironmentId) => {
       fenced.delete(environmentId);
