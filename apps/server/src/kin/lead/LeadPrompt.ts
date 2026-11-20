@@ -71,6 +71,7 @@ import {
 } from "../pulse/weekly.ts";
 import { OFFERINGS_NONE, offeringsArchived, offeringsPromptIndex } from "../work/offerings.ts";
 import { playbookIndex } from "../work/playbooks.ts";
+import { issuedNumber } from "../work/recordRows.ts";
 import { entriesShown, sensitiveShown, sourcesShown } from "../work/sensitiveReads.ts";
 import { KIN_OWNER_LEVEL, personSees, viewerOfPeople } from "../work/teamView.ts";
 import { promptLine as connectionsLine } from "../connections/ConnectionRows.ts";
@@ -1755,8 +1756,9 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
     dueAt: number | null;
     titleBy: string | null;
     notesBy: string | null;
+    number: unknown;
   }>`SELECT r.title, r.notes, r.due_at AS "dueAt", ${writer("title_by")} AS "titleBy",
-      ${writer("notes_by")} AS "notesBy"
+      ${writer("notes_by")} AS "notesBy", json_extract(r.fields_json, '$.number') AS number
     FROM kin_records r LEFT JOIN kin_agents a ON a.org_id = r.org_id AND a.agent_id = ${event.agentId}
     WHERE r.org_id = ${orgId} AND r.record_id = ${event.recordId}
       AND ${ownerOnly || teammate === undefined ? sql`1 = 1` : personSees(sql, teammate)}`.pipe(
@@ -1797,6 +1799,7 @@ export const workEventText = Effect.fn("KinLeadPrompt.workEvent")(function* (inp
         ...(entry === undefined
           ? {}
           : {
+              ...issuedNumber(entry.number),
               ...(titleBy === null ? { title: entry.title } : {}),
               ...(notesBy === null ? { notes: entry.notes } : {}),
               ...(entry.dueAt === null

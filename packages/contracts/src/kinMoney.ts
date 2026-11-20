@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { KinChatId, KinMessageId, KinTrimmedText } from "./kinChat.ts";
+import { KinAgentId, KinChatId, KinMessageId, KinPersonId, KinTrimmedText } from "./kinChat.ts";
 
 /**
  * Money and the typed pieces of a list entry. Amounts are integer minor units (paise for INR)
@@ -107,6 +107,24 @@ export const KinPaymentReceipt = Schema.Struct({
   document: Schema.NullOr(TrimmedNonEmptyString),
 });
 export type KinPaymentReceipt = typeof KinPaymentReceipt.Type;
+/**
+ * Where a payment came from: a line of a bank statement the owner confirmed; a person's word, by
+ * their own tap or by an agent acting on their message (`agentId`); an agent with no one's word
+ * behind its turn; or `recorded`, written here some other way (an import, Kin itself).
+ */
+export const KinPaymentSource = Schema.Union([
+  Schema.TaggedStruct("statement", {}),
+  Schema.TaggedStruct("person", { personId: KinPersonId, agentId: Schema.optionalKey(KinAgentId) }),
+  Schema.TaggedStruct("agent", { agentId: KinAgentId }),
+  Schema.TaggedStruct("recorded", {}),
+]);
+export type KinPaymentSource = typeof KinPaymentSource.Type;
+/**
+ * How far Kin sees the bank: the last day of the unbroken run of bank statements the owner
+ * confirmed, or null when none is confirmed. Kin can't tell what reached the bank after it.
+ */
+export const KinBankKnown = Schema.Struct({ through: Schema.NullOr(KinDay) });
+export type KinBankKnown = typeof KinBankKnown.Type;
 export const KinPayment = Schema.Struct({
   paymentId: TrimmedNonEmptyString,
   amount: KinMoney,
@@ -118,5 +136,7 @@ export const KinPayment = Schema.Struct({
   withheld: Schema.optionalKey(Schema.Literal(true)),
   /** Absent from older servers; `null` when it has no receipt yet (make one with makeReceipt). */
   receipt: Schema.optionalKey(Schema.NullOr(KinPaymentReceipt)),
+  /** Absent from older servers. */
+  source: Schema.optionalKey(KinPaymentSource),
 });
 export type KinPayment = typeof KinPayment.Type;
