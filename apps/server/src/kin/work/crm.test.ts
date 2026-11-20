@@ -3087,6 +3087,28 @@ it.effect(
         }),
       );
       assert.include(missed.message, "Nearest: Invented Harbourline Logistics (C-2)");
+      // The grouped read answers what the per-client subqueries it replaced did.
+      const today = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      for (const at of [DAY, today, today + 400 * DAY])
+        assert.deepStrictEqual(
+          yield* Touches.clientRows(orgId, at),
+          yield* sql`SELECT c.record_id AS "partyId", c.key, c.title, c.sensitive,
+              c.created_at AS "createdAt", COALESCE(c.category, 'client') = 'prospect' AS prospect,
+              (SELECT COUNT(*) FROM kin_records p WHERE p.org_id = c.org_id
+                AND p.register_id = 'projects' AND p.party_id = c.record_id AND p.state = 'open')
+                AS "openProjects",
+              (SELECT MAX(p.closed_at) FROM kin_records p WHERE p.org_id = c.org_id
+                AND p.register_id = 'projects' AND p.party_id = c.record_id AND p.state = 'done'
+                AND p.closed_at <= ${at}) AS "lastProjectAt",
+              (SELECT MIN(w.due_at) FROM kin_records w WHERE w.org_id = c.org_id
+                AND w.register_id = 'work' AND w.party_id = c.record_id AND w.side = 'ours'
+                AND w.category = 'obligation' AND w.state IN ('open', 'doing', 'waiting')
+                AND w.due_at < ${at}) AS "dueAt"
+            FROM kin_records c
+            WHERE c.org_id = ${orgId} AND c.register_id = 'clients' AND c.state = 'open'
+              AND COALESCE(c.category, 'client') IN ('client', 'prospect')
+            ORDER BY c.key`,
+        );
     }).pipe(Effect.provide(layer)),
 );
 
