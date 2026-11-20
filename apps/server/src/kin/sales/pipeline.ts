@@ -47,7 +47,7 @@ export const PipelineResult = Schema.Struct({
       }),
     ),
   ),
-  /** More open deals than the list shows. */
+  /** More open deals, or concerns, than the list shows. */
   more: Schema.optional(Schema.Literal(true)),
   concerns: Schema.optional(
     Schema.Array(
@@ -90,7 +90,8 @@ const runPipeline = Effect.fnUntraced(function* (lead: Lead, input: typeof Pipel
   if (team !== undefined) yield* Deals.switchedOn(lead.orgId, team.people).pipe(workFailure);
   const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
   const totals = yield* Deals.pipelineTotals(lead.orgId, viewer).pipe(workFailure);
-  const concerns = yield* Deals.pipelineConcerns(lead.orgId, viewer).pipe(workFailure);
+  const heard = yield* Deals.pipelineConcerns(lead.orgId, viewer).pipe(workFailure);
+  const concerns = heard.concerns;
   const who = team === undefined ? [] : yield* namesOf(lead, team.people);
   const base = {
     asOf: iso(yield* Clock.currentTimeMillis),
@@ -112,7 +113,7 @@ const runPipeline = Effect.fnUntraced(function* (lead: Lead, input: typeof Pipel
         lost: shownTotals(totals.lost),
       };
     case "concerns":
-      return { ...base, concerns };
+      return { ...base, concerns, ...(heard.more ? { more: true as const } : {}) };
     case "mine": {
       const person =
         team === undefined

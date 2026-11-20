@@ -782,9 +782,13 @@ const concernCounts = Effect.fn("KinDeals.concerns")(function* (
       counts.set(folded, count);
     }
   }
-  return [...counts.values()]
-    .toSorted((a, b) => b.deals - a.deals || a.label.localeCompare(b.label))
-    .slice(0, KIN_DEAL_CONCERNS_CAP) satisfies ReadonlyArray<KinDealConcernCount>;
+  const all = [...counts.values()].toSorted(
+    (a, b) => b.deals - a.deals || a.label.localeCompare(b.label),
+  ) satisfies ReadonlyArray<KinDealConcernCount>;
+  return {
+    concerns: all.slice(0, KIN_DEAL_CONCERNS_CAP),
+    more: all.length > KIN_DEAL_CONCERNS_CAP,
+  };
 });
 
 /** What `viewer` sees of the company's deals, in one fragment list for the reads below. */
@@ -881,7 +885,7 @@ export const pipelineMine = Effect.fn("KinDeals.pipelineMine")(function* (
   };
 });
 
-/** `concernCounts` over every deal `viewer` sees, whatever its state. */
+/** `concernCounts` over every deal `viewer` sees, whatever its state: the 50 most heard, and whether there are more. */
 export const pipelineConcerns = Effect.fn("KinDeals.pipelineConcerns")(function* (
   orgId: KinOrgId,
   viewer: KinViewer,
@@ -970,7 +974,7 @@ export const deals = Effect.fn("KinDeals.list")(function* (
         ),
       },
       canCreate: party === undefined ? true : party.category !== "vendor" && party.state === "open",
-      concerns: yield* concernCounts(where),
+      concerns: (yield* concernCounts(where)).concerns,
     };
   }).pipe(workFailure);
   const now = yield* Clock.currentTimeMillis;
