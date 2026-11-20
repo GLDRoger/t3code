@@ -210,6 +210,45 @@ export const inheritOutside = Effect.fn("KinOutsideContent.inherit")(function* (
   if (source !== undefined) yield* markOutside(input, source);
 });
 
+const PAGES_TURNS = 200;
+const PAGES_PER_TURN = 2_000;
+/** Per wake-up, the page addresses it was given (`web_page`): the newest 200 turns, 2,000 each. */
+const pagesSeen = new Map<string, Set<string>>();
+const turnKey = (turn: Pick<Turn, "orgId" | "wakeupId">) => `${turn.orgId} ${turn.wakeupId}`;
+const pageKey = (address: string) => {
+  if (!URL.canParse(address)) return undefined;
+  const url = new URL(address);
+  url.hash = "";
+  return url.href;
+};
+
+/** Pages the turn read, and the links they gave, which it may open after outside text. */
+export const rememberPages = (
+  turn: Pick<Turn, "orgId" | "wakeupId">,
+  addresses: ReadonlyArray<string>,
+) =>
+  Effect.sync(() => {
+    const key = turnKey(turn);
+    const seen = pagesSeen.get(key) ?? new Set<string>();
+    pagesSeen.delete(key);
+    pagesSeen.set(key, seen);
+    for (const address of addresses) {
+      if (seen.size >= PAGES_PER_TURN) break;
+      const page = pageKey(address);
+      if (page !== undefined) seen.add(page);
+    }
+    for (const old of pagesSeen.keys()) {
+      if (pagesSeen.size <= PAGES_TURNS) break;
+      pagesSeen.delete(old);
+    }
+  });
+
+/** Whether the turn read this page, or a page it read links to it. */
+export const pageSeen = (turn: Pick<Turn, "orgId" | "wakeupId">, address: string) => {
+  const page = pageKey(address);
+  return page !== undefined && pagesSeen.get(turnKey(turn))?.has(page) === true;
+};
+
 /** Whether `name` may run with these arguments once the turn has read outside text. */
 export const outsideToolAllowed = Effect.fn("KinOutsideContent.allowed")(
   function* (turn: Turn, name: string, args: unknown) {
