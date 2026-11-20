@@ -653,6 +653,31 @@ it.effect("an overdue invoice or a long silence with the client puts a project a
     const never = yield* health(silentBuild.key);
     assert.include(never, { health: "at_risk" });
     assert.deepStrictEqual(never.healthBecause.noContact, { lastContactAt: null, days: 14 });
+    // Twenty healthy projects that sort ahead by name don't push a quiet client's out of the summary.
+    const busy = yield* Clients.createParty([owner], {
+      orgId,
+      name: "Invented Busy Co",
+      clientRequestId: "busy",
+    });
+    yield* Clients.logTouch([owner], {
+      orgId,
+      party: busy.key,
+      kind: "call",
+      clientRequestId: "busy-call",
+    });
+    for (let n = 1; n <= 20; n++)
+      yield* Clients.createProject([owner], {
+        orgId,
+        name: `Alpha ${String(n).padStart(2, "0")}`,
+        party: busy.key,
+        clientRequestId: `alpha-${n}`,
+      });
+    const crowded = (yield* OwnerWork.summary([owner], { orgId })).projects!;
+    assert.lengthOf(crowded, 20);
+    assert.deepInclude(
+      crowded.find((one) => one.project.key === silentBuild.key),
+      { health: "at_risk" },
+    );
   }).pipe(Effect.provide(layer)),
 );
 

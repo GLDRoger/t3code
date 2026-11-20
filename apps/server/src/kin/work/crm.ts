@@ -304,7 +304,7 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
         ? sql`p.state IN ('done', 'dropped'), p.due_at IS NULL, p.due_at, lower(p.title), p.key`
         : sql`${health}, p.due_at IS NULL, p.due_at, lower(p.title), p.key`
     }
-    LIMIT ${limit} OFFSET ${offset}`;
+    ${order === "attention" ? sql`` : sql`LIMIT ${limit} OFFSET ${offset}`}`;
   // A client's silence, as the client_quiet sense reads it: from the last contact, else their adding.
   const quietOf = (row: ProjectRowSql) =>
     row.partyId !== null &&
@@ -361,10 +361,12 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
       because,
     };
   });
-  // Contact isn't in SQL's order: within the page, health still comes first.
+  // Contact isn't in SQL's order, so attention ranks every match before taking its page.
   const rank = (one: (typeof counted)[number]) =>
     one.row.health === null ? 3 : HEALTH_RANK[one.row.health];
-  return order === "attention" ? counted.toSorted((a, b) => rank(a) - rank(b)) : counted;
+  return order === "attention"
+    ? counted.toSorted((a, b) => rank(a) - rank(b)).slice(offset, offset + limit)
+    : counted;
 });
 
 /** Each of these projects' health and why, for the owner, by record id: what the pulse reads. */
