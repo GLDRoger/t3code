@@ -1061,6 +1061,26 @@ describe("recipe documents", () => {
         [billed.number, (yield* records.get(orgId, "INV-2"))!.amountMinor],
         ["INV/26-27/001", 23_600_000],
       );
+      // The owner's Mark sent: the quote reads Sent with the number it has, or the next one;
+      // pressed again, nothing more and no second number.
+      yield* LeadWork.create(scope, {
+        sourceEventId: yes,
+        records: [{ list: "quotes", title: "Support", client: "Invented Acme", amount: "5,000" }],
+      });
+      const marked = [];
+      for (const key of ["QT-1", "QT-2", "QT-1", "QT-2"]) {
+        const done = yield* OwnerMoney.issue(people, { orgId, key: KinRecordKey.make(key) });
+        marked.push([key, done.number, done.state, (yield* records.get(orgId, key))!.state]);
+      }
+      assert.deepStrictEqual(marked, [
+        ["QT-1", "QT/26-27/001", "waiting", "waiting"],
+        ["QT-2", "QT/26-27/002", "waiting", "waiting"],
+        ["QT-1", "QT/26-27/001", "waiting", "waiting"],
+        ["QT-2", "QT/26-27/002", "waiting", "waiting"],
+      ]);
+      const [numbers] = yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_issued_numbers
+        WHERE org_id = ${orgId} AND register_id = 'quotes'`;
+      assert.strictEqual(numbers!.n, 2);
     }).pipe(Effect.provide(layer)),
   );
 

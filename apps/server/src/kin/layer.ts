@@ -6,6 +6,7 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as KinEnabled from "./KinEnabled.ts";
 import * as HostPolicy from "./hostPolicy.ts";
+import { checkPublicUrl } from "./publicAddress.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
@@ -74,6 +75,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
       );
       const { owner } = yield* KinIdentity;
       yield* HostPolicy.check();
+      yield* checkPublicUrl();
       // A failed seed leaves Kin running; the next start tries the missing ones again.
       yield* seedPlaybooks(owner.orgId, owner.personId).pipe(
         Effect.provide(services),

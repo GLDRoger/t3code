@@ -286,14 +286,27 @@ const moneyReader = Effect.fn("KinMoney.reader")(function* (
 export const moneyViewer = (orgId: KinOrgId, personId: KinPersonId) =>
   moneyReader([{ _tag: "person", orgId, personId }], orgId);
 
-/** The owner's Issue tap: the entry's number from its list's series, the same one if asked twice. */
+/**
+ * The owner's Issue tap: the entry's number from its list's series, the same one if asked twice.
+ * On a quote it is Mark sent, so a draft quote also reads sent.
+ */
 export const issue = Effect.fn("KinMoney.issue")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinIssueInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
   const writer = ownerWriter(person);
-  const issued = yield* issueEntry(input.orgId, writer, input.key);
+  const sql = yield* SqlClient.SqlClient;
+  const records = yield* KinRecords;
+  const issued = yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const issued = yield* issueEntry(input.orgId, writer, input.key);
+      if (issued.number === null || issued.state !== "open") return issued;
+      if ((yield* records.get(input.orgId, issued.key))?.registerId !== "quotes") return issued;
+      const sent = yield* records.update(input.orgId, writer, issued.key, { state: "waiting" });
+      return { ...issued, state: sent.state };
+    }),
+  );
   const remade =
     issued.number !== null && issued.state !== "dropped"
       ? yield* remakeForEntry({

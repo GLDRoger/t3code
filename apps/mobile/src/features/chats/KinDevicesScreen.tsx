@@ -12,11 +12,7 @@ import {
   kinRemoveDeviceCopy,
   kinRemoveDeviceProblem,
 } from "@t3tools/client-runtime/kin/kinDevices";
-import {
-  KIN_INVITE_LOCAL_ONLY_NOTE,
-  kinInviteLink,
-  kinInviteLinkLocalOnly,
-} from "@t3tools/client-runtime/kin/kinTeam";
+import { kinShareLink } from "@t3tools/client-runtime/kin/kinTeam";
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   EnvironmentId,
@@ -48,6 +44,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentSession } from "../../state/session";
 import { KinLoadFailedRow } from "./components/KinLoadFailed";
 import { KinQrCode } from "./components/KinQrCode";
+import { useKinPublicUrl } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
 
 export type KinDevicesParams = {
@@ -261,12 +258,16 @@ function KinDeviceLinkView(props: {
       useAtomValue(kinClient.devices({ environmentId, input: { orgId, personId } })),
     ),
   );
+  const publicUrl = useKinPublicUrl(environmentId);
   const [copied, setCopied] = useState(false);
   const nowMs = useNowMinuteMs();
   if (connection === null) {
     return <ErrorBanner message={KIN_DEVICES_COPY.dropped} />;
   }
-  const link = kinInviteLink(connection.httpBaseUrl, made.secret);
+  const { link, note } = kinShareLink(
+    { publicUrl, httpBaseUrl: connection.httpBaseUrl },
+    made.secret,
+  );
   const left = kinDeviceLinkLeft(made.expiresAt, nowMs);
   const joined =
     listed === null
@@ -309,11 +310,11 @@ function KinDeviceLinkView(props: {
           </Text>
         </View>
       </ListSection>
-      {kinInviteLinkLocalOnly(connection.httpBaseUrl) ? (
+      {note === null ? null : (
         <Text textRole="footnote" className="px-4 text-warning-foreground">
-          {KIN_INVITE_LOCAL_ONLY_NOTE}
+          {note}
         </Text>
-      ) : null}
+      )}
       <View className="gap-3">
         <Button
           tone="primary"
