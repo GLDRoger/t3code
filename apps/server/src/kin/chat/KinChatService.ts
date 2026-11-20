@@ -410,6 +410,14 @@ export class KinChatService extends Context.Service<
       { readonly placed: "reply" | "message"; readonly attachmentId: string },
       ServiceError
     >;
+    /**
+     * Before a batch of `kin_picture`'s images is made: the agent may post in the chat, and the
+     * reply (or the turn's messages, outside one) has room for every one not placed already.
+     */
+    readonly pictureRoom: (
+      identity: AgentIdentity,
+      input: { readonly chatId: KinChatId; readonly clientMessageIds: ReadonlyArray<string> },
+    ) => Effect.Effect<void, ServiceError>;
     readonly replyCard: (
       agent: AgentIdentity,
       chatId: KinChatId,
@@ -3186,6 +3194,49 @@ const make = Effect.gen(function* () {
         };
       return { placed: "message" as const, attachmentId: yield* postPicture(identity, input) };
     }, transaction),
+    pictureRoom: Effect.fn("KinChatService.pictureRoom")(function* (identity, input) {
+      const member = yield* memberFor(identity, input.chatId);
+      yield* canWrite(identity, member);
+      const full = (message: string) => new KinChatError({ reason: "limit", message });
+      const wakeupId = yield* figureLane(identity, input.chatId);
+      if (wakeupId !== null) {
+        const rows = yield* figureRows({ ...identity, wakeupId }, input.chatId, false);
+        const fresh = input.clientMessageIds.filter(
+          (id) => !rows.some((row) => row.clientId === id),
+        ).length;
+        const room = KIN_REPLY_PICTURES_MAX - rows.filter((row) => row.kind === "picture").length;
+        if (fresh <= room) return;
+        return yield* full(
+          room <= 0
+            ? `This reply already holds ${KIN_REPLY_PICTURES_MAX} pictures, so nothing was made or counted. Make the next in your next reply.`
+            : `This reply has room for ${room} more ${room === 1 ? "picture" : "pictures"}, so nothing was made or counted. Ask for ${room} or fewer, or make the rest in your next reply.`,
+        );
+      }
+      let fresh = 0;
+      for (const id of input.clientMessageIds) {
+        const existing = yield* repo.findClientMessage({
+          orgId: identity.orgId,
+          chatId: input.chatId,
+          memberId: member.memberId,
+          kind: "send",
+          clientId: id,
+        });
+        if (Option.isNone(existing)) fresh += 1;
+      }
+      const used = yield* repo.wakeupPosts({
+        orgId: identity.orgId,
+        chatId: input.chatId,
+        agentId: identity.agentId,
+        threadId: identity.threadId,
+      });
+      const room = KIN_WAKEUP_MESSAGE_LIMIT - used.messages;
+      if (fresh <= room) return;
+      return yield* full(
+        room <= 0
+          ? "This wake-up has posted all it may in this chat, so nothing was made or counted."
+          : `This wake-up can post ${room} more ${room === 1 ? "message" : "messages"} in this chat, so nothing was made or counted. Ask for ${room} or fewer.`,
+      );
+    }),
     replyCard: Effect.fn("KinChatService.replyCard")(function* (agent, chatId) {
       return agent.wakeupId === undefined
         ? null

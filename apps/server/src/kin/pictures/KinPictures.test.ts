@@ -260,7 +260,11 @@ describe("KinPictures", () => {
           assert.deepStrictEqual(yield* counts, []);
           assert.strictEqual(yield* used, 0);
           // Sent, and nothing usable came back: it may be made, so it is counted.
-          const lost = { _tag: "refused", reason: "lost", sentence: GENERATE_SENTENCES.lost };
+          const lost = {
+            _tag: "refused",
+            reason: "lost",
+            sentence: GENERATE_SENTENCES.lost,
+          } as const;
           fake.control.mode = "lost";
           assert.deepStrictEqual(yield* ask(), lost);
           fake.control.mode = "garbage";

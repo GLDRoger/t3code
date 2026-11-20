@@ -154,12 +154,13 @@ const chatImages = Effect.fn("KinPictures.chatImages")(function* (
         AND m.status <> 'deleted'
       ORDER BY a.attachment_id LIMIT 1`;
     const [read] =
-      row === undefined
-        ? []
-        : yield* sql<{ readers: number }>`SELECT COUNT(*) AS readers
-            FROM kin_messages, json_each(${JSON.stringify(readers)}) who
-            WHERE kin_messages.org_id = ${orgId} AND kin_messages.message_id = ${row.messageId}
-              AND ${personReads(sql, sql`who.value`)}`;
+      row === undefined || readers.length === 0
+        ? [{ readers: 0 }]
+        : yield* sql<{ readers: number }>`SELECT COUNT(DISTINCT who.person_id) AS readers
+            FROM kin_people who, kin_messages
+            WHERE who.org_id = ${orgId} AND who.person_id IN ${sql.in(readers)}
+              AND kin_messages.org_id = ${orgId} AND kin_messages.message_id = ${row.messageId}
+              AND ${personReads(sql, sql`who.person_id`)}`;
     const path = resolveAttachmentPathById({ attachmentsDir, attachmentId: id.toLowerCase() });
     if (
       row?.mimeType == null ||
@@ -201,6 +202,13 @@ type Made = {
   /** What the level gate checks it shows. */
   readonly seen: string;
 };
+
+/** Where a picture is placed in the chat, and its retry: one per picture of the call. */
+const placeOf = (wakeupId: string, one: string) => `kin-picture:${wakeupId}:${one}`;
+const isKinChatError = Schema.is(KinChatError);
+/** A generated batch Kin made and counted but couldn't place: it stays, for the same call. */
+export const KEPT =
+  "The pictures are made and counted, and Kin keeps them: call again with the same input in this turn to put them on your reply, with nothing new made or counted.";
 
 const SENTENCE_REASONS = {
   no_key: "unavailable",
@@ -256,10 +264,36 @@ export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: Pict
     const title = input.title.slice(0, 200);
     const from = changedFrom === undefined ? "" : `, changed from ${changedFrom}`;
 
+    const stores = yield* Effect.serviceOption(KinAttachmentStore);
+    if (Option.isNone(stores))
+      return yield* new KinChatError({
+        reason: "unavailable",
+        message: "Attachments are unavailable.",
+      });
+    const store = stores.value;
+    const gate = yield* KinLevelGate;
+    const count = input.html === undefined ? (input.count ?? 1) : 1;
+    const oneOf = (index: number) => (index === 0 ? key : `${key}-${index + 1}`);
+    const placing = { ...lead, wakeupId };
+    const page =
+      input.html === undefined
+        ? undefined
+        : yield* visualPage({ title: input.title, html: input.html });
+    // Where it goes, what it shows and room for all of it, before anything is drawn or paid for.
+    yield* gate.pictureRoom(placing, {
+      chatId,
+      clientMessageIds: Array.from({ length: count }, (_, index) =>
+        placeOf(wakeupId, oneOf(index)),
+      ),
+      seen:
+        page === undefined
+          ? `${input.title}\n${input.prompt ?? ""}`
+          : `${page.title}\n${page.html.replace(/<[^>]*>/g, " ")}`,
+    });
+
     const pictures: Array<Made> = [];
     let note: string | null = null;
-    if (input.html !== undefined) {
-      const page = yield* visualPage({ title: input.title, html: input.html });
+    if (page !== undefined) {
       const files = yield* chatImages(lead, chatId, kinVisualFileReferences(page.html));
       const drawn = yield* (yield* KinPictureRenderer).render({
         html: page.html,
@@ -289,10 +323,10 @@ export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: Pict
         ownerLevel: team === undefined,
         prompt,
         size: input.size,
-        count: input.count ?? 1,
+        count,
         retryKey: `kin-picture:${wakeupId}:${key}`,
       });
-      // The service's own sentence, word for word: nothing was made, filed or counted.
+      // The service's own sentence, word for word: nothing was filed.
       if (generated._tag === "refused")
         return yield* new KinChatError({
           reason: SENTENCE_REASONS[generated.reason],
@@ -322,37 +356,39 @@ export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: Pict
     }
 
     const sensitive = yield* turnSensitive(lead.orgId, lead.wakeupId);
-    const stores = yield* Effect.serviceOption(KinAttachmentStore);
-    if (Option.isNone(stores))
-      return yield* new KinChatError({
-        reason: "unavailable",
-        message: "Attachments are unavailable.",
-      });
-    const store = stores.value;
     const sql = yield* SqlClient.SqlClient;
-    const gate = yield* KinLevelGate;
     const renderer = yield* KinDocRenderer;
     const audience = yield* effectiveAudience(lead);
-    const made: Array<{ readonly file: string; readonly doc: string; readonly version: number }> =
-      [];
-    let placedIn: "reply" | "chat" = "reply";
-    for (const [index, picture] of pictures.entries()) {
-      const one = index === 0 ? key : `${key}-${index + 1}`;
-      const extension = EXTENSIONS[picture.mimeType];
-      const hash = sha256(picture.bytes);
-      const docFile =
-        picture.docFile ??
-        (yield* renderer.store(lead.orgId, `pic-${one}`, {
-          sha256: hash,
+    const stored = yield* Effect.forEach(pictures, (picture, index) =>
+      Effect.gen(function* () {
+        const one = oneOf(index);
+        const extension = EXTENSIONS[picture.mimeType];
+        const hash = sha256(picture.bytes);
+        const docFile =
+          picture.docFile ??
+          (yield* renderer.store(lead.orgId, `pic-${one}`, {
+            sha256: hash,
+            extension,
+            bytes: picture.bytes,
+          }));
+        return {
+          picture,
+          one,
           extension,
-          bytes: picture.bytes,
-        }));
-      const chatImage = yield* store.storeImage(picture.bytes, extension);
-      const name = fileName(input.title, extension, index);
-      const filed = yield* sql
-        .withTransaction(
+          hash,
+          docFile,
+          chatImage: yield* store.storeImage(picture.bytes, extension),
+        };
+      }),
+    );
+    const chatImageIds = stored.map((one) => one.chatImage);
+    // The whole batch is filed and placed together, or none of it is.
+    const filedAll = yield* sql
+      .withTransaction(
+        Effect.forEach(stored, ({ picture, one, extension, hash, docFile, chatImage }, index) =>
           Effect.gen(function* () {
             yield* admitted(lead, TOOL, input);
+            const name = fileName(input.title, extension, index);
             const filed = yield* Docs.fileVersion(
               lead.orgId,
               writer,
@@ -380,38 +416,47 @@ export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: Pict
                 },
               },
             );
-            const placed = yield* gate.picture(
-              { ...lead, wakeupId },
-              {
-                chatId,
-                clientMessageId: `kin-picture:${wakeupId}:${one}`,
-                intent: lane.value.mode === "reply" ? "answer" : "evidence",
-                attachment: {
-                  type: "image",
-                  id: chatImage,
-                  name,
-                  mimeType: picture.mimeType,
-                  sizeBytes: picture.bytes.length,
-                },
-                doc: { key: filed.row.key, version: filed.version.version },
-                seen: picture.seen,
+            const placed = yield* gate.picture(placing, {
+              chatId,
+              clientMessageId: placeOf(wakeupId, one),
+              intent: lane.value.mode === "reply" ? "answer" : "evidence",
+              attachment: {
+                type: "image",
+                id: chatImage,
+                name,
+                mimeType: picture.mimeType,
+                sizeBytes: picture.bytes.length,
               },
-            );
+              doc: { key: filed.row.key, version: filed.version.version },
+              seen: picture.seen,
+            });
             yield* sql`INSERT INTO kin_picture_images (org_id, record_id, version, attachment_id)
               VALUES (${lead.orgId}, ${filed.row.recordId}, ${filed.version.version},
                 ${placed.attachmentId})
               ON CONFLICT DO NOTHING`;
             return { filed, placed };
           }),
-        )
-        .pipe(Effect.onError(() => store.remove([chatImage])));
-      if (filed.placed.attachmentId !== chatImage) yield* store.remove([chatImage]);
-      placedIn = filed.placed.placed === "reply" ? "reply" : "chat";
-      made.push({
-        file: filed.placed.attachmentId,
-        doc: filed.filed.row.key,
-        version: filed.filed.version.version,
-      });
+        ),
+      )
+      .pipe(
+        Effect.onError(() => store.remove(chatImageIds)),
+        // Generated pictures were paid for and are kept: the same call again places them.
+        Effect.mapError((error) =>
+          input.prompt === undefined
+            ? error
+            : new KinChatError({
+                reason: "unavailable",
+                message: `${isKinChatError(error) && error.reason !== "unavailable" ? error.message : "Kin couldn't put the pictures on your reply."} ${KEPT}`,
+              }),
+        ),
+      );
+    const made: Array<{ readonly file: string; readonly doc: string; readonly version: number }> =
+      [];
+    let placedIn: "reply" | "chat" = "reply";
+    for (const [index, { filed, placed }] of filedAll.entries()) {
+      if (placed.attachmentId !== chatImageIds[index]) yield* store.remove([chatImageIds[index]!]);
+      placedIn = placed.placed === "reply" ? "reply" : "chat";
+      made.push({ file: placed.attachmentId, doc: filed.row.key, version: filed.version.version });
     }
     const [first] = made;
     if (first === undefined)

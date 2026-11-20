@@ -1267,6 +1267,22 @@ describe("KinChatService", () => {
         };
         const first = { placed: "reply", attachmentId: "kin-chat-picture-1" };
         assert.deepStrictEqual(yield* service.picture(inTurn, input), first);
+        // Before a batch is made: room for every picture not on the reply already, or none made.
+        const batch = (count: number) => [
+          "kin-picture:one",
+          ...Array.from({ length: count }, (_, index) => `kin-picture:batch-${index}`),
+        ];
+        yield* service.pictureRoom(inTurn, { chatId: chat.chatId, clientMessageIds: batch(3) });
+        assert.include(
+          yield* Effect.flip(
+            service.pictureRoom(inTurn, { chatId: chat.chatId, clientMessageIds: batch(4) }),
+          ),
+          {
+            reason: "limit",
+            message:
+              "This reply has room for 3 more pictures, so nothing was made or counted. Ask for 3 or fewer, or make the rest in your next reply.",
+          },
+        );
         // A retry drew its image again; the first one is what the reply carries.
         assert.deepStrictEqual(
           yield* service.picture(inTurn, { ...input, attachment: image("kin-chat-picture-2") }),

@@ -1,8 +1,12 @@
 // Loaded first: the chat and trigger modules import each other.
 import "../chat/KinChatService.ts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- the tool's own retry key, derived the same way.
+import * as NodeCrypto from "node:crypto";
+
 import * as PlatformCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import { stableStringify } from "@t3tools/shared/relaySigning";
 import {
   EnvironmentId,
   KinAgentId,
@@ -48,7 +52,7 @@ import * as OwnerDocs from "../work/ownerDocs.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import { makeFakeImageVendor } from "./FakeImageVendor.ts";
 import { GENERATE_SENTENCES, KinPictures, makeLayer as picturesLayer } from "./KinPictures.ts";
-import { makePicture, type PictureInput, UNASKED_AFTER_OUTSIDE } from "./picture.ts";
+import { KEPT, makePicture, type PictureInput, UNASKED_AFTER_OUTSIDE } from "./picture.ts";
 import { KinPictureRenderer, PICTURE_SENTENCES, type PictureDrawn } from "./renderer.ts";
 
 // Ambermill and its people are invented; nothing here reads a real database or draws in a browser.
@@ -88,11 +92,27 @@ const identity = Layer.mock(KinIdentity)({
 // What each picture put on the turn's reply, posted here as the reply carrying its image;
 // `KinChatService.test.ts` places it on the real reply.
 const placed: Array<Parameters<KinLevelGate["Service"]["picture"]>[1]> = [];
+/** How many more pictures the reply takes, and a placement made to fail, as the real gate may. */
+const reply = { room: 4, failOn: undefined as string | undefined };
 const gate = Layer.unwrap(
   Effect.map(SqlClient.SqlClient, (sql) =>
     Layer.mock(KinLevelGate)({
+      pictureRoom: (_agent, input) =>
+        input.clientMessageIds.length <= reply.room
+          ? Effect.void
+          : Effect.fail(
+              new KinChatError({
+                reason: "limit",
+                message: `This reply has room for ${reply.room}.`,
+              }),
+            ),
       picture: (_agent, input) =>
         Effect.gen(function* () {
+          if (input.clientMessageId === reply.failOn)
+            return yield* new KinChatError({
+              reason: "not_allowed",
+              message: "Nothing was posted: the chat changed.",
+            });
           // A retry carries the image its first call staged, as `KinChatService.picture` answers.
           const earlier = placed.find((one) => one.clientMessageId === input.clientMessageId);
           if (earlier !== undefined)
@@ -108,7 +128,7 @@ const gate = Layer.unwrap(
           yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
             VALUES (${input.attachment.id}, ${orgId}, ${input.chatId}, ${messageId})`;
           return { placed: "reply" as const, attachmentId: input.attachment.id };
-        }).pipe(Effect.orDie),
+        }).pipe(Effect.catchTags({ SqlError: Effect.die })),
     }),
   ),
 );
@@ -181,6 +201,8 @@ const layer = Layer.mergeAll(KinRecords.layer, gate, renderer).pipe(
 /** Rhea's lead with its direct chat, and two teammates who are in no chat yet. */
 const seed = Effect.gen(function* () {
   placed.length = 0;
+  reply.room = 4;
+  reply.failOn = undefined;
   drawing.next = undefined;
   drawing.files.length = 0;
   keys.clear();
@@ -274,6 +296,9 @@ const post = (headline: string, more: Partial<PictureInput> = {}): PictureInput 
   html: `<h1 style="font-size:${headline}">Ambermill opens Monday</h1>`,
   ...more,
 });
+/** The call's own key, as the tool derives it: the hash of what it was given. */
+const placeKey = (input: PictureInput) =>
+  NodeCrypto.createHash("sha256").update(stableStringify(input)).digest("hex").slice(0, 32);
 const versions = (key: string) =>
   Effect.gen(function* () {
     const doc = yield* Docs.docRow(orgId, { key }, KIN_OWNER_LEVEL);
@@ -676,6 +701,57 @@ describe("kin_picture", () => {
         });
         assert.deepInclude(changed, { doc: "D-1", version: 2 });
         assert.lengthOf(yield* versions("D-1"), 2);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "makes and counts nothing a reply can't take, and files a made batch whole or keeps it for the same call",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* (yield* KinPictures).set([person(ownerId)], {
+          orgId,
+          key: Redacted.make("sk-invented-ambermill"),
+        });
+        yield* turn(1);
+        const ask = {
+          title: "Mill at dawn",
+          size: "square",
+          prompt: "The mill at dawn",
+          count: 3,
+        } as const;
+        const counted = sql<{ count: number }>`SELECT count FROM kin_picture_counts
+          WHERE org_id = ${orgId} ORDER BY count_id`;
+        // Room for two: the service is never asked, and nothing is counted.
+        reply.room = 2;
+        assert.include(yield* Effect.flip(makePicture(scope, ask)), {
+          reason: "limit",
+          message: "This reply has room for 2.",
+        });
+        assert.deepStrictEqual([fake.calls.length, yield* counted, placed], [0, [], []]);
+        // Room for all three; the third can't be placed, so none of them is filed or placed.
+        reply.room = 4;
+        reply.failOn = `kin-picture:wake-1:${placeKey(ask)}-3`;
+        const failed = yield* Effect.flip(makePicture(scope, ask));
+        assert.strictEqual(failed.message, `Nothing was posted: the chat changed. ${KEPT}`);
+        placed.length = 0;
+        assert.deepStrictEqual(
+          yield* sql`SELECT key FROM kin_records WHERE org_id = ${orgId} AND register_id = 'docs'`,
+          [],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT message_id FROM kin_messages WHERE body = 'Here it is.'`,
+          [],
+        );
+        assert.deepStrictEqual([fake.calls.length, yield* counted], [1, [{ count: 3 }]]);
+        // The same call again places what was made, with no second call or count.
+        reply.failOn = undefined;
+        const made = yield* makePicture(scope, ask);
+        assert.deepStrictEqual(
+          [made.files.length, placed.length, fake.calls.length, yield* counted],
+          [3, 3, 1, [{ count: 3 }]],
+        );
       }).pipe(Effect.provide(layer)),
   );
 
