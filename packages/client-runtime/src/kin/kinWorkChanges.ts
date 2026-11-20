@@ -29,7 +29,10 @@ import {
   type KinWorkNames,
   type KinWorkRef,
 } from "./kinWork.ts";
+import { kinZonedDayStart } from "./kinDates.ts";
 import type { KinWorkLive } from "./kinWorkStream.ts";
+
+const HOUR_MS = 3_600_000;
 
 /** One thing the owner does to a task. */
 export type KinWorkAction =
@@ -307,8 +310,14 @@ function patchOf(record: KinRecord, action: KinWorkAction, names: KinWorkNames):
     case "due":
       return action.day === null
         ? { dueAt: null, dueAllDay: false, late: false }
-        : // Midday keeps the picked day the same day in the owner's zone until the host answers.
-          { dueAt: `${action.day}T12:00:00.000Z`, dueAllDay: true, late: false };
+        : // Midday where the company is keeps the picked day its day until the host answers.
+          {
+            dueAt: new Date(
+              kinZonedDayStart(action.day, names.zone).getTime() + 12 * HOUR_MS,
+            ).toISOString(),
+            dueAllDay: true,
+            late: false,
+          };
     case "dueBack":
       // The host says whether the old date is late.
       return { dueAt: action.dueAt, dueAllDay: action.dueAt !== null && action.allDay };

@@ -472,6 +472,8 @@ describe("a teammate's morning page", () => {
       assert.lengthOf(yield* pagesTo(zoya), 0);
       yield* tickAt(monday + 30 * MINUTE);
       assert.lengthOf(yield* pagesTo(zoya), 1);
+      // A day ahead of the company, she still reads its day: Sunday, not her Monday.
+      assert.include((yield* pagesTo(zoya))[0]!.body, "is expected by Sun 8 Nov.");
       // Tuesday is not one of her days; a new fact waits for Wednesday.
       yield* insert({ id: "C-5", list: "clients", title: "Saltvik", category: "prospect" });
       yield* tickAt(monday + DAY + 30 * MINUTE);

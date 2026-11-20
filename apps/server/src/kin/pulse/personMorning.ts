@@ -1,5 +1,4 @@
 import {
-  formatKinWhen,
   kinWhenParts,
   KIN_TEXT_LOCALE,
   type KinOrgId,
@@ -17,7 +16,7 @@ import * as NodeCrypto from "node:crypto";
 
 import { validZone } from "../triggers/quietHold.ts";
 import { storedWorkHours } from "../triggers/quietHours.ts";
-import { endOfDay, ownerZone, startOfDay } from "../work/recordRows.ts";
+import { dueWhenText, endOfDay, ownerZone, startOfDay } from "../work/recordRows.ts";
 import { asideOf, type Hold } from "./holds.ts";
 import { holderLine, noticeHolder } from "./holderNotice.ts";
 import { DEAL_SENSES } from "./senses/deals.ts";
@@ -281,17 +280,27 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
       return [`${line.key} ${line.title}, ${line.state}`];
     });
     const day7 = to + COMING_DAYS * DAY_MS;
-    const when = (ms: number) => formatKinWhen(ms, "day", { zone, locale: KIN_TEXT_LOCALE });
-    const steps = yield* sql<{ title: string; client: string; dueAt: number }>`SELECT r.title,
-        c.title AS client, r.due_at AS "dueAt"
+    const clock = { zone, locale: KIN_TEXT_LOCALE };
+    const when = (row: { readonly dueAt: number; readonly allDay: number }) =>
+      dueWhenText(row.dueAt, row.allDay === 1, ctx.zone, clock, "day");
+    const steps = yield* sql<{
+      title: string;
+      client: string;
+      dueAt: number;
+      allDay: number;
+    }>`SELECT r.title, c.title AS client, r.due_at AS "dueAt", r.due_all_day AS "allDay"
       FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
       WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.side = 'ours'
         AND r.state IN ('open', 'doing', 'waiting')
         AND r.owner_kind = 'person' AND r.owner_id = ${personId}
         AND r.due_at > ${to} AND r.due_at <= ${day7}
       ORDER BY r.due_at, r.key LIMIT ${SHOWN}`;
-    const expected = yield* sql<{ title: string; client: string; dueAt: number }>`SELECT r.title,
-        c.title AS client, r.due_at AS "dueAt"
+    const expected = yield* sql<{
+      title: string;
+      client: string;
+      dueAt: number;
+      allDay: number;
+    }>`SELECT r.title, c.title AS client, r.due_at AS "dueAt", r.due_all_day AS "allDay"
       FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
       WHERE r.org_id = ${orgId} AND r.register_id = 'deals' AND r.state = 'open'
         AND r.owner_kind = 'person' AND r.owner_id = ${personId}
@@ -300,11 +309,11 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
     const comingUp = [
       ...steps.map((row) => ({
         at: row.dueAt,
-        line: `${row.title} (${row.client}), ${when(row.dueAt)}.`,
+        line: `${row.title} (${row.client}), ${when(row)}.`,
       })),
       ...expected.map((row) => ({
         at: row.dueAt,
-        line: `${row.title} for ${row.client} is expected by ${when(row.dueAt)}.`,
+        line: `${row.title} for ${row.client} is expected by ${when(row)}.`,
       })),
     ]
       .toSorted((a, b) => a.at - b.at)

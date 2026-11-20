@@ -209,6 +209,16 @@ describe("kinAgentChangeLine and kinAgentChangeOffer", () => {
   });
 
   it.each([
+    ["Pacific/Honolulu", "2026-11-28T09:59:59.999Z", "2026-11-23T09:59:59.999Z"],
+    ["Asia/Kolkata", "2026-11-27T18:29:59.999Z", "2026-11-22T18:29:59.999Z"],
+  ])("a due moved reads the company's days in %s, whatever this device's", (zone, from, to) => {
+    const moved = change({ kind: "updated", fields: [{ field: "due", from, to }] });
+    expect(kinAgentChangeLine(moved, new Map(), new Date("2026-11-18T09:00:00.000Z"), zone)).toBe(
+      "D-3 Invented chase notes: due Nov 27 → Nov 22",
+    );
+  });
+
+  it.each([
     ["a link this person just removed", { linkedTo: end, undone: true }, true, C.linkUndone],
     ["a link someone else removed first", { linkedTo: end, undone: true }, false, C.linkGone],
     [
