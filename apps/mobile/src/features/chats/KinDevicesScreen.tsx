@@ -9,13 +9,8 @@ import {
   kinDeviceLinkLeft,
   kinDeviceLinkProblem,
   kinDeviceRemovable,
-  kinOwnDeviceIsPhone,
-  kinOwnDeviceLabel,
-  kinOwnDeviceLine,
-  kinOwnDevices,
   kinRemoveDeviceCopy,
   kinRemoveDeviceProblem,
-  kinRemoveOwnDeviceCopy,
 } from "@t3tools/client-runtime/kin/kinDevices";
 import { kinShareLink } from "@t3tools/client-runtime/kin/kinTeam";
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -23,7 +18,6 @@ import {
   EnvironmentId,
   KinOrgId,
   KinPersonId,
-  type AuthClientSession,
   type KinPeopleLinkDeviceResult,
   type KinPersonDevice,
 } from "@t3tools/contracts";
@@ -47,7 +41,6 @@ import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useNowMinuteMs } from "../../lib/clock";
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { appAtomRegistry } from "../../state/atom-registry";
-import { authEnvironment } from "../../state/auth";
 import { environmentSession } from "../../state/session";
 import { KinLoadFailedRow } from "./components/KinLoadFailed";
 import { KinQrCode } from "./components/KinQrCode";
@@ -145,115 +138,6 @@ export function KinDevicesScreen({ route }: StaticScreenProps<KinDevicesParams>)
         </ScreenScrollView>
       </ScreenContent>
     </View>
-  );
-}
-
-export type KinOwnDevicesParams = { readonly environmentId: string };
-
-/**
- * The owner's own phones and browsers, signed in by pairing with the computer that runs Kin, and
- * the way to sign each out. New ones are paired from that computer.
- */
-export function KinOwnDevicesScreen({ route }: StaticScreenProps<KinOwnDevicesParams>) {
-  const navigation = useNavigation();
-  const environmentId = Option.getOrNull(decodeEnvironmentId(route.params.environmentId));
-  return (
-    <View collapsable={false} className="flex-1 bg-screen">
-      <AppBar title={KIN_DEVICES_COPY.title} onBack={() => navigation.goBack()} />
-      <ScreenContent surface="screen">
-        <ScreenScrollView
-          className="flex-1"
-          contentInsetAdjustmentBehavior="automatic"
-          contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
-        >
-          {environmentId === null ? (
-            <EmptyState
-              variant="plain"
-              title="This link doesn't open anything"
-              detail="Open Your devices from Settings."
-            />
-          ) : (
-            <KinOwnDeviceList environmentId={environmentId} />
-          )}
-        </ScreenScrollView>
-      </ScreenContent>
-    </View>
-  );
-}
-
-function KinOwnDeviceList(props: { readonly environmentId: EnvironmentId }) {
-  const atom = authEnvironment.accessChanges({ environmentId: props.environmentId, input: null });
-  const result = useAtomValue(atom);
-  const refresh = useAtomRefresh(atom);
-  const [removing, setRemoving] = useState<string | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
-  const held = Option.getOrNull(AsyncResult.value(result));
-  const nowMs = useNowMinuteMs();
-  const devices = held?.type === "snapshot" ? kinOwnDevices(held.payload.clientSessions) : null;
-
-  const remove = (device: AuthClientSession) => {
-    const copy = kinRemoveOwnDeviceCopy(device);
-    Dialog.confirm({
-      title: copy.title,
-      message: copy.detail,
-      confirmText: KIN_DEVICES_COPY.remove,
-      destructive: true,
-      onConfirm: () => {
-        setRemoving(device.sessionId);
-        setProblem(null);
-        void runAtomCommand(
-          appAtomRegistry,
-          authEnvironment.revokeClient,
-          { environmentId: props.environmentId, input: { sessionId: device.sessionId } },
-          { reportFailure: false, reportDefect: true },
-        ).then((outcome) => {
-          setRemoving(null);
-          if (AsyncResult.isFailure(outcome))
-            setProblem(kinRemoveDeviceProblem(squashAtomCommandFailure(outcome)));
-        });
-      },
-    });
-  };
-
-  return (
-    <>
-      {problem === null ? null : <ErrorBanner message={problem} />}
-      <ListSection footer={KIN_DEVICES_COPY.ownFooter}>
-        {devices === null ? (
-          AsyncResult.isFailure(result) ? (
-            <KinLoadFailedRow title="Couldn't load devices" cause={result} onRetry={refresh} />
-          ) : (
-            <View className="items-center py-6">
-              <AppActivityIndicator />
-            </View>
-          )
-        ) : devices.length === 0 ? (
-          <View className="px-4 py-3">
-            <Text textRole="body" className="text-foreground-muted">
-              {KIN_DEVICES_COPY.empty}
-            </Text>
-          </View>
-        ) : (
-          devices.map((device, index) => (
-            <View
-              key={device.sessionId}
-              className={index === 0 ? undefined : "border-t border-border-subtle"}
-            >
-              <ListActionRow
-                icon={kinOwnDeviceIsPhone(device) ? "iphone" : "laptopcomputer"}
-                label={kinOwnDeviceLabel(device)}
-                accessibilityLabel={`${KIN_DEVICES_COPY.remove} ${kinOwnDeviceLabel(device)}`}
-                detail={KIN_DEVICES_COPY.remove}
-                description={kinOwnDeviceLine(device, new Date(nowMs))}
-                loading={removing === device.sessionId}
-                disabled={removing !== null}
-                onPress={() => remove(device)}
-              />
-            </View>
-          ))
-        )}
-      </ListSection>
-    </>
   );
 }
 

@@ -278,23 +278,21 @@ export function KinSettings(props: {
                           })
                         }
                       />
-                      {/* A teammate's devices are bound to them in Kin; the owner's are the app's pairings. */}
-                      <SettingsRow
-                        icon="iphone"
-                        label={KIN_DEVICES_COPY.title}
-                        value={KIN_DEVICES_COPY.rowDetail}
-                        onPress={() =>
-                          teammateIds.includes(host.environmentId)
-                            ? navigation.navigate("KinDevices", {
-                                environmentId: host.environmentId,
-                                orgId,
-                                personId: mine.personId,
-                              })
-                            : navigation.navigate("KinOwnDevices", {
-                                environmentId: host.environmentId,
-                              })
-                        }
-                      />
+                      {/* The owner links devices from T3 Code's Sharing & access settings. */}
+                      {teammateIds.includes(host.environmentId) ? (
+                        <SettingsRow
+                          icon="iphone"
+                          label={KIN_DEVICES_COPY.title}
+                          value={KIN_DEVICES_COPY.rowDetail}
+                          onPress={() =>
+                            navigation.navigate("KinDevices", {
+                              environmentId: host.environmentId,
+                              orgId,
+                              personId: mine.personId,
+                            })
+                          }
+                        />
+                      ) : null}
                     </Fragment>
                   );
                 case "notifications":

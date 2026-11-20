@@ -47,7 +47,7 @@ import { KinReceiptApplyScreen, KinReceiptNewScreen } from "./KinInvoice";
 import { KinJoinScreen } from "./KinJoinScreen";
 import { KinBudgetScreen } from "./KinMoneyAnswers";
 import { KinTeamScreen } from "./KinTeamScreen";
-import { KinDevicesScreen, KinOwnDevicesScreen } from "./KinDevicesScreen";
+import { KinDevicesScreen } from "./KinDevicesScreen";
 import { KinProfileEditScreen, KinProfileScreen } from "./KinProfileScreen";
 import { KinTeammateScreen } from "./KinTeammateScreen";
 import { KinWaitingScreen } from "./KinWaitingScreen";
@@ -305,11 +305,6 @@ export const KIN_SCREENS = {
   KinDevices: createNativeStackScreen({
     screen: KinDevicesScreen,
     linking: "kin/:environmentId/:orgId/people/:personId/devices",
-    options: pageRoute({ title: "Your devices" }),
-  }),
-  KinOwnDevices: createNativeStackScreen({
-    screen: KinOwnDevicesScreen,
-    linking: "kin/:environmentId/devices",
     options: pageRoute({ title: "Your devices" }),
   }),
   // A full sheet, so the keyboard never covers the field being typed in.

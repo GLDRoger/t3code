@@ -1168,18 +1168,6 @@ features:
       - apps/server/src/kin/people/KinPeople.test.ts
       - packages/client-runtime/src/kin/kinDevices.test.ts
 
-  - id: own-devices
-    name: See and sign out the owner's own devices
-    tab: settings
-    phone: [SettingsKin, KinOwnDevices]
-    roles: { owner: phone, co_owner: none, lead: none, member: none }
-    note: >-
-      The owner's phones and browsers are this Kin's own pairings, listed from the app's access
-      stream without teammates' chat-only sessions. On web and desktop they are in T3 Code's
-      Settings, Connections; new ones are paired from the computer.
-    proof:
-      - packages/client-runtime/src/kin/kinDevices.test.ts
-
   - id: teammate-profile
     name: Change a teammate's profile
     tab: settings
