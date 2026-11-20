@@ -36,6 +36,8 @@ import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
 import * as Clients from "./ownerClients.ts";
+import * as OwnerDocs from "./ownerDocs.ts";
+import * as OwnerMoney from "./ownerMoney.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import * as Docs from "./docs.ts";
 import * as Search from "./search.ts";
@@ -1923,6 +1925,181 @@ it.effect(
           (yield* Clients.parties([mate], { orgId, ...filtered })).parties.map((one) => one.key),
           ["C-1"],
         );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a client's money reaches only whoever Money lets see it, on its page and every read the page makes",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* setup("ask-event");
+      yield* TestClock.adjust(20 * DAY);
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(presetDefinition("invoices", "INR"))}),
+        (${orgId}, 'quotes', 'Quotes', 'QT', 0, 0, ${JSON.stringify(presetDefinition("quotes", "INR"))}),
+        (${orgId}, 'receipts', 'Receipts', 'RC', 0, 0, ${JSON.stringify(presetDefinition("receipts", "INR"))})`;
+      // Who reads: Clients and Money as each teammate's switches say; mate is Clients off, no project.
+      const roles = [
+        ["co", "co_owner", 0, 0],
+        ["both", "member", 1, 1],
+        ["onLead", "member", 1, 0],
+        ["offLead", "member", 0, 0],
+      ] as const;
+      for (const [id, access, clients, money] of roles) {
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+            access, sees_clients, sees_money)
+          VALUES (${id}, ${orgId}, ${id}, ${id}, ${at}, ${access}, ${clients}, ${money})`;
+        yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+          VALUES (${`s-${id}`}, ${orgId}, ${id}, 0)`;
+      }
+      yield* sql`UPDATE kin_people SET sees_clients = 0, sees_money = 0 WHERE person_id = ${mateId}`;
+      const who = (id: string) => ({
+        _tag: "person" as const,
+        orgId,
+        personId: KinPersonId.make(id),
+      });
+      const ledBy = (id: string) => ({ _tag: "person" as const, personId: KinPersonId.make(id) });
+      const projectA = yield* Clients.createProject([owner], {
+        orgId,
+        name: "Invented app build",
+        party: "C-1",
+        owner: ledBy("onLead"),
+        clientRequestId: "project-a",
+      });
+      const projectB = yield* Clients.createProject([owner], {
+        orgId,
+        name: "Invented booking build",
+        party: "C-1",
+        owner: ledBy("offLead"),
+        clientRequestId: "project-b",
+      });
+      const made = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          {
+            list: "quotes",
+            title: "Invented accepted quote",
+            client: "C-1",
+            project: projectB.key,
+            amount: "7319",
+            state: "done",
+          },
+          {
+            list: "quotes",
+            title: "Invented sent quote",
+            client: "C-1",
+            project: projectA.key,
+            amount: "5837",
+            state: "waiting",
+          },
+          {
+            list: "invoices",
+            title: "Invented overdue invoice",
+            client: "C-1",
+            project: projectA.key,
+            amount: "4623",
+            state: "waiting",
+            due: "1970-01-05",
+          },
+          {
+            list: "invoices",
+            title: "Invented booking invoice",
+            client: "C-1",
+            project: projectB.key,
+            amount: "2381",
+            state: "waiting",
+            due: "1970-01-06",
+          },
+          {
+            list: "receipts",
+            title: "Invented advance receipt",
+            client: "C-1",
+            project: projectA.key,
+            amount: "2971",
+          },
+        ],
+      });
+      const overdue = made.records.find((one) => one.title === "Invented overdue invoice")!.key;
+      yield* LeadMoney.payment(scope, {
+        sourceEventId: "ask-event",
+        key: overdue,
+        amount: "1457",
+        paidOn: "1970-01-10",
+      });
+      const acme = yield* Clients.party([owner], { orgId, key: "C-1" });
+      yield* Docs.create(
+        orgId,
+        { actor: { _tag: "agent", agentId: lead }, via: "lead", askedBy: ownerId },
+        {},
+        {
+          title: "Invented quote document",
+          body: "Invented: the price",
+          owner: { _tag: "agent", agentId: lead },
+          summary: "Created",
+          originKey: "test:quote-doc",
+          kind: "quote",
+          partyId: acme.party.recordId,
+          projectId: projectA.recordId,
+        },
+      );
+      // Shared with the team, so Money's own rule shows every entry to a teammate with Money on;
+      // a quote and its doc the owner unmarked private, so only the Money switch keeps them back.
+      yield* sql`UPDATE kin_records SET team_shared = 1
+        WHERE register_id IN ('quotes', 'invoices', 'receipts')`;
+      yield* sql`UPDATE kin_records SET sensitive = 0
+        WHERE title IN ('Invented sent quote', 'Invented quote document')`;
+
+      const amounts = ["7319", "5837", "4623", "2381", "1457", "2971", "3166"];
+      const titles = [...made.records.map((one) => one.title), "Invented quote document"];
+      const keys = made.records.map((one) => one.key);
+      const answer = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        Effect.match(effect, {
+          onFailure: (error) => `refused ${isChatError(error) ? error.reason : "otherwise"}`,
+          onSuccess: (value) => JSON.stringify(value),
+        });
+      // Every read a client's page makes, web and phone alike, for C-1.
+      const pageReads = (person: ReturnType<typeof who>) =>
+        Effect.all([
+          answer(Clients.party([person], { orgId, key: "C-1" })),
+          answer(Clients.parties([person], { orgId })),
+          answer(Clients.history([person], { orgId, key: "C-1" })),
+          answer(Clients.projects([person], { orgId, party: "C-1" })),
+          ...["quotes", "invoices", "receipts"].map((list) =>
+            answer(OwnerWork.list([person], { orgId, list, party: "C-1", totalsBy: "none" })),
+          ),
+          answer(OwnerMoney.money([person], { orgId, upcomingRows: false, party: "C-1" })),
+          answer(OwnerDocs.list([person], { orgId, party: "C-1" })),
+        ]).pipe(Effect.map((all) => all.join("\n")));
+      const money = (read: string) =>
+        [...amounts, ...titles, ...keys].filter((word) => read.includes(word));
+
+      for (const person of [owner, who("co")]) {
+        const read = yield* pageReads(person);
+        assert.deepStrictEqual(money(read), [...amounts, ...titles, ...keys]);
+      }
+      // Money on: the client's figures as Money shows them (its docs are Docs' to share).
+      assert.deepStrictEqual(money(yield* pageReads(who("both"))), [
+        ...amounts,
+        ...titles.filter((one) => one !== "Invented quote document"),
+        ...keys,
+      ]);
+      // Money off: none of it, whichever of its projects they lead, Clients on or off.
+      for (const id of ["onLead", "offLead", "mate"])
+        assert.deepStrictEqual(money(yield* pageReads(who(id))), [], id);
+      // The name-only page still carries the client and the project its lead sees.
+      const named = yield* Clients.party([who("offLead")], { orgId, key: "C-1" });
+      assert.deepStrictEqual(
+        [named.party.name, named.projects.map((one) => one.key)],
+        ["Invented Acme", [projectB.key]],
+      );
+      // Money's own place is unchanged: a lead reads their project's quote there.
+      assert.include(
+        JSON.stringify(yield* OwnerWork.list([who("offLead")], { orgId, list: "quotes" })),
+        "Invented accepted quote",
+      );
     }).pipe(Effect.provide(layer)),
 );
 

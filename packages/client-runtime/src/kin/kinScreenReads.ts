@@ -54,9 +54,17 @@ export interface KinMoneyLiveRead<P extends KinMoneyPart> {
 export function makeKinScreenReads(kinClient: KinClient, registry: AtomRegistry.AtomRegistry) {
   const lists = ({ environmentId, orgId }: KinScreenTarget, archived: boolean) =>
     kinClient.workLists({ environmentId, input: archived ? { orgId, archived: true } : { orgId } });
-  const money = ({ environmentId, orgId }: KinScreenTarget, use: KinMoneyUse) =>
+  /** With `party`, for that client's page: its line alone, as the host lets this viewer see it. */
+  const money = (
+    { environmentId, orgId }: KinScreenTarget,
+    use: KinMoneyUse,
+    party?: KinRecordKey,
+  ) =>
     use === "line"
-      ? kinClient.workOwed({ environmentId, input: { orgId, upcomingRows: false } })
+      ? kinClient.workOwed({
+          environmentId,
+          input: { orgId, upcomingRows: false, ...(party === undefined ? {} : { party }) },
+        })
       : kinClient.workMoney({
           environmentId,
           input: use === "rows" ? { orgId } : { orgId, upcomingRows: false },

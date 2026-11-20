@@ -221,7 +221,7 @@ export const party = Effect.fn("KinWork.party")(function* (
   const [team] = viewer.people;
   if (team === undefined) return yield* noClients;
   if (yield* switchedOn(input.orgId, viewer)) return yield* read(memberPage(page, team, row));
-  // Its name, contacts and the projects they lead; never terms, tax, notes, contact log or what's owed.
+  // Built from what it may carry, so nothing added to the page later reaches a name-only reader.
   const shown = yield* read(
     teamVisible(input.orgId, team, [
       ...page.contacts.map((one) => one.recordId),
@@ -229,10 +229,7 @@ export const party = Effect.fn("KinWork.party")(function* (
     ]),
   );
   const none = { records: [], total: 0 };
-  // With the Clients place they reach the people there; leading a project alone gives their names.
-  const reached = (yield* read(placesOf(input.orgId, team))).clients;
   return {
-    ...page,
     party: {
       ...nameOnly(page.party),
       notes: "",
@@ -246,15 +243,17 @@ export const party = Effect.fn("KinWork.party")(function* (
       closedAt: page.party.closedAt,
       seq: page.party.seq,
     },
+    // Leading a project alone gives its people's names, never how to reach them.
     contacts: page.contacts
       .filter((one) => shown.has(one.recordId))
-      .map((one) => (reached ? one : { ...one, email: null, phone: null })),
+      .map((one) => ({ ...one, email: null, phone: null })),
     projects: page.projects.filter((one) => shown.has(one.recordId)),
     weOwe: none,
     theyOwe: none,
-    // The contact log carries the owner's notes on the relationship.
     ...(page.touches === undefined ? {} : { touches: [] }),
     can: { edit: false, log: false, owner: false },
+    seq: page.seq,
+    asOf: page.asOf,
   } satisfies KinPartyPage;
 });
 
