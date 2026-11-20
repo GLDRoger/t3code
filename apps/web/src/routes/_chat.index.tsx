@@ -1,3 +1,4 @@
+import { isPickableProjectMember } from "@t3tools/client-runtime/state/project-grouping";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
@@ -47,7 +48,7 @@ function IndexDraftLanding() {
 
   const mostRecentProject =
     sortScopedProjectsForSidebar(
-      projects.filter((project) => project.archivedAt == null),
+      projects.filter(isPickableProjectMember),
       threads,
       "updated_at",
     )[0] ?? null;

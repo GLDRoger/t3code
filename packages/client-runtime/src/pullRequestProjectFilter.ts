@@ -6,6 +6,7 @@ interface FilterProject {
   readonly repositoryIdentity?: { readonly canonicalKey?: string | undefined } | null | undefined;
   readonly title: string;
   readonly workspaceRoot: string;
+  readonly internal?: boolean | undefined;
 }
 
 function distinguishTitles<Project extends FilterProject>(
@@ -30,13 +31,15 @@ export function pullRequestFilterProjects<Project extends FilterProject>(
 ) {
   const byRepository = new Map<string, Project>();
   for (const project of projects) {
+    const selected =
+      project.id === selectedProject?.id && project.environmentId === selectedProject.environmentId;
+    // A workspace the server made for itself is no filter choice unless a link already chose it.
+    if (project.internal === true && !selected) continue;
     const repository = project.repositoryIdentity?.canonicalKey?.toLowerCase();
     const key = JSON.stringify([
       project.environmentId,
       repository ? ["repository", repository] : ["project", project.id],
     ]);
-    const selected =
-      project.id === selectedProject?.id && project.environmentId === selectedProject.environmentId;
     if (!byRepository.has(key) || selected) byRepository.set(key, project);
   }
 

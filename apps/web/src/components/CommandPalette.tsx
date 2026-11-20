@@ -1954,7 +1954,8 @@ function OpenCommandPaletteDialog(props: {
       run: async () => toggleProjectGroupPin(currentProjectGroup),
     });
   }
-  const contextualProjectGroup = currentProjectGroup ?? projectGroups[0] ?? null;
+  const contextualProjectGroup =
+    currentProjectGroup ?? projectGroups.find((group) => !group.internal) ?? null;
   if (contextualProjectGroup) {
     actionItems.push({
       kind: "action",

@@ -432,7 +432,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
       const projects = yield* access;
       // Identities are resolved: linked environments find this side's project by repository.
       const page = yield* projects
-        .listPage({ cursor: input.cursor ?? 0, limit: input.limit ?? 20 })
+        .listPage({
+          cursor: input.cursor ?? 0,
+          limit: input.limit ?? 20,
+          ...(input.includeInternal === true ? { includeInternal: true } : {}),
+        })
         .pipe(Effect.mapError(unavailable));
       return { ...page, projects: page.projects.map(yield* withSavedDefaultModel) };
     }),

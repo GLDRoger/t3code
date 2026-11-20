@@ -58,6 +58,11 @@ const ProjectListTool = Tool.make("t3_project_list", {
     environmentId: OrchestratorMcpEnvironmentTarget,
     cursor: Schema.optional(NonNegativeInt),
     limit: Schema.optional(clampedPositiveInt(100)),
+    includeInternal: Schema.optional(
+      Schema.Boolean.annotate({
+        description: "Also list workspaces the server made for its own use, such as Kin's.",
+      }),
+    ),
   }),
   success: Schema.Struct({
     projects: Schema.Array(Project),

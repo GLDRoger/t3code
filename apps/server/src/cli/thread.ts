@@ -278,7 +278,8 @@ const listAllProjects = Effect.fn("cli.thread.listAllProjects")(function* (tools
   while (cursor !== null) {
     const page: typeof ProjectListResult.Type = yield* tools.call(
       "t3_project_list",
-      { cursor, limit: 100 },
+      // An id or a path names its project, Kin's workspaces included.
+      { cursor, limit: 100, includeInternal: true },
       ProjectListResult,
     );
     projects.push(...page.projects);

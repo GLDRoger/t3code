@@ -42,6 +42,7 @@ export const ProjectRow = Schema.Struct({
   scripts: Schema.Array(ProjectScript),
   pinnedAt: Schema.NullOr(IsoDateTime),
   archivedAt: Schema.NullOr(IsoDateTime),
+  internal: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
@@ -53,6 +54,7 @@ const ProjectDbRow = Schema.Struct({
   defaultModelSelection: Schema.NullOr(Schema.fromJsonString(ModelSelection)),
   hasCustomTitle: Schema.BooleanFromBit,
   autoPull: Schema.BooleanFromBit,
+  internal: Schema.BooleanFromBit,
   projectIcon: Schema.NullOr(Schema.fromJsonString(StoredProjectIcon)),
   scripts: Schema.fromJsonString(Schema.Array(ProjectScript)),
 });
@@ -72,6 +74,7 @@ function toShell(row: ProjectRow): OrchestrationProjectShell {
     scripts: row.scripts,
     pinnedAt: row.pinnedAt,
     archivedAt: row.archivedAt,
+    internal: row.internal,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -130,6 +133,7 @@ export const make = Effect.gen(function* () {
         scripts_json AS "scripts",
         pinned_at AS "pinnedAt",
         archived_at AS "archivedAt",
+        internal,
         created_at AS "createdAt",
         updated_at AS "updatedAt",
         deleted_at AS "deletedAt"
@@ -163,6 +167,7 @@ export const make = Effect.gen(function* () {
             scripts_json,
             pinned_at,
             archived_at,
+            internal,
             created_at,
             updated_at,
             deleted_at
@@ -180,6 +185,7 @@ export const make = Effect.gen(function* () {
             ${encoded.scripts},
             ${encoded.pinnedAt},
             ${encoded.archivedAt},
+            ${encoded.internal},
             ${encoded.createdAt},
             ${encoded.updatedAt},
             ${encoded.deletedAt}
@@ -201,6 +207,7 @@ export const make = Effect.gen(function* () {
             scripts_json = excluded.scripts_json,
             pinned_at = excluded.pinned_at,
             archived_at = excluded.archived_at,
+            internal = excluded.internal,
             created_at = excluded.created_at,
             updated_at = excluded.updated_at,
             deleted_at = excluded.deleted_at
@@ -252,6 +259,7 @@ export const make = Effect.gen(function* () {
           scripts: payload.scripts,
           pinnedAt: null,
           archivedAt: null,
+          internal: payload.internal === true,
           createdAt: payload.createdAt,
           updatedAt: payload.updatedAt,
           deletedAt: null,

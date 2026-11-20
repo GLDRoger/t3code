@@ -387,6 +387,37 @@ it.layer(layerTest)("ProjectService", (it) => {
       assert.isTrue(first.created);
       assert.isFalse(second.created);
       assert.equal(second.project.id, first.project.id);
+      assert.isFalse(first.project.internal);
+    }),
+  );
+
+  it.effect("keeps an internal project out of the project list unless asked for", () =>
+    Effect.gen(function* () {
+      const service = yield* ProjectService.ProjectService;
+      const internalId = ProjectId.make("project:internal");
+      const { project } = yield* service.bootstrap({
+        commandId: CommandId.make("command:bootstrap:internal"),
+        projectId: internalId,
+        title: "Kin · Acme · Lead",
+        workspaceRoot: "/work/kin-memory/",
+        internal: true,
+      });
+      yield* service.create({
+        commandId: CommandId.make("command:create:repo"),
+        projectId: ProjectId.make("project:repo"),
+        title: "Repo",
+        workspaceRoot: "/work/repo/",
+      });
+      assert.isTrue(project.internal);
+      assert.isTrue(Option.getOrThrow(yield* service.getShell(internalId)).internal);
+      const ids = (page: { readonly projects: ReadonlyArray<{ readonly id: string }> }) =>
+        page.projects.map((entry) => entry.id);
+      assert.notInclude(ids(yield* service.listPage({ cursor: 0, limit: 100 })), internalId);
+      assert.include(ids(yield* service.listPage({ cursor: 0, limit: 100 })), "project:repo");
+      assert.include(
+        ids(yield* service.listPage({ cursor: 0, limit: 100, includeInternal: true })),
+        internalId,
+      );
     }),
   );
 

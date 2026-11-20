@@ -220,6 +220,8 @@ vi.mock("../lib/utils", () => ({
 vi.mock("@t3tools/client-runtime/state/project-grouping", () => ({
   deriveLogicalProjectKeyFromSettings: () => "remote-project",
   getProjectOrderKey: () => "remote-project",
+  isPickableProjectMember: (project: { archivedAt?: string | null; internal?: boolean }) =>
+    project.archivedAt == null && project.internal !== true,
   selectProjectGroupingSettings: () => ({}),
 }));
 vi.mock("../state/entities", () => {

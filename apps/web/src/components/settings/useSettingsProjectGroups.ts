@@ -15,10 +15,15 @@ export function useSettingsProjectGroups() {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const { environments } = useEnvironments();
   const labels = new Map(environments.map((entry) => [entry.environmentId, entry.label]));
+  // Workspaces the server made for itself are listed here, after the rest, and nowhere else.
   return buildSidebarProjectSnapshots({
     projects,
     settings: { sidebarProjectGroupingMode, sidebarProjectGroupingOverrides },
     primaryEnvironmentId,
     resolveEnvironmentLabel: (id) => labels.get(id) ?? null,
-  }).sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }).sort(
+    (a, b) =>
+      Number(a.internal === true) - Number(b.internal === true) ||
+      a.displayName.localeCompare(b.displayName),
+  );
 }

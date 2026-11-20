@@ -263,18 +263,26 @@ export interface ProjectGroup<TProject extends EnvironmentProject = EnvironmentP
   /** Clients write every member together. When members still disagree, the project stays visible. */
   readonly pinned: boolean;
   readonly archived: boolean;
+  /** Every member is a workspace the server made for itself, such as Kin's. */
+  readonly internal: boolean;
 }
 
-/** The groups a project picker offers: archived groups left out, pinned ones first. */
+/** The groups a project picker offers: archived and internal groups left out, pinned ones first. */
 export function pickableProjectGroups<
-  TGroup extends { readonly pinned: boolean; readonly archived: boolean },
+  TGroup extends {
+    readonly pinned: boolean;
+    readonly archived: boolean;
+    readonly internal?: boolean | undefined;
+  },
 >(groups: ReadonlyArray<TGroup>): TGroup[] {
-  const open = groups.filter((group) => !group.archived);
+  const open = groups.filter((group) => !group.archived && group.internal !== true);
   return [...open.filter((group) => group.pinned), ...open.filter((group) => !group.pinned)];
 }
 
-export function isPickableProjectMember(member: Pick<EnvironmentProject, "archivedAt">): boolean {
-  return member.archivedAt == null;
+export function isPickableProjectMember(
+  member: Pick<EnvironmentProject, "archivedAt" | "internal">,
+): boolean {
+  return member.archivedAt == null && member.internal !== true;
 }
 
 function projectFreshnessTime(project: EnvironmentProject): number {
@@ -401,7 +409,8 @@ export function buildProjectGroups<TProject extends EnvironmentProject>(
       members,
       memberProjectRefs: projectRefsByLogicalKey.get(key) ?? [],
       pinned: members.some((member) => member.project.pinnedAt != null),
-      archived: !members.some(({ project }) => isPickableProjectMember(project)),
+      archived: members.every(({ project }) => project.archivedAt != null),
+      internal: members.every(({ project }) => project.internal === true),
     };
   });
 }
@@ -414,6 +423,7 @@ export function sortProjectsByGroupOrder<
     readonly memberProjectRefs: ReadonlyArray<ScopedProjectRef>;
     readonly pinned: boolean;
     readonly archived: boolean;
+    readonly internal?: boolean | undefined;
   }>,
 ): TProject[] {
   const rankByProject = new Map<string, number>();

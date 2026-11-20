@@ -66,7 +66,9 @@ export function useSettingsEnvironmentMenu(): AppBarMenu {
             id: `project:${group.key}`,
             title: group.archived
               ? gt("{project} · Archived", { project: group.label })
-              : group.label,
+              : group.internal
+                ? gt("{project} · Internal", { project: group.label })
+                : group.label,
             selected: selectedProjectKey === group.key,
             onPress: () => selectProject(group.key),
           })),

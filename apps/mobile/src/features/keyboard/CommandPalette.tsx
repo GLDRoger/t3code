@@ -1,3 +1,4 @@
+import { isPickableProjectMember } from "@t3tools/client-runtime/state/project-grouping";
 import { LegendList, type LegendListRef } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { uuidv4 } from "../../lib/uuid";
@@ -423,7 +424,7 @@ export function CommandPalette(props: {
         });
       }
     }
-    const openProjects = projects.filter((project) => project.archivedAt == null);
+    const openProjects = projects.filter(isPickableProjectMember);
     const projectItems: CommandPaletteItem[] = [
       ...openProjects.filter((project) => project.pinnedAt != null),
       ...openProjects.filter((project) => project.pinnedAt == null),

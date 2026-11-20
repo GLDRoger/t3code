@@ -247,7 +247,9 @@ function ProjectBindings({
   readonly bindings: IssueTrackerConnectionList["bindings"];
 }) {
   const gt = useGT();
-  const projects = useProjects().filter((project) => project.environmentId === environmentId);
+  const projects = useProjects().filter(
+    (project) => project.environmentId === environmentId && project.internal !== true,
+  );
   const bind = useAtomCommand(issueTrackerEnvironment.bindProject, {
     label: `bind project to ${tracker.displayName}`,
   });
