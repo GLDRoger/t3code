@@ -9,7 +9,7 @@ import {
   type KinPartiesInput,
 } from "@t3tools/contracts";
 
-import { kinMoneyText } from "./kinLists.ts";
+import { KIN_LISTS, kinMoneyText } from "./kinLists.ts";
 
 /** Marketing's words and rules, the same on web and phone: campaigns, tags, lists and exports. */
 export const KIN_MARKETING = {
@@ -50,7 +50,7 @@ export const KIN_MARKETING = {
   cameFromEmpty: "No prospects or clients came from here yet.",
   cameFromEmptyDetail: 'Choose this campaign in "Came from" on a prospect or client.',
   dealsEmpty: "No deals counted here yet.",
-  listFailed: "Couldn't load this list.",
+  listFailed: KIN_LISTS.entriesFailed,
   namesOnly: "You see names only. Emails and phone numbers stay with Clients.",
   contacts: (n: number) => `${n} ${n === 1 ? "contact" : "contacts"}`,
   listMore: (shown: number, total: number) =>
