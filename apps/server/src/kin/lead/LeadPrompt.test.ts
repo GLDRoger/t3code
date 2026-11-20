@@ -787,6 +787,17 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       "Invented-offering-1-zq",
     ])
       expect(shared).not.toContain(owners);
+    // An agent whose area sells carries the sales seat's rules where a teammate reads too, and
+    // nothing else of its charter; any other agent's shared prompt is the same without them.
+    expect(shared).not.toContain("# Selling (your seat)");
+    yield* sql`UPDATE kin_leads SET domain = 'sales-and-marketing' WHERE agent_id = ${agentId}`;
+    const selling = yield* build("shared-wake-sales");
+    expect(selling.split(TURN_DIVIDER)[0]).toContain(salesRules);
+    for (const owners of ["sales-and-marketing", "Invented-charter-zq", "Domain:", "Charter:"])
+      expect(selling).not.toContain(owners);
+    yield* sql`UPDATE kin_leads SET domain = 'engineering' WHERE agent_id = ${agentId}`;
+    expect(yield* build("shared-wake-engineering")).toBe(selling.replace(`${salesRules}\n\n`, ""));
+    yield* sql`UPDATE kin_leads SET domain = 'invented-domain-zq' WHERE agent_id = ${agentId}`;
     // With the Docs place, the teammate reads it, so the turn lists it.
     yield* sql`UPDATE kin_records SET state = 'dropped' WHERE record_id = 'rec-sells'`;
     expect(yield* build("shared-wake-archived")).not.toContain("What we sell");

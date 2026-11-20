@@ -74,7 +74,7 @@ import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp
 import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
 import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
 import { KinSalesToolkit } from "../../apps/server/src/kin/sales/mcp.ts";
-import { salesRules as kinSalesRules } from "../../apps/server/src/kin/sales/instructions.ts";
+import { salesRulesFor } from "../../apps/server/src/kin/sales/seat.ts";
 import { KinPulseToolkit } from "../../apps/server/src/kin/pulse/mcp.ts";
 import {
   MONEY_RULE,
@@ -1374,7 +1374,10 @@ const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["world"]) 
     .replaceAll("{{GROUP_RULES}}", kinGroupRules)
     .replaceAll("{{TEAM_RULES}}", kinTeamRules)
     .replaceAll("{{SOCIAL_RULES}}", kinSocialRules)
-    .replaceAll("{{SALES_RULES}}", kinSalesRules)
+    // The seat's rules as the prompt builder picks them, by the agent's domain.
+    .replace(/\{\{SALES_RULES:([a-z-]+)\}\}/g, (_, domain: string) =>
+      salesRulesFor(domain).join("\n\n"),
+    )
     .replaceAll("{{REPLY_SHAPE}}", REPLY_SHAPE)
     .replaceAll("{{HANDED_BACK_WORK}}", HANDED_BACK_WORK)
     .replaceAll("{{STARTED_RULE}}", STARTED_RULE)

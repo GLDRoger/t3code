@@ -1132,15 +1132,15 @@ export class KinLeadPrompt extends Context.Service<
             Effect.logWarning("Kin speaker names unavailable", cause).pipe(Effect.as(undefined)),
           ),
         );
-        const [charter] = ownerOnly
-          ? yield* sql<{ domain: string; charter: string }>`
+        // The domain picks the seat's static rules in every turn; the charter is the owner's.
+        const [stored] = yield* sql<{ domain: string; charter: string }>`
           SELECT domain, charter FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${agentId}
           ORDER BY agent_id`.pipe(
-              Effect.catch((cause) =>
-                Effect.logWarning("Kin lead charter unavailable", cause).pipe(Effect.as([])),
-              ),
-            )
-          : [];
+          Effect.catch((cause) =>
+            Effect.logWarning("Kin lead charter unavailable", cause).pipe(Effect.as([])),
+          ),
+        );
+        const charter = ownerOnly ? stored : undefined;
         // What the owner chose to tell teammates about this lead, so any turn may carry it.
         const [intro] = yield* sql<{ text: string }>`SELECT public_intro AS text FROM kin_leads
           WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY agent_id`.pipe(
@@ -1527,7 +1527,7 @@ export class KinLeadPrompt extends Context.Service<
           ...(charter !== undefined && isSocialDomain(charter.domain)
             ? [ownerPart(socialRules)]
             : []),
-          ...salesRulesFor(charter?.domain).map(sharedPart),
+          ...salesRulesFor(stored?.domain).map(sharedPart),
           // Rooms shared with other people and agents.
           ...(laneChat !== undefined && laneChat.kind !== "direct"
             ? [sharedPart(laneChat.teamId === KIN_TEAM_ROOM_TEAM_ID ? teamRules : groupRules)]
