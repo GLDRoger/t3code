@@ -265,11 +265,14 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
   // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- only narrows whose contact is read; WHERE scopes the rows, the touches apply the viewer
   const clientsOfRows = sql`SELECT p.party_id FROM kin_records p WHERE ${filter} AND p.state = 'open'`;
   const checkIn = yield* playbookClientValues(orgId, "client_checkin_days");
+  const ownDays = Object.entries(checkIn.byClient);
   const checkInDays =
-    Object.keys(checkIn.byClient).length === 0
+    ownDays.length === 0
       ? sql`${checkIn.value}`
-      : sql`COALESCE((SELECT value FROM json_each(${JSON.stringify(checkIn.byClient)})
-          WHERE key = p.party_id), ${checkIn.value})`;
+      : sql`CASE p.party_id${ownDays.reduce(
+          (whens, [partyId, days]) => sql`${whens} WHEN ${partyId} THEN ${days}`,
+          sql``,
+        )} ELSE ${checkIn.value} END`;
   // A client's silence, as the client_quiet sense reads it: from the last contact, else their adding.
   const quiet = sql`(p.state = 'open' AND pa.state = 'open'
     AND COALESCE(pa.category, 'client') = 'client'
