@@ -2,8 +2,6 @@ import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { indexWhere } from "../../work/searchIndex.ts";
-
 /**
  * Docs: every version of a doc's body, kept whole, with its provenance from stored rows. A doc
  * itself is a `kin_records` row in the `docs` list. `file_json` waits for generated files.
@@ -54,18 +52,13 @@ export default Effect.gen(function* () {
   const indexed = yield* sql`SELECT 1 FROM sqlite_master WHERE name = 'kin_search'`;
   if (indexed.length > 0) return;
   // An SQLite without FTS5 fails with SQLITE_ERROR; search then scans. Other failures fail here,
-  // so the next start retries.
-  const created = yield* sql`CREATE VIRTUAL TABLE kin_search USING fts5(
+  // so the next start retries. K188 rebuilds it with a `kind` column and fills it.
+  yield* sql`CREATE VIRTUAL TABLE kin_search USING fts5(
       title, body, tokenize = 'unicode61 remove_diacritics 2')`.pipe(
-    Effect.as(true),
     Effect.catchIf(
       (cause) =>
         Predicate.hasProperty(cause.reason.cause, "errcode") && cause.reason.cause.errcode === 1,
-      (cause) =>
-        Effect.logWarning("Kin search index unavailable; search will scan.", cause).pipe(
-          Effect.as(false),
-        ),
+      (cause) => Effect.logWarning("Kin search index unavailable; search will scan.", cause),
     ),
   );
-  if (created) yield* indexWhere(sql, sql.and([sql`1 = 1`]));
 });
