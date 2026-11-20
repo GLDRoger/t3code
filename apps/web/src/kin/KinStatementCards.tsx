@@ -181,7 +181,12 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
   const editable =
     (card.status === "open" || card.status === "undone") && canApply && pending === null;
 
-  const { change, load, send, readAgain: readAgainNow } = kinStatementReviewActions({
+  const {
+    change,
+    load,
+    send,
+    readAgain: readAgainNow,
+  } = kinStatementReviewActions({
     review,
     environmentId,
     shown,

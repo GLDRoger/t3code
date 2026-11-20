@@ -272,7 +272,7 @@ export const kinStatementApplyInput = (
 });
 
 /** The next page of a section, after the rows this device has. */
-export const kinStatementRowsInput = (
+const kinStatementRowsInput = (
   view: KinStatementReviewView,
   section: KinStatementSection,
   offset: number,
