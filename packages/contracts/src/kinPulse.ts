@@ -433,13 +433,15 @@ export const KinBrief = Schema.Struct({
   on: Schema.Boolean,
   /** Not sent today, the company's day, because this brief came instead. */
   coveredToday: Schema.optional(KinCoveringBrief),
+  /** A morning page Kin writes for this person itself, in their own time zone; no agent's brief. */
+  page: Schema.optional(Schema.Boolean),
 });
 export type KinBrief = typeof KinBrief.Type;
 
 export const KinBriefsInput = Schema.Struct({ orgId: KinOrgId });
 export type KinBriefsInput = typeof KinBriefsInput.Type;
 export const KinBriefsResult = Schema.Struct({
-  /** The company time zone check-ins keep, which `at` is in. */
+  /** The company time zone check-ins keep, which `at` is in; a morning page's own person's zone. */
   zone: Schema.String,
   /** Only the briefs this person receives; none for someone who receives none. */
   briefs: Schema.Array(KinBrief),

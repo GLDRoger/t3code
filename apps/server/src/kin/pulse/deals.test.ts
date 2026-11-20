@@ -7,8 +7,10 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Chat from "../chat/layer.ts";
+import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { withQuietDays } from "../work/deals.ts";
 import { PLAYBOOK_SEEDS } from "../work/playbookSeeds.ts";
+import * as CheckIns from "./checkIns.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { morningBody, morningDue, morningOf } from "./personMorning.ts";
 
@@ -139,6 +141,18 @@ const pagesTo = Effect.fn("test.pagesTo")(function* (personId: KinPersonId) {
       AND m.author_kind = 'system' AND m.status = 'posted' AND m.form = 'brief'
     ORDER BY m.seq`;
 });
+const as = (personId: KinPersonId) => [{ _tag: "person", orgId, personId } as const];
+const pageOf = (personId: KinPersonId) => CheckIns.briefs(as(personId), orgId);
+const setPage = (
+  personId: KinPersonId,
+  at: number,
+  input: Omit<Parameters<typeof CheckIns.saveBrief>[1], "orgId" | "kind">,
+) =>
+  TestClock.setTime(at).pipe(
+    Effect.andThen(CheckIns.saveBrief(as(personId), { orgId, kind: "morning", ...input })),
+    // A page's save never moves a schedule.
+    Effect.provide(Layer.mock(KinSchedules.KinSchedules)({})),
+  );
 const tickAt = (at: number) => TestClock.setTime(at).pipe(Effect.andThen(KinPulse.tick(orgId, at)));
 
 describe("deal senses", () => {
@@ -432,11 +446,121 @@ describe("a teammate's morning page", () => {
       assert.lengthOf(yield* pagesTo(zoya), 1);
       yield* tickAt(monday + 2 * DAY + 30 * MINUTE);
       assert.lengthOf(yield* pagesTo(zoya), 2);
-      assert.deepStrictEqual(morningOf(null), { at: "08:00", days: [1, 2, 3, 4, 5] });
+      assert.deepStrictEqual(morningOf(null), { at: "08:00", days: [1, 2, 3, 4, 5], on: true });
       // Six hours past her start it no longer comes that day.
       assert.isUndefined(morningDue({ at: "08:00", days: [1] }, "UTC", MONDAY + 6 * HOUR));
       assert.strictEqual(morningDue({ at: "08:00", days: [1] }, "UTC", MONDAY), "2026-11-02");
     }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("is hers to set in Settings: its time and days in her zone, and nobody else's", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_people SET time_zone = 'Pacific/Auckland' WHERE person_id = ${zoya}`;
+      yield* TestClock.setTime(B);
+      const weekdays = [1, 2, 3, 4, 5];
+      const page = { kind: "morning", around: false, page: true } as const;
+      assert.deepStrictEqual(yield* pageOf(zoya), {
+        zone: "Pacific/Auckland",
+        briefs: [{ ...page, at: "08:00", days: weekdays, on: true }],
+      });
+      // Clients off, or an agent of her own, and there is no page to set.
+      for (const person of [dev, rhea]) {
+        assert.deepStrictEqual((yield* pageOf(person)).briefs, [], person);
+        const refused = yield* setPage(person, B, { at: "07:00", days: [1], on: true }).pipe(
+          Effect.flip,
+        );
+        assert.include(refused, { _tag: "KinChatError", reason: "not_allowed" });
+      }
+      const saved = yield* setPage(zoya, B, { at: "07:15", days: [2], on: true });
+      assert.deepStrictEqual(saved.briefs, [{ ...page, at: "07:15", days: [2], on: true }]);
+      assert.deepStrictEqual(yield* pageOf(arjun), {
+        zone: "UTC",
+        briefs: [{ ...page, at: "08:00", days: weekdays, on: true }],
+      });
+      // Monday 08:00 in Auckland is not one of her days; Tuesday 07:15 there is Monday 18:15 UTC.
+      yield* tickAt(Date.UTC(2026, 10, 1, 19));
+      yield* tickAt(Date.UTC(2026, 10, 2, 18, 14));
+      assert.lengthOf(yield* pagesTo(zoya), 0);
+      yield* tickAt(Date.UTC(2026, 10, 2, 18, 15));
+      assert.lengthOf(yield* pagesTo(zoya), 1);
+      // Arjun's own page is untouched: at his default, on his own clock.
+      const [stored] = yield* sql<{ morning: string | null }>`SELECT morning_json AS morning
+        FROM kin_people WHERE person_id = ${arjun}`;
+      assert.isNull(stored?.morning ?? null);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("off sends nothing and keeps her facts; on again, it starts the next morning", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const off = yield* setPage(zoya, B, { at: "08:00", days: [1], on: false, changed: ["on"] });
+      assert.include(off.briefs[0], { at: "08:00", on: false });
+      assert.deepStrictEqual(off.briefs[0]?.days, [1, 2, 3, 4, 5]);
+      yield* tickAt(MONDAY);
+      yield* tickAt(MONDAY + HOUR);
+      const posts = yield* sql`SELECT 1 FROM kin_messages m
+        JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+        WHERE c.direct_key = ${`${zoya}:${chief}`}`;
+      assert.lengthOf(posts, 0);
+      assert.deepStrictEqual(senses((yield* asZoya(MONDAY + HOUR)).facts), ["deal_no_next_step"]);
+      yield* setPage(zoya, MONDAY + 2 * HOUR, {
+        at: "08:00",
+        days: [1],
+        on: true,
+        changed: ["on"],
+      });
+      yield* tickAt(MONDAY + 2 * HOUR + MINUTE);
+      assert.lengthOf(yield* pagesTo(zoya), 0);
+      yield* tickAt(MONDAY + DAY);
+      assert.lengthOf(yield* pagesTo(zoya), 1);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect(
+    "a time moved later the same morning goes at the new time, once; after it went, tomorrow",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        for (const [id, day] of [
+          ["W-6", 2],
+          ["W-7", 3],
+          ["W-8", 4],
+          ["W-9", 5],
+        ] as const)
+          yield* insert({
+            id,
+            list: "work",
+            title: "Send the tile samples",
+            category: "task",
+            partyId: "C-1",
+            dueAt: Date.UTC(2026, 10, day, 16),
+          });
+        const all = { days: [1, 2, 3, 4, 5], on: true };
+        yield* setPage(zoya, MONDAY - 30 * MINUTE, { at: "09:00", ...all });
+        yield* tickAt(MONDAY);
+        assert.lengthOf(yield* pagesTo(zoya), 0);
+        yield* tickAt(MONDAY + HOUR);
+        yield* tickAt(MONDAY + HOUR + 15 * MINUTE);
+        assert.lengthOf(yield* pagesTo(zoya), 1);
+        // Moved after it went: nothing more today, the new time from tomorrow.
+        yield* setPage(zoya, MONDAY + 2 * HOUR, { at: "11:00", ...all });
+        yield* tickAt(MONDAY + 3 * HOUR);
+        assert.lengthOf(yield* pagesTo(zoya), 1);
+        yield* tickAt(MONDAY + DAY + 3 * HOUR - MINUTE);
+        assert.lengthOf(yield* pagesTo(zoya), 1);
+        yield* tickAt(MONDAY + DAY + 3 * HOUR);
+        assert.lengthOf(yield* pagesTo(zoya), 2);
+        // Moved to a time already past, before it went: it starts the next morning.
+        yield* setPage(zoya, MONDAY + 2 * DAY + 2 * HOUR, { at: "09:30", ...all });
+        yield* tickAt(MONDAY + 2 * DAY + 2 * HOUR + MINUTE);
+        yield* tickAt(MONDAY + 2 * DAY + 3 * HOUR);
+        assert.lengthOf(yield* pagesTo(zoya), 2);
+        yield* tickAt(MONDAY + 3 * DAY + 90 * MINUTE);
+        assert.lengthOf(yield* pagesTo(zoya), 3);
+      }).pipe(Effect.provide(chatLayer)),
   );
 
   it.effect("an imported deal is told at the next morning, not when it lands", () =>

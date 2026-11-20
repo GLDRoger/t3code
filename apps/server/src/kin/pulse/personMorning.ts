@@ -8,6 +8,8 @@ import {
   type KinPulseFact,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous retry-key hash; Digest would add a service.
@@ -44,28 +46,79 @@ interface Candidate {
   readonly personId: string;
   readonly zone: string | null;
   readonly hours: string | null;
+  readonly morning: string | null;
 }
 
-/** When a person's day starts: their working hours' start on their working days, else 08:00 on weekdays. */
-export const morningOf = (hoursJson: string | null) => {
+/** `kin_people.morning_json`: the page as its person set it, since `since` (epoch ms). */
+const StoredMorning = Schema.Struct({
+  at: Schema.String.check(Schema.isPattern(/^([01]\d|2[0-3]):[0-5]\d$/)),
+  days: Schema.Array(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(6)),
+  ).check(Schema.isMinLength(1)),
+  on: Schema.Boolean,
+  since: Schema.optional(Schema.Number),
+});
+export type StoredMorning = typeof StoredMorning.Type;
+const decodeMorning = Schema.decodeUnknownOption(Schema.fromJsonString(StoredMorning));
+export const morningJson = Schema.encodeSync(Schema.fromJsonString(StoredMorning));
+
+/**
+ * When a person's page comes: as they set it, else at their working hours' start on their working
+ * days, else 08:00 on weekdays. A setting's `since` keeps a time already past that day for the next.
+ */
+export const morningOf = (hoursJson: string | null, morningJson: string | null = null) => {
+  const set = morningJson === null ? undefined : Option.getOrUndefined(decodeMorning(morningJson));
+  if (set !== undefined) return set;
   const hours = storedWorkHours(hoursJson);
   return hours === undefined || hours.days.length === 0
-    ? { at: DEFAULT_AT, days: WEEKDAYS }
-    : { at: hours.start, days: hours.days };
+    ? { at: DEFAULT_AT, days: WEEKDAYS, on: true }
+    : { at: hours.start, days: hours.days, on: true };
 };
 
 /** The day whose page is due for this person at `at`, or undefined outside its window. */
 export const morningDue = (
-  morning: { readonly at: string; readonly days: ReadonlyArray<number> },
+  morning: {
+    readonly at: string;
+    readonly days: ReadonlyArray<number>;
+    readonly on?: boolean;
+    readonly since?: number | undefined;
+  },
   zone: string,
   at: number,
 ) => {
+  if (morning.on === false) return undefined;
   const parts = kinWhenParts(at, zone);
   const day = DAY_NAMES.indexOf(parts.weekday);
   if (!morning.days.includes(day)) return undefined;
-  const since = (parts.hour * 60 + parts.minute - minutes(morning.at)) * 60_000;
-  return since >= 0 && since < WINDOW_MS ? parts.isoDay : undefined;
+  const elapsed = (parts.hour * 60 + parts.minute - minutes(morning.at)) * 60_000;
+  if (elapsed < 0 || elapsed >= WINDOW_MS) return undefined;
+  const start = at - (at % 60_000) - elapsed;
+  return morning.since !== undefined && start < morning.since ? undefined : parts.isoDay;
 };
+
+/**
+ * Who gets a morning page (`only`: just this person). Whoever has an agent of their own reads its
+ * brief instead; the rest with Clients on, in a company with a deal or a prospect.
+ */
+export const pageReaders = Effect.fn("KinPulse.pageReaders")(function* (
+  orgId: KinOrgId,
+  only?: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [selling] = yield* sql`SELECT 1 FROM kin_records WHERE org_id = ${orgId}
+    AND ((register_id = 'deals' AND state = 'open')
+      OR (register_id = 'clients' AND category = 'prospect' AND state <> 'dropped'))
+    LIMIT 1`;
+  if (selling === undefined) return [];
+  return yield* sql<Candidate>`SELECT p.person_id AS "personId", p.time_zone AS zone,
+      p.work_hours_json AS hours, p.morning_json AS morning FROM kin_people p
+    WHERE p.org_id = ${orgId} AND p.removed_at IS NULL
+      AND ${only === undefined ? sql`1 = 1` : sql`p.person_id = ${only}`}
+      AND (p.access IN ('owner', 'co_owner') OR p.sees_clients = 1)
+      AND NOT EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = p.org_id
+        AND a.owner_person_id = p.person_id AND a.retired_at IS NULL)
+    ORDER BY p.person_id`;
+});
 
 /** Of these deal facts, the records imported since `from`: an import alone is no news until a morning. */
 export const importedSince = Effect.fn("KinPulse.importedSince")(function* (
@@ -131,23 +184,10 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
   const sql = yield* SqlClient.SqlClient;
   const sent: Array<{ readonly personId: string; readonly day: string }> = [];
   if (ctx.chief === undefined) return sent;
-  // A company with no deals and no prospects has no page to write.
-  const [selling] = yield* sql`SELECT 1 FROM kin_records WHERE org_id = ${orgId}
-    AND ((register_id = 'deals' AND state = 'open')
-      OR (register_id = 'clients' AND category = 'prospect' AND state <> 'dropped'))
-    LIMIT 1`;
-  if (selling === undefined) return sent;
-  // Whoever has an agent of their own reads its morning brief instead; the rest with Clients on.
-  const people = yield* sql<Candidate>`SELECT p.person_id AS "personId", p.time_zone AS zone,
-      p.work_hours_json AS hours FROM kin_people p
-    WHERE p.org_id = ${orgId} AND p.removed_at IS NULL
-      AND (p.access IN ('owner', 'co_owner') OR p.sees_clients = 1)
-      AND NOT EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = p.org_id
-        AND a.owner_person_id = p.person_id AND a.retired_at IS NULL)
-    ORDER BY p.person_id`;
+  const people = yield* pageReaders(orgId);
   for (const person of people) {
     const zone = validZone(person.zone) ?? ctx.zone;
-    const morning = morningOf(person.hours);
+    const morning = morningOf(person.hours, person.morning);
     const day = morningDue(morning, zone, at);
     if (day === undefined) continue;
     const [done] = yield* sql`SELECT 1 FROM kin_pulse_told WHERE org_id = ${orgId}

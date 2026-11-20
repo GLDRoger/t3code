@@ -526,6 +526,13 @@ morning brief comes and when, and whether and when the afternoon check-in and ev
 Your quiet hours hold any of them that would land inside them; an evening summary that would reach
 you after its day is over isn't sent.
 
+A teammate who looks after clients, and has no agent of their own, gets Kin's **Morning page**
+instead: on a working morning with something about their clients, a "Good morning" page with what
+needs them, their clients and what's coming up. It comes at the start of their working hours, or
+08:00 on weekdays if they set none. They change its time and days, or turn it off, under **Settings
+→ Briefs**. A change counts from the next time its time comes, so a page already sent today, or a
+time already past, starts tomorrow.
+
 Owners and co-owners manage them under **Settings → Check-ins**: add one, turn one off, or **Run
 now**. Or say it in a chat: "check in at 11 instead".
 

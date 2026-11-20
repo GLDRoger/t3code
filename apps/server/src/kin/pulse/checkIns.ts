@@ -15,10 +15,12 @@ import type * as SqlError from "effect/sql/SqlError";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
+import { validZone } from "../triggers/quietHold.ts";
 import { theOwner, viewerOf } from "../work/ownerWork.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { coveredToday } from "./checkIn.ts";
 import { BRIEF_SLUGS, onHostClock } from "./checkInSeeds.ts";
+import { morningJson, morningOf, pageReaders } from "./personMorning.ts";
 
 /**
  * Check-ins as Kin Settings shows them, in the owner's time. Run now, off, on and remove are taps
@@ -166,9 +168,21 @@ export const act = Effect.fn("KinCheckIns.act")(function* (
   return yield* read(input.orgId);
 }, unread);
 
+/** This person's own morning page, as Settings shows it, in their zone; none for who gets none. */
+const pageOf = Effect.fn("KinBriefs.page")(function* (orgId: KinOrgId, personId: string) {
+  const [reader] = yield* pageReaders(orgId, personId);
+  if (reader === undefined) return undefined;
+  const { at, days, on } = morningOf(reader.hours, reader.morning);
+  return {
+    zone: validZone(reader.zone) ?? (yield* ownerZone(orgId)),
+    brief: { kind: "morning" as const, at, days: [...days], around: false, on, page: true },
+  };
+});
+
 /**
  * The seeded check-ins this person receives, as their briefs: those whose agent posts to them.
- * The same rows the chat moves (`kin_schedule` with replaces) and Check-ins lists.
+ * The same rows the chat moves (`kin_schedule` with replaces) and Check-ins lists. Whoever gets
+ * none of those may get Kin's own morning page instead (`pageReaders`), listed as its morning one.
  */
 const briefsOf = Effect.fn("KinBriefs.read")(function* (orgId: KinOrgId, personId: string) {
   const sql = yield* SqlClient.SqlClient;
@@ -208,16 +222,21 @@ const briefsOf = Effect.fn("KinBriefs.read")(function* (orgId: KinOrgId, personI
   }
   return { zone, briefs };
 });
-const shown = (read: Effect.Success<ReturnType<typeof briefsOf>>) => ({
-  zone: read.zone,
-  briefs: read.briefs.map(({ kind, at, days, around, on, coveredToday }) => ({
-    kind,
-    at,
-    days,
-    around,
-    on,
-    ...(coveredToday === undefined ? {} : { coveredToday }),
-  })),
+const shown = Effect.fn("KinBriefs.shown")(function* (orgId: KinOrgId, personId: string) {
+  const read = yield* briefsOf(orgId, personId);
+  const page = read.briefs.length === 0 ? yield* pageOf(orgId, personId) : undefined;
+  if (page !== undefined) return { zone: page.zone, briefs: [page.brief] };
+  return {
+    zone: read.zone,
+    briefs: read.briefs.map(({ kind, at, days, around, on, coveredToday }) => ({
+      kind,
+      at,
+      days,
+      around,
+      on,
+      ...(coveredToday === undefined ? {} : { coveredToday }),
+    })),
+  };
 });
 
 export const briefs = Effect.fn("KinBriefs.list")(function* (
@@ -225,7 +244,7 @@ export const briefs = Effect.fn("KinBriefs.list")(function* (
   orgId: KinOrgId,
 ) {
   const { person } = yield* viewerOf(people, orgId);
-  return shown(yield* briefsOf(orgId, person.personId));
+  return yield* shown(orgId, person.personId);
 }, unread);
 
 /**
@@ -238,9 +257,12 @@ export const saveBrief = Effect.fn("KinBriefs.save")(function* (
   input: KinBriefSaveInput,
 ) {
   const { person } = yield* viewerOf(people, input.orgId);
-  const brief = (yield* briefsOf(input.orgId, person.personId)).briefs.find(
-    (one) => one.kind === input.kind,
-  );
+  const own = (yield* briefsOf(input.orgId, person.personId)).briefs;
+  const page =
+    own.length === 0 && input.kind === "morning"
+      ? yield* pageOf(input.orgId, person.personId)
+      : undefined;
+  const brief = page?.brief ?? own.find((one) => one.kind === input.kind);
   if (brief === undefined)
     return yield* new KinChatError({
       reason: "not_allowed",
@@ -248,12 +270,19 @@ export const saveBrief = Effect.fn("KinBriefs.save")(function* (
     });
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
-  const { row, task } = brief;
   const taken = (field: "at" | "days" | "on") =>
     input.changed === undefined || input.changed.includes(field);
   const at = taken("at") ? input.at : brief.at;
   const days = taken("days") ? input.days.toSorted((a, b) => a - b) : brief.days;
   const on = taken("on") ? input.on : brief.on;
+  if (!("row" in brief)) {
+    // From now on: a time already past today, or a page already sent today, waits for the next one.
+    if (at !== brief.at || days.join() !== brief.days.join() || on !== brief.on)
+      yield* sql`UPDATE kin_people SET morning_json = ${morningJson({ at, days, on, since: now })}
+        WHERE org_id = ${input.orgId} AND person_id = ${person.personId}`;
+    return yield* shown(input.orgId, person.personId);
+  }
+  const { row, task } = brief;
   if (at !== brief.at || days.join() !== brief.days.join()) {
     const schedules = yield* KinSchedules.KinSchedules;
     const zone = yield* ownerZone(input.orgId);
@@ -279,5 +308,5 @@ export const saveBrief = Effect.fn("KinBriefs.save")(function* (
   if (on !== brief.on)
     yield* sql`UPDATE kin_schedules SET pending_enabled = ${on ? 1 : 0}, updated_at = ${now}
       WHERE task_id = ${row.taskId} AND deleted_at IS NULL`;
-  return shown(yield* briefsOf(input.orgId, person.personId));
+  return yield* shown(input.orgId, person.personId);
 }, unread);

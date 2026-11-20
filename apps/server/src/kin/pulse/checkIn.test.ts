@@ -95,6 +95,8 @@ const record = Effect.fn("test.record")(function* (row: {
   readonly dueAt?: number;
   readonly partyId?: string;
   readonly fields?: string;
+  readonly origin?: string;
+  readonly createdAt?: number;
 }) {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
@@ -103,7 +105,8 @@ const record = Effect.fn("test.record")(function* (row: {
     VALUES (${orgId}, ${`r-${row.key}`}, ${row.list}, ${row.key}, ${row.title},
       ${row.state ?? "open"}, ${row.ownerKind ?? "agent"}, ${row.ownerId ?? chief},
       ${row.partyId ?? null}, ${row.dueAt ?? null}, ${row.fields ?? "{}"}, 'person', ${owner},
-      ${`origin-${row.key}`}, ${MONDAY - 30 * DAY}, ${MONDAY - 30 * DAY})`;
+      ${row.origin ?? `origin-${row.key}`}, ${row.createdAt ?? MONDAY - 30 * DAY},
+      ${row.createdAt ?? MONDAY - 30 * DAY})`;
 });
 
 const mail = (id: string, who: string, subject: string): KinPulseOutsideLine => ({
@@ -557,6 +560,52 @@ describe("pulse check-ins", () => {
         yield* run("checkin-evening", TUESDAY + DAY + 13 * HOUR + 30 * MINUTE),
         { _tag: "past_its_day" },
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a deal imported today waits out the afternoon and evening for the next morning", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'deals', 'deals', 'DL', 1, 0)`;
+      yield* record({
+        key: "C-1",
+        list: "clients",
+        title: "Invented Tiles",
+        origin: "import:b1:entry:row-0",
+        createdAt: MONDAY + 10 * HOUR,
+      });
+      yield* record({
+        key: "DL-1",
+        list: "deals",
+        title: "Invented showroom",
+        partyId: "r-C-1",
+        fields: '{"stage":"new"}',
+        origin: "import:b1:entry:row-1",
+        createdAt: MONDAY + 10 * HOUR,
+      });
+      const run = (scheduleId: string, at: number) =>
+        queueCheckIn({
+          orgId,
+          agentId: chief,
+          scheduleId: KinMemoryItemId.make(scheduleId),
+          title: scheduleId,
+          what: "Check-in.",
+          dueAt: at,
+          looseAt: null,
+          zone: "UTC",
+          at,
+          outside: nothingOutside,
+        });
+      const read = yield* KinPulse.read({ orgId, at: SLOT, viewer: { _tag: "owner" } });
+      assert.deepStrictEqual(
+        read.facts.map((fact) => fact.sense),
+        ["deal_no_next_step"],
+      );
+      assert.deepStrictEqual(yield* run("checkin-afternoon", SLOT), { _tag: "nothing_new" });
+      assert.include(yield* run("checkin-evening", MONDAY + 18 * HOUR), { facts: 0 });
+      assert.include(yield* run("checkin-morning", MONDAY + DAY + 9 * HOUR), { facts: 1 });
     }).pipe(Effect.provide(layer)),
   );
 
