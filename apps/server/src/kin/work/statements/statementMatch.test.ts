@@ -239,6 +239,7 @@ describe("statement matching", () => {
       ],
       {
         currency: "INR",
+        withholdsAtSource: true,
         invoices: [],
         payments: [
           {
