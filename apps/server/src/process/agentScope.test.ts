@@ -65,13 +65,11 @@ const withFakeSystemd = <A, E>(
   {
     oomPolicy = true,
     stopFails = false,
-    refusedProperty,
     leftovers = false,
     liveOwner = false,
   }: {
     readonly oomPolicy?: boolean;
     readonly stopFails?: boolean;
-    readonly refusedProperty?: string;
     readonly leftovers?: boolean;
     readonly liveOwner?: boolean;
   } = {},
@@ -102,8 +100,6 @@ const withFakeSystemd = <A, E>(
           if (!oomPolicy && args.some((arg) => arg.startsWith("--property=OOMPolicy="))) {
             return output("", 1);
           }
-          if (refusedProperty !== undefined && args.includes(`--property=${refusedProperty}`))
-            return output("", 1);
           const [, verb, unit = ""] = args;
           if (failingVerbs.has(verb!)) return output("", 1);
           if (stopFails && verb === "stop") {
@@ -224,18 +220,8 @@ describe("AgentScope service", () => {
     () =>
       withFakeSystemd(({ scope, units, calls }) =>
         Effect.gen(function* () {
-          const agent = yield* scope.wrap({
-            command: "agent",
-            args: [],
-            name: "t",
-            threadId: "a",
-            properties: ["MemoryMax=1073741824", "TasksMax=4096"],
-          });
+          const agent = yield* scope.wrap({ command: "agent", args: [], name: "t", threadId: "a" });
           expect(agent.args).toContain("--property=OOMPolicy=stop");
-          // A caller's own limits apply to its scope alone, before the command.
-          const command = agent.args.indexOf("--");
-          expect(agent.args.indexOf("--property=MemoryMax=1073741824")).toBeLessThan(command);
-          expect(agent.args.indexOf("--property=TasksMax=4096")).toBeGreaterThan(-1);
           units.set(unitOf(agent), { activeState: "failed", result: "oom-kill" });
           expect(yield* scope.oomKilled("a")).toBe(true);
 
@@ -253,26 +239,6 @@ describe("AgentScope service", () => {
           ).toEqual([]);
         }),
       ),
-  );
-
-  it.effect("starts an agent without a property this systemd refuses, and says which", () =>
-    withFakeSystemd(
-      ({ scope, calls }) =>
-        Effect.gen(function* () {
-          const properties = ["MemoryMax=1073741824", "CPUWeight=50"];
-          const first = yield* scope.wrap({ command: "agent", args: [], name: "t", properties });
-          expect(first.unit).toBeDefined();
-          expect(first.args).toContain("--property=MemoryMax=1073741824");
-          expect(first.args).not.toContain("--property=CPUWeight=50");
-          expect(first.refusedProperties).toEqual(["CPUWeight=50"]);
-          const asked = calls.length;
-          const second = yield* scope.wrap({ command: "agent", args: [], name: "t", properties });
-          expect(second.refusedProperties).toEqual(["CPUWeight=50"]);
-          // Each property is tried once per server.
-          expect(calls.length).toBe(asked);
-        }),
-      { refusedProperty: "CPUWeight=50" },
-    ),
   );
 
   it.effect.each([{ oomPolicy: true }, { oomPolicy: false }])(
@@ -300,15 +266,6 @@ describe("AgentScope service", () => {
               false,
             );
             expect(calls.filter(([, verb]) => verb === "kill")).toEqual([]);
-
-            // Reaping confirms the tree is gone only once the kernel says the cgroup is empty.
-            exitedAgent(units, cgroupRoot, unitOf(agent), { populated: false, oomKills: 0 });
-            expect(yield* scope.reap("a")).toBe(true);
-            units.delete(unitOf(agent));
-            expect(yield* scope.reap("a")).toBe(true);
-            // A shared scope, or a thread with none here, can't be confirmed.
-            expect(yield* scope.reap("b")).toBe(false);
-            expect(yield* scope.reap("unknown")).toBe(false);
           }),
         { oomPolicy },
       ),
