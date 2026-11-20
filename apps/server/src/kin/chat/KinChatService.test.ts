@@ -2485,10 +2485,11 @@ describe("KinChatService", () => {
       assert.strictEqual(many.list.chats.length, few.list.chats.length + 6);
       // Per chat: the chat, the viewer's member row, the last messages and their cards.
       assert.isAtMost(many.count - few.count, 6 * 4);
-      // What a row may link to (every client and project the viewer sees) is read once a list.
+      // What a row may link to (every client, project and deal the viewer sees) is read once a list.
       assert.strictEqual(
-        statements.filter((query) => query.includes("register_id IN ('clients', 'projects')"))
-          .length,
+        statements.filter((query) =>
+          query.includes("register_id IN ('clients', 'projects', 'deals')"),
+        ).length,
         1,
       );
     }).pipe(Effect.provide(layer)),
