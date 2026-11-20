@@ -45,7 +45,7 @@ const score = (tool: ListedTool, terms: ReadonlyArray<string>) => {
 };
 
 export const make = (
-  tools: () => ReadonlyArray<ListedTool>,
+  tools: () => Effect.Effect<ReadonlyArray<ListedTool>>,
   announceListChanged: () => Effect.Effect<void>,
 ) => {
   const loaded = new Map<string, Set<string>>();
@@ -65,7 +65,7 @@ export const make = (
         .toLowerCase()
         .split(/[^a-z0-9_]+/u)
         .filter(Boolean);
-      const found = tools()
+      const found = (yield* tools())
         .filter((tool) => tool.name !== TOOL_SEARCH)
         .map((tool) => ({ tool, score: score(tool, terms) }))
         .filter((match) => match.score > 0)

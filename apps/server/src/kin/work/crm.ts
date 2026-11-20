@@ -43,7 +43,14 @@ import {
   principalOfText,
   projectSpecChanges,
 } from "./projectSpine.ts";
-import { KIN_OWNER_LEVEL, personSeesAs, seenBy, type KinViewer } from "./teamView.ts";
+import {
+  crmSeenBy,
+  crmSeesAs,
+  KIN_OWNER_LEVEL,
+  personSeesAs,
+  seenBy,
+  type KinViewer,
+} from "./teamView.ts";
 import {
   actorOf,
   iso,
@@ -121,7 +128,7 @@ type PartyRowSql = {
 
 /**
  * Clients, prospects and vendors with what each side owes, from one grouped read of the open Work
- * entries `viewer` sees: a count or a next step never names work they can't see.
+ * entries `viewer` sees in Clients (`crmSeenBy`): a count or a next step never names work they can't.
  */
 const partyRowsWhere = Effect.fn("KinCrm.partyRows")(function* (
   orgId: KinOrgId,
@@ -143,7 +150,7 @@ const partyRowsWhere = Effect.fn("KinCrm.partyRows")(function* (
         SUM(r.side = 'ours' AND r.due_at < ${now}) AS late,
         SUM(r.side = 'theirs' AND r.due_at < ${now}) AS overdue
       FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'work'
-        AND r.state IN ${sql.in(OPEN)} AND r.party_id IS NOT NULL AND ${seenBy(sql, viewer)}
+        AND r.state IN ${sql.in(OPEN)} AND r.party_id IS NOT NULL AND ${crmSeenBy(sql, viewer)}
       GROUP BY r.party_id) n ON n.party_id = c.record_id
     WHERE ${filter}
     ORDER BY ${
@@ -171,10 +178,10 @@ const partyRowsWhere = Effect.fn("KinCrm.partyRows")(function* (
               PARTITION BY party_id ORDER BY due_at IS NULL, due_at, key) AS n
             FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'work'
               AND r.side = 'ours' AND r.state IN ${sql.in(OPEN)} AND r.party_id IN ${sql.in(ids)}
-              AND ${seenBy(sql, viewer)})
+              AND ${crmSeenBy(sql, viewer)})
           WHERE n = 1 ORDER BY party_id`;
   const nextBy = new Map(next.map((row) => [row.partyId, row]));
-  const last = yield* lastContacts(orgId, ids, now);
+  const last = yield* lastContacts(orgId, ids, now, viewer);
   return rows.map((row): KinPartyRow => {
     const soonest = nextBy.get(row.recordId);
     const fields = parseFields(row.fieldsJson);
@@ -241,6 +248,7 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
   limit: number,
   offset: number,
   viewer: KinViewer,
+  seen: typeof seenBy = seenBy,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const filter = sql.and([sql`p.org_id = ${orgId}`, sql`p.register_id = 'projects'`, ...where]);
@@ -260,7 +268,7 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
         SUM(r.due_at IS NOT NULL AND r.due_at < ${now}) AS late,
         SUM(r.state = 'waiting' AND ${waitingSince(sql, "r")} < ${now - WEEK_MS}) AS "waitingLong"
       FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'work'
-        AND r.state IN ${sql.in(OPEN)} AND r.project_id IS NOT NULL AND ${seenBy(sql, viewer)}
+        AND r.state IN ${sql.in(OPEN)} AND r.project_id IS NOT NULL AND ${seen(sql, viewer)}
       GROUP BY r.project_id) n ON n.project_id = p.record_id
     WHERE ${filter}
     ORDER BY ${
@@ -336,7 +344,7 @@ export const parties = Effect.fn("KinCrm.parties")(function* (
   const where = [
     ...(viewer._tag === "ownerLevel"
       ? []
-      : viewer.people.map((person) => personSeesAs(sql, person, "c"))),
+      : viewer.people.map((person) => crmSeesAs(sql, person, "c"))),
     input.active === false ? sql`c.state != 'open'` : sql`c.state = 'open'`,
     ...(input.kind === undefined ? [] : [sql`c.category = ${input.kind}`]),
     ...(input.prospect === true ? [sql`c.category = 'prospect'`] : []),
@@ -565,6 +573,7 @@ export const history = Effect.fn("KinCrm.history")(function* (
   anchor: RecordRow,
   input: { readonly beforeSeq?: number; readonly sinceAt?: number; readonly limit: number },
   viewer: KinViewer,
+  seen: typeof seenBy = seenBy,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const orgId = anchor.orgId as KinOrgId;
@@ -577,7 +586,7 @@ export const history = Effect.fn("KinCrm.history")(function* (
     sql`(r.record_id = ${anchor.recordId} OR ${pointing})`,
     // A doc's history is its versions (`kin.docs.history`); clients older than Docs can't read it.
     sql`r.register_id != 'docs'`,
-    seenBy(sql, viewer),
+    seen(sql, viewer),
     ...(input.beforeSeq === undefined ? [] : [sql`c.seq < ${input.beforeSeq}`]),
     ...(input.sinceAt === undefined ? [] : [sql`c.at >= ${input.sinceAt}`]),
   ]);
@@ -644,20 +653,26 @@ export const partyPage = Effect.fn("KinCrm.partyPage")(function* (
       sql`r.party_id = ${row.recordId}`,
       sql`r.side = ${side}`,
       sql`r.state IN ${sql.in(OPEN)}`,
-      seenBy(sql, viewer),
+      crmSeenBy(sql, viewer),
     ]);
   const contacts = yield* sql<RecordRow>`${selectRecords(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'contacts' AND r.party_id = ${row.recordId}
-      AND ${seenBy(sql, viewer)}
+      AND ${crmSeenBy(sql, viewer)}
     ORDER BY r.state != 'open', lower(r.title), r.key LIMIT ${KIN_RECORDS_PAGE_CAP}`;
   const projectRows = yield* projectRowsWhere(
     orgId,
     now,
-    [sql`p.party_id = ${row.recordId}`],
+    [
+      sql`p.party_id = ${row.recordId}`,
+      ...(viewer._tag === "ownerLevel"
+        ? []
+        : viewer.people.map((person) => crmSeesAs(sql, person, "p"))),
+    ],
     "target",
     KIN_RECORDS_PAGE_CAP,
     0,
     viewer,
+    crmSeenBy,
   );
   return {
     party: yield* partyDetail(row, now, viewer),
@@ -670,7 +685,7 @@ export const partyPage = Effect.fn("KinCrm.partyPage")(function* (
       open("theirs"),
       sql`(r.due_at IS NOT NULL AND r.due_at < ${now}) DESC, r.due_at IS NULL, r.due_at, r.key`,
     ),
-    touches: yield* touchesOf(orgId, row.recordId, now, TOUCHES_SHOWN),
+    touches: yield* touchesOf(orgId, row.recordId, now, TOUCHES_SHOWN, viewer),
     seq,
     asOf: iso(now),
   } satisfies KinPartyPage;

@@ -4,7 +4,7 @@ import { ArrowDownIcon, ArrowUpIcon, PlusIcon, TrophyIcon, XIcon } from "lucide-
 import { useState } from "react";
 
 import { SettingsSection } from "../components/settings/settingsLayout";
-import { searchableSetting } from "../components/settings/settingsSearch";
+import { useSearchableSetting } from "../components/settings/settingsSearch";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import {
@@ -33,6 +33,7 @@ import type { KinWorkTarget } from "./useKinWork";
 /** Settings → Deals: the company's stages, with Won and Lost as fixed ends. */
 export function KinDealsSetting() {
   const target = kinNewLeadTarget(useKinHost());
+  const searchableSetting = useSearchableSetting();
   return target === null ? null : (
     <SettingsSection {...searchableSetting("kin-deals")} hideTitle>
       <KinDealStagesSettings {...target} />

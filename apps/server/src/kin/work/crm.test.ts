@@ -1492,6 +1492,479 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "a member's Clients is read only from what they may see there; hidden and absent answer alike",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      yield* seed;
+      yield* setup("ask-event");
+      const now = Date.parse("2026-11-20T09:00:00.000Z");
+      yield* TestClock.setTime(now);
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('s-mate', ${orgId}, ${mateId}, 0)`;
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${mateId}`;
+      const acme = (yield* Clients.party([owner], { orgId, key: "C-1" })).party;
+      yield* Clients.updateParty([owner], {
+        orgId,
+        key: "C-1",
+        rev: acme.rev,
+        owner: { _tag: "person", personId: mateId },
+      });
+      const failure = (effect: Effect.Effect<unknown, KinChatError, Services>) =>
+        effect.pipe(
+          Effect.asVoid,
+          Effect.flip,
+          Effect.map(({ reason, message }) => ({ reason, message })),
+        );
+      const writer = { ...OwnerWork.ownerWriter(owner) };
+      // A private project of a public client, and an unmarked task in it the team shares: Tasks
+      // shows it to them; Clients never counts, names or dates it.
+      const quietProject = yield* Clients.createProject([owner], {
+        orgId,
+        name: "Invented quiet pilot",
+        party: "C-1",
+        sensitive: true,
+        clientRequestId: "quiet-pilot",
+      });
+      const entry = (originKey: string, extra: Partial<KinRecords.CreateInput>) =>
+        records.create(orgId, writer, {
+          originKey,
+          title: `Invented ${originKey}`,
+          owner: { _tag: "person", personId: ownerId },
+          partyId: acme.recordId,
+          ...extra,
+        });
+      const hiddenStep = yield* entry("hidden step", {
+        projectId: quietProject.recordId,
+        dueAt: Date.parse("1969-12-31T00:00:00.000Z"),
+        team: true,
+      });
+      yield* entry("visible step", { dueAt: Date.parse("1970-01-06T00:00:00.000Z"), team: true });
+      // Contact the member can't see: meetings in the private project, newer than any they can,
+      // and one marked private on its own.
+      const call = yield* Clients.logTouch([mate], {
+        orgId,
+        party: "C-1",
+        kind: "call",
+        at: "2026-11-15T09:00:00.000Z",
+        clientRequestId: "seen-call",
+      });
+      for (let n = 0; n < 6; n += 1)
+        yield* entry(`hidden meeting ${n}`, {
+          category: "meeting",
+          projectId: quietProject.recordId,
+          dateAt: now - 4 * DAY + n * 60_000,
+          team: true,
+        });
+      yield* entry("private meeting", { category: "meeting", dateAt: now - DAY, sensitive: true });
+      const tasks = (yield* OwnerWork.list([mate], { orgId, limit: 100 })).records.map(
+        (one) => one.key,
+      );
+      assert.include(tasks, hiddenStep.row.key);
+
+      const row = (yield* Clients.parties([mate], { orgId })).parties.find(
+        (one) => one.key === "C-1",
+      );
+      const page = yield* Clients.party([mate], { orgId, key: "C-1" });
+      for (const read of [row, page.party]) {
+        assert.include(read, { weOwe: 1, lastContactAt: call.at });
+        assert.strictEqual(read?.next?.title, "Invented visible step");
+      }
+      assert.deepStrictEqual(
+        (page.touches ?? []).map((one) => one.id),
+        [call.id],
+      );
+      assert.notInclude(JSON.stringify([row, page]), "Invented hidden");
+      assert.notInclude(JSON.stringify([row, page]), "Invented private meeting");
+      // The owner reads it all.
+      const owners = (yield* Clients.party([owner], { orgId, key: "C-1" })).party;
+      assert.strictEqual(owners.next?.key, hiddenStep.row.key);
+      assert.notStrictEqual(owners.lastContactAt, call.at);
+
+      // History: the hidden task's lines and the owner's terms are left out before a page is cut,
+      // so a page with a cursor always has something on it.
+      for (let n = 0; n < 4; n += 1) {
+        const rev = (yield* Clients.party([owner], { orgId, key: "C-1" })).party.rev;
+        yield* Clients.updateParty([owner], {
+          orgId,
+          key: "C-1",
+          rev,
+          terms: `Invented terms ${n}`,
+        });
+      }
+      const walked: Array<string> = [];
+      let cursor: string | undefined;
+      for (let pages = 0; pages < 50; pages += 1) {
+        const one = yield* Clients.history([mate], {
+          orgId,
+          key: "C-1",
+          limit: 1,
+          ...(cursor === undefined ? {} : { cursor }),
+        });
+        if (one.nextCursor !== null) assert.lengthOf(one.items, 1);
+        walked.push(...one.items.map((item) => `${item.record.key}:${item.kind}`));
+        if (one.nextCursor === null) break;
+        cursor = one.nextCursor;
+      }
+      assert.isNotEmpty(walked);
+      assert.notInclude(walked.join(" "), hiddenStep.row.key);
+
+      // A private contact on a client they look after is no contact: the same answer as none,
+      // before its revision is checked, and it stays as it was.
+      const hana = yield* Clients.createContact([owner], {
+        orgId,
+        party: "C-1",
+        name: "Invented Hana",
+        notes: "Invented private notes",
+        sensitive: true,
+        clientRequestId: "hana",
+      });
+      const absent = yield* failure(
+        Clients.updateContact([mate], { orgId, key: "CT-99", rev: 1, notes: "x" }),
+      );
+      for (const rev of [hana.rev, hana.rev + 5])
+        assert.deepStrictEqual(
+          yield* failure(Clients.updateContact([mate], { orgId, key: hana.key, rev, notes: "x" })),
+          { reason: absent.reason, message: absent.message.replace("CT-99", hana.key) },
+        );
+      assert.strictEqual(absent.reason, "not_found");
+      const contacts = (yield* Clients.party([owner], { orgId, key: "C-1" })).contacts;
+      assert.strictEqual(
+        contacts.find((one) => one.key === hana.key)?.notes,
+        "Invented private notes",
+      );
+
+      // A name they can't see is no clash: theirs is made and the owner sees both. One they see
+      // still is.
+      const quiet = yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Quiet Co",
+        sensitive: true,
+        clientRequestId: "quiet",
+      });
+      yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Hush Ltd",
+        prospect: true,
+        sensitive: true,
+        clientRequestId: "hush",
+      });
+      const twin = yield* Clients.createContact([mate], {
+        orgId,
+        party: "C-1",
+        name: "Invented Hana",
+        clientRequestId: "twin-hana",
+      });
+      assert.notStrictEqual(twin.key, hana.key);
+      const twinCo = yield* Clients.createParty([mate], {
+        orgId,
+        name: "Invented Quiet Co",
+        prospect: true,
+        clientRequestId: "twin-quiet",
+      });
+      assert.notStrictEqual(twinCo.key, quiet.key);
+      const spare = yield* Clients.createParty([mate], {
+        orgId,
+        name: "Invented Spare Co",
+        prospect: true,
+        clientRequestId: "spare",
+      });
+      assert.strictEqual(
+        (yield* Clients.updateParty([mate], {
+          orgId,
+          key: spare.key,
+          rev: spare.rev,
+          name: "Invented Hush Ltd",
+        })).name,
+        "Invented Hush Ltd",
+      );
+      assert.deepStrictEqual(
+        (yield* Clients.parties([owner], { orgId, text: "Invented Quiet Co" })).parties
+          .map((one) => one.key)
+          .toSorted(),
+        [quiet.key, twinCo.key].toSorted(),
+      );
+      for (const clash of [
+        Clients.createContact([mate], {
+          orgId,
+          party: "C-1",
+          name: "Invented Mira",
+          clientRequestId: "mira-again",
+        }),
+        Clients.createParty([mate], {
+          orgId,
+          name: "Invented Acme",
+          prospect: true,
+          clientRequestId: "acme-again",
+        }),
+      ])
+        assert.strictEqual((yield* failure(clash)).reason, "conflict");
+
+      // A retry gets back only what they may see now: one made private since, or moved to a
+      // private client, is not found.
+      const retryCo = {
+        orgId,
+        name: "Invented Retry Co",
+        prospect: true as const,
+        clientRequestId: "retry-co",
+      };
+      const made = yield* Clients.createParty([mate], retryCo);
+      yield* Clients.updateParty([owner], { orgId, key: made.key, rev: made.rev, sensitive: true });
+      const ola = {
+        orgId,
+        party: "C-1",
+        name: "Invented Ola",
+        email: "ola@x.invalid",
+        clientRequestId: "ola",
+      };
+      const olaRow = yield* Clients.createContact([mate], ola);
+      yield* Clients.updateContact([owner], {
+        orgId,
+        key: olaRow.key,
+        rev: olaRow.rev,
+        party: quiet.key,
+        email: "ola.private@x.invalid",
+      });
+      for (const [retry, name] of [
+        [Clients.createParty([mate], retryCo), retryCo.name],
+        [Clients.createContact([mate], ola), ola.name],
+      ] as const)
+        assert.deepStrictEqual(yield* failure(retry), {
+          reason: "not_found",
+          message: `No entry ${name} in Work.`,
+        });
+
+      // Removing a contact on a client they can't see answers as an id never there.
+      const hiddenTouch = yield* Clients.logTouch([owner], {
+        orgId,
+        party: quiet.key,
+        kind: "call",
+        clientRequestId: "quiet-call",
+      });
+      for (const touchId of [hiddenTouch.id, "tch_never_there"])
+        assert.deepStrictEqual(yield* Clients.removeTouch([mate], { orgId, touchId }), {
+          removed: false,
+        });
+      yield* sql`UPDATE kin_people SET sees_clients = 0 WHERE person_id = ${mateId}`;
+      const offAnswers = [];
+      for (const touchId of [hiddenTouch.id, call.id, "tch_never_there"])
+        offAnswers.push(yield* failure(Clients.removeTouch([mate], { orgId, touchId })));
+      assert.deepStrictEqual(offAnswers, [offAnswers[0], offAnswers[0], offAnswers[0]]);
+      assert.strictEqual(offAnswers[0]?.reason, "not_allowed");
+      const offContact = [];
+      for (const key of [hana.key, twin.key, "CT-99"])
+        offContact.push(
+          (yield* failure(Clients.updateContact([mate], { orgId, key, rev: 1, notes: "x" })))
+            .reason,
+        );
+      assert.deepStrictEqual(offContact, ["not_allowed", "not_allowed", "not_allowed"]);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a task's client follows the member's sight of it, a project keeps its client, and terms stay the owner's",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* setup("ask-event");
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('s-mate', ${orgId}, ${mateId}, 0)`;
+      const switchTo = (on: boolean) =>
+        sql`UPDATE kin_people SET sees_clients = ${on ? 1 : 0} WHERE person_id = ${mateId}`;
+      yield* switchTo(true);
+      const me = { _tag: "person" as const, personId: mateId };
+      const rev = (key: string) =>
+        Clients.party([owner], { orgId, key }).pipe(Effect.map((page) => page.party.rev));
+      yield* Clients.updateParty([owner], {
+        orgId,
+        key: "C-1",
+        rev: yield* rev("C-1"),
+        gstin: "27ABCDE1234F1Z5",
+        placeOfSupply: "Invented Province",
+      });
+      // Its terms and tax details are the owner's in its changes too, on the generic sheet.
+      const sheet = yield* OwnerWork.get([mate], { orgId, key: "C-1" });
+      assert.notMatch(JSON.stringify(sheet), /retainer|27ABCDE1234F1Z5|Invented Province/u);
+
+      // A task they hold in a project of Acme's: another client would take it out of the
+      // project, which isn't theirs to do, so its client isn't either.
+      const other = yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Brightwell",
+        clientRequestId: "brightwell",
+      });
+      const held = yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented held in the site project",
+        project: "P-1",
+        owner: me,
+        clientRequestId: "held",
+      });
+      assert.isFalse((yield* OwnerWork.get([mate], { orgId, key: held.key })).can.party);
+      const kept = yield* OwnerWork.update([mate], {
+        orgId,
+        key: held.key,
+        rev: held.rev,
+        party: other.key,
+      }).pipe(Effect.flip);
+      assert.deepInclude(kept, {
+        reason: "not_allowed",
+        message: `${held.key} is part of a project for another client, so it keeps that client. The owner or a co-owner can take it out of the project first.`,
+      });
+      const still = yield* OwnerWork.get([owner], { orgId, key: held.key });
+      assert.deepStrictEqual([still.project?.key, still.party?.key], ["P-1", "C-1"]);
+      const moved = yield* OwnerWork.update([owner], {
+        orgId,
+        key: held.key,
+        rev: still.rev,
+        party: other.key,
+      });
+      assert.deepStrictEqual([moved.project?.key, moved.party?.key], [undefined, other.key]);
+
+      // A task they file in a project they lead with no client keeps a client only while they
+      // see it: switched off, or the client made private, and it is gone, past values too.
+      const own = yield* Clients.createProject([owner], {
+        orgId,
+        name: "Invented own project",
+        owner: me,
+        clientRequestId: "own-project",
+      });
+      const task = yield* OwnerWork.create([mate], {
+        orgId,
+        title: "Invented filed under Acme",
+        project: own.key,
+        party: "C-1",
+        clientRequestId: "filed",
+      });
+      const refiled = yield* OwnerWork.update([mate], {
+        orgId,
+        key: task.key,
+        rev: task.rev,
+        party: other.key,
+      });
+      assert.strictEqual(refiled.party?.key, other.key);
+      const named = (read: unknown) =>
+        ["C-1", other.key, "Invented Acme", "Invented Brightwell"].filter((word) =>
+          JSON.stringify(read).includes(word),
+        );
+      const views = () =>
+        Effect.gen(function* () {
+          const detail = yield* OwnerWork.get([mate], { orgId, key: task.key });
+          const rows = (yield* OwnerWork.list([mate], { orgId, limit: 100 })).records.filter(
+            (one) => one.key === task.key,
+          );
+          return { detail, rows };
+        });
+      // While they see both, the task names its client and its change from Acme.
+      assert.includeMembers(named(yield* views()), ["C-1", other.key, "Invented Brightwell"]);
+      yield* switchTo(false);
+      assert.deepStrictEqual(named(yield* views()), []);
+      const written = yield* OwnerWork.update([mate], {
+        orgId,
+        key: task.key,
+        rev: refiled.rev,
+        title: "Invented filed, renamed",
+      });
+      assert.deepStrictEqual(named(written), []);
+      yield* switchTo(true);
+      yield* Clients.updateParty([owner], {
+        orgId,
+        key: other.key,
+        rev: yield* rev(other.key),
+        sensitive: true,
+      });
+      yield* Clients.updateParty([owner], {
+        orgId,
+        key: "C-1",
+        rev: yield* rev("C-1"),
+        sensitive: true,
+      });
+      assert.deepStrictEqual(named(yield* views()), []);
+      yield* Clients.updateParty([owner], {
+        orgId,
+        key: "C-1",
+        rev: yield* rev("C-1"),
+        sensitive: false,
+      });
+
+      // Switched off, a project's lead reads its client's name as before this branch: no prospect,
+      // where it came from or tags, and the Clients filters do nothing.
+      yield* switchTo(false);
+      yield* Clients.updateParty([owner], {
+        orgId,
+        key: "C-1",
+        rev: yield* rev("C-1"),
+        prospect: true,
+        source: "Invented trade fair",
+        tags: ["invented"],
+      });
+      yield* Clients.updateProject([owner], {
+        orgId,
+        key: "P-1",
+        rev: (yield* Clients.project([owner], { orgId, key: "P-1" })).project.rev,
+        owner: me,
+      });
+      const plain = yield* Clients.parties([mate], { orgId });
+      assert.deepStrictEqual(
+        plain.parties.map((one) => one.key),
+        ["C-1"],
+      );
+      const page = yield* Clients.party([mate], { orgId, key: "C-1" });
+      for (const read of [plain.parties[0], page.party])
+        for (const field of ["prospect", "source", "tags"]) assert.notProperty(read, field);
+      yield* Clients.updateParty([owner], {
+        orgId,
+        key: "C-1",
+        rev: yield* rev("C-1"),
+        prospect: false,
+      });
+      // Neither filter would keep Acme now; to a lead without Clients they are no filters.
+      for (const filtered of [{ prospect: true as const }, { owner: me }])
+        assert.deepStrictEqual(
+          (yield* Clients.parties([mate], { orgId, ...filtered })).parties.map((one) => one.key),
+          ["C-1"],
+        );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("an agent finds a prospect as the client of that name, and calls it a client", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* seed;
+    yield* setup("ask-event");
+    const fennick = yield* Clients.createParty([owner], {
+      orgId,
+      name: "Invented Fennick",
+      prospect: true,
+      clientRequestId: "fennick",
+    });
+    const again = yield* LeadWork.create(scope, {
+      sourceEventId: "again-event",
+      records: [{ list: "clients", title: "Invented Fennick" }],
+    });
+    assert.deepInclude(again.records[0], { key: fennick.key, created: false });
+    const vendor = yield* LeadWork.create(scope, {
+      sourceEventId: "third-event",
+      records: [{ list: "clients", title: "Invented Fennick", kind: "vendor" }],
+    });
+    assert.include(vendor.records[0]?.alsoNamed, `(${fennick.key}) is a client of the same name`);
+    yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+        queued_at, state, wakeup_id)
+      SELECT 'fourth-event', org_id, agent_id, tag, priority,
+        json_set(json, '$.eventId', 'fourth-event'), received_at, queued_at, state, wakeup_id
+      FROM kin_events WHERE event_id = 'ask-event'`;
+    const which = yield* LeadWork.create(scope, {
+      sourceEventId: "fourth-event",
+      records: [{ list: "contacts", title: "Invented Noor", client: "Invented Fennick" }],
+    }).pipe(Effect.flip);
+    assert.include(String(which.message), `Invented Fennick (${fennick.key}, client)`);
+    assert.notInclude(String(which.message), "prospect");
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("logging contact with a next step makes the follow-up in the same transaction", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -1581,6 +2054,63 @@ it.effect(
       assert.include(yield* Effect.flip(LeadClients.contact(scope, { key: "C-2" })), {
         reason: "not_allowed",
       });
+      // Its terms and tax details too, through the agent's reads, whatever the turn asks.
+      const open = (yield* Clients.party([owner], { orgId, key: "C-2" })).party;
+      yield* Clients.updateParty([owner], {
+        orgId,
+        key: "C-2",
+        rev: open.rev,
+        terms: "Invented net 45 retainer",
+        gstin: "29ABCDE1234F1Z5",
+        placeOfSupply: "Invented Province",
+      });
+      const owners = /net 45|29ABCDE1234F1Z5|Invented Province/u;
+      const agentReads = Effect.all([
+        LeadWork.query(scope, { list: "clients" }),
+        LeadWork.get(scope, { key: "C-2" }),
+      ]);
+      // An owner-only turn still reads them (the first test's `LeadWork.get` of C-1).
+      assert.notMatch(JSON.stringify(yield* agentReads), owners);
+
+      // A client on a task made or changed for the room is one each of them could set there:
+      // with Clients off, a project's lead sees its client's name but files nothing under it.
+      yield* Clients.createProject([owner], {
+        orgId,
+        name: "Invented Open project",
+        party: "C-2",
+        owner: { _tag: "person", personId: mateId },
+        clientRequestId: "open-project",
+      });
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('s-mate', ${orgId}, ${mateId}, 0)`;
+      const roomTask = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ title: "Invented room task" }],
+      });
+      const roomKey = roomTask.records[0]!.key;
+      const forRoom = [
+        LeadWork.create(scope, {
+          sourceEventId: "again-event",
+          records: [{ title: "Invented room task for Open Co", client: "C-2" }],
+        }).pipe(Effect.asVoid),
+        LeadWork.update(scope, { key: roomKey, sourceEventId: "ask-event", client: "C-2" }).pipe(
+          Effect.asVoid,
+        ),
+      ];
+      yield* sql`UPDATE kin_people SET sees_clients = 0 WHERE person_id = ${mateId}`;
+      for (const write of forRoom) {
+        const error = yield* Effect.flip(write);
+        assert.strictEqual(isChatError(error) ? error.reason : error._tag, "not_allowed");
+      }
+      const [filed] = yield* sql<{ party: string | null }>`SELECT party_id AS party
+        FROM kin_records WHERE org_id = ${orgId} AND key = ${roomKey}`;
+      assert.isNull(filed?.party ?? null);
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_records WHERE title = 'Invented room task for Open Co'`,
+        0,
+      );
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${mateId}`;
+      for (const write of forRoom) yield* write;
     }).pipe(Effect.provide(layer)),
 );
 
@@ -1743,6 +2273,14 @@ it.effect(
         clientRequestId: "fennick",
       });
       yield* sql`UPDATE kin_records SET created_at = 0 WHERE key = ${prospect.key}`;
+      assert.deepStrictEqual(yield* senses(prospect.key), []);
+      // Nor quiet, with a pilot under way.
+      yield* Clients.createProject([owner], {
+        orgId,
+        name: "Invented Fennick pilot",
+        party: prospect.key,
+        clientRequestId: "fennick-pilot",
+      });
       assert.deepStrictEqual(yield* senses(prospect.key), []);
       yield* OwnerWork.create([owner], {
         orgId,

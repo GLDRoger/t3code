@@ -1,3 +1,4 @@
+import type { AuthSessionId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
 import { SessionHooks } from "./sessionHooks.ts";
@@ -18,5 +19,13 @@ export const authHooks = Effect.gen(function* () {
       if (!allowed) return yield* new EnvironmentAuth.ServerAuthInvalidCredentialError({});
     }),
     recordPairedSession: hooks.recordPairedSession,
+    revokesSessionOnly: (callerSessionId?: AuthSessionId) =>
+      hooks
+        .revokesSessionOnly(callerSessionId)
+        .pipe(
+          Effect.mapError(
+            (cause) => new EnvironmentAuth.ServerAuthSessionRevocationError({ cause }),
+          ),
+        ),
   };
 });

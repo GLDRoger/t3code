@@ -50,7 +50,7 @@ import { partyPage, projectDetail } from "./crm.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { fold, matchName } from "./nameMatch.ts";
 import { lastContacts } from "./touches.ts";
-import { KinRecords, type Patch, type TotalsBy, type Writer } from "./KinRecords.ts";
+import { clientFamily, KinRecords, type Patch, type TotalsBy, type Writer } from "./KinRecords.ts";
 import {
   GOAL_INPUTS,
   GoalInputs,
@@ -926,7 +926,7 @@ export const refRecord = Effect.fn("KinWorkTools.refRecord")(function* (
     partyId: string | null;
   }>`
     SELECT r.record_id AS "recordId", r.key, r.title AS name, r.created_at AS "createdAt",
-      r.state NOT IN ('done', 'dropped') AS active, COALESCE(r.category, 'client') AS kind,
+      r.state NOT IN ('done', 'dropped') AS active, ${clientFamily(sql, sql`r.category`)} AS kind,
       json_extract(r.fields_json, '$.address') AS address, r.party_id AS "partyId"
     FROM kin_records r WHERE r.org_id = ${lead.orgId} AND r.register_id = ${list} AND ${sees}
     ORDER BY r.key LIMIT ${REF_CANDIDATES}`;
@@ -1176,12 +1176,16 @@ const ownersInput = (input: object, also: ReadonlyArray<string> = []) =>
   );
 
 /**
- * A row as a teammate's own Work shows it: no client, project, money, list fields or labels. How
- * a task repeats stays, as their screen shows it, so whoever gave it can see what they set.
+ * A row as a teammate's own Work shows it: no client, project, money, list fields or labels, and
+ * never a client's terms or tax details. How a task repeats stays, as their screen shows it, so
+ * whoever gave it can see what they set.
  */
 const teamRow = ({
   client: _client,
   project: _project,
+  terms: _terms,
+  gstin: _gstin,
+  placeOfSupply: _placeOfSupply,
   amount: _amount,
   balance: _balance,
   date: _date,
@@ -2167,7 +2171,7 @@ const sameNamed = Effect.fn("KinWorkTools.sameNamed")(function* (
     WHERE r.org_id = ${lead.orgId} AND r.register_id = ${list}
       AND r.state NOT IN ('done', 'dropped') AND lower(r.title) = lower(${title})
       AND (${list} != 'contacts' OR r.party_id IS ${partyId})
-      AND (${list} != 'clients' OR COALESCE(r.category, 'client') = ${kind ?? "client"})
+      AND (${list} != 'clients' OR ${clientFamily(sql, sql`r.category`)} = ${clientFamily(sql, sql`${kind ?? "client"}`)})
       AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
     ORDER BY r.key LIMIT 1`;
   return row;

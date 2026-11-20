@@ -53,6 +53,9 @@ import { KinAvatar } from "./KinAvatar";
 import { KinAwayField } from "./KinAway";
 import { useOpenKinPeopleChat } from "./KinPeopleChat";
 import { kinSettingsSectionIn } from "./kinSettingsAddress";
+import type { KIN_PROFILE_SETTINGS_SEARCH_ITEMS } from "./kinSettingsSearch";
+
+type KinProfileSearchId = (typeof KIN_PROFILE_SETTINGS_SEARCH_ITEMS)[number]["id"];
 import { KinTasksKeysSection } from "./KinTasksKeys";
 import { useKinOwnerLevelKnown } from "./useKinOwnerLevel";
 import { KIN_DIALOG_PARTS, KIN_SHEET_PARTS } from "./kinOverlayParts";
@@ -366,9 +369,17 @@ export function useKinMe(environmentId: EnvironmentId, orgId: KinOrgId): KinPers
   ).personId;
 }
 
-function Field(props: { readonly label: string; readonly children: React.ReactNode }) {
+function Field(props: {
+  readonly label: string;
+  readonly target?: string | undefined;
+  readonly children: React.ReactNode;
+}) {
   return (
-    <section className="flex flex-col gap-1">
+    <section
+      id={props.target}
+      tabIndex={props.target === undefined ? undefined : -1}
+      className="flex flex-col gap-1"
+    >
       <h3 className="text-xs font-medium text-muted-foreground">{props.label}</h3>
       {props.children}
     </section>
@@ -386,6 +397,8 @@ function KinProfileRead(props: {
 }) {
   const { profile } = props;
   const hours = kinHoursLine(profile.workHours);
+  // Your own settings are where the app's settings search lands.
+  const mineTarget = (id: KinProfileSearchId) => (props.mine ? id : undefined);
   const ownerLevel = useKinOwnerLevelKnown(props.environmentId);
   return (
     <>
@@ -424,7 +437,7 @@ function KinProfileRead(props: {
           )}
         </p>
       </Field>
-      <Field label={KIN_PROFILE_COPY.hoursLabel}>
+      <Field label={KIN_PROFILE_COPY.hoursLabel} target={mineTarget("kin-working-hours")}>
         <p className="text-sm text-foreground">
           {hours === null ? (
             <span className="text-muted-foreground">{KIN_PROFILE_COPY.noHours}</span>
@@ -439,8 +452,9 @@ function KinProfileRead(props: {
         profile={profile}
         mine={props.mine}
         mayEdit={props.mayEdit}
+        target={mineTarget("kin-away")}
       />
-      <Field label={KIN_PROFILE_COPY.quietLabel}>
+      <Field label={KIN_PROFILE_COPY.quietLabel} target={mineTarget("kin-quiet-hours")}>
         <p className="text-sm text-foreground">{kinQuietLine(profile, props.holding)}</p>
       </Field>
       {props.mayEdit ? (

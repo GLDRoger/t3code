@@ -1227,6 +1227,7 @@ unlisted:
   "web:settings/check-ins": The app's old address; opens Kin's Settings → Check-ins.
   "web:settings/kin-connections": The app's old address; opens Kin's Settings → Connections.
   "web:settings/deals": The app's settings address for Deals; opens Kin's Settings → Deals.
+  "web:settings/kin-profile": Where app Settings search lands for quiet hours, working hours and away; opens Kin's Settings → Profile.
   "web:?v": Picks the version of the open doc; not a screen.
   "web:?tab": Switches the Clients place between its Clients, Deals and Projects lists; not a screen.
   "web:?person": Starts Tasks narrowed to what one person holds, from their page's See all in Tasks; not a screen.
