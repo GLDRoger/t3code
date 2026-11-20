@@ -58,6 +58,8 @@ import * as Reach from "../lead/Reach.ts";
 import { encodeLeadModel } from "../lead/leadModels.ts";
 import * as AskPerson from "./askPerson.ts";
 import * as Questions from "./openQuestions.ts";
+import { deliverHeld } from "../triggers/heldDelivery.ts";
+import { holdLine } from "../triggers/quietHold.ts";
 import { defaultDue } from "./rules.ts";
 
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -1396,6 +1398,76 @@ it.effect(
 
 // Dev is away: nothing reaches him, and Rhea's chat says when it will. The first pass after he is
 // back posts the card, its day counted from then; at that day it is raised once more, once.
+// Restricted after it was held or asked: a held relay is dropped and its asker told, a held
+// question or one due to be raised closes, and nothing reaches the pair.
+it.effect("what waits for a pair restricted since goes nowhere, and the asker hears so", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const team = yield* askingTeam;
+      const { sql, orgId, owner, chats, chatOf, chiefChat, askFor, wakeOn } = team;
+      const org = KinOrgId.make(orgId);
+      const devChat = yield* chiefChat("dev");
+      const zoyaChat = yield* chiefChat("zoya");
+      const restrict = (id: string) =>
+        Reach.setLimit({
+          orgId: org,
+          by: owner.personId,
+          a: Reach.person(KinPersonId.make(id)),
+          b: Reach.agent(KinAgentId.make("chief")),
+          restricted: true,
+        });
+      const agentPosts = (chatId: KinChatId) =>
+        sql<{ body: string }>`SELECT body FROM kin_messages WHERE chat_id = ${chatId}
+          AND author_kind = 'agent' ORDER BY seq`;
+      yield* sql`UPDATE kin_people SET away_until = '2026-11-19' WHERE person_id = 'dev'`;
+      const rhea = yield* wakeOn("chief", "rhea", chatOf("chief"), "Ask Dev and Zoya.");
+      yield* holdLine({
+        orgId: org,
+        chatId: devChat,
+        personId: KinPersonId.make("dev"),
+        key: `kin-relay:${rhea}:van`,
+        body: "Is the van booked?",
+        audience: "chat",
+        at: IST_MON_1130,
+        agentId: KinAgentId.make("chief"),
+      });
+      const held = yield* askFor("chief", rhea, { to: "Dev" });
+      assert.strictEqual(held.state, "held");
+      const posted = yield* askFor("chief", rhea, { to: "Zoya", intent: "props" });
+      assert.strictEqual(posted.state, "posted");
+      yield* restrict("dev");
+      yield* restrict("zoya");
+
+      // He is back: what waited for him is due now.
+      yield* sql`UPDATE kin_people SET away_until = NULL WHERE person_id = 'dev'`;
+      assert.strictEqual(yield* deliverHeld(org, chats), 0);
+      assert.deepStrictEqual(yield* agentPosts(devChat), []);
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_held_posts WHERE chat_id = ${devChat}`, 0);
+      yield* settle(orgId, Date.UTC(2026, 10, 20, 5));
+      assert.strictEqual((yield* questionRow(sql, held.questionId)).state, "withdrawn");
+      assert.strictEqual((yield* questionRow(sql, posted.questionId)).state, "withdrawn");
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_widgets WHERE chat_id = ${devChat} AND type = 'choice'`,
+        0,
+      );
+      const card = yield* team.widgetOf((yield* team.cardOf(posted.questionId)).widgetId!);
+      assert.deepInclude(card.state, {
+        outcome: { title: "Closed", text: "You and Chief of staff can't message each other here." },
+      });
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_widgets WHERE chat_id = ${zoyaChat} AND type = 'choice'`,
+        1,
+      );
+      assert.includeMembers(yield* team.kinLines(chatOf("chief")), [
+        "Dev Malhotra and Chief of staff can't message each other here, so nothing was sent.",
+        "“Does the shoot move to Friday?” was closed before Dev Malhotra answered.",
+        "“Does the shoot move to Friday?” was closed before Zoya Sheikh answered.",
+      ]);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
 it.effect("a question asked for someone away waits for them, then is raised once", () =>
   Effect.andThen(
     TestClock.setTime(IST_MON_1130),

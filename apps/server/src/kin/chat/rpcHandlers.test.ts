@@ -1292,6 +1292,12 @@ it.effect(
       assert.include(yield* send(priya, theirs.chatId, "to-sam").pipe(Effect.flip), {
         reason: "not_allowed",
       });
+      // Whatever its member rows say, a write between the pair is refused.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_chat_members SET role = 'member' WHERE chat_id = ${theirs.chatId}`;
+      assert.include(yield* send(priya, theirs.chatId, "to-sam-by-rows").pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
       assert.include(
         yield* sam["kin.chats.withPerson"]({ ...org, personId: priyaId }).pipe(Effect.flip),
         { reason: "not_allowed" },
@@ -1309,6 +1315,20 @@ it.effect(
         restricted: true,
       }).pipe(Effect.flip);
       assert.deepStrictEqual((yield* owner["kin.reach.list"](org)).limits, []);
+      // Lifting one for someone since removed lifts the row and opens no chat.
+      const samFinance = {
+        ...org,
+        a: { kind: "person" as const, personId: samId },
+        b: { kind: "agent" as const, agentId: finance.agentId },
+      };
+      yield* owner["kin.reach.set"]({ ...samFinance, restricted: true });
+      yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = ${samId}`;
+      yield* owner["kin.reach.set"]({ ...samFinance, restricted: false });
+      assert.deepStrictEqual(
+        yield* sql`SELECT 1 AS live FROM kin_reach_limits WHERE other_id = ${samId}
+          AND lifted_at IS NULL`,
+        [],
+      );
     }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 

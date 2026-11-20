@@ -992,10 +992,12 @@ export const allow = Effect.fn("KinLeadProvision.allow")(function* (
       }).pipe(Effect.mapError(toPersistenceSqlError("KinLeadProvision.allow")));
       yield* limitRefused(change);
       if (change._tag === "changed") yield* leadsChanged(lead.orgId);
-      yield* chats.createDirect(
-        { _tag: "person", orgId: lead.orgId, personId: input.personId },
-        { orgId: lead.orgId, agentId: lead.agentId },
-      );
+      // Someone removed has the row lifted and no chat opened.
+      if (yield* liveAgain(lead.orgId, Reach.person(input.personId), Reach.agent(lead.agentId)))
+        yield* chats.createDirect(
+          { _tag: "person", orgId: lead.orgId, personId: input.personId },
+          { orgId: lead.orgId, agentId: lead.agentId },
+        );
       return yield* accessRows(lead);
     }),
   );
@@ -1031,6 +1033,10 @@ export const disallow = Effect.fn("KinLeadProvision.disallow")(function* (
     }),
   );
 });
+
+/** Both sides of a lifted pair are live and may message each other again. */
+const liveAgain = (orgId: KinOrgId, a: Reach.KinParty, b: Reach.KinParty) =>
+  Reach.reaches(orgId, a, b).pipe(Effect.mapError(toPersistenceSqlError("KinLeadProvision.lift")));
 
 const toReach = (party: KinReachParty): Reach.KinParty =>
   party.kind === "person" ? Reach.person(party.personId) : Reach.agent(party.agentId);
@@ -1135,7 +1141,11 @@ export const reachSet = Effect.fn("KinLeadProvision.reachSet")(function* (input:
           const [had] = yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${orgId}
             AND kind = 'direct' AND direct_key = ${LeadAccess.directKey(people[0], agent.agentId)}
             LIMIT 1`.pipe(Effect.mapError(toPersistenceSqlError("KinLeadProvision.reachSet")));
-          if (had !== undefined)
+          // A removed person or retired agent has the row lifted and no chat opened.
+          if (
+            had !== undefined &&
+            (yield* liveAgain(orgId, Reach.person(people[0]), Reach.agent(agent.agentId)))
+          )
             yield* chats.createDirect({ _tag: "person", orgId, personId: people[0] }, lead);
         }
       } else if (people[0] !== undefined && people[1] !== undefined)

@@ -11,6 +11,7 @@ import {
   KIN_FIGURE_SCHEME,
   KinEmbed,
   KIN_TEAM_ROOM_TEAM_ID,
+  KIN_PEOPLE_CHAT_TEAM_PREFIX,
   kinIsPeopleChat,
   KinChatError,
   KinChatId,
@@ -696,12 +697,48 @@ const make = Effect.gen(function* () {
           threadId: identity.threadId,
           memberId: member.memberId,
         };
+  /**
+   * Whether a two-party chat joins a pair that may not message each other now (`Reach`): checked
+   * at every write, so no member row, promotion or demotion carries a write across it.
+   */
+  const pairClosed = Effect.fn("KinChatService.pairClosed")(
+    function* (identity: Identity, member: KinChatMember) {
+      const others = yield* sql<{ personId: KinPersonId | null; agentId: KinAgentId | null }>`
+        SELECT m.person_id AS "personId", m.agent_id AS "agentId" FROM kin_chats c
+        JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+          AND m.left_at IS NULL AND m.member_id <> ${member.memberId}
+        WHERE c.org_id = ${member.orgId} AND c.chat_id = ${member.chatId}
+          AND (c.kind = 'direct' OR (c.kind = 'team_group'
+            AND substr(c.team_id, 1, ${KIN_PEOPLE_CHAT_TEAM_PREFIX.length}) = ${KIN_PEOPLE_CHAT_TEAM_PREFIX}))
+        ORDER BY m.member_id`;
+      const other = others.length === 1 ? others[0] : undefined;
+      if (other === undefined) return false;
+      const party =
+        other.agentId !== null
+          ? Reach.agent(other.agentId)
+          : other.personId !== null
+            ? Reach.person(other.personId)
+            : undefined;
+      if (party === undefined) return false;
+      const self =
+        identity._tag === "person"
+          ? Reach.person(identity.personId)
+          : Reach.agent(identity.agentId);
+      return (
+        (yield* Reach.mayReach(member.orgId, self, party).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        )) === "restricted"
+      );
+    },
+    Effect.mapError(toPersistenceSqlError("KinChatService.pairClosed")),
+  );
   const canWrite = Effect.fn("KinChatService.canWrite")(function* (
     identity: Identity,
     member: KinChatMember,
   ) {
     if (!mayWrite(member, identity._tag === "agent", yield* Clock.currentTimeMillis))
       return yield* notAllowed;
+    if (yield* pairClosed(identity, member)) return yield* notAllowed;
   });
   /** The chat's owner, or a co-owner in her own direct chat with a lead: owner-level there. */
   const ownerSide = Effect.fn("KinChatService.ownerSide")(function* (
