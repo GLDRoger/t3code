@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Updates the Kin server from source. Run as the kin user on the Kin host:
 #
-#   ~/t3code/ops/kin/host/update.sh
+#   ~/t3code/ops/kin/host/update.sh <commit>    # the commit the release check passed
+#   ~/t3code/ops/kin/host/update.sh --tip       # origin/kin's tip, unchecked
 #
-# Fetches `kin` into the clone, builds it in its own worktree (~/kin-builds/<sha>): install,
+# Fetches `kin` into the clone, builds the commit in its own worktree (~/kin-builds/<sha>): install,
 # the server's Kin contract tests, Kin's name on the web app, build, and a check that the web
 # app the build serves is named Kin with Kin's icons. Only when all of that passes does it stop
 # the server, back up its database, point ~/kin-current at the new build and start it. The
@@ -45,6 +46,28 @@ hand_over() {
   if [ -n "${KIN_UPDATE_HANDED_OVER:-}" ] || [ "$(cksum <"$merged")" = "$SELF_SUM" ]; then return 0; fi
   say "the update script changed; running the new one."
   KIN_UPDATE_HANDED_OVER=1 exec bash "$merged" "$@"
+}
+
+# The commit to deploy. Never the tip by default: a merge after the release check would ship unchecked.
+deploy_target() {
+  local tip sha
+  tip="$(git -C "$REPO" rev-parse --verify 'refs/remotes/origin/kin^{commit}')" || return 1
+  case "${1:-}" in
+    "")
+      say "name the commit the release check passed: update.sh <commit>. origin/kin is at ${tip:0:12}; update.sh --tip deploys it unchecked."
+      return 1
+      ;;
+    --tip)
+      echo "$tip"
+      return 0
+      ;;
+  esac
+  sha="$(git -C "$REPO" rev-parse --verify --quiet "$1^{commit}")" || {
+    say "$1 is not a commit in $REPO, even after fetching origin/kin."
+    return 1
+  }
+  [ "$sha" = "$tip" ] || say "origin/kin has moved on to ${tip:0:12}; deploying ${sha:0:12}, the commit you named."
+  echo "$sha"
 }
 
 # `sudo -iu kin` starts no user session, so point systemctl at kin's user manager.
@@ -366,9 +389,10 @@ main() {
   [ -f "$REPO/.env" ] || { say "$REPO/.env is missing (cp .env.example .env)."; exit 1; }
 
   git -C "$REPO" fetch origin +refs/heads/kin:refs/remotes/origin/kin
-  git -C "$REPO" merge --ff-only origin/kin
+  SHA="$(deploy_target "${1:-}")"
+  # An older commit than the clone's leaves the clone as it is; the build is a worktree at $SHA.
+  git -C "$REPO" merge --ff-only "$SHA"
   hand_over "$@"
-  SHA="$(git -C "$REPO" rev-parse --verify 'HEAD^{commit}')"
   # The memory repo's memory-check fetches its pin from GitHub, so only a pushed commit is offered.
   PUBLISHED="$SHA"
   git -C "$REPO" merge-base --is-ancestor "$SHA" origin/kin || PUBLISHED=""

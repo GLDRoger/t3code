@@ -5,7 +5,7 @@ description: Model-check Kin's riskiest flows (the send card, a turn's reply, th
 
 # Verify Kin's models
 
-Ten small TLA+ models live in `verification/kin/<name>/`. Each has a `README.md` with its rules, bound, what it leaves out, and the files it covers.
+Eleven small TLA+ models live in `verification/kin/<name>/`. Each has a `README.md` with its rules, bound, what it leaves out, and the files it covers.
 
 | Model           | Run it when you change                                                                                                                                                                                    |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

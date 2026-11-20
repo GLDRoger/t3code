@@ -252,6 +252,8 @@ echo "current $(basename "$(readlink "$CURRENT")")"`);
     const update = (packaged: string) =>
       onFakeHost(`
 SHA="$(printf 'c%.0s' {1..40})"
+# origin/kin moved on after the release check passed $SHA.
+TIP="$(printf 'd%.0s' {1..40})"
 NEW="$BUILDS/$SHA"
 export KIN_UPDATE_HANDED_OVER=1
 mkdir -p "$REPO" && touch "$REPO/.env" "$HOME/calls"
@@ -259,7 +261,8 @@ id() { if [ "$1" = -un ]; then echo kin; else command id "$@"; fi; }
 git() {
   case "$*" in
     *"branch --show-current"*) echo kin ;;
-    *rev-parse*) echo "$SHA" ;;
+    *"rev-parse --verify --quiet $SHA^{commit}"*) echo "$SHA" ;;
+    *rev-parse*) echo "$TIP" ;;
     *"worktree add"*)
       build "$SHA" 149 >/dev/null && rm "$NEW/apps/server/dist/bin.mjs" && touch "$NEW/.env.example"
       echo '{ "engines": { "node": "24.13.1" } }' >"$NEW/package.json"
@@ -286,7 +289,7 @@ package() {
   printf '{ "name": "Kin", "short_name": "%s", "icons": [{ "src": "/icon-192x192.png" }] }' "$SHORT_NAME" >"$client/manifest.webmanifest"
 }
 ${packaged}
-(main); echo "status $?"
+(main "$SHA"); echo "status $?"
 echo "current $(basename "$(readlink "$CURRENT")")"
 echo "stops $(grep -c 'stop kin-server' "$HOME/calls")"`);
 
@@ -297,6 +300,7 @@ echo "stops $(grep -c 'stop kin-server' "$HOME/calls")"`);
       `current ${"c".repeat(40)}`,
       "stops 1",
     ]);
+    expect(good.said).toContain("origin/kin has moved on to dddddddddddd; deploying cccccccccccc");
     for (const [packaged, problem] of [
       ['TITLE="T3 Code (Beta)"', 'index.html: <title> is "T3 Code (Beta)", not "Kin"'],
       ["SHORT_NAME=T3", 'manifest.webmanifest: short_name is "T3", not "Kin"'],
@@ -311,6 +315,30 @@ echo "stops $(grep -c 'stop kin-server' "$HOME/calls")"`);
       expect(said).toContain(problem);
       expect(said).toContain("failed; the server still runs");
     }
+  });
+
+  it("deploys the commit it is given, and the tip only when told to", () => {
+    const { out, said } = onFakeHost(`
+unset -f git
+git init -q -b kin "$HOME/origin" && cd "$HOME/origin"
+git -c user.name=Rhea -c user.email=rhea@ambermill.test commit -q --allow-empty -m checked
+CHECKED="$(git rev-parse HEAD)"
+git -c user.name=Rhea -c user.email=rhea@ambermill.test commit -q --allow-empty -m "merged after the check"
+TIP="$(git rev-parse HEAD)"
+git clone -q -b kin "$HOME/origin" "$REPO" && cd "$HOME"
+(deploy_target) || echo "no commit: refused"
+[ "$(deploy_target --tip)" = "$TIP" ] && echo "--tip: the tip"
+[ "$(deploy_target "\${CHECKED:0:12}")" = "$CHECKED" ] && echo "named: the checked commit"
+(deploy_target 0123456789ab) || echo "unknown: refused"`);
+    expect(out, said).toEqual([
+      "no commit: refused",
+      "--tip: the tip",
+      "named: the checked commit",
+      "unknown: refused",
+    ]);
+    expect(said).toContain("name the commit the release check passed: update.sh <commit>.");
+    expect(said).toContain("origin/kin has moved on to");
+    expect(said).toContain("0123456789ab is not a commit in");
   });
 
   it("hands over to the merged script once, when the merge changed it", () => {

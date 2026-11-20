@@ -6,7 +6,7 @@ A Kin release is a commit on `kin` that runs on the host. The release check runs
 
 1. On a clean checkout of the commit you want to ship: `KIN_RELEASE_CHECK_DIR=~/code/kin-lane-a/release-check BOMBADIL=<path to bombadil> node scripts/kin-release-check.ts --full`. Use `--quick` (under 10 minutes) for a small fix.
 2. Read `summary.md` or `report.html` in the folder it prints. NEW findings block the release. STILL PRESENT ones were already there at the last release. FIXED ones are gone.
-3. Deploy: `ssh` to the host, then `sudo -iu kin ~/t3code/ops/kin/host/update.sh`. It backs up the database, switches, checks health, and rolls back by itself. A non-zero exit means the host is on the previous build again. Its last lines say why. The first deploy that brings the Kin name and its check needs the host's clone fast-forwarded first: see [Update](../../ops/kin/host/README.md#update).
+3. Deploy the commit you checked: `ssh` to the host, then `sudo -iu kin ~/t3code/ops/kin/host/update.sh <commit>`; `summary.md` ends with the line when the check passed. It builds that commit even if `kin` has moved on, so a merge after the check doesn't ship unchecked. It backs up the database, switches, checks health, and rolls back by itself. A non-zero exit means the host is on the previous build again. Its last lines say why. The first deploy that brings the Kin name and its check needs the host's clone fast-forwarded first: see [Update](../../ops/kin/host/README.md#update).
 4. Mark it: `node scripts/kin-release-check.ts --mark-released <commit>`, then commit `ops/kin/releases.json` to `kin`.
 
 ## The release check
@@ -19,10 +19,12 @@ A Kin release is a commit on `kin` that runs on the host. The release check runs
 | `lifecycle`  | every verify-kin lifecycle script (`run-all.sh --list`), shared across parallel instances           | quick |
 | `migrate`    | the last release's company database, started on this build, then `doctor` and two lifecycle scripts | full  |
 | `ui-fuzz`    | Bombadil as owner, co-owner, lead and member, 2 minutes each (`--fuzz-time`)                        | full  |
+| `lookbook`   | the [look book](kin-lookbook.md) captured and compared with the owner's accepted set                | full  |
 
 - Every failure becomes a finding with a fingerprint built from the stage, check, step, role and normalised message, so the same failure matches across runs. `findings.json` holds them.
 - By default a run is compared with the last release in `ops/kin/releases.json`. `--against <commit|findings.json>` picks another. A finding that is not in the baseline is NEW.
 - The exit is non-zero on any finding from a deterministic stage, and on a NEW fuzz finding. A deterministic failure stops the later stages unless you pass `--keep-going`. `--only <stage,…>` runs a subset.
+- `lookbook` makes each changed, new, missing or uncaptured screen a finding, so a release with a screen the owner hasn't seen fails until he accepts the set (`kin-lookbook accept`). It compares with `~/.kin-lookbook/accepted` (or `$KIN_LOOKBOOK_ACCEPTED`) and skips, saying so, on a machine that has none.
 - No model is called. Provider CLIs are stubbed on `PATH` for every stage, and the fuzz runner fails if any agent turn produced a token.
 - `lifecycle` splits the scripts across `--lifecycle-workers N` instances (default: a third of the cores, at most 4), each taking the next script left. A script that needs another's state lives in that script, so order across workers doesn't matter.
 - A `--full` run keeps `<dir>/<commit>/fixture`, the first lifecycle instance's company after its share of the scripts (all of them with `--lifecycle-workers 1`). The next release's `migrate` stage starts the new build on a copy of it. If the last release has no fixture, `migrate` is skipped and says so. Fuzz traces are deleted after summarising, unless you pass `--keep-traces`.
