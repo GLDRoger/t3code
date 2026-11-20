@@ -258,7 +258,7 @@ export const dates = Effect.fn("KinMoney.dates")(function* (
   };
 }, workFailure);
 
-/** Owing clients a screen is sent; the rest are counted, and every invoice is in the list. */
+/** Owing clients a screen is sent; the rest are counted, and `allClients` reads them all. */
 const SCREEN_CLIENTS = 20;
 
 export const money = Effect.fn("KinMoney.summary")(function* (
@@ -279,7 +279,10 @@ export const money = Effect.fn("KinMoney.summary")(function* (
     input.party !== undefined
       ? {
           ...summary,
-          owed: { ...summary.owed, byClient: byClient.filter((one) => one.party?.key === input.party) },
+          owed: {
+            ...summary.owed,
+            byClient: byClient.filter((one) => one.party?.key === input.party),
+          },
         }
       : input.allClients === true || byClient.length <= SCREEN_CLIENTS
         ? summary
