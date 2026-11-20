@@ -180,8 +180,11 @@ it.effect("links for each reader only what they may open; a hidden client leaves
       ],
     );
     // A deal opens as a deal by its title, and a deal named like its client leaves it the client.
-    const deal = { _tag: "record", key: "DL-1", kind: "entry" };
-    assert.deepStrictEqual(owner.find((link) => link.text === "Pineglass window graphics")?.to, deal);
+    assert.deepStrictEqual(owner.find((link) => link.text === "Pineglass window graphics")?.to, {
+      _tag: "record",
+      key: "DL-1",
+      kind: "entry",
+    });
     assert.deepStrictEqual(owner.find((link) => link.text === "Orbit Dental")?.to, {
       _tag: "record",
       key: "C-1",
@@ -196,7 +199,15 @@ it.effect("links for each reader only what they may open; a hidden client leaves
     ]);
     // The private client is not named, numbered or hinted at anywhere in what she is sent.
     const sent = JSON.stringify(mate);
-    for (const hidden of ["Lumen Grove", "C-3", "Orbit Dental", "INV", "finance-chat", "Pineglass", "DL-"])
+    for (const hidden of [
+      "Lumen Grove",
+      "C-3",
+      "Orbit Dental",
+      "INV",
+      "finance-chat",
+      "Pineglass",
+      "DL-",
+    ])
       assert.notInclude(sent, hidden);
 
     // Agents read the words as written.
