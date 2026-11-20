@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import * as Docs from "../leadDocs.ts";
+import { liftMarks } from "../pageMarks.ts";
 import { KinDocsToolkit } from "./docTools.ts";
 
 const isKinChatError = Schema.is(KinChatError);
@@ -47,7 +48,9 @@ export const handlers = McpToolAccess.toLayer(KinDocsToolkit, {
   ),
   docs_search: McpToolAccess.reads(
     Effect.fn("KinDocsToolkit.search")(function* (input) {
-      return yield* Docs.searchTool(yield* McpInvocationContext, input);
+      const result = yield* Docs.searchTool(yield* McpInvocationContext, input);
+      const [hits, marks] = liftMarks(result.hits);
+      return { ...result, hits, ...marks };
     }, Effect.mapError(failure)),
   ),
   doc_history: McpToolAccess.reads(
