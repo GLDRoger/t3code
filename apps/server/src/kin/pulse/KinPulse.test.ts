@@ -28,6 +28,7 @@ import { goalsNow } from "../work/goals.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { wordOf } from "./holds.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { buildPulseSection } from "./prompt.ts";
 import { projectLastMoved } from "./senses/projects.ts";
@@ -813,7 +814,7 @@ describe("KinPulse", () => {
         });
       const handled = yield* handle("got_it", at + DAY);
       assert.strictEqual(DateTime.toEpochMillis(handled.handled!.until!), at + DAY);
-      // A check-in given it to tell names who has it; other turns leave it out.
+      // No turn is given a fact in hand, a check-in's included.
       const shown = (when: number, checkIn: ReadonlySet<string> | undefined) =>
         buildPulseSection({ orgId, agentId: chief, now: when, wokeFor: [], checkIn }).pipe(
           Effect.map((section) =>
@@ -821,11 +822,10 @@ describe("KinPulse", () => {
           ),
         );
       assert.isUndefined(yield* shown(at, undefined));
-      const held = yield* shown(at, new Set([fact.key]));
-      assert.include(held, { sentIn: "no mail with it on record", rule: "10 days (now 10)" });
-      assert.match(String(held?.inHand), /^fin until /);
-      // A check-in not given it to tell (told before, unchanged) never sees it.
-      assert.isUndefined(yield* shown(at, new Set()));
+      assert.isUndefined(yield* shown(at, new Set([fact.key])));
+      assert.include(yield* shown(at + DAY, new Set([fact.key])), {
+        sentIn: "no mail with it on record",
+      });
       assert.strictEqual(yield* open(at + DAY - MINUTE), 0);
       assert.strictEqual(yield* open(at + DAY), 1);
       yield* handle("got_it");
@@ -840,6 +840,206 @@ describe("KinPulse", () => {
 
   // Run of two weeks: 8 of 9 unprompted messages only reminded, as the turn didn't say who to
   // write to, from which account, or which file to attach.
+  it.effect(
+    "a client set aside holds its invoice across a new key and its tasks; an invoice, only itself",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const at = B + 12 * DAY;
+        const open = (when = at) =>
+          KinPulse.read({ orgId, at: when, viewer: { _tag: "owner" } }).pipe(
+            Effect.map((result) => result.facts.map((fact) => fact.subject.key)),
+          );
+        assert.includeMembers(yield* open(), ["INV-5", "W-10", "INV-1"]);
+        const company = { _tag: "may" as const, forPersonId: null, onWordOf: owner };
+        const aside = (recordKey: string, action: "set" | "lift", until: number | null = null) =>
+          KinPulse.aside({
+            orgId,
+            at,
+            viewer: { _tag: "owner" },
+            by: { _tag: "agent", agentId: finance },
+            recordKey,
+            action,
+            until,
+            note: action === "set" ? "Invented: paying in two weeks" : null,
+            holding: company,
+          });
+        const held = yield* aside("C-1", "set", B + 40 * DAY);
+        assert.include(held, { covers: "all", mine: false, liftable: true, onWordOf: owner });
+        const shown = yield* open();
+        assert.notIncludeMembers(shown, ["INV-5", "W-10", "C-1"]);
+        assert.include(shown, "INV-1");
+        // Asked about, the held fact says so, and the read lists the hold once.
+        const all = yield* read(at);
+        assert.strictEqual(
+          keyed(all.facts, "invoice_overdue", "INV-5")[0]?.aside?.record.key,
+          "C-1",
+        );
+        assert.deepStrictEqual(
+          all.setAside?.map((one) => one.record.key),
+          ["C-1"],
+        );
+        // A new due date is a new fact key, and still held.
+        yield* sql`UPDATE kin_records SET due_at = ${B + 3 * DAY} WHERE record_id = 'r-INV-5'`;
+        assert.notInclude(yield* open(), "INV-5");
+        // Nothing held wakes anyone.
+        yield* KinPulse.tick(orgId, at);
+        const woke = yield* sql<{ json: string }>`SELECT json FROM kin_events WHERE tag = 'pulse'
+          ORDER BY event_id`;
+        assert.isFalse(woke.some((event) => event.json.includes("INV-5")));
+        assert.isTrue(woke.some((event) => event.json.includes("INV-1")));
+        // Lifted, and only the invoice set aside: its client's task is back, the invoice not.
+        assert.isNull(yield* aside("C-1", "lift"));
+        yield* aside("INV-5", "set");
+        const after = yield* open();
+        assert.include(after, "W-10");
+        assert.notInclude(after, "INV-5");
+        assert.include(keyed((yield* read(at)).facts, "invoice_overdue", "INV-5")[0]?.aside ?? {}, {
+          covers: "only",
+          until: null,
+        });
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a record with no fact yet can be set aside; a teammate's hold is theirs alone", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const at = B + 12 * DAY;
+      // INV-1 is not overdue yet on the 1st: set aside then, its fact is born held.
+      yield* KinPulse.aside({
+        orgId,
+        at: B,
+        viewer: { _tag: "owner" },
+        by: { _tag: "person", personId: owner },
+        recordKey: "INV-1",
+        action: "set",
+        until: B + 20 * DAY,
+        note: null,
+        holding: { _tag: "may", forPersonId: null, onWordOf: null },
+      });
+      const keys = (when: number, viewer: KinPulse.Viewer = { _tag: "owner" }) =>
+        KinPulse.read({ orgId, at: when, viewer }).pipe(
+          Effect.map((result) => result.facts.map((fact) => fact.subject.key)),
+        );
+      assert.notInclude(yield* keys(at), "INV-1");
+      assert.include(yield* keys(B + 20 * DAY), "INV-1");
+      // Meera sets her own late task aside: hidden for her, not for the owner.
+      const meera = { _tag: "people" as const, people: [mate] };
+      const hers = yield* KinPulse.aside({
+        orgId,
+        at,
+        viewer: meera,
+        by: { _tag: "person", personId: mate },
+        recordKey: "W-8",
+        action: "set",
+        until: null,
+        note: null,
+        holding: { _tag: "may", forPersonId: mate, onWordOf: null },
+      });
+      assert.include(hers, { mine: true, liftable: true });
+      assert.notInclude(yield* keys(at, meera), "W-8");
+      assert.include(yield* keys(at), "W-8");
+      assert.deepStrictEqual(
+        (yield* read(at)).setAside?.map((one) => one.record.key),
+        ["INV-1"],
+      );
+      // The company's hold on W-9 hides it from her too, and she can't lift it.
+      yield* KinPulse.aside({
+        orgId,
+        at,
+        viewer: { _tag: "owner" },
+        by: { _tag: "person", personId: owner },
+        recordKey: "W-9",
+        action: "set",
+        until: null,
+        note: null,
+        holding: { _tag: "may", forPersonId: null, onWordOf: null },
+      });
+      assert.notInclude(yield* keys(at, meera), "W-9");
+      const w9 = keyed((yield* read(at, meera)).facts, "task_late", "W-9")[0]!;
+      assert.include(w9.aside ?? {}, { mine: false, liftable: false });
+      const undone = yield* Effect.flip(
+        KinPulse.handle({
+          orgId,
+          at,
+          viewer: meera,
+          by: { _tag: "person", personId: mate },
+          factKey: w9.key,
+          action: "undo",
+          holding: { _tag: "may", forPersonId: mate, onWordOf: null },
+        }),
+      );
+      assert.include(undone, { reason: "not_allowed" });
+      // An agent with no person's word in its turn changes nothing.
+      const refused = yield* Effect.flip(
+        KinPulse.aside({
+          orgId,
+          at,
+          viewer: { _tag: "owner" },
+          by: { _tag: "agent", agentId: chief },
+          recordKey: "W-9",
+          action: "lift",
+          until: null,
+          note: null,
+          holding: { _tag: "refused", message: "Only a person can." },
+        }),
+      );
+      assert.strictEqual(refused.message, "Only a person can.");
+      assert.notInclude(yield* keys(at), "W-9");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("an agent holds on a person's own word in its turn, never a check-in's", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const event = (id: string, wakeupId: string, tag: string, json: Record<string, unknown>) =>
+        sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+            queued_at, state, wakeup_id)
+          VALUES (${id}, ${orgId}, ${chief}, ${tag}, 'P0', ${JSON.stringify(json)}, 0, 0,
+            'claimed', ${wakeupId})`;
+      const message = (id: string, person: KinPersonId, seq: number) =>
+        sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
+            created_at)
+          VALUES (${id}, ${orgId}, ${`chat-${chief}`}, ${seq}, 'human', ${person}, ${`m-${person}`},
+            'member', 'text', 'Invented: leave it for a month', '[]', 'posted', 0)`;
+      const said = (id: string, wakeupId: string, extra: Record<string, unknown> = {}) =>
+        event(id, wakeupId, "chat.message", {
+          _tag: "chat.message",
+          chatId: `chat-${chief}`,
+          messageId: id,
+          ...extra,
+        });
+      for (const person of [owner, mate])
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, role, joined_at)
+          VALUES (${`m-${person}`}, ${orgId}, ${`chat-${chief}`}, 'person', ${person}, 'member', 0)`;
+      for (const wakeupId of ["w-owner", "w-mate", "w-check", "w-passed", "w-mixed"])
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+            started_at, status, event_ids, audience)
+          VALUES (${wakeupId}, ${orgId}, ${chief}, 'thread', 'test', 0, 'completed', '[]',
+            'owner_only')`;
+      yield* message("own", owner, 1);
+      yield* said("own", "w-owner");
+      yield* message("hers", mate, 2);
+      yield* said("hers", "w-mate");
+      yield* event("check", "w-check", "pulse", { _tag: "pulse", checkIn: {} });
+      yield* message("passed", owner, 3);
+      yield* said("passed", "w-passed", { origin: { personId: owner } });
+      yield* message("mixed", owner, 4);
+      yield* said("mixed", "w-mixed");
+      yield* event("mixed-check", "w-mixed", "pulse", { _tag: "pulse", checkIn: {} });
+      const word = (wakeupId: string) => wordOf({ orgId, agentId: chief, wakeupId });
+      assert.deepStrictEqual(yield* word("w-owner"), { personId: owner, ownerLevel: true });
+      assert.deepStrictEqual(yield* word("w-mate"), { personId: mate, ownerLevel: false });
+      assert.isNull(yield* word("w-check"));
+      assert.isNull(yield* word("w-passed"));
+      assert.isNull(yield* word("w-mixed"));
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("a fact carries its head start: the contact, the mail account and the made file", () =>
     Effect.gen(function* () {
       yield* seed;
