@@ -183,11 +183,14 @@ Changing what an agent may do needs more: an approval with Face ID on a
 phone set up under **Settings → Approvals** in the Kin app. Until one is set up, nothing that needs
 approval can happen.
 
-## Messaging a teammate
+## Messaging a teammate or an agent
 
-Anyone can message anyone else on the team: **New → Message a teammate**, or **Message** on their
+Anyone can message anyone else on the team: **New → Message someone**, or **Message** on their
 profile. It is a chat for the two of you, with no agent. Only you and they can read it, not the owner
 or a co-owner, and the chat says so at its top. Starting it again opens the same chat.
+
+**Message someone** also lists every agent you may message, with what teammates see about it. Your
+chat with an agent is your own; whoever runs the workspace can see it.
 
 Everyone can message every agent and everyone else, unless the owner or a co-owner restricts a pair.
 Restrict a person and an agent from either one's page (**Who can message** on the agent, or the
@@ -586,8 +589,8 @@ on the projects they lead.
 
 | What                                                 | Owner and co-owners                 | Member                                                                           | Project lead, on top                                 |
 | ---------------------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| Chat with agents                                     | All of them                         | The team agent, and agents the owner lets them message                           |                                                      |
-| Message a teammate                                   | Yes                                 | Yes                                                                              |                                                      |
+| Chat with agents                                     | All of them                         | All of them, unless the owner or a co-owner restricts one                        |                                                      |
+| Message someone                                      | Yes                                 | Yes                                                                              |                                                      |
 | Start a group, create an agent, add a teammate       | Yes                                 | No                                                                               |                                                      |
 | Tasks                                                | All, including tasks marked private | What they hold, made or gave, their projects' and the team's                     |                                                      |
 | Mark a task **Only me**                              | Yes                                 | No                                                                               | Yes                                                  |

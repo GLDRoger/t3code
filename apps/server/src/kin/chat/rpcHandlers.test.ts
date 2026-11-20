@@ -1014,15 +1014,28 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
       (yield* operator["kin.leads.list"](org).pipe(Effect.flip))._tag,
       "EnvironmentAuthorizationError",
     );
-    assert.deepStrictEqual(yield* member["kin.leads.list"](org), {
+    // A teammate gets none of the owner's leads, only the agents she may start a chat with.
+    const { messageable, ...rest } = yield* member["kin.leads.list"](org);
+    assert.deepStrictEqual(rest, {
       leads: [],
       contacts: [],
       teamAgentId: null,
       companyChat: null,
     });
+    assert.sameDeepMembers(
+      [...(messageable ?? [])],
+      [growth, social].map(({ orgId, agentId, name }) => ({
+        orgId,
+        agentId,
+        name,
+        intro: "",
+        ownerName: "Owner",
+      })),
+    );
     assert.deepStrictEqual(yield* client["kin.leads.list"]({ orgId: KinOrgId.make("foreign") }), {
       leads: [],
       contacts: [],
+      messageable: [],
       teamAgentId: null,
       companyChat: null,
     });
@@ -1204,10 +1217,13 @@ it.effect(
       const contacts = Effect.map(priya["kin.leads.list"](org), (list) => ({
         ...list,
         contacts: list.contacts?.filter((one) => one.agentId === finance.agentId),
+        messageable: list.messageable?.filter((one) => one.agentId === finance.agentId),
       }));
+      const { chatId: _chatId, ...startable } = financeContact;
       assert.deepStrictEqual(yield* contacts, {
         leads: [],
         contacts: [financeContact],
+        messageable: [startable],
         teamAgentId: null,
         companyChat: null,
       });
@@ -1258,6 +1274,7 @@ it.effect(
       });
       assert.lengthOf((yield* page(priya, chat.chatId)).messages, 1);
       assert.deepStrictEqual((yield* contacts).contacts, []);
+      assert.deepStrictEqual((yield* contacts).messageable, []);
       // Lifted: the same chat.
       yield* owner["kin.lead.access.grant"]({ ...lead, personId: priyaId });
       yield* send(priya, chat.chatId, "hers-3");

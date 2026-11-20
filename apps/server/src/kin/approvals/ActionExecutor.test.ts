@@ -1575,8 +1575,17 @@ describe("KinActionExecutor", () => {
     );
     assert.notMatch(
       source("kin/chat/refreshes.ts"),
-      /\bLeadProvision\.(?!profiles\b|contacts\b|ts\b)\w+/,
+      /\bLeadProvision\.(?!profiles\b|contacts\b|messageable\b|ts\b)\w+/,
     );
+    // `messageable` only reads the caller's own list of agents they may message: one SELECT,
+    // scoped to their person row, that writes nothing and opens no chat.
+    const messageable = /export const messageable = [\s\S]*?\n\}\);/.exec(
+      source("kin/lead/KinLeadProvision.ts"),
+    )?.[0];
+    assert.isDefined(messageable);
+    assert.match(messageable!, /me\.person_id = \$\{person\.personId\}/);
+    assert.match(messageable!, /WHERE l\.org_id = \$\{person\.orgId\}/);
+    assert.notMatch(messageable!, /\b(INSERT|UPDATE|DELETE)\b|createDirect|\bchats\./);
     assert.deepStrictEqual(importers("kin/chat/refreshes.ts"), ["kin/work/rpcHandlers.ts"]);
     assert.deepStrictEqual(importers("kin/chat/rpcHandlers.ts"), [
       "kin/people/rpcHandlers.ts",
@@ -1584,13 +1593,13 @@ describe("KinActionExecutor", () => {
     ]);
     assert.notMatch(
       source("kin/chat/rpcHandlers.ts"),
-      /\bLeadProvision\.(?!create\b|update\b|retire\b|restore\b|setPaused\b|agentDefaults\b|setAgentDefaults\b|profiles\b|contacts\b|access\b|allow\b|disallow\b|reachList\b|reachSet\b|teamAgent\b|KinLeadProvisionError\b|ts\b)\w+/,
+      /\bLeadProvision\.(?!create\b|update\b|retire\b|restore\b|setPaused\b|agentDefaults\b|setAgentDefaults\b|profiles\b|contacts\b|messageable\b|access\b|allow\b|disallow\b|reachList\b|reachSet\b|teamAgent\b|KinLeadProvisionError\b|ts\b)\w+/,
     );
     // The refresh stream reads only the caller's own lead list to tell them it moved.
     assert.deepStrictEqual(importers("kin/chat/refreshes.ts"), ["kin/work/rpcHandlers.ts"]);
     assert.notMatch(
       source("kin/chat/refreshes.ts"),
-      /\bLeadProvision\.(?!profiles\b|contacts\b|ts\b)\w+/,
+      /\bLeadProvision\.(?!profiles\b|contacts\b|messageable\b|ts\b)\w+/,
     );
     assert.deepStrictEqual(importers("kin/cli/lead.ts"), ["binCli.ts"]);
     const served = new Set<string>();
