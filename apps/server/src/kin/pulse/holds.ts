@@ -15,6 +15,7 @@ import type * as Statement from "effect/sql/Statement";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 
+import { outsideRead } from "../lead/OutsideContent.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import { dayIn } from "../work/money.ts";
 import { iso } from "./senses/shared.ts";
@@ -186,8 +187,9 @@ export const holdRecord = Effect.fn("KinHolds.record")(function* (orgId: KinOrgI
 });
 
 /**
- * The one person whose own chat messages or card taps woke every event of this turn, passed on
- * by no one; else null. Folds into `KinAccess.ownerLevelAsked` (fix/kin-suggested-invoice-not-owed).
+ * The one person whose own message or card tap in that chat woke this turn, beside nothing passed
+ * on (an origin, a hand-off, outside words), no other person's event and no outside text read;
+ * else null. Kin's own events beside it keep the word. Looser than `KinAccess.ownerLevelAsked`.
  */
 export const wordOf = Effect.fn("KinHolds.wordOf")(function* (input: {
   readonly orgId: KinOrgId;
@@ -195,21 +197,39 @@ export const wordOf = Effect.fn("KinHolds.wordOf")(function* (input: {
   readonly wakeupId: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ person: string | null; ownerLevel: number }>`SELECT CASE
-        WHEN e.tag IN ('chat.message', 'widget.action') AND json_extract(e.json, '$.origin') IS NULL
-          AND m.author_kind = 'human' AND m.chat_id = json_extract(e.json, '$.chatId')
-        THEN m.author_person_id ELSE NULL END AS person,
-      COALESCE(${sql.literal(ownerLevelSql("m.org_id", "m.author_person_id"))}, 0) AS "ownerLevel"
-    FROM kin_events e
-    LEFT JOIN kin_messages m ON m.org_id = e.org_id AND e.tag IN ('chat.message', 'widget.action')
-      AND m.message_id = json_extract(e.json, '$.messageId')
-      AND (m.kind = 'widget_action') = (e.tag = 'widget.action')
-    WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
-      AND e.wakeup_id = ${input.wakeupId}
-    ORDER BY e.event_id`;
-  const person = rows[0]?.person;
-  if (person == null || !rows.every((row) => row.person === person)) return null;
-  return { personId: KinPersonId.make(person), ownerLevel: rows[0]!.ownerLevel === 1 };
+  const rows = yield* sql<{
+    person: string | null;
+    by: string | null;
+    passedOn: number;
+    ownerLevel: number;
+  }>`WITH woke AS (SELECT e.event_id AS id, e.tag,
+        json_extract(e.json, '$.origin') IS NOT NULL AS origin,
+        CASE WHEN json_extract(e.json, '$.provenance._tag') = 'human'
+          THEN json_extract(e.json, '$.provenance.personId') END AS by,
+        CASE WHEN e.tag IN ('chat.message', 'widget.action')
+            AND json_extract(e.json, '$.origin') IS NULL AND m.origin_json IS NULL
+            AND m.author_kind = 'human' AND m.chat_id = json_extract(e.json, '$.chatId')
+          THEN m.author_person_id END AS person,
+        COALESCE(${sql.literal(ownerLevelSql("m.org_id", "m.author_person_id"))}, 0) AS "ownerLevel"
+      FROM kin_events e
+      LEFT JOIN kin_messages m ON m.org_id = e.org_id AND e.tag IN ('chat.message', 'widget.action')
+        AND m.message_id = json_extract(e.json, '$.messageId')
+        AND (m.kind = 'widget_action') = (e.tag = 'widget.action')
+      WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
+        AND e.wakeup_id = ${input.wakeupId})
+    SELECT person, by, "ownerLevel", (origin OR tag = 'github'
+        OR (tag IN ('chat.message', 'widget.action') AND person IS NULL)) AS "passedOn"
+    FROM woke ORDER BY id`;
+  const said = rows.find((row) => row.person !== null);
+  if (said === undefined || said.person === null) return null;
+  const person = said.person;
+  const beside = rows.every((row) =>
+    row.person === null
+      ? row.passedOn === 0 && (row.by === null || row.by === person)
+      : row.person === person,
+  );
+  if (!beside || (yield* outsideRead(input))) return null;
+  return { personId: KinPersonId.make(person), ownerLevel: said.ownerLevel === 1 };
 });
 
 const holdId = (parts: ReadonlyArray<string | number | null>) =>

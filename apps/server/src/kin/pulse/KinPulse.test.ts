@@ -1082,7 +1082,7 @@ describe("KinPulse", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("an agent holds on a person's own word in its turn, never a check-in's", () =>
+  it.effect("an agent holds on a person's own word in its turn, beside Kin's own events only", () =>
     Effect.gen(function* () {
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
@@ -1091,12 +1091,12 @@ describe("KinPulse", () => {
             queued_at, state, wakeup_id)
           VALUES (${id}, ${orgId}, ${chief}, ${tag}, 'P0', ${JSON.stringify(json)}, 0, 0,
             'claimed', ${wakeupId})`;
-      const message = (id: string, person: KinPersonId, seq: number) =>
+      const message = (id: string, person: KinPersonId, seq: number, kind = "text") =>
         sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
             author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
             created_at)
           VALUES (${id}, ${orgId}, ${`chat-${chief}`}, ${seq}, 'human', ${person}, ${`m-${person}`},
-            'member', 'text', 'Invented: leave it for a month', '[]', 'posted', 0)`;
+            'member', ${kind}, 'Invented: leave it for a month', '[]', 'posted', 0)`;
       const said = (id: string, wakeupId: string, extra: Record<string, unknown> = {}) =>
         event(id, wakeupId, "chat.message", {
           _tag: "chat.message",
@@ -1108,7 +1108,19 @@ describe("KinPulse", () => {
         yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
             person_id, role, joined_at)
           VALUES (${`m-${person}`}, ${orgId}, ${`chat-${chief}`}, 'person', ${person}, 'member', 0)`;
-      for (const wakeupId of ["w-owner", "w-mate", "w-check", "w-passed", "w-mixed"])
+      for (const wakeupId of [
+        "w-owner",
+        "w-mate",
+        "w-check",
+        "w-passed",
+        "w-mixed",
+        "w-handoff",
+        "w-two",
+        "w-outside",
+        "w-tap",
+        "w-mate-check",
+        "w-mate-assigned",
+      ])
         yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
             started_at, status, event_ids, audience)
           VALUES (${wakeupId}, ${orgId}, ${chief}, 'thread', 'test', 0, 'completed', '[]',
@@ -1123,12 +1135,60 @@ describe("KinPulse", () => {
       yield* message("mixed", owner, 4);
       yield* said("mixed", "w-mixed");
       yield* event("mixed-check", "w-mixed", "pulse", { _tag: "pulse", checkIn: {} });
+      const human = (person: KinPersonId) => ({
+        provenance: { _tag: "human", personId: person, memberId: `m-${person}` },
+      });
+      yield* message("handoff-own", owner, 5);
+      yield* said("handoff-own", "w-handoff");
+      yield* message("handoff", owner, 6);
+      yield* said("handoff", "w-handoff", {
+        origin: { agentId: finance, chatId: `chat-${finance}` },
+      });
+      yield* message("two-own", owner, 7);
+      yield* said("two-own", "w-two");
+      yield* message("two-hers", mate, 8);
+      yield* said("two-hers", "w-two");
+      yield* message("outside", owner, 9);
+      yield* said("outside", "w-outside");
+      yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
+        VALUES (${orgId}, 'w-outside', 0, 'mail')`;
+      yield* message("tap", owner, 10, "widget_action");
+      yield* event("tap", "w-tap", "widget.action", {
+        _tag: "widget.action",
+        chatId: `chat-${chief}`,
+        messageId: "tap",
+        actionId: "hold",
+      });
+      yield* event("tap-record", "w-tap", "record.changed", {
+        _tag: "record.changed",
+        reason: "handed_back",
+        provenance: { _tag: "system" },
+      });
+      yield* message("mate-check", mate, 11);
+      yield* said("mate-check", "w-mate-check");
+      yield* event("mate-check-pulse", "w-mate-check", "pulse", { _tag: "pulse", checkIn: {} });
+      yield* message("mate-assigned", mate, 12);
+      yield* said("mate-assigned", "w-mate-assigned");
+      yield* event("mate-assigned-by-owner", "w-mate-assigned", "record.changed", {
+        _tag: "record.changed",
+        reason: "assigned",
+        ...human(owner),
+      });
       const word = (wakeupId: string) => wordOf({ orgId, agentId: chief, wakeupId });
-      assert.deepStrictEqual(yield* word("w-owner"), { personId: owner, ownerLevel: true });
+      const ownersWord = { personId: owner, ownerLevel: true };
+      assert.deepStrictEqual(yield* word("w-owner"), ownersWord);
       assert.deepStrictEqual(yield* word("w-mate"), { personId: mate, ownerLevel: false });
       assert.isNull(yield* word("w-check"));
       assert.isNull(yield* word("w-passed"));
-      assert.isNull(yield* word("w-mixed"));
+      // Kin's own check-in or record change beside the person's word leaves it theirs.
+      assert.deepStrictEqual(yield* word("w-mixed"), ownersWord);
+      assert.deepStrictEqual(yield* word("w-tap"), ownersWord);
+      assert.isNull(yield* word("w-handoff"));
+      assert.isNull(yield* word("w-two"));
+      assert.isNull(yield* word("w-outside"));
+      // A teammate's word stays theirs: a hold on it is their own, never the company's.
+      assert.deepStrictEqual(yield* word("w-mate-check"), { personId: mate, ownerLevel: false });
+      assert.isNull(yield* word("w-mate-assigned"));
     }).pipe(Effect.provide(layer)),
   );
 
