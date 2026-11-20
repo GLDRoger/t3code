@@ -19,7 +19,13 @@ import {
   makeKinFixtureMessages,
 } from "./kinChatFixtures.ts";
 import type { KinFeedViewer } from "./kinChatFeed.ts";
-import { kinChatFeedView, kinChatReads, kinChatScreen } from "./kinChatScreen.ts";
+import {
+  kinChatFeedFollow,
+  kinChatFeedRows,
+  kinChatFeedView,
+  kinChatReads,
+  kinChatScreen,
+} from "./kinChatScreen.ts";
 import { initialKinFeedFollow, resolveKinFeedFollow } from "./kinFeedFollow.ts";
 import { emptyKinChat } from "./kinInboxModel.ts";
 import type { KinOutboxEntry } from "./kinOutbox.ts";
@@ -162,27 +168,30 @@ const pendingEntry = (clientMessageId: string, sent: KinMessage | null = null): 
   state: sent === null ? "waiting" : "sent",
   sent,
 });
+const feedInput = (
+  fields: Partial<Parameters<typeof kinChatFeedView>[0]> = {},
+): Parameters<typeof kinChatFeedView>[0] => ({
+  chatId: KIN_FIXTURE_CHAT_ID,
+  live: { ...emptyKinChat, messages },
+  earlier: emptyKinChat,
+  exhausted: true,
+  outbox: [],
+  viewer,
+  expandedRuns: new Set(),
+  dayStart: new Date(Date.parse("2026-11-08T00:00:00.000Z")),
+  teamRoomId: null,
+  direct: true,
+  formatTime: (iso) => iso.slice(11, 16),
+  follow: initialKinFeedFollow(4),
+  landOn: null,
+  ownsLead: true,
+  agentName: "Chief of staff",
+  retired: false,
+  readOnly: false,
+  ...fields,
+});
 const feed = (fields: Partial<Parameters<typeof kinChatFeedView>[0]> = {}) =>
-  kinChatFeedView({
-    chatId: KIN_FIXTURE_CHAT_ID,
-    live: { ...emptyKinChat, messages },
-    earlier: emptyKinChat,
-    exhausted: true,
-    outbox: [],
-    viewer,
-    expandedRuns: new Set(),
-    dayStart: new Date(Date.parse("2026-11-08T00:00:00.000Z")),
-    teamRoomId: null,
-    direct: true,
-    formatTime: (iso) => iso.slice(11, 16),
-    follow: initialKinFeedFollow(4),
-    landOn: null,
-    ownsLead: true,
-    agentName: "Chief of staff",
-    retired: false,
-    readOnly: false,
-    ...fields,
-  });
+  kinChatFeedView(feedInput(fields));
 const keys = (view: ReturnType<typeof feed>) => view.rows.map((row) => row.key);
 
 describe("kinChatFeedView", () => {
@@ -228,6 +237,7 @@ describe("kinChatFeedView", () => {
       live: { ...emptyKinChat, messages: [...messages, notice(5), notice(6)] },
     });
     expect(view.rows.filter((row) => row.type === "system")).toHaveLength(1);
+    expect(view.feedRows.filter((row) => row.type === "system")).toHaveLength(2);
   });
 
   it("finds the row a notification opened on, once it has loaded", () => {
@@ -245,6 +255,14 @@ describe("kinChatFeedView", () => {
     expect(view.followsEnd).toBe(false);
     // Messages 3 and 4: one from the lead, one the owner wrote, which they have seen.
     expect(view.unseen).toBe(1);
+    // Read apart from the rows, so scrolling leaves the rows as they were.
+    const { follow: _follow, ...rowsInput } = feedInput({ follow: away });
+    const rows = kinChatFeedRows(rowsInput);
+    expect(kinChatFeedFollow(rows.messages, away, viewer.personId)).toEqual({
+      followsEnd: false,
+      unseen: 1,
+    });
+    expect(rows.rows).toEqual(view.rows);
   });
 
   it("says where the composer stands", () => {
