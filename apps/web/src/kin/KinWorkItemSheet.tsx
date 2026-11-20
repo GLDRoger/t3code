@@ -582,7 +582,6 @@ function KinWorkItem(
                 orgId={orgId}
                 record={{ key: view.key, title: view.title }}
                 disabled={saving}
-                onOpen={props.onClose}
               />
               {!more ? null : (
                 <Menu>

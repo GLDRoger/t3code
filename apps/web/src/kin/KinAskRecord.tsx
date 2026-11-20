@@ -18,12 +18,12 @@ import type { KinWorkTarget } from "./useKinWork";
 /**
  * Ask an agent about a task or project, with the record named in the chat's box. One agent is asked
  * directly; several are picked from a menu. Nothing shows when the viewer can message no agent.
+ * The chat is pushed over the task without closing it first, so Back returns to the task.
  */
 export function KinAskRecord(
   props: KinWorkTarget & {
     readonly record: { readonly key: string; readonly title: string };
     readonly disabled?: boolean;
-    readonly onOpen?: () => void;
   },
 ) {
   const { environmentId, orgId } = props;
@@ -31,7 +31,6 @@ export function KinAskRecord(
   const result = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
   const agents = kinAskAgents(Option.getOrNull(AsyncResult.value(result)));
   const ask = (agent: KinAskAgent) => {
-    props.onOpen?.();
     openChat(environmentId, orgId, agent.chatId, kinAskRecordDraft(props.record));
   };
   const [only] = agents;
