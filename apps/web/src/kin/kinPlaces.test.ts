@@ -50,8 +50,9 @@ describe("kinRecordPlace", () => {
     ["project", "P-1", "clients", { project: "P-1" }],
     ["doc", "D-1", "docs", { doc: "D-1" }],
     ["entry", "INV-1", "money", { task: "INV-1" }],
-    // A deal lives on the Clients place's Deals tab.
+    // A deal lives on Clients' Deals tab, however a message, notice or search names it.
     ["entry", "DL-1", "clients", { tab: "deals", task: "DL-1" }],
+    ["task", "DL-1", "clients", { tab: "deals", task: "DL-1" }],
   ] as const)("opens %s %s where it lives", (kind, key, place, search) => {
     expect(kinRecordPlace({ key, kind })).toEqual({
       to: KIN_PLACE_PATH[place],
@@ -94,13 +95,10 @@ describe("kinSearchHitPlace", () => {
     ).toEqual({ to: KIN_PLACE_PATH.clients, search: { client: "C-1" } });
   });
 
-  it("opens a remembered item on the memory page", () => {
+  it("leaves memory to Settings", () => {
     expect(
-      kinSearchHitPlace({ kind: "memory", key: "M-1", section: null, clientKey: null }),
-    ).toEqual({
-      to: "/kin/$environmentId/$orgId/memory",
-      search: {},
-    });
+      kinSearchHitPlace({ kind: "memory", key: "memory:1", section: null, clientKey: null }),
+    ).toBeNull();
   });
 });
 

@@ -77,7 +77,11 @@ function setup(
   host = makeHost(),
   disk = makeStorage(),
   send: (record: KinOutboxRecord) => Promise<KinSendOutcome> = host.send,
-  extra: { readonly maxEntries?: number; readonly warn?: (message: string) => void } = {},
+  extra: {
+    readonly maxEntries?: number;
+    readonly warn?: (message: string) => void;
+    readonly makeId?: () => string;
+  } = {},
 ) {
   let id = 0;
   // Who this phone's session on the host is; undefined until the host has said.
@@ -439,6 +443,29 @@ describe("kinOutbox", () => {
     await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "unsent" });
     await outbox.clearEnvironment(ENV);
     expect(chat()).toEqual([]);
+    expect(disk.saved()).toEqual([]);
+  });
+
+  it("keeps another tab's unsent message on disk when this tab saves its own", async () => {
+    const host = makeHost();
+    const disk = makeStorage();
+    const first = setup(host, disk);
+    let id = 0;
+    const second = setup(host, disk, host.send, { makeId: () => `tab-b-${++id}` });
+    await first.outbox.load();
+    await second.outbox.load();
+    await first.outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "Written in tab A" });
+    await second.outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "Written in tab B" });
+    expect(disk.saved().map((entry: { body: string }) => entry.body)).toEqual([
+      "Written in tab A",
+      "Written in tab B",
+    ]);
+    // Tab B sends its own and forgets it; tab A's still waits on disk for the next load.
+    host.setOnline(true);
+    await second.outbox.deliver(ENV);
+    expect(disk.saved().map((entry: { body: string }) => entry.body)).toEqual(["Written in tab A"]);
+    // A tab that removes the environment takes every tab's messages there with it.
+    await second.outbox.clearEnvironment(ENV);
     expect(disk.saved()).toEqual([]);
   });
 

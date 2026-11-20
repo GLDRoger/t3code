@@ -184,6 +184,13 @@ export function createKinOutbox(options: KinOutboxOptions) {
     Atom.make(false).pipe(Atom.keepAlive, Atom.withLabel("kin:outbox:waiting")),
   );
   const entries = new Map<string, KinOutboxEntry>();
+  // Another instance (a second tab) saves to the same storage: what it holds is kept on save,
+  // unless this one ever held that entry, or dropped its environment or person after it was written.
+  const held = new Set<string>();
+  const dropped = new Map<
+    EnvironmentId,
+    { readonly at: number; readonly keeps: string | null | undefined }
+  >();
   const delivering = new Set<EnvironmentId>();
   const deliverAgain = new Set<EnvironmentId>();
   let loaded: Promise<void> | null = null;
@@ -215,6 +222,7 @@ export function createKinOutbox(options: KinOutboxOptions) {
   };
 
   const set = (entry: KinOutboxEntry) => {
+    held.add(entry.clientMessageId);
     entries.set(entry.clientMessageId, entry);
     publish(entry.environmentId, entry.chatId);
   };
@@ -224,16 +232,33 @@ export function createKinOutbox(options: KinOutboxOptions) {
     publish(entry.environmentId, entry.chatId);
   };
 
+  const othersIn = async (): Promise<ReadonlyArray<unknown>> => {
+    const payload = await options.storage.load().catch(() => null);
+    if (payload === null) return [];
+    const file = decodeFile(payload);
+    if (file._tag === "None") return [];
+    return file.value.entries.filter((raw) => {
+      const record = decodeRecord(raw);
+      if (record._tag === "None" || held.has(record.value.clientMessageId)) return false;
+      const drop = dropped.get(record.value.environmentId);
+      return (
+        drop === undefined ||
+        Date.parse(record.value.createdAt) > drop.at ||
+        (drop.keeps !== undefined && record.value.author === drop.keeps)
+      );
+    });
+  };
+
   // Acked entries stay in memory only: the host holds them, so a restart must not resend them.
   const persist = (): Promise<void> => {
-    const records = [...entries.values()]
-      .filter((entry) => entry.state !== "sent")
-      .map(({ state: _state, sent: _sent, ...record }) => encodeRecord(record));
-    const payload = JSON.stringify({ version: 1, entries: records });
-    writes = writes.then(
-      () => options.storage.save(payload),
-      () => options.storage.save(payload),
-    );
+    const save = async () => {
+      const others = await othersIn();
+      const records = [...entries.values()]
+        .filter((entry) => entry.state !== "sent")
+        .map(({ state: _state, sent: _sent, ...record }) => encodeRecord(record));
+      await options.storage.save(JSON.stringify({ version: 1, entries: [...others, ...records] }));
+    };
+    writes = writes.then(save, save);
     return writes.catch((error) => warn("[kin-outbox] save failed", error));
   };
 
@@ -394,6 +419,7 @@ export function createKinOutbox(options: KinOutboxOptions) {
     for (const entry of entries.values()) {
       if (entry.environmentId === environmentId) remove(entry);
     }
+    dropped.set(environmentId, { at: now().getTime(), keeps: undefined });
     await persist();
   };
 
@@ -407,7 +433,9 @@ export function createKinOutbox(options: KinOutboxOptions) {
     changed: boolean,
   ): Promise<void> => {
     await load();
-    let touched = false;
+    // What another instance saved under the person before goes too.
+    if (changed) dropped.set(environmentId, { at: now().getTime(), keeps: identity });
+    let touched = changed;
     for (const entry of entries.values()) {
       if (entry.environmentId !== environmentId || entry.author === identity) continue;
       if (changed) remove(entry);

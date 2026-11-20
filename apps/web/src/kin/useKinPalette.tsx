@@ -178,11 +178,13 @@ export function useKinPalette(input: {
             icon: <Icon className={ITEM_ICON_CLASS} />,
             run: async () => {
               const place = kinSearchHitPlace(hit);
-              await navigate({
-                to: place.to,
-                params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
-                search: place.search,
-              });
+              if (place === null) openKinSettings(router.history, "memory", hit.title);
+              else
+                await navigate({
+                  to: place.to,
+                  params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+                  search: place.search,
+                });
             },
           };
         });

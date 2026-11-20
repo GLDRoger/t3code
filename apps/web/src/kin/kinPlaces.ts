@@ -25,8 +25,13 @@ export const KIN_PLACE_PATH = {
 
 type KinRecordKind = Extract<KinMessageLinkTarget, { readonly _tag: "record" }>["kind"];
 
-/** The page and search that open a record a message names or a search finds. */
+/**
+ * The page and search that open a record, from a message link, a notice or a search hit alike.
+ * A deal opens on Clients' Deals tab, whatever kind it came as.
+ */
 export function kinRecordPlace(to: { readonly kind: KinRecordKind; readonly key: KinRecordKey }) {
+  if ((to.kind === "entry" || to.kind === "task") && kinIsDealKey(to.key))
+    return { to: KIN_PLACE_PATH.clients, search: { tab: "deals" as const, task: to.key } };
   switch (to.kind) {
     case "client":
       return { to: KIN_PLACE_PATH.clients, search: { client: to.key } };
@@ -35,9 +40,7 @@ export function kinRecordPlace(to: { readonly kind: KinRecordKind; readonly key:
     case "doc":
       return { to: KIN_PLACE_PATH.docs, search: { doc: to.key } };
     case "entry":
-      return kinIsDealKey(to.key)
-        ? { to: KIN_PLACE_PATH.clients, search: { tab: "deals" as const, task: to.key } }
-        : { to: KIN_PLACE_PATH.money, search: { task: to.key } };
+      return { to: KIN_PLACE_PATH.money, search: { task: to.key } };
     case "task":
       return { to: KIN_PLACE_PATH.tasks, search: { task: to.key } };
   }
@@ -55,22 +58,18 @@ const SEARCH_HIT_RECORD: Record<Exclude<KinSearchKind, "memory">, KinRecordKind>
   receipts: "entry",
 };
 
-/** Where a search hit opens: its record's place, at the doc section found; memory on its page. */
+/** Where a search hit opens, at the doc section found; null for memory, which opens in Settings. */
 export function kinSearchHitPlace(hit: {
   readonly kind: KinSearchKind;
   readonly key: KinRecordKey;
   readonly section: { readonly id: string } | null;
   readonly clientKey: KinRecordKey | null;
 }) {
-  if (hit.kind === "memory")
-    return { to: "/kin/$environmentId/$orgId/memory" as const, search: {} };
+  if (hit.kind === "memory") return null;
   // A contact has no page of its own: its client's opens.
   if (hit.kind === "contacts" && hit.clientKey !== null)
     return kinRecordPlace({ kind: "client", key: hit.clientKey });
-  const place = kinRecordPlace({
-    kind: kinIsDealKey(hit.key) ? "entry" : SEARCH_HIT_RECORD[hit.kind],
-    key: hit.key,
-  });
+  const place = kinRecordPlace({ kind: SEARCH_HIT_RECORD[hit.kind], key: hit.key });
   return place.to === KIN_PLACE_PATH.docs && hit.section !== null
     ? { ...place, search: { ...place.search, section: hit.section.id } }
     : place;
