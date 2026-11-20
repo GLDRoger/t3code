@@ -1054,7 +1054,7 @@ export const logTouch = Effect.fn("KinWork.logTouch")(function* (
   const at = input.at === undefined ? now : Date.parse(input.at);
   // A member's requests have their own keys, so a retry never finds someone else's.
   const origin = viewer.teammate ? `member:${person.personId}:touch` : "owner:touch";
-  const touch = yield* sql
+  const { touch, partyId } = yield* sql
     .withTransaction(
       Effect.gen(function* () {
         const party = viewer.teammate
@@ -1086,11 +1086,11 @@ export const logTouch = Effect.fn("KinWork.logTouch")(function* (
                 : yield* dueMillis(input.orgId, next.dueAt, next.dueAllDay),
             dueAllDay: next.dueAt !== undefined && next.dueAllDay === true,
           });
-        return logged;
+        return { touch: logged, partyId: party.recordId };
       }),
     )
     .pipe(workFailure);
-  yield* records.announce(input.orgId);
+  yield* records.announce(input.orgId, [partyId]);
   return touch;
 });
 
@@ -1102,6 +1102,8 @@ export const removeTouch = Effect.fn("KinWork.removeTouch")(function* (
   const viewer = yield* viewerOf(people, input.orgId);
   const now = yield* Clock.currentTimeMillis;
   const remove = read(Touches.removeTouch(input.orgId, input.touchId, now));
+  // Read before it goes: which client's page shows it.
+  const shown = yield* read(Touches.loggedBy(input.orgId, input.touchId));
   const removed = viewer.teammate
     ? yield* asViewer(
         viewer,
@@ -1123,6 +1125,7 @@ export const removeTouch = Effect.fn("KinWork.removeTouch")(function* (
         }),
       )
     : yield* remove;
-  if (removed) yield* (yield* KinRecords).announce(input.orgId);
+  if (removed && shown !== undefined)
+    yield* (yield* KinRecords).announce(input.orgId, [shown.partyId]);
   return { removed };
 });

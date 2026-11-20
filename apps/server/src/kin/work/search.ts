@@ -12,7 +12,7 @@ import { seenBy, type KinViewer } from "./teamView.ts";
 /**
  * One search over entries and docs. `team` is what a teammate may find (design 9.1): nothing of
  * a sensitive entry, its own label or inherited, and no field that is sensitive whatever the
- * label. Only owner-only callers exist yet; the teammate view will pass `team`.
+ * label. Teammates' searches (`ownerDocs.search`, `leadDocs`) pass it today.
  */
 export type Viewer = "owner" | "team";
 

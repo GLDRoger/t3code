@@ -601,6 +601,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_records_due" },
           { name: "idx_kin_records_number" },
           { name: "idx_kin_records_owner" },
+          { name: "idx_kin_records_owner_list" },
           { name: "idx_kin_records_party" },
           { name: "idx_kin_records_project" },
           { name: "idx_kin_records_register" },
@@ -1743,7 +1744,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 191");
+      assert.include(String(exit), "below the latest applied migration 192");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

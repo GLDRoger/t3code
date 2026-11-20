@@ -681,9 +681,10 @@ To give agents characters you wrote yourself, see
 **Settings → Company details → Download everything** (the owner only) saves the company as one zip. On the phone,
 the same row downloads the zip and opens the share sheet.
 
-Your clients, contacts, projects, every list with its entries and their payments, each doc as it
-reads now, and the files entries and docs hold, in one zip. Kin's import makes the clients,
-contacts, projects and entries again; the docs and files are there to keep.
+Your clients, contacts, projects, every list with its entries and their payments, each entry's
+comments, the contact logged with each client, each doc as it reads now, and the files entries,
+comments and docs hold, in one zip. Kin's import makes the clients, contacts, projects and entries
+again; the comments, logged contact, docs and files are there to keep.
 
 It is not a full backup. Not in it: memory, which stays in your memory repository; chats; people
 and their access; agents and their characters; check-ins and reminders; connections, social

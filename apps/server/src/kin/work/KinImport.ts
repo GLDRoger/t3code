@@ -58,7 +58,7 @@ import {
   storedCategoryLabels,
 } from "./registers.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
-import { undoBatch, type UndoReport } from "./importUndo.ts";
+import { IMPORT_BUSY, notImporting, undoBatch, type UndoReport } from "./importUndo.ts";
 
 // Everything an import makes is keyed `import:<batch>:<kind>:<source>`, so a rerun makes nothing
 // twice and leaves alone what someone changed since. Rows go a hundred to a transaction: a crash
@@ -225,8 +225,6 @@ export type ImportLive = {
   done: number;
   of: number;
 };
-export const IMPORT_BUSY =
-  "Kin is importing or undoing a file for this company now. Wait for it to finish, then try again.";
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -259,7 +257,13 @@ const make = Effect.gen(function* () {
         Effect.suspend(() => {
           held.delete(entry);
           if (held.size === 0 && live.get(orgId) === held) live.delete(orgId);
-          return refreshes.touch(orgId, "imports");
+          // One that stopped part way holds nothing: running it again may start at once.
+          const letGo =
+            entry.seq === null
+              ? Effect.void
+              : sql`UPDATE kin_import_runs SET summary_json = json_remove(summary_json, '$.beat')
+                  WHERE seq = ${entry.seq} AND finished_at IS NULL`.pipe(Effect.ignore);
+          return Effect.andThen(letGo, refreshes.touch(orgId, "imports"));
         }),
       ),
     );
@@ -1278,13 +1282,14 @@ const make = Effect.gen(function* () {
       const [row] = yield* sql<{ seq: number }>`INSERT INTO kin_import_runs (org_id, batch,
           action, person_id, started_at, lists_json, summary_json)
         VALUES (${orgId}, ${doc.batch}, ${action}, ${owner}, ${now}, ${encodeJson(lists)},
-          ${encodeJson({ done: 0, rows: scan.rows, ...(options.file === undefined ? {} : { file: options.file }) })})
+          ${encodeJson({ done: 0, rows: scan.rows, beat: now, ...(options.file === undefined ? {} : { file: options.file }) })})
         RETURNING seq`;
       return row?.seq;
     });
     // The run's own row commits with its lists, so an undo knows which lists the batch made.
     const begin = Effect.gen(function* () {
       if (options.guard !== undefined) yield* options.guard;
+      if (keep) yield* notImporting(orgId);
       yield* defineLists(true);
       if (!keep) return undefined;
       const made = listReport.filter((one) => one.action === "create").map((one) => one.list);
@@ -1332,6 +1337,7 @@ const make = Effect.gen(function* () {
                         UNION ALL SELECT value FROM json_each(${encodeJson(fresh)})))))`;
               yield* sql`UPDATE kin_import_runs
                 SET summary_json = json_set(${summary}, '$.done', ${done + decoded.length},
+                  '$.beat', ${yield* Clock.currentTimeMillis},
                   '$.rows', ${scan.rows}, '$.clients', json(${encodeJson(counts.clients)}),
                   '$.contacts', json(${encodeJson(counts.contacts)}),
                   '$.deals', json(${encodeJson(counts.deals)}),
@@ -1345,7 +1351,8 @@ const make = Effect.gen(function* () {
           else yield* rolledBack(work);
           if (checkSeq !== undefined)
             yield* sql`UPDATE kin_import_runs
-              SET summary_json = json_set(summary_json, '$.done', ${done + decoded.length})
+              SET summary_json = json_set(summary_json, '$.done', ${done + decoded.length},
+                '$.beat', ${yield* Clock.currentTimeMillis})
               WHERE seq = ${checkSeq}`;
           forget();
           done += decoded.length;
