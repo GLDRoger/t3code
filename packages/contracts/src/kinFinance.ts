@@ -165,6 +165,8 @@ export const KinDateRow = Schema.Struct({
   allDay: Schema.Boolean,
 });
 export type KinDateRow = typeof KinDateRow.Type;
+/** Only a due day can be late; an entry's own day, such as an invoice's issue day, never is. */
+export const kinDateRowLate = (row: KinDateRow) => row.kind === "due" && row.record.late;
 
 /** Everything with a date in `[from, to)`, across lists, soonest first. A calendar or agenda. */
 export const KinDatesInput = Schema.Struct({

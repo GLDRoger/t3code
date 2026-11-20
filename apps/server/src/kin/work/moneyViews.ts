@@ -6,7 +6,7 @@ import type {
   KinOrgId,
   KinRecordRef,
 } from "@t3tools/contracts";
-import { KinRecordId } from "@t3tools/contracts";
+import { kinDateRowLate, KinRecordId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -203,6 +203,49 @@ const dateRow = (row: RecordRow, def: ListDef, hit: DateHit, now: number): KinDa
   at: iso(hit.at),
   allDay: hit.field?.allDay ?? (hit.kind === "due" ? row.dueAllDay : row.dateAllDay) === 1,
 });
+
+/**
+ * Date rows as an agent reads them: an invoice's issue and due day as one entry, at its due day
+ * when that is listed. Every other row is an entry of its own. Screens keep a row per day.
+ */
+export const datesOnce = (rows: ReadonlyArray<KinDateRow>) => {
+  const invoices = new Map<string, Array<KinDateRow>>();
+  const entries: Array<Array<KinDateRow>> = [];
+  for (const row of rows) {
+    const held = invoices.get(row.record.recordId);
+    if (row.record.list !== "invoices" || row.field !== undefined) entries.push([row]);
+    else if (held !== undefined) held.push(row);
+    else {
+      const entry = [row];
+      invoices.set(row.record.recordId, entry);
+      entries.push(entry);
+    }
+  }
+  const at = (entry: ReadonlyArray<KinDateRow>) =>
+    Date.parse((entry.find((row) => row.kind === "due") ?? entry[0]!).at);
+  return entries.toSorted((a, b) => at(a) - at(b));
+};
+
+/** An invoice entry's days: issued (a suggestion's plain "date") and due, late only once due. */
+export const invoiceDays = (
+  entry: ReadonlyArray<KinDateRow>,
+  day: (row: KinDateRow) => string,
+): {
+  readonly issued?: string;
+  readonly date?: string;
+  readonly due?: string;
+  readonly late?: true;
+} => {
+  const own = entry.find((row) => row.kind === "date");
+  const due = entry.find((row) => row.kind === "due");
+  return {
+    ...(own === undefined ? {} : own.label === "Date" ? { date: day(own) } : { issued: day(own) }),
+    ...(due === undefined ? {} : { due: day(due) }),
+    ...(due !== undefined && kinDateRowLate(due) ? { late: true as const } : {}),
+  };
+};
+export const isInvoice = (entry: ReadonlyArray<KinDateRow>) =>
+  entry[0]!.record.list === "invoices" && entry[0]!.field === undefined;
 
 /** The first instant of a month (`2026-11`) in `zone`. */
 const monthStart = (month: string, zone: string) =>
@@ -478,6 +521,14 @@ const aboutSection = (summary: KinMoneySummary) => {
   return Object.values(section).every((one) => one === undefined) ? {} : { about: section };
 };
 const SECTION_DATES = 10;
+/** A day ahead in the section: its days keyed by what its list calls each, such as `due`. */
+type SectionDate = {
+  readonly key: string;
+  readonly number?: string;
+  readonly title: string;
+  readonly list: string;
+  readonly [day: string]: string | true | undefined;
+};
 /** What the section says of its suggestions: only what the server guarantees about them. */
 const SUGGESTED_NOTE =
   "Entries an agent suggested that the owner or a co-owner hasn't kept. No figure here counts them or any payment recorded on them: none is owed, due, received or spent until it is kept.";
@@ -497,6 +548,9 @@ export const moneySection = (summary: KinMoneySummary, zone: string) => {
     (summary.suggested ?? []).length === 0;
   if (nothing) return undefined;
   const suggested = summary.suggested ?? [];
+  const upcoming = datesOnce(summary.upcoming);
+  // The total counts an invoice's two days twice wherever both are listed.
+  const entries = summary.upcomingTotal - (summary.upcoming.length - upcoming.length);
   return {
     asOf: summary.asOf,
     owedToUs: shown(summary.owed.total),
@@ -530,17 +584,21 @@ export const moneySection = (summary: KinMoneySummary, zone: string) => {
       category: one.category ?? "uncategorised",
       spent: shown(one.total),
     })),
-    next30Days: summary.upcoming.slice(0, SECTION_DATES).map((row) => ({
-      key: row.record.key,
-      ...issuedNumber(row.record.fields?.number),
-      title: row.record.title,
-      list: row.listName,
-      [row.label.toLowerCase()]: row.allDay ? dayIn(Date.parse(row.at), zone) : row.at,
-      ...(row.record.late ? { late: true } : {}),
-    })),
-    ...(summary.upcomingTotal > SECTION_DATES
-      ? { moreDates: summary.upcomingTotal - SECTION_DATES }
-      : {}),
+    next30Days: upcoming.slice(0, SECTION_DATES).map((entry): SectionDate => {
+      const row = entry[0]!;
+      const day = (one: KinDateRow) => (one.allDay ? dayIn(Date.parse(one.at), zone) : one.at);
+      const days: Readonly<Record<string, string | true>> = isInvoice(entry)
+        ? invoiceDays(entry, day)
+        : { [row.label.toLowerCase()]: day(row), ...(kinDateRowLate(row) ? { late: true } : {}) };
+      return {
+        key: row.record.key,
+        ...issuedNumber(row.record.fields?.number),
+        title: row.record.title,
+        list: row.listName,
+        ...days,
+      };
+    }),
+    ...(entries > SECTION_DATES ? { moreDates: entries - SECTION_DATES } : {}),
     ...(suggested.length === 0
       ? {}
       : {
