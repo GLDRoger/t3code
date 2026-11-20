@@ -288,11 +288,12 @@ export const owedInvoices = Effect.fn("KinRecordRows.owedInvoices")(function* (i
     currency: string;
     paid: number;
     dueAt: number | null;
+    number: unknown;
   }>`SELECT r.record_id AS "recordId", r.key, r.title, r.party_id AS "partyId",
       pa.key AS "partyKey", pa.title AS "partyTitle", r.amount_minor AS minor, r.currency,
       (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid,
-      ${invoiceDue(sql)} AS "dueAt"
+      ${invoiceDue(sql)} AS "dueAt", json_extract(r.fields_json, '$.number') AS number
     FROM kin_records r
     LEFT JOIN kin_records pa ON pa.org_id = r.org_id AND pa.record_id = r.party_id
     WHERE r.org_id = ${input.orgId} AND r.register_id = 'invoices' AND ${countedEntry(sql)}
@@ -372,6 +373,20 @@ export const byKey = Effect.fn("KinRecords.byKey")(function* (orgId: KinOrgId, k
   const [row] = yield* sql<RecordRow>`${selectRecords(sql)}
     WHERE r.org_id = ${orgId} AND r.key = ${key} ORDER BY r.record_id`;
   return row;
+});
+/**
+ * The entry a number names, as people see it on screen. Issued numbers are unique within a list
+ * (`kin_issued_numbers`); two entries showing one, as two lists may, name none rather than guess.
+ */
+export const byNumber = Effect.fn("KinRecords.byNumber")(function* (
+  orgId: KinOrgId,
+  number: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<RecordRow>`${selectRecords(sql)}
+    WHERE r.org_id = ${orgId} AND json_extract(r.fields_json, '$.number') = ${number.trim()}
+    ORDER BY r.record_id LIMIT 2`;
+  return rows.length === 1 ? rows[0] : undefined;
 });
 export const byId = Effect.fn("KinRecords.byId")(function* (orgId: KinOrgId, recordId: string) {
   const sql = yield* SqlClient.SqlClient;
@@ -515,9 +530,21 @@ type ChangeRow = {
   readonly kind: KinRecordChange["kind"];
   readonly fieldsJson: string;
 };
+const numberText = (value: unknown) =>
+  typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 /** An entry's issued number from its `$.number` field, as an optional `number` to spread. */
-export const issuedNumber = (value: unknown) =>
-  typeof value === "string" && value.trim() !== "" ? { number: value.trim() } : {};
+export const issuedNumber = (value: unknown) => {
+  const number = numberText(value);
+  return number === undefined ? {} : { number };
+};
+/**
+ * An entry as text agents read names it: its issued number, as people see it, then the key its
+ * tools take, "INV/26-27/004 (INV-1)"; the key alone until it has one.
+ */
+export const recordName = (key: string, number: unknown) => {
+  const issued = numberText(number);
+  return issued === undefined ? key : `${issued} (${key})`;
+};
 
 type LinkRow = {
   readonly kind: KinRecordLink["kind"];

@@ -17,7 +17,7 @@ import {
   retryKey,
   sourceOf,
 } from "./leadWork.ts";
-import { endOfDay, iso, ownerZone } from "./recordRows.ts";
+import { endOfDay, iso, ownerZone, recordName } from "./recordRows.ts";
 import * as Touches from "./touches.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 
@@ -61,7 +61,7 @@ const toShown = (touch: Effect.Success<ReturnType<typeof Touches.touchesOf>>[num
   kind: touch.kind,
   note: touch.note,
   ...(touch.who === null ? {} : { who: touch.who }),
-  ...(touch.record === null ? {} : { from: touch.record.key }),
+  ...(touch.record === null ? {} : { from: recordName(touch.record.key, touch.number) }),
 });
 
 /** The person on our side: named, else the one teammate or the owner whose message this answers. */

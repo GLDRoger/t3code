@@ -154,6 +154,11 @@ describe("kinAttention", () => {
       "AM/26-27/004 · Atlas · Lumen",
       "INV-8 · Atlas · Lumen",
     ]);
+    // Asked about, the agent hears the number the person sees and the key its tools take.
+    expect(numbered.open.map((row) => row.askDraft.split(":")[0])).toEqual([
+      "About AM/26-27/004 (INV-7) Retainer",
+      "About INV-8 Invented INV-8",
+    ]);
     expect(project.handled.map((row) => row.handled)).toEqual([
       expect.stringMatching(/^Arjun has it until /),
     ]);
