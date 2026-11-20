@@ -15,6 +15,7 @@ import {
 import * as DateTime from "effect/DateTime";
 
 import { kinMoneyDraft, kinMoneyText, kinRecordName } from "./kinLists.ts";
+import { kinAskName } from "./kinAskRecord.ts";
 import { KIN_NEEDS_YOU_SHOWN, type KinNeedsYouRow } from "./kinWorkHome.ts";
 import { kinFailure } from "./kinAnswers.ts";
 import { kinMidSentence, kinWorkName } from "./kinWork.ts";
@@ -132,7 +133,7 @@ const inScope = (fact: KinPulseFact, scope: KinAttentionScope) => {
 };
 
 const openOf = (fact: KinPulseFact): KinAttentionOpen =>
-  fact.family === "goals" || fact.subject.kind === "budget"
+  fact.family === "goals" || fact.subject.kind === "budget" || fact.subject.kind === "bank"
     ? { type: "money" }
     : fact.subject.kind === "record"
       ? { type: "record", key: fact.subject.key }
@@ -192,7 +193,10 @@ function kinAttentionRow(
   },
 ): KinAttentionRow {
   const { subject, scope } = fact;
-  const label = subject.kind === "record" ? `${subject.key} ${subject.title}` : subject.title;
+  const label =
+    subject.kind === "record"
+      ? `${kinAskName(subject.key, subject.number)} ${subject.title}`
+      : subject.title;
   const where = [
     input.scope.type === "project" ? null : (scope.projectTitle ?? null),
     input.scope.type === "client" || input.scope.type === "project"

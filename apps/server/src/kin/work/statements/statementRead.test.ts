@@ -616,6 +616,25 @@ describe("statement files", () => {
         ["UPI-AWS", "debit", "0000627"],
       ],
     );
+    // It names no currency or account, so the owner picks the currency on the card.
+    assert.isDefined(csv.statement.currencyChoice);
+    assert.isNull(csv.statement.account);
+    // A file's own Currency and Account columns are its currency and account, asked nothing.
+    const columns = await read(
+      text(
+        [
+          "Date,Description,Credit,Debit,Balance,Currency,Account",
+          "2026-11-01,Invented stationery,,100.00,48800.00,INR,501000981234",
+          "2026-11-30,Invented bank fee,,40.00,48760.00,INR,501000981234",
+        ].join("\n"),
+      ),
+    );
+    assert.deepInclude(columns.statement, {
+      currency: "INR",
+      account: "1234",
+      accountNumber: "501000981234",
+    });
+    assert.isUndefined(columns.statement.currencyChoice);
     const html = await read(
       text(
         "<html><body><table><tr><th>Date</th><th>Particulars</th><th>Withdrawals</th><th>Deposits</th><th>Balance</th></tr>" +

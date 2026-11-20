@@ -1743,6 +1743,22 @@ it.effect("an entry opens by id, and its links carry what opens the other end", 
         ],
       ],
     );
+    // An agent reads a linked entry that has the number people see by it, with its key.
+    yield* turn();
+    const linked = () =>
+      LeadWork.get(scopeOf(lead), { key: step.key }).pipe(
+        Effect.map((got) => got.links.filter((link) => link.kind === "record")),
+      );
+    assert.deepStrictEqual(
+      (yield* linked()).map((link) => link.target),
+      [parent.recordId, "rec_gone"],
+    );
+    yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/004')
+      WHERE org_id = ${orgId} AND record_id = ${parent.recordId}`;
+    assert.deepStrictEqual(
+      (yield* linked()).map((link) => link.target),
+      [`AM/26-27/004 (${parent.key})`, "rec_gone"],
+    );
     // Its own change number moves with its links, not with another entry's change.
     assert.strictEqual(byId.seq, byId.changes[0]!.seq);
     yield* records.update(orgId, writer, parent.key, { state: "doing" });
@@ -1862,6 +1878,26 @@ it.effect("in a teammate's turn the lead reads and changes Work as their own scr
       yield* Effect.flip(LeadWork.get(scope, { key: hidden.key })),
       unknown(hidden.key),
     );
+    // By the number people see on screen too: theirs to read, else unknown, as a key is.
+    const sql = yield* SqlClient.SqlClient;
+    const numbered = (key: string, number: string) =>
+      sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', ${number})
+        WHERE org_id = ${orgId} AND key = ${key}`;
+    yield* numbered(shared.key, "AM/26-27/010");
+    yield* numbered(hidden.key, "AM/26-27/011");
+    assert.strictEqual((yield* LeadWork.get(scope, { key: "AM/26-27/010" })).key, shared.key);
+    for (const number of ["AM/26-27/011", "AM/26-27/012"])
+      assert.deepStrictEqual(
+        yield* Effect.flip(LeadWork.get(scope, { key: number })),
+        unknown(number),
+      );
+    // Two entries showing one number name neither, rather than a guess.
+    yield* numbered(theirs.key, "AM/26-27/010");
+    assert.deepStrictEqual(
+      yield* Effect.flip(LeadWork.get(scope, { key: "AM/26-27/010" })),
+      unknown("AM/26-27/010"),
+    );
+    yield* numbered(theirs.key, "AM/26-27/013");
     assert.deepStrictEqual(
       yield* Effect.flip(
         LeadWork.update(scope, { key: hidden.key, sourceEventId: "ask-event", state: "done" }),
@@ -2606,6 +2642,16 @@ it.effect(
       const his = (yield* told)!;
       assert.include(his, "as if the owner had asked you");
       assert.notInclude(his, TEAMMATE_WORDS);
+      assert.notInclude(his, '"number"');
+      // An entry with the number people see carries it beside its key.
+      const sql = yield* SqlClient.SqlClient;
+      const event = (yield* lastGiven)!;
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/26-27/004')
+        WHERE org_id = ${orgId} AND record_id = ${event.recordId}`;
+      assert.include(
+        quotesIn((yield* told)!).get("work given to you (data)")!,
+        `"key":"${event.key}","number":"AM/26-27/004"`,
+      );
     }).pipe(Effect.provide(layer)),
 );
 
