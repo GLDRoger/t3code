@@ -730,15 +730,18 @@ const make = Effect.gen(function* () {
     def: ListDef,
     now: number,
   ) {
-    // A defined list's register is written when it is defined; a built-in one on first use.
-    if (def.builtIn !== null)
-      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
-        VALUES (${orgId}, ${def.id}, ${def.name}, ${def.prefix}, 1, ${now})
-        ON CONFLICT DO NOTHING`;
-    const [register] = yield* sql<{ next: number; prefix: string }>`
+    const take = sql<{ next: number; prefix: string }>`
       UPDATE kin_registers SET next_number = next_number + 1
       WHERE org_id = ${orgId} AND register_id = ${def.id}
       RETURNING next_number - 1 AS next, key_prefix AS prefix`;
+    let [register] = yield* take;
+    // A defined list's register is written when it is defined; a built-in one on first use.
+    if (register === undefined && def.builtIn !== null) {
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, ${def.id}, ${def.name}, ${def.prefix}, 1, ${now})
+        ON CONFLICT DO NOTHING`;
+      [register] = yield* take;
+    }
     if (register === undefined) return yield* unavailable;
     return `${register.prefix}-${register.next}`;
   });
