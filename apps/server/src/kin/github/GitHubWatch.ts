@@ -25,7 +25,12 @@ import { KinServer } from "../KinServer.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { KinRecords } from "../work/KinRecords.ts";
-import { githubClosed, githubOpenWork, type GitHubOpenItem } from "../work/githubEntries.ts";
+import {
+  githubClosed,
+  githubOpenWork,
+  githubUnwatched,
+  type GitHubOpenItem,
+} from "../work/githubEntries.ts";
 import { agentPostKeys, signed } from "./agentMark.ts";
 import { AGENT_POSTS_FILE, GH_APP_FOLDER } from "./ghSign.ts";
 import {
@@ -65,6 +70,8 @@ const DIFF_CAP = 30_000;
 /** How often each watched repo's open issues and default-branch CI are read into Work. */
 const WORK_EVERY_MS = 10 * MINUTE;
 const ISSUE_PAGES = 5;
+/** Open issues per repo that become tasks, most recently updated first; the rest wait their turn. */
+export const ISSUE_CAP = 50;
 
 export const capNote = (count: number) =>
   `I've replied ${count} times here in an hour, so I'm stopping for now; say /kin again to continue.`;
@@ -316,9 +323,11 @@ export const make = Effect.gen(function* () {
   const fileSystem = yield* Effect.serviceOption(FileSystem.FileSystem);
   /** Orgs whose repos this server has read; the first look after a start reads them again. */
   const reposReadSinceStart = new Set<KinOrgId>();
-  /** When each org's repo was last read into Work, and what GitHub refused there. */
+  /** When each org's repo was last read into Work, and what the watch line says of it. */
   const workReadAt = new Map<string, number>();
-  const workRefused = new Map<string, string>();
+  const workNotes = new Map<string, string>();
+  /** The watch line's words when GitHub refused to list the owner's organisations. */
+  const orgsRefused = new Map<KinOrgId, string>();
   /** What agents' shells sent this past week (`ghSign.ts`): their words, signed or not. */
   const agentPosts = Effect.gen(function* () {
     if (Option.isNone(config) || Option.isNone(fileSystem)) return undefined;
@@ -348,8 +357,6 @@ export const make = Effect.gen(function* () {
     account: { readonly login: string; readonly orgs: ReadonlyArray<string> },
     now: number,
   ) {
-    // `affiliation` already keeps to his and his organisations' repos; GitHub may refuse to list
-    // those organisations (403), so an organisation's repo counts without the list.
     const owners = new Set([account.login, ...account.orgs].map((name) => name.toLowerCase()));
     // Only an organisation's owners can put an App on it; unknown when GitHub won't say.
     const memberships = yield* get("user/memberships/orgs?state=active&per_page=100");
@@ -363,32 +370,44 @@ export const make = Effect.gen(function* () {
         ),
       ).pipe(Option.getOrUndefined);
     const found: Array<KnownRepo> = [];
+    let orgRepoSkipped = false;
     for (let page = 1; page <= 5; page++) {
       const answer = yield* get(
         `user/repos?per_page=100&page=${page}&affiliation=owner,organization_member&sort=pushed`,
       );
       const repos = answer.status === 200 ? decodeRepos(answer.body) : Option.none();
       if (Option.isNone(repos)) return answer;
-      for (const repo of repos.value)
-        if (
-          repo.permissions?.push !== false &&
-          (repo.owner.type === "Organization" || owners.has(repo.owner.login.toLowerCase()))
-        )
-          found.push({
-            repo: repo.full_name,
-            fork: repo.fork,
-            ...(repo.id === undefined ? {} : { id: repo.id }),
-            ...(repo.owner.id === undefined ? {} : { ownerId: repo.owner.id }),
-            ...(repo.default_branch === undefined ? {} : { branch: repo.default_branch }),
-            ...(repo.permissions?.admin === undefined ? {} : { admin: repo.permissions.admin }),
-            ...(repo.owner.type === "Organization"
-              ? { ownerOrg: true, ownerAdmin: ownsOrg(repo.owner.login) }
-              : repo.owner.type === "User"
-                ? { ownerOrg: false }
-                : {}),
-          });
+      for (const repo of repos.value) {
+        if (repo.permissions?.push === false) continue;
+        if (!owners.has(repo.owner.login.toLowerCase())) {
+          orgRepoSkipped ||= repo.owner.type === "Organization";
+          continue;
+        }
+        found.push({
+          repo: repo.full_name,
+          fork: repo.fork,
+          ...(repo.id === undefined ? {} : { id: repo.id }),
+          ...(repo.owner.id === undefined ? {} : { ownerId: repo.owner.id }),
+          ...(repo.default_branch === undefined ? {} : { branch: repo.default_branch }),
+          ...(repo.permissions?.admin === undefined ? {} : { admin: repo.permissions.admin }),
+          ...(repo.owner.type === "Organization"
+            ? { ownerOrg: true, ownerAdmin: ownsOrg(repo.owner.login) }
+            : repo.owner.type === "User"
+              ? { ownerOrg: false }
+              : {}),
+        });
+      }
       if (repos.value.length < 100) break;
     }
+    // A refused organisation list reads as none (`GitHubLogin.probe`); ask once to tell them apart.
+    const orgsAnswer =
+      orgRepoSkipped && account.orgs.length === 0 ? yield* get("user/orgs?per_page=1") : undefined;
+    if (orgsAnswer !== undefined && (orgsAnswer.status === 401 || orgsAnswer.status === 403))
+      orgsRefused.set(
+        orgId,
+        `GitHub won't list this login's organisations (HTTP ${orgsAnswer.status}), so their repos aren't watched until it can. Reconnect GitHub with a login that can read organisations (read:org).`,
+      );
+    else orgsRefused.delete(orgId);
     yield* sql`UPDATE kin_github_watch SET repos_json = ${toJson(found)},
       repos_at = ${now} WHERE org_id = ${orgId}`;
     return undefined;
@@ -634,7 +653,7 @@ export const make = Effect.gen(function* () {
     owner: KinWorkPrincipal,
   ) {
     if (Option.isNone(records)) return [];
-    const refused: Array<string> = [];
+    const notes: Array<string> = [];
     const name = repo.repo.toLowerCase();
     const keep = (input: Omit<Parameters<typeof githubOpenWork>[0], "orgId" | "repo" | "owner">) =>
       githubOpenWork({ orgId, repo: repo.repo, owner, ...input }).pipe(
@@ -649,11 +668,13 @@ export const make = Effect.gen(function* () {
     let issuesRead = true;
     let complete = false;
     for (let page = 1; page <= ISSUE_PAGES; page++) {
-      const answer = yield* get(`repos/${repo.repo}/issues?state=open&per_page=100&page=${page}`);
+      const answer = yield* get(
+        `repos/${repo.repo}/issues?state=open&sort=updated&direction=desc&per_page=100&page=${page}`,
+      );
       const listed = answer.status === 200 ? decodeListedIssues(answer.body) : Option.none();
       if (Option.isNone(listed)) {
         const words = refusedRead(answer, "issues", repo.repo);
-        if (words !== undefined) refused.push(words);
+        if (words !== undefined) notes.push(words);
         issuesRead = false;
         break;
       }
@@ -661,10 +682,10 @@ export const make = Effect.gen(function* () {
         if (issue.pull_request === undefined)
           issues.push({
             group: `github:issue:${name}#${issue.number}`,
-            originKey: `github:issue:${name}#${issue.number}`,
             title: `Issue #${issue.number}: ${issue.title}`,
             url: issue.html_url,
             label: `Issue #${issue.number}`,
+            quiet: issues.length >= ISSUE_CAP,
           });
       if (listed.value.length < 100) {
         complete = true;
@@ -672,6 +693,10 @@ export const make = Effect.gen(function* () {
       }
     }
     const issuePrefix = `github:issue:${name}#`;
+    if (issuesRead && issues.length > ISSUE_CAP)
+      notes.push(
+        `${repo.repo} has ${complete ? issues.length : `over ${issues.length}`} open issues; Kin keeps tasks for the ${ISSUE_CAP} most recently updated.`,
+      );
     if (issuesRead)
       yield* keep({
         prefix: issuePrefix,
@@ -687,7 +712,7 @@ export const make = Effect.gen(function* () {
         },
       });
 
-    if (repo.branch === undefined) return refused;
+    if (repo.branch === undefined) return notes;
     const branch = repo.branch;
     const answer = yield* get(
       `repos/${repo.repo}/actions/runs?branch=${encodeURIComponent(branch)}&status=completed&exclude_pull_requests=true&per_page=100`,
@@ -695,8 +720,8 @@ export const make = Effect.gen(function* () {
     const runs = answer.status === 200 ? decodeWorkflowRuns(answer.body) : Option.none();
     if (Option.isNone(runs)) {
       const words = refusedRead(answer, "GitHub Actions runs", repo.repo);
-      if (words !== undefined) refused.push(words);
-      return refused;
+      if (words !== undefined) notes.push(words);
+      return notes;
     }
     const failing: Array<GitHubOpenItem> = [];
     const passed = new Map<string, { readonly url: string; readonly label: string }>();
@@ -725,27 +750,36 @@ export const make = Effect.gen(function* () {
       open: failing,
       closedBy: (group) => passed.get(group),
     });
-    return refused;
+    return notes;
   });
 
-  /** Each watched repo is read into Work at most every few minutes; returns the watch's problem. */
+  /** Each watched repo is read into Work at most every few minutes; returns what the watch line says of it. */
   const syncWork = Effect.fn("KinGitHubWatch.syncWork")(function* (
     orgId: KinOrgId,
     watched: ReadonlyArray<KnownRepo>,
     owner: KinWorkPrincipal,
     now: number,
   ) {
+    if (Option.isNone(records)) return null;
     const problems: Array<string> = [];
+    const names = new Set(watched.map((repo) => repo.repo.toLowerCase()));
+    yield* githubUnwatched({ orgId, watched: names }).pipe(
+      Effect.provideService(KinRecords, records.value),
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Kin couldn't drop Work entries of unwatched repos", { cause }),
+      ),
+    );
     for (const repo of watched) {
       const at = `${orgId.length}:${orgId}${repo.repo.toLowerCase()}`;
       const last = workReadAt.get(at);
       if (last === undefined || now - last >= WORK_EVERY_MS) {
         workReadAt.set(at, now);
-        const refused = yield* syncRepoWork(orgId, repo, owner);
-        if (refused.length === 0) workRefused.delete(at);
-        else workRefused.set(at, refused.join(" "));
+        const notes = yield* syncRepoWork(orgId, repo, owner);
+        if (notes.length === 0) workNotes.delete(at);
+        else workNotes.set(at, notes.join(" "));
       }
-      const words = workRefused.get(at);
+      const words = workNotes.get(at);
       if (words !== undefined) problems.push(words);
     }
     return problems.length === 0 ? null : problems.join(" ");
@@ -977,8 +1011,8 @@ export const make = Effect.gen(function* () {
     const watchedRepos = (yield* knownRepos(orgId)).filter((entry) =>
       watched.has(entry.repo.toLowerCase()),
     );
-    const problem =
-      lead === undefined || Option.isNone(records)
+    const work =
+      lead === undefined
         ? null
         : yield* syncWork(
             orgId,
@@ -986,6 +1020,8 @@ export const make = Effect.gen(function* () {
             { _tag: "agent", agentId: KinAgentId.make(lead.agentId) },
             now,
           );
+    const problem =
+      [orgsRefused.get(orgId), work].filter((words) => typeof words === "string").join(" ") || null;
     const asked = Number(notifications.headers["x-poll-interval"]);
     const interval = asked > 0 ? asked * 1000 : DEFAULT_INTERVAL_MS;
     // With work left over, the cursors stay put: the next look reads the same and handles the rest.

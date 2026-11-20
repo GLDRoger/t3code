@@ -1280,15 +1280,93 @@ describe("KinGitHubWatch keeps Work entries of GitHub", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("an organisation's repos are watched when GitHub won't list his organisations", () => {
-    // `user/orgs` refused (403) comes back as no organisations at all.
-    const { github, layer } = setup({ records: true, orgs: [] });
+  it.effect(
+    "an organisation's repos aren't watched when GitHub won't list his organisations",
+    () => {
+      // `user/orgs` refused (403) comes back as no organisations at all.
+      const { github, layer } = setup({ records: true, orgs: [] });
+      github.world.refused = ["user/orgs"];
+      return Effect.gen(function* () {
+        yield* start(github);
+        assert.notInclude(
+          (yield* repoList(orgId)).filter((repo) => repo.watched).map((repo) => repo.repo),
+          REPO,
+        );
+        const problem = (yield* watchSummary(orgId, T0))?.problem ?? "";
+        assert.include(problem, "won't list this login's organisations (HTTP 403)");
+        assert.include(problem, "aren't watched");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("a reopened issue is a task again; a task a person closed stays closed", () => {
+    const { github, layer } = setup({ records: true });
     return Effect.gen(function* () {
       yield* start(github);
-      assert.include(
-        (yield* repoList(orgId)).filter((repo) => repo.watched).map((repo) => repo.repo),
-        REPO,
+      const issue = (title: string) =>
+        github.openItem({
+          repo: REPO,
+          pull: false,
+          author: "teammate-a",
+          association: "COLLABORATOR",
+          title,
+        });
+      const reopened = issue("Login button does nothing");
+      const setAside = issue("Dark mode");
+      yield* look(github, 10);
+      const states = Effect.map(entries, (rows) => rows.map((row) => [row.title, row.state]));
+
+      github.close({ repo: REPO, number: reopened, actor: "teammate-a" });
+      const records = yield* KinRecords.KinRecords;
+      const sql = yield* SqlClient.SqlClient;
+      const [aside] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+        WHERE org_id = ${orgId} AND title LIKE '%Dark mode'`;
+      yield* records.update(
+        orgId,
+        { actor: { _tag: "person", personId: KinPersonId.make("owner") }, via: "owner" },
+        aside!.key,
+        { state: "dropped" },
       );
+      yield* look(github, 10);
+      github.reopen({ repo: REPO, number: reopened, actor: "teammate-a" });
+      yield* look(github, 10);
+      yield* look(github, 10);
+      assert.deepStrictEqual(yield* states, [
+        [`Issue #${setAside}: Dark mode`, "dropped"],
+        [`Issue #${reopened}: Login button does nothing`, "done"],
+        [`Issue #${reopened}: Login button does nothing`, "open"],
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("a repo's first read makes tasks of its 50 most recently updated open issues", () => {
+    const { github, layer } = setup({ records: true });
+    return Effect.gen(function* () {
+      yield* start(github);
+      const numbers = Array.from({ length: GitHubWatch.ISSUE_CAP + 2 }, (_, at) =>
+        github.openItem({
+          repo: REPO,
+          pull: false,
+          author: "teammate-a",
+          association: "COLLABORATOR",
+          title: `Backlog ${at}`,
+        }),
+      );
+      yield* look(github, 10);
+      const titles = (yield* entries).map((row) => row.title);
+      assert.lengthOf(titles, GitHubWatch.ISSUE_CAP);
+      assert.notInclude(titles, `Issue #${numbers[0]}: Backlog 0`);
+      assert.include(
+        (yield* watchSummary(orgId, T0 + 11 * MINUTE))?.problem ?? "",
+        `${REPO} has ${GitHubWatch.ISSUE_CAP + 2} open issues; Kin keeps tasks for the ${GitHubWatch.ISSUE_CAP} most recently updated.`,
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("a repo no longer watched drops its open issue and CI tasks, saying why", () => {
+    const { github, layer } = setup({ records: true });
+    return Effect.gen(function* () {
+      yield* start(github);
       github.openItem({
         repo: REPO,
         pull: false,
@@ -1296,8 +1374,22 @@ describe("KinGitHubWatch keeps Work entries of GitHub", () => {
         association: "COLLABORATOR",
         title: "Broken export",
       });
+      github.run({ repo: REPO, workflow: 1, name: "CI", conclusion: "failure" });
       yield* look(github, 10);
-      assert.lengthOf(yield* entries, 1);
+      assert.deepStrictEqual(
+        (yield* entries).map((row) => row.state),
+        ["open", "open"],
+      );
+      yield* setRepo({ orgId, repo: REPO, watched: false }, T0);
+      yield* look(github, 10);
+      assert.deepStrictEqual(
+        (yield* entries).map((row) => row.state),
+        ["dropped", "dropped"],
+      );
+      const sql = yield* SqlClient.SqlClient;
+      const notes = yield* sql<{ label: string }>`SELECT DISTINCT label FROM kin_record_links
+        WHERE org_id = ${orgId} AND relation = 'relates'`;
+      assert.deepStrictEqual(notes, [{ label: `Kin stopped watching ${REPO}` }]);
     }).pipe(Effect.provide(layer));
   });
 

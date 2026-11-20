@@ -349,6 +349,10 @@ export class FakeGitHub {
     this.item(input.repo, input.number).state = "closed";
     this.happened(input.repo, input.number, input.actor, "IssuesEvent");
   }
+  reopen(input: { repo: string; number: number; actor: string }) {
+    this.item(input.repo, input.number).state = "open";
+    this.happened(input.repo, input.number, input.actor, "IssuesEvent");
+  }
   /** One finished run of a workflow, on `branch` (default main). */
   run(input: {
     repo: string;
@@ -897,6 +901,12 @@ export class FakeGitHub {
       target.repos = target.repos.filter((entry) => entry.toLowerCase() !== name.toLowerCase());
       return done;
     }
+    if (method === "GET" && path === "user/orgs")
+      return ok(
+        (this.world.accounts ?? [])
+          .filter((account) => account.type === "Organization")
+          .map((account) => ({ login: account.login, id: account.id })),
+      );
     if (method === "GET" && path === "user/memberships/orgs") {
       const orgs = new Map<string, FakeAccount>();
       for (const repo of this.world.repos) {
