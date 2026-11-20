@@ -362,34 +362,32 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             )?.supportedRuntimeModes,
           });
         }
-        const result = yield* ThreadMessageIntake.launchThread(
-          {
-            commandId,
-            threadId,
-            projectId,
-            title: input.title,
-            modelSelection,
-            runtimeMode: startedRuntimeMode,
-            interactionMode,
-            workspaceStrategy: strategy ?? { type: "root" },
-            ...(input.message === undefined && attachments.length === 0
-              ? {}
-              : {
-                  initialMessage: {
-                    messageId,
-                    ...(caller === undefined ? {} : { senderThreadId: caller.id }),
-                    text: input.message ?? "",
-                    attachments,
-                  },
-                }),
-            createdBy: "agent",
-            creationSource: "mcp",
-            ...(linkOrigin === undefined ? {} : { linkOrigin }),
-            // Kept only alongside linkOrigin: thread.create drops it otherwise.
-            ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
-          },
-          yield* mcpCallerUploadOwner,
-        ).pipe(
+        const result = yield* ThreadMessageIntake.launchThread({
+          commandId,
+          threadId,
+          projectId,
+          title: input.title,
+          modelSelection,
+          runtimeMode: startedRuntimeMode,
+          interactionMode,
+          workspaceStrategy: strategy ?? { type: "root" },
+          ...(input.message === undefined && attachments.length === 0
+            ? {}
+            : {
+                initialMessage: {
+                  messageId,
+                  ...(caller === undefined ? {} : { senderThreadId: caller.id }),
+                  text: input.message ?? "",
+                  attachments,
+                },
+              }),
+          createdBy: "agent",
+          creationSource: "mcp",
+          ...(linkOrigin === undefined ? {} : { linkOrigin }),
+          // Kept only alongside linkOrigin: thread.create drops it otherwise.
+          ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
+          uploadOwner: yield* mcpCallerUploadOwner,
+        }).pipe(
           Effect.mapError((error) => {
             if (error._tag === "AttachmentClaimError") {
               return new OrchestratorMcpFailure({

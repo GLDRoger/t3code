@@ -600,6 +600,40 @@ export const kinTrunk = Effect.fn("kinBranchChecks.kinTrunk")(function* (
     note: `kin branch: ${ref} has no Kin files, so these checks ran against ${closest.ref}.`,
   };
 });
+const UPSTREAM_REF = "upstream/main";
+const STANDING_TOP = 10;
+const STANDING_SKIP = /(?:^\.repos\/|(?:^|\/)(?:routeTree\.gen\.ts|pnpm-lock\.yaml)$)/;
+
+/** Every Kin line already inside T3's files since the fork left upstream, largest first. */
+export const standingT3Footprint = (input: {
+  readonly from: string;
+  readonly changes: ReadonlyArray<{
+    readonly file: string;
+    readonly added: number;
+    readonly removed: number;
+    readonly isNew: boolean;
+  }>;
+  readonly kinOwned: ReadonlyArray<string>;
+}) => {
+  const owned = input.kinOwned.map(globPattern);
+  const files = input.changes
+    .filter(
+      ({ file, isNew }) =>
+        !isNew && !STANDING_SKIP.test(file) && !owned.some((pattern) => pattern.test(file)),
+    )
+    .toSorted(
+      (a, b) => b.added + b.removed - (a.added + a.removed) || a.file.localeCompare(b.file),
+    );
+  if (files.length === 0) return [];
+  const sum = (list: typeof files) => list.reduce((total, one) => total + one.added, 0);
+  const tests = files.filter(({ file }) => /\.test\.tsx?$/.test(file));
+  return [
+    `T3 footprint since upstream ${input.from.slice(0, 10)}: Kin adds ${sum(files)} lines to ${files.length} T3 files (${sum(tests)} of them in ${tests.length} test files). Largest:`,
+    ...files
+      .slice(0, STANDING_TOP)
+      .map(({ file, added, removed }) => `  +${added} -${removed} ${file}`),
+  ];
+};
 
 /** All checks for the branch at `root` against `ref`: problems, or none, and notes to print. */
 export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
@@ -816,7 +850,33 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
       }),
     );
   }
-  return { problems, notes: [...(trunk.note === undefined ? [] : [trunk.note]), ...people.notes] };
+  const notes = [...(trunk.note === undefined ? [] : [trunk.note]), ...people.notes];
+  const upstreamBase = yield* git(root, ["merge-base", "HEAD", UPSTREAM_REF]).pipe(
+    Effect.map((out) => out.toString().trim()),
+    Effect.option,
+  );
+  if (footprint !== undefined && Option.isSome(upstreamBase)) {
+    const from = upstreamBase.value;
+    const created = new Set(
+      yield* gitLines(root, ["diff", "--name-only", "--no-renames", "--diff-filter=A", from]),
+    );
+    const changes = (yield* gitLines(root, ["diff", "--numstat", "--no-renames", from]))
+      .map((line) => line.split("\t"))
+      .flatMap(([added = "", removed = "", file]) =>
+        file === undefined
+          ? []
+          : [
+              {
+                file,
+                added: Number(added) || 0,
+                removed: Number(removed) || 0,
+                isNew: created.has(file),
+              },
+            ],
+      );
+    notes.push(...standingT3Footprint({ from, changes, kinOwned: footprint.kinOwned }));
+  }
+  return { problems, notes };
 });
 
 export const kinBranchChecksCommand = Command.make(

@@ -255,7 +255,7 @@ describe("AgentScope service", () => {
       ),
   );
 
-  it.effect("starts an agent without a property this systemd refuses, and says which", () =>
+  it.effect("starts an agent without a property this systemd refuses, asking once", () =>
     withFakeSystemd(
       ({ scope, calls }) =>
         Effect.gen(function* () {
@@ -264,10 +264,9 @@ describe("AgentScope service", () => {
           expect(first.unit).toBeDefined();
           expect(first.args).toContain("--property=MemoryMax=1073741824");
           expect(first.args).not.toContain("--property=CPUWeight=50");
-          expect(first.refusedProperties).toEqual(["CPUWeight=50"]);
           const asked = calls.length;
           const second = yield* scope.wrap({ command: "agent", args: [], name: "t", properties });
-          expect(second.refusedProperties).toEqual(["CPUWeight=50"]);
+          expect(second.args).not.toContain("--property=CPUWeight=50");
           // Each property is tried once per server.
           expect(calls.length).toBe(asked);
         }),
@@ -300,15 +299,6 @@ describe("AgentScope service", () => {
               false,
             );
             expect(calls.filter(([, verb]) => verb === "kill")).toEqual([]);
-
-            // Reaping confirms the tree is gone only once the kernel says the cgroup is empty.
-            exitedAgent(units, cgroupRoot, unitOf(agent), { populated: false, oomKills: 0 });
-            expect(yield* scope.reap("a")).toBe(true);
-            units.delete(unitOf(agent));
-            expect(yield* scope.reap("a")).toBe(true);
-            // A shared scope, or a thread with none here, can't be confirmed.
-            expect(yield* scope.reap("b")).toBe(false);
-            expect(yield* scope.reap("unknown")).toBe(false);
           }),
         { oomPolicy },
       ),

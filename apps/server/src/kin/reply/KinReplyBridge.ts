@@ -36,7 +36,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KIN_VISUAL_CARD_TYPE } from "@t3tools/shared/kinVisual";
 
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
-import { isClaudeThinkingItem } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import {
   KinChatService,
@@ -50,6 +49,7 @@ import {
   rescueMessageId,
   type AgentIdentity,
 } from "../chat/KinIdentity.ts";
+import { isClaudeThinkingItem } from "./claudeThinkingItem.ts";
 import { laneFor, type Lane } from "./replyLane.ts";
 import { AUDIENCE_MOVED, aborted, ownerOnlyChat } from "../lead/Audience.ts";
 import * as KinLevels from "../lead/KinLevels.ts";

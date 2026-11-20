@@ -23,6 +23,7 @@ import {
   checkMigrations,
   checkSurvival,
   checkT3Footprint,
+  standingT3Footprint,
   declarationOf,
   explainedT3Files,
   FOOTPRINT,
@@ -452,6 +453,30 @@ export const { useKinDeals } = makeKinDealsHooks(kinHookApp);
     );
     // A line without a reason lets nothing pass.
     assert.lengthOf(check([{ file: t3, added: 11 }], `T3-file: ${t3}:`), 1);
+
+    // What Kin already holds in T3's files is shown, not refused: largest first, tests counted.
+    const standing = (changes: ReadonlyArray<{ file: string; added: number; isNew?: boolean }>) =>
+      standingT3Footprint({
+        from: "803f21f6a5211dd83ca26e02f7382a2396338bee",
+        changes: changes.map((change) => ({ isNew: false, removed: 1, ...change })),
+        kinOwned,
+      });
+    assert.deepStrictEqual(
+      standing([
+        { file: t3, added: 4 },
+        { file: "apps/server/src/kin/lead/deep/Big.ts", added: 900 },
+        { file: "apps/server/src/brandNew.ts", added: 300, isNew: true },
+        { file: "apps/server/src/server.test.ts", added: 30 },
+        { file: "apps/web/src/routeTree.gen.ts", added: 120 },
+        { file: ".repos/effect/packages/effect/src/Effect.ts", added: 80 },
+      ]),
+      [
+        "T3 footprint since upstream 803f21f6a5: Kin adds 34 lines to 2 T3 files (30 of them in 1 test files). Largest:",
+        "  +30 -1 apps/server/src/server.test.ts",
+        `  +4 -1 ${t3}`,
+      ],
+    );
+    assert.deepStrictEqual(standing([{ file: "packages/contracts/src/kinHost.ts", added: 9 }]), []);
   });
 
   it.effect("counts a T3 file's lines only after the branch's last upstream sync", () => {

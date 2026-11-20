@@ -45,10 +45,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
-import {
-  CLAUDE_PROVIDER,
-  claudeThinkingItemId,
-} from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import { CLAUDE_PROVIDER } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import type { ProjectionRecordFilter } from "../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -73,6 +70,7 @@ import {
   SILENCE_MARKERS,
   stripTrailingSilenceMarker,
 } from "./classify.ts";
+import { claudeThinkingItemId } from "./claudeThinkingItem.ts";
 import { KinPresence } from "./KinPresence.ts";
 import * as ReplyBridge from "./KinReplyBridge.ts";
 import { WEEK_FIGURES_TITLE } from "../pulse/weekly.ts";
