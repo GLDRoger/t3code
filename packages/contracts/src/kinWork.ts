@@ -33,6 +33,7 @@ import {
   KinMoney,
   KinMoneyTotals,
   KinSignedMoney,
+  KinBankKnown,
   KinPayment,
   KinRepeatRule,
 } from "./kinMoney.ts";
@@ -262,6 +263,8 @@ export const KinRecordLink = Schema.Struct({
   createdAt: IsoDateTime,
   /** A `record` link's other end as it is now, to open it by key; absent once it is gone. */
   record: Schema.optional(KinRecordRef),
+  /** That record's issued number (INV/26-27/004), once it has one. */
+  number: Schema.optional(TrimmedNonEmptyString),
   /**
    * A `worker` link's run, as its task card shows it: the thread (in `remoteEnvironmentId` when
    * that is set, else on this host) and the draft pull request Kin opened from it.
@@ -427,6 +430,8 @@ export const KinRecordDetail = Schema.Struct({
    * waits for that; absent otherwise, and from older hosts.
    */
   toldWhenBack: Schema.optional(KinDay),
+  /** An invoice's: how far Kin sees the bank, for whether it was paid; absent from older hosts. */
+  bankKnown: Schema.optional(KinBankKnown),
 });
 export type KinRecordDetail = typeof KinRecordDetail.Type;
 export const KIN_RECORD_CHANGES_CAP = 50;
@@ -1164,6 +1169,8 @@ export const KinClientTouch = Schema.Struct({
   logged: Schema.Boolean,
   /** The entry it comes from, for Kin's own. */
   record: Schema.NullOr(KinRecordRef),
+  /** That entry's issued number (INV/26-27/004), once it has one. */
+  number: Schema.optional(TrimmedNonEmptyString),
 });
 export type KinClientTouch = typeof KinClientTouch.Type;
 

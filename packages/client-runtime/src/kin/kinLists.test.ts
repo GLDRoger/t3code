@@ -355,6 +355,11 @@ describe("a list by its definition", () => {
     ]);
     expect(entry.payments[0]).toMatchObject({ amount: "₹40,000.00", note: null, voided: false });
     expect(kinListRow(detail, invoices, context).owed).toBe("₹60,000 still owed");
+    // Named by its key until it is issued, then by its number.
+    expect(kinListRow(detail, invoices, context).line).toMatch(/^EQ-1 · /);
+    const numbered = { ...detail, fields: { number: "AM/26-27/004" } };
+    expect(kinListRow(numbered, invoices, context).line).toMatch(/^AM\/26-27\/004 · /);
+    expect(kinListEntryView(numbered, invoices, context).heading).toBe("AM/26-27/004 · Equipment");
     // A suggestion says so before its state, and is paid by nobody until it is kept; as a
     // deadline it is never overdue in a money list. Stored issued, it reads Suggested alone, and
     // its day is no issue day.

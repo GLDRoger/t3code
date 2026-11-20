@@ -28,6 +28,7 @@ import {
   fieldDateAt,
   countedPayment,
   isSuggestion,
+  issuedNumber,
   iso,
   keptEntry,
   moneyDay,
@@ -595,6 +596,7 @@ export const moneySection = (summary: KinMoneySummary, zone: string) => {
     })),
     next30Days: summary.upcoming.slice(0, SECTION_DATES).map((row) => ({
       key: row.record.key,
+      ...issuedNumber(row.record.fields?.number),
       title: row.record.title,
       list: row.listName,
       [row.label.toLowerCase()]: row.allDay ? dayIn(Date.parse(row.at), zone) : row.at,

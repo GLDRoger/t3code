@@ -43,7 +43,7 @@ import {
 import { Switch } from "../components/ui/switch";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAskRecord } from "./KinAskRecord";
-import { KinAttentionSection } from "./KinAttention";
+import { KinAsideNote, KinAttentionSection } from "./KinAttention";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinProjectNoteSection } from "./KinProjectNote";
 import { KinProjectPeopleSection } from "./KinProjectPeople";
@@ -288,6 +288,7 @@ function ProjectPage(
           onChanged={props.onRefresh}
         />
       )}
+      <KinAsideNote environmentId={environmentId} orgId={orgId} record={view.key} names={names} />
       <KinAttentionSection
         environmentId={environmentId}
         orgId={orgId}

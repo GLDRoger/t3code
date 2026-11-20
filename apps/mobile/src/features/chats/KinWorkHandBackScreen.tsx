@@ -96,7 +96,6 @@ export function KinWorkHandBackScreen({ route }: StaticScreenProps<KinWorkHandBa
                     maxLength={280}
                     onChangeText={setNote}
                     textAlignVertical="top"
-                    placeholder={KIN_WORK_HAND_BACK.reasonPlaceholder}
                     placeholderTextColorClassName="accent-placeholder"
                     className="min-h-20 font-sans text-base text-foreground"
                   />

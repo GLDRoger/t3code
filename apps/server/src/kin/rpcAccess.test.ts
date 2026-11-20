@@ -69,6 +69,8 @@ const MEMBER = [
   "kin.people.revokeDevice",
   "kin.people.setGithubLogin",
   "kin.people.updateProfile",
+  // Set aside: the service makes a member's hold their own, seen and lifted by them alone.
+  "kin.pulse.aside",
   "kin.pulse.handle",
   "kin.pulse.read",
   "kin.pulse.subscribe",

@@ -16,6 +16,7 @@ import type {
   KinPulseHandleAction,
   KinPulseScreenRead,
   KinDay,
+  KinRecordKey,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -71,14 +72,46 @@ export function useKinAttention(
   return state._tag === "ready" ? kinAttentionShown(state.value, new Set(answered)) : null;
 }
 
-/** "I've got it", Snooze and "Not a problem", and Undo, with one line when a tap didn't save. */
+/**
+ * "I've got it", Snooze and "Not a problem", Undo, and setting a record aside or lifting it, with
+ * one line when a tap didn't save.
+ */
 export function useKinAttentionHandle(target: KinWorkTarget, scope?: KinAttentionScope) {
   const handle = useAtomCommand(kinClient.attentionHandle, { reportFailure: false });
+  const aside = useAtomCommand(kinClient.attentionAside, { reportFailure: false });
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   return {
     busy,
     problem,
+    /** Sets `record` aside until `until`, else until lifted; `factKey` leaves the list at once. */
+    aside: async (
+      record: KinRecordKey,
+      action: "set" | "lift",
+      until?: KinDay,
+      factKey?: string,
+    ) => {
+      setBusy(factKey ?? record);
+      setProblem(null);
+      if (factKey !== undefined) kinReads.markAnswered(target, factKey, true);
+      const outcome = await aside({
+        environmentId: target.environmentId,
+        input: {
+          orgId: target.orgId,
+          record,
+          action,
+          ...(until === undefined ? {} : { until }),
+        },
+      });
+      setBusy(null);
+      kinReads.afterAttentionHandle(target, scope);
+      const problem = kinAttentionProblem(
+        AsyncResult.isSuccess(outcome) ? null : squashAtomCommandFailure(outcome),
+      );
+      if (problem === null) return;
+      if (factKey !== undefined) kinReads.markAnswered(target, factKey, false);
+      setProblem(problem);
+    },
     send: async (factKey: string, action: KinPulseHandleAction, until?: KinDay) => {
       setBusy(factKey);
       setProblem(null);

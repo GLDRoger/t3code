@@ -50,6 +50,7 @@ import {
 import {
   KIN_INTRO_COUNTRY,
   KIN_INTRO_PROMPTS,
+  KIN_INTRO_START_HINT,
   kinIntroVisible,
 } from "@t3tools/client-runtime/kin/kinIntro";
 import {
@@ -1332,17 +1333,17 @@ function KinIntro(props: {
               title={`Sends this to ${props.agentName}`}
               onClick={() => props.onSend(prompt.text)}
             >
-              {prompt.text}
+              {prompt.label}
             </Button>
           ) : (
             <Button
               key={prompt.text}
               size="sm"
               variant="outline"
-              aria-label={`${prompt.text.trimEnd()}, finish it yourself`}
+              title={KIN_INTRO_START_HINT}
               onClick={() => props.onStart(prompt.text)}
             >
-              {prompt.text.trimEnd()}…
+              {prompt.label}
             </Button>
           ),
         )}

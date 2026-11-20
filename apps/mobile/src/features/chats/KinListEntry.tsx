@@ -2,6 +2,7 @@ import { KIN_QUOTES_LIST, kinQuoteRow } from "@t3tools/client-runtime/kin/kinMon
 import { useAtomValue } from "@effect/atom-react";
 import { kinAccessMeAtom, kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
+import { kinAskRecordDraft } from "@t3tools/client-runtime/kin/kinAskRecord";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinDatesMonth, kinShiftMonth } from "@t3tools/client-runtime/kin/kinDates";
 import {
@@ -79,6 +80,7 @@ import {
   KinInvoicePayments,
   KinMoneyActionNotice,
 } from "./KinInvoice";
+import { KinAsideNote } from "./KinAttention";
 import { KinSuggestionKeep } from "./KinMoneySuggested";
 import { KinQuoteActions } from "./KinMoneyAnswers";
 import { KinNotesVersions } from "./KinNotesVersions";
@@ -260,7 +262,9 @@ export function KinListEntryBody(
   const context = useKinListContext(props, props.directory);
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
   const entry = kinListEntryView(item, def, context);
-  const invoice = kinIsInvoice(item) ? kinInvoiceView(item, def, props.now) : null;
+  const invoice = kinIsInvoice(item)
+    ? kinInvoiceView(item, def, props.now, props.directory.names)
+    : null;
   const quote = item.list === KIN_QUOTES_LIST ? kinQuoteRow(item, null, props.now) : null;
   const money = useKinMoneyActions(props);
   const rates = useKinRates(props, invoice !== null || quote !== null);
@@ -471,6 +475,7 @@ export function KinListEntryBody(
       {changes.problem === null ? null : (
         <Notice message={changes.problem} tone="danger" onDismiss={changes.dismiss} />
       )}
+      <KinAsideNote environmentId={environmentId} orgId={orgId} record={item.key} names={names} />
       <ListSection>
         {!canChange || quote !== null ? null : (
           <Menu
@@ -809,6 +814,7 @@ export function KinListEntryBody(
               const detail = [
                 payment.when,
                 payment.note,
+                payment.source,
                 payment.voided ? KIN_LISTS.entry.takenBack : null,
               ]
                 .filter((part) => part !== null)
@@ -862,7 +868,13 @@ export function KinListEntryBody(
           label={KIN_LISTS.entry.askChange}
           onPress={() => {
             navigation.goBack();
-            agent.ask(`About ${item.key} (${item.title}): `);
+            agent.ask(
+              kinAskRecordDraft({
+                key: item.key,
+                title: item.title,
+                number: item.fields?.number,
+              }),
+            );
           }}
         />
       )}
@@ -1016,7 +1028,6 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
             value={draft.tds ?? ""}
             keyboard="numbers"
             disabled={changes.busy}
-            placeholder={KIN_LISTS.entry.payTdsPlaceholder}
             onChangeText={(tds) => setDraft({ ...draft, tds })}
           />
         ) : null}

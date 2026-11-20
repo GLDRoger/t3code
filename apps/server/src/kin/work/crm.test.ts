@@ -2966,7 +2966,19 @@ it.effect(
       // An edit to the invoice later, such as a payment, is no new contact.
       const invoiceAt = after.touches!.find((touch) => touch.kind === "invoice")!.at;
       yield* sql`UPDATE kin_records SET updated_at = updated_at + ${5 * DAY} WHERE key = 'INV-1'`;
+      // Once it is issued, the client page names it by its number.
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', 'AM/1')
+        WHERE key = 'INV-1'`;
       const edited = yield* Clients.party([owner], { orgId, key: "C-1" });
+      assert.deepStrictEqual(
+        edited.touches?.filter((touch) => touch.record !== null).map((touch) => touch.number),
+        ["AM/1", "AM/1"],
+      );
+      const read = yield* LeadClients.contact(scope, { key: "C-1" });
+      assert.deepStrictEqual(
+        read.touches.flatMap((touch) => ("from" in touch ? [touch.from] : [])),
+        ["AM/1 (INV-1)", "AM/1 (INV-1)"],
+      );
       assert.deepStrictEqual(
         edited.touches?.map((touch) => [touch.kind, touch.kind === "invoice" ? touch.at : ""]),
         after.touches?.map((touch) => [touch.kind, touch.kind === "invoice" ? invoiceAt : ""]),
@@ -2999,7 +3011,7 @@ it.effect(
       yield* sql`UPDATE kin_records SET state = 'waiting', due_at = ${3 * DAY} WHERE key = 'INV-1'`;
       const owes = (yield* LeadWork.get(scope, { key: "C-1" })).owed!;
       assert.deepStrictEqual(owes.money.overdue, owes.money.unpaid);
-      assert.match(owes.money.invoices[0]!, /^INV-1: .*500.* overdue for \d+ days$/);
+      assert.match(owes.money.invoices[0]!, /^AM\/1 \(INV-1\): .*500.* overdue for \d+ days$/);
 
       // A client added today with work that ended long ago reads cold from that day, and a typed
       // name finds it: any case, a start of it, or a close spelling.

@@ -473,7 +473,6 @@ function KinWorkItemBody(props: ItemTarget) {
     give: canGive,
     step: step.acts,
   });
-  const repeatShown = view.repeat?.text ?? KIN_WORK_REPEAT.never;
   const dated = view.due !== null;
   const repeats = act !== null && view.can.repeat === true && !view.closed;
   const repeatMenu: ReadonlyArray<AppBarMenuItem> = !repeats
@@ -481,7 +480,7 @@ function KinWorkItemBody(props: ItemTarget) {
     : [
         {
           id: "repeat",
-          title: `${KIN_WORK_REPEAT.label}: ${repeatShown}`,
+          title: KIN_WORK_REPEAT.menu(view.repeat?.text ?? null),
           items: [
             ...(dated
               ? []
@@ -638,7 +637,6 @@ function KinWorkItemBody(props: ItemTarget) {
                 returnKeyType="done"
                 onChangeText={(title) => changes.setEdit({ title })}
                 textAlignVertical="center"
-                placeholder={KIN_WORK_NEW_COPY.titlePlaceholder}
                 placeholderTextColorClassName="accent-placeholder"
                 className="min-h-8 font-sans text-base text-foreground"
               />
@@ -1284,14 +1282,14 @@ export function KinLinkedSection(props: {
               <RowPressable
                 key={item.key}
                 accessibilityRole="button"
-                accessibilityLabel={item.kind === "message" ? title : `${item.key}, ${title}`}
+                accessibilityLabel={item.kind === "message" ? title : `${item.name}, ${title}`}
                 onPress={() => props.onOpen(item.open)}
                 className="bg-grouped-card"
               >
                 <View className="min-w-0 flex-row gap-2 px-4 py-3">
                   {item.kind === "message" ? null : (
                     <Text textRole="body" className="text-foreground-muted">
-                      {item.key}
+                      {item.name}
                     </Text>
                   )}
                   <Text

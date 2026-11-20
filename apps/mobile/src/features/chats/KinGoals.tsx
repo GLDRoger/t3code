@@ -209,7 +209,6 @@ function GoalForm(props: {
           autoFocus={goal === null}
           disabled={saving}
           maxLength={200}
-          placeholder="Q4 money in"
           onChangeText={(title) => edit({ title })}
         />
       </ListSection>
@@ -236,7 +235,6 @@ function GoalForm(props: {
             keyboard="numbers"
             disabled={saving}
             maxLength={60}
-            placeholder={KIN_GOALS.targetHint[draft.measure]}
             onChangeText={(target) => edit({ target })}
           />
         </KinCountryFirstField>
@@ -248,7 +246,6 @@ function GoalForm(props: {
               keyboard="numbers"
               disabled={saving}
               maxLength={20}
-              placeholder="0"
               onChangeText={(current) => edit({ current })}
             />
             <KinWorkTextField
@@ -256,7 +253,7 @@ function GoalForm(props: {
               value={draft.unit}
               disabled={saving}
               maxLength={40}
-              placeholder="hires, releases"
+              placeholder="For example: hires"
               onChangeText={(unit) => edit({ unit })}
             />
           </>
@@ -269,7 +266,7 @@ function GoalForm(props: {
           keyboard="numbers"
           disabled={saving}
           maxLength={10}
-          placeholder="2026-10-01"
+          placeholder="YYYY-MM-DD"
           onChangeText={(startsOn) => edit({ startsOn: startsOn.trim() })}
         />
         <KinWorkTextField
@@ -278,7 +275,7 @@ function GoalForm(props: {
           keyboard="numbers"
           disabled={saving}
           maxLength={10}
-          placeholder="2026-12-31"
+          placeholder="YYYY-MM-DD"
           onChangeText={(dueOn) => edit({ dueOn: dueOn.trim() })}
         />
       </ListSection>
