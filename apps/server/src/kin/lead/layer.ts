@@ -75,6 +75,7 @@ import * as GitHubWatch from "../github/GitHubWatch.ts";
 import * as TaskWake from "./TaskWake.ts";
 import * as DelegatedTasks from "./DelegatedTasks.ts";
 import * as ChatWake from "./ChatWake.ts";
+import { archiveEarlierKinProjects } from "./leadProject.ts";
 
 export class KinLeadStartupError extends Schema.TaggedError<KinLeadStartupError>()(
   "KinLeadStartupError",
@@ -407,6 +408,17 @@ const draftAmounts = Layer.effectDiscard(
     forkParked,
   ),
 );
+// Once per project, at every start: Kin's projects from before it archived them at creation.
+const earlierProjects = Layer.effectDiscard(
+  archiveEarlierKinProjects().pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin couldn't archive its earlier projects; the next start tries again", {
+        cause: Cause.pretty(cause),
+      }),
+    ),
+    forkParked,
+  ),
+);
 const production = withServices(
   Layer.mergeAll(
     runner,
@@ -417,6 +429,7 @@ const production = withServices(
     workImport,
     issuedAmounts,
     draftAmounts,
+    earlierProjects,
   ).pipe(
     Layer.provideMerge(documents),
     Layer.provideMerge(Team.layer),
