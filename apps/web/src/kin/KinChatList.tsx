@@ -46,10 +46,10 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/
 import { useSidebar } from "../components/ui/sidebar";
 import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
+import { ApproveOnPhone } from "./ApproveOnPhone";
 import { KinRestoreButton, useKinRestore } from "./KinAgentRetire";
 import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
-import { ApproveOnPhone } from "./KinCards";
 import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
 import type { KinLeadFormTarget } from "./kinLeadForm";
 import { useNowMinuteMs } from "./useKinClock";

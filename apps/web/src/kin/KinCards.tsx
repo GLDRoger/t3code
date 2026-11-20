@@ -73,7 +73,7 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import type { EnvironmentId, KinPersonId, KinSendTry, KinWidget } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
-import { FileTextIcon, SmartphoneIcon } from "lucide-react";
+import { FileTextIcon } from "lucide-react";
 import { kinConnectionChange } from "@t3tools/client-runtime/kin/kinConnections";
 import {
   Menu,
@@ -98,6 +98,7 @@ import {
 import { useAssetUrls } from "../assets/assetUrls";
 import { AttachmentImage } from "../components/media/AttachmentImage";
 import { environmentCatalog } from "../connection/catalog";
+import { ApproveOnPhone } from "./ApproveOnPhone";
 import { useKinOpenWaiting } from "./useKinOpen";
 import { useKinOwnerLevelKnown } from "./useKinOwnerLevel";
 import { useNowMinuteMs } from "./useKinClock";
@@ -1230,15 +1231,5 @@ function KinApprovalCard(props: { readonly approval: KinApprovalWidgetView }) {
     >
       {open ? <ApproveOnPhone /> : <p className="text-xs text-muted-foreground">{status}</p>}
     </CardFrame>
-  );
-}
-
-/** Approvals need the phone's device key, so the browser points there instead. */
-export function ApproveOnPhone() {
-  return (
-    <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-      <SmartphoneIcon aria-hidden className="size-3.5" />
-      Approve on your phone
-    </p>
   );
 }
