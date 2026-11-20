@@ -76,7 +76,7 @@ import {
   spineShown,
   taskSpecChanged,
 } from "./leadSpine.ts";
-import { contactFields, contactSensitive } from "./contactDetails.ts";
+import { contactAll, contactFields, contactSensitive } from "./contactDetails.ts";
 import { fieldList, fieldText, isMoney, LISTS, listOf, parseFields, shownField } from "./lists.ts";
 import {
   addUp,
@@ -1891,15 +1891,15 @@ const mailedFor = Effect.fnUntraced(function* (
   if (!MAILED_LISTS.has(row.registerId)) return [];
   if (row.registerId !== "clients") return yield* sentMail({ orgId, recordIds: [row.recordId] });
   const sql = yield* SqlClient.SqlClient;
-  const related = yield* sql<{ recordId: string; email: string | null }>`SELECT record_id AS
-      "recordId", json_extract(fields_json, '$.email') AS email
+  const related = yield* sql<{ recordId: string; fieldsJson: string }>`SELECT record_id AS
+      "recordId", fields_json AS "fieldsJson"
     FROM kin_records WHERE org_id = ${orgId} AND party_id = ${row.recordId}
       AND register_id IN ('invoices', 'quotes', 'receipts', 'contacts')
     ORDER BY record_id`;
   return yield* sentMail({
     orgId,
     recordIds: related.map((one) => one.recordId),
-    addresses: related.flatMap((one) => (typeof one.email === "string" ? [one.email] : [])),
+    addresses: related.flatMap((one) => contactAll(parseFields(one.fieldsJson), "email")),
   });
 });
 const COMMENTS_SHOWN = 10;

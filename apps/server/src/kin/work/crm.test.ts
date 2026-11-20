@@ -298,6 +298,34 @@ it.effect(
       assert.deepStrictEqual(client.projects, [
         { key: "P-1", title: "Invented site", health: "on_track" },
       ]);
+      // Mail Kin sent to any of a contact's emails, not only the main one, shows on the client.
+      const db = yield* SqlClient.SqlClient;
+      yield* db`UPDATE kin_records SET fields_json = json_set(fields_json, '$.emails',
+          json('["ravi@x.invalid","ravi.home@x.invalid"]'))
+        WHERE org_id = ${orgId} AND title = 'Invented Ravi'`;
+      yield* db`INSERT INTO kin_connections (org_id, connection_id, label, kind, url_host, auth,
+          reach, state, created_at, updated_at)
+        VALUES (${orgId}, 'mail', 'Mail', 'remote', 'mail.invalid', 'none', 'open', 'active', 1, 1)`;
+      const mail = {
+        _tag: "email",
+        to: ["Ravi.Home@x.invalid"],
+        cc: [],
+        subject: "Invented kickoff",
+        body: "Invented body",
+        threadId: null,
+        inReplyTo: null,
+        references: null,
+        attachments: [],
+      };
+      yield* db`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
+          pin_digest, payload_json, agent_id, wakeup_id, chat_id, widget_id, proposed_at, state,
+          done_at)
+        VALUES (${orgId}, 'ask-mail', 'mail', 'mail_send', 'pin', ${JSON.stringify(mail)}, ${lead},
+          'wake', 'chief-chat', 'card', 0, 'sent', 1)`;
+      assert.deepStrictEqual(
+        (yield* LeadWork.get(scope, { key: "C-1" })).mailed?.map((one) => one.subject),
+        ["Invented kickoff"],
+      );
       // Fields a list doesn't have, and a client that isn't there, are refused with nothing written.
       for (const records of [
         [{ title: "Invented", email: "a@x.invalid" }],

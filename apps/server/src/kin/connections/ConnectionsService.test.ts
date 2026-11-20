@@ -3289,14 +3289,23 @@ describe("KinConnections accounts", () => {
           VALUES (${orgId}, 'rec_client', 'clients', 'C-1', 'Invented Two', 'person', ${ownerId},
             'person', 'c1', 0, 0, NULL, '{}'),
             (${orgId}, 'rec_raj', 'contacts', 'CT-1', 'Raj', 'person', ${ownerId}, 'person',
-            'ct1', 0, 0, 'rec_client', '{"email":"Raj@Client2.example"}')`;
+            'ct1', 0, 0, 'rec_client', '{"email":"Raj@Client2.example"}'),
+            (${orgId}, 'rec_client3', 'clients', 'C-2', 'Invented Three', 'person', ${ownerId},
+            'person', 'c2', 0, 0, NULL, '{}'),
+            (${orgId}, 'rec_raj3', 'contacts', 'CT-2', 'Raj', 'person', ${ownerId}, 'person',
+            'ct2', 0, 0, 'rec_client3',
+            '{"email":"raj@three.example","emails":["raj@three.example","RAJ@client2.example"]}')`;
         const replied = yield* answer(reply.widgetId, ownerId, true);
         yield* connections.sendAsk(orgId, replied!.askId);
         yield* connections.sendAsk(orgId, replied!.askId);
+        // Each client whose contact holds the address, as its main email or another one.
         assert.deepStrictEqual(
           yield* sql`SELECT party_id AS "partyId", kind, note, person_id AS "personId"
-            FROM kin_client_touches ORDER BY touch_id`,
-          [{ partyId: "rec_client", kind: "email", note: "Re: PO 77", personId: ownerId }],
+            FROM kin_client_touches ORDER BY party_id`,
+          [
+            { partyId: "rec_client", kind: "email", note: "Re: PO 77", personId: ownerId },
+            { partyId: "rec_client3", kind: "email", note: "Re: PO 77", personId: ownerId },
+          ],
         );
         const sentReply = vendor.vendor.sent.at(-1)!;
         assert.strictEqual(sentReply.account, WORK_MAIL);
