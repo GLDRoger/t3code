@@ -4204,10 +4204,14 @@ it.effect("an agent's reply carries what its own wake-up changed, as each reader
       sourceEventId: "ask-event",
       tasks: [{ key: "W-1", to: "Finance", reason: "Invented: month end" }],
     });
-    // Named in no link of the reply: the receipt alone says it opens as a client.
+    // Named in no link of the reply: the receipt alone says it opens as a client, and a contact
+    // as its client's page.
     yield* LeadWork.create(scope, {
       sourceEventId: "ask-event",
-      records: [{ list: "clients", title: "Invented Acme" }],
+      records: [
+        { list: "clients", title: "Invented Acme" },
+        { list: "contacts", title: "Invented Ola", client: "Invented Acme" },
+      ],
     });
     yield* reply("first", "wake");
     // The next wake-up, in the same chat, changes seven things.
@@ -4240,15 +4244,21 @@ it.effect("an agent's reply carries what its own wake-up changed, as each reader
     yield* reply("empty", "wake-3");
     const read = yield* ownerReads;
     const first = read.get(KinMessageId.make("first"))!.turnChanges;
-    assert.deepInclude(first, { count: 3, more: 0 });
+    assert.deepInclude(first, { count: 4, more: 0 });
     assert.deepStrictEqual(receiptRows(first), [
       ["W-2", "created", true, false],
       ["W-1", "given to Finance", true, false],
       ["C-1", "created", false, false],
+      ["CT-1", "created", false, false],
     ]);
     assert.deepStrictEqual(
-      first!.items.map((item) => item.kind),
-      ["task", "task", "client"],
+      first!.items.map((item) => [item.kind, item.party]),
+      [
+        ["task", undefined],
+        ["task", undefined],
+        ["client", undefined],
+        ["entry", "C-1"],
+      ],
     );
     assert.deepStrictEqual(first!.items[0]!.change.agentId, lead);
     // A turn that changed nothing says so, unlike an older server.

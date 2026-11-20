@@ -2,10 +2,12 @@ import {
   KIN_MARKETING,
   kinCameFromLabel,
   kinCampaignResultRows,
+  kinCampaignResultsSummary,
   kinContactListView,
   kinIsCampaignSource,
+  kinTagAdd,
   kinTagChoices,
-  kinTagsWith,
+  kinTagsFull,
   kinTagsWithout,
   type KinCampaignResultId,
 } from "@t3tools/client-runtime/kin/kinMarketing";
@@ -59,9 +61,11 @@ export function KinTagEditor(props: {
 }) {
   const [typed, setTyped] = useState("");
   const choices = kinTagChoices(props.tags, props.company, typed);
+  const full = kinTagsFull(props.tags, typed);
   const add = (tag: string) => {
-    props.onChange(kinTagsWith(props.tags, tag));
-    setTyped("");
+    const next = kinTagAdd(props.tags, tag);
+    if (next.tags !== props.tags) props.onChange(next.tags);
+    setTyped(next.typed);
   };
   return (
     <div className="flex flex-col gap-2">
@@ -94,6 +98,8 @@ export function KinTagEditor(props: {
           placeholder={KIN_MARKETING.tagPlaceholder}
           autoComplete="off"
           disabled={props.disabled}
+          aria-invalid={full === null ? undefined : true}
+          aria-describedby={full === null ? undefined : `${props.id}-problem`}
           onChange={(event) => setTyped(event.target.value)}
           onKeyDown={(event) => {
             if (event.key !== "Enter") return;
@@ -111,6 +117,11 @@ export function KinTagEditor(props: {
           {KIN_MARKETING.addTag}
         </Button>
       </div>
+      {full === null ? null : (
+        <p id={`${props.id}-problem`} role="alert" className="text-xs text-destructive-foreground">
+          {full}
+        </p>
+      )}
       {choices.length === 0 ? null : (
         <div className="flex flex-wrap gap-1.5">
           {choices.map((tag) => (
@@ -311,7 +322,10 @@ export function KinContactListDialog(
   );
 }
 
-/** A campaign's results, counted by the host; each count opens the list it counts. */
+/**
+ * A campaign's results, counted by the host, folded to their counts like the page's other blocks;
+ * each count opens what it counts.
+ */
 export function KinCampaignResultsSection(props: {
   readonly results: KinCampaignResults;
   readonly audience: string | null;
@@ -319,7 +333,10 @@ export function KinCampaignResultsSection(props: {
 }) {
   const rows = kinCampaignResultRows(props.results, props.audience);
   return (
-    <KinWorkSection title={KIN_MARKETING.results}>
+    <KinWorkSection
+      title={KIN_MARKETING.results}
+      fold={{ summary: kinCampaignResultsSummary(props.results, props.audience) }}
+    >
       <ul className="-mx-2 flex flex-col">
         {rows.map((row) => (
           <li key={row.id}>

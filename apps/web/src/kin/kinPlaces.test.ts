@@ -2,8 +2,10 @@ import { KinAgentId, KinListId, KinRecordKey } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  KIN_PLACE_PATH,
   kinPlaceOfWork,
   kinRecordOf,
+  kinRecordPlace,
   kinSearchOf,
   kinTaskAddress,
   validateKinAgentSearch,
@@ -37,6 +39,23 @@ describe("kinPlaceOfWork", () => {
     [{ show: "dates", client: party }, "clients", { client: party }],
   ] as const)("%j lands on %s", (search, place, kept) => {
     expect(kinPlaceOfWork(search)).toEqual({ place, search: kept });
+  });
+});
+
+describe("kinRecordPlace", () => {
+  it.each([
+    ["task", "W-1", "tasks", { task: "W-1" }],
+    ["client", "C-1", "clients", { client: "C-1" }],
+    ["project", "P-1", "clients", { project: "P-1" }],
+    ["doc", "D-1", "docs", { doc: "D-1" }],
+    ["entry", "INV-1", "money", { task: "INV-1" }],
+    // A deal lives with Clients, beside its client.
+    ["entry", "DL-1", "clients", { task: "DL-1" }],
+  ] as const)("opens %s %s where it lives", (kind, key, place, search) => {
+    expect(kinRecordPlace({ _tag: "record", key, kind })).toEqual({
+      to: KIN_PLACE_PATH[place],
+      search,
+    });
   });
 });
 

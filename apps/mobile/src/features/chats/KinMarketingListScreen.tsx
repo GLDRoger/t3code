@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_DEALS, kinDealRow, kinDealsNotRead } from "@t3tools/client-runtime/kin/kinDeals";
 import {
   KIN_MARKETING,
   kinContactListOfClients,
@@ -12,7 +13,13 @@ import {
   kinClientsQuery,
   type KinClientsFilter,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
-import { EnvironmentId, KinOrgId, type KinContactListInput } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  KinOrgId,
+  type KinContactListInput,
+  type KinDealsInput,
+  type KinRecordKey,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -22,13 +29,18 @@ import { View } from "react-native";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../components/ui/AppBar";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
 import { NavigationRow } from "../../components/ui/NavigationRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useNowMinuteMs } from "../../lib/clock";
+import { KinLoadFailed } from "./components/KinLoadFailed";
+import { KinDealRowButton } from "./KinDealsList";
 import { KinExportListRow } from "./KinMarketing";
 import { kinClient } from "./state/kinClient";
+import { useKinDeals } from "./state/useKinDeals";
+import { useKinWorkLink } from "./state/kinWorkLink";
 import {
   useKinClientsList,
   useKinWork,
@@ -36,13 +48,17 @@ import {
   type KinWorkTarget,
 } from "./state/useKinWork";
 
-/** A list: a tag's contacts, a campaign's audience, or the clients that came from a campaign. */
+/**
+ * A list: a tag's contacts, a campaign's audience, the clients that came from a campaign, or with
+ * `deals` the open or won deals at them.
+ */
 export type KinMarketingListParams = {
   readonly environmentId: string;
   readonly orgId: string;
   readonly title: string;
   readonly tag?: string;
   readonly campaign?: string;
+  readonly deals?: "open" | "won";
   /** With `cameFrom`, the clients and prospects that came from there. */
   readonly cameFrom?: string;
   readonly show?: "prospects" | "clients" | "open";
@@ -71,6 +87,15 @@ export function KinMarketingListScreen({ route }: StaticScreenProps<KinMarketing
               variant="plain"
               title={KIN_MARKETING.listFailed}
               detail="This link doesn't name a list."
+            />
+          ) : params.deals !== undefined && params.campaign !== undefined ? (
+            <CampaignDeals
+              {...target}
+              input={{
+                orgId: target.orgId,
+                campaign: params.campaign as KinRecordKey,
+                state: params.deals,
+              }}
             />
           ) : params.cameFrom !== undefined ? (
             <CameFromList
@@ -151,6 +176,51 @@ function ContactList(props: KinWorkTarget & { readonly input: KinContactListInpu
         )}
       </ListSection>
     </>
+  );
+}
+
+function CampaignDeals(props: KinWorkTarget & { readonly input: KinDealsInput }) {
+  const openRecord = useKinWorkLink();
+  const directory = useKinWorkDirectory(props, true);
+  const now = new Date(useNowMinuteMs());
+  const { state, refresh } = useKinDeals(props, props.input);
+  if (state._tag === "loading")
+    return (
+      <View className="items-center py-12">
+        <AppActivityIndicator />
+      </View>
+    );
+  if (state._tag !== "ready") {
+    const notRead = kinDealsNotRead(state);
+    return notRead !== null || state._tag !== "failed" ? (
+      <EmptyState variant="plain" {...(notRead ?? KIN_DEALS.refused)} />
+    ) : (
+      <KinLoadFailed title={KIN_DEALS.loadFailed} cause={state.cause} onRetry={refresh} />
+    );
+  }
+  const { deals, more } = state.value;
+  return (
+    <ListSection>
+      {deals.length === 0 ? (
+        <ListRowLayout label={KIN_MARKETING.dealsEmpty} disabled />
+      ) : (
+        deals.map((deal) => (
+          <KinDealRowButton
+            key={deal.key}
+            inset
+            row={kinDealRow(deal, directory.names, now)}
+            onPress={() =>
+              openRecord("KinDeal", {
+                environmentId: props.environmentId,
+                orgId: props.orgId,
+                deal: deal.key,
+              })
+            }
+          />
+        ))
+      )}
+      {more === 0 ? null : <ListRowLayout label={`${more} more`} disabled />}
+    </ListSection>
   );
 }
 

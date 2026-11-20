@@ -18,6 +18,7 @@ import {
   type KinMoney,
   type KinOrgId,
   type KinRecordDetail,
+  type KinRecordRef,
   type KinWorkPrincipal,
   KIN_TEXT_LOCALE,
   calendarTimeMillis,
@@ -44,7 +45,7 @@ import { heldUntil } from "../triggers/quietHold.ts";
 import { ownerLevelAsked, ownerLevelPeople } from "../people/KinAccess.ts";
 import { sentMail, SentMailView } from "../connections/Sending.ts";
 import { countryFirst, countryRefusal, homeCurrency, isCountryFirst } from "./companyProfile.ts";
-import { partyPage, projectDetail } from "./crm.ts";
+import { campaignsNamed, partyPage, projectDetail, sourceShown } from "./crm.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { fold, matchName } from "./nameMatch.ts";
 import { lastContacts } from "./touches.ts";
@@ -182,9 +183,11 @@ const CameFrom = KinToolText(
   120,
   "A client's: where it came from, such as a referral or an event.",
 );
+// Past twenty, Kin's own rule (`cleanTags`) refuses in words an agent can pass on.
 const PartyTags = Schema.Array(KinToolText(60))
-  .check(Schema.isMaxLength(20))
+  .check(Schema.isMaxLength(50))
   .annotate({ description: "A client's: the company's own words for it." });
+const Audience = KinToolText(60);
 const Terms = KinToolText(4_000);
 const Repos = Schema.Array(KinRepoName).check(Schema.isMaxLength(20));
 
@@ -268,6 +271,9 @@ const Row = Schema.Struct({
   project: Schema.optional(Schema.String),
   side: Schema.optional(Schema.Literal("theirs")),
   kind: Schema.optional(KinPartyKind),
+  cameFrom: Schema.optional(Schema.String),
+  tags: Schema.optional(Schema.Array(Schema.String)),
+  audience: Schema.optional(Schema.String),
   repo: Schema.optional(Schema.String),
   role: Schema.optional(Schema.String),
   email: Schema.optional(Schema.String),
@@ -427,6 +433,7 @@ const CreateRow = Schema.Struct({
   kind: Schema.optional(NewPartyKind),
   cameFrom: Schema.optional(CameFrom),
   tags: Schema.optional(PartyTags),
+  audience: Schema.optional(Audience),
   role: Schema.optional(Detail),
   email: Schema.optional(Detail),
   phone: Schema.optional(Detail),
@@ -515,12 +522,14 @@ export const UpdateInput = Schema.Struct({
   owner: Schema.optional(Who),
   due: Schema.optional(Due),
   notes: Schema.optional(Notes),
-  category: Schema.optional(Category),
+  category: Schema.optional(Schema.NullOr(Category)),
   side: Schema.optional(KinRecordSide),
   client: Schema.optional(Schema.NullOr(Client)),
   project: Schema.optional(Schema.NullOr(Project)),
   repo: Schema.optional(Schema.NullOr(KinRepoName)),
   kind: Schema.optional(KinPartyKind),
+  tags: Schema.optional(PartyTags),
+  audience: Schema.optional(Schema.NullOr(Audience)),
   role: Schema.optional(Schema.NullOr(Detail)),
   email: Schema.optional(Schema.NullOr(Detail)),
   phone: Schema.optional(Schema.NullOr(Detail)),
@@ -866,6 +875,8 @@ const linkKeys = Effect.fn("KinWorkTools.linkKeys")(function* (
 
 type Shown = {
   readonly name: (who: KinWorkPrincipal | null) => string | undefined;
+  /** The campaigns these rows came from that the turn's people see in Clients, by key. */
+  readonly campaigns: ReadonlyMap<string, KinRecordRef>;
   readonly lists: Lists;
   readonly keys: ReadonlyMap<string, string>;
   readonly zone: string;
@@ -884,12 +895,53 @@ const viewFor = Effect.fn("KinWorkTools.view")(function* (
   ]);
   return {
     name: yield* namer(lead),
+    campaigns: yield* campaignsSeen(
+      lead,
+      rows.map((row) => fieldText(parseFields(row.fieldsJson), "source")),
+    ),
     lists,
     keys: yield* linkKeys(lead, links, unseen),
     zone: yield* ownerZone(lead.orgId),
     unseen,
   } satisfies Shown;
 });
+
+/** The campaigns these sources name that every person the turn is for sees in Clients. */
+const campaignsSeen = Effect.fn("KinWorkTools.campaignsSeen")(function* (
+  lead: Lead,
+  sources: ReadonlyArray<string | null>,
+) {
+  const team = yield* viewOf(lead);
+  return yield* campaignsNamed(
+    lead.orgId,
+    sources,
+    team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
+  );
+});
+/** Where it came from as an agent reads it: a campaign by name and key, or the word alone. */
+const cameFromShown = (source: string, campaigns: ReadonlyMap<string, KinRecordRef>) => {
+  const shown = sourceShown(source, campaigns);
+  return shown.campaign === undefined
+    ? (shown.source ?? source)
+    : `${shown.campaign.title} (${shown.campaign.key})`;
+};
+/** One change as the history line an agent reads, a campaign source by its name. */
+const changeLine = (
+  fields: ReadonlyArray<{ readonly field: string; readonly to: string | null }>,
+  campaigns: ReadonlyMap<string, KinRecordRef>,
+) =>
+  fields
+    .map(
+      (field) =>
+        `${field.field}: ${
+          field.to === null
+            ? "cleared"
+            : field.field === "source"
+              ? cameFromShown(field.to, campaigns)
+              : field.to
+        }`,
+    )
+    .join("; ");
 
 /** A goal's own fields as an agent reads them; its progress is `record_get`'s. */
 const goalShown = (fields: ReturnType<typeof parseFields>) => {
@@ -915,6 +967,10 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     return value === null ? {} : { [key]: value };
   };
   const repos = fieldList(fields, "repos");
+  const tags = list === "clients" || list === "contacts" ? fieldList(fields, "tags") : [];
+  const cameFrom = list === "clients" ? fieldText(fields, "source") : null;
+  const audience =
+    list === "projects" && row.category === "campaign" ? fieldText(fields, "audience") : null;
   const several = (key: "emails" | "phones") => {
     const all = fieldList(fields, key);
     return all.length === 0 ? {} : { [key]: [...all] };
@@ -948,6 +1004,10 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
       : { project: `${record.project.title} (${record.project.key})` }),
     ...(row.side === "theirs" && list === "work" ? { side: "theirs" as const } : {}),
     ...(list === "clients" ? { kind: row.category === "vendor" ? "vendor" : "client" } : {}),
+    ...(cameFrom === null ? {} : { cameFrom: cameFromShown(cameFrom, view.campaigns) }),
+    ...(tags.length === 0 ? {} : { tags: [...tags] }),
+    ...(list === "projects" && row.category === "campaign" ? { category: "campaign" } : {}),
+    ...(audience === null ? {} : { audience }),
     ...(row.repo === null ? {} : { repo: row.repo }),
     ...text("role"),
     ...text("email"),
@@ -1165,13 +1225,21 @@ const fieldsFrom = (row: {
     ).flatMap((key) => (row[key] === undefined ? [] : [[key, row[key]]])),
   ) as Record<string, string | ReadonlyArray<string> | null>;
 
-/** Where a client came from and its tags, under the keys Clients stores them by. */
-const partyWords = (row: {
-  readonly cameFrom?: string | undefined;
-  readonly tags?: ReadonlyArray<string> | undefined;
-}): Record<string, string | ReadonlyArray<string>> => ({
-  ...(row.cameFrom === undefined ? {} : { source: row.cameFrom }),
-  ...(row.tags === undefined || row.tags.length === 0 ? {} : { tags: [...new Set(row.tags)] }),
+/**
+ * Where a client came from, a client's or contact's tags and a campaign's audience, under the keys
+ * Clients stores them by; `KinRecords` cleans them and refuses them on a list without them.
+ */
+const partyWords = (
+  list: string,
+  row: {
+    readonly cameFrom?: string | undefined;
+    readonly tags?: ReadonlyArray<string> | undefined;
+    readonly audience?: string | null | undefined;
+  },
+): Record<string, string | ReadonlyArray<string> | null> => ({
+  ...(row.cameFrom === undefined || list !== "clients" ? {} : { source: row.cameFrom }),
+  ...(row.tags === undefined ? {} : { tags: row.tags }),
+  ...(row.audience === undefined ? {} : { audience: row.audience }),
 });
 
 /** A list a lead named, as this org has it. */
@@ -1300,6 +1368,7 @@ const CONTACT_CHANGES: ReadonlySet<string> = new Set([
   "phone",
   "emails",
   "phones",
+  "tags",
 ]);
 
 /** What only the owner sets in Work: clients, projects, money, list fields, labels, holders. */
@@ -1343,6 +1412,9 @@ const ownersInput = (input: object, also: ReadonlyArray<string> = []) =>
 const teamRow = ({
   client: _client,
   project: _project,
+  cameFrom: _cameFrom,
+  tags: _tags,
+  audience: _audience,
   terms: _terms,
   gstin: _gstin,
   placeOfSupply: _placeOfSupply,
@@ -1792,6 +1864,12 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   const actor = (by: (typeof detail.changes)[number]["by"]) =>
     by._tag === "system" ? "Kin" : (name(by) ?? "someone");
   const assignedBy = name(detail.assignedBy);
+  const pastCampaigns = yield* campaignsSeen(
+    lead,
+    detail.changes.flatMap((change) =>
+      change.fields.flatMap((field) => (field.field === "source" ? [field.to] : [])),
+    ),
+  );
   const said = yield* latestComments(lead.orgId, row.recordId, COMMENTS_SHOWN);
   const comments = {
     ...(said.comments.length === 0
@@ -1832,10 +1910,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
       history: teamChanges(detail.changes).map((change) => ({
         at: change.at,
         by: actor(change.by),
-        change:
-          change.kind === "created"
-            ? "created"
-            : change.fields.map((field) => `${field.field}: ${field.to ?? "cleared"}`).join("; "),
+        change: change.kind === "created" ? "created" : changeLine(change.fields, pastCampaigns),
       })),
       ...comments,
       ...fromProject,
@@ -1919,10 +1994,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
     ).map((change) => ({
       at: change.at,
       by: actor(change.by),
-      change:
-        change.kind === "created"
-          ? "created"
-          : change.fields.map((field) => `${field.field}: ${field.to ?? "cleared"}`).join("; "),
+      change: change.kind === "created" ? "created" : changeLine(change.fields, pastCampaigns),
       ...(change.kind !== "created" &&
       change.fields.some((field) => sensitive.has(field.field) || field.field === "payment")
         ? { sensitive: true as const }
@@ -2058,7 +2130,7 @@ const createRow = Effect.fnUntraced(function* (
   const goal = yield* goalFields(lead.orgId, row);
   const fields = {
     ...fieldsFrom(row),
-    ...(list === "clients" ? partyWords(row) : {}),
+    ...partyWords(list, row),
     ...spineSet,
     ...goal,
   };
@@ -2706,7 +2778,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
         input.state === "done" ||
         input.sensitive !== undefined,
     });
-  yield* explainedHonestly(lead, before, input.state, input.kind ?? input.category);
+  yield* explainedHonestly(lead, before, input.state, input.kind ?? input.category ?? undefined);
   const def = yield* listFor(lead, before.registerId);
   const patch: Patch = {
     ...(input.title === undefined ? {} : { title: input.title }),
@@ -2745,6 +2817,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
   );
   const fields = {
     ...fieldsFrom(input),
+    ...partyWords(before.registerId, { tags: input.tags, audience: input.audience }),
     ...spine.fields,
     ...(yield* goalFields(lead.orgId, input, parseFields(before.fieldsJson))),
     ...(holds ? { untold: `person:${giving.personId}` } : releases ? { untold: null } : {}),

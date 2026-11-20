@@ -1,4 +1,5 @@
 import {
+  KIN_CAMPAIGN_SOURCE,
   KinChatError,
   type KinDealAddStepInput,
   type KinDealCan,
@@ -37,7 +38,7 @@ import type * as Statement from "effect/sql/Statement";
 
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
-import { campaignsNamed, sourceShown } from "./crm.ts";
+import { campaignsNamed, dealsFromCampaign, sourceShown } from "./crm.ts";
 import { DEFAULT_STAGES, stageLine, stageMove, stagesOf } from "./dealStages.ts";
 import { KinRecords, requestHashOf, type Patch, type Writer } from "./KinRecords.ts";
 import { fieldText, isMoney, parseFields, type FieldValue } from "./lists.ts";
@@ -729,6 +730,17 @@ export const deals = Effect.fn("KinDeals.list")(function* (
   const sql = yield* SqlClient.SqlClient;
   const party =
     input.party === undefined ? undefined : yield* seenParty(actor, input.party).pipe(workFailure);
+  // A campaign they can't see in Clients answers as one never there.
+  if (
+    input.campaign !== undefined &&
+    !(yield* campaignsNamed(input.orgId, [`${KIN_CAMPAIGN_SOURCE}${input.campaign}`], viewer).pipe(
+      workFailure,
+    )).has(input.campaign)
+  )
+    return yield* new KinChatError({
+      reason: "not_found",
+      message: `No campaign ${input.campaign.slice(0, 40)}.`,
+    });
   const state = input.state ?? (party === undefined ? "open" : undefined);
   const stored =
     state === undefined
@@ -743,6 +755,9 @@ export const deals = Effect.fn("KinDeals.list")(function* (
     sql`r.register_id = 'deals'`,
     crmSeenBy(sql, viewer),
     ...(party === undefined ? [] : [sql`r.party_id = ${party.recordId}`]),
+    ...(input.campaign === undefined
+      ? []
+      : [dealsFromCampaign(sql, input.orgId, input.campaign, viewer)]),
     ...(input.owner === undefined
       ? []
       : [

@@ -2,9 +2,11 @@ import {
   KIN_MARKETING,
   kinCameFromLabel,
   kinCampaignResultRows,
+  kinCampaignResultsSummary,
   kinIsCampaignSource,
+  kinTagAdd,
   kinTagChoices,
-  kinTagsWith,
+  kinTagsFull,
   kinTagsWithout,
   type KinCampaignResultId,
 } from "@t3tools/client-runtime/kin/kinMarketing";
@@ -30,7 +32,7 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { beginForegroundHandoff } from "../../lib/foreground-handoff";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { KinWorkTextField } from "./components/KinWorkPieces";
+import { KinFoldSection, KinWorkTextField } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 import type { KinWorkTarget } from "./state/useKinWork";
 
@@ -110,9 +112,11 @@ export function KinTagFields(props: {
 }) {
   const [typed, setTyped] = useState("");
   const choices = kinTagChoices(props.tags, props.company, typed);
+  const full = kinTagsFull(props.tags, typed);
   const add = (tag: string) => {
-    props.onChange(kinTagsWith(props.tags, tag));
-    setTyped("");
+    const next = kinTagAdd(props.tags, tag);
+    if (next.tags !== props.tags) props.onChange(next.tags);
+    setTyped(next.typed);
   };
   return (
     <ListSection title={KIN_MARKETING.tags} footer={KIN_MARKETING.tagsHint}>
@@ -139,6 +143,15 @@ export function KinTagFields(props: {
         placeholder={KIN_MARKETING.audiencePlaceholder}
         onChangeText={setTyped}
       />
+      {full === null ? null : (
+        <Text
+          textRole="footnote"
+          accessibilityLiveRegion="polite"
+          className="px-4 pb-2 text-danger-foreground"
+        >
+          {full}
+        </Text>
+      )}
       <View className="flex-row flex-wrap items-center gap-2 px-4 pb-3">
         <Button
           label={KIN_MARKETING.addTag}
@@ -215,7 +228,10 @@ export function KinCameFromFields(props: {
   );
 }
 
-/** A campaign's results, counted by the host; each count opens the list it counts. */
+/**
+ * A campaign's results, counted by the host, folded to their counts like the page's other blocks;
+ * each count opens what it counts.
+ */
 export function KinCampaignResultsSection(props: {
   readonly results: KinCampaignResults;
   readonly audience: string | null;
@@ -223,13 +239,9 @@ export function KinCampaignResultsSection(props: {
 }) {
   const rows = kinCampaignResultRows(props.results, props.audience);
   return (
-    <ListSection
+    <KinFoldSection
       title={KIN_MARKETING.results}
-      footer={
-        props.audience === null
-          ? `${KIN_MARKETING.noAudience} ${KIN_MARKETING.resultsNote}`
-          : KIN_MARKETING.resultsNote
-      }
+      summary={kinCampaignResultsSummary(props.results, props.audience)}
     >
       {rows.map((row) => (
         <ListActionRow
@@ -239,6 +251,11 @@ export function KinCampaignResultsSection(props: {
           onPress={() => props.onOpen(row.id)}
         />
       ))}
-    </ListSection>
+      <Text textRole="footnote" className="bg-grouped-card px-4 py-3 text-foreground-muted">
+        {props.audience === null
+          ? `${KIN_MARKETING.noAudience} ${KIN_MARKETING.resultsNote}`
+          : KIN_MARKETING.resultsNote}
+      </Text>
+    </KinFoldSection>
   );
 }

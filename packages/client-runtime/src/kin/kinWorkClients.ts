@@ -1,11 +1,13 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
-import { KIN_MARKETING } from "./kinMarketing.ts";
+import { KIN_MARKETING, type KinCampaignResultId } from "./kinMarketing.ts";
 import { KIN_CHECK_CONNECTION } from "./kinAnswers.ts";
 import { KIN_CAMPAIGN_SOURCE, kinOwnerLevel, formatKinWhen } from "@t3tools/contracts";
 import type {
   KinAccessMeResult,
   KinClientTouch,
   KinContact,
+  KinContactListInput,
+  KinDealsInput,
   KinOrgId,
   KinPartiesInput,
   KinPerson,
@@ -485,14 +487,33 @@ export function kinClientsQuery(
 }
 
 /** The Clients list a campaign's count opens: who came from it, as that count reads them. */
-export function kinCampaignClientsFilter(
+/** What a campaign's result row opens: the list that count counts, and its title. */
+export type KinCampaignResultOpen =
+  | { readonly to: "contacts"; readonly title: string; readonly input: KinContactListInput }
+  | { readonly to: "clients"; readonly title: string; readonly filter: KinClientsFilter }
+  | { readonly to: "deals"; readonly title: string; readonly input: KinDealsInput };
+
+export function kinCampaignResultOpens(
+  orgId: KinOrgId,
   key: string,
-  id: "prospects" | "clients" | "deals" | "won",
-): KinClientsFilter {
+  name: string,
+  id: KinCampaignResultId,
+): KinCampaignResultOpen {
+  if (id === "audience") return { to: "contacts", title: name, input: { orgId, campaign: key } };
+  if (id === "deals" || id === "won")
+    return {
+      to: "deals",
+      title: `${id === "won" ? KIN_MARKETING.won : KIN_MARKETING.deals}: ${name}`,
+      input: { orgId, campaign: key as KinRecordKey, state: id === "won" ? "won" : "open" },
+    };
   return {
-    ...KIN_CLIENTS_DEFAULT_FILTER,
-    show: id === "prospects" ? "prospects" : id === "clients" ? "clients" : "open",
-    cameFrom: `${KIN_CAMPAIGN_SOURCE}${key}`,
+    to: "clients",
+    title: `${KIN_MARKETING.cameFrom}: ${name}`,
+    filter: {
+      ...KIN_CLIENTS_DEFAULT_FILTER,
+      show: id,
+      cameFrom: `${KIN_CAMPAIGN_SOURCE}${key}`,
+    },
   };
 }
 

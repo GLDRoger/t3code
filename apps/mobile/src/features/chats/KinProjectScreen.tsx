@@ -1,4 +1,3 @@
-import { KIN_MARKETING, kinCampaignSource } from "@t3tools/client-runtime/kin/kinMarketing";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { useAtomValue } from "@effect/atom-react";
@@ -14,6 +13,7 @@ import {
   KIN_PROJECT_GONE,
   KIN_PROJECT_REFUSED,
   KIN_PROJECT_LEAD,
+  kinCampaignResultOpens,
   kinProjectPageView,
   type KinProjectPageView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
@@ -333,20 +333,22 @@ function KinProjectBody(
                   <KinCampaignResultsSection
                     results={props.page.results}
                     audience={view.audience}
-                    onOpen={(id) =>
-                      navigation.navigate(
-                        "KinMarketingList",
-                        id === "audience"
-                          ? { environmentId, orgId, title: view.name, campaign: view.key }
-                          : {
-                              environmentId,
-                              orgId,
-                              title: `${KIN_MARKETING.cameFrom}: ${view.name}`,
-                              cameFrom: kinCampaignSource(view.key),
-                              show: id === "prospects" || id === "clients" ? id : "open",
-                            },
-                      )
-                    }
+                    onOpen={(id) => {
+                      const opened = kinCampaignResultOpens(orgId, view.key, view.name, id);
+                      navigation.navigate("KinMarketingList", {
+                        environmentId,
+                        orgId,
+                        title: opened.title,
+                        ...(opened.to === "contacts"
+                          ? { campaign: view.key }
+                          : opened.to === "deals"
+                            ? { campaign: view.key, deals: id === "won" ? "won" : "open" }
+                            : {
+                                cameFrom: opened.filter.cameFrom ?? "",
+                                show: id === "prospects" ? "prospects" : "clients",
+                              }),
+                      });
+                    }}
                   />
                 )
               }

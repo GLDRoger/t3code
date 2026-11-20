@@ -1,3 +1,4 @@
+import { kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinInMoney } from "@t3tools/client-runtime/kin/kinMoney";
 import {
   KinAgentId,
@@ -31,7 +32,9 @@ export function kinRecordPlace(to: Extract<KinMessageLinkTarget, { readonly _tag
     case "doc":
       return { to: KIN_PLACE_PATH.docs, search: { doc: to.key } };
     case "entry":
-      return { to: KIN_PLACE_PATH.money, search: { task: to.key } };
+      return kinIsDealKey(to.key)
+        ? { to: KIN_PLACE_PATH.clients, search: { task: to.key } }
+        : { to: KIN_PLACE_PATH.money, search: { task: to.key } };
     case "task":
       return { to: KIN_PLACE_PATH.tasks, search: { task: to.key } };
   }

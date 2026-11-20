@@ -638,7 +638,8 @@ export const projectDetail = Effect.fn("KinCrm.projectDetail")(function* (
       const who = principalOfText(text);
       return who === null ? [] : [who];
     }),
-    ...(row.category === "campaign"
+    // A campaign turned off keeps its audience for when it returns; its form shows the kept one.
+    ...(row.category === "campaign" || fieldText(fields, "audience") !== null
       ? { audience: fieldText(fields, "audience") as KinProjectDetail["audience"] }
       : {}),
     healthBecause: counted!.because,
@@ -901,6 +902,19 @@ const countedOf = (rows: ReadonlyArray<Counted>) => ({
   ),
 });
 
+/** Deals at the clients and prospects that came from this campaign, as the viewer sees them. */
+export const dealsFromCampaign = (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  key: string,
+  viewer: KinViewer,
+) =>
+  // Its client must be seen too; `crmSeenBy` reads `r`, which inside names the client.
+  sql`r.party_id IN (SELECT r.record_id FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'clients'
+      AND json_extract(r.fields_json, '$.source') = ${`${KIN_CAMPAIGN_SOURCE}${key}`}
+      AND ${crmSeenBy(sql, viewer)})`;
+
 /**
  * A campaign's results, counted from what this viewer reads in Clients (`crmSeenBy`) over every
  * row: one hidden from them is left out of every count, so no count says it is there.
@@ -917,10 +931,7 @@ export const campaignResults = Effect.fn("KinCrm.campaignResults")(function* (
     FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'clients'
       AND r.state = 'open' AND json_extract(r.fields_json, '$.source') = ${source}
       AND ${crmSeenBy(sql, viewer)}`;
-  // Its client must be seen too; `crmSeenBy` reads `r`, which inside names the client.
-  const fromIt = sql`r.party_id IN (SELECT r.record_id FROM kin_records r
-    WHERE r.org_id = ${orgId} AND r.register_id = 'clients'
-      AND json_extract(r.fields_json, '$.source') = ${source} AND ${crmSeenBy(sql, viewer)})`;
+  const fromIt = dealsFromCampaign(sql, orgId, campaign.key, viewer);
   const deals = (state: "open" | "done") => sql<Counted>`
     SELECT json_extract(r.fields_json, '$.value.currency') AS currency,
       SUM(json_extract(r.fields_json, '$.value.minor')) AS minor, COUNT(*) AS count

@@ -1,3 +1,4 @@
+import { KIN_MARKETING } from "@t3tools/client-runtime/kin/kinMarketing";
 import {
   KIN_DEALS,
   KIN_DEALS_STATES,
@@ -21,6 +22,7 @@ import type {
   KinDealMove,
   KinDealRow,
   KinDealStage,
+  KinDealsInput,
   KinPersonId,
   KinRecordKey,
 } from "@t3tools/contracts";
@@ -764,6 +766,64 @@ export function KinClientDeals(
         </ul>
       )}
     </KinWorkSection>
+  );
+}
+
+/** The deals a campaign's count counts, each opening its page; the host filters and caps them. */
+export function KinCampaignDealsDialog(
+  props: KinWorkTarget & {
+    readonly input: KinDealsInput;
+    readonly title: string;
+    readonly directory: KinWorkDirectory;
+    readonly onOpen: (key: KinRecordKey) => void;
+    readonly onClose: () => void;
+  },
+) {
+  const { state, refresh } = useKinDeals(props, props.input);
+  const now = new Date(useNowMinuteMs());
+  const notRead =
+    state._tag === "ready" || state._tag === "loading" ? null : kinDealsNotRead(state);
+  return (
+    <Dialog open onOpenChange={(open) => (open ? undefined : props.onClose())}>
+      <DialogPopup className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{props.title}</DialogTitle>
+        </DialogHeader>
+        <DialogPanel>
+          {state._tag === "loading" ? (
+            <KinWorkRowSkeletons />
+          ) : state._tag !== "ready" ? (
+            notRead !== null || state._tag !== "failed" ? (
+              <KinWorkNotice {...(notRead ?? KIN_DEALS.refused)} />
+            ) : (
+              <KinLoadFailed what={KIN_DEALS.loadFailed} cause={state.cause} onRetry={refresh} />
+            )
+          ) : state.value.deals.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{KIN_MARKETING.dealsEmpty}</p>
+          ) : (
+            <ul className="-mx-2 flex flex-col">
+              {state.value.deals.map((deal) => (
+                <li key={deal.key}>
+                  <DealRowButton
+                    row={kinDealRow(deal, props.directory.names, now)}
+                    selected={false}
+                    onOpen={() => props.onOpen(deal.key)}
+                  />
+                </li>
+              ))}
+              {state.value.more === 0 ? null : (
+                <li className="px-2 py-1 text-xs text-muted-foreground">{state.value.more} more</li>
+              )}
+            </ul>
+          )}
+        </DialogPanel>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={props.onClose}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
   );
 }
 

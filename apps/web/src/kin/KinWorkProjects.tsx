@@ -12,16 +12,12 @@ import {
   KIN_PROJECT_REFUSED,
   KIN_PROJECT_GONE,
   KIN_PROJECT_LEAD,
-  kinCampaignClientsFilter,
+  kinCampaignResultOpens,
   kinProjectLeadChoices,
   kinProjectPageView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { kinWorkSend, type KinWorkFormProblem } from "@t3tools/client-runtime/kin/kinWorkForms";
-import {
-  KIN_MARKETING,
-  kinContactListOfCampaign,
-  type KinCampaignResultId,
-} from "@t3tools/client-runtime/kin/kinMarketing";
+import type { KinCampaignResultId } from "@t3tools/client-runtime/kin/kinMarketing";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type {
@@ -55,6 +51,7 @@ import { KinDocsUnder } from "./KinDocsList";
 import { KinProjectNoteSection } from "./KinProjectNote";
 import { KinProjectPeopleSection } from "./KinProjectPeople";
 import { KinMilestoneDialog, KinProjectDialog } from "./KinWorkForms";
+import { KinCampaignDealsDialog } from "./KinDeals";
 import { KinCampaignResultsSection, KinContactListDialog } from "./KinMarketing";
 import { KinWorkClientsList } from "./KinWorkClients";
 import {
@@ -147,6 +144,8 @@ function ProjectPage(
   const privateId = useId();
   const view = kinProjectPageView(page, names, now);
   const { party } = view;
+  const opened =
+    openResult === null ? null : kinCampaignResultOpens(orgId, view.key, view.name, openResult);
   const change = async (input: {
     readonly state?: KinProjectState;
     readonly sensitive?: boolean;
@@ -614,15 +613,28 @@ function ProjectPage(
           onClose={() => setChoosingLead(false)}
         />
       ) : null}
-      {openResult === null ? null : openResult === "audience" ? (
+      {opened === null ? null : opened.to === "contacts" ? (
         <KinContactListDialog
           environmentId={environmentId}
           orgId={orgId}
-          input={kinContactListOfCampaign(orgId, view.key)}
-          title={view.name}
+          input={opened.input}
+          title={opened.title}
           onOpenClient={(key) => {
             setOpenResult(null);
             props.onOpenClient(key);
+          }}
+          onClose={() => setOpenResult(null)}
+        />
+      ) : opened.to === "deals" ? (
+        <KinCampaignDealsDialog
+          environmentId={environmentId}
+          orgId={orgId}
+          input={opened.input}
+          title={opened.title}
+          directory={props.directory}
+          onOpen={(key) => {
+            setOpenResult(null);
+            props.onOpenTask(key);
           }}
           onClose={() => setOpenResult(null)}
         />
@@ -630,7 +642,7 @@ function ProjectPage(
         <Dialog open onOpenChange={(open) => (open ? undefined : setOpenResult(null))}>
           <DialogPopup className="max-w-2xl">
             <DialogHeader>
-              <DialogTitle>{`${KIN_MARKETING.cameFrom}: ${view.name}`}</DialogTitle>
+              <DialogTitle>{opened.title}</DialogTitle>
             </DialogHeader>
             <div className="flex h-[60vh] min-h-0 flex-col">
               <KinWorkClientsList
@@ -639,7 +651,7 @@ function ProjectPage(
                 live={props.live}
                 stale={props.stale}
                 directory={props.directory}
-                start={kinCampaignClientsFilter(view.key, openResult)}
+                start={opened.filter}
                 onOpen={(key) => {
                   setOpenResult(null);
                   props.onOpenClient(key);

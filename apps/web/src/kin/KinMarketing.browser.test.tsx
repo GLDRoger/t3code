@@ -58,6 +58,13 @@ describe("a campaign's results", () => {
       />,
       { router: false },
     );
+    // Folded like the page's other blocks, its counts on the line.
+    const fold = page.getByRole("button", {
+      name: /Results so far\s*14 prospects · 2 clients · 5 deals · 1 won · 212 contacts/,
+    });
+    await expect.element(fold).toHaveAttribute("aria-expanded", "false");
+    expect(page.getByRole("button", { name: /Prospects from it/ }).elements()).toHaveLength(0);
+    await userEvent.click(fold);
     await expect
       .element(page.getByRole("button", { name: /Prospects from it\s*14/ }))
       .toBeVisible();

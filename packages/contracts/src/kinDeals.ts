@@ -104,6 +104,8 @@ export const KinDealsInput = Schema.Struct({
   owner: Schema.optional(KinWorkPrincipal),
   /** Default every state with `party`, open without it. */
   state: Schema.optional(KinDealState),
+  /** The deals a campaign's results count: those at clients and prospects that came from it. */
+  campaign: Schema.optional(KinRecordKey),
 });
 export type KinDealsInput = typeof KinDealsInput.Type;
 export const KinDealsResult = Schema.Struct({

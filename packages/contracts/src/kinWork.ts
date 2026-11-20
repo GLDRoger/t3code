@@ -1118,7 +1118,7 @@ export const KinProjectDetail = Schema.Struct({
   renewsOn: Schema.optional(Schema.NullOr(KinDay)),
   /** The people and agents on it besides its lead (`owner`). Membership only; it grants nothing. */
   members: Schema.optional(Schema.Array(KinWorkPrincipal)),
-  /** A campaign's audience: the contacts carrying this tag. */
+  /** A campaign's audience, the contacts carrying this tag; kept on one turned back to a project. */
   audience: Schema.optional(Schema.NullOr(KinPartyTag)),
   /** Why `health` is what it is. */
   healthBecause: Schema.Struct({

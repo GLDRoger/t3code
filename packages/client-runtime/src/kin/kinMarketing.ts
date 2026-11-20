@@ -24,7 +24,7 @@ export const KIN_MARKETING = {
   removeTag: (tag: string) => `Remove tag ${tag}`,
   tagsHint:
     "Tags are the company's own words. A list is every contact with a tag, saved as a filter; export it to your mail tool from the list.",
-  tagsFull: `Keep it to ${KIN_TAGS_MAX} tags.`,
+  tagsFull: `A contact takes at most ${KIN_TAGS_MAX} tags.`,
   cameFrom: "Came from",
   cameFromAnywhere: "Anywhere",
   cameFromCampaigns: "Campaigns",
@@ -32,6 +32,7 @@ export const KIN_MARKETING = {
   tag: "Tag",
   anyTag: "Any tag",
   results: "Results so far",
+  resultsNone: "nothing yet",
   prospects: "Prospects from it",
   clients: "Clients from it",
   deals: "Deals from them",
@@ -48,6 +49,7 @@ export const KIN_MARKETING = {
   listEmptyDetail: "Add the tag to contacts on their client's page to put them on it.",
   cameFromEmpty: "No prospects or clients came from here yet.",
   cameFromEmptyDetail: 'Choose this campaign in "Came from" on a prospect or client.',
+  dealsEmpty: "No deals counted here yet.",
   listFailed: "Couldn't load this list.",
   namesOnly: "You see names only. Emails and phone numbers stay with Clients.",
   contacts: (n: number) => `${n} ${n === 1 ? "contact" : "contacts"}`,
@@ -58,12 +60,29 @@ export const KIN_MARKETING = {
 /** What two tags are compared by, as the host compares them: their case never makes them two. */
 const kinTagFold = (tag: string) => tag.trim().normalize("NFC").toLowerCase();
 
-/** The tags with one more, typed or picked; one already there in any case is not added twice. */
-export function kinTagsWith(tags: ReadonlyArray<string>, typed: string): ReadonlyArray<string> {
+const kinTagOn = (tags: ReadonlyArray<string>, tag: string) =>
+  tags.some((one) => kinTagFold(one) === kinTagFold(tag));
+
+/**
+ * The tags with one more, typed or picked, and what the field holds after: one already there in
+ * any case is not added twice; a twenty-first stays in the field (`kinTagsFull` says why).
+ */
+export function kinTagAdd(
+  tags: ReadonlyArray<string>,
+  typed: string,
+): { readonly tags: ReadonlyArray<string>; readonly typed: string } {
   const tag = typed.trim();
-  if (tag === "" || tags.length >= KIN_TAGS_MAX) return tags;
-  return tags.some((one) => kinTagFold(one) === kinTagFold(tag)) ? tags : [...tags, tag];
+  if (tag === "") return { tags, typed };
+  if (kinTagOn(tags, tag)) return { tags, typed: "" };
+  if (tags.length >= KIN_TAGS_MAX) return { tags, typed };
+  return { tags: [...tags, tag], typed: "" };
 }
+
+/** The limit, in the form's words, while what is typed would be a twenty-first tag. */
+export const kinTagsFull = (tags: ReadonlyArray<string>, typed: string) =>
+  tags.length >= KIN_TAGS_MAX && typed.trim() !== "" && !kinTagOn(tags, typed.trim())
+    ? KIN_MARKETING.tagsFull
+    : null;
 
 export const kinTagsWithout = (tags: ReadonlyArray<string>, tag: string) =>
   tags.filter((one) => kinTagFold(one) !== kinTagFold(tag));
@@ -90,8 +109,6 @@ export function kinCameFromLabel(source: string, choices: ReadonlyArray<KinCameF
 }
 
 export const kinIsCampaignSource = (source: string) => source.startsWith(KIN_CAMPAIGN_SOURCE);
-
-export const kinCampaignSource = (key: string) => `${KIN_CAMPAIGN_SOURCE}${key}`;
 
 export type KinCampaignResultId = "prospects" | "clients" | "deals" | "won" | "audience";
 export interface KinCampaignResultRow {
@@ -130,6 +147,24 @@ export function kinCampaignResultRows(
   ];
 }
 
+const counting = (n: number, one: string, many: string) =>
+  n === 0 ? [] : [`${n} ${n === 1 ? one : many}`];
+
+/** "1 client · 2 deals · 1 won": a campaign's results on their folded line, zeros left out. */
+export function kinCampaignResultsSummary(
+  results: KinCampaignResults,
+  audience: string | null | undefined,
+): string {
+  const parts = [
+    ...counting(results.prospects, "prospect", "prospects"),
+    ...counting(results.clients, "client", "clients"),
+    ...counting(results.open.count, "deal", "deals"),
+    ...counting(results.won.count, "won", "won"),
+    ...(audience == null ? [] : counting(results.audience, "contact", "contacts")),
+  ];
+  return parts.length === 0 ? KIN_MARKETING.resultsNone : parts.join(" · ");
+}
+
 /** The contacts at the clients and prospects a Clients filter shows, as a list asks for them. */
 export function kinContactListOfClients(
   query: Omit<KinPartiesInput, "cursor" | "limit">,
@@ -141,11 +176,6 @@ export function kinContactListOfClients(
 export const kinContactListOfTag = (orgId: KinOrgId, tag: string): KinContactListInput => ({
   orgId,
   tag,
-});
-
-export const kinContactListOfCampaign = (orgId: KinOrgId, key: string): KinContactListInput => ({
-  orgId,
-  campaign: key,
 });
 
 export interface KinContactListRowView {
