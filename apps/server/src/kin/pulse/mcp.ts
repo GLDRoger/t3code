@@ -57,10 +57,13 @@ export const PulseHandleInput = Schema.Struct({
   factKey: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(300))).annotate({
     description: "The fact's key, exactly as pulse_read or the Pulse section gave it.",
   }),
-  record: Schema.optional(KinRecordKey),
+  record: Schema.optional(KinRecordKey).annotate({
+    description:
+      "Instead of factKey: a record's key (C-7, P-2, INV-9) to set aside or lift, also when nothing about it is open yet.",
+  }),
   action: Schema.optional(KinPulseHandleAction).annotate({
     description:
-      "got_it (default): you or someone has it in hand; it comes back after until, or 3 days. not_a_problem: drop it until what it is about changes. undo: take either back.",
+      "got_it (default): you or someone has it in hand; it comes back after until, or 3 days. not_a_problem: drop it until what it is about changes. set_aside: a person said to leave it; its record is set aside until the day in until, or until someone lifts it. undo: take any of these back.",
   }),
   until: Schema.optional(
     Schema.Union([
@@ -72,7 +75,8 @@ export const PulseHandleInput = Schema.Struct({
       ),
     ]),
   ).annotate({
-    description: "For got_it: hide it until this day (owner's time zone) or time with offset.",
+    description:
+      "For got_it: hide it until this day (owner's time zone) or time with offset. For set_aside: the day the person named; leave it out for until they say.",
   }),
   note: Schema.optional(Schema.String.check(Schema.isMaxLength(500))).annotate({
     description: "One line on what is being done, for whoever reads it next.",
@@ -311,7 +315,7 @@ export const KinPulseToolkit = Toolkit.make(
   Tool.make("pulse_handle", {
     ...shared,
     description:
-      "Once you have acted on a pulse fact or decided it needs nothing: mark it got_it (optionally until a date) or not a problem so it stops coming back; undo takes that back.",
+      'Once you have acted on a pulse fact or decided it needs nothing: mark it got_it (optionally until a date) or not a problem so it stops coming back; undo takes that back. When a person, in their own message or tap this turn, says to leave something until a day or until they say ("leave INV-9 for a month", "they\'ll pay in two weeks, don\'t remind me"), set_aside its fact or its record, with until for a day and without for until lifted. A client or project covers everything under it. That is the whole promise: Kin tells nothing and raises no question about it before then, so make no deferral or reminder for the same day, and tell them only what the result says. undo on their word lifts it. In any other turn it is refused.',
     parameters: PulseHandleInput,
     success: Schema.Union([KinPulseFact, PulseAsideResult]),
   }).annotate(McpSchema.EnabledWhen, enabled),
