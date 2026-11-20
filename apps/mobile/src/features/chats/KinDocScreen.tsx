@@ -664,6 +664,14 @@ function KinDocBody(
               </View>
             ) : null}
           </View>
+          {doc.version.file?.mimeType.startsWith("image/") === true ? (
+            <ThreadMarkdownImage
+              environmentId={environmentId}
+              resource={{ _tag: "attachment", attachmentId: doc.version.file.attachmentId }}
+              alt={doc.version.file.name}
+              onPressPreview={setPreview}
+            />
+          ) : null}
           {doc.version.file === undefined ? null : (
             <KinDocFileRows environmentId={environmentId} file={doc.version.file} />
           )}
