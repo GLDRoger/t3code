@@ -25,10 +25,12 @@ import { KinToolchain } from "../gendocs/toolchain.ts";
 import { effectiveAudience } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
+import { outsideRead } from "../lead/OutsideContent.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import * as Docs from "../work/docs.ts";
 import type { Writer } from "../work/KinRecords.ts";
 import { admitted, type Lead, leadTool, viewOf, viewWriter, writerFor } from "../work/leadWork.ts";
+import { personReads } from "../chat/sharing.ts";
 import { readProfile } from "../work/companyProfile.ts";
 import { turnSensitive } from "../work/sensitiveReads.ts";
 import { KIN_OWNER_LEVEL, PICTURE_DOC_ORIGIN, viewerOfPeople } from "../work/teamView.ts";
@@ -60,6 +62,9 @@ export const PictureResult = Schema.Struct({
 
 const TOOL = "kin_picture";
 const PAUSED = "Kin is paused by the owner, so nothing new is made until they resume it.";
+/** A prompt leaves Kin: after outside text, only a person's own ask sends one. */
+export const UNASKED_AFTER_OUTSIDE =
+  "This turn read text from a connected service and no one asked for this picture in their own message, so nothing was generated or counted. Design it with html instead.";
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const sha256 = (value: string | Uint8Array) =>
@@ -99,27 +104,69 @@ const earlierPicture = Effect.fn("KinPictures.earlier")(function* (lead: Lead, k
   return { row, chatId: first?.chatId ?? null };
 });
 
-/** Images the page names as `kin-file:<id>` that were sent in this chat, read for the renderer. */
+/**
+ * The people whose own message or card tap woke this turn: none for a check-in, a pulse, a
+ * hand-off or a schedule, which no one asked for in person.
+ */
+const messageAskers = Effect.fn("KinPictures.askers")(function* (lead: Lead) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ personId: string }>`SELECT DISTINCT m.author_person_id AS "personId"
+    FROM kin_events e JOIN kin_messages m ON m.org_id = e.org_id
+      AND m.message_id = json_extract(e.json, '$.messageId')
+      AND m.chat_id = json_extract(e.json, '$.chatId') AND m.author_kind = 'human'
+    WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId}
+      AND e.wakeup_id = ${lead.wakeupId} AND e.tag IN ('chat.message', 'widget.action')
+      AND json_extract(e.json, '$.origin') IS NULL
+    ORDER BY m.author_person_id`;
+  return rows.map((row) => row.personId);
+});
+
+/**
+ * Images the page names as `kin-file:<id>` that were sent in this chat, read for the renderer:
+ * each only if whoever asked for the picture reads its message, or, when no one asked in person,
+ * everyone in the chat does, so the picture shows no one an image they couldn't see.
+ */
 const chatImages = Effect.fn("KinPictures.chatImages")(function* (
-  orgId: KinOrgId,
+  lead: Lead,
   chatId: KinChatId,
   ids: ReadonlyArray<string>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const fs = yield* FileSystem.FileSystem;
   const { attachmentsDir } = yield* ServerConfig;
+  const orgId = lead.orgId;
+  const askers = ids.length === 0 ? [] : yield* messageAskers(lead);
+  const readers =
+    askers.length > 0 || ids.length === 0
+      ? askers
+      : (yield* sql<{ personId: string }>`SELECT DISTINCT person_id AS "personId"
+          FROM kin_chat_members WHERE org_id = ${orgId} AND chat_id = ${chatId}
+            AND principal_kind = 'person' AND left_at IS NULL AND person_id IS NOT NULL
+          ORDER BY person_id`).map((row) => row.personId);
   const files: Array<PictureFile> = [];
   for (const id of ids) {
-    const [row] = yield* sql<{ mimeType: string | null }>`
-      SELECT json_extract(j.value, '$.mimeType') AS "mimeType"
+    const [row] = yield* sql<{ mimeType: string | null; messageId: string }>`
+      SELECT json_extract(j.value, '$.mimeType') AS "mimeType", m.message_id AS "messageId"
       FROM kin_message_attachments a
       JOIN kin_messages m ON m.org_id = a.org_id AND m.message_id = a.message_id
       JOIN json_each(COALESCE(m.attachments_json, '[]')) j ON json_extract(j.value, '$.id') = a.attachment_id
       WHERE a.org_id = ${orgId} AND a.chat_id = ${chatId} AND a.attachment_id = ${id.toLowerCase()}
         AND m.status <> 'deleted'
       ORDER BY a.attachment_id LIMIT 1`;
+    const [read] =
+      row === undefined
+        ? []
+        : yield* sql<{ readers: number }>`SELECT COUNT(*) AS readers
+            FROM kin_messages, json_each(${JSON.stringify(readers)}) who
+            WHERE kin_messages.org_id = ${orgId} AND kin_messages.message_id = ${row.messageId}
+              AND ${personReads(sql, sql`who.value`)}`;
     const path = resolveAttachmentPathById({ attachmentsDir, attachmentId: id.toLowerCase() });
-    if (row?.mimeType == null || !/^image\//i.test(row.mimeType) || path === null)
+    if (
+      row?.mimeType == null ||
+      !/^image\//i.test(row.mimeType) ||
+      path === null ||
+      read?.readers !== readers.length
+    )
       return yield* invalid(
         `kin-file:${id} is not an image sent in this chat, so nothing was made. Use the id of a picture sent here, or put the image in the page as a data: URL.`,
       );
@@ -181,6 +228,12 @@ export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: Pict
       return yield* invalid(
         "A change makes one picture, the doc's next version: leave count out, so nothing was made.",
       );
+    if (
+      input.prompt !== undefined &&
+      (yield* outsideRead(lead)) &&
+      (yield* messageAskers(lead)).length === 0
+    )
+      return yield* new KinChatError({ reason: "not_allowed", message: UNASKED_AFTER_OUTSIDE });
     const wakeupId = KinWakeupId.make(lead.wakeupId);
     const lane = yield* laneFor({ orgId: lead.orgId, agentId: lead.agentId, wakeupId });
     if (Option.isNone(lane))
@@ -206,7 +259,7 @@ export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: Pict
     let note: string | null = null;
     if (input.html !== undefined) {
       const page = yield* visualPage({ title: input.title, html: input.html });
-      const files = yield* chatImages(lead.orgId, chatId, kinVisualFileReferences(page.html));
+      const files = yield* chatImages(lead, chatId, kinVisualFileReferences(page.html));
       const drawn = yield* (yield* KinPictureRenderer).render({
         html: page.html,
         size: input.size,

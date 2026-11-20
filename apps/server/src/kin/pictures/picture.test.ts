@@ -48,7 +48,7 @@ import * as OwnerDocs from "../work/ownerDocs.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import { makeFakeImageVendor } from "./FakeImageVendor.ts";
 import { GENERATE_SENTENCES, KinPictures, makeLayer as picturesLayer } from "./KinPictures.ts";
-import { makePicture, type PictureInput } from "./picture.ts";
+import { makePicture, type PictureInput, UNASKED_AFTER_OUTSIDE } from "./picture.ts";
 import { KinPictureRenderer, PICTURE_SENTENCES, type PictureDrawn } from "./renderer.ts";
 
 // Ambermill and its people are invented; nothing here reads a real database or draws in a browser.
@@ -119,14 +119,18 @@ const PNG = Uint8Array.from(
     "base64",
   ),
 );
-const drawing: { next: PictureDrawn | undefined } = { next: undefined };
+const drawing: { next: PictureDrawn | undefined; files: Array<ReadonlyArray<string>> } = {
+  next: undefined,
+  files: [],
+};
 const renderer = Layer.succeed(
   KinPictureRenderer,
   KinPictureRenderer.of({
-    render: () =>
-      Effect.succeed(
-        drawing.next ?? { _tag: "drawn" as const, png: PNG, width: 1080, height: 1080 },
-      ),
+    render: (request) =>
+      Effect.sync(() => {
+        drawing.files.push(request.files.map((file) => file.id));
+        return drawing.next ?? { _tag: "drawn" as const, png: PNG, width: 1080, height: 1080 };
+      }),
   }),
 );
 const toolchain = Layer.succeed(KinToolchain, {
@@ -178,6 +182,7 @@ const layer = Layer.mergeAll(KinRecords.layer, gate, renderer).pipe(
 const seed = Effect.gen(function* () {
   placed.length = 0;
   drawing.next = undefined;
+  drawing.files.length = 0;
   keys.clear();
   fake.calls.length = 0;
   fake.control.mode = "ok";
@@ -214,12 +219,16 @@ const group = Effect.gen(function* () {
     VALUES ('team-chat-lead', ${orgId}, 'team-chat', 'agent', ${lead}, 'member', ${at})`;
 });
 
-/** A running turn woken by Rhea's (or Meera's) message `n` in the lead's chat, or `chat`. */
+/**
+ * A running turn woken by Rhea's (or Meera's) message `n` in the lead's chat, or `chat`; handed
+ * on by another agent instead, no one asked in person.
+ */
 const turn = Effect.fn("KinPicturesTest.turn")(function* (
   n: number,
   from: "rhea" | "meera" = "rhea",
   audience: "owner_only" | "shared" = "owner_only",
   chat = "lead-chat",
+  options: { readonly handedOn?: true; readonly outside?: true } = {},
 ) {
   const sql = yield* SqlClient.SqlClient;
   const author = from === "rhea" ? ownerId : meera;
@@ -248,11 +257,15 @@ const turn = Effect.fn("KinPicturesTest.turn")(function* (
     provenance: { _tag: "human", personId: author, memberId: member },
     chatId: chat,
     messageId: `ask-${n}`,
+    ...(options.handedOn === true ? { origin: { agentId: "finance", chatId: chat } } : {}),
   };
   yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
       queued_at, state, wakeup_id)
     VALUES (${`event-${n}`}, ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)}, 0, 0,
       'claimed', ${`wake-${n}`})`;
+  if (options.outside === true)
+    yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
+      VALUES (${orgId}, ${`wake-${n}`}, 0, 'mail')`;
 });
 
 const post = (headline: string, more: Partial<PictureInput> = {}): PictureInput => ({
@@ -513,6 +526,75 @@ describe("kin_picture", () => {
         // Taken out of the chat, Meera reads none of it, a URL she kept included.
         yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'team-chat-meera'`;
         assert.deepStrictEqual(yield* reads(meera), [false, false, false]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "draws an earlier chat image only for who asked, if they read it, or for everyone when no one did",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* group;
+        const sql = yield* SqlClient.SqlClient;
+        const fs = yield* FileSystem.FileSystem;
+        const { attachmentsDir } = yield* ServerConfig;
+        // Meera's photo in the team's chat, sent before Dev joins it.
+        yield* fs.writeFile(`${attachmentsDir}/kin-chat-mill-photo.png`, PNG);
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+            author_member_id, author_role, kind, body, attachments_json, mentions_json, status, created_at)
+          VALUES ('photo', ${orgId}, 'team-chat', 50, 'human', ${meera}, 'team-chat-meera', 'member',
+            'text', 'The mill this morning',
+            ${JSON.stringify([{ type: "image", id: "kin-chat-mill-photo", name: "mill.png", mimeType: "image/png", sizeBytes: PNG.length }])},
+            '[]', 'posted', ${at})`;
+        yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
+          VALUES ('kin-chat-mill-photo', ${orgId}, 'team-chat', 'photo')`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at, joined_seq)
+          VALUES ('team-chat-dev', ${orgId}, 'team-chat', 'person', ${dev}, 'member', ${at}, 60)`;
+        const withPhoto = post("48px", { html: `<img src="kin-file:kin-chat-mill-photo">` });
+        // Meera asks, and she reads her photo: it goes in, Dev in the chat or not.
+        yield* turn(61, "meera", "shared", "team-chat");
+        yield* makePicture(scope, withPhoto);
+        assert.deepStrictEqual(drawing.files, [["kin-chat-mill-photo"]]);
+        // A turn no one asked for in person: Dev reads the reply, not the photo, so it stays out.
+        yield* turn(62, "meera", "shared", "team-chat", { handedOn: true });
+        assert.match(
+          (yield* Effect.flip(makePicture(scope, withPhoto))).message,
+          /^kin-file:kin-chat-mill-photo is not an image sent in this chat/,
+        );
+        assert.lengthOf(drawing.files, 1);
+        // Once everyone reading the chat reads it, it goes in.
+        yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'team-chat-dev'`;
+        yield* turn(63, "meera", "shared", "team-chat", { handedOn: true });
+        yield* makePicture(scope, withPhoto);
+        assert.lengthOf(drawing.files, 2);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "after outside text, generates only when a person asked in their own message, and draws in any turn",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* (yield* KinPictures).set([person(ownerId)], {
+          orgId,
+          key: Redacted.make("sk-invented-ambermill"),
+        });
+        const ask = { title: "Mill", size: "square", prompt: "The mill at dawn" } as const;
+        // Handed on from a turn that read mail: no one asked, so no prompt leaves Kin.
+        yield* turn(1, "rhea", "owner_only", "lead-chat", { handedOn: true, outside: true });
+        assert.include(yield* Effect.flip(makePicture(scope, ask)), {
+          reason: "not_allowed",
+          message: UNASKED_AFTER_OUTSIDE,
+        });
+        assert.lengthOf(fake.calls, 0);
+        assert.deepStrictEqual(yield* sql`SELECT count_id FROM kin_picture_counts`, []);
+        // A drawing stays on Kin's server: it is made.
+        assert.deepInclude(yield* makePicture(scope, post("48px")), { version: 1 });
+        // Rhea asked in her own message after the mail was read: it is generated.
+        yield* turn(2, "rhea", "owner_only", "lead-chat", { outside: true });
+        assert.lengthOf((yield* makePicture(scope, ask)).files, 1);
+        assert.lengthOf(fake.calls, 1);
       }).pipe(Effect.provide(layer)),
   );
 
