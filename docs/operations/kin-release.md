@@ -40,3 +40,7 @@ A full check takes over an hour on a laptop. A faster machine you can reach over
 3. Here, set `KIN_RELEASE_REMOTE` to the ssh host (an alias in your `~/.ssh/config`) and `KIN_RELEASE_REMOTE_COMMAND` to that command. The commit must be pushed. Pass `--here` to run locally anyway.
 
 The findings, summary and (on `--full`) the new fixture come back into the usual folder here, with the full output in `remote.log`. A `--full` run sends the last release's fixture there first, so `migrate` checks the same thing on either machine. No credentials go to the second machine: no stage needs one.
+
+## Pictures on the host
+
+Kin draws each picture in a browser held in a user systemd scope (1 GB of memory, 256 tasks) where the host has one. A host without a user scope, such as a container, draws without it and relies on the container's own memory limit.

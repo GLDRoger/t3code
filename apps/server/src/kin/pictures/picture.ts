@@ -143,7 +143,7 @@ const chatImages = Effect.fn("KinPictures.chatImages")(function* (
           FROM kin_chat_members WHERE org_id = ${orgId} AND chat_id = ${chatId}
             AND principal_kind = 'person' AND left_at IS NULL AND person_id IS NOT NULL
           ORDER BY person_id`).map((row) => row.personId);
-  const files: Array<PictureFile> = [];
+  const found: Array<{ id: string; mimeType: string; path: string }> = [];
   for (const id of ids) {
     const [row] = yield* sql<{ mimeType: string | null; messageId: string }>`
       SELECT json_extract(j.value, '$.mimeType') AS "mimeType", m.message_id AS "messageId"
@@ -171,8 +171,15 @@ const chatImages = Effect.fn("KinPictures.chatImages")(function* (
       return yield* invalid(
         `kin-file:${id} is not an image sent in this chat, so nothing was made. Use the id of a picture sent here, or put the image in the page as a data: URL.`,
       );
-    files.push({ id, mimeType: row.mimeType, bytes: yield* fs.readFile(path) });
+    found.push({ id, mimeType: row.mimeType, path });
   }
+  // Sizes first: past the cap, nothing is read into memory.
+  let total = 0;
+  for (const one of found) total += Number((yield* fs.stat(one.path)).size);
+  if (total > PICTURE_INPUTS.bytes) return yield* invalid(TOO_MANY_INPUTS);
+  const files: Array<PictureFile> = [];
+  for (const one of found)
+    files.push({ id: one.id, mimeType: one.mimeType, bytes: yield* fs.readFile(one.path) });
   return files;
 });
 
@@ -202,6 +209,11 @@ type Made = {
   /** What the level gate checks it shows. */
   readonly seen: string;
 };
+
+/** What one drawing may load of the chat's images, checked before any is read. */
+const PICTURE_INPUTS = { images: 8, bytes: 24 * 1024 * 1024 };
+export const TOO_MANY_INPUTS = `A picture can use at most ${PICTURE_INPUTS.images} of the chat's images, ${PICTURE_INPUTS.bytes / 1024 / 1024} MB together, so nothing was made. Use fewer or smaller ones, or put one in the page as a data: URL.`;
+const CANT_MAKE = "Kin can't make pictures right now, so nothing was made.";
 
 /** Where a picture is placed in the chat, and its retry: one per picture of the call. */
 const placeOf = (wakeupId: string, one: string) => `kin-picture:${wakeupId}:${one}`;
@@ -294,12 +306,26 @@ export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: Pict
     const pictures: Array<Made> = [];
     let note: string | null = null;
     if (page !== undefined) {
-      const files = yield* chatImages(lead, chatId, kinVisualFileReferences(page.html));
+      const named = [...new Set(kinVisualFileReferences(page.html).map((id) => id.toLowerCase()))];
+      if (named.length > PICTURE_INPUTS.images) return yield* invalid(TOO_MANY_INPUTS);
+      const context = yield* Effect.context<
+        SqlClient.SqlClient | FileSystem.FileSystem | ServerConfig
+      >();
       const drawn = yield* (yield* KinPictureRenderer).render({
         html: page.html,
         size: input.size,
-        files,
-        brand: yield* companyBrand(lead.orgId),
+        // Read once this picture's turn to draw comes, so a line of them holds no files.
+        inputs: Effect.all({
+          files: chatImages(lead, chatId, named),
+          brand: companyBrand(lead.orgId),
+        }).pipe(
+          Effect.provideContext(context),
+          Effect.mapError((error) =>
+            isKinChatError(error)
+              ? error
+              : new KinChatError({ reason: "unavailable", message: CANT_MAKE }),
+          ),
+        ),
         fonts: yield* (yield* KinToolchain).fonts(),
       });
       if (drawn._tag === "refused") return yield* invalid(drawn.reason);
@@ -339,10 +365,7 @@ export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: Pict
         const path = resolveAttachmentPathById({ attachmentsDir, attachmentId: file.id });
         const mimeType = file.mimeType;
         if (path === null || !isPictureType(mimeType))
-          return yield* new KinChatError({
-            reason: "unavailable",
-            message: "Kin can't make pictures right now, so nothing was made.",
-          });
+          return yield* new KinChatError({ reason: "unavailable", message: CANT_MAKE });
         pictures.push({
           bytes: yield* fs.readFile(path),
           mimeType,
@@ -460,10 +483,7 @@ export const makePicture = leadTool("KinPictures.make", (lead: Lead, input: Pict
     }
     const [first] = made;
     if (first === undefined)
-      return yield* new KinChatError({
-        reason: "unavailable",
-        message: "Kin can't make pictures right now, so nothing was made.",
-      });
+      return yield* new KinChatError({ reason: "unavailable", message: CANT_MAKE });
     const where = placedIn === "reply" ? "under your reply" : "in the chat";
     const next =
       made.length === 1

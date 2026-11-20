@@ -52,7 +52,13 @@ import * as OwnerDocs from "../work/ownerDocs.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import { makeFakeImageVendor } from "./FakeImageVendor.ts";
 import { GENERATE_SENTENCES, KinPictures, makeLayer as picturesLayer } from "./KinPictures.ts";
-import { KEPT, makePicture, type PictureInput, UNASKED_AFTER_OUTSIDE } from "./picture.ts";
+import {
+  KEPT,
+  makePicture,
+  type PictureInput,
+  TOO_MANY_INPUTS,
+  UNASKED_AFTER_OUTSIDE,
+} from "./picture.ts";
 import { KinPictureRenderer, PICTURE_SENTENCES, type PictureDrawn } from "./renderer.ts";
 
 // Ambermill and its people are invented; nothing here reads a real database or draws in a browser.
@@ -147,8 +153,8 @@ const renderer = Layer.succeed(
   KinPictureRenderer,
   KinPictureRenderer.of({
     render: (request) =>
-      Effect.sync(() => {
-        drawing.files.push(request.files.map((file) => file.id));
+      Effect.map(request.inputs, (inputs) => {
+        drawing.files.push(inputs.files.map((file) => file.id));
         return drawing.next ?? { _tag: "drawn" as const, png: PNG, width: 1080, height: 1080 };
       }),
   }),
@@ -591,6 +597,23 @@ describe("kin_picture", () => {
         yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'team-chat-dev'`;
         yield* turn(63, "meera", "shared", "team-chat", { handedOn: true });
         yield* makePicture(scope, withPhoto);
+        assert.lengthOf(drawing.files, 2);
+        // Past eight images, or 24 MB of them, nothing is read or drawn.
+        yield* turn(64, "meera", "shared", "team-chat");
+        const many = Array.from(
+          { length: 9 },
+          (_, index) => `<img src="kin-file:kin-chat-${index}">`,
+        );
+        assert.include(
+          yield* Effect.flip(makePicture(scope, post("48px", { html: many.join("") }))),
+          {
+            message: TOO_MANY_INPUTS,
+          },
+        );
+        yield* fs.truncate(`${attachmentsDir}/kin-chat-mill-photo.png`, 25 * 1024 * 1024);
+        assert.include(yield* Effect.flip(makePicture(scope, withPhoto)), {
+          message: TOO_MANY_INPUTS,
+        });
         assert.lengthOf(drawing.files, 2);
       }).pipe(Effect.provide(layer)),
   );

@@ -1,4 +1,4 @@
-import { PROVIDER_SEND_TURN_MAX_IMAGE_BYTES } from "@t3tools/contracts";
+import { type KinChatError, PROVIDER_SEND_TURN_MAX_IMAGE_BYTES } from "@t3tools/contracts";
 import { AgentScope, agentScopeLauncherScript } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
@@ -62,16 +62,22 @@ export type PictureFile = {
   readonly mimeType: string;
   readonly bytes: Uint8Array;
 };
-export type PictureRequest = {
-  readonly html: string;
-  readonly size: KinPictureSize;
+/** What a page draws with besides itself, read only once its turn to draw has come. */
+export type PictureInputs = {
   /** Chat files the page names as `kin-file:<id>`, already checked to be the turn's to show. */
   readonly files: ReadonlyArray<PictureFile>;
   /** The company's brand; its logo is drawn as `kin-brand:logo`. */
   readonly brand?: PictureBrand | undefined;
+};
+export type PictureRequest = {
+  readonly html: string;
+  readonly size: KinPictureSize;
+  /** Run after the picture takes its place in line, so pictures waiting hold no files. */
+  readonly inputs: Effect.Effect<PictureInputs, KinChatError>;
   /** The folder of Kin's pinned fonts, when this host has them. */
   readonly fonts?: string | undefined;
 };
+type Loaded = Omit<PictureRequest, "inputs"> & PictureInputs;
 export type PictureBrand = Omit<KinVisualBrand, "logo"> & {
   readonly logo: { readonly mimeType: string; readonly bytes: Uint8Array } | null;
 };
@@ -121,7 +127,7 @@ export class KinPictureRenderer extends Context.Service<
   KinPictureRenderer,
   {
     /** One page drawn to a PNG at its size, once it has loaded, its fonts are in and it is still. */
-    readonly render: (request: PictureRequest) => Effect.Effect<PictureDrawn>;
+    readonly render: (request: PictureRequest) => Effect.Effect<PictureDrawn, KinChatError>;
   }
 >()("t3/kin/pictures/renderer/KinPictureRenderer") {}
 
@@ -247,7 +253,7 @@ export const makeLayer = (limits: PictureLimits = PICTURE_LIMITS) =>
       });
 
       const serve =
-        (request: PictureRequest, page: string, blocked: Array<string>) => async (route: Route) => {
+        (request: Loaded, page: string, blocked: Array<string>) => async (route: Route) => {
           const url = route.request().url();
           const outside = outsideHost(url);
           if (outside !== undefined) {
@@ -307,7 +313,7 @@ export const makeLayer = (limits: PictureLimits = PICTURE_LIMITS) =>
           return route.fulfill({ status: 404, body: "" });
         };
 
-      const shoot = (context: BrowserContext, request: PictureRequest, blocked: Array<string>) =>
+      const shoot = (context: BrowserContext, request: Loaded, blocked: Array<string>) =>
         Effect.tryPromise({
           catch: browserError("page"),
           try: async () => {
@@ -353,7 +359,7 @@ export const makeLayer = (limits: PictureLimits = PICTURE_LIMITS) =>
           },
         });
 
-      const draw = Effect.fn("KinPictureRenderer.draw")(function* (request: PictureRequest) {
+      const draw = Effect.fn("KinPictureRenderer.draw")(function* (request: Loaded) {
         const executable = yield* browser.executable.pipe(
           Effect.map((path) => ({ _tag: "ready" as const, path })),
           Effect.catchTags({
@@ -471,19 +477,21 @@ export const makeLayer = (limits: PictureLimits = PICTURE_LIMITS) =>
       });
 
       return KinPictureRenderer.of({
-        render: Effect.fn("KinPictureRenderer.render")((request) =>
+        render: Effect.fn("KinPictureRenderer.render")(({ inputs, ...request }) =>
           queue(
-            draw(request).pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("Kin couldn't draw a picture", { cause }).pipe(
-                  Effect.as({
-                    _tag: "cannotDraw",
-                    reason: PICTURE_SENTENCES.cannotDraw,
-                  } satisfies PictureDrawn),
+            Effect.flatMap(inputs, (loaded) =>
+              draw({ ...request, ...loaded }).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Kin couldn't draw a picture", { cause }).pipe(
+                    Effect.as({
+                      _tag: "cannotDraw",
+                      reason: PICTURE_SENTENCES.cannotDraw,
+                    } satisfies PictureDrawn),
+                  ),
                 ),
               ),
             ),
-            { _tag: "refused", reason: PICTURE_SENTENCES.busy },
+            { _tag: "refused", reason: PICTURE_SENTENCES.busy } satisfies PictureDrawn,
           ),
         ),
       });

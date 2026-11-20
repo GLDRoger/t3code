@@ -62,17 +62,67 @@ describe("pictureQueue", () => {
   );
 });
 
-const renderer = (executable: string, limits: PictureLimits) =>
+const rendererOn = (browser: PreviewBrowser["Service"], limits: PictureLimits) =>
   makeLayer(limits).pipe(
-    Layer.provide(
-      Layer.succeed(PreviewBrowser, {
-        executable: Effect.succeed(executable),
-        installed: Effect.succeedSome(executable),
-      }),
-    ),
+    Layer.provide(Layer.succeed(PreviewBrowser, browser)),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-picture-" })),
     Layer.provideMerge(NodeServices.layer),
   );
+const renderer = (executable: string, limits: PictureLimits) =>
+  rendererOn(
+    { executable: Effect.succeed(executable), installed: Effect.succeedSome(executable) },
+    limits,
+  );
+
+describe("KinPictureRenderer", () => {
+  it.effect("takes its place in line before it reads what it draws with", () =>
+    Effect.gen(function* () {
+      // No browser here: each picture ends as cannotDraw once its turn comes.
+      const service = yield* KinPictureRenderer.pipe(
+        Effect.provide(
+          rendererOn(
+            {
+              executable: Effect.die(new Error("No browser in this test.")),
+              installed: Effect.succeedNone,
+            },
+            { ...PICTURE_LIMITS, waiting: 1 },
+          ),
+        ),
+      );
+      const read: Array<string> = [];
+      const reading = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const ask = (name: string, hold = Effect.void) =>
+        service.render({
+          html: plain("<p>Mill</p>"),
+          size: "square",
+          inputs: Effect.sync(() => read.push(name)).pipe(
+            Effect.andThen(hold),
+            Effect.as({ files: [] }),
+          ),
+        });
+      const first = yield* Effect.forkChild(
+        ask(
+          "first",
+          Deferred.succeed(reading, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        ),
+        { startImmediately: true },
+      );
+      yield* Deferred.await(reading);
+      const second = yield* Effect.forkChild(ask("second"), { startImmediately: true });
+      assert.deepStrictEqual(yield* ask("third"), {
+        _tag: "refused",
+        reason: PICTURE_SENTENCES.busy,
+      });
+      // Waiting in line, the second has read nothing; turned away, the third never will.
+      assert.deepStrictEqual(read, ["first"]);
+      yield* Deferred.succeed(release, undefined);
+      assert.strictEqual((yield* Fiber.join(first))._tag, "cannotDraw");
+      assert.strictEqual((yield* Fiber.join(second))._tag, "cannotDraw");
+      assert.deepStrictEqual(read, ["first", "second"]);
+    }),
+  );
+});
 
 const withRenderer = <A, E>(
   limits: Partial<PictureLimits>,
@@ -88,6 +138,7 @@ const withRenderer = <A, E>(
   });
 
 const skipped = `Set ${TEST_BROWSER_ENV} to run this test.`;
+const none = Effect.succeed({ files: [] });
 /** A 1x1 PNG, served from memory as a chat's file or the company's logo. */
 const PIXEL = Uint8Array.from(
   Buffer.from(
@@ -108,7 +159,7 @@ it.live("a picture is drawn at twice each named size", (ctx) =>
             `<div style="width:100vw;height:100vh;background:#1f6f5c;color:#fff;font:bold 40px sans-serif">Launch day</div>`,
           ),
           size,
-          files: [],
+          inputs: none,
         }),
       ),
     );
@@ -134,7 +185,9 @@ it.live("a picture draws with Kin's libraries and the chat's own file", (ctx) =>
           `<img id="i" src="kin-file:kin-photo" width="40" height="40"><script src="/api/kin/visual-lib/6.1.0/echarts.js"></script><div id="c" style="width:500px;height:300px"></div><script>kin.echarts("#c",{xAxis:{data:["Q1","Q2","Q3"]},yAxis:{},series:[{type:"bar",data:[12,30,18]}]});window.addEventListener("load",function(){if(!document.getElementById("i").naturalWidth||!window.echarts)document.body.insertAdjacentHTML("beforeend",'<img src="https://broken.example.com/x.png">')})</script>`,
         ),
         size: "square",
-        files: [{ id: "kin-photo", mimeType: "image/png", bytes: PIXEL }],
+        inputs: Effect.succeed({
+          files: [{ id: "kin-photo", mimeType: "image/png", bytes: PIXEL }],
+        }),
       }),
     );
     if (Option.isNone(drawn)) return ctx.skip(skipped);
@@ -164,14 +217,16 @@ it.live("a picture draws in the company's colours, font and logo", (ctx) =>
           `<img id="l" src="kin-brand:logo" width="40" height="40"><p style="font:700 40px var(--brand-font)">Ambermill</p><div id="b" style="height:20px;background:var(--brand-primary)"></div><script>document.fonts.ready.then(function(){var ok=document.getElementById("l").naturalWidth>0&&getComputedStyle(document.getElementById("b")).backgroundColor==="rgb(31, 111, 92)"&&document.fonts.check("700 40px Poppins");if(!ok)document.body.insertAdjacentHTML("beforeend",'<img src="https://broken.example.com/x.png">')})</script>`,
         ),
         size: "square",
-        files: [],
+        inputs: Effect.succeed({
+          files: [],
+          brand: {
+            primary: "#1F6F5C",
+            secondary: null,
+            font: "Poppins",
+            logo: { mimeType: "image/png", bytes: PIXEL },
+          },
+        }),
         fonts,
-        brand: {
-          primary: "#1F6F5C",
-          secondary: null,
-          font: "Poppins",
-          logo: { mimeType: "image/png", bytes: PIXEL },
-        },
       }),
     );
     if (Option.isNone(drawn)) return ctx.skip(skipped);
@@ -186,16 +241,16 @@ it.live("a page that loads from outside is refused, and one that never settles i
         render({
           html: plain(`<img src="https://images.example.com/team.png">Hello`),
           size: "square",
-          files: [],
+          inputs: none,
         }),
         render({
           html: plain(
             `<p id="t"></p><script>setInterval(function(){t.textContent=Math.random()},100)</script>`,
           ),
           size: "square",
-          files: [],
+          inputs: none,
         }),
-        render({ html: plain(`<script>for(;;){}</script>`), size: "square", files: [] }),
+        render({ html: plain(`<script>for(;;){}</script>`), size: "square", inputs: none }),
       ]),
     );
     if (Option.isNone(results)) return ctx.skip(skipped);
@@ -217,7 +272,7 @@ it.live("a picture over the chat's image limit is refused", (ctx) =>
           `<div style="width:540px;height:540px;background:linear-gradient(90deg,red,blue)"></div>`,
         ),
         size: "square",
-        files: [],
+        inputs: none,
       }),
     );
     if (Option.isNone(result)) return ctx.skip(skipped);
@@ -275,7 +330,7 @@ it.live("the seal test's hostile page, drawn as a picture, reaches nothing", (ct
     const page = hostilePage(`127.0.0.1:${canary.udpPort}`, http, canary.tcpPort);
     // Still long enough for the page's last attempts, which navigate away after 2.5 seconds.
     const result = yield* withRenderer({ stillMs: 3_500 }, (render) =>
-      render({ html: page, size: "square", files: [] }),
+      render({ html: page, size: "square", inputs: none }),
     );
     assert.deepStrictEqual(canary.reached, []);
     assert.strictEqual(Option.getOrUndefined(result)?._tag, "refused");
