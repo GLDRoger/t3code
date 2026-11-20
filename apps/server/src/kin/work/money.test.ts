@@ -1173,8 +1173,12 @@ describe("invoices", () => {
         yield* OwnerWork.decline(people, { orgId, key: "INV-4", rev: yield* rev("INV-4") });
         // It started as a draft, so kept it is a draft: owed once it is issued.
         assert.deepStrictEqual((yield* owed).owed, inr(4_720_000));
+        const balanceOf = (key: string) =>
+          LeadWork.get(scope, { key }).pipe(Effect.map((one) => [one.amount, one.balance]));
+        assert.deepStrictEqual(yield* balanceOf("INV-2"), ["₹47,200.00", undefined]);
         for (const key of ["INV-2", "INV-3"])
           yield* OwnerMoney.issue(people, { orgId, key: KinRecordKey.make(key) });
+        assert.deepStrictEqual(yield* balanceOf("INV-2"), ["₹47,200.00", "₹47,200.00"]);
         assert.deepStrictEqual(yield* owed, {
           owed: inr(14_160_000),
           overdue: inr(14_160_000),

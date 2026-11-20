@@ -104,6 +104,7 @@ import {
 import {
   allLists,
   isBuiltIn,
+  isInvoiceDraft,
   type ListDef,
   listOrPreset,
   sensitiveKeys,
@@ -971,7 +972,9 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     ...(defined ? {} : { ...text("address"), ...text("gstin"), ...text("placeOfSupply") }),
     ...(defined && row.category !== null ? { category: row.category } : {}),
     ...(record.amount === undefined ? {} : { amount: formatMoney(record.amount) }),
-    ...(record.balance === undefined ? {} : { balance: formatMoney(record.balance) }),
+    ...(record.balance === undefined || isInvoiceDraft(list, record.state)
+      ? {}
+      : { balance: formatMoney(record.balance) }),
     ...(record.dateAt === undefined
       ? {}
       : { date: dayOrTime(record.dateAt, record.dateAllDay === true, view.zone) }),
