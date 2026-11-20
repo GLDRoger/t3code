@@ -218,7 +218,7 @@ KIN_BACKUP_DEST=/mnt/backup/kin
 
 The destination must be a mounted volume of its own: `backup.sh` refuses one on the same filesystem as `~/.t3`, or on `/`, which is what an unmounted mountpoint looks like. The encryption override doesn't skip that check.
 
-The timer does nothing until that file exists. Run one by hand with `systemctl --user start kin-backup` and read the result with `journalctl --user -u kin-backup`.
+The timer does nothing until that file exists. Each run records its outcome in `~/.t3/userdata/kin-backup-status.json`; when the last good backup is over 36 hours old, or there is none, Kin tells the owner in their Chief of staff chat, once a day. Run one by hand with `systemctl --user start kin-backup` and read the details with `journalctl --user -u kin-backup`.
 
 ## Operating
 

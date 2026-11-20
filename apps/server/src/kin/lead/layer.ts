@@ -6,6 +6,7 @@ import * as DeferralFlow from "../triggers/deferralFlow.ts";
 import * as ScheduledTasks from "../triggers/scheduledTasks.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import * as Watchdogs from "../triggers/watchdogs.ts";
+import * as HostBackup from "../hostBackup.ts";
 import * as GithubReaders from "../triggers/githubReaders.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as TriggerScheduler from "../triggers/KinTriggerScheduler.ts";
@@ -105,6 +106,7 @@ const routineRuntime = Layer.mergeAll(
   ScheduledTasks.layer,
   GitHubWatch.liveLayer,
   Watchdogs.layer,
+  HostBackup.layer,
   KinPulse.layer,
   KinRecommend.layer,
   OpenShadow.layer,
