@@ -7,20 +7,15 @@ import {
   kinStatementActionOf,
   kinStatementActionsFor,
   kinStatementAllTicked,
-  kinStatementAnswered,
-  kinStatementApplyInput,
   kinStatementConfirm,
   kinStatementFailureText,
-  kinStatementLoaded,
   kinStatementLocal,
   kinStatementNeedsPassword,
   kinStatementOpenSuggestions,
   kinStatementPasswordLines,
   kinStatementPickOf,
-  kinStatementQueue,
-  kinStatementRereadText,
+  kinStatementReviewActions,
   kinStatementRowNote,
-  kinStatementRowsInput,
   kinStatementSections,
   kinStatementShown,
   kinStatementStatusLines,
@@ -32,13 +27,13 @@ import {
   kinStatementTicked,
   kinStatementTotal,
   type KinStatementPasswordView,
+  type KinStatementPending,
   type KinStatementReviewView,
   type KinStatementSectionId,
   KIN_STATEMENT_COPY,
 } from "@t3tools/client-runtime/kin/kinStatementPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinStatementSelectChange } from "@t3tools/contracts";
-import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import { AsyncResult } from "effect/reactivity";
 import { ChevronRightIcon } from "lucide-react";
@@ -180,67 +175,20 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
   const [local, setLocal] = useState(() => kinStatementLocal(review.card.hash));
   const shown = kinStatementShown(review.card, local);
   const { card, selection } = shown;
-  const [pending, setPending] = useState<"apply" | "undo" | "reread" | null>(null);
+  const [pending, setPending] = useState<KinStatementPending>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const confirm = kinStatementConfirm(card);
   const editable =
     (card.status === "open" || card.status === "undone") && canApply && pending === null;
 
-  const change = async (next: KinStatementSelectChange) => {
-    const hash = card.hash;
-    setFailure(null);
-    setLocal((prev) => kinStatementQueue(prev, hash, next));
-    const result = await select({
-      environmentId,
-      input: { orgId: review.orgId, statementId: card.statementId, hash, change: next },
-    });
-    const reply = Option.getOrNull(AsyncResult.value(result))?.card ?? null;
-    setLocal((prev) => kinStatementAnswered(prev, hash, reply));
-    if (AsyncResult.isFailure(result))
-      setFailure(kinStatementFailureText(squashAtomCommandFailure(result)));
-  };
-  const load = async (section: KinStatementSectionId) => {
-    const hash = card.hash;
-    const result = await readRows({
-      environmentId,
-      input: kinStatementRowsInput(review, section, shown.rows[section].length),
-    });
-    if (AsyncResult.isFailure(result)) {
-      setFailure(kinStatementFailureText(squashAtomCommandFailure(result)));
-      return false;
-    }
-    const page = Option.getOrNull(AsyncResult.value(result));
-    if (page !== null) setLocal((prev) => kinStatementLoaded(prev, hash, page));
-    return page !== null;
-  };
-  const target = { orgId: review.orgId, statementId: card.statementId };
-  const send = async (what: "apply" | "undo") => {
-    if (pending !== null) return;
-    setPending(what);
-    setFailure(null);
-    setRereadNote(null);
-    const result =
-      what === "apply"
-        ? await apply({ environmentId, input: kinStatementApplyInput(review, selection) })
-        : await undo({ environmentId, input: target });
-    setPending(null);
-    if (AsyncResult.isFailure(result))
-      setFailure(kinStatementFailureText(squashAtomCommandFailure(result)));
-  };
-  const readAgainNow = async () => {
-    if (pending !== null) return;
-    setPending("reread");
-    setFailure(null);
-    setRereadNote(null);
-    const result = await reread({ environmentId, input: target });
-    setPending(null);
-    if (AsyncResult.isFailure(result)) {
-      setFailure(kinStatementFailureText(squashAtomCommandFailure(result)));
-      return;
-    }
-    const answer = Option.getOrNull(AsyncResult.value(result));
-    if (answer !== null) setRereadNote(kinStatementRereadText(answer.status));
-  };
+  const { change, load, send, readAgain: readAgainNow } = kinStatementReviewActions({
+    review,
+    environmentId,
+    shown,
+    pending,
+    commands: { select, rows: readRows, apply, undo, reread },
+    set: { local: setLocal, failure: setFailure, pending: setPending, rereadNote: setRereadNote },
+  });
   const readAgain = (
     <Button
       size="sm"
