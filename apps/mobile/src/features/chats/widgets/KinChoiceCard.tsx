@@ -669,6 +669,11 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
         })}
         className="gap-1.5"
       >
+        {choice.askedBy === null ? null : (
+          <Text textRole="footnote" className="text-foreground-secondary">
+            {choice.askedBy}
+          </Text>
+        )}
         <Text textRole="headline" className="font-t3-bold text-foreground">
           {choice.question}
         </Text>

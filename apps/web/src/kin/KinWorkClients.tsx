@@ -24,6 +24,8 @@ import {
   KIN_CLIENTS_DEFAULT_FILTER,
   KIN_CLIENTS_SHOW,
   kinClientsShowChoices,
+  kinClientsQuery,
+  type KinClientsFilter,
   kinClientPageView,
   kinClientRow,
   kinClientsLookedAfterChoices,
@@ -45,6 +47,12 @@ import {
   type KinWorkFormProblem,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
+import {
+  KIN_MARKETING,
+  kinCameFromLabel,
+  kinContactListOfClients,
+  kinContactListOfTag,
+} from "@t3tools/client-runtime/kin/kinMarketing";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type {
   KinContact,
@@ -70,6 +78,7 @@ import { KinClientContact } from "./KinClientTouches";
 import { KinAsideNote, KinAttentionSection } from "./KinAttention";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinClientDialog, KinContactDialog, KinProjectDialog } from "./KinWorkForms";
+import { KinContactListDialog, KinExportListButton, useKinMarketing } from "./KinMarketing";
 import { KinWorkPlaceLists } from "./KinWorkPlaceLists";
 import {
   KinFilter,
@@ -100,6 +109,7 @@ import {
 } from "./useKinWork";
 
 const ANYONE = "anyone";
+const ANYWHERE = "";
 const ME = "me";
 
 /** Everyone the company sells to, works for or buys from. The Filter picks which, and whose. */
@@ -113,17 +123,21 @@ export function KinWorkClientsList(
     readonly onAdd: ((start: KinClientDraftKind) => void) | null;
     /** The client showing beside the list, marked in it. */
     readonly selected?: KinRecordKey | null;
+    /** Where it starts instead of the viewer's own start, such as a campaign's prospects. */
+    readonly start?: KinClientsFilter;
   },
 ) {
   const { names } = props.directory;
   const now = new Date(useNowMinuteMs());
   const scope = useKinViewerScope(props.environmentId);
   const seesClients = useKinSeesClients(props.environmentId);
+  const viewerStart = useKinClientsStart(props.environmentId);
   const { state, list } = useKinClientsList(
     props,
     props.stale ? null : props.live.seq,
-    useKinClientsStart(props.environmentId),
+    props.start ?? viewerStart,
   );
+  const marketing = useKinMarketing(props);
   const { filter } = state;
   const nothing = kinClientsNothing(filter, scope, names.me);
   const mine =
@@ -139,6 +153,10 @@ export function KinWorkClientsList(
       : mine
         ? KIN_CLIENTS.lookedAfterMe
         : `${KIN_CLIENTS.lookedAfterBy} ${kinClientsLookedAfterLabel(filter.lookedAfter, names)}`,
+    filter.cameFrom == null
+      ? null
+      : `${KIN_MARKETING.cameFrom}: ${kinCameFromLabel(filter.cameFrom, marketing.cameFrom)}`,
+    filter.tag == null ? null : `${KIN_MARKETING.tag}: ${filter.tag}`,
   ]
     .filter((part) => part !== null)
     .join(" · ");
@@ -220,6 +238,35 @@ export function KinWorkClientsList(
                         onChange: pickLookedAfter,
                         long: true,
                       },
+                      {
+                        label: KIN_MARKETING.cameFrom,
+                        value: filter.cameFrom ?? ANYWHERE,
+                        options: [
+                          { value: ANYWHERE, label: KIN_MARKETING.cameFromAnywhere },
+                          ...marketing.cameFrom.map((one) => ({
+                            value: one.source,
+                            label: one.label,
+                            detail: one.campaign ? KIN_MARKETING.campaign : null,
+                          })),
+                        ],
+                        onChange: (value: string) =>
+                          list.setFilter({
+                            ...filter,
+                            cameFrom: value === ANYWHERE ? null : value,
+                          }),
+                        long: true,
+                      },
+                      {
+                        label: KIN_MARKETING.tag,
+                        value: filter.tag ?? ANYWHERE,
+                        options: [
+                          { value: ANYWHERE, label: KIN_MARKETING.anyTag },
+                          ...marketing.tags.map((tag) => ({ value: tag, label: tag })),
+                        ],
+                        onChange: (value: string) =>
+                          list.setFilter({ ...filter, tag: value === ANYWHERE ? null : value }),
+                        long: true,
+                      },
                     ]
                   : []),
               ]}
@@ -259,14 +306,25 @@ export function KinWorkClientsList(
         </div>
       }
       ListFooterComponent={
-        !state.more ? null : (
-          <KinListMore
-            failed={state.moreFailed}
-            loading={state.loadingMore}
-            shown={`Showing ${state.records.length} of ${state.total ?? state.records.length} clients`}
-            onMore={() => void list.loadMore()}
-          />
-        )
+        <>
+          {!state.more ? null : (
+            <KinListMore
+              failed={state.moreFailed}
+              loading={state.loadingMore}
+              shown={`Showing ${state.records.length} of ${state.total ?? state.records.length} clients`}
+              onMore={() => void list.loadMore()}
+            />
+          )}
+          {state.records.length === 0 ? null : (
+            <div className="mx-auto w-full max-w-3xl px-4 pt-3">
+              <KinExportListButton
+                environmentId={props.environmentId}
+                orgId={props.orgId}
+                input={kinContactListOfClients(kinClientsQuery(props.orgId, filter))}
+              />
+            </div>
+          )}
+        </>
       }
       renderItem={({ item }) => {
         const row = kinClientRow(item, names, now);
@@ -601,6 +659,7 @@ function ClientPage(
   const update = useAtomCommand(kinClient.workClientUpdate, { reportFailure: false });
   const now = new Date(useNowMinuteMs());
   const [dialog, setDialog] = useState<ClientDialog>(null);
+  const [tagList, setTagList] = useState<string | null>(null);
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
   const [busy, setBusy] = useState(false);
   const history = useKinWorkHistory(props, props.clientKey, page.seq);
@@ -621,6 +680,7 @@ function ClientPage(
   const { can } = view;
   // Clients on, or the owner level: what's owed, the contact log, notes and history show.
   const full = can.log;
+  const keepsContacts = can.contacts ?? can.edit;
   const act = (key: KinRecordKey, action: KinWorkAction) => {
     const record = [...page.weOwe.records, ...page.theyOwe.records].find(
       (held) => held.key === key,
@@ -838,7 +898,7 @@ function ClientPage(
         <KinWorkSection
           title={KIN_CLIENTS.contacts}
           action={
-            can.edit ? (
+            keepsContacts ? (
               <Button
                 size="xs"
                 variant="ghost"
@@ -852,7 +912,7 @@ function ClientPage(
         >
           {view.contacts.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              {can.edit ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
+              {keepsContacts ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
             </p>
           ) : (
             <>
@@ -862,8 +922,11 @@ function ClientPage(
                     <ContactRow
                       contact={contact}
                       onEdit={
-                        can.edit ? () => setDialog({ type: "contact", key: contact.key }) : null
+                        keepsContacts
+                          ? () => setDialog({ type: "contact", key: contact.key })
+                          : null
                       }
+                      onTag={setTagList}
                     />
                   </li>
                 ))}
@@ -1033,6 +1096,18 @@ function ClientPage(
           }}
           onClose={() => setDialog(null)}
         />
+      ) : tagList !== null ? (
+        <KinContactListDialog
+          environmentId={environmentId}
+          orgId={orgId}
+          input={kinContactListOfTag(orgId, tagList)}
+          title={tagList}
+          onOpenClient={(key) => {
+            setTagList(null);
+            props.onOpenClient(key);
+          }}
+          onClose={() => setTagList(null)}
+        />
       ) : dialog?.type === "contact" ? (
         <KinContactDialog
           environmentId={environmentId}
@@ -1107,6 +1182,7 @@ const DETAIL_LINK =
 function ContactRow(props: {
   readonly contact: KinContactView;
   readonly onEdit: (() => void) | null;
+  readonly onTag: (tag: string) => void;
 }) {
   const { contact } = props;
   const detail = (
@@ -1151,6 +1227,21 @@ function ContactRow(props: {
           <div className="flex min-w-0 flex-wrap gap-x-4 gap-y-1">
             {contact.emails.map((one, at) => detail(MailIcon, one, "Email", at))}
             {contact.phones.map((one, at) => detail(PhoneIcon, one, "Call", at))}
+          </div>
+        )}
+        {contact.tags.length === 0 ? null : (
+          <div className="flex flex-wrap gap-1.5" aria-label={KIN_MARKETING.tags}>
+            {contact.tags.map((tag) => (
+              <Button
+                key={tag}
+                type="button"
+                size="micro"
+                variant="outline"
+                onClick={() => props.onTag(tag)}
+              >
+                {tag}
+              </Button>
+            ))}
           </div>
         )}
         {contact.notes === null ? null : (

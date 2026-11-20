@@ -21,8 +21,10 @@ export interface Observed {
   readonly deferredFindable: boolean;
   /** Any of the user's own skills, settings, plugins or MCP servers can reach the session. */
   readonly personalConfig: boolean;
-  /** The provider's own shell, file and web tools exist in the session at all. */
+  /** The provider's own shell, file and web-fetch tools exist in the session at all. */
   readonly builtins: boolean;
+  /** The provider's own web search, which runs at its vendor, is in the session. */
+  readonly webSearch: boolean;
   readonly shell:
     | {
         readonly path: string | undefined;

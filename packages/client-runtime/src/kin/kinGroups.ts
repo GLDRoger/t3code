@@ -1,5 +1,6 @@
 import {
   KIN_GROUP_TITLE_MAX_LENGTH,
+  KIN_TEAM_ROOM_TEAM_ID,
   KinChatError,
   type KinAgentId,
   type KinChatMembersResult,
@@ -21,6 +22,10 @@ export const KIN_GROUP_PEOPLE_NOTE =
   "People in a group can ask its agents to talk things through; only you can have one start work there. Anyone can give an agent a task, and it then works with that person's access, never more.";
 
 type GroupMember = KinChatMembersResult["members"][number];
+
+/** Whether its owner may add to this group: the host refuses every add to the Team room. */
+export const kinGroupTakesAdds = (chat: { readonly teamId: string | null }) =>
+  chat.teamId !== KIN_TEAM_ROOM_TEAM_ID;
 
 /** A group's name as the host will store it, or what to fix. */
 export function kinGroupNameCheck(

@@ -3,6 +3,7 @@ import { kinNow, kinNowMs } from "./kinNow.ts";
 import {
   EnvironmentAuthorizationError,
   kinIsPeopleChat,
+  kinThreadLinksAsWords,
   type EnvironmentId,
   type KinChatId,
   type KinAgentId,
@@ -308,7 +309,7 @@ export function kinTableWiderThan(markdown: string, chars: number): boolean {
 
 /** Message markdown as one plain line. */
 export function kinPreviewText(body: string): string {
-  return kinPlainTables(body)
+  return kinPlainTables(kinThreadLinksAsWords(body))
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/^\s{0,3}(?:#{1,6}|>|[-*+]|\d+\.)\s+/gm, "")
     .replace(/```[^\s`]*/g, "")

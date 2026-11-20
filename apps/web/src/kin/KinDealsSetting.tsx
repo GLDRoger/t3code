@@ -1,4 +1,9 @@
-import { KIN_DEAL_STAGES, kinDealStagesProblem } from "@t3tools/client-runtime/kin/kinDeals";
+import {
+  KIN_DEAL_QUIET,
+  KIN_DEAL_STAGES,
+  kinDealQuietProblem,
+  kinDealStagesProblem,
+} from "@t3tools/client-runtime/kin/kinDeals";
 import type { KinDealStagesResult } from "@t3tools/contracts";
 import { ArrowDownIcon, ArrowUpIcon, PlusIcon, TrophyIcon, XIcon } from "lucide-react";
 import { useState } from "react";
@@ -26,7 +31,7 @@ import {
 } from "../components/ui/select";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { KinLoadFailed, KinWorkRowSkeletons } from "./KinWorkParts";
-import { useKinDealStages, useKinDealStagesSet } from "./useKinDeals";
+import { useKinDealQuietDaysSet, useKinDealStages, useKinDealStagesSet } from "./useKinDeals";
 import { useKinHost } from "./useKinHost";
 import type { KinWorkTarget } from "./useKinWork";
 
@@ -103,6 +108,7 @@ function StagesEditor(props: KinWorkTarget & { readonly held: KinDealStagesResul
           <p className="text-xs text-muted-foreground">{KIN_DEAL_STAGES.readOnly}</p>
         </section>
         <Ends />
+        <QuietDays {...props} held={held} />
       </div>
     );
 
@@ -250,6 +256,7 @@ function StagesEditor(props: KinWorkTarget & { readonly held: KinDealStagesResul
           {KIN_DEAL_STAGES.save}
         </Button>
       </div>
+      <QuietDays {...props} held={held} />
       {removing === null ? null : (
         <RemoveStage
           row={removing}
@@ -260,6 +267,76 @@ function StagesEditor(props: KinWorkTarget & { readonly held: KinDealStagesResul
         />
       )}
     </form>
+  );
+}
+
+/** "A deal goes quiet after N days": the owner level sets it; everyone else reads it. */
+function QuietDays(props: KinWorkTarget & { readonly held: KinDealStagesResult }) {
+  const days = props.held.quietDays;
+  const save = useKinDealQuietDaysSet(props);
+  const [text, setText] = useState(days === undefined ? "" : String(days));
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  if (days === undefined) return null;
+  const invalid = kinDealQuietProblem(text);
+  const submit = async () => {
+    if (invalid !== null || Number(text) === days) return;
+    setBusy(true);
+    setProblem(null);
+    const outcome = await save(Number(text));
+    setBusy(false);
+    if (!outcome.ok) setProblem(outcome.problem);
+  };
+  return (
+    <section aria-label={KIN_DEAL_QUIET.title} className="flex flex-col gap-2">
+      <h3 className="text-xs font-medium text-muted-foreground">{KIN_DEAL_QUIET.title}</h3>
+      {props.held.can ? (
+        // A form of its own inside the stages' form would nest; this saves on its own button.
+        <div className="flex items-center gap-2">
+          <Input
+            type="number"
+            nativeInput
+            min={1}
+            max={365}
+            className="w-24"
+            aria-label={KIN_DEAL_QUIET.label}
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter") return;
+              event.preventDefault();
+              void submit();
+            }}
+          />
+          <span className="text-sm text-muted-foreground">{KIN_DEAL_QUIET.unit(text)}</span>
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            disabled={busy || invalid !== null || Number(text) === days}
+            aria-busy={busy}
+            onClick={() => void submit()}
+          >
+            {KIN_DEAL_QUIET.save}
+          </Button>
+        </div>
+      ) : (
+        <p className="text-sm">{KIN_DEAL_QUIET.days(days)}</p>
+      )}
+      <p className="text-xs text-muted-foreground">
+        {props.held.can
+          ? KIN_DEAL_QUIET.detail
+          : `${KIN_DEAL_QUIET.detail} ${KIN_DEAL_QUIET.readOnly}`}
+      </p>
+      {invalid !== null && props.held.can && text !== "" ? (
+        <p className="text-sm text-destructive-foreground">{invalid}</p>
+      ) : null}
+      {problem === null ? null : (
+        <Alert variant="error">
+          <AlertDescription>{problem}</AlertDescription>
+        </Alert>
+      )}
+    </section>
   );
 }
 

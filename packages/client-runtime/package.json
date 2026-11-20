@@ -787,6 +787,10 @@
       "types": "./src/kin/kinIntro.ts",
       "default": "./src/kin/kinIntro.ts"
     },
+    "./kin/kinReach": {
+      "types": "./src/kin/kinReach.ts",
+      "default": "./src/kin/kinReach.ts"
+    },
     "./kin/kinLeadPresentation": {
       "types": "./src/kin/kinLeadPresentation.ts",
       "default": "./src/kin/kinLeadPresentation.ts"
@@ -923,6 +927,10 @@
       "types": "./src/kin/kinDeals.ts",
       "default": "./src/kin/kinDeals.ts"
     },
+    "./kin/kinImport": {
+      "types": "./src/kin/kinImport.ts",
+      "default": "./src/kin/kinImport.ts"
+    },
     "./kin/kinWorkClients": {
       "types": "./src/kin/kinWorkClients.ts",
       "default": "./src/kin/kinWorkClients.ts"
@@ -930,6 +938,10 @@
     "./kin/kinWorkForms": {
       "types": "./src/kin/kinWorkForms.ts",
       "default": "./src/kin/kinWorkForms.ts"
+    },
+    "./kin/kinMarketing": {
+      "types": "./src/kin/kinMarketing.ts",
+      "default": "./src/kin/kinMarketing.ts"
     },
     "./kin/kinDocs": {
       "types": "./src/kin/kinDocs.ts",

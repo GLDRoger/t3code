@@ -302,8 +302,14 @@ export const KinRecordChange = Schema.Struct({
   codingAgent: Schema.optional(Schema.String),
 });
 export type KinRecordChange = typeof KinRecordChange.Type;
+/** `codingAgent` as read by a teammate who isn't the key's person: the key's own name is not theirs. */
+export const KIN_CODING_AGENT_UNNAMED = "a coding agent";
 /** The field a change carries when Kin took a question's default: no list field's key has a colon. */
 export const KIN_TAKEN_DEFAULT_FIELD = "kin:default";
+/** The field a hand-over carries for someone who left the team: `person:<id>` in `from`. */
+export const KIN_LEFT_FIELD = "kin:left";
+/** The field a deal's hand-over carries for each next step that went with it: the step's key in `to`. */
+export const KIN_DEAL_STEP_FIELD = "kin:step";
 
 export const KIN_RECORD_COMMENT_MAX = 4_000;
 export const KIN_RECORD_COMMENT_FILES_MAX = 8;
@@ -997,7 +1003,11 @@ const PageCursor = Schema.String.check(Schema.isMaxLength(200));
 const Source = KinTrimmedText.check(Schema.isMaxLength(120));
 /** A client's own words for it, the company's to choose. */
 export const KinPartyTag = KinTrimmedText.check(Schema.isMaxLength(60));
-const Tags = Schema.Array(KinPartyTag).check(Schema.isMaxLength(20));
+/** How many tags one client, prospect or contact carries. */
+export const KIN_TAGS_MAX = 20;
+const Tags = Schema.Array(KinPartyTag).check(Schema.isMaxLength(KIN_TAGS_MAX));
+/** A `source` naming a campaign: `campaign:<its project's key>`. */
+export const KIN_CAMPAIGN_SOURCE = "campaign:";
 /** By key, or by record id as a `party` or `project` ref names it. */
 const KinRecordLookup = Schema.Union([
   Schema.Struct({ orgId: KinOrgId, key: KinRecordKey }),
@@ -1020,8 +1030,10 @@ export const KinPartyRow = Schema.Struct({
   lastContactAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** A company we haven't sold to yet; `kind` stays `client`, so an older app shows a client. */
   prospect: Schema.optional(Schema.Literal(true)),
-  /** Where it came from. */
+  /** Where it came from; a campaign's name when it came from one. */
   source: Schema.optional(Source),
+  /** The campaign it came from, when the reader sees that campaign. */
+  campaign: Schema.optional(KinRecordRef),
   tags: Schema.optional(Tags),
   /** The soonest open entry we owe them. */
   next: Schema.NullOr(
@@ -1067,6 +1079,8 @@ export const KinContact = Schema.Struct({
   phone: Schema.NullOr(KinTrimmedText),
   emails: ContactDetailsRead,
   phones: ContactDetailsRead,
+  /** Absent from older hosts and when it has none. */
+  tags: Schema.optional(Tags),
   notes: KinText,
   active: Schema.Boolean,
   /** The contact's own label, or its client's. */
@@ -1095,6 +1109,8 @@ export const KinProjectRow = Schema.Struct({
   sensitive: Schema.Boolean,
   /** True when its client is labelled sensitive. */
   sensitiveInherited: Schema.Boolean,
+  /** A campaign: it brings in prospects and has an audience. An older app shows a project. */
+  campaign: Schema.optional(Schema.Literal(true)),
   rev: NonNegativeInt,
 });
 export type KinProjectRow = typeof KinProjectRow.Type;
@@ -1113,6 +1129,8 @@ export const KinProjectDetail = Schema.Struct({
   renewsOn: Schema.optional(Schema.NullOr(KinDay)),
   /** The people and agents on it besides its lead (`owner`). Membership only; it grants nothing. */
   members: Schema.optional(Schema.Array(KinWorkPrincipal)),
+  /** A campaign's audience, the contacts carrying this tag; kept on one turned back to a project. */
+  audience: Schema.optional(Schema.NullOr(KinPartyTag)),
   /** Why `health` is what it is. */
   healthBecause: Schema.Struct({
     targetPassed: Schema.Boolean,
@@ -1183,6 +1201,8 @@ export const KinPartyCan = Schema.Struct({
   edit: Schema.Boolean,
   log: Schema.Boolean,
   owner: Schema.Boolean,
+  /** Adding and editing its contacts, which looking after an open deal there also gives; absent, as `edit`. */
+  contacts: Schema.optional(Schema.Boolean),
 });
 export type KinPartyCan = typeof KinPartyCan.Type;
 
@@ -1245,6 +1265,22 @@ export const KinProjectMoney = Schema.Struct({
 });
 export type KinProjectMoney = typeof KinProjectMoney.Type;
 
+/** Deals counted with their values, one per currency, never summed across currencies. */
+const KinDealsCounted = Schema.Struct({ count: NonNegativeInt, values: Schema.Array(KinMoney) });
+/**
+ * A campaign's results, counted by the host from what the reader sees in Clients: open prospects
+ * and clients whose `source` is the campaign, their open and won deals, and its audience.
+ */
+export const KinCampaignResults = Schema.Struct({
+  prospects: NonNegativeInt,
+  clients: NonNegativeInt,
+  open: KinDealsCounted,
+  won: KinDealsCounted,
+  /** Open contacts carrying the audience tag. */
+  audience: NonNegativeInt,
+});
+export type KinCampaignResults = typeof KinCampaignResults.Type;
+
 /** The project page. Its full entry list is `kin.work.list` with `project`. */
 export const KinProjectPage = Schema.Struct({
   project: KinProjectDetail,
@@ -1290,6 +1326,8 @@ export const KinProjectPage = Schema.Struct({
   ),
   /** Its note for every task; absent with none, and from older hosts. */
   note: Schema.optional(KinProjectNote),
+  /** A campaign's results, for a reader with Clients. */
+  results: Schema.optional(KinCampaignResults),
   seq: NonNegativeInt,
   asOf: IsoDateTime,
 });
@@ -1322,6 +1360,10 @@ export const KinPartiesInput = Schema.Struct({
   active: Schema.optional(Schema.Boolean),
   /** Case-insensitive match on the name. */
   text: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
+  /** Only those that came from here: the stored `source`, such as `campaign:P-3`. */
+  source: Schema.optional(Source),
+  /** Only those carrying this tag, themselves or on one of their contacts. */
+  tag: Schema.optional(KinPartyTag),
   cursor: Schema.optional(PageCursor),
   limit: Schema.optional(PageLimit),
 });
@@ -1343,6 +1385,8 @@ export const KinProjectsInput = Schema.Struct({
   text: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
   /** Only the projects this person leads or is on. */
   person: Schema.optional(KinPersonId),
+  /** Only campaigns. */
+  campaign: Schema.optional(Schema.Literal(true)),
   cursor: Schema.optional(PageCursor),
   limit: Schema.optional(PageLimit),
 });
@@ -1429,6 +1473,7 @@ export const KinContactCreateInput = Schema.Struct({
   phone: Schema.optional(ShortText),
   emails: Schema.optional(ContactDetails),
   phones: Schema.optional(ContactDetails),
+  tags: Schema.optional(Tags),
   notes: Schema.optional(Notes),
   sensitive: Schema.optional(Schema.Boolean),
   clientRequestId: RequestId,
@@ -1473,6 +1518,8 @@ export const KinContactUpdateInput = Schema.Struct({
   /** The whole list, main first; empty clears it. */
   emails: Schema.optional(ContactDetails),
   phones: Schema.optional(ContactDetails),
+  /** The whole list; empty clears it. */
+  tags: Schema.optional(Tags),
   notes: Schema.optional(Notes),
   sensitive: Schema.optional(Schema.Boolean),
   active: Schema.optional(Schema.Boolean),
@@ -1495,6 +1542,9 @@ export const KinProjectCreateInput = Schema.Struct({
   startsOn: Schema.optional(Schema.NullOr(KinDay)),
   renewsOn: Schema.optional(Schema.NullOr(KinDay)),
   members: Schema.optional(Schema.Array(KinWorkPrincipal).check(Schema.isMaxLength(50))),
+  /** A campaign, with the tag its audience carries. */
+  campaign: Schema.optional(Schema.Boolean),
+  audience: Schema.optional(Schema.NullOr(KinPartyTag)),
   notes: Schema.optional(Notes),
   sensitive: Schema.optional(Schema.Boolean),
   clientRequestId: RequestId,
@@ -1518,6 +1568,10 @@ export const KinProjectUpdateInput = Schema.Struct({
   startsOn: Schema.optional(Schema.NullOr(KinDay)),
   renewsOn: Schema.optional(Schema.NullOr(KinDay)),
   members: Schema.optional(Schema.Array(KinWorkPrincipal).check(Schema.isMaxLength(50))),
+  /** `false` makes a campaign an ordinary project again; its audience stays for when it returns. */
+  campaign: Schema.optional(Schema.Boolean),
+  /** `null` clears. */
+  audience: Schema.optional(Schema.NullOr(KinPartyTag)),
   notes: Schema.optional(Notes),
   sensitive: Schema.optional(Schema.Boolean),
   state: Schema.optional(KinProjectState),
@@ -1537,6 +1591,72 @@ export const KinProjectPeopleResult = Schema.Struct({
   members: Schema.Array(KinWorkPrincipal),
 });
 export type KinProjectPeopleResult = typeof KinProjectPeopleResult.Type;
+
+/** The tags and the places "Came from" offers, as far as the reader sees them in Clients. */
+export const KinMarketingInput = Schema.Struct({ orgId: KinOrgId });
+export type KinMarketingInput = typeof KinMarketingInput.Type;
+export const KinCameFrom = Schema.Struct({
+  /** As stored: the company's own words, or `campaign:<key>`. */
+  source: Source,
+  /** As read: a campaign by its name. */
+  label: KinTrimmedText,
+  campaign: Schema.Boolean,
+});
+export type KinCameFrom = typeof KinCameFrom.Type;
+export const KinMarketing = Schema.Struct({
+  /** Each tag once, as the company first spelled it, by name. */
+  tags: Schema.Array(KinPartyTag),
+  /** Open campaigns first, newest first, then the company's own words by name. */
+  cameFrom: Schema.Array(KinCameFrom),
+});
+export type KinMarketing = typeof KinMarketing.Type;
+
+/** The Clients filter as a list asks for it: the contacts at the clients it shows. */
+const KinPartiesFilter = Schema.Struct({
+  kind: Schema.optional(KinPartyKind),
+  prospect: Schema.optional(Schema.Literal(true)),
+  owner: Schema.optional(KinWorkPrincipal),
+  active: Schema.optional(Schema.Boolean),
+  text: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
+  source: Schema.optional(Source),
+  tag: Schema.optional(KinPartyTag),
+});
+/**
+ * A list: a saved filter, read again each time, never a stored copy. The open contacts carrying a
+ * tag, a campaign's audience, or the contacts at the clients and prospects a Clients filter shows.
+ */
+export const KinContactListInput = Schema.Union([
+  Schema.Struct({ orgId: KinOrgId, tag: KinPartyTag }),
+  Schema.Struct({ orgId: KinOrgId, campaign: KinRecordKey }),
+  Schema.Struct({ orgId: KinOrgId, parties: KinPartiesFilter }),
+]);
+export type KinContactListInput = typeof KinContactListInput.Type;
+export const KIN_CONTACT_LIST_SHOWN = 200;
+/** How many rows one export carries. */
+export const KIN_CONTACT_EXPORT_MAX = 20_000;
+export const KinContactListRow = Schema.Struct({
+  ...KinContact.fields,
+  /** Who looks after its client, by name. */
+  lookedAfterBy: KinTrimmedText,
+});
+export type KinContactListRow = typeof KinContactListRow.Type;
+export const KinContactList = Schema.Struct({
+  /** By client, then by name; at most `KIN_CONTACT_LIST_SHOWN`. */
+  contacts: Schema.Array(KinContactListRow),
+  total: NonNegativeInt,
+  /** The list's name: the tag, or the campaign's name; absent for a Clients filter. */
+  title: Schema.optional(KinTrimmedText),
+  /** False for a reader who gets names only: no emails, phones or tags. */
+  details: Schema.Boolean,
+});
+export type KinContactList = typeof KinContactList.Type;
+/** The same list as a CSV file, one row per contact, made by the host. */
+export const KinContactExport = Schema.Struct({
+  filename: TrimmedNonEmptyString,
+  csv: Schema.String,
+  rows: NonNegativeInt,
+});
+export type KinContactExport = typeof KinContactExport.Type;
 
 export const KIN_WORK_WS_METHODS = {
   summary: "kin.work.summary",
@@ -1572,6 +1692,9 @@ export const KIN_WORK_WS_METHODS = {
   linkAdd: "kin.work.linkAdd",
   linkRemove: "kin.work.linkRemove",
   projectNote: "kin.work.projectNote",
+  marketing: "kin.work.marketing",
+  contactList: "kin.work.contactList",
+  exportContacts: "kin.work.exportContacts",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -1736,6 +1859,21 @@ export const KinWorkRpcs = [
     success: KinTouchRemoveResult,
     error,
   }),
+  Rpc.make(KIN_WORK_WS_METHODS.marketing, {
+    payload: KinMarketingInput,
+    success: KinMarketing,
+    error,
+  }),
+  Rpc.make(KIN_WORK_WS_METHODS.contactList, {
+    payload: KinContactListInput,
+    success: KinContactList,
+    error,
+  }),
+  Rpc.make(KIN_WORK_WS_METHODS.exportContacts, {
+    payload: KinContactListInput,
+    success: KinContactExport,
+    error,
+  }),
 ] as const;
 
 export const KIN_WORK_RPC_SCOPES = {
@@ -1777,4 +1915,8 @@ export const KIN_WORK_RPC_SCOPES = {
   [KIN_WORK_WS_METHODS.projectPeople]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.logTouch]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.removeTouch]: AuthKinChatScope,
+  // Reads; the service shows each person only what they see in Clients.
+  [KIN_WORK_WS_METHODS.marketing]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.contactList]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.exportContacts]: AuthKinChatScope,
 } as const;

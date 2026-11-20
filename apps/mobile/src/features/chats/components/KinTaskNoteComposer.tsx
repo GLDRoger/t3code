@@ -229,7 +229,6 @@ export function KinTaskNoteComposer(props: {
             className={`min-h-11 flex-1 justify-center py-1 ${serverConfig === null ? "pl-4" : ""}`}
           >
             <TextInput
-              accessibilityLabel={KIN_TASK_RECORD.addNote}
               value={draft.text}
               editable={!sending}
               multiline

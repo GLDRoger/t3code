@@ -418,6 +418,7 @@ export const search = Effect.fn("KinDocs.search")(
           ...(hit.section === undefined
             ? {}
             : { section: { id: hit.section.id, title: hit.section.title } }),
+          ...(hit.client === undefined ? {} : { client: KinRecordKey.make(hit.client) }),
           sensitive: hit.sensitive,
           closed: hit.closed,
           updatedAt: iso(hit.updatedAt),

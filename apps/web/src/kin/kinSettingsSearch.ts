@@ -29,11 +29,19 @@ export const KIN_PROFILE_SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["kin away holiday leave vacation out of office back"],
     kinOnly: true,
   },
+  {
+    id: "kin-github-username",
+    title: "GitHub username",
+    to: "/settings/kin-profile",
+    searchTerms: ["kin github username login pull requests review"],
+    kinOnly: true,
+  },
 ] as const satisfies ReadonlyArray<SettingsSearchItem>;
 
 // A found Kin setting that Kin's Settings keeps on another page than its app address names.
 const KIN_SETTING_ELSEWHERE: Readonly<Record<string, KinSettingsPage>> = {
   "kin-agents": "agents",
+  "kin-who-can-message": "team",
 };
 
 /** The page of Kin's Settings that holds the setting `target`, reached from an address for `page`. */

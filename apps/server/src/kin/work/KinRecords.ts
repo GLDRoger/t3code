@@ -43,8 +43,9 @@ import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { teammatesLimited } from "../lead/KinBudget.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import * as Reach from "../lead/Reach.ts";
 import { ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
-import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
+import { codingAgentSource, outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { companyMoney, countryFirst, homeCurrency } from "./companyProfile.ts";
 import { commentsPage } from "./recordComments.ts";
 import { indexRecord } from "./searchIndex.ts";
@@ -110,6 +111,7 @@ import {
   verifyRefs,
 } from "./registers.ts";
 import { contactFields } from "./contactDetails.ts";
+import { cleanTags } from "./tags.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
 import {
   bumpTeamSeqs,
@@ -832,8 +834,8 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Where a teammate's assignment wakes a lead: their direct chat with it, while its owner lets
-   * them message it and they have turns left today, as `ChatWake` admits their messages. Asked
+   * Where a teammate's assignment wakes a lead: their direct chat with it, while they may message
+   * it (`Reach`) and they have turns left today, as `ChatWake` admits their messages. Asked
    * from their own app, a refusal fails the write, so nothing is given away that won't be done.
    */
   const teammateWake = Effect.fn("KinRecords.teammateWake")(function* (
@@ -845,9 +847,11 @@ const make = Effect.gen(function* () {
   ) {
     const own = writer.actor._tag === "person" && writer.actor.personId === personId;
     const refuse = (error: KinChatError) => (own ? Effect.fail(error) : Effect.void);
-    // A co-owner messages every lead and has no daily cap, as the owner does.
+    // A co-owner has no daily cap, as the owner does.
     const level = yield* ownerLevel(orgId, personId).pipe(provideSql);
-    if (!level && !(yield* LeadAccess.allowed({ orgId, agentId, personId }).pipe(provideSql)))
+    if (
+      !(yield* Reach.reaches(orgId, Reach.person(personId), Reach.agent(agentId)).pipe(provideSql))
+    )
       return yield* refuse(
         new KinChatError({
           reason: "not_found",
@@ -955,14 +959,22 @@ const make = Effect.gen(function* () {
             }),
       })
       .pipe(
-        // Given out after an outside read: the receiving lead's turn starts outside-read too.
+        // Given out after an outside read, or by a coding agent: the receiving turn starts marked.
         Effect.tap(({ event }) =>
-          writer.wakeupId === undefined
-            ? Effect.void
-            : outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(
-                Effect.flatMap((source) => stampEvent(orgId, event.eventId, source)),
+          writer.codingAgentKey !== undefined
+            ? sql<{ label: string }>`SELECT label FROM kin_tasks_keys
+                WHERE org_id = ${orgId} AND session_id = ${writer.codingAgentKey}`.pipe(
+                Effect.flatMap(([key]) =>
+                  stampEvent(orgId, event.eventId, codingAgentSource(key?.label ?? "Coding agent")),
+                ),
                 Effect.provideService(SqlClient.SqlClient, sql),
-              ),
+              )
+            : writer.wakeupId === undefined
+              ? Effect.void
+              : outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(
+                  Effect.flatMap((source) => stampEvent(orgId, event.eventId, source)),
+                  Effect.provideService(SqlClient.SqlClient, sql),
+                ),
         ),
         Effect.as(true),
         Effect.catchTags({
@@ -1180,14 +1192,17 @@ const make = Effect.gen(function* () {
     seenBy: KinPersonId | undefined,
   ) {
     if (list === "work" || list === "docs" || list === "milestones" || !isBuiltIn(list)) return;
+    // `+key` keeps SQLite off the key index, which walks every key in the company for each name;
+    // it reads the title index instead.
     const [row] = yield* sql<{ key: string; sensitive: number }>`SELECT r.key,
         ${sensitiveNow(sql)} AS sensitive FROM kin_records r
-      WHERE r.org_id = ${orgId} AND r.register_id = ${list} AND r.state NOT IN ${sql.in(CLOSED)}
+      WHERE r.org_id = ${orgId} AND r.register_id = ${list}
+        AND ${list === "contacts" ? sql`r.party_id IS ${partyId}` : sql`1 = 1`}
+        AND r.state NOT IN ${sql.in(CLOSED)}
         AND lower(r.title) = lower(${title}) AND r.record_id IS NOT ${except}
-        AND (${list} != 'contacts' OR r.party_id IS ${partyId})
         AND (${list} != 'clients' OR ${clientFamily(sql, sql`r.category`)} = ${clientFamily(sql, sql`${category ?? "client"}`)})
         AND ${seenBy === undefined ? sql`1 = 1` : crmSees(sql, seenBy)}
-      ORDER BY r.key LIMIT 1`;
+      ORDER BY +r.key LIMIT 1`;
     if (row !== undefined) {
       const error = {
         reason: "conflict" as const,
@@ -1306,8 +1321,9 @@ const make = Effect.gen(function* () {
     if (list === "deals" && writer.deal !== true) return yield* dealsOnly;
     const contact = list === "contacts" ? contactFields({}, input.fields ?? {}) : input.fields;
     if (isChatError(contact)) return yield* contact;
+    const tagged = yield* cleanTags(orgId, list, contact).pipe(provideSql);
     const fields = Object.fromEntries(
-      Object.entries(contact ?? {}).filter(
+      Object.entries(tagged ?? {}).filter(
         (entry): entry is [string, FieldValue] => entry[1] !== null,
       ),
     );
@@ -1561,7 +1577,14 @@ const make = Effect.gen(function* () {
             ? contactFields(parseFields(row.fieldsJson), asked.fields)
             : undefined;
         if (isChatError(contact)) return yield* contact;
-        const patch = contact === undefined ? asked : { ...asked, fields: contact };
+        const given = contact === undefined ? asked : { ...asked, fields: contact };
+        const patch =
+          given.fields === undefined
+            ? given
+            : {
+                ...given,
+                fields: yield* cleanTags(orgId, row.registerId, given.fields).pipe(provideSql),
+              };
         if (writer.codingAgentKey !== undefined && !heldBy(row, writer))
           return yield* notFound(key);
         if (writer.teammate === true && writer.actor._tag === "person")

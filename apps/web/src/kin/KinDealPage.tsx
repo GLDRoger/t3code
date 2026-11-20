@@ -10,6 +10,7 @@ import {
   kinDealQuoteChoices,
   kinDealStageName,
   kinDealStrip,
+  kinDealWithoutConcern,
   kinDealWhen,
 } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinMoneyText } from "@t3tools/client-runtime/kin/kinLists";
@@ -388,6 +389,37 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
             </ul>
           )}
           {deal.can.edit ? <AddStep {...props} deal={deal} onProblem={setProblem} /> : null}
+        </KinWorkSection>
+      )}
+
+      {deal.concerns === undefined ? null : (
+        <KinWorkSection title={KIN_DEALS.concernsRaised}>
+          <ul className="flex flex-col gap-2 text-sm">
+            {deal.concerns.map((concern) => (
+              <li key={concern.label} className="flex items-start gap-2">
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <span className="text-foreground">{concern.label}</span>
+                  {concern.heard === undefined ? null : (
+                    <span className="text-xs text-muted-foreground">
+                      {KIN_DEALS.heard(concern.heard)}
+                    </span>
+                  )}
+                </div>
+                {!deal.can.edit ? null : (
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    disabled={busy}
+                    aria-label={KIN_DEALS.removeConcern(concern.label)}
+                    title={KIN_DEALS.removeConcern(concern.label)}
+                    onClick={() => void change(kinDealWithoutConcern(deal, concern.label))}
+                  >
+                    <XIcon />
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
         </KinWorkSection>
       )}
 

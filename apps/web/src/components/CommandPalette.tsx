@@ -2115,7 +2115,9 @@ function OpenCommandPaletteDialog(props: {
                     to:
                       hit.kind === "docs"
                         ? "/kin/$environmentId/$orgId/docs"
-                        : hit.kind === "clients" || hit.kind === "projects"
+                        : hit.kind === "clients" ||
+                            hit.kind === "projects" ||
+                            hit.clientKey !== null
                           ? "/kin/$environmentId/$orgId/clients"
                           : money
                             ? "/kin/$environmentId/$orgId/money"
@@ -2131,7 +2133,9 @@ function OpenCommandPaletteDialog(props: {
                           ? { [KIN_CLIENT_PARAM]: raw.key }
                           : hit.kind === "projects"
                             ? { project: raw.key }
-                            : { task: raw.key },
+                            : hit.clientKey !== null
+                              ? { [KIN_CLIENT_PARAM]: hit.clientKey }
+                              : { task: raw.key },
                   });
                 },
               };

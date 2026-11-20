@@ -47,6 +47,7 @@ import { turnAudience, turnChat, turnPeople } from "../lead/Audience.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import * as Reach from "../lead/Reach.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { TEAMMATE_WORDS, workEventText } from "../lead/LeadPrompt.ts";
 import { sharedToolAllowed } from "../lead/SharedTools.ts";
@@ -1218,12 +1219,16 @@ it.effect(
         "kin.work.updateContact",
         "kin.work.logTouch",
         "kin.work.removeTouch",
+        // Reads of what they see in Clients, refused with it off (`ownerMarketing.ts`, crm tests).
+        "kin.work.marketing",
+        "kin.work.contactList",
+        "kin.work.exportContacts",
       ]);
       const methods = [
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 49);
+      assert.lengthOf(methods, 52);
       for (const method of methods)
         assert.strictEqual(kinRpcAccess(method) === "person", teammate.has(method), method);
     }).pipe(Effect.provide(layer)),
@@ -2425,7 +2430,14 @@ it.effect(
       yield* seed;
       yield* mateMayMessage;
       const sql = yield* SqlClient.SqlClient;
-      // An agent its owner doesn't let them message is no agent to them, and nothing is written.
+      // An agent the owner restricted for them is no agent to them, and nothing is written.
+      yield* Reach.setLimit({
+        orgId,
+        by: ownerId,
+        a: Reach.person(mateId),
+        b: Reach.agent(other),
+        restricted: true,
+      });
       assert.deepInclude(
         yield* Effect.flip(
           OwnerWork.create([mate], {
@@ -2933,6 +2945,14 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
     );
     assert.isNull(page.party.terms);
     assert.notInclude(JSON.stringify(page), "net 30");
+    // Search finds the contact with its client, whose page opens for it.
+    assert.deepStrictEqual(
+      (yield* OwnerDocs.search([mate], { orgId, text: "Priya" })).hits.map((hit) => [
+        hit.key,
+        "client" in hit ? hit.client : undefined,
+      ]),
+      [[priya.row.key, client.key]],
+    );
     assert.include(yield* Effect.flip(OwnerDocs.list([mate], { orgId })), {
       reason: "not_allowed",
     });
@@ -3345,6 +3365,9 @@ it.effect(
       yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'America/Los_Angeles', '08:30',
           '18:30', '03:00', 0, 1, '09:00', '{"from":"22:00","to":"07:00"}')
         ON CONFLICT (org_id) DO UPDATE SET time_zone = 'America/Los_Angeles'`;
+      // Her own clock is a day ahead: a due day is still the company's, not hers.
+      yield* sql`UPDATE kin_people SET time_zone = 'Pacific/Auckland'
+        WHERE org_id = ${orgId} AND person_id = ${mateId}`;
       const scope = scopeOf("lead");
       // G03: the owner's turn has seen a price; what it writes is still not private for that.
       yield* sensitiveShown({ orgId, wakeupId: "wake" });
@@ -3376,8 +3399,13 @@ it.effect(
       assert.lengthOf(told, 1);
       assert.include(told[0]!.body, "gave you 3 tasks");
       assert.include(told[0]!.body, "W-2 Invented: fix the login screen, due Fri 20 Nov. Why: iOS");
+      yield* sql`UPDATE kin_people SET time_zone = NULL
+        WHERE org_id = ${orgId} AND person_id = ${mateId}`;
       // The agent reads the day the owner named, west of UTC too.
-      assert.include(yield* LeadWork.get(scope, { key: "W-2" }), { due: "2026-11-20" });
+      assert.include(yield* LeadWork.get(scope, { key: "W-2" }), {
+        due: "2026-11-20",
+        dueDay: "Fri 20 Nov 2026",
+      });
       // The owner asked, so the owner gave it; the agent only carried it.
       const given = yield* OwnerWork.get([mate], { orgId, key: "W-2" });
       assert.deepInclude(given, {
@@ -4252,10 +4280,14 @@ it.effect("an agent's reply carries what its own wake-up changed, as each reader
       sourceEventId: "ask-event",
       tasks: [{ key: "W-1", to: "Finance", reason: "Invented: month end" }],
     });
-    // Named in no link of the reply: the receipt alone says it opens as a client.
+    // Named in no link of the reply: the receipt alone says it opens as a client, and a contact
+    // as its client's page.
     yield* LeadWork.create(scope, {
       sourceEventId: "ask-event",
-      records: [{ list: "clients", title: "Invented Acme" }],
+      records: [
+        { list: "clients", title: "Invented Acme" },
+        { list: "contacts", title: "Invented Ola", client: "Invented Acme" },
+      ],
     });
     yield* reply("first", "wake");
     // The next wake-up, in the same chat, changes seven things.
@@ -4288,15 +4320,21 @@ it.effect("an agent's reply carries what its own wake-up changed, as each reader
     yield* reply("empty", "wake-3");
     const read = yield* ownerReads;
     const first = read.get(KinMessageId.make("first"))!.turnChanges;
-    assert.deepInclude(first, { count: 3, more: 0 });
+    assert.deepInclude(first, { count: 4, more: 0 });
     assert.deepStrictEqual(receiptRows(first), [
       ["W-2", "created", true, false],
       ["W-1", "given to Finance", true, false],
       ["C-1", "created", false, false],
+      ["CT-1", "created", false, false],
     ]);
     assert.deepStrictEqual(
-      first!.items.map((item) => item.kind),
-      ["task", "task", "client"],
+      first!.items.map((item) => [item.kind, item.party]),
+      [
+        ["task", undefined],
+        ["task", undefined],
+        ["client", undefined],
+        ["entry", "C-1"],
+      ],
     );
     assert.deepStrictEqual(first!.items[0]!.change.agentId, lead);
     // A turn that changed nothing says so, unlike an older server.

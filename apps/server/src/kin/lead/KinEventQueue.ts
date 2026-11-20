@@ -31,7 +31,7 @@ import {
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
-import * as LeadAccess from "./LeadAccess.ts";
+import * as Reach from "./Reach.ts";
 
 const EventJson = Schema.fromJsonString(KinEvent);
 const encodeEvent = Schema.encodeEffect(EventJson);
@@ -110,7 +110,7 @@ const STORED_AUTHOR = `LEFT JOIN kin_messages m ON m.org_id = e.org_id
 const AUTHOR_OF = `COALESCE(m.author_person_id,
   CASE WHEN e.tag = 'chat.reaction' THEN json_extract(e.json, '$.provenance.personId') END)`;
 
-/** An owner message waits only for the rest of its burst, and never longer than the cap. */
+/** A person's message waits only for the rest of its burst, and never longer than the cap. */
 const OWNER_BURST_MS = 300;
 const OWNER_WINDOW_MS = 2_000;
 
@@ -497,8 +497,11 @@ const make = Effect.gen(function* () {
       SELECT
         MIN(CASE WHEN COALESCE(not_before, queued_at) <= ${now} THEN queued_at END) AS first_at,
         MAX(CASE WHEN COALESCE(not_before, queued_at) <= ${now} THEN queued_at END) AS last_at,
-        -- A finished task's run is already going: it can't wait for a batch.
-        MIN(CASE WHEN (priority = 'P0' OR tag = 'task.finished')
+        -- A finished task's run is already going, and a person is waiting on what they wrote:
+        -- neither waits out the batch window. A person's place in the budget stays their priority.
+        MIN(CASE WHEN (priority = 'P0' OR tag = 'task.finished'
+            OR (tag IN ('chat.message', 'widget.action')
+              AND json_extract(json, '$.provenance._tag') = 'human'))
           AND COALESCE(not_before, queued_at) <= ${now} THEN queued_at END) AS urgent_at,
         MIN(CASE WHEN not_before > ${now} THEN not_before END) AS deferred_at
       FROM kin_events
@@ -521,7 +524,7 @@ const make = Effect.gen(function* () {
 
   /**
    * A teammate's request Kin passed on (`routeCard.forward`) starts only while they may still
-   * message the agent and their own message still stands; otherwise it expires. One that expired
+   * message the agent (`Reach`) and their own message still stands; otherwise it expires. One that expired
    * for any reason is told once, in the chat they asked it in.
    */
   const expireStaleRoutes = Effect.fn("KinEventQueue.expireStaleRoutes")(function* (
@@ -543,7 +546,7 @@ const make = Effect.gen(function* () {
       const personId = KinPersonId.make(row.personId);
       if (
         row.live !== 1 ||
-        !(yield* LeadAccess.allowed({ orgId, agentId, personId }).pipe(
+        !(yield* Reach.reaches(orgId, Reach.person(personId), Reach.agent(agentId)).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
         ))
       )

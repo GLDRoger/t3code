@@ -20,6 +20,7 @@ const state = vi.hoisted(() => ({
   move: null as unknown as (...args: Array<unknown>) => unknown,
   update: null as unknown as (...args: Array<unknown>) => unknown,
   setStages: null as unknown as (...args: Array<unknown>) => unknown,
+  setQuietDays: null as unknown as (...args: Array<unknown>) => unknown,
 }));
 
 vi.mock(import("./useKinDeals"), () => {
@@ -46,6 +47,10 @@ vi.mock(import("./useKinDeals"), () => {
     })) as never,
     useKinDealStagesSet: (() => async (input: unknown) => {
       state.setStages(input);
+      return { ok: true, value: state.stages };
+    }) as never,
+    useKinDealQuietDaysSet: (() => async (days: unknown) => {
+      state.setQuietDays(days);
       return { ok: true, value: state.stages };
     }) as never,
   };
@@ -124,7 +129,13 @@ function setup(input: {
   state.move = vi.fn();
   state.update = vi.fn();
   state.setStages = vi.fn();
-  return { move: state.move, update: state.update, setStages: state.setStages };
+  state.setQuietDays = vi.fn();
+  return {
+    move: state.move,
+    update: state.update,
+    setStages: state.setStages,
+    setQuietDays: state.setQuietDays,
+  };
 }
 
 const board = () => (
@@ -311,19 +322,40 @@ describe("one deal's page", () => {
     });
   });
 
-  it("offers no hand-over to whoever may not give the deal away", async () => {
+  it("offers no hand-over, and no way to take a concern off, to whoever may not edit the deal", async () => {
     setup({
       page: dealPage(
         deal(7, "Clinic scheduling pilot", {
           can: { edit: false, move: false, give: false, mark: false },
+          concerns: [{ label: "Staff confidence" }],
         }),
       ),
     });
     await using _screen = await renderPage(company);
     await expect.element(page.getByText("Zoya")).toBeVisible();
+    await expect.element(page.getByText("Staff confidence")).toBeVisible();
     expect(page.getByRole("button", { name: "Change who looks after it" }).elements()).toHaveLength(
       0,
     );
+    expect(page.getByRole("button", { name: /^Remove / }).elements()).toHaveLength(0);
+  });
+
+  it("takes one concern off through the deal's own edit, keeping the rest", async () => {
+    const pilot = deal(7, "Clinic scheduling pilot", {
+      concerns: [
+        { label: "Past system failed", heard: "The last one never worked for us" },
+        { label: "Staff confidence" },
+      ],
+    });
+    const { update } = setup({ page: dealPage(pilot) });
+    await using _screen = await renderPage();
+    await expect.element(page.getByText("“The last one never worked for us”")).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Remove Past system failed" }));
+    expect(update).toHaveBeenLastCalledWith({
+      key: pilot.key,
+      rev: pilot.rev,
+      concerns: [{ label: "Staff confidence" }],
+    });
   });
 
   it("links one of the client's quotes from Details, and None unlinks it", async () => {
@@ -390,6 +422,7 @@ describe("Settings → Deals", () => {
     rev: 5,
     can,
     open: can ? { new: 3, "in-talks": 4, proposal: 2, deciding: 2 } : {},
+    quietDays: 14,
   });
 
   it("lets the owner rename, add and remove a stage, moving its open deals first", async () => {
@@ -420,6 +453,29 @@ describe("Settings → Deals", () => {
     });
   });
 
+  it("lets the owner set when a deal goes quiet, on its own Save", async () => {
+    const { setQuietDays, setStages } = setup({ stages: held(true) });
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <KinDealStagesSettings {...target} />
+      </AppAtomRegistryProvider>,
+    );
+    const days = page.getByRole("spinbutton", { name: "Days before a deal is quiet" });
+    await expect.element(days).toHaveValue(14);
+    const save = page.getByRole("region", { name: "A deal goes quiet after" }).getByRole("button", {
+      name: "Save",
+    });
+    await expect.element(save).toBeDisabled();
+    await userEvent.clear(days);
+    await userEvent.type(days, "0");
+    await expect.element(page.getByText("Say a whole number of days, 1 to 365.")).toBeVisible();
+    await userEvent.clear(days);
+    await userEvent.type(days, "21");
+    await userEvent.click(save);
+    expect(setQuietDays).toHaveBeenCalledWith(21);
+    expect(setStages).not.toHaveBeenCalled();
+  });
+
   it("shows a teammate the stages to read, not change", async () => {
     setup({ stages: held(false) });
     await using _screen = await render(
@@ -432,5 +488,113 @@ describe("Settings → Deals", () => {
       .toBeVisible();
     expect(page.getByRole("textbox").elements()).toHaveLength(0);
     expect(page.getByRole("button", { name: "Save stages" }).elements()).toHaveLength(0);
+    await expect.element(page.getByText("14 days")).toBeVisible();
+    expect(page.getByRole("spinbutton").elements()).toHaveLength(0);
+  });
+});
+
+describe("the deals figures", () => {
+  const rhea = KinPersonId.make("person-rhea");
+  const eur = (count: number, minor: number) => ({
+    count,
+    values: [{ minor, currency: "EUR" }],
+  });
+  const numbers = (owner: boolean): NonNullable<KinDealsResult["numbers"]> => ({
+    month: "2026-11",
+    lastMonth: "2026-10",
+    weekStart: "2026-11-16",
+    open: eur(2, 2_100_000),
+    stages: [],
+    wonThisMonth: eur(1, 1_900_000),
+    week: {
+      won: [
+        {
+          key: KinRecordKey.make("DL-9"),
+          title: "warehouse app",
+          party: "Kestrel Freight",
+          owner: { _tag: "person", personId: zoya },
+          value: { minor: 1_900_000, currency: "EUR" },
+        },
+      ],
+      lost: [],
+      new: [],
+      moved: [],
+      counts: { won: 1, lost: 0, new: 3, moved: 0 },
+    },
+    people: [
+      {
+        owner: { _tag: "person", personId: zoya },
+        open: eur(1, 1_800_000),
+        wonThisMonth: eur(1, 1_900_000),
+        late: 1,
+      },
+      ...(owner
+        ? [
+            {
+              owner: { _tag: "person" as const, personId: rhea },
+              open: eur(1, 300_000),
+              wonThisMonth: eur(0, 0),
+              late: 0,
+            },
+          ]
+        : []),
+    ],
+    ...(owner
+      ? {
+          wonLastMonth: eur(0, 0),
+          lostThisMonth: eur(1, 650_000),
+          lostLastMonth: eur(0, 0),
+          winRate: { won: 2, decided: 3 },
+          sources: [{ source: "Harbour trade fair", count: 2 }],
+          late: 1,
+        }
+      : {}),
+  });
+  const withNumbers = (owner: boolean) => {
+    setup({ deals: [deal(1, "Shop fit-out")] });
+    state.deals = { ...(state.deals as KinDealsResult), numbers: numbers(owner) };
+  };
+
+  it("shows the owner won this month and the week, everyone's row folded, and a person's open deals", async () => {
+    await page.viewport(1440, 900);
+    withNumbers(true);
+    await using _screen = await render(board());
+    await expect.element(page.getByLabelText("Won in November: 1 deal")).toBeVisible();
+    await expect.element(page.getByLabelText("This week: +3 new · 1 won · 0 lost")).toBeVisible();
+    // Folded until opened, as the page's other sections.
+    await expect.element(page.getByText("Kestrel Freight: warehouse app")).not.toBeInTheDocument();
+    await userEvent.click(page.getByRole("button", { name: /This week in deals/ }));
+    await expect.element(page.getByText("Kestrel Freight: warehouse app")).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "By person" }));
+    await expect.element(page.getByRole("cell", { name: "You" })).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "This month and last" }));
+    await expect.element(page.getByText("2 won of 3")).toBeVisible();
+    await expect.element(page.getByText("Harbour trade fair")).toBeVisible();
+    // A person's open value opens their open deals through the list's own filter.
+    await expect.element(page.getByRole("button", { name: "Whose deals: Everyone" })).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Open deals looked after by You" }));
+    await expect.element(page.getByRole("button", { name: "Whose deals: Me" })).toBeVisible();
+  });
+
+  it("shows a sales person their own row and the team's totals, and nobody else's", async () => {
+    await page.viewport(1440, 900);
+    withNumbers(false);
+    await using _screen = await render(board());
+    await expect.element(page.getByLabelText("Won in November: 1 deal")).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Yours" }));
+    await expect.element(page.getByRole("cell", { name: "You" })).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "By person" })).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "This month and last" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("shows no figures at all for a company with no deals", async () => {
+    await page.viewport(1440, 900);
+    setup({});
+    await using _screen = await render(board());
+    await expect.element(page.getByText("No deals yet")).toBeVisible();
+    await expect.element(page.getByText(/^Won in/)).not.toBeInTheDocument();
+    await expect.element(page.getByText("This week in deals")).not.toBeInTheDocument();
   });
 });

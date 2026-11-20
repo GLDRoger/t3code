@@ -57,6 +57,8 @@ import { KinSearchDialog } from "./KinSearchDialog";
 import { KinWorkClientPage, KinWorkClientsList, KinWorkProjectsTab } from "./KinWorkClients";
 import { KinDealNewDialog, KinDealsTab } from "./KinDeals";
 import { KinDealPage } from "./KinDealPage";
+import { KinImportView } from "./KinImport";
+import { KIN_IMPORT } from "@t3tools/client-runtime/kin/kinImport";
 import { KIN_DEALS, kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { KinWorkDates } from "./KinWorkDates";
@@ -462,10 +464,13 @@ export function KinPlaceView({
             </Button>
           ) : place === "clients" && tab === "deals" ? (
             addDeal === null ? null : (
-              <Button size="sm" onClick={() => addDeal(null)}>
-                <PlusIcon />
-                {KIN_DEALS.newDeal}
-              </Button>
+              // Below phone width the Deals tab's own header carries it.
+              <span className="max-sm:hidden">
+                <Button size="sm" onClick={() => addDeal(null)}>
+                  <PlusIcon />
+                  {KIN_DEALS.newDeal}
+                </Button>
+              </span>
             )
           ) : place === "clients" && addClient !== null && addProject !== null ? (
             <Menu>
@@ -483,6 +488,9 @@ export function KinPlaceView({
                   </MenuItem>
                 ) : null}
                 <MenuItem onClick={addProject}>{KIN_PROJECTS.add}</MenuItem>
+                {ownerLevel ? (
+                  <MenuItem onClick={() => onDialog("import")}>{KIN_IMPORT.entry}</MenuItem>
+                ) : null}
               </MenuPopup>
             </Menu>
           ) : place === "clients" && (addClient ?? addProject) !== null ? (
@@ -741,6 +749,8 @@ export function KinPlaceView({
       />
     );
   const opening = record !== null || taskPage;
+  // Import a file takes the Clients place over while it is open; the host decides who may.
+  const importing = dialog === "import" && place === "clients" && ownerLevel && hostClients;
 
   // A doc on a narrow window is the whole page, under its own header with its own way back.
   const docAlone = record !== null && "doc" in record && !wide && !taskPage;
@@ -767,6 +777,8 @@ export function KinPlaceView({
         <div className="mx-auto w-full max-w-3xl p-4" role="status" aria-label={`Loading ${title}`}>
           <KinWorkRowSkeletons />
         </div>
+      ) : importing ? (
+        <KinImportView {...props} directory={directory.names} onOpenDeals={() => onTab("deals")} />
       ) : (
         <div className="flex min-h-0 flex-1">
           {/* A record under a place taken away says for itself that it isn't theirs; no list beside it. */}
@@ -813,7 +825,9 @@ export function KinPlaceView({
             else if (hit.kind === "clients") openClient(hit.key);
             else if (hit.kind === "projects") openProject(hit.key);
             else if (hit.kind === "memory") openKinMemoryInstead(router.history, hit.title, "open");
-            // A contact has no page of its own, and a money entry opens on its sheet.
+            // A contact has no page of its own: its client's opens.
+            else if (hit.clientKey !== null) openClient(hit.clientKey);
+            // A money entry opens on its sheet.
             else setOpenKey(hit.key);
           }}
         />

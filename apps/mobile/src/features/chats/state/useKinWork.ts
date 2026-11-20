@@ -118,6 +118,17 @@ export function useKinReinvited({ environmentId, orgId }: KinWorkTarget, enabled
   return kinInvitedPeople(Option.getOrNull(AsyncResult.value(result))?.invites ?? null);
 }
 
+/** The company's time zone, where a picked day is a calendar day; `read` once the host answered. */
+export function useKinWorkZone({ environmentId, orgId }: KinWorkTarget, enabled = true) {
+  const result = useAtomValue(
+    enabled ? kinClient.workZone({ environmentId, input: { orgId } }) : noZoneAtom,
+  );
+  return {
+    zone: Option.getOrNull(AsyncResult.value(result))?.timeZone ?? null,
+    read: !AsyncResult.isInitial(result),
+  };
+}
+
 /** Who Work can name and be given to. `enabled` is off for a viewer the host would refuse. */
 export function useKinWorkDirectory({ environmentId, orgId }: KinWorkTarget, enabled: boolean) {
   const host = useKinHostAt(environmentId);
@@ -128,14 +139,7 @@ export function useKinWorkDirectory({ environmentId, orgId }: KinWorkTarget, ena
   const listed = Option.getOrNull(AsyncResult.value(result));
   const people = listed?.people ?? null;
   const invited = useKinReinvited({ environmentId, orgId }, enabled);
-  const zone =
-    Option.getOrNull(
-      AsyncResult.value(
-        useAtomValue(
-          enabled ? kinClient.workZone({ environmentId, input: { orgId } }) : noZoneAtom,
-        ),
-      ),
-    )?.timeZone ?? null;
+  const { zone } = useKinWorkZone({ environmentId, orgId }, enabled);
   return {
     orgs,
     people,

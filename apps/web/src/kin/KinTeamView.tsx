@@ -1,7 +1,3 @@
-import {
-  kinLeadMessageable,
-  KIN_AGENTS_COPY,
-} from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
@@ -27,7 +23,6 @@ import {
   kinTeammateAgentsLine,
   kinTeammateKind,
   kinTeammateKindEditable,
-  kinTeammateLeadLine,
   kinOpenCountsFollower,
   type KinMadeInvite,
   type KinTeamActions,
@@ -40,7 +35,6 @@ import { executeAtomQuery, squashAtomCommandFailure } from "@t3tools/client-runt
 import { kinAccessAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import type {
   EnvironmentId,
-  KinLeadProfile,
   KinOrgId,
   KinPeopleSetAccessInput,
   KinPersonAccess,
@@ -103,9 +97,11 @@ import { useKinProfiles } from "./kinPictures";
 import { KIN_HAND_OVER } from "@t3tools/client-runtime/kin/kinHandOver";
 import { KIN_PERSON_TASKS } from "@t3tools/client-runtime/kin/kinTasksList";
 import { kinClient } from "./kinClient";
-import { kinProfileRequestAtom, kinTeamAddRequestAtom } from "./kinTeamForm";
+import { kinTeamAddRequestAtom } from "./kinTeamForm";
 import { openKinProfile } from "./KinProfileSheet";
 import { KinCompanyChatRow, KinTeamAgentRow } from "./KinTeamAgent";
+import { KinPersonReach, KinReachList } from "./KinReach";
+import { KIN_REACH_COPY } from "@t3tools/client-runtime/kin/kinReach";
 import { useKinHostAt } from "./useKinHost";
 import { useKinWork } from "./useKinWork";
 import { KinLoadFailed } from "./KinWorkParts";
@@ -322,6 +318,7 @@ function KinTeamBody(
             ))}
           </ul>
         )}
+        <KinReachList environmentId={environmentId} orgId={orgId} />
       </div>
       {open === null ? null : (
         <KinTeammateDialog
@@ -515,22 +512,30 @@ function KinTeammateDialog(props: {
               onOpen={props.onClose}
             />
           )}
-          <Section title="Agents">
-            {teammate.personId === null ? (
+          {teammate.personId === null ? (
+            <Section title="Agents">
               <p className="text-sm text-muted-foreground">
-                Once {teammate.name} joins, open an agent's details to let them message it.
+                {KIN_REACH_COPY.notJoined(teammate.name)}
               </p>
-            ) : kinTeammateAgentsLine(teammate) !== null ? (
-              <p className="text-sm text-muted-foreground">{kinTeammateAgentsLine(teammate)}</p>
-            ) : (
-              <KinTeammateLeads
-                personId={teammate.personId}
-                name={teammate.name}
+            </Section>
+          ) : (
+            <>
+              {kinTeammateAgentsLine(teammate) === null ? null : (
+                <Section title="Agents">
+                  <p className="text-sm text-muted-foreground">{kinTeammateAgentsLine(teammate)}</p>
+                </Section>
+              )}
+              <KinPersonReach
                 environmentId={props.environmentId}
                 orgId={props.orgId}
+                personId={teammate.personId}
+                name={teammate.name}
+                ownerLevel={kinTeammateAgentsLine(teammate) !== null}
+                onOpenAgent={props.onClose}
+                section={Section}
               />
-            )}
-          </Section>
+            </>
+          )}
           {offered.link === null ? null : (
             <Section title="Invite link">
               <Button
@@ -818,73 +823,6 @@ function KinTeammatePlaces(props: {
         )}
       </Section>
     </>
-  );
-}
-
-/** The owner's leads and whether this person can message each. A lead's own details change it. */
-function KinTeammateLeads(props: {
-  readonly personId: KinPersonId;
-  readonly name: string;
-  readonly environmentId: EnvironmentId;
-  readonly orgId: KinOrgId;
-}) {
-  const { environmentId, orgId } = props;
-  const result = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
-  const leads = Option.getOrNull(AsyncResult.value(result))?.leads ?? null;
-  if (leads === null) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        {AsyncResult.isFailure(result) ? KIN_AGENTS_COPY.loadFailed : "Loading…"}
-      </p>
-    );
-  }
-  if (leads.length === 0) {
-    return <p className="text-sm text-muted-foreground">{KIN_AGENTS_COPY.none}</p>;
-  }
-  return (
-    <>
-      <ul className="flex flex-col">
-        {leads.map((lead) => (
-          <li key={lead.agentId}>
-            <KinTeammateLead lead={lead} personId={props.personId} environmentId={environmentId} />
-          </li>
-        ))}
-      </ul>
-      <p className="text-xs text-muted-foreground">{KIN_TEAM_COPY.openAgentToChange(props.name)}</p>
-    </>
-  );
-}
-
-function KinTeammateLead(props: {
-  readonly lead: KinLeadProfile;
-  readonly personId: KinPersonId;
-  readonly environmentId: EnvironmentId;
-}) {
-  const { lead, environmentId } = props;
-  const navigate = useNavigate();
-  const access = useAtomValue(
-    kinClient.leadAccess({ environmentId, input: { orgId: lead.orgId, agentId: lead.agentId } }),
-  );
-  const read = Option.getOrNull(AsyncResult.value(access));
-  const allowed = kinLeadMessageable(read, props.personId);
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        appAtomRegistry.set(kinProfileRequestAtom, lead.ownerChatId);
-        void navigate({
-          to: "/kin/$environmentId/$orgId/$chatId",
-          params: { environmentId, orgId: lead.orgId, chatId: lead.ownerChatId },
-        });
-      }}
-      className="flex min-h-9 w-full items-center gap-3 rounded-md px-1 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
-    >
-      <span className="min-w-0 flex-1 truncate text-sm text-foreground">{lead.name}</span>
-      <span className="shrink-0 text-xs text-muted-foreground">
-        {read === null && AsyncResult.isFailure(access) ? "" : kinTeammateLeadLine(allowed)}
-      </span>
-      <ChevronRightIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-    </button>
   );
 }
 

@@ -11,7 +11,7 @@ import {
   type KinSubscriptionRow,
   type KinSubscriptionsView,
 } from "@t3tools/client-runtime/kin/kinSubscriptions";
-import type { KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
+import { kinRateDay, type KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
 import {
   EnvironmentId,
   KinOrgId,
@@ -431,7 +431,7 @@ function KinSubscriptionsBody(
   };
   const basis = view.monthly.flatMap((line) => (line.estimate === null ? [] : [line.estimate]));
   const rateBasis = (props.rates?.rates ?? []).map(
-    (rate) => `${rate.currency}: ${rate.rate} as of ${rate.asOf}`,
+    (rate) => `${rate.currency}: ${rate.rate} as of ${kinRateDay(rate.asOf)}`,
   );
   const rows = (list: ReadonlyArray<KinSubscriptionRow>, cancelled: boolean) =>
     list.map((row) => (

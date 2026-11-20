@@ -9,6 +9,7 @@ import {
   type KinCompanyProfileSetInput,
   type KinOrgId,
 } from "@t3tools/contracts";
+import { kinRateDay } from "./kinCurrency.ts";
 import * as Schema from "effect/Schema";
 
 /** The company's legal and bank details, as the owner reads and edits them in Settings. */
@@ -83,6 +84,8 @@ interface FieldSpec {
   readonly multiline?: true;
   /** Ids written in capitals with no spaces. */
   readonly code?: true;
+  /** A calendar day, picked rather than typed. */
+  readonly day?: true;
   readonly problem?: string;
   /** Shown only for a company in India, or only for one elsewhere. */
   readonly india?: boolean;
@@ -167,7 +170,7 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
         id: "lutDate",
         india: true,
         label: "LUT filed on",
-        placeholder: "YYYY-MM-DD",
+        day: true,
         problem: "Write the day as YYYY-MM-DD, like 2026-04-01.",
       },
     ],
@@ -419,6 +422,9 @@ export function kinCompanyInput(
   };
 }
 
+/** "Apr 1, 2026" for a stored `YYYY-MM-DD`; anything else as it was written. */
+const readDay = (day: string) => (/^\d{4}-\d{2}-\d{2}$/.test(day) ? kinRateDay(day) : day);
+
 /** The filled-in fields of a section, to read. */
 export function kinCompanyRead(profile: KinCompanyProfile): ReadonlyArray<{
   readonly title: string;
@@ -432,7 +438,8 @@ export function kinCompanyRead(profile: KinCompanyProfile): ReadonlyArray<{
     title: section.title,
     rows: section.fields.flatMap((field) => {
       const value = stored(profile, field.id);
-      return value === null ? [] : [{ id: field.id, label: field.label, value }];
+      if (value === null) return [];
+      return [{ id: field.id, label: field.label, value: field.day ? readDay(value) : value }];
     }),
   }));
 }

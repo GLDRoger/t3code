@@ -1,5 +1,6 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format change dates for React render, outside an Effect runtime.
 import { kinNow } from "./kinNow.ts";
+import { kinWorkAllDay } from "./kinWork.ts";
 import {
   type KinAgentPage,
   type KinPersonAccess,
@@ -61,7 +62,8 @@ export function kinAgentPageCan(viewer: {
 export const KIN_AGENT_PAGE = {
   loadFailed: "Couldn't load this agent",
   ownerLevelOnly: "Only the owner and co-owners see this agent's details.",
-  notTeamAgent: "Not the team agent. Only you and the people you add can message it.",
+  notTeamAgent:
+    "Not the team agent. Everyone in the company can message it, except anyone you restrict.",
   modelFailed: "Couldn't change the model.",
   characterFailed: "Couldn't save the character.",
   nothingWaiting: "Nothing is waiting on it.",
@@ -92,7 +94,8 @@ export const KIN_AGENT_PAGE = {
     `${name} is paused. Messages to it wait until you resume it; nothing else wakes it.`,
   pauseDetail: "Pausing lets a reply under way finish. Messages wait until you resume it.",
   teamAgent: "Team agent",
-  teamAgentDetail: "Everyone on the team can message it, and it answers in the company chat.",
+  teamAgentDetail:
+    "Everyone on the team can message it, except anyone you restrict, and it answers in the company chat.",
   writeForMe: "Write one for me",
   writeForMeDetail: "After you create it, the Chief of staff drafts its character with you.",
   characterField: "Character",
@@ -266,6 +269,8 @@ export function kinAgentChangeLine(
   change: Change,
   names: ReadonlyMap<string, string>,
   now: Date = kinNow(),
+  /** The company's, whose calendar a due or date is on; this device's until it is read. */
+  zone: string | null = null,
 ): string {
   const record = `${change.key} ${change.title}`;
   if (change.kind === "created") return `Added ${record}`;
@@ -292,10 +297,12 @@ export function kinAgentChangeLine(
       const title = change.named?.find((one) => one.key === shown)?.title;
       return title === undefined ? shown : short(`${shown} ${title}`);
     }
-    if ((field === "due" || field === "date") && !Number.isNaN(Date.parse(shown)))
+    const day = field === "due" || field === "date" ? kinWorkAllDay(shown, true, { zone }) : null;
+    if (day !== null)
       return formatKinWhen(
-        new Date(shown),
-        new Date(shown).getFullYear() === now.getFullYear() ? "date" : "dateYear",
+        Date.parse(`${day}T12:00:00Z`),
+        Number(day.slice(0, 4)) === now.getFullYear() ? "date" : "dateYear",
+        { zone: "UTC" },
       );
     return short(shown);
   };

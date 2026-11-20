@@ -24,7 +24,7 @@ import * as KinPulse from "./KinPulse.ts";
 import { deliverHeld } from "../triggers/heldDelivery.ts";
 import { holdIfQuiet } from "../triggers/quietHold.ts";
 import { inHoursAt, nudge } from "./nudge.ts";
-import { type OutsideRead, type OutsideSource, poll } from "./outside.ts";
+import { matchLines, type OutsideRead, type OutsideSource, poll } from "./outside.ts";
 
 // Invented company, people, mail and calendar only; nothing here reads a real database or service.
 const orgId = KinOrgId.make("org");
@@ -95,6 +95,8 @@ const record = Effect.fn("test.record")(function* (row: {
   readonly dueAt?: number;
   readonly partyId?: string;
   readonly fields?: string;
+  readonly origin?: string;
+  readonly createdAt?: number;
 }) {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
@@ -103,7 +105,8 @@ const record = Effect.fn("test.record")(function* (row: {
     VALUES (${orgId}, ${`r-${row.key}`}, ${row.list}, ${row.key}, ${row.title},
       ${row.state ?? "open"}, ${row.ownerKind ?? "agent"}, ${row.ownerId ?? chief},
       ${row.partyId ?? null}, ${row.dueAt ?? null}, ${row.fields ?? "{}"}, 'person', ${owner},
-      ${`origin-${row.key}`}, ${MONDAY - 30 * DAY}, ${MONDAY - 30 * DAY})`;
+      ${row.origin ?? `origin-${row.key}`}, ${row.createdAt ?? MONDAY - 30 * DAY},
+      ${row.createdAt ?? MONDAY - 30 * DAY})`;
 });
 
 const mail = (id: string, who: string, subject: string): KinPulseOutsideLine => ({
@@ -560,6 +563,52 @@ describe("pulse check-ins", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("a deal imported today waits out the afternoon and evening for the next morning", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'deals', 'deals', 'DL', 1, 0)`;
+      yield* record({
+        key: "C-1",
+        list: "clients",
+        title: "Invented Tiles",
+        origin: "import:b1:entry:row-0",
+        createdAt: MONDAY + 10 * HOUR,
+      });
+      yield* record({
+        key: "DL-1",
+        list: "deals",
+        title: "Invented showroom",
+        partyId: "r-C-1",
+        fields: '{"stage":"new"}',
+        origin: "import:b1:entry:row-1",
+        createdAt: MONDAY + 10 * HOUR,
+      });
+      const run = (scheduleId: string, at: number) =>
+        queueCheckIn({
+          orgId,
+          agentId: chief,
+          scheduleId: KinMemoryItemId.make(scheduleId),
+          title: scheduleId,
+          what: "Check-in.",
+          dueAt: at,
+          looseAt: null,
+          zone: "UTC",
+          at,
+          outside: nothingOutside,
+        });
+      const read = yield* KinPulse.read({ orgId, at: SLOT, viewer: { _tag: "owner" } });
+      assert.deepStrictEqual(
+        read.facts.map((fact) => fact.sense),
+        ["deal_no_next_step"],
+      );
+      assert.deepStrictEqual(yield* run("checkin-afternoon", SLOT), { _tag: "nothing_new" });
+      assert.include(yield* run("checkin-evening", MONDAY + 18 * HOUR), { facts: 0 });
+      assert.include(yield* run("checkin-morning", MONDAY + DAY + 9 * HOUR), { facts: 1 });
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("a check-in in the owner's quiet hours waits for 08:00; Run now never does", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -676,6 +725,42 @@ describe("pulse check-ins", () => {
           ["t1:a", null],
         ],
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("mail naming an issued number is matched to that entry, only where one shows it", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at) VALUES (${orgId}, 'quotes', 'quotes', 'Q', 1, 0)`;
+      yield* record({
+        key: "INV-1",
+        list: "invoices",
+        title: "Retainer",
+        state: "waiting",
+        fields: '{"number":"INV/26-27/004"}',
+      });
+      yield* record({
+        key: "INV-2",
+        list: "invoices",
+        title: "Audit",
+        fields: '{"number":"2026-17"}',
+      });
+      yield* record({ key: "Q-1", list: "quotes", title: "Audit", fields: '{"number":"2026-17"}' });
+      const matched = (subject: string) =>
+        matchLines(orgId, [mail("m", "accounts@other.example", subject)]).pipe(
+          Effect.map((found) => found.map((match) => match.line.matched)),
+        );
+      const inv1 = ["invoice INV/26-27/004 (INV-1)"];
+      assert.deepStrictEqual(yield* matched("Invoice INV/26-27/004"), inv1);
+      assert.deepStrictEqual(yield* matched("Re: Invoice INV/26-27/004 paid."), inv1);
+      assert.deepStrictEqual(yield* matched("Re: INV-1 for the retainer"), inv1);
+      assert.deepStrictEqual(yield* matched("Invoice INV/26-27/0041"), []);
+      assert.deepStrictEqual(yield* matched("Invoice XINV/26-27/004"), []);
+      assert.deepStrictEqual(yield* matched("Invoice inv/26-27/004"), []);
+      // The invoice and the quote both show 2026-17: neither is guessed.
+      assert.deepStrictEqual(yield* matched("Re: 2026-17"), []);
     }).pipe(Effect.provide(layer)),
   );
 

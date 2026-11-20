@@ -77,8 +77,27 @@ describe("coding agent keys on your own profile", () => {
       </AppAtomRegistryProvider>,
     );
     await expect.element(page.getByText("No keys yet.")).toBeVisible();
+    await expect
+      .element(page.getByLabelText("Address", { exact: true }))
+      .toHaveValue("https://kin.ambermill.example/kin/you/mcp");
+    await expect
+      .element(page.getByLabelText("Claude Code", { exact: true }))
+      .not.toBeInTheDocument();
 
-    await userEvent.click(page.getByRole("button", { name: "Make a key" }));
+    await userEvent.click(page.getByRole("button", { name: "How to set it up" }));
+    await expect
+      .element(page.getByText("Each line has YOUR_KEY where your key goes.", { exact: false }))
+      .toBeVisible();
+    for (const agent of ["Claude Code", "Codex", "Cursor", "Another MCP client"]) {
+      await expect.element(page.getByLabelText(agent, { exact: true })).toBeVisible();
+    }
+    await expect
+      .element(page.getByLabelText("Claude Code", { exact: true }))
+      .toHaveValue(
+        'claude mcp add --transport http --scope user kin https://kin.ambermill.example/kin/you/mcp --header "Authorization: Bearer YOUR_KEY"',
+      );
+
+    await userEvent.click(page.getByRole("button", { name: "Make a coding agent key" }));
     await userEvent.type(page.getByLabelText("What is it for?"), "Work laptop");
     await userEvent.click(page.getByRole("button", { name: "Make key" }));
 
@@ -104,5 +123,24 @@ describe("coding agent keys on your own profile", () => {
     await userEvent.click(page.getByRole("button", { name: "Remove key" }));
     await expect.element(page.getByText("No keys yet.")).toBeVisible();
     expect(host.keys).toEqual([]);
+  });
+
+  it("shows a teammate's keys without an address or setup lines", async () => {
+    setup();
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <KinTasksKeysSection
+          environmentId={EnvironmentId.make("env-1")}
+          orgId={KinOrgId.make("org-1")}
+          personId={KinPersonId.make("dev")}
+          holder="Dev"
+        />
+      </AppAtomRegistryProvider>,
+    );
+    await expect.element(page.getByText("Dev has no coding agent keys.")).toBeVisible();
+    await expect.element(page.getByLabelText("Address", { exact: true })).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "How to set it up" }))
+      .not.toBeInTheDocument();
   });
 });

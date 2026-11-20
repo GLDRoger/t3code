@@ -11,6 +11,7 @@ import {
   KIN_FIGURE_SCHEME,
   KinEmbed,
   KIN_TEAM_ROOM_TEAM_ID,
+  KIN_PEOPLE_CHAT_TEAM_PREFIX,
   kinIsPeopleChat,
   KinChatError,
   KinChatId,
@@ -112,6 +113,7 @@ import { KinAttachmentStore } from "./KinAttachmentStore.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 import * as Reactions from "./reactions.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import * as Reach from "../lead/Reach.ts";
 import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { memberReads } from "./sharing.ts";
 
@@ -207,6 +209,8 @@ export class KinChatService extends Context.Service<
       readonly silent?: true;
       /** The time `body` names, which each reader's client puts on their own clock. */
       readonly when?: KinMessageWhen;
+      /** A page Kin wrote under the reader's greeting, such as a teammate's morning page. */
+      readonly form?: "brief";
     }) => Effect.Effect<
       { readonly message: KinMessage; readonly waiting: KinWaitingItem | null },
       ServiceError
@@ -695,12 +699,73 @@ const make = Effect.gen(function* () {
           threadId: identity.threadId,
           memberId: member.memberId,
         };
+  /**
+   * Whether a two-party chat joins a pair that may not message each other now (`Reach`): checked
+   * at every write, so no member row, promotion or demotion carries a write across it.
+   */
+  const pairClosed = Effect.fn("KinChatService.pairClosed")(
+    function* (identity: Identity, member: KinChatMember) {
+      const others = yield* sql<{ personId: KinPersonId | null; agentId: KinAgentId | null }>`
+        SELECT m.person_id AS "personId", m.agent_id AS "agentId" FROM kin_chats c
+        JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+          AND m.left_at IS NULL AND m.member_id <> ${member.memberId}
+        WHERE c.org_id = ${member.orgId} AND c.chat_id = ${member.chatId}
+          AND (c.kind = 'direct' OR (c.kind = 'team_group'
+            AND substr(c.team_id, 1, ${KIN_PEOPLE_CHAT_TEAM_PREFIX.length}) = ${KIN_PEOPLE_CHAT_TEAM_PREFIX}))
+        ORDER BY m.member_id`;
+      const other = others.length === 1 ? others[0] : undefined;
+      if (other === undefined) return false;
+      const party =
+        other.agentId !== null
+          ? Reach.agent(other.agentId)
+          : other.personId !== null
+            ? Reach.person(other.personId)
+            : undefined;
+      if (party === undefined) return false;
+      const self =
+        identity._tag === "person"
+          ? Reach.person(identity.personId)
+          : Reach.agent(identity.agentId);
+      return (
+        (yield* Reach.mayReach(member.orgId, self, party).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        )) === "restricted"
+      );
+    },
+    Effect.mapError(toPersistenceSqlError("KinChatService.pairClosed")),
+  );
+  /** A person's direct chat with an agent that can answer: retired, or no lead to wake, refuses. */
+  const answerable = Effect.fn("KinChatService.answerable")(function* (
+    person: PersonIdentity,
+    chatId: KinChatId,
+  ) {
+    const [agent] = yield* sql<{ name: string; retired: number; lead: number }>`
+        SELECT a.display_name AS name, a.retired_at IS NOT NULL AS retired,
+          a.role = 'lead' AS lead
+        FROM kin_chats c
+        JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+          AND m.principal_kind = 'agent' AND m.left_at IS NULL
+        JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
+        WHERE c.org_id = ${person.orgId} AND c.chat_id = ${chatId} AND c.kind = 'direct'
+        ORDER BY a.agent_id LIMIT 1`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinChatService.answerable")),
+    );
+    if (agent === undefined || (agent.retired === 0 && agent.lead === 1)) return;
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message:
+        agent.retired === 1
+          ? `${agent.name} has been retired, so this wasn't sent.`
+          : `${agent.name} doesn't answer messages here, so this wasn't sent.`,
+    });
+  });
   const canWrite = Effect.fn("KinChatService.canWrite")(function* (
     identity: Identity,
     member: KinChatMember,
   ) {
     if (!mayWrite(member, identity._tag === "agent", yield* Clock.currentTimeMillis))
       return yield* notAllowed;
+    if (yield* pairClosed(identity, member)) return yield* notAllowed;
   });
   /** The chat's owner, or a co-owner in her own direct chat with a lead: owner-level there. */
   const ownerSide = Effect.fn("KinChatService.ownerSide")(function* (
@@ -1379,6 +1444,7 @@ const make = Effect.gen(function* () {
     const request = yield* decodeSend(input).pipe(Effect.mapError(() => invalidState));
     const member = yield* memberFor(identity, request.chatId);
     yield* canWrite(identity, member);
+    if (identity._tag === "person") yield* answerable(identity, request.chatId);
     // A lead posts text; only a person's message can be files alone, or point at a doc.
     if (identity._tag === "agent" && request.body.trim().length === 0) return yield* invalidState;
     if (identity._tag === "agent" && (request.refs?.length ?? 0) > 0) return yield* invalidState;
@@ -1719,6 +1785,7 @@ const make = Effect.gen(function* () {
         ...(input.discussionId === undefined ? {} : { discussionId: input.discussionId }),
         ...(input.silent === undefined ? {} : { silent: input.silent }),
         ...(input.when === undefined ? {} : { when: input.when }),
+        ...(input.form === undefined ? {} : { form: input.form }),
         intent: null,
         mentions: [],
         replyTo: null,
@@ -1782,14 +1849,15 @@ const make = Effect.gen(function* () {
         Effect.fn("KinChatService.org")(function* (identity) {
           const org = yield* requireRecord(repo.getOrg(identity));
           const agents = yield* repo.listAgents(identity);
-          // The agents this person owns (the owner owns every one), may message, or shares a chat
-          // with; the rest only by name, so a task's holder is never "an agent".
+          // The agents this person owns (the owner owns every one), may message (any not
+          // restricted for them), or shares a chat with; the rest only by name, so a task's holder
+          // is never "an agent".
           const visible = yield* sql<{ agentId: string }>`SELECT a.agent_id AS "agentId"
             FROM kin_agents a WHERE a.org_id = ${identity.orgId} AND (
               a.owner_person_id = ${identity.personId}
-              OR EXISTS (SELECT 1 FROM kin_lead_access x WHERE x.org_id = a.org_id
-                AND x.agent_id = a.agent_id AND x.person_id = ${identity.personId}
-                AND x.revoked_at IS NULL)
+              OR NOT EXISTS (SELECT 1 FROM kin_people p0 WHERE p0.org_id = a.org_id
+                AND p0.person_id = ${identity.personId}
+                AND ${sql.literal(Reach.restrictedSql("a.org_id", "a.agent_id", "p0.person_id"))})
               OR EXISTS (SELECT 1 FROM kin_chat_members p JOIN kin_chat_members m
                 ON m.org_id = p.org_id AND m.chat_id = p.chat_id AND m.principal_kind = 'agent'
                   AND m.agent_id = a.agent_id AND m.left_at IS NULL
@@ -2230,16 +2298,13 @@ const make = Effect.gen(function* () {
       if (identity.orgId !== input.orgId) return yield* notFound;
       const person = yield* requireRecord(repo.getPerson(identity));
       const agent = yield* requireRecord(repo.getAgent(input));
-      if (agent.retiredAt !== null) return yield* notAllowed;
       const own = ownsAgent(agent, person.personId);
-      // Someone else's lead: a co-owner messages every one, anyone else while its owner allows.
       if (
-        !own &&
-        !(yield* ownerLevel(input.orgId, person.personId).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.mapError(toPersistenceSqlError("KinChatService.createDirect")),
-        )) &&
-        !(yield* LeadAccess.allowed({ ...input, personId: person.personId }).pipe(
+        !(yield* Reach.reaches(
+          input.orgId,
+          Reach.person(person.personId),
+          Reach.agent(agent.agentId),
+        ).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.mapError(toPersistenceSqlError("KinChatService.createDirect")),
         ))

@@ -52,6 +52,7 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { KinAwayField } from "./KinAway";
+import { KinGithubLoginField } from "./KinGithubLogin";
 import { useOpenKinPeopleChat } from "./KinPeopleChat";
 import { kinSettingsSectionIn } from "./kinSettingsAddress";
 import type { KIN_PROFILE_SETTINGS_SEARCH_ITEMS } from "./kinSettingsSearch";
@@ -458,6 +459,13 @@ function KinProfileRead(props: {
       <Field label={KIN_PROFILE_COPY.quietLabel} target={mineTarget("kin-quiet-hours")}>
         <p className="text-sm text-foreground">{kinQuietLine(profile, props.holding)}</p>
       </Field>
+      <KinGithubLoginField
+        environmentId={props.environmentId}
+        orgId={props.orgId}
+        profile={profile}
+        mine={props.mine}
+        target={mineTarget("kin-github-username")}
+      />
       {props.mayEdit ? (
         <Button variant="outline" className="self-start" onClick={props.onEdit}>
           {KIN_PROFILE_COPY.edit}

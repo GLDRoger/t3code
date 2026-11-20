@@ -46,7 +46,8 @@ import { KinTemplateRows } from "./KinTemplates";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
 import { useKinCompanyProfile, useKinCountryNeeded } from "./state/useKinMoney";
-import type { KinWorkTarget } from "./state/useKinWork";
+import { useKinWorkZone, type KinWorkTarget } from "./state/useKinWork";
+import { KinDayField } from "./components/KinDayField";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { useKinGate } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
@@ -127,6 +128,8 @@ function Profile(
   const [editingBrand, setEditingBrand] = useState(false);
   const waiting = useKinCountryNeeded(props);
   const region = kinDeviceRegion();
+  const { zone } = useKinWorkZone(props);
+  const [opened] = useState(() => new Date());
   const save = async (typed: KinCompanyDraft) => {
     const checked = kinCompanyInput(orgId, profile, typed);
     setProblem(null);
@@ -270,16 +273,28 @@ function Profile(
               field.id === "country" ? kinCompanyCountrySuggestion(draft, region, waiting) : null;
             return (
               <Fragment key={field.id}>
-                <KinWorkTextField
-                  label={field.label}
-                  value={draft[field.id]}
-                  placeholder={field.placeholder}
-                  disabled={saving}
-                  {...(field.code ? { keyboard: "plain" as const } : {})}
-                  {...(field.multiline ? { multiline: true } : {})}
-                  {...(problems[field.id] === undefined ? {} : { hint: problems[field.id] })}
-                  onChangeText={(text) => setDraft({ ...draft, [field.id]: text })}
-                />
+                {field.day ? (
+                  <KinDayField
+                    label={field.label}
+                    day={draft[field.id] === "" ? null : draft[field.id]}
+                    zone={zone}
+                    now={opened}
+                    hint={problems[field.id] ?? null}
+                    disabled={saving}
+                    onPick={(day) => setDraft({ ...draft, [field.id]: day ?? "" })}
+                  />
+                ) : (
+                  <KinWorkTextField
+                    label={field.label}
+                    value={draft[field.id]}
+                    placeholder={field.placeholder}
+                    disabled={saving}
+                    {...(field.code ? { keyboard: "plain" as const } : {})}
+                    {...(field.multiline ? { multiline: true } : {})}
+                    {...(problems[field.id] === undefined ? {} : { hint: problems[field.id] })}
+                    onChangeText={(text) => setDraft({ ...draft, [field.id]: text })}
+                  />
+                )}
                 {offer === null ? null : (
                   <ListActionRow
                     icon="globe"

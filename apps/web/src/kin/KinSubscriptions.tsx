@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import type { KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
+import { kinRateDay, type KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
 import { KIN_LIST_DEFAULT_FILTER, kinListSend } from "@t3tools/client-runtime/kin/kinLists";
 import {
   KIN_SUBSCRIPTIONS,
@@ -303,7 +303,7 @@ function KinSubscriptionsBody(
     setUndo(cancel ? { key: row.key, title: row.title, repeat: row.repeat } : null);
   };
   const basis = (props.rates?.rates ?? []).map(
-    (rate) => `${rate.currency}: ${props.rates?.home} ${rate.rate} as of ${rate.asOf}`,
+    (rate) => `${rate.currency}: ${props.rates?.home} ${rate.rate} as of ${kinRateDay(rate.asOf)}`,
   );
   const rows = (list: ReadonlyArray<KinSubscriptionRow>, cancelled: boolean) =>
     list.map((row) => (

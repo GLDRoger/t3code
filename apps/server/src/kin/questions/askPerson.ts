@@ -22,12 +22,17 @@ import {
   aborted,
   askersDirectChat,
   effectiveAudience,
+  mayReadChat,
   turnAsker,
   turnPeople,
 } from "../lead/Audience.ts";
 import { arrivesNote } from "../lead/Handoff.ts";
 import type { KinLevelGate } from "../lead/LevelGate.ts";
+import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
+import * as Reach from "../lead/Reach.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
+import { signedIn } from "../people/signedIn.ts";
+import { heldUntil } from "../triggers/quietHold.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import { choiceCardState } from "../widgets/choiceCard.ts";
@@ -50,6 +55,22 @@ export const AskPersonInput = Schema.Struct({
   intent: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(120))),
 });
 
+/** What `kin_ask_person` returns: where the question is, and what to tell whoever asked. */
+export const AskPersonResult = Schema.Struct({
+  questionId: KinTrimmedText,
+  to: KinTrimmedText,
+  state: Schema.Literals(["posted", "held"]),
+  at: Schema.optional(Schema.Number),
+  dueAt: Schema.Number,
+  retry: Schema.Boolean,
+  signedIn: Schema.optional(Schema.Boolean),
+  note: KinTrimmedText,
+});
+
+/** What the agent is told when the person has never signed in: it waits, and nobody was alerted. */
+const notSignedIn = (name: string) =>
+  `${name} hasn't signed in to Kin yet: it waits in their chat with you and reaches them when they do. Nobody was alerted. Their answer comes back here.`;
+
 /** At most this many questions asked for others wait on one person, from every agent together. */
 const ASKED_FOR_PER_PERSON = 3;
 const NOTHING = "Nothing was asked.";
@@ -70,8 +91,8 @@ const askedAgain = (
     : asked.intent === "" && asked.about.some((key) => open.about.includes(key));
 
 /**
- * A question card to one person outside the chat, for it: from the owner side to anyone who may
- * message the agent, from a teammate's own chat only to the owner side or an open project's lead.
+ * A question card to one person outside the chat, for it: to anyone in the company who may
+ * message the agent (`Reach`), from the owner side or from a teammate's own chat with it.
  * Checked against the people behind the turn, in the write's transaction. Held for their quiet
  * hours, it is stored and posted later (`settleDue`); a retry returns the stored question.
  */
@@ -132,29 +153,36 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
           return yield* refuse(
             "Only one person's own request, in their own chat with you, asks someone else.",
           );
-        const [leads] = yield* sql`SELECT 1 FROM kin_records WHERE org_id = ${orgId}
-          AND register_id = 'projects' AND owner_kind = 'person' AND owner_id = ${target.id}
-          AND state = 'open' LIMIT 1`;
-        if (!targetOwnerSide && leads === undefined)
-          return yield* refuse(
-            `${target.name} doesn't decide for others. Ask the owner, a co-owner or the project's lead.`,
-          );
       }
       const askerName =
         asker === null
           ? null
           : ((yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
               WHERE org_id = ${orgId} AND person_id = ${asker}`)[0]?.name ?? null);
-      // Their own direct chat with this agent: opening it is their own access check.
+      // Their own direct chat with this agent: opening it is their own reach check (`Reach`).
+      const unreached = new KinChatError({
+        reason: "not_allowed",
+        message: Reach.restrictedLine(
+          target.name,
+          self.name,
+          asker === self.owner ? null : (askerName ?? undefined),
+        ),
+      });
+      if (!(yield* Reach.reaches(orgId, Reach.person(target.id), Reach.agent(agentId))))
+        return yield* unreached;
+      // Whoever it is asked for must reach them too, whichever agent carries it.
+      if (
+        asker !== null &&
+        (yield* Reach.mayReach(orgId, Reach.person(asker), Reach.person(target.id))) ===
+          "restricted"
+      )
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: Reach.restrictedLine(target.name, askerName ?? "they", askerName),
+        });
       const direct = yield* deps.chat
         .createDirect({ _tag: "person", orgId, personId: target.id }, { orgId, agentId })
-        .pipe(
-          Effect.mapError(() =>
-            refuse(
-              `${target.name} can't message you. Ask through an agent ${target.name} can message, or ask the owner to let ${target.name} message you.`,
-            ),
-          ),
-        );
+        .pipe(Effect.mapError(() => unreached));
       const about = normaliseAbout(input.about);
       const intent = normaliseIntent(input.intent);
       if (intent === "" && about.length === 0)
@@ -181,20 +209,32 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
           state: seen.widgetId === null ? ("held" as const) : ("posted" as const),
           dueAt: seen.dueAt,
           retry: true,
+          note: `Already asked: it waits on ${target.name}. Their answer comes back here.`,
         };
       }
       const open = yield* openFor(orgId, target.id);
+      // Its wording and asker are quoted only to a turn that may read the card or the chat it is for.
+      const readable = Effect.fn("KinQuestions.askPerson.readable")(function* (
+        row: (typeof open)[number],
+      ) {
+        if (yield* mayReadChat(turn, row.chatId)) return true;
+        return row.forChatId !== null && (yield* mayReadChat(turn, row.forChatId));
+      });
       const repeat = open.find((row) => askedAgain({ intent, about }, row));
       if (repeat !== undefined)
         return yield* refuse(
-          `${repeat.agentName} already asked ${target.name} that: “${repeat.question}”. It waits on ${target.name}; don't ask it again.`,
+          (yield* readable(repeat))
+            ? `${repeat.agentName} already asked ${target.name} that: “${repeat.question}”. It waits on ${target.name}; don't ask it again.`
+            : `${target.name} already has an open question on this; don't ask it again.`,
         );
       const forOthers = open.filter((row) => row.forChatId !== null);
       if (forOthers.length >= ASKED_FOR_PER_PERSON)
         return yield* refuse(
-          `${ASKED_FOR_PER_PERSON} questions asked for others already wait on ${target.name}: ${forOthers
-            .map((row) => `“${row.question}” (${row.agentName})`)
-            .join(", ")}.`,
+          (yield* Effect.forEach(forOthers, readable)).every(Boolean)
+            ? `${ASKED_FOR_PER_PERSON} questions asked for others already wait on ${target.name}: ${forOthers
+                .map((row) => `“${row.question}” (${row.agentName})`)
+                .join(", ")}.`
+            : `${ASKED_FOR_PER_PERSON} questions asked for others already wait on ${target.name}.`,
         );
       if (
         asker === null &&
@@ -228,12 +268,14 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
       const named = input.by === undefined ? undefined : namedDue(input.by, now, clock.zone);
       if (named !== undefined && "refused" in named) return yield* refuse(named.refused);
       const dueAt = named?.at ?? defaultDue(now, clock.zone, clock.days);
-      const detail = `${askedBy(askerName, self.name)}${
+      const by = askedBy(askerName, self.name);
+      const detail = `${by}${
         input.detail === undefined || input.detail.trim() === "" ? "" : `\n\n${input.detail}`
       }`;
       const card = {
         question: flat(input.question),
         detail,
+        askedBy: by,
         options: input.options.map((one) => ({
           label: one.label,
           ...(one.kind === undefined ? {} : { kind: one.kind }),
@@ -243,7 +285,7 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
         optionId,
         label,
       }));
-      const heldCard = yield* encodeHeldCard({ detail, options: card.options });
+      const heldCard = yield* encodeHeldCard({ detail, askedBy: by, options: card.options });
       const store = (widgetId: string | null) =>
         sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id, kind,
             widget_id, question, options_json, default_label, safe, about, intent, asked_at, due_at,
@@ -265,6 +307,9 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
         },
         (widget) => store(widget === null ? null : widget.widgetId),
       );
+      // Asked after an outside read, its answer wakes a turn that has read outside text too.
+      yield* stampEvent(orgId, questionId, yield* outsideStamp(turn));
+      const joined = yield* signedIn(orgId, target.id);
       if ("_tag" in posted) {
         yield* arrivesNote(
           deps.chat,
@@ -281,9 +326,23 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
           at: posted.at,
           dueAt,
           retry: false,
+          signedIn: joined,
+          note: joined
+            ? `${heldUntil(target.name, posted)}: Kin posts it in their chat with you then, and this chat has been told. Their answer comes back here.`
+            : notSignedIn(target.name),
         };
       }
-      return { questionId, to: target.name, state: "posted" as const, dueAt, retry: false };
+      return {
+        questionId,
+        to: target.name,
+        state: "posted" as const,
+        dueAt,
+        retry: false,
+        signedIn: joined,
+        note: joined
+          ? `Posted in ${target.name}'s chat with you, waiting on them. Their answer comes back here.`
+          : notSignedIn(target.name),
+      };
     }),
   );
 });

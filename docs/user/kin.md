@@ -73,7 +73,7 @@ doesn't send it for you and won't show it again. Make the link from the address 
 reach Kin, not from `localhost`, or it won't open on anyone else's device.
 
 Each teammate starts as a **Member**. Open them under **Settings → Team** to make them a **Co-owner**, to
-turn on what they can see (Money, Clients, Docs), to choose which agents they can message, or to
+turn on what they can see (Money, Clients, Docs), to restrict who they can message, or to
 **Remove access**.
 
 Removing access signs them out everywhere and changes nothing else. Their open tasks stay in their
@@ -183,11 +183,21 @@ Changing what an agent may do needs more: an approval with Face ID on a
 phone set up under **Settings → Approvals** in the Kin app. Until one is set up, nothing that needs
 approval can happen.
 
-## Messaging a teammate
+## Messaging a teammate or an agent
 
-Anyone can message anyone else on the team: **New → Message a teammate**, or **Message** on their
+Anyone can message anyone else on the team: **New → Message someone**, or **Message** on their
 profile. It is a chat for the two of you, with no agent. Only you and they can read it, not the owner
 or a co-owner, and the chat says so at its top. Starting it again opens the same chat.
+
+**Message someone** also lists every agent you may message, with what teammates see about it. Your
+chat with an agent is your own; whoever runs the workspace can see it.
+
+Everyone can message every agent and everyone else, unless the owner or a co-owner restricts a pair.
+Restrict a person and an agent from either one's page (**Who can message** on the agent, or the
+agent's row on the person), and two people from the person's page with **Restrict messaging
+with…**. A restriction holds both ways; their chat stays, to read only, until you **Lift** it.
+**Settings → Team → Who can message** lists every restriction. Owners and co-owners can't be
+restricted.
 
 ## Group chats and the company chat
 
@@ -526,6 +536,14 @@ morning brief comes and when, and whether and when the afternoon check-in and ev
 Your quiet hours hold any of them that would land inside them; an evening summary that would reach
 you after its day is over isn't sent.
 
+A teammate who looks after clients, and has no agent of their own, gets Kin's **Morning page**
+instead: on a working morning with something new about their clients, a "Good morning" page with
+what needs them, their clients and what's coming up. It comes at the start of their working hours,
+or 08:00 on weekdays if they set none, with what is true at that minute; whatever stays open is also
+under **Needs you** in Tasks. They change its time and days, or turn it off, under **Settings
+→ Briefs**. A change counts from the next time its time comes, so a page already sent today, or a
+time already past, starts tomorrow.
+
 Owners and co-owners manage them under **Settings → Check-ins**: add one, turn one off, or **Run
 now**. Or say it in a chat: "check in at 11 instead".
 
@@ -579,8 +597,8 @@ on the projects they lead.
 
 | What                                                 | Owner and co-owners                 | Member                                                                           | Project lead, on top                                 |
 | ---------------------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| Chat with agents                                     | All of them                         | The team agent, and agents the owner lets them message                           |                                                      |
-| Message a teammate                                   | Yes                                 | Yes                                                                              |                                                      |
+| Chat with agents                                     | All of them                         | All of them, unless the owner or a co-owner restricts one                        |                                                      |
+| Message someone                                      | Yes                                 | Yes                                                                              |                                                      |
 | Start a group, create an agent, add a teammate       | Yes                                 | No                                                                               |                                                      |
 | Tasks                                                | All, including tasks marked private | What they hold, made or gave, their projects' and the team's                     |                                                      |
 | Mark a task **Only me**                              | Yes                                 | No                                                                               | Yes                                                  |

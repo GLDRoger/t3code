@@ -104,12 +104,27 @@ it.effect(
       assert.strictEqual(yield* level(), "L0");
       assert.strictEqual(yield* level(dm), "L2");
       assert.strictEqual(yield* level(group), "L0");
-      assert.strictEqual(yield* level(KinChatId.make("dm-teammate")), "L0");
-      // As the team agent, it talks with every teammate in their DM, as an allowed lead does.
+      // Anyone in the company talks with it in their DM, with no access row and no shared group.
+      const teammateDm = KinChatId.make("dm-teammate");
+      assert.strictEqual(yield* level(teammateDm), "L1");
+      // A restricted pair works at the lead's own level there, whatever an old grant row says.
+      yield* sql`INSERT INTO kin_reach_limits (limit_id, org_id, one_kind, one_id, other_kind,
+          other_id, set_by_person_id, set_at)
+        VALUES ('limit', ${orgId}, 'agent', ${lead.agentId}, 'person', 'teammate', 'owner-org', 0)`;
+      assert.strictEqual(yield* level(teammateDm), "L0");
+      yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+        VALUES (${orgId}, ${lead.agentId}, 'teammate', 'owner-org', 0)`;
+      assert.strictEqual(yield* level(teammateDm), "L0");
       yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
         VALUES (${orgId}, ${lead.agentId}, 'owner-org', 0)`;
-      assert.strictEqual(yield* level(KinChatId.make("dm-teammate")), "L1");
+      assert.strictEqual(yield* level(teammateDm), "L0");
       yield* sql`DELETE FROM kin_team_agents`;
+      // Lifted, it talks there again; someone removed is talked to by no one.
+      yield* sql`UPDATE kin_reach_limits SET lifted_at = 1, lifted_by_person_id = 'owner-org'`;
+      assert.strictEqual(yield* level(teammateDm), "L1");
+      yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = 'teammate'`;
+      assert.strictEqual(yield* level(teammateDm), "L0");
+      yield* sql`UPDATE kin_people SET removed_at = NULL WHERE person_id = 'teammate'`;
       // A group the lead's owner owns, with the lead in it, works at L2 too; one someone else
       // owns, or one the lead has left, keeps the lead's own level.
       for (const [chat, owner] of [

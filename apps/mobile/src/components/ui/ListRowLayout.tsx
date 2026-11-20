@@ -15,6 +15,8 @@ export interface ListRowContentProps {
   /** Rich secondary content under the description, such as scores with emphasized values. */
   readonly meta?: ReactNode;
   readonly disabled?: boolean;
+  /** Where a trailing `detail` too long for the row is cut; a name reads best cut at its end. */
+  readonly detailEllipsizeMode?: "middle" | "tail";
 }
 
 export function ListRowLayout({
@@ -25,6 +27,7 @@ export function ListRowLayout({
   detail,
   meta,
   disabled,
+  detailEllipsizeMode = "middle",
   accessory,
   tone = "default",
 }: ListRowContentProps & { readonly accessory?: ReactNode; readonly tone?: "default" | "danger" }) {
@@ -75,7 +78,7 @@ export function ListRowLayout({
           textRole="footnote"
           className="max-w-[40%] shrink text-right text-foreground-muted"
           numberOfLines={1}
-          ellipsizeMode="middle"
+          ellipsizeMode={detailEllipsizeMode}
         >
           {detail}
         </AppText>
