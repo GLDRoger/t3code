@@ -41,7 +41,7 @@ import {
 const NO_RETIRED_AGENTS: ReadonlySet<string> = new Set();
 
 /** A lead's charter as the empty chat's opening lines: whole when short, else cut at a word. */
-export function kinIntroCharter(charter: string): string | null {
+function kinIntroCharter(charter: string): string | null {
   const text = charter.trim();
   if (text === "") return null;
   if (text.length <= 240) return text;
