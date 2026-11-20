@@ -3422,6 +3422,7 @@ describe("Kin migrations", () => {
         [188, "ReachLimits"],
         [189, "MorningPages"],
         [190, "RecordTitleIndex"],
+        [191, "GitHubReviewReceipts"],
       ]);
       assert.lengthOf(yield* sql`SELECT 1 FROM kin_holds`, 3);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
@@ -3527,6 +3528,7 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(yield* runKinMigrations(), [
           [189, "MorningPages"],
           [190, "RecordTitleIndex"],
+          [191, "GitHubReviewReceipts"],
         ]);
         const people = () =>
           sql<{ personId: string; morning: string | null }>`SELECT person_id AS "personId",
@@ -3541,6 +3543,7 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(yield* runKinMigrations(), [
           [189, "MorningPages"],
           [190, "RecordTitleIndex"],
+          [191, "GitHubReviewReceipts"],
         ]);
         assert.strictEqual((yield* people())[1]?.morning, '{"at":"07:30","days":[1],"on":false}');
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
