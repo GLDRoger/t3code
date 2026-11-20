@@ -1401,7 +1401,6 @@ unlisted:
   "rpc:kin.docs.clearRecipeLabel": Served; no client clears a recipe's label yet.
   "rpc:kin.work.statementPasswords": Served; no client manages statement passwords yet.
   "rpc:kin.work.statementForgetAccount": Served; no client forgets a statement account yet.
-  "rpc:kin.push.unregisterDevice": Served; the phone never unregisters its push device yet.
   "rpc:kin.people.setOwnerName": Called by the kin-verify seed (scripts/kin-verify/seed.ts); no client calls it.
   "rpc:kin.refreshes.announce": Called by the host CLI (apps/server/src/kin/cli/announce.ts) from the owner's session.
   "rpc:kin.open.read": Served; clients follow the open list through kin.open.subscribe instead.

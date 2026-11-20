@@ -266,6 +266,11 @@ const make = Effect.gen(function* () {
                   ),
               );
             yield* refresh.touch(settings.orgId, "timeZone");
+            // keepAllDayDays renamed due-keyed pulse facts and moved statements' undo days.
+            if (before !== settings.timeZone) {
+              yield* refresh.touch(settings.orgId, "pulse");
+              yield* refresh.touch(settings.orgId, "moneyStatements");
+            }
             yield* reconcile(settings);
           }),
         )

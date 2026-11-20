@@ -356,7 +356,8 @@ describe("KinRefreshHub", () => {
         "github/appRepos.ts",
       ],
       kin_budget_limits: ["lead/KinBudget.ts"],
-      kin_pulse_facts: ["pulse/KinPulse.ts"],
+      // A zone change renames due-keyed facts; KinRoutines.configure touches pulse (pinned below).
+      kin_pulse_facts: ["pulse/KinPulse.ts", "work/allDayZone.ts"],
       // Lists read only rows a company defined (`built_in = 0`). The deals files write the built-in
       // deals row's stages and pipeline flag, and KinRecords a built-in row and the next number,
       // which no list read selects.
@@ -381,6 +382,8 @@ describe("KinRefreshHub", () => {
       kin_bank_statement_entries: [
         "work/statements/statementReview.ts",
         "work/statements/statementApply.ts",
+        // A zone change moves undo days; KinRoutines.configure touches moneyStatements (below).
+        "work/allDayZone.ts",
       ],
       // An import's and an undo's own row: each chunk moves `imports`, as does each run's end.
       kin_import_runs: ["work/KinImport.ts", "work/importUndo.ts"],
@@ -404,6 +407,10 @@ describe("KinRefreshHub", () => {
         if (!writers[match[1]!]!.includes(file)) found.push(`${file}: ${match[1]}`);
     }
     assert.deepStrictEqual(found, []);
+    const routines = NodeFS.readFileSync(NodePath.join(root, "triggers/routines.ts"), "utf8");
+    assert.include(routines, "keepAllDayDays(settings.orgId, before, settings.timeZone)");
+    for (const topic of ["pulse", "moneyStatements"])
+      assert.include(routines, `refresh.touch(settings.orgId, "${topic}")`);
     const briefs = NodeFS.readFileSync(NodePath.join(root, "pulse/checkIns.ts"), "utf8");
     const sets = [...briefs.matchAll(/(?:INSERT INTO|UPDATE|DELETE FROM)\s+kin_people\b([^`]*)`/g)];
     assert.deepStrictEqual(
