@@ -26,7 +26,6 @@ import {
   isCalendarDay,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
-import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { KinToolText } from "./leadSchemas.ts";
@@ -81,6 +80,7 @@ import {
   issuedAfterDue,
   largestIn,
   parseAmount,
+  timeIn,
 } from "./money.ts";
 import { latestComments, projectNoteOf } from "./recordComments.ts";
 import {
@@ -792,9 +792,7 @@ const shownFields = (
   return Object.keys(shown).length === 0 ? {} : { fields: shown };
 };
 const dayOrTime = (at: string, allDay: boolean, zone: string) =>
-  allDay
-    ? DateTime.formatIsoDate(DateTime.makeZonedUnsafe(Date.parse(at), { timeZone: zone }))
-    : at;
+  allDay ? dayIn(Date.parse(at), zone) : timeIn(Date.parse(at), zone);
 const shownRepeatRule = (rule: KinRepeatRule) =>
   rule.every === "days" ? `every ${rule.days} days` : `every ${rule.every}`;
 

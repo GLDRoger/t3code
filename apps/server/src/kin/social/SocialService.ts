@@ -625,7 +625,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
       input.group === undefined
         ? yield* ownerLevelGroups(lead.orgId)
         : [yield* groupNamed(lead.orgId, input.group)];
-    const since = input.since ?? iso(now - 7 * DAY_MS).slice(0, 10);
+    const since = input.since ?? dayIn(now - 7 * DAY_MS, zone);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(since)) return yield* invalid("since is a day, YYYY-MM-DD.");
     const out = [];
     for (const group of groups) {

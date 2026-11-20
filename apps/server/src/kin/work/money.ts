@@ -123,6 +123,9 @@ export const aboutTotal = (
 /** The calendar day an instant falls on in `zone`. */
 export const dayIn = (ms: number, zone: string) =>
   DateTime.formatIsoDate(DateTime.makeZonedUnsafe(ms, { timeZone: zone }));
+/** An instant as `zone`'s own clock reads it, with its offset: `2026-12-05T00:16:00.000+14:00`. */
+export const timeIn = (ms: number, zone: string) =>
+  DateTime.formatIsoOffset(DateTime.makeZonedUnsafe(ms, { timeZone: zone }));
 /** `2026-11` from a day. */
 export const monthOf = (day: string) => day.slice(0, 7);
 /**

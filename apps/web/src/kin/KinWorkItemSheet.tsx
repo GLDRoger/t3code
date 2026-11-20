@@ -876,7 +876,13 @@ function KinWorkItem(
                   {view.due ?? KIN_WORK_COPY.noDate}
                 </span>
               ) : (
-                <DueMenu view={view} now={props.now} saving={saving} onAct={reword} />
+                <DueMenu
+                  view={view}
+                  now={props.now}
+                  zone={names.zone}
+                  saving={saving}
+                  onAct={reword}
+                />
               )}
             </dd>
             {choices === null || (!view.can.project && view.project === null) ? null : (
@@ -1473,6 +1479,7 @@ function RepeatMenu(props: {
 function DueMenu(props: {
   readonly view: KinWorkItemView;
   readonly now: Date;
+  readonly zone: string | null;
   readonly saving: boolean;
   readonly onAct: (action: KinWorkAction) => void;
 }) {
@@ -1496,7 +1503,7 @@ function DueMenu(props: {
         <ChevronDownIcon />
       </MenuTrigger>
       <MenuPopup align="start">
-        {kinWorkDueChoices(props.now).map((choice) => (
+        {kinWorkDueChoices(props.now, props.zone).map((choice) => (
           <MenuItem
             key={choice.day}
             disabled={choice.day === view.dueDay}

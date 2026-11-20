@@ -1,10 +1,11 @@
-import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_CHECK_INS,
   KIN_WEEKDAYS,
   kinCheckInDraft,
   kinCheckInLine,
+  kinCoveredLine,
   kinCheckInProblem,
   type KinCheckInDraft,
 } from "@t3tools/client-runtime/kin/kinCheckIns";
@@ -28,7 +29,7 @@ import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
 import { FormMessage, FormShell, NO_LINK, targetOf } from "./KinWorkFormScreens";
-import { kinClient } from "./state/kinClient";
+import { kinClient, refreshKinBriefs } from "./state/kinClient";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
@@ -46,7 +47,7 @@ function useCheckIns(target: Target) {
   return {
     result,
     value: Option.getOrNull(AsyncResult.value(result)),
-    refresh: useAtomRefresh(atom),
+    refresh: () => refreshKinBriefs(target.environmentId, target.orgId),
     canRead: useAtomValue(kinClient.checkInSave.permissionAtom(target.environmentId)),
   };
 }
@@ -75,11 +76,14 @@ export function KinCheckInsSection(props: Target) {
               icon={checkIn.on ? "clock" : "moon"}
               label={checkIn.title}
               valuePosition="below"
-              value={
+              value={[
                 checkIn.on
                   ? kinCheckInLine(checkIn)
-                  : `${KIN_CHECK_INS.off} · ${kinCheckInLine(checkIn)}`
-              }
+                  : `${KIN_CHECK_INS.off} · ${kinCheckInLine(checkIn)}`,
+                kinCoveredLine(checkIn),
+              ]
+                .filter((line) => line !== null)
+                .join("\n")}
               onPress={() =>
                 navigation.navigate("KinCheckInForm", {
                   environmentId: props.environmentId,
@@ -209,7 +213,11 @@ function CheckInForm(
       problem={problem === null ? null : { kind: "failed", text: problem }}
       onSave={send}
     >
-      <ListSection footer={KIN_CHECK_INS.zone(result.zone)}>
+      <ListSection
+        footer={[KIN_CHECK_INS.zone(result.zone), checkIn === null ? null : kinCoveredLine(checkIn)]
+          .filter((line) => line !== null)
+          .join(" ")}
+      >
         <KinWorkTextField
           label={KIN_CHECK_INS.name}
           value={draft.title}

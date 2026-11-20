@@ -178,9 +178,11 @@ describe("kinWorkGroups", () => {
   it("leads On me with what is late, due today or stuck, each marked once", () => {
     const later = task({ owner: zoya, dueAt: "2026-12-01T12:00:00.000Z" });
     const stuck = task({ owner: zoya, state: "waiting", waitingOn: null });
-    const today = task({ owner: zoya, dueAt: new Date(2026, 10, 16, 18).toISOString() });
+    // Today is the company's (UTC here), whatever this device's clock says.
+    const today = task({ owner: zoya, dueAt: "2026-11-16T23:30:00.000Z" });
     const late = task({ owner: zoya, dueAt: "2026-11-10T12:00:00.000Z", late: true });
-    const mine = kinWorkGroups([later, stuck, today, late], namesFor(zoya), now).flatMap((item) =>
+    const noon = new Date("2026-11-16T12:00:00.000Z");
+    const mine = kinWorkGroups([later, stuck, today, late], namesFor(zoya), noon).flatMap((item) =>
       item.type === "task" ? [[item.key, item.mark ?? null]] : [],
     );
     expect(mine).toEqual([

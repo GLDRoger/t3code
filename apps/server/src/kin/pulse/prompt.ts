@@ -4,6 +4,8 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { sentMail, type SentMail } from "../connections/Sending.ts";
+import { timeIn } from "../work/money.ts";
+import { ownerZone } from "../work/recordRows.ts";
 import { clientHistory } from "./clientHistory.ts";
 import { headStarts } from "./headStart.ts";
 import * as KinPulse from "./KinPulse.ts";
@@ -15,7 +17,10 @@ export const CHECK_IN_PULSE_RULE =
   "Check-in: below are only facts the owner hasn't been told as they stand now (new, changed or due today). Tell him each in your reply, once, leading with what you did or what waits on his tap; one in hand (inHand) with who and until when. What he was told and hasn't changed is left out: don't recall it.";
 /** The morning check-in, which took over the morning brief's sections; the app greets above it. */
 export const MORNING_RULE =
-  "This is the morning check-in. Besides the pulse: what is due today, overdue promises, what waits on the owner, reviews and red checks, objectives this week and stuck tasks. The owner reads it as a page under a greeting the app writes, so write no greeting and put everything under headings, each on its own line: `## Needs you`, `## Money`, `## Clients`, `## Work`, `## Coming up`. Use only the ones you have something for, Needs you first, a few short lines under each, and tell every pulse fact under the heading it belongs to, as the pulse rule says. Stay silent only when there is no pulse fact and nothing here needs them.";
+  "This is the morning check-in. Besides the pulse: what is due today, overdue promises, what waits on the owner, reviews and red checks, objectives this week and stuck tasks. The owner reads it as a page under a greeting the app writes, so write no greeting and put everything under headings, each on its own line: `## Needs you`, `## Money`, `## Clients`, `## Work`, `## Coming up`. Use only the ones you have something for, Needs you first, a few short lines under each, and tell every pulse fact under the heading it belongs to, as the pulse rule says. It is sent on a quiet morning too: when nothing here needs them, say so in a line under `## Needs you`, then `## Coming up` only if something is.";
+/** The evening check-in, which took over the evening summary's sections. */
+export const EVENING_RULE =
+  "This is the evening summary: the day as these facts have it, what got done, what moved or slipped, and what is still open and carries to tomorrow. Like the morning page it reads under a greeting the app writes, so write no greeting and put it under headings, each on its own line, a few short lines under each. `today` is Kin's own record of what happened in the company today, whatever an earlier message already told him: sum it up, and never call a day quiet or say nothing was done while it has lines. Anything else he was told today, tell again only where it changed.";
 const SECTION_CAP = 30;
 const MAILED_SENSES = new Set<KinPulseFact["sense"]>(["invoice_overdue", "quote_unanswered"]);
 const CHECK_IN_CAP = 200;
@@ -90,6 +95,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
         yield* clientHistory(input.orgId, fact.subject.recordId, input.now),
       );
   const starts = yield* headStarts(input.orgId, shown);
+  const zone = yield* ownerZone(input.orgId);
   const row = (fact: KinPulseFact) => ({
     key: fact.key,
     about: `${fact.subject.key === fact.subject.title ? fact.subject.title : `${fact.subject.key} ${fact.subject.title}`}`,
@@ -104,7 +110,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
     ...(mailed.has(fact.key)
       ? {
           sentIn: (({ at, connection, account, from, to, subject, threadId }) => ({
-            at,
+            at: timeIn(Date.parse(at), zone),
             connection,
             account,
             from,
@@ -120,7 +126,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
     ...(fact.handled === null
       ? {}
       : {
-          inHand: `${who(fact.handled.by)}${fact.handled.until === null ? ", not a problem" : ` until ${DateTime.formatIso(fact.handled.until)}`}${fact.handled.note === null ? "" : `: ${fact.handled.note}`}`,
+          inHand: `${who(fact.handled.by)}${fact.handled.until === null ? ", not a problem" : ` until ${timeIn(DateTime.toEpochMillis(fact.handled.until), zone)}`}${fact.handled.note === null ? "" : `: ${fact.handled.note}`}`,
         }),
     ...(fact.sensitive ? { sensitive: true } : {}),
     ...(woke.has(fact.key) ? { wokeYou: true } : {}),
@@ -138,7 +144,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   }
   const team = yield* teamHoursNow(input.orgId, input.now);
   return {
-    asOf: all.asOf,
+    asOf: timeIn(DateTime.toEpochMillis(all.asOf), zone),
     total: checkIn ? all.facts.length : all.total,
     ...(team.length === 0 ? {} : { teamHours: team }),
     ...(starts.mail === undefined ? {} : { mailFrom: starts.mail }),
