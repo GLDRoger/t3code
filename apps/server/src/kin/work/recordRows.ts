@@ -24,6 +24,8 @@ import {
   type KinWorkActor,
   type KinWorkPrincipal,
   canonicalTimeZone,
+  formatKinLate,
+  KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -278,6 +280,7 @@ export const owedInvoices = Effect.fn("KinRecordRows.owedInvoices")(function* (i
       ${input.partyId === undefined ? sql`` : sql`AND r.party_id = ${input.partyId}`}
       ${input.seen === undefined ? sql`` : sql`AND ${input.seen}`}
     ORDER BY r.due_at, r.key`;
+  const zone = yield* ownerZone(input.orgId);
   return rows
     .map((row) => {
       const overdue = row.dueAt !== null && row.dueAt < input.now;
@@ -285,7 +288,7 @@ export const owedInvoices = Effect.fn("KinRecordRows.owedInvoices")(function* (i
         ...row,
         balance: { minor: row.minor - row.paid, currency: row.currency },
         overdue,
-        daysOverdue: overdue ? Math.floor((input.now - row.dueAt!) / DAY) : 0,
+        daysOverdue: overdue ? daysOverdue(row.dueAt!, input.now, zone) : 0,
       };
     })
     .filter((row) => row.balance.minor > 0);
@@ -854,6 +857,19 @@ const dayStart = (day: string, zone: string) => {
     { timeZone: zone, adjustForTimeZone: true },
   );
 };
+const calendarDay = (ms: number, zone: string) =>
+  Date.parse(DateTime.formatIsoDate(DateTime.makeZonedUnsafe(ms, { timeZone: zone })));
+/**
+ * Days overdue, for money and tasks alike: whole calendar days in `zone`, the company's, from the
+ * day `dueAt` falls on to today's. Due the 8th, on the 20th that is 12; due today, 0.
+ */
+export const daysOverdue = (dueAt: number, now: number, zone: string) =>
+  Math.max(0, Math.round((calendarDay(now, zone) - calendarDay(dueAt, zone)) / DAY));
+/** How long an owed invoice is overdue, after "overdue": "for 12 days" counted as `daysOverdue`. */
+export const overdueFor = (dueAt: number, days: number, now: number, zone: string) =>
+  days >= 2 && days < 60
+    ? `for ${days} days`
+    : formatKinLate(dueAt, now, { zone, locale: KIN_TEXT_LOCALE });
 /** A calendar day's last millisecond in `zone`: an all-day entry is late only once it is over. */
 export const endOfDay = (day: string, zone: string) =>
   DateTime.toEpochMillis(DateTime.add(dayStart(day, zone), { days: 1 })) - 1;

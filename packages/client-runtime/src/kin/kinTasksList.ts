@@ -110,7 +110,7 @@ export function kinTaskLine(
   const today = !closed && !record.late && kinWorkDueDays(record, names, now) === 0;
   const lead =
     record.late && record.dueAt !== null
-      ? { text: kinLateWords(record.dueAt, now), tone: "late" as const }
+      ? { text: kinLateWords(record, names, now), tone: "late" as const }
       : working && !closed
         ? { text: KIN_TASKS.working, tone: "working" as const }
         : today
