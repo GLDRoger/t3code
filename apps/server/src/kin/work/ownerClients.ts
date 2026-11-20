@@ -165,8 +165,8 @@ export const parties = Effect.fn("KinWork.parties")(function* (
   const viewer = yield* reader(people, input.orgId);
   const works = yield* switchedOn(input.orgId, viewer);
   const { now, seq } = yield* asOf(input.orgId, viewer);
-  // Prospects and who looks after a client are Clients' own; a lead without it filters by neither.
-  const { prospect: _prospect, owner: _owner, ...plain } = input;
+  // Kinds and who looks after a client are Clients' own; a lead without it filters by neither.
+  const { kind: _kind, prospect: _prospect, owner: _owner, ...plain } = input;
   const page = yield* read(Crm.parties(input.orgId, now, works ? input : plain, viewer));
   return {
     parties: works ? page.rows : page.rows.map(nameOnly),

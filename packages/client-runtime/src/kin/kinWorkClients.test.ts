@@ -20,6 +20,7 @@ import {
   kinClientRow,
   kinClientsNothing,
   kinClientsQuery,
+  kinClientsShowChoices,
   kinClientsStartFilter,
   KIN_CLIENTS_DEFAULT_FILTER,
   kinLastContactLine,
@@ -196,6 +197,17 @@ describe("the clients list's Show and Looked after by", () => {
     expect(
       kinClientsQuery(orgId, { show: "prospects", lookedAfter: arjun, text: " Fen " }),
     ).toEqual({ orgId, prospect: true, owner: arjun, text: "Fen" });
+  });
+
+  it("offers someone who reads names only no choice that tells a prospect from a client", () => {
+    expect(kinClientsShowChoices(true).map((one) => one.id)).toEqual([
+      "open",
+      "prospects",
+      "clients",
+      "vendors",
+      "closed",
+    ]);
+    expect(kinClientsShowChoices(false).map((one) => one.id)).toEqual(["open", "closed"]);
   });
 
   it("starts a teammate with Clients on at their own, and everyone else at everyone's", () => {

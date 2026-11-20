@@ -23,6 +23,7 @@ import {
   KIN_PROJECT_VIEWS,
   KIN_CLIENTS_DEFAULT_FILTER,
   KIN_CLIENTS_SHOW,
+  kinClientsShowChoices,
   kinClientPageView,
   kinClientRow,
   kinClientsLookedAfterChoices,
@@ -184,11 +185,16 @@ export function KinWorkClientsList(
                 {
                   label: KIN_CLIENTS.show,
                   value: filter.show,
-                  options: KIN_CLIENTS_SHOW.map((one) => ({ value: one.id, label: one.label })),
+                  options: kinClientsShowChoices(seesClients).map((one) => ({
+                    value: one.id,
+                    label: one.label,
+                  })),
                   onChange: (value) =>
                     list.setFilter({
                       ...filter,
-                      show: KIN_CLIENTS_SHOW.find((one) => one.id === value)?.id ?? "open",
+                      show:
+                        kinClientsShowChoices(seesClients).find((one) => one.id === value)?.id ??
+                        "open",
                     }),
                   note: KIN_CLIENTS.order,
                 },

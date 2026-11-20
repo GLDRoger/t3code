@@ -1913,6 +1913,12 @@ it.effect(
       const page = yield* Clients.party([mate], { orgId, key: "C-1" });
       for (const read of [plain.parties[0], page.party])
         for (const field of ["prospect", "source", "tags"]) assert.notProperty(read, field);
+      // Nor does a kind tell him: Acme is a prospect, and Clients or Vendors still lists it.
+      for (const kind of ["client", "vendor"] as const)
+        assert.deepStrictEqual(
+          (yield* Clients.parties([mate], { orgId, kind })).parties.map((one) => one.key),
+          ["C-1"],
+        );
       yield* Clients.updateParty([owner], {
         orgId,
         key: "C-1",
