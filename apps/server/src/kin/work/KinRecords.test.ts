@@ -820,7 +820,21 @@ const keptForPerson = [
         orgId,
         personId: ownerId,
         wakeupId: "wake-1",
-        entryRecordIds: [quote.recordId],
+        attachments: [
+          {
+            key: "DOC-1",
+            recordId: "rec-doc",
+            version: 1,
+            attachmentId: "att-1",
+            sha256: "0",
+            name: "QT-1.pdf",
+            mimeType: "application/pdf",
+            bytes: 1,
+            label: null,
+            entryRecordId: quote.recordId,
+            entryRev: quote.rev,
+          },
+        ],
       });
       const state = Effect.map(scene.records.get(orgId, "QT-1"), (row) => row!.state);
       assert.strictEqual(yield* state, "waiting");
