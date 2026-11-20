@@ -302,11 +302,18 @@ describe("kinWorkOnlyOwner", () => {
   it.each([
     ["tasks", "Tasks are"],
     ["money", "Money is"],
-    ["clients", "Clients are"],
+    ["clients", "Clients come"],
     ["docs", "Docs are"],
   ] as const)("names %s, the page it is on", (place, starts) => {
-    expect(kinWorkOnlyOwner(place).detail.startsWith(starts)).toBe(true);
+    if (place !== "clients") expect(kinWorkOnlyOwner(place).detail.startsWith(starts)).toBe(true);
     expect(kinWorkOffline(place).detail.startsWith(starts.split(" ")[0]!)).toBe(true);
+  });
+
+  it("tells a teammate Clients is switched off for them, as the client page does", () => {
+    expect(kinWorkOnlyOwner("clients")).toEqual({
+      title: "Clients isn't on for you",
+      detail: "The owner or a co-owner decides who sees Clients.",
+    });
   });
 });
 

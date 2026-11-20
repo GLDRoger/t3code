@@ -73,8 +73,15 @@ const PLACE_NOUN: Record<KinWorkPageName, { readonly name: string; readonly plur
   docs: { name: "Docs", plural: true },
 };
 
+/** Clients refused a teammate: their switch is off, the same words as on a client's page. */
+const KIN_CLIENTS_OFF = {
+  title: "Clients isn't on for you",
+  detail: "The owner or a co-owner decides who sees Clients.",
+};
+
 /** The refusal on a work page, naming that page. */
 export const kinWorkOnlyOwner = (place: KinWorkPageName) => {
+  if (place === "clients") return KIN_CLIENTS_OFF;
   const { name, plural } = PLACE_NOUN[place];
   return {
     title: "Only the owner can open this",
@@ -1232,9 +1239,13 @@ export function kinWorkChangeText(
   if (sensitive === "true") clauses.push("made it private");
   else if (sensitive === "false") clauses.push("made it not private");
   // Clients keep their kind in the category field.
-  const kind = list === "clients" ? field("category")?.to : undefined;
-  if (kind === "vendor") clauses.push("marked them a vendor");
-  else if (kind === "client") clauses.push("marked them a client");
+  const kind = list === "clients" ? field("category") : undefined;
+  if (kind?.to === "vendor") clauses.push("marked them a vendor");
+  else if (kind?.to === "client") clauses.push("marked them a client");
+  else if (kind?.to === "prospect")
+    clauses.push(
+      kind.from === "client" ? "marked them a prospect again" : "marked them a prospect",
+    );
   const said = clauses.length === 0 ? "updated it" : clauses.join(", ");
   // A change Kin made by taking the default of a question nobody answered.
   return field(KIN_TAKEN_DEFAULT_FIELD) === undefined

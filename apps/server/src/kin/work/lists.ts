@@ -56,9 +56,11 @@ export const LISTS: Record<ListName, List> = {
     prefix: "C",
     noun: "client",
     states: ["open", "dropped"],
-    categories: ["client", "vendor"],
-    // Tax ids are configuration for invoices; computing tax is not Kin's.
-    fields: ["terms", "address", "gstin", "placeOfSupply"],
+    // A prospect is a client we haven't sold to yet; the wire calls it a client (`prospect`).
+    categories: ["client", "vendor", "prospect"],
+    // Tax ids are configuration for invoices; computing tax is not Kin's. `source` is where it
+    // came from and `tags` the company's own words for it.
+    fields: ["terms", "address", "gstin", "placeOfSupply", "source", "tags"],
   },
   contacts: {
     name: "Contacts",

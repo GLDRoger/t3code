@@ -55,7 +55,12 @@ import { KinSubscriptionsPage } from "./KinSubscriptions";
 import { KinSearchDialog } from "./KinSearchDialog";
 import { KinWorkClientPage, KinWorkClientsList, KinWorkProjectsTab } from "./KinWorkClients";
 import { KinWorkDates } from "./KinWorkDates";
+import {
+  KIN_WORK_FORM_COPY,
+  type KinClientDraftKind,
+} from "@t3tools/client-runtime/kin/kinWorkForms";
 import { KinClientDialog, KinProjectDialog } from "./KinWorkForms";
+import { useKinOwnerLevel, useKinSeesClients } from "./useKinOwnerLevel";
 import { KinWorkItemSheet, useKinOpenedKind } from "./KinWorkItemSheet";
 import { KinWorkListPage } from "./KinWorkLists";
 import { KinWorkMoney } from "./KinWorkMoney";
@@ -256,7 +261,7 @@ export function KinPlacesRoute() {
 
 type Adding =
   | { readonly type: "task"; readonly draft: KinWorkDraft }
-  | { readonly type: "client" }
+  | { readonly type: "client"; readonly start: KinClientDraftKind }
   | { readonly type: "project" }
   | null;
 
@@ -303,7 +308,9 @@ export function KinPlaceView({
   // The web stays on its address: a place the host took away says so here and comes back by itself.
   const placeRefused = kinPlaceInPlace({ held: place, tabs: destinations, known }) === "refused";
   const canAdd = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
-  const canAddClient = useAtomValue(kinClient.workClientCreate.permissionAtom(environmentId));
+  // The host takes a new client from the owner level, and a prospect from a teammate with Clients on.
+  const canAddClient = useKinSeesClients(environmentId);
+  const ownerLevel = useKinOwnerLevel(environmentId);
   const canAddProject = useAtomValue(kinClient.workProjectCreate.permissionAtom(environmentId));
   const canChangeTasks = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
   const ready = state._tag === "ready";
@@ -372,7 +379,10 @@ export function KinPlaceView({
         }
       : null;
   const addClient =
-    ready && hostClients && canAddClient ? () => setAdding({ type: "client" }) : null;
+    ready && hostClients && canAddClient
+      ? (start: KinClientDraftKind) => setAdding({ type: "client", start })
+      : null;
+  const addLabel = ownerLevel ? KIN_CLIENTS.add : KIN_CLIENTS.addProspect;
   const addProject =
     ready && hostClients && canAddProject ? () => setAdding({ type: "project" }) : null;
   const title = KIN_WORK_HOME.places[place];
@@ -443,14 +453,28 @@ export function KinPlaceView({
                 {KIN_WORK_HOME.add}
               </MenuTrigger>
               <MenuPopup align="end">
-                <MenuItem onClick={addClient}>{KIN_CLIENTS.add}</MenuItem>
+                <MenuItem onClick={() => addClient(ownerLevel ? "client" : "prospect")}>
+                  {addLabel}
+                </MenuItem>
+                {ownerLevel ? (
+                  <MenuItem onClick={() => addClient("prospect")}>
+                    {KIN_WORK_FORM_COPY.party.prospectTitle}
+                  </MenuItem>
+                ) : null}
                 <MenuItem onClick={addProject}>{KIN_PROJECTS.add}</MenuItem>
               </MenuPopup>
             </Menu>
           ) : place === "clients" && (addClient ?? addProject) !== null ? (
-            <Button size="sm" onClick={addClient ?? addProject ?? undefined}>
+            <Button
+              size="sm"
+              onClick={
+                addClient === null
+                  ? (addProject ?? undefined)
+                  : () => addClient(ownerLevel ? "client" : "prospect")
+              }
+            >
               <PlusIcon />
-              {addClient === null ? KIN_PROJECTS.add : KIN_CLIENTS.add}
+              {addClient === null ? KIN_PROJECTS.add : addLabel}
             </Button>
           ) : null}
         </div>
@@ -769,6 +793,7 @@ export function KinPlaceView({
         <KinClientDialog
           {...props}
           editing={null}
+          start={adding.start}
           onSaved={(key) => {
             setAdding(null);
             openClient(key);

@@ -107,13 +107,18 @@ export const kinListsOf = (handle: KinListsHandle): ReadonlyArray<KinListDefinit
 /** The Money summary, kept current by Work's changes (`kinWorkRefreshOn`). */
 export function useKinMoneySummary(
   target: KinWorkTarget,
-  options: { readonly enabled: boolean; readonly use?: KinMoneyUse },
+  options: {
+    readonly enabled: boolean;
+    readonly use?: KinMoneyUse;
+    /** A client's page: the host answers what this viewer may see owed by that client. */
+    readonly party?: KinRecordKey;
+  },
 ) {
   const use = options.use ?? "line";
   const streamed = useKinMoneyLive(target, "summary");
   const read = kinReads.chosen(
     use === "rows" ? null : streamed,
-    kinReads.money(target, use),
+    kinReads.money(target, use, options.party),
     options.enabled,
   );
   const state = kinWorkReadState(useAtomValue(read.atom ?? noMoneyAtom));
