@@ -111,6 +111,22 @@ const AUTHOR_OF = `COALESCE(m.author_person_id,
   CASE WHEN e.tag = 'chat.reaction' THEN json_extract(e.json, '$.provenance.personId') END)`;
 
 /** A person's message waits only for the rest of its burst, and never longer than the cap. */
+/**
+ * The lead row aliased `lead` has a turn going on its thread (a queued or active run, or an
+ * unfinished provider turn) that no wake-up may claim into yet: the run T3 started for a finished
+ * task is the one exception, and waits for the wake-up that takes it over.
+ */
+export const leadThreadBusy = (sql: SqlClient.SqlClient, lead: string) => {
+  const thread = sql.literal(`${lead}.thread_id`);
+  return sql`(EXISTS (SELECT 1 FROM orchestration_v2_projection_runs r
+        WHERE r.thread_id = ${thread} AND r.status IN ${sql.in(["queued", ...ACTIVE_RUN_STATUSES])})
+      OR EXISTS (SELECT 1 FROM orchestration_v2_projection_provider_turns t
+        WHERE t.thread_id = ${thread} AND t.completed_at IS NULL))
+    AND NOT EXISTS (SELECT 1 FROM kin_events f WHERE f.org_id = ${sql.literal(`${lead}.org_id`)}
+      AND f.agent_id = ${sql.literal(`${lead}.agent_id`)} AND f.tag = 'task.finished'
+      AND f.state = 'queued' AND json_extract(f.json, '$.threadId') = ${thread})`;
+};
+
 const OWNER_BURST_MS = 300;
 const OWNER_WINDOW_MS = 2_000;
 
@@ -939,19 +955,8 @@ const make = Effect.gen(function* () {
         FROM kin_events e JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
         WHERE e.org_id = ${orgId} AND e.state = 'queued' AND a.retired_at IS NULL
           AND a.paused_at IS NULL
-          AND NOT EXISTS (
-            SELECT 1 FROM kin_leads l
-            WHERE l.org_id = e.org_id AND l.agent_id = e.agent_id AND (
-              EXISTS (SELECT 1 FROM orchestration_v2_projection_runs r
-                WHERE r.thread_id = l.thread_id AND r.status IN ${sql.in(["queued", ...ACTIVE_RUN_STATUSES])})
-              OR EXISTS (SELECT 1 FROM orchestration_v2_projection_provider_turns t
-                WHERE t.thread_id = l.thread_id AND t.completed_at IS NULL)
-            )
-            -- The run T3 started for a finished task waits for the wake-up that takes it over.
-            AND NOT EXISTS (SELECT 1 FROM kin_events f WHERE f.org_id = l.org_id
-              AND f.agent_id = l.agent_id AND f.tag = 'task.finished' AND f.state = 'queued'
-              AND json_extract(f.json, '$.threadId') = l.thread_id)
-          )
+          AND NOT EXISTS (SELECT 1 FROM kin_leads l
+            WHERE l.org_id = e.org_id AND l.agent_id = e.agent_id AND ${leadThreadBusy(sql, "l")})
         GROUP BY e.agent_id ORDER BY e.agent_id`;
       const candidates = yield* Effect.forEach(rows, (row) =>
         Effect.gen(function* () {

@@ -50,6 +50,7 @@ import {
   claudeThinkingItemId,
 } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import type { ProjectionRecordFilter } from "../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import { KinGroups } from "../chat/KinGroups.ts";
@@ -115,9 +116,30 @@ const fakeThreads = (fake: Fake, wakeupId: KinWakeupId) =>
           turnItems: [...fake.items, ...(fake.rescues === 0 ? [] : fake.rescueItems)],
         };
       });
+      // The filters the bridge's reads use, as the projection store applies them.
+      const records = (filter: ProjectionRecordFilter = {}) =>
+        Effect.map(projection, (current) => {
+          const newest = current.runs
+            .toSorted((a, b) => b.ordinal - a.ordinal)
+            .slice(0, filter.latestRunLimit);
+          return {
+            ...current,
+            runs: newest.filter((run) => filter.runIds?.includes(run.id) ?? true),
+            turnItems: current.turnItems.filter(
+              (item) =>
+                (filter.turnItemRunIds?.includes(item.runId) ?? true) &&
+                (filter.turnItemTypes?.includes(item.type) ?? true) &&
+                (filter.turnItemStatuses?.includes(item.status) ?? true),
+            ),
+            messages: current.messages.filter(
+              (message) => filter.messageIds?.includes(message.id) ?? true,
+            ),
+          };
+        });
       return Layer.mock(ThreadManagement.ThreadManagementService)({
         streamDomainEvents: Stream.fromQueue(fake.live),
         getThreadProjection: () => projection,
+        getThreadRecords: (_threadId, _fields, filter) => records(filter),
         sendToThread: (input) =>
           Effect.gen(function* () {
             fake.rescues++;
