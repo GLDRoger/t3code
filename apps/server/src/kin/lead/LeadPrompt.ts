@@ -2175,14 +2175,16 @@ function boundedEvents(events: ReadonlyArray<string>): string {
     length -= (events[omitted]?.length ?? 0) + 2;
     omitted++;
   }
-  // A line Kin repeats per event, such as "This reminder is due now.", is said once.
-  const said = new Set<string>();
-  const kept = events.slice(omitted).map((event) =>
-    event
-      .split("\n\n")
+  // A line the event just before also carried, such as "This reminder is due now.", is said once;
+  // after a different kind of event it is said again, so it stays with its own quote.
+  let before = new Set<string>();
+  const kept = events.slice(omitted).map((event) => {
+    const paragraphs = event.split("\n\n");
+    const said = before;
+    before = new Set(paragraphs);
+    return paragraphs
       .filter((paragraph) => paragraph.startsWith(">") || !said.has(paragraph))
-      .map((paragraph) => (said.add(paragraph), paragraph))
-      .join("\n\n"),
-  );
+      .join("\n\n");
+  });
   return [...(omitted > 0 ? [note()] : []), ...kept].join("\n\n");
 }

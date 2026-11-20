@@ -32,7 +32,7 @@ import { instructions } from "./instructions.ts";
 import { kinInstructions } from "./turn/session.ts";
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../pulse/prompt.ts";
 import { WEEKLY_RULE } from "../pulse/weekly.ts";
-import { MONEY_RULE } from "../work/workPrompt.ts";
+import { MONEY_RULE, WITHDRAWN_WORK } from "../work/workPrompt.ts";
 import { KinLeadPrompt, TURN_DIVIDER, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import { outsideRead } from "./OutsideContent.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
@@ -2849,6 +2849,26 @@ it.effect(
             (yield* turn(events, events[0]?._tag === "chat.reaction" ? "reply" : "notice")).text,
           ]),
         ).toEqual([]);
+      // Taken back, given, taken back: each intro stays with its own quote, only a run repeats.
+      const work = (n: number, reason: "withdrawn" | "assigned") =>
+        decodeEvent({
+          _tag: "record.changed",
+          orgId,
+          agentId,
+          eventId: `work-${n}`,
+          receivedAt: timestamp,
+          dedupeKey: `record-${reason}:rec-${n}:2`,
+          provenance: { _tag: "human", personId, memberId },
+          recordId: `rec-${n}`,
+          key: `W-${n}`,
+          seq: 2,
+          reason,
+        });
+      const mixed = (yield* turn(
+        [work(3, "withdrawn"), work(5, "assigned"), work(7, "withdrawn"), work(9, "withdrawn")],
+        "notice",
+      )).text;
+      expect(mixed.split(WITHDRAWN_WORK).length - 1).toBe(2);
       // The sections' own rules, which ride only on turns their facts reach.
       expect(
         repeatedGuidance(owners, [`${PULSE_RULE} ${CHECK_IN_PULSE_RULE}`, MONEY_RULE, WEEKLY_RULE]),
