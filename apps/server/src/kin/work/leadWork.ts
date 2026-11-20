@@ -305,10 +305,12 @@ export const QueryResult = Schema.Struct({
   records: Schema.Array(Row),
   /** The offset of the next page, while matches remain past this one. */
   next: Schema.optional(Schema.Number),
-  /** Every match's amounts added up, one figure per currency; money in less out for bank rows. */
+  /** Every match's amounts added up, one figure per currency, whichever way the money went. */
   totals: Schema.optional(Schema.Array(Schema.String)),
+  /** Bank transactions only: money in, money out, and in less out. */
   moneyIn: Schema.optional(Schema.Array(Schema.String)),
   moneyOut: Schema.optional(Schema.Array(Schema.String)),
+  net: Schema.optional(Schema.Array(Schema.String)),
   groups: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -318,6 +320,7 @@ export const QueryResult = Schema.Struct({
         totals: Schema.optional(Schema.Array(Schema.String)),
         moneyIn: Schema.optional(Schema.Array(Schema.String)),
         moneyOut: Schema.optional(Schema.Array(Schema.String)),
+        net: Schema.optional(Schema.Array(Schema.String)),
         sensitive: Schema.optional(Schema.Literal(true)),
       }),
     ),
@@ -1637,7 +1640,7 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
     total: page.total,
     records: page.rows.map((row) => withDeal(deals, rowFor(view, row, now))),
     ...next,
-    ...(totals === undefined || (totals.total.length === 0 && totals.moneyIn === undefined)
+    ...(totals === undefined || totals.total.length === 0
       ? {}
       : { totals: totals.total.map(formatMoney), ...flows(totals), sensitive: true as const }),
     ...(groups === undefined ? {} : { groups }),
@@ -1645,14 +1648,19 @@ const runQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof QueryInp
 });
 export const query = leadTool("KinWorkTools.query", runQuery);
 
-/** A bank list's money in and out, apart, beside the net its `totals` carry. */
+/** The bank list's money in, money out and their net, beside the plain sum `totals` carry. */
 const flows = (sums: {
   readonly moneyIn?: ReadonlyArray<KinMoney>;
   readonly moneyOut?: ReadonlyArray<KinMoney>;
+  readonly net?: ReadonlyArray<KinMoney>;
 }) =>
-  sums.moneyIn === undefined || sums.moneyOut === undefined
+  sums.moneyIn === undefined || sums.moneyOut === undefined || sums.net === undefined
     ? {}
-    : { moneyIn: sums.moneyIn.map(formatMoney), moneyOut: sums.moneyOut.map(formatMoney) };
+    : {
+        moneyIn: sums.moneyIn.map(formatMoney),
+        moneyOut: sums.moneyOut.map(formatMoney),
+        net: sums.net.map(formatMoney),
+      };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TOTALS_BY: Record<NonNullable<typeof QueryInput.Type.groupBy>, TotalsBy> = {
@@ -1679,6 +1687,7 @@ const labelGroups = Effect.fn("KinWorkTools.labelGroups")(function* (
     readonly total?: ReadonlyArray<KinMoney>;
     readonly moneyIn?: ReadonlyArray<KinMoney>;
     readonly moneyOut?: ReadonlyArray<KinMoney>;
+    readonly net?: ReadonlyArray<KinMoney>;
   }>,
 ) {
   const sql = yield* SqlClient.SqlClient;

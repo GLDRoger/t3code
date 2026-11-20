@@ -723,7 +723,7 @@ export const kinListGroupings = (def: KinListDefinition): ReadonlyArray<KinListG
 
 /** One figure over a list: "Still owed" with a line per currency. */
 export interface KinListFigure {
-  readonly id: "total" | "owed" | "received" | "sent" | "accepted" | "moneyIn" | "moneyOut";
+  readonly id: "total" | "owed" | "received" | "sent" | "accepted" | "moneyIn" | "moneyOut" | "net";
   /** Null for the only figure of a list that isn't paid over time: it needs no name. */
   readonly label: string | null;
   readonly lines: ReadonlyArray<string>;
@@ -731,7 +731,7 @@ export interface KinListFigure {
 
 type Sums = Pick<
   KinListTotals,
-  "total" | "owed" | "received" | "sent" | "accepted" | "moneyIn" | "moneyOut"
+  "total" | "owed" | "received" | "sent" | "accepted" | "moneyIn" | "moneyOut" | "net"
 >;
 
 /**
@@ -744,11 +744,11 @@ function figuresOf(def: KinListDefinition, sums: Sums): ReadonlyArray<KinListFig
     totals.length === 0 ? [KIN_MONEY_NOTHING] : kinTotalsLines(totals);
   const billed = { id: "total" as const, label: KIN_LISTS.billed, lines: some(sums.total) };
   // Bank rows: money in and out apart, then the net, never one sum across both.
-  if (sums.moneyIn !== undefined || sums.moneyOut !== undefined)
+  if (sums.net !== undefined)
     return [
       { id: "moneyIn", label: KIN_LISTS.moneyIn, lines: some(sums.moneyIn ?? []) },
       { id: "moneyOut", label: KIN_LISTS.moneyOut, lines: some(sums.moneyOut ?? []) },
-      { id: "total", label: KIN_LISTS.net, lines: some(sums.total) },
+      { id: "net", label: KIN_LISTS.net, lines: some(sums.net) },
     ];
   // Quotes add up only what is out and what was won; a draft is not money yet.
   if (sums.sent !== undefined || sums.accepted !== undefined)
@@ -809,11 +809,17 @@ export function kinListHeader(
   const groups = (totals?.groups ?? []).map((group): KinListGroupView => {
     const figures = figuresOf(def, group);
     const flows = figures[0]?.id === "moneyIn";
+    const ways = [
+      ...((group.moneyIn ?? []).length > 0 ? [`${kinTotalsText(group.moneyIn ?? [])} in`] : []),
+      ...((group.moneyOut ?? []).length > 0 ? [`${kinTotalsText(group.moneyOut ?? [])} out`] : []),
+    ];
     const base = {
       count: countText(group.count),
       totals: (flows ? figures[2] : figures[0])?.lines ?? [],
       billed: flows
-        ? `${kinTotalsText(group.moneyIn ?? [])} in · ${kinTotalsText(group.moneyOut ?? [])} out`
+        ? ways.length === 0
+          ? null
+          : ways.join(" · ")
         : figures.length > 1 && group.total.length > 0
           ? `${kinTotalsText(group.total)} ${KIN_LISTS.billed.toLowerCase()}`
           : null,

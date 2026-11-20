@@ -980,7 +980,8 @@ describe("bank statements", () => {
       );
       assert.include(lists[0]!.json, '"balance"');
       assert.lengthOf(yield* bankRows, 20);
-      // Money in and out add up apart, in the list's own words for them; the total is their net.
+      // Money in and out add up apart, in the list's own words for them, then their net; the
+      // total stays the plain sum older phone builds show.
       const kept = yield* sql<{ minor: number; fields: string }>`SELECT amount_minor AS minor,
           fields_json AS fields FROM kin_records
         WHERE org_id = ${orgId} AND register_id = 'bank_txns' AND state != 'dropped'`;
@@ -993,12 +994,62 @@ describe("bank statements", () => {
       assert.isAbove(sum("credit") * sum("debit"), 0);
       const totals = yield* records.totals(orgId, { list: "bank_txns" });
       assert.deepStrictEqual(
-        [totals.moneyIn, totals.moneyOut, totals.total],
+        [totals.moneyIn, totals.moneyOut, totals.net, totals.total],
         [
           [{ minor: sum("credit"), currency: "INR" }],
           [{ minor: sum("debit"), currency: "INR" }],
           [{ minor: sum("credit") - sum("debit"), currency: "INR" }],
+          [{ minor: sum("credit") + sum("debit"), currency: "INR" }],
         ],
+      );
+      // An owner's own list with a Direction field is no bank list: its total is the plain sum.
+      yield* defineList(
+        orgId,
+        {
+          _tag: "new",
+          id: "calls",
+          name: "Calls",
+          prefix: "CL",
+          definition: {
+            noun: "call",
+            states: ["open", "done"],
+            stateLabels: {},
+            defaultState: "done",
+            categories: [],
+            fields: [
+              {
+                key: "direction",
+                label: "Direction",
+                type: "choice",
+                choices: ["Inbound", "Outbound", "Internal"],
+                sensitive: false,
+              },
+            ],
+            sensitive: false,
+            amount: true,
+            currency: "INR",
+          },
+        },
+        NOW,
+      );
+      for (const [index, direction] of ["Inbound", "Outbound", "Internal"].entries())
+        yield* records.create(
+          orgId,
+          { actor: { _tag: "system" }, via: "import" },
+          {
+            list: "calls",
+            originKey: `import:calls:${index}`,
+            title: `${direction} call`,
+            owner: { _tag: "person", personId: ownerId },
+            state: "done",
+            amount: { minor: 100 * (index + 1), currency: "INR" },
+            fields: { direction },
+          },
+        );
+      const calls = yield* records.totals(orgId, { list: "calls" });
+      assert.deepStrictEqual(
+        [calls.total, calls.moneyIn, calls.moneyOut, calls.net],
+        [[{ minor: 600, currency: "INR" }], undefined, undefined, undefined],
       );
     }).pipe(Effect.provide(layer)),
   );

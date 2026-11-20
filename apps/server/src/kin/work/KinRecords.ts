@@ -110,7 +110,7 @@ import {
   verifyRefs,
 } from "./registers.ts";
 import { contactFields } from "./contactDetails.ts";
-import { directionOf } from "./statements/bankList.ts";
+import { directionOf, findBankList } from "./statements/bankList.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
 import {
   bumpTeamSeqs,
@@ -375,9 +375,10 @@ type Sums = {
   /** Quotes sent and waiting, and accepted. */
   readonly sent?: ReadonlyArray<KinMoney>;
   readonly accepted?: ReadonlyArray<KinMoney>;
-  /** A list whose entries say their direction, as bank rows do; `total` is then in less out. */
+  /** The bank list's money in, money out, and in less out; `total` stays the plain sum. */
   readonly moneyIn?: ReadonlyArray<KinMoney>;
   readonly moneyOut?: ReadonlyArray<KinMoney>;
+  readonly net?: ReadonlyArray<KinMoney>;
 };
 export type Totals = Sums & {
   readonly counted: number;
@@ -2496,7 +2497,7 @@ const make = Effect.gen(function* () {
           ORDER BY r.record_id`;
         const listDef = yield* resolveList(orgId, input.list ?? "work");
         const paidOverTime = listDef.payments === true;
-        const directed = listDef.fields.some((one) => one.key === "direction");
+        const directed = (yield* findBankList(orgId).pipe(provideSql))?.id === listDef.id;
         const amounts = (members: typeof rows): Sums => {
           const priced = members.flatMap((row) =>
             row.minor === null ? [] : [{ ...row, minor: row.minor }],
@@ -2509,17 +2510,21 @@ const make = Effect.gen(function* () {
               home,
             );
           return {
-            total: directed
-              ? addUp(
-                  priced.flatMap((row, at) =>
-                    way[at] === null
-                      ? []
-                      : [way[at] === "debit" ? { ...row, minor: -row.minor } : row],
+            total: addUp(priced, home),
+            ...(directed
+              ? {
+                  moneyIn: side("credit"),
+                  moneyOut: side("debit"),
+                  net: addUp(
+                    priced.flatMap((row, at) =>
+                      way[at] === null
+                        ? []
+                        : [way[at] === "debit" ? { ...row, minor: -row.minor } : row],
+                    ),
+                    home,
                   ),
-                  home,
-                )
-              : addUp(priced, home),
-            ...(directed ? { moneyIn: side("credit"), moneyOut: side("debit") } : {}),
+                }
+              : {}),
             ...(paidOverTime
               ? {
                   owed: addUp(
