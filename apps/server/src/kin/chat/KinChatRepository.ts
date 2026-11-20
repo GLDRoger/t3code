@@ -55,7 +55,7 @@ import { sensitiveNow } from "../work/recordRows.ts";
 import { viewVisible } from "../work/teamView.ts";
 import { encodeNames, nameKeys, withLinks } from "./messageLinks.ts";
 import { messageForViewer } from "./messageView.ts";
-import { chatShared, readableBy, recordJoin } from "./sharing.ts";
+import { chatShared, readableBy, readableFrom, recordJoin } from "./sharing.ts";
 import { accessSql } from "../people/KinAccess.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
@@ -2205,20 +2205,19 @@ const make = Effect.gen(function* () {
     unreadCount,
     unreadTotal: Effect.fn("KinChatRepository.unreadTotal")(
       function* (input) {
-        const members = yield* sql<{
-          chatId: KinChatId;
-          memberId: KinMemberId;
-        }>`SELECT m.chat_id AS "chatId", m.member_id AS "memberId"
+        // `unreadCount` for every listed chat in one read, each from its own member row's join.
+        const [row] = yield* sql<{ total: number }>`SELECT COUNT(kin_messages.message_id) AS total
  FROM kin_chat_members m JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+ JOIN kin_messages ON kin_messages.org_id = m.org_id AND kin_messages.chat_id = m.chat_id
+ AND kin_messages.status = 'posted' AND kin_messages.silent = 0
+ AND (kin_messages.author_member_id IS NULL OR kin_messages.author_member_id != m.member_id)
+ AND ${readableFrom(sql, input.orgId, sql`COALESCE(m.joined_seq, 0)`)}
+ AND kin_messages.seq > COALESCE((SELECT r.last_read_seq FROM kin_read_state r WHERE r.org_id = m.org_id
+ AND r.chat_id = m.chat_id AND r.member_id = m.member_id), 0)
  WHERE m.org_id = ${input.orgId} AND m.person_id = ${input.personId} AND m.principal_kind = 'person'
  AND m.left_at IS NULL AND c.archived_at IS NULL
- AND (c.team_id IS NULL OR c.team_id <> ${KIN_TEAM_ROOM_TEAM_ID}) ORDER BY m.member_id`.pipe(
-          NodeSqliteClient.readOnly,
-        );
-        let total = 0;
-        for (const member of members)
-          total += yield* unreadCount({ orgId: input.orgId, ...member });
-        return total;
+ AND (c.team_id IS NULL OR c.team_id <> ${KIN_TEAM_ROOM_TEAM_ID})`.pipe(NodeSqliteClient.readOnly);
+        return row?.total ?? 0;
       },
       Effect.mapError(toRepositoryError("KinChatRepository.unreadTotal")),
     ),
