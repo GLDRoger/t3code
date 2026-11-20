@@ -55,6 +55,7 @@ import { KinAwaySection } from "./components/KinAway";
 import { KinPersonTasks } from "./components/KinPersonTasks";
 import { KinTasksKeysSection } from "./components/KinTasksKeys";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { kinZoneLabel } from "@t3tools/client-runtime/kin/kinTimeZone";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
 export type KinProfileParams = {
@@ -247,7 +248,7 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
           </Text>
           {profile.timeZone === null ? null : (
             <Text textRole="footnote" className="text-foreground-muted">
-              {profile.timeZone}
+              {kinZoneLabel(profile.timeZone)}
             </Text>
           )}
         </View>

@@ -1,11 +1,11 @@
 import type { KinBrief, KinBriefSaveInput, KinCheckIn, KinCoveringBrief } from "@t3tools/contracts";
 
-import { kinZoneName } from "./kinTimeZone.ts";
+import { kinZoneLabel } from "./kinTimeZone.ts";
 
 export const KIN_CHECK_INS = {
   title: "Check-ins",
   detail: "When your agents look over what needs attention and tell you what moved.",
-  zone: (zone: string) => `Times are in ${kinZoneName(zone)}.`,
+  zone: (zone: string) => `Times are in ${kinZoneLabel(zone)}.`,
   empty: "No check-ins. Add one to have an agent look over the company at a set time.",
   add: "Add check-in",
   edit: "Edit check-in",
