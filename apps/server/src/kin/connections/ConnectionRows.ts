@@ -274,8 +274,16 @@ export const promptLine = Effect.fn("KinConnectionRows.promptLine")(function* (o
 });
 
 /**
- * In the caller's transaction: every ask still waiting on its Confirm whose entry is this record
- * goes stale with `reason`. The ids of their cards, for the caller to close.
+ * Whether the ask's entry is that of a file it carries. Only then does the entry closing stop the
+ * mail: a mail tied to a task by its turn goes as it would have.
+ */
+export const carriesEntry = (sql: SqlClient.SqlClient, ask: string) =>
+  sql`EXISTS (SELECT 1 FROM json_each(${sql(ask)}.payload_json, '$.attachments') f
+    WHERE json_extract(f.value, '$.entryRecordId') = ${sql(ask)}.entry_record_id)`;
+
+/**
+ * In the caller's transaction: every ask still waiting on its Confirm that carries a file of this
+ * record goes stale with `reason`. The ids of their cards, for the caller to close.
  */
 export const staleAsksAbout = Effect.fn("KinConnectionRows.staleAsksAbout")(function* (
   orgId: KinOrgId,
@@ -287,6 +295,7 @@ export const staleAsksAbout = Effect.fn("KinConnectionRows.staleAsksAbout")(func
   const rows = yield* sql<{ widgetId: string | null }>`UPDATE kin_connection_asks
     SET state = 'stale', reason = ${reason}, decided_at = ${now}
     WHERE org_id = ${orgId} AND entry_record_id = ${recordId} AND state = 'open'
+      AND ${carriesEntry(sql, "kin_connection_asks")}
     RETURNING widget_id AS "widgetId"`;
   return rows.flatMap((row) => (row.widgetId === null ? [] : [row.widgetId])).toSorted();
 });

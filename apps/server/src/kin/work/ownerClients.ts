@@ -166,8 +166,8 @@ export const parties = Effect.fn("KinWork.parties")(function* (
   const viewer = yield* reader(people, input.orgId);
   const works = yield* switchedOn(input.orgId, viewer);
   const { now, seq } = yield* asOf(input.orgId, viewer);
-  // Prospects and who looks after a client are Clients' own; a lead without it filters by neither.
-  const { prospect: _prospect, owner: _owner, ...plain } = input;
+  // Kinds and who looks after a client are Clients' own; a lead without it filters by neither.
+  const { kind: _kind, prospect: _prospect, owner: _owner, ...plain } = input;
   const page = yield* read(Crm.parties(input.orgId, now, works ? input : plain, viewer));
   return {
     parties: works ? page.rows : page.rows.map(nameOnly),
@@ -222,7 +222,7 @@ export const party = Effect.fn("KinWork.party")(function* (
   const [team] = viewer.people;
   if (team === undefined) return yield* noClients;
   if (yield* switchedOn(input.orgId, viewer)) return yield* read(memberPage(page, team, row));
-  // Its name, contacts and the projects they lead; never terms, tax, notes, contact log or what's owed.
+  // Built from what it may carry, so nothing added to the page later reaches a name-only reader.
   const shown = yield* read(
     teamVisible(input.orgId, team, [
       ...page.contacts.map((one) => one.recordId),
@@ -230,10 +230,7 @@ export const party = Effect.fn("KinWork.party")(function* (
     ]),
   );
   const none = { records: [], total: 0 };
-  // With the Clients place they reach the people there; leading a project alone gives their names.
-  const reached = (yield* read(placesOf(input.orgId, team))).clients;
   return {
-    ...page,
     party: {
       ...nameOnly(page.party),
       notes: "",
@@ -247,15 +244,17 @@ export const party = Effect.fn("KinWork.party")(function* (
       closedAt: page.party.closedAt,
       seq: page.party.seq,
     },
+    // Leading a project alone gives its people's names, never how to reach them.
     contacts: page.contacts
       .filter((one) => shown.has(one.recordId))
-      .map((one) => (reached ? one : { ...one, email: null, phone: null })),
+      .map((one) => ({ ...one, email: null, phone: null })),
     projects: page.projects.filter((one) => shown.has(one.recordId)),
     weOwe: none,
     theyOwe: none,
-    // The contact log carries the owner's notes on the relationship.
     ...(page.touches === undefined ? {} : { touches: [] }),
     can: { edit: false, log: false, owner: false },
+    seq: page.seq,
+    asOf: page.asOf,
   } satisfies KinPartyPage;
 });
 
@@ -547,6 +546,29 @@ const projectOut = (row: RecordRow) =>
     Effect.flatMap(Clock.currentTimeMillis, (now) => Crm.projectDetail(row, now, KIN_OWNER_LEVEL)),
   );
 
+/**
+ * What a member adds in Clients, on their own screen or through their agent: a prospect they look
+ * after, with its name, where it came from, tags and notes. Read inside the write's transaction.
+ */
+export const memberAdds = Effect.fn("KinWork.crm.memberAdds")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  input: {
+    readonly prospect: boolean;
+    readonly owner: KinWorkPrincipal | undefined;
+    /** Terms, tax details, address, Keep private or closing it. */
+    readonly ownersFields: boolean;
+  },
+) {
+  if (!(yield* switchedOn(orgId, viewerOfPeople([personId])))) return yield* ownerOnly;
+  if (!input.prospect) return yield* PROSPECTS_ONLY;
+  if (
+    input.ownersFields ||
+    (input.owner !== undefined && !samePrincipal(input.owner, { _tag: "person", personId }))
+  )
+    return yield* MEMBER_FIELDS;
+});
+
 export const createParty = Effect.fn("KinWork.createParty")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPartyCreateInput,
@@ -573,14 +595,11 @@ export const createParty = Effect.fn("KinWork.createParty")(function* (
   const row = yield* asViewer(
     viewer,
     Effect.gen(function* () {
-      if (!(yield* switchedOn(input.orgId, viewerOfPeople([person.personId]))))
-        return yield* ownerOnly;
-      if (input.prospect !== true || input.kind === "vendor") return yield* PROSPECTS_ONLY;
-      if (
-        defines(input, ["terms", "address", "gstin", "placeOfSupply", "sensitive"]) ||
-        (input.owner !== undefined && !samePrincipal(input.owner, me(person)))
-      )
-        return yield* MEMBER_FIELDS;
+      yield* memberAdds(input.orgId, person.personId, {
+        prospect: input.prospect === true && input.kind !== "vendor",
+        owner: input.owner,
+        ownersFields: defines(input, ["terms", "address", "gstin", "placeOfSupply", "sensitive"]),
+      });
       return yield* stillSeen(person, yield* create, input.name);
     }),
   );

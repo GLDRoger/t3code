@@ -5,7 +5,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import {
   KIN_CLIENTS,
-  KIN_CLIENTS_SHOW,
+  kinClientsShowChoices,
   kinClientsTabs,
   kinClientsTabShown,
   KIN_PROJECTS,
@@ -360,7 +360,7 @@ function clientsMenu(
       title: KIN_CLIENTS.show,
       inline: true,
       items: [
-        ...KIN_CLIENTS_SHOW.map((one) => ({
+        ...kinClientsShowChoices(seesClients).map((one) => ({
           id: `show:${one.id}`,
           title: one.label,
           selected: clients.show === one.id,

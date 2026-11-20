@@ -1043,7 +1043,7 @@ const make = Effect.gen(function* () {
     if (widget.revision !== request.revision)
       return yield* new KinChatError({
         reason: "widget_changed",
-        message: "Widget revision changed.",
+        message: "This card changed or was answered. Look at it again.",
       });
     if (widget.closedAt !== null && choice?.card.answer == null) return yield* invalidState;
     if (widget.type === "deferral" && request.actionId === "undo") {

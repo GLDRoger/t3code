@@ -38,6 +38,8 @@ import * as LeadWork from "./leadWork.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
 import * as Clients from "./ownerClients.ts";
 import * as Deals from "./deals.ts";
+import * as OwnerDocs from "./ownerDocs.ts";
+import * as OwnerMoney from "./ownerMoney.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import * as Docs from "./docs.ts";
 import * as Search from "./search.ts";
@@ -111,6 +113,9 @@ const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Invented Co', ${at}), ('elsewhere', 'Other', ${at})`;
+  // The company's clock, which its due days follow, on any host.
+  yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Kolkata', '08:00', '18:00', '02:00',
+      0, 1, '09:00', '{}') ON CONFLICT (org_id) DO UPDATE SET time_zone = 'Asia/Kolkata'`;
   yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
     VALUES (${ownerId}, ${orgId}, 'owner', 'Owner', ${at}), (${mateId}, ${orgId}, 'mate', 'Mate', ${at})`;
   yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at, retired_at) VALUES (${lead}, ${orgId}, 'Lead lead', 'lead', ${ownerId}, ${at}, NULL)`;
@@ -1915,6 +1920,12 @@ it.effect(
       const page = yield* Clients.party([mate], { orgId, key: "C-1" });
       for (const read of [plain.parties[0], page.party])
         for (const field of ["prospect", "source", "tags"]) assert.notProperty(read, field);
+      // Nor does a kind tell him: Acme is a prospect, and Clients or Vendors still lists it.
+      for (const kind of ["client", "vendor"] as const)
+        assert.deepStrictEqual(
+          (yield* Clients.parties([mate], { orgId, kind })).parties.map((one) => one.key),
+          ["C-1"],
+        );
       yield* Clients.updateParty([owner], {
         orgId,
         key: "C-1",
@@ -1927,6 +1938,294 @@ it.effect(
           (yield* Clients.parties([mate], { orgId, ...filtered })).parties.map((one) => one.key),
           ["C-1"],
         );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a client's money reaches only whoever Money lets see it, on its page and every read the page makes",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* setup("ask-event");
+      yield* TestClock.adjust(20 * DAY);
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(presetDefinition("invoices", "INR"))}),
+        (${orgId}, 'quotes', 'Quotes', 'QT', 0, 0, ${JSON.stringify(presetDefinition("quotes", "INR"))}),
+        (${orgId}, 'receipts', 'Receipts', 'RC', 0, 0, ${JSON.stringify(presetDefinition("receipts", "INR"))})`;
+      // Who reads: Clients and Money as each teammate's switches say; mate is Clients off, no project.
+      const roles = [
+        ["co", "co_owner", 0, 0],
+        ["both", "member", 1, 1],
+        ["onLead", "member", 1, 0],
+        ["offLead", "member", 0, 0],
+      ] as const;
+      for (const [id, access, clients, money] of roles) {
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+            access, sees_clients, sees_money)
+          VALUES (${id}, ${orgId}, ${id}, ${id}, ${at}, ${access}, ${clients}, ${money})`;
+        yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+          VALUES (${`s-${id}`}, ${orgId}, ${id}, 0)`;
+      }
+      yield* sql`UPDATE kin_people SET sees_clients = 0, sees_money = 0 WHERE person_id = ${mateId}`;
+      const who = (id: string) => ({
+        _tag: "person" as const,
+        orgId,
+        personId: KinPersonId.make(id),
+      });
+      const ledBy = (id: string) => ({ _tag: "person" as const, personId: KinPersonId.make(id) });
+      const projectA = yield* Clients.createProject([owner], {
+        orgId,
+        name: "Invented app build",
+        party: "C-1",
+        owner: ledBy("onLead"),
+        clientRequestId: "project-a",
+      });
+      const projectB = yield* Clients.createProject([owner], {
+        orgId,
+        name: "Invented booking build",
+        party: "C-1",
+        owner: ledBy("offLead"),
+        clientRequestId: "project-b",
+      });
+      const made = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          {
+            list: "quotes",
+            title: "Invented accepted quote",
+            client: "C-1",
+            project: projectB.key,
+            amount: "7319",
+            state: "done",
+          },
+          {
+            list: "quotes",
+            title: "Invented sent quote",
+            client: "C-1",
+            project: projectA.key,
+            amount: "5837",
+            state: "waiting",
+          },
+          {
+            list: "invoices",
+            title: "Invented overdue invoice",
+            client: "C-1",
+            project: projectA.key,
+            amount: "4623",
+            state: "waiting",
+            due: "1970-01-05",
+          },
+          {
+            list: "invoices",
+            title: "Invented booking invoice",
+            client: "C-1",
+            project: projectB.key,
+            amount: "2381",
+            state: "waiting",
+            due: "1970-01-06",
+          },
+          {
+            list: "receipts",
+            title: "Invented advance receipt",
+            client: "C-1",
+            project: projectA.key,
+            amount: "2971",
+          },
+        ],
+      });
+      const overdue = made.records.find((one) => one.title === "Invented overdue invoice")!.key;
+      yield* LeadMoney.payment(scope, {
+        sourceEventId: "ask-event",
+        key: overdue,
+        amount: "1457",
+        paidOn: "1970-01-10",
+      });
+      const acme = yield* Clients.party([owner], { orgId, key: "C-1" });
+      yield* Docs.create(
+        orgId,
+        { actor: { _tag: "agent", agentId: lead }, via: "lead", askedBy: ownerId },
+        {},
+        {
+          title: "Invented quote document",
+          body: "Invented: the price",
+          owner: { _tag: "agent", agentId: lead },
+          summary: "Created",
+          originKey: "test:quote-doc",
+          kind: "quote",
+          partyId: acme.party.recordId,
+          projectId: projectA.recordId,
+        },
+      );
+      // Shared with the team, so Money's own rule shows every entry to a teammate with Money on;
+      // a quote and its doc the owner unmarked private, so only the Money switch keeps them back.
+      yield* sql`UPDATE kin_records SET team_shared = 1
+        WHERE register_id IN ('quotes', 'invoices', 'receipts')`;
+      yield* sql`UPDATE kin_records SET sensitive = 0
+        WHERE title IN ('Invented sent quote', 'Invented quote document')`;
+
+      const amounts = ["7319", "5837", "4623", "2381", "1457", "2971", "3166"];
+      const titles = [...made.records.map((one) => one.title), "Invented quote document"];
+      const keys = made.records.map((one) => one.key);
+      const answer = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        Effect.match(effect, {
+          onFailure: (error) => `refused ${isChatError(error) ? error.reason : "otherwise"}`,
+          onSuccess: (value) => JSON.stringify(value),
+        });
+      // Every read a client's page makes, web and phone alike, for C-1.
+      const pageReads = (person: ReturnType<typeof who>) =>
+        Effect.all([
+          answer(Clients.party([person], { orgId, key: "C-1" })),
+          answer(Clients.parties([person], { orgId })),
+          answer(Clients.history([person], { orgId, key: "C-1" })),
+          answer(Clients.projects([person], { orgId, party: "C-1" })),
+          ...["quotes", "invoices", "receipts"].map((list) =>
+            answer(OwnerWork.list([person], { orgId, list, party: "C-1", totalsBy: "none" })),
+          ),
+          answer(OwnerMoney.money([person], { orgId, upcomingRows: false, party: "C-1" })),
+          answer(OwnerDocs.list([person], { orgId, party: "C-1" })),
+        ]).pipe(Effect.map((all) => all.join("\n")));
+      const money = (read: string) =>
+        [...amounts, ...titles, ...keys].filter((word) => read.includes(word));
+
+      for (const person of [owner, who("co")]) {
+        const read = yield* pageReads(person);
+        assert.deepStrictEqual(money(read), [...amounts, ...titles, ...keys]);
+      }
+      // Money on: the client's figures as Money shows them (its docs are Docs' to share).
+      assert.deepStrictEqual(money(yield* pageReads(who("both"))), [
+        ...amounts,
+        ...titles.filter((one) => one !== "Invented quote document"),
+        ...keys,
+      ]);
+      // Money off: none of it, whichever of its projects they lead, Clients on or off.
+      for (const id of ["onLead", "offLead", "mate"])
+        assert.deepStrictEqual(money(yield* pageReads(who(id))), [], id);
+      // The name-only page still carries the client and the project its lead sees.
+      const named = yield* Clients.party([who("offLead")], { orgId, key: "C-1" });
+      assert.deepStrictEqual(
+        [named.party.name, named.projects.map((one) => one.key)],
+        ["Invented Acme", [projectB.key]],
+      );
+      // Money's own place is unchanged: a lead reads their project's quote there.
+      assert.include(
+        JSON.stringify(yield* OwnerWork.list([who("offLead")], { orgId, list: "quotes" })),
+        "Invented accepted quote",
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a teammate's agent adds the prospect their own form adds, with its next step theirs; never a client",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* setup("ask-event");
+      // The teammate asks in their own chat with the lead: a turn only they are behind.
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('s-mate', ${orgId}, ${mateId}, 0)`;
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${mateId}`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES ('mate-chat', ${orgId}, 'direct', 'mate:lead', 1, ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('mate-chat-mate', ${orgId}, 'mate-chat', 'person', ${mateId}, 'member', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+        VALUES ('mate-chat-lead', ${orgId}, 'mate-chat', 'agent', ${lead}, 'member', ${at})`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+          author_member_id, author_role, kind, body, mentions_json, status, created_at)
+        VALUES ('mate-ask', ${orgId}, 'mate-chat', 1, 'human', ${mateId}, 'mate-chat-mate', 'member',
+          'text', 'Add the invented prospect from the fair and remind me to call Tuesday', '[]', 'posted', ${at})`;
+      const event = {
+        _tag: "chat.message",
+        orgId,
+        agentId: lead,
+        eventId: "mate-event",
+        receivedAt: at,
+        dedupeKey: null,
+        provenance: { _tag: "human", personId: mateId, memberId: "mate-chat-mate" },
+        chatId: "mate-chat",
+        messageId: "mate-ask",
+      };
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+          queued_at, state, wakeup_id)
+        VALUES ('mate-event', ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)}, 0, 0,
+          'claimed', 'wake')`;
+      yield* sql`UPDATE kin_events SET wakeup_id = NULL, state = 'done' WHERE event_id != 'mate-event'`;
+      yield* sql`UPDATE kin_wakeups SET event_ids = '["mate-event"]', audience = 'shared'
+        WHERE wakeup_id = 'wake'`;
+      const me = { _tag: "person" as const, personId: mateId };
+      const refused = (records: Parameters<typeof LeadWork.create>[1]["records"]) =>
+        LeadWork.create(scope, { sourceEventId: "mate-event", records }).pipe(
+          Effect.flip,
+          Effect.map((error) =>
+            isChatError(error)
+              ? { reason: error.reason, message: error.message }
+              : assert.fail(String(error)),
+          ),
+        );
+      const stored = () =>
+        sql<{ key: string }>`SELECT key FROM kin_records
+          WHERE org_id = ${orgId} AND title LIKE 'Invented Tallmoor%' ORDER BY key`;
+
+      // A new client with terms stays the owner's: the refusal says who, and nothing is made.
+      assert.deepStrictEqual(
+        yield* refused([
+          { list: "clients", title: "Invented Tallmoor Freight", terms: "Invented net 30" },
+        ]),
+        { reason: "not_allowed", message: "Only the owner or a co-owner changes that." },
+      );
+      // A prospect is theirs only as their form makes it: no terms, nobody else to look after it.
+      for (const extra of [{ terms: "Invented net 30" }, { owner: "owner" }])
+        assert.include(
+          (yield* refused([
+            { list: "clients", title: "Invented Tallmoor Freight", kind: "prospect", ...extra },
+          ])).message,
+          "Only the owner or a co-owner sets a client's terms",
+        );
+      assert.deepStrictEqual(yield* stored(), []);
+
+      // The prospect and its next step, in one call: theirs to look after, the call theirs to make.
+      const made = yield* LeadWork.create(scope, {
+        sourceEventId: "mate-event",
+        records: [
+          {
+            list: "clients",
+            title: "Invented Tallmoor Freight",
+            kind: "prospect",
+            cameFrom: "Invented trade fair",
+            tags: ["invented"],
+          },
+          {
+            title: "Invented: call Tallmoor",
+            client: "Invented Tallmoor Freight",
+            owner: "me",
+            due: "1970-01-06",
+          },
+        ],
+      });
+      const [prospect, call] = made.records;
+      const page = yield* Clients.party([mate], { orgId, key: prospect!.key });
+      assert.deepInclude(page.party, {
+        prospect: true,
+        source: "Invented trade fair",
+        tags: ["invented"],
+        owner: me,
+      });
+      const row = (yield* Clients.parties([mate], { orgId, owner: me })).parties.find(
+        (one) => one.key === prospect!.key,
+      );
+      assert.deepInclude(row?.next, { key: call!.key, title: "Invented: call Tallmoor" });
+      const task = yield* OwnerWork.get([mate], { orgId, key: call!.key });
+      assert.deepStrictEqual([task.owner, task.party?.key], [me, prospect!.key]);
+      // Clients switched off, their agent adds no prospect either.
+      yield* sql`UPDATE kin_people SET sees_clients = 0 WHERE person_id = ${mateId}`;
+      assert.include(
+        yield* refused([{ list: "clients", title: "Invented Tallmoor Two", kind: "prospect" }]),
+        { reason: "not_allowed" },
+      );
+      assert.lengthOf(yield* stored(), 1);
     }).pipe(Effect.provide(layer)),
 );
 

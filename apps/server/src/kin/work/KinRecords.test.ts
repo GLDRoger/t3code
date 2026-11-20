@@ -3757,6 +3757,8 @@ it.effect(
       yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
         VALUES (${orgId}, ${lead}, ${ownerId}, ${at})`;
       // Midday on the company's clock and hers, so what she is told arrives now.
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'UTC', '08:00', '18:00', '02:00',
+          0, 1, '09:00', '{}') ON CONFLICT (org_id) DO UPDATE SET time_zone = 'UTC'`;
       yield* TestClock.setTime(Date.parse("2026-11-16T12:00:00.000Z"));
       const meeraId = KinPersonId.make("meera");
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)

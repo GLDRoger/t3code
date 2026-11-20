@@ -432,6 +432,13 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
   const project = yield* filterRef(viewer, input.orgId, input.project, "projects");
   const partyId = party.id;
   const projectId = project.id;
+  // A client's money reaches a teammate only with the Money switch, whichever project they lead.
+  const moneyOff =
+    viewer.teammate &&
+    typeof partyId === "string" &&
+    input.list !== undefined &&
+    !isBuiltIn(input.list) &&
+    !(yield* placesOf(input.orgId, viewer.person.personId).pipe(workFailure)).money;
   const at = cursor.at ?? (yield* Clock.currentTimeMillis);
   const limit = input.limit ?? 50;
   if (
@@ -474,34 +481,34 @@ const listAs = Effect.fn("KinWork.listAs")(function* (
     at,
   };
   const byMove = input.byMove === true && (input.list === undefined || input.list === "work");
-  const page =
-    party.none || project.none
-      ? {
-          rows: [],
-          total: 0,
-          seq: yield* teamSeq(input.orgId, viewer.person.personId).pipe(workFailure),
-          moves: byMove ? [] : undefined,
-          counts: byMove ? { needsYou: 0, waiting: 0, rest: 0, doneRecently: 0 } : undefined,
-        }
-      : byMove
-        ? yield* movePage({
-            orgId: input.orgId,
-            personId: viewer.person.personId,
-            ownerLevel: !viewer.teammate,
-            filter,
-            offset: cursor.offset,
-            limit,
-            at,
-          })
-        : yield* records.query(input.orgId, {
-            ...filter,
-            ...internal,
-            offset: cursor.offset,
-            limit,
-          });
+  const nothing = party.none || project.none || moneyOff;
+  const page = nothing
+    ? {
+        rows: [],
+        total: 0,
+        seq: yield* teamSeq(input.orgId, viewer.person.personId).pipe(workFailure),
+        moves: byMove ? [] : undefined,
+        counts: byMove ? { needsYou: 0, waiting: 0, rest: 0, doneRecently: 0 } : undefined,
+      }
+    : byMove
+      ? yield* movePage({
+          orgId: input.orgId,
+          personId: viewer.person.personId,
+          ownerLevel: !viewer.teammate,
+          filter,
+          offset: cursor.offset,
+          limit,
+          at,
+        })
+      : yield* records.query(input.orgId, {
+          ...filter,
+          ...internal,
+          offset: cursor.offset,
+          limit,
+        });
   // The sums are of every match and the same on each page, so only the first page pays for them.
   const totals =
-    input.totalsBy === undefined || input.cursor !== undefined
+    nothing || input.totalsBy === undefined || input.cursor !== undefined
       ? undefined
       : yield* records.totals(
           input.orgId,

@@ -222,6 +222,11 @@ export const KIN_CLIENTS_SHOW = [
   { id: "closed", label: "Closed" },
 ] as const;
 export type KinClientsShow = (typeof KIN_CLIENTS_SHOW)[number]["id"];
+/** Someone who reads names only (`kinSeesClients` false) gets no choice that depends on kind. */
+export const kinClientsShowChoices = (seesClients: boolean) =>
+  seesClients
+    ? KIN_CLIENTS_SHOW
+    : KIN_CLIENTS_SHOW.filter((one) => one.id === "open" || one.id === "closed");
 
 export const KIN_CLIENT_GONE = {
   title: "This client isn't here any more",

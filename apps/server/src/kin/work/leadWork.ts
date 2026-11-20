@@ -110,7 +110,9 @@ import {
   sensitiveShown,
   showsSensitive,
 } from "./sensitiveReads.ts";
+import { memberAdds } from "./ownerClients.ts";
 import {
+  crmVisible,
   KIN_OWNER_LEVEL,
   TEAM_REFUSED,
   teamChanges,
@@ -170,6 +172,15 @@ const Address = KinToolText(500, "A client's billing address, as its invoices sh
 export const Client = KinToolText(200, "A client or vendor: its key (C-3) or exact name.");
 export const Project = KinToolText(200, "A project: its key (P-2) or exact name.");
 const Detail = KinToolText(200);
+/** A client's kind on create; a prospect is a client we haven't sold to yet. */
+const NewPartyKind = Schema.Literals(["client", "vendor", "prospect"]);
+const CameFrom = KinToolText(
+  120,
+  "A client's: where it came from, such as a referral or an event.",
+);
+const PartyTags = Schema.Array(KinToolText(60))
+  .check(Schema.isMaxLength(20))
+  .annotate({ description: "A client's: the company's own words for it." });
 const Terms = KinToolText(4_000);
 const Repos = Schema.Array(KinRepoName).check(Schema.isMaxLength(20));
 
@@ -407,7 +418,9 @@ const CreateRow = Schema.Struct({
   client: Schema.optional(Client),
   project: Schema.optional(Project),
   repo: Schema.optional(KinRepoName),
-  kind: Schema.optional(KinPartyKind),
+  kind: Schema.optional(NewPartyKind),
+  cameFrom: Schema.optional(CameFrom),
+  tags: Schema.optional(PartyTags),
   role: Schema.optional(Detail),
   email: Schema.optional(Detail),
   phone: Schema.optional(Detail),
@@ -1105,6 +1118,15 @@ const fieldsFrom = (row: {
       ["role", "email", "phone", "terms", "repos", "address", "gstin", "placeOfSupply"] as const
     ).flatMap((key) => (row[key] === undefined ? [] : [[key, row[key]]])),
   ) as Record<string, string | ReadonlyArray<string> | null>;
+
+/** Where a client came from and its tags, under the keys Clients stores them by. */
+const partyWords = (row: {
+  readonly cameFrom?: string | undefined;
+  readonly tags?: ReadonlyArray<string> | undefined;
+}): Record<string, string | ReadonlyArray<string>> => ({
+  ...(row.cameFrom === undefined ? {} : { source: row.cameFrom }),
+  ...(row.tags === undefined || row.tags.length === 0 ? {} : { tags: [...new Set(row.tags)] }),
+});
 
 /** A list a lead named, as this org has it. */
 const listFor = Effect.fn("KinWorkTools.list")(function* (lead: Lead, id: string) {
@@ -1903,11 +1925,33 @@ const createRow = Effect.fnUntraced(function* (
   const list = def.id;
   // A deal's rules are `deals.ts`'s, whoever writes it.
   if (list === "deals") return yield* dealRow(lead, sourceEventId, writer, def, lists, row);
-  // A client or contact is the owner's to look after unless told otherwise.
+  // For a teammate alone in the turn, a prospect is what their own Clients form adds (`memberAdds`).
+  const [only, ...others] = team?.people ?? [];
+  const prospectFor =
+    list === "clients" && categoryOf(list, row).category === "prospect" && others.length === 0
+      ? only
+      : undefined;
+  // A client or contact is the owner's to look after unless told otherwise; theirs, they look after.
   const owner = yield* resolveWho(
     lead,
-    row.owner ?? (list === "clients" || list === "contacts" ? "owner" : "you"),
+    row.owner ??
+      (prospectFor !== undefined
+        ? "me"
+        : list === "clients" || list === "contacts"
+          ? "owner"
+          : "you"),
   ).pipe(asField("owner"));
+  if (prospectFor !== undefined)
+    yield* memberAdds(lead.orgId, prospectFor, {
+      prospect: true,
+      owner,
+      ownersFields:
+        [row.terms, row.address, row.gstin, row.placeOfSupply, row.sensitive].some(
+          (value) => value !== undefined,
+        ) ||
+        row.state === "done" ||
+        row.state === "dropped",
+    });
   const waitingOn =
     row.waitingOn === undefined
       ? undefined
@@ -1943,7 +1987,12 @@ const createRow = Effect.fnUntraced(function* (
   )
     return yield* invalid("A goal needs its measure and target, and due as its date.");
   const goal = yield* goalFields(lead.orgId, row);
-  const fields = { ...fieldsFrom(row), ...spineSet, ...goal };
+  const fields = {
+    ...fieldsFrom(row),
+    ...(list === "clients" ? partyWords(row) : {}),
+    ...spineSet,
+    ...goal,
+  };
   if (existing !== undefined) {
     const found = yield* records.get(lead.orgId, existing.key);
     // The same details again is a retry; new ones are a change, which only record_update makes.
@@ -1994,34 +2043,48 @@ const createRow = Effect.fnUntraced(function* (
     partyId ?? null,
     "dueAt" in due && typeof due.dueAt === "number" ? due.dueAt : undefined,
   );
-  const { row: stored, created } = yield* records.create(lead.orgId, writer, {
-    list,
-    originKey,
-    title: row.title,
-    owner,
-    ...(partyId === undefined ? {} : { partyId }),
-    ...(inProject === undefined ? {} : { projectId: inProject }),
-    ...(row.repo === undefined ? {} : { repo: row.repo }),
-    // Private only when asked, or a money goal; never for what the turn happened to read.
-    ...(row.sensitive === undefined && !(row.measure !== undefined && isMoneyMeasure(row.measure))
-      ? {}
-      : { sensitive: true }),
-    ...(Object.keys(fields).length === 0 ? {} : { fields }),
-    ...(row.state === undefined ? {} : { state: row.state }),
-    ...(waitingOn === undefined ? {} : { waitingOn }),
-    ...due,
-    ...(closedAt === undefined ? {} : { closedAt }),
-    ...money,
-    ...spine.at,
-    ...(row.notes === undefined ? {} : { notes: row.notes }),
-    ...categoryOf(list, row),
-    ...(row.side === undefined ? {} : { side: row.side }),
-    // What the owner asked for is confirmed; what a lead inferred waits for the owner. Only
-    // the owner confirms in Work, so a teammate's task keeps the default.
-    ...(team === undefined ? { confirmed: row.suggested !== true && writer.askedBy !== null } : {}),
-    // Where it was first asked stays the owner's to know.
-    ...(source === undefined || team !== undefined ? {} : { source }),
-  });
+  // `memberAdds` decided it; names clash only with what they see in Clients, as on their form.
+  const { view: _view, ...unguarded } = writer;
+  const { row: stored, created } = yield* records.create(
+    lead.orgId,
+    prospectFor === undefined ? writer : { ...unguarded, namesSeenBy: prospectFor },
+    {
+      list,
+      originKey,
+      title: row.title,
+      owner,
+      ...(partyId === undefined ? {} : { partyId }),
+      ...(inProject === undefined ? {} : { projectId: inProject }),
+      ...(row.repo === undefined ? {} : { repo: row.repo }),
+      // Private only when asked, or a money goal; never for what the turn happened to read.
+      ...(row.sensitive === undefined && !(row.measure !== undefined && isMoneyMeasure(row.measure))
+        ? {}
+        : { sensitive: true }),
+      ...(Object.keys(fields).length === 0 ? {} : { fields }),
+      ...(row.state === undefined ? {} : { state: row.state }),
+      ...(waitingOn === undefined ? {} : { waitingOn }),
+      ...due,
+      ...(closedAt === undefined ? {} : { closedAt }),
+      ...money,
+      ...spine.at,
+      ...(row.notes === undefined ? {} : { notes: row.notes }),
+      ...categoryOf(list, row),
+      ...(row.side === undefined ? {} : { side: row.side }),
+      // What the owner asked for is confirmed; what a lead inferred waits for the owner. Only
+      // the owner confirms in Work, so a teammate's task keeps the default.
+      ...(team === undefined
+        ? { confirmed: row.suggested !== true && writer.askedBy !== null }
+        : {}),
+      // Where it was first asked stays the owner's to know.
+      ...(source === undefined || team !== undefined ? {} : { source }),
+    },
+  );
+  // A retry finds what the first call stored, answered only while they may still see it.
+  if (
+    prospectFor !== undefined &&
+    !(yield* crmVisible(lead.orgId, prospectFor, [stored.recordId])).has(stored.recordId)
+  )
+    return yield* notFound(row.title);
   if (created) notices.push(...movedNotices(undefined, stored));
   const past =
     stored.category === "meeting" &&

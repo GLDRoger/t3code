@@ -127,12 +127,35 @@ export const personSeesAs = (sql: SqlClient.SqlClient, personId: KinPersonId, al
     AND r.record_id = ${sql(alias)}.record_id AND ${personSees(sql, personId)})`;
 
 /**
+ * `r` is money: an entry of one of the company's lists (quotes, invoices, receipts and the rest),
+ * or a doc that is a quote or was made from such an entry.
+ */
+const moneyKind = (sql: SqlClient.SqlClient) =>
+  sql`(r.register_id NOT IN ${sql.in(NOT_LISTS.filter((one) => one !== "bank_transactions"))}
+    OR (r.register_id = 'docs' AND (r.category = 'quote' OR EXISTS (SELECT 1
+      FROM kin_doc_versions mv
+      JOIN kin_doc_jobs mj ON mj.org_id = mv.org_id AND mj.worker_id = mv.worker_id
+      JOIN kin_records me ON me.org_id = mj.org_id AND me.record_id = mj.entry_record_id
+      WHERE mv.org_id = r.org_id AND mv.record_id = r.record_id
+        AND me.register_id NOT IN ${sql.in(NOT_LISTS)}))))`;
+
+/**
+ * What Clients shows this person of `r`'s money: all of it with the Money switch, none without,
+ * whichever project they lead. Money's own screens keep `personSees`.
+ */
+export const clientMoneySeen = (
+  sql: SqlClient.SqlClient,
+  personId: KinPersonId | Statement.Fragment,
+) => sql`(NOT ${moneyKind(sql)} OR ${placeOn(sql, personId, "sees_money")})`;
+
+/**
  * What a member reads in Clients (rows, counts, next steps, contact, history, contacts): what
  * `personSees` shows them, less anything labelled itself or through its client or project, tasks
- * included. Tasks keeps `personSees`.
+ * included, and less money without the Money switch. Tasks keeps `personSees`.
  */
 export const crmSees = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
-  sql`(${personSees(sql, personId)} AND NOT ${keySensitive(sql)})`;
+  sql`(${personSees(sql, personId)} AND NOT ${keySensitive(sql)}
+    AND ${clientMoneySeen(sql, personId)})`;
 
 /** `crmSees` for every one of a viewer's people; the owner level reads everything. */
 export const crmSeenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
