@@ -711,6 +711,10 @@
       "types": "./src/kin/kinSocial.ts",
       "default": "./src/kin/kinSocial.ts"
     },
+    "./kin/kinPictures": {
+      "types": "./src/kin/kinPictures.ts",
+      "default": "./src/kin/kinPictures.ts"
+    },
     "./kin/kinCurrency": {
       "types": "./src/kin/kinCurrency.ts",
       "default": "./src/kin/kinCurrency.ts"

@@ -62,6 +62,7 @@ import * as DevFakeMail from "./connections/DevFakeMail.ts";
 import * as DevClock from "./DevClock.ts";
 import * as McpGateway from "./connections/McpGateway.ts";
 import * as DevFakeSocial from "./social/DevFakeSocial.ts";
+import * as DevFakeImages from "./pictures/DevFakeImages.ts";
 
 const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
   Layer.effect(
@@ -202,6 +203,12 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           DevFakeSocial.layer.pipe(
             Layer.provide(ConnectionSecrets.layer),
             Layer.provideMerge(core),
+          ),
+        // Pictures read the secret store, chats for the 80% notice, and the document store.
+        (withSocial) =>
+          DevFakeImages.layer.pipe(
+            Layer.provide(ConnectionSecrets.layer),
+            Layer.provideMerge(withSocial),
           ),
       ),
     ),

@@ -33,6 +33,7 @@ import type { KinGitHubLogin } from "./connections/GitHubLogin.ts";
 import type { KinGitHubApp } from "./github/KinGitHubApp.ts";
 import type { KinAgentSessionPolicy } from "./lead/sessionPolicy.ts";
 import type { KinSocial } from "./social/SocialService.ts";
+import type { KinPictures } from "./pictures/KinPictures.ts";
 import type { KinDevClock } from "./DevClock.ts";
 
 export type Services =
@@ -67,7 +68,8 @@ export type Services =
   | KinGitHubLogin
   | KinGitHubApp
   | KinAgentSessionPolicy
-  | KinSocial;
+  | KinSocial
+  | KinPictures;
 
 export class KinServer extends Context.Service<
   KinServer,
