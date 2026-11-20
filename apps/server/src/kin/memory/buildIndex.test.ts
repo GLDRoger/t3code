@@ -43,6 +43,8 @@ it("matches the bounded index golden, independently of input order, and fades on
     item("objective", { kind: "objective" }),
     item("commitment", { kind: "commitment", due: "2026-11-07" }),
     item("overdue", { review_by: "2026-11-07" }),
+    item("cancelled-review", { status: "cancelled", review_by: "2026-11-07" }),
+    item("invalid-review", { invalid_at: "2026-11-07", review_by: "2026-11-07" }),
     item("duplicate"),
     item("duplicate", { path: "claims/moved.md", invalid_at: "2026-11-07" }),
     item("misleading", { misleading: true, review_by: "2026-11-07" }),

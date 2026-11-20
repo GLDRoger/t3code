@@ -444,7 +444,7 @@ it.live(
         assert.isFalse(toolRead.isError);
         assert.include(JSON.stringify(toolRead), "a-item");
         const opened = yield* service.read(scope, { id: KinMemoryItemId.make("a-item") });
-        assert.isTrue("head" in opened && opened.reviewOverdue);
+        assert.isTrue("head" in opened && !opened.reviewOverdue);
         assert.isTrue("head" in opened && opened.misleading);
         assert.lengthOf(
           yield* sql`SELECT 1 FROM kin_memory_reads WHERE org_id = ${orgId} AND item_id = 'a-item'`,

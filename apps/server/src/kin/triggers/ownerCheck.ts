@@ -23,7 +23,7 @@ import { stringify } from "yaml";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryWriter from "../memory/MemoryWriter.ts";
-import { memoryDateMillis } from "../memory/frontMatter.ts";
+import { memoryDateMillis, openBy } from "../memory/frontMatter.ts";
 import * as Chat from "../chat/KinChatService.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as Hub from "../chat/KinChatHub.ts";
@@ -63,13 +63,7 @@ export function pickOwnerCheckItems(
   now: number,
 ): ReadonlyArray<Selection> {
   return items
-    .filter(
-      (item) =>
-        item.orgId === orgId &&
-        !item.duplicate &&
-        item.invalid_at === null &&
-        item.superseded_by === null,
-    )
+    .filter((item) => item.orgId === orgId && !item.duplicate && openBy(item, now))
     .map((item) => {
       const review = memoryDateMillis(item.review_by);
       const rank =

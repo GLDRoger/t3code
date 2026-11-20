@@ -243,7 +243,10 @@ it.live.each([
           { query: { kind: "deferral" }, ids: ["def-001"] },
 
           { query: { dueBefore: "2026-11-14", dueAfter: "2026-11-12" }, ids: ["def-001"] },
-          { query: { reviewOverdue: true, kind: "commitment" }, ids: ["com-001"] },
+          // com-001 is invalid: not open, and past its review date it needs no review.
+          { query: { status: "open" }, ids: ["def-001"] },
+          { query: { reviewOverdue: true, kind: "commitment" }, ids: [] },
+          { query: { reviewOverdue: false, kind: "commitment" }, ids: ["com-001"] },
           { query: { excludeInvalid: true }, ids: ["def-001"] },
           { query: {}, ids: ["com-001", "def-001"] },
         ];

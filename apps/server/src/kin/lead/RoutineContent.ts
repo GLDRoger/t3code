@@ -27,7 +27,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as Chat from "../chat/KinChatService.ts";
-import { memoryDateMillis } from "../memory/frontMatter.ts";
+import { memoryDateMillis, openBy, reviewOverdueBy } from "../memory/frontMatter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
@@ -201,9 +201,7 @@ const make = Effect.gen(function* () {
     const all = (yield* memory.query(orgId, {}, { lead: event.agentId })).filter(
       (item) => item.orgId === orgId && !item.duplicate,
     );
-    const live = all.filter(
-      (item) => item.invalid_at === null && item.superseded_by === null && item.status === "open",
-    );
+    const live = all.filter((item) => openBy(item, now));
     const due = (item: MemoryItemHead) => memoryDateMillis(item.due);
     const byDue = (a: MemoryItemHead, b: MemoryItemHead) =>
       due(a) - due(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -289,7 +287,7 @@ const make = Effect.gen(function* () {
           ? Option.none()
           : yield* reader.read(orgId, owner.login).pipe(Effect.timeoutOption(GITHUB_BUDGET));
       const pastReview = live
-        .filter((item) => memoryDateMillis(item.review_by) < now)
+        .filter((item) => reviewOverdueBy(item, now))
         .toSorted(
           (a, b) =>
             memoryDateMillis(a.review_by) - memoryDateMillis(b.review_by) ||

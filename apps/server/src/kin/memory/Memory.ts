@@ -45,6 +45,8 @@ import { memoryIdentity } from "./memoryIdentity.ts";
 import {
   MemoryItemError,
   memoryDateMillis as dateMillis,
+  openBy,
+  reviewOverdueBy,
   parseFrontMatter,
 } from "./frontMatter.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
@@ -1088,11 +1090,12 @@ const make = Effect.gen(function* () {
       .filter(
         (item) =>
           (q.kind === undefined || item.kind === q.kind) &&
-          (q.status === undefined || item.status === q.status) &&
+          (q.status === undefined ||
+            (q.status === "open" ? openBy(item, now) : item.status === q.status)) &&
           (!q.excludeInvalid || item.invalid_at === null) &&
           (q.dueBefore === undefined || dateMillis(item.due) <= dateMillis(q.dueBefore)) &&
           (q.dueAfter === undefined || dateMillis(item.due) >= dateMillis(q.dueAfter)) &&
-          (q.reviewOverdue === undefined || dateMillis(item.review_by) < now === q.reviewOverdue) &&
+          (q.reviewOverdue === undefined || reviewOverdueBy(item, now) === q.reviewOverdue) &&
           (q.saidBy === undefined || item.said_by === q.saidBy) &&
           (q.linksTo === undefined || item.links.includes(q.linksTo)),
       )
