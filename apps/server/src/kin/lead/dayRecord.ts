@@ -71,6 +71,16 @@ export const dayRecordEmpty = (day: DayRecord) =>
     day.mail.length ===
   0;
 
+/** What the evening facts say of a day with nothing in Kin's records. */
+export const QUIET_DAY =
+  "Nothing was finished, changed, noted, made, paid or mailed in Kin's records today.";
+
+/** The day as the evening facts carry it: its lists that have lines, or `QUIET_DAY`. */
+export const shownDay = (day: DayRecord) =>
+  dayRecordEmpty(day)
+    ? QUIET_DAY
+    : Object.fromEntries(Object.entries(day).filter(([, lines]) => lines.length > 0));
+
 export const dayRecord = Effect.fn("KinDayRecord.read")(function* (input: {
   readonly orgId: KinOrgId;
   readonly from: number;

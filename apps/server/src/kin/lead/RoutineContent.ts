@@ -33,7 +33,7 @@ import * as MemoryCache from "../memory/MemoryCache.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { deferralWidgetId } from "../triggers/deferrals.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
-import { dayRecord, dayRecordEmpty } from "./dayRecord.ts";
+import { dayRecord, dayRecordEmpty, shownDay } from "./dayRecord.ts";
 import {
   renderRoutine,
   routineEmpty,
@@ -565,9 +565,8 @@ const make = Effect.gen(function* () {
         until: gathered.dayEnd,
         viewer,
       }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-      return routineEmpty(gathered.facts) && dayRecordEmpty(today)
-        ? null
-        : yield* encodeFacts(gathered.facts);
+      if (routineEmpty(gathered.facts) && dayRecordEmpty(today)) return null;
+      return yield* encodeFacts({ ...gathered.facts, today: shownDay(today) });
     },
     (effect, orgId) =>
       effect.pipe(

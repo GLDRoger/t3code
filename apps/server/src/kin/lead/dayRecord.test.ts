@@ -7,7 +7,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
-import { dayRecord, dayRecordEmpty } from "./dayRecord.ts";
+import { dayRecord, QUIET_DAY, shownDay } from "./dayRecord.ts";
 
 // Invented company: Ambermill, owner Rhea, teammate Zoya, agent Finance.
 const orgId = KinOrgId.make("org");
@@ -164,8 +164,9 @@ it.effect(
       assert.deepStrictEqual(before.changed, [
         "W-2 Changed yesterday, company time: now in progress (Rhea)",
       ]);
-      assert.isTrue(
-        dayRecordEmpty(
+      // A day with nothing in the records says so in one line; one with something, never.
+      assert.strictEqual(
+        shownDay(
           yield* dayRecord({
             orgId,
             from: until,
@@ -173,7 +174,14 @@ it.effect(
             viewer: KIN_OWNER_LEVEL,
           }),
         ),
+        QUIET_DAY,
       );
+      assert.deepStrictEqual(shownDay({ ...owner, changed: [], mail: [] }), {
+        finished: owner.finished,
+        notes: owner.notes,
+        made: owner.made,
+        money: owner.money,
+      });
     }).pipe(Effect.provide(layer)),
 );
 
