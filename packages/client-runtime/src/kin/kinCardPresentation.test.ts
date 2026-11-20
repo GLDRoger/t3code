@@ -353,6 +353,24 @@ describe("choice cards", () => {
       { id: "option-2", label: "Wait", action: null },
     ]);
     expect(acts.detail).toBe("Dev says it is live.");
+    expect(open.askedBy).toBeNull();
+    // Asked for someone else, who asks comes first; the line `detail` repeats is shown once.
+    const askedFor = (detail: string) =>
+      choice({
+        state: { ...choiceState(), askedBy: "Zoya Sheikh asks, through Chief of staff.", detail },
+      });
+    const forZoya = askedFor(
+      "Zoya Sheikh asks, through Chief of staff.\n\nThe pilot clinics wait on it.",
+    );
+    expect([forZoya.askedBy, forZoya.question, forZoya.detail]).toEqual([
+      "Zoya Sheikh asks, through Chief of staff.",
+      "Ship today?",
+      "The pilot clinics wait on it.",
+    ]);
+    expect(askedFor("Zoya Sheikh asks, through Chief of staff.").detail).toBeNull();
+    expect(kinChoiceAccessibilityLabel(forZoya, null)).toMatch(
+      /^Question\. Zoya Sheikh asks, through Chief of staff\. Ship today\?/,
+    );
     expect(kinChoicePhase(open, posted + 60_000)).toBe("open");
     expect(kinChoicePhase(open, posted + 24 * 60 * 60 * 1000)).toBe("expired");
     expect(kinChoicePhase(choice({ closedAt: "2026-11-08T10:00:00.000Z" }), posted)).toBe(

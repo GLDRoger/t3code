@@ -29,6 +29,8 @@ export interface KinChoiceCardView {
   readonly orgId: KinWidget["orgId"];
   readonly widgetId: KinWidget["widgetId"];
   readonly revision: number;
+  /** Asked for someone else: who asks, and through which agent, shown above the question. */
+  readonly askedBy: string | null;
   readonly question: string;
   readonly detail: string | null;
   readonly options: ReadonlyArray<{
@@ -330,7 +332,7 @@ export function kinChoiceCardView(
   }));
   // The server repeats each option's action line in `detail` for older clients; shown here once.
   const note = kinChoiceActionNote(card.options);
-  const own =
+  const noted =
     card.detail === null || note === ""
       ? card.detail
       : card.detail === note
@@ -338,6 +340,16 @@ export function kinChoiceCardView(
         : card.detail.endsWith(`\n\n${note}`)
           ? card.detail.slice(0, -note.length - 2)
           : card.detail;
+  // `detail` opens with the asker's line too, for older clients; shown here once, first.
+  const by = card.askedBy;
+  const own =
+    noted === null || by === undefined
+      ? noted
+      : noted === by
+        ? null
+        : noted.startsWith(`${by}\n`)
+          ? noted.slice(by.length + 1)
+          : noted;
   const chosen =
     card.answer === null
       ? undefined
@@ -354,6 +366,7 @@ export function kinChoiceCardView(
     orgId: widget.orgId,
     widgetId: widget.widgetId,
     revision: widget.revision,
+    askedBy: by === undefined ? null : line(by),
     // Answered, the title says what happened, never the question it asked.
     question:
       card.answer !== null && card.outcome !== undefined
@@ -528,6 +541,7 @@ export function kinChoiceAccessibilityLabel(
     ]);
   return kinSentences([
     view.outcome === null ? "Question" : null,
+    view.askedBy,
     view.question,
     view.detail,
     status,

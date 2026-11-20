@@ -499,6 +499,11 @@ export type KinSendCard = typeof KinSendCard.Type;
 export const KinChoiceCardState = Schema.Struct({
   question: KinTrimmedText.check(Schema.isMaxLength(240)),
   detail: Schema.NullOr(KinText.check(Schema.isMaxLength(2000))),
+  /**
+   * Asked for someone else: who asks, and through which agent, as the card's first line, above
+   * the question. `detail` opens with the same line for older clients.
+   */
+  askedBy: Schema.optionalKey(KinTrimmedText.check(Schema.isMaxLength(500))),
   // An agent's kin_ask offers at most four; Kin's own cards, such as a statement's currency, up to eight.
   options: Schema.Array(KinChoiceOption).check(Schema.isMinLength(2), Schema.isMaxLength(8)),
   /** A picture of what is asked about, such as a new logo: a file in this card's chat. */

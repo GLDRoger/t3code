@@ -423,7 +423,7 @@ export const askedForCard = Effect.fn("KinQuestions.askedForCard")(function* (
   return rows.length > 0;
 });
 
-/** The card's first line, the server's own: who asks, and through which agent. */
+/** The card's first line, the server's own: who asks, and through which agent (`askedBy`). */
 export const askedBy = (askerName: string | null, agentName: string) =>
   askerName === null ? `${agentName} asks.` : `${askerName} asks, through ${agentName}.`;
 
@@ -1052,6 +1052,7 @@ export const settleDue = Effect.fn("KinQuestions.settleDue")(function* (
 const HeldCardJson = Schema.fromJsonString(
   Schema.Struct({
     detail: Schema.String,
+    askedBy: Schema.optional(Schema.String),
     options: Schema.Array(
       Schema.Struct({
         label: Schema.String,
@@ -1134,6 +1135,7 @@ const postHeldCard = Effect.fn("KinQuestions.postHeldCard")(function* (
     {
       question: row.question,
       detail: card.detail,
+      ...(card.askedBy === undefined ? {} : { askedBy: card.askedBy }),
       options: card.options,
       untilAnswered: true,
       chatId: row.chatId,
@@ -1427,13 +1429,18 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
   }
   const clock = yield* personClock(orgId, row.personId);
   const said = `${row.agentName} asked ${dayWord(row.askedAt, now, clock.zone)}. Nothing happens until you answer.`;
+  // Asked for someone, it says who still: the server's line, as on the first card.
+  const by =
+    row.forChatId === null
+      ? undefined
+      : askedBy(
+          row.forPersonId === null ? null : yield* personName(orgId, row.forPersonId),
+          row.agentName,
+        );
   const asked = {
     question: oneLine(`${STILL_OPEN}${row.question}`, 240),
-    // Asked for someone, it says who still: the server's line, as on the first card.
-    detail:
-      row.forChatId === null
-        ? said
-        : `${askedBy(row.forPersonId === null ? null : yield* personName(orgId, row.forPersonId), row.agentName)}\n${said}`,
+    detail: by === undefined ? said : `${by}\n${said}`,
+    ...(by === undefined ? {} : { askedBy: by }),
     options: offered.map((option) => ({ label: option.label })),
     actions: offered.map((option) => option.drawn),
     untilAnswered: true as const,

@@ -60,6 +60,9 @@ const KinGroupQuestion = memo(function KinGroupQuestion(props: {
   const undone = kinChoiceUndoneLine(choice, props.viewerPersonId, new Date(nowMs));
   return (
     <>
+      {expanded && choice.askedBy !== null ? (
+        <p className="text-xs text-muted-foreground">{choice.askedBy}</p>
+      ) : null}
       <button
         type="button"
         aria-expanded={expanded}

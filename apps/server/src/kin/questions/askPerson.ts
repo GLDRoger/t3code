@@ -268,12 +268,14 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
       const named = input.by === undefined ? undefined : namedDue(input.by, now, clock.zone);
       if (named !== undefined && "refused" in named) return yield* refuse(named.refused);
       const dueAt = named?.at ?? defaultDue(now, clock.zone, clock.days);
-      const detail = `${askedBy(askerName, self.name)}${
+      const by = askedBy(askerName, self.name);
+      const detail = `${by}${
         input.detail === undefined || input.detail.trim() === "" ? "" : `\n\n${input.detail}`
       }`;
       const card = {
         question: flat(input.question),
         detail,
+        askedBy: by,
         options: input.options.map((one) => ({
           label: one.label,
           ...(one.kind === undefined ? {} : { kind: one.kind }),
@@ -283,7 +285,7 @@ export const askPerson = Effect.fn("KinQuestions.askPerson")(function* (
         optionId,
         label,
       }));
-      const heldCard = yield* encodeHeldCard({ detail, options: card.options });
+      const heldCard = yield* encodeHeldCard({ detail, askedBy: by, options: card.options });
       const store = (widgetId: string | null) =>
         sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id, kind,
             widget_id, question, options_json, default_label, safe, about, intent, asked_at, due_at,

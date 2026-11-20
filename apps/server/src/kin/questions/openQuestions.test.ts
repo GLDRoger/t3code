@@ -1165,6 +1165,7 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
       assert.include(card.state, {
         question: "Does the shoot move to Friday?",
         detail: "Rhea Rao asks, through Chief of staff.",
+        askedBy: "Rhea Rao asks, through Chief of staff.",
       });
       // The same call again is a retry: the same question, no second card.
       assert.deepInclude(yield* askFor("chief", rhea, { to: "Dev" }), {
@@ -1226,6 +1227,7 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
       });
       assert.include((yield* widgetOf(rheaCard.widgetId!)).state, {
         detail: "Dev Malhotra asks, through Chief of staff.",
+        askedBy: "Dev Malhotra asks, through Chief of staff.",
       });
       const toArjun = yield* askFor("chief", dev, { to: "Arjun", intent: "call sheet" });
       assert.strictEqual(toArjun.state, "posted");
@@ -1689,8 +1691,10 @@ it.effect("a question asked for someone away waits for them, then is raised once
       const { sql, orgId, chatOf, chiefChat, askFor, wakeOn } = team;
       const devChat = yield* chiefChat("dev");
       const cardsFor = (chatId: KinChatId) =>
-        sql<{ question: string; detail: string }>`SELECT json_extract(w.state_json, '$.question')
-            AS question, json_extract(w.state_json, '$.detail') AS detail
+        sql<{ askedBy: string | null; question: string; detail: string }>`SELECT
+            json_extract(w.state_json, '$.askedBy') AS "askedBy",
+            json_extract(w.state_json, '$.question') AS question,
+            json_extract(w.state_json, '$.detail') AS detail
           FROM kin_widgets w WHERE w.chat_id = ${chatId} AND w.type = 'choice' ORDER BY w.rowid`;
       // Back on Thursday the 19th, on the day stored.
       yield* sql`UPDATE kin_people SET away_until = '2026-11-19' WHERE person_id = 'dev'`;
@@ -1720,6 +1724,7 @@ it.effect("a question asked for someone away waits for them, then is raised once
       const cards = yield* cardsFor(devChat);
       assert.deepStrictEqual(cards, [
         {
+          askedBy: "Rhea Rao asks, through Chief of staff.",
           question: "Does the shoot move to Friday?",
           detail: "Rhea Rao asks, through Chief of staff.",
         },
@@ -1738,6 +1743,7 @@ it.effect("a question asked for someone away waits for them, then is raised once
       const raised = yield* cardsFor(devChat);
       assert.lengthOf(raised, 2);
       assert.strictEqual(raised[1]!.question, "Still open: Does the shoot move to Friday?");
+      assert.strictEqual(raised[1]!.askedBy, "Rhea Rao asks, through Chief of staff.");
       assert.match(
         raised[1]!.detail,
         /^Rhea Rao asks, through Chief of staff\.\nChief of staff asked /,
