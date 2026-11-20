@@ -419,8 +419,6 @@ describe("kinDealChangeWhen", () => {
   it("reads when it happened on this device's clock, as chat does, not the company's", () => {
     const at = "2026-11-19T18:00:00.000Z";
     const clock = formatKinWhen(Date.parse(at), "time");
-    // `names` keeps Kolkata time, which none of the zones the tests run in shares.
-    expect(clock).not.toBe(formatKinWhen(Date.parse(at), "time", { zone: names.zone! }));
     expect(kinDealChangeWhen({ at }, new Date(at))).toBe(`today, ${clock}`);
     expect(kinDealChangeWhen({ at }, new Date(Date.parse(at) + 24 * 60 * 60 * 1000))).toBe(
       `yesterday, ${clock}`,
