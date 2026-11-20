@@ -77,7 +77,7 @@ export const ASK_REFUSAL = {
   unwatched: (repo: string) =>
     `${repo} isn't a repo Kin watches. The owner adds it in Settings, Connections. ${NOTHING}`,
   noLogin: (name: string) =>
-    `Kin has no GitHub username on file for ${name}, so it reviews only public repos for them, named by repo. ${NOTHING}`,
+    `Kin has no GitHub username on file for ${name}, so it reviews only public repos for them, named by repo; they can add theirs under You → GitHub username, or an owner on their page. ${NOTHING}`,
 } as const;
 export const PULL_REFUSAL = {
   missing: `Kin can't find this pull request. ${NOTHING}`,

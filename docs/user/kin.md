@@ -462,10 +462,10 @@ settings on GitHub. The section also lists the last few things done as you.
 #### When things happen on GitHub
 
 Kin hears at once about repos its GitHub App is on, and about your other watched repos within a
-minute, from its own checks with your login. Kin sets the App's webhook up itself when your Kin has
-a public address; there is nothing to set up. An App made before this needs its events ticked once on
-GitHub: **Settings → Connections → GitHub** says so and links to the page. On your repos and your
-organizations' repos, these start an agent on their own:
+minute, from its own checks with your login. When your Kin has a public address, Kin sets up the
+webhook of an App it made; it leaves one that points somewhere else alone. If **Settings →
+Connections → GitHub** lists events to tick, tick them once on GitHub; it links to the page. On your
+repos and your organizations' repos, these start an agent on their own:
 
 - **A teammate opens a pull request**, or marks a draft ready: it is reviewed and the review posted.
   On your own pull requests the review is a comment, since GitHub doesn't let you approve your own.
@@ -480,8 +480,9 @@ organizations' repos, these start an agent on their own:
 - **A review requested from you**, and **failing checks on an agent's own pull request**, which it
   fixes or explains.
 
-Only people who can write to the repo can call an agent. Anyone else's `/kin` starts nothing, and
-their pull request gets a comment review from its diff: their code never runs. An agent never reacts
+Only people GitHub lets write to the repo can call an agent or start one with the `kin` label.
+Anyone else's `/kin` starts nothing, and their pull request gets one comment review from its diff
+and nothing else: their code never runs, and that review is written knowing nothing private. An agent never reacts
 to its own posts, and a mention of you doesn't call it unless you tell it in chat to let mentions
 of you call it in a repo. Everything an agent posts on GitHub ends with its name ("_Tech lead, via
 Kin_"). It tells you once, in one line with the link; quiet hours hold that line, not the work. A
