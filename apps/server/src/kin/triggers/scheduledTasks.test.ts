@@ -220,7 +220,7 @@ const retirement = (agentId: string, at: number, retired: boolean) =>
         if (retired)
           yield* Retirement.retire(
             { orgId, agentId: agent, retiredAt: retiredAt!, now: at },
-            { closeReplaced: () => Effect.void },
+            { closeReplaced: () => Effect.void, notice: () => Effect.die("unused") },
           );
         else
           yield* Retirement.restore({ orgId, agentId: agent, retiredAt: was!.retiredAt, now: at });

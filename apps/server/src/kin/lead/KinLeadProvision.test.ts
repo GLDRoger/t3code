@@ -282,8 +282,53 @@ describe("KinLeadProvision", () => {
           "not_found",
         );
 
+        const at0 = "1970-01-01T00:00:00.000Z";
+        // The owner wrote to it and it hadn't answered yet: retiring tells him so, once.
+        const chats = yield* ChatService.KinChatService;
+        const me = { ...identity.owner, personId: ada.ownerPersonId };
+        const asked = yield* chats.send(me, {
+          chatId: growth.ownerChatId,
+          body: "Draft the launch post?",
+          clientMessageId: "before-retire",
+        });
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, dedupe_key, received_at, queued_at)
+          VALUES ('unanswered', ${growth.orgId}, ${growth.agentId}, 'chat.message', 'P0',
+            ${JSON.stringify({ chatId: growth.ownerChatId, messageId: asked.messageId })},
+            'unanswered', 0, 0)`;
         const retired = yield* Provision.retire({ ...by, agentId: growth.agentId });
         assert.strictEqual(retired._tag, "retired");
+        assert.deepStrictEqual(
+          yield* sql`SELECT body FROM kin_messages WHERE chat_id = ${growth.ownerChatId}
+            AND author_kind = 'system'`,
+          [{ body: "Growth has been retired, so it won't see this or reply." }],
+        );
+        // Writing to it now is refused when sent, saying why, rather than met with silence.
+        assert.deepInclude(
+          yield* chats
+            .send(me, {
+              chatId: growth.ownerChatId,
+              body: "Still there?",
+              clientMessageId: "after-retire",
+            })
+            .pipe(Effect.flip),
+          { reason: "not_allowed", message: "Growth has been retired, so this wasn't sent." },
+        );
+        // So is writing to a live agent no turn answers.
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+          VALUES ('helper', ${growth.orgId}, 'Helper', 'specialist', ${ada.ownerPersonId}, ${at0})`;
+        const helper = yield* chats.createDirect(me, {
+          orgId: growth.orgId,
+          agentId: KinAgentId.make("helper"),
+        });
+        assert.deepInclude(
+          yield* chats
+            .send(me, { chatId: helper.chatId, body: "Hello?", clientMessageId: "to-helper" })
+            .pipe(Effect.flip),
+          {
+            reason: "not_allowed",
+            message: "Helper doesn't answer messages here, so this wasn't sent.",
+          },
+        );
         const at = "1970-01-01T00:01:00.000Z";
         assert.deepStrictEqual(retired.profile.retired, { at, byPersonId: ada.ownerPersonId });
         assert.deepStrictEqual(retired.lead, {

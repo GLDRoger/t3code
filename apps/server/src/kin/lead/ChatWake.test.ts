@@ -689,24 +689,29 @@ describe("ChatWake", () => {
           "chat-message:second:lead-a",
           "chat-message:owners:lead-a",
         ]);
-        // Told once, however many more arrive.
-        assert.deepStrictEqual(yield* notices, [
-          {
-            body: "Lead has answered as much as it can for you today and didn't see your last message. Send it again later.",
-          },
-        ]);
+        // Told once, however many more arrive that hour.
+        const capped = {
+          body: "Lead has answered as much as it can for you today and didn't see your last message. Send it again later.",
+        };
+        assert.deepStrictEqual(yield* notices, [capped]);
+        // An hour on and still capped, the next one hears it again rather than silence.
+        yield* TestClock.adjust("61 minutes");
+        yield* say("an-hour-on", 6);
+        yield* say("and-another", 7);
+        yield* settle;
+        assert.deepStrictEqual(yield* notices, [capped, capped]);
 
         // The turns age out a day after they were asked for.
         yield* TestClock.adjust("25 hours");
-        yield* say("next-day", 6);
+        yield* say("next-day", 8);
         yield* settle;
         assert.include(keys(attempts), "chat-message:next-day:lead-a");
 
         yield* restrict("limit-2");
-        yield* say("after", 7);
+        yield* say("after", 9);
         yield* settle;
         assert.notInclude(keys(attempts), "chat-message:after:lead-a");
-        assert.lengthOf(yield* notices, 1);
+        assert.lengthOf(yield* notices, 2);
       }).pipe(
         Effect.provide(
           Layer.merge(

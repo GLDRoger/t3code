@@ -732,6 +732,31 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toPersistenceSqlError("KinChatService.pairClosed")),
   );
+  /** A person's direct chat with an agent that can answer: retired, or no lead to wake, refuses. */
+  const answerable = Effect.fn("KinChatService.answerable")(function* (
+    person: PersonIdentity,
+    chatId: KinChatId,
+  ) {
+    const [agent] = yield* sql<{ name: string; retired: number; lead: number }>`
+        SELECT a.display_name AS name, a.retired_at IS NOT NULL AS retired,
+          a.role = 'lead' AS lead
+        FROM kin_chats c
+        JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+          AND m.principal_kind = 'agent' AND m.left_at IS NULL
+        JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
+        WHERE c.org_id = ${person.orgId} AND c.chat_id = ${chatId} AND c.kind = 'direct'
+        ORDER BY a.agent_id LIMIT 1`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinChatService.answerable")),
+    );
+    if (agent === undefined || (agent.retired === 0 && agent.lead === 1)) return;
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message:
+        agent.retired === 1
+          ? `${agent.name} has been retired, so this wasn't sent.`
+          : `${agent.name} doesn't answer messages here, so this wasn't sent.`,
+    });
+  });
   const canWrite = Effect.fn("KinChatService.canWrite")(function* (
     identity: Identity,
     member: KinChatMember,
@@ -1417,6 +1442,7 @@ const make = Effect.gen(function* () {
     const request = yield* decodeSend(input).pipe(Effect.mapError(() => invalidState));
     const member = yield* memberFor(identity, request.chatId);
     yield* canWrite(identity, member);
+    if (identity._tag === "person") yield* answerable(identity, request.chatId);
     // A lead posts text; only a person's message can be files alone, or point at a doc.
     if (identity._tag === "agent" && request.body.trim().length === 0) return yield* invalidState;
     if (identity._tag === "agent" && (request.refs?.length ?? 0) > 0) return yield* invalidState;
