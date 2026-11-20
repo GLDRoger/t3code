@@ -2794,7 +2794,7 @@ it.effect("a teammate's change numbers move only with what they can see, on ever
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("a teammate's reads find the projects they lead by its own index, with no statistics", () =>
+it.effect("a teammate's Tasks and Search find the projects they lead by its own index", () =>
   Effect.gen(function* () {
     yield* seed;
     const sql = yield* SqlClient.SqlClient;
@@ -2802,14 +2802,17 @@ it.effect("a teammate's reads find the projects they lead by its own index, with
     assert.lengthOf(yield* sql`SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat1'`, 0);
     yield* OwnerWork.create([mate], { orgId, title: "Invented: theirs", clientRequestId: "t" });
     const asked: Array<readonly [string, ReadonlyArray<unknown>]> = [];
-    yield* OwnerWork.list([mate], { orgId, open: true }).pipe(
-      Effect.provideService(Statement.CurrentTransformer, (statement) => {
-        const [text, params] = statement.compile();
-        if (text.includes("lp.register_id = 'projects'")) asked.push([text, params]);
-        return Effect.succeed(statement);
-      }),
-    );
-    assert.isNotEmpty(asked);
+    const watched = Effect.provideService(Statement.CurrentTransformer, (statement) => {
+      const [text, params] = statement.compile();
+      if (text.includes("lp.register_id = 'projects'")) asked.push([text, params]);
+      return Effect.succeed(statement);
+    });
+    // Tasks' count and page, then Search: each reads through the same visibility.
+    yield* OwnerWork.list([mate], { orgId, open: true }).pipe(watched);
+    const read = asked.length;
+    assert.isAtLeast(read, 2);
+    yield* OwnerDocs.search([mate], { orgId, text: "theirs" }).pipe(watched);
+    assert.isAbove(asked.length, read);
     for (const [text, params] of asked) {
       const plan = yield* sql.unsafe<{ detail: string }>(`EXPLAIN QUERY PLAN ${text}`, params);
       const led = plan.map((row) => row.detail).filter((detail) => /\blp\b/u.test(detail));
