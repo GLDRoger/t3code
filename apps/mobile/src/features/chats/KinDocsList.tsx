@@ -57,7 +57,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
-import { kinTabBar, useKinTab } from "./components/KinTab";
+import { kinTabBar, useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinWorkLoading, KinWorkPrivateMark, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 import {
@@ -607,7 +607,9 @@ export function KinDocsList(
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
           // The search field, or the dock, floats over the foot of the list.
-          contentContainerStyle={{ paddingBottom: tab === null ? 96 : 32 + tab.bottomClearance }}
+          contentContainerStyle={{
+            paddingBottom: tab === null ? 96 : kinTabFoot(tab.bottomClearance),
+          }}
           data={items}
           keyExtractor={(item) => item.id}
           extraData={[

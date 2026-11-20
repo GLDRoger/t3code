@@ -41,6 +41,7 @@ import {
   KinOutlookSection,
   KinQuotesSection,
 } from "./KinMoneyAnswers";
+import { KinMoneySuggested } from "./KinMoneySuggested";
 import { KinSubscriptionsSection } from "./KinSubscriptions";
 import { KinNewReceiptDialog, KinReceiptsSection } from "./KinReceipts";
 import { KinAttentionSection } from "./KinAttention";
@@ -450,6 +451,16 @@ function MoneyScreen(props: MoneyProps) {
             )}
           </KinWorkSection>
         </section>
+        {view.suggested.length === 0 ? null : (
+          <KinMoneySuggested
+            {...props}
+            rows={view.suggested}
+            more={view.suggestedMore}
+            onOpenKey={props.onOpenKey}
+            onOpenList={props.onOpenList}
+            onChanged={refresh}
+          />
+        )}
         <KinOutlookSection {...props} seq={seq} rates={rates} onOpenKey={props.onOpenKey} />
         <KinCashSection {...props} seq={seq} rates={rates} />
         <div className="flex flex-col gap-1">

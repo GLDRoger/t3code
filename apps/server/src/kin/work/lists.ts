@@ -71,7 +71,8 @@ export const LISTS: Record<ListName, List> = {
     noun: "contact",
     states: ["open", "dropped"],
     categories: [],
-    fields: ["role", "email", "phone"],
+    // `emails` and `phones` hold every one, main first, only beside a second (`contactDetails.ts`).
+    fields: ["role", "email", "phone", "emails", "phones"],
   },
   projects: {
     name: "Projects",

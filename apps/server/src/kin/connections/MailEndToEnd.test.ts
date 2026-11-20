@@ -909,6 +909,102 @@ describe("Kin mail end to end, on a fake mailbox", () => {
       ),
   );
 
+  // The chat card's Confirm and the Tasks row's "Approve and send" are the same tap.
+  it.effect(
+    "an owner-level Confirm keeps the suggested invoice it mails, as the card showed it",
+    () =>
+      setUp((fake, cards) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+            VALUES (${orgId}, 'work', 'Work', 'W', 0)`;
+          yield* sql`UPDATE kin_registers SET definition_json = ${JSON.stringify(
+            presetDefinition("invoices", "INR"),
+          )} WHERE org_id = ${orgId} AND register_id = 'invoices'`;
+          yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+              owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json, confirmed)
+            VALUES (${orgId}, 'rec_w1', 'work', 'W-1', 'Invented follow-up', 'person', ${owner},
+              'person', 'w1', 0, 0, '{}', 0)`;
+          const flag = (recordId: string) =>
+            sql<{ confirmed: number; state: string }>`SELECT confirmed, state FROM kin_records
+              WHERE record_id = ${recordId}`.pipe(Effect.map(([row]) => row!));
+          const guess = sql`UPDATE kin_records SET confirmed = 0, state = 'open'
+            WHERE record_id = 'rec_inv'`;
+          const keptBy = sql<{ actor: string | null }>`SELECT actor_id AS actor
+            FROM kin_record_changes WHERE record_id = 'rec_inv' AND kind = 'updated'
+              AND fields_json LIKE '%confirmed%' ORDER BY seq DESC LIMIT 1`.pipe(
+            Effect.map(([row]) => row?.actor),
+          );
+          yield* connect(fake, "google", ACCOUNTS);
+          let n = 0;
+          // The owner's own agent drafts it, asked by the co-owner in her chat.
+          const draftOf = (attached: string) =>
+            Effect.gen(function* () {
+              n += 1;
+              yield* wake({ person: coOwner });
+              yield* callTool(ACCOUNTS, "mail_send", {
+                to: ["ravi@lumen.example"],
+                subject: `November invoice ${n}`,
+                body: "Hi Ravi,\n\nThe invoice is attached.\n\nArjun",
+                attachments: [attached],
+              });
+              return cards.at(-1)!;
+            });
+          const drafted = draftOf("INV-1");
+          const sent = { state: "sent" as const, reason: null };
+
+          // Her Confirm sends it and keeps it, as hers; an open invoice stays open, unnumbered.
+          yield* guess;
+          const card = yield* drafted;
+          assert.deepStrictEqual(yield* tap(card.widgetId, coOwner), sent);
+          assert.deepStrictEqual(yield* flag("rec_inv"), { confirmed: 1, state: "open" });
+          assert.strictEqual(yield* keptBy, coOwner);
+
+          // A refused send keeps nothing.
+          yield* guess;
+          const refused = yield* drafted;
+          fake.failWith(ACCOUNTS, 400);
+          yield* tap(refused.widgetId, coOwner);
+          fake.failWith(ACCOUNTS, null);
+          assert.strictEqual((yield* flag("rec_inv")).confirmed, 0);
+
+          // Changed since the card was drawn: the mail goes, the entry stays a guess.
+          yield* guess;
+          const stale = yield* drafted;
+          yield* sql`UPDATE kin_records SET title = 'Lumen Studio: November, revised', rev = rev + 1
+            WHERE record_id = 'rec_inv'`;
+          assert.deepStrictEqual(yield* tap(stale.widgetId, coOwner), sent);
+          assert.strictEqual((yield* flag("rec_inv")).confirmed, 0);
+          // Dropped since: nothing goes, as for any void invoice, and nothing is kept.
+          yield* guess;
+          const dropped = yield* drafted;
+          yield* sql`UPDATE kin_records SET state = 'dropped' WHERE record_id = 'rec_inv'`;
+          assert.include(yield* tap(dropped.widgetId, coOwner), {
+            reason: "Invoice INV-1 is void now, so nothing was sent.",
+          });
+          assert.strictEqual((yield* flag("rec_inv")).confirmed, 0);
+
+          // Another kind of entry on the mail is left as it is.
+          yield* sql`UPDATE kin_doc_jobs SET entry_record_id = 'rec_w1' WHERE worker_id = 'job-1'`;
+          const task = yield* draftOf("W-1");
+          assert.deepStrictEqual(yield* tap(task.widgetId, coOwner), sent);
+          assert.strictEqual((yield* flag("rec_w1")).confirmed, 0);
+          yield* sql`UPDATE kin_doc_jobs SET entry_record_id = 'rec_inv' WHERE worker_id = 'job-1'`;
+
+          // Sent as the owner edited it on his stored card: kept the same way.
+          yield* guess;
+          const toEdit = yield* drafted;
+          yield* stored(toEdit);
+          const edited = yield* sendEdited(cards, toEdit, owner, {
+            to: ["ravi@lumen.example"],
+            body: "Hi Ravi,\n\nNovember's invoice is attached.\n\nArjun",
+          });
+          assert.deepStrictEqual(edited.outcomes, [sent]);
+          assert.strictEqual((yield* flag("rec_inv")).confirmed, 1);
+        }),
+      ),
+  );
+
   it.effect("a mail about the one open task its turn names shows on that task's row", () =>
     setUp((fake, cards) =>
       Effect.gen(function* () {

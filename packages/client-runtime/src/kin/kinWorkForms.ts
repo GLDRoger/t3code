@@ -1,4 +1,5 @@
 import {
+  KIN_CONTACT_DETAILS_MAX,
   KIN_DEFAULT_HOME_CURRENCY,
   KIN_GST_STATES,
   KIN_GSTIN_PATTERN,
@@ -80,6 +81,10 @@ export const KIN_WORK_FORM_COPY = {
     countryPlaceholder: "United States",
     notes: "Notes",
     notesPlaceholder: "Anything worth remembering about them",
+    contact: "Contact",
+    contactName: "Person's name",
+    contactHint: "Optional. You can add more people on its page later.",
+    contactNameMissing: "Add the person's name, or leave the contact empty.",
   },
   contact: {
     newTitle: "New contact",
@@ -91,6 +96,10 @@ export const KIN_WORK_FORM_COPY = {
     rolePlaceholder: "Head of marketing",
     email: "Email",
     phone: "Phone",
+    addEmail: "Add another email",
+    addPhone: "Add another phone",
+    removeEmail: "Remove this email",
+    removePhone: "Remove this phone",
     detailsHint: "Emails and phone numbers are always private.",
     notes: "Notes",
     notesPlaceholder: "Prefers calls after lunch",
@@ -137,6 +146,12 @@ export interface KinClientDraft {
   readonly abroad: boolean;
   readonly notes: string;
   readonly private: boolean;
+  /** Its first contact, on a new one only; all empty for none. */
+  readonly contactName: string;
+  readonly contactRole: string;
+  /** Every one typed, main first; always at least one field. */
+  readonly contactEmails: ReadonlyArray<string>;
+  readonly contactPhones: ReadonlyArray<string>;
 }
 
 /** The states a client may be in, by name. */
@@ -203,6 +218,10 @@ export const kinClientDraftOf = (
     abroad: place !== "" && state === null,
     notes: party?.notes ?? "",
     private: party?.sensitive ?? false,
+    contactName: "",
+    contactRole: "",
+    contactEmails: [""],
+    contactPhones: [""],
   };
 };
 
@@ -250,6 +269,28 @@ const tagsCheck = (text: string): string | null => {
     : null;
 };
 
+const firstContactOf = (draft: KinClientDraft): KinContactDraft | null => {
+  const contact = {
+    name: draft.contactName,
+    role: draft.contactRole,
+    emails: draft.contactEmails,
+    phones: draft.contactPhones,
+    notes: "",
+  };
+  return [contact.name, contact.role, ...contact.emails, ...contact.phones].some(
+    (typed) => typed.trim() !== "",
+  )
+    ? contact
+    : null;
+};
+const firstContactCheck = (draft: KinClientDraft): string | null => {
+  const contact = firstContactOf(draft);
+  if (contact === null) return null;
+  return contact.name.trim() === ""
+    ? KIN_WORK_FORM_COPY.party.contactNameMissing
+    : kinContactDraftCheck(contact);
+};
+
 export const kinClientDraftCheck = (draft: KinClientDraft): string | null =>
   draft.name.trim() === ""
     ? "Give them a name."
@@ -262,11 +303,19 @@ export const kinClientDraftCheck = (draft: KinClientDraft): string | null =>
         ? "That GSTIN isn't right: it has 15 letters and digits, like 27ABCDE1234F1Z5."
         : null) ??
       tooLong(draft.placeOfSupply, PLACE_MAX, "the country") ??
-      tooLong(draft.notes, NOTES_MAX, "the notes"));
+      tooLong(draft.notes, NOTES_MAX, "the notes") ??
+      firstContactCheck(draft));
 
 export const kinClientCreateInput = (
   draft: KinClientDraft,
-): Omit<KinPartyCreateInput, "orgId" | "clientRequestId"> => ({
+): Omit<KinPartyCreateInput, "orgId" | "clientRequestId"> => {
+  const contact = firstContactOf(draft);
+  return {
+    ...kinPartyInput(draft),
+    ...(contact === null ? {} : { contact: kinContactCreateInput(contact) }),
+  };
+};
+const kinPartyInput = (draft: KinClientDraft) => ({
   name: draft.name.trim(),
   ...(draft.kind === "vendor" ? { kind: "vendor" as const } : {}),
   ...(draft.kind === "prospect" ? { prospect: true } : {}),
@@ -308,40 +357,103 @@ export const kinClientUpdateInput = (
 export interface KinContactDraft {
   readonly name: string;
   readonly role: string;
-  readonly email: string;
-  readonly phone: string;
+  /** Every one typed, main first; always at least one field. */
+  readonly emails: ReadonlyArray<string>;
+  readonly phones: ReadonlyArray<string>;
   readonly notes: string;
 }
+
+/** Every one a contact has, main first, from a host that sends the list or only the main one. */
+const detailsOf = (all: ReadonlyArray<string> | undefined, one: string | null | undefined) =>
+  all !== undefined && all.length > 0 ? all : one == null ? [""] : [one];
 
 export const kinContactDraftOf = (contact?: KinContact): KinContactDraft => ({
   name: contact?.name ?? "",
   role: contact?.role ?? "",
-  email: contact?.email ?? "",
-  phone: contact?.phone ?? "",
+  emails: detailsOf(contact?.emails, contact?.email),
+  phones: detailsOf(contact?.phones, contact?.phone),
   notes: contact?.notes ?? "",
 });
 
-const retyped = (typed: string, saved: string | undefined) => typed.trim() !== (saved ?? "").trim();
+/** One more empty field below the last, up to what a contact takes. */
+export const kinContactDetailAdd = (list: ReadonlyArray<string>): ReadonlyArray<string> =>
+  list.length >= KIN_CONTACT_DETAILS_MAX ? list : [...list, ""];
+export const kinContactDetailCanAdd = (list: ReadonlyArray<string>) =>
+  list.length < KIN_CONTACT_DETAILS_MAX;
+/** Takes one off; the first field stays, emptied, so the next one typed becomes main. */
+export const kinContactDetailRemove = (
+  list: ReadonlyArray<string>,
+  at: number,
+): ReadonlyArray<string> =>
+  list.length <= 1 ? [""] : list.filter((_, index) => index !== at);
+export const kinContactDetailSet = (
+  list: ReadonlyArray<string>,
+  at: number,
+  text: string,
+): ReadonlyArray<string> => list.map((one, index) => (index === at ? text : one));
 
-/** Email and phone are checked only when retyped, so an old entry never blocks other edits. */
+/** What is saved: trimmed, blanks and repeats dropped (emails in any case), in the order typed. */
+const kept = (list: ReadonlyArray<string>, same: (text: string) => string) => {
+  const seen = new Set<string>();
+  return list.flatMap((typed) => {
+    const text = typed.trim();
+    if (text === "" || seen.has(same(text))) return [];
+    seen.add(same(text));
+    return [text];
+  });
+};
+const keptEmails = (list: ReadonlyArray<string>) => kept(list, (text) => text.toLowerCase());
+const keptPhones = (list: ReadonlyArray<string>) => kept(list, (text) => text);
+
+/** Emails and phones are checked only when retyped, so an old entry never blocks other edits. */
 export const kinContactDraftCheck = (
   draft: KinContactDraft,
   saved?: KinContactDraft,
 ): string | null => {
   if (draft.name.trim() === "") return "Give them a name.";
-  const email = draft.email.trim();
-  if (email !== "" && retyped(email, saved?.email) && !kinContactEmailOk(email))
+  const savedEmails = new Set((saved?.emails ?? []).map((one) => one.trim()));
+  if (keptEmails(draft.emails).some((one) => !savedEmails.has(one) && !kinContactEmailOk(one)))
     return "Enter an email like name@example.com.";
-  const phone = draft.phone.trim();
-  if (phone !== "" && retyped(phone, saved?.phone) && !kinContactPhoneOk(phone))
+  const savedPhones = new Set((saved?.phones ?? []).map((one) => one.trim()));
+  if (keptPhones(draft.phones).some((one) => !savedPhones.has(one) && !kinContactPhoneOk(one)))
     return "Enter a phone number with digits in it.";
   return (
     tooLong(draft.name, NAME_MAX, "the name") ??
     tooLong(draft.role, SHORT_MAX, "the role") ??
-    tooLong(draft.email, SHORT_MAX, "the email") ??
-    tooLong(draft.phone, SHORT_MAX, "the phone number") ??
+    draft.emails.reduce<string | null>(
+      (problem, one) => problem ?? tooLong(one, SHORT_MAX, "the email"),
+      null,
+    ) ??
+    draft.phones.reduce<string | null>(
+      (problem, one) => problem ?? tooLong(one, SHORT_MAX, "the phone number"),
+      null,
+    ) ??
     tooLong(draft.notes, NOTES_MAX, "the notes")
   );
+};
+
+/** The main one as before, all an older host reads, and the whole list beside several. */
+const newDetails = (emails: ReadonlyArray<string>, phones: ReadonlyArray<string>) => {
+  const allEmails = keptEmails(emails);
+  const allPhones = keptPhones(phones);
+  return {
+    ...(allEmails[0] === undefined ? {} : { email: allEmails[0] }),
+    ...(allEmails.length > 1 ? { emails: allEmails } : {}),
+    ...(allPhones[0] === undefined ? {} : { phone: allPhones[0] }),
+    ...(allPhones.length > 1 ? { phones: allPhones } : {}),
+  };
+};
+/** An edit sends the whole list, so taking one off is never read as keeping the rest. */
+const changedDetails = (
+  emails: ReadonlyArray<string> | undefined,
+  phones: ReadonlyArray<string> | undefined,
+) => {
+  const allEmails = emails === undefined ? undefined : keptEmails(emails);
+  const allPhones = phones === undefined ? undefined : keptPhones(phones);
+  return {
+    ...(allEmails === undefined ? {} : { email: allEmails[0] ?? null, emails: allEmails }),
+    ...(allPhones === undefined ? {} : { phone: allPhones[0] ?? null, phones: allPhones }),
+  };
 };
 
 export const kinContactCreateInput = (
@@ -349,8 +461,7 @@ export const kinContactCreateInput = (
 ): Omit<KinContactCreateInput, "orgId" | "party" | "clientRequestId"> => ({
   name: draft.name.trim(),
   ...(draft.role.trim() === "" ? {} : { role: draft.role.trim() }),
-  ...(draft.email.trim() === "" ? {} : { email: draft.email.trim() }),
-  ...(draft.phone.trim() === "" ? {} : { phone: draft.phone.trim() }),
+  ...newDetails(draft.emails, draft.phones),
   ...(draft.notes.trim() === "" ? {} : { notes: draft.notes.trim() }),
 });
 
@@ -359,8 +470,7 @@ export const kinContactUpdateInput = (
 ): Omit<KinContactUpdateInput, "orgId" | "key" | "rev"> => ({
   ...(changed.name === undefined ? {} : { name: changed.name.trim() }),
   ...(changed.role === undefined ? {} : { role: changed.role.trim() || null }),
-  ...(changed.email === undefined ? {} : { email: changed.email.trim() || null }),
-  ...(changed.phone === undefined ? {} : { phone: changed.phone.trim() || null }),
+  ...changedDetails(changed.emails, changed.phones),
   ...(changed.notes === undefined ? {} : { notes: changed.notes.trim() }),
 });
 

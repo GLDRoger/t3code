@@ -62,6 +62,7 @@ import {
   selectRecords,
   toRecord,
 } from "./recordRows.ts";
+import { contactAll, contactSensitive } from "./contactDetails.ts";
 import { lastContacts, touchesOf } from "./touches.ts";
 
 /**
@@ -462,10 +463,12 @@ export const toContact = (row: RecordRow): KinContact => {
     role: text("role"),
     email: text("email"),
     phone: text("phone"),
+    emails: contactAll(fields, "email"),
+    phones: contactAll(fields, "phone"),
     notes: row.notes,
     active: row.state === "open",
     sensitive: row.sensitive === 1 || row.inheritedSensitive === 1,
-    sensitiveFields: [...sensitiveFields("contacts")],
+    sensitiveFields: contactSensitive(sensitiveFields("contacts"), fields),
     rev: row.rev,
     updatedAt: iso(row.updatedAt),
   };
