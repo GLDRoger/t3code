@@ -231,10 +231,7 @@ export const KIN_HOOK_FILES_IN_BOTH: Readonly<Record<string, string>> = {
   "useKinOpenChat.ts": "each app opens a chat through its own navigation and draft store",
 };
 /** Hooks written in both apps' copies of one file, each for a reason; an entry goes with its copy. */
-export const KIN_HOOKS_IN_BOTH: Readonly<Record<string, string>> = {
-  useKinWorkChanges:
-    "the phone keeps the host's answers for every screen of a task and can open editing; web does neither",
-};
+export const KIN_HOOKS_IN_BOTH: Readonly<Record<string, string>> = {};
 
 const hookFileName = (file: string) => /\/(use[A-Z]\w*\.tsx?)$/.exec(file)?.[1];
 const callsSharedHooks = (source: string) =>
