@@ -313,7 +313,13 @@ const builtInDef = (name: ListName, currency: string): ListDef => {
     sensitive: false,
     amount: false,
     currency,
-    ...(name === "work" ? { dueLabel: "Due" } : name === "projects" ? { dueLabel: "Target" } : {}),
+    ...(name === "work"
+      ? { dueLabel: "Due" }
+      : name === "projects"
+        ? { dueLabel: "Target" }
+        : name === "deals"
+          ? { dueLabel: "Expected" }
+          : {}),
     archivedAt: null,
     rev: 1,
   };

@@ -17,8 +17,11 @@ import { formatMoney } from "./money.ts";
  * lists people define later (slice 5) get the same shape from configuration.
  */
 
-/** `docs` is Kin's own: its rows are docs, read and written through `docs.ts`. */
-export type ListName = KinWorkListName | "docs";
+/**
+ * `docs` is Kin's own: its rows are docs, read and written through `docs.ts`. `deals` are written
+ * only through `deals.ts`.
+ */
+export type ListName = KinWorkListName | "docs" | "deals";
 type List = {
   readonly name: string;
   readonly prefix: string;
@@ -97,6 +100,16 @@ export const LISTS: Record<ListName, List> = {
     categories: [],
     fields: ["measure", "target", "current", "unit", "startsOn"],
   },
+  // What we hope to win from a client or prospect: done is won, dropped is lost. `stage` is a stage
+  // id of the company's own (`deals.ts`), `value` a `KinMoney` in any currency.
+  deals: {
+    name: "Deals",
+    prefix: "DL",
+    noun: "deal",
+    states: ["open", "done", "dropped"],
+    categories: [],
+    fields: ["stage", "value", "source", "lostReason"],
+  },
   docs: {
     name: "Docs",
     prefix: "D",
@@ -111,11 +124,14 @@ export const LISTS: Record<ListName, List> = {
 
 export const listOf = (registerId: string): ListName =>
   registerId in LISTS ? (registerId as ListName) : "work";
-/** A list clients older than Docs know; callers keep docs out of what they return. */
+/** A list clients older than Docs and Deals know; callers keep docs out of what they return. */
 export const workListOf = (registerId: string): KinWorkListName => {
   const list = listOf(registerId);
-  return list === "docs" ? "work" : list;
+  return list === "docs" || list === "deals" ? "work" : list;
 };
+/** The true list, for a client that knows lists newer than `workListOf` reads them as. */
+export const listNameOf = (registerId: string) =>
+  registerId === "deals" ? { listName: "deals" as const } : {};
 
 /** Which of an entry's own fields are sensitive whatever its label says (design 4.9). */
 export const sensitiveFields = (list: ListName): ReadonlyArray<string> =>

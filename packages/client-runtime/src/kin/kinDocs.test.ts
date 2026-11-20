@@ -138,6 +138,8 @@ describe("kinSearchHit", () => {
     expect(
       kinSearchHit({ ...hitInput, title: "Booking app", snippet: "Booking app" }).snippet,
     ).toBeNull();
+    // A deal comes back among entries, under its own name, so an older app opens it as one.
+    expect(kinSearchHit({ ...hitInput, key: "DL-4", kind: "work" }).kindLabel).toBe("Deal");
   });
 });
 

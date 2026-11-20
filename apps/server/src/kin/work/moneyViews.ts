@@ -140,6 +140,8 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
   const where = (column: "due_at" | "date_at") =>
     sql.and([
       sql`r.org_id = ${orgId}`,
+      // A deal's expected day is the pipeline's, not a date anyone owes.
+      sql`r.register_id <> 'deals'`,
       sql`${sql("r")}.${sql(column)} >= ${input.from}`,
       sql`${sql("r")}.${sql(column)} < ${input.to}`,
       ...(input.lists === undefined || input.lists.length === 0

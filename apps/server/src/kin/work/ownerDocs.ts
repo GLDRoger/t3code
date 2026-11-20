@@ -395,6 +395,7 @@ export const search = Effect.fn("KinDocs.search")(
             limit: limit - memory.length,
             viewer: team === undefined ? "owner" : "team",
             scope: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
+            deals: true,
           });
     return {
       hits: [

@@ -55,6 +55,7 @@ import {
   KinWorkTaskRow,
   KinWorkTimelineLines,
 } from "./components/KinWorkPieces";
+import { KinClientDeals } from "./KinDealsList";
 import { KinWorkNamedRow } from "./KinWorkLists";
 import { KinAvatar } from "./components/KinAvatar";
 import { useKinIsOwnerLevel } from "./state/kinChatOnly";
@@ -467,6 +468,14 @@ function KinClientBody(
             />
           ) : null}
         </ListSection>
+      )}
+      {view.vendor ? null : (
+        <KinClientDeals
+          {...target}
+          party={{ key: view.key, title: view.name }}
+          closed={view.closed}
+          names={names}
+        />
       )}
       <ListSection
         title={KIN_CLIENTS.contacts}

@@ -85,6 +85,9 @@ export const KinWorkListName = Schema.Literals([
   "goals",
 ]);
 export type KinWorkListName = typeof KinWorkListName.Type;
+/** A built-in list newer than `KinWorkListName`: an older client reads its entries as Work. */
+export const KinRecordListName = Schema.Literals(["deals"]);
+export type KinRecordListName = typeof KinRecordListName.Type;
 /** A client or a vendor: one list, by kind. A prospect goes out as a client with `prospect`. */
 export const KinPartyKind = Schema.Literals(["client", "vendor"]);
 export type KinPartyKind = typeof KinPartyKind.Type;
@@ -202,6 +205,8 @@ export const KinRecord = Schema.Struct({
   handedBack: Schema.optional(Schema.Struct({ by: KinWorkPrincipal, at: IsoDateTime })),
   /** Who marked it private ("Only me"), while it is; absent when unknown or not marked. */
   markedBy: Schema.optional(KinPersonId),
+  /** Its true list when that is newer than older clients know, such as a deal. */
+  listName: Schema.optional(KinRecordListName),
 });
 export type KinRecord = typeof KinRecord.Type;
 
@@ -1107,7 +1112,11 @@ export type KinProjectDetail = typeof KinProjectDetail.Type;
 export const KinWorkHistoryItem = Schema.Struct({
   ...KinRecordChange.fields,
   /** The entry the change happened to, as it is now. */
-  record: Schema.Struct({ ...KinRecordRef.fields, list: KinWorkListName }),
+  record: Schema.Struct({
+    ...KinRecordRef.fields,
+    list: KinWorkListName,
+    listName: Schema.optional(KinRecordListName),
+  }),
 });
 export type KinWorkHistoryItem = typeof KinWorkHistoryItem.Type;
 

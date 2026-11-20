@@ -203,6 +203,14 @@ export function kinAccessAtom<R, ER>(
   return kinAccessAtoms(runtime).accessAtom(environmentId);
 }
 
+/** The viewer's kind once the host has answered (null when it refused), undefined until then. */
+export function kinAccessKnownAtom<R, ER>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+  environmentId: EnvironmentId,
+) {
+  return kinAccessAtoms(runtime).knownAtom(environmentId);
+}
+
 /** The viewer's kind, places and the projects they lead, or null until the host has said. */
 export function kinAccessMeAtom<R, ER>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,

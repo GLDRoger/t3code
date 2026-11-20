@@ -111,6 +111,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
 import { kinSearchHit } from "@t3tools/client-runtime/kin/kinDocs";
 import { kinClient } from "../kin/kinClient";
 import {
@@ -2095,6 +2096,14 @@ function OpenCommandPaletteDialog(props: {
                   };
                   if (hit.kind === "memory") {
                     await navigate({ to: "/kin/$environmentId/$orgId/memory", params });
+                    return;
+                  }
+                  if (kinIsDealKey(raw.key)) {
+                    await navigate({
+                      to: "/kin/$environmentId/$orgId/clients",
+                      params,
+                      search: { tab: "deals", task: raw.key },
+                    });
                     return;
                   }
                   const money =

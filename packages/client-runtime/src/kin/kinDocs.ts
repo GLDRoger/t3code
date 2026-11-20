@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import { KIN_SCOPE_ALL, type KinViewerScope } from "./kinViewerScope.ts";
 import { KIN_CHECK_CONNECTION, kinFailureText } from "./kinAnswers.ts";
+import { kinIsDealKey } from "./kinDeals.ts";
 import {
   KinDocCardState,
   type KinChatId,
@@ -994,11 +995,12 @@ export function kinSearchHit(hit: KinSearchHit): KinSearchHitView {
       ? null
       : { id: hit.section.id, title: hit.section.title };
   const closed = !hit.closed ? null : hit.kind === "docs" ? "Archived" : "Closed";
+  const kindLabel = hit.kind === "work" && kinIsDealKey(hit.key) ? "Deal" : KIND_LABEL[hit.kind];
   return {
     id: `${hit.recordId}:${hit.section?.id ?? ""}`,
     key: hit.key,
     kind: hit.kind,
-    kindLabel: KIND_LABEL[hit.kind],
+    kindLabel,
     title: hit.title,
     snippet: snippet === "" ? null : snippet,
     section,
@@ -1006,7 +1008,7 @@ export function kinSearchHit(hit: KinSearchHit): KinSearchHitView {
     private: hit.sensitive && hit.kind !== "memory",
     closed,
     accessibilityLabel: [
-      `${KIND_LABEL[hit.kind]}: ${hit.title}`,
+      `${kindLabel}: ${hit.title}`,
       section?.title ?? null,
       snippet === "" ? null : snippet,
       hit.sensitive && hit.kind !== "memory" ? "Private" : null,
