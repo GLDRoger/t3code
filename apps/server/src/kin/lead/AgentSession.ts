@@ -34,6 +34,7 @@ import { CODING_T3_TOOLS, isEngineeringDomain, LEAD_T3_TOOLS } from "./t3Tools.t
 import { wakeupOfRuns } from "../chat/wakeupRuns.ts";
 import { isSocialTool } from "../social/mcp.ts";
 import { socialSeatThread } from "../social/seat.ts";
+import { seatOf } from "./characterDefaults.ts";
 
 const leadT3Tools: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
 const codingT3Tools: ReadonlySet<string> = new Set(CODING_T3_TOOLS);
@@ -187,24 +188,44 @@ const onSocialSeat = Effect.fn("KinAgentSession.onSocialSeat")(
   ),
 );
 
-/** Whether a thread is the live own thread of a lead whose remit builds software. */
-const onEngineeringSeat = Effect.fn("KinAgentSession.onEngineeringSeat")(
+/** The remit of the lead whose live own thread this is, and those of its org's other live leads. */
+const threadSeat = Effect.fn("KinAgentSession.threadSeat")(
   function* (threadId: ThreadId) {
     const services = Option.flatMap(yield* Effect.serviceOption(KinServer), (kin) => kin.services);
-    if (Option.isNone(services)) return false;
+    if (Option.isNone(services)) return undefined;
     const sql = Context.get(services.value, SqlClient.SqlClient);
-    // A thread id is unique across orgs; the join keeps the lead in the thread's own org.
-    const [lead] = yield* sql<{ domain: string }>`SELECT l.domain FROM kin_agent_threads t
-      JOIN kin_leads l ON l.org_id = t.org_id AND l.agent_id = t.agent_id
-      WHERE t.thread_id = ${threadId} AND t.ended_at IS NULL ORDER BY t.thread_id LIMIT 1`;
-    return lead !== undefined && isEngineeringDomain(lead.domain);
+    // A thread id is unique across orgs; the joins keep every lead in the thread's own org.
+    const leads = yield* sql<{ domain: string; own: number }>`SELECT l.domain,
+        l.agent_id = t.agent_id AS own FROM kin_agent_threads t
+      JOIN kin_leads l ON l.org_id = t.org_id
+      JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id AND a.retired_at IS NULL
+      WHERE t.thread_id = ${threadId} AND t.ended_at IS NULL ORDER BY own DESC, l.agent_id`;
+    const own = leads[0];
+    if (own === undefined || own.own !== 1) return undefined;
+    const seat = isEngineeringDomain(own.domain) ? "engineering" : seatOf(own.domain);
+    return { seat, others: leads.slice(1).map((lead) => seatOf(lead.domain)) };
   },
   Effect.catchCause((cause) =>
-    Effect.logWarning("Kin coding tool visibility failed; hiding", { cause }).pipe(
-      Effect.as(false),
-    ),
+    Effect.logWarning("Kin seat tool visibility failed", { cause }).pipe(Effect.as(undefined)),
   ),
 );
+
+/**
+ * Money and pipeline tools an engineering or social lead leaves to the seat they belong to, once
+ * the company has a lead in it; with none, every lead keeps them.
+ */
+const SEAT_HOME: Readonly<Record<string, string>> = {
+  statement_read: "finance",
+  statement_rows: "finance",
+  money_query: "finance",
+  money_summary: "finance",
+  payment_record: "finance",
+  budget_set: "finance",
+  kin_receipt: "finance",
+  pipeline_read: "growth",
+  deal_stages: "growth",
+};
+const LEAVES_TO_HOME: ReadonlySet<string> = new Set(["engineering", "social"]);
 
 /** How far up T3's task links a lead's name is looked for. */
 const MAX_NAME_DEPTH = 8;
@@ -242,7 +263,7 @@ const loginConnected = Effect.gen(function* () {
 /**
  * What the Kin endpoint lists, per thread so every turn of it sends the same list (prompt cache).
  * Shared threads list only what shared turns may run; T3 tools show only on an owner-only thread,
- * and its coding ones only on an engineering lead's.
+ * and its coding ones only on an engineering lead's (`threadSeat`, as `SEAT_HOME`'s).
  * `KinToolGate` checks each call.
  */
 export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(function* (
@@ -253,9 +274,14 @@ export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(functio
   if (shared && !listedOnSharedThread(name)) return false;
   if (isKinGitHubTool(name)) return LOGIN_GITHUB_TOOLS.has(name) && (yield* loginConnected);
   if (isSocialTool(name)) return yield* onSocialSeat(threadId);
+  const home = Object.hasOwn(SEAT_HOME, name) ? SEAT_HOME[name] : undefined;
+  if (home !== undefined) {
+    const lead = yield* threadSeat(threadId);
+    return lead === undefined || !LEAVES_TO_HOME.has(lead.seat) || !lead.others.includes(home);
+  }
   if (!isT3Tool(name)) return true;
   if (!leadT3Tools.has(name) || shared) return false;
-  return !codingT3Tools.has(name) || (yield* onEngineeringSeat(threadId));
+  return !codingT3Tools.has(name) || (yield* threadSeat(threadId))?.seat === "engineering";
 });
 
 export const endpointVisibility = McpHttpServer.toolVisibility((name) =>

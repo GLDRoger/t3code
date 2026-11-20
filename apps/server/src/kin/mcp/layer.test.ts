@@ -542,6 +542,7 @@ it.effect.each([true, false])(
             inputSchema,
           }));
           return {
+            names,
             t3: LEAD_T3_TOOLS.filter((name) => names.includes(name)),
             bytes: Buffer.byteLength(JSON.stringify(read), "utf8"),
           };
@@ -582,12 +583,51 @@ it.effect.each([true, false])(
             "t3_attachment_discard",
             "t3_thread_send_attachments",
           ]);
+        // With a Finance and a sales lead in the company, engineering and social leave money and
+        // the pipeline to them; any other lead keeps them, as every lead does without them.
+        const homed = [
+          "statement_read",
+          "statement_rows",
+          "money_query",
+          "money_summary",
+          "payment_record",
+          "budget_set",
+          "kin_receipt",
+          "pipeline_read",
+          "deal_stages",
+        ];
+        for (const seat of [engineering, ...Object.values(seats)])
+          assert.includeMembers(seat.names, homed);
+        for (const [id, domain] of [
+          ["finance-lead", "finance"],
+          ["sales-lead", "sales"],
+        ] as const) {
+          yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES (${id}, ${person.orgId}, ${id}, 'lead', ${person.personId}, '1970-01-01T00:00:00.000Z')`;
+          yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id, domain)
+            VALUES (${id}, ${person.orgId}, ${id}, 'L1', 0, '{}', '[]', ${chat.chatId}, ${domain})`;
+        }
+        const beside = {
+          engineering: yield* seatList("engineering"),
+          social: yield* seatList("social"),
+        };
+        for (const seat of Object.values(beside))
+          assert.deepStrictEqual(
+            homed.filter((name) => seat.names.includes(name)),
+            [],
+          );
+        assert.includeMembers((yield* seatList("support")).names, homed);
+        assert.includeMembers((yield* seatList("chief-of-staff")).names, homed);
+        yield* sql`UPDATE kin_agents SET retired_at = '1970-01-02T00:00:00.000Z'
+          WHERE agent_id IN ('finance-lead', 'sales-lead')`;
+        assert.includeMembers((yield* seatList("social")).names, homed);
         assert.deepStrictEqual(
           {
             engineering: engineering.bytes,
             finance: seats.finance.bytes,
             social: seats.social.bytes,
             support: seats.support.bytes,
+            engineeringBesideFinanceAndSales: beside.engineering.bytes,
+            socialBesideFinanceAndSales: beside.social.bytes,
           },
           contextBudget.kinLeadToolListJsonBytes,
         );
