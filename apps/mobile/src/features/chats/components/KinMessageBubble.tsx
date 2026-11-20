@@ -74,6 +74,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { kinOutbox } from "../state/kinOutboxDelivery";
 import { KinVisualInView } from "../widgets/KinVisual";
 import { KinWidgetView } from "../widgets/KinWidgetView";
+import { KinCardGroup } from "../widgets/KinCardGroup";
 import { KinAvatar } from "./KinAvatar";
 import { KinDocRefs } from "./KinDocRefs";
 import { KinLinkedText, KinMessagePage, useKinOpenTarget } from "./KinMessagePage";
@@ -202,6 +203,11 @@ export function KinMessageBubble(props: {
   readonly firstName?: string | null;
   /** Opens the sheet of what this reply's turn changed. */
   readonly onOpenReceipt: () => void;
+  /** The cards this row leads, drawn as one (`kinGroupCardRows`); `widget` is the first's. */
+  readonly group?: {
+    readonly question: KinWidget | undefined;
+    readonly tasks: ReadonlyArray<KinWidget | undefined>;
+  };
 }) {
   const { row, onReact, onOpenActions } = props;
   const onOpenTarget = useKinOpenTarget(props.environmentId, row.message.orgId);
@@ -242,24 +248,36 @@ export function KinMessageBubble(props: {
   ];
 
   // A page's card is its foot, across the page's width.
-  const card = (
-    <KinWidgetView
-      widget={props.widget}
-      environmentId={props.environmentId}
-      viewerPersonId={props.viewerPersonId}
-      onOpenLink={props.onLinkPress}
-      heldFor={props.heldFor ?? null}
-      {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
-      {...(onOpenActions === null
-        ? {}
-        : {
-            onLongPress: () => {
-              void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-              onOpenActions();
-            },
-          })}
-    />
-  );
+  const longPress =
+    onOpenActions === null
+      ? {}
+      : {
+          onLongPress: () => {
+            void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            onOpenActions();
+          },
+        };
+  const card =
+    props.group === undefined ? (
+      <KinWidgetView
+        widget={props.widget}
+        environmentId={props.environmentId}
+        viewerPersonId={props.viewerPersonId}
+        onOpenLink={props.onLinkPress}
+        heldFor={props.heldFor ?? null}
+        {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
+        {...longPress}
+      />
+    ) : (
+      <KinCardGroup
+        question={props.group.question}
+        tasks={props.group.tasks}
+        environmentId={props.environmentId}
+        viewerPersonId={props.viewerPersonId}
+        onOpenLink={props.onLinkPress}
+        {...longPress}
+      />
+    );
   const page =
     hasBubble && layout !== "bubble" ? (
       <View className="w-full gap-1">

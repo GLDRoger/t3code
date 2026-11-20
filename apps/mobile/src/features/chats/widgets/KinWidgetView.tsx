@@ -13,6 +13,8 @@ import { View } from "react-native";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { environmentCatalog } from "../../../connection/catalog";
 import { connectionAtomRuntime } from "../../../connection/runtime";
+import { serverEnvironment } from "../../../state/server";
+import { kinListedModelName } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import {
   KIN_MISSING_CARD_TEXT,
   kinCardView,
@@ -28,6 +30,12 @@ import { KinSocialPackCard, KinSocialWeekCard } from "./KinSocialCards";
 import { KinStatementPasswordCard, KinStatementReviewCard } from "./KinStatementCards";
 import { KinTaskCard } from "./KinTaskCard";
 import { KinVisual } from "./KinVisual";
+
+/** A model id as Settings names it on this environment, or null where it has no name. */
+export function useKinModelName(environmentId: EnvironmentId) {
+  const providers = useAtomValue(serverEnvironment.providersValueAtom(environmentId));
+  return (model: string) => kinListedModelName(model, providers);
+}
 
 /** A chart in a card's frame, in a chat or a doc alike. */
 export function KinChartCard(props: { readonly view: KinChartView }) {
@@ -54,6 +62,7 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
 }) {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const access = useAtomValue(kinAccessAtom(connectionAtomRuntime, props.environmentId));
+  const modelName = useKinModelName(props.environmentId);
   // Before the catalog loads, assume the environment is known; the thread screen handles the rest.
   const view = kinCardView(
     props.widget,
@@ -61,6 +70,7 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
     (environmentId) => !catalog.isReady || catalog.entries.has(environmentId),
     props.heldFor ?? null,
     access === null ? undefined : kinOwnerLevel(access),
+    modelName,
   );
   switch (view.kind) {
     case "task":

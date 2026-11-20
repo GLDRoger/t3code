@@ -320,15 +320,8 @@ export function KinComposer({
 
   return (
     <View className="gap-1 px-3 pt-1.5" style={{ paddingBottom: props.bottomInset }}>
-      {/* As under the thread composer: the feed fades out behind the pill. */}
-      <View
-        className={
-          Platform.OS === "android"
-            ? "absolute inset-0 bg-screen"
-            : "absolute inset-0 bg-linear-to-b from-screen/0 via-screen/60 to-screen/90"
-        }
-        pointerEvents="none"
-      />
+      {/* Solid, as on Android: through a fade, text scrolled behind the glass pill stays legible. */}
+      <View className="absolute inset-0 bg-screen" pointerEvents="none" />
       {hint === null ? null : (
         <Text
           textRole="caption"
