@@ -69,7 +69,7 @@ export interface KinNewChatAgent {
   readonly intro: string | null;
 }
 
-export type KinNewChatLeads = {
+type KinNewChatLeads = {
   readonly leads: ReadonlyArray<
     Pick<KinLeadsListResult["leads"][number], "agentId" | "name"> & { readonly retired?: unknown }
   >;

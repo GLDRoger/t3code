@@ -1,6 +1,6 @@
-import type { KinAgentId, KinChatId } from "@t3tools/contracts";
+import type { KinAgentId, KinChatId, KinLeadContact, KinLeadsListResult } from "@t3tools/contracts";
 
-import { kinMessageableAgents, type KinNewChatLeads } from "./kinPeopleChat.ts";
+import { kinMessageableAgents } from "./kinPeopleChat.ts";
 
 export const KIN_ASK_RECORD = {
   askWho: "Ask an agent",
@@ -19,17 +19,17 @@ export interface KinAskAgent {
  * viewer already has with one is opened as it is; for any other, the chat is made on the pick.
  */
 export function kinAskAgents(
-  result:
-    | (KinNewChatLeads & {
-        readonly leads: ReadonlyArray<{
-          readonly agentId: KinAgentId;
-          readonly ownerChatId: KinChatId;
-        }>;
-        readonly contacts?:
-          | ReadonlyArray<{ readonly agentId: KinAgentId; readonly chatId: KinChatId }>
-          | undefined;
-      })
-    | null,
+  result: {
+    readonly leads: ReadonlyArray<
+      Pick<KinLeadsListResult["leads"][number], "agentId" | "name" | "ownerChatId"> & {
+        readonly retired?: unknown;
+      }
+    >;
+    readonly contacts?:
+      | ReadonlyArray<Pick<KinLeadContact, "agentId" | "name" | "intro" | "ownerName" | "chatId">>
+      | undefined;
+    readonly messageable?: KinLeadsListResult["messageable"];
+  } | null,
 ): ReadonlyArray<KinAskAgent> {
   if (result === null) return [];
   const chats = new Map<string, KinChatId>([
