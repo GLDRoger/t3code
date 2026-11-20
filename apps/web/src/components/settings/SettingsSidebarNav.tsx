@@ -59,8 +59,6 @@ import { scrollToSettingsTarget } from "./settingsLayout";
 import {
   searchSettings,
   revealSettingsSearchTarget,
-  KIN_MOVED_SETTINGS_PATHS,
-  KIN_ONLY_SETTINGS_PATHS,
   SETTINGS_NAV_GROUPS,
   SETTINGS_NAV_LABELS,
   SETTINGS_SECTION_LABELS,
@@ -71,6 +69,7 @@ import { useAvailableSettingsSearchItems } from "./useAvailableSettingsSearchIte
 import { handleSettingsSectionKeyDown } from "./settingsSectionNavigation";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { kinListShownAt } from "../../kin/kinListSwitch";
+import { KIN_MOVED_SETTINGS_PATHS, KIN_ONLY_SETTINGS_PATHS } from "../../kin/kinSettingsSearch";
 import { useKinHost } from "../../kin/useKinHost";
 
 const SnapShotIcon = createLucideIcon("snap-shot", [

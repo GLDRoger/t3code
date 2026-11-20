@@ -59,17 +59,11 @@ import {
   PRIMARY_LOCAL_ENVIRONMENT_ID,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
-import { useLocation, useNavigate, useRouter } from "@tanstack/react-router";
+import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeftIcon,
   BugIcon,
   ChartNoAxesColumnIcon,
-  FileTextIcon,
-  MessagesSquareIcon,
-  BrainIcon,
-  UsersIcon,
-  BotIcon,
-  UserRoundPlusIcon,
   CheckIcon,
   ChevronRightIcon,
   CornerLeftUpIcon,
@@ -79,7 +73,6 @@ import {
   FolderPlusIcon,
   MessageSquareDashedIcon,
   LinkIcon,
-  ListChecksIcon,
   MessageSquareIcon,
   PaletteIcon,
   RotateCcwIcon,
@@ -111,21 +104,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
-import { kinSearchHit } from "@t3tools/client-runtime/kin/kinDocs";
-import { kinClient } from "../kin/kinClient";
-import {
-  kinNewLeadTarget,
-  noKinLeadPermissionAtom,
-  openKinLeadForm,
-} from "../kin/KinNewLeadButton";
-import { useKinPaletteHits } from "../kin/useKinDocs";
-import { useKinPaletteAgents, useOpenKinAgentPage } from "../kin/kinAgentPageLink";
-import { useKinHost } from "../kin/useKinHost";
-import { useKinListSwitch } from "../kin/useKinListSwitch";
-import { kinListShownAt, kinReturnHref } from "../kin/kinListSwitch";
-import { useKinChatRows, useKinPlaceRows } from "../kin/kinPaletteRows";
-import { openKinSettings } from "../kin/kinSettingsAddress";
+import { useKinPalette } from "../kin/useKinPalette";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { copyThreadReference } from "../lib/copyThreadReference";
 import {
@@ -317,14 +296,6 @@ const ADD_PROJECT_ENTRY_GROUP = "add-project";
 const NEW_THREAD_IN_GROUP = "projects";
 
 /** The submenu an open intent starts in; its groups resolve while rendering. */
-// The address says "client"; reading it by name keeps it apart from an RPC client in lint's eyes.
-const KIN_CLIENT_PARAM = "client";
-/** What Kin is asked for: nothing for a command filter or a single letter. */
-const kinPaletteQuery = (query: string) => {
-  const text = query.trim();
-  return query.startsWith(">") || text.length < 2 ? "" : text;
-};
-
 function openIntentView(
   intent: CommandPaletteOpenIntent | null,
   resolve: MessageResolver,
@@ -462,31 +433,6 @@ function OpenCommandPaletteDialog(props: {
   const messages = useMessages();
   const navigate = useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
-  const inKin = kinListShownAt(pathname) === "kin";
-  const router = useRouter();
-  const kinListSwitch = useKinListSwitch();
-  const kinPlaceRows = useKinPlaceRows();
-  const kinNewLead = kinNewLeadTarget(useKinHost());
-  const canCreateKinLead = useAtomValue(
-    kinNewLead === null
-      ? noKinLeadPermissionAtom
-      : kinClient.leadCreate.permissionAtom(kinNewLead.environmentId),
-  );
-  const canOpenKinMemory = useAtomValue(
-    kinNewLead === null
-      ? noKinLeadPermissionAtom
-      : kinClient.memorySetVisibility.permissionAtom(kinNewLead.environmentId),
-  );
-  const canOpenKinWork = useAtomValue(
-    kinNewLead === null
-      ? noKinLeadPermissionAtom
-      : kinClient.workRead.permissionAtom(kinNewLead.environmentId),
-  );
-  const canManageKinTeam = useAtomValue(
-    kinNewLead === null
-      ? noKinLeadPermissionAtom
-      : kinClient.inviteCreate.permissionAtom(kinNewLead.environmentId),
-  );
   const { openChildSearch, setOpen } = props;
   // Keyed by palette session: the intent and restored search only seed this
   // mount, and closing must not change what the closing palette shows.
@@ -513,16 +459,7 @@ function OpenCommandPaletteDialog(props: {
   const setQuery = (query: string) => dispatchSearch({ type: "query", query });
   const deferredQuery = useDeferredValue(query);
   const isActionsOnly = deferredQuery.startsWith(">");
-  const kinAgents = useKinPaletteAgents(kinNewLead, canCreateKinLead);
-  const kinChatRows = useKinChatRows(
-    kinNewLead?.environmentId ?? null,
-    !isActionsOnly && deferredQuery.trim() !== "",
-  );
-  const openKinAgentPage = useOpenKinAgentPage();
-  const kinHits = useKinPaletteHits(
-    canOpenKinWork ? kinNewLead : null,
-    kinPaletteQuery(deferredQuery),
-  );
+  const kin = useKinPalette({ pathname, query: deferredQuery, isActionsOnly });
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const resultListRef = useRef<LegendListRef | null>(null);
   // A pushed view drops the typed highlight until the user moves it again.
@@ -1818,87 +1755,7 @@ function OpenCommandPaletteDialog(props: {
     },
   });
 
-  actionItems.push(...kinPlaceRows);
-
-  // Only the way back into Kin: Kin itself doesn't offer the coding threads.
-  if (kinListSwitch !== null && kinListSwitch.current === "threads") {
-    actionItems.push({
-      kind: "action",
-      value: "action:kin-switch-list",
-      searchTerms: ["kin", "chats", "agents", "leads", "coding", "threads", "switch", "list"],
-      title: kinListSwitch.title,
-      icon: <MessagesSquareIcon className={ITEM_ICON_CLASS} />,
-      shortcutCommand: "kin.switchList",
-      run: async () => {
-        kinListSwitch.switchList();
-      },
-    });
-  }
-
-  if (kinNewLead !== null && canCreateKinLead) {
-    actionItems.push({
-      kind: "action",
-      value: "action:kin-new-lead",
-      searchTerms: ["kin", "agent", "lead", "new", "create", "add", "teammate"],
-      // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-      title: "New agent",
-      icon: <UserRoundPlusIcon className={ITEM_ICON_CLASS} />,
-      run: async () => {
-        // The form lives on Kin's page, so it opens there.
-        await navigate({ href: kinReturnHref() });
-        openKinLeadForm(kinNewLead);
-      },
-    });
-  }
-
-  actionItems.push(...kinChatRows);
-  if (kinNewLead !== null) {
-    for (const agent of kinAgents) {
-      actionItems.push({
-        kind: "action",
-        value: `action:kin-agent:${agent.agentId}`,
-        searchTerms: ["kin", "agent", "model", "character", "pause", agent.name, agent.domain],
-        // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-        title: `${agent.name}: model, character and settings`,
-        icon: <BotIcon className={ITEM_ICON_CLASS} />,
-        run: async () => {
-          await openKinAgentPage({
-            ...kinNewLead,
-            agentId: agent.agentId,
-            chatId: agent.ownerChatId,
-          });
-        },
-      });
-    }
-  }
-
-  if (kinNewLead !== null && canOpenKinMemory) {
-    actionItems.push({
-      kind: "action",
-      value: "action:kin-memory",
-      searchTerms: ["kin", "memory", "remember", "agents", "leads", "team", "share"],
-      // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-      title: "What your agents remember",
-      icon: <BrainIcon className={ITEM_ICON_CLASS} />,
-      run: async () => {
-        openKinSettings(router.history, "memory");
-      },
-    });
-  }
-
-  if (kinNewLead !== null && canManageKinTeam) {
-    actionItems.push({
-      kind: "action",
-      value: "action:kin-team",
-      searchTerms: ["kin", "team", "people", "teammate", "invite", "add", "person", "link"],
-      // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-      title: "Team: add or invite a teammate",
-      icon: <UsersIcon className={ITEM_ICON_CLASS} />,
-      run: async () => {
-        openKinSettings(router.history, "team");
-      },
-    });
-  }
+  actionItems.push(...kin.actionItems);
 
   for (const direction of [1, -1] as const) {
     const title =
@@ -1923,8 +1780,7 @@ function OpenCommandPaletteDialog(props: {
     title: gt("Open settings"),
     icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
-      if (inKin) openKinSettings(router.history);
-      else await navigate({ to: "/settings" });
+      await (kin.openSettings?.() ?? navigate({ to: "/settings" }));
     },
   });
 
@@ -1984,24 +1840,11 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
-  // Kin doesn't offer T3's coding threads, projects or app settings: only its own commands.
-  const shownActionItems = inKin
-    ? actionItems.filter(
-        (item) =>
-          (item.value.startsWith("action:kin-") && item.value !== "action:kin-switch-list") ||
-          item.value === "action:settings" ||
-          item.value.startsWith("action:workspace-focus:") ||
-          item === changeThemeItem ||
-          item === changeAppearanceItem,
-      )
-    : actionItems;
-  const rootGroups = buildRootGroups(
-    {
-      actionItems: shownActionItems,
-      recentThreadItems: inKin ? [] : recentThreadItems,
-    },
-    messages,
-  );
+  const rootInput = kin.rootInput({ actionItems, recentThreadItems }, [
+    changeThemeItem,
+    changeAppearanceItem,
+  ]);
+  const rootGroups = buildRootGroups(rootInput, messages);
   // Every setting goes to the palette's own matcher, so settings get the same
   // word starts and typo tolerance as threads.
   const settingsSearchItems: CommandPaletteActionItem[] = settingsForThisPlatform(
@@ -2068,76 +1911,14 @@ function OpenCommandPaletteDialog(props: {
         ? {
             allOptions: {
               rootGroups,
-              nestedItems: buildNestedSearchItems(shownActionItems, deferredQuery),
+              nestedItems: buildNestedSearchItems(rootInput.actionItems, deferredQuery),
             },
           }
         : {}),
-      projectSearchItems: inKin ? [] : projectSearchItems,
-      settingsSearchItems: inKin ? [] : settingsSearchItems,
-      kinItems:
-        kinNewLead === null || currentView !== null
-          ? []
-          : kinHits.map((raw) => {
-              const hit = kinSearchHit(raw);
-              const Icon = hit.kind === "docs" ? FileTextIcon : ListChecksIcon;
-              return {
-                kind: "action" as const,
-                value: `kin-hit:${hit.id}`,
-                searchTerms: [hit.title],
-                title: hit.title,
-                description: [hit.kindLabel, hit.section?.title, hit.snippet, hit.closed]
-                  .filter((part) => part !== null && part !== undefined)
-                  .join(" · "),
-                icon: <Icon className={ITEM_ICON_CLASS} />,
-                run: async () => {
-                  const params = {
-                    environmentId: kinNewLead.environmentId,
-                    orgId: kinNewLead.orgId,
-                  };
-                  if (hit.kind === "memory") {
-                    await navigate({ to: "/kin/$environmentId/$orgId/memory", params });
-                    return;
-                  }
-                  if (kinIsDealKey(raw.key)) {
-                    await navigate({
-                      to: "/kin/$environmentId/$orgId/clients",
-                      params,
-                      search: { tab: "deals", task: raw.key },
-                    });
-                    return;
-                  }
-                  const money =
-                    hit.kind === "invoices" ||
-                    hit.kind === "quotes" ||
-                    hit.kind === "expenses" ||
-                    hit.kind === "receipts";
-                  await navigate({
-                    to:
-                      hit.kind === "docs"
-                        ? "/kin/$environmentId/$orgId/docs"
-                        : hit.kind === "clients" || hit.kind === "projects"
-                          ? "/kin/$environmentId/$orgId/clients"
-                          : money
-                            ? "/kin/$environmentId/$orgId/money"
-                            : "/kin/$environmentId/$orgId/tasks",
-                    params,
-                    search:
-                      hit.kind === "docs"
-                        ? {
-                            doc: raw.key,
-                            ...(hit.section === null ? {} : { section: hit.section.id }),
-                          }
-                        : hit.kind === "clients"
-                          ? { [KIN_CLIENT_PARAM]: raw.key }
-                          : hit.kind === "projects"
-                            ? { project: raw.key }
-                            : { task: raw.key },
-                  });
-                },
-              };
-            }),
+      projectSearchItems: projectSearchItems,
+      settingsSearchItems,
       threadSearchItems:
-        isLinkedThreadSearch && linkedThreadSearch?.linkedThreads && !inKin
+        isLinkedThreadSearch && linkedThreadSearch?.linkedThreads
           ? buildLinkedThreadActionItems(
               {
                 ...linkedThreadSearch.linkedThreads,
@@ -2159,11 +1940,10 @@ function OpenCommandPaletteDialog(props: {
               },
               messages,
             )
-          : inKin
-            ? []
-            : allThreadItems,
-      threadMessageItems: isLinkedThreadSearch || inKin ? [] : threadMessageItems,
+          : allThreadItems,
+      threadMessageItems: isLinkedThreadSearch ? [] : threadMessageItems,
       now: searchNow,
+      ...kin.searchInput(currentView !== null),
     },
     messages,
   );

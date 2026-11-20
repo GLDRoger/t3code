@@ -4,11 +4,8 @@ import { page, userEvent } from "vite-plus/test/browser";
 import { act, render } from "../../../test/render";
 import { SidebarProvider } from "../ui/sidebar";
 import { SettingsSidebarNav } from "./SettingsSidebarNav";
-import {
-  KIN_ONLY_SETTINGS_PATHS,
-  SETTINGS_NAV_GROUPS,
-  SETTINGS_SECTION_LABELS,
-} from "./settingsSearch";
+import { KIN_ONLY_SETTINGS_PATHS } from "../../kin/kinSettingsSearch";
+import { SETTINGS_NAV_GROUPS, SETTINGS_SECTION_LABELS } from "./settingsSearch";
 
 vi.mock("./useAvailableSettingsSearchItems", () => ({
   useAvailableSettingsSearchItems: () => [

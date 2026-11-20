@@ -8,11 +8,8 @@ vi.mock(import("./KinNewLeadButton"), async (importOriginal) => ({
 }));
 
 import { render } from "../../test/render";
-import {
-  KIN_MOVED_SETTINGS_PATHS,
-  SETTINGS_SEARCH_ITEMS,
-  type SettingsPath,
-} from "../components/settings/settingsSearch";
+import { SETTINGS_SEARCH_ITEMS, type SettingsPath } from "../components/settings/settingsSearch";
+import { KIN_MOVED_SETTINGS_PATHS } from "./kinSettingsSearch";
 import { useKinSettingLanding } from "./kinSettingsAddress";
 import { KinSettingsMoved } from "./KinSettingsView";
 

@@ -1,6 +1,60 @@
 import type { KinSettingsPage } from "@t3tools/client-runtime/kin/kinNavigation";
 
-import type { SettingsSearchItem } from "../components/settings/settingsSearch";
+import { KIN_APPROVER_PHONES_TITLE } from "@t3tools/client-runtime/kin/kinApprovalPresentation";
+import { msg } from "gt-react";
+
+import type {
+  SettingsSearchItem,
+  SettingsSearchScope,
+} from "../components/settings/settingsSearch";
+
+/** Kin's own pages in the app's Settings; while a host runs Kin, each opens Kin's Settings. */
+export type KinSettingsPath =
+  | "/settings/approvals"
+  | "/settings/company"
+  | "/settings/check-ins"
+  | "/settings/deals"
+  | "/settings/kin-connections"
+  | "/settings/kin-profile";
+
+export const KIN_SETTINGS_SECTION_LABELS: Readonly<Record<KinSettingsPath, string>> = {
+  "/settings/approvals": msg("Approvals"),
+  "/settings/company": msg("Company details"),
+  "/settings/check-ins": msg("Check-ins"),
+  "/settings/deals": msg("Deals"),
+  "/settings/kin-connections": msg("Connections"),
+  "/settings/kin-profile": msg("Profile"),
+};
+
+export const KIN_SETTINGS_CATEGORY_SCOPES: Readonly<
+  Record<KinSettingsPath, SettingsSearchScope | null>
+> = {
+  "/settings/approvals": null,
+  "/settings/company": null,
+  "/settings/check-ins": null,
+  "/settings/deals": null,
+  "/settings/kin-connections": null,
+  "/settings/kin-profile": null,
+};
+
+/** Pages that exist only while a connected host runs Kin. */
+export const KIN_ONLY_SETTINGS_PATHS: ReadonlySet<string> = new Set([
+  "/settings/approvals",
+  "/settings/check-ins",
+  "/settings/deals",
+  "/settings/kin-connections",
+  "/settings/kin-profile",
+]);
+
+/** Kin's pages, which Kin's own Settings holds while a host runs Kin. */
+export const KIN_MOVED_SETTINGS_PATHS: ReadonlySet<string> = new Set([
+  "/settings/approvals",
+  "/settings/check-ins",
+  "/settings/company",
+  "/settings/deals",
+  "/settings/kin-connections",
+  "/settings/kin-profile",
+]);
 
 /**
  * Kin's own Profile settings, found from the app's settings search; the address opens Kin's
@@ -35,6 +89,70 @@ export const KIN_PROFILE_SETTINGS_SEARCH_ITEMS = [
     to: "/settings/kin-profile",
     searchTerms: ["kin github username login pull requests review"],
     kinOnly: true,
+  },
+] as const satisfies ReadonlyArray<SettingsSearchItem>;
+
+/** Kin's settings as the app's settings search finds them. */
+export const KIN_SETTINGS_SEARCH_ITEMS = [
+  {
+    id: "approval-phones",
+    kinOnly: true,
+    title: KIN_APPROVER_PHONES_TITLE,
+    to: "/settings/approvals",
+    searchTerms: [
+      "kin approvals approve phone face id set up remove key device lost new recent changes",
+    ],
+  },
+  {
+    id: "company-details",
+    title: "Company details",
+    to: "/settings/company",
+    searchTerms: ["kin legal name address gstin pan tax bank account ifsc upi invoice"],
+  },
+  {
+    id: "kin-connections",
+    title: "Connections",
+    to: "/settings/kin-connections",
+    searchTerms: ["kin connected services tools posthog github key agents read"],
+  },
+  {
+    id: "kin-time-zone",
+    title: "Time zone",
+    to: "/settings/company",
+    searchTerms: ["kin timezone zone check-ins due dates hours clock"],
+  },
+  {
+    id: "kin-agents",
+    title: "Agents",
+    to: "/settings/company",
+    searchTerms: ["kin agents model character personality pause retire new agents default"],
+  },
+  {
+    id: "kin-who-can-message",
+    title: "Who can message",
+    to: "/settings/company",
+    searchTerms: [
+      "kin restrict restricted restriction message messaging who can message lift block",
+    ],
+  },
+  {
+    id: "kin-daily-limit",
+    title: "Daily limit",
+    to: "/settings/company",
+    searchTerms: ["kin budget agents usage spend limit"],
+  },
+  {
+    id: "kin-check-ins",
+    title: "Check-ins",
+    to: "/settings/check-ins",
+    searchTerms: ["kin schedule morning afternoon weekly brief routine time run now"],
+  },
+  ...KIN_PROFILE_SETTINGS_SEARCH_ITEMS,
+  {
+    id: "kin-deals",
+    title: "Deal stages",
+    to: "/settings/deals",
+    searchTerms: ["kin deals stages pipeline won lost sales prospect"],
   },
 ] as const satisfies ReadonlyArray<SettingsSearchItem>;
 
