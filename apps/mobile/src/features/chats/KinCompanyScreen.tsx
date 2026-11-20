@@ -43,6 +43,7 @@ import {
   KinWorkTextField,
 } from "./components/KinWorkPieces";
 import { KinBrandForm, KinBrandRows } from "./KinBrand";
+import { KinStopRows } from "./KinStopRows";
 import { KinTemplateRows } from "./KinTemplates";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
@@ -229,6 +230,7 @@ function Profile(
           ))
         )}
         <CompanyTimeZone environmentId={environmentId} orgId={orgId} />
+        <KinStopRows environmentId={environmentId} orgId={orgId} />
         {brandSaved ? <Notice message={KIN_BRAND.saved} icon="checkmark.circle" /> : null}
         <KinBrandRows
           environmentId={environmentId}

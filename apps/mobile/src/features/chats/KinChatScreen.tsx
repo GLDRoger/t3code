@@ -187,6 +187,8 @@ import { useKinAgentRetire } from "./state/useKinAgentRetire";
 import { useKinHostAt } from "./state/useKinHost";
 import { useKinReconnect } from "./state/useKinReconnect";
 import { useKinProfiles } from "./state/useKinProfiles";
+import { kinStopNotice } from "@t3tools/client-runtime/kin/kinStop";
+import { useKinStopLine } from "./state/useKinStop";
 import {
   kinMemberNames,
   kinMentionCandidates,
@@ -335,6 +337,12 @@ function KinLiveChat(props: {
       ? undefined
       : pairProfiles.profiles.find((profile) => profile.personId === pairWith);
   const away = pairProfile === undefined ? null : kinAwayLine(pairProfile, { mine: false });
+  // A chat between people goes on while agents are stopped.
+  const stopLine = useKinStopLine(
+    environmentId === null || summary === undefined || pairWith !== null
+      ? null
+      : { environmentId, orgId: summary.orgId },
+  );
   const groupResult = useAtomValue(
     environmentId === null || chatId === null || !group
       ? noMembersAtom
@@ -467,9 +475,10 @@ function KinLiveChat(props: {
                     : () => retire.restore(ownLead),
               }
         }
-        groupNotice={
-          silentAnswerer === null ? null : kinRetiredGroupLine(silentAnswerer, canRestore)
-        }
+        groupNotice={kinStopNotice(
+          stopLine,
+          silentAnswerer === null ? null : kinRetiredGroupLine(silentAnswerer, canRestore),
+        )}
         group={
           environmentId === null || summary === undefined || !group || pairWith !== null
             ? null
