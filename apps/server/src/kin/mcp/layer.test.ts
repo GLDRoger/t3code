@@ -33,9 +33,10 @@ import { isSocialTool } from "../social/mcp.ts";
 import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
 import { visibleOnKinEndpoint } from "../lead/AgentSession.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
+import { kinInstructions } from "../lead/turn/session.ts";
 import * as FileSystem from "effect/FileSystem";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
-import budget from "./agentContextBudget.json" with { type: "json" };
+import contextBudget from "./agentContextBudget.json" with { type: "json" };
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -105,6 +106,19 @@ const decodeToolList = Schema.decodeUnknownSync(
   Schema.fromJsonString(
     Schema.Struct({
       result: Schema.Struct({ tools: Schema.Array(Schema.Struct({ name: Schema.String })) }),
+    }),
+  ),
+);
+const decodeToolBodies = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      result: Schema.Struct({
+        tools: Schema.Array(
+          Schema.StructWithRest(Schema.Struct({ name: Schema.String }), [
+            Schema.Record(Schema.String, Schema.Unknown),
+          ]),
+        ),
+      }),
     }),
   ),
 );
@@ -508,6 +522,75 @@ it.effect.each([true, false])(
           yield* Effect.promise(() => HttpServerResponse.toWeb(socialList).text()),
         ).result.tools.map((tool) => tool.name);
         assert.includeMembers(servedNames, ["social_read", "social_draft", "social_week"]);
+        // Which seat lists which T3 tools, and what each seat's list weighs.
+        const seatList = Effect.fn(function* (domain: string) {
+          yield* sql`UPDATE kin_leads SET domain = ${domain} WHERE agent_id = ${agentId}`;
+          const tools = decodeToolBodies(
+            yield* request(
+              "/kin/mcp",
+              issued.config.authorizationHeader,
+              "tools/list",
+              {},
+              initialized.headers["mcp-session-id"],
+            ).pipe(Effect.flatMap(bodyOf)),
+          ).result.tools;
+          const names = tools.map((tool) => tool.name);
+          // What the model reads of each tool, as the budget below measures it.
+          const read = tools.map(({ name, description, inputSchema }) => ({
+            name,
+            description,
+            inputSchema,
+          }));
+          return {
+            t3: LEAD_T3_TOOLS.filter((name) => names.includes(name)),
+            bytes: Buffer.byteLength(JSON.stringify(read), "utf8"),
+          };
+        });
+        const engineering = yield* seatList("engineering");
+        const seats = {
+          finance: yield* seatList("finance"),
+          social: yield* seatList("social"),
+          support: yield* seatList("support"),
+        };
+        // Linked environments are off on this server, so their list never shows.
+        assert.deepStrictEqual(
+          engineering.t3,
+          LEAD_T3_TOOLS.filter((name) => name !== "t3_environment_links"),
+        );
+        assert.deepStrictEqual((yield* seatList("tech-lead")).t3, engineering.t3);
+        // Any other lead keeps delegation, threads, figures and attachments; code goes to a task.
+        for (const seat of Object.values(seats))
+          assert.deepStrictEqual(seat.t3, [
+            "orchestrator_capabilities",
+            "delegate_task",
+            "task_status",
+            "task_cancel",
+            "t3_workflow_stop",
+            "t3_background_wait",
+            "t3_thread_list",
+            "t3_thread_read",
+            "t3_thread_send",
+            "t3_thread_wait",
+            "t3_thread_interrupt",
+            "t3_pending_request",
+            "t3_environment_read",
+            "t3_project_list",
+            "t3_project_read",
+            "html_preview",
+            "html_render",
+            "t3_attachment_prepare_upload",
+            "t3_attachment_discard",
+            "t3_thread_send_attachments",
+          ]);
+        assert.deepStrictEqual(
+          {
+            engineering: engineering.bytes,
+            finance: seats.finance.bytes,
+            social: seats.social.bytes,
+            support: seats.support.bytes,
+          },
+          contextBudget.kinLeadToolListJsonBytes,
+        );
         yield* sql`UPDATE kin_leads SET domain = 'engineering' WHERE agent_id = ${agentId}`;
         const served = [...new Set([...servedNames, ...kinGitHub, ...LEAD_T3_TOOLS])];
         assert.sameMembers(served, Object.keys(SHARED_TOOLS));
@@ -848,8 +931,17 @@ it.effect("measures the combined agent tool list separately from ordinary thread
       {
         mcpToolListJsonBytes: Buffer.byteLength(JSON.stringify(tools), "utf8"),
         kinToolListJsonBytes: Buffer.byteLength(JSON.stringify(kinTools), "utf8"),
+        // The system prompt every lead turn sends, by seat.
+        kinInstructionsBytes: {
+          owner: Buffer.byteLength(kinInstructions("owner", "claudeAgent"), "utf8"),
+          confined: Buffer.byteLength(kinInstructions("confined", "claudeAgent"), "utf8"),
+        },
       },
-      budget,
+      {
+        mcpToolListJsonBytes: contextBudget.mcpToolListJsonBytes,
+        kinToolListJsonBytes: contextBudget.kinToolListJsonBytes,
+        kinInstructionsBytes: contextBudget.kinInstructionsBytes,
+      },
     );
   }).pipe(
     Effect.provide(

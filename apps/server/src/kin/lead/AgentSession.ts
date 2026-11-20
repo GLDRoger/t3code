@@ -30,12 +30,13 @@ import { aborted, effectiveAudience, SESSION_REFUSAL, SHARED_THREAD_PREFIX } fro
 import { markOutside, outsideRead } from "./OutsideContent.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { listedOnSharedThread } from "./SharedTools.ts";
-import { LEAD_T3_TOOLS } from "./t3Tools.ts";
+import { CODING_T3_TOOLS, isEngineeringDomain, LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { wakeupOfRuns } from "../chat/wakeupRuns.ts";
 import { isSocialTool } from "../social/mcp.ts";
 import { socialSeatThread } from "../social/seat.ts";
 
 const leadT3Tools: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
+const codingT3Tools: ReadonlySet<string> = new Set(CODING_T3_TOOLS);
 
 const T3_TOOLKITS = [
   OrchestratorToolkit,
@@ -186,6 +187,25 @@ const onSocialSeat = Effect.fn("KinAgentSession.onSocialSeat")(
   ),
 );
 
+/** Whether a thread is the live own thread of a lead whose remit builds software. */
+const onEngineeringSeat = Effect.fn("KinAgentSession.onEngineeringSeat")(
+  function* (threadId: ThreadId) {
+    const services = Option.flatMap(yield* Effect.serviceOption(KinServer), (kin) => kin.services);
+    if (Option.isNone(services)) return false;
+    const sql = Context.get(services.value, SqlClient.SqlClient);
+    // A thread id is unique across orgs; the join keeps the lead in the thread's own org.
+    const [lead] = yield* sql<{ domain: string }>`SELECT l.domain FROM kin_agent_threads t
+      JOIN kin_leads l ON l.org_id = t.org_id AND l.agent_id = t.agent_id
+      WHERE t.thread_id = ${threadId} AND t.ended_at IS NULL ORDER BY t.thread_id LIMIT 1`;
+    return lead !== undefined && isEngineeringDomain(lead.domain);
+  },
+  Effect.catchCause((cause) =>
+    Effect.logWarning("Kin coding tool visibility failed; hiding", { cause }).pipe(
+      Effect.as(false),
+    ),
+  ),
+);
+
 /** How far up T3's task links a lead's name is looked for. */
 const MAX_NAME_DEPTH = 8;
 
@@ -221,7 +241,8 @@ const loginConnected = Effect.gen(function* () {
 
 /**
  * What the Kin endpoint lists, per thread so every turn of it sends the same list (prompt cache).
- * Shared threads list only what shared turns may run; T3 tools show only on an owner-only thread.
+ * Shared threads list only what shared turns may run; T3 tools show only on an owner-only thread,
+ * and its coding ones only on an engineering lead's.
  * `KinToolGate` checks each call.
  */
 export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(function* (
@@ -233,7 +254,8 @@ export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(functio
   if (isKinGitHubTool(name)) return LOGIN_GITHUB_TOOLS.has(name) && (yield* loginConnected);
   if (isSocialTool(name)) return yield* onSocialSeat(threadId);
   if (!isT3Tool(name)) return true;
-  return leadT3Tools.has(name) && !shared;
+  if (!leadT3Tools.has(name) || shared) return false;
+  return !codingT3Tools.has(name) || (yield* onEngineeringSeat(threadId));
 });
 
 export const endpointVisibility = McpHttpServer.toolVisibility((name) =>
