@@ -46,9 +46,8 @@ import { useConnectionController } from "../connection/useConnectionController";
 import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { useSettingsPageBack } from "../settings/useSettingsPageBack";
-import { useKinTab } from "./components/KinTab";
+import { useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinBriefsSection } from "./KinBriefs";
-import { KinCheckInsSection } from "./KinCheckIns";
 import { useKinIsHome } from "./state/kinHome";
 import { openKinNotificationSettings } from "./notifications/installKinNotifications";
 import { useChatOnlyEnvironments, useKinOwnerLevel, useKinSeesClients } from "./state/kinChatOnly";
@@ -79,7 +78,7 @@ const CONNECTION_LABEL: Record<EnvironmentPresentation["connection"]["phase"], s
  * itself, and so does a co-owner; a member gets the app and the way to leave.
  * Drawn as a tab of the Kin home, or as a pushed page where there is no dock.
  */
-/** Company pages that open a screen of their own; Check-ins and Approvals are sections here. */
+/** Company pages that open a screen of their own; Approvals is a section here, check-ins sit under Briefs. */
 const COMPANY_ROWS: Partial<
   Record<
     KinSettingsPage,
@@ -189,16 +188,18 @@ export function KinSettings(props: {
   const nameOf = (environment: EnvironmentPresentation) =>
     environment.displayUrl !== null &&
     environments.filter((one) => one.label === environment.label).length > 1
-      ? `${environment.label} (${environment.displayUrl})`
+      ? `${environment.label} (${shortAddress(environment.displayUrl)})`
       : environment.label;
-  // The team on screen has its name; an old one this phone still holds goes by its computer and state.
-  const teamOf = (environmentId: EnvironmentId) => {
-    if (host._tag === "host" && host.environmentId === environmentId) return team;
-    const held = environments.find((one) => one.environmentId === environmentId);
-    return held === undefined
-      ? null
-      : `${nameOf(held)} (${CONNECTION_LABEL[held.connection.phase].toLowerCase()})`;
-  };
+  // The team on screen has its name; an old one this phone still holds goes by its computer's.
+  const teamOf = (environmentId: EnvironmentId) =>
+    host._tag === "host" && host.environmentId === environmentId
+      ? team
+      : (environments.find((one) => one.environmentId === environmentId)?.label ?? null);
+  const heldTeams = environments.filter(
+    (held) =>
+      teammateIds.includes(held.environmentId) &&
+      !(host._tag === "host" && host.environmentId === held.environmentId),
+  );
   const forget = (environmentId: EnvironmentId) => {
     setLeft((held) => new Set(held).add(environmentId));
     void controller.removeEnvironment(environmentId).then((result) => {
@@ -253,7 +254,11 @@ export function KinSettings(props: {
         <ScreenScrollView
           className="flex-1"
           contentInsetAdjustmentBehavior="automatic"
-          contentContainerStyle={{ padding: 16, paddingBottom: 32 + bottomClearance, gap: 20 }}
+          contentContainerStyle={{
+            padding: 16,
+            paddingBottom: kinTabFoot(bottomClearance),
+            gap: 20,
+          }}
         >
           <SettingsSection title={you.title}>
             {you.pages.map((page) => {
@@ -321,7 +326,11 @@ export function KinSettings(props: {
             )}
           </SettingsSection>
           {host._tag !== "host" || orgId === null ? null : (
-            <KinBriefsSection environmentId={host.environmentId} orgId={orgId} />
+            <KinBriefsSection
+              environmentId={host.environmentId}
+              orgId={orgId}
+              checkIns={company !== null}
+            />
           )}
           {owned.length === 0 ? null : (
             <SettingsSection
@@ -360,7 +369,6 @@ export function KinSettings(props: {
                 <KinCompanyChatRow {...company} />
               </SettingsSection>
               <KinDailyLimitSection {...company} />
-              <KinCheckInsSection {...company} />
               <SettingsSection
                 title={KIN_SETTINGS_PAGE_TITLES.approvals}
                 footer="Your agents ask before anything that needs your say. You approve on this phone with Face ID."
@@ -379,6 +387,14 @@ export function KinSettings(props: {
                 />
               </SettingsSection>
             </>
+          )}
+          {/* Another team this phone still holds: its connection shows here, not in its Leave. */}
+          {heldTeams.length === 0 ? null : (
+            <SettingsSection>
+              {heldTeams.map((environment) => (
+                <KinConnection key={environment.environmentId} environment={environment} />
+              ))}
+            </SettingsSection>
           )}
           {/* The coding app signs out of a computer from Environments. */}
           {(inCodingApp ? [] : owned).map((environment) => (
@@ -409,6 +425,10 @@ export function KinSettings(props: {
   );
 }
 
+/** "192.168.1.20:3773" for "http://192.168.1.20:3773/": the scheme and the closing slash say nothing. */
+const shortAddress = (url: string) =>
+  url.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/\/+$/, "");
+
 /** Kin's page in the coding app's Settings; where Kin is the whole app, its own Settings. */
 export function KinSettingsScreen() {
   return <KinSettings inCodingApp={!useKinIsHome()} />;
@@ -425,7 +445,9 @@ function KinConnection(props: { readonly environment: EnvironmentPresentation })
         <ListRowLayout
           icon="desktopcomputer"
           label={environment.label}
-          description={environment.displayUrl ?? undefined}
+          description={
+            environment.displayUrl === null ? undefined : shortAddress(environment.displayUrl)
+          }
           detail={status === "failed" ? "Couldn't reconnect" : CONNECTION_LABEL[phase]}
         />
       </View>

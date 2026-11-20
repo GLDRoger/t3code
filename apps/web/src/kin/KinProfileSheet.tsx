@@ -17,6 +17,7 @@ import {
   type KinProfileHolding,
 } from "@t3tools/client-runtime/kin/kinProfiles";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
+import { kinZoneLabel } from "@t3tools/client-runtime/kin/kinTimeZone";
 import type {
   EnvironmentId,
   KinAttachment,
@@ -442,7 +443,7 @@ function KinProfileRead(props: {
           {hours === null ? (
             <span className="text-muted-foreground">{KIN_PROFILE_COPY.noHours}</span>
           ) : (
-            `${hours}${profile.timeZone === null ? "" : `, ${profile.timeZone}`}`
+            `${hours}${profile.timeZone === null ? "" : `, ${kinZoneLabel(profile.timeZone)}`}`
           )}
         </p>
       </Field>

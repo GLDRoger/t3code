@@ -21,7 +21,6 @@ import {
   type KinWorkPrincipal,
   KIN_TEXT_LOCALE,
   calendarTimeMillis,
-  formatKinLate,
   formatKinWhen,
   isCalendarDay,
 } from "@t3tools/contracts";
@@ -87,6 +86,7 @@ import {
   endOfDay,
   iso,
   notFound,
+  overdueFor,
   owedInvoices,
   ownerZone,
   principalId,
@@ -1671,7 +1671,7 @@ const clientOwed = Effect.fnUntraced(function* (
             one.dueAt === null
               ? "unpaid, no due date"
               : one.overdue
-                ? `overdue ${formatKinLate(one.dueAt, now, { zone, locale: KIN_TEXT_LOCALE })}`
+                ? `overdue ${overdueFor(one.dueAt, one.daysOverdue, now, zone)}`
                 : `due ${dayIn(one.dueAt, zone)}`
           }`,
       ),

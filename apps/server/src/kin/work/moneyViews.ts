@@ -250,7 +250,6 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   const byClient = [...clients].map(([partyId, members]) => {
     const first = members[0]!;
     const late = members.filter((one) => one.overdue);
-    const oldest = Math.min(...late.map((one) => one.dueAt ?? now));
     const party: KinRecordRef | null =
       partyId === null ||
       first.partyKey === null ||
@@ -269,7 +268,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
         home,
       ),
       invoices: members.length,
-      oldestOverdueDays: late.length === 0 ? null : Math.floor((now - oldest) / DAY_MS),
+      oldestOverdueDays: late.length === 0 ? null : Math.max(...late.map((one) => one.daysOverdue)),
     };
   });
 
