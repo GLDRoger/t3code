@@ -19,7 +19,7 @@ import * as ServerConfig from "../../../../config.ts";
 import * as ClaudeAdapterV2 from "../../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { hookAllows, kinSecretVariables } from "../../../claudeConfinement.testkit.ts";
 import * as DreamIsolation from "../../../dreaming/DreamIsolation.ts";
-import { builtinTools, claude } from "./claude.ts";
+import { builtinTools, claude, OWNER_SEAT_OFF } from "./claude.ts";
 import { kinInstructions } from "../session.ts";
 import { ownerOnlyWakeup, wakeupRun } from "../../Audience.testkit.ts";
 import {
@@ -304,9 +304,13 @@ it.effect(
           ),
         );
       const full = yield* open("kin:tech");
-      // Claude Code's own tools, no deny rules, the pinned gh first on PATH.
+      // Claude Code's own tools but those that wait on someone at the screen, the pinned gh first.
       assert.strictEqual(full?.tools, lead.tools);
-      assert.deepStrictEqual(full?.disallowedTools ?? [], lead.disallowedTools ?? []);
+      assert.deepStrictEqual(full?.disallowedTools, [
+        ...new Set([...(lead.disallowedTools ?? []), ...OWNER_SEAT_OFF]),
+      ]);
+      for (const kept of ["Bash", "Read", "Edit", "Write", "WebFetch", "Agent", "TaskStop"])
+        assert.notInclude(full?.disallowedTools ?? [], kept);
       // The signing gh first, then the pinned one; Claude Code's own PR footer and trailer off.
       const signing = `${stateDir}/kin/gh-sign`;
       assert.strictEqual(full?.env?.PATH, `${signing}:/kin-home/kin-tools/gh-pinned:/usr/bin`);

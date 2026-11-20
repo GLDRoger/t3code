@@ -576,6 +576,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_lead_access_person" },
           { name: "idx_kin_lead_deliveries_pending" },
           { name: "idx_kin_leads_org_domain" },
+          { name: "idx_kin_messages_agent_thread" },
           { name: "idx_kin_messages_changes" },
           { name: "idx_kin_pending_actions_approved" },
           { name: "idx_kin_pending_actions_expiry" },
@@ -620,6 +621,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_waiting_open_widget_person" },
           { name: "idx_kin_waiting_person_resolved_at" },
           { name: "idx_kin_wakeups_running_lead" },
+          { name: "idx_kin_wakeups_started" },
           { name: "idx_kin_wakeups_unretired_agent" },
           { name: "idx_kin_widgets_chat_message" },
           { name: "idx_kin_widgets_type_closed_at" },
@@ -1695,6 +1697,42 @@ describe("Kin migrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect(
+    "K191 reads one wake-up's posts and a day's wake-ups by index, not the whole history",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        // Each read is its own statement: the client keeps a prepared plan for a statement's text.
+        const plans = Effect.fn(function* (read: string) {
+          const tag = sql.literal(`/* ${read} */`);
+          const posts = yield* sql<{ detail: string }>`EXPLAIN QUERY PLAN SELECT body ${tag}
+          FROM kin_messages
+          WHERE org_id = 'org' AND author_kind = 'agent' AND author_agent_id = 'lead'
+            AND author_thread_id = 'kin:lead' AND created_at >= '2026-11-20T00:00:00.000Z'
+          ORDER BY seq`;
+          const failed = yield* sql<{
+            detail: string;
+          }>`EXPLAIN QUERY PLAN SELECT COUNT(*) AS n ${tag}
+          FROM kin_wakeups WHERE org_id = 'org' AND status IN ('failed', 'timed_out')
+            AND started_at >= 0`;
+          return [...posts, ...failed].map((row) => row.detail).join("\n");
+        });
+        yield* runKinMigrations();
+        const indexed = yield* plans("indexed");
+        assert.include(indexed, "idx_kin_messages_agent_thread");
+        assert.include(indexed, "idx_kin_wakeups_started");
+        yield* sql`DROP INDEX idx_kin_messages_agent_thread`;
+        yield* sql`DROP INDEX idx_kin_wakeups_started`;
+        // Without them, both read every row the org ever had.
+        const scanned = yield* plans("without");
+        assert.include(scanned, "idx_kin_messages_changes (org_id=?)");
+        assert.notInclude(scanned, "started_at>");
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 191`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(191));
+        assert.strictEqual(yield* plans("again"), indexed);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -1705,7 +1743,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 190");
+      assert.include(String(exit), "below the latest applied migration 191");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
