@@ -116,6 +116,9 @@ const clamp = (text: string, max: number) => {
 
 const OPENS_THREAD = "Opens the thread";
 
+/** A model id as Settings names it (`kinListedModelName`); null shows no model at all. */
+export type KinModelName = (model: string) => string | null;
+
 /** The task card in an app with no coding threads: nothing to open, and nothing said of one. */
 export function kinTaskCardWithoutThread(task: KinTaskCardView): KinTaskCardView {
   return {
@@ -131,10 +134,12 @@ function kinTaskCardView(
   /** The environment hosting this chat. A local card must name it; only remote cards go elsewhere. */
   hostEnvironmentId: EnvironmentId,
   isKnownEnvironment: (environmentId: EnvironmentId) => boolean,
+  modelName: KinModelName,
 ): KinTaskCardView {
   const { label, tone } = STATUS[state.status];
   const title = clamp(state.title, 200);
-  const model = state.model === null ? null : clamp(state.model, 60) || null;
+  const named = state.model === null ? null : modelName(state.model);
+  const model = named === null ? null : clamp(named, 60) || null;
   const detail = state.lastError === null ? null : clamp(state.lastError, 280) || null;
   const environmentId = state.remoteEnvironmentId ?? state.environmentId;
   const known =
@@ -482,8 +487,15 @@ export function kinCardView(
   heldFor: string | null = null,
   /** Whether the viewer is owner-level; unknown offers every tap. */
   ownerLevel?: boolean,
+  modelName: KinModelName = () => null,
 ): KinCardView {
-  const view = kinLiveCardView(widget, hostEnvironmentId, isKnownEnvironment, ownerLevel);
+  const view = kinLiveCardView(
+    widget,
+    hostEnvironmentId,
+    isKnownEnvironment,
+    ownerLevel,
+    modelName,
+  );
   if (heldFor === null || view.kind !== "deferral" || !HELD_TYPES.has(widget?.type ?? ""))
     return view;
   const { deferral } = view;
@@ -512,6 +524,7 @@ function kinLiveCardView(
   hostEnvironmentId: EnvironmentId,
   isKnownEnvironment: (environmentId: EnvironmentId) => boolean,
   ownerLevel: boolean | undefined,
+  modelName: KinModelName,
 ): KinCardView {
   if (widget === undefined) return { kind: "missing" };
   if (widget.widgetClass !== "native") return unknown(widget);
@@ -521,7 +534,7 @@ function kinLiveCardView(
       return Option.isSome(state)
         ? {
             kind: "task",
-            task: kinTaskCardView(state.value, hostEnvironmentId, isKnownEnvironment),
+            task: kinTaskCardView(state.value, hostEnvironmentId, isKnownEnvironment, modelName),
           }
         : unknown(widget);
     }

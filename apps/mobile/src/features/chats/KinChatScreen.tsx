@@ -1,3 +1,4 @@
+import { kinGroupCardRows, type KinCardGroupRow } from "@t3tools/client-runtime/kin/kinCardGroups";
 import { kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
 import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_PEOPLE_CHAT, kinPeopleChatWith } from "@t3tools/client-runtime/kin/kinPeopleChat";
@@ -931,6 +932,7 @@ const SEEN_ROW_CONFIGS = [
 
 type KinChatRow =
   | KinFeedRow
+  | KinCardGroupRow
   | {
       readonly type: "pending";
       readonly key: string;
@@ -1103,11 +1105,20 @@ function KinChatFeed(props: {
         };
   const lastFeedRow = feedRows.at(-1);
   const endsOnOwn = lastFeedRow?.type === "message" && lastFeedRow.own;
+  const groupedRows = kinGroupCardRows(
+    feedRows,
+    widgets,
+    new Set(
+      streamed.reactions.flatMap((reaction) =>
+        reaction.removedAt === null ? [reaction.messageId] : [],
+      ),
+    ),
+  );
   const rows: ReadonlyArray<KinChatRow> =
     pending.length === 0
-      ? feedRows
+      ? groupedRows
       : [
-          ...feedRows,
+          ...groupedRows,
           ...pending.map((entry, index) => ({
             type: "pending" as const,
             key: `pending:${entry.clientMessageId}`,
@@ -1124,7 +1135,12 @@ function KinChatFeed(props: {
   const landIndex =
     landOn === null
       ? -1
-      : rows.findIndex((row) => row.type === "message" && row.message.messageId === landOn);
+      : rows.findIndex((row) =>
+          row.type === "message"
+            ? row.message.messageId === landOn
+            : row.type === "cards" &&
+              [row.question, ...row.tasks].some((card) => card?.message.messageId === landOn),
+        );
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the list, outside React, to the message a notification opened, once it has loaded
   useEffect(() => {
     if (landOn === null || landIndex < 0 || landed.current === landOn) return;
@@ -1273,7 +1289,11 @@ function KinChatFeed(props: {
   const markSeen = ({ viewableItems }: OnViewableItemsChangedInfo<KinChatRow>) => {
     const seq = Math.max(
       0,
-      ...viewableItems.map((token) => (token.item.type === "pending" ? 0 : kinRowSeq(token.item))),
+      ...viewableItems.map((token) =>
+        token.item.type === "pending"
+          ? 0
+          : kinRowSeq(token.item.type === "cards" ? token.item.tasks.at(-1)! : token.item),
+      ),
     );
     if (seq > 0) transition({ type: "seen", seq });
   };
@@ -1320,63 +1340,83 @@ function KinChatFeed(props: {
         sendingSample.current = false;
       });
   };
+  const renderMessage = (
+    item: Extract<KinFeedRow, { readonly type: "message" }>,
+    group?: KinCardGroupRow,
+  ) => {
+    const { message } = item;
+    const widget = message.widgetId === null ? undefined : widgets.get(message.widgetId);
+    const chips = kinReactionChips(
+      streamed.reactions,
+      message.messageId,
+      viewerMemberId,
+      reactorName,
+    );
+    // The host refuses reactions on approval and deferral cards.
+    const reactable =
+      canReact &&
+      message.status === "posted" &&
+      (message.widgetId === null || (widget !== undefined && REACTABLE_WIDGETS.has(widget.type)));
+    return (
+      <KinMessageBubble
+        row={item}
+        markdownStyle={markdownStyle}
+        ownMarkdownStyle={ownMarkdownStyle}
+        direct={props.direct}
+        onPressPreview={setPreviewFile}
+        onOpenPerson={(personId) =>
+          navigation.navigate("KinProfile", {
+            environmentId: props.environmentId,
+            orgId: props.orgId,
+            personId,
+          })
+        }
+        onOpenActions={
+          message.status !== "deleted" && (reactable || message.body.trim().length > 0)
+            ? () => openActions(message.messageId)
+            : null
+        }
+        onOpenReceipt={() => setReceiptFor(message.messageId)}
+        onLinkPress={onLinkPress}
+        widget={widget}
+        environmentId={props.environmentId}
+        viewerPersonId={props.viewer.personId}
+        firstName={props.viewer.firstName ?? null}
+        heldFor={kinHeldCardAgent(message.author, props.viewer, props.retired?.name ?? null)}
+        agentNames={props.viewer.agentNames}
+        reactions={chips}
+        onReact={
+          reactable
+            ? (emoji: KinReactionEmoji) =>
+                void react({
+                  environmentId: props.environmentId,
+                  input: kinReactionToggle(chips, message.messageId, emoji),
+                })
+            : null
+        }
+        {...(group === undefined
+          ? {}
+          : {
+              group: {
+                question:
+                  group.question?.message.widgetId == null
+                    ? undefined
+                    : widgets.get(group.question.message.widgetId),
+                tasks: group.tasks.map((task) =>
+                  task.message.widgetId === null ? undefined : widgets.get(task.message.widgetId),
+                ),
+              },
+            })}
+      />
+    );
+  };
+
   const renderItem = ({ item }: { readonly item: KinChatRow }) => {
     switch (item.type) {
-      case "message": {
-        const { message } = item;
-        const widget = message.widgetId === null ? undefined : widgets.get(message.widgetId);
-        const chips = kinReactionChips(
-          streamed.reactions,
-          message.messageId,
-          viewerMemberId,
-          reactorName,
-        );
-        // The host refuses reactions on approval and deferral cards.
-        const reactable =
-          canReact &&
-          message.status === "posted" &&
-          (message.widgetId === null ||
-            (widget !== undefined && REACTABLE_WIDGETS.has(widget.type)));
-        return (
-          <KinMessageBubble
-            row={item}
-            markdownStyle={markdownStyle}
-            ownMarkdownStyle={ownMarkdownStyle}
-            direct={props.direct}
-            onPressPreview={setPreviewFile}
-            onOpenPerson={(personId) =>
-              navigation.navigate("KinProfile", {
-                environmentId: props.environmentId,
-                orgId: props.orgId,
-                personId,
-              })
-            }
-            onOpenActions={
-              message.status !== "deleted" && (reactable || message.body.trim().length > 0)
-                ? () => openActions(message.messageId)
-                : null
-            }
-            onOpenReceipt={() => setReceiptFor(message.messageId)}
-            onLinkPress={onLinkPress}
-            widget={widget}
-            environmentId={props.environmentId}
-            viewerPersonId={props.viewer.personId}
-            firstName={props.viewer.firstName ?? null}
-            heldFor={kinHeldCardAgent(message.author, props.viewer, props.retired?.name ?? null)}
-            agentNames={props.viewer.agentNames}
-            reactions={chips}
-            onReact={
-              reactable
-                ? (emoji: KinReactionEmoji) =>
-                    void react({
-                      environmentId: props.environmentId,
-                      input: kinReactionToggle(chips, message.messageId, emoji),
-                    })
-                : null
-            }
-          />
-        );
-      }
+      case "message":
+        return renderMessage(item);
+      case "cards":
+        return renderMessage(item.first, item);
       case "system": {
         const { retry } = item;
         // An unsent message is already a retry in flight.
