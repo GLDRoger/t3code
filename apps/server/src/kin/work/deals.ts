@@ -1101,6 +1101,14 @@ export const update = Effect.fn("KinDeals.rpc.update")(function* (
           owner: input.owner,
           sensitive: input.sensitive,
           quoteKey: input.quote,
+          concerns:
+            input.concerns === undefined || input.concerns === null
+              ? input.concerns
+              : input.concerns.map((concern) =>
+                  concern.heard === undefined
+                    ? concern.label
+                    : `${concern.label}: ${concern.heard}`,
+                ),
         },
         input.rev,
       );

@@ -361,7 +361,8 @@ it.effect(
 
 it.effect("a deal's concerns: short labels, each once, cleared by an empty list", () =>
   Effect.gen(function* () {
-    const { stock } = yield* seed;
+    const seeded = yield* seed;
+    const { stock } = seeded;
     const key = stock.deal.key;
     assert.strictEqual(
       yield* refusal(concernsOn(key, ["Staff confidence", "staff  Confidence: again"])),
@@ -378,6 +379,29 @@ it.effect("a deal's concerns: short labels, each once, cleared by an empty list"
     assert.include(shown, "concerns");
     yield* concernsOn(key, []);
     assert.isUndefined((yield* Deals.page([owner], { orgId, key })).deal.concerns);
+    // On the deal's page, Remove is the deal's own edit: for whoever may edit it, and no one else.
+    yield* concernsOn(key, ["Staff confidence: they worry", "Past system failed"]);
+    const { rheas } = seeded;
+    yield* concernsOn(rheas.deal.key, ["Past system failed"]);
+    const rev = (yield* Deals.page([owner], { orgId, key: rheas.deal.key })).deal.rev;
+    assert.strictEqual(
+      yield* refusal(Deals.update([zoya], { orgId, key: rheas.deal.key, rev, concerns: [] })),
+      "not_allowed",
+    );
+    assert.deepStrictEqual(
+      (yield* Deals.page([owner], { orgId, key: rheas.deal.key })).deal.concerns,
+      [{ label: "Past system failed" }],
+    );
+    const mine = (yield* Deals.page([zoya], { orgId, key })).deal;
+    const left = yield* Deals.update([zoya], {
+      orgId,
+      key,
+      rev: mine.rev,
+      concerns: [{ label: "Staff confidence", heard: "they worry" }],
+    });
+    assert.deepStrictEqual(left.deal.concerns, [
+      { label: "Staff confidence", heard: "they worry" },
+    ]);
   }).pipe(Effect.provide(layer)),
 );
 

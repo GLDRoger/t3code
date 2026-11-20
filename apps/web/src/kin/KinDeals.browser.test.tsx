@@ -311,19 +311,40 @@ describe("one deal's page", () => {
     });
   });
 
-  it("offers no hand-over to whoever may not give the deal away", async () => {
+  it("offers no hand-over, and no way to take a concern off, to whoever may not edit the deal", async () => {
     setup({
       page: dealPage(
         deal(7, "Clinic scheduling pilot", {
           can: { edit: false, move: false, give: false, mark: false },
+          concerns: [{ label: "Staff confidence" }],
         }),
       ),
     });
     await using _screen = await renderPage(company);
     await expect.element(page.getByText("Zoya")).toBeVisible();
+    await expect.element(page.getByText("Staff confidence")).toBeVisible();
     expect(page.getByRole("button", { name: "Change who looks after it" }).elements()).toHaveLength(
       0,
     );
+    expect(page.getByRole("button", { name: /^Remove / }).elements()).toHaveLength(0);
+  });
+
+  it("takes one concern off through the deal's own edit, keeping the rest", async () => {
+    const pilot = deal(7, "Clinic scheduling pilot", {
+      concerns: [
+        { label: "Past system failed", heard: "The last one never worked for us" },
+        { label: "Staff confidence" },
+      ],
+    });
+    const { update } = setup({ page: dealPage(pilot) });
+    await using _screen = await renderPage();
+    await expect.element(page.getByText("“The last one never worked for us”")).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Remove Past system failed" }));
+    expect(update).toHaveBeenLastCalledWith({
+      key: pilot.key,
+      rev: pilot.rev,
+      concerns: [{ label: "Staff confidence" }],
+    });
   });
 
   it("links one of the client's quotes from Details, and None unlinks it", async () => {

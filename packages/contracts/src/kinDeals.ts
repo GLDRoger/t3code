@@ -205,6 +205,8 @@ export const KinDealUpdateInput = Schema.Struct({
   owner: Schema.optional(KinWorkPrincipal),
   sensitive: Schema.optional(Schema.Boolean),
   quote: Schema.optional(Schema.NullOr(KinRecordKey)),
+  /** The whole list as it should stand, such as one taken off; empty or null clears them. */
+  concerns: Schema.optional(Schema.NullOr(Schema.Array(KinDealConcern))),
 });
 export type KinDealUpdateInput = typeof KinDealUpdateInput.Type;
 

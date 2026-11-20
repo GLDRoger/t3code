@@ -114,6 +114,7 @@ export const KIN_DEALS = {
   whatWeHearHint:
     "Concerns are the words your team and agents put on deals, counted across the deals you see.",
   heard: (words: string) => `“${words}”`,
+  removeConcern: (label: string) => `Remove ${label}`,
   concernStands: (open: number, won: number, lost: number) =>
     `${open} open · ${won} won · ${lost} lost`,
 } as const;
@@ -127,6 +128,15 @@ export function kinDealsNotRead(state: KinWorkReadState<unknown>) {
   if (state._tag === "failed" && Cause.isCause(state.cause) && kinHostLacksCall(state.cause))
     return KIN_DEALS.olderHost;
   return null;
+}
+
+/** A deal's change that takes one concern off, through the deal's own edit. */
+export function kinDealWithoutConcern(deal: KinDealRow, label: string) {
+  return {
+    key: deal.key,
+    rev: deal.rev,
+    concerns: (deal.concerns ?? []).filter((concern) => concern.label !== label),
+  };
 }
 
 /** One line of What we hear: the concern, how many deals raised it, and how those stand. */
