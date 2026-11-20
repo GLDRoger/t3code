@@ -72,6 +72,7 @@ function KinDealEditForm(
   const send = useKinDealSend(props);
   const home = useKinHomeCurrency(props) ?? null;
   const [draft, setDraft] = useState(() => kinDealEditDraft(deal, names));
+  const quotes = kinDealQuoteChoices(page, draft.quote);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const request = kinDealEditRequest(deal, draft, names, home);
@@ -133,11 +134,9 @@ function KinDealEditForm(
           disabled={saving}
           onChangeText={(source) => set({ source })}
         />
-        <KinDealQuoteRow
-          quotes={kinDealQuoteChoices(page, draft.quote)}
-          disabled={saving}
-          onPick={(quote) => set({ quote })}
-        />
+        {quotes === null ? null : (
+          <KinDealQuoteRow quotes={quotes} disabled={saving} onPick={(quote) => set({ quote })} />
+        )}
       </ListSection>
     </FormShell>
   );

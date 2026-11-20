@@ -827,11 +827,15 @@ it.effect(
         "invalid_state",
       );
       // A quote is money: Zoya, without the Money switch, sees the deal and not its quote, and
-      // Edit offers her none.
+      // her page has no quotes to pick from at all, so nothing says there are none.
       yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${zoyaId}`;
       const hers = yield* Deals.deals([zoya], { orgId });
       assert.isUndefined(hers.deals[0]!.quote);
+      assert.isUndefined((yield* Deals.page([zoya], { orgId, key: made.deal.key })).quotes);
+      // With Money on she picks among those Money shows her.
+      yield* sql`UPDATE kin_people SET sees_money = 1 WHERE person_id = ${zoyaId}`;
       assert.deepStrictEqual((yield* Deals.page([zoya], { orgId, key: made.deal.key })).quotes, []);
+      yield* sql`UPDATE kin_people SET sees_money = 0 WHERE person_id = ${zoyaId}`;
       // Unlinking takes it off.
       const off = yield* Deals.update([owner], {
         orgId,

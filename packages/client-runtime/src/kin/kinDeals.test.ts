@@ -316,7 +316,7 @@ describe("kinDealQuoteChoices", () => {
   it("offers None, then the client's quotes, with the linked one checked", () => {
     const linked = deal(1, { quote: quote(2, true) });
     expect(
-      kinDealQuoteChoices({ deal: linked, quotes: [quote(3), quote(2, true)] }).choices,
+      kinDealQuoteChoices({ deal: linked, quotes: [quote(3), quote(2, true)] })?.choices,
     ).toEqual([
       { key: null, label: "None", current: false },
       { key: "QT-3", label: "Quote 3", current: false },
@@ -324,7 +324,7 @@ describe("kinDealQuoteChoices", () => {
     ]);
     // A draft's own pick is what's checked.
     expect(
-      kinDealQuoteChoices({ deal: linked, quotes: [quote(2, true)] }, null).choices[0]?.current,
+      kinDealQuoteChoices({ deal: linked, quotes: [quote(2, true)] }, null)?.choices[0]?.current,
     ).toBe(true);
   });
 
@@ -333,10 +333,12 @@ describe("kinDealQuoteChoices", () => {
       choices: [],
       empty: "No quotes for Brightwater Clinics to link.",
     });
-    // A host older than the list sends none at all; a linked quote can still be taken off.
+    // Without a list to pick from a linked quote can still be taken off; with neither, someone
+    // who doesn't read quotes (no Money) has no Quote row, and nothing says there are none.
     expect(
-      kinDealQuoteChoices({ deal: deal(1, { quote: quote(4) }) }).choices.map((one) => one.key),
+      kinDealQuoteChoices({ deal: deal(1, { quote: quote(4) }) })?.choices.map((one) => one.key),
     ).toEqual([null, "QT-4"]);
+    expect(kinDealQuoteChoices({ deal: deal(1) })).toBeNull();
   });
 });
 

@@ -65,7 +65,7 @@ export function KinDealOwnerRow(props: {
  * offer it says so and opens nothing; a linked quote can also be opened from it.
  */
 export function KinDealQuoteRow(props: {
-  readonly quotes: ReturnType<typeof kinDealQuoteChoices>;
+  readonly quotes: NonNullable<ReturnType<typeof kinDealQuoteChoices>>;
   readonly disabled: boolean;
   readonly onPick: (key: KinRecordKey | null) => void;
   /** Opens the linked quote; absent in the Edit form. */

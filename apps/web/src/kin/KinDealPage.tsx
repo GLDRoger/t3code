@@ -438,12 +438,12 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
               <dd>{deal.source}</dd>
             </>
           )}
-          {deal.quote === undefined && !deal.can.edit ? null : (
+          {deal.quote === undefined && (!deal.can.edit || quotes === null) ? null : (
             <>
               <dt className="text-muted-foreground">{KIN_DEALS.quote}</dt>
               <dd className="flex flex-wrap items-center gap-2">
                 {deal.quote === undefined ? (
-                  <span className="text-muted-foreground">{quotes.empty ?? KIN_DEALS.none}</span>
+                  <span className="text-muted-foreground">{quotes?.empty ?? KIN_DEALS.none}</span>
                 ) : (
                   <button
                     type="button"
@@ -455,7 +455,7 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
                       : deal.quote.title}
                   </button>
                 )}
-                {!deal.can.edit || quotes.choices.length === 0 ? null : (
+                {!deal.can.edit || quotes === null || quotes.choices.length === 0 ? null : (
                   <Menu>
                     <MenuTrigger
                       render={
@@ -710,31 +710,33 @@ function DealEdit(
           onChange={(event) => set({ source: event.target.value })}
         />
       </Field>
-      <Field
-        id={ids.quote}
-        label={KIN_DEALS.quote}
-        {...(quotes.empty === null ? {} : { hint: quotes.empty })}
-      >
-        {quotes.choices.length === 0 ? null : (
-          <Select
-            value={draft.quote ?? NO_QUOTE}
-            onValueChange={(next) =>
-              set({ quote: next === NO_QUOTE || next === null ? null : (next as KinRecordKey) })
-            }
-          >
-            <SelectTrigger id={ids.quote} className="w-full min-w-0">
-              <SelectValue>{quotes.choices.find((choice) => choice.current)?.label}</SelectValue>
-            </SelectTrigger>
-            <SelectPopup alignItemWithTrigger={false}>
-              {quotes.choices.map((choice) => (
-                <SelectItem key={choice.key ?? NO_QUOTE} value={choice.key ?? NO_QUOTE}>
-                  {choice.label}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-        )}
-      </Field>
+      {quotes === null ? null : (
+        <Field
+          id={ids.quote}
+          label={KIN_DEALS.quote}
+          {...(quotes.empty === null ? {} : { hint: quotes.empty })}
+        >
+          {quotes.choices.length === 0 ? null : (
+            <Select
+              value={draft.quote ?? NO_QUOTE}
+              onValueChange={(next) =>
+                set({ quote: next === NO_QUOTE || next === null ? null : (next as KinRecordKey) })
+              }
+            >
+              <SelectTrigger id={ids.quote} className="w-full min-w-0">
+                <SelectValue>{quotes.choices.find((choice) => choice.current)?.label}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup alignItemWithTrigger={false}>
+                {quotes.choices.map((choice) => (
+                  <SelectItem key={choice.key ?? NO_QUOTE} value={choice.key ?? NO_QUOTE}>
+                    {choice.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          )}
+        </Field>
+      )}
     </FormShell>
   );
 }

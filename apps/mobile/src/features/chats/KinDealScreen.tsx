@@ -129,6 +129,7 @@ function KinDealBody(
   const { environmentId, orgId, page } = props;
   const target = { environmentId, orgId };
   const { deal, stages } = page;
+  const quotes = kinDealQuoteChoices(page);
   const { names } = props.directory;
   const now = new Date(useNowMinuteMs());
   const send = useKinDealSend(target);
@@ -441,9 +442,9 @@ function KinDealBody(
         {deal.source === undefined ? null : (
           <ListRowLayout label={KIN_DEALS.cameFrom} detail={deal.source} />
         )}
-        {deal.can.edit ? (
+        {deal.can.edit && quotes !== null ? (
           <KinDealQuoteRow
-            quotes={kinDealQuoteChoices(page)}
+            quotes={quotes}
             disabled={busy}
             onPick={(quote) => void change({ key: deal.key, rev: deal.rev, quote })}
             onOpen={

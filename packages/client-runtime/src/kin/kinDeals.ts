@@ -634,14 +634,17 @@ export interface KinDealQuoteChoice {
 
 /**
  * The quotes a deal may link: None, then its client's quotes the viewer sees, newest first. With
- * none to offer and none linked, `empty` says so and there is nothing to pick.
+ * none to offer and none linked, `empty` says so and there is nothing to pick. Null when the host
+ * offers no list (the viewer doesn't read quotes) and none is linked: the deal has no Quote row.
  */
 export function kinDealQuoteChoices(
   page: Pick<KinDealPage, "deal" | "quotes">,
   linked: KinRecordKey | null = page.deal.quote?.key ?? null,
-): { readonly choices: ReadonlyArray<KinDealQuoteChoice>; readonly empty: string | null } {
-  const offered = [...(page.quotes ?? [])];
+): { readonly choices: ReadonlyArray<KinDealQuoteChoice>; readonly empty: string | null } | null {
   const held = page.deal.quote;
+  // The host sends no list to someone who doesn't read quotes; with none linked, there's no row.
+  if (page.quotes === undefined && held === undefined) return null;
+  const offered = [...(page.quotes ?? [])];
   if (held !== undefined && !offered.some((quote) => quote.key === held.key)) offered.push(held);
   if (offered.length === 0 && linked === null)
     return { choices: [], empty: KIN_DEALS.noQuotes(page.deal.party.title) };

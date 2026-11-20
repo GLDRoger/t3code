@@ -604,6 +604,16 @@ const quoteChoices = Effect.fn("KinDeals.quoteChoices")(function* (
 });
 const KIN_DEAL_QUOTES_CAP = 50;
 
+/** Quotes are Money's: the owner level, and members whose Money place it is, read them. */
+const readsQuotes = Effect.fn("KinDeals.readsQuotes")(function* (
+  orgId: KinOrgId,
+  actor: DealActor,
+) {
+  for (const personId of actor.members)
+    if (!(yield* placesOf(orgId, personId).pipe(workFailure)).reaches.money) return false;
+  return true;
+});
+
 const dealOf = (
   row: RecordRow,
   viewer: KinViewer,
@@ -778,9 +788,10 @@ export const page = Effect.fn("KinDeals.page")(function* (
   const steps = yield* stepsFor(input.orgId, viewer, [row.recordId], now).pipe(workFailure);
   const { stages } = yield* stagesOf(input.orgId).pipe(workFailure);
   const detail = yield* records.detail(row, KIN_RECORD_CHANGES_CAP);
-  const quotes = deal!.can.edit
-    ? yield* quoteChoices(input.orgId, viewer, row).pipe(workFailure)
-    : undefined;
+  const quotes =
+    deal!.can.edit && (yield* readsQuotes(input.orgId, actor))
+      ? yield* quoteChoices(input.orgId, viewer, row).pipe(workFailure)
+      : undefined;
   return {
     deal: deal!,
     stages,
