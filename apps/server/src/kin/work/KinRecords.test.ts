@@ -2467,7 +2467,9 @@ it.effect(
       // Closing it tells nobody: only the lead's owner withdraws work.
       yield* OwnerWork.update([mate], { orgId, key: given.key, rev: given.rev, state: "done" });
       assert.lengthOf(yield* assignedEvents, 2);
-      // A day of turns used up: giving it again is refused and changes nothing.
+      // A day of turns used up under a limit: giving it again is refused and changes nothing.
+      yield* sql`INSERT INTO kin_budget_limits (org_id, limits_json)
+        VALUES (${orgId}, '{"leadUnits":1000,"workerUnits":1000}')`;
       for (let n = 0; n < 50; n++)
         yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
             received_at, queued_at, state)
@@ -2482,6 +2484,11 @@ it.effect(
       );
       assert.include(yield* OwnerWork.get([mate], { orgId, key: given.key }), { state: "done" });
       assert.lengthOf(yield* assignedEvents, 2);
+      // With no limit the cap is lifted, and the same change goes through.
+      yield* sql`UPDATE kin_budget_limits SET limits_json = '{"leadUnits":null,"workerUnits":null}'
+        WHERE org_id = ${orgId}`;
+      yield* OwnerWork.update([mate], { orgId, key: given.key, rev: closed.rev, state: "open" });
+      assert.lengthOf(yield* assignedEvents, 3);
     }).pipe(Effect.provide(layer)),
 );
 

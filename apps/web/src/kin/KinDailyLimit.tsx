@@ -1,6 +1,8 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import {
   KIN_DAILY_LIMIT,
+  type KinDailyLimitChoice,
+  kinDailyLimitAsks,
   kinDailyLimitChoices,
   kinDailyLimitUsed,
   kinDailyLimitWaiting,
@@ -11,6 +13,16 @@ import { useState } from "react";
 
 import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
 import { useSearchableSetting } from "../components/settings/settingsSearch";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../components/ui/alert-dialog";
+import { Button } from "../components/ui/button";
 import {
   Select,
   SelectItem,
@@ -43,12 +55,20 @@ function DailyLimit(props: KinWorkTarget) {
   const canSet = useAtomValue(kinClient.budgetSet.permissionAtom(props.environmentId));
   const set = useAtomCommand(kinClient.budgetSet, { reportFailure: false });
   const [failed, setFailed] = useState(false);
+  const [asking, setAsking] = useState<KinDailyLimitChoice | null>(null);
   const budget = Option.getOrNull(AsyncResult.value(result));
   // Only the owner reads the limit; a teammate's read is refused, so there is nothing to show.
   if (!canSet || AsyncResult.isFailure(result)) return null;
   const { choices, current } = kinDailyLimitChoices(budget);
   const waiting = kinDailyLimitWaiting(budget);
   const used = kinDailyLimitUsed(budget);
+  const choose = (picked: KinDailyLimitChoice) => {
+    setFailed(false);
+    void set({ ...query, input: { orgId: props.orgId, limits: picked.limits } }).then((outcome) => {
+      setFailed(AsyncResult.isFailure(outcome));
+      refresh();
+    });
+  };
   return (
     <SettingsRow
       title={KIN_DAILY_LIMIT.title}
@@ -61,13 +81,8 @@ function DailyLimit(props: KinWorkTarget) {
           onValueChange={(value) => {
             const picked = choices.find((choice) => choice.value === value);
             if (picked === undefined || picked.value === current) return;
-            setFailed(false);
-            void set({ ...query, input: { orgId: props.orgId, limits: picked.limits } }).then(
-              (outcome) => {
-                setFailed(AsyncResult.isFailure(outcome));
-                refresh();
-              },
-            );
+            if (kinDailyLimitAsks(picked)) setAsking(picked);
+            else choose(picked);
           }}
         >
           <SelectTrigger size="xs" className="w-48" aria-label={KIN_DAILY_LIMIT.title}>
@@ -100,6 +115,31 @@ function DailyLimit(props: KinWorkTarget) {
           </ul>
         </div>
       )}
+      <AlertDialog
+        open={asking !== null}
+        onOpenChange={(open) => {
+          if (!open) setAsking(null);
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{KIN_DAILY_LIMIT.noneAsk.title}</AlertDialogTitle>
+            <AlertDialogDescription>{KIN_DAILY_LIMIT.noneAsk.detail}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+            <Button
+              onClick={() => {
+                const picked = asking;
+                setAsking(null);
+                if (picked !== null) choose(picked);
+              }}
+            >
+              {KIN_DAILY_LIMIT.noneAsk.confirm}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
     </SettingsRow>
   );
 }
