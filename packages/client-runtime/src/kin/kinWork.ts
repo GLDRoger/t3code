@@ -73,8 +73,15 @@ const PLACE_NOUN: Record<KinWorkPageName, { readonly name: string; readonly plur
   docs: { name: "Docs", plural: true },
 };
 
+/** Clients refused a teammate: their switch is off, the same words as on a client's page. */
+const KIN_CLIENTS_OFF = {
+  title: "Clients isn't on for you",
+  detail: "The owner or a co-owner decides who sees Clients.",
+};
+
 /** The refusal on a work page, naming that page. */
 export const kinWorkOnlyOwner = (place: KinWorkPageName) => {
+  if (place === "clients") return KIN_CLIENTS_OFF;
   const { name, plural } = PLACE_NOUN[place];
   return {
     title: "Only the owner can open this",
