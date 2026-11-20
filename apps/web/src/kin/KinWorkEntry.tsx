@@ -1005,7 +1005,7 @@ export function KinListEntry(
                       >
                         {payment.amount}
                       </span>
-                      <span className="truncate text-xs text-muted-foreground">
+                      <span className="text-xs break-words text-muted-foreground">
                         {[
                           payment.when,
                           payment.note,
