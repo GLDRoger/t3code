@@ -5,10 +5,12 @@ import {
   kinApprovalActionIdOf,
   type KinApprovalView,
   type KinCheckRun,
+  type KinGrantUnsignedPayload,
   type KinPendingAction,
   type KinWidget,
   type KinMergeMethod,
 } from "@t3tools/contracts";
+import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -501,3 +503,40 @@ export function kinApprovalFailure(
       };
   }
 }
+
+/** The facts a grant binds, as the server records them (approvals spec §5). */
+const signedFacts = (facts: {
+  readonly kind: string;
+  readonly target: unknown;
+  readonly headSha?: string | undefined;
+  readonly base?: string | undefined;
+  readonly mergeMethod?: string | undefined;
+}) =>
+  stableStringify({
+    kind: facts.kind,
+    target: facts.target,
+    headSha: facts.headSha,
+    base: facts.base,
+    mergeMethod: facts.mergeMethod,
+  });
+
+const shownFacts = (action: KinPendingAction) =>
+  signedFacts({
+    kind: action.kind,
+    target: action.target,
+    headSha: action.resolved._tag === "none" ? undefined : action.resolved.headSha,
+    base: action.resolved._tag === "pull_request" ? action.resolved.base : undefined,
+    mergeMethod: action.target._tag === "pull_request" ? action.target.mergeMethod : undefined,
+  });
+
+/**
+ * Whether the host's challenge asks to sign what the card showed: the same action, revision and
+ * signed facts. A newer head or revision means the owner looks again before Face ID.
+ */
+export const kinChallengeMatchesCard = (
+  payload: KinGrantUnsignedPayload,
+  action: KinPendingAction,
+): boolean =>
+  payload.actionId === action.id &&
+  payload.revision === action.revision &&
+  signedFacts(payload) === shownFacts(action);
