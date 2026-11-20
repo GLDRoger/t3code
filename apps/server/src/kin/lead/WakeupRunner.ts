@@ -95,7 +95,6 @@ const deadlineAt = (startedAt: number, steers: number) =>
 const isSteerRun = (wakeupId: KinWakeupId, run: { readonly userMessageId: string }) =>
   KinIdentity.isAdoptedRunMessage(wakeupId, run.userMessageId) &&
   run.userMessageId !== KinIdentity.rescueMessageId(wakeupId);
-const ownerCheckDispatcherReady = false;
 /** A running lead never shortens the org loop's wait; its finish wakes the loop instead. */
 const orgLoopWaitMs = (
   ready: ReadonlyArray<{ readonly agentId: KinAgentId; readonly readyAt: number }>,
@@ -1012,13 +1011,8 @@ const make = Effect.gen(function* () {
               ),
             );
             const preparedAt = yield* Clock.currentTimeMillis;
+            // The owner check is retired (K145) and posts no card: a fire that lands is dropped.
             if (Option.isSome(ownerCheck)) {
-              for (const event of events) {
-                if (event._tag === "routine" && event.routine === "owner_check")
-                  // Keep cards dark until the verified action dispatcher and clients land.
-                  if (ownerCheckDispatcherReady)
-                    yield* ownerCheck.value.post(orgId, event.eventId, event.ownerCheckItems ?? []);
-              }
               events = events.filter(
                 (event) => event._tag !== "routine" || event.routine !== "owner_check",
               );
