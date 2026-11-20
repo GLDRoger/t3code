@@ -2113,6 +2113,195 @@ it.effect(
 );
 
 it.effect(
+  "a new client or prospect takes its first contact in the same save, for whoever may add both, or neither is made",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* setup("ask-event");
+      for (const [id, access, clients] of [
+        ["co", "co_owner", 0],
+        ["off", "member", 0],
+      ] as const) {
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+            access, sees_clients)
+          VALUES (${id}, ${orgId}, ${id}, ${id}, ${at}, ${access}, ${clients})`;
+        yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+          VALUES (${`s-${id}`}, ${orgId}, ${id}, 0)`;
+      }
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('s-mate', ${orgId}, ${mateId}, 0)`;
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${mateId}`;
+      const who = (id: string) => ({
+        _tag: "person" as const,
+        orgId,
+        personId: KinPersonId.make(id),
+      });
+      const co = who("co");
+      const off = who("off");
+      const refused = (effect: Effect.Effect<unknown, KinChatError, Services>) =>
+        effect.pipe(
+          Effect.asVoid,
+          Effect.flip,
+          Effect.map((error) => error.reason),
+        );
+      const count = (title: string) =>
+        sql<{ n: number }>`SELECT count(*) AS n FROM kin_records
+          WHERE org_id = ${orgId} AND title = ${title}`.pipe(Effect.map(([row]) => row!.n));
+      const contactsOf = (person: typeof owner, key: string) =>
+        Clients.party([person], { orgId, key }).pipe(
+          Effect.map((page) =>
+            page.contacts.map((one) => [one.name, one.role, one.email, one.phone]),
+          ),
+        );
+      const ingrid = {
+        name: "Invented Ingrid",
+        role: "Invented buyer",
+        email: "ingrid@tallmoor.invalid",
+        phone: "+00 1234 5678",
+      };
+
+      // Without one, nothing changes: the company alone.
+      const plain = yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Plain Co",
+        clientRequestId: "plain",
+      });
+      assert.deepStrictEqual(yield* contactsOf(owner, plain.key), []);
+
+      // The owner, a co-owner and a teammate with Clients on each add one with the person there.
+      const byOwner = yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Harbour Co",
+        kind: "vendor",
+        contact: { name: "Invented Ola", phone: "+00 555" },
+        clientRequestId: "harbour",
+      });
+      assert.deepStrictEqual(yield* contactsOf(owner, byOwner.key), [
+        ["Invented Ola", null, null, "+00 555"],
+      ]);
+      const byCo = yield* Clients.createParty([co], {
+        orgId,
+        name: "Invented Fennick Co",
+        contact: { name: "Invented Pia", email: "pia@fennick.invalid" },
+        clientRequestId: "fennick",
+      });
+      assert.deepStrictEqual(yield* contactsOf(co, byCo.key), [
+        ["Invented Pia", null, "pia@fennick.invalid", null],
+      ]);
+      const mine = {
+        orgId,
+        name: "Invented Tallmoor Freight",
+        prospect: true,
+        source: "Invented trade fair",
+        contact: ingrid,
+        clientRequestId: "tallmoor",
+      };
+      const tallmoor = yield* Clients.createParty([mate], mine);
+      assert.deepInclude(tallmoor, {
+        prospect: true,
+        owner: { _tag: "person", personId: mateId },
+      });
+      const row = [ingrid.name, ingrid.role, ingrid.email, ingrid.phone];
+      assert.deepStrictEqual(yield* contactsOf(mate, tallmoor.key), [row]);
+      assert.deepStrictEqual(yield* contactsOf(owner, tallmoor.key), [row]);
+      // History tells it as it tells a contact added from the page.
+      const [contact] = (yield* Clients.party([owner], { orgId, key: tallmoor.key })).contacts;
+      const later = yield* Clients.createContact([mate], {
+        orgId,
+        party: tallmoor.key,
+        name: "Invented Ivo",
+        clientRequestId: "ivo",
+      });
+      const lines = (yield* Clients.history([mate], { orgId, key: tallmoor.key })).items.map(
+        (item) => JSON.stringify(item).replace(later.key, "KEY").replace(contact!.key, "KEY"),
+      );
+      assert.strictEqual(lines.filter((line) => line.includes("KEY")).length, 2);
+
+      // A press again, or a retried request, makes neither twice; other details under it, nothing.
+      const again = yield* Clients.createParty([mate], mine);
+      assert.strictEqual(again.key, tallmoor.key);
+      assert.strictEqual(
+        yield* refused(
+          Clients.createParty([mate], { ...mine, contact: { ...ingrid, phone: "+00 999" } }),
+        ),
+        "not_allowed",
+      );
+      assert.deepStrictEqual([yield* count(mine.name), yield* count(ingrid.name)], [1, 1]);
+
+      // A contact refused leaves no company behind: here its request was another contact's.
+      yield* Clients.createContact([owner], {
+        orgId,
+        party: "C-1",
+        name: "Invented Ravi Two",
+        clientRequestId: "spent",
+      });
+      assert.strictEqual(
+        yield* refused(
+          Clients.createParty([owner], {
+            orgId,
+            name: "Invented Orphan Co",
+            contact: { name: "Invented Una" },
+            clientRequestId: "spent",
+          }),
+        ),
+        "not_allowed",
+      );
+      assert.deepStrictEqual(
+        [yield* count("Invented Orphan Co"), yield* count("Invented Una")],
+        [0, 0],
+      );
+
+      // A name already there is the one already there: no second company, no contact on it.
+      assert.strictEqual(
+        yield* refused(
+          Clients.createParty([owner], {
+            orgId,
+            name: "invented tallmoor freight",
+            contact: { name: "Invented Vera" },
+            clientRequestId: "twin",
+          }),
+        ),
+        "conflict",
+      );
+      assert.strictEqual(yield* count("Invented Vera"), 0);
+
+      // A teammate adds only a prospect, and with Clients off, nothing; neither leaves a contact.
+      assert.strictEqual(
+        yield* refused(
+          Clients.createParty([mate], {
+            orgId,
+            name: "Invented Client Co",
+            contact: { name: "Invented Wes" },
+            clientRequestId: "client-co",
+          }),
+        ),
+        "not_allowed",
+      );
+      assert.strictEqual(
+        yield* refused(
+          Clients.createParty([off], {
+            orgId,
+            name: "Invented Off Co",
+            prospect: true,
+            contact: { name: "Invented Wes" },
+            clientRequestId: "off-co",
+          }),
+        ),
+        "not_allowed",
+      );
+      assert.deepStrictEqual(
+        [
+          yield* count("Invented Client Co"),
+          yield* count("Invented Off Co"),
+          yield* count("Invented Wes"),
+        ],
+        [0, 0, 0],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
   "a teammate's agent adds the prospect their own form adds, with its next step theirs; never a client",
   () =>
     Effect.gen(function* () {
@@ -2199,6 +2388,13 @@ it.effect(
             owner: "me",
             due: "1970-01-06",
           },
+          {
+            list: "contacts",
+            title: "Invented Ingrid",
+            client: "Invented Tallmoor Freight",
+            phone: "+00 1234 5678",
+            email: "ingrid@tallmoor.invalid",
+          },
         ],
       });
       const [prospect, call] = made.records;
@@ -2209,6 +2405,29 @@ it.effect(
         tags: ["invented"],
         owner: me,
       });
+      // The person there, as their own form adds them: on the page, with what they typed.
+      assert.deepStrictEqual(
+        page.contacts.map((one) => [one.name, one.phone, one.email]),
+        [["Invented Ingrid", "+00 1234 5678", "ingrid@tallmoor.invalid"]],
+      );
+      // Not on a client someone else looks after, and never Keep private, as on their form.
+      assert.include(
+        (yield* refused([
+          { list: "contacts", title: "Invented Odd", client: "Invented Acme", phone: "+00 1" },
+        ])).message,
+        "Only whoever looks after",
+      );
+      assert.include(
+        (yield* refused([
+          {
+            list: "contacts",
+            title: "Invented Odd",
+            client: "Invented Tallmoor Freight",
+            sensitive: true,
+          },
+        ])).message,
+        "Only the owner or a co-owner sets a client's terms",
+      );
       const row = (yield* Clients.parties([mate], { orgId, owner: me })).parties.find(
         (one) => one.key === prospect!.key,
       );

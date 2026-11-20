@@ -80,6 +80,10 @@ export const KIN_WORK_FORM_COPY = {
     countryPlaceholder: "United States",
     notes: "Notes",
     notesPlaceholder: "Anything worth remembering about them",
+    contact: "Contact",
+    contactName: "Person's name",
+    contactHint: "Optional. You can add more people on its page later.",
+    contactNameMissing: "Add the person's name, or leave the contact empty.",
   },
   contact: {
     newTitle: "New contact",
@@ -137,6 +141,11 @@ export interface KinClientDraft {
   readonly abroad: boolean;
   readonly notes: string;
   readonly private: boolean;
+  /** Its first contact, on a new one only; all empty for none. */
+  readonly contactName: string;
+  readonly contactRole: string;
+  readonly contactEmail: string;
+  readonly contactPhone: string;
 }
 
 /** The states a client may be in, by name. */
@@ -203,6 +212,10 @@ export const kinClientDraftOf = (
     abroad: place !== "" && state === null,
     notes: party?.notes ?? "",
     private: party?.sensitive ?? false,
+    contactName: "",
+    contactRole: "",
+    contactEmail: "",
+    contactPhone: "",
   };
 };
 
@@ -250,6 +263,24 @@ const tagsCheck = (text: string): string | null => {
     : null;
 };
 
+const firstContactOf = (draft: KinClientDraft): KinContactDraft | null => {
+  const contact = {
+    name: draft.contactName,
+    role: draft.contactRole,
+    email: draft.contactEmail,
+    phone: draft.contactPhone,
+    notes: "",
+  };
+  return Object.values(contact).some((typed) => typed.trim() !== "") ? contact : null;
+};
+const firstContactCheck = (draft: KinClientDraft): string | null => {
+  const contact = firstContactOf(draft);
+  if (contact === null) return null;
+  return contact.name.trim() === ""
+    ? KIN_WORK_FORM_COPY.party.contactNameMissing
+    : kinContactDraftCheck(contact);
+};
+
 export const kinClientDraftCheck = (draft: KinClientDraft): string | null =>
   draft.name.trim() === ""
     ? "Give them a name."
@@ -262,11 +293,19 @@ export const kinClientDraftCheck = (draft: KinClientDraft): string | null =>
         ? "That GSTIN isn't right: it has 15 letters and digits, like 27ABCDE1234F1Z5."
         : null) ??
       tooLong(draft.placeOfSupply, PLACE_MAX, "the country") ??
-      tooLong(draft.notes, NOTES_MAX, "the notes"));
+      tooLong(draft.notes, NOTES_MAX, "the notes") ??
+      firstContactCheck(draft));
 
 export const kinClientCreateInput = (
   draft: KinClientDraft,
-): Omit<KinPartyCreateInput, "orgId" | "clientRequestId"> => ({
+): Omit<KinPartyCreateInput, "orgId" | "clientRequestId"> => {
+  const contact = firstContactOf(draft);
+  return {
+    ...kinPartyInput(draft),
+    ...(contact === null ? {} : { contact: kinContactCreateInput(contact) }),
+  };
+};
+const kinPartyInput = (draft: KinClientDraft) => ({
   name: draft.name.trim(),
   ...(draft.kind === "vendor" ? { kind: "vendor" as const } : {}),
   ...(draft.kind === "prospect" ? { prospect: true } : {}),

@@ -39,6 +39,7 @@ import {
   ownerWriter,
   tellMoved,
   theOwner,
+  type Viewer,
   viewerOf,
   writerOf,
 } from "./ownerWork.ts";
@@ -523,17 +524,17 @@ const notTheirs = (key: string) =>
  * they see answers; one they don't is no client at all. `theirs` also needs them to look after it.
  */
 const memberParty = Effect.fn("KinWork.crm.memberParty")(function* (
-  person: PersonIdentity,
+  personId: KinPersonId,
   orgId: KinOrgId,
   ref: { readonly key: string } | { readonly recordId: string },
   theirs: boolean,
 ) {
-  if (!(yield* switchedOn(orgId, viewerOfPeople([person.personId])))) return yield* ownerOnly;
+  if (!(yield* switchedOn(orgId, viewerOfPeople([personId])))) return yield* ownerOnly;
   const name = "key" in ref ? ref.key : "with that id";
   const row = yield* found(orgId, ref).pipe(Effect.mapError(() => notFound(name)));
-  const reached = yield* read(teamClients(orgId, person.personId, [row.recordId]));
+  const reached = yield* read(teamClients(orgId, personId, [row.recordId]));
   if (!reached.has(row.recordId)) return yield* notFound(name);
-  if (theirs && !looksAfter(row, person.personId)) return yield* notTheirs(row.key);
+  if (theirs && !looksAfter(row, personId)) return yield* notTheirs(row.key);
   return row;
 });
 const defines = (input: object, keys: ReadonlyArray<string>) =>
@@ -565,7 +566,30 @@ export const memberAdds = Effect.fn("KinWork.crm.memberAdds")(function* (
   )
     return yield* MEMBER_FIELDS;
 });
+/**
+ * A contact a member adds, on their own screen, with a prospect they add, or through their agent:
+ * on a client they look after, held by them, never Keep private. The client it goes on.
+ */
+export const memberAddsContact = Effect.fn("KinWork.crm.memberAddsContact")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  input: {
+    readonly party: { readonly key: string } | { readonly recordId: string };
+    readonly owner: KinWorkPrincipal | undefined;
+    /** Keep private, or made already gone. */
+    readonly ownersFields: boolean;
+  },
+) {
+  const party = yield* memberParty(personId, orgId, input.party, true);
+  if (
+    input.ownersFields ||
+    (input.owner !== undefined && !samePrincipal(input.owner, { _tag: "person", personId }))
+  )
+    return yield* MEMBER_FIELDS;
+  return party;
+});
 
+/** With `contact`, the client and its first contact are saved in one transaction, or neither. */
 export const createParty = Effect.fn("KinWork.createParty")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPartyCreateInput,
@@ -588,19 +612,35 @@ export const createParty = Effect.fn("KinWork.createParty")(function* (
     },
     viewer.teammate,
   );
-  if (!viewer.teammate) return yield* partyOut(yield* create);
-  const row = yield* asViewer(
-    viewer,
-    Effect.gen(function* () {
-      yield* memberAdds(input.orgId, person.personId, {
-        prospect: input.prospect === true && input.kind !== "vendor",
-        owner: input.owner,
-        ownersFields: defines(input, ["terms", "address", "gstin", "placeOfSupply", "sensitive"]),
+  const made = !viewer.teammate
+    ? create
+    : Effect.gen(function* () {
+        yield* memberAdds(input.orgId, person.personId, {
+          prospect: input.prospect === true && input.kind !== "vendor",
+          owner: input.owner,
+          ownersFields: defines(input, ["terms", "address", "gstin", "placeOfSupply", "sensitive"]),
+        });
+        return yield* stillSeen(person, yield* create, input.name);
       });
-      return yield* stillSeen(person, yield* create, input.name);
-    }),
-  );
-  return yield* memberOut(row, person);
+  const { contact } = input;
+  const row =
+    contact === undefined
+      ? yield* asViewer(viewer, made)
+      : yield* (yield* SqlClient.SqlClient)
+          .withTransaction(
+            Effect.gen(function* () {
+              const party = yield* made;
+              yield* contactIn(viewer, {
+                orgId: input.orgId,
+                party: party.key,
+                ...contact,
+                clientRequestId: input.clientRequestId,
+              });
+              return party;
+            }),
+          )
+          .pipe(workFailure);
+  return viewer.teammate ? yield* memberOut(row, person) : yield* partyOut(row);
 });
 
 export const updateParty = Effect.fn("KinWork.updateParty")(function* (
@@ -636,7 +676,7 @@ export const updateParty = Effect.fn("KinWork.updateParty")(function* (
   const row = yield* asViewer(
     viewer,
     Effect.gen(function* () {
-      yield* memberParty(person, input.orgId, { key: input.key }, true);
+      yield* memberParty(person.personId, input.orgId, { key: input.key }, true);
       if (
         defines(input, [
           "terms",
@@ -681,11 +721,11 @@ const tagged = (
         : [...new Set(input.tags)],
 });
 
-export const createContact = Effect.fn("KinWork.createContact")(function* (
-  people: ReadonlyArray<PersonIdentity>,
+/** A contact made, for a member only on a client `memberAddsContact` allows, in the caller's transaction. */
+const contactIn = Effect.fn("KinWork.crm.contactIn")(function* (
+  viewer: Viewer,
   input: KinContactCreateInput,
 ) {
-  const viewer = yield* viewerOf(people, input.orgId);
   const { person } = viewer;
   const write = Effect.gen(function* () {
     const party = yield* inList(input.orgId, input.party, "clients");
@@ -705,16 +745,21 @@ export const createContact = Effect.fn("KinWork.createContact")(function* (
       viewer.teammate,
     );
   });
-  if (!viewer.teammate) return Crm.toContact(yield* write);
-  const row = yield* asViewer(
-    viewer,
-    Effect.gen(function* () {
-      yield* memberParty(person, input.orgId, { key: input.party }, true);
-      if (input.sensitive !== undefined) return yield* MEMBER_FIELDS;
-      return yield* stillSeen(person, yield* write, input.name);
-    }),
-  );
-  return Crm.toContact(row);
+  if (!viewer.teammate) return yield* write;
+  yield* memberAddsContact(input.orgId, person.personId, {
+    party: { key: input.party },
+    owner: undefined,
+    ownersFields: input.sensitive !== undefined,
+  });
+  return yield* stillSeen(person, yield* write, input.name);
+});
+
+export const createContact = Effect.fn("KinWork.createContact")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinContactCreateInput,
+) {
+  const viewer = yield* viewerOf(people, input.orgId);
+  return Crm.toContact(yield* asViewer(viewer, contactIn(viewer, input)));
 });
 
 export const updateContact = Effect.fn("KinWork.updateContact")(function* (
@@ -756,7 +801,7 @@ export const updateContact = Effect.fn("KinWork.updateContact")(function* (
       const seen = yield* read(crmVisible(input.orgId, person.personId, [contact.recordId]));
       if (contact.partyId === null || !seen.has(contact.recordId))
         return yield* notFound(input.key);
-      yield* memberParty(person, input.orgId, { recordId: contact.partyId }, true).pipe(
+      yield* memberParty(person.personId, input.orgId, { recordId: contact.partyId }, true).pipe(
         Effect.mapError((error) => (error.reason === "not_found" ? notFound(input.key) : error)),
       );
       if (input.sensitive !== undefined || input.party !== undefined) return yield* MEMBER_FIELDS;
@@ -931,7 +976,7 @@ export const logTouch = Effect.fn("KinWork.logTouch")(function* (
     .withTransaction(
       Effect.gen(function* () {
         const party = viewer.teammate
-          ? yield* memberParty(person, input.orgId, { key: input.party }, false)
+          ? yield* memberParty(person.personId, input.orgId, { key: input.party }, false)
           : yield* inList(input.orgId, input.party, "clients");
         const logged = yield* Touches.logTouch(input.orgId, {
           partyId: party.recordId,

@@ -1322,6 +1322,14 @@ export const KinProjectsResult = Schema.Struct({
 });
 export type KinProjectsResult = typeof KinProjectsResult.Type;
 
+/** The first person to reach there, saved with it as a contact or neither is. */
+export const KinPartyFirstContact = Schema.Struct({
+  name: Name,
+  role: Schema.optional(ShortText),
+  email: Schema.optional(ShortText),
+  phone: Schema.optional(ShortText),
+});
+export type KinPartyFirstContact = typeof KinPartyFirstContact.Type;
 /** A new client or vendor. A name another active one already has is refused with its key. */
 export const KinPartyCreateInput = Schema.Struct({
   orgId: KinOrgId,
@@ -1341,6 +1349,7 @@ export const KinPartyCreateInput = Schema.Struct({
   placeOfSupply: Schema.optional(PlaceOfSupply),
   /** Labels everything pointing at it sensitive too. */
   sensitive: Schema.optional(Schema.Boolean),
+  contact: Schema.optional(KinPartyFirstContact),
   clientRequestId: RequestId,
 });
 export type KinPartyCreateInput = typeof KinPartyCreateInput.Type;

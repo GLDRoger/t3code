@@ -7,6 +7,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { AtomCommandResult } from "../state/runtime.ts";
 import {
   KIN_WORK_FORM_CHANGED,
+  KIN_WORK_FORM_COPY,
   createKinWorkForm,
   createKinWorkPageWatch,
   kinClientCreateInput,
@@ -317,6 +318,70 @@ describe("kinProjectDraftCheck", () => {
     expect(kinProjectTargetHint("2026-12-03", now)).not.toMatch(/2026/);
     expect(kinProjectTargetHint("2027-03-02", now).match(/2027/g)).toHaveLength(1);
     expect(kinProjectTargetHint("2026-02-30", now)).toBe("Enter a real date.");
+  });
+});
+
+describe("a new client's first contact", () => {
+  const draft = { ...kinClientDraftOf(undefined, "prospect"), name: "Tallmoor Freight" };
+  const blank = { contactName: "", contactRole: "", contactEmail: "", contactPhone: "" };
+  it.each([
+    ["nothing typed", {}, null, undefined],
+    ["spaces only", { contactName: " ", contactPhone: "  " }, null, undefined],
+    ["a name", { contactName: " Ingrid Holm " }, null, { name: "Ingrid Holm" }],
+    [
+      "everything",
+      {
+        contactName: "Ingrid Holm",
+        contactRole: " Head of buying ",
+        contactEmail: " ingrid@example.com ",
+        contactPhone: "+47 912 34 567",
+      },
+      null,
+      {
+        name: "Ingrid Holm",
+        role: "Head of buying",
+        email: "ingrid@example.com",
+        phone: "+47 912 34 567",
+      },
+    ],
+    [
+      "a phone only",
+      { contactPhone: "+47 912 34 567" },
+      KIN_WORK_FORM_COPY.party.contactNameMissing,
+      undefined,
+    ],
+    [
+      "an email only",
+      { contactEmail: "ingrid@example.com" },
+      KIN_WORK_FORM_COPY.party.contactNameMissing,
+      undefined,
+    ],
+    [
+      "a role only",
+      { contactRole: "Buyer" },
+      KIN_WORK_FORM_COPY.party.contactNameMissing,
+      undefined,
+    ],
+    [
+      "a bad email",
+      { contactName: "Ingrid", contactEmail: "ingrid at tallmoor" },
+      "Enter an email like name@example.com.",
+      undefined,
+    ],
+    [
+      "a phone with no digits",
+      { contactName: "Ingrid", contactPhone: "ask reception" },
+      "Enter a phone number with digits in it.",
+      undefined,
+    ],
+  ] as const)("%s", (_, typed, problem, contact) => {
+    const filled = { ...draft, ...blank, ...typed };
+    expect(kinClientDraftCheck(filled)).toBe(problem);
+    if (problem === null) expect(kinClientCreateInput(filled).contact).toEqual(contact);
+  });
+  it("starts empty, for a new one and one being edited, and an edit never sends it", () => {
+    expect(kinClientDraftOf(undefined, "client")).toMatchObject(blank);
+    expect(kinClientUpdateInput({ name: "Tallmoor" })).toEqual({ name: "Tallmoor" });
   });
 });
 

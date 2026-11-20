@@ -106,7 +106,7 @@ import {
   sensitiveShown,
   showsSensitive,
 } from "./sensitiveReads.ts";
-import { memberAdds } from "./ownerClients.ts";
+import { memberAdds, memberAddsContact } from "./ownerClients.ts";
 import {
   crmVisible,
   KIN_OWNER_LEVEL,
@@ -1841,21 +1841,19 @@ const createRow = Effect.fnUntraced(function* (
   if (row.amount !== undefined) yield* countryFirst(lead.orgId);
   const def = yield* listFor(lead, row.list ?? "work");
   const list = def.id;
-  // For a teammate alone in the turn, a prospect is what their own Clients form adds (`memberAdds`).
+  // For a teammate alone in the turn, a prospect or a contact is what their own Clients form adds
+  // (`memberAdds`, `memberAddsContact`).
   const [only, ...others] = team?.people ?? [];
+  const alone = others.length === 0 ? only : undefined;
   const prospectFor =
-    list === "clients" && categoryOf(list, row).category === "prospect" && others.length === 0
-      ? only
-      : undefined;
+    list === "clients" && categoryOf(list, row).category === "prospect" ? alone : undefined;
+  const contactFor = list === "contacts" && row.client !== undefined ? alone : undefined;
+  const crmFor = prospectFor ?? contactFor;
   // A client or contact is the owner's to look after unless told otherwise; theirs, they look after.
   const owner = yield* resolveWho(
     lead,
     row.owner ??
-      (prospectFor !== undefined
-        ? "me"
-        : list === "clients" || list === "contacts"
-          ? "owner"
-          : "you"),
+      (crmFor !== undefined ? "me" : list === "clients" || list === "contacts" ? "owner" : "you"),
   ).pipe(asField("owner"));
   if (prospectFor !== undefined)
     yield* memberAdds(lead.orgId, prospectFor, {
@@ -1879,6 +1877,12 @@ const createRow = Effect.fnUntraced(function* (
       ? undefined
       : yield* refRecord(lead, row.client, "clients", PARTY_KIND[list]);
   const partyId = party?.recordId;
+  if (contactFor !== undefined && partyId !== undefined)
+    yield* memberAddsContact(lead.orgId, contactFor, {
+      party: { recordId: partyId },
+      owner,
+      ownersFields: row.sensitive !== undefined || row.state === "done" || row.state === "dropped",
+    });
   const projectId = yield* refOrNull(lead, row.project, "projects");
   // Setting up a client twice finds the one that is there instead of making another.
   const existing =
@@ -1963,7 +1967,7 @@ const createRow = Effect.fnUntraced(function* (
   const { view: _view, ...unguarded } = writer;
   const { row: stored, created } = yield* records.create(
     lead.orgId,
-    prospectFor === undefined ? writer : { ...unguarded, namesSeenBy: prospectFor },
+    crmFor === undefined ? writer : { ...unguarded, namesSeenBy: crmFor },
     {
       list,
       originKey,
@@ -1997,8 +2001,8 @@ const createRow = Effect.fnUntraced(function* (
   );
   // A retry finds what the first call stored, answered only while they may still see it.
   if (
-    prospectFor !== undefined &&
-    !(yield* crmVisible(lead.orgId, prospectFor, [stored.recordId])).has(stored.recordId)
+    crmFor !== undefined &&
+    !(yield* crmVisible(lead.orgId, crmFor, [stored.recordId])).has(stored.recordId)
   )
     return yield* notFound(row.title);
   if (created) notices.push(...movedNotices(undefined, stored));
