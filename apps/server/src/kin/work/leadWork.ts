@@ -81,8 +81,10 @@ import {
 } from "./money.ts";
 import { latestComments, projectNoteOf } from "./recordComments.ts";
 import {
+  awaitingOwner,
   endOfDay,
   iso,
+  isSuggestedMoney,
   notFound,
   owedInvoices,
   ownerZone,
@@ -2305,6 +2307,8 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
   if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, before.recordId)))
     return yield* notFound(key);
   if (listOf(before.registerId) === "docs") return yield* isDoc(key);
+  if (input.confirmed === true && isSuggestedMoney(before))
+    return yield* new KinChatError({ reason: "not_allowed", message: awaitingOwner(before.key) });
   yield* explainedHonestly(lead, before, input.state, input.kind ?? input.category);
   const def = yield* listFor(lead, before.registerId);
   const patch: Patch = {

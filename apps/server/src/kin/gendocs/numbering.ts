@@ -16,6 +16,7 @@ import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { isMoney, parseFields } from "../work/lists.ts";
 import { dayIn, financialYearOf, formatMoney } from "../work/money.ts";
 import {
+  awaitingOwner,
   endOfDay,
   notFound,
   ownerZone,
@@ -202,6 +203,8 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
         return answered({ key: row.key, number: had, state: row.state, issued: false });
       if (row.state === "dropped")
         return yield* invalid(`${row.key} is void, so it gets no number. Make a new one instead.`);
+      // A suggestion takes no number in the company's series until a person keeps it.
+      if (row.confirmed === 0) return yield* invalid(awaitingOwner(row.key, "can be issued"));
       // An issued entry always carries its amount, whatever its list says about amounts.
       if (!def.amount)
         return yield* invalid(

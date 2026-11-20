@@ -71,7 +71,9 @@ import {
   encodeRepeat,
   type FieldChange,
   type Principal,
+  awaitingOwner,
   isClosed,
+  isSuggestedMoney,
   latestSeq,
   moneyDay,
   notFound,
@@ -2210,6 +2212,7 @@ const make = Effect.gen(function* () {
         }
         if (row.state === "dropped")
           return yield* invalid(`${row.key} is void; it takes no payments.`);
+        if (isSuggestedMoney(row)) return yield* invalid(awaitingOwner(row.key, "takes payments"));
         const amount = amountOf(row);
         if (amount === undefined)
           return yield* invalid(`${row.key} has no amount yet; set it before recording payments.`);

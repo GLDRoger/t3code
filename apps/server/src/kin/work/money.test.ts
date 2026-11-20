@@ -9,6 +9,7 @@ import {
   KinAgentId,
   KinOrgId,
   KinPersonId,
+  KinRecordKey,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -1043,6 +1044,137 @@ describe("repeating entries", () => {
 });
 
 describe("invoices", () => {
+  it.effect(
+    "an agent's suggestion is owed nowhere, takes no payment or number, and counts once a person with the right keeps it",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES ('co-owner', ${orgId}, 'co', 'Co', ${at}, 'co_owner'),
+            ('mate', ${orgId}, 'mate', 'Mate', ${at}, 'member')`;
+        const inr = (minor: number) => [{ minor, currency: "INR" }];
+        const as = (personId: string) => [
+          { _tag: "person" as const, orgId, personId: KinPersonId.make(personId) },
+        ];
+        yield* defined(1, { template: "invoices" });
+        const asked = yield* turn(3, "Invoice Invented Orbit");
+        yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [{ list: "clients", title: "Invented Orbit" }],
+        });
+        const invoice = (title: string, date: string, suggested?: true) => ({
+          list: "invoices",
+          title,
+          client: "Invented Orbit",
+          amount: "47,200",
+          date,
+          due: "2026-11-01",
+          ...(suggested === undefined ? {} : { suggested }),
+        });
+        yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            invoice("Invented retainer", "2026-10-01"),
+            invoice("Invented renewal", "2026-10-02", true),
+            invoice("Invented second renewal", "2026-10-03", true),
+            invoice("Invented third renewal", "2026-10-04", true),
+          ],
+        });
+        const owed = Effect.gen(function* () {
+          const summary = yield* OwnerMoney.money(people, { orgId });
+          const page = yield* OwnerWork.list(people, { orgId, list: "invoices", totalsBy: "none" });
+          const client = yield* LeadWork.get(scope, { key: "C-1" });
+          return {
+            owed: summary.owed.total,
+            overdue: summary.owed.overdue,
+            byClient: summary.owed.byClient.map((one) => one.owed),
+            listOwed: page.totals?.owed,
+            clientUnpaid: client.owed?.money.unpaid,
+            suggested: (summary.suggested ?? []).map((one) => one.record.key),
+            late: page.records
+              .filter((one) => one.late)
+              .map((one) => one.key)
+              .toSorted(),
+          };
+        });
+        assert.deepStrictEqual(yield* owed, {
+          owed: inr(4_720_000),
+          overdue: inr(4_720_000),
+          byClient: [inr(4_720_000)],
+          listOwed: inr(4_720_000),
+          clientUnpaid: ["₹47,200.00"],
+          suggested: ["INV-2", "INV-3", "INV-4"],
+          late: ["INV-1"],
+        });
+        // The agent reads it as a suggestion, and it waits on a person with the right.
+        assert.include(yield* LeadWork.get(scope, { key: "INV-2" }), { suggested: true });
+        const waits = "INV-2 is an agent's suggestion awaiting the owner";
+        const paid = yield* LeadMoney.payment(scope, {
+          sourceEventId: asked,
+          key: "INV-2",
+          amount: "47,200",
+          paidOn: "2026-11-05",
+        }).pipe(Effect.flip);
+        assert.include(
+          paid.message,
+          `${waits}: only the owner or a co-owner can confirm it, and then it takes payments.`,
+        );
+        const numbered = yield* OwnerMoney.issue(people, {
+          orgId,
+          key: KinRecordKey.make("INV-2"),
+        }).pipe(Effect.flip);
+        assert.include(
+          numbered.message,
+          `${waits}: only the owner or a co-owner can confirm it, and then it can be issued.`,
+        );
+        const byAgent = yield* LeadWork.update(scope, {
+          sourceEventId: asked,
+          key: "INV-2",
+          confirmed: true,
+        }).pipe(Effect.flip);
+        assert.include(byAgent, { reason: "not_allowed" });
+        assert.include(byAgent.message, `${waits}: only the owner or a co-owner can confirm it.`);
+        const rev = (key: string) =>
+          OwnerWork.list(people, { orgId, list: "invoices" }).pipe(
+            Effect.map((page) => page.records.find((one) => one.key === key)!.rev),
+          );
+        for (const tried of [
+          OwnerWork.confirm(as("mate"), { orgId, key: "INV-2", rev: yield* rev("INV-2") }),
+          OwnerWork.decline(as("mate"), { orgId, key: "INV-2", rev: yield* rev("INV-2") }),
+        ]) {
+          const refused = yield* Effect.flip(tried);
+          assert.deepStrictEqual(
+            [refused.reason, refused.message],
+            ["not_allowed", "Only the owner or a co-owner can do that in Work."],
+          );
+        }
+        assert.deepStrictEqual((yield* owed).suggested, ["INV-2", "INV-3", "INV-4"]);
+
+        // A co-owner's keep and the owner's each count from then; a decline drops it.
+        yield* OwnerWork.confirm(as("co-owner"), { orgId, key: "INV-2", rev: yield* rev("INV-2") });
+        yield* OwnerWork.confirm(people, { orgId, key: "INV-3", rev: yield* rev("INV-3") });
+        yield* OwnerWork.decline(people, { orgId, key: "INV-4", rev: yield* rev("INV-4") });
+        assert.deepStrictEqual(yield* owed, {
+          owed: inr(14_160_000),
+          overdue: inr(14_160_000),
+          byClient: [inr(14_160_000)],
+          listOwed: inr(14_160_000),
+          clientUnpaid: ["₹1,41,600.00"],
+          suggested: [],
+          late: ["INV-1", "INV-2", "INV-3"],
+        });
+        const records = yield* KinRecords.KinRecords;
+        assert.strictEqual((yield* records.get(orgId, "INV-4"))!.state, "dropped");
+        yield* LeadMoney.payment(scope, {
+          sourceEventId: asked,
+          key: "INV-2",
+          amount: "47,200",
+          paidOn: "2026-11-05",
+        });
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("take part payments exactly once each, refuse overpaying, and reopen on a void", () =>
     Effect.gen(function* () {
       yield* seed;

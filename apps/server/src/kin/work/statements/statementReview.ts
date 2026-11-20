@@ -35,7 +35,7 @@ import { choiceCardState } from "../../widgets/choiceCard.ts";
 import { fieldText, parseFields } from "../lists.ts";
 import { homeCurrency } from "../companyProfile.ts";
 import { dayIn } from "../money.ts";
-import { ownerZone } from "../recordRows.ts";
+import { notSuggestedMoney, ownerZone } from "../recordRows.ts";
 import { listDef } from "../registers.ts";
 import { bankStates, directionOf, findBankList, type KnownRow, knownRows } from "./bankList.ts";
 import type { FileOutcome } from "./statementFiles.ts";
@@ -222,7 +222,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid
     FROM kin_records r LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
     WHERE r.org_id = ${orgId} AND r.register_id = 'invoices' AND r.state = 'waiting'
-      AND r.amount_minor IS NOT NULL AND NOT EXISTS (SELECT 1 FROM kin_bank_statement_entries e
+      AND r.amount_minor IS NOT NULL AND ${notSuggestedMoney(sql)} AND NOT EXISTS (SELECT 1 FROM kin_bank_statement_entries e
         WHERE e.org_id = r.org_id AND e.statement_id = ${statementId ?? ""}
           AND e.target_record_id = r.record_id)
     ORDER BY r.key`;

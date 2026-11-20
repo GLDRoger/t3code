@@ -12,7 +12,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
 import { type playbookThreshold, playbookThresholds } from "./playbooks.ts";
-import { iso } from "./recordRows.ts";
+import { iso, notSuggestedMoney } from "./recordRows.ts";
 
 /**
  * Contact with a client: what someone logged, and what Kin already holds (an invoice or quote
@@ -81,7 +81,8 @@ const touchUnion = (
       r.title, NULL, 0, NULL, NULL, r.record_id, r.key, r.title, ${issued}
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND ${of(sql`r.party_id`)} AND (
-      (r.register_id IN ('invoices', 'quotes') AND r.state IN ('waiting', 'done'))
+      (r.register_id IN ('invoices', 'quotes') AND r.state IN ('waiting', 'done')
+        AND ${notSuggestedMoney(sql)})
       OR (r.category = 'meeting' AND r.state != 'dropped' AND r.date_at IS NOT NULL))
     UNION ALL
     SELECT r.party_id, 'payment:' || p.payment_id, ${paidAt(sql)}, 'payment', r.title, NULL, 0,

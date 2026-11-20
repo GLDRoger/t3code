@@ -19,9 +19,11 @@ import type * as HttpClient from "effect/http/HttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { readStoredFile } from "../gendocs/brand.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import type { TextClock } from "../work/companyProfile.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { formatMoney } from "../work/money.ts";
+import { notSuggestedMoney } from "../work/recordRows.ts";
 import { listDef, stateLabel } from "../work/registers.ts";
 import { logTouch } from "../work/touches.ts";
 import { KinGatewayError } from "./McpGateway.ts";
@@ -812,7 +814,10 @@ export const sentToClient = Effect.fn("KinSending.sentToClient")(function* (sent
     });
 });
 
-/** A quote attached to a sent mail went out: a draft one now reads as sent. */
+/**
+ * A quote attached to a sent mail went out: a draft one now reads as sent. An owner-level
+ * person's Confirm sent it, so an agent's suggestion among them is kept from now on.
+ */
 export const markQuotesSent = Effect.fn("KinSending.markQuotesSent")(function* (
   records: KinRecords["Service"],
   sent: {
@@ -829,17 +834,20 @@ export const markQuotesSent = Effect.fn("KinSending.markQuotesSent")(function* (
     WHERE org_id = ${sent.orgId} AND register_id = 'quotes' AND state = 'open'
       AND record_id IN ${sql.in([...new Set(sent.entryRecordIds)])}
     ORDER BY key`;
+  const writer = {
+    actor: { _tag: "person", personId: KinPersonId.make(sent.personId) },
+    via: "owner",
+    wakeupId: sent.wakeupId,
+  } as const;
   for (const { key } of drafts)
-    yield* records.update(
-      sent.orgId,
-      {
-        actor: { _tag: "person", personId: KinPersonId.make(sent.personId) },
-        via: "owner",
-        wakeupId: sent.wakeupId,
-      },
-      key,
-      { state: "waiting" },
-    );
+    yield* records.update(sent.orgId, writer, key, { state: "waiting" });
+  if (!(yield* ownerLevel(sent.orgId, KinPersonId.make(sent.personId)))) return;
+  const suggested = yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
+    WHERE r.org_id = ${sent.orgId} AND NOT ${notSuggestedMoney(sql)}
+      AND r.record_id IN ${sql.in([...new Set(sent.entryRecordIds)])}
+    ORDER BY r.key`;
+  for (const { key } of suggested)
+    yield* records.update(sent.orgId, writer, key, { confirmed: true });
 });
 
 const decodeSentPayload = Schema.decodeUnknownOption(PreparedJson);

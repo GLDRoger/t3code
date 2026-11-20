@@ -184,6 +184,27 @@ const seed = Effect.gen(function* () {
     partyId: "r-C-1",
   });
   yield* insert({ id: "W-10", dueAt: B + 5 * DAY, partyId: "r-C-1", category: "obligation" });
+  // An agent's suggestions nobody confirmed: no chase, no contact, no goal, no brief figure,
+  // even with a payment an older build let it take.
+  yield* insert({
+    id: "INV-7",
+    list: "invoices",
+    state: "waiting",
+    amount: 177_000_00,
+    dueAt: B + 2 * DAY,
+    dateAt: B - 5 * DAY,
+    partyId: "r-C-1",
+    confirmed: 0,
+    createdAt: B - 5 * DAY,
+  });
+  yield* insert({
+    id: "QT-2",
+    list: "quotes",
+    state: "waiting",
+    amount: 300_000_00,
+    confirmed: 0,
+    createdAt: B,
+  });
   yield* insert({ id: "DT-1", list: "dates", category: "renewal", dueAt: B + 40 * DAY });
   yield* insert({
     id: "EXP-1",
@@ -211,7 +232,8 @@ const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor, currency,
       paid_on, origin_key, created_at, created_by_kind, voided_at)
     VALUES (${orgId}, 'pay-1', 'r-INV-6', 1_00_000_00, 'INR', '2026-11-02', 'pay-1', 0, 'person', NULL),
-      (${orgId}, 'pay-2', 'r-INV-6', 50_000_00, 'INR', '2026-11-02', 'pay-2', 0, 'person', 1)`;
+      (${orgId}, 'pay-2', 'r-INV-6', 50_000_00, 'INR', '2026-11-02', 'pay-2', 0, 'person', 1),
+      (${orgId}, 'pay-3', 'r-INV-7', 10_000_00, 'INR', '2026-11-02', 'pay-3', 0, 'person', NULL)`;
   const goal = (id: string, fields: object) =>
     insert({
       id,
@@ -430,8 +452,11 @@ describe("KinPulse", () => {
         "No contact for 30 days (calls, meetings, mail, invoices and payments count; the last was an invoice), and nothing open with them.",
       );
 
-      // A void invoice never counts; a moved due date is a new episode, so a new key.
-      assert.lengthOf(keyed((yield* read(B + 60 * DAY)).facts, "invoice_overdue", "INV-2"), 0);
+      // A void invoice never counts, nor a suggestion; a moved due date is a new episode, so a new key.
+      const later = (yield* read(B + 60 * DAY)).facts;
+      assert.lengthOf(keyed(later, "invoice_overdue", "INV-2"), 0);
+      assert.lengthOf(keyed(later, "invoice_overdue", "INV-7"), 0);
+      assert.lengthOf(keyed(later, "quote_unanswered", "QT-2"), 0);
       const [before] = keyed((yield* read(B + 11 * DAY)).facts, "task_late", "W-1");
       yield* sql`UPDATE kin_records SET due_at = ${B + 10 * DAY + HOUR} WHERE record_id = 'r-W-1'`;
       const [after] = keyed((yield* read(B + 11 * DAY)).facts, "task_late", "W-1");
@@ -1056,6 +1081,8 @@ describe("KinPulse", () => {
           /^INV-1:.*unpaid, overdue for \d+ days; no mail with it on record$/.test(line),
         ),
       );
+      assert.isFalse(week.money.unpaid.some((line) => line.startsWith("INV-7")));
+      assert.deepStrictEqual(week.money.unpaidTotal, ["₹1,97,000.00"]);
       // Run 4: the brief called a reminder sent 45 s earlier a draft. Its lines read the record.
       const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO kin_connections (org_id, connection_id, label, kind, url_host, auth,

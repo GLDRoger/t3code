@@ -29,6 +29,7 @@ import {
   countedPayment,
   iso,
   moneyDay,
+  notSuggestedMoney,
   owedInvoices,
   ownerZone,
   type RecordRow,
@@ -87,7 +88,7 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
         r.record_id AS id, r.key, r.fields_json AS "fieldsJson" FROM kin_records r
       WHERE r.org_id = ${orgId} AND r.register_id = ${def.id}
         ${input.open === true ? sql`AND r.state NOT IN ('done', 'dropped')` : sql``}
-        AND ${seenBy(sql, input.viewer)}
+        AND ${notSuggestedMoney(sql)} AND ${seenBy(sql, input.viewer)}
         AND (${sql.or(
           fields.map(
             (one) =>
@@ -140,6 +141,7 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
         ? []
         : [sql`r.register_id IN ${sql.in(input.lists)}`]),
       ...(input.open === true ? [sql`r.state NOT IN ('done', 'dropped')`] : []),
+      notSuggestedMoney(sql),
       seenBy(sql, input.viewer),
     ]);
   const hits = sql`SELECT r.record_id AS id, 'due' AS kind, r.due_at AS at, r.key FROM kin_records r
@@ -200,6 +202,8 @@ const monthStart = (month: string, zone: string) =>
       { timeZone: zone, adjustForTimeZone: true },
     ),
   );
+
+const SUGGESTED_CAP = 20;
 
 /** The Money tab's figures: owed and overdue by client, received and spent, dates ahead, a year. */
 export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
@@ -333,6 +337,16 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     { from: now, to: now + 30 * DAY_MS, open: true, limit: 50, viewer },
     now,
   );
+  const suggested =
+    viewer._tag === "ownerLevel"
+      ? yield* sql<RecordRow & { listName: string }>`SELECT * FROM (${selectRecords(sql)}
+          WHERE r.org_id = ${orgId} AND r.state <> 'dropped' AND NOT ${notSuggestedMoney(sql)}
+            AND ${seen}
+          ORDER BY r.created_at DESC, r.key LIMIT ${SUGGESTED_CAP}) s
+          JOIN (SELECT register_id, name AS "listName" FROM kin_registers
+            WHERE org_id = ${orgId}) g ON g.register_id = s."registerId"
+          ORDER BY s."createdAt" DESC, s.key`
+      : [];
   const owedTotal = addUp(
     owing.map((one) => one.balance),
     home,
@@ -379,6 +393,14 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     ),
     upcoming: upcoming.rows,
     upcomingTotal: upcoming.total,
+    ...(viewer._tag === "ownerLevel"
+      ? {
+          suggested: suggested.map((row) => ({
+            record: toRecord(row, now),
+            listName: row.listName,
+          })),
+        }
+      : {}),
     series: months.map((month) => ({
       month,
       received: receivedIn(month),

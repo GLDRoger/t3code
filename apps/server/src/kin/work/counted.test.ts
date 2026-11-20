@@ -21,8 +21,9 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "gendocs/receipts.ts": 2,
   // A receipt already made for this advance: one entry's own amount matched, nothing summed.
   "gendocs/receiptProposals.ts": 1,
-  // The columns every read selects, with an entry's own paid and withheld; one entry's payments.
-  "work/recordRows.ts": 2,
+  // The columns every read selects, with an entry's own paid and withheld; one entry's payments;
+  // the rule's own test of whether an entry is money an agent only suggested.
+  "work/recordRows.ts": 3,
   // One entry's payments, read to check a retry and to void one; a totals query's has-amount filter.
   "work/KinRecords.ts": 3,
   // The columns each pulse sense selects; every sense that reads money applies the rule itself.
