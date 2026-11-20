@@ -187,16 +187,18 @@ export function KinSettings(props: {
   const nameOf = (environment: EnvironmentPresentation) =>
     environment.displayUrl !== null &&
     environments.filter((one) => one.label === environment.label).length > 1
-      ? `${environment.label} (${environment.displayUrl})`
+      ? `${environment.label} (${shortAddress(environment.displayUrl)})`
       : environment.label;
-  // The team on screen has its name; an old one this phone still holds goes by its computer and state.
-  const teamOf = (environmentId: EnvironmentId) => {
-    if (host._tag === "host" && host.environmentId === environmentId) return team;
-    const held = environments.find((one) => one.environmentId === environmentId);
-    return held === undefined
-      ? null
-      : `${nameOf(held)} (${CONNECTION_LABEL[held.connection.phase].toLowerCase()})`;
-  };
+  // The team on screen has its name; an old one this phone still holds goes by its computer's.
+  const teamOf = (environmentId: EnvironmentId) =>
+    host._tag === "host" && host.environmentId === environmentId
+      ? team
+      : (environments.find((one) => one.environmentId === environmentId)?.label ?? null);
+  const heldTeams = environments.filter(
+    (held) =>
+      teammateIds.includes(held.environmentId) &&
+      !(host._tag === "host" && host.environmentId === held.environmentId),
+  );
   const forget = (environmentId: EnvironmentId) => {
     setLeft((held) => new Set(held).add(environmentId));
     void controller.removeEnvironment(environmentId).then((result) => {
@@ -381,6 +383,14 @@ export function KinSettings(props: {
               </SettingsSection>
             </>
           )}
+          {/* Another team this phone still holds: its connection shows here, not in its Leave. */}
+          {heldTeams.length === 0 ? null : (
+            <SettingsSection>
+              {heldTeams.map((environment) => (
+                <KinConnection key={environment.environmentId} environment={environment} />
+              ))}
+            </SettingsSection>
+          )}
           {/* The coding app signs out of a computer from Environments. */}
           {(inCodingApp ? [] : owned).map((environment) => (
             <Button
@@ -410,6 +420,10 @@ export function KinSettings(props: {
   );
 }
 
+/** "192.168.1.20:3773" for "http://192.168.1.20:3773/": the scheme and the closing slash say nothing. */
+const shortAddress = (url: string) =>
+  url.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/\/+$/, "");
+
 /** Kin's page in the coding app's Settings; where Kin is the whole app, its own Settings. */
 export function KinSettingsScreen() {
   return <KinSettings inCodingApp={!useKinIsHome()} />;
@@ -426,7 +440,9 @@ function KinConnection(props: { readonly environment: EnvironmentPresentation })
         <ListRowLayout
           icon="desktopcomputer"
           label={environment.label}
-          description={environment.displayUrl ?? undefined}
+          description={
+            environment.displayUrl === null ? undefined : shortAddress(environment.displayUrl)
+          }
           detail={status === "failed" ? "Couldn't reconnect" : CONNECTION_LABEL[phase]}
         />
       </View>
