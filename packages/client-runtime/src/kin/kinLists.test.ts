@@ -27,6 +27,7 @@ import {
   kinMoneyDraft,
   kinParseMoney,
   kinPrincipalValue,
+  kinListChips,
   kinListQuery,
   kinListRow,
   kinSuggestionKeep,
@@ -463,6 +464,24 @@ describe("a list by its definition", () => {
     expect(kinListNarrowings(counted)).toEqual([
       { id: "kept", label: "Counted in Money", cleared: { ...counted, kept: null } },
     ]);
+    // Each status pill asks for that status alone and is the one selected; All asks for all.
+    const cleared = { ...counted, kept: null };
+    for (const [id, states] of [
+      ["open", ["open"]],
+      ["waiting", ["waiting"]],
+      ["done", ["done"]],
+      ["dropped", ["dropped"]],
+      ["all", undefined],
+    ] as const) {
+      const picked = kinListChips(issued, cleared).find((chip) => chip.id === id)!.filter;
+      expect(kinListQuery(orgId, issued.list, picked).states, id).toEqual(states);
+      expect(
+        kinListChips(issued, picked)
+          .filter((chip) => chip.selected)
+          .map((chip) => chip.id),
+        id,
+      ).toEqual([id]);
+    }
   });
 
   it("sends only the names that changed when a list is renamed", () => {

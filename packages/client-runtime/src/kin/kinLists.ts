@@ -508,7 +508,8 @@ export function kinListsIndex(lists: ReadonlyArray<KinListDefinition>): {
 
 // Filters
 
-export type KinListShow = "all" | "open" | KinRecordState;
+/** `notClosed`: every entry not yet closed; a state alone, `open` included, is just that state. */
+export type KinListShow = "all" | "notClosed" | KinRecordState;
 
 export interface KinListFilter {
   readonly text: string;
@@ -575,7 +576,7 @@ export function kinListQuery(
     list,
     ...(filter.show === "all"
       ? {}
-      : filter.show === "open"
+      : filter.show === "notClosed"
         ? { open: true }
         : { states: [filter.show] }),
     ...(filter.late ? { late: true } : {}),
@@ -615,7 +616,7 @@ export function kinListChips(
     {
       id: "all",
       label: KIN_LISTS.all,
-      selected: plain && (filter.show === "all" || filter.show === "open"),
+      selected: plain && (filter.show === "all" || filter.show === "notClosed"),
       filter: { ...filter, show: "all", late: false },
     },
     ...def.states.map((state) => ({
@@ -1605,7 +1606,15 @@ export function kinListEditInput(
   };
 }
 
-const SHOWS: ReadonlyArray<string> = ["all", "open", "doing", "waiting", "done", "dropped"];
+const SHOWS: ReadonlyArray<string> = [
+  "all",
+  "notClosed",
+  "open",
+  "doing",
+  "waiting",
+  "done",
+  "dropped",
+];
 const GROUPS: ReadonlyArray<string> = ["none", "category", "month", "financialYear"];
 const DAY_TEXT = /^\d{4}-\d{2}-\d{2}$/;
 
