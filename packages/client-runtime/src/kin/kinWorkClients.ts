@@ -951,7 +951,7 @@ export function kinProjectsNothing(
 /** The Clients place's views: who the company works with, what it hopes to win, and the work. */
 export type KinClientsTab = "clients" | "deals" | "projects";
 
-export const KIN_CLIENTS_TABS: ReadonlyArray<{
+const KIN_CLIENTS_TABS: ReadonlyArray<{
   readonly id: KinClientsTab;
   readonly label: string;
 }> = [
@@ -959,6 +959,14 @@ export const KIN_CLIENTS_TABS: ReadonlyArray<{
   { id: "deals", label: "Deals" },
   { id: "projects", label: KIN_PROJECTS.title },
 ];
+
+/** The views this person has: Deals only at the owner level or with Clients on. */
+export const kinClientsTabs = (seesClients: boolean) =>
+  seesClients ? KIN_CLIENTS_TABS : KIN_CLIENTS_TABS.filter((held) => held.id !== "deals");
+
+/** The view to show for an asked one: a view they lack, such as Deals, shows Clients. */
+export const kinClientsTabShown = (tab: KinClientsTab, seesClients: boolean): KinClientsTab =>
+  kinClientsTabs(seesClients).some((held) => held.id === tab) ? tab : "clients";
 
 const KIN_PROJECTS_NO_CLIENT = "Not for a client";
 

@@ -7,6 +7,7 @@ import {
   kinDealsByStage,
   kinDealsHeader,
   kinDealsNothing,
+  kinDealsNotRead,
   kinDealsQuery,
   kinDealsSection,
   kinDealStageBeside,
@@ -385,10 +386,11 @@ export function KinDealsTab(
         <KinWorkRowSkeletons />
       </div>
     );
-  if (state._tag === "refused" || state._tag === "gone")
-    return <KinWorkNotice {...KIN_DEALS.olderHost} />;
-  if (state._tag === "failed")
-    return (
+  if (state._tag !== "ready") {
+    const notRead = kinDealsNotRead(state);
+    return notRead !== null || state._tag !== "failed" ? (
+      <KinWorkNotice {...(notRead ?? KIN_DEALS.refused)} />
+    ) : (
       <KinLoadFailed
         what={KIN_DEALS.loadFailed}
         cause={state.cause}
@@ -396,6 +398,7 @@ export function KinDealsTab(
         className="mx-auto w-full max-w-3xl p-4"
       />
     );
+  }
   const result = state.value;
   const header = kinDealsHeader(result.open, rates);
   const columns = kinDealsByStage(result.stages, result.deals, props.directory.names, now);

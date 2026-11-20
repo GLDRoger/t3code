@@ -6,7 +6,8 @@ import { useNavigation } from "@react-navigation/native";
 import {
   KIN_CLIENTS,
   KIN_CLIENTS_SHOW,
-  KIN_CLIENTS_TABS,
+  kinClientsTabs,
+  kinClientsTabShown,
   KIN_PROJECTS,
   KIN_PROJECT_VIEWS,
   kinClientRow,
@@ -438,11 +439,13 @@ function showMenu(
 
 /** Clients, or their projects grouped under them, one segment at a time. */
 export function KinClientsList(props: ListProps & { readonly projects: boolean }) {
-  const [tab, setTab] = useState<KinClientsTab>(() =>
+  const [asked, setTab] = useState<KinClientsTab>(() =>
     props.projects ? "projects" : appAtomRegistry.get(kinClientsTabAtom),
   );
   const start = useKinClientsStart(props.environmentId);
   const seesClients = useKinSeesClients(props.environmentId) === true;
+  // Deals are for someone with Clients on; the segment they last chose may no longer be theirs.
+  const tab = kinClientsTabShown(asked, seesClients);
   const [showing, setShowing] = useState<Showing>(() => ({
     clients: { show: start.show, lookedAfter: start.lookedAfter },
     view: "open",
@@ -461,7 +464,7 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
     ask,
     header: (
       <SegmentedControl
-        options={KIN_CLIENTS_TABS.map((held) => ({ value: held.id, label: held.label }))}
+        options={kinClientsTabs(seesClients).map((held) => ({ value: held.id, label: held.label }))}
         selected={tab}
         onSelect={(next) => {
           appAtomRegistry.set(kinClientsTabAtom, next);

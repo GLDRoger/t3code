@@ -28,6 +28,12 @@ const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
 const defectMessage = (defect: unknown) =>
   typeof defect === "string" ? defect : defect instanceof Error ? defect.message : "";
 
+/** A server without the call answers `Exit.die("Unknown request tag: ...")`. */
+export const kinHostLacksCall = (cause: Cause.Cause<unknown>) =>
+  cause.reasons
+    .filter(Cause.isDieReason)
+    .some((reason) => defectMessage(reason.defect).includes("Unknown request tag"));
+
 export function classifyKinProbe(
   result: AsyncResult.AsyncResult<KinOrgsListResult, unknown>,
 ): KinProbe {
@@ -47,11 +53,7 @@ export function classifyKinProbe(
     }
   }
   if (failures.length === 0 && Cause.hasDies(result.cause)) {
-    // A server without the Kin RPCs answers `Exit.die("Unknown request tag: ...")`.
-    const unknownTag = result.cause.reasons
-      .filter(Cause.isDieReason)
-      .some((reason) => defectMessage(reason.defect).includes("Unknown request tag"));
-    if (unknownTag) return { _tag: "notKin" };
+    if (kinHostLacksCall(result.cause)) return { _tag: "notKin" };
     // Any other defect, such as a decode failure, is a broken Kin host, not a missing one.
     return { _tag: "error", message: Cause.pretty(result.cause), transient: false };
   }

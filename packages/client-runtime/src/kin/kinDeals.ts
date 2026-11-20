@@ -15,8 +15,10 @@ import {
   type KinRecordChange,
   type KinRecordKey,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 
 import { kinTotalsEstimate, type KinRates } from "./kinCurrency.ts";
+import { kinHostLacksCall } from "./kinHost.ts";
 import { kinMoneyText, kinParseMoney } from "./kinLists.ts";
 import {
   kinWorkActorName,
@@ -26,6 +28,7 @@ import {
   kinWorkName,
   type KinWorkNames,
 } from "./kinWork.ts";
+import type { KinWorkReadState } from "./kinWorkForms.ts";
 
 /** A deal's key: the built-in Deals list's fixed prefix. */
 export const kinIsDealKey = (key: string) => key.startsWith("DL-");
@@ -80,6 +83,10 @@ export const KIN_DEALS = {
     title: "Deals need a newer Kin",
     detail: "The computer Kin runs on is older than this app. Update it to see deals here.",
   },
+  refused: {
+    title: "Deals aren't yours to see",
+    detail: "They're for the owner, co-owners and teammates with Clients on.",
+  },
   more: (n: number) => `${n} more not shown; narrow the filters to see them.`,
   estimate: (about: string) => `${about}, an estimate at the company's rates`,
   dealCount: (n: number) => (n === 1 ? "1 deal" : `${n} deals`),
@@ -103,6 +110,17 @@ export const KIN_DEALS = {
   openQuote: (quote: string) => `Open ${quote}`,
   clientStays: "A deal stays with its client. For another, add a new deal.",
 } as const;
+
+/**
+ * What Deals says in place of deals it couldn't read: refused, or a host that has no deals at all
+ * (it lacks the call). Null for any other failure, which offers Retry.
+ */
+export function kinDealsNotRead(state: KinWorkReadState<unknown>) {
+  if (state._tag === "refused" || state._tag === "gone") return KIN_DEALS.refused;
+  if (state._tag === "failed" && Cause.isCause(state.cause) && kinHostLacksCall(state.cause))
+    return KIN_DEALS.olderHost;
+  return null;
+}
 
 /** Settings → Deals. */
 export const KIN_DEAL_STAGES = {

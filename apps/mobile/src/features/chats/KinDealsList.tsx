@@ -8,6 +8,7 @@ import {
   kinDealsHeader,
   kinDealsQuery,
   kinDealsNothing,
+  kinDealsNotRead,
   kinDealsSection,
   type KinDealNextView,
   type KinDealRowView,
@@ -224,6 +225,7 @@ export function KinDealsView(
   const filter = query?.filter ?? WAITING;
   const [text, setText] = useState("");
   const { state, refresh } = useKinDeals(props, query?.input ?? null);
+  const notRead = kinDealsNotRead(state);
   const rates = useKinRates(props, ownerLevel);
   const now = new Date(useNowMinuteMs());
   const result = state._tag === "ready" ? state.value : null;
@@ -375,8 +377,8 @@ export function KinDealsView(
             <View className="px-4 pt-4">
               {state._tag === "loading" ? (
                 <KinWorkLoading label={`Loading ${KIN_DEALS.title}`} />
-              ) : state._tag === "refused" || state._tag === "gone" ? (
-                <EmptyState variant="plain" {...KIN_DEALS.olderHost} />
+              ) : notRead !== null ? (
+                <EmptyState variant="plain" {...notRead} />
               ) : state._tag === "failed" ? (
                 <KinLoadFailed title={KIN_DEALS.loadFailed} cause={state.cause} onRetry={refresh} />
               ) : (result?.deals.length ?? 0) > 0 ? (

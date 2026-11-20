@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Fixtures build times relative to a fixed clock.
+import * as Cause from "effect/Cause";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -17,6 +18,8 @@ import {
   kinDealNext,
   kinDealNextStage,
   kinDealsByStage,
+  kinDealsNotRead,
+  KIN_DEALS,
   kinDealEditDraft,
   kinDealEditRequest,
   kinDealQuoteChoices,
@@ -334,6 +337,18 @@ describe("kinDealQuoteChoices", () => {
     expect(
       kinDealQuoteChoices({ deal: deal(1, { quote: quote(4) }) }).choices.map((one) => one.key),
     ).toEqual([null, "QT-4"]);
+  });
+});
+
+describe("kinDealsNotRead", () => {
+  it("says Deals need a newer Kin only for a host without them; a refusal says it is refused", () => {
+    expect(kinDealsNotRead({ _tag: "refused" })).toBe(KIN_DEALS.refused);
+    expect(
+      kinDealsNotRead({ _tag: "failed", cause: Cause.die("Unknown request tag: kin.work.deals") }),
+    ).toBe(KIN_DEALS.olderHost);
+    // Any other failure offers Retry, as every list does.
+    expect(kinDealsNotRead({ _tag: "failed", cause: Cause.die(new Error("Broken")) })).toBeNull();
+    expect(kinDealsNotRead({ _tag: "loading" })).toBeNull();
   });
 });
 

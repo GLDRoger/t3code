@@ -19,8 +19,9 @@ import {
 import {
   KIN_CLIENTS,
   KIN_CLIENTS_OLDER_HOST,
-  KIN_CLIENTS_TABS,
   KIN_PROJECTS,
+  kinClientsTabs,
+  kinClientsTabShown,
   type KinClientsTab,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { KIN_WORK_HOME } from "@t3tools/client-runtime/kin/kinWorkHome";
@@ -282,7 +283,7 @@ export function KinPlaceView({
   dialog,
   onDialog,
   docLink,
-  tab,
+  tab: askedTab,
   onTab,
   person = null,
   ...props
@@ -314,6 +315,8 @@ export function KinPlaceView({
   const canAdd = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
   // The host takes a new client from the owner level, and a prospect from a teammate with Clients on.
   const canAddClient = useKinSeesClients(environmentId);
+  // Deals are for someone with Clients on; a deals address without it shows Clients.
+  const tab = kinClientsTabShown(askedTab, canAddClient);
   const ownerLevel = useKinOwnerLevel(environmentId);
   const canAddProject = useAtomValue(kinClient.workProjectCreate.permissionAtom(environmentId));
   const canChangeTasks = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
@@ -431,11 +434,11 @@ export function KinPlaceView({
           aria-label={title}
           value={[tab]}
           onValueChange={(value) => {
-            const next = KIN_CLIENTS_TABS.find((held) => held.id === value[0]);
+            const next = kinClientsTabs(canAddClient).find((held) => held.id === value[0]);
             if (next !== undefined) onTab(next.id);
           }}
         >
-          {KIN_CLIENTS_TABS.map((held) => (
+          {kinClientsTabs(canAddClient).map((held) => (
             <Toggle key={held.id} value={held.id}>
               {held.label}
             </Toggle>

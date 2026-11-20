@@ -21,6 +21,8 @@ import {
   kinClientsNothing,
   kinClientsQuery,
   kinClientsStartFilter,
+  kinClientsTabShown,
+  kinClientsTabs,
   KIN_CLIENTS_DEFAULT_FILTER,
   kinLastContactLine,
   kinProjectsByClient,
@@ -395,6 +397,17 @@ describe("kinProjectsByClient", () => {
 
   it("is no groups for no projects", () => {
     expect(kinProjectsByClient([], names, now)).toEqual([]);
+  });
+});
+
+describe("kinClientsTabs", () => {
+  it("offers Deals only to someone with Clients on, and shows Clients for a deals address without it", () => {
+    expect(kinClientsTabs(true).map((tab) => tab.id)).toEqual(["clients", "deals", "projects"]);
+    // A project lead with Clients off reaches the place for their client, never its deals.
+    expect(kinClientsTabs(false).map((tab) => tab.id)).toEqual(["clients", "projects"]);
+    expect(kinClientsTabShown("deals", false)).toBe("clients");
+    expect(kinClientsTabShown("projects", false)).toBe("projects");
+    expect(kinClientsTabShown("deals", true)).toBe("deals");
   });
 });
 
