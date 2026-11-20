@@ -211,6 +211,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.setDealStages": Effect.fn("KinWork.rpc.setDealStages")(function* (input) {
         return yield* call((people) => Deals.setStages(people, input));
       }),
+      "kin.work.setDealQuietDays": Effect.fn("KinWork.rpc.setDealQuietDays")(function* (input) {
+        return yield* call((people) => Deals.setQuietDays(people, input));
+      }),
       "kin.work.logTouch": Effect.fn("KinWork.rpc.logTouch")(function* (input) {
         return yield* call((people) => Clients.logTouch(people, input));
       }),

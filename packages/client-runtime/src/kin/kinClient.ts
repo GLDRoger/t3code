@@ -1402,6 +1402,12 @@ export function makeKinClient<R, ER>(
       tag: "kin.work.setDealStages",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
     }),
+    /** "A deal goes quiet after N days": the owner and co-owners only. */
+    workDealQuietDaysSet: createKinRpcCommand(runtime, {
+      label: "kin:work:deal-quiet-days:set",
+      tag: "kin.work.setDealQuietDays",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+    }),
     /** How many clients and open projects there are: the lists' own totals, without their rows. */
     workCounts: createKinQueryAtomFamily(runtime, {
       label: "kin:work:counts",

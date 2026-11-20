@@ -1,5 +1,6 @@
 import {
   kinOwnerLevel,
+  KIN_DEAL_QUIET_DAYS_MAX,
   type KinDealMove,
   type KinDealNumbers,
   type KinDealPage,
@@ -184,6 +185,26 @@ export const KIN_DEAL_STAGES = {
   limit: "At most 12 stages.",
   searchTerms: ["deals", "stages", "pipeline", "won", "lost"],
 } as const;
+
+/** Settings → Deals: when a deal with nothing moving reaches whoever looks after it. */
+export const KIN_DEAL_QUIET = {
+  title: "A deal goes quiet after",
+  label: "Days before a deal is quiet",
+  days: (n: number) => (n === 1 ? "1 day" : `${n} days`),
+  unit: (text: string) => (text.trim() === "1" ? "day" : "days"),
+  detail:
+    "No contact, note, stage move or next-step change for this long, and whoever looks after it hears.",
+  readOnly: "The owner and co-owners set this.",
+  save: "Save",
+} as const;
+
+/** Why a number of quiet days can't be saved, or null when it can. */
+export function kinDealQuietProblem(text: string): string | null {
+  const days = Number(text.trim());
+  return text.trim() === "" || !Number.isInteger(days) || days < 1 || days > KIN_DEAL_QUIET_DAYS_MAX
+    ? `Say a whole number of days, 1 to ${KIN_DEAL_QUIET_DAYS_MAX}.`
+    : null;
+}
 
 /** Why a stage list can't be saved, or null when it can. */
 export function kinDealStagesProblem(names: ReadonlyArray<string>): string | null {

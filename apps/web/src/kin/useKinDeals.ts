@@ -108,6 +108,20 @@ export function useKinDealSend(target: KinWorkTarget) {
   };
 }
 
+/** "A deal goes quiet after N days", answered with the stages as the host now has them. */
+export function useKinDealQuietDaysSet(target: KinWorkTarget) {
+  const set = useAtomCommand(kinClient.workDealQuietDaysSet, { reportFailure: false });
+  return async (days: number): Promise<KinListOutcome<KinDealStagesResult>> => {
+    const outcome = await kinListSend({
+      online: () => kinHostConnected(target.environmentId),
+      send: () =>
+        set({ environmentId: target.environmentId, input: { orgId: target.orgId, days } }),
+    });
+    if (outcome.ok) appAtomRegistry.refresh(stagesAtom(target));
+    return outcome;
+  };
+}
+
 export function useKinDealStagesSet(target: KinWorkTarget) {
   const set = useAtomCommand(kinClient.workDealStagesSet, { reportFailure: false });
   return async (

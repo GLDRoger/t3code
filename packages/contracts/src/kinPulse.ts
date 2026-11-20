@@ -47,12 +47,21 @@ const KIN_PULSE_SENSES = [
   "meeting_soon",
   "holder_removed",
   "statement_missing",
+  "deal_no_next_step",
+  "deal_quiet",
+  "deal_date_passed",
 ] as const;
 /**
  * Senses newer than the first phones: a screen read sends them only to a client that lists them
  * in `acceptSenses`, so an older client never meets a sense it can't decode.
  */
-export const KIN_PULSE_LATER_SENSES = ["holder_removed", "statement_missing"] as const;
+export const KIN_PULSE_LATER_SENSES = [
+  "holder_removed",
+  "statement_missing",
+  "deal_no_next_step",
+  "deal_quiet",
+  "deal_date_passed",
+] as const;
 export const KinPulseSense = Schema.Literals(KIN_PULSE_SENSES);
 export type KinPulseSense = typeof KinPulseSense.Type;
 
@@ -446,13 +455,15 @@ export const KinBrief = Schema.Struct({
   on: Schema.Boolean,
   /** Not sent today, the company's day, because this brief came instead. */
   coveredToday: Schema.optional(KinCoveringBrief),
+  /** A morning page Kin writes for this person itself, in their own time zone; no agent's brief. */
+  page: Schema.optional(Schema.Boolean),
 });
 export type KinBrief = typeof KinBrief.Type;
 
 export const KinBriefsInput = Schema.Struct({ orgId: KinOrgId });
 export type KinBriefsInput = typeof KinBriefsInput.Type;
 export const KinBriefsResult = Schema.Struct({
-  /** The company time zone check-ins keep, which `at` is in. */
+  /** The company time zone check-ins keep, which `at` is in; a morning page's own person's zone. */
   zone: Schema.String,
   /** Only the briefs this person receives; none for someone who receives none. */
   briefs: Schema.Array(KinBrief),
