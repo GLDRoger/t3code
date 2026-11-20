@@ -103,7 +103,8 @@ export const OUTSIDE_TOOLS = {
   doc_history: "allowed",
   doc_restore: "allowed",
   list_define: "allowed",
-  payment_record: "allowed",
+  // A bank's or anyone's text must not become money received; a person's tap records it.
+  payment_record: "refused",
   deal_stages: "allowed",
   money_summary: "allowed",
   money_query: "allowed",

@@ -92,6 +92,7 @@ function useKinNeedsRows(
         now,
       }),
       handled: attention.handled,
+      asides: attention.asides,
       handler,
       expanded,
       setExpanded,
@@ -122,6 +123,7 @@ function useKinNeedsRows(
     needs,
     hidden: split.hidden,
     handled: attention.handled,
+    asides: attention.asides,
     handler,
     expanded,
     setExpanded,
@@ -150,7 +152,7 @@ export function KinNeedsYou(
     attention: read.attention,
     needs: read.needs,
     hidden: read.hidden,
-    handled: read.handled.length,
+    handled: read.handled.length + read.asides.length,
     expanded: read.expanded,
   });
   return (
@@ -258,7 +260,7 @@ function KinNeedsBlock(
           {shown.slice(lead).map(needRow)}
         </ul>
       )}
-      <KinAttentionHandled rows={props.handled} handler={handler} />
+      <KinAttentionHandled rows={props.handled} asides={props.asides} handler={handler} />
       {handler.problem === null ? null : (
         <p role="alert" className="px-2 text-xs text-destructive-foreground">
           {handler.problem}

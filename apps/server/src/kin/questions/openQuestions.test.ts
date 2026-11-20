@@ -443,6 +443,75 @@ it.effect("a question is asked once, and its default is taken once at its day", 
 
 // A default that sends mail is never taken: at its day nothing happens, the next working
 // morning it is raised once as a fresh card, and then it waits in Waiting on you until tapped.
+it.effect("no card is raised about what is set aside, but its owner may be asked in person", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const { sql, chats, owner, orgId, chatOf, wake } = yield* ambermill;
+      for (const [list, prefix] of [
+        ["clients", "C"],
+        ["invoices", "INV"],
+      ] as const)
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+            created_at)
+          VALUES (${orgId}, ${list}, ${list}, ${prefix}, 1, 0) ON CONFLICT DO NOTHING`;
+      for (const [id, list, key, party] of [
+        ["r-c8", "clients", "C-8", null],
+        ["r-inv8", "invoices", "INV-8", "r-c8"],
+      ] as const)
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+            owner_kind, owner_id, party_id, fields_json, created_by_kind, created_by_id,
+            origin_key, created_at, updated_at)
+          VALUES (${orgId}, ${id}, ${list}, ${key}, ${`Invented ${key}`}, 'open', 'agent',
+            'finance', ${party}, '{}', 'person', ${owner.personId}, ${`origin-${id}`}, 0, 0)`;
+      // Finance set the client aside on Rhea's word until Thursday.
+      yield* sql`INSERT INTO kin_holds (hold_id, org_id, record_id, for_person_id, until_at,
+          set_by_kind, set_by_id, on_word_of, note, set_at)
+        VALUES ('hold-c8', ${orgId}, 'r-c8', NULL, ${IST_MON_1130 + 3 * 86_400_000}, 'agent',
+          'finance', ${owner.personId}, NULL, ${IST_MON_1130 - 86_400_000})`;
+      const ask = (n: number) => callAs("chief", "kin_ask", { ...reminderAsk, intent: `ask ${n}` });
+      const checkIn = startAgentWakeup({
+        orgId,
+        agentId: KinAgentId.make("chief"),
+        threadId: ThreadId.make("chief-thread"),
+        event: (base) => ({
+          ...base,
+          _tag: "pulse",
+          provenance: { _tag: "system" },
+          factKeys: [],
+          checkIn: {
+            scheduleId: KinMemoryItemId.make("check-in"),
+            title: "Check-in",
+            what: "Check-in.",
+            slot: "d",
+          },
+        }),
+      });
+      yield* checkIn;
+      const refused = yield* ask(1);
+      assert.isFalse(refused.ok);
+      assert.match(
+        String(refused.value.message),
+        /^C-8 Invented C-8 and everything under it is set aside until 2026-11-19, by Finance on Rhea Rao's word \(2026-11-15\)\. Kin won't ask about it before then\.$/,
+      );
+      // Rhea's own message about it: she may be asked.
+      yield* wake(
+        "chief",
+        yield* chats.send(owner, {
+          chatId: chatOf("chief"),
+          body: "What about C-8?",
+          clientMessageId: "held-1",
+        }),
+      );
+      assert.isTrue((yield* ask(2)).ok);
+      // Its day come, any turn may ask again.
+      yield* TestClock.setTime(IST_MON_1130 + 3 * 86_400_000);
+      yield* checkIn;
+      assert.isTrue((yield* ask(3)).ok);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
 it.effect("a question with no safe default is raised once, then waits for its answer", () =>
   Effect.andThen(
     TestClock.setTime(IST_MON_1130),

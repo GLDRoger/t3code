@@ -147,16 +147,9 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
 }) {
   const queue = yield* KinEventQueue.KinEventQueue;
   const { orgId, at } = input;
-  // A fact someone has in hand is still open: the check-in names it with who holds it and until
-  // when (`buildPulseSection`). One marked not a problem has no end and starts none.
-  const read = yield* KinPulse.read({
-    orgId,
-    at,
-    viewer: { _tag: "owner" },
-    includeHandled: true,
-    limit: 200,
-  });
-  const facts = read.facts.filter((fact) => fact.handled === null || fact.handled.until !== null);
+  // Only open facts: one in hand or set aside is not news, and comes back as news when it ends.
+  const read = yield* KinPulse.read({ orgId, at, viewer: { _tag: "owner" }, limit: 200 });
+  const facts = read.facts;
   const matched = yield* matchLines(orgId, input.outside.lines);
   const byId = new Map(matched.map(({ line }) => [`${line.source}\0${line.id}`, line]));
   const lines = input.outside.lines

@@ -1,17 +1,29 @@
 import {
   KIN_ATTENTION,
+  kinAsideOf,
   kinAttention,
+  kinSetAsideDays,
   kinSnoozeDays,
+  type KinAsideRow,
   type KinAttentionOpen,
   type KinAttentionRow,
   type KinAttentionScope,
 } from "@t3tools/client-runtime/kin/kinAttention";
 import type { KinWorkNames } from "@t3tools/client-runtime/kin/kinWork";
-import type { KinPulseRead } from "@t3tools/contracts";
+import type { KinDay, KinPulseRead, KinRecordKey } from "@t3tools/contracts";
 import { CircleAlertIcon, ClockIcon, EllipsisIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "../components/ui/button";
+import {
+  Dialog,
+  DialogFooter,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "../components/ui/dialog";
+import { Input } from "../components/ui/input";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../components/ui/menu";
 import { cn } from "../lib/utils";
 import { KinWorkSection } from "./KinWorkParts";
@@ -24,6 +36,50 @@ export const kinAttentionNames = (names: KinWorkNames) =>
   new Map([...names.agents, ...names.people]);
 
 type Handler = ReturnType<typeof useKinAttentionHandle>;
+
+/** "Set aside until…": a day it comes back on, or until someone lifts it. */
+function KinSetAsideDialog(props: {
+  readonly title: string;
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly onSave: (until?: KinDay) => void;
+}) {
+  const days = kinSetAsideDays(new Date(useNowMinuteMs()));
+  const [day, setDay] = useState<string>(days.initial);
+  const save = (until?: KinDay) => {
+    props.onOpenChange(false);
+    props.onSave(until);
+  };
+  return (
+    <Dialog open={props.open} onOpenChange={props.onOpenChange}>
+      <DialogPopup className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>{`${KIN_ATTENTION.setAsideTitle}: ${props.title}`}</DialogTitle>
+        </DialogHeader>
+        <DialogPanel>
+          <Input
+            type="date"
+            aria-label={KIN_ATTENTION.setAsideDay}
+            min={days.min}
+            value={day}
+            onChange={(event) => setDay(event.target.value)}
+          />
+        </DialogPanel>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => props.onOpenChange(false)}>
+            {KIN_ATTENTION.cancel}
+          </Button>
+          <Button variant="outline" onClick={() => save()}>
+            {KIN_ATTENTION.untilLifted}
+          </Button>
+          <Button disabled={day < days.min} onClick={() => save(day)}>
+            {KIN_ATTENTION.setAsideSave}
+          </Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
+  );
+}
 
 /** One row: what, why it matters, and the answers to it. Tapping it opens the thing itself. */
 export function KinAttentionItem(
@@ -38,6 +94,8 @@ export function KinAttentionItem(
   const asker = useKinAskAbout(props)(row.agentId);
   const busy = handler.busy === row.factKey;
   const opens = row.open.type !== "none";
+  const [asideOpen, setAsideOpen] = useState(false);
+  const record = row.record;
   const body = (
     <>
       <CircleAlertIcon
@@ -99,6 +157,9 @@ export function KinAttentionItem(
                 {choice.label}
               </MenuItem>
             ))}
+            {record === null ? null : (
+              <MenuItem onClick={() => setAsideOpen(true)}>{KIN_ATTENTION.setAside}</MenuItem>
+            )}
             <MenuItem onClick={() => void handler.send(row.factKey, "not_a_problem")}>
               {KIN_ATTENTION.notAProblem}
             </MenuItem>
@@ -113,17 +174,28 @@ export function KinAttentionItem(
           </MenuPopup>
         </Menu>
       </div>
+      {record === null ? null : (
+        <KinSetAsideDialog
+          title={row.title}
+          open={asideOpen}
+          onOpenChange={setAsideOpen}
+          onSave={(until) => void handler.aside(record, "set", until, row.factKey)}
+        />
+      )}
     </li>
   );
 }
 
-/** What someone already has in hand, folded away, each with its Undo. */
+/** What someone already has in hand or set aside, folded away, each with its Undo. */
 export function KinAttentionHandled(props: {
   readonly rows: ReadonlyArray<KinAttentionRow>;
+  readonly asides?: ReadonlyArray<KinAsideRow> | undefined;
   readonly handler: Handler;
 }) {
   const [open, setOpen] = useState(false);
-  if (props.rows.length === 0) return null;
+  const asides = props.asides ?? [];
+  const count = props.rows.length + asides.length;
+  if (count === 0) return null;
   return (
     <div className="flex flex-col gap-1">
       <Button
@@ -134,10 +206,28 @@ export function KinAttentionHandled(props: {
         onClick={() => setOpen(!open)}
       >
         <ClockIcon />
-        {`${KIN_ATTENTION.handled} (${props.rows.length})`}
+        {`${KIN_ATTENTION.handled} (${count})`}
       </Button>
       {open ? (
         <ul className="flex flex-col">
+          {asides.map((row) => (
+            <li key={row.id} className="flex items-center gap-2 px-2 py-1">
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-sm text-muted-foreground">{row.title}</span>
+                <span className="text-xs text-muted-foreground">{row.detail}</span>
+              </span>
+              {row.liftable ? (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={props.handler.busy === row.record}
+                  onClick={() => void props.handler.aside(row.record, "lift")}
+                >
+                  {KIN_ATTENTION.undo}
+                </Button>
+              ) : null}
+            </li>
+          ))}
           {props.rows.map((row) => (
             <li key={row.id} className="flex items-center gap-2 px-2 py-1">
               <span className="flex min-w-0 flex-1 flex-col">
@@ -162,7 +252,7 @@ export function KinAttentionHandled(props: {
 
 /**
  * "Needs attention" at the top of a project, a client or Money: only what is about it, and
- * nothing at all when nothing is.
+ * nothing at all when nothing is open or set aside.
  */
 export function KinAttentionSection(
   props: KinWorkTarget & {
@@ -177,31 +267,68 @@ export function KinAttentionSection(
   const read = props.read === undefined ? own : props.read;
   const handler = useKinAttentionHandle(props, props.scope);
   const now = new Date(useNowMinuteMs());
-  const { open, handled } = kinAttention(read, {
+  const { open, handled, asides } = kinAttention(read, {
     scope: props.scope,
     names: kinAttentionNames(props.names),
     now,
   });
-  if (open.length === 0) return null;
+  if (open.length === 0 && asides.length === 0) return null;
   return (
     <KinWorkSection title={KIN_ATTENTION.title}>
-      <ul className="flex flex-col">
-        {open.map((row) => (
-          <KinAttentionItem
-            key={row.id}
-            {...props}
-            row={row}
-            handler={handler}
-            onOpen={props.onOpen}
-          />
-        ))}
-      </ul>
-      <KinAttentionHandled rows={handled} handler={handler} />
+      {open.length === 0 ? null : (
+        <ul className="flex flex-col">
+          {open.map((row) => (
+            <KinAttentionItem
+              key={row.id}
+              {...props}
+              row={row}
+              handler={handler}
+              onOpen={props.onOpen}
+            />
+          ))}
+        </ul>
+      )}
+      <KinAttentionHandled rows={handled} asides={asides} handler={handler} />
       {handler.problem === null ? null : (
         <p role="alert" className="px-2 text-xs text-destructive-foreground">
           {handler.problem}
         </p>
       )}
     </KinWorkSection>
+  );
+}
+
+/**
+ * One quiet line on a client's, project's, invoice's, quote's or deal's own page while it is set
+ * aside, with Undo for whoever may lift it. Nothing when it isn't, or the host can't say.
+ */
+export function KinAsideNote(
+  props: KinWorkTarget & { readonly record: KinRecordKey; readonly names: KinWorkNames },
+) {
+  const read = useKinAttention(props);
+  const handler = useKinAttentionHandle(props);
+  const now = new Date(useNowMinuteMs());
+  const row = kinAsideOf(read, props.record, { names: kinAttentionNames(props.names), now });
+  if (row === null) return null;
+  return (
+    <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <ClockIcon aria-hidden className="size-3.5 shrink-0" />
+      <span className="min-w-0">{row.detail}</span>
+      {row.liftable ? (
+        <Button
+          size="xs"
+          variant="ghost"
+          disabled={handler.busy === row.record}
+          onClick={() => void handler.aside(row.record, "lift")}
+        >
+          {KIN_ATTENTION.undo}
+        </Button>
+      ) : null}
+      {handler.problem === null ? null : (
+        <span role="alert" className="text-destructive-foreground">
+          {handler.problem}
+        </span>
+      )}
+    </p>
   );
 }

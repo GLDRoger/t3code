@@ -450,6 +450,7 @@ const KIN_RPC_ACCESS = {
   "kin.pulse.read": "person",
   "kin.pulse.subscribe": "person",
   "kin.pulse.handle": "person",
+  "kin.pulse.aside": "person",
   "kin.open.read": "person",
   "kin.open.subscribe": "person",
   // What Kin suggested to the owner and his answers: his alone, as the cards are.
@@ -533,6 +534,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.pulse.read": "kin-pulse",
   "kin.pulse.subscribe": "kin-pulse",
   "kin.pulse.handle": "kin-pulse",
+  "kin.pulse.aside": "kin-pulse",
   "kin.open.read": "kin-pulse",
   "kin.open.subscribe": "kin-pulse",
   "kin.recommendations.list": "kin-recommendations",

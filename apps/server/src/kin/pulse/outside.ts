@@ -17,6 +17,7 @@ import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { logTouch } from "../work/touches.ts";
+import { recordName } from "../work/recordRows.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 
 /** What is new at an org's connections since its last check-in, and the cursors that marks. */
@@ -221,7 +222,8 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
     WHERE r.org_id = ${orgId} AND r.register_id = 'contacts' AND r.state = 'open'
       AND e.value IS NOT NULL
     ORDER BY main, r.key`;
-  const money = yield* sql<{ key: string; list: string }>`SELECT key, register_id AS list
+  const money = yield* sql<{ key: string; list: string; number: unknown }>`SELECT key,
+      register_id AS list, json_extract(fields_json, '$.number') AS number
     FROM kin_records WHERE org_id = ${orgId} AND register_id IN ('invoices', 'quotes')
       AND state IN ('open', 'waiting')
     ORDER BY key`;
@@ -246,7 +248,7 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
         matched.push({
           line: {
             ...line,
-            matched: `${named.list === "invoices" ? "invoice" : "quote"} ${named.key}`,
+            matched: `${named.list === "invoices" ? "invoice" : "quote"} ${recordName(named.key, named.number)}`,
           },
           domain: "finance",
           ...client,

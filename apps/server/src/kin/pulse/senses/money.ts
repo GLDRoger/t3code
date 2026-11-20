@@ -8,6 +8,7 @@ import { budgetsAnswer, budgetsView } from "../../work/budgets.ts";
 import { formatMoneyPlain } from "../../work/money.ts";
 import { countedEntry, daysOverdue, endOfDay, invoiceDue } from "../../work/recordRows.ts";
 import { DAY_MS, type Threshold, threshold, toMs } from "../thresholds.ts";
+import { statementSenses } from "./bank.ts";
 import {
   agentOrOwner,
   dayOf,
@@ -25,7 +26,11 @@ import {
 } from "./shared.ts";
 import { SENSE_CAP } from "./work.ts";
 
-type ClientKey = "chase_invoice_after_days" | "quote_follow_up_days" | "renewal_heads_up_days";
+type ClientKey =
+  | "chase_invoice_after_days"
+  | "quote_follow_up_days"
+  | "renewal_heads_up_days"
+  | "renewal_draft_days";
 // The longest heads-up a playbook may set (`playbooks.ts` bounds).
 const RENEWAL_WIDEST_MS = 120 * DAY_MS;
 
@@ -200,18 +205,22 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
   for (const row of renewals.toSorted((a, b) => a.dueAt! - b.dueAt! || (a.key < b.key ? -1 : 1))) {
     const renewal = yield* forClient("renewal_heads_up_days", row.clientId);
     if (row.dueAt! > at + toMs(renewal)) continue;
+    // Mentioned from the heads-up; handed over to be drafted only from the draft day.
+    const draftFrom = row.dueAt! - toMs(yield* forClient("renewal_draft_days", row.clientId));
+    const stage = at < draftFrom ? "heads_up" : "draft";
     const amount = amountText(row);
     const days = elapsed(at, row.dueAt!, "days");
-    facts.push(
-      moneyFact(ctx, row, {
+    facts.push({
+      ...moneyFact(ctx, row, {
         sense: "renewal_due",
         key: `renewal_due:${row.key}:due=${row.dueAt}`,
         since: iso(row.dueAt! - toMs(renewal)),
         measure: measure(days, renewal),
-        consequence: `Renewal due ${dayOf(ctx, row.dueAt!)}${row.dueAt! < at ? ", already passed" : `, in ${daysText(days)}`}${amount === undefined ? "" : ` (${amount})`}.`,
+        consequence: `Renewal due ${dayOf(ctx, row.dueAt!)}${row.dueAt! < at ? ", already passed" : `, in ${daysText(days)}`}${amount === undefined ? "" : ` (${amount})`}${stage === "heads_up" ? `; drafting starts ${dayOf(ctx, draftFrom)}, not before` : ""}.`,
         wake: "sweep",
       }),
-    );
+      stage,
+    });
   }
 
   // budget_over and budget_near: this month's spending against each limit.
@@ -244,5 +253,6 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
       wake: sense === "budget_over" ? "now" : "brief",
     });
   });
+  facts.push(...(yield* statementSenses(ctx)));
   return facts;
 });

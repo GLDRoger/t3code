@@ -67,7 +67,7 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
-import { KinAttentionSection } from "./KinAttention";
+import { KinAsideNote, KinAttentionSection } from "./KinAttention";
 import { KinProjectNoteSection } from "./components/KinProjectNote";
 import { useKinWorkLink } from "./state/kinWorkLink";
 
@@ -346,6 +346,12 @@ function KinProjectBody(
                   onChanged={props.onRefresh}
                 />
               )}
+              <KinAsideNote
+                environmentId={environmentId}
+                orgId={orgId}
+                record={view.key}
+                names={props.directory.names}
+              />
               <KinAttentionSection
                 environmentId={environmentId}
                 orgId={orgId}
