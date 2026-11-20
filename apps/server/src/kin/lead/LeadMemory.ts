@@ -73,6 +73,7 @@ import { TurnEvent } from "./eventIds.ts";
 import { validZone } from "../triggers/quietHold.ts";
 import { stillAway } from "../triggers/quietHours.ts";
 import { ownerZone } from "../work/recordRows.ts";
+import { pauseTriggers } from "../triggers/KinTriggerStore.ts";
 
 const text = Schema.String.check(Schema.isMaxLength(100_000));
 const date = Schema.String.check(
@@ -742,9 +743,9 @@ const make = Effect.gen(function* () {
         if (asked !== undefined && asked.chatId !== head.chat) return false;
         const now = yield* Clock.currentTimeMillis;
         if (head.every !== undefined) {
-          yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
-            updated_at = max(updated_at, ${now})
-            WHERE org_id = ${ctx.orgId} AND trigger_id = ${scheduledTaskTriggerId(itemId)}`;
+          yield* pauseTriggers(ctx.orgId, [scheduledTaskTriggerId(itemId)], now).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
           return { outcome: "stopped" as const };
         }
         const stopped = yield* cancelDeferralRun({ orgId: ctx.orgId, itemId, now }).pipe(

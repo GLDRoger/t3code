@@ -7,6 +7,9 @@ import {
   KinTriggerId,
   KinTriggerSettings,
 } from "@t3tools/contracts";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -490,4 +493,18 @@ describe("KinTriggerStore", () => {
         assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
       }).pipe(Effect.provide(layer)),
   );
+
+  // A paused trigger is written one way: a second copy of the statement drifts from this one.
+  it("pauses triggers only through pauseTriggers", () => {
+    const root = NodePath.resolve(import.meta.dirname, "..");
+    const pause = /UPDATE\s+kin_triggers\s+SET\s+enabled\s*=\s*0\s*,\s*next_run_at\s*=\s*NULL/g;
+    const found = NodeFS.readdirSync(root, { recursive: true, encoding: "utf8" }).flatMap((file) =>
+      !file.endsWith(".ts") || /\.test\.ts$|\.testkit\.ts$|migrations\//.test(file)
+        ? []
+        : [...NodeFS.readFileSync(NodePath.join(root, file), "utf8").matchAll(pause)].map(
+            () => file,
+          ),
+    );
+    assert.deepStrictEqual(found, ["triggers/KinTriggerStore.ts"]);
+  });
 });
