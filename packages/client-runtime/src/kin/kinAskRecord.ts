@@ -48,7 +48,8 @@ export function kinAskName(key: string, number: unknown) {
 
 /**
  * What an Ask about an entry starts with in the agent's composer: its name for the agent, and its
- * title, so the person sees what they are asking about.
+ * title, so the person sees what they are asking about. A numbered name already ends in the
+ * bracketed key, so its title follows bare, as Needs attention's Ask has it.
  */
 export function kinAskRecordDraft(record: {
   readonly key: string;
@@ -57,5 +58,6 @@ export function kinAskRecordDraft(record: {
 }) {
   const name = kinAskName(record.key, record.number);
   const title = record.title.trim();
-  return title === "" ? `About ${name}: ` : `About ${name} (${title}): `;
+  if (title === "") return `About ${name}: `;
+  return name === record.key ? `About ${name} (${title}): ` : `About ${name} ${title}: `;
 }
