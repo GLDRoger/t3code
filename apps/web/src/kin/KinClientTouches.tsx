@@ -215,7 +215,6 @@ function TouchDialog(
                   autoFocus
                   maxLength={4_000}
                   value={note}
-                  placeholder={KIN_CLIENTS.touchNotePlaceholder}
                   onChange={(event) => setNote(event.target.value)}
                 />
               </div>

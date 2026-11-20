@@ -43,7 +43,6 @@ const PLACE_MAX = 60;
 export const KIN_WORK_FORM_LIMITS = { name: NAME_MAX, short: SHORT_MAX, notes: NOTES_MAX };
 
 export const KIN_WORK_FORM_COPY = {
-  milestoneExample: "Beta to the client",
   save: "Save",
   cancel: "Cancel",
   openExisting: "Open it",
@@ -52,7 +51,6 @@ export const KIN_WORK_FORM_COPY = {
     editTitle: "Edit client",
     add: "Add client",
     name: "Name",
-    namePlaceholder: "Acme Foods",
     kind: "They are a",
     kindProspect: "Prospect",
     kindClient: "Client",
@@ -64,13 +62,12 @@ export const KIN_WORK_FORM_COPY = {
     tagsPlaceholder: "Words to find them by, separated by commas",
     memberHint: "Terms, tax details and Keep private stay with the owner and co-owners.",
     terms: "Terms",
-    termsPlaceholder: "Retainer, billed monthly, net 30",
+    termsPlaceholder: "How and when they pay",
     termsHint: "Always private. Only you see the terms.",
     address: "Billing address",
-    addressPlaceholder: "Street, city, state and PIN code",
+    addressPlaceholder: "Street, city and postal code",
     addressHint: "Printed on their invoices.",
     gstin: "GSTIN",
-    gstinPlaceholder: "27ABCDE1234F1Z5",
     gstinHint: "Leave empty if they aren't registered for GST.",
     place: "State",
     placeNone: "Not set",
@@ -78,7 +75,6 @@ export const KIN_WORK_FORM_COPY = {
     placeHint:
       "Where the supply goes. Invoices charge CGST and SGST in your own state, IGST in another.",
     country: "Country",
-    countryPlaceholder: "United States",
     notes: "Notes",
     notesPlaceholder: "Anything worth remembering about them",
     contact: "Contact",
@@ -91,9 +87,7 @@ export const KIN_WORK_FORM_COPY = {
     editTitle: "Edit contact",
     add: "Add contact",
     name: "Name",
-    namePlaceholder: "Mira Shah",
     role: "Role",
-    rolePlaceholder: "Head of marketing",
     email: "Email",
     phone: "Phone",
     addEmail: "Add another email",
@@ -102,7 +96,7 @@ export const KIN_WORK_FORM_COPY = {
     removePhone: "Remove this phone",
     detailsHint: "Emails and phone numbers are always private.",
     notes: "Notes",
-    notesPlaceholder: "Prefers calls after lunch",
+    notesPlaceholder: "Anything worth remembering about them",
     remove: "No longer a contact",
     restore: "Make a contact again",
   },
@@ -111,7 +105,6 @@ export const KIN_WORK_FORM_COPY = {
     editTitle: "Edit project",
     add: "Add project",
     name: "Name",
-    namePlaceholder: "Website relaunch",
     party: "Client",
     noClient: "No client",
     target: "Target date",
@@ -120,7 +113,7 @@ export const KIN_WORK_FORM_COPY = {
     billing: "Billing",
     noBilling: "Not set",
     value: "Value",
-    valuePlaceholder: "600000 or $12,000",
+    valuePlaceholder: "Amount, and its currency if it isn't yours",
     startsOn: "Starts",
     renewsOn: "Renews on",
     notes: "Notes",
@@ -384,8 +377,7 @@ export const kinContactDetailCanAdd = (list: ReadonlyArray<string>) =>
 export const kinContactDetailRemove = (
   list: ReadonlyArray<string>,
   at: number,
-): ReadonlyArray<string> =>
-  list.length <= 1 ? [""] : list.filter((_, index) => index !== at);
+): ReadonlyArray<string> => (list.length <= 1 ? [""] : list.filter((_, index) => index !== at));
 export const kinContactDetailSet = (
   list: ReadonlyArray<string>,
   at: number,

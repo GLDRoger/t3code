@@ -238,7 +238,6 @@ export function KinGoalSheet(props: {
           id={ids.name}
           value={draft.title}
           maxLength={200}
-          placeholder="Q4 money in"
           autoComplete="off"
           autoFocus
           onChange={(event) => edit({ title: event.target.value })}
@@ -272,7 +271,6 @@ export function KinGoalSheet(props: {
               id={ids.target}
               value={draft.target}
               maxLength={60}
-              placeholder={KIN_GOALS.targetHint[draft.measure]}
               autoComplete="off"
               onChange={(event) => edit({ target: event.target.value })}
             />
@@ -284,7 +282,6 @@ export function KinGoalSheet(props: {
               id={ids.current}
               value={draft.current}
               inputMode="decimal"
-              placeholder="0"
               autoComplete="off"
               onChange={(event) => edit({ current: event.target.value })}
             />
@@ -297,7 +294,7 @@ export function KinGoalSheet(props: {
             id={ids.unit}
             value={draft.unit}
             maxLength={40}
-            placeholder="hires, releases"
+            placeholder="For example: hires"
             autoComplete="off"
             onChange={(event) => edit({ unit: event.target.value })}
           />

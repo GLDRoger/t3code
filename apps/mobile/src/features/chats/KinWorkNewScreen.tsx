@@ -216,7 +216,6 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                     returnKeyType="done"
                     onChangeText={(title) => setDraft({ ...draft, title })}
                     textAlignVertical="center"
-                    placeholder={words.titlePlaceholder}
                     placeholderTextColorClassName="accent-placeholder"
                     className="min-h-8 font-sans text-base text-foreground"
                   />

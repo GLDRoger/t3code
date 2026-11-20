@@ -222,7 +222,6 @@ function KinGroupDialog(props: { readonly target: KinGroupFormTarget }) {
                     id={nameId}
                     value={name}
                     maxLength={KIN_GROUP_NAME_MAX}
-                    placeholder="Launch week"
                     autoFocus
                     onChange={(event) => setName(event.target.value)}
                   />

@@ -490,11 +490,15 @@ describe("KinPulse", () => {
       assert.strictEqual(before!.consequence, "Was due 2026-11-11, yesterday.");
       assert.strictEqual(after!.consequence, "Was due 2026-11-11, yesterday.");
 
+      yield* sql`UPDATE kin_records SET fields_json = '{"number":"AM/26-27/001"}'
+        WHERE record_id = 'r-INV-1'`;
       const overdue = keyed((yield* read(B + 12 * DAY)).facts, "invoice_overdue", "INV-1")[0]!;
       assert.strictEqual(overdue.consequence, "₹1,77,000 owed, 10 days past due (2026-11-03).");
+      assert.strictEqual(overdue.subject.number, "AM/26-27/001");
       assert.deepStrictEqual(overdue.actor, { _tag: "agent", agentId: finance });
       assert.deepStrictEqual(overdue.measure?.from, { _tag: "default" });
       const lumen = keyed((yield* read(B + 9 * DAY)).facts, "invoice_overdue", "INV-5")[0]!;
+      assert.notProperty(lumen.subject, "number");
       assert.deepStrictEqual(lumen.measure?.from, {
         _tag: "playbook",
         key: "D-1",

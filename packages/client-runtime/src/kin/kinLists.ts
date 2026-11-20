@@ -106,9 +106,8 @@ export const KIN_LISTS = {
     payAmount: "Amount received",
     payDay: "Received on",
     payNote: "Note",
-    payNotePlaceholder: "Bank transfer, UPI reference…",
+    payNotePlaceholder: "How it was paid, or its reference",
     payTds: "TDS deducted",
-    payTdsPlaceholder: "0",
     paySave: "Record payment",
     takeBack: "Take back",
     takenBack: "Taken back",
@@ -131,7 +130,7 @@ export const KIN_LISTS = {
     filesNone: "No files in your chats yet. Send one to an agent, then add it here.",
     filesNoMatch: "No file with that name.",
     filesFailed: "Couldn't load your files.",
-    amountPlaceholder: "40,000 or $120.50",
+    amountPlaceholder: "Amount, and its currency if it isn't yours",
     retiredField: "No longer used",
     private: "Private. Only you see this.",
     gone: {
@@ -168,6 +167,13 @@ export const KIN_LISTS = {
 
 /** How many digits follow the point in `currency`: 2 for rupees, 0 for yen. */
 export const kinMinorDigits = (currency: string) => kinCurrency(currency).decimals;
+
+/**
+ * What a person calls an entry: its issued number (INV/26-27/004), else its key while it has none.
+ * `number` is a ref's own, or an entry's `fields.number`.
+ */
+export const kinRecordName = (key: string, number: unknown) =>
+  typeof number === "string" && number.trim() !== "" ? number.trim() : key;
 
 /** An exact amount: "₹4,20,000", with paise only when there are some unless `paise` keeps them. */
 export const kinMoneyText = (money: KinMoney, paise = false) =>
@@ -949,7 +955,7 @@ export function kinListRow(
     record.party === undefined || record.party.key === within?.party ? null : record.party.title;
   const dueLine = due === null || closed ? null : `${def?.dueLabel ?? "Due"} ${afterLabel(due)}`;
   const parts = [
-    record.key,
+    kinRecordName(record.key, record.fields?.number),
     within?.list === false && def !== null ? def.name : null,
     record.listCategory === undefined ? null : kinCategoryLabel(record.listCategory, def),
     stateLabel,
@@ -1207,7 +1213,10 @@ export function kinListEntryView(
   const canFinish = !closed && !suggested && (def === null || def.states.includes("done"));
   const moves = suggested && KIN_MONEY_LISTS.has(item.list ?? "work") ? MONEY_MOVES : null;
   return {
-    heading: def === null ? item.key : `${item.key} · ${def.name}`,
+    heading:
+      def === null
+        ? kinRecordName(item.key, item.fields?.number)
+        : `${kinRecordName(item.key, item.fields?.number)} · ${def.name}`,
     state: item.state,
     stateLabel: kinSuggestionStateLabel(def, item),
     suggested,

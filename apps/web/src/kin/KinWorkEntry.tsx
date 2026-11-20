@@ -316,7 +316,6 @@ function PaymentForm(props: {
             id={ids.tds}
             inputMode="decimal"
             autoComplete="off"
-            placeholder={KIN_LISTS.entry.payTdsPlaceholder}
             value={draft.tds}
             onChange={(event) => setDraft({ ...draft, tds: event.target.value })}
           />

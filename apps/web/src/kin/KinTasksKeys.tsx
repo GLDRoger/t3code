@@ -247,7 +247,6 @@ function KinTasksKeyDialog(props: {
                     id={labelId}
                     value={label}
                     maxLength={KIN_TASKS_KEY_LABEL_MAX}
-                    placeholder={KIN_TASKS_KEYS_COPY.labelPlaceholder}
                     autoComplete="off"
                     autoFocus
                     onChange={(event) => setLabel(event.target.value)}

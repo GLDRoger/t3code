@@ -886,7 +886,6 @@ function ReceiptForm(props: KinWorkTarget) {
         label={KIN_RECEIPTS.amount}
         value={draft.amount}
         onChangeText={(amount) => setDraft({ ...draft, amount })}
-        placeholder={KIN_RECEIPTS.amountPlaceholder}
         keyboard="numbers"
         autoFocus
       />
@@ -894,7 +893,6 @@ function ReceiptForm(props: KinWorkTarget) {
         label={KIN_RECEIPTS.towards}
         value={draft.towards}
         onChangeText={(towards) => setDraft({ ...draft, towards })}
-        placeholder={KIN_RECEIPTS.towardsPlaceholder}
         maxLength={300}
       />
       <ListSection>

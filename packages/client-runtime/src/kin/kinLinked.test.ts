@@ -88,6 +88,17 @@ describe("kinLinked", () => {
     expect(groups[0]!.items[0]!.open).toEqual(open);
   });
 
+  it("names an issued entry by its number and one without a number by its key", () => {
+    const { groups } = kinLinked({
+      key: "W-1",
+      links: [{ ...recordLink("INV-6"), number: "AM/26-27/004" }, recordLink("INV-9")],
+    });
+    expect(groups[0]!.items.map((item) => [item.key, item.name])).toEqual([
+      ["INV-6", "AM/26-27/004"],
+      ["INV-9", "INV-9"],
+    ]);
+  });
+
   it("orders groups, drops itself, repeats and what opens nowhere, and caps each group", () => {
     const tasks = ["W-2", "W-3", "W-4", "W-5", "W-6", "W-7", "W-8"];
     const detail = {
