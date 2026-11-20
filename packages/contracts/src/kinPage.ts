@@ -150,6 +150,13 @@ export function kinPageGist(body: string): string {
   return firstLine(body) ?? "";
 }
 
+const THREAD_LINK = /(?<!!)\[([^\]]*)\]\(\s*<?t3-thread:[^)]*\)/gi;
+const BARE_THREAD_LINK = /[^\S\n]*<?t3-thread:[^\s<>()]*[^\s<>().,;:!?'"]>?/gi;
+
+/** Kin has no thread screen, so a link to a T3 thread reads as its words and a bare one goes. */
+export const kinThreadLinksAsWords = (body: string) =>
+  body.replace(THREAD_LINK, "$1").replace(BARE_THREAD_LINK, "");
+
 export function kinPlainBody(body: string): string {
   const { lines, found } = scanKinDocFences(body);
   if (found.length === 0) return body;

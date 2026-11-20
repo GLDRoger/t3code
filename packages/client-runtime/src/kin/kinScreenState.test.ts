@@ -395,6 +395,7 @@ describe("chat list rows", () => {
     ["## Done\n\n- **Merged** [#212](https://x.test) `main`", "Done Merged #212 main"],
     ["*Shipped* the _retry_ fix", "Shipped the retry fix"],
     ["Run:\n```ts\nawait retry()\n```", "Run: await retry()"],
+    ["Reviewed in t3-thread://v2/ab12 and [here](t3-thread://v2/cd34)", "Reviewed in and here"],
     ["2 * 3 * 4 in snake_case_name", "2 * 3 * 4 in snake_case_name"],
     [
       "Due:\n\n| Piece | Owner |\n|---|:--:|\n| Brand guide | Zoya |",
