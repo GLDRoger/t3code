@@ -41,6 +41,15 @@ vi.mock("@effect/atom-react", async (original) => ({
   useAtomValue: (atom: unknown) =>
     atom === primaryServerKeybindingsAtom ? DEFAULT_RESOLVED_KEYBINDINGS : [],
 }));
+// Kin's part of the palette reads Kin's own atoms, which the blanket atom mock above can't stand in for.
+vi.mock("../kin/useKinPalette", () => ({
+  useKinPalette: () => ({
+    actionItems: [],
+    openSettings: null,
+    rootInput: (root: unknown) => root,
+    searchInput: () => ({}),
+  }),
+}));
 vi.mock("../hooks/useTheme", () => ({
   useRenderedAppearance: () => "light",
   useTheme: () => ({ theme: "t3-chat", resolvedTheme: "light", appearanceMode: "light" }),
