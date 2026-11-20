@@ -111,7 +111,13 @@ export interface KinLeadPromptInput {
   readonly lane?: { readonly chatId: KinChatId; readonly mode: "reply" | "notice" };
   /** Server-gathered facts for a brief or summary event, by event id. */
   readonly routineFacts?: ReadonlyMap<string, string>;
+  /** Who a finished task's work was for (`workFor`), by its event id. */
+  readonly workFor?: ReadonlyMap<string, ReadonlyArray<string>>;
 }
+
+/** The finished work answered a teammate's request Kin relayed to the owner: it goes back to them. */
+export const workForText = (names: string) =>
+  `This work was for ${names}'s request, which Kin relayed to the owner. Send ${names} the outcome with kin_relay, in words they may read; the details stay here.`;
 
 export class KinLeadPrompt extends Context.Service<
   KinLeadPrompt,
@@ -249,7 +255,7 @@ export class KinLeadPrompt extends Context.Service<
       const quoteEvents = Effect.fnUntraced(function* (
         input: Pick<
           KinLeadPromptInput,
-          "orgId" | "agentId" | "wakeupId" | "events" | "routineFacts"
+          "orgId" | "agentId" | "wakeupId" | "events" | "routineFacts" | "workFor"
         > & {
           readonly laneChatId?: KinChatId | undefined;
           readonly audience?: TurnAudience | undefined;
@@ -553,6 +559,17 @@ export class KinLeadPrompt extends Context.Service<
                 true,
               ),
             );
+            continue;
+          }
+          const forWhom =
+            event._tag === "task.finished" && ownerOnly
+              ? input.workFor?.get(event.eventId)
+              : undefined;
+          if (forWhom !== undefined) {
+            fromOwner = false;
+            replyDue = true;
+            const names = forWhom.join(" and ");
+            events.push(`${quote("event data", eventFacts(event), true)}\n\n${workForText(names)}`);
             continue;
           }
           if (event._tag !== "chat.message" && event._tag !== "widget.action") {

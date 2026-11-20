@@ -45,6 +45,7 @@ import * as LeadProvision from "./KinLeadProvision.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { toolAdmitted } from "./SharedTools.ts";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
+import { workFor } from "./workFor.ts";
 import { recordTextQuestion } from "../questions/openQuestions.ts";
 import { DECLINED_WINDOW_MS, declinedRequests } from "./declinedSection.ts";
 import * as Reach from "./Reach.ts";
@@ -958,6 +959,38 @@ it.effect(
           ['Zoya Sheikh asked Chief of staff:\n"Can you take W-7?"'],
         );
         assert.lengthOf(sent, 2);
+
+        // The owner answers her relayed request: work his turn starts is remembered as hers,
+        // until anyone else speaks there first.
+        const go = yield* ctx.chats.send(owner, {
+          chatId: ctx.chiefChat,
+          body: "Yes, move it.",
+          clientMessageId: "owner-go",
+        });
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, run_id, model, started_at, status, event_ids)
+          VALUES ('go-wake', ${orgId}, ${chief}, 'go-run', 'test', 0, 'completed', '[]')`;
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+          VALUES ('go-event', ${orgId}, ${chief}, 'chat.message', 'P0',
+            ${JSON.stringify({ messageId: go.messageId, chatId: ctx.chiefChat })}, 0, 0, 'done', 'go-wake')`;
+        const forWhom = (runIds: ReadonlyArray<string>) =>
+          workFor({ orgId, agentId: chief, runIds }).pipe(
+            Effect.map((rows) => rows.map((row) => row.name)),
+          );
+        assert.deepStrictEqual(yield* forWhom(["go-run"]), ["Zoya Sheikh"]);
+        assert.deepStrictEqual(yield* forWhom(["other-run"]), []);
+        yield* ctx.chats.send(owner, {
+          chatId: ctx.chiefChat,
+          body: "Also, unrelated.",
+          clientMessageId: "owner-other",
+        });
+        const later = yield* ctx.chats.send(owner, {
+          chatId: ctx.chiefChat,
+          body: "And start the report.",
+          clientMessageId: "owner-later",
+        });
+        yield* sql`UPDATE kin_events SET json = ${JSON.stringify({ messageId: later.messageId, chatId: ctx.chiefChat })}
+          WHERE event_id = 'go-event'`;
+        assert.deepStrictEqual(yield* forWhom(["go-run"]), []);
       }),
     ),
 );

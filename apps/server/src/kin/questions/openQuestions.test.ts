@@ -53,6 +53,7 @@ import { KinRecords } from "../work/KinRecords.ts";
 import { presetDefinition } from "../work/registers.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as Provision from "../lead/KinLeadProvision.ts";
+import * as Reach from "../lead/Reach.ts";
 import { encodeLeadModel } from "../lead/leadModels.ts";
 import * as AskPerson from "./askPerson.ts";
 import * as Questions from "./openQuestions.ts";
@@ -1034,7 +1035,14 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
       // Rhea, in her own chat with the Chief of staff.
       const rhea = yield* wakeOn("chief", "rhea", chatOf("chief"), "Ask Dev about the shoot.");
       const toDev = yield* askFor("chief", rhea, { to: "Dev" });
-      assert.deepInclude(toDev, { to: "Dev Malhotra", state: "posted", retry: false });
+      // Dev never signed in: it still waits in his chat, and the result says no one was alerted.
+      assert.deepInclude(toDev, {
+        to: "Dev Malhotra",
+        state: "posted",
+        retry: false,
+        signedIn: false,
+        note: "Dev Malhotra hasn't signed in to Kin yet: it waits in their chat with you and reaches them when they do. Nobody was alerted. Their answer comes back here.",
+      });
       const devChat = yield* chiefChat("dev");
       const stored = yield* cardOf(toDev.questionId);
       assert.deepStrictEqual(stored, {
@@ -1078,11 +1086,18 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
         /ask them here with kin_ask/,
       );
       yield* refused(askFor("chief", rhea, { to: "Finance" }), /No one called Finance/);
-      // Through Finance, whom Dev may not message, nothing is asked.
+      // Through Finance, once Rhea restricted Dev and Finance, nothing is asked.
+      yield* Reach.setLimit({
+        orgId: KinOrgId.make(orgId),
+        by: owner.personId,
+        a: Reach.person(KinPersonId.make("dev")),
+        b: Reach.agent(KinAgentId.make("finance")),
+        restricted: true,
+      });
       const viaFinance = yield* wakeOn("finance", "rhea", chatOf("finance"), "Ask Dev.");
-      yield* refused(
-        askFor("finance", viaFinance, { to: "Dev", intent: "y" }),
-        /Dev Malhotra can't message you/,
+      assert.strictEqual(
+        (yield* Effect.flip(askFor("finance", viaFinance, { to: "Dev", intent: "y" }))).message,
+        "Dev Malhotra and Finance can't message each other here, so nothing was sent. The owner can lift that.",
       );
       // The same thing Chief of staff already put to Meera, through Finance: a repeat.
       yield* refused(
@@ -1105,9 +1120,10 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
       });
       const toArjun = yield* askFor("chief", dev, { to: "Arjun", intent: "call sheet" });
       assert.strictEqual(toArjun.state, "posted");
-      yield* refused(
-        askFor("chief", dev, { to: "Zoya", intent: "cover friday" }),
-        /Zoya Sheikh doesn't decide for others/,
+      // Anyone in the company, not only someone who decides for him.
+      assert.strictEqual(
+        (yield* askFor("chief", dev, { to: "Zoya", intent: "cover friday" })).state,
+        "posted",
       );
       // What Arjun may not read never reaches him through the question.
       yield* refused(

@@ -76,6 +76,7 @@ import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { KinTeam } from "../team/KinTeam.ts";
 import { KinHandoff } from "./Handoff.ts";
+import * as WorkFor from "./workFor.ts";
 
 /** How long one wake-up may run before it is interrupted. */
 const WAKEUP_DEADLINE_MS = 900_000;
@@ -1031,6 +1032,23 @@ const make = Effect.gen(function* () {
                 return;
               }
             }
+            // Work the owner side started for a teammate's relayed request goes back to them.
+            const workFor = new Map<string, ReadonlyArray<string>>();
+            for (const event of events)
+              if (event._tag === "task.finished") {
+                const { subagents } = yield* threads.getThreadRecords(event.threadId, [
+                  "subagents",
+                ]);
+                const runIds = subagents.flatMap((task) =>
+                  event.taskIds.includes(task.id) && task.runId !== null ? [task.runId] : [],
+                );
+                const people = yield* WorkFor.workFor({ orgId, agentId, runIds }).pipe(provideSql);
+                if (people.length > 0)
+                  workFor.set(
+                    event.eventId,
+                    people.map((one) => one.name),
+                  );
+              }
             const built = yield* prompt.build({
               orgId,
               agentId,
@@ -1039,6 +1057,7 @@ const make = Effect.gen(function* () {
               memoryHead: pinned.head,
               budgetContext,
               routineFacts,
+              workFor,
               ...(lane === undefined ? {} : { lane }),
             });
             // What the people in the chat attached to the messages this turn answers, as text and
@@ -1189,8 +1208,12 @@ const make = Effect.gen(function* () {
             const run = taken ?? sent?.runs.findLast((run) => run.userMessageId === messageId);
             if (run === undefined)
               return yield* new KinWakeupError({ orgId, agentId, cause: "missing_run" });
-            // Anything else this wake-up answers goes into that run as its first steer.
-            if (taken !== undefined && events.some((event) => event._tag !== "task.finished")) {
+            // Anything else this wake-up answers goes into that run as its first steer, and so
+            // does who the finished work was for.
+            if (
+              taken !== undefined &&
+              (workFor.size > 0 || events.some((event) => event._tag !== "task.finished"))
+            ) {
               if (Option.isSome(bridge))
                 yield* bridge.value.steered(orgId, wakeupId, {
                   n: 1,
