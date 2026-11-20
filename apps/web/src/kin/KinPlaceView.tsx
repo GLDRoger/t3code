@@ -825,7 +825,9 @@ export function KinPlaceView({
             else if (hit.kind === "clients") openClient(hit.key);
             else if (hit.kind === "projects") openProject(hit.key);
             else if (hit.kind === "memory") openKinMemoryInstead(router.history, hit.title, "open");
-            // A contact has no page of its own, and a money entry opens on its sheet.
+            // A contact has no page of its own: its client's opens.
+            else if (hit.client !== null) openClient(hit.client);
+            // A money entry opens on its sheet.
             else setOpenKey(hit.key);
           }}
         />
