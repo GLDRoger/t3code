@@ -102,7 +102,7 @@ describe("Kin feature map", () => {
 
   it("asks a reason for every RPC no client calls, and drops it once one does", () => {
     const map = { features: [base, others] };
-    const rpcCheck = (unlisted: FeatureMap["unlisted"]) =>
+    const rpcCheck = (unlisted: Record<string, string>) =>
       checkFeatureMap({ ...map, unlisted }, inventory, (path) => path === "proof.ts");
     expect(rpcCheck({})).toEqual([
       'RPC "kin.org.pause" has no client caller; list it under unlisted with why',
