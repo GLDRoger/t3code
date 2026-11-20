@@ -2628,6 +2628,24 @@ const make = Effect.gen(function* () {
       );
       const inherited = parent?.thread.modelSelection;
       const searchTerms = input.search?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
+      const usable: Array<ServerProvider> = [];
+      const unavailable = new Map<string, Array<ServerProvider["instanceId"]>>();
+      for (const provider of providers) {
+        // Snapshots list instances any project enables; delegate_task checks the caller's project.
+        const enabledForCaller =
+          parent === undefined ||
+          resolveProjectProviderInstanceEnabled(
+            settings,
+            parent.thread.projectId,
+            provider.instanceId,
+          );
+        const reason = providerConstraints(
+          enabledForCaller ? provider : { ...provider, enabled: false },
+          orchestrationCapableInstanceIds.has(provider.instanceId),
+        ).join(" ");
+        if (reason === "") usable.push(provider);
+        else unavailable.set(reason, [...(unavailable.get(reason) ?? []), provider.instanceId]);
+      }
       return {
         parentThreadId: parent?.thread.id ?? null,
         inheritedProviderInstanceId: inherited?.instanceId ?? null,
@@ -2642,19 +2660,7 @@ const make = Effect.gen(function* () {
           ) ?? [],
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
-        providers: providers.map((provider) => {
-          // Snapshots list instances any project enables; delegate_task checks the caller's project.
-          const enabledForCaller =
-            parent === undefined ||
-            resolveProjectProviderInstanceEnabled(
-              settings,
-              parent.thread.projectId,
-              provider.instanceId,
-            );
-          const constraints = providerConstraints(
-            enabledForCaller ? provider : { ...provider, enabled: false },
-            orchestrationCapableInstanceIds.has(provider.instanceId),
-          );
+        providers: usable.map((provider) => {
           const { listed, omitted } = listCapabilityModels({
             provider,
             preferences: settings.providerModelPreferences?.[provider.instanceId],
@@ -2686,11 +2692,19 @@ const make = Effect.gen(function* () {
             provider.supportedRuntimeModes.length === 0
               ? {}
               : { runtimeModes: [...provider.supportedRuntimeModes] }),
-            canRunChildTask: constraints.length === 0,
-            canRunCrossProviderChildTask: constraints.length === 0,
-            constraints: [...constraints],
+            canRunChildTask: true,
+            canRunCrossProviderChildTask: true,
+            constraints: [],
           };
         }),
+        ...(unavailable.size === 0
+          ? {}
+          : {
+              unavailableProviders: Array.from(unavailable, ([reason, providerInstanceIds]) => ({
+                reason,
+                providerInstanceIds,
+              })),
+            }),
         features: {
           appOwnedSubagents: true,
           asyncPolling: true,

@@ -693,7 +693,17 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   inheritedOptions: Schema.optional(Schema.Array(ProviderOptionSelection)),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  /** Only providers that can run a child task. */
   providers: Schema.Array(OrchestratorMcpProviderCapability),
+  /** Everything else, one entry per reason. */
+  unavailableProviders: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        reason: Schema.String,
+        providerInstanceIds: Schema.Array(ProviderInstanceId),
+      }),
+    ),
+  ),
   features: Schema.Struct({
     appOwnedSubagents: Schema.Boolean,
     asyncPolling: Schema.Boolean,
