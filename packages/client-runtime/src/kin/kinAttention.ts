@@ -101,8 +101,16 @@ const URGENT = KIN_PULSE_URGENT;
 /** Open facts Needs you asks for: the rows it shows before "See all", and some to spare. */
 export const KIN_NEEDS_YOU_PAGE = 8;
 
+/** What a deal or prospect stopping moving reads as: Tasks lists these for whoever has it. */
+export const KIN_DEAL_SENSES: ReadonlySet<KinPulseFact["sense"]> = new Set<KinPulseFact["sense"]>([
+  "deal_no_next_step",
+  "deal_quiet",
+  "deal_date_passed",
+]);
+
 /** A client's own matters, and its tasks that are late or due. */
 const CLIENT_MATTERS = new Set<KinPulseFact["sense"]>([
+  ...KIN_DEAL_SENSES,
   "task_late",
   "task_due_soon",
   "client_cold",
@@ -113,9 +121,6 @@ const CLIENT_MATTERS = new Set<KinPulseFact["sense"]>([
   "invoice_overdue",
   "retainer_due",
   "renewal_due",
-  "deal_no_next_step",
-  "deal_quiet",
-  "deal_date_passed",
 ]);
 
 /** The host's filter for a scope: what it sends covers what `inScope` keeps. */

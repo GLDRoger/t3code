@@ -17,7 +17,7 @@ import * as NodeCrypto from "node:crypto";
 
 import { validZone } from "../triggers/quietHold.ts";
 import { storedWorkHours } from "../triggers/quietHours.ts";
-import { endOfDay, startOfDay } from "../work/recordRows.ts";
+import { endOfDay, ownerZone, startOfDay } from "../work/recordRows.ts";
 import { asideOf, type Hold } from "./holds.ts";
 import { holderLine, noticeHolder } from "./holderNotice.ts";
 import { DEAL_SENSES } from "./senses/deals.ts";
@@ -75,8 +75,8 @@ export const morningOf = (hoursJson: string | null, morningJson: string | null =
     : { at: hours.start, days: hours.days, on: true };
 };
 
-/** The day whose page is due for this person at `at`, or undefined outside its window. */
-export const morningDue = (
+/** The page due for this person at `at`: its day and the minute it was set for, else undefined. */
+const morningStart = (
   morning: {
     readonly at: string;
     readonly days: ReadonlyArray<number>;
@@ -93,8 +93,14 @@ export const morningDue = (
   const elapsed = (parts.hour * 60 + parts.minute - minutes(morning.at)) * 60_000;
   if (elapsed < 0 || elapsed >= WINDOW_MS) return undefined;
   const start = at - (at % 60_000) - elapsed;
-  return morning.since !== undefined && start < morning.since ? undefined : parts.isoDay;
+  return morning.since !== undefined && start < morning.since
+    ? undefined
+    : { day: parts.isoDay, start };
 };
+
+/** The day whose page is due for this person at `at`, or undefined outside its window. */
+export const morningDue = (morning: Parameters<typeof morningStart>[0], zone: string, at: number) =>
+  morningStart(morning, zone, at)?.day;
 
 /**
  * Who gets a morning page (`only`: just this person). Whoever has an agent of their own reads its
@@ -120,6 +126,25 @@ export const pageReaders = Effect.fn("KinPulse.pageReaders")(function* (
     ORDER BY p.person_id`;
 });
 
+/** Whether someone's page minute fell after `from`, up to `to`: the pulse runs then, not later. */
+export const pageMinuteSince = Effect.fn("KinPulse.pageMinuteSince")(function* (
+  orgId: KinOrgId,
+  from: number,
+  to: number,
+) {
+  const people = yield* pageReaders(orgId);
+  if (people.length === 0) return false;
+  const zone = yield* ownerZone(orgId);
+  return people.some((person) => {
+    const due = morningStart(
+      morningOf(person.hours, person.morning),
+      validZone(person.zone) ?? zone,
+      to,
+    );
+    return due !== undefined && due.start > from;
+  });
+});
+
 /** Of these deal facts, the records imported since `from`: an import alone is no news until a morning. */
 export const importedSince = Effect.fn("KinPulse.importedSince")(function* (
   orgId: KinOrgId,
@@ -140,7 +165,10 @@ export const importedSince = Effect.fn("KinPulse.importedSince")(function* (
   return new Set(rows.map((row) => row.recordId));
 });
 
-/** One page's body: only the sections with something in them. */
+/**
+ * One page's body: only the sections with something in them. A section's title is a "Clients:"
+ * line, which a page reads as its heading and an older phone, drawing it as a notice, as plain text.
+ */
 export const morningBody = (sections: {
   readonly needsYou: ReadonlyArray<string>;
   readonly clients: ReadonlyArray<string>;
@@ -151,8 +179,7 @@ export const morningBody = (sections: {
       ? []
       : [
           [
-            `## ${title}`,
-            "",
+            `${title}:`,
             ...lines.slice(0, SHOWN).map((line) => `- ${line}`),
             ...(lines.length > SHOWN ? [`- and ${lines.length - SHOWN} more`] : []),
           ].join("\n"),
@@ -232,7 +259,13 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
       ...(followUps === 0 ? [] : [`Follow-ups today: ${followUps}.`]),
       ...deals.map((fact) => fact.consequence),
     ];
-    if (clients.length === 0) continue;
+    // Written from what is true at its minute, and only with something untold: else none that day.
+    if (clients.length === 0 || deals.length + work.length === 0) {
+      yield* sql`INSERT INTO kin_pulse_told (org_id, person_id, fact_key, event_id, sig, told_at)
+        VALUES (${orgId}, ${personId}, ${morningKey(day)}, 'none', ${day}, ${at})
+        ON CONFLICT DO NOTHING`;
+      continue;
+    }
     const dues = new Map(
       work.length === 0
         ? []

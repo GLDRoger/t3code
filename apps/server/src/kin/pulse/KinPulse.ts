@@ -45,7 +45,7 @@ import { workSenses } from "./senses/work.ts";
 import { fromConnections, noOutside, poll } from "./outside.ts";
 import { DAY_MS } from "./thresholds.ts";
 import { tellHolder } from "./holderNotice.ts";
-import { morningPages } from "./personMorning.ts";
+import { morningPages, pageMinuteSince } from "./personMorning.ts";
 import { agentParty, forHolder, markTold, untold } from "./told.ts";
 import {
   asideOf,
@@ -859,9 +859,52 @@ export const aside = Effect.fn("KinPulse.aside")(function* (input: {
     : asideView(hold, input.viewer, input.by._tag === "person" ? input.by.personId : undefined);
 });
 
+/** When each org's pulse last ran, its change number then, and the minute last checked for pages. */
+export type Passes = Map<
+  string,
+  { readonly at: number; readonly seq: number; readonly minute: number }
+>;
+
+/** One scheduler pass: each org whose pulse is due runs it (`last` remembers when). */
+// Untraced: the scheduler runs it every few seconds; each org's `tick` carries its own span.
+export const pass = Effect.fnUntraced(
+  function* (last: Passes) {
+    const sql = yield* SqlClient.SqlClient;
+    const now = yield* Clock.currentTimeMillis;
+    // Scheduler maintenance scans organizations; the pulse below is org-scoped.
+    const orgs = yield* sql<{ orgId: string; seq: number | null }>`SELECT o.org_id AS "orgId",
+        (SELECT MAX(c.seq) FROM kin_record_changes c WHERE c.org_id = o.org_id) AS seq
+      FROM kin_orgs o ORDER BY o.org_id`.pipe(NodeSqliteClient.readOnly);
+    const minute = Math.floor(now / 60_000);
+    for (const { orgId, seq } of orgs) {
+      const seen = last.get(orgId);
+      const due =
+        seen === undefined ||
+        seen.seq !== (seq ?? 0) ||
+        now - seen.at >= TICK_EVERY_MS ||
+        // A morning page goes at its own minute, not at the pulse's next turn.
+        (seen.minute !== minute &&
+          (yield* pageMinuteSince(KinOrgId.make(orgId), seen.at, now).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Kin page check failed", { orgId, cause }).pipe(Effect.as(false)),
+            ),
+          )));
+      if (!due) {
+        last.set(orgId, { ...seen, minute });
+        continue;
+      }
+      last.set(orgId, { at: now, seq: seq ?? 0, minute });
+      yield* tick(KinOrgId.make(orgId), now).pipe(
+        Effect.catch((cause) => Effect.logWarning("Kin pulse failed", { orgId, cause })),
+      );
+    }
+  },
+  Effect.catch((cause) => Effect.logWarning("Kin pulse scan failed", { cause })),
+);
+
 /**
- * Every 15 minutes, and within seconds of a change to an org's entries, each org's pulse runs on
- * the shared scheduler beside the watchdogs.
+ * Every 15 minutes, within seconds of a change to an org's entries, and at the minute a person's
+ * morning page is set for, each org's pulse runs on the shared scheduler beside the watchdogs.
  */
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -870,7 +913,7 @@ export const layer = Layer.effectDiscard(
     const queue = yield* KinEventQueue.KinEventQueue;
     const refreshes = yield* KinRefreshObserver;
     const chats = yield* Effect.serviceOption(KinChatService);
-    const last = new Map<string, { readonly at: number; readonly seq: number }>();
+    const last: Passes = new Map();
     const outside = Option.match(yield* Effect.serviceOption(KinConnections), {
       onNone: () => noOutside,
       onSome: (connections) => fromConnections(connections, sql),
@@ -898,25 +941,11 @@ export const layer = Layer.effectDiscard(
     );
     yield* ticks.register(
       "kin-pulse",
-      Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis;
-        // Scheduler maintenance scans organizations; the pulse below is org-scoped.
-        const orgs = yield* sql<{ orgId: string; seq: number | null }>`SELECT o.org_id AS "orgId",
-            (SELECT MAX(c.seq) FROM kin_record_changes c WHERE c.org_id = o.org_id) AS seq
-          FROM kin_orgs o ORDER BY o.org_id`.pipe(NodeSqliteClient.readOnly);
-        for (const { orgId, seq } of orgs) {
-          const seen = last.get(orgId);
-          if (seen !== undefined && seen.seq === (seq ?? 0) && now - seen.at < TICK_EVERY_MS)
-            continue;
-          last.set(orgId, { at: now, seq: seq ?? 0 });
-          yield* tick(KinOrgId.make(orgId), now).pipe(
-            Effect.provideService(KinEventQueue.KinEventQueue, queue),
-            Effect.provideService(KinRefreshObserver, refreshes),
-            Option.isSome(chats) ? Effect.provideService(KinChatService, chats.value) : (e) => e,
-            Effect.catch((cause) => Effect.logWarning("Kin pulse failed", { orgId, cause })),
-          );
-        }
-      }).pipe(Effect.catch((cause) => Effect.logWarning("Kin pulse scan failed", { cause }))),
+      Effect.suspend(() => pass(last)).pipe(
+        Effect.provideService(KinEventQueue.KinEventQueue, queue),
+        Effect.provideService(KinRefreshObserver, refreshes),
+        Option.isSome(chats) ? Effect.provideService(KinChatService, chats.value) : (e) => e,
+      ),
     );
   }),
 );

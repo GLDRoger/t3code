@@ -1,5 +1,12 @@
 import { assert, describe, it } from "@effect/vitest";
-import { KinAgentId, KinOrgId, KinPersonId, type KinPulseFact } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  KinOrgId,
+  KinPersonId,
+  kinIsBrief,
+  kinPageSections,
+  type KinPulseFact,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -154,6 +161,30 @@ const setPage = (
     Effect.provide(Layer.mock(KinSchedules.KinSchedules)({})),
   );
 const tickAt = (at: number) => TestClock.setTime(at).pipe(Effect.andThen(KinPulse.tick(orgId, at)));
+/**
+ * The scheduler's pass once a minute from `from` to `to`, as a server that stays up runs it; the
+ * minute Zoya's page count first grew, or undefined.
+ */
+const passes = Effect.fn("test.passes")(function* (
+  last: KinPulse.Passes,
+  from: number,
+  to: number,
+) {
+  const before = (yield* pagesTo(zoya)).length;
+  for (let at = from; at <= to; at += MINUTE) {
+    yield* TestClock.setTime(at);
+    yield* KinPulse.pass(last);
+    if ((yield* pagesTo(zoya)).length > before) return at;
+  }
+  return undefined;
+});
+const toldDays = Effect.fn("test.toldDays")(function* (personId: KinPersonId) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ key: string }>`SELECT fact_key AS key FROM kin_pulse_told
+    WHERE org_id = ${orgId} AND person_id = ${personId} AND fact_key LIKE 'person-morning:%'
+    ORDER BY fact_key`;
+  return rows.map((row) => row.key.slice("person-morning:".length));
+});
 
 describe("deal senses", () => {
   it.effect(
@@ -347,8 +378,11 @@ describe("deal senses", () => {
       assert.deepStrictEqual(senses((yield* asZoya(at)).facts), []);
       yield* tickAt(MONDAY);
       assert.lengthOf(yield* pagesTo(zoya), 0);
+      // Lifted after her minute: that morning's page was written from what was true then.
       yield* aside("C-1", rhea, "lift", null);
       yield* tickAt(MONDAY + HOUR);
+      assert.lengthOf(yield* pagesTo(zoya), 0);
+      yield* tickAt(MONDAY + DAY);
       assert.lengthOf(yield* pagesTo(zoya), 1);
     }).pipe(Effect.provide(chatLayer)),
   );
@@ -390,13 +424,11 @@ describe("a teammate's morning page", () => {
           {
             form: "brief",
             body: [
-              "## Clients",
-              "",
+              "Clients:",
               "- Follow-ups today: 1.",
               "- Fennick & Daughters is a prospect with no deal and no next step.",
               "",
-              "## Coming up",
-              "",
+              "Coming up:",
               "- Intro call (Quillon Studios), Wed 4 Nov.",
               "- Stock and orders system for Corran Tiles is expected by Sun 8 Nov.",
             ].join("\n"),
@@ -549,12 +581,15 @@ describe("a teammate's morning page", () => {
         yield* setPage(zoya, MONDAY + 2 * HOUR, { at: "11:00", ...all });
         yield* tickAt(MONDAY + 3 * HOUR);
         assert.lengthOf(yield* pagesTo(zoya), 1);
+        // Each later page has something untold to carry.
+        yield* insert({ id: "C-8", list: "clients", title: "Saltvik", category: "prospect" });
         yield* tickAt(MONDAY + DAY + 3 * HOUR - MINUTE);
         assert.lengthOf(yield* pagesTo(zoya), 1);
         yield* tickAt(MONDAY + DAY + 3 * HOUR);
         assert.lengthOf(yield* pagesTo(zoya), 2);
         // Moved to a time already past, before it went: it starts the next morning.
         yield* setPage(zoya, MONDAY + 2 * DAY + 2 * HOUR, { at: "09:30", ...all });
+        yield* insert({ id: "C-9", list: "clients", title: "Halden", category: "prospect" });
         yield* tickAt(MONDAY + 2 * DAY + 2 * HOUR + MINUTE);
         yield* tickAt(MONDAY + 2 * DAY + 3 * HOUR);
         assert.lengthOf(yield* pagesTo(zoya), 2);
@@ -606,6 +641,119 @@ describe("a teammate's morning page", () => {
     }).pipe(Effect.provide(chatLayer)),
   );
 
+  it.effect("a morning with nothing untold sends no page, so no push and no unread", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      // The deal's step is due today and its own notice told it at 07:59: only the count is left.
+      yield* step("W-2", "DL-1", MONDAY + 4 * HOUR);
+      yield* tickAt(MONDAY - MINUTE);
+      const result = yield* tickAt(MONDAY);
+      assert.deepStrictEqual(result.pages, []);
+      assert.lengthOf(yield* pagesTo(zoya), 0);
+      // Decided at its minute: a fact true later that morning waits for the next one.
+      yield* insert({ id: "C-7", list: "clients", title: "Maple Kiln", category: "prospect" });
+      yield* tickAt(MONDAY + HOUR);
+      assert.lengthOf(yield* pagesTo(zoya), 0);
+      yield* tickAt(MONDAY + DAY);
+      const [page] = yield* pagesTo(zoya);
+      assert.include(page?.body, "Maple Kiln is a prospect with no deal and no next step.");
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("goes at its minute, whatever else has run since its facts arose", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      // A deal with no next step is made at 07:50; nothing else moves before 08:00.
+      yield* insert({
+        id: "DL-5",
+        list: "deals",
+        title: "Showroom tiles",
+        partyId: "C-1",
+        createdAt: MONDAY - 10 * MINUTE,
+      });
+      const sent = yield* passes(new Map(), MONDAY - 10 * MINUTE, MONDAY + 20 * MINUTE);
+      assert.strictEqual(sent, MONDAY);
+      const [page] = yield* pagesTo(zoya);
+      assert.include(page?.body, "Showroom tiles for Corran Tiles has no next step.");
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a set 09:30 on Tuesday and Thursday goes at 09:30 on Tuesday, never at 08:00", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* setPage(zoya, B, { at: "09:30", days: [2, 4], on: true });
+      const last: KinPulse.Passes = new Map();
+      assert.isUndefined(yield* passes(last, MONDAY - 10 * MINUTE, MONDAY + 2 * HOUR));
+      const tuesday = MONDAY + DAY;
+      assert.strictEqual(
+        yield* passes(last, tuesday - 10 * MINUTE, tuesday + 2 * HOUR),
+        tuesday + 90 * MINUTE,
+      );
+      assert.deepStrictEqual(yield* toldDays(zoya), ["2026-11-03"]);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a server down at the minute sends it once, late; back the next day, not at all", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      // Down from 07:59; back at 08:20 with nothing remembered: it goes then, once.
+      assert.isUndefined(yield* passes(new Map(), MONDAY - 10 * MINUTE, MONDAY - MINUTE));
+      const back: KinPulse.Passes = new Map();
+      assert.strictEqual(
+        yield* passes(back, MONDAY + 20 * MINUTE, MONDAY + HOUR),
+        MONDAY + 20 * MINUTE,
+      );
+      assert.isUndefined(yield* passes(back, MONDAY + HOUR, MONDAY + 2 * HOUR));
+      assert.lengthOf(yield* pagesTo(zoya), 1);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("a server back the next morning never sends yesterday's page", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      assert.isUndefined(yield* passes(new Map(), MONDAY - 10 * MINUTE, MONDAY - MINUTE));
+      // Down through Monday's minute and its window; back on Tuesday before her minute.
+      const tuesday = MONDAY + DAY;
+      const back: KinPulse.Passes = new Map();
+      assert.isUndefined(yield* passes(back, tuesday - 30 * MINUTE, tuesday - MINUTE));
+      assert.strictEqual(yield* passes(back, tuesday, tuesday + 10 * MINUTE), tuesday);
+      assert.deepStrictEqual(yield* toldDays(zoya), ["2026-11-03"]);
+      assert.lengthOf(yield* pagesTo(zoya), 1);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("off, then on again: what is untold or newly true goes at the next set morning", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const last: KinPulse.Passes = new Map();
+      yield* setPage(zoya, B, { at: "08:00", days: [1, 2, 3, 4, 5], on: false, changed: ["on"] });
+      assert.isUndefined(yield* passes(last, MONDAY - 10 * MINUTE, MONDAY + 30 * MINUTE));
+      // Newly true while it is off: a prospect with no deal and no next step.
+      yield* insert({
+        id: "C-6",
+        list: "clients",
+        title: "Cedar Forge",
+        category: "prospect",
+        createdAt: MONDAY + DAY + 2 * HOUR,
+      });
+      assert.isUndefined(yield* passes(last, MONDAY + DAY - MINUTE, MONDAY + DAY + MINUTE));
+      yield* setPage(zoya, MONDAY + 2 * DAY + 4 * HOUR, {
+        at: "08:00",
+        days: [1, 2, 3, 4, 5],
+        on: true,
+        changed: ["on"],
+      });
+      const thursday = MONDAY + 3 * DAY;
+      assert.strictEqual(
+        yield* passes(last, thursday - 10 * MINUTE, thursday + 30 * MINUTE),
+        thursday,
+      );
+      const [page] = yield* pagesTo(zoya);
+      assert.include(page?.body, "Stock and orders system for Corran Tiles has no next step.");
+      assert.include(page?.body, "Cedar Forge is a prospect with no deal and no next step.");
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
   it("writes only the sections with something in them", () => {
     assert.strictEqual(morningBody({ needsYou: [], clients: [], comingUp: [] }), "");
     assert.strictEqual(
@@ -614,7 +762,18 @@ describe("a teammate's morning page", () => {
         clients: ["Follow-ups today: 2."],
         comingUp: [],
       }),
-      "## Needs you\n\n- W-1 Send the deck, due today\n\n## Clients\n\n- Follow-ups today: 2.",
+      "Needs you:\n- W-1 Send the deck, due today\n\nClients:\n- Follow-ups today: 2.",
+    );
+    // A page under her greeting, its titles real headings: no "##" or "- " reaches her as text.
+    const body = morningBody({
+      needsYou: ["W-1 Send the deck, due today"],
+      clients: ["Follow-ups today: 2."],
+      comingUp: ["Intro call (Quillon Studios), Wed 4 Nov."],
+    });
+    assert.isTrue(kinIsBrief(body, "brief"));
+    assert.deepStrictEqual(
+      kinPageSections(body).map((section) => section.title),
+      ["Needs you", "Clients", "Coming up"],
     );
   });
 

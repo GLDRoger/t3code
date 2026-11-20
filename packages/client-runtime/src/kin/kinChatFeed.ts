@@ -12,6 +12,7 @@ import {
   type KinPersonId,
   type KinRecordKey,
   type KinWidget,
+  kinIsBrief,
   kinWhenFormat,
   scanKinDocFences,
 } from "@t3tools/contracts";
@@ -525,12 +526,14 @@ export function buildKinFeedRows(
       previousAuthor = null;
       return;
     }
-    // Host cards (memory changes, routines) arrive as system messages carrying a widget, and a
-    // worker's screenshots as one carrying files: both draw as messages, not a line.
+    // Host cards (memory changes, routines) arrive as system messages carrying a widget, a
+    // worker's screenshots as one carrying files, and Kin's own page as a brief: all draw as
+    // messages, not a line.
     if (
       isSystem(message) &&
       message.widgetId === null &&
-      (message.attachments ?? []).length === 0
+      (message.attachments ?? []).length === 0 &&
+      !kinIsBrief(message.body, message.form)
     ) {
       const notice = retryNotice(message);
       const retry = notice ? lastOwnText : null;
