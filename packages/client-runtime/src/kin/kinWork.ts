@@ -23,6 +23,7 @@ import {
   type KinWorkListInput,
   type KinWorkPrincipal,
   type KinWorkSummary,
+  KIN_LEFT_FIELD,
   KIN_TAKEN_DEFAULT_FIELD,
   kinWhenFormat,
   kinWhenParts,
@@ -1170,13 +1171,14 @@ export function kinWorkChangeText(
   const owner = field("owner");
   const to = principalFromText(owner?.to ?? null);
   const handedBack = field("handedBack");
+  const left = principalFromText(field(KIN_LEFT_FIELD)?.from ?? null);
   if (to !== null) {
     clauses.push(
       handedBack !== undefined
         ? `handed it back to ${kinWorkName(to, names, "you")}${handedBack.to === null ? "" : `: “${handedBack.to}”`}`
         : change.by._tag !== "system" && kinWorkSamePrincipal(change.by, to)
           ? "took it on"
-          : `gave it to ${kinWorkName(to, names, "you")}`,
+          : `gave it to ${kinWorkName(to, names, "you")}${left === null ? "" : ` (${kinWorkName(left, names)} left)`}`,
     );
   }
   // A held notice: `untold` names the holder not told yet, and clears once they are.

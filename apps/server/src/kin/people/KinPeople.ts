@@ -84,6 +84,7 @@ import { ownerZone } from "../work/recordRows.ts";
 import { closeHeldQuestions } from "../questions/openQuestions.ts";
 import { live as liveKey } from "../tasksKey/TasksKeys.ts";
 import { staleAsksStranded } from "../connections/strandedAsks.ts";
+import { leaverBack, leaverCards } from "./leaver.ts";
 
 const isKinError = Schema.is(KinChatError);
 const isSqlError = Schema.is(PersistenceSqlError);
@@ -489,6 +490,11 @@ export const make = Effect.gen(function* () {
     }
     if (Option.isSome(records))
       yield* noteTasks(records.value, personId, { orgId, personId }, "accessBack");
+    if (Option.isSome(chats))
+      yield* leaverBack(orgId, yield* person(orgId, personId), chats.value).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.mapError(sqlError("KinPeople.backLeaver")),
+      );
   });
   /** A device still signed in as this person, who the owner has not removed. */
   const deviceLive = Effect.fn("KinPeople.deviceLive")(function* (
@@ -1003,10 +1009,10 @@ export const make = Effect.gen(function* () {
     };
   });
   /**
-   * Takes away the person's access: links, sessions, every chat and lead they could reach, their
-   * pushes, and every turn or event that answers them. Nothing else moves: their open tasks stay
-   * in their name, each saying who removed them, and nothing is given to anyone. A new link for
-   * the same person (`accept`) brings back exactly what they had.
+   * Takes away the person's access: links, sessions, chats, leads, pushes and every turn or event
+   * that answers them. Their open tasks, deals and clients stay in their name, each saying who
+   * removed them; the owner level gets one card to give the clients' part away (`leaver.ts`).
+   * A new link for the same person (`accept`) brings back exactly what they had.
    */
   const removeAccess = Effect.fn("KinPeople.removeAccess")(function* (
     session: AuthenticatedSession,
@@ -1043,6 +1049,17 @@ export const make = Effect.gen(function* () {
             if (gone.access === "co_owner") yield* closeStranded(input.orgId, gone);
             if (Option.isSome(records))
               yield* noteTasks(records.value, caller.personId, input, "accessRemoved");
+            if (Option.isSome(chats))
+              yield* leaverCards({ orgId: input.orgId, gone, removedAt: now }).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.provideService(KinChatService, chats.value),
+                Effect.provideService(KinIdentity, identity),
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Kin couldn't ask who takes what a leaver looked after", {
+                    cause,
+                  }),
+                ),
+              );
           }
           // An unused link would let them straight back in.
           yield* sql`UPDATE kin_people_invites SET revoked_at = ${now}
@@ -1152,8 +1169,8 @@ export const make = Effect.gen(function* () {
       .pipe(Effect.mapError(sqlError("KinPeople.removeAccess")));
   });
   /**
-   * Each open task the person holds says, in its history, that `by` removed their access or that
-   * they came back; it stays theirs either way, so no agent starts on it because of either.
+   * Each open task, deal and client the person holds says, in its history, that `by` removed their
+   * access or that they came back; it stays theirs either way, so no agent starts on it.
    */
   const noteTasks = Effect.fn("KinPeople.noteTasks")(function* (
     tasks: KinRecords["Service"],
@@ -1161,15 +1178,23 @@ export const make = Effect.gen(function* () {
     input: { readonly orgId: KinOrgId; readonly personId: KinPersonId },
     field: "accessRemoved" | "accessBack",
   ) {
-    const held = yield* sql<{ key: string }>`SELECT key FROM kin_records
-      WHERE org_id = ${input.orgId} AND register_id = 'work' AND owner_kind = 'person'
-        AND owner_id = ${input.personId} AND state NOT IN ('done', 'dropped')
+    const held = yield* sql<{ key: string; registerId: string }>`SELECT key,
+        register_id AS "registerId" FROM kin_records
+      WHERE org_id = ${input.orgId} AND owner_kind = 'person' AND owner_id = ${input.personId}
+        AND ((register_id = 'work' AND state NOT IN ('done', 'dropped'))
+          OR (register_id = 'deals' AND state = 'open')
+          OR (register_id = 'clients' AND category IN ('client', 'prospect') AND state = 'open'))
       ORDER BY key`.pipe(Effect.mapError(toPersistenceSqlError("KinPeople.heldTasks")));
     const writer: Writer = { actor: { _tag: "person", personId: by }, via: "owner", askedBy: by };
     for (const task of held)
-      yield* tasks.update(input.orgId, writer, task.key, {}, undefined, [
-        { field, from: `person:${input.personId}`, to: null },
-      ]);
+      yield* tasks.update(
+        input.orgId,
+        task.registerId === "deals" ? { ...writer, deal: true } : writer,
+        task.key,
+        {},
+        undefined,
+        [{ field, from: `person:${input.personId}`, to: null }],
+      );
   });
   /** In the change that took their owner-level: the mail asks it left unconfirmable close. */
   const closeStranded = Effect.fn("KinPeople.closeStranded")(function* (

@@ -11,6 +11,7 @@ import {
   KinPersonId,
   KinRecord,
   KinWorkHistoryItem,
+  KIN_LEFT_FIELD,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -1120,5 +1121,113 @@ it.effect(
         (yield* pipelineLines(orgId, now - 7 * 86_400_000, now))[0],
         "Pipeline: €19,000 open in 2 deals, and NOK\u00a0240,000 in 1 (about €20,304 at your rate of 17 Nov).",
       );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a leaver's hand-over moves every kind and logs it, all or nothing, only by the owner level and only to someone who can hold them",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const { brightwater, corran, hush, supplies } = yield* seed;
+      const arjunId = KinPersonId.make("arjun");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+          access, sees_clients) VALUES (${arjunId}, ${orgId}, 'arjun', 'Arjun', ${at}, NULL, 1)`;
+      const byOwner = {
+        actor: { _tag: "person" as const, personId: ownerId },
+        via: "owner" as const,
+      };
+      const toZoya = { _tag: "person" as const, personId: zoyaId };
+      for (const key of [brightwater, corran, supplies])
+        yield* records.update(orgId, byOwner, key, { owner: toZoya });
+      const deal = (yield* Deals.create([owner], newDeal(corran, "Invented stock system"))).deal;
+      // Only the owner level sees Hush: Zoya's deal there can't go to Arjun.
+      const hushDeal = (yield* Deals.create([owner], newDeal(hush, "Invented hush refit"))).deal;
+      for (const key of [deal.key, hushDeal.key])
+        yield* records.update(orgId, { ...byOwner, deal: true }, key, { owner: toZoya });
+      const party = (yield* records.get(orgId, corran))!.recordId;
+      const task = (title: string, extra: object) =>
+        records
+          .create(orgId, byOwner, { title, owner: toZoya, originKey: title, ...extra })
+          .pipe(Effect.map((made) => made.row.key));
+      const followUp = yield* task("Invented: call Corran back", { partyId: party });
+      const promise = yield* task("Invented: send the revised quote", { category: "obligation" });
+      const own = yield* task("Invented: tidy the shared drive", {});
+      yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = ${zoyaId}`;
+
+      const handOver = (by: KinPersonId, to: KinPersonId) =>
+        sql.withTransaction(Deals.handOverLeaver({ orgId, by, from: zoyaId, to }));
+      const message = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.flip,
+          Effect.map((error) => (isChatError(error) ? error.message : "not a refusal")),
+        );
+      assert.deepStrictEqual(yield* Deals.leaverHeld(orgId, zoyaId), {
+        deals: 2,
+        prospects: 1,
+        clients: 1,
+        followUps: 1,
+        promises: 1,
+      });
+      assert.strictEqual(
+        yield* message(handOver(arjunId, arjunId)),
+        "Only the owner or a co-owner gives away what someone who left looked after.",
+      );
+      assert.strictEqual(
+        yield* message(handOver(ownerId, devId)),
+        "Dev can't take them: Clients is off for Dev. Give them to the owner, a co-owner or someone with Clients on.",
+      );
+      const ownersOf = (keys: ReadonlyArray<string>) =>
+        Effect.forEach(keys, (key) =>
+          records.get(orgId, key).pipe(Effect.map((row) => row?.ownerId)),
+        );
+      const moving = [brightwater, corran, deal.key, hushDeal.key, followUp, promise];
+      // The Hush deal is refused after the clients moved: nothing moves.
+      assert.match(yield* message(handOver(ownerId, arjunId)), /^Arjun can't see DL-/);
+      assert.deepStrictEqual(
+        yield* ownersOf(moving),
+        moving.map(() => zoyaId),
+      );
+
+      yield* records.update(orgId, { ...byOwner, deal: true }, hushDeal.key, {
+        owner: { _tag: "person", personId: ownerId },
+      });
+      assert.deepStrictEqual(yield* handOver(ownerId, arjunId), {
+        deals: 1,
+        prospects: 1,
+        clients: 1,
+        followUps: 1,
+        promises: 1,
+      });
+      const moved = moving.filter((key) => key !== hushDeal.key);
+      assert.deepStrictEqual(
+        yield* ownersOf(moved),
+        moved.map(() => arjunId),
+      );
+      // Her own task and the vendor are not a client's: they stay hers.
+      assert.deepStrictEqual(yield* ownersOf([own, supplies]), [zoyaId, zoyaId]);
+      const lines = yield* sql<{ key: string; actor: string; fields: string }>`SELECT r.key,
+          c.actor_id AS actor, c.fields_json AS fields FROM kin_record_changes c
+        JOIN kin_records r ON r.org_id = c.org_id AND r.record_id = c.record_id
+        WHERE c.org_id = ${orgId} AND c.fields_json LIKE ${`%${KIN_LEFT_FIELD}%`}
+        ORDER BY r.key`;
+      assert.deepStrictEqual(
+        lines.map((line) => line.key),
+        [...moved].sort(),
+      );
+      for (const line of lines) {
+        assert.strictEqual(line.actor, ownerId);
+        assert.deepInclude(JSON.parse(line.fields), {
+          field: "owner",
+          from: `person:${zoyaId}`,
+          to: `person:${arjunId}`,
+        });
+        assert.deepInclude(JSON.parse(line.fields), {
+          field: KIN_LEFT_FIELD,
+          from: `person:${zoyaId}`,
+          to: null,
+        });
+      }
     }).pipe(Effect.provide(layer)),
 );

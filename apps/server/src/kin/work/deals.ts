@@ -34,6 +34,7 @@ import {
   type KinRecordChange,
   type KinWorkPrincipal,
   KIN_DEALS_CAP,
+  KIN_LEFT_FIELD,
   KIN_RECORD_CHANGES_CAP,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -1691,4 +1692,122 @@ export const setStages = Effect.fn("KinDeals.setStages")(function* (
     }),
   );
   return yield* stages(people, { orgId: input.orgId });
+});
+
+export const LEAVER_OWNERS_ONLY = refused(
+  "Only the owner or a co-owner gives away what someone who left looked after.",
+);
+
+/** What someone who left looked after, by kind, as one hand-over moves it. */
+export type LeaverHeld = {
+  readonly deals: number;
+  readonly prospects: number;
+  readonly clients: number;
+  readonly followUps: number;
+  readonly promises: number;
+};
+
+/**
+ * Open deals, prospects and clients `personId` looks after, and their open follow-ups (tasks with
+ * a client) and promises: clients first, so a deal moves only once its client has.
+ */
+const leaverRows = Effect.fn("KinDeals.leaverRows")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql<{ key: string; registerId: string; category: string | null }>`SELECT key,
+      register_id AS "registerId", category FROM kin_records
+    WHERE org_id = ${orgId} AND owner_kind = 'person' AND owner_id = ${personId}
+      AND ((register_id = 'clients' AND category IN ('client', 'prospect') AND state = 'open')
+        OR (register_id = 'deals' AND state = 'open')
+        OR (register_id = 'work' AND state IN ('open', 'doing', 'waiting')
+          AND (party_id IS NOT NULL OR category = 'obligation')))
+    ORDER BY CASE register_id WHEN 'clients' THEN 0 WHEN 'deals' THEN 1 ELSE 2 END, key`;
+});
+
+const heldOf = (rows: ReadonlyArray<{ registerId: string; category: string | null }>) => ({
+  deals: rows.filter((row) => row.registerId === "deals").length,
+  prospects: rows.filter((row) => row.registerId === "clients" && row.category === "prospect")
+    .length,
+  clients: rows.filter((row) => row.registerId === "clients" && row.category === "client").length,
+  followUps: rows.filter((row) => row.registerId === "work" && row.category !== "obligation")
+    .length,
+  promises: rows.filter((row) => row.registerId === "work" && row.category === "obligation").length,
+});
+
+export const leaverHeld = Effect.fn("KinDeals.leaverHeld")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+) {
+  return heldOf(yield* leaverRows(orgId, personId).pipe(workFailure)) satisfies LeaverHeld;
+});
+
+/** Whether `personId` may take a leaver's clients and deals: on the team, owner level or Clients on. */
+const leaverReceiver = Effect.fn("KinDeals.leaverReceiver")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const { owner } = yield* KinIdentity;
+  const [row] = yield* sql<{ name: string; removed: number; clients: number }>`SELECT
+      display_name AS name, removed_at IS NOT NULL AS removed, sees_clients AS clients
+    FROM kin_people WHERE org_id = ${orgId} AND person_id = ${personId}`.pipe(workFailure);
+  if (row === undefined) return yield* refused("Kin can't find who should take them.");
+  if (row.removed === 1)
+    return yield* refused(`${row.name} is no longer on the team. Choose someone else.`);
+  if (!(yield* mayActAsOwner(orgId, personId, owner).pipe(workFailure)) && row.clients !== 1)
+    return yield* refused(
+      `${row.name} can't take them: Clients is off for ${row.name}. Give them to the owner, a co-owner or someone with Clients on.`,
+    );
+  return row.name;
+});
+
+/**
+ * Gives every open deal, prospect, client, follow-up and promise `from` looked after to `to`, in
+ * the caller's transaction: each logs who gave it and that `from` left, and one refusal moves
+ * none. The owner level only, for someone removed from the team.
+ */
+export const handOverLeaver = Effect.fn("KinDeals.handOverLeaver")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly by: KinPersonId;
+  readonly from: KinPersonId;
+  readonly to: KinPersonId;
+}) {
+  const { orgId } = input;
+  const { owner } = yield* KinIdentity;
+  if (!(yield* mayActAsOwner(orgId, input.by, owner).pipe(workFailure)))
+    return yield* LEAVER_OWNERS_ONLY;
+  const sql = yield* SqlClient.SqlClient;
+  const [gone] = yield* sql<{ removed: number }>`SELECT removed_at IS NOT NULL AS removed
+    FROM kin_people WHERE org_id = ${orgId} AND person_id = ${input.from}`.pipe(workFailure);
+  if (gone?.removed !== 1)
+    return yield* invalid("They are on the team: change who looks after each one on its own page.");
+  if (input.to === input.from) return yield* invalid("Choose someone else to give them to.");
+  yield* leaverReceiver(orgId, input.to);
+  const records = yield* KinRecords;
+  const writer: Writer = {
+    actor: { _tag: "person", personId: input.by },
+    via: "owner",
+    askedBy: input.by,
+  };
+  const to = me(input.to);
+  const left = [{ field: KIN_LEFT_FIELD, from: `person:${input.from}`, to: null }];
+  const rows = yield* leaverRows(orgId, input.from).pipe(workFailure);
+  for (const row of rows) {
+    if (row.registerId !== "deals") {
+      yield* records.update(orgId, writer, row.key, { owner: to }, undefined, left);
+      continue;
+    }
+    const after = yield* records.update(
+      orgId,
+      { ...writer, deal: true },
+      row.key,
+      { owner: to },
+      undefined,
+      left,
+    );
+    yield* seesItAfter(orgId, after, to);
+  }
+  return heldOf(rows) satisfies LeaverHeld;
 });
