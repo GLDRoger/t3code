@@ -77,6 +77,7 @@ import { KIN_OWNER_LEVEL, personSees, viewerOfPeople } from "../work/teamView.ts
 import { promptLine as connectionsLine } from "../connections/ConnectionRows.ts";
 import { companyAccounts } from "../github/githubWatchStore.ts";
 import { inheritOutside } from "./OutsideContent.ts";
+import { outsideReview } from "./outsideReview.ts";
 import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { groupRules, teamRules } from "./instructions.ts";
@@ -918,7 +919,21 @@ export class KinLeadPrompt extends Context.Service<
           ownerUnnamed && owner === "" ? OWNER_NAME_UNSET : ""
         } Name people only as Kin names them here, never from a file path, account or machine name.`;
       });
-      const build = Effect.fn("KinLeadPrompt.build")(function* (input: KinLeadPromptInput) {
+      const build = Effect.fn("KinLeadPrompt.build")(function* (given: KinLeadPromptInput) {
+        // A stranger's pull request's review reads nothing of the owner's chat it answers in.
+        const review = yield* outsideReview(given).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(
+            (cause) =>
+              new KinLeadPromptError({
+                orgId: given.orgId,
+                reason: "Could not read the turn",
+                cause,
+              }),
+          ),
+        );
+        const { lane: _ownerChat, ...laneless } = given;
+        const input: KinLeadPromptInput = review === undefined ? given : laneless;
         const { orgId, agentId, memoryHead } = input;
         // A shared turn gets none of the owner's private context: no other chats, and of memory
         // only what the team can know.
@@ -1288,7 +1303,7 @@ export class KinLeadPrompt extends Context.Service<
         // What we sell, in every turn whose readers may see it: a shared turn's by stored rows.
         const offerings = yield* Effect.gen(function* () {
           if (ownerOnly) return yield* offeringsPromptIndex(orgId, KIN_OWNER_LEVEL);
-          const behind = yield* turnPeople(input);
+          const behind = review === undefined ? yield* turnPeople(input) : undefined;
           if (behind === undefined) return { _tag: "hidden" } as const;
           return yield* offeringsPromptIndex(
             orgId,

@@ -18,6 +18,7 @@ import { isMemoryRepo, repoList, setRepo } from "../../github/githubWatchStore.t
 import { linkGithubItem } from "../../github/githubLink.ts";
 import { SHARED_REFUSAL } from "../Audience.ts";
 import { toolAdmitted } from "../SharedTools.ts";
+import { reviewOnce } from "../outsideReview.ts";
 import { laneFor } from "../../reply/replyLane.ts";
 import { KinChatService } from "../../chat/KinChatService.ts";
 import { KinServer } from "../../KinServer.ts";
@@ -414,7 +415,10 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
     Effect.fn("KinLeadToolkit.githubReview")(function* (input) {
       const lead = yield* resolveLead(yield* McpInvocationContext);
       yield* admitted(lead, "kin_github_review", input);
-      const asOwner = yield* ownerGitHubReview(lead, input).pipe(Effect.provide(ghApiLayer));
+      const asOwner = yield* reviewOnce(
+        lead,
+        ownerGitHubReview(lead, input).pipe(Effect.provide(ghApiLayer)),
+      );
       if (asOwner !== undefined) return asOwner;
       return yield* new KinChatError({
         reason: "unavailable",
