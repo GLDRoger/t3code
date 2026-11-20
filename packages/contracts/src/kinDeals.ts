@@ -6,6 +6,7 @@ import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchema
 import { KinChatError, KinOrgId, KinText, KinTrimmedText } from "./kinChat.ts";
 import { KinDay, KinMoney } from "./kinMoney.ts";
 import {
+  KinRecord,
   KinRecordChange,
   KinRecordId,
   KinRecordKey,
@@ -133,6 +134,8 @@ export const KinDealPage = Schema.Struct({
   steps: Schema.Array(KinDealNext),
   /** Its client's quotes the reader may see and link, newest first; only when it may edit. */
   quotes: Schema.optional(Schema.Array(KinDealQuote)),
+  /** Promises linked to it that the reader sees, not dropped: ours, then theirs, each by day. */
+  promises: Schema.optional(Schema.Array(KinRecord)),
   seq: NonNegativeInt,
 });
 export type KinDealPage = typeof KinDealPage.Type;

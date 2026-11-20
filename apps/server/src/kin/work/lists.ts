@@ -40,8 +40,8 @@ export const LISTS: Record<ListName, List> = {
     states: ["open", "doing", "waiting", "done", "dropped"],
     categories: ["task", "issue", "obligation", "meeting"],
     // The project spine: a milestone's key, S/M/L, why its holder was picked, the doc section it
-    // came from with that section's hash then, a meeting's people and place, and the holder not
-    // told yet that it is theirs.
+    // came from with that section's hash then, a meeting's people and place, the holder not
+    // told yet that it is theirs, and where a promise was made (`promises.ts`).
     fields: [
       "milestone",
       "size",
@@ -52,6 +52,7 @@ export const LISTS: Record<ListName, List> = {
       "fromHash",
       "attendees",
       "where",
+      "from",
     ],
   },
   clients: {
@@ -80,8 +81,9 @@ export const LISTS: Record<ListName, List> = {
     noun: "project",
     states: ["open", "done", "dropped"],
     categories: [],
-    // `members` holds `person:<id>` and `agent:<id>`; days are `YYYY-MM-DD`.
-    fields: ["repos", "billing", "value", "startsOn", "renewsOn", "members"],
+    // `members` holds `person:<id>` and `agent:<id>`; days are `YYYY-MM-DD`; `noticeDays` a whole
+    // number as text.
+    fields: ["repos", "billing", "value", "startsOn", "renewsOn", "noticeDays", "members"],
   },
   milestones: {
     name: "Milestones",

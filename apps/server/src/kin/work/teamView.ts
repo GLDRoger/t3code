@@ -725,8 +725,46 @@ export const teamGuard = Effect.fn("KinTeamView.guard")(function* (
     write.row === undefined ? [] : [write.row.recordId],
     typeof write.input.partyId === "string" ? [write.input.partyId] : [],
   );
-  const refused = teamRule(facts(write.row?.recordId), write);
+  const refused = teamRule(facts(write.row?.recordId), {
+    ...write,
+    input: yield* promiseParts(orgId, personId, write),
+  });
   if (refused !== undefined) return yield* refused;
+});
+
+/**
+ * A new task on a client this teammate sees in Clients may say where it was promised
+ * (`fields.from`) and sit on one of that client's deals they see (`promises.ts`); those parts
+ * are theirs to set, and the rest of the write is decided as any other.
+ */
+const promiseParts = Effect.fn("KinTeamView.promiseParts")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  write: TeamWrite,
+) {
+  const { input } = write;
+  const { fields, links, ...rest } = input;
+  if (write.row !== undefined || typeof input.partyId !== "string") return input;
+  if ((typeof input.list === "string" ? input.list : "work") !== "work") return input;
+  const fromOnly =
+    fields === undefined ||
+    (typeof fields === "object" &&
+      fields !== null &&
+      Object.keys(fields).every((key) => key === "from"));
+  const deals = Array.isArray(links) ? (links as ReadonlyArray<Record<string, unknown>>) : [];
+  if (!fromOnly || (links !== undefined && !Array.isArray(links))) return input;
+  if (deals.some((link) => link.kind !== "record" || link.relation !== "relates")) return input;
+  const targets = deals.map((link) => String(link.target));
+  if (targets.length > 0) {
+    const sql = yield* SqlClient.SqlClient;
+    const onIt = yield* sql<{ recordId: string }>`SELECT r.record_id AS "recordId"
+      FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'deals'
+        AND r.party_id = ${input.partyId} AND r.record_id IN ${sql.in(targets)}
+        AND ${crmSees(sql, personId)}
+      ORDER BY r.record_id`;
+    if (onIt.length !== new Set(targets).size) return input;
+  }
+  return rest;
 });
 
 type CanRow = {

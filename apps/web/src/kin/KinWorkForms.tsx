@@ -1,3 +1,4 @@
+import { KIN_PROMISES } from "@t3tools/client-runtime/kin/kinPromises";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_CLIENTS,
@@ -851,6 +852,7 @@ export function KinProjectDialog(
     value: useId(),
     startsOn: useId(),
     renewsOn: useId(),
+    noticeDays: useId(),
   };
   const save = async () => {
     const outcome = await form.save();
@@ -976,6 +978,21 @@ export function KinProjectDialog(
             />
           </Field>
         ) : null}
+        {draft.renewsOn === null ? null : (
+          <Field
+            id={ids.noticeDays}
+            label={KIN_PROMISES.noticeDays}
+            hint={KIN_PROMISES.noticeDaysHint}
+            moved={moved.noticeDays ?? undefined}
+          >
+            <Input
+              id={ids.noticeDays}
+              inputMode="numeric"
+              value={draft.noticeDays}
+              onChange={(event) => form.edit({ noticeDays: event.target.value })}
+            />
+          </Field>
+        )}
       </div>
       {editing === null && props.directory !== undefined ? (
         <div className="flex flex-col gap-1.5">

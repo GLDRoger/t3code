@@ -1,16 +1,30 @@
-import { KinMoney } from "@t3tools/contracts";
+import {
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
+  KinMoney,
+  KinPersonId,
+  KinRecordId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { budgetsAnswer, budgetsView } from "../../work/budgets.ts";
+import { noticeDay } from "../../work/crm.ts";
 import { formatMoneyPlain } from "../../work/money.ts";
-import { countedEntry, daysOverdue, endOfDay, invoiceDue } from "../../work/recordRows.ts";
+import {
+  countedEntry,
+  daysOverdue,
+  endOfDay,
+  invoiceDue,
+  startOfDay,
+} from "../../work/recordRows.ts";
 import { DAY_MS, type Threshold, threshold, toMs } from "../thresholds.ts";
 import {
   agentOrOwner,
   dayOf,
+  daysAgoText,
   daysText,
   elapsed,
   entryColumns,
@@ -161,10 +175,19 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
       AND r.due_at <= ${at + RENEWAL_WIDEST_MS}
     ORDER BY r.due_at, r.key LIMIT ${SENSE_CAP}`;
   const projects = yield* sql<
-    EntryRow & { renewsOn: string; value: string | null; kept: number }
+    EntryRow & {
+      renewsOn: string;
+      value: string | null;
+      kept: number;
+      noticeDays: string | null;
+      clientOwnerKind: string | null;
+      clientOwnerId: string | null;
+    }
   >`SELECT
       ${entryColumns(sql)}, json_extract(r.fields_json, '$.renewsOn') AS "renewsOn",
-      json_extract(r.fields_json, '$.value') AS value, r.confirmed AS kept
+      json_extract(r.fields_json, '$.value') AS value, r.confirmed AS kept,
+      json_extract(r.fields_json, '$.noticeDays') AS "noticeDays",
+      c.owner_kind AS "clientOwnerKind", c.owner_id AS "clientOwnerId"
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'projects' AND r.state = 'open'
       AND json_extract(r.fields_json, '$.renewsOn') IS NOT NULL
@@ -219,6 +242,66 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
         wake: "sweep",
       }),
       stage,
+    });
+  }
+
+  // notice_due: an open project's last day to give notice (`renewsOn` less `noticeDays`) is
+  // within the renewal heads-up, or passed while the renewal is still ahead. It reaches whoever
+  // looks after the client, as a deal's facts do; a new notice day is a new fact.
+  const noticed = projects.filter((project) => project.noticeDays !== null);
+  const present =
+    noticed.length === 0
+      ? new Set<string>()
+      : new Set(
+          (yield* sql<{ personId: string }>`SELECT person_id AS "personId" FROM kin_people
+            WHERE org_id = ${orgId} AND removed_at IS NULL ORDER BY person_id`).map(
+            (row) => row.personId,
+          ),
+        );
+  for (const project of noticed) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(project.renewsOn)) continue;
+    const day = noticeDay(project.renewsOn, project.noticeDays);
+    if (day === undefined) continue;
+    const renews = endOfDay(project.renewsOn, ctx.zone);
+    const by = endOfDay(day, ctx.zone);
+    const heads = yield* forClient("renewal_heads_up_days", project.clientId);
+    // From the start of the day that many days before it: 60 days' notice before 1 March, by
+    // 31 December, is told from 17 December.
+    const from = startOfDay(day, ctx.zone) - toMs(heads);
+    if (at > renews || from > at) continue;
+    const when = (ms: number) =>
+      formatKinWhen(ms, "day", { zone: ctx.zone, locale: KIN_TEXT_LOCALE });
+    const name = project.clientTitle ?? project.title;
+    const looks = [
+      { kind: project.clientOwnerKind, id: project.clientOwnerId },
+      { kind: project.ownerKind, id: project.ownerId },
+    ].find((one) => one.kind === "person" && one.id !== null && present.has(one.id));
+    facts.push({
+      sense: "notice_due",
+      family: "work",
+      key: `notice_due:${project.key}:on=${day}`,
+      // About the client, so it reaches whoever reads that client and a hold on it covers it.
+      subject:
+        project.clientId === null || project.clientKey === null
+          ? entrySubject(project)
+          : {
+              kind: "record",
+              key: project.clientKey,
+              title: project.clientTitle ?? project.clientKey,
+              recordId: KinRecordId.make(project.clientId),
+            },
+      scope: entryScope({ ...project, projectKey: project.key, projectTitle: project.title }),
+      since: iso(from),
+      consequence:
+        by < at
+          ? `${name}: notice was due by ${when(by)}, ${daysAgoText(ctx, by)}; ${project.title} renews ${when(renews)}.`
+          : `${name}: notice by ${when(by)} if the contract changes; ${project.title} renews ${when(renews)}.`,
+      actor:
+        looks === undefined
+          ? { _tag: "owner" }
+          : { _tag: "person", personId: KinPersonId.make(looks.id!) },
+      sensitive: project.sensitive === 1,
+      wake: "sweep",
     });
   }
 

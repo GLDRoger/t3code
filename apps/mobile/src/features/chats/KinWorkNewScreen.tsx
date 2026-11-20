@@ -100,6 +100,7 @@ export function KinWorkNewScreen({ route }: StaticScreenProps<KinWorkParams>) {
         project: kinWorkRefParam(route.params.project, route.params.projectName),
         side:
           route.params.side === "theirs" ? "theirs" : route.params.side === "ours" ? "ours" : null,
+        deal: kinWorkRefParam(route.params.deal, route.params.dealName),
       })}
     />
   );
@@ -320,7 +321,8 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                         held={draft.party}
                         choices={choices.clients}
                         disabled={saving}
-                        onPick={(party) => setDraft({ ...draft, party })}
+                        // A deal belongs to its client: another client leaves it.
+                        onPick={(party) => setDraft({ ...draft, party, deal: null })}
                       />
                     )}
                     {draft.party === null ? null : (
@@ -344,6 +346,30 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                     )}
                   </ListSection>
                 </KinWorkAboveKeyboard>
+              )}
+              {draft.party === null || draft.side === null ? null : (
+                <ListSection>
+                  <View className="gap-2 px-4 py-3">
+                    {draft.deal == null ? null : (
+                      <Text className="text-sm text-foreground-muted">
+                        {`${KIN_WORK_NEW_COPY.dealLabel}: ${draft.deal.title}`}
+                      </Text>
+                    )}
+                    <Text className="text-sm text-foreground-muted">
+                      {KIN_WORK_NEW_COPY.fromLabel}
+                    </Text>
+                    <TextInput
+                      accessibilityLabel={KIN_WORK_NEW_COPY.fromLabel}
+                      value={draft.from ?? ""}
+                      editable={!saving}
+                      maxLength={280}
+                      onChangeText={(from) => setDraft({ ...draft, from })}
+                      placeholder={KIN_WORK_NEW_COPY.fromPlaceholder}
+                      placeholderTextColorClassName="accent-placeholder"
+                      className="font-sans text-base text-foreground"
+                    />
+                  </View>
+                </ListSection>
               )}
               <ListSection>
                 <View className="gap-2 px-4 py-3">

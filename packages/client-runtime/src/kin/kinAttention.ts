@@ -114,6 +114,7 @@ const CLIENT_MATTERS = new Set<KinPulseFact["sense"]>([
   "deal_no_next_step",
   "deal_quiet",
   "deal_date_passed",
+  "notice_due",
 ]);
 
 /** The host's filter for a scope: what it sends covers what `inScope` keeps. */

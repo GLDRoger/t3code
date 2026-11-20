@@ -49,6 +49,7 @@ const KIN_PULSE_SENSES = [
   "deal_no_next_step",
   "deal_quiet",
   "deal_date_passed",
+  "notice_due",
 ] as const;
 /**
  * Senses newer than the first phones: a screen read sends them only to a client that lists them
@@ -59,6 +60,7 @@ export const KIN_PULSE_LATER_SENSES = [
   "deal_no_next_step",
   "deal_quiet",
   "deal_date_passed",
+  "notice_due",
 ] as const;
 export const KinPulseSense = Schema.Literals(KIN_PULSE_SENSES);
 export type KinPulseSense = typeof KinPulseSense.Type;

@@ -12,6 +12,7 @@ import {
   type KinTaskLine,
   type KinTaskStep,
 } from "@t3tools/client-runtime/kin/kinTasksList";
+import { KIN_PROMISES } from "@t3tools/client-runtime/kin/kinPromises";
 import { KIN_WORK_COPY, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type { KinWorkTimelineLine } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
@@ -173,8 +174,14 @@ export function KinWorkTaskRow(props: {
   readonly onAct: ((action: KinWorkAction) => void) | null;
   /** Inside a rounded section the row keeps to the section's edges. */
   readonly inset?: boolean;
+  /** A promise to or from a client: its "Promised" mark, and where it was made. */
+  readonly promise?: {
+    readonly from: string | null;
+    /** Opens the chat message it was made in, where the reader may; null is words only. */
+    readonly onOpen: (() => void) | null;
+  } | null;
 }) {
-  const { row, onAct } = props;
+  const { row, onAct, promise } = props;
   const tick = onAct === null ? null : row.tick;
   return (
     <>
@@ -228,6 +235,11 @@ export function KinWorkTaskRow(props: {
               )}
             </View>
           </View>
+          {promise == null ? null : (
+            <Text textRole="footnote" className="font-t3-medium text-primary-text">
+              {KIN_PROMISES.mark}
+            </Text>
+          )}
           {row.markText === null ? null : (
             <Text
               textRole="footnote"
@@ -245,6 +257,19 @@ export function KinWorkTaskRow(props: {
           )}
         </Pressable>
       </View>
+      {promise == null || promise.from === null ? null : promise.onOpen === null ? (
+        <Text
+          textRole="footnote"
+          numberOfLines={2}
+          className="pb-3 pl-12 pr-5 text-foreground-muted"
+        >
+          {promise.from}
+        </Text>
+      ) : (
+        <View className="flex-row pb-2 pl-12 pr-5">
+          <Button tone="text" size="compact" label={promise.from} onPress={promise.onOpen} />
+        </View>
+      )}
       {row.suggested && onAct !== null ? (
         <View className="flex-row gap-2 pb-3 pl-12 pr-5">
           <Button

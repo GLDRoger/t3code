@@ -41,6 +41,7 @@ import { DEFAULT_STAGES, stageLine, stageMove, stagesOf } from "./dealStages.ts"
 import * as Docs from "./docs.ts";
 import { WINNING_CUSTOMERS_ORIGIN } from "./playbookSeeds.ts";
 import { playbookThreshold } from "./playbooks.ts";
+import { fromsOf } from "./promises.ts";
 import { KinRecords, requestHashOf, type Patch, type Writer } from "./KinRecords.ts";
 import { fieldText, isMoney, parseFields, type FieldValue } from "./lists.ts";
 import { dueMillis, ownerWriter, viewerOf } from "./ownerWork.ts";
@@ -55,6 +56,7 @@ import {
   samePrincipal,
   selectRecords,
   type StoredChange,
+  toRecord,
   workFailure,
 } from "./recordRows.ts";
 import {
@@ -64,6 +66,7 @@ import {
   placesOf,
   teamClients,
   teamSeesField,
+  teamRecordIn,
   teamSeq,
   viewerOfPeople,
   type KinViewer,
@@ -820,6 +823,7 @@ export const page = Effect.fn("KinDeals.page")(function* (
     deal!.can.edit && (yield* readsQuotes(input.orgId, actor))
       ? yield* quoteChoices(input.orgId, viewer, row).pipe(workFailure)
       : undefined;
+  const readers = people.filter((one) => one.orgId === input.orgId).map((one) => one.personId);
   return {
     deal: deal!,
     stages,
@@ -827,9 +831,44 @@ export const page = Effect.fn("KinDeals.page")(function* (
     changes: dealChanges(detail.changes, stages, viewer),
     steps: steps.get(row.recordId) ?? [],
     ...(quotes === undefined ? {} : { quotes }),
+    promises: yield* promisesOf(input.orgId, viewer, row, now, readers).pipe(workFailure),
     seq: yield* seqFor(input.orgId, viewer),
   } satisfies KinDealPage;
 });
+
+/**
+ * The promises on a deal this viewer reads in Clients, open or done, never dropped: ours, then
+ * theirs, each by its day; each with where it was made, as `readers` may follow it.
+ */
+const promisesOf = Effect.fn("KinDeals.promises")(function* (
+  orgId: KinOrgId,
+  viewer: KinViewer,
+  deal: RecordRow,
+  now: number,
+  readers: ReadonlyArray<string>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<RecordRow>`${selectRecords(sql)}
+    WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.category = 'obligation'
+      AND r.state <> 'dropped' AND ${crmSeenBy(sql, viewer)}
+      AND EXISTS (SELECT 1 FROM kin_record_links dl WHERE dl.org_id = r.org_id
+        AND dl.record_id = r.record_id AND dl.kind = 'record' AND dl.target = ${deal.recordId})
+    ORDER BY r.side = 'theirs', r.state = 'done', r.due_at IS NULL, r.due_at, r.key
+    LIMIT ${KIN_DEAL_PROMISES_CAP}`;
+  const froms = yield* fromsOf(
+    orgId,
+    rows.map((one) => one.recordId),
+    readers,
+  );
+  const clients = new Set(deal.partyId === null ? [] : [deal.partyId]);
+  return rows.map((one) => {
+    const record = toRecord(one, now);
+    const shown = viewer._tag === "ownerLevel" ? record : teamRecordIn(record, new Set(), clients);
+    const from = froms.get(one.recordId);
+    return from === undefined ? shown : { ...shown, from };
+  });
+});
+const KIN_DEAL_PROMISES_CAP = 50;
 
 // Writes from a person's own app: decode, decide inside one transaction, answer as they read it.
 

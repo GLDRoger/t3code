@@ -24,6 +24,7 @@ import type {
 
 import { kinLinkToOpen } from "./kinChatFeed.ts";
 import { kinMoneyText } from "./kinLists.ts";
+import { kinContractLine, kinPromiseOf, type KinPromiseView } from "./kinPromises.ts";
 import { formatKinTime, type KinAvatarView } from "./kinScreenState.ts";
 import { KIN_SCOPE_ALL, kinNothingShown, type KinViewerScope } from "./kinViewerScope.ts";
 import {
@@ -697,8 +698,11 @@ function kinContactView(contact: KinContact): KinContactView {
 }
 
 /** One side of what is owed: the rows read, and how many more the host has. */
+/** A client's or deal's row, with its "Promised" mark and where it was made when it is a promise. */
+export type KinOwedRowView = KinWorkRowView & { readonly promise: KinPromiseView | null };
+
 export interface KinOwedView {
-  readonly rows: ReadonlyArray<KinWorkRowView>;
+  readonly rows: ReadonlyArray<KinOwedRowView>;
   readonly total: number;
   /** "See all 62"; null when everything is shown. */
   readonly more: string | null;
@@ -738,6 +742,8 @@ export interface KinClientPageView {
   readonly privacy: KinWorkPrivacy;
   readonly weOwe: KinOwedView;
   readonly theyOwe: KinOwedView;
+  /** "Renews 1 Mar · notice by 31 Dec" under the name; amber when `soon`. Null with no renewal. */
+  readonly contract: { readonly text: string; readonly soon: boolean } | null;
   readonly projects: ReadonlyArray<KinProjectRowView>;
   readonly contacts: ReadonlyArray<KinContactView>;
   readonly terms: string | null;
@@ -763,7 +769,7 @@ export function kinClientPageView(
     kinWorkRow(record, names, now, { party: ref, project: null, sided: true }),
   );
   const owed = (side: KinPartyPage["weOwe"], rows: ReadonlyArray<KinWorkRowView>): KinOwedView => ({
-    rows,
+    rows: rows.map((row, index) => ({ ...row, promise: kinPromiseOf(side.records[index]!) })),
     total: side.total,
     more: side.total > side.records.length ? `See all ${side.total}` : null,
   });
@@ -808,6 +814,7 @@ export function kinClientPageView(
     },
     weOwe: owed(page.weOwe, weOwe),
     theyOwe: owed(page.theyOwe, theyOwe),
+    contract: kinContractLine(page.contract),
     projects: page.projects.map((row) => kinProjectRow(row, names, now, ref)),
     contacts: page.contacts.map(kinContactView),
     terms: terms === "" ? null : terms,

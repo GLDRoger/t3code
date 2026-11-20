@@ -721,6 +721,7 @@ export function KinPlaceView({
             ? null
             : (party) => setAdding({ type: "project", party })
         }
+        onAddTask={addTask}
         onClose={() => setOpenKey(null)}
       />
     ) : (
@@ -826,9 +827,10 @@ export function KinPlaceView({
           choices={hostClients ? choices : null}
           start={adding.draft}
           onAdded={(key) => {
+            const fromDeal = adding.draft.deal != null;
             setAdding(null);
-            // Added from a client or project, it shows up there: the record stays put.
-            if (record === null) setOpenKey(key);
+            // Added from a client, project or deal, it shows up there: the record stays put.
+            if (record === null && !fromDeal) setOpenKey(key);
             else onDialog(null);
           }}
           onClose={() => {

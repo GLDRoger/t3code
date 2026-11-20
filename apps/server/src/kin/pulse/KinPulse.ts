@@ -319,6 +319,8 @@ const dealsHeardBy = Effect.fn("KinPulse.dealsHeardBy")(function* (
   const theirs = facts.filter(
     (fact) =>
       DEAL_SENSES.has(fact.sense) &&
+      // A private project's notice day stays the owner level's, whoever looks after the client.
+      !(fact.sense === "notice_due" && fact.sensitive) &&
       fact.actor._tag === "person" &&
       fact.actor.personId === person &&
       fact.subject.recordId !== undefined,

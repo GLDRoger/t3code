@@ -90,6 +90,7 @@ export function KinWorkNewDialog(
   const titleCountId = useId();
   const dueId = useId();
   const notesId = useId();
+  const fromId = useId();
   const assignees = kinWorkAssignees({
     orgs,
     orgId,
@@ -290,7 +291,8 @@ export function KinWorkNewDialog(
                       label={KIN_WORK_NEW_COPY.clientLabel}
                       value={draft.party}
                       choices={choices.clients}
-                      onChange={(party) => setDraft({ ...draft, party })}
+                      // A deal belongs to its client: another client leaves it.
+                      onChange={(party) => setDraft({ ...draft, party, deal: null })}
                     />
                   )}
                   {choices.projects.length === 0 && draft.project === null ? null : (
@@ -323,6 +325,23 @@ export function KinWorkNewDialog(
                     <Toggle value="ours">{KIN_WORK_NEW_COPY.sideOurs}</Toggle>
                     <Toggle value="theirs">{KIN_WORK_NEW_COPY.sideTheirs}</Toggle>
                   </ToggleGroup>
+                </div>
+              )}
+              {draft.deal == null || draft.party === null ? null : (
+                <p className="text-sm text-muted-foreground">
+                  {KIN_WORK_NEW_COPY.dealLabel}: {draft.deal.title}
+                </p>
+              )}
+              {draft.party === null || draft.side === null ? null : (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={fromId}>{KIN_WORK_NEW_COPY.fromLabel}</Label>
+                  <Input
+                    id={fromId}
+                    value={draft.from ?? ""}
+                    maxLength={280}
+                    placeholder={KIN_WORK_NEW_COPY.fromPlaceholder}
+                    onChange={(event) => setDraft({ ...draft, from: event.target.value })}
+                  />
                 </div>
               )}
               <div className="flex flex-col gap-1.5">

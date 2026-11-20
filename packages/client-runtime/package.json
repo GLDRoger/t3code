@@ -923,6 +923,10 @@
       "types": "./src/kin/kinDeals.ts",
       "default": "./src/kin/kinDeals.ts"
     },
+    "./kin/kinPromises": {
+      "types": "./src/kin/kinPromises.ts",
+      "default": "./src/kin/kinPromises.ts"
+    },
     "./kin/kinWorkClients": {
       "types": "./src/kin/kinWorkClients.ts",
       "default": "./src/kin/kinWorkClients.ts"

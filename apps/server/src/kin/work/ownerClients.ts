@@ -217,7 +217,8 @@ export const party = Effect.fn("KinWork.party")(function* (
   const row = yield* opened(input, "clients");
   yield* unseen(viewer, row, input);
   const { now, seq } = yield* asOf(input.orgId, viewer);
-  const page = yield* read(Crm.partyPage(row, now, seq, viewer));
+  const readers = people.filter((one) => one.orgId === input.orgId).map((one) => one.personId);
+  const page = yield* read(Crm.partyPage(row, now, seq, viewer, readers));
   if (viewer._tag === "ownerLevel")
     return { ...page, can: { edit: true, log: true, owner: true } } satisfies KinPartyPage;
   const [team] = viewer.people;
@@ -618,9 +619,7 @@ export const memberChangesContact = Effect.fn("KinWork.crm.memberChangesContact"
   input: { readonly ownersFields: boolean },
 ) {
   if (!(yield* switchedOn(orgId, viewerOfPeople([personId])))) return yield* ownerOnly;
-  const contact = yield* inList(orgId, key, "contacts").pipe(
-    Effect.mapError(() => notFound(key)),
-  );
+  const contact = yield* inList(orgId, key, "contacts").pipe(Effect.mapError(() => notFound(key)));
   // A contact labelled itself or through its client is one they never saw.
   const seen = yield* read(crmVisible(orgId, personId, [contact.recordId]));
   if (contact.partyId === null || !seen.has(contact.recordId)) return yield* notFound(key);
@@ -858,6 +857,10 @@ const spineFields = (input: KinProjectCreateInput | KinProjectUpdateInput) => ({
   value: input.value,
   startsOn: input.startsOn,
   renewsOn: input.renewsOn,
+  noticeDays:
+    input.noticeDays === undefined || input.noticeDays === null
+      ? input.noticeDays
+      : String(input.noticeDays),
   members: input.members?.map(principalText),
 });
 

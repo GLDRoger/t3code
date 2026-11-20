@@ -142,6 +142,21 @@ export const KinRecordCan = Schema.Struct({
 });
 export type KinRecordCan = typeof KinRecordCan.Type;
 
+/**
+ * Where a promise (an obligation) was made, as its reader may follow it: a meeting or mail logged
+ * on its client, a chat message, or words someone typed. `chatId` and `messageId` only where the
+ * reader may open that chat; `at` is when the meeting, mail or message happened.
+ */
+export const KinPromiseFrom = Schema.Struct({
+  kind: Schema.Literals(["meeting", "mail", "chat", "note"]),
+  at: Schema.optional(IsoDateTime),
+  /** A typed note's own words. */
+  note: Schema.optional(KinTrimmedText),
+  chatId: Schema.optional(KinChatId),
+  messageId: Schema.optional(KinMessageId),
+});
+export type KinPromiseFrom = typeof KinPromiseFrom.Type;
+
 /** One slim list row, about 150 bytes: what a list, the profile and the prompt show. */
 export const KinRecord = Schema.Struct({
   recordId: KinRecordId,
@@ -208,6 +223,8 @@ export const KinRecord = Schema.Struct({
   markedBy: Schema.optional(KinPersonId),
   /** Its true list when that is newer than older clients know, such as a deal. */
   listName: Schema.optional(KinRecordListName),
+  /** A promise's source, on a client's or deal's page; absent elsewhere and from older hosts. */
+  from: Schema.optional(KinPromiseFrom),
 });
 export type KinRecord = typeof KinRecord.Type;
 
@@ -732,6 +749,10 @@ export const KinWorkCreateInput = Schema.Struct({
   repo: Schema.optional(KinRepoName),
   /** A task that comes back: when it closes, the next one is made from its due date. */
   repeat: Schema.optional(KinRepeatRule),
+  /** A deal's key: the entry sits on that deal, and takes its client when `party` is absent. */
+  deal: Schema.optional(KinRecordKey),
+  /** Where a promise was made, in the person's own words ("At the site visit"). */
+  from: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(280))),
   /** A retry with the same id returns the same entry. */
   clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
 });
@@ -1106,6 +1127,8 @@ export const KinProjectDetail = Schema.Struct({
   startsOn: Schema.optional(Schema.NullOr(KinDay)),
   /** A retainer's next renewal day. */
   renewsOn: Schema.optional(Schema.NullOr(KinDay)),
+  /** Days of notice before `renewsOn` to end or change the contract; absent from older hosts. */
+  noticeDays: Schema.optional(Schema.NullOr(NonNegativeInt)),
   /** The people and agents on it besides its lead (`owner`). Membership only; it grants nothing. */
   members: Schema.optional(Schema.Array(KinWorkPrincipal)),
   /** Why `health` is what it is. */
@@ -1191,6 +1214,18 @@ export const KinPartyPage = Schema.Struct({
   /** Newest first, a few; absent from hosts before contact logs. */
   touches: Schema.optional(Schema.Array(KinClientTouch)),
   can: Schema.optional(KinPartyCan),
+  /**
+   * The soonest renewal among its open projects the reader sees, with the last day to give notice
+   * (`renewsOn` less the project's `noticeDays`); `soon` within the renewal heads-up days.
+   */
+  contract: Schema.optional(
+    Schema.Struct({
+      project: KinRecordKey,
+      renewsOn: KinDay,
+      noticeBy: Schema.optional(KinDay),
+      soon: Schema.optional(Schema.Literal(true)),
+    }),
+  ),
   seq: NonNegativeInt,
   asOf: IsoDateTime,
 });
@@ -1472,6 +1507,10 @@ export const KinContactUpdateInput = Schema.Struct({
 });
 export type KinContactUpdateInput = typeof KinContactUpdateInput.Type;
 
+export const KinNoticeDays = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(1),
+  Schema.isLessThanOrEqualTo(730),
+);
 export const KinProjectCreateInput = Schema.Struct({
   orgId: KinOrgId,
   name: Name,
@@ -1487,6 +1526,8 @@ export const KinProjectCreateInput = Schema.Struct({
   value: Schema.optional(Schema.NullOr(KinMoney)),
   startsOn: Schema.optional(Schema.NullOr(KinDay)),
   renewsOn: Schema.optional(Schema.NullOr(KinDay)),
+  /** Days of notice before `renewsOn`, 1 to 730; `null` clears. */
+  noticeDays: Schema.optional(Schema.NullOr(KinNoticeDays)),
   members: Schema.optional(Schema.Array(KinWorkPrincipal).check(Schema.isMaxLength(50))),
   notes: Schema.optional(Notes),
   sensitive: Schema.optional(Schema.Boolean),
@@ -1510,6 +1551,8 @@ export const KinProjectUpdateInput = Schema.Struct({
   value: Schema.optional(Schema.NullOr(KinMoney)),
   startsOn: Schema.optional(Schema.NullOr(KinDay)),
   renewsOn: Schema.optional(Schema.NullOr(KinDay)),
+  /** Days of notice before `renewsOn`, 1 to 730; `null` clears. */
+  noticeDays: Schema.optional(Schema.NullOr(KinNoticeDays)),
   members: Schema.optional(Schema.Array(KinWorkPrincipal).check(Schema.isMaxLength(50))),
   notes: Schema.optional(Notes),
   sensitive: Schema.optional(Schema.Boolean),

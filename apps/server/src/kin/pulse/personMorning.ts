@@ -140,6 +140,20 @@ export const importedSince = Effect.fn("KinPulse.importedSince")(function* (
   return new Set(rows.map((row) => row.recordId));
 });
 
+/** When each fact's entry is due, by record id. */
+const duesOf = Effect.fn("KinPulse.morningDues")(function* (
+  orgId: KinOrgId,
+  facts: ReadonlyArray<Pick<KinPulseFact, "subject">>,
+) {
+  const ids = facts.flatMap((fact) => fact.subject.recordId ?? []);
+  if (ids.length === 0) return new Map<string, number>();
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ recordId: string; dueAt: number }>`SELECT record_id AS "recordId",
+      due_at AS "dueAt" FROM kin_records WHERE org_id = ${orgId} AND record_id IN ${sql.in(ids)}
+      AND due_at IS NOT NULL ORDER BY record_id`;
+  return new Map(rows.map((row) => [row.recordId, row.dueAt]));
+});
+
 /** One page's body: only the sections with something in them. */
 export const morningBody = (sections: {
   readonly needsYou: ReadonlyArray<string>;
@@ -222,40 +236,78 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
     );
     const work = facts.filter((fact) => forHolder(fact, at, ctx.zone));
     const to = endOfDay(day, zone);
+    const day7 = to + COMING_DAYS * DAY_MS;
+    const when = (ms: number) => formatKinWhen(ms, "day", { zone, locale: KIN_TEXT_LOCALE });
     const [today] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records r
       WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.side = 'ours'
         AND r.state IN ('open', 'doing', 'waiting') AND r.party_id IS NOT NULL
+        AND COALESCE(r.category, '') <> 'obligation'
         AND r.owner_kind = 'person' AND r.owner_id = ${personId}
         AND r.due_at >= ${from} AND r.due_at <= ${to}`;
     const followUps = today?.count ?? 0;
+    // Promises of theirs due from today through the week, each once: here, not in Needs you.
+    const promised = yield* sql<{ recordId: string; title: string; client: string; dueAt: number }>`
+      SELECT r.record_id AS "recordId", r.title, c.title AS client, r.due_at AS "dueAt"
+      FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
+      WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.side = 'ours'
+        AND r.category = 'obligation' AND r.state IN ('open', 'doing', 'waiting')
+        AND r.owner_kind = 'person' AND r.owner_id = ${personId}
+        AND r.due_at >= ${from} AND r.due_at <= ${day7}
+      ORDER BY r.due_at, r.key`;
+    const promisedIds = new Set(promised.map((row) => row.recordId));
+    // What a client owes them that is late is a line on the client, not their own late task.
+    const owedLate = work.filter((fact) => fact.sense === "theirs_late");
+    const listed = (fact: KinPulseFact) =>
+      fact.sense === "theirs_late" ||
+      (fact.sense === "task_due_soon" &&
+        fact.subject.recordId !== undefined &&
+        promisedIds.has(fact.subject.recordId));
+    const owedDues = yield* duesOf(orgId, owedLate);
     const clients = [
       ...(followUps === 0 ? [] : [`Follow-ups today: ${followUps}.`]),
+      ...(promised.length === 0 ? [] : [`Promised this week: ${promised.length}.`]),
+      ...promised.map(
+        (row) =>
+          `${row.title} for ${row.client}, ${row.dueAt <= to ? "due today" : `by ${when(row.dueAt)}`}.`,
+      ),
+      ...owedLate.flatMap((fact) => {
+        const due =
+          fact.subject.recordId === undefined ? undefined : owedDues.get(fact.subject.recordId);
+        if (due === undefined) return [];
+        return [
+          fact.scope.clientTitle === undefined
+            ? `${fact.subject.title} was owed by ${when(due)}.`
+            : `${fact.scope.clientTitle} owed ${fact.subject.title} by ${when(due)}.`,
+        ];
+      }),
       ...deals.map((fact) => fact.consequence),
     ];
     if (clients.length === 0) continue;
-    const dues = new Map(
-      work.length === 0
-        ? []
-        : (yield* sql<{ recordId: string; dueAt: number }>`SELECT record_id AS "recordId",
-            due_at AS "dueAt" FROM kin_records WHERE org_id = ${orgId}
-              AND record_id IN ${sql.in(work.flatMap((fact) => fact.subject.recordId ?? []))}
-              AND due_at IS NOT NULL ORDER BY record_id`).map((row) => [row.recordId, row.dueAt]),
-    );
-    const needsYou = work.flatMap((fact) => {
+    const mine = work.filter((fact) => !listed(fact));
+    const dues = yield* duesOf(orgId, mine);
+    const needsYou = mine.flatMap((fact) => {
       const due = fact.subject.recordId === undefined ? undefined : dues.get(fact.subject.recordId);
       if (due === undefined) return [];
       const line = holderLine(ctx, fact, due);
       return [`${line.key} ${line.title}, ${line.state}`];
     });
-    const day7 = to + COMING_DAYS * DAY_MS;
-    const when = (ms: number) => formatKinWhen(ms, "day", { zone, locale: KIN_TEXT_LOCALE });
     const steps = yield* sql<{ title: string; client: string; dueAt: number }>`SELECT r.title,
         c.title AS client, r.due_at AS "dueAt"
       FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
       WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.side = 'ours'
+        AND COALESCE(r.category, '') <> 'obligation'
         AND r.state IN ('open', 'doing', 'waiting')
         AND r.owner_kind = 'person' AND r.owner_id = ${personId}
         AND r.due_at > ${to} AND r.due_at <= ${day7}
+      ORDER BY r.due_at, r.key LIMIT ${SHOWN}`;
+    // What clients promised them, coming due this week; once late, it is a Clients line instead.
+    const owed = yield* sql<{ title: string; client: string; dueAt: number }>`SELECT r.title,
+        c.title AS client, r.due_at AS "dueAt"
+      FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
+      WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.side = 'theirs'
+        AND r.category = 'obligation' AND r.state IN ('open', 'doing', 'waiting')
+        AND r.owner_kind = 'person' AND r.owner_id = ${personId}
+        AND r.due_at >= ${at} AND r.due_at <= ${day7}
       ORDER BY r.due_at, r.key LIMIT ${SHOWN}`;
     const expected = yield* sql<{ title: string; client: string; dueAt: number }>`SELECT r.title,
         c.title AS client, r.due_at AS "dueAt"
@@ -272,6 +324,10 @@ export const morningPages = Effect.fn("KinPulse.morningPages")(function* (input:
       ...expected.map((row) => ({
         at: row.dueAt,
         line: `${row.title} for ${row.client} is expected by ${when(row.dueAt)}.`,
+      })),
+      ...owed.map((row) => ({
+        at: row.dueAt,
+        line: `${row.title} from ${row.client}, by ${when(row.dueAt)}.`,
       })),
     ]
       .toSorted((a, b) => a.at - b.at)

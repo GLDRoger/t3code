@@ -31,6 +31,7 @@ import {
   kinWorkDueLabel,
 } from "./kinWork.ts";
 import { kinMoneyDraft, kinParseMoney } from "./kinLists.ts";
+import { kinNoticeDays } from "./kinPromises.ts";
 import { kinContactEmailOk, kinContactPhoneOk, KIN_PROJECTS } from "./kinWorkClients.ts";
 import { KIN_WORK_OFFLINE_CHANGE } from "./kinWorkChanges.ts";
 import type { KinWorkLive } from "./kinWorkStream.ts";
@@ -384,8 +385,7 @@ export const kinContactDetailCanAdd = (list: ReadonlyArray<string>) =>
 export const kinContactDetailRemove = (
   list: ReadonlyArray<string>,
   at: number,
-): ReadonlyArray<string> =>
-  list.length <= 1 ? [""] : list.filter((_, index) => index !== at);
+): ReadonlyArray<string> => (list.length <= 1 ? [""] : list.filter((_, index) => index !== at));
 export const kinContactDetailSet = (
   list: ReadonlyArray<string>,
   at: number,
@@ -490,6 +490,8 @@ export interface KinProjectDraft {
   readonly currency: string;
   readonly startsOn: string | null;
   readonly renewsOn: string | null;
+  /** Days of notice before it renews, as typed; empty for none (`kinNoticeDays`). */
+  readonly noticeDays: string;
 }
 
 export const KIN_PROJECT_BILLING_LABELS: Readonly<Record<KinProjectBilling, string>> = {
@@ -526,6 +528,10 @@ export const kinProjectDraftOf = (
   currency: home,
   startsOn: project?.startsOn ?? null,
   renewsOn: project?.renewsOn ?? null,
+  noticeDays:
+    project?.noticeDays === undefined || project.noticeDays === null
+      ? ""
+      : String(project.noticeDays),
 });
 const valueOf = (text: string, currency: string) =>
   text.trim() === "" ? null : kinParseMoney(text.trim(), currency);
@@ -554,6 +560,8 @@ export const kinProjectDraftCheck = (draft: KinProjectDraft): string | null => {
   if (draft.target !== null && !kinRealDay(draft.target)) return NOT_A_DAY;
   if (draft.startsOn !== null && !kinRealDay(draft.startsOn)) return NOT_A_DAY;
   if (draft.renewsOn !== null && !kinRealDay(draft.renewsOn)) return NOT_A_DAY;
+  const notice = kinNoticeDays(draft.noticeDays);
+  if (typeof notice === "object" && notice !== null) return notice.problem;
   if (draft.value.trim() !== "" && valueOf(draft.value, draft.currency) === null)
     return "Write the value as an amount, such as 600000 or $12,000.";
   return tooLong(draft.name, NAME_MAX, "the name") ?? tooLong(draft.notes, NOTES_MAX, "the notes");
@@ -576,6 +584,9 @@ export const kinProjectCreateInput = (
     : { value: valueOf(draft.value, draft.currency) }),
   ...(draft.startsOn === null ? {} : { startsOn: draft.startsOn }),
   ...(draft.renewsOn === null ? {} : { renewsOn: draft.renewsOn }),
+  ...(typeof kinNoticeDays(draft.noticeDays) === "number"
+    ? { noticeDays: kinNoticeDays(draft.noticeDays) as number }
+    : {}),
 });
 
 export const kinProjectUpdateInput = (
@@ -596,7 +607,12 @@ export const kinProjectUpdateInput = (
   ...(changed.value === undefined ? {} : { value: valueOf(changed.value, currency) }),
   ...(changed.startsOn === undefined ? {} : { startsOn: changed.startsOn }),
   ...(changed.renewsOn === undefined ? {} : { renewsOn: changed.renewsOn }),
+  ...(changed.noticeDays === undefined ? {} : { noticeDays: noticeOrNull(changed.noticeDays) }),
 });
+const noticeOrNull = (text: string) => {
+  const days = kinNoticeDays(text);
+  return typeof days === "number" ? days : null;
+};
 
 // Why a change didn't go through
 
