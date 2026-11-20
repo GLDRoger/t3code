@@ -243,6 +243,15 @@ export const KinMoneySummary = Schema.Struct({
   /** Open entries due or dated in the next 30 days, soonest first, at most 50. */
   upcoming: Schema.Array(KinDateRow),
   upcomingTotal: NonNegativeInt,
+  /**
+   * Money an agent suggested that the owner or a co-owner hasn't confirmed, newest first, at most
+   * 20: counted in no figure here. Owner-level readers only; absent from older servers.
+   */
+  suggested: Schema.optional(Schema.Array(Schema.Struct({ record: KinRecord, listName: Label }))),
+  /** Every such suggestion, counted by its list, most first: the rest open from here. */
+  suggestedLists: Schema.optional(
+    Schema.Array(Schema.Struct({ list: KinListId, listName: Label, count: NonNegativeInt })),
+  ),
   /** The last 12 months, oldest first, this month last: money in and out, for a chart. */
   series: Schema.Array(
     Schema.Struct({ month: Schema.String, received: KinMoneyTotals, spent: KinMoneyTotals }),

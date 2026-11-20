@@ -16,6 +16,10 @@ import {
   kinIndiaFields,
   kinClientUpdateInput,
   kinContactCreateInput,
+  kinContactDetailAdd,
+  kinContactDetailCanAdd,
+  kinContactDetailRemove,
+  kinContactDetailSet,
   kinContactDraftCheck,
   kinContactDraftOf,
   kinContactUpdateInput,
@@ -36,6 +40,7 @@ import type {
   KinRecordKey,
   KinWorkPrincipal,
 } from "@t3tools/contracts";
+import { PlusIcon, XIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
@@ -167,6 +172,64 @@ export function Field(props: {
   );
 }
 
+/** A contact's emails or phones: the first is the main one, each after it can be taken off. */
+function ContactDetails(props: {
+  readonly id: string;
+  readonly kind: "email" | "phone";
+  readonly values: ReadonlyArray<string>;
+  readonly moved?: ReadonlyArray<string> | undefined;
+  readonly onChange: (next: ReadonlyArray<string>) => void;
+}) {
+  const { values, onChange } = props;
+  const email = props.kind === "email";
+  const label = email ? COPY.contact.email : COPY.contact.phone;
+  return (
+    <Field id={props.id} label={label} isPrivate moved={props.moved?.join(", ")}>
+      {values.map((value, at) => (
+        // oxlint-disable-next-line react/no-array-index-key -- typed text has no identity besides its place, and blanks repeat
+        <div key={at} className="flex items-center gap-1.5">
+          <div className="min-w-0 flex-1">
+            <Input
+              id={at === 0 ? props.id : undefined}
+              aria-label={at === 0 ? undefined : `${label} ${at + 1}`}
+              type={email ? "email" : "tel"}
+              value={value}
+              maxLength={KIN_WORK_FORM_LIMITS.short}
+              autoComplete="off"
+              autoFocus={at > 0 && value === "" && at === values.length - 1}
+              onChange={(event) => onChange(kinContactDetailSet(values, at, event.target.value))}
+            />
+          </div>
+          {at === 0 ? null : (
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              aria-label={`${email ? COPY.contact.removeEmail : COPY.contact.removePhone}: ${value.trim() || `${label} ${at + 1}`}`}
+              onClick={() => onChange(kinContactDetailRemove(values, at))}
+            >
+              <XIcon />
+            </Button>
+          )}
+        </div>
+      ))}
+      {kinContactDetailCanAdd(values) ? (
+        <div>
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            onClick={() => onChange(kinContactDetailAdd(values))}
+          >
+            <PlusIcon />
+            {email ? COPY.contact.addEmail : COPY.contact.addPhone}
+          </Button>
+        </div>
+      ) : null}
+    </Field>
+  );
+}
+
 function PrivateSwitch(props: {
   readonly label: string;
   readonly note: string;
@@ -261,6 +324,10 @@ export function KinClientDialog(
     notes: useId(),
     source: useId(),
     tags: useId(),
+    contactName: useId(),
+    contactRole: useId(),
+    contactEmail: useId(),
+    contactPhone: useId(),
   };
   const kinds: ReadonlyArray<KinClientDraftKind> = !member
     ? ["prospect", "client", "vendor"]
@@ -273,6 +340,8 @@ export function KinClientDialog(
     vendor: COPY.party.kindVendor,
   };
   const newProspect = editing === null && draft.kind === "prospect";
+  // Said on the field itself: on the owner's long form the problem line sits below the fold.
+  const nameMissing = state.problem?.text === COPY.party.contactNameMissing;
   const india = kinIndiaFields(useKinCompanyCountry(props));
   const gstinNote = kinClientGstinNote(draft);
   const place = draft.abroad ? ABROAD : draft.placeOfSupply || NO_PLACE;
@@ -295,7 +364,7 @@ export function KinClientDialog(
       submit={editing !== null ? COPY.save : newProspect ? KIN_CLIENTS.addProspect : COPY.party.add}
       saving={state.saving}
       canSave={draft.name.trim() !== ""}
-      problem={state.problem}
+      problem={nameMissing ? null : state.problem}
       onOpenExisting={props.onOpenExisting}
       onSave={() => void save()}
       onClose={props.onClose}
@@ -351,6 +420,60 @@ export function KinClientDialog(
           />
         </Field>
       </div>
+      {editing !== null ? null : (
+        <fieldset className="flex flex-col gap-4">
+          <legend className="mb-1 text-base/4.5 font-medium text-foreground sm:text-sm/4">
+            {COPY.party.contact}
+          </legend>
+          <p className="text-xs text-muted-foreground">{COPY.party.contactHint}</p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field id={ids.contactName} label={COPY.party.contactName}>
+              <Input
+                id={ids.contactName}
+                value={draft.contactName}
+                maxLength={KIN_WORK_FORM_LIMITS.name}
+                placeholder={COPY.contact.namePlaceholder}
+                autoComplete="off"
+                aria-invalid={nameMissing || undefined}
+                aria-describedby={nameMissing ? `${ids.contactName}-problem` : undefined}
+                onChange={(event) => form.edit({ contactName: event.target.value })}
+              />
+              {nameMissing ? (
+                <p
+                  id={`${ids.contactName}-problem`}
+                  role="alert"
+                  className="text-xs text-destructive-foreground"
+                >
+                  {COPY.party.contactNameMissing}
+                </p>
+              ) : null}
+            </Field>
+            <Field id={ids.contactRole} label={COPY.contact.role}>
+              <Input
+                id={ids.contactRole}
+                value={draft.contactRole}
+                maxLength={KIN_WORK_FORM_LIMITS.short}
+                placeholder={COPY.contact.rolePlaceholder}
+                autoComplete="off"
+                onChange={(event) => form.edit({ contactRole: event.target.value })}
+              />
+            </Field>
+            <ContactDetails
+              id={ids.contactEmail}
+              kind="email"
+              values={draft.contactEmails}
+              onChange={(contactEmails) => form.edit({ contactEmails })}
+            />
+            <ContactDetails
+              id={ids.contactPhone}
+              kind="phone"
+              values={draft.contactPhones}
+              onChange={(contactPhones) => form.edit({ contactPhones })}
+            />
+          </div>
+          <p className="-mt-2 text-xs text-muted-foreground">{COPY.contact.detailsHint}</p>
+        </fieldset>
+      )}
       {member ? null : (
         <>
           <Field
@@ -617,26 +740,20 @@ export function KinContactDialog(
         />
       </Field>
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field id={ids.email} label={COPY.contact.email} isPrivate moved={moved.email}>
-          <Input
-            id={ids.email}
-            type="email"
-            value={draft.email}
-            maxLength={KIN_WORK_FORM_LIMITS.short}
-            autoComplete="off"
-            onChange={(event) => form.edit({ email: event.target.value })}
-          />
-        </Field>
-        <Field id={ids.phone} label={COPY.contact.phone} isPrivate moved={moved.phone}>
-          <Input
-            id={ids.phone}
-            type="tel"
-            value={draft.phone}
-            maxLength={KIN_WORK_FORM_LIMITS.short}
-            autoComplete="off"
-            onChange={(event) => form.edit({ phone: event.target.value })}
-          />
-        </Field>
+        <ContactDetails
+          id={ids.email}
+          kind="email"
+          values={draft.emails}
+          moved={moved.emails}
+          onChange={(emails) => form.edit({ emails })}
+        />
+        <ContactDetails
+          id={ids.phone}
+          kind="phone"
+          values={draft.phones}
+          moved={moved.phones}
+          onChange={(phones) => form.edit({ phones })}
+        />
       </div>
       <p className="text-xs text-muted-foreground">{COPY.contact.detailsHint}</p>
       <Field id={ids.notes} label={COPY.contact.notes} moved={moved.notes}>

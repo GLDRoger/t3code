@@ -646,10 +646,22 @@ describe("pulse check-ins", () => {
         partyId: "r-C-1",
         fields: '{"email":"priya@lumen.example"}',
       });
+      // A contact's second address matches too; a main one another contact has stays theirs.
+      yield* record({
+        key: "CT-2",
+        list: "contacts",
+        title: "Ravi",
+        partyId: "r-C-1",
+        fields: JSON.stringify({
+          email: "ravi@lumen.example",
+          emails: ["ravi@lumen.example", "ravi.home@lumen.example", "priya@lumen.example"],
+        }),
+      });
       const result = yield* checkIn(SLOT, {
         lines: [
           mail("t1:a", "Shop <news@shop.example>", "Weekend sale"),
           mail("t2:a", "Priya <Priya@lumen.example>", "Re: launch date"),
+          mail("t3:a", "Ravi <ravi.home@lumen.example>", "Re: launch date"),
         ],
         seen: [],
       });
@@ -660,6 +672,7 @@ describe("pulse check-ins", () => {
         parsed.outside.map((line: KinPulseOutsideLine) => [line.id, line.matched ?? null]),
         [
           ["t2:a", "contact CT-1 Priya of client C-1 Lumen"],
+          ["t3:a", "contact CT-2 Ravi of client C-1 Lumen"],
           ["t1:a", null],
         ],
       );

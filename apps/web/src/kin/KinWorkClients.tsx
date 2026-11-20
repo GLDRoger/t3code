@@ -1111,16 +1111,26 @@ function ContactRow(props: {
   const { contact } = props;
   const detail = (
     Icon: typeof MailIcon,
-    value: KinContactView["email"],
+    value: KinContactView["emails"][number],
     label: string,
+    at: number,
   ): React.ReactNode =>
-    value === null ? null : value.href === null ? (
-      <span className="inline-flex min-w-0 items-center gap-1.5 text-sm text-foreground">
+    value.href === null ? (
+      <span
+        key={`${label}-${at}`}
+        className="inline-flex min-w-0 items-center gap-1.5 text-sm text-foreground"
+      >
         <Icon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="truncate">{value.text}</span>
       </span>
     ) : (
-      <a href={value.href} aria-label={`${label} ${contact.name}`} className={DETAIL_LINK}>
+      <a
+        key={`${label}-${at}`}
+        href={value.href}
+        // The main one reads as it always has; the others say which one they are.
+        aria-label={`${label} ${contact.name}${at === 0 ? "" : ` at ${value.text}`}`}
+        className={DETAIL_LINK}
+      >
         <Icon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="truncate">{value.text}</span>
       </a>
@@ -1137,10 +1147,10 @@ function ContactRow(props: {
             <span className="text-muted-foreground"> · No longer a contact</span>
           ) : null}
         </p>
-        {contact.email === null && contact.phone === null ? null : (
+        {contact.emails.length === 0 && contact.phones.length === 0 ? null : (
           <div className="flex min-w-0 flex-wrap gap-x-4 gap-y-1">
-            {detail(MailIcon, contact.email, "Email")}
-            {detail(PhoneIcon, contact.phone, "Call")}
+            {contact.emails.map((one, at) => detail(MailIcon, one, "Email", at))}
+            {contact.phones.map((one, at) => detail(PhoneIcon, one, "Call", at))}
           </div>
         )}
         {contact.notes === null ? null : (

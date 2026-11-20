@@ -8,6 +8,12 @@ export const KIN_DAILY_LIMIT = {
   detail:
     "How much work your agents do each day. Once they reach it, only your urgent messages run until midnight.",
   none: "No limit",
+  noneAsk: {
+    title: "Set no daily limit?",
+    detail:
+      "With no limit, Kin never pauses agents for cost. You can see today's use here and set a limit again any time.",
+    confirm: "Set no limit",
+  },
   custom: "Set elsewhere",
   failed: "Couldn't change the daily limit.",
   waiting: "Waiting until tomorrow",
@@ -22,12 +28,15 @@ export interface KinDailyLimitChoice {
 
 const NO_LIMIT = "none";
 
+/** Choosing no limit is asked once first; any other choice is made at once. */
+export const kinDailyLimitAsks = (choice: KinDailyLimitChoice) => choice.value === NO_LIMIT;
+
 /** The limits on offer, with the host's current one first named if it is none of them. */
 export function kinDailyLimitChoices(budget: KinBudget | null): {
   readonly choices: ReadonlyArray<KinDailyLimitChoice>;
   readonly current: string | null;
 } {
-  // A teammate's own share is set apart from these choices, so picking one keeps it.
+  // A teammate's own share is set apart from the steps, so picking one keeps it; No limit is none.
   const teammateUnits = budget?.limits.teammateUnits;
   const usual = budget?.usual ?? FALLBACK_USUAL;
   const kept = teammateUnits === undefined ? {} : { teammateUnits };
@@ -35,7 +44,7 @@ export function kinDailyLimitChoices(budget: KinBudget | null): {
     {
       value: NO_LIMIT,
       label: KIN_DAILY_LIMIT.none,
-      limits: { leadUnits: null, workerUnits: null, ...kept },
+      limits: { leadUnits: null, workerUnits: null, teammateUnits: null },
     },
     ...KIN_DAILY_LIMIT_STEPS.map(({ times, label }) => ({
       value: String(times),
@@ -52,7 +61,8 @@ export function kinDailyLimitChoices(budget: KinBudget | null): {
   const match = choices.find(
     (choice) =>
       choice.limits.leadUnits === leadUnits &&
-      (leadUnits !== null || choice.limits.workerUnits === workerUnits),
+      (leadUnits !== null || choice.limits.workerUnits === workerUnits) &&
+      (choice.value !== NO_LIMIT || (teammateUnits ?? null) === null),
   );
   if (match !== undefined) return { choices, current: match.value };
   const custom = { value: "custom", label: KIN_DAILY_LIMIT.custom, limits: budget.limits };

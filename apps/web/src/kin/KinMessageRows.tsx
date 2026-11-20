@@ -53,6 +53,7 @@ import { Button } from "../components/ui/button";
 import { Menu, MenuCheckboxItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { cn } from "../lib/utils";
 import { KinCard } from "./KinCards";
+import { KinCardGroup } from "./KinCardGroup";
 import { KinMessageAttachments } from "./KinMessageAttachments";
 import { KinLinkedMarkdown, KinMessagePage } from "./KinMessagePage";
 import { KinTurnReceipt } from "./KinTurnReceipt";
@@ -178,6 +179,11 @@ export function KinMessageRow(props: {
   /** The reader's first name, for a brief's greeting. */
   readonly firstName?: string | null;
   readonly connected: boolean;
+  /** The cards this row leads, drawn as one (`kinGroupCardRows`); `widget` is the first's. */
+  readonly group?: {
+    readonly question: KinWidget | undefined;
+    readonly tasks: ReadonlyArray<KinWidget | undefined>;
+  };
 }) {
   const { row, onReact } = props;
   const { message } = row;
@@ -204,15 +210,23 @@ export function KinMessageRow(props: {
   const receipt = deleted ? null : kinTurnReceiptLine(message.turnChanges);
   // A page's card is its foot, across the page's width.
   const onPage = hasBubble && layout !== "bubble";
-  const card = (
-    <KinCard
-      widget={props.widget}
-      environmentId={props.environmentId}
-      orgId={props.orgId}
-      viewerPersonId={props.viewerPersonId}
-      heldFor={props.heldFor}
-    />
-  );
+  const card =
+    props.group === undefined ? (
+      <KinCard
+        widget={props.widget}
+        environmentId={props.environmentId}
+        orgId={props.orgId}
+        viewerPersonId={props.viewerPersonId}
+        heldFor={props.heldFor}
+      />
+    ) : (
+      <KinCardGroup
+        question={props.group.question}
+        tasks={props.group.tasks}
+        environmentId={props.environmentId}
+        viewerPersonId={props.viewerPersonId}
+      />
+    );
 
   return (
     <div

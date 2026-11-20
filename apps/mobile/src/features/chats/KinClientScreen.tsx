@@ -715,7 +715,22 @@ function KinContactRows(props: {
   readonly onEdit: (() => void) | null;
 }) {
   const { contact, onEdit } = props;
-  const { email, phone } = contact;
+  const reach = (
+    icon: "envelope" | "phone",
+    one: KinContactView["emails"][number],
+    at: number,
+    what: string,
+  ) =>
+    one.href === null ? (
+      <ListRowLayout key={`${icon}-${at}`} icon={icon} label={one.text} />
+    ) : (
+      <ListActionRow
+        key={`${icon}-${at}`}
+        icon={icon}
+        label={one.text}
+        onPress={() => props.onOpen(one.href ?? "", what)}
+      />
+    );
   const who = {
     icon: "person.crop.circle" as const,
     label: contact.name,
@@ -731,24 +746,8 @@ function KinContactRows(props: {
   return (
     <>
       {onEdit === null ? <ListRowLayout {...who} /> : <ListRow {...who} onPress={onEdit} />}
-      {email === null ? null : email.href === null ? (
-        <ListRowLayout icon="envelope" label={email.text} />
-      ) : (
-        <ListActionRow
-          icon="envelope"
-          label={email.text}
-          onPress={() => props.onOpen(email.href ?? "", "send email")}
-        />
-      )}
-      {phone === null ? null : phone.href === null ? (
-        <ListRowLayout icon="phone" label={phone.text} />
-      ) : (
-        <ListActionRow
-          icon="phone"
-          label={phone.text}
-          onPress={() => props.onOpen(phone.href ?? "", "make calls")}
-        />
-      )}
+      {contact.emails.map((one, at) => reach("envelope", one, at, "send email"))}
+      {contact.phones.map((one, at) => reach("phone", one, at, "make calls"))}
     </>
   );
 }
