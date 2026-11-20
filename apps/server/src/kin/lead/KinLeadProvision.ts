@@ -1075,7 +1075,6 @@ const reachRows = Effect.fn("KinLeadProvision.reachRows")(
         groups: groups.map((group) => group.title),
       });
     }
-    const sql = yield* SqlClient.SqlClient;
     const restrictable = yield* sql<{ personId: KinPersonId }>`
       SELECT p.person_id AS "personId" FROM kin_people p
       WHERE p.org_id = ${orgId} AND p.removed_at IS NULL
