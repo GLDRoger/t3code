@@ -1146,6 +1146,14 @@ it.effect("who may be asked for someone else, and what refuses it", () =>
       for (const to of ["Rhea", "Rhea Rao (owner)"])
         yield* refused(askFor("chief", rhea, { to, intent: "x" }), /ask them here with kin_ask/);
       yield* refused(askFor("chief", rhea, { to: "Finance" }), /No one called Finance/);
+      // The agent as a tool shows it is not the person whose name starts the same.
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES ('finance-team', ${orgId}, 'finance-team', 'Finance Team', 0, 'member')`;
+      yield* refused(
+        askFor("chief", rhea, { to: "Finance (finance)" }),
+        /No one called Finance \(finance\)/,
+      );
+      yield* sql`UPDATE kin_people SET removed_at = 0 WHERE person_id = 'finance-team'`;
       // Through Finance, whom Dev may not message, nothing is asked.
       const viaFinance = yield* wakeOn("finance", "rhea", chatOf("finance"), "Ask Dev.");
       yield* refused(

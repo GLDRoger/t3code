@@ -29,10 +29,15 @@ export const personNamed = Effect.fn("KinPeople.personNamed")(function* (
   const people = rows.map((row) => ({ ...row, id: KinPersonId.make(row.id) }));
   // A name copied from a tool, "Rhea (owner)", is Rhea, unless someone is called that exactly.
   const shown = shownName(typed);
-  const wanted =
-    shown === null || people.some((one) => one.name.trim() === typed.trim())
-      ? typed.trim()
-      : shown.name;
+  const exactName = people.some((one) => one.name.trim() === typed.trim());
+  // "Finance (a-1)" or "Finance (agent)" is an agent as a tool shows it, never a person.
+  if (shown !== null && !exactName) {
+    const agents = yield* sql<{ id: string }>`SELECT agent_id AS id FROM kin_agents
+      WHERE org_id = ${orgId} AND retired_at IS NULL AND agent_id = ${shown.mark} LIMIT 1`;
+    if (shown.mark === "agent" || agents.length > 0)
+      return { _tag: "none", nearest: [] as ReadonlyArray<NamedPerson> } as const;
+  }
+  const wanted = shown === null || exactName ? typed.trim() : shown.name;
   const handle = wanted.replace(/^@/, "").toLowerCase();
   const exact = people.filter(
     (one) => one.id === wanted || (one.handle !== null && one.handle.toLowerCase() === handle),
