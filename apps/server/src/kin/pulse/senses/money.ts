@@ -140,7 +140,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
         key: `retainer_due:${row.key}:on=${row.goesOut}`,
         since: iso(row.goesOut - toMs(retainer)),
         measure: measure(days, retainer),
-        consequence: `Repeating invoice${amount === undefined ? "" : ` for ${amount}`} goes out ${dayOf(ctx, row.goesOut)}${row.goesOut < at ? ", already passed" : ""}; it is still a draft.`,
+        consequence: `Repeating invoice${amount === undefined ? "" : ` for ${amount}`} goes out ${dayOf(ctx, row.goesOut)}${row.goesOut < at ? ", already passed" : ""}; it is still a draft${row.kept === 1 ? "" : " that waits on Keep"}.`,
         wake: "sweep",
       }),
     );

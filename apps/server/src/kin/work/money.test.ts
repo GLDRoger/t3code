@@ -1113,15 +1113,15 @@ describe("invoices", () => {
         // The agent reads it as a suggestion, and it waits on a person with the right.
         assert.include(yield* LeadWork.get(scope, { key: "INV-2" }), {
           suggested: true,
-          stateLabel: "Suggested, awaiting the owner",
+          stateLabel: "Suggested, not kept yet",
         });
         const section = moneySection(yield* OwnerMoney.money(people, { orgId }), "Asia/Kolkata");
         assert.deepStrictEqual(
-          [section?.owedToUs, section?.suggestedAwaitingOwner?.entries.map((one) => one.key)],
+          [section?.owedToUs, section?.suggestedNotKept?.entries.map((one) => one.key)],
           ["₹47,200.00", ["INV-2", "INV-3", "INV-4"]],
         );
         const waits =
-          "INV-2 is an agent's suggestion awaiting the owner: only the owner or a co-owner can confirm it.";
+          "INV-2 is still a suggestion: the owner or a co-owner hasn't kept it. They keep it with Keep on its page, or by asking you to keep it themselves. Nothing changed.";
         const paid = yield* LeadMoney.payment(scope, {
           sourceEventId: asked,
           key: "INV-2",
@@ -2574,7 +2574,7 @@ describe("who keeps a suggestion", () => {
       );
 
       // Until it is kept, nobody issues, sends, pays or moves it to issued.
-      const refusal = `${key} is an agent's suggestion awaiting the owner: only the owner or a co-owner can confirm it.`;
+      const refusal = `${key} is still a suggestion: the owner or a co-owner hasn't kept it. They keep it with Keep on its page, or by asking you to keep it themselves. Nothing changed.`;
       const quote = (yield* asAgent(
         ["routine"],
         [{ list: "quotes", title: "Invented guessed quote", amount: "5,000" }],

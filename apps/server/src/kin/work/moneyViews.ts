@@ -465,7 +465,7 @@ const aboutSection = (summary: KinMoneySummary) => {
 const SECTION_DATES = 10;
 /** What the section says of its suggestions: only what the server guarantees about them. */
 const SUGGESTED_NOTE =
-  "Entries an agent suggested that the owner or a co-owner hasn't confirmed. No figure here counts them: none is owed, due, received or spent until it is confirmed.";
+  "Entries an agent suggested that the owner or a co-owner hasn't kept. No figure here counts them or any payment recorded on them: none is owed, due, received or spent until it is kept.";
 
 /**
  * The Money summary as a short block for an owner-only prompt, built by code: figures already
@@ -528,7 +528,7 @@ export const moneySection = (summary: KinMoneySummary, zone: string) => {
     ...(suggested.length === 0
       ? {}
       : {
-          suggestedAwaitingOwner: {
+          suggestedNotKept: {
             note: SUGGESTED_NOTE,
             entries: suggested.map(({ record, listName }) => ({
               key: record.key,

@@ -482,7 +482,10 @@ export const UpdateInput = Schema.Struct({
   repeat: Schema.optional(Repeat),
   fields: Schema.optional(FieldInputs),
   sensitive: Schema.optional(Schema.Literal(true)),
-  confirmed: Schema.optional(Schema.Boolean),
+  confirmed: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "true keeps an entry that reads suggested when the owner or a co-owner asked you to in person; it also says an amount far above the rest of its list, or an invoice issued after its due day, is right as given.",
+  }),
   expectedRev: Schema.optional(Schema.Int),
   tell: Tell,
   ...SpineInputs,
@@ -843,7 +846,7 @@ const goalShown = (fields: ReturnType<typeof parseFields>) => {
 };
 
 /** A suggestion's money is issued, sent or owed nowhere, so its state reads as this instead. */
-const SUGGESTED_STATE = "Suggested, awaiting the owner";
+const SUGGESTED_STATE = "Suggested, not kept yet";
 const rowFor = (view: Shown, row: RecordRow, now: number) => {
   const { name } = view;
   const record = toRecord(row, now);

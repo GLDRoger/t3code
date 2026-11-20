@@ -451,6 +451,18 @@ describe("KinPulse", () => {
         (fact) => fact.sense === "renewal_due" && fact.scope.projectKey === "P-1",
       );
       assert.deepStrictEqual(renewals.map((fact) => fact.subject.key).toSorted(), ["DT-2", "DT-3"]);
+      // A suggested repeating invoice's next draft names no amount and waits on Keep.
+      yield* insert({
+        id: "INV-17",
+        list: "invoices",
+        amount: 12_345_00,
+        confirmed: 0,
+        repeat: '{"every":"month"}',
+        dateAt: B + 15 * DAY,
+      });
+      const [retainer] = keyed((yield* read(B + 10 * DAY)).facts, "retainer_due", "INV-17");
+      assert.match(retainer!.consequence, /; it is still a draft that waits on Keep\.$/);
+      assert.notInclude(retainer!.consequence, "12,345");
 
       // V27: our own task under a client is a late task, not something we owe the client.
       yield* insert({ id: "W-15", dueAt: B, partyId: "r-C-2", category: "task" });

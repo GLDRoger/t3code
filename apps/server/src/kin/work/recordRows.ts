@@ -201,7 +201,7 @@ export const isSuggestion = (row: { readonly confirmed: number }) => row.confirm
 export const keptEntry = (sql: SqlClient.SqlClient) => sql`r.confirmed = 1`;
 /** The one refusal for anything done to a suggestion before it is kept, whoever asks. */
 export const stillSuggestion = (key: string) =>
-  `${key} is an agent's suggestion awaiting the owner: only the owner or a co-owner can confirm it.`;
+  `${key} is still a suggestion: the owner or a co-owner hasn't kept it. They keep it with Keep on its page, or by asking you to keep it themselves. Nothing changed.`;
 
 /**
  * The one rule for what a figure, a chart or a file counts: an entry `r` that isn't void, dropped

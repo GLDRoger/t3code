@@ -629,7 +629,7 @@ describe("bank statements", () => {
       const refused = yield* OwnerStatements.apply(people, confirm).pipe(Effect.flip);
       assert.include(
         String(isChatError(refused) ? refused.message : refused),
-        `${keys.exact} is an agent's suggestion awaiting the owner: only the owner or a co-owner can confirm it.`,
+        `${keys.exact} is still a suggestion: the owner or a co-owner hasn't kept it. They keep it with Keep on its page, or by asking you to keep it themselves. Nothing changed.`,
       );
       assert.lengthOf(yield* sql`SELECT 1 FROM kin_record_payments`, 0);
     }).pipe(Effect.provide(layer)),
