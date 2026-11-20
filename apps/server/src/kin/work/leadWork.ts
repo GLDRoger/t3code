@@ -2173,7 +2173,8 @@ const createRow = Effect.fnUntraced(function* (
   const def = yield* listFor(lead, row.list ?? "work");
   const list = def.id;
   // A deal's rules are `deals.ts`'s, whoever writes it.
-  if (list === "deals") return yield* dealRow(lead, sourceEventId, writer, def, lists, row);
+  if (list === "deals")
+    return yield* dealRow(lead, sourceEventId, writer, def, lists, row, notices);
   if (row.next !== undefined) return yield* NEXT_IS_A_DEALS;
   // For a teammate alone in the turn, a prospect or a contact is what their own Clients form adds
   // (`memberAdds`, `memberAddsContact`).
@@ -2418,6 +2419,7 @@ const dealRow = Effect.fnUntraced(function* (
   def: ListDef,
   lists: Lists,
   row: typeof CreateRow.Type,
+  notices: Array<AssignNotice>,
 ) {
   if (row.client === undefined)
     return yield* invalid("A deal needs its client or prospect: give client.");
@@ -2432,7 +2434,7 @@ const dealRow = Effect.fnUntraced(function* (
   const actor = yield* Deals.agentActor(lead.orgId, writer);
   const originKey = `lead:${lead.agentId}:${sourceEventId}:${retryKey(`deals|${party.recordId}|${titleKey(row.title)}`)}`;
   yield* dealsOpenOn(actor, party.recordId, party.name, originKey, row.besides ?? []);
-  const { row: stored, created } = yield* Deals.createAs(actor, {
+  const made = yield* Deals.createAs(actor, {
     partyKey: party.key,
     title: row.title,
     ...(fields.stage === undefined || fields.stage === null ? {} : { stage: fields.stage }),
@@ -2448,6 +2450,8 @@ const dealRow = Effect.fnUntraced(function* (
     ...(row.next === undefined ? {} : { next: stepOf(row.next) }),
     originKey,
   });
+  const { row: stored, created } = made;
+  notices.push(...made.notices);
   return {
     key: stored.key,
     title: stored.title,

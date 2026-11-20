@@ -849,6 +849,19 @@ it.effect(
         (party) => party.key === corran,
       );
       assert.notStrictEqual(row?.next?.title, "Invented: owner's call");
+      // A step the owner writes with a deal she gives Zoya is the deal's first, so it is Zoya's.
+      const given = yield* Deals.create(
+        [owner],
+        newDeal(corran, "Invented rollout", {
+          owner: asZoya,
+          next: { title: "Invented: send the rollout plan" },
+        }),
+      );
+      const hers = yield* Deals.page([zoya], { orgId, key: given.deal.key });
+      assert.strictEqual(hers.deal.next?.title, "Invented: send the rollout plan");
+      const [held] = yield* sql<{ ownerId: string }>`SELECT owner_id AS "ownerId" FROM kin_records
+        WHERE register_id = 'work' AND title = 'Invented: send the rollout plan'`;
+      assert.strictEqual(held?.ownerId, zoyaId);
     }).pipe(Effect.provide(layer)),
 );
 

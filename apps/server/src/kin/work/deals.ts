@@ -310,13 +310,14 @@ const addStep = Effect.fn("KinDeals.addStep")(function* (
   deal: RecordRow,
   step: KinDealStepInput,
   originKey: string,
+  holder: KinWorkPrincipal = actor.person === null ? ownerOf(deal) : me(actor.person),
 ) {
   const records = yield* KinRecords;
   return yield* records.create(actor.orgId, actor.writer, {
     originKey,
     requestHash: requestHashOf({ clientRequestId: originKey, ...step }),
     title: step.title,
-    owner: actor.person === null ? ownerOf(deal) : me(actor.person),
+    owner: holder,
     category: "task",
     side: "ours",
     partyId: deal.partyId,
@@ -344,7 +345,10 @@ export type DealDraft = {
   readonly requestHash?: string | undefined;
 };
 
-/** Makes a deal, and its first next step when given, in one transaction. A retry makes one. */
+/**
+ * Makes a deal, and its first next step when given, in one transaction. A retry makes one. The
+ * step written with the deal is its keeper's, whoever wrote it; `notices` tells them it is theirs.
+ */
 export const createAs = Effect.fn("KinDeals.create")(function* (
   actor: DealActor,
   draft: DealDraft,
@@ -394,8 +398,15 @@ export const createAs = Effect.fn("KinDeals.create")(function* (
   });
   // Decided on the stored row, so the one rule is a hand-over's; a refusal rolls the write back.
   yield* seesItAfter(actor.orgId, row, owner, "the new deal");
-  if (draft.next !== undefined) yield* addStep(actor, row, draft.next, `${draft.originKey}-next`);
-  return { row, created };
+  const step =
+    draft.next === undefined
+      ? undefined
+      : yield* addStep(actor, row, draft.next, `${draft.originKey}-next`, owner);
+  return {
+    row,
+    created,
+    notices: step?.created === true ? movedNotices(undefined, step.row) : [],
+  };
 });
 
 /** The change a caller asks for, refs resolved; `undefined` leaves a field as it is. */
@@ -1513,13 +1524,13 @@ export const create = Effect.fn("KinDeals.rpc.create")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinDealCreateInput,
 ) {
-  const { actor, viewer } = yield* personActor(people, input.orgId);
+  const { actor, viewer, person } = yield* personActor(people, input.orgId);
   const { clientRequestId, orgId: _orgId, ...asked } = input;
-  const row = yield* written(
+  const { row, notices } = yield* written(
     input.orgId,
     Effect.gen(function* () {
       const due = yield* expectedAt(input.orgId, input.expectedOn);
-      return (yield* createAs(actor, {
+      return yield* createAs(actor, {
         partyKey: input.party,
         title: input.title,
         stage: input.stage,
@@ -1533,9 +1544,11 @@ export const create = Effect.fn("KinDeals.rpc.create")(function* (
         next: input.next,
         originKey: `${originOf(actor)}:${clientRequestId}`,
         requestHash: requestHashOf({ clientRequestId, ...asked }),
-      })).row;
+      });
     }),
   );
+  for (const notice of notices)
+    yield* tellOnScreen(person, `${notice.row.recordId}:${notice.row.rev}`, [notice]);
   return yield* answer(input.orgId, viewer, row, false);
 });
 
