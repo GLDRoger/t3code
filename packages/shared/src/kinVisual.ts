@@ -387,6 +387,8 @@ function lookSheet(look: KinVisualLook): string {
         `@font-face{font-family:"${one.family}";font-weight:${one.weight};font-style:normal;font-display:block;src:url("${KIN_VISUAL_FONT_ROUTE}/${one.file}") format("truetype")}`,
     ).join("") +
     `:root{--brand-primary:${color(brand?.primary, "var(--primary)")};--brand-secondary:${color(brand?.secondary, "var(--chart-2)")};--brand-font:${font ?? "var(--font-sans)"}}` +
+    // A page sizes its logo before it knows there is none; the empty one keeps no space.
+    `img[src="${BLANK_LOGO}"]{display:none!important}` +
     (look.picture === true
       ? "html{padding:0;background:var(--background);overflow:hidden}body{margin:0}"
       : "")

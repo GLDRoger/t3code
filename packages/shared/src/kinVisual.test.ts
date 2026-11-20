@@ -145,7 +145,8 @@ describe("kinVisualPageDocument", () => {
       ":root{--brand-primary:var(--primary);--brand-secondary:var(--chart-2);--brand-font:var(--font-sans)}",
     );
     expect(plain).toContain("html{padding:0;background:var(--background);overflow:hidden}");
-    expect(plain).toMatch(/<img src="data:image\/svg\+xml;base64,[A-Za-z0-9+/=]+">/);
+    const blank = /<img src="(data:image\/svg\+xml;base64,[A-Za-z0-9+/=]+)">/.exec(plain)?.[1];
+    expect(plain).toContain(`img[src="${blank}"]{display:none!important}`);
     expect(plain).not.toContain("cdn.example.com");
     expect(written(kinVisualPageDocument('<img src="kin-brand:logo">'))).not.toContain(
       "kin-brand:logo",
