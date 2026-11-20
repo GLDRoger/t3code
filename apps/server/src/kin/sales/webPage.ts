@@ -10,7 +10,6 @@ import * as Stream from "effect/Stream";
 import * as HttpClient from "effect/http/HttpClient";
 
 import { guardedLookup, urlRefusal } from "../connections/EgressGuard.ts";
-import { htmlToText } from "../connections/MailText.ts";
 import { clean } from "../connections/ResultText.ts";
 import {
   PAGE_NOT_HTTPS,
@@ -22,14 +21,17 @@ import {
   pageTooBig,
   pageTooSlow,
 } from "./text.ts";
+import { pageText } from "./pageText.ts";
 
 /** A page's readable text is cut here; what is past it is dropped. */
 export const PAGE_TEXT_CHARS = 40_000;
-const PAGE_MEGABYTES = 4;
+const PAGE_MEGABYTES = 1;
 const PAGE_BYTES = PAGE_MEGABYTES * 1024 * 1024;
 const PAGE_SECONDS = 20;
 const REDIRECTS_MAX = 5;
 const TITLE_MAX = 200;
+/** Links a page gives that the turn may open next (`OutsideContent.ts`); past this they are not kept. */
+const PAGE_LINKS = 500;
 const TEXT_TYPES = /^(text\/html|application\/xhtml\+xml|text\/plain)\b/i;
 
 export type WebPage = {
@@ -38,6 +40,8 @@ export type WebPage = {
   readonly text: string;
   /** Its text ran past `PAGE_TEXT_CHARS`. */
   readonly cut: boolean;
+  /** The links its text shows, as absolute addresses. */
+  readonly links: ReadonlyArray<string>;
 };
 
 const notRead = (message: string) => new KinChatError({ reason: "invalid_state", message });
@@ -51,11 +55,6 @@ const lookupRefused = (error: unknown, depth = 0): boolean =>
     lookupRefused(Reflect.get(error, "cause"), depth + 1) ||
     lookupRefused(Reflect.get(error, "reason"), depth + 1));
 
-const titleOf = (html: string) =>
-  htmlToText(/<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(html)?.[1] ?? "")
-    .replace(/\s+/g, " ")
-    .slice(0, TITLE_MAX);
-
 /**
  * Reads one public https page for an agent. Every address, the first and each redirect's, passes
  * `urlRefusal`, and every socket resolves through `guardedLookup`, so no hop reaches this machine,
@@ -66,64 +65,92 @@ export class KinWebPages extends Context.Service<
   { readonly read: (address: string) => Effect.Effect<WebPage, KinChatError> }
 >()("t3/kin/sales/webPage/KinWebPages") {}
 
+type Hop =
+  | { readonly _tag: "redirect"; readonly to: URL }
+  | { readonly _tag: "page"; readonly page: WebPage };
+
 const make = Effect.gen(function* () {
-  const client = yield* HttpClient.HttpClient;
-  const fetchOnce = (url: URL) =>
-    client
+  // Each hop's response, body and all, is released when that hop's scope closes.
+  const client = HttpClient.withScope(yield* HttpClient.HttpClient);
+  const hop = Effect.fn("KinWebPages.hop")(function* (url: URL, last: boolean) {
+    const response = yield* client
       .get(url.href, {
-        headers: { accept: "text/html, application/xhtml+xml, text/plain;q=0.8" },
+        headers: {
+          accept: "text/html, application/xhtml+xml, text/plain;q=0.8",
+          "accept-encoding": "identity",
+        },
       })
       .pipe(
         Effect.mapError((error) => notRead(lookupRefused(error) ? PAGE_REFUSED : PAGE_UNREACHABLE)),
+        // No client span: no trace headers go to the site, and no address lands in a trace.
+        Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
       );
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers["location"];
+      if (location === undefined || !URL.canParse(location, url.href))
+        return yield* notRead(pageStatus(response.status));
+      if (last) return yield* notRead(PAGE_TOO_MANY_REDIRECTS);
+      return { _tag: "redirect", to: new URL(location, url.href) } satisfies Hop;
+    }
+    if (response.status >= 400) return yield* notRead(pageStatus(response.status));
+    const type = response.headers["content-type"] ?? "text/html";
+    if (!TEXT_TYPES.test(type)) return yield* notRead(PAGE_NOT_TEXT);
+    const encoding = (response.headers["content-encoding"] ?? "identity").trim().toLowerCase();
+    if (encoding !== "identity" && encoding !== "") return yield* notRead(PAGE_NOT_TEXT);
+    const declared = Number(response.headers["content-length"] ?? "0");
+    if (declared > PAGE_BYTES) return yield* notRead(pageTooBig(PAGE_MEGABYTES));
+    const parts: Array<Uint8Array> = [];
+    let size = 0;
+    yield* response.stream.pipe(
+      Stream.mapError(() => notRead(PAGE_UNREACHABLE)),
+      Stream.runForEach((chunk) => {
+        size += chunk.length;
+        if (size > PAGE_BYTES) return Effect.fail(notRead(pageTooBig(PAGE_MEGABYTES)));
+        parts.push(chunk);
+        return Effect.void;
+      }),
+    );
+    const bytes = new Uint8Array(size);
+    let at = 0;
+    for (const part of parts) {
+      bytes.set(part, at);
+      at += part.length;
+    }
+    const raw = new TextDecoder().decode(bytes);
+    const read = /^text\/plain\b/i.test(type)
+      ? (() => {
+          const text = raw.trim();
+          const cut = text.length > PAGE_TEXT_CHARS;
+          return {
+            title: "",
+            text: cut ? text.slice(0, PAGE_TEXT_CHARS) : text,
+            links: [],
+            cut,
+          };
+        })()
+      : pageText(raw, url, { chars: PAGE_TEXT_CHARS, links: PAGE_LINKS, title: TITLE_MAX });
+    return {
+      _tag: "page",
+      page: {
+        url: url.href,
+        title: clean(read.title) || url.hostname,
+        text: clean(read.text),
+        cut: read.cut,
+        links: read.links,
+      },
+    } satisfies Hop;
+  }, Effect.scoped);
   const read = Effect.fn("KinWebPages.read")(
     function* (address: string) {
       if (!URL.canParse(address)) return yield* notRead(PAGE_NOT_HTTPS);
       let url = new URL(address);
-      for (let hop = 0; ; hop += 1) {
+      for (let count = 0; ; count += 1) {
         url.hash = "";
         if (url.protocol !== "https:") return yield* notRead(PAGE_NOT_HTTPS);
         if (urlRefusal(url) !== undefined) return yield* notRead(PAGE_REFUSED);
-        const response = yield* fetchOnce(url);
-        if (response.status >= 300 && response.status < 400) {
-          const location = response.headers["location"];
-          if (location === undefined || !URL.canParse(location, url.href))
-            return yield* notRead(pageStatus(response.status));
-          if (hop >= REDIRECTS_MAX) return yield* notRead(PAGE_TOO_MANY_REDIRECTS);
-          url = new URL(location, url.href);
-          continue;
-        }
-        if (response.status >= 400) return yield* notRead(pageStatus(response.status));
-        const type = response.headers["content-type"] ?? "text/html";
-        if (!TEXT_TYPES.test(type)) return yield* notRead(PAGE_NOT_TEXT);
-        const declared = Number(response.headers["content-length"] ?? "0");
-        if (declared > PAGE_BYTES) return yield* notRead(pageTooBig(PAGE_MEGABYTES));
-        const chunks = yield* response.stream.pipe(
-          Stream.mapError(() => notRead(PAGE_UNREACHABLE)),
-          Stream.runFoldEffect(
-            () => ({ size: 0, parts: [] as Array<Uint8Array> }),
-            (body, chunk) =>
-              body.size + chunk.length > PAGE_BYTES
-                ? Effect.fail(notRead(pageTooBig(PAGE_MEGABYTES)))
-                : Effect.succeed({ size: body.size + chunk.length, parts: [...body.parts, chunk] }),
-          ),
-        );
-        const bytes = new Uint8Array(chunks.size);
-        let at = 0;
-        for (const part of chunks.parts) {
-          bytes.set(part, at);
-          at += part.length;
-        }
-        const raw = new TextDecoder().decode(bytes);
-        const html = !/^text\/plain\b/i.test(type);
-        const text = clean(html ? htmlToText(raw) : raw.trim());
-        const cut = text.length > PAGE_TEXT_CHARS;
-        return {
-          url: url.href,
-          title: clean(html ? titleOf(raw) : "") || url.hostname,
-          text: cut ? text.slice(0, PAGE_TEXT_CHARS) : text,
-          cut,
-        } satisfies WebPage;
+        const answer = yield* hop(url, count >= REDIRECTS_MAX);
+        if (answer._tag === "page") return answer.page;
+        url = answer.to;
       }
     },
     (effect) =>
