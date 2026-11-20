@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- each case copies one migrated database file.
 import PeopleInvitesMigration from "./migrations/K038_PeopleInvites.ts";
 import ChatGrantsLapse from "./migrations/K055_ChatGrantsLapse.ts";
 import K058Work from "./migrations/K058_Work.ts";
@@ -1722,7 +1723,7 @@ describe("Kin migrations", () => {
       assert.strictEqual(new Set(kinMigrations.map(([id]) => id)).size, kinMigrations.length);
       assert.strictEqual(new Set(kinMigrations.map(([, name]) => name)).size, kinMigrations.length);
       // Nothing a host already ran is dropped, renamed or renumbered; new ones go after it.
-      assert.deepStrictEqual(kinMigrations.slice(0, shipped.length), shipped);
+      assert.deepStrictEqual(kinMigrations.slice(0, shipped.length), [...shipped]);
       assert.isTrue(kinMigrations.slice(shipped.length).every(([id]) => id > shipped.at(-1)![0]));
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
