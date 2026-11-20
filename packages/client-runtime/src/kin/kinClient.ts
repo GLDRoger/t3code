@@ -572,7 +572,7 @@ export function makeKinClient<R, ER>(
           result.orgs.map((org) => org.orgId),
         );
         if (platform.onOrgs !== undefined) yield* platform.onOrgs(environmentId, result);
-        syncKinOwnerTimeZone(
+        void syncKinOwnerTimeZone(
           registry,
           environmentId,
           result.me.map((me) => me.orgId),
