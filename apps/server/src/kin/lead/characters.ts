@@ -11,7 +11,6 @@ import {
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinChatHub } from "../chat/KinChatHub.ts";
@@ -193,30 +192,51 @@ export const setCharacter = Effect.fn("KinCharacters.set")(function* (
 
 // Growth's new default, offered once to a company that had the old one (`growthCharacterV1`).
 
-/** One card per company, ever: its id carries the org, its message which card and which agent. */
+/** One card per company, ever: its id carries the org, its message which card, agent, doc and version. */
 const CARD = "kin-character-default:growth:2:";
 const cardId = (orgId: KinOrgId) => `${CARD}${orgId}`;
 type CardKind = "use" | "see";
+/** The card's claim in the told ledger, which a chat clear never touches: one row per company. */
+const CLAIM = { party: "kin:company", fact: "kin-character-default:growth:2", event: "card" };
 
 /** A character's text without its heading, which carries the agent's name. */
 const bodyOf = (text: string) => text.replace(/^# .*$/m, "").trim();
 
-/** The company's first live agent on the growth seat, with its character as it stands now. */
-const growthAgent = Effect.fn("KinCharacters.growthAgent")(function* (orgId: KinOrgId) {
+type Drawn = Character & { readonly domain: string; readonly version: number };
+/** Live agents' characters as they stand now, with each doc's latest version; one agent's with `agentId`. */
+const charactersNow = Effect.fn("KinCharacters.now")(function* (orgId: KinOrgId, agentId?: string) {
   const sql = yield* SqlClient.SqlClient;
-  const domains = new Map(
-    (yield* liveLeads(sql, orgId)).map((lead) => [lead.agentId, lead.domain] as const),
-  );
-  const found = (yield* characters(orgId)).find(
-    (one) => seatOf(domains.get(one.agentId) ?? "") === "growth",
-  );
-  if (found === undefined) return undefined;
+  return yield* sql<Drawn>`SELECT l.agent_id AS "agentId", l.name, l.domain, r.key, v.body,
+      v.version
+    FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+    JOIN kin_records r ON r.org_id = l.org_id AND r.register_id = 'docs'
+      AND r.origin_key = ${ORIGIN} || l.agent_id AND r.state <> 'dropped'
+    JOIN kin_doc_versions v ON v.org_id = r.org_id AND v.record_id = r.record_id
+      AND v.version = (SELECT MAX(w.version) FROM kin_doc_versions w
+        WHERE w.org_id = v.org_id AND w.record_id = v.record_id)
+    WHERE l.org_id = ${orgId} AND a.role = 'lead' AND a.retired_at IS NULL
+      AND (${agentId ?? null} IS NULL OR l.agent_id = ${agentId ?? null})
+    ORDER BY a.created_at, l.agent_id`;
+});
+
+/** An agent's character as the card weighs it: unchanged since Kin wrote the old one, and the new text. */
+const weighed = Effect.fn("KinCharacters.weighed")(function* (orgId: KinOrgId, found: Drawn) {
   const money = yield* companyMoney(orgId);
   return {
     ...found,
     asWritten: bodyOf(found.body) === bodyOf(growthCharacterV1(money)),
     next: (defaultCharacterFor("growth", money) ?? "").replace(/^# .*$/m, `# ${found.name}`),
   };
+});
+
+/** The company's first live agent on the growth seat that isn't on the new text already. */
+const growthAgent = Effect.fn("KinCharacters.growthAgent")(function* (orgId: KinOrgId) {
+  for (const found of yield* charactersNow(orgId)) {
+    if (seatOf(found.domain) !== "growth") continue;
+    const agent = yield* weighed(orgId, found);
+    if (bodyOf(agent.body) !== bodyOf(agent.next)) return agent;
+  }
+  return undefined;
 });
 
 const CARD_DETAIL = "Nothing changes until you choose.";
@@ -236,22 +256,33 @@ export const offerNewCharacter = Effect.fn("KinCharacters.offerNew")(function* (
   const repo = yield* KinChatRepository;
   const hub = yield* KinChatHub;
   const widgetId = KinWidgetId.make(cardId(orgId));
-  if (Option.isSome(yield* repo.getWidget({ orgId, widgetId }))) return false;
+  const claimed = sql`SELECT 1 FROM kin_pulse_told WHERE org_id = ${orgId}
+    AND person_id = ${CLAIM.party} AND fact_key = ${CLAIM.fact}`;
+  if ((yield* claimed).length > 0) return false;
   const agent = yield* growthAgent(orgId);
-  if (agent === undefined || bodyOf(agent.body) === bodyOf(agent.next)) return false;
+  if (agent === undefined) return false;
   const chat = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
   if (chat === undefined) return false;
   const kind: CardKind = agent.asWritten ? "use" : "see";
   const question = cardQuestion(kind, agent.name);
-  const at = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+  const now = yield* Clock.currentTimeMillis;
+  const at = DateTime.formatIso(DateTime.makeUnsafe(now));
   const chatId = KinChatId.make(chat.ownerChatId);
-  yield* sql.withTransaction(
+  return yield* sql.withTransaction(
     Effect.gen(function* () {
+      // Claimed with the card it draws: a second start, or one after a clear, finds it.
+      const claim = yield* sql`INSERT INTO kin_pulse_told (org_id, person_id, fact_key, event_id,
+          sig, told_at)
+        VALUES (${orgId}, ${CLAIM.party}, ${CLAIM.fact}, ${CLAIM.event}, 'told', ${now})
+        ON CONFLICT DO NOTHING RETURNING fact_key`;
+      if (claim.length === 0) return false;
       const message = yield* repo.insertMessage({
         orgId,
         chatId,
         audience: "owner",
-        messageId: KinMessageId.make(`${cardId(orgId)}:${kind}:${agent.agentId}`),
+        messageId: KinMessageId.make(
+          `${cardId(orgId)}:${kind}:${agent.agentId}:${agent.key}:${agent.version}`,
+        ),
         author: { _tag: "system" },
         kind: "system",
         body: question,
@@ -303,15 +334,16 @@ export const offerNewCharacter = Effect.fn("KinCharacters.offerNew")(function* (
       yield* sql.afterCommit(
         hub.publish({ type: "widget.updated", orgId, widget: { ...widget, revision: 1 } }),
       );
+      return true;
     }),
   );
-  return true;
 });
 
 /**
  * The owner level's tap on that card, in the tap's transaction; `undefined` for any other card.
- * Use writes the new text as a new version only while the old one still stands, so an edit made
- * since is never written over; See puts the new text in a draft doc beside it.
+ * It acts on the agent and doc the card was drawn for. Use writes the new text as a new version
+ * only while that doc is still at the version drawn, so an edit made since is never written over:
+ * then, as See does, it puts the new text in a draft doc beside it.
  */
 export const answerCharacterCard = Effect.fn("KinCharacters.answerCard")(function* (input: {
   readonly orgId: KinOrgId;
@@ -326,24 +358,27 @@ export const answerCharacterCard = Effect.fn("KinCharacters.answerCard")(functio
       reason: "not_allowed",
       message: "Only the owner or a co-owner chooses an agent's character.",
     });
-  const [kind, agentId] = input.messageId.slice(input.widgetId.length + 1).split(":");
-  const agent = yield* growthAgent(input.orgId);
-  if (agent === undefined || agent.agentId !== agentId)
+  // What the card was drawn for: which card, agent, doc and version.
+  const drawn = input.messageId.slice(input.widgetId.length + 1).split(":");
+  const kind = drawn[0];
+  const version = Number(drawn.at(-1));
+  const key = drawn.at(-2);
+  const agentId = drawn.slice(1, -2).join(":");
+  const [found] = agentId === "" ? [] : yield* charactersNow(input.orgId, agentId);
+  if (found === undefined || found.key !== key)
     return {
       title: "Nothing changed",
       text: "That agent is no longer here.",
     } satisfies KinChoiceOutcome;
+  const agent = yield* weighed(input.orgId, found);
   if (!input.yes)
     return {
       title: "Kept",
       text: `${agent.name} keeps the character it has.`,
     } satisfies KinChoiceOutcome;
-  if (kind === "use") {
-    if (!agent.asWritten)
-      return yield* new KinChatError({
-        reason: "widget_changed",
-        message: `${agent.name}'s character was changed since this card, so it stays as it is.`,
-      });
+  // Changed since the card was drawn, however it was changed: it stays, and Use shows the new one.
+  const changed = agent.version !== version;
+  if (kind === "use" && !changed) {
     yield* setCharacter(input.orgId, agent.agentId as KinAgentId, agent.next, input.personId);
     return {
       title: "New character",
@@ -367,6 +402,9 @@ export const answerCharacterCard = Effect.fn("KinCharacters.answerCard")(functio
   );
   return {
     title: "Draft made",
-    text: `The new one is in Docs as ${draft.row.key}. ${agent.name}'s character is unchanged.`,
+    text:
+      kind === "use"
+        ? `${agent.name}'s character was changed since this card, so it stays as written. The new one is in Docs as ${draft.row.key}.`
+        : `The new one is in Docs as ${draft.row.key}. ${agent.name}'s character is unchanged.`,
   } satisfies KinChoiceOutcome;
 });

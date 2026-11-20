@@ -5,6 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   KinAgentId,
   KinChatError,
+  KinChatId,
   KinOrgId,
   KinPersonId,
   KinWidgetId,
@@ -194,15 +195,44 @@ it.effect(
       yield* before;
       assert.isTrue(yield* offerNewCharacter(orgId));
       const next = (defaultCharacterFor("growth", yield* companyMoney(orgId)) ?? "").trim();
-      // Edited after the card was drawn: the tap refuses, and her words stay. Each write is
-      // its own moment, as a person's edits are.
+      const old = yield* growthText;
+      // A heading changed after the card was drawn, and then put back: the doc is not at the
+      // version drawn, so the tap writes nothing over it and gives a draft of the new text.
+      // Each write is its own moment, as a person's edits are.
       yield* TestClock.adjust("1 minute");
-      yield* setCharacter(orgId, growth, "# Growth\n\nInvented: short and warm.", ownerId);
-      assert.strictEqual(yield* refusal(tap(true)), "widget_changed");
-      assert.include(yield* growthText, "Invented: short and warm.");
-      // Put back as Kin wrote it, the same tap takes the new one; history keeps the old.
+      yield* setCharacter(orgId, growth, old.replace("# Growth", "# Growth, Rhea's"), ownerId);
       yield* TestClock.adjust("1 minute");
-      yield* setCharacter(orgId, growth, growthCharacterV1(yield* companyMoney(orgId)), ownerId);
+      yield* setCharacter(orgId, growth, old, ownerId);
+      const kept = yield* tap(true);
+      assert.strictEqual(kept?.title, "Draft made");
+      assert.include(
+        kept?.text ?? "",
+        "Growth's character was changed since this card, so it stays as written.",
+      );
+      assert.strictEqual(yield* growthText, old);
+      const [draft] = yield* sql<{ body: string }>`SELECT v.body FROM kin_doc_versions v
+        JOIN kin_records r ON r.org_id = v.org_id AND r.record_id = v.record_id
+        WHERE r.origin_key = ${`${widgetId}:draft`}`;
+      assert.strictEqual(draft?.body.trim(), next);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "Use the new one, on the version drawn, writes it on the agent the card names; history keeps the old",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* before;
+      // A second agent on the growth seat, made first with the new text: the card still names
+      // the one with the old text, and the tap acts on it alone.
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at, retired_at)
+        VALUES ('marketing', ${orgId}, 'Marketing', 'lead', ${ownerId}, '2026-11-01T12:00:00.000Z', NULL)`;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, domain, level_since, thread_id,
+          models_json, worker_projects_json, owner_chat_id)
+        VALUES ('marketing', ${orgId}, 'Marketing', 'marketing', 0, 'marketing-thread', '{}', '[]', 'growth-chat')`;
+      yield* seedCharacters(orgId);
+      assert.isTrue(yield* offerNewCharacter(orgId));
+      const next = (defaultCharacterFor("growth", yield* companyMoney(orgId)) ?? "").trim();
       yield* TestClock.adjust("1 minute");
       assert.deepStrictEqual(yield* tap(true), {
         title: "New character",
@@ -213,6 +243,34 @@ it.effect(
         FROM kin_doc_versions v JOIN kin_records r ON r.org_id = v.org_id AND r.record_id = v.record_id
         WHERE r.origin_key = ${`kin-character:${growth}`}`;
       assert.isAbove(counted?.versions ?? 0, 2);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "the card comes once, ever: not after a clear and a restart, nor from two starts at once",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const repo = yield* KinChatRepository;
+      yield* before;
+      // Two starts at once draw one card between them.
+      const drawn = yield* Effect.all([offerNewCharacter(orgId), offerNewCharacter(orgId)], {
+        concurrency: 2,
+      });
+      assert.deepStrictEqual(drawn.toSorted().map(String), ["false", "true"]);
+      // Keep, then clear the chat the card is in, then start again: nothing comes back.
+      yield* tap(false);
+      yield* repo.clearChat({
+        orgId,
+        chatId: KinChatId.make("chief-chat"),
+        clearedAt: at,
+        clearedAtMs: 0,
+      });
+      assert.isTrue(Option.isNone(yield* repo.getWidget({ orgId, widgetId })));
+      assert.isFalse(yield* offerNewCharacter(orgId));
+      const [counted] = yield* sql<{ cards: number }>`SELECT COUNT(*) AS cards FROM kin_widgets
+      WHERE org_id = ${orgId} AND widget_id LIKE 'kin-character-default:%'`;
+      assert.strictEqual(counted?.cards, 0);
     }).pipe(Effect.provide(layer)),
 );
 
