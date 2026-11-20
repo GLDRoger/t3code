@@ -51,6 +51,7 @@ import {
   type KinDealsInput,
   type KinDealPageInput,
   type KinDealStagesInput,
+  type KinImportRunsInput,
   type KinWorkGetInput,
   type KinWorkSubscribeInput,
 } from "@t3tools/contracts";
@@ -353,6 +354,9 @@ export function makeKinClient<R, ER>(
       label: "kin:work:deal-stages:read",
       tag: "kin.work.dealStages",
     }),
+  );
+  const readImportRuns = kinGuardedRead(
+    createKinRpcCommand(runtime, { label: "kin:import:runs:read", tag: "kin.import.runs" }),
   );
   const workHistoryRead = createKinRpcCommand(runtime, {
     label: "kin:work:history:read",
@@ -1394,6 +1398,29 @@ export function makeKinClient<R, ER>(
       label: "kin:work:deal-stages:set",
       tag: "kin.work.setDealStages",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+    }),
+    /** The owner level brings a file in: check it, import it, take a batch away, list them. */
+    importCheck: createKinRpcCommand(runtime, {
+      label: "kin:import:check",
+      tag: "kin.import.check",
+    }),
+    importApply: createKinRpcCommand(runtime, {
+      label: "kin:import:apply",
+      tag: "kin.import.apply",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.batch}` },
+    }),
+    importUndo: createKinRpcCommand(runtime, {
+      label: "kin:import:undo",
+      tag: "kin.import.undo",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.batch}` },
+    }),
+    importRuns: createKinQueryAtomFamily(runtime, {
+      label: "kin:import:runs",
+      execute: Effect.fn("KinClient.importRuns")(function* (input: KinImportRunsInput) {
+        return yield* readImportRuns(input);
+      }),
+      staleTimeMs: 60_000,
+      refreshTrigger: kinWorkRefreshOn(["work", "deals"]),
     }),
     /** How many clients and open projects there are: the lists' own totals, without their rows. */
     workCounts: createKinQueryAtomFamily(runtime, {

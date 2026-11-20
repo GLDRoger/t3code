@@ -1,3 +1,4 @@
+import { KIN_IMPORT } from "@t3tools/client-runtime/kin/kinImport";
 import { useKinClientsStart, useKinSeesClients, useKinViewerScope } from "./state/kinChatOnly";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
@@ -189,6 +190,8 @@ function NamedList(props: {
   readonly onSearch: (text: string) => void;
   readonly nothing: React.ReactNode;
   readonly add: { readonly label: string; readonly onPress: () => void } | null;
+  /** Beside Add: Clients' Import a file, for the owner level. */
+  readonly bring?: AppBarAction | null;
   readonly loading: string;
   readonly loadFailed: string;
   readonly extra: unknown;
@@ -205,6 +208,7 @@ function NamedList(props: {
         refresh={{ accessibilityLabel: "Refresh", onPress: list.refresh }}
         actions={[
           ...(props.ask === null ? [] : [props.ask]),
+          ...(props.bring === undefined || props.bring === null ? [] : [props.bring]),
           ...(add === null
             ? []
             : [{ accessibilityLabel: add.label, icon: "plus" as const, onPress: add.onPress }]),
@@ -541,6 +545,8 @@ function ClientsView(
         };
   const openClient = (to: KinRecordKey) =>
     navigation.navigate("KinClient", { environmentId, orgId, party: to });
+  // The owner level's, as the host has it: the host applies the same gate to the call.
+  const canImport = useAtomValue(kinClient.importApply.permissionAtom(environmentId));
   return (
     <NamedList
       environmentId={environmentId}
@@ -582,6 +588,15 @@ function ClientsView(
         />
       }
       add={add}
+      bring={
+        canImport
+          ? {
+              accessibilityLabel: KIN_IMPORT.entry,
+              icon: "tray.and.arrow.down" as const,
+              onPress: () => navigation.navigate("KinImport", { environmentId, orgId }),
+            }
+          : null
+      }
       loading="Loading clients"
       loadFailed={KIN_CLIENTS.loadFailed}
       onOpen={openClient}

@@ -923,6 +923,10 @@
       "types": "./src/kin/kinDeals.ts",
       "default": "./src/kin/kinDeals.ts"
     },
+    "./kin/kinImport": {
+      "types": "./src/kin/kinImport.ts",
+      "default": "./src/kin/kinImport.ts"
+    },
     "./kin/kinWorkClients": {
       "types": "./src/kin/kinWorkClients.ts",
       "default": "./src/kin/kinWorkClients.ts"

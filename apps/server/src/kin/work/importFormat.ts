@@ -13,7 +13,8 @@ import * as Schema from "effect/Schema";
 /**
  * The file `kin import` reads: JSON Lines, so a company's whole history streams through in
  * bounded memory. The first line names the batch and the lists; every line after it is one
- * client, project or entry, and a row may point only at rows above it or imported before.
+ * client, project, entry, contact or deal, and a row may point only at rows above it or imported
+ * before.
  */
 
 const Label = KinLabelText.check(Schema.isMaxLength(60));
@@ -85,10 +86,20 @@ export const ImportHeader = Schema.Struct({
 });
 export type ImportHeader = typeof ImportHeader.Type;
 
+const Key = Schema.String.check(Schema.isPattern(/^[A-Z][A-Z0-9]{0,7}-[1-9]\d{0,8}$/));
+const Person = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128));
+
 export const ImportClient = Schema.Struct({
   source: SourceId,
   name: Title,
-  kind: Schema.optional(Schema.Literals(["client", "vendor"])),
+  kind: Schema.optional(Schema.Literals(["client", "vendor", "prospect"])),
+  /** A client Kin has, by key: it gains only the fields it lacks, and nothing is made. */
+  match: Schema.optional(Key),
+  /** Who looks after it, a person on the team by id; else whoever imports. */
+  owner: Schema.optional(Person),
+  /** Where it came from, in the company's own words. */
+  cameFrom: Schema.optional(Line),
+  tags: Schema.optional(Schema.Array(Label).check(Schema.isMaxLength(20))),
   state: Schema.optional(Schema.Literals(["open", "dropped"])),
   gstin: Schema.optional(Line),
   address: Schema.optional(Line),
@@ -150,9 +161,40 @@ export const ImportEntry = Schema.Struct({
 });
 export type ImportEntry = typeof ImportEntry.Type;
 
+/** A person at a client above it or imported before; `match` fills one Kin has. */
+export const ImportContact = Schema.Struct({
+  source: SourceId,
+  client: SourceId,
+  name: Title,
+  role: Schema.optional(Line),
+  /** Main first, as `contactDetails.ts` keeps them. */
+  emails: Schema.optional(Schema.Array(Line).check(Schema.isMaxLength(20))),
+  phones: Schema.optional(Schema.Array(Line).check(Schema.isMaxLength(20))),
+  notes: Schema.optional(Notes),
+  match: Schema.optional(Key),
+});
+export type ImportContact = typeof ImportContact.Type;
+
+/** An open deal, made through Deals as any other: a stage the company has, never a new one. */
+export const ImportDeal = Schema.Struct({
+  source: SourceId,
+  client: SourceId,
+  title: Title,
+  stage: Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,39}$/)),
+  value: Schema.optional(Schema.Struct({ amount: Amount, currency: KinCurrency })),
+  /** Its expected day, a day in the company's zone. */
+  expected: Schema.optional(KinDay),
+  owner: Schema.optional(Person),
+  cameFrom: Schema.optional(Line),
+  notes: Schema.optional(Notes),
+});
+export type ImportDeal = typeof ImportDeal.Type;
+
 export const ImportRow = Schema.Union([
   Schema.Struct({ client: ImportClient }),
   Schema.Struct({ project: ImportProject }),
   Schema.Struct({ entry: ImportEntry }),
+  Schema.Struct({ contact: ImportContact }),
+  Schema.Struct({ deal: ImportDeal }),
 ]);
 export type ImportRow = typeof ImportRow.Type;

@@ -1,11 +1,41 @@
 # Moving your records into Kin
 
-Kin can take in what you kept in another system: clients, projects, Work entries, entries of your
-lists (expenses, invoices, dates or any list you define) and payments received. Everything comes
-in as yours, with its original dates. There is no screen for this: you run one command on the
-machine that hosts Kin.
+Kin can take in what you kept in another system. Clients, prospects, their contacts and deals come
+in from a spreadsheet, in Kin itself. Projects, Work entries, entries of your lists (expenses,
+invoices, dates or any list you define) and payments received come in through one command on the
+machine that hosts Kin. Only the owner and co-owners import.
 
-## The import file
+## Clients, contacts and deals from a spreadsheet
+
+In Clients, choose **Add**, then **Import a file** (on the phone, the import button beside Add; on
+the web, also "Import a file" in the command palette). Choose a CSV file: a spreadsheet saved as
+CSV, or the export of the CRM you use now. Kin reads UTF-8 and UTF-16, separated by commas,
+semicolons or tabs, up to 50,000 rows and 10 MB. Nothing is added until you import.
+
+1. **Columns.** Kin proposes where each column goes from its header: Company, Contact name,
+   E-mail, Phone, Opportunity, Amount, Stage, Close date, Owner and the like. Change any that are
+   wrong, or leave a column out. A contact may have several emails and phones: give each its own
+   column, or put several in one cell, separated by `;` (emails also by `,`).
+2. **Check.** Kin shows what it will add, which rows match clients you already have and how it
+   knows (a contact's email, the web domain of an email, or the same name), and what needs a
+   look. Rows of one company in the file become one client the same way.
+3. **Decide.** A name only close to one you have, such as "Lumen Grove (Oslo)" beside Lumen
+   Grove, is never merged by itself: it is marked **Decide**, and you pick the client it is, a new
+   one, or leave its rows out. A deal stage that isn't one of yours is never made up: pick which
+   of your stages those deals go in. Kin also asks the currency of amounts written without one,
+   and whether days like 03/04/2026 are written day first or month first.
+4. **Import.** A client or contact you already have only gains what it lacks; nothing you typed
+   changes. Deals arrive open, with no next step, and nobody is pinged about them. Importing the
+   same file again changes nothing.
+
+**Earlier imports** lists each file with who brought it in, when and what it added. **Undo this
+import** takes away what that import added, and empties what it filled in on clients and contacts
+you had. Anything someone changed since, or that something else now uses, stays and is listed
+with the reason. An import already undone says so.
+
+A "Why we may mail them" column isn't imported yet; it is listed under "Not imported".
+
+## The import file (on the host)
 
 An import is one text file with one JSON object per line. The first line names the import and
 the lists it needs. Each line after it is a client, a project or an entry, and may refer only to
@@ -22,8 +52,12 @@ lines above it:
   imported before.
 - A list named in the first line is made if you don't have it yet, from a template or with your
   own fields, states and categories. A list you already have only gains new fields and categories.
-- A contact at a client is an entry on `contacts` naming its `client`, with `role`, `email` and
-  `phone` as fields.
+- A contact is a `contact` row naming its `client`, with `name`, `role`, `notes`, and `emails`
+  and `phones` as lists, main one first. Kin cleans them as it does for a contact you type, and
+  keeps at most eight of each.
+- A deal is a `deal` row naming its `client`, `title` and `stage` (one of your stage ids), with
+  `value` (`{"amount":"18000","currency":"EUR"}`), `expected` (a day) and `owner` if you have
+  them. Deals come in through **Import a file** in Kin; the command reports deal rows as left out.
 - Amounts are plain decimals in the list's currency unless a row names another. Dates are days
   (`2026-04-30`) or times with an offset.
 - An entry whose amount is over a thousand times the largest in its list, or an invoice dated after

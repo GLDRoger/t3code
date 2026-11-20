@@ -447,7 +447,14 @@ describe("KinImport", () => {
         apply: false,
         includeChanged: false,
       });
-      assert.deepStrictEqual(plan.removes, { clients: 1, projects: 1, entries: 5, payments: 1 });
+      assert.deepStrictEqual(plan.removes, {
+        clients: 1,
+        projects: 1,
+        entries: 5,
+        payments: 1,
+        contacts: 0,
+        deals: 0,
+      });
       assert.notDeepEqual(yield* holdings, before);
       const work = yield* Stream.toQueue(records.changes(orgId), { capacity: "unbounded" });
       const heard = yield* Queue.take(work);
@@ -521,7 +528,14 @@ describe("KinImport", () => {
       assert.deepStrictEqual(undone.kept, [
         { key: acme.key, reason: `${[may.key, mine.key].toSorted().join(", ")} use it` },
       ]);
-      assert.deepStrictEqual(undone.removes, { clients: 0, projects: 1, entries: 4, payments: 1 });
+      assert.deepStrictEqual(undone.removes, {
+        clients: 0,
+        projects: 1,
+        entries: 4,
+        payments: 1,
+        contacts: 0,
+        deals: 0,
+      });
       assert.deepStrictEqual(
         undone.lists.map((one) => [one.list, one.action, one.entries]),
         [
@@ -623,7 +637,14 @@ describe("KinImport", () => {
           { key: may.key, reason: "a payment recorded in Kin is on it" },
         ].toSorted((a, b) => (a.key < b.key ? -1 : 1)),
       );
-      assert.deepStrictEqual(undone.removes, { clients: 0, projects: 0, entries: 0, payments: 0 });
+      assert.deepStrictEqual(undone.removes, {
+        clients: 0,
+        projects: 0,
+        entries: 0,
+        payments: 0,
+        contacts: 0,
+        deals: 0,
+      });
       assert.deepStrictEqual(
         yield* sql`SELECT origin_key AS "originKey" FROM kin_record_payments ORDER BY origin_key`,
         [{ originKey: "owner:may-part" }],
@@ -822,11 +843,12 @@ describe("KinImport", () => {
           ),
         );
       const seen: Array<number> = [];
-      const plan = yield* imports.plan(orgId, ownerId, many(), (done) =>
-        Effect.sync(() => {
-          seen.push(done);
-        }),
-      );
+      const plan = yield* imports.plan(orgId, ownerId, many(), {
+        progress: (done) =>
+          Effect.sync(() => {
+            seen.push(done);
+          }),
+      });
       assert.deepStrictEqual(
         [plan.rows, plan.entries.create, plan.problems.length],
         [count, count, 0],

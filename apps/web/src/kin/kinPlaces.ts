@@ -69,7 +69,8 @@ export interface KinPlaceSearch {
   person?: KinPersonId;
 }
 
-export type KinPlaceDialog = "new" | "search";
+/** `import` is Clients' Import a file, which opens in the place itself. */
+export type KinPlaceDialog = "new" | "search" | "import";
 
 /** An agent's page, open over whatever Kin page is under it. */
 export interface KinAgentSearch {
@@ -114,7 +115,9 @@ export function validateKinPlaceSearch(raw: Record<string, unknown>): KinPlaceSe
     ...(changes === undefined ? {} : { changes }),
     ...(from === undefined ? {} : { from }),
     ...(raw.history === true ? { history: true } : {}),
-    ...(raw.open === "new" || raw.open === "search" ? { open: raw.open } : {}),
+    ...(raw.open === "new" || raw.open === "search" || raw.open === "import"
+      ? { open: raw.open }
+      : {}),
     ...(raw.tab === "projects" || raw.tab === "deals" ? { tab: raw.tab } : {}),
     ...(isPerson(raw.person) ? { person: raw.person } : {}),
   };

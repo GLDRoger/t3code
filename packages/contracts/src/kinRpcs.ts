@@ -32,6 +32,7 @@ import { KinMemoryRpcs, KIN_MEMORY_RPC_SCOPES } from "./kinMemory.ts";
 import { KinWorkRpcs, KIN_WORK_RPC_SCOPES } from "./kinWork.ts";
 import { KinDocsRpcs, KIN_DOCS_RPC_SCOPES } from "./kinDocs.ts";
 import { KinDealRpcs, KIN_DEAL_RPC_SCOPES } from "./kinDeals.ts";
+import { KinImportRpcs, KIN_IMPORT_RPC_SCOPES } from "./kinImport.ts";
 import { KinFinanceRpcs, KIN_FINANCE_RPC_SCOPES } from "./kinFinance.ts";
 import { KinStatementRpcs, KIN_STATEMENT_RPC_SCOPES } from "./kinStatements.ts";
 import { KinMoneyAnswerRpcs, KIN_MONEY_ANSWER_RPC_SCOPES } from "./kinMoneyAnswers.ts";
@@ -185,6 +186,7 @@ export const KinRpcs = [
   ...KinMemoryRpcs,
   ...KinWorkRpcs,
   ...KinDealRpcs,
+  ...KinImportRpcs,
   ...KinDocsRpcs,
   ...KinFinanceRpcs,
   ...KinMoneyAnswerRpcs,
@@ -207,6 +209,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_MEMORY_RPC_SCOPES,
   ...KIN_WORK_RPC_SCOPES,
   ...KIN_DEAL_RPC_SCOPES,
+  ...KIN_IMPORT_RPC_SCOPES,
   ...KIN_DOCS_RPC_SCOPES,
   ...KIN_FINANCE_RPC_SCOPES,
   ...KIN_MONEY_ANSWER_RPC_SCOPES,
@@ -376,6 +379,11 @@ const KIN_RPC_ACCESS = {
   "kin.work.dealStep": "person",
   "kin.work.dealStages": "person",
   "kin.work.setDealStages": "owner_level",
+  // Bringing a file in, and taking it away again: the owner level; the service decides too.
+  "kin.import.check": "owner_level",
+  "kin.import.apply": "owner_level",
+  "kin.import.undo": "owner_level",
+  "kin.import.runs": "owner_level",
   "kin.docs.list": "person",
   "kin.docs.get": "person",
   "kin.docs.history": "person",
@@ -663,6 +671,10 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.dealStep": "kin-work",
   "kin.work.dealStages": "kin-work",
   "kin.work.setDealStages": "kin-work",
+  "kin.import.check": "kin-work",
+  "kin.import.apply": "kin-work",
+  "kin.import.undo": "kin-work",
+  "kin.import.runs": "kin-work",
   "kin.work.lists": "kin-work",
   "kin.work.updateList": "kin-work",
   "kin.work.dates": "kin-work",
