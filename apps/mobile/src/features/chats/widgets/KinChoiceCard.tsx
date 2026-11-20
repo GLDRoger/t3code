@@ -20,8 +20,6 @@ import { uuidv4 } from "../../../lib/uuid";
 import { useAssetUrl, useRefreshAssetUrl } from "../../../state/assets";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
-import { useKinOpenWaitingFor } from "../state/useKinOpen";
-import { kinChoiceDefaultLine } from "@t3tools/client-runtime/kin/kinWaitingAsk";
 import { kinConnectionChange } from "@t3tools/client-runtime/kin/kinConnections";
 import {
   kinAddressPieces,
@@ -565,11 +563,6 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
   // The tick answers the press on screen: the editor's for the words typed, else the card's.
   const warnedView = kinSendEditWarned(choice, shownEdit, new Date(nowMs));
   const checked = kinSendTicked(warnedView, ticked) !== null;
-  const waiting = useKinOpenWaitingFor({ environmentId, orgId: choice.orgId });
-  const takes =
-    answered === null && phase === "open"
-      ? kinChoiceDefaultLine(choice.widgetId, waiting, nowMs)
-      : null;
   const undone = kinChoiceUndoneLine(choice, props.viewerPersonId, new Date(nowMs));
 
   /** The editor after the host answered: words it refused stay on this device until let go. */
@@ -664,7 +657,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       <View
         // Grouped for VoiceOver, except while Change or the editor sits inside: a group hides them.
         accessible={grouped}
-        accessibilityLabel={kinChoiceAccessibilityLabel(choice, answered?.text ?? takes, edited, {
+        accessibilityLabel={kinChoiceAccessibilityLabel(choice, answered?.text ?? null, edited, {
           message: true,
         })}
         className="gap-1.5"
@@ -677,11 +670,6 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
         <Text textRole="headline" className="font-t3-bold text-foreground">
           {choice.question}
         </Text>
-        {takes === null ? null : (
-          <Text textRole="footnote" className="text-foreground-secondary">
-            {takes}
-          </Text>
-        )}
         {choice.send !== null && shownEdit !== null ? (
           <SendEditor
             send={choice.send}

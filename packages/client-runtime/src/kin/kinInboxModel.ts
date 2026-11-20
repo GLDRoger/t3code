@@ -125,14 +125,8 @@ function kinInboxFold(chat: KinChatSummary, waitingCount: number): KinInboxFold 
   return chat.working === true ? "working" : "rest";
 }
 
-/**
- * `waiting`, when given, is the host's open list's (`kinOpenWaiting`), which drops what no longer
- * asks anything; absent, the chat list's own waiting items stand.
- */
-export function selectKinInboxView(
-  state: KinInboxState,
-  waiting: ReadonlyArray<KinWaitingItem> = state.waiting,
-): KinInboxView {
+export function selectKinInboxView(state: KinInboxState): KinInboxView {
+  const { waiting } = state;
   const waitingByChat = new Map<KinChatId, number>();
   for (const item of waiting) {
     waitingByChat.set(item.chatId, (waitingByChat.get(item.chatId) ?? 0) + 1);

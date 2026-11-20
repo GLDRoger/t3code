@@ -67,7 +67,6 @@ import {
   type KinMemoryChangesCardView,
 } from "@t3tools/client-runtime/kin/kinMemoryChangesPresentation";
 import { kinDocCardLine, KIN_DOCS, type KinDocCardView } from "@t3tools/client-runtime/kin/kinDocs";
-import { kinChoiceDefaultLine } from "@t3tools/client-runtime/kin/kinWaitingAsk";
 import { kinListedModelName } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinPersonId, KinSendTry, KinWidget } from "@t3tools/contracts";
@@ -98,7 +97,6 @@ import {
 import { useAssetUrls } from "../assets/assetUrls";
 import { AttachmentImage } from "../components/media/AttachmentImage";
 import { environmentCatalog } from "../connection/catalog";
-import { useKinOpenWaiting } from "./useKinOpen";
 import { useKinOwnerLevelKnown } from "./useKinOwnerLevel";
 import { useNowMinuteMs } from "./useKinClock";
 import { cn, randomUUID } from "../lib/utils";
@@ -487,11 +485,6 @@ function KinChoiceCard(props: {
   const editable =
     answered === null && pending === null && kinSendEditOffered(choice, phase, canAct && canEdit);
   const shownEdit = kinSendEditShown(editing, editable) ? editing : null;
-  const waiting = useKinOpenWaiting({ environmentId, orgId: choice.orgId });
-  const takes =
-    answered === null && phase === "open"
-      ? kinChoiceDefaultLine(choice.widgetId, waiting, nowMs)
-      : null;
   const undone = kinChoiceUndoneLine(choice, props.viewerPersonId, new Date(nowMs));
 
   const editBound = shownEdit === null ? null : kinSendEditBound(shownEdit, choice);
@@ -579,7 +572,6 @@ function KinChoiceCard(props: {
         <p className="text-xs text-muted-foreground">{choice.askedBy}</p>
       )}
       <p className="font-medium text-foreground">{choice.question}</p>
-      {takes === null ? null : <p className="text-xs text-muted-foreground">{takes}</p>}
       {choice.send !== null && shownEdit !== null ? (
         <KinSendEditor
           send={choice.send}

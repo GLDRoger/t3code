@@ -227,7 +227,6 @@ export const KIN_SHARED_HOOKS_DIR = "packages/client-runtime/src/kin/react";
 export const KIN_HOOK_FILES_IN_BOTH: Readonly<Record<string, string>> = {
   "useKinHost.ts": "each app finds its host through its own connection and pairing",
   "useKinMoneyLive.ts": "web counts its own session as owner level; the phone reads the host",
-  "useKinOpen.ts": "the open-list stream, which no host serves yet",
   "useKinOpenChat.ts": "each app opens a chat through its own navigation and draft store",
 };
 /** Hooks written in both apps' copies of one file, each for a reason; an entry goes with its copy. */

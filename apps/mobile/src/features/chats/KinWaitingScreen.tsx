@@ -15,7 +15,6 @@ import {
   kinWaitingRowView,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import { useKinInbox } from "./state/useKinInbox";
-import { useKinOpenWaiting } from "./state/useKinOpen";
 import { kinWaitingAskView } from "@t3tools/client-runtime/kin/kinWaitingAsk";
 import { useNowMinuteMs } from "../../lib/clock";
 import { KinWaitingAsk } from "./components/KinWaitingAsk";
@@ -28,13 +27,12 @@ import { KinApprovalCard } from "./widgets/KinApprovalCard";
 export function KinWaitingScreen() {
   const navigation = useNavigation();
   const { host, state, retry } = useKinInbox();
-  const waiting = useKinOpenWaiting(host, state._tag === "ready" ? state.inbox.value : null);
   const { agentNames } = kinDirectory(host);
   const nowMs = useNowMinuteMs();
   return (
     <KinInboxPage title="Waiting on you" state={state} onRetry={retry}>
       {(ready) => {
-        const view = selectKinInboxView(ready.inbox.value, waiting);
+        const view = selectKinInboxView(ready.inbox.value);
         if (view.waiting.length === 0) {
           return (
             <EmptyState
