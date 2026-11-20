@@ -89,6 +89,19 @@ export const kinBankKnownText = (known: KinBankKnown | undefined, now: Date) =>
       ? KIN_BANK.unseen
       : KIN_BANK.knownTo(kinBankDay(known.through, now));
 
+/**
+ * An Invoices draft nothing came in on shows no balance: it is owed once issued. Display only;
+ * `balance` stays on the record, as Mark paid and older phones record a payment from it.
+ */
+export const kinDraftShowsNoBalance = (
+  item: Pick<KinRecord, "list" | "state" | "amount" | "balance">,
+) =>
+  item.list === "invoices" &&
+  item.state === "open" &&
+  item.balance !== undefined &&
+  item.amount !== undefined &&
+  item.balance.minor >= item.amount.minor;
+
 /** An issued invoice's line while some of it is owed: never more certain than the bank. */
 export const kinInvoiceBankText = (
   item: Pick<KinRecordDetail, "state" | "bankKnown" | "balance" | "amount">,
@@ -1052,7 +1065,9 @@ export function kinListRow(
     ...(due === null ? {} : { due }),
     ...(record.party === undefined ? {} : { party: record.party.title }),
     ...(record.amount === undefined ? {} : { amount: kinMoneyText(record.amount, true) }),
-    ...(record.balance === undefined ? {} : { owed: kinMoneyText(record.balance, true) }),
+    ...(record.balance === undefined || kinDraftShowsNoBalance(record)
+      ? {}
+      : { owed: kinMoneyText(record.balance, true) }),
   };
   for (const field of def?.fields ?? []) {
     const shown = kinFieldText(field, record.fields?.[field.key], context);
