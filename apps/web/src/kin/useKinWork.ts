@@ -455,7 +455,10 @@ export function useKinPickerSearch(
 /** A client, contact or project form: what is typed, and why a save didn't go through. */
 export function useKinWorkForm<D extends object, A>(
   environmentId: EnvironmentId,
-  options: Omit<Parameters<typeof createKinWorkForm<D, A>>[0], "online" | "onChange">,
+  options: Omit<Parameters<typeof createKinWorkForm<D, A>>[0], "online" | "onChange"> & {
+    /** The record being edited as read now, so saving again goes against its newest revision. */
+    readonly latest?: D | null;
+  },
 ) {
   const [state, setState] = useState<KinWorkFormState<D>>(() => ({
     draft: options.start,
@@ -471,5 +474,8 @@ export function useKinWorkForm<D extends object, A>(
       onChange: setState,
     }),
   );
+  // The form ignores a revision it has seen, so this sets state only when a newer read lands.
+  if (options.editing != null && options.latest != null)
+    form.latest(options.latest, options.editing.rev);
   return { state, form };
 }
