@@ -443,6 +443,18 @@ export const McpToolUseCase = Schema.Struct({
   notes: Schema.optional(Schema.String),
 });
 export type McpToolUseCase = typeof McpToolUseCase.Type;
+
+const KIN_SHARED_PROMPT = /\{\{(SHARED_TURN|GROUP_RULES)\}\}/;
+/**
+ * A Kin lead's turn on a thread nobody else reads has the owner's seat, as `lead/turn/session.ts`
+ * plans it; a case says `kinSession: false` only to model a turn without it on purpose.
+ */
+export const kinSessionOf = ({ setup, prompt }: McpToolUseCase) => {
+  const stated = setup.world?.kinSession;
+  return typeof stated === "boolean"
+    ? stated
+    : setup.world?.kinLead === true && !KIN_SHARED_PROMPT.test(prompt);
+};
 const AnyBlock = Schema.StructWithRest(
   Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) }),
   Rest,
@@ -3261,9 +3273,7 @@ const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSample")(fu
   const runPromise = Effect.runPromiseWith(yield* Effect.context<HttpClient.HttpClient>());
   const calls: Array<Call> = [];
   let step = 0;
-  const ownerSession =
-    testCase.setup.world?.kinSession === true &&
-    !/\{\{(SHARED_TURN|GROUP_RULES)\}\}/.test(testCase.prompt);
+  const ownerSession = kinSessionOf(testCase) && !KIN_SHARED_PROMPT.test(testCase.prompt);
   const result = yield* Effect.tryPromise({
     try: () =>
       server.runTurn({
@@ -3715,8 +3725,10 @@ const main = Effect.gen(function* () {
         );
   // Codex has no native subagents; its cases with that role run as top-level threads.
   // A Kin turn others read carries Kin's shared-turn line, as the server's prompt does.
-  const baseKey = ({ setup, prompt }: McpToolUseCase) =>
-    `${replay && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.world?.browserAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.forge !== false}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${setup.world?.kinSession === true}:${prompt.includes("{{SHARED_TURN}}")}:${setup.world?.kinSocial === true}`;
+  const baseKey = (testCase: McpToolUseCase) => {
+    const { setup, prompt } = testCase;
+    return `${replay && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.world?.browserAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.forge !== false}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${kinSessionOf(testCase)}:${prompt.includes("{{SHARED_TURN}}")}:${setup.world?.kinSocial === true}`;
+  };
   const base = yield* buildFor("top", true, true, false, true);
   const bases = new Map<string, Base>([
     ["top:true:true:false:true:false:false:false:false:false", base],

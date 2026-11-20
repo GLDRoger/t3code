@@ -24,6 +24,7 @@ import {
   failedEarly,
   executeCodex,
   gradeSample,
+  kinSessionOf,
   makeSample,
   ranCalls,
   McpToolUseCase,
@@ -886,7 +887,7 @@ it("lists link tools only while a case turns the beta on, and sends chips as T3 
   assert.include(prompt?.text, "environmentId: environment-vps");
 });
 
-it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with the owner's session", () => {
+it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with the owner's session, its default", () => {
   const names = (kinSession: boolean) =>
     buildBase(template, {
       model: "claude-sonnet-5-5",
@@ -906,6 +907,25 @@ it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with
       name,
     );
   assert.notInclude(after, "mcp__t3-code__schedule_task");
+  // A lead case has the owner's seat, as production gives a thread nobody else reads, unless it says not.
+  const lead = (prompt: string, kinSession?: boolean) =>
+    kinSessionOf({
+      ...childCase,
+      prompt,
+      setup: {
+        role: "top",
+        world: {
+          kinAgent: true,
+          kinLead: true,
+          ...(kinSession === undefined ? {} : { kinSession }),
+        },
+      },
+    });
+  assert.isTrue(lead("# Messages"));
+  assert.isFalse(lead("# Messages", false));
+  assert.isFalse(lead("{{SHARED_TURN}}\n# Messages"));
+  assert.isFalse(lead("{{GROUP_RULES}}\n# Messages"));
+  assert.isFalse(kinSessionOf(childCase));
 });
 
 it("replays earlier capability results with the model under test as the caller", () => {
