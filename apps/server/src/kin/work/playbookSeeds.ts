@@ -169,6 +169,33 @@ overloaded_load: 8
 The owner can reassign anything; people can hand back work they can't do.
 `,
   },
+  {
+    slug: "winning-customers",
+    title: "Winning customers",
+    body: `# Winning customers
+
+## When this applies
+Finding new customers, working a prospect, and every deal until it is won or lost.
+
+## Steps
+1. Who we want: What we sell says who a good customer is. When it doesn't, ask the owner once and work from our best customers meanwhile.
+2. Finding them: look where they are (their trade, their area, who they buy from), read their own pages, and add only the ones that fit, as prospects of whoever asked.
+3. Before the first call: a short background note on the prospect, fit first, with what we couldn't find marked as not found.
+4. A deal gets a plan: who decides, what they care about, which of our offerings and why, the worries to expect and the proof to bring, and the first three steps with dates.
+5. After every meeting: note what happened, what they worry about, what each side promised and by when, and the next step. Send what we promised on time.
+6. A worry we answered well goes into What we sell, so the next deal starts with it.
+7. Every open deal has a next step with a date. A deal quiet for the days below gets a nudge to whoever looks after it.
+8. Won: hand over to "Taking on a client". Lost: one line on why, and a date to look again if it's worth it.
+
+## Thresholds
+\`\`\`kin
+deal_quiet_days: 14
+\`\`\`
+
+## Who decides
+Whoever looks after a deal decides the next step. Prices, discounts and terms are the owner's. Mail to a prospect goes out only on the Confirm of the person whose mailbox it is.
+`,
+  },
 ] as const;
 
 const SEED_ORIGIN = "kin-playbook-seed:";

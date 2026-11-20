@@ -8,6 +8,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Chat from "../chat/layer.ts";
 import { withQuietDays } from "../work/deals.ts";
+import { PLAYBOOK_SEEDS } from "../work/playbookSeeds.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { morningBody, morningDue, morningOf } from "./personMorning.ts";
 
@@ -199,7 +200,10 @@ describe("deal senses", () => {
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
       yield* insert({ id: "D-1", list: "docs", title: "Winning customers", category: "playbook" });
-      const body = withQuietDays("# Winning customers\n\n```kin\ndeal_quiet_days: 14\n```\n", 5);
+      // The seeded playbook's own text, as Settings, Deals rewrites it.
+      const seeded = PLAYBOOK_SEEDS.find((one) => one.slug === "winning-customers")!.body;
+      assert.include(seeded, "deal_quiet_days: 14");
+      const body = withQuietDays(seeded, 5);
       yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind, summary,
           operations_json, actor_kind, actor_id, via, origin_key, created_at)
         VALUES (${orgId}, 'r-D-1', 1, ${body}, 'Winning customers', 'created', 'Seeded', '[]',
