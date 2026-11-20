@@ -1108,7 +1108,7 @@ describe("KinPulse", () => {
       assert.lengthOf(yield* missing(B + 20 * DAY), 0);
       yield* statement("st-sep", "2026-09-01", "2026-09-30", true);
       yield* insert({
-        id: "INV-7",
+        id: "INV-71",
         list: "invoices",
         state: "waiting",
         amount: 9_000_00,
@@ -1127,7 +1127,7 @@ describe("KinPulse", () => {
       });
       // Another unpaid invoice changes its words, never its key or what it is told on: once.
       yield* insert({
-        id: "INV-8",
+        id: "INV-72",
         list: "invoices",
         state: "waiting",
         amount: 1_000_00,
