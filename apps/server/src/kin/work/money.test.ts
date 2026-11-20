@@ -890,6 +890,54 @@ describe("lists through the tools", () => {
         assert.strictEqual((yield* records.get(orgId, blurry!.key))!.confirmed, 1);
       }).pipe(Effect.provide(layer)),
   );
+
+  it.effect("record one charge mailed as an invoice and a receipt once, keeping both files", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "expenses" });
+      const charge = (title: string, file: string) => ({
+        list: "expenses",
+        title,
+        amount: "₹1,770",
+        date: "2026-11-10",
+        fields: { vendor: "Invented Cloud", receipt: [file] },
+      });
+      const mailed = yield* turn(3, "Fwd: Your receipt", ["invoice-77.pdf", "receipt-77.pdf"]);
+      const pair = [
+        charge("Invented Cloud invoice", "invoice-77.pdf"),
+        charge("Invented Cloud receipt", "receipt-77.pdf"),
+      ];
+      const kept = yield* LeadWork.create(scope, { sourceEventId: mailed, records: pair });
+      assert.deepStrictEqual(
+        kept.records.map((one) => [one.key, one.created]),
+        [
+          ["EXP-1", true],
+          ["EXP-1", false],
+        ],
+      );
+      const records = yield* KinRecords.KinRecords;
+      const files = (key: string) =>
+        records.get(orgId, key).pipe(
+          Effect.flatMap((entry) => records.detail(entry!)),
+          Effect.map((detail) => detail.files?.map((one) => one.name)),
+        );
+      assert.deepStrictEqual(yield* files("EXP-1"), ["invoice-77.pdf", "receipt-77.pdf"]);
+      // A retry is the same entry, and keeps each file once.
+      const again = yield* LeadWork.create(scope, { sourceEventId: mailed, records: pair });
+      assert.deepStrictEqual(
+        again.records.map((one) => one.key),
+        ["EXP-1", "EXP-1"],
+      );
+      assert.deepStrictEqual(yield* files("EXP-1"), ["invoice-77.pdf", "receipt-77.pdf"]);
+      // The same charge in another mail is another charge.
+      const next = yield* turn(4, "Fwd: Your receipt", ["receipt-78.pdf"]);
+      const other = yield* LeadWork.create(scope, {
+        sourceEventId: next,
+        records: [charge("Invented Cloud receipt", "receipt-78.pdf")],
+      });
+      assert.deepInclude(other.records[0], { key: "EXP-2", created: true });
+    }).pipe(Effect.provide(layer)),
+  );
 });
 
 describe("goals through the tools", () => {
